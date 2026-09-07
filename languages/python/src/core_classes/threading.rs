@@ -69,11 +69,7 @@ pub(super) fn base_lock() -> Statement {
             ],
             vec![set_this("locked", bool_lit(true)), ret(bool_lit(true))],
         ),
-        method(
-            "release",
-            vec![],
-            vec![set_this("locked", bool_lit(false))],
-        ),
+        method("release", vec![], vec![set_this("locked", bool_lit(false))]),
     ];
     members.extend(enter_exit());
     class("__PyLock", members)
@@ -106,10 +102,7 @@ pub(super) fn semaphore() -> Statement {
                 if_stmt(
                     binary(BinOp::Gt, this_field("_value"), num(0.0)),
                     vec![
-                        set_this(
-                            "_value",
-                            binary(BinOp::Sub, this_field("_value"), num(1.0)),
-                        ),
+                        set_this("_value", binary(BinOp::Sub, this_field("_value"), num(1.0))),
                         ret(bool_lit(true)),
                     ],
                 ),
@@ -138,7 +131,11 @@ pub(super) fn bounded_semaphore() -> Statement {
             vec![
                 set_this("_value", add(this_field("_value"), ident("n"))),
                 if_stmt(
-                    binary(BinOp::Gt, this_field("_value"), this_field("_initial_value")),
+                    binary(
+                        BinOp::Gt,
+                        this_field("_value"),
+                        this_field("_initial_value"),
+                    ),
                     vec![set_this("_value", this_field("_initial_value"))],
                 ),
             ],
@@ -199,7 +196,11 @@ pub(super) fn condition() -> Statement {
             vec![param("timeout", Some(null()))],
             vec![ret(bool_lit(true))],
         ),
-        method("notify", vec![param("n", Some(num(1.0)))], vec![ret(null())]),
+        method(
+            "notify",
+            vec![param("n", Some(num(1.0)))],
+            vec![ret(null())],
+        ),
         method("notify_all", vec![], vec![ret(null())]),
     ];
     members.extend(enter_exit());
@@ -284,12 +285,18 @@ pub(super) fn thread() -> Statement {
             method(
                 "start",
                 vec![],
-                vec![expr_stmt(call_global("__py_thread_start", vec![ident("self")]))],
+                vec![expr_stmt(call_global(
+                    "__py_thread_start",
+                    vec![ident("self")],
+                ))],
             ),
             method(
                 "run",
                 vec![],
-                vec![expr_stmt(call_global("__py_thread_run", vec![ident("self")]))],
+                vec![expr_stmt(call_global(
+                    "__py_thread_run",
+                    vec![ident("self")],
+                ))],
             ),
             method(
                 "join",
@@ -365,10 +372,7 @@ pub(super) fn module_functions() -> Vec<Statement> {
                 param("thread", Some(null())),
             ],
             vec![
-                if_stmt(
-                    is_none(ident("target")),
-                    vec![ret(null())],
-                ),
+                if_stmt(is_none(ident("target")), vec![ret(null())]),
                 expr_stmt(call_spread(ident("target"), ident("args"))),
                 if_stmt(
                     is_not_none(ident("thread")),
@@ -384,19 +388,29 @@ pub(super) fn module_functions() -> Vec<Statement> {
             "__py_thread_run",
             vec![param("thread", None)],
             vec![
-                if_stmt(
-                    field_of(ident("thread"), "_done"),
-                    vec![ret(null())],
-                ),
+                if_stmt(field_of(ident("thread"), "_done"), vec![ret(null())]),
                 assign(index(ident("thread"), str_lit("_started")), bool_lit(true)),
-                expr_stmt(call_global(
-                    "__py_thread_call",
-                    vec![
-                        field_of(ident("thread"), "_target"),
-                        field_of(ident("thread"), "_args"),
-                        ident("thread"),
-                    ],
-                )),
+                assign(ident("__py_prev_thread"), ident("__py_current_thread")),
+                assign(ident("__py_current_thread"), ident("thread")),
+                Statement::with_span(
+                    vybe_ast::StmtKind::Try {
+                        body: vec![expr_stmt(call_global(
+                            "__py_thread_context_call",
+                            vec![
+                                field_of(ident("thread"), "_target"),
+                                field_of(ident("thread"), "_args"),
+                                ident("thread"),
+                            ],
+                        ))],
+                        catches: vec![],
+                        else_body: None,
+                        finally: Some(vec![assign(
+                            ident("__py_current_thread"),
+                            ident("__py_prev_thread"),
+                        )]),
+                    },
+                    span(),
+                ),
                 assign(index(ident("thread"), str_lit("_done")), bool_lit(true)),
             ],
         ),
@@ -410,7 +424,7 @@ pub(super) fn module_functions() -> Vec<Statement> {
                     "__run",
                     vec![],
                     vec![expr_stmt(call_global(
-                        "__py_thread_call",
+                        "__py_thread_context_call",
                         vec![
                             field_of(ident("thread"), "_target"),
                             field_of(ident("thread"), "_args"),
@@ -454,6 +468,18 @@ pub(super) fn module_functions() -> Vec<Statement> {
                 ],
             )],
         ),
+        function(
+            "__py_thread_context_call",
+            vec![
+                param("target", None),
+                param("args", None),
+                param("thread", Some(null())),
+            ],
+            vec![ret(call_global(
+                "__py_thread_call",
+                vec![ident("target"), ident("args"), ident("thread")],
+            ))],
+        ),
         // `join` is the real one too. `_done` is stamped after it returns so
         // `is_alive()` answers correctly once the thread has been waited on.
         function(
@@ -472,7 +498,12 @@ pub(super) fn module_functions() -> Vec<Statement> {
             "__py_main_thread",
             new("Thread", vec![null(), null(), str_lit("MainThread")]),
         ),
-        function("current_thread", vec![], vec![ret(ident("__py_main_thread"))]),
+        global_assign("__py_current_thread", ident("__py_main_thread")),
+        function(
+            "current_thread",
+            vec![],
+            vec![ret(ident("__py_current_thread"))],
+        ),
         function("main_thread", vec![], vec![ret(ident("__py_main_thread"))]),
         function(
             "enumerate",

@@ -50,7 +50,11 @@ pub fn emit_ref(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
     super::adapter_util::lset(&mut chunks[current], list, line);
     lget(&mut chunks[current], base, line);
     lget(&mut chunks[current], list, line);
-    struct_set(&mut chunks[current], &ClassSlot::internal(WEAKREFS_KEY), line);
+    struct_set(
+        &mut chunks[current],
+        &ClassSlot::internal(WEAKREFS_KEY),
+        line,
+    );
     chunks[current].emit_end(line);
     lget(&mut chunks[current], list, line);
     lget(&mut chunks[current], this_ref, line);
@@ -112,11 +116,7 @@ pub fn emit_finalize(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u3
     new_tagged(
         chunk,
         "finalize",
-        &[
-            ("__obj", base),
-            ("__func", base + 1),
-            ("__args", args_slot),
-        ],
+        &[("__obj", base), ("__func", base + 1), ("__args", args_slot)],
         line,
     );
     chunk.emit_dup(line);

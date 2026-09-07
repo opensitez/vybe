@@ -10,7 +10,7 @@
 //! deliberately.
 
 use super::builders::*;
-use vybe_ast::{BinOp, Statement};
+use vybe_ast::{BinOp, ClassMember, Statement};
 
 const NONE_SENTINEL: &str = "__py_queue_none__";
 
@@ -27,18 +27,22 @@ fn items() -> Statement {
     assign(ident("__it"), this_field("_items"))
 }
 
+fn init_queue_fields() -> ClassMember {
+    init(
+        vec![param("maxsize", Some(num(0.0)))],
+        vec![
+            set_this("maxsize", ident("maxsize")),
+            set_this("_items", call_global("list", vec![])),
+            set_this("_unfinished_tasks", num(0.0)),
+        ],
+    )
+}
+
 pub(super) fn queue() -> Statement {
     class(
         "Queue",
         vec![
-            init(
-                vec![param("maxsize", Some(num(0.0)))],
-                vec![
-                    set_this("maxsize", ident("maxsize")),
-                    set_this("_items", call_global("list", vec![])),
-                    set_this("_unfinished_tasks", num(0.0)),
-                ],
-            ),
+            init_queue_fields(),
             method(
                 "put",
                 vec![
@@ -53,6 +57,18 @@ pub(super) fn queue() -> Statement {
                         vec![assign(ident("__v"), str_lit(NONE_SENTINEL))],
                     ),
                     items(),
+                    if_stmt(
+                        binary(
+                            BinOp::And,
+                            binary(BinOp::Gt, this_field("maxsize"), num(0.0)),
+                            binary(
+                                BinOp::GtEq,
+                                call_global("len", vec![ident("__it")]),
+                                this_field("maxsize"),
+                            ),
+                        ),
+                        vec![raise_new("Full", vec![])],
+                    ),
                     expr_stmt(call(member(ident("__it"), "append"), vec![ident("__v")])),
                     set_this(
                         "_unfinished_tasks",
@@ -77,12 +93,8 @@ pub(super) fn queue() -> Statement {
                 vec![
                     items(),
                     if_stmt(
-                        binary(
-                            BinOp::Eq,
-                            call_global("len", vec![ident("__it")]),
-                            num(0.0),
-                        ),
-                        vec![ret(null())],
+                        binary(BinOp::Eq, call_global("len", vec![ident("__it")]), num(0.0)),
+                        vec![raise_new("Empty", vec![])],
                     ),
                     assign(
                         ident("__v"),
@@ -139,13 +151,16 @@ pub(super) fn queue() -> Statement {
             method(
                 "task_done",
                 vec![],
-                vec![if_stmt(
-                    binary(BinOp::Gt, this_field("_unfinished_tasks"), num(0.0)),
-                    vec![set_this(
+                vec![
+                    if_stmt(
+                        binary(BinOp::LtEq, this_field("_unfinished_tasks"), num(0.0)),
+                        vec![raise_call("ValueError", vec![])],
+                    ),
+                    set_this(
                         "_unfinished_tasks",
                         binary(BinOp::Sub, this_field("_unfinished_tasks"), num(1.0)),
-                    )],
-                )],
+                    ),
+                ],
             ),
             method("join", vec![], vec![ret(null())]),
         ],
@@ -157,26 +172,29 @@ pub(super) fn lifo_queue() -> Statement {
     class_extending(
         "LifoQueue",
         &["Queue"],
-        vec![method(
-            "get",
-            vec![
-                param("block", Some(bool_lit(true))),
-                param("timeout", Some(null())),
-            ],
-            vec![
-                items(),
-                if_stmt(
-                    binary(BinOp::Eq, call_global("len", vec![ident("__it")]), num(0.0)),
-                    vec![ret(null())],
-                ),
-                assign(ident("__v"), call(member(ident("__it"), "pop"), vec![])),
-                if_stmt(
-                    binary(BinOp::Eq, ident("__v"), str_lit(NONE_SENTINEL)),
-                    vec![ret(null())],
-                ),
-                ret(ident("__v")),
-            ],
-        )],
+        vec![
+            init_queue_fields(),
+            method(
+                "get",
+                vec![
+                    param("block", Some(bool_lit(true))),
+                    param("timeout", Some(null())),
+                ],
+                vec![
+                    items(),
+                    if_stmt(
+                        binary(BinOp::Eq, call_global("len", vec![ident("__it")]), num(0.0)),
+                        vec![raise_new("Empty", vec![])],
+                    ),
+                    assign(ident("__v"), call(member(ident("__it"), "pop"), vec![])),
+                    if_stmt(
+                        binary(BinOp::Eq, ident("__v"), str_lit(NONE_SENTINEL)),
+                        vec![ret(null())],
+                    ),
+                    ret(ident("__v")),
+                ],
+            ),
+        ],
     )
 }
 
@@ -186,55 +204,58 @@ pub(super) fn priority_queue() -> Statement {
     class_extending(
         "PriorityQueue",
         &["Queue"],
-        vec![method(
-            "get",
-            vec![
-                param("block", Some(bool_lit(true))),
-                param("timeout", Some(null())),
-            ],
-            vec![
-                items(),
-                if_stmt(
-                    binary(BinOp::Eq, call_global("len", vec![ident("__it")]), num(0.0)),
-                    vec![ret(null())],
-                ),
-                assign(ident("__bi"), num(0.0)),
-                assign(ident("__best"), index(ident("__it"), num(0.0))),
-                assign(ident("__i"), num(1.0)),
-                while_stmt(
-                    binary(
-                        BinOp::Lt,
-                        ident("__i"),
-                        call_global("len", vec![ident("__it")]),
+        vec![
+            init_queue_fields(),
+            method(
+                "get",
+                vec![
+                    param("block", Some(bool_lit(true))),
+                    param("timeout", Some(null())),
+                ],
+                vec![
+                    items(),
+                    if_stmt(
+                        binary(BinOp::Eq, call_global("len", vec![ident("__it")]), num(0.0)),
+                        vec![raise_new("Empty", vec![])],
                     ),
-                    vec![
-                        if_stmt(
-                            binary(
-                                BinOp::Lt,
-                                index(ident("__it"), ident("__i")),
-                                ident("__best"),
-                            ),
-                            vec![
-                                assign(ident("__best"), index(ident("__it"), ident("__i"))),
-                                assign(ident("__bi"), ident("__i")),
-                            ],
+                    assign(ident("__bi"), num(0.0)),
+                    assign(ident("__best"), index(ident("__it"), num(0.0))),
+                    assign(ident("__i"), num(1.0)),
+                    while_stmt(
+                        binary(
+                            BinOp::Lt,
+                            ident("__i"),
+                            call_global("len", vec![ident("__it")]),
                         ),
-                        assign(ident("__i"), add(ident("__i"), num(1.0))),
-                    ],
-                ),
-                expr_stmt(call(member(ident("__it"), "pop"), vec![ident("__bi")])),
-                if_stmt(
-                    binary(BinOp::Eq, ident("__best"), str_lit(NONE_SENTINEL)),
-                    vec![ret(null())],
-                ),
-                ret(ident("__best")),
-            ],
-        )],
+                        vec![
+                            if_stmt(
+                                binary(
+                                    BinOp::Lt,
+                                    index(index(ident("__it"), ident("__i")), num(0.0)),
+                                    index(ident("__best"), num(0.0)),
+                                ),
+                                vec![
+                                    assign(ident("__best"), index(ident("__it"), ident("__i"))),
+                                    assign(ident("__bi"), ident("__i")),
+                                ],
+                            ),
+                            assign(ident("__i"), add(ident("__i"), num(1.0))),
+                        ],
+                    ),
+                    expr_stmt(call(member(ident("__it"), "pop"), vec![ident("__bi")])),
+                    if_stmt(
+                        binary(BinOp::Eq, ident("__best"), str_lit(NONE_SENTINEL)),
+                        vec![ret(null())],
+                    ),
+                    ret(ident("__best")),
+                ],
+            ),
+        ],
     )
 }
 
-/// `SimpleQueue` — a `Queue` with no maxsize. The inherited constructor takes
-/// the default, so the subclass adds nothing at all.
+/// `SimpleQueue` — a `Queue` with no maxsize. It carries the same storage
+/// fields as `Queue` because core-class subclass constructors are explicit.
 pub(super) fn simple_queue() -> Statement {
-    class_extending("SimpleQueue", &["Queue"], vec![])
+    class_extending("SimpleQueue", &["Queue"], vec![init_queue_fields()])
 }

@@ -70,10 +70,7 @@ pub(super) fn ipv4_address() -> Statement {
                 vec![
                     set_this("version", num(4.0)),
                     set_this("_int", ident("value")),
-                    set_this(
-                        "_text",
-                        call_global("_vybe_ip4_str", vec![ident("value")]),
-                    ),
+                    set_this("_text", call_global("_vybe_ip4_str", vec![ident("value")])),
                     set_this("compressed", this_field("_text")),
                     set_this("exploded", this_field("_text")),
                     // ⛔ EAGER FIELDS, not `@property`. Every one is a pure
@@ -106,10 +103,7 @@ pub(super) fn ipv4_address() -> Statement {
                         "is_multicast",
                         and(ge(octet(0.0), num(224.0)), le(octet(0.0), num(239.0))),
                     ),
-                    set_this(
-                        "is_global",
-                        eq(this_field("is_private"), bool_lit(false)),
-                    ),
+                    set_this("is_global", eq(this_field("is_private"), bool_lit(false))),
                 ],
             ),
             method("__str__", vec![], vec![ret(this_field("_text"))]),
@@ -214,7 +208,10 @@ pub(super) fn ipv4_network() -> Statement {
                         ident("__mask"),
                         call_global("_vybe_ip4_mask", vec![this_field("prefixlen")]),
                     ),
-                    set_this("network_address", new("IPv4Address", vec![this_field("_base")])),
+                    set_this(
+                        "network_address",
+                        new("IPv4Address", vec![this_field("_base")]),
+                    ),
                     set_this("netmask", new("IPv4Address", vec![ident("__mask")])),
                     set_this(
                         "hostmask",
@@ -398,7 +395,10 @@ pub(super) fn ipv4_interface() -> Statement {
                     ),
                     set_this("version", num(4.0)),
                     set_this("prefixlen", index_of(ident("__pair"), 1.0)),
-                    set_this("ip", new("IPv4Address", vec![index_of(ident("__pair"), 0.0)])),
+                    set_this(
+                        "ip",
+                        new("IPv4Address", vec![index_of(ident("__pair"), 0.0)]),
+                    ),
                     set_this(
                         "network",
                         new("IPv4Network", vec![ident("value"), bool_lit(false)]),
@@ -495,16 +495,10 @@ pub(super) fn module_functions() -> Vec<Statement> {
                                     vec![
                                         expr_stmt(call(
                                             member(ident("__out"), "append"),
-                                            vec![call(
-                                                member(ident("__a"), "supernet"),
-                                                vec![],
-                                            )],
+                                            vec![call(member(ident("__a"), "supernet"), vec![])],
                                         )),
                                         assign(ident("__merged"), bool_lit(true)),
-                                        assign(
-                                            ident("__i"),
-                                            add(ident("__i"), num(2.0)),
-                                        ),
+                                        assign(ident("__i"), add(ident("__i"), num(2.0))),
                                     ],
                                 ),
                             ],

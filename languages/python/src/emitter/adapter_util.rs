@@ -52,7 +52,7 @@ pub fn stash_exact(chunks: &mut [Chunk], current: usize, argc: u8, want: u16, li
     base
 }
 
-pub fn string_key(chunk: &mut Chunk, key: &str) -> u16 {
+pub fn string_key(chunk: &mut Chunk, key: &str) -> u32 {
     chunk.add_constant(Value::String(Arc::from(key)))
 }
 

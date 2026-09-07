@@ -12,7 +12,7 @@
 //! object is gone and these are ordinary globals.
 
 use super::builders::*;
-use vybe_ast::{BinOp, Statement};
+use vybe_ast::{BinOp, Expression, Statement};
 
 pub(super) fn log_record() -> Statement {
     class("LogRecord", vec![init(any_args(), vec![])])
@@ -103,6 +103,7 @@ pub(super) fn logger() -> Statement {
 
 pub(super) fn module_functions() -> Vec<Statement> {
     vec![
+        assign(ident("__py_logging_record_factory"), ident("LogRecord")),
         function(
             "getLogger",
             vec![param("name", Some(str_lit("root")))],
@@ -114,23 +115,29 @@ pub(super) fn module_functions() -> Vec<Statement> {
             "getLevelName",
             vec![param("level", None)],
             vec![
-                assign(
-                    ident("__names"),
-                    call_global(
-                        "dict",
-                        vec![list_of(vec![
-                            list_of(vec![num(0.0), str_lit("NOTSET")]),
-                            list_of(vec![num(10.0), str_lit("DEBUG")]),
-                            list_of(vec![num(20.0), str_lit("INFO")]),
-                            list_of(vec![num(30.0), str_lit("WARNING")]),
-                            list_of(vec![num(40.0), str_lit("ERROR")]),
-                            list_of(vec![num(50.0), str_lit("CRITICAL")]),
-                        ])],
-                    ),
+                if_stmt(
+                    binary(BinOp::Eq, ident("level"), Expression::int(0)),
+                    vec![ret(str_lit("NOTSET"))],
                 ),
                 if_stmt(
-                    binary(BinOp::In, ident("level"), ident("__names")),
-                    vec![ret(index(ident("__names"), ident("level")))],
+                    binary(BinOp::Eq, ident("level"), Expression::int(10)),
+                    vec![ret(str_lit("DEBUG"))],
+                ),
+                if_stmt(
+                    binary(BinOp::Eq, ident("level"), Expression::int(20)),
+                    vec![ret(str_lit("INFO"))],
+                ),
+                if_stmt(
+                    binary(BinOp::Eq, ident("level"), Expression::int(30)),
+                    vec![ret(str_lit("WARNING"))],
+                ),
+                if_stmt(
+                    binary(BinOp::Eq, ident("level"), Expression::int(40)),
+                    vec![ret(str_lit("ERROR"))],
+                ),
+                if_stmt(
+                    binary(BinOp::Eq, ident("level"), Expression::int(50)),
+                    vec![ret(str_lit("CRITICAL"))],
                 ),
                 ret(add(
                     str_lit("Level "),
@@ -146,5 +153,26 @@ pub(super) fn module_functions() -> Vec<Statement> {
         stub_fn("error", null()),
         stub_fn("critical", null()),
         stub_fn("log", null()),
+        stub_fn("exception", null()),
+        function(
+            "setLogRecordFactory",
+            vec![param("factory", None)],
+            vec![assign(
+                ident("__py_logging_record_factory"),
+                ident("factory"),
+            )],
+        ),
+        function(
+            "getLogRecordFactory",
+            vec![],
+            vec![ret(ident("__py_logging_record_factory"))],
+        ),
+        stub_fn("dictConfig", null()),
+        stub_fn("fileConfig", null()),
+        function(
+            "RotatingFileHandler",
+            any_args(),
+            vec![ret(new("FileHandler", vec![]))],
+        ),
     ]
 }

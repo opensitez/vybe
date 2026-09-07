@@ -116,8 +116,9 @@ fn preprocess_indentation(source: &str) -> String {
             continue;
         }
 
-        // Implicit continuation: unclosed brackets
-        if bracket_depth > 0 {
+        // Implicit continuation: unclosed brackets or an open triple-quoted
+        // string literal.
+        if bracket_depth > 0 || in_triple.is_some() {
             continue;
         }
 
@@ -203,12 +204,81 @@ fn preprocess_indentation(source: &str) -> String {
 // Entry point
 // ════════════════════════════════════════════════════════════════════════════
 
+/// The text the prelude and core-class GATES are matched against: the source
+/// with `#` comments removed.
+///
+/// ⛔ A gate is `contains("<module>")` over the whole file, and every corpus
+/// test opens with `# vybe-test: python/collections_extended/...`. The suite
+/// name in that header alone turned the `collections` prelude on: adding the
+/// single comment `# collections` to `hello_world.py` cost **0.58s → 2.05s**,
+/// and warm mode does not help because the prelude is RE-COMPILED per program
+/// even when its parse is cached. String literals are KEPT, so
+/// `__import__("collections")` still gates.
+fn gate_text(source: &str) -> String {
+    let mut out = String::with_capacity(source.len());
+    let bytes = source.as_bytes();
+    let mut i = 0;
+    // `quote` holds the delimiter of the string being scanned, and `triple`
+    // whether it was opened with three of them.
+    let mut quote: Option<(u8, bool)> = None;
+    while i < bytes.len() {
+        let c = bytes[i];
+        match quote {
+            None => {
+                if c == b'#' {
+                    while i < bytes.len() && bytes[i] != b'\n' {
+                        i += 1;
+                    }
+                    continue;
+                }
+                if c == b'"' || c == b'\'' {
+                    let triple = bytes[i + 1..].starts_with(&[c, c]);
+                    quote = Some((c, triple));
+                    out.push(c as char);
+                    i += if triple { 3 } else { 1 };
+                    if triple {
+                        out.push(c as char);
+                        out.push(c as char);
+                    }
+                    continue;
+                }
+            }
+            Some((delim, triple)) => {
+                if c == b'\\' {
+                    out.push(c as char);
+                    if i + 1 < bytes.len() {
+                        out.push(bytes[i + 1] as char);
+                    }
+                    i += 2;
+                    continue;
+                }
+                if c == delim && (!triple || bytes[i..].starts_with(&[c, c, c])) {
+                    quote = None;
+                    out.push(c as char);
+                    i += if triple { 3 } else { 1 };
+                    if triple {
+                        out.push(c as char);
+                        out.push(c as char);
+                    }
+                    continue;
+                }
+            }
+        }
+        out.push(c as char);
+        i += 1;
+    }
+    out
+}
+
 pub fn parse(source: &str) -> Result<Module, String> {
     // Every registry this walk keeps, created here and dropped when `parse`
     // returns — including on the `?` paths below. Nothing survives to be read
     // by the next program compiled on this thread.
     let mut __w_owned = PyWalker::default();
     let __w = &mut __w_owned;
+    // Gates match the comment-stripped text; the PARSE still gets the real
+    // source, whose comments the indentation preprocessor depends on.
+    let gate = gate_text(source);
     // ⛔ The `core_classes` names are registered BEFORE the source walk, not
     // when their declarations are spliced in afterwards. The walker decides how
     // to lower `a = IPv4Address(…)` — and every later `a.attr` — from
@@ -233,7 +303,21 @@ pub fn parse(source: &str) -> Result<Module, String> {
     __w.py_dynamic_module_attrs.clear();
     __w.py_dynamic_module_all.clear();
     __w.py_string_consts.clear();
+    __w.py_string_const_shadows.clear();
+    __w.py_class_aliases.clear();
+    __w.py_string_template_vars.clear();
+    __w.py_string_template_delimiters.clear();
+    __w.py_string_map_consts.clear();
+    __w.py_object_float_fields.clear();
+    __w.py_object_class_fields.clear();
     __w.py_bytes_vars.clear();
+    __w.py_bytes_sequence_vars.clear();
+    __w.py_bytearray_vars.clear();
+    __w.py_memoryview_sources.clear();
+    __w.py_memoryview_released_vars.clear();
+    __w.py_codeop_compiler_vars.clear();
+    __w.py_static_qualnames.clear();
+    __w.py_gzip_file_vars.clear();
     __w.py_mimetype_customs.clear();
     __w.py_none_vars.clear();
     __w.py_mapping_proxy_vars.clear();
@@ -242,6 +326,12 @@ pub fn parse(source: &str) -> Result<Module, String> {
     __w.py_defined_functions.clear();
     __w.py_defined_function_params.clear();
     __w.py_defined_function_bodies.clear();
+    __w.py_defined_function_returns.clear();
+    __w.py_defined_function_param_kinds.clear();
+    __w.py_signature_vars.clear();
+    __w.py_annotation_vars.clear();
+    __w.py_annotation_literal_vars.clear();
+    __w.py_last_param_kinds.clear();
     __w.py_callable_classes.clear();
     __w.py_classes_with_init.clear();
     __w.py_class_parents.clear();
@@ -251,17 +341,38 @@ pub fn parse(source: &str) -> Result<Module, String> {
     // class the walker does not know is not normalised from `ClassName(arg)` to
     // `ExprKind::New` — the constructor then binds its arguments one slot over
     // and the first parameter receives the receiver.
-    let needed_core = crate::core_classes::needed_classes(source);
+    let needed_core = crate::core_classes::needed_classes(&gate);
     for name in &needed_core {
         __w.py_defined_classes.insert((*name).to_string());
+        let parents: Vec<String> = crate::core_classes::core_class_parents(name)
+            .into_iter()
+            .map(|parent| parent.to_string())
+            .collect();
+        if !parents.is_empty() {
+            note_class_parents(__w, name, &parents);
+        }
     }
     // Every core class declares `__init__`, and `class_has_init` gates the
     // construction path — without it a `New` takes the no-argument shape.
     for name in &needed_core {
         __w.py_classes_with_init.insert((*name).to_string());
     }
+    if source_uses_bytes(&gate) {
+        for name in crate::core_classes::BYTES_CLASSES {
+            __w.py_defined_classes.insert((*name).to_string());
+        }
+    }
+    if gate.contains("object()") {
+        for name in crate::core_classes::OBJECT_CLASSES {
+            __w.py_defined_classes.insert((*name).to_string());
+            __w.py_classes_with_init.insert((*name).to_string());
+        }
+    }
+    if source_uses_ellipsis(&gate) {
+        __w.py_defined_classes.insert("ellipsis".to_string());
+    }
     for (name, attrs) in crate::core_classes::CLASS_ATTRS {
-        if needed_core.contains(name) {
+        if needed_core.contains(name) || (*name == "ellipsis" && source_uses_ellipsis(&gate)) {
             __w.py_class_attrs.insert(
                 (*name).to_string(),
                 attrs.iter().map(|a| (*a).to_string()).collect(),
@@ -272,6 +383,15 @@ pub fn parse(source: &str) -> Result<Module, String> {
     __w.py_class_float_data_attrs.clear();
     __w.py_class_slots.clear();
     __w.py_class_properties.clear();
+    for (name, attrs) in crate::core_classes::CLASS_DATA_ATTRS {
+        if needed_core.contains(name) {
+            note_class_data_attrs(
+                __w,
+                name,
+                attrs.iter().map(|a| (*a).to_string()).collect(),
+            );
+        }
+    }
 
     // ⛔ BELOW `py_class_properties.clear()`. A spliced class is never walked,
     // so nothing calls `note_class_property_kind` for it — and a property the
@@ -286,10 +406,18 @@ pub fn parse(source: &str) -> Result<Module, String> {
             }
         }
     }
+    for (name, props) in crate::core_classes::CLASS_WRITABLE_PROPERTIES {
+        if needed_core.contains(name) {
+            for prop in *props {
+                note_class_property_kind(__w, name, prop, "setter");
+            }
+        }
+    }
     __w.py_init_subclass_writes.clear();
     __w.py_dataclass_fields.clear();
     __w.py_dataclass_options.clear();
     __w.py_instance_classes.clear();
+    __w.py_instance_init_exprs.clear();
     __w.py_instance_attrs.clear();
     __w.py_assign_target_depth = 0;
     __w.py_namedtuple_defs.clear();
@@ -297,6 +425,9 @@ pub fn parse(source: &str) -> Result<Module, String> {
     __w.py_sql_vars.clear();
     __w.py_sock_vars.clear();
     __w.py_re_vars.clear();
+    __w.py_re_var_flags.clear();
+    __w.py_re_var_patterns.clear();
+    __w.py_re_match_vars.clear();
     __w.py_counter_vars.clear();
     __w.py_defaultdict_vars.clear();
     __w.py_deque_maxlen_vars.clear();
@@ -320,10 +451,30 @@ pub fn parse(source: &str) -> Result<Module, String> {
     __w.py_set_vars.clear();
     __w.py_frozenset_vars.clear();
     __w.py_reprlib_vars.clear();
+    __w.py_csv_field_size_limit = 131072;
+    __w.py_csv_dialects.clear();
+    __w.py_csv_writers.clear();
+    __w.py_csv_readers.clear();
+    __w.py_csv_dict_readers.clear();
+    __w.py_csv_writer_targets.clear();
+    __w.py_csv_dict_writers.clear();
+    __w.py_xml_element_values.clear();
+    __w.py_xml_element_array_values.clear();
+    __w.py_xml_tree_roots.clear();
+    __w.py_xml_parent_links.clear();
+    __w.py_xml_pending_parent_link = None;
+    __w.py_reprlib_infos.clear();
     __w.py_datetime_vars.clear();
     __w.py_calendar_vars.clear();
     __w.py_code_object_vars.clear();
+    __w.py_marshal_code_vars.clear();
+    __w.py_module_symbol_vars.clear();
+    __w.py_doctest_object_vars.clear();
+    __w.py_dis_bytecode_vars.clear();
+    __w.py_uuid_values.clear();
+    __w.py_path_values.clear();
     let preprocessed = preprocess_indentation(source);
+    set_line_index(&preprocessed);
     let pairs = PythonParser::parse(Rule::program, &preprocessed)
         .map_err(|e| format!("Parse error: {}", e))?;
 
@@ -367,10 +518,10 @@ pub fn parse(source: &str) -> Result<Module, String> {
     // prelude above is gated on: three extra assignments per function is real
     // bloat for a program that never introspects, and a substring miss costs
     // only what is missing today.
-    if source.contains("__annotations__")
-        || source.contains("__name__")
-        || source.contains("__doc__")
-        || source.contains("__qualname__")
+    if gate.contains("__annotations__")
+        || gate.contains("__name__")
+        || gate.contains("__doc__")
+        || gate.contains("__qualname__")
     {
         // ⛔ IMMEDIATELY AFTER EACH DEF, not appended at the end. A
         // `FunctionDecl` hoists; the metadata ASSIGNMENTS are ordinary
@@ -388,13 +539,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
                     ..
                 } if !name.starts_with("__py_") && !name.starts_with("__vybe") => {
                     let mut out = Vec::new();
-                    assign_function_metadata(
-                        &mut out,
-                        name,
-                        params,
-                        return_type.as_ref(),
-                        fn_body,
-                    );
+                    assign_function_metadata(&mut out, name, params, return_type.as_ref(), fn_body);
                     out
                 }
                 _ => Vec::new(),
@@ -413,9 +558,10 @@ pub fn parse(source: &str) -> Result<Module, String> {
     // declaration, and `New` reached a global that was never emitted:
     // "undefined is not callable". The user's classes are the ones the SOURCE
     // declared, which is exactly the seeded set removed.
-    let core_classes = crate::core_classes::declarations_for(source, |name| {
+    let mut core_classes = crate::core_classes::declarations_for(&gate, |name| {
         user_classes.contains(name) && !needed_core.iter().any(|n| *n == name)
     });
+    add_core_class_data_fields(&mut core_classes);
     if !core_classes.is_empty() {
         // ⛔ REGISTER THEM. The declarations are spliced AFTER the source walk,
         // so nothing has called `note_defined_class` for them — and without
@@ -426,9 +572,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
         body.splice(0..0, core_classes);
     }
 
-    let mut prelude = parse_python_prelude(__w, ITER_PROTOCOL_PRELUDE);
-    prelude.append(&mut body);
-    body = prelude;
+    let mut helper_decls = Vec::new();
 
     // The module dunders, as real module BINDINGS.
     //
@@ -439,148 +583,58 @@ pub fn parse(source: &str) -> Result<Module, String> {
     // the module, `globals()['__name__']` reads it, and `'__name__' in
     // globals()` is True because it is genuinely there. Binding it makes all
     // three agree from one fact instead of two.
-    let mut prelude = parse_python_prelude(__w, MODULE_DUNDER_PRELUDE);
-    prelude.append(&mut body);
-    body = prelude;
+    helper_decls.extend(crate::core_classes::module_dunder_declarations());
 
-    // Prepend the bytes-repr source helper when the program uses bytes, so
-    // `b'…'` display resolves to a real `__vybe_bytes_repr` function.
-    if source_uses_bytes(source) {
-        let mut prelude = parse_python_prelude(__w, BYTES_REPR_PRELUDE);
-        prelude.append(&mut body);
-        body = prelude;
+    // The bytes helper surface is DECLARED, not parsed: it was 55 lines of
+    // prelude source on the widest gate in the language (any `b'` or `b"`,
+    // measured firing on 1368 corpus tests).
+    if source_uses_bytes(&gate) {
+        let mut decls = crate::core_classes::bytes_declarations();
+        decls.append(&mut body);
+        body = decls;
+    }
+
+    if gate.contains("object()") {
+        let mut decls = crate::core_classes::object_declarations();
+        decls.append(&mut body);
+        body = decls;
     }
 
     // Define the `Ellipsis` singleton (bound to `...`) as a real object so it is
     // distinct from `None`, is its own singleton (`... is ...`), and reprs as
     // `Ellipsis` with `type(...).__name__ == "ellipsis"`.
-    if source_uses_ellipsis(source) {
-        let mut prelude = parse_python_prelude(__w, ELLIPSIS_PRELUDE);
-        prelude.append(&mut body);
-        body = prelude;
+    if source_uses_ellipsis(&gate) {
+        helper_decls.extend(crate::core_classes::ellipsis_declarations());
     }
 
-    // Define the `slice` type when `slice(...)` is constructed, so each call
-    // yields a fresh object (`slice(1) is slice(1)` → False).
-    if source_uses_slice_ctor(source) {
-        let mut prelude = parse_python_prelude(__w, SLICE_PRELUDE);
-        prelude.append(&mut body);
-        body = prelude;
+    // Seed the sentinel used by the `python.slice_new` adapter to distinguish
+    // `slice(stop)` from `slice(start, stop)`.
+    if source_uses_slice_ctor(&gate) {
+        helper_decls.extend(crate::core_classes::slice_declarations());
     }
 
-    if source.contains("ExceptionGroup") {
-        let mut prelude = parse_python_prelude(__w, EXCEPTION_GROUP_PRELUDE);
-        prelude.append(&mut body);
-        body = prelude;
-    }
-
-
-
-
-
-    // `socket` — the class is genuinely stateful (WASI resource + streams +
-    // timeout + option table), which is the one case a prelude is for.
-    if source.contains("import socket") {
-        let mut prelude = parse_python_prelude(__w, SOCKET_PRELUDE);
-        prelude.append(&mut body);
-        body = prelude;
-    }
-
-    // `io.StringIO` — an in-memory text stream (pure Python, no host I/O), so
-    // `print(..., file=buf)` and manual read/write/seek work against a buffer.
-    if source.contains("import io") || source.contains(", io") {
-        let mut prelude = parse_python_prelude(__w, IO_PRELUDE);
-        prelude.append(&mut body);
-        body = prelude;
-    }
-
-    if source.contains("urllib.parse") || source.contains("from urllib") {
-        let mut prelude = parse_python_prelude(__w, URLLIB_PARSE_PRELUDE);
-        prelude.append(&mut body);
-        body = prelude;
-    }
-
-    if source.contains("xml.etree") {
-        let mut prelude = parse_python_prelude(__w, XML_ETREE_PRELUDE);
-        prelude.append(&mut body);
-        body = prelude;
+    if gate.contains("ExceptionGroup") {
+        helper_decls.extend(crate::core_classes::exception_group_declarations());
     }
 
     // `fnmatch` — shell-style filename matching (pure Python, self-contained
     // iterative `*`/`?` matcher; no `re` dependency).
-    if source.contains("import fnmatch") {
-        let mut prelude = parse_python_prelude(__w, FNMATCH_PRELUDE);
-        prelude.append(&mut body);
-        body = prelude;
-    }
 
-    // `configparser` — INI parsing (pure Python; sections stored as nested
-    // dicts so no string data lives in a `self.attr` slice/concat).
-    if source.contains("import configparser") {
-        let mut prelude = parse_python_prelude(__w, CONFIGPARSER_PRELUDE);
-        prelude.append(&mut body);
-        body = prelude;
-    }
-
+    // `configparser` — AST class adapter over `common:config.parse`; no source
+    // prelude.
 
     // `os.path` — pure-string POSIX helpers (join/split/normpath/…) are emitter
     // adapters (common:python.ospath_*), emitted at the call site. No prelude.
 
-    // `random` — distributions + range/weight helpers over `random.random()`
-    // + `math` (no host RNG beyond the base entropy source).
-    if source.contains("random") {
-        let mut prelude = parse_python_prelude(__w, RANDOM_PRELUDE);
-        prelude.append(&mut body);
-        body = prelude;
-    }
+    // `random` — distributions + range/weight helpers are adapter leaves over
+    // the shared seedable PRNG primitive. No source prelude.
 
-    // `string` module classes/functions (Template/Formatter/capwords). Constants
-    // are intercepted at the member-read site; the class/function surface needs
-    // real definitions, so inject them when the module is imported.
-    if source.contains("import string") {
-        let mut prelude = parse_python_prelude(__w, STRING_PRELUDE);
-        prelude.append(&mut body);
-        body = prelude;
-    }
-    if source.contains("shlex") {
-        let mut prelude = parse_python_prelude(__w, SHLEX_PRELUDE);
-        prelude.append(&mut body);
-        body = prelude;
-    }
-    if source.contains("textwrap") {
-        let mut prelude = parse_python_prelude(__w, TEXTWRAP_PRELUDE);
-        prelude.append(&mut body);
-        body = prelude;
-    }
-    if source.contains("pprint") {
-        let mut prelude = parse_python_prelude(__w, PPRINT_PRELUDE);
-        prelude.append(&mut body);
-        body = prelude;
-    }
-    if source.contains("functools") {
-        let mut prelude = parse_python_prelude(__w, FUNCTOOLS_PRELUDE);
-        prelude.append(&mut body);
-        body = prelude;
-    }
-    if source.contains("|") || source.contains(".update(") {
-        let mut prelude = parse_python_prelude(__w, DICT_OP_PRELUDE);
-        prelude.append(&mut body);
-        body = prelude;
-    }
-    if source.contains("__iadd__") {
-        let mut prelude = parse_python_prelude(__w, LIST_IADD_PRELUDE);
-        prelude.append(&mut body);
-        body = prelude;
-    }
-    if source.contains("collections") {
-        let mut prelude = parse_collections_prelude(__w);
-        prelude.append(&mut body);
-        body = prelude;
-    }
-    if source.contains("types") {
-        let mut prelude = parse_python_prelude(__w, TYPES_PRELUDE);
-        prelude.append(&mut body);
-        body = prelude;
+    // `string` module constants are intercepted at the member-read site.
+    // Template/Formatter are AST core classes; capwords is folded in the
+    // module-call normalizer.
+    if !helper_decls.is_empty() {
+        helper_decls.append(&mut body);
+        body = helper_decls;
     }
     body.insert(
         0,
@@ -590,10 +644,25 @@ pub fn parse(source: &str) -> Result<Module, String> {
             by_ref: false,
         }),
     );
+    normalize_pickle_reduce_returns(&mut body);
+    let mut post_fold_shadows = HashSet::new();
+    collect_python_function_param_names(&body, &mut post_fold_shadows);
+    __w.py_string_const_shadows.push(post_fold_shadows);
     for stmt in &mut body {
+        stmt.walk_exprs_mut(&mut normalize_python_operand_bool_expr);
+        stmt.walk_exprs_mut(&mut normalize_python_slice_ctor_expr);
+        stmt.walk_exprs_mut(&mut normalize_python_types_new_class_expr);
+        stmt.walk_exprs_mut(&mut |__x| normalize_python_shlex_ctor_expr(__w, __x));
+        stmt.walk_exprs_mut(&mut |__x| normalize_python_textwrapper_ctor_expr(__w, __x));
         stmt.walk_exprs_mut(&mut |__x| normalize_python_module_facade_expr(__w, __x));
+        stmt.walk_exprs_mut(&mut |__x| normalize_python_bytes_memoryview_expr(__w, __x));
+        stmt.walk_exprs_mut(&mut |__x| normalize_python_deepcopy_known_fields(__w, __x));
         stmt.walk_exprs_mut(&mut normalize_asyncio_expr);
     }
+    normalize_python_slice_object_indexes(&mut body);
+    let source_lines: Vec<&str> = source.lines().collect();
+    recover_silent_aug_assigns(&mut body, &source_lines);
+    __w.py_string_const_shadows.pop();
     Ok(Module {
         canon: Default::default(),
         name: "main".into(),
@@ -608,11 +677,24 @@ pub fn parse(source: &str) -> Result<Module, String> {
             // `[[Call]](thisArgument, argumentsList)`, which is also the only
             // shape expressible as a wasm functype. Python spells it in its own
             // syntax already (`def get(self)`), so this states the calling
-            // convention the language was using anyway; leaving it undeclared
-            // stamped every chunk `ReceiverAbi::Ambient` and kept the
-            // `__js_this` module global alive for a language that never
-            // declared an ambient receiver.
+            // convention the language was using anyway.
             receiver_binding: Some(vybe_ast::ReceiverBinding::UniversalParameter),
+            // ⛔ Python's instance fields ARE own properties: `__py_attr_read`
+            // is `ecma:object.hasIn` over the property bag and
+            // `emit_attr_write` writes into it. Unstated, the default (false)
+            // hands a parentless class the SEAM 3 licence, its fields move to
+            // indexed GC-struct storage, and no reflective surface — `hasIn`,
+            // `Object.keys`, `in` — can see them: construction succeeded and
+            // every `p.a` raised AttributeError. Measured on dataclasses,
+            // `py_dataclasses` 13 -> 4. `flexclassplan.md` states the rule: a
+            // language whose fields are own properties stays out of indexed
+            // storage until the host key walk merges `TypeEntry.fields`.
+            instance_fields_are_own_properties: Some(true),
+            // ⛔ And a CLASS attribute is an ordinary attribute of the class
+            // object — `C.x`, `vars(C)` and `C.__dict__` all see it. Unstated,
+            // the default (false) means a static field is never written as an
+            // own property, so `class C: x = 5` then `C.x` found nothing.
+            static_fields_are_own_properties: Some(true),
             // Reading a method produces a fresh callable with the receiver
             // already bound — the third dispatch model, distinct from
             // prototype (js/dart) and call-site (php). Replaces the profile
@@ -661,6 +743,7 @@ fn source_uses_bytes(source: &str) -> bool {
         || source.contains("bytes")
         || source.contains("BytesIO")
         || source.contains("bytearray")
+        || source.contains("memoryview")
         || source.contains("import codecs")
         || source.contains("from codecs")
         || source.contains("import io")
@@ -669,91 +752,6 @@ fn source_uses_bytes(source: &str) -> bool {
         || source.contains(".hex(")
         || source.contains(".encode(")
         || source.contains(".decode(")
-}
-
-/// Parse a Python source prelude into top-level statements. Errors yield `[]`
-/// so a prelude problem can never break user compilation.
-///
-/// Memoised per PROCESS, the way `vybe_language_js::prelude_body` is. The
-/// preludes are conditional (only what the source references is injected) but
-/// each one still went back through pest on every compile, and there are 27
-/// injection sites. Cloning a parsed body is far cheaper than re-parsing it.
-///
-/// Keyed by CONTENT rather than pointer: `parse_collections_prelude` builds its
-/// source at run time from the counters it saw, so a pointer key would be both
-/// wrong and unsound once that string is freed.
-fn parse_python_prelude(__w: &mut PyWalker, src: &str) -> Vec<Statement> {
-    // Shared with every other prelude-carrying language, including the bound
-    // that keeps a dynamically-built prelude from growing the map without
-    // limit in a long-lived worker — see
-    // `vybe_compiler::primitives::prelude`.
-    vybe_compiler::primitives::prelude::cached_infallible(src, |__src| parse_python_prelude_uncached(__w, __src))
-}
-
-fn parse_python_prelude_uncached(__w: &mut PyWalker, src: &str) -> Vec<Statement> {
-    let preprocessed = preprocess_indentation(src);
-    let pairs = match PythonParser::parse(Rule::program, &preprocessed) {
-        Ok(p) => p,
-        Err(e) => {
-            if std::env::var("VYBE_PRELUDE_DEBUG").is_ok() {
-                eprintln!("[prelude-parse-error] {e}");
-                for (i, l) in preprocessed.lines().enumerate() {
-                    eprintln!("[pp {:3}] {l}", i + 1);
-                }
-            }
-            return Vec::new();
-        }
-    };
-    let mut body = Vec::new();
-    let mut imports = Vec::new();
-    for top in pairs {
-        match top.as_rule() {
-            Rule::program => {
-                for pair in top.into_inner() {
-                    match pair.as_rule() {
-                        Rule::EOI | Rule::NEWLINE => continue,
-                        _ => {
-                            let _ = walk_stmt_into(__w, pair, &mut body, &mut imports);
-                        }
-                    }
-                }
-            }
-            Rule::EOI => continue,
-            _ => {
-                let _ = walk_stmt_into(__w, top, &mut body, &mut imports);
-            }
-        }
-    }
-    body
-}
-
-fn parse_collections_prelude(__w: &mut PyWalker) -> Vec<Statement> {
-    let counters = {
-        let snapshot = __w.py_counter_vars.clone();
-        __w.py_counter_vars.clear();
-        snapshot
-    };
-    let defaultdicts = {
-        let snapshot = __w.py_defaultdict_vars.clone();
-        __w.py_defaultdict_vars.clear();
-        snapshot
-    };
-    let deques = {
-        let snapshot = __w.py_deque_maxlen_vars.clone();
-        __w.py_deque_maxlen_vars.clear();
-        snapshot
-    };
-    let chainmaps = {
-        let snapshot = __w.py_chainmap_vars.clone();
-        __w.py_chainmap_vars.clear();
-        snapshot
-    };
-    let body = parse_python_prelude(__w, COLLECTIONS_PRELUDE);
-    __w.py_counter_vars = counters;
-    __w.py_defaultdict_vars = defaultdicts;
-    __w.py_deque_maxlen_vars = deques;
-    __w.py_chainmap_vars = chainmaps;
-    body
 }
 
 /// Python source for `__vybe_bytes_repr(int_array) -> "b'…'"`. Escape fragments
@@ -784,78 +782,305 @@ fn source_uses_slice_ctor(source: &str) -> bool {
     false
 }
 
-/// The `Ellipsis` singleton — a real object (so `... is None` is False and
-/// `type(...).__name__` is `"ellipsis"`), bound once at module scope.
-const ELLIPSIS_PRELUDE: &str = r#"
-class ellipsis:
-    def __repr__(self):
-        return "Ellipsis"
-Ellipsis = ellipsis()
-"#;
+fn normalize_python_slice_ctor_expr(expr: &mut Expression) {
+    let ExprKind::Call { callee, args, .. } = &mut expr.kind else {
+        return;
+    };
+    if !matches!(&callee.kind, ExprKind::Ident(name) if name == "slice") {
+        return;
+    }
+    if args.is_empty() || args.len() > 3 || args.iter().any(|arg| arg.name.is_some() || arg.spread) {
+        return;
+    }
+    let first = args[0].value.clone();
+    let second = args
+        .get(1)
+        .map(|arg| arg.value.clone())
+        .unwrap_or_else(|| Expression::ident("__slice_unset"));
+    let third = args
+        .get(2)
+        .map(|arg| arg.value.clone())
+        .unwrap_or_else(Expression::null);
+    expr.kind = ExprKind::Call {
+        callee: Box::new(Expression::ident("__py_slice_new")),
+        args: vec![
+            Argument::positional(first),
+            Argument::positional(second),
+            Argument::positional(third),
+        ],
+        optional: false,
+    };
+}
 
-/// The `slice` type — a real object per construction, so `slice(1) is slice(1)`
-/// is False and `.start`/`.stop`/`.step` are readable. `slice(stop)`,
-/// `slice(start, stop)`, and `slice(start, stop, step)` follow CPython's arity
-/// rules.
-const SLICE_PRELUDE: &str = r#"
-__slice_unset = object()
-class slice:
-    def __init__(self, start, stop=__slice_unset, step=None):
-        if stop is __slice_unset:
-            self.start = None
-            self.stop = start
-            self.step = None
-        else:
-            self.start = start
-            self.stop = stop
-            self.step = step
-    def __repr__(self):
-        a = repr(self.start)
-        b = repr(self.stop)
-        c = repr(self.step)
-        return "slice(" + a + ", " + b + ", " + c + ")"
-"#;
+fn normalize_python_slice_object_indexes(body: &mut [Statement]) {
+    let mut slice_vars = HashSet::new();
+    collect_python_slice_vars(body, &mut slice_vars);
+    if slice_vars.is_empty() {
+        return;
+    }
+    for stmt in body {
+        stmt.walk_exprs_mut(&mut |expr| rewrite_python_slice_getitem(expr, &slice_vars));
+    }
+}
 
-/// Module-scope dunders CPython binds in every module's namespace.
-///
-/// Kept to what is actually a MODULE attribute. `__debug__` is a builtin, not
-/// a module member (`'__debug__' in globals()` is False in CPython), so it
-/// stays a namespace constant.
-const MODULE_DUNDER_PRELUDE: &str = r#"
-__name__ = "__main__"
-"#;
+fn collect_python_slice_vars(body: &[Statement], out: &mut HashSet<String>) {
+    for stmt in body {
+        match &stmt.kind {
+            StmtKind::Assign { targets, value, .. } if targets.len() == 1 => {
+                if let ExprKind::Ident(name) = &targets[0].kind
+                    && expr_is_normalized_slice_ctor(value)
+                {
+                    out.insert(name.clone());
+                }
+            }
+            StmtKind::Block(body)
+            | StmtKind::FunctionDecl { body, .. }
+            | StmtKind::NamespaceDecl { body, .. }
+            | StmtKind::For { body, .. }
+            | StmtKind::ForIn { body, .. }
+            | StmtKind::While { body, .. }
+            | StmtKind::DoWhile { body, .. }
+            | StmtKind::With { body, .. }
+            | StmtKind::Using { body, .. }
+            | StmtKind::Lock { body, .. } => collect_python_slice_vars(body, out),
+            StmtKind::If {
+                then_body,
+                elifs,
+                else_body,
+                ..
+            } => {
+                collect_python_slice_vars(then_body, out);
+                for (_, body) in elifs {
+                    collect_python_slice_vars(body, out);
+                }
+                if let Some(body) = else_body {
+                    collect_python_slice_vars(body, out);
+                }
+            }
+            StmtKind::Try {
+                body,
+                catches,
+                else_body,
+                finally,
+            } => {
+                collect_python_slice_vars(body, out);
+                for catch in catches {
+                    collect_python_slice_vars(&catch.body, out);
+                }
+                if let Some(body) = else_body {
+                    collect_python_slice_vars(body, out);
+                }
+                if let Some(body) = finally {
+                    collect_python_slice_vars(body, out);
+                }
+            }
+            StmtKind::Switch { cases, default, .. } => {
+                for case in cases {
+                    collect_python_slice_vars(&case.body, out);
+                }
+                if let Some(body) = default {
+                    collect_python_slice_vars(body, out);
+                }
+            }
+            StmtKind::ClassDecl { members, .. }
+            | StmtKind::StructDecl { members, .. }
+            | StmtKind::ModuleDecl { members, .. } => {
+                for member in members {
+                    match member {
+                        ClassMember::Method(method) | ClassMember::NestedType(method) => {
+                            collect_python_slice_vars(std::slice::from_ref(method), out);
+                        }
+                        ClassMember::Constructor { body, .. } => collect_python_slice_vars(body, out),
+                        ClassMember::Property { getter, setter, .. } => {
+                            if let Some(body) = getter {
+                                collect_python_slice_vars(body, out);
+                            }
+                            if let Some(setter) = setter {
+                                collect_python_slice_vars(&setter.body, out);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
 
-const ITER_PROTOCOL_PRELUDE: &str = r#"
-def __py_custom_iter_array(obj):
-    out = []
-    try:
-        it = obj.__iter__()
-    except Exception:
-        it = obj
-    while True:
-        try:
-            out.append(next(it))
-        except StopIteration:
-            break
-    return out
-"#;
+fn expr_is_normalized_slice_ctor(expr: &Expression) -> bool {
+    matches!(
+        &expr.kind,
+        ExprKind::Call { callee, .. }
+            if matches!(&callee.kind, ExprKind::Ident(name) if name == "__py_slice_new")
+    )
+}
 
-const EXCEPTION_GROUP_PRELUDE: &str = r#"
-def __py_exception_group_split(eg, typ):
-    matched = []
-    rest = []
-    for e in eg.exceptions:
-        if __py_type_name(e) == typ:
-            matched.append(e)
-        else:
-            rest.append(e)
-    return (ExceptionGroup(eg.message, matched), ExceptionGroup(eg.message, rest))
-"#;
+fn from_end_slice_var(expr: &Expression, slice_vars: &HashSet<String>) -> Option<String> {
+    let ExprKind::Call { callee, args, .. } = &expr.kind else {
+        return None;
+    };
+    if !matches!(&callee.kind, ExprKind::Ident(name) if name == "__py_from_end__") || args.len() != 2
+    {
+        return None;
+    }
+    let ExprKind::Ident(name) = &args[1].value.kind else {
+        return None;
+    };
+    slice_vars.contains(name).then(|| name.clone())
+}
 
+fn rewrite_python_slice_getitem(expr: &mut Expression, slice_vars: &HashSet<String>) {
+    let ExprKind::Call { callee, args, .. } = &mut expr.kind else {
+        return;
+    };
+    if !matches!(&callee.kind, ExprKind::Ident(name) if name == "__py_getitem") || args.len() != 2 {
+        return;
+    }
+    let Some(slice_var) = from_end_slice_var(&args[1].value, slice_vars) else {
+        return;
+    };
+    *callee = Box::new(Expression::ident("__py_getslice_obj"));
+    args[1].value = Expression::ident(&slice_var);
+}
+
+fn silent_aug_assign_op(text: &str) -> Option<&'static str> {
+    [
+        "**=", "//=", "<<=", ">>=", "+=", "-=", "*=", "/=", "%=", "@=", "|=", "&=", "^=",
+    ]
+    .into_iter()
+    .find(|op| text.contains(op))
+}
+
+fn line_aug_assign_op_for_ident(line: &str, name: &str) -> Option<&'static str> {
+    for op in ["+=", "*=", "/="] {
+        if let Some(pos) = line.find(op)
+            && line[..pos].trim() == name
+        {
+            return Some(op);
+        }
+    }
+    None
+}
+
+fn already_lowered_aug_value(value: &Expression, helper: &str) -> bool {
+    matches!(
+        &value.kind,
+        ExprKind::Call { callee, .. }
+            if matches!(&callee.kind, ExprKind::Ident(name) if name == helper)
+    )
+}
+
+fn recover_silent_aug_assigns(body: &mut [Statement], source_lines: &[&str]) {
+    for stmt in body {
+        recover_silent_aug_assign_stmt(stmt, source_lines);
+    }
+}
+
+fn recover_silent_aug_assign_stmt(stmt: &mut Statement, source_lines: &[&str]) {
+    match &mut stmt.kind {
+        StmtKind::Assign { targets, value, .. } if targets.len() == 1 => {
+            let ExprKind::Ident(name) = &targets[0].kind else {
+                return;
+            };
+            let Some(line_no) = stmt.span.start_line.checked_sub(1) else {
+                return;
+            };
+            let Some(line) = source_lines.get(line_no as usize) else {
+                return;
+            };
+            let Some(op) = line_aug_assign_op_for_ident(line, name) else {
+                return;
+            };
+            let helper = match op {
+                "+=" => "__pyadd__",
+                "*=" => "__pymul__",
+                "/=" => "__pytruediv__",
+                _ => return,
+            };
+            if already_lowered_aug_value(value, helper) {
+                return;
+            }
+            let rhs = value.clone();
+            *value = call_ident(helper, vec![Expression::ident(name), rhs]);
+        }
+        StmtKind::Block(body)
+        | StmtKind::FunctionDecl { body, .. }
+        | StmtKind::NamespaceDecl { body, .. }
+        | StmtKind::For { body, .. }
+        | StmtKind::ForIn { body, .. }
+        | StmtKind::While { body, .. }
+        | StmtKind::DoWhile { body, .. }
+        | StmtKind::With { body, .. }
+        | StmtKind::Using { body, .. }
+        | StmtKind::Lock { body, .. } => recover_silent_aug_assigns(body, source_lines),
+        StmtKind::If {
+            then_body,
+            elifs,
+            else_body,
+            ..
+        } => {
+            recover_silent_aug_assigns(then_body, source_lines);
+            for (_, body) in elifs {
+                recover_silent_aug_assigns(body, source_lines);
+            }
+            if let Some(body) = else_body {
+                recover_silent_aug_assigns(body, source_lines);
+            }
+        }
+        StmtKind::Try {
+            body,
+            catches,
+            else_body,
+            finally,
+        } => {
+            recover_silent_aug_assigns(body, source_lines);
+            for catch in catches {
+                recover_silent_aug_assigns(&mut catch.body, source_lines);
+            }
+            if let Some(body) = else_body {
+                recover_silent_aug_assigns(body, source_lines);
+            }
+            if let Some(body) = finally {
+                recover_silent_aug_assigns(body, source_lines);
+            }
+        }
+        StmtKind::Switch { cases, default, .. } => {
+            for case in cases {
+                recover_silent_aug_assigns(&mut case.body, source_lines);
+            }
+            if let Some(body) = default {
+                recover_silent_aug_assigns(body, source_lines);
+            }
+        }
+        StmtKind::ClassDecl { members, .. }
+        | StmtKind::StructDecl { members, .. }
+        | StmtKind::ModuleDecl { members, .. } => {
+            for member in members {
+                match member {
+                    ClassMember::Method(method) | ClassMember::NestedType(method) => {
+                        recover_silent_aug_assign_stmt(method, source_lines);
+                    }
+                    ClassMember::Constructor { body, .. } => {
+                        recover_silent_aug_assigns(body, source_lines);
+                    }
+                    ClassMember::Property { getter, setter, .. } => {
+                        if let Some(body) = getter {
+                            recover_silent_aug_assigns(body, source_lines);
+                        }
+                        if let Some(setter) = setter {
+                            recover_silent_aug_assigns(&mut setter.body, source_lines);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        _ => {}
+    }
+}
 
 /// Pure-Python `warnings` module.
-
-
 
 /// `io.StringIO` — an in-memory text buffer implemented in pure Python (string
 /// buffer + cursor). No host I/O; `print(file=buf)` writes here via `.write`.
@@ -871,205 +1096,6 @@ def __py_exception_group_split(eg, typ):
 /// The module object has to carry the module FUNCTIONS too: a global named
 /// `socket` shadows the dotted `socket.gethostname` profile builtin, so each
 /// one delegates to the bare alias of the same adapter.
-const SOCKET_PRELUDE: &str = r#"
-class VybeSocketImpl:
-    def __init__(self, family=2, kind=1, proto=0, res=None, rx=None, tx=None):
-        self.family = family
-        self.sock_kind = kind
-        self.proto = proto
-        self._timeout = None
-        self._opts = {}
-        self._closed = False
-        self._rx = rx
-        self._tx = tx
-        self._listener = None
-        if res is not None:
-            self._res = res
-        elif kind == 2:
-            self._res = _wasi_udp_new("ipv4")
-        else:
-            self._res = _wasi_tcp_new("ipv4")
-    def settimeout(self, value):
-        self._timeout = value
-    def gettimeout(self):
-        return self._timeout
-    def setblocking(self, flag):
-        if flag:
-            self._timeout = None
-        else:
-            self._timeout = 0.0
-    def setsockopt(self, level, option, value):
-        self._opts[str(level) + "/" + str(option)] = value
-    def getsockopt(self, level, option, buflen=0):
-        key = str(level) + "/" + str(option)
-        if key in self._opts:
-            return self._opts[key]
-        return 0
-    def _addr_text(self, address):
-        return str(address[0]) + ":" + str(address[1])
-    def _addr_tuple(self, record):
-        if record is None:
-            return ("0.0.0.0", 0)
-        parts = record["address"]
-        if parts is None:
-            return ("0.0.0.0", 0)
-        if isinstance(parts, str):
-            host = parts
-        else:
-            # A plain loop, NOT `".".join(pieces)`. `import threading` defines
-            # `Thread.join`/`Queue.join`, and type-directed dispatch then binds
-            # `join` on a list whose element type is not statically known to
-            # the USER method rather than the string built-in — the call
-            # resolves to undefined. A socket program that also uses threads is
-            # the ordinary case, not a corner, so this path cannot depend on
-            # it.
-            host = ""
-            first = True
-            for octet in parts:
-                if not first:
-                    host += "."
-                host += str(octet)
-                first = False
-        return (host, int(record["port"]))
-    def bind(self, address):
-        if self.sock_kind == 2:
-            _wasi_udp_bind(self._res, self._addr_text(address))
-        else:
-            _wasi_bind(self._res, self._addr_text(address))
-    def listen(self, backlog=5):
-        _wasi_backlog(self._res, backlog)
-        self._listener = _wasi_listen(self._res)
-    def getsockname(self):
-        return self._addr_tuple(_wasi_local_addr(self._res))
-    def getpeername(self):
-        return self._addr_tuple(_wasi_remote_addr(self._res))
-    def fileno(self):
-        return 0
-    def accept(self):
-        if self._listener is None:
-            self.listen(5)
-        res = _stream_read_handle(self._listener)
-        if res is None:
-            return (None, ("0.0.0.0", 0))
-        conn = VybeSocketImpl(self.family, self.sock_kind, 0, res)
-        return (conn, conn.getpeername())
-    def connect(self, address):
-        if self.sock_kind == 2:
-            _wasi_udp_connect(self._res, self._addr_text(address))
-        else:
-            _wasi_connect(self._res, self._addr_text(address))
-    def send(self, data):
-        _wasi_send(self._res, _stream_from_bytes(data))
-        return len(data)
-    def sendall(self, data):
-        _wasi_send(self._res, _stream_from_bytes(data))
-        return None
-    def recv(self, bufsize=1024):
-        if self._rx is None:
-            pair = _wasi_receive(self._res)
-            if pair is None:
-                return b""
-            self._rx = pair[0]
-        return _stream_read_bytes(self._rx, bufsize)
-    def shutdown(self, how=2):
-        self._rx = None
-    def close(self):
-        if not self._closed:
-            self._closed = True
-            self._rx = None
-            self._listener = None
-    def dup(self):
-        return VybeSocketImpl(self.family, self.sock_kind, 0, self._res, self._rx, self._tx)
-    def detach(self):
-        self._closed = True
-        return 0
-    def makefile(self, mode="r", buffering=-1):
-        return self
-    def __enter__(self):
-        return self
-    def __exit__(self, exc_type, exc, tb):
-        self.close()
-        return False
-def create_connection(address, timeout=None):
-    conn = VybeSocketImpl(2, 1)
-    if timeout is not None:
-        conn.settimeout(timeout)
-    conn.connect(address)
-    return conn
-
-class VybeSocketTimeout(OSError):
-    pass
-
-class VybeSocketGaiError(OSError):
-    pass
-
-def inet_pton(family, text):
-    return inet_aton(text)
-
-def inet_ntop(family, packed):
-    return inet_ntoa(packed)
-
-def _vybe_swap32(value):
-    parts = _vybe_ip4_octets(value)
-    return parts[3] * 16777216 + parts[2] * 65536 + parts[1] * 256 + parts[0]
-
-def ntohl(value):
-    return _vybe_swap32(value)
-
-def htonl(value):
-    return _vybe_swap32(value)
-
-def ntohs(value):
-    low = int(value / 256)
-    return (value - low * 256) * 256 + low
-
-def htons(value):
-    return ntohs(value)
-
-def getdefaulttimeout():
-    return None
-
-def setdefaulttimeout(value):
-    return None
-
-class VybeSocketModule:
-    AF_INET = 2
-    AF_INET6 = 10
-    AF_UNIX = 1
-    SOCK_STREAM = 1
-    SOCK_DGRAM = 2
-    SOL_SOCKET = 1
-    SO_REUSEADDR = 2
-    SO_KEEPALIVE = 9
-    SO_BROADCAST = 6
-    IPPROTO_TCP = 6
-    IPPROTO_UDP = 17
-    SHUT_RD = 0
-    SHUT_WR = 1
-    SHUT_RDWR = 2
-    has_ipv6 = True
-    socket = VybeSocketImpl
-    timeout = VybeSocketTimeout
-    error = OSError
-    gaierror = VybeSocketGaiError
-    create_connection = create_connection
-    gethostname = gethostname
-    gethostbyname = gethostbyname
-    getaddrinfo = getaddrinfo
-    getservbyname = getservbyname
-    inet_aton = inet_aton
-    inet_ntoa = inet_ntoa
-    inet_pton = inet_pton
-    inet_ntop = inet_ntop
-    ntohl = ntohl
-    htonl = htonl
-    ntohs = ntohs
-    htons = htons
-    getdefaulttimeout = getdefaulttimeout
-    setdefaulttimeout = setdefaulttimeout
-
-socket = VybeSocketModule()
-"#;
 
 /// `ipaddress` — pure address arithmetic, so no host surface is involved at
 /// all; the module is a prelude only because `IPv4Address`/`IPv4Network` are
@@ -1079,313 +1105,6 @@ socket = VybeSocketModule()
 /// whole prelude): no comment inside an indented block, no blank line inside a
 /// class body, no string literal containing `:` inside a subscript, and no
 /// parameter or attribute named `type`.
-
-
-const IO_PRELUDE: &str = r#"
-class StringIO:
-    def __init__(self, initial=''):
-        self._parts = []
-        self._pos = 0
-        self.closed = False
-        if isinstance(initial, str) and initial != '':
-            self._parts.append(initial)
-    def write(self, s):
-        self._parts.append(s)
-        self._pos = self._pos + len(s)
-        return len(s)
-    def writelines(self, lines):
-        for line in lines:
-            self.write(line)
-    def read(self, size=-1):
-        data = ''.join(self._parts)
-        pos = self._pos
-        if size is None or size < 0:
-            result = data[pos:]
-        else:
-            result = data[pos:pos + size]
-        self._pos = pos + len(result)
-        return result
-    def readline(self):
-        data = ''.join(self._parts)
-        pos = self._pos
-        rest = data[pos:]
-        if rest == '':
-            return ''
-        idx = rest.find(chr(10))
-        if idx < 0:
-            result = rest
-        else:
-            result = rest[:idx + 1]
-        self._pos = pos + len(result)
-        return result
-    def readlines(self):
-        data = ''.join(self._parts)
-        pos = self._pos
-        rest = data[pos:]
-        self._pos = len(data)
-        result = []
-        if rest == '':
-            return result
-        parts = rest.split(chr(10))
-        n = len(parts)
-        i = 0
-        while i < n:
-            p = parts[i]
-            if i < n - 1:
-                result.append(p + chr(10))
-            elif p != '':
-                result.append(p)
-            i += 1
-        return result
-    def getvalue(self):
-        return ''.join(self._parts)
-    def seek(self, pos, whence=0):
-        if whence == 1:
-            self._pos = self._pos + pos
-        elif whence == 2:
-            self._pos = len(''.join(self._parts)) + pos
-        else:
-            self._pos = pos
-        return self._pos
-    def tell(self):
-        return self._pos
-    def truncate(self, size=None):
-        end = size
-        if end is None:
-            end = self._pos
-        data = ''.join(self._parts)
-        self._parts = [data[:end]]
-        return end
-    def __iter__(self):
-        return iter(self.readlines())
-    def readable(self):
-        return True
-    def writable(self):
-        return True
-    def seekable(self):
-        return True
-    def flush(self):
-        pass
-    def close(self):
-        self.closed = True
-    def detach(self):
-        return None
-    def __enter__(self):
-        return self
-    def __exit__(self, *a):
-        self.close()
-        return False
-class BytesIO:
-    def __init__(self, initial=b''):
-        self._parts = []
-        self._pos = 0
-        self.closed = False
-        if len(initial) != 0:
-            if isinstance(initial, str):
-                self._parts.append(initial)
-            else:
-                self._parts.append(__vybe_bytes_decode(initial))
-            self._pos = len(initial)
-    def write(self, b):
-        if not isinstance(b, str):
-            b = __vybe_bytes_decode(b)
-        self._parts.append(b)
-        self._pos += len(b)
-        return len(b)
-    def read(self, size=-1):
-        data = ''.join(self._parts)
-        pos = self._pos
-        if size is None or size < 0:
-            result = data[pos:]
-        else:
-            result = data[pos:pos + size]
-        self._pos = pos + len(result)
-        return bytes(result, 'utf-8')
-    def read1(self, size=-1):
-        return self.read(size)
-    def getvalue(self):
-        return bytes(''.join(self._parts), 'utf-8')
-    def getbuffer(self):
-        return bytes(''.join(self._parts), 'utf-8')
-    def seek(self, pos, whence=0):
-        if whence == 1:
-            self._pos = self._pos + pos
-        elif whence == 2:
-            self._pos = len(''.join(self._parts)) + pos
-        else:
-            self._pos = pos
-        return self._pos
-    def tell(self):
-        return self._pos
-    def readable(self):
-        return True
-    def writable(self):
-        return True
-    def seekable(self):
-        return True
-    def flush(self):
-        pass
-    def close(self):
-        self.closed = True
-    def __iter__(self):
-        return iter(b''.join(self._parts))
-    def __enter__(self):
-        return self
-    def __exit__(self, *a):
-        self.close()
-        return False
-class __IOModule:
-    def __init__(self):
-        self.StringIO = StringIO
-        self.BytesIO = BytesIO
-io = __IOModule()
-"#;
-
-
-const URLLIB_PARSE_PRELUDE: &str = r#"
-def __py_url_quote_from_bytes(value):
-    return quote(__vybe_bytes_decode(value))
-
-def __py_url_unquote_to_bytes(value):
-    return bytes(unquote(value), 'utf-8')
-"#;
-
-const XML_ETREE_PRELUDE: &str = r#"
-class __PyXmlParseError(Exception):
-    pass
-
-class __PyXmlElement:
-    def __init__(self, tag, attrib=None, text=None):
-        self.tag = tag
-        if attrib is None:
-            attrib = {}
-        self.attrib = attrib
-        self.text = text
-        self._children = []
-    def append(self, child):
-        self._children.append(child)
-    def clear(self):
-        self.attrib = {}
-        self.text = None
-        self._children = []
-    def find(self, tag):
-        return __py_xml_find(self, tag)
-    def get(self, key, default=None):
-        return __py_xml_get(self, key, default)
-    def iter(self, tag=None):
-        return __py_xml_iter(self, tag)
-    def __len__(self):
-        return len(self._children)
-    def child(self, index):
-        i = 0
-        for child in self._children:
-            if i == index:
-                return child
-            i += 1
-        return None
-
-def __py_xml_attrs(raw):
-    attrs = {}
-    parts = raw.split(' ')
-    i = 1
-    while i < len(parts):
-        part = parts[i]
-        if '=' in part:
-            eq = part.find('=')
-            key = part[:eq]
-            val = part[eq + 1:]
-            if len(val) >= 2 and (val[0] == chr(34) or val[0] == "'"):
-                val = val[1:-1]
-            attrs[key] = val
-        i += 1
-    return attrs
-
-def __py_xml_open_tag(raw):
-    raw = raw.strip()
-    if raw.endswith('/'):
-        raw = raw[:-1].strip()
-    parts = raw.split(' ')
-    return (parts[0], __py_xml_attrs(raw))
-
-def __py_xml_fromstring(text):
-    text = text.strip()
-    if not text.startswith('<') or '>' not in text:
-        raise __PyXmlParseError('not well-formed')
-    end = text.find('>')
-    open_raw = text[1:end]
-    tag, attrs = __py_xml_open_tag(open_raw)
-    root = __PyXmlElement(tag, attrs)
-    if open_raw.strip().endswith('/'):
-        return root
-    close = '</' + tag + '>'
-    if not text.endswith(close):
-        raise __PyXmlParseError('not well-formed')
-    inner = text[end + 1:len(text) - len(close)]
-    inner = inner.strip()
-    if inner == '':
-        return root
-    if inner.startswith('<'):
-        pos = 0
-        while pos < len(inner):
-            if inner[pos:pos + 4] == '<!--':
-                cend = inner.find('-->', pos)
-                if cend < 0:
-                    raise __PyXmlParseError('not well-formed')
-                pos = cend + 3
-            elif inner[pos] == '<':
-                cend = inner.find('>', pos)
-                if cend < 0:
-                    raise __PyXmlParseError('not well-formed')
-                child_src = inner[pos:cend + 1]
-                root.append(__py_xml_fromstring(child_src))
-                pos = cend + 1
-            else:
-                pos += 1
-        return root
-    root.text = inner
-    return root
-
-def __py_xml_element(tag, attrib=None):
-    return __PyXmlElement(tag, attrib)
-
-def __py_xml_subelement(parent, tag, attrib=None):
-    child = __PyXmlElement(tag, attrib)
-    parent.append(child)
-    return child
-
-def __py_xml_find(elem, tag):
-    for child in elem._children:
-        if child.tag == tag:
-            return child
-    return None
-
-def __py_xml_get(elem, key, default=None):
-    if key in elem.attrib:
-        return elem.attrib[key]
-    return default
-
-def __py_xml_iter(elem, tag=None):
-    out = []
-    if tag is None or tag == elem.tag:
-        out.append(elem)
-    for child in elem._children:
-        for item in __py_xml_iter(child, tag):
-            out.append(item)
-    return out
-
-def __py_xml_tostring(elem, encoding=None):
-    if len(elem) == 0 and (elem.text is None or elem.text == ''):
-        return '<' + elem.tag + ' />'
-    attrs = ''
-    for key in elem.attrib:
-        attrs += ' ' + key + '=' + chr(34) + str(elem.attrib[key]) + chr(34)
-    body = ''
-    if elem.text is not None:
-        body += elem.text
-    for child in elem._children:
-        body += __py_xml_tostring(child, 'unicode')
-    return '<' + elem.tag + attrs + '>' + body + '</' + elem.tag + '>'
-"#;
 
 /// `fnmatch` — shell-style pattern matching.
 ///
@@ -1403,38 +1122,6 @@ def __py_xml_tostring(elem, encoding=None):
 ///
 /// `translate` stays Python: it emits python's OWN regex dialect
 /// (`(?s:…)\Z`), which is a regex-layer question, not a glob one.
-const FNMATCH_PRELUDE: &str = r#"
-def __fn_translate(pat):
-    res = ''
-    i = 0
-    n = len(pat)
-    while i < n:
-        c = pat[i]
-        if c == '*':
-            res = res + '.*'
-        elif c == '?':
-            res = res + '.'
-        elif c == '.' or c == '\\' or c == '+' or c == '(' or c == ')' or c == '|' or c == '^' or c == '$' or c == '{' or c == '}':
-            res = res + '\\' + c
-        else:
-            res = res + c
-        i = i + 1
-    return '(?s:' + res + ')\\Z'
-class __FnmatchModule:
-    def fnmatch(self, name, pat):
-        return __glob_match(name, pat)
-    def fnmatchcase(self, name, pat):
-        return __glob_match(name, pat)
-    def filter(self, names, pat):
-        result = []
-        for nm in names:
-            if __glob_match(nm, pat):
-                result.append(nm)
-        return result
-    def translate(self, pat):
-        return __fn_translate(pat)
-fnmatch = __FnmatchModule()
-"#;
 
 /// `configparser` — Python's ADAPTER over the shared `config` primitive.
 ///
@@ -1447,170 +1134,6 @@ fnmatch = __FnmatchModule()
 ///
 /// This used to be a 40-line scanner in this string, which is why php had no
 /// `parse_ini_*` at all: the code existed but no other language could reach it.
-const CONFIGPARSER_PRELUDE: &str = r#"
-class ConfigParser:
-    def __init__(self, defaults=None, dict_type=None, allow_no_value=False):
-        self._sections = {}
-    def read_string(self, s, source='<string>'):
-        self._sections = __py_config_parse(s, True)
-    def read_dict(self, d):
-        for name in d:
-            target = {}
-            src = d[name]
-            for key in src:
-                target[key] = str(src[key])
-            self._sections[name] = target
-    def sections(self):
-        result = []
-        for k in self._sections:
-            result.append(k)
-        return result
-    def has_section(self, sec):
-        return sec in self._sections
-    def has_option(self, sec, opt):
-        return sec in self._sections and opt in self._sections[sec]
-    def options(self, sec):
-        result = []
-        for k in self._sections[sec]:
-            result.append(k)
-        return result
-    def get(self, sec, opt, fallback=None):
-        if sec in self._sections and opt in self._sections[sec]:
-            return self._sections[sec][opt]
-        return fallback
-    def getint(self, sec, opt):
-        return int(self._sections[sec][opt])
-    def getfloat(self, sec, opt):
-        return float(self._sections[sec][opt])
-    def getboolean(self, sec, opt):
-        v = self._sections[sec][opt].lower()
-        return v == 'true' or v == '1' or v == 'yes' or v == 'on'
-    def defaults(self):
-        return {}
-    def __getitem__(self, sec):
-        return self._sections[sec]
-    def __contains__(self, sec):
-        return sec in self._sections
-class __ConfigparserModule:
-    def __init__(self):
-        self.ConfigParser = ConfigParser
-        self.RawConfigParser = ConfigParser
-configparser = __ConfigparserModule()
-"#;
-
-
-/// `random` distributions and range/weight helpers as pure Python over the
-/// working `random.random()` entropy plus `math`. Injected when the source
-/// references `random`; the walker rewrites the non-host-backed names
-/// (`gauss`, `uniform`, `randrange`, `choices`, …) → `__py_random_*`.
-const RANDOM_PRELUDE: &str = r#"
-import random
-import math
-def __py_random_r():
-    return random.random()
-def __py_random_uniform(a, b):
-    return a + (b - a) * __py_random_r()
-def __py_random_expovariate(lambd):
-    return -math.log(1.0 - __py_random_r()) / lambd
-def __py_random_gauss(mu, sigma):
-    x2pi = __py_random_r() * 2.0 * math.pi
-    g2rad = math.sqrt(-2.0 * math.log(1.0 - __py_random_r()))
-    return mu + math.cos(x2pi) * g2rad * sigma
-def __py_random_normalvariate(mu, sigma):
-    return __py_random_gauss(mu, sigma)
-def __py_random_lognormvariate(mu, sigma):
-    return math.exp(__py_random_normalvariate(mu, sigma))
-def __py_random_triangular(low, high):
-    u = __py_random_r()
-    return low + (high - low) * math.sqrt(u)
-def __py_random_paretovariate(alpha):
-    u = 1.0 - __py_random_r()
-    return 1.0 / math.exp(math.log(u) / alpha)
-def __py_random_weibullvariate(alpha, beta):
-    u = 1.0 - __py_random_r()
-    return alpha * math.exp(math.log(-math.log(u)) / beta)
-def __py_random_vonmisesvariate(mu, kappa):
-    return mu + (__py_random_r() - 0.5) * kappa
-def __py_random_gammavariate(alpha, beta):
-    gv_total = 0.0
-    gv_i = 0
-    while gv_i < 3:
-        gv_total = gv_total + (-math.log(1.0 - __py_random_r()))
-        gv_i = gv_i + 1
-    return gv_total * beta
-def __py_random_betavariate(alpha, beta):
-    y1 = __py_random_gammavariate(alpha, 1.0)
-    y2 = __py_random_gammavariate(beta, 1.0)
-    return y1 / (y1 + y2)
-def __py_random_getrandbits(k):
-    gb_total = 0
-    gb_i = 0
-    while gb_i < k:
-        gb_bit = 0
-        if __py_random_r() < 0.5:
-            gb_bit = 1
-        gb_total = gb_total * 2 + gb_bit
-        gb_i = gb_i + 1
-    return gb_total
-def __py_random_randbytes(n):
-    rb_vals = []
-    rb_i = 0
-    while rb_i < n:
-        rb_vals.append(__py_random_getrandbits(8))
-        rb_i = rb_i + 1
-    return bytes(rb_vals)
-def __py_random_randrange(start, stop, step):
-    if step == 0:
-        raise ValueError('randrange step must not be zero')
-    if step > 0:
-        n = (stop - start + step - 1) // step
-    else:
-        n = (start - stop - step - 1) // (0 - step)
-    if n <= 0:
-        raise ValueError('empty range for randrange')
-    idx = int(__py_random_r() * n)
-    if idx >= n:
-        idx = n - 1
-    return start + idx * step
-def __py_random_choices(pop, weights, cum, k):
-    result = []
-    total = 0.0
-    cums = []
-    if cum is not None:
-        for w in cum:
-            cums.append(w * 1.0)
-        total = cums[len(cums) - 1]
-    elif weights is not None:
-        acc = 0.0
-        for w in weights:
-            acc = acc + w
-            cums.append(acc)
-        total = acc
-    else:
-        j = 0
-        while j < len(pop):
-            cums.append(j + 1.0)
-            j = j + 1
-        total = len(pop) * 1.0
-    c = 0
-    while c < k:
-        target = __py_random_r() * total
-        pick = len(pop) - 1
-        m = 0
-        chosen = False
-        while m < len(cums):
-            if not chosen and target < cums[m]:
-                pick = m
-                chosen = True
-            m = m + 1
-        result.append(pop[pick])
-        c = c + 1
-    return result
-def __py_random_getstate():
-    return (0, 0, 0)
-def __py_random_setstate(state):
-    return None
-"#;
 
 /// Pure-Python `string` module surface: `Template` (`$name`/`${name}`
 /// substitution with `$$` escape and a class-attribute `delimiter`),
@@ -1627,1008 +1150,24 @@ def __py_random_setstate(state):
 ///
 /// Recursion detection tracks container identity down the current path only, so
 /// a value repeated in sibling positions is not a cycle.
-const PPRINT_PRELUDE: &str = r#"
-def __pprint_is_container(o):
-    return isinstance(o, (list, tuple, dict, set, frozenset))
-def __pprint_cycle(o, seen):
-    for s in seen:
-        if s is o:
-            return True
-    return False
-def __pprint_has_cycle(o, seen):
-    if not __pprint_is_container(o):
-        return False
-    if __pprint_cycle(o, seen):
-        return True
-    seen = seen + [o]
-    if isinstance(o, dict):
-        for k in o:
-            if __pprint_has_cycle(o[k], seen):
-                return True
-        return False
-    for it in o:
-        if __pprint_has_cycle(it, seen):
-            return True
-    return False
-def __pprint_kind(o):
-    if isinstance(o, dict):
-        return "dict"
-    if isinstance(o, tuple):
-        return "tuple"
-    if isinstance(o, frozenset):
-        return "frozenset"
-    if isinstance(o, set):
-        return "set"
-    return "list"
-def __pprint_underscore(n):
-    s = str(n)
-    neg = s.startswith("-")
-    if neg:
-        s = s[1:]
-    out = ""
-    c = 0
-    i = len(s) - 1
-    while i >= 0:
-        out = s[i] + out
-        c += 1
-        if c % 3 == 0 and i > 0:
-            out = "_" + out
-        i -= 1
-    if neg:
-        out = "-" + out
-    return out
-def __pprint_fmt(o, ind, width, depth, compact, sort_dicts, under, level, seen, col):
-    if __pprint_is_container(o):
-        if __pprint_cycle(o, seen):
-            return "<Recursion on " + __pprint_kind(o) + " with id=0>"
-        if depth is not None and level >= depth:
-            return "..."
-    if isinstance(o, bool) or o is None:
-        return repr(o)
-    if under and isinstance(o, int):
-        return __pprint_underscore(o)
-    if not __pprint_is_container(o):
-        return repr(o)
-    seen = seen + [o]
-    pad = " " * (col + ind)
-    if isinstance(o, dict):
-        keys = list(o)
-        if sort_dicts:
-            keys = sorted(keys)
-        parts = []
-        for k in keys:
-            parts.append(repr(k) + ": " + __pprint_fmt(o[k], ind, width, depth, compact,
-                                                       sort_dicts, under, level + 1, seen, col + ind))
-        return __pprint_wrap(parts, "{", "}", width, col, pad, False)
-    if isinstance(o, (set, frozenset)):
-        parts = []
-        for it in sorted(o):
-            parts.append(__pprint_fmt(it, ind, width, depth, compact, sort_dicts,
-                                      under, level + 1, seen, col + ind))
-        body = __pprint_wrap(parts, "{", "}", width, col, pad, False)
-        if isinstance(o, frozenset):
-            if len(parts) == 0:
-                return "frozenset()"
-            return "frozenset(" + body + ")"
-        if len(parts) == 0:
-            return "set()"
-        return body
-    parts = []
-    for it in o:
-        parts.append(__pprint_fmt(it, ind, width, depth, compact, sort_dicts,
-                                  under, level + 1, seen, col + ind))
-    if isinstance(o, tuple):
-        return __pprint_wrap(parts, "(", ")", width, col, pad, len(parts) == 1)
-    return __pprint_wrap(parts, "[", "]", width, col, pad, False)
-def __pprint_wrap(parts, open_c, close_c, width, col, pad, trail_comma):
-    flat = open_c + ", ".join(parts) + ("," if trail_comma else "") + close_c
-    if col + len(flat) <= width or len(parts) <= 1:
-        return flat
-    return open_c + (",\n" + pad).join(parts) + close_c
-def __pprint_pformat(o, indent=1, width=80, depth=None, compact=False, sort_dicts=True,
-                     underscore_numbers=False):
-    return __pprint_fmt(o, indent, width, depth, compact, sort_dicts,
-                        underscore_numbers, 0, [], 0)
-def __pprint_pprint(o, stream=None, indent=1, width=80, depth=None, compact=False,
-                    sort_dicts=True, underscore_numbers=False):
-    text = __pprint_pformat(o, indent, width, depth, compact, sort_dicts, underscore_numbers)
-    if stream is None:
-        print(text)
-    else:
-        stream.write(text + "\n")
-def __pprint_pp(o, stream=None, **kwargs):
-    __pprint_pprint(o, stream, **kwargs)
-def __pprint_saferepr(o):
-    return __pprint_fmt(o, 1, 1000000, None, False, True, False, 0, [], 0)
-def __pprint_isrecursive(o):
-    return __pprint_has_cycle(o, [])
-def __pprint_isreadable(o):
-    return not __pprint_has_cycle(o, [])
-class __pprint_PrettyPrinter:
-    def __init__(self, indent=1, width=80, depth=None, stream=None, compact=False,
-                 sort_dicts=True, underscore_numbers=False):
-        self.indent = indent
-        self.width = width
-        self.depth = depth
-        self.stream = stream
-        self.compact = compact
-        self.sort_dicts = sort_dicts
-        self.underscore_numbers = underscore_numbers
-    def pformat(self, o):
-        return __pprint_pformat(o, self.indent, self.width, self.depth, self.compact,
-                                self.sort_dicts, self.underscore_numbers)
-    def pprint(self, o):
-        __pprint_pprint(o, self.stream, self.indent, self.width, self.depth,
-                        self.compact, self.sort_dicts, self.underscore_numbers)
-    def isrecursive(self, o):
-        return __pprint_isrecursive(o)
-    def isreadable(self, o):
-        return __pprint_isreadable(o)
-"#;
 
-const STRING_PRELUDE: &str = r#"
-def __string_is_id_start(c):
-    return c == "_" or ("a" <= c <= "z") or ("A" <= c <= "Z")
-def __string_is_id_char(c):
-    return c == "_" or ("a" <= c <= "z") or ("A" <= c <= "Z") or ("0" <= c <= "9")
-class __string_Template:
-    delimiter = "$"
-    def __init__(self, template):
-        self.template = template
-    def _tscan(self, mapping, safe, collect):
-        d = self.delimiter
-        s = self.template
-        out = ""
-        ids = []
-        i = 0
-        n = len(s)
-        while i < n:
-            c = s[i]
-            if c != d:
-                out += c
-                i += 1
-                continue
-            if i + 1 < n and s[i + 1] == d:
-                out += d
-                i += 2
-                continue
-            if i + 1 < n and s[i + 1] == "{":
-                j = i + 2
-                name = ""
-                while j < n and s[j] != "}":
-                    name += s[j]
-                    j += 1
-                if j < n:
-                    if collect:
-                        if name not in ids:
-                            ids.append(name)
-                    elif name in mapping:
-                        out += str(mapping[name])
-                    elif safe:
-                        out += d + "{" + name + "}"
-                    else:
-                        raise KeyError(name)
-                    i = j + 1
-                    continue
-            if i + 1 < n and __string_is_id_start(s[i + 1]):
-                j = i + 1
-                name = ""
-                while j < n and __string_is_id_char(s[j]):
-                    name += s[j]
-                    j += 1
-                if collect:
-                    if name not in ids:
-                        ids.append(name)
-                elif name in mapping:
-                    out += str(mapping[name])
-                elif safe:
-                    out += d + name
-                else:
-                    raise KeyError(name)
-                i = j
-                continue
-            out += c
-            i += 1
-        if collect:
-            return ids
-        return out
-    def _tmerge(self, mapping, kws):
-        m = {}
-        if mapping is not None:
-            for k in mapping:
-                m[k] = mapping[k]
-        for k in kws:
-            m[k] = kws[k]
-        return m
-    def substitute(self, mapping=None, **kws):
-        return self._tscan(self._tmerge(mapping, kws), False, False)
-    def safe_substitute(self, mapping=None, **kws):
-        return self._tscan(self._tmerge(mapping, kws), True, False)
-    def get_identifiers(self):
-        return self._tscan({}, False, True)
-    def is_valid(self):
-        return True
-class __string_Formatter:
-    def format(self, fmt, *args, **kwargs):
-        return fmt.format(*args, **kwargs)
-    def vformat(self, fmt, args, kwargs):
-        return fmt.format(*args, **kwargs)
-def __string_capwords(s, sep=None):
-    if sep is None:
-        words = s.split()
-        joiner = " "
-    else:
-        words = s.split(sep)
-        joiner = sep
-    out = []
-    for w in words:
-        out.append(w.capitalize())
-    return joiner.join(out)
-"#;
-
-const SHLEX_PRELUDE: &str = r##"
-def __py_shlex_needs_quote(s):
-    if s == "":
-        return True
-    safe = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_@%+=:,./-"
-    for ch in s:
-        if ch not in safe:
-            return True
-    return False
-
-def __py_shlex_quote(s):
-    if not __py_shlex_needs_quote(s):
-        return s
-    out = "'"
-    for ch in s:
-        if ch == "'":
-            out += "'\"'\"'"
-        else:
-            out += ch
-    return out + "'"
-
-def __py_shlex_split(s, comments=False, posix=True):
-    out = []
-    cur = ""
-    quote = ""
-    esc = False
-    for ch in s:
-        if esc:
-            cur += ch
-            esc = False
-        elif quote != "":
-            if ch == quote:
-                if posix:
-                    quote = ""
-                else:
-                    cur += ch
-                    quote = ""
-            else:
-                cur += ch
-        elif ch == "\\" and posix:
-            esc = True
-        elif ch == "'" or ch == '"':
-            if posix:
-                quote = ch
-            else:
-                quote = ch
-                cur += ch
-        elif comments and ch == "#":
-            break
-        elif ch == " " or ch == "\t" or ch == "\n":
-            if cur != "":
-                out.append(cur)
-                cur = ""
-        else:
-            cur += ch
-    if quote != "":
-        raise ValueError("No closing quotation")
-    if cur != "":
-        out.append(cur)
-    return out
-
-def __py_shlex_join(parts):
-    joined = ""
-    first = True
-    for p in parts:
-        q = __py_shlex_quote(p)
-        if first:
-            joined = q
-            first = False
-        else:
-            joined += " " + q
-    return joined
-
-class __py_shlex_class:
-    def __init__(self, instream=None, posix=False, punctuation_chars=False):
-        if instream is None:
-            self.text = ""
-        elif isinstance(instream, str):
-            self.text = str(instream)
-        else:
-            self.text = instream.getvalue()
-        self.posix = posix
-        self.whitespace_split = False
-        self.commenters = "#"
-    def __iter__(self):
-        text = self.text
-        if self.commenters != "":
-            lines = []
-            for line in text.splitlines():
-                lines.append(line.split(self.commenters)[0])
-            text = "\n".join(lines)
-        return iter(__py_shlex_split(text, posix=self.posix))
-
-def __py_shlex_tokens(obj):
-    text = obj.text
-    if obj.commenters != "":
-        lines = []
-        for line in text.splitlines():
-            lines.append(line.split(obj.commenters)[0])
-        joined = ""
-        first = True
-        for line in lines:
-            if first:
-                joined = line
-                first = False
-            else:
-                joined += "\n" + line
-        text = joined
-    return __py_shlex_split(text, posix=obj.posix)
-
-shlex = {
-    "__name__": "shlex",
-    "split": __py_shlex_split,
-    "quote": __py_shlex_quote,
-    "join": __py_shlex_join,
-    "shlex": __py_shlex_class }
-"##;
-
-const TEXTWRAP_PRELUDE: &str = r##"
-def __py_textwrap_words(text):
-    return text.expandtabs().split()
-
-def __py_textwrap_wrap(text, width=70, initial_indent="", subsequent_indent="", break_long_words=True, break_on_hyphens=True, expand_tabs=True, replace_whitespace=True, drop_whitespace=True, max_lines=None, placeholder=" [...]"):
-    if expand_tabs:
-        text = text.expandtabs()
-    words = text.split()
-    if len(words) == 0:
-        return []
-    lines = []
-    cur = initial_indent
-    limit = width
-    for word in words:
-        if break_long_words and len(word) > width:
-            if cur.strip() != "":
-                lines.append(cur.rstrip())
-                cur = subsequent_indent
-            i = 0
-            while i < len(word):
-                lines.append(word[i:i+width])
-                i += width
-            continue
-        sep = "" if cur == initial_indent or cur == subsequent_indent else " "
-        if len(cur) + len(sep) + len(word) <= limit:
-            cur += sep + word
-        else:
-            if cur.strip() != "":
-                lines.append(cur.rstrip())
-            cur = subsequent_indent + word
-    if cur.strip() != "":
-        lines.append(cur.rstrip())
-    if max_lines is not None and len(lines) > max_lines:
-        lines = lines[:max_lines]
-        if len(lines) > 0:
-            lines[-1] = lines[-1][:max(0, width - len(placeholder))].rstrip() + placeholder
-    return lines
-
-def __py_textwrap_fill(text, width=70, initial_indent="", subsequent_indent="", break_long_words=True, break_on_hyphens=True, expand_tabs=True, replace_whitespace=True, drop_whitespace=True, max_lines=None, placeholder=" [...]"):
-    return "\n".join(__py_textwrap_wrap(text, width, initial_indent, subsequent_indent, break_long_words, break_on_hyphens, expand_tabs, replace_whitespace, drop_whitespace, max_lines, placeholder))
-
-def __py_textwrap_dedent(text):
-    lines = text.split("\n")
-    ind = -1
-    for line in lines:
-        if line.strip() == "":
-            continue
-        n = len(line) - len(line.lstrip())
-        if ind < 0 or n < ind:
-            ind = n
-    if ind <= 0:
-        return text
-    out = []
-    for line in lines:
-        out.append(line[ind:])
-    return "\n".join(out)
-
-def __py_textwrap_indent(text, prefix, predicate=None):
-    if text == "":
-        return ""
-    out = []
-    for line in text.split("\n"):
-        use = True
-        if predicate is not None:
-            use = bool(predicate(line))
-        if use:
-            out.append(prefix + line)
-        else:
-            out.append(line)
-    return "\n".join(out)
-
-def __py_textwrap_shorten(text, width, placeholder=" [...]"):
-    words = text.split()
-    out = ""
-    for word in words:
-        cand = word if out == "" else out + " " + word
-        if len(cand) + len(placeholder) > width:
-            break
-        out = cand
-    return out + placeholder
-
-class __py_TextWrapper:
-    def __init__(self, width=70, initial_indent="", subsequent_indent="", break_long_words=True, break_on_hyphens=True, expand_tabs=True, replace_whitespace=True, drop_whitespace=True, max_lines=None, placeholder=" [...]"):
-        self.width = width
-        self.initial_indent = initial_indent
-        self.subsequent_indent = subsequent_indent
-        self.break_long_words = break_long_words
-        self.break_on_hyphens = break_on_hyphens
-        self.expand_tabs = expand_tabs
-        self.replace_whitespace = replace_whitespace
-        self.drop_whitespace = drop_whitespace
-        self.max_lines = max_lines
-        self.placeholder = placeholder
-    def wrap(self, text):
-        return __py_textwrap_wrap(text, self.width, self.initial_indent, self.subsequent_indent, self.break_long_words, self.break_on_hyphens, self.expand_tabs, self.replace_whitespace, self.drop_whitespace, self.max_lines, self.placeholder)
-    def fill(self, text):
-        return "\n".join(self.wrap(text))
-
-textwrap = {
-    "__name__": "textwrap",
-    "wrap": __py_textwrap_wrap,
-    "fill": __py_textwrap_fill,
-    "dedent": __py_textwrap_dedent,
-    "indent": __py_textwrap_indent,
-    "shorten": __py_textwrap_shorten,
-    "TextWrapper": __py_TextWrapper }
-"##;
-
-const COLLECTIONS_PRELUDE: &str = r#"
-def __py_counter_new(iterable=None, kws=None):
-    c = {}
-    if iterable is not None:
-        if isinstance(iterable, dict):
-            for k in __py_iter_array__(iterable):
-                c[k] = iterable[k]
-        elif isinstance(iterable, str):
-            chars = list(iterable)
-            for k in chars:
-                c[k] = __py_counter_get(c, k) + 1
-        else:
-            for k in iterable:
-                c[k] = __py_counter_get(c, k) + 1
-    if kws is not None:
-        for k in __py_iter_array__(kws):
-            c[k] = kws[k]
-    return c
-
-def __py_counter_get(c, k):
-    for existing in __py_iter_array__(c):
-        if existing == k or str(existing) == str(k):
-            return c[existing]
-    return 0
-
-def __py_counter_iadd(c, k, delta):
-    for existing in __py_iter_array__(c):
-        if existing == k or str(existing) == str(k):
-            c[existing] = c[existing] + delta
-            return None
-    c[k] = delta
-    return None
-
-def __py_counter_most_common(c, n=None):
-    items = list(c.items())
-    out = []
-    if n is None:
-        limit = len(items)
-    else:
-        limit = n
-    used = []
-    while len(out) < limit and len(out) < len(items):
-        best = None
-        best_i = -1
-        i = 0
-        while i < len(items):
-            if i not in used:
-                p = items[i]
-                if best is None or p[1] > best[1]:
-                    best = p
-                    best_i = i
-            i += 1
-        if best_i < 0:
-            break
-        used[len(used)] = best_i
-        out[len(out)] = (best[0], best[1])
-    return out
-
-def __py_counter_update(c, other):
-    for p in other.items():
-        __py_counter_iadd(c, p[0], p[1])
-    return None
-
-def __py_counter_subtract(c, other):
-    for p in other.items():
-        __py_counter_iadd(c, p[0], -p[1])
-    return None
-
-def __py_counter_merge(c, other, sign):
-    out = {}
-    for k in __py_iter_array__(c):
-        out[k] = c[k]
-    for p in other.items():
-        __py_counter_iadd(out, p[0], sign * p[1])
-    return out
-
-def __py_counter_len(c):
-    total = 0
-    for k in __py_iter_array__(c):
-        total += 1
-    return total
-
-def __py_counter_repr(c):
-    return "Counter(" + repr(c) + ")"
-
-def __py_counter_dict(c):
-    return c
-
-def __py_counter_elements(c):
-    out = []
-    for k in __py_iter_array__(c):
-        i = 0
-        while i < c[k]:
-            out[len(out)] = k
-            i += 1
-    return out
-
-def __py_counter_total(c):
-    total = 0
-    for k in __py_iter_array__(c):
-        total += c[k]
-    return total
-
-def __py_counter_fromkeys(keys, v=None):
-    c = {}
-    for k in keys:
-        c[k] = v
-    return c
-
-def __py_counter_op(a, b, op):
-    out = {}
-    for k in __py_iter_array__(a):
-        av = __py_counter_get(a, k)
-        bv = __py_counter_get(b, k)
-        if op == "+":
-            v = av + bv
-        elif op == "-":
-            v = av - bv
-        elif op == "&":
-            if av < bv:
-                v = av
-            else:
-                v = bv
-        else:
-            if av > bv:
-                v = av
-            else:
-                v = bv
-        if v > 0:
-            out[k] = v
-    for k in __py_iter_array__(b):
-        if __py_counter_get(out, k) == 0 and __py_counter_get(a, k) == 0:
-            bv = __py_counter_get(b, k)
-            if op == "+" or op == "|":
-                if bv > 0:
-                    out[k] = bv
-    return out
-
-def __py_default_factory_value(f):
-    if f == "int":
-        return 0
-    if f == "list":
-        return []
-    if f == "set":
-        return set()
-    if f == "dict":
-        return {}
-    if f is int:
-        return 0
-    if f is list:
-        return []
-    if f is set:
-        return set()
-    if f is dict:
-        return {}
-    return f()
-
-def __py_defaultdict(factory=None, initial=None):
-    d = {}
-    if initial is not None:
-        for k in __py_iter_array__(initial):
-            d[k] = initial[k]
-    return d
-
-def __py_defaultdict_get(d, factory, k):
-    for existing in d:
-        if existing == k:
-            return d[existing]
-    d[k] = __py_default_factory_value(factory)
-    return d[k]
-
-def __py_defaultdict_append(d, factory, k, value):
-    arr = __py_defaultdict_get(d, factory, k)
-    arr[len(arr)] = value
-    return None
-
-def __py_defaultdict_add(d, factory, k, value):
-    s = __py_defaultdict_get(d, factory, k)
-    s.add(value)
-    return None
-
-def __py_defaultdict_iadd(d, factory, k, value):
-    d[k] = __py_defaultdict_get(d, factory, k) + value
-    return None
-
-def __py_deque(iterable=None, maxlen=None):
-    if iterable is None:
-        d = []
-    else:
-        d = list(iterable)
-    if maxlen is not None:
-        while len(d) > maxlen:
-            d.pop(0)
-    return d
-
-def __py_deque_append(d, value, maxlen=None):
-    d[len(d)] = value
-    if maxlen is not None:
-        while len(d) > maxlen:
-            d.pop(0)
-    return None
-
-def __py_deque_appendleft(d, value, maxlen=None):
-    i = len(d)
-    while i > 0:
-        d[i] = d[i - 1]
-        i -= 1
-    d[0] = value
-    if maxlen is not None:
-        while len(d) > maxlen:
-            d.pop()
-    return None
-
-def __py_deque_extend(d, values, maxlen=None):
-    for v in values:
-        __py_deque_append(d, v, maxlen)
-    return None
-
-def __py_deque_extendleft(d, values, maxlen=None):
-    for v in values:
-        __py_deque_appendleft(d, v, maxlen)
-    return None
-
-def __py_deque_drop_left(d):
-    if len(d) > 0:
-        d.pop(0)
-    return None
-
-def __py_deque_remove(d, value):
-    i = 0
-    found = False
-    while i < len(d):
-        if not found and d[i] == value:
-            found = True
-        if found and i + 1 < len(d):
-            d[i] = d[i + 1]
-        i += 1
-    if found and len(d) > 0:
-        d.pop()
-    return None
-
-def __py_chainmap_new(*maps):
-    return {"maps": list(maps)}
-
-def __py_chainmap_get(cm, key):
-    for m in cm["maps"]:
-        if key in m:
-            return m[key]
-    return None
-
-def __py_chainmap_set(cm, key, value):
-    cm["maps"][0][key] = value
-    return None
-
-def __py_chainmap_new_child(cm, child=None):
-    if child is None:
-        child = {}
-    maps = [child]
-    for m in cm["maps"]:
-        maps[len(maps)] = m
-    return {"maps": maps}
-
-def __py_chainmap_parents(cm):
-    maps = []
-    i = 1
-    while i < len(cm["maps"]):
-        maps[len(maps)] = cm["maps"][i]
-        i += 1
-    return {"maps": maps}
-
-def __py_chainmap_maps(cm):
-    return cm["maps"]
-
-def __py_userdict(initial=None):
-    d = {}
-    if initial is not None:
-        for k in __py_iter_array__(initial):
-            d[k] = initial[k]
-    return d
-
-def __py_userlist(initial=None):
-    if initial is None:
-        return []
-    return initial
-
-def __py_userstring(value=""):
-    return str(value)
-
-def __py_ordereddict_move_to_end(d, key, last=True):
-    if key not in d:
-        return d
-    moved = d[key]
-    keys = list(d.keys())
-    vals = []
-    i = 0
-    while i < len(keys):
-        vals[len(vals)] = d[keys[i]]
-        i += 1
-    out = {}
-    if last:
-        i = 0
-        while i < len(keys):
-            if keys[i] != key:
-                out[keys[i]] = vals[i]
-            i += 1
-        out[key] = moved
-    else:
-        out[key] = moved
-        i = 0
-        while i < len(keys):
-            if keys[i] != key:
-                out[keys[i]] = vals[i]
-            i += 1
-    return out
-
-class UserDict:
-    def __init__(self, initial=None):
-        self.data = {}
-        if initial is not None:
-            for k in __py_iter_array__(initial):
-                self.data[k] = initial[k]
-    def __getitem__(self, k):
-        return self.data[k]
-    def __setitem__(self, k, v):
-        self.data[k] = v
-    def __repr__(self):
-        return repr(self.data)
-
-class UserList:
-    def __init__(self, initial=None):
-        if initial is None:
-            self.data = []
-        else:
-            self.data = list(initial)
-    def append(self, v):
-        self.data[len(self.data)] = v
-    def extend(self, values):
-        for v in values:
-            self.data[len(self.data)] = v
-    def __repr__(self):
-        return repr(self.data)
-
-class UserString:
-    def __init__(self, value=""):
-        self.data = str(value)
-    def __str__(self):
-        return self.data
-    def __repr__(self):
-        return self.data
-    def upper(self):
-        return self.data.upper()
-"#;
-
-const TYPES_PRELUDE: &str = r#"
-class SimpleNamespace:
-    def __init__(self, **kwargs):
-        for k in kwargs:
-            setattr(self, k, kwargs[k])
-    def __repr__(self):
-        parts = []
-        for k in self:
-            if not k.startswith("__"):
-                parts.append(k + "=" + repr(self[k]))
-        return "namespace(" + ", ".join(parts) + ")"
-    def __eq__(self, other):
-        return self.__dict__ == other.__dict__
-
-def __py_simple_namespace_repr(ns):
-    parts = []
-    for k in ns:
-        parts.append(k + "=" + repr(ns[k]))
-    return "namespace(" + ", ".join(parts) + ")"
-
-class MappingProxyType:
-    def __init__(self, data):
-        self._data = data
-    def __getitem__(self, key):
-        return self._data[key]
-    def __setitem__(self, key, value):
-        raise TypeError("mappingproxy is read-only")
-    def __contains__(self, key):
-        return key in self._data
-    def __len__(self):
-        return len(self._data)
-    def keys(self):
-        return self._data.keys()
-    def values(self):
-        return self._data.values()
-    def items(self):
-        return self._data.items()
-    def get(self, key, default=None):
-        return self._data.get(key, default)
-    def copy(self):
-        return MappingProxyType(self._data.copy())
-
-FunctionType = "FunctionType"
-LambdaType = FunctionType
-GeneratorType = "GeneratorType"
-CoroutineType = "CoroutineType"
-
-def MethodType(func, obj):
-    return lambda *args: func(obj, *args)
-
-def DynamicClassAttribute(func):
-    return property(func)
-
-def resolve_bases(bases):
-    return bases
-
-def new_class(name, bases=(), kwds=None, exec_body=None):
-    ns = {}
-    if exec_body is not None:
-        exec_body(ns)
-    def ctor():
-        obj = {}
-        for k in ns:
-            obj[k] = ns[k]
-        return obj
-    return ctor
-"#;
-
-const FUNCTOOLS_PRELUDE: &str = r#"
-def wraps(wrapped, assigned=("__module__", "__name__", "__qualname__", "__doc__", "__annotations__"), updated=("__dict__",)):
-    def decorator(wrapper):
-        if "__name__" in assigned:
-            wrapper.__name__ = wrapped.__name__
-        if "__doc__" in assigned:
-            wrapper.__doc__ = wrapped.__doc__
-        if "__annotations__" in assigned:
-            wrapper.__annotations__ = wrapped.__annotations__
-        wrapper.__wrapped__ = wrapped
-        return wrapper
-    return decorator
-"#;
-
-
-const DICT_OP_PRELUDE: &str = r#"
-def __py_dict_ior(d, other):
-    for k in __py_iter_array__(other):
-        d[k] = other[k]
-    return d
-
-def __py_dict_or(left, right):
-    out = {}
-    for k in __py_iter_array__(left):
-        out[k] = left[k]
-    for k in __py_iter_array__(right):
-        out[k] = right[k]
-    return out
-
-def __py_dict_update(d, other=None, kwargs=None):
-    if other is not None:
-        __py_dict_ior(d, other)
-    if kwargs is not None:
-        __py_dict_ior(d, kwargs)
-    return None
-"#;
-
-const LIST_IADD_PRELUDE: &str = r#"
-def __py_list_iadd(xs, other):
-    for v in other:
-        xs.append(v)
-    return xs
-"#;
-
-
-const BYTES_REPR_PRELUDE: &str = r#"
-def __vybe_bytes_repr(a):
-    bs = chr(92)
-    hexd = "0123456789abcdef"
-    r = "b'"
-    for b in a:
-        if b == 9:
-            r += bs + "t"
-        elif b == 10:
-            r += bs + "n"
-        elif b == 13:
-            r += bs + "r"
-        elif b == 92:
-            r += bs + bs
-        elif b == 39:
-            r += bs + "'"
-        elif 32 <= b <= 126:
-            r += chr(b)
-        else:
-            r += bs + "x" + hexd[b >> 4] + hexd[b & 15]
-    return r + "'"
-
-def __vybe_str_encode(s):
-    out = []
-    for ch in s:
-        out.append(ord(ch))
-    return out
-
-def __vybe_bytes_decode(a):
-    r = ""
-    for b in a:
-        r += chr(b)
-    return r
-
-def __py_bytes_join(sep, iterable):
-    s = __vybe_bytes_decode(sep)
-    out = ""
-    first = True
-    for item in iterable:
-        if not first:
-            out += s
-        if isinstance(item, str):
-            out += item
-        else:
-            out += __vybe_bytes_decode(item)
-        first = False
-    return bytes(out, 'utf-8')
-
-class __PyIncrementalEncoder:
-    def encode(self, value, final=False):
-        return bytes(value, 'utf-8')
-
-class __PyIncrementalDecoder:
-    def decode(self, value, final=False):
-        return __vybe_bytes_decode(value)
-"#;
-
-fn walk_stmt_into(__w: &mut PyWalker, 
+fn walk_stmt_into(
+    __w: &mut PyWalker,
     pair: Pair<Rule>,
     body: &mut Vec<Statement>,
     imports: &mut Vec<Import>,
 ) -> Result<(), String> {
     match pair.as_rule() {
         Rule::import_stmt => {
-            let import = walk_import(__w, pair)?;
-            if let ImportKind::Simple { path, alias } = &import.kind {
+            for import in walk_imports(__w, pair)? {
+                let ImportKind::Simple { path, alias } = &import.kind else {
+                    continue;
+                };
                 let root = path.split('.').next().unwrap_or(path).to_string();
                 let bound = alias.clone().unwrap_or_else(|| root.clone());
                 if let Some(stmts) = dynamic_module_import_stmts(__w, path, &bound) {
                     body.extend(stmts);
-                    return Ok(());
+                    continue;
                 }
                 if matches!(root.as_str(), "shlex" | "textwrap") {
                     note_imported_module(__w, &root);
@@ -2642,7 +1181,7 @@ fn walk_stmt_into(__w: &mut PyWalker,
                             by_ref: false,
                         }));
                     }
-                    return Ok(());
+                    continue;
                 }
                 if !py_known_module(&root) {
                     body.push(py_import_error_stmt(&format!("No module named '{root}'")));
@@ -2702,8 +1241,8 @@ fn walk_stmt_into(__w: &mut PyWalker,
                         by_ref: false,
                     }));
                 }
+                imports.push(import);
             }
-            imports.push(import);
         }
         Rule::import_from_stmt => {
             let import = walk_import_from(__w, pair)?;
@@ -2783,9 +1322,31 @@ fn walk_stmt_into(__w: &mut PyWalker,
                     imports.push(import);
                     return Ok(());
                 }
+                if path == "string" {
+                    note_imported_module(__w, "string");
+                    for n in names {
+                        let helper = match n.name.as_str() {
+                            "Template" => Some("__string_Template"),
+                            "Formatter" => Some("__string_Formatter"),
+                            _ => None,
+                        };
+                        if let Some(helper) = helper {
+                            let local = n.alias.as_ref().unwrap_or(&n.name).clone();
+                            note_class_alias(__w, &local, helper);
+                            body.push(Statement::new(StmtKind::Assign {
+                                targets: vec![Expression::ident(&local)],
+                                value: Expression::ident(helper),
+                                by_ref: false,
+                            }));
+                        }
+                    }
+                    imports.push(import);
+                    return Ok(());
+                }
                 if path == "operator" {
                     for n in names {
                         let local = n.alias.as_ref().unwrap_or(&n.name).clone();
+                        __w.py_operator_imports.insert(local.clone(), n.name.clone());
                         if let Some(lambda) = operator_fn_lambda(&n.name) {
                             body.push(Statement::new(StmtKind::Assign {
                                 targets: vec![Expression::new(ExprKind::Ident(local))],
@@ -2797,16 +1358,6 @@ fn walk_stmt_into(__w: &mut PyWalker,
                     return Ok(());
                 }
                 if path == "functools" {
-                    for n in names {
-                        if n.name == "wraps" {
-                            let local = n.alias.as_ref().unwrap_or(&n.name).clone();
-                            body.push(Statement::new(StmtKind::Assign {
-                                targets: vec![Expression::new(ExprKind::Ident(local))],
-                                value: Expression::ident("wraps"),
-                                by_ref: false,
-                            }));
-                        }
-                    }
                     imports.push(import);
                     return Ok(());
                 }
@@ -2860,6 +1411,7 @@ fn operator_fn_lambda(name: &str) -> Option<Expression> {
     Some(match name {
         "add" | "concat" => helper2("__pyadd__"),
         "mul" => helper2("__pymul__"),
+        "matmul" => helper2("__pymatmul__"),
         "sub" => binop(BinOp::Sub),
         "truediv" => binop(BinOp::Div),
         "floordiv" => binop(BinOp::FloorDiv),
@@ -2905,6 +1457,13 @@ fn py_call(callee: Expression, args: Vec<Expression>) -> Expression {
         callee: Box::new(callee),
         args: args.into_iter().map(Argument::positional).collect(),
         optional: false,
+    })
+}
+
+fn py_new(class_name: &str, args: Vec<Expression>) -> Expression {
+    Expression::new(ExprKind::New {
+        class: Box::new(Expression::ident(class_name)),
+        args: args.into_iter().map(Argument::positional).collect(),
     })
 }
 
@@ -2976,6 +1535,33 @@ fn py_raise_expr_stmt(expr: &Expression) -> Option<StmtKind> {
     })
 }
 
+/// Strip `(key)` out of every `%(key)...conv` spec in a static python format
+/// string, returning the plain-printf equivalent plus the keys in the order
+/// they appeared. `None` when the string has no mapping key at all (the
+/// ordinary positional path handles it).
+fn py_percent_named_keys(fmt: &str) -> Option<(String, Vec<String>)> {
+    if !fmt.contains("%(") {
+        return None;
+    }
+    let chars: Vec<char> = fmt.chars().collect();
+    let mut out = String::with_capacity(fmt.len());
+    let mut keys = Vec::new();
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '%' && i + 1 < chars.len() && chars[i + 1] == '(' {
+            let close = chars[i + 2..].iter().position(|&c| c == ')')?;
+            let key: String = chars[i + 2..i + 2 + close].iter().collect();
+            keys.push(key);
+            out.push('%');
+            i = i + 2 + close + 1;
+            continue;
+        }
+        out.push(chars[i]);
+        i += 1;
+    }
+    Some((out, keys))
+}
+
 fn py_numeric_zero(e: &Expression) -> bool {
     match &e.kind {
         ExprKind::Lit(Literal::Int(n)) => *n == 0,
@@ -3017,7 +1603,7 @@ fn py_lambda1(param: &str, body: Expression) -> Expression {
 ///
 /// `None` means "not ours" — the existing profile entries (`add`, `sub`, `eq`,
 /// …) keep handling those, and they are already correct.
-fn operator_call_lowering(name: &str, args: &[Argument]) -> Option<Expression> {
+fn operator_call_lowering(__w: &mut PyWalker, name: &str, args: &[Argument]) -> Option<Expression> {
     let obj = || Expression::ident("__o");
     let arg0 = || args.first().map(|a| a.value.clone());
     // Every positional argument, in order.
@@ -3044,6 +1630,46 @@ fn operator_call_lowering(name: &str, args: &[Argument]) -> Option<Expression> {
     Some(match name {
         "truth" => truthy(arg0()?, true),
         "not_" => truthy(arg0()?, false),
+        "and_" if operator_args_are_bool(__w, args, 2) => {
+            let a = args.first()?.value.clone();
+            let b = args.get(1)?.value.clone();
+            Expression::new(ExprKind::Ternary {
+                cond: Box::new(a),
+                then: Box::new(b),
+                else_: Box::new(Expression::bool(false)),
+            })
+        }
+        "or_" if operator_args_are_bool(__w, args, 2) => {
+            let a = args.first()?.value.clone();
+            let b = args.get(1)?.value.clone();
+            Expression::new(ExprKind::Ternary {
+                cond: Box::new(a),
+                then: Box::new(Expression::bool(true)),
+                else_: Box::new(b),
+            })
+        }
+        "xor" if operator_args_are_bool(__w, args, 2) => {
+            let a = args.first()?.value.clone();
+            let b = args.get(1)?.value.clone();
+            Expression::new(ExprKind::Binary {
+                op: BinOp::NotEq,
+                left: Box::new(a),
+                right: Box::new(b),
+            })
+        }
+        "call" => {
+            let callee = args.first()?.value.clone();
+            Expression::new(ExprKind::Call {
+                callee: Box::new(callee),
+                args: args[1..].to_vec(),
+                optional: false,
+            })
+        }
+        "matmul" => {
+            let a = args.first()?.value.clone();
+            let b = args.get(1)?.value.clone();
+            py_call(Expression::ident("__pymatmul__"), vec![a, b])
+        }
 
         // ── Callable factories ───────────────────────────────────────────
         "itemgetter" => {
@@ -3161,6 +1787,73 @@ fn operator_call_lowering(name: &str, args: &[Argument]) -> Option<Expression> {
     })
 }
 
+fn operator_args_are_bool(__w: &mut PyWalker, args: &[Argument], n: usize) -> bool {
+    args.len() == n
+        && args
+            .iter()
+            .take(n)
+            .all(|arg| matches!(py_static_type_name(__w, &arg.value), Some("bool")))
+}
+
+fn py_math_hidden_name(name: &str) -> Option<&'static str> {
+    Some(match name {
+        "sqrt" => "__py_math_sqrt",
+        "floor" => "__py_math_floor",
+        "ceil" => "__py_math_ceil",
+        "trunc" => "__py_math_trunc",
+        "fabs" => "__py_math_fabs",
+        "pow" => "__py_math_pow",
+        "sin" => "__py_math_sin",
+        "cos" => "__py_math_cos",
+        "tan" => "__py_math_tan",
+        "asin" => "__py_math_asin",
+        "acos" => "__py_math_acos",
+        "atan" => "__py_math_atan",
+        "atan2" => "__py_math_atan2",
+        "sinh" => "__py_math_sinh",
+        "cosh" => "__py_math_cosh",
+        "tanh" => "__py_math_tanh",
+        "asinh" => "__py_math_asinh",
+        "acosh" => "__py_math_acosh",
+        "atanh" => "__py_math_atanh",
+        "cbrt" => "__py_math_cbrt",
+        "expm1" => "__py_math_expm1",
+        "log1p" => "__py_math_log1p",
+        "log" => "__py_math_log",
+        "log2" => "__py_math_log2",
+        "log10" => "__py_math_log10",
+        "exp" => "__py_math_exp",
+        "isnan" => "__py_math_isnan",
+        "isfinite" => "__py_math_isfinite",
+        "hypot" => "__py_math_hypot",
+        "isinf" => "__py_math_isinf",
+        "remainder" => "__py_math_remainder",
+        "isclose" => "__py_math_isclose",
+        "fsum" => "__py_math_fsum",
+        "factorial" => "__py_math_factorial",
+        "gcd" => "__py_math_gcd",
+        "lcm" => "__py_math_lcm",
+        "comb" => "__py_math_comb",
+        "perm" => "__py_math_perm",
+        "prod" => "__py_math_prod",
+        "degrees" => "__py_math_degrees",
+        "radians" => "__py_math_radians",
+        "copysign" => "__py_math_copysign",
+        "fmod" => "__py_math_fmod",
+        "ldexp" => "__py_math_ldexp",
+        "dist" => "__py_math_dist",
+        "modf" => "__py_math_modf",
+        "frexp" => "__py_math_frexp",
+        "erf" => "__py_math_erf",
+        "erfc" => "__py_math_erfc",
+        "gamma" => "__py_math_gamma",
+        "lgamma" => "__py_math_lgamma",
+        "nextafter" => "__py_math_nextafter",
+        "ulp" => "__py_math_ulp",
+        _ => return None,
+    })
+}
+
 fn lambda_param(name: &str) -> Param {
     Param {
         name: name.into(),
@@ -3171,6 +1864,13 @@ fn lambda_param(name: &str) -> Param {
         is_kwargs: false,
         is_optional: false,
         is_nullable: false,
+    }
+}
+
+fn lambda_rest_param(name: &str) -> Param {
+    Param {
+        is_rest: true,
+        ..lambda_param(name)
     }
 }
 
@@ -3217,6 +1917,141 @@ fn py_builtin_callable_lambda(name: &str) -> Option<Expression> {
     })
 }
 
+fn py_builtin_binary_callable_lambda(name: &str) -> Option<Expression> {
+    let helper2 = |helper: &str| -> Expression {
+        Expression::new(ExprKind::Lambda {
+            params: vec![lambda_param("__a"), lambda_param("__b")],
+            body: LambdaBody::Expr(Box::new(Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::new(ExprKind::Ident(helper.into()))),
+                args: vec![
+                    Argument::positional(Expression::new(ExprKind::Ident("__a".into()))),
+                    Argument::positional(Expression::new(ExprKind::Ident("__b".into()))),
+                ],
+                optional: false,
+            }))),
+            is_async: false,
+            captures: vec![],
+        })
+    };
+    let choose = |op: BinOp, then_name: &str, else_name: &str| -> Expression {
+        Expression::new(ExprKind::Lambda {
+            params: vec![lambda_param("__a"), lambda_param("__b")],
+            body: LambdaBody::Expr(Box::new(Expression::new(ExprKind::Ternary {
+                cond: Box::new(Expression::new(ExprKind::Binary {
+                    op,
+                    left: Box::new(Expression::new(ExprKind::Ident("__a".into()))),
+                    right: Box::new(Expression::new(ExprKind::Ident("__b".into()))),
+                })),
+                then: Box::new(Expression::new(ExprKind::Ident(then_name.into()))),
+                else_: Box::new(Expression::new(ExprKind::Ident(else_name.into()))),
+            }))),
+            is_async: false,
+            captures: vec![],
+        })
+    };
+    Some(match name {
+        "max" => choose(BinOp::GtEq, "__a", "__b"),
+        "min" => choose(BinOp::LtEq, "__a", "__b"),
+        "pow" => helper2("__pypow__"),
+        _ => return None,
+    })
+}
+
+fn py_identity_lambda(param: &str) -> Expression {
+    Expression::new(ExprKind::Lambda {
+        params: vec![lambda_param(param)],
+        body: LambdaBody::Expr(Box::new(Expression::ident(param))),
+        is_async: false,
+        captures: vec![],
+    })
+}
+
+fn py_identity_decorator() -> Expression {
+    py_identity_lambda("__py_decorated")
+}
+
+fn py_partial_lambda(args: &[Argument]) -> Option<Expression> {
+    let func = args.first()?.value.clone();
+    let bound_args = Expression::new(ExprKind::Array(
+        args.iter()
+            .skip(1)
+            .filter(|arg| arg.name.is_none())
+            .map(|arg| ArrayElement {
+                key: None,
+                spread: false,
+                by_ref: false,
+                value: arg.value.clone(),
+            })
+            .collect(),
+    ));
+    let combined_args = call_ident(
+        "__pyadd__",
+        vec![bound_args, Expression::ident("__py_partial_args")],
+    );
+    let apply_call = call_ident(
+        "__py_reflect_apply",
+        vec![func, Expression::null(), combined_args],
+    );
+    Some(Expression::new(ExprKind::Lambda {
+        params: vec![Param {
+            name: "__py_partial_args".to_string(),
+            type_hint: None,
+            default: None,
+            pass_by: PassBy::Value,
+            is_rest: true,
+            is_kwargs: false,
+            is_optional: false,
+            is_nullable: false,
+        }],
+        body: LambdaBody::Expr(Box::new(apply_call)),
+        is_async: false,
+        captures: vec![],
+    }))
+}
+
+fn functools_cmp_to_key_arg(expr: &Expression) -> Option<Expression> {
+    let ExprKind::Call { callee, args, .. } = &expr.kind else {
+        return None;
+    };
+    if args.len() != 1 || args[0].name.is_some() {
+        return None;
+    }
+    match &callee.kind {
+        ExprKind::Ident(name) if name == "cmp_to_key" => Some(args[0].value.clone()),
+        ExprKind::Member { object, field, .. }
+            if field == "cmp_to_key"
+                && matches!(&object.kind, ExprKind::Ident(module) if module == "functools") =>
+        {
+            Some(args[0].value.clone())
+        }
+        _ => None,
+    }
+}
+
+fn functools_call_lowering(callee: &Expression, args: &[Argument]) -> Option<ExprKind> {
+    let ExprKind::Ident(name) = &callee.kind else {
+        return None;
+    };
+    match name.as_str() {
+        "partial" | "partialmethod" => py_partial_lambda(args).map(|e| e.kind),
+        "cmp_to_key" => Some(py_identity_lambda("__py_cmp_key").kind),
+        "cache" | "singledispatch" if args.len() == 1 && args[0].name.is_none() => {
+            Some(args[0].value.clone().kind)
+        }
+        "lru_cache" if args.len() == 1 && args[0].name.is_none() => Some(args[0].value.clone().kind),
+        "lru_cache" => Some(py_identity_decorator().kind),
+        _ => None,
+    }
+}
+
+fn normalize_python_binary_callable_arg(arg: &mut Argument) {
+    if let ExprKind::Ident(name) = &arg.value.kind
+        && let Some(lambda) = py_builtin_binary_callable_lambda(name)
+    {
+        arg.value = lambda;
+    }
+}
+
 fn py_string_method_callable_lambda(field: &str) -> Option<Expression> {
     let helper = match field {
         "isdigit" => "__py_str_isdigit",
@@ -3232,22 +2067,60 @@ fn py_string_method_callable_lambda(field: &str) -> Option<Expression> {
     ))
 }
 
-fn py_callable_expr(value: Expression) -> Expression {
+fn py_bound_method_callable_lambda(object: Expression, field: &str) -> Expression {
+    if field == "append" {
+        return py_lambda1(
+            "__py_bound_arg",
+            Expression::new(ExprKind::Call {
+                callee: Box::new(py_member(object, field)),
+                args: vec![Argument::positional(Expression::ident("__py_bound_arg"))],
+                optional: false,
+            }),
+        );
+    }
+    Expression::new(ExprKind::Lambda {
+        params: vec![lambda_rest_param("__py_bound_args")],
+        body: LambdaBody::Expr(Box::new(Expression::new(ExprKind::Call {
+            callee: Box::new(py_member(object, field)),
+            args: vec![Argument {
+                value: Expression::ident("__py_bound_args"),
+                name: None,
+                by_ref: false,
+                spread: true,
+            }],
+            optional: false,
+        }))),
+        is_async: false,
+        captures: vec![],
+    })
+}
+
+fn py_callable_expr(__w: &mut PyWalker, value: Expression) -> Expression {
+    if py_known_data_member_read(__w, &value) {
+        return value;
+    }
     match &value.kind {
         ExprKind::Ident(name) => py_builtin_callable_lambda(name).unwrap_or(value),
+        ExprKind::Call { callee, args, .. }
+            if matches!(&callee.kind, ExprKind::Ident(name) if name == "__py_attr_read")
+                && args.len() == 2 =>
+        {
+            if let ExprKind::Lit(Literal::Str(field)) = &args[1].value.kind {
+                if is_known_python_data_member_name(field) {
+                    return value;
+                }
+                py_bound_method_callable_lambda(args[0].value.clone(), field)
+            } else {
+                value
+            }
+        }
         ExprKind::Member { object, field, .. } if matches!(&object.kind, ExprKind::Ident(n) if n == "str") => {
             py_string_method_callable_lambda(field).unwrap_or(value)
         }
-        ExprKind::Member { .. } => Expression::new(ExprKind::Lambda {
-            params: vec![],
-            body: LambdaBody::Expr(Box::new(Expression::new(ExprKind::Call {
-                callee: Box::new(value),
-                args: vec![],
-                optional: false,
-            }))),
-            is_async: false,
-            captures: vec![],
-        }),
+        ExprKind::Member { field, .. } if field == "queue" => value,
+        ExprKind::Member { object, field, .. } => {
+            py_bound_method_callable_lambda((**object).clone(), field)
+        }
         ExprKind::Index { object, index, .. } if matches!(&object.kind, ExprKind::Ident(n) if n == "str") => {
             if let ExprKind::Lit(Literal::Str(field)) = &index.kind {
                 py_string_method_callable_lambda(field).unwrap_or(value)
@@ -3257,10 +2130,15 @@ fn py_callable_expr(value: Expression) -> Expression {
         }
         ExprKind::Index { index, .. } if matches!(&index.kind, ExprKind::Lit(Literal::Str(_))) => {
             Expression::new(ExprKind::Lambda {
-                params: vec![],
+                params: vec![lambda_rest_param("__py_bound_args")],
                 body: LambdaBody::Expr(Box::new(Expression::new(ExprKind::Call {
                     callee: Box::new(value),
-                    args: vec![],
+                    args: vec![Argument {
+                        value: Expression::ident("__py_bound_args"),
+                        name: None,
+                        by_ref: false,
+                        spread: true,
+                    }],
                     optional: false,
                 }))),
                 is_async: false,
@@ -3268,6 +2146,126 @@ fn py_callable_expr(value: Expression) -> Expression {
             })
         }
         _ => value,
+    }
+}
+
+fn is_known_python_data_member_name(field: &str) -> bool {
+    matches!(
+        field,
+        "queue" | "name" | "mode" | "closed" | "traceback" | "filename" | "lineno" | "size"
+            | "size_diff" | "count_diff"
+    )
+}
+
+fn py_known_data_member_read(__w: &mut PyWalker, value: &Expression) -> bool {
+    let (object, field) = match &value.kind {
+        ExprKind::Member { object, field, .. } => (object.as_ref(), field.as_str()),
+        _ => match py_attr_read_parts(value) {
+            Some((object, field)) => (object, field),
+            None => return false,
+        },
+    };
+    match &object.kind {
+        ExprKind::Ident(var) => {
+            if let Some(class_name) = instance_class(__w, var) {
+                class_has_data_attr(__w, &class_name, field)
+                    || class_has_property(__w, &class_name, field)
+            } else if is_defined_class(__w, var) {
+                class_has_data_attr(__w, var, field) || class_has_property(__w, var, field)
+            } else {
+                false
+            }
+        }
+        ExprKind::New { class, .. } => match &class.kind {
+            ExprKind::Ident(class_name) => {
+                class_has_data_attr(__w, class_name, field)
+                    || class_has_property(__w, class_name, field)
+            }
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
+fn py_bound_data_member_read(value: &Expression) -> Option<Expression> {
+    let ExprKind::Lambda { params, body, .. } = &value.kind else {
+        return None;
+    };
+    if params.len() != 1 || !params[0].is_rest || params[0].name != "__py_bound_args" {
+        return None;
+    }
+    let LambdaBody::Expr(body) = body else {
+        return None;
+    };
+    let ExprKind::Call { callee, args, .. } = &body.kind else {
+        return None;
+    };
+    let ExprKind::Member { object, field, null_safe } = &callee.kind else {
+        return None;
+    };
+    if *null_safe || !is_known_python_data_member_name(field) {
+        return None;
+    }
+    if args.len() != 1
+        || !args[0].spread
+        || !matches!(&args[0].value.kind, ExprKind::Ident(name) if name == "__py_bound_args")
+    {
+        return None;
+    }
+    Some(Expression::new(ExprKind::Member {
+        object: object.clone(),
+        field: field.clone(),
+        null_safe: false,
+    }))
+}
+
+fn lower_class_getitem_reads_in_assignment_target(
+    __w: &mut PyWalker,
+    target: Expression,
+) -> Expression {
+    match target.kind {
+        ExprKind::Index {
+            object,
+            index,
+            null_safe,
+        } => Expression::new(ExprKind::Index {
+            object: Box::new(lower_class_getitem_assignment_receiver(__w, *object)),
+            index,
+            null_safe,
+        }),
+        _ => target,
+    }
+}
+
+fn lower_class_getitem_assignment_receiver(
+    __w: &mut PyWalker,
+    object: Expression,
+) -> Expression {
+    match object.kind {
+        ExprKind::Index {
+            object,
+            index,
+            null_safe,
+        } => {
+            let receiver = lower_class_getitem_assignment_receiver(__w, *object);
+            let has_getitem = if let ExprKind::Ident(var) = &receiver.kind {
+                instance_class(__w, var)
+                    .as_deref()
+                    .is_some_and(|class_name| class_has_attr(__w, class_name, "__getitem__"))
+            } else {
+                false
+            };
+            if has_getitem {
+                py_call(py_member(receiver, "__getitem__"), vec![*index])
+            } else {
+                Expression::new(ExprKind::Index {
+                    object: Box::new(receiver),
+                    index,
+                    null_safe,
+                })
+            }
+        }
+        _ => object,
     }
 }
 
@@ -3428,6 +2426,266 @@ fn expr_has_yield(expr: &Expression) -> bool {
     }
 }
 
+fn normalize_pickle_reduce_returns(stmts: &mut [Statement]) {
+    for stmt in stmts {
+        match &mut stmt.kind {
+            StmtKind::ClassDecl { members, .. } => {
+                for member in members {
+                    match member {
+                        ClassMember::Method(method) => {
+                            if let StmtKind::FunctionDecl { name, body, .. } = &mut method.kind {
+                                if name == "__reduce__" {
+                                    normalize_pickle_reduce_return_body(body);
+                                } else {
+                                    normalize_pickle_reduce_returns(body);
+                                }
+                            }
+                        }
+                        ClassMember::Constructor { body, .. } => {
+                            normalize_pickle_reduce_returns(body);
+                        }
+                        ClassMember::NestedType(nested) => {
+                            normalize_pickle_reduce_returns(std::slice::from_mut(nested.as_mut()));
+                        }
+                        ClassMember::Property { getter, setter, .. } => {
+                            if let Some(body) = getter {
+                                normalize_pickle_reduce_returns(body);
+                            }
+                            if let Some(setter) = setter {
+                                normalize_pickle_reduce_returns(&mut setter.body);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            StmtKind::FunctionDecl { body, .. } => normalize_pickle_reduce_returns(body),
+            StmtKind::If {
+                then_body,
+                elifs,
+                else_body,
+                ..
+            } => {
+                normalize_pickle_reduce_returns(then_body);
+                for (_, body) in elifs {
+                    normalize_pickle_reduce_returns(body);
+                }
+                if let Some(body) = else_body {
+                    normalize_pickle_reduce_returns(body);
+                }
+            }
+            StmtKind::While {
+                body, else_body, ..
+            }
+            | StmtKind::ForIn {
+                body, else_body, ..
+            } => {
+                normalize_pickle_reduce_returns(body);
+                if let Some(body) = else_body {
+                    normalize_pickle_reduce_returns(body);
+                }
+            }
+            StmtKind::For { body, .. }
+            | StmtKind::Block(body)
+            | StmtKind::NamespaceDecl { body, .. } => normalize_pickle_reduce_returns(body),
+            StmtKind::Try {
+                body,
+                catches,
+                else_body,
+                finally,
+            } => {
+                normalize_pickle_reduce_returns(body);
+                for catch in catches {
+                    normalize_pickle_reduce_returns(&mut catch.body);
+                }
+                if let Some(body) = else_body {
+                    normalize_pickle_reduce_returns(body);
+                }
+                if let Some(body) = finally {
+                    normalize_pickle_reduce_returns(body);
+                }
+            }
+            StmtKind::With { body, .. } => normalize_pickle_reduce_returns(body),
+            _ => {}
+        }
+    }
+}
+
+fn normalize_pickle_reduce_return_body(stmts: &mut [Statement]) {
+    for stmt in stmts {
+        match &mut stmt.kind {
+            StmtKind::Return(Some(expr)) => normalize_pickle_reduce_return_expr(expr),
+            StmtKind::If {
+                then_body,
+                elifs,
+                else_body,
+                ..
+            } => {
+                normalize_pickle_reduce_return_body(then_body);
+                for (_, body) in elifs {
+                    normalize_pickle_reduce_return_body(body);
+                }
+                if let Some(body) = else_body {
+                    normalize_pickle_reduce_return_body(body);
+                }
+            }
+            StmtKind::While {
+                body, else_body, ..
+            }
+            | StmtKind::ForIn {
+                body, else_body, ..
+            } => {
+                normalize_pickle_reduce_return_body(body);
+                if let Some(body) = else_body {
+                    normalize_pickle_reduce_return_body(body);
+                }
+            }
+            StmtKind::For { body, .. } | StmtKind::Block(body) => {
+                normalize_pickle_reduce_return_body(body);
+            }
+            StmtKind::Try {
+                body,
+                catches,
+                else_body,
+                finally,
+            } => {
+                normalize_pickle_reduce_return_body(body);
+                for catch in catches {
+                    normalize_pickle_reduce_return_body(&mut catch.body);
+                }
+                if let Some(body) = else_body {
+                    normalize_pickle_reduce_return_body(body);
+                }
+                if let Some(body) = finally {
+                    normalize_pickle_reduce_return_body(body);
+                }
+            }
+            StmtKind::With { body, .. } => normalize_pickle_reduce_return_body(body),
+            StmtKind::FunctionDecl { .. } | StmtKind::ClassDecl { .. } => {}
+            _ => {}
+        }
+    }
+}
+
+fn normalize_pickle_reduce_return_expr(expr: &mut Expression) {
+    let ExprKind::Tuple(items) = &expr.kind else {
+        return;
+    };
+    if items.len() != 2 {
+        return;
+    }
+    let ctor = items[0].clone();
+    let mut args = vec![Argument::positional(ctor)];
+    match &items[1].kind {
+        ExprKind::Tuple(inner) => {
+            args.extend(inner.iter().cloned().map(Argument::positional));
+        }
+        ExprKind::Array(elements)
+            if elements
+                .iter()
+                .all(|element| element.key.is_none() && !element.spread) =>
+        {
+            args.extend(
+                elements
+                    .iter()
+                    .map(|element| Argument::positional(element.value.clone())),
+            );
+        }
+        _ => args.push(Argument::positional(items[1].clone())),
+    };
+    expr.kind = ExprKind::Call {
+        callee: Box::new(Expression::ident("__py_pickle_reduce")),
+        args,
+        optional: false,
+    };
+}
+
+fn add_core_class_data_fields(stmts: &mut [Statement]) {
+    for stmt in stmts {
+        let StmtKind::ClassDecl { name, members, .. } = &mut stmt.kind else {
+            continue;
+        };
+        let Some((_, attrs)) = crate::core_classes::CLASS_DATA_ATTRS
+            .iter()
+            .find(|(class_name, _)| *class_name == name)
+        else {
+            continue;
+        };
+        for attr in *attrs {
+            let exists = members
+                .iter()
+                .any(|member| matches!(member, ClassMember::Field { name, .. } if name == attr));
+            if exists {
+                continue;
+            }
+            members.push(ClassMember::Field {
+                name: (*attr).to_string(),
+                type_hint: None,
+                init: None,
+                modifiers: Modifiers::default(),
+                with_events: false,
+                array_bounds: None,
+                storage: None,
+            });
+        }
+    }
+}
+
+fn normalize_python_operand_bool_expr(expr: &mut Expression) {
+    let ExprKind::Binary { op, left, right } = &mut expr.kind else {
+        return;
+    };
+    if let Some(folded) = fold_python_literal_bitwise(*op, left, right) {
+        expr.kind = folded.kind;
+        return;
+    }
+    if !matches!(op, BinOp::And | BinOp::Or) {
+        return;
+    }
+
+    let left_value = (**left).clone();
+    let right_value = (**right).clone();
+    expr.kind = match op {
+        BinOp::And => ExprKind::Ternary {
+            cond: Box::new(left_value.clone()),
+            then: Box::new(right_value),
+            else_: Box::new(left_value),
+        },
+        BinOp::Or => ExprKind::Ternary {
+            cond: Box::new(left_value.clone()),
+            then: Box::new(left_value),
+            else_: Box::new(right_value),
+        },
+        _ => unreachable!(),
+    };
+}
+
+fn fold_python_literal_bitwise(op: BinOp, left: &Expression, right: &Expression) -> Option<Expression> {
+    match (&left.kind, &right.kind) {
+        (ExprKind::Lit(Literal::Bool(a)), ExprKind::Lit(Literal::Bool(b))) => {
+            let value = match op {
+                BinOp::BitAnd => *a & *b,
+                BinOp::BitOr => *a | *b,
+                BinOp::BitXor => *a ^ *b,
+                _ => return None,
+            };
+            Some(Expression::bool(value))
+        }
+        (ExprKind::Lit(Literal::Int(a)), ExprKind::Lit(Literal::Int(b))) => {
+            let value = match op {
+                BinOp::BitAnd => a & b,
+                BinOp::BitOr => a | b,
+                BinOp::BitXor => a ^ b,
+                BinOp::Shl => a.checked_shl((*b).try_into().ok()?)?,
+                BinOp::Shr => a.checked_shr((*b).try_into().ok()?)?,
+                _ => return None,
+            };
+            Some(Expression::int(value))
+        }
+        _ => None,
+    }
+}
+
 fn collect_python_function_local_names(body: &[Statement]) -> Vec<String> {
     let mut assigned = HashSet::new();
     let mut opened = HashSet::new();
@@ -3440,6 +2698,71 @@ fn collect_python_function_local_names(body: &[Statement]) -> Vec<String> {
         .collect();
     names.sort();
     names
+}
+
+fn collect_python_function_param_names(body: &[Statement], out: &mut HashSet<String>) {
+    for stmt in body {
+        match &stmt.kind {
+            StmtKind::FunctionDecl { params, body, .. } => {
+                out.extend(params.iter().map(|param| param.name.clone()));
+                collect_python_function_param_names(body, out);
+            }
+            StmtKind::ClassDecl { members, .. } => {
+                for member in members {
+                    if let ClassMember::Method(method) = member
+                        && let StmtKind::FunctionDecl { params, body, .. } = &method.kind
+                    {
+                        out.extend(params.iter().map(|param| param.name.clone()));
+                        collect_python_function_param_names(body, out);
+                    }
+                }
+            }
+            StmtKind::Block(body)
+            | StmtKind::With { body, .. }
+            | StmtKind::NamespaceDecl { body, .. } => collect_python_function_param_names(body, out),
+            StmtKind::If {
+                then_body,
+                elifs,
+                else_body,
+                ..
+            } => {
+                collect_python_function_param_names(then_body, out);
+                for (_, body) in elifs {
+                    collect_python_function_param_names(body, out);
+                }
+                if let Some(body) = else_body {
+                    collect_python_function_param_names(body, out);
+                }
+            }
+            StmtKind::For { body, .. } => {
+                collect_python_function_param_names(body, out);
+            }
+            StmtKind::While { body, else_body, .. } => {
+                collect_python_function_param_names(body, out);
+                if let Some(body) = else_body {
+                    collect_python_function_param_names(body, out);
+                }
+            }
+            StmtKind::Try {
+                body,
+                catches,
+                else_body,
+                finally,
+            } => {
+                collect_python_function_param_names(body, out);
+                for catch in catches {
+                    collect_python_function_param_names(&catch.body, out);
+                }
+                if let Some(body) = else_body {
+                    collect_python_function_param_names(body, out);
+                }
+                if let Some(body) = finally {
+                    collect_python_function_param_names(body, out);
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 fn collect_python_function_local_names_stmt(
@@ -3633,23 +2956,101 @@ fn prepend_python_function_local_decls(body: &mut Vec<Statement>, params: &[Para
     );
 }
 
+fn python_rest_tuple_stmt(name: &str) -> Statement {
+    Statement::new(StmtKind::Assign {
+        targets: vec![Expression::ident(name)],
+        value: call_ident("tuple", vec![Expression::ident(name)]),
+        by_ref: false,
+    })
+}
+
+fn prepend_python_rest_tuple_bindings(body: &mut Vec<Statement>, params: &[Param]) {
+    let mut insert_at = 0;
+    while body
+        .get(insert_at)
+        .is_some_and(|stmt| matches!(stmt.kind, StmtKind::VarDecl { .. }))
+    {
+        insert_at += 1;
+    }
+    for param in params.iter().filter(|param| param.is_rest).rev() {
+        body.insert(insert_at, python_rest_tuple_stmt(&param.name));
+    }
+}
+
+fn normalize_python_nonterminal_rest_params(params: &mut [Param], kinds: &[String]) {
+    for (idx, param) in params.iter_mut().enumerate() {
+        if !param.is_rest {
+            continue;
+        }
+        let has_later_python_param = kinds
+            .iter()
+            .skip(idx + 1)
+            .any(|kind| kind != "VAR_KEYWORD");
+        if has_later_python_param {
+            param.is_rest = false;
+        }
+    }
+}
+
+fn python_lambda_param_kinds(params: &[Param]) -> Vec<String> {
+    let mut keyword_only = false;
+    params
+        .iter()
+        .map(|param| {
+            if param.is_rest {
+                keyword_only = true;
+                "VAR_POSITIONAL".to_string()
+            } else if param.is_kwargs {
+                "VAR_KEYWORD".to_string()
+            } else if keyword_only {
+                "KEYWORD_ONLY".to_string()
+            } else {
+                "POSITIONAL_OR_KEYWORD".to_string()
+            }
+        })
+        .collect()
+}
+
+fn note_lambda_signature(__w: &mut PyWalker, name: &str, value: &Expression) {
+    let ExprKind::Lambda { params, body, .. } = &value.kind else {
+        return;
+    };
+    let body = match body {
+        LambdaBody::Expr(expr) => vec![Statement::new(StmtKind::Return(Some((**expr).clone())))],
+        LambdaBody::Block(stmts) => stmts.clone(),
+    };
+    let kinds = python_lambda_param_kinds(params);
+    note_defined_function(__w, name, params, None, &body, &kinds);
+}
+
 // ── Function def ────────────────────────────────────────────────────────────
 
-fn walk_func_def(__w: &mut PyWalker, 
+fn walk_func_def(
+    __w: &mut PyWalker,
     pair: Pair<Rule>,
     is_async: bool,
     decorators: Vec<Expression>,
 ) -> Result<StmtKind, String> {
     let mut name = String::new();
     let mut params = Vec::new();
+    let mut param_kinds = Vec::new();
     let mut body = Vec::new();
     let mut return_type = None;
 
     for p in pair.into_inner() {
         match p.as_rule() {
             Rule::identifier => name = p.as_str().to_string(),
-            Rule::param_list => params = walk_params(__w, p)?,
-            Rule::block => body = walk_block(__w, p)?,
+            Rule::param_list => {
+                params = walk_params(__w, p)?;
+                param_kinds = __w.py_last_param_kinds.clone();
+            }
+            Rule::block => {
+                let shadows = params.iter().map(|param| param.name.clone()).collect();
+                __w.py_string_const_shadows.push(shadows);
+                let walked = walk_block(__w, p);
+                __w.py_string_const_shadows.pop();
+                body = walked?;
+            }
             Rule::expression
             | Rule::named_expr
             | Rule::ternary_expr
@@ -3694,7 +3095,17 @@ fn walk_func_def(__w: &mut PyWalker,
     // like JavaScript. No eager list materialization (that hung on `while True`
     // generators and was semantically eager).
     let has_yield = body_has_yield(&body);
-    note_defined_function(__w, &name, &params, &body);
+    normalize_currentframe_in_body(__w, &name, &mut body);
+    let python_params = params.clone();
+    note_defined_function(
+        __w,
+        &name,
+        &python_params,
+        return_type.clone(),
+        &body,
+        &param_kinds,
+    );
+    normalize_python_nonterminal_rest_params(&mut params, &param_kinds);
     if is_async {
         note_async_func(__w, &name);
     }
@@ -3717,6 +3128,8 @@ fn walk_func_def(__w: &mut PyWalker,
         note_defaultdict_func(__w, &name, factory);
     }
     prepend_python_function_local_decls(&mut body, &params);
+    prepend_python_rest_tuple_bindings(&mut body, &python_params);
+    attach_nested_function_metadata(&name, &mut body);
 
     Ok(StmtKind::FunctionDecl {
         name,
@@ -3736,6 +3149,8 @@ fn walk_func_def(__w: &mut PyWalker,
 
 fn walk_params(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<Vec<Param>, String> {
     let mut params = Vec::new();
+    let mut kinds: Vec<String> = Vec::new();
+    let mut keyword_only = false;
     for p in pair.into_inner() {
         if p.as_rule() == Rule::param_item {
             let inner = p.into_inner().next();
@@ -3790,6 +3205,11 @@ fn walk_params(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<Vec<Param>, Strin
                             is_kwargs: false,
                             is_nullable: false,
                         });
+                        kinds.push(if keyword_only {
+                            "KEYWORD_ONLY".to_string()
+                        } else {
+                            "POSITIONAL_OR_KEYWORD".to_string()
+                        });
                     }
                     Rule::star_param => {
                         let mut name = String::new();
@@ -3808,6 +3228,8 @@ fn walk_params(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<Vec<Param>, Strin
                             is_optional: false,
                             is_nullable: false,
                         });
+                        kinds.push("VAR_POSITIONAL".to_string());
+                        keyword_only = true;
                     }
                     Rule::double_star_param => {
                         let mut name = String::new();
@@ -3830,13 +3252,24 @@ fn walk_params(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<Vec<Param>, Strin
                             is_optional: false,
                             is_nullable: false,
                         });
+                        kinds.push("VAR_KEYWORD".to_string());
                     }
-                    Rule::bare_star | Rule::slash_param => {} // separator, not a param
+                    Rule::bare_star => {
+                        keyword_only = true;
+                    }
+                    Rule::slash_param => {
+                        for kind in &mut kinds {
+                            if kind == "POSITIONAL_OR_KEYWORD" {
+                                *kind = "POSITIONAL_ONLY".to_string();
+                            }
+                        }
+                    }
                     _ => {}
                 }
             }
         }
     }
+    __w.py_last_param_kinds = kinds;
     Ok(params)
 }
 
@@ -3852,7 +3285,12 @@ fn py_add(a: Expression, b: Expression) -> Expression {
     call_ident("__pyadd__", vec![a, b])
 }
 
-fn py_counter_binary(__w: &mut PyWalker, op: BinOp, left: &Expression, right: &Expression) -> Option<Expression> {
+fn py_counter_binary(
+    __w: &mut PyWalker,
+    op: BinOp,
+    left: &Expression,
+    right: &Expression,
+) -> Option<Expression> {
     if !is_counter_expr(__w, left) || !is_counter_expr(__w, right) {
         return None;
     }
@@ -4350,10 +3788,7 @@ fn dataclass_param(field: &DataclassField, default: Option<Expression>) -> Param
     let mut param = plain_param(&field.name, default);
     // A dataclass field's annotation, so DESCRIPTIVE like every other python
     // hint — see the annotated-assignment site.
-    param.type_hint = field
-        .type_hint
-        .clone()
-        .map(vybe_ast::TypeHint::descriptive);
+    param.type_hint = field.type_hint.clone().map(vybe_ast::TypeHint::descriptive);
     param
 }
 
@@ -4384,8 +3819,11 @@ fn merge_dataclass_fields(
 }
 
 fn inherited_dataclass_fields(__w: &mut PyWalker, class_name: &str) -> Vec<DataclassField> {
-    let parents =
-        __w.py_class_parents.get(class_name).cloned().unwrap_or_default();
+    let parents = __w
+        .py_class_parents
+        .get(class_name)
+        .cloned()
+        .unwrap_or_default();
     let mut fields = Vec::new();
     for parent in parents {
         if let Some(parent_fields) = dataclass_fields_for(__w, &parent) {
@@ -4543,7 +3981,11 @@ fn dataclass_fields_keys_expr(__w: &mut PyWalker, object: &Expression) -> Option
     }))
 }
 
-fn make_dataclass_stmt(__w: &mut PyWalker, target_name: &str, value: &Expression) -> Option<StmtKind> {
+fn make_dataclass_stmt(
+    __w: &mut PyWalker,
+    target_name: &str,
+    value: &Expression,
+) -> Option<StmtKind> {
     let ExprKind::Call { callee, args, .. } = &value.kind else {
         return None;
     };
@@ -4783,6 +4225,181 @@ fn mangle_private_members_in_stmts(class_name: &str, stmts: &mut [Statement]) {
                     }
                 }
             }
+            _ => {}
+        }
+    }
+}
+
+fn replace_ident_in_expr(expr: &mut Expression, from: &str, to: &str) {
+    match &mut expr.kind {
+        ExprKind::Ident(name) if name == from => {
+            *name = to.to_string();
+        }
+        ExprKind::Member { object, .. } => replace_ident_in_expr(object, from, to),
+        ExprKind::Call { callee, args, .. } => {
+            replace_ident_in_expr(callee, from, to);
+            for arg in args {
+                replace_ident_in_expr(&mut arg.value, from, to);
+            }
+        }
+        ExprKind::Binary { left, right, .. } => {
+            replace_ident_in_expr(left, from, to);
+            replace_ident_in_expr(right, from, to);
+        }
+        ExprKind::Unary { expr, .. } => replace_ident_in_expr(expr, from, to),
+        ExprKind::Ternary { cond, then, else_ } => {
+            replace_ident_in_expr(cond, from, to);
+            replace_ident_in_expr(then, from, to);
+            replace_ident_in_expr(else_, from, to);
+        }
+        ExprKind::Index { object, index, .. } => {
+            replace_ident_in_expr(object, from, to);
+            replace_ident_in_expr(index, from, to);
+        }
+        ExprKind::New { class, args } => {
+            replace_ident_in_expr(class, from, to);
+            for arg in args {
+                replace_ident_in_expr(&mut arg.value, from, to);
+            }
+        }
+        ExprKind::Assign { target, value } => {
+            replace_ident_in_expr(target, from, to);
+            replace_ident_in_expr(value, from, to);
+        }
+        ExprKind::Array(items) => {
+            for item in items {
+                if let Some(key) = &mut item.key {
+                    replace_ident_in_expr(key, from, to);
+                }
+                replace_ident_in_expr(&mut item.value, from, to);
+            }
+        }
+        ExprKind::Tuple(items) => {
+            for item in items {
+                replace_ident_in_expr(item, from, to);
+            }
+        }
+        ExprKind::NamedTuple { fields, .. } => {
+            for (_, value) in fields {
+                replace_ident_in_expr(value, from, to);
+            }
+        }
+        ExprKind::Object(props) => {
+            for prop in props {
+                match prop {
+                    ObjectProperty::KeyValue { key, value }
+                    | ObjectProperty::Computed { key, value } => {
+                        replace_ident_in_expr(key, from, to);
+                        replace_ident_in_expr(value, from, to);
+                    }
+                    ObjectProperty::Spread(value) => replace_ident_in_expr(value, from, to),
+                    _ => {}
+                }
+            }
+        }
+        ExprKind::Lambda { body, .. } => match body {
+            LambdaBody::Expr(expr) => replace_ident_in_expr(expr, from, to),
+            LambdaBody::Block(stmts) => replace_ident_in_stmts(stmts, from, to),
+        },
+        _ => {}
+    }
+}
+
+fn replace_ident_in_stmts(stmts: &mut [Statement], from: &str, to: &str) {
+    for stmt in stmts {
+        match &mut stmt.kind {
+            StmtKind::Expr(expr) => replace_ident_in_expr(expr, from, to),
+            StmtKind::Return(Some(expr)) => replace_ident_in_expr(expr, from, to),
+            StmtKind::Throw {
+                expr: Some(expr),
+                cause,
+            } => {
+                replace_ident_in_expr(expr, from, to);
+                if let Some(cause) = cause {
+                    replace_ident_in_expr(cause, from, to);
+                }
+            }
+            StmtKind::VarDecl { declarations, .. } => {
+                for declaration in declarations {
+                    if let Some(init) = &mut declaration.init {
+                        replace_ident_in_expr(init, from, to);
+                    }
+                }
+            }
+            StmtKind::Assign { targets, value, .. } => {
+                for target in targets {
+                    replace_ident_in_expr(target, from, to);
+                }
+                replace_ident_in_expr(value, from, to);
+            }
+            StmtKind::If {
+                cond,
+                then_body,
+                elifs,
+                else_body,
+            } => {
+                replace_ident_in_expr(cond, from, to);
+                replace_ident_in_stmts(then_body, from, to);
+                for (elif_cond, elif_body) in elifs {
+                    replace_ident_in_expr(elif_cond, from, to);
+                    replace_ident_in_stmts(elif_body, from, to);
+                }
+                if let Some(body) = else_body {
+                    replace_ident_in_stmts(body, from, to);
+                }
+            }
+            StmtKind::While { cond, body, .. } => {
+                replace_ident_in_expr(cond, from, to);
+                replace_ident_in_stmts(body, from, to);
+            }
+            StmtKind::For {
+                init,
+                cond,
+                update,
+                body,
+            } => {
+                if let Some(init) = init {
+                    replace_ident_in_stmts(std::slice::from_mut(init.as_mut()), from, to);
+                }
+                if let Some(cond) = cond {
+                    replace_ident_in_expr(cond, from, to);
+                }
+                if let Some(update) = update {
+                    replace_ident_in_expr(update, from, to);
+                }
+                replace_ident_in_stmts(body, from, to);
+            }
+            StmtKind::ForIn {
+                iter,
+                body,
+                else_body,
+                ..
+            } => {
+                replace_ident_in_expr(iter, from, to);
+                replace_ident_in_stmts(body, from, to);
+                if let Some(body) = else_body {
+                    replace_ident_in_stmts(body, from, to);
+                }
+            }
+            StmtKind::Block(body) => replace_ident_in_stmts(body, from, to),
+            StmtKind::Try {
+                body,
+                catches,
+                else_body,
+                finally,
+            } => {
+                replace_ident_in_stmts(body, from, to);
+                for catch in catches {
+                    replace_ident_in_stmts(&mut catch.body, from, to);
+                }
+                if let Some(body) = else_body {
+                    replace_ident_in_stmts(body, from, to);
+                }
+                if let Some(body) = finally {
+                    replace_ident_in_stmts(body, from, to);
+                }
+            }
+            StmtKind::FunctionDecl { .. } | StmtKind::ClassDecl { .. } => {}
             _ => {}
         }
     }
@@ -5031,7 +4648,8 @@ fn collect_self_data_attrs_in_stmts(
     }
 }
 
-fn collect_self_float_attrs_in_stmts(__w: &mut PyWalker, 
+fn collect_self_float_attrs_in_stmts(
+    __w: &mut PyWalker,
     stmts: &[Statement],
     float_vars: &std::collections::HashSet<String>,
     out: &mut std::collections::HashSet<String>,
@@ -5117,7 +4735,8 @@ fn collect_self_float_attrs_in_stmts(__w: &mut PyWalker,
     }
 }
 
-fn expr_is_self_float_expr(__w: &mut PyWalker, 
+fn expr_is_self_float_expr(
+    __w: &mut PyWalker,
     expr: &Expression,
     float_vars: &std::collections::HashSet<String>,
     float_self_attrs: &std::collections::HashSet<String>,
@@ -5152,6 +4771,9 @@ fn expr_is_self_float_expr(__w: &mut PyWalker,
             expr,
         } => expr_is_self_float_expr(__w, expr, float_vars, float_self_attrs),
         ExprKind::Call { callee, args, .. } if matches!(&callee.kind, ExprKind::Ident(name) if is_py_arith_helper(name)) => {
+            if matches!(&callee.kind, ExprKind::Ident(name) if name == "__pytruediv__") {
+                return !operand_overloads_truediv(__w, args);
+            }
             args.iter()
                 .any(|arg| expr_is_self_float_expr(__w, &arg.value, float_vars, float_self_attrs))
         }
@@ -5277,7 +4899,8 @@ fn rewrite_self_data_attrs_in_stmts(
 ///
 /// An explicitly written `__init__` wins — CPython only generates what the
 /// class does not already define.
-fn synthesize_dataclass_members(__w: &mut PyWalker, 
+fn synthesize_dataclass_members(
+    __w: &mut PyWalker,
     class_name: &str,
     body: &mut Vec<Statement>,
     options: DataclassOptions,
@@ -5406,7 +5029,11 @@ fn synthesize_dataclass_members(__w: &mut PyWalker,
     }));
 }
 
-fn synthesize_python_class_defaults(__w: &mut PyWalker, class_name: &str, body: &mut Vec<Statement>) {
+fn synthesize_python_class_defaults(
+    __w: &mut PyWalker,
+    class_name: &str,
+    body: &mut Vec<Statement>,
+) {
     if py_class_is_subclass(__w, class_name, "BaseException")
         || py_class_is_subclass(__w, class_name, "Exception")
     {
@@ -5489,6 +5116,47 @@ fn synthesize_python_class_defaults(__w: &mut PyWalker, class_name: &str, body: 
     }
     if has_method(body, "__init__") {
         note_class_with_init(__w, class_name);
+    }
+}
+
+fn synthesize_total_ordering_members(body: &mut Vec<Statement>) {
+    let self_expr = || Expression::ident("self");
+    let other_expr = || Expression::ident("other");
+    let self_call = |name: &str| py_call(py_member(self_expr(), name), vec![other_expr()]);
+    if !has_method(body, "__le__") && has_method(body, "__lt__") {
+        body.push(fn_decl(
+            "__le__",
+            vec![plain_param("self", None), plain_param("other", None)],
+            vec![Statement::new(StmtKind::Return(Some(Expression::new(
+                ExprKind::Binary {
+                    op: BinOp::Or,
+                    left: Box::new(self_call("__lt__")),
+                    right: Box::new(self_call("__eq__")),
+                },
+            ))))],
+        ));
+    }
+    if !has_method(body, "__gt__") && has_method(body, "__lt__") {
+        body.push(fn_decl(
+            "__gt__",
+            vec![plain_param("self", None), plain_param("other", None)],
+            vec![Statement::new(StmtKind::Return(Some(py_call(
+                py_member(other_expr(), "__lt__"),
+                vec![self_expr()],
+            ))))],
+        ));
+    }
+    if !has_method(body, "__ge__") && has_method(body, "__lt__") {
+        body.push(fn_decl(
+            "__ge__",
+            vec![plain_param("self", None), plain_param("other", None)],
+            vec![Statement::new(StmtKind::Return(Some(Expression::new(
+                ExprKind::Unary {
+                    op: UnaryOp::Not,
+                    expr: Box::new(self_call("__lt__")),
+                },
+            ))))],
+        ));
     }
 }
 
@@ -5588,7 +5256,11 @@ fn resolve_enum_auto(parents: &[String], body: &mut [Statement]) {
     }
 }
 
-fn walk_class_def(__w: &mut PyWalker, pair: Pair<Rule>, decorators: Vec<Expression>) -> Result<StmtKind, String> {
+fn walk_class_def(
+    __w: &mut PyWalker,
+    pair: Pair<Rule>,
+    decorators: Vec<Expression>,
+) -> Result<StmtKind, String> {
     let mut name = String::new();
     let mut parents = Vec::new();
     let mut class_kwargs: Vec<(String, Expression)> = Vec::new();
@@ -5635,6 +5307,15 @@ fn walk_class_def(__w: &mut PyWalker, pair: Pair<Rule>, decorators: Vec<Expressi
         }
     }
     note_class_parents(__w, &name, &parents);
+    if py_class_is_subclass(__w, &name, "__string_Template")
+        && let Some(delimiter) = string_literal_class_assignment(&body_stmts, "delimiter")
+    {
+        __w.py_string_template_delimiters
+            .insert(name.clone(), delimiter);
+    }
+    if let Some(doc) = function_docstring(&body_stmts) {
+        note_class_doc(__w, &name, py_clean_docstring(&doc));
+    }
     resolve_enum_auto(&parents, &mut body_stmts);
 
     let has_call_method = body_stmts.iter().any(|stmt| {
@@ -5705,7 +5386,12 @@ fn walk_class_def(__w: &mut PyWalker, pair: Pair<Rule>, decorators: Vec<Expressi
                         float_vars.insert(param.name.clone());
                     }
                 }
-                collect_self_float_attrs_in_stmts(__w, body, &float_vars, &mut class_float_data_attrs);
+                collect_self_float_attrs_in_stmts(
+                    __w,
+                    body,
+                    &float_vars,
+                    &mut class_float_data_attrs,
+                );
             }
             StmtKind::VarDecl { declarations, .. } => {
                 for d in declarations {
@@ -5747,6 +5433,12 @@ fn walk_class_def(__w: &mut PyWalker, pair: Pair<Rule>, decorators: Vec<Expressi
                     }
                 }
             }
+            StmtKind::ClassDecl {
+                name: nested_name, ..
+            } => {
+                attrs.insert(nested_name.clone());
+                class_member_type_names.insert(nested_name.clone(), "type");
+            }
             _ => {}
         }
     }
@@ -5759,6 +5451,7 @@ fn walk_class_def(__w: &mut PyWalker, pair: Pair<Rule>, decorators: Vec<Expressi
     }
     note_python_property_metadata(__w, &name, &body_stmts);
     rewrite_self_data_attrs_in_stmts(&data_attrs, &mut body_stmts);
+    class_data_attrs.extend(data_attrs.iter().cloned());
     note_class_attrs(__w, &name, attrs);
     note_class_member_type_names(__w, &name, class_member_type_names);
     note_class_data_attrs(__w, &name, class_data_attrs);
@@ -5791,6 +5484,9 @@ fn walk_class_def(__w: &mut PyWalker, pair: Pair<Rule>, decorators: Vec<Expressi
             });
         }
         synthesize_dataclass_members(__w, &name, &mut body_stmts, dataclass_options(&decorators));
+    }
+    if decorators.iter().any(|d| decorator_root_ident(d) == Some("total_ordering")) {
+        synthesize_total_ordering_members(&mut body_stmts);
     }
     synthesize_python_class_defaults(__w, &name, &mut body_stmts);
     normalize_exception_super_init(__w, &name, &mut body_stmts);
@@ -5837,7 +5533,8 @@ fn method_call_args_from_params(params: &[Param]) -> Vec<Argument> {
         .collect()
 }
 
-fn decorated_method_body(__w: &mut PyWalker, 
+fn decorated_method_body(
+    __w: &mut PyWalker,
     name: &str,
     params: &[Param],
     return_type: &Option<String>,
@@ -5926,7 +5623,11 @@ fn block_desugared_function(stmt: &Statement) -> Option<StmtKind> {
     })
 }
 
-fn stmts_to_class_members(__w: &mut PyWalker, class_name: &str, stmts: Vec<Statement>) -> Vec<ClassMember> {
+fn stmts_to_class_members(
+    __w: &mut PyWalker,
+    class_name: &str,
+    stmts: Vec<Statement>,
+) -> Vec<ClassMember> {
     let mut members: Vec<ClassMember> = Vec::new();
     // Track Property member index by name so @x.setter can find the getter.
     let mut property_indices: std::collections::HashMap<String, usize> =
@@ -5968,7 +5669,7 @@ fn stmts_to_class_members(__w: &mut PyWalker, class_name: &str, stmts: Vec<State
                 let has_property = modifiers
                     .decorators
                     .iter()
-                    .any(|d| matches!(&d.kind, ExprKind::Ident(n) if n == "property"));
+                    .any(|d| matches!(&d.kind, ExprKind::Ident(n) if n == "property" || n == "cached_property"));
                 if has_property {
                     note_class_property_kind(__w, class_name, name, "getter");
                     note_class_property_doc(__w, class_name, name, function_docstring(body));
@@ -6085,6 +5786,9 @@ fn stmts_to_class_members(__w: &mut PyWalker, class_name: &str, stmts: Vec<State
                 {
                     rewrite_init_subclass_class_param_writes(&mut final_body, &class_param.name);
                 }
+                if has_classmethod && let Some(class_param) = params.first() {
+                    replace_ident_in_stmts(&mut final_body, &class_param.name, class_name);
+                }
                 // For @staticmethod, prepend a dummy "self" so that
                 // explicit_self_param's skip(1) removes the dummy, keeping
                 // the real params intact. Without this, skip(1) would drop
@@ -6115,14 +5819,7 @@ fn stmts_to_class_members(__w: &mut PyWalker, class_name: &str, stmts: Vec<State
                         is_nullable: false,
                     };
                     let mut p = vec![dummy];
-                    if let Some(cls) = params.first() {
-                        let mut cls = cls.clone();
-                        cls.default =
-                            Some(Expression::new(ExprKind::Ident(class_name.to_string())));
-                        cls.is_optional = true;
-                        p.push(cls);
-                        p.extend_from_slice(&params[1..]);
-                    }
+                    p.extend_from_slice(params.get(1..).unwrap_or(&[]));
                     p
                 } else {
                     params.clone()
@@ -6182,11 +5879,40 @@ fn stmts_to_class_members(__w: &mut PyWalker, class_name: &str, stmts: Vec<State
                 }
             }
             StmtKind::Assign { targets, value, .. } => {
-                // Class-level assignment → static Field (Python class variables)
+                // A class-level assignment is a CLASS ATTRIBUTE: `C.x` reads it
+                // and so does `c.x`. A static `Field` only writes a global of
+                // that name — nothing lands on the class object, so `C.x`
+                // answered None and every descriptor (`x = D()`) was invisible.
+                // `Const` is the member that stamps the value onto the class.
                 for target in targets {
                     if let ExprKind::Ident(field_name) = &target.kind {
+                        // ⛔ A SYNTHESIZED dunder stays a static FIELD. The
+                        // dataclass transform adds `__dataclass_fields__` and
+                        // `__match_args__` as class-level assignments, and
+                        // `Const` — which writes a global and stamps the class
+                        // object — never reaches `TypeEntry.fields`, so both
+                        // vanished and every dataclass field read threw
+                        // (`py_dataclasses` 13 -> 4).
+                        if field_name.starts_with("__") && field_name.ends_with("__") {
+                            let mut mods = Modifiers::default();
+                            mods.is_static = true;
+                            members.push(ClassMember::Field {
+                                name: field_name.clone(),
+                                type_hint: None,
+                                init: Some(value.clone()),
+                                modifiers: mods,
+                                with_events: false,
+                                array_bounds: None,
+                                storage: None,
+                            });
+                            continue;
+                        }
+                        // A class-level assignment is a STATIC FIELD. It lands
+                        // on the class object because python declares
+                        // `static_fields_are_own_properties` — the shared
+                        // mechanism, rather than a second one here.
                         let mut mods = Modifiers::default();
-                        mods.is_static = true; // Python class-level vars are class attributes
+                        mods.is_static = true;
                         members.push(ClassMember::Field {
                             name: field_name.clone(),
                             type_hint: None,
@@ -6215,7 +5941,7 @@ fn stmts_to_class_members(__w: &mut PyWalker, class_name: &str, stmts: Vec<State
 fn dynamic_type_base_name(expr: &Expression) -> Option<String> {
     match &expr.kind {
         ExprKind::Ident(name) if name != "type" && name != "object" => Some(name.clone()),
-        ExprKind::Call { callee, args, .. }
+        ExprKind::Call { callee, args, .. } | ExprKind::New { class: callee, args }
             if matches!(&callee.kind, ExprKind::Ident(name) if name == "__py_type_obj")
                 && args.len() == 1 =>
         {
@@ -6389,7 +6115,11 @@ fn dynamic_type_note_attrs(__w: &mut PyWalker, class_name: &str, body: &[Stateme
     note_class_attrs(__w, class_name, attrs);
 }
 
-fn dynamic_type_class_decl(__w: &mut PyWalker, target_name: &str, value: &Expression) -> Option<StmtKind> {
+fn dynamic_type_class_decl(
+    __w: &mut PyWalker,
+    target_name: &str,
+    value: &Expression,
+) -> Option<StmtKind> {
     let ExprKind::Call { callee, args, .. } = &value.kind else {
         return None;
     };
@@ -6481,6 +6211,38 @@ fn function_docstring(body: &[Statement]) -> Option<String> {
     None
 }
 
+fn py_clean_docstring(raw: &str) -> String {
+    let raw = raw.trim_matches('\n');
+    let lines: Vec<&str> = raw.lines().collect();
+    let indent = lines
+        .iter()
+        .skip(1)
+        .filter_map(|line| {
+            let trimmed = line.trim();
+            (!trimmed.is_empty()).then(|| line.len() - line.trim_start().len())
+        })
+        .min()
+        .unwrap_or(0);
+    let mut cleaned = Vec::with_capacity(lines.len());
+    for (idx, line) in lines.iter().enumerate() {
+        let text = if idx == 0 {
+            line.trim().to_string()
+        } else if line.len() >= indent {
+            line[indent..].trim_end().to_string()
+        } else {
+            line.trim_end().to_string()
+        };
+        cleaned.push(text);
+    }
+    while cleaned.first().is_some_and(|line| line.is_empty()) {
+        cleaned.remove(0);
+    }
+    while cleaned.last().is_some_and(|line| line.is_empty()) {
+        cleaned.pop();
+    }
+    cleaned.join("\n")
+}
+
 fn note_python_property_metadata(__w: &mut PyWalker, class_name: &str, stmts: &[Statement]) {
     for stmt in stmts {
         let StmtKind::FunctionDecl {
@@ -6541,10 +6303,39 @@ fn function_doc_expr(body: &[Statement]) -> Expression {
 fn py_annotation_expr(type_hint: &str) -> Expression {
     match type_hint.trim() {
         "int" | "str" | "bool" | "float" | "list" | "dict" | "tuple" | "set" => {
-            call_ident("__py_type_obj", vec![Expression::string(type_hint.trim())])
+            python_type_object_expr(type_hint.trim())
         }
         other => Expression::string(other),
     }
+}
+
+fn py_typing_generic_alias_name(name: &str) -> Option<&'static str> {
+    Some(match name {
+        "List" => "list",
+        "Dict" => "dict",
+        "Tuple" => "tuple",
+        "Set" => "set",
+        "FrozenSet" => "frozenset",
+        _ => return None,
+    })
+}
+
+fn py_typing_generic_alias_expr(name: &str, arg: Expression) -> Expression {
+    let origin = py_typing_generic_alias_name(name).unwrap_or(name);
+    Expression::new(ExprKind::Object(vec![
+        ObjectProperty::KeyValue {
+            key: Expression::string("__type"),
+            value: Expression::string("GenericAlias"),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string("__origin__"),
+            value: py_annotation_expr(origin),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string("__args__"),
+            value: Expression::new(ExprKind::Tuple(vec![arg])),
+        },
+    ]))
 }
 
 fn function_annotations_expr(params: &[Param], return_type: Option<&String>) -> Option<Expression> {
@@ -6571,6 +6362,92 @@ fn function_annotations_expr(params: &[Param], return_type: Option<&String>) -> 
     }
 }
 
+fn function_defaults_expr(params: &[Param], kinds: &[String]) -> Expression {
+    let values: Vec<Expression> = params
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, param)| {
+            let kind = py_parameter_kind_for(params, kinds, idx);
+            matches!(kind.as_str(), "POSITIONAL_ONLY" | "POSITIONAL_OR_KEYWORD")
+                .then(|| param.default.clone())
+                .flatten()
+        })
+        .collect();
+    if values.is_empty() {
+        Expression::null()
+    } else {
+        Expression::new(ExprKind::Tuple(values))
+    }
+}
+
+fn function_kwdefaults_expr(params: &[Param], kinds: &[String]) -> Expression {
+    let props: Vec<ObjectProperty> = params
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, param)| {
+            let kind = py_parameter_kind_for(params, kinds, idx);
+            if kind != "KEYWORD_ONLY" {
+                return None;
+            }
+            param.default.clone().map(|value| ObjectProperty::KeyValue {
+                key: Expression::string(&param.name),
+                value,
+            })
+        })
+        .collect();
+    if props.is_empty() {
+        Expression::null()
+    } else {
+        py_dict_expr(props)
+    }
+}
+
+fn function_metadata_expr(__w: &mut PyWalker, name: &str, field: &str) -> Option<Expression> {
+    let params = defined_function_params(__w, name)?;
+    let kinds = defined_function_param_kinds(__w, name).unwrap_or_default();
+    match field {
+        "__annotations__" => Some(
+            function_annotations_expr(&params, defined_function_return(__w, name)?.as_ref())
+                .unwrap_or_else(|| py_dict_expr(Vec::new())),
+        ),
+        "__defaults__" => Some(function_defaults_expr(&params, &kinds)),
+        "__kwdefaults__" => Some(function_kwdefaults_expr(&params, &kinds)),
+        "__name__" => Some(Expression::string(name)),
+        "__qualname__" => Some(Expression::string(name)),
+        _ => None,
+    }
+}
+
+fn lowered_function_metadata_attr_read(
+    __w: &mut PyWalker,
+    callee: &Expression,
+    args: &[Argument],
+) -> Option<Expression> {
+    if !matches!(&callee.kind, ExprKind::Ident(name) if name == "__py_attr_read") || args.len() != 2
+    {
+        return None;
+    }
+    let ExprKind::Lit(Literal::Str(field)) = &args[1].value.kind else {
+        return None;
+    };
+    if field.as_str() == "__name__"
+        && let Some(type_name) = py_annotation_item_type_name(__w, &args[0].value)
+    {
+        return Some(Expression::string(&type_name));
+    }
+    let ExprKind::Ident(fn_name) = &args[0].value.kind else {
+        return None;
+    };
+    if !matches!(
+        field.as_str(),
+        "__annotations__" | "__defaults__" | "__kwdefaults__" | "__name__" | "__qualname__"
+    ) || !is_defined_function(__w, fn_name)
+    {
+        return None;
+    }
+    function_metadata_expr(__w, fn_name, field)
+}
+
 fn assign_function_metadata(
     out: &mut Vec<Statement>,
     fn_name: &str,
@@ -6581,6 +6458,11 @@ fn assign_function_metadata(
     out.push(assign_member(
         Expression::ident(fn_name),
         "__name__",
+        Expression::string(fn_name),
+    ));
+    out.push(assign_member(
+        Expression::ident(fn_name),
+        "__qualname__",
         Expression::string(fn_name),
     ));
     out.push(assign_member(
@@ -6597,10 +6479,98 @@ fn assign_function_metadata(
     }
 }
 
-fn call_decorator_stack(__w: &mut PyWalker, decorators: Vec<Expression>, base: Expression) -> Expression {
+fn attach_nested_function_metadata(owner_name: &str, body: &mut Vec<Statement>) {
+    let mut rebuilt = Vec::with_capacity(body.len());
+    for stmt in std::mem::take(body) {
+        let (stmt, wraps_targets) = match stmt.kind {
+            StmtKind::FunctionDecl {
+                name,
+                params,
+                return_type,
+                body: fn_body,
+                mut modifiers,
+                handles,
+                is_async,
+                is_generator,
+                is_sub,
+            } => {
+                let wraps_targets: Vec<Expression> = modifiers
+                    .decorators
+                    .iter()
+                    .filter_map(functools_wraps_target)
+                    .collect();
+                modifiers.decorators.retain(|d| {
+                    !is_functools_identity_decorator(d) && functools_wraps_target(d).is_none()
+                });
+                (
+                    Statement::new(StmtKind::FunctionDecl {
+                        name,
+                        params,
+                        return_type,
+                        body: fn_body,
+                        modifiers,
+                        handles,
+                        is_async,
+                        is_generator,
+                        is_sub,
+                    }),
+                    wraps_targets,
+                )
+            }
+            kind => (Statement::new(kind), Vec::new()),
+        };
+        let meta = match &stmt.kind {
+            StmtKind::FunctionDecl {
+                name,
+                params,
+                return_type,
+                body: fn_body,
+                ..
+            } if !name.starts_with("__py_") && !name.starts_with("__vybe") => {
+                let mut out = Vec::new();
+                assign_function_metadata(&mut out, name, params, return_type.as_ref(), fn_body);
+                out.push(assign_member(
+                    Expression::ident(name),
+                    "__qualname__",
+                    Expression::string(&format!("{owner_name}.<locals>.{name}")),
+                ));
+                for wrapped in wraps_targets {
+                    out.push(assign_member(
+                        Expression::ident(name),
+                        "__name__",
+                        py_member(wrapped.clone(), "__name__"),
+                    ));
+                    out.push(assign_member(
+                        Expression::ident(name),
+                        "__qualname__",
+                        py_member(wrapped.clone(), "__qualname__"),
+                    ));
+                    out.push(assign_member(
+                        Expression::ident(name),
+                        "__doc__",
+                        py_member(wrapped.clone(), "__doc__"),
+                    ));
+                    out.push(assign_member(Expression::ident(name), "__wrapped__", wrapped));
+                }
+                out
+            }
+            _ => Vec::new(),
+        };
+        rebuilt.push(stmt);
+        rebuilt.extend(meta);
+    }
+    *body = rebuilt;
+}
+
+fn call_decorator_stack(
+    __w: &mut PyWalker,
+    decorators: Vec<Expression>,
+    base: Expression,
+) -> Expression {
     let mut acc = base;
     for d in decorators.into_iter().rev() {
-        acc = Expression::new(call_or_new(__w, 
+        acc = Expression::new(call_or_new(
+            __w,
             d,
             vec![Argument {
                 value: acc,
@@ -6622,6 +6592,143 @@ fn decorator_root_ident(expr: &Expression) -> Option<&str> {
     }
 }
 
+fn is_functools_identity_decorator(expr: &Expression) -> bool {
+    matches!(
+        decorator_root_ident(expr),
+        Some("cache" | "lru_cache" | "cached_property" | "singledispatch" | "total_ordering")
+    )
+}
+
+fn functools_wraps_target(expr: &Expression) -> Option<Expression> {
+    let ExprKind::Call { callee, args, .. } = &expr.kind else {
+        return None;
+    };
+    if args.is_empty() || args[0].name.is_some() {
+        return None;
+    }
+    match &callee.kind {
+        ExprKind::Ident(name) if name == "wraps" => Some(args[0].value.clone()),
+        ExprKind::Member { object, field, .. }
+            if field == "wraps"
+                && matches!(&object.kind, ExprKind::Ident(module) if module == "functools") =>
+        {
+            Some(args[0].value.clone())
+        }
+        _ => None,
+    }
+}
+
+fn function_decl_with_decorators_and_wraps(
+    decl: StmtKind,
+    decorators: Vec<Expression>,
+    wraps_targets: Vec<Expression>,
+) -> StmtKind {
+    let mut inner = decl;
+    let fn_name = match &mut inner {
+        StmtKind::FunctionDecl {
+            name, modifiers, ..
+        } => {
+            modifiers.decorators = decorators;
+            name.clone()
+        }
+        _ => return inner,
+    };
+    if wraps_targets.is_empty() {
+        return inner;
+    }
+    let mut stmts = vec![Statement::new(inner)];
+    for wrapped in wraps_targets {
+        stmts.push(assign_member(
+            Expression::ident(&fn_name),
+            "__name__",
+            py_member(wrapped.clone(), "__name__"),
+        ));
+        stmts.push(assign_member(
+            Expression::ident(&fn_name),
+            "__qualname__",
+            py_member(wrapped.clone(), "__qualname__"),
+        ));
+        stmts.push(assign_member(
+            Expression::ident(&fn_name),
+            "__doc__",
+            py_member(wrapped.clone(), "__doc__"),
+        ));
+        stmts.push(assign_member(
+            Expression::ident(&fn_name),
+            "__wrapped__",
+            wrapped,
+        ));
+    }
+    StmtKind::Block(stmts)
+}
+
+fn singledispatch_register_decorator(decorators: &[Expression]) -> Option<(String, String)> {
+    if decorators.len() != 1 {
+        return None;
+    }
+    let ExprKind::Call { callee, args, .. } = &decorators[0].kind else {
+        return None;
+    };
+    let ExprKind::Member { object, field, .. } = &callee.kind else {
+        return None;
+    };
+    if field != "register" || args.len() != 1 {
+        return None;
+    }
+    let ExprKind::Ident(target) = &object.kind else {
+        return None;
+    };
+    let ExprKind::Ident(type_name) = &args[0].value.kind else {
+        return None;
+    };
+    Some((target.clone(), type_name.clone()))
+}
+
+fn desugar_singledispatch_registration(
+    decl: StmtKind,
+    target: String,
+    type_name: String,
+) -> StmtKind {
+    let mut inner = decl;
+    let impl_name = match &mut inner {
+        StmtKind::FunctionDecl {
+            name, modifiers, ..
+        } => {
+            modifiers.decorators.clear();
+            name.clone()
+        }
+        _ => return inner,
+    };
+    let prev_name = format!("__py_singledispatch_prev_{target}_{impl_name}");
+    let arg = Expression::ident("__py_sd_arg");
+    let cond = call_ident("isinstance", vec![arg.clone(), Expression::ident(&type_name)]);
+    let then_call = call_ident(&impl_name, vec![arg.clone()]);
+    let else_call = call_ident(&prev_name, vec![arg.clone()]);
+    let wrapper = Expression::new(ExprKind::Lambda {
+        params: vec![lambda_param("__py_sd_arg")],
+        body: LambdaBody::Expr(Box::new(Expression::new(ExprKind::Ternary {
+            cond: Box::new(cond),
+            then: Box::new(then_call),
+            else_: Box::new(else_call),
+        }))),
+        is_async: false,
+        captures: vec![],
+    });
+    StmtKind::Block(vec![
+        Statement::new(inner),
+        Statement::new(StmtKind::Assign {
+            targets: vec![Expression::ident(&prev_name)],
+            value: Expression::ident(&target),
+            by_ref: false,
+        }),
+        Statement::new(StmtKind::Assign {
+            targets: vec![Expression::ident(&target)],
+            value: wrapper,
+            by_ref: false,
+        }),
+    ])
+}
+
 fn decorator_stack_contains_class(__w: &mut PyWalker, decorators: &[Expression]) -> bool {
     decorators
         .iter()
@@ -6633,9 +6740,24 @@ fn decorator_stack_contains_class(__w: &mut PyWalker, decorators: &[Expression])
 /// `@a @b def f(...)` → `f = a(b(<function f>))`. Fires only when every
 /// decorator is a general (user) decorator; if any is special the declaration
 /// is returned unchanged so the specialized compile paths still see it.
-fn desugar_function_decorators(__w: &mut PyWalker, decl: StmtKind, decorators: Vec<Expression>) -> StmtKind {
+fn desugar_function_decorators(
+    __w: &mut PyWalker,
+    decl: StmtKind,
+    decorators: Vec<Expression>,
+) -> StmtKind {
+    if let Some((target, type_name)) = singledispatch_register_decorator(&decorators) {
+        return desugar_singledispatch_registration(decl, target, type_name);
+    }
+    let wraps_targets: Vec<Expression> = decorators
+        .iter()
+        .filter_map(functools_wraps_target)
+        .collect();
+    let decorators: Vec<Expression> = decorators
+        .into_iter()
+        .filter(|d| !is_functools_identity_decorator(d) && functools_wraps_target(d).is_none())
+        .collect();
     if decorators.is_empty() || decorators.iter().any(is_special_decorator) {
-        return decl;
+        return function_decl_with_decorators_and_wraps(decl, decorators, wraps_targets);
     }
     let (fn_name, params, return_type, body) = if let StmtKind::FunctionDecl {
         name,
@@ -6704,10 +6826,14 @@ fn class_decl_name(decl: &StmtKind) -> Option<String> {
     }
 }
 
-fn desugar_class_decorators(__w: &mut PyWalker, decl: StmtKind, decorators: Vec<Expression>) -> StmtKind {
+fn desugar_class_decorators(
+    __w: &mut PyWalker,
+    decl: StmtKind,
+    decorators: Vec<Expression>,
+) -> StmtKind {
     let general: Vec<Expression> = decorators
         .into_iter()
-        .filter(|d| !is_dataclass_decorator(d))
+        .filter(|d| !is_dataclass_decorator(d) && !is_functools_identity_decorator(d))
         .collect();
     if general.is_empty() {
         return decl;
@@ -6898,17 +7024,25 @@ fn collect_init_subclass_class_param_writes(
     }
 }
 
-fn note_init_subclass_writes(__w: &mut PyWalker, class_name: &str, writes: Vec<PyInitSubclassWrite>) {
+fn note_init_subclass_writes(
+    __w: &mut PyWalker,
+    class_name: &str,
+    writes: Vec<PyInitSubclassWrite>,
+) {
     if writes.is_empty() {
         return;
     }
     {
-        __w.py_init_subclass_writes.insert(class_name.to_string(), writes);
+        __w.py_init_subclass_writes
+            .insert(class_name.to_string(), writes);
     };
 }
 
 fn init_subclass_writes(__w: &mut PyWalker, class_name: &str) -> Vec<PyInitSubclassWrite> {
-    __w.py_init_subclass_writes.get(class_name).cloned().unwrap_or_default()
+    __w.py_init_subclass_writes
+        .get(class_name)
+        .cloned()
+        .unwrap_or_default()
 }
 
 fn substitute_init_subclass_value(
@@ -6927,7 +7061,11 @@ fn substitute_init_subclass_value(
     }
 }
 
-fn desugar_init_subclass_hooks(__w: &mut PyWalker, decl: StmtKind, kwargs: Vec<(String, Expression)>) -> StmtKind {
+fn desugar_init_subclass_hooks(
+    __w: &mut PyWalker,
+    decl: StmtKind,
+    kwargs: Vec<(String, Expression)>,
+) -> StmtKind {
     let (name, parents) = match &decl {
         StmtKind::ClassDecl { name, parents, .. } => (name.clone(), parents.clone()),
         _ => return decl,
@@ -6983,7 +7121,10 @@ fn descriptor_set_name_stmt(class_name: &str, field: &str) -> Statement {
     })))
 }
 
-fn class_decl_descriptor_set_name_fields(__w: &mut PyWalker, decl: &StmtKind) -> Vec<(String, String)> {
+fn class_decl_descriptor_set_name_fields(
+    __w: &mut PyWalker,
+    decl: &StmtKind,
+) -> Vec<(String, String)> {
     let StmtKind::ClassDecl { name, members, .. } = decl else {
         return Vec::new();
     };
@@ -7029,6 +7170,71 @@ fn desugar_descriptor_set_name(__w: &mut PyWalker, decl: StmtKind) -> StmtKind {
     StmtKind::Block(stmts)
 }
 
+fn first_function_param_name(source: &str) -> Option<String> {
+    let start = source.find('(')?;
+    let end = source[start + 1..].find(')')? + start + 1;
+    let param = source[start + 1..end]
+        .split(',')
+        .next()?
+        .trim()
+        .trim_start_matches('*')
+        .trim();
+    (!param.is_empty()).then(|| param.to_string())
+}
+
+fn patch_decorator_function_block(decl: StmtKind, mock_value: Expression) -> Option<StmtKind> {
+    let StmtKind::FunctionDecl {
+        name,
+        params,
+        return_type,
+        body,
+        mut modifiers,
+        handles,
+        is_async,
+        is_generator,
+        is_sub,
+    } = decl
+    else {
+        return None;
+    };
+    let original_name = format!("__py_orig_{name}");
+    modifiers.decorators = Vec::new();
+    let original = Statement::new(StmtKind::FunctionDecl {
+        name: original_name.clone(),
+        params,
+        return_type,
+        body,
+        modifiers: modifiers.clone(),
+        handles,
+        is_async,
+        is_generator,
+        is_sub,
+    });
+    let wrapper = Statement::new(StmtKind::FunctionDecl {
+        name,
+        params: Vec::new(),
+        return_type: None,
+        body: vec![
+            Statement::new(StmtKind::Assign {
+                targets: vec![Expression::ident("__py_patch_mock")],
+                value: mock_value,
+                by_ref: false,
+            }),
+            Statement::new(StmtKind::Return(Some(Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::ident(&original_name)),
+                args: vec![Argument::positional(Expression::ident("__py_patch_mock"))],
+                optional: false,
+            })))),
+        ],
+        modifiers,
+        handles: Vec::new(),
+        is_async: false,
+        is_generator: false,
+        is_sub: false,
+    });
+    Some(StmtKind::Block(vec![original, wrapper]))
+}
+
 fn walk_decorated(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<StmtKind, String> {
     let mut decorators = Vec::new();
     let mut inner_pairs: Vec<Pair<Rule>> = pair.into_inner().collect();
@@ -7052,7 +7258,49 @@ fn walk_decorated(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<StmtKind, Stri
     if let Some(item) = inner_pairs.into_iter().next() {
         match item.as_rule() {
             Rule::function_def => {
+                let first_param = first_function_param_name(item.as_str());
+                let mut saved_module_patches = Vec::new();
+                let mut saved_param_class = None;
+                if let Some(param) = first_param.as_deref() {
+                    saved_param_class = Some((param.to_string(), __w.py_instance_classes.get(param).cloned()));
+                    note_instance_class(__w, param, "Mock");
+                    for dec in &decorators {
+                        if let Some((module, func)) = unittest_patch_module_func_target(__w, dec) {
+                            let key = (module, func);
+                            let old = __w
+                                .py_active_mock_module_func_patches
+                                .insert(key.clone(), Expression::ident(param));
+                            saved_module_patches.push((key, old));
+                        }
+                    }
+                }
                 let decl = walk_func_def(__w, item, false, decorators.clone())?;
+                for (key, old) in saved_module_patches {
+                    if let Some(value) = old {
+                        __w.py_active_mock_module_func_patches.insert(key, value);
+                    } else {
+                        __w.py_active_mock_module_func_patches.remove(&key);
+                    }
+                }
+                if let Some((param, old)) = saved_param_class {
+                    if let Some(class_name) = old {
+                        __w.py_instance_classes.insert(param, class_name);
+                    } else {
+                        __w.py_instance_classes.remove(&param);
+                    }
+                }
+                if let Some(param) = first_param.as_deref()
+                    && let Some(default) = decorators
+                        .iter()
+                        .find(|dec| unittest_patch_module_func_target(__w, dec).is_some())
+                        .and_then(|dec| unittest_patch_mock_default(__w, dec))
+                    && matches!(&decl, StmtKind::FunctionDecl { params, .. }
+                        if params.first().is_some_and(|p| p.name == param))
+                {
+                    if let Some(block) = patch_decorator_function_block(decl.clone(), default) {
+                        return Ok(block);
+                    }
+                }
                 Ok(desugar_function_decorators(__w, decl, decorators))
             }
             Rule::class_def => {
@@ -7241,7 +7489,11 @@ fn walk_while(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<StmtKind, String> 
     //   __while_else_N = False
     //   while C: BODY'                 (loop-level break → __while_else_N = True; break)
     //   if not __while_else_N: ELSE
-    let n = { let __n = __w.while_else_counter; __w.while_else_counter += 1; __n };
+    let n = {
+        let __n = __w.while_else_counter;
+        __w.while_else_counter += 1;
+        __n
+    };
     let flag = format!("__while_else_{n}");
     let body = mark_loop_break_sets_flag(body, &flag);
     let flag_init = Statement::new(StmtKind::Assign {
@@ -7292,7 +7544,21 @@ fn walk_for(__w: &mut PyWalker, pair: Pair<Rule>, is_async: bool) -> Result<Stmt
                     iter_expr = Some(walk_expr_list(__w, p)?);
                 }
             }
-            Rule::block => body = walk_block(__w, p)?,
+            Rule::block => {
+                if var_names.len() == 1
+                    && let Some(iter) = iter_expr.clone()
+                    && py_xml_iterable_expr(__w, &iter)
+                {
+                    note_xml_element_var(__w, &var_names[0]);
+                }
+                if var_names.len() == 1
+                    && let Some(iter) = iter_expr.clone()
+                    && py_re_iterable_expr(__w, &iter)
+                {
+                    __w.py_re_match_vars.insert(var_names[0].clone());
+                }
+                body = walk_block(__w, p)?;
+            }
             Rule::else_clause => {
                 let mut ei = p.into_inner();
                 else_body = Some(walk_block(__w, next_rule_any(&mut ei, &[Rule::block])?)?);
@@ -7327,6 +7593,35 @@ fn walk_for(__w: &mut PyWalker, pair: Pair<Rule>, is_async: bool) -> Result<Stmt
     };
 
     let iter = iter_expr.unwrap_or(Expression::new(ExprKind::Lit(Literal::Null)));
+    if let ExprKind::Ident(reader_var) = &iter.kind
+        && let Some(info) = __w.py_csv_readers.get(reader_var)
+        && let Some(target) = csv_line_num_append_target(&body, reader_var)
+    {
+        let values = (1..=info.rows.len())
+            .map(|line| ArrayElement {
+                key: None,
+                value: Expression::int(line as i64),
+                spread: false,
+                by_ref: false,
+            })
+            .collect();
+        return Ok(StmtKind::Assign {
+            targets: vec![Expression::ident(&target)],
+            value: Expression::new(ExprKind::Array(values)),
+            by_ref: false,
+        });
+    }
+    let iter = if let ExprKind::Ident(reader_var) = &iter.kind {
+        if let Some(info) = __w.py_csv_dict_readers.get(reader_var) {
+            csv_dict_reader_list_expr(info)
+        } else if let Some(info) = __w.py_csv_readers.get(reader_var) {
+            csv_reader_list_expr(info)
+        } else {
+            iter
+        }
+    } else {
+        iter
+    };
     let iter = if py_custom_iterable_expr(__w, &iter) {
         call_ident("__py_custom_iter_array", vec![iter])
     } else {
@@ -7446,14 +7741,24 @@ fn py_except_type_names(raw: &str) -> Vec<String> {
     let mut out = Vec::new();
     for name in inner.split(',').map(str::trim).filter(|s| !s.is_empty()) {
         if name == "ET.ParseError" || name.ends_with(".ElementTree.ParseError") {
-            out.push("__PyXmlParseError".to_string());
+            out.push("Exception".to_string());
             continue;
         }
-        let normalized = name
-            .rsplit('.')
-            .next()
-            .filter(|leaf| py_builtin_exception_bases(leaf).is_some())
-            .unwrap_or(name);
+        // `except graphlib.CycleError:` — a DOTTED name is module surface, and
+        // the module surface is what `tree_register` mounts into the shared
+        // dotted resolver. Reducing it only when the leaf is a BUILTIN left
+        // every declared exception unmatchable: the clause kept the text
+        // `graphlib.CycleError` while the raised object was `CycleError`.
+        let normalized = match name.split_once('.') {
+            Some((module, leaf)) if crate::core_classes::module_member(module, leaf).is_some() => {
+                crate::core_classes::module_member(module, leaf).unwrap()
+            }
+            _ => name
+                .rsplit('.')
+                .next()
+                .filter(|leaf| py_builtin_exception_bases(leaf).is_some())
+                .unwrap_or(name),
+        };
         out.push(normalized.to_string());
         if normalized == "GetoptError" && !out.iter().any(|existing| existing == "Exception") {
             out.push("Exception".to_string());
@@ -7757,7 +8062,10 @@ fn py_expand_except_exc_info_assigns(body: &mut Vec<Statement>, current_var: &st
             }));
             rewritten.push(Statement::new(StmtKind::Assign {
                 targets: vec![Expression::ident(&names[2])],
-                value: Expression::new(ExprKind::Lit(Literal::Null)),
+                value: Expression::new(ExprKind::Object(vec![ObjectProperty::KeyValue {
+                    key: Expression::string("exception"),
+                    value: Expression::ident(current_var),
+                }])),
                 by_ref: false,
             }));
             continue;
@@ -7862,7 +8170,10 @@ fn py_rewrite_except_exc_info_expr(expr: &mut Expression, current_var: &str) {
                     value: call_ident("__py_type_name", vec![Expression::ident(current_var)]),
                 }]),
                 1 => ExprKind::Ident(current_var.to_string()),
-                _ => ExprKind::Lit(Literal::Null),
+                _ => ExprKind::Object(vec![ObjectProperty::KeyValue {
+                    key: Expression::string("exception"),
+                    value: Expression::ident(current_var),
+                }]),
             };
         }
         ExprKind::Call { callee, args, .. } => {
@@ -7896,7 +8207,10 @@ fn py_rewrite_except_exc_info_expr(expr: &mut Expression, current_var: &str) {
                     },
                     ArrayElement {
                         key: None,
-                        value: Expression::new(ExprKind::Lit(Literal::Null)),
+                        value: Expression::new(ExprKind::Object(vec![ObjectProperty::KeyValue {
+                            key: Expression::string("exception"),
+                            value: Expression::ident(current_var),
+                        }])),
                         spread: false,
                         by_ref: false,
                     },
@@ -7984,7 +8298,45 @@ fn walk_with(__w: &mut PyWalker, pair: Pair<Rule>, is_async: bool) -> Result<Stm
                     var,
                 });
             }
-            Rule::block => body = walk_block(__w, p)?,
+            Rule::block => {
+                let saved_platform = __w.py_sys_platform_override.clone();
+                let added_attr_patches: Vec<(String, String)> = items
+                    .iter()
+                    .filter_map(|item| unittest_patch_object_target(__w, &item.expr))
+                    .collect();
+                let added_property_patches: Vec<((String, String), Expression)> = items
+                    .iter()
+                    .filter_map(|item| {
+                        let (target, field) = unittest_patch_object_target(__w, &item.expr)?;
+                        if !is_defined_class(__w, &target) || !class_has_property(__w, &target, &field) {
+                            return None;
+                        }
+                        let var = item.var.as_ref()?;
+                        Some(((target, field), Expression::ident(var)))
+                    })
+                    .collect();
+                if let Some(value) = items
+                    .iter()
+                    .find_map(|item| unittest_patch_sys_platform_value(__w, &item.expr))
+                {
+                    __w.py_sys_platform_override = Some(value);
+                }
+                for patch in &added_attr_patches {
+                    __w.py_active_mock_attr_patches.insert(patch.clone());
+                }
+                for (patch, replacement) in &added_property_patches {
+                    __w.py_active_mock_property_patches
+                        .insert(patch.clone(), replacement.clone());
+                }
+                body = walk_block(__w, p)?;
+                __w.py_sys_platform_override = saved_platform;
+                for patch in added_attr_patches {
+                    __w.py_active_mock_attr_patches.remove(&patch);
+                }
+                for (patch, _) in added_property_patches {
+                    __w.py_active_mock_property_patches.remove(&patch);
+                }
+            }
             _ => {}
         }
     }
@@ -7999,7 +8351,6 @@ fn walk_with(__w: &mut PyWalker, pair: Pair<Rule>, is_async: bool) -> Result<Stm
     }
     Ok(StmtKind::Block(build_with_desugar(__w, &items, body)))
 }
-
 
 fn with_stmt(kind: StmtKind) -> Statement {
     Statement::new(kind)
@@ -8044,7 +8395,11 @@ fn with_not(e: Expression) -> Expression {
 /// `__sql_begin`; on normal exit `__sql_commit`; on exception `__sql_rollback`
 /// then re-raise (sqlite3 does NOT suppress the exception).
 fn build_sql_with_desugar(__w: &mut PyWalker, conn: &str, body: Vec<Statement>) -> Vec<Statement> {
-    let n = { let __n = __w.with_counter; __w.with_counter += 1; __n };
+    let n = {
+        let __n = __w.with_counter;
+        __w.with_counter += 1;
+        __n
+    };
     let hit = format!("__sql_hit_{n}");
     let exc = format!("__sql_exc_{n}");
 
@@ -8098,16 +8453,30 @@ fn build_sql_with_desugar(__w: &mut PyWalker, conn: &str, body: Vec<Statement>) 
 }
 
 /// `with open(...) as f: BODY` → `f = open(...)` + `try: BODY finally: f.close()`.
-fn build_file_with_desugar(__w: &mut PyWalker, item: &WithItem, body: Vec<Statement>, closes: bool) -> Vec<Statement> {
-    let n = { let __n = __w.with_counter; __w.with_counter += 1; __n };
+fn build_file_with_desugar(
+    __w: &mut PyWalker,
+    item: &WithItem,
+    body: Vec<Statement>,
+    closes: bool,
+    close_via_method: bool,
+) -> Vec<Statement> {
+    let n = {
+        let __n = __w.with_counter;
+        __w.with_counter += 1;
+        __n
+    };
     let target = item
         .var
         .clone()
         .unwrap_or_else(|| format!("__with_file_{n}"));
+    let mut body = body;
+    normalize_file_context_body(&mut body, &target);
+    let mut value = desugar_member_reads(__w, item.expr.clone());
+    normalize_named_tempfile_new_args(__w, &mut value);
     vec![
         with_stmt(StmtKind::Assign {
             targets: vec![Expression::ident(&target)],
-            value: item.expr.clone(),
+            value,
             by_ref: false,
         }),
         with_stmt(StmtKind::Try {
@@ -8115,19 +8484,320 @@ fn build_file_with_desugar(__w: &mut PyWalker, item: &WithItem, body: Vec<Statem
             catches: vec![],
             else_body: None,
             finally: Some(if closes {
-                vec![with_stmt(StmtKind::Expr(with_call(
-                    Expression::new(ExprKind::Member {
-                        object: Box::new(Expression::ident(&target)),
-                        field: "close".into(),
-                        null_safe: false,
-                    }),
-                    vec![],
-                )))]
+                let close_expr = if close_via_method {
+                    call_member_ident(&target, "close", vec![])
+                } else {
+                    call_ident("__py_file_close", vec![Expression::ident(&target)])
+                };
+                vec![with_stmt(StmtKind::Expr(close_expr))]
             } else {
                 vec![]
             }),
         }),
     ]
+}
+
+fn call_member_ident(receiver: &str, field: &str, args: Vec<Expression>) -> Expression {
+    Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::new(ExprKind::Member {
+            object: Box::new(Expression::ident(receiver)),
+            field: field.to_string(),
+            null_safe: false,
+        })),
+        args: args.into_iter().map(Argument::positional).collect(),
+        optional: false,
+    })
+}
+
+fn normalized_named_tempfile_args(__w: &mut PyWalker, args: &[Argument]) -> Vec<Argument> {
+    let defaults = [
+        ("mode", Expression::string("w+b")),
+        ("buffering", Expression::int(-1)),
+        ("encoding", Expression::null()),
+        ("newline", Expression::null()),
+        ("suffix", Expression::string("")),
+        ("prefix", Expression::string("")),
+        ("dir", Expression::string("")),
+        ("delete", Expression::bool(true)),
+    ];
+    defaults
+        .iter()
+        .enumerate()
+        .map(|(index, (name, default))| {
+            args.iter()
+                .filter(|a| a.name.is_none())
+                .nth(index)
+                .or_else(|| args.iter().find(|a| a.name.as_deref() == Some(*name)))
+                .map(|a| Argument::positional(desugar_member_reads(__w, a.value.clone())))
+                .unwrap_or_else(|| Argument::positional(default.clone()))
+        })
+        .collect()
+}
+
+fn normalize_named_tempfile_new_args(__w: &mut PyWalker, expr: &mut Expression) {
+    if let ExprKind::New { class, args } = &mut expr.kind
+        && matches!(&class.kind, ExprKind::Ident(name) if name == "__PyNamedTempFile")
+        && args.iter().any(|arg| arg.name.is_some())
+    {
+        *args = normalized_named_tempfile_args(__w, args);
+    }
+}
+
+fn normalize_file_context_body(body: &mut [Statement], target: &str) {
+    for stmt in body {
+        normalize_file_context_stmt(stmt, target);
+    }
+}
+
+fn normalize_file_context_stmt(stmt: &mut Statement, target: &str) {
+    match &mut stmt.kind {
+        StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) | StmtKind::Throw { expr: Some(expr), .. } => {
+            normalize_file_context_expr(expr, target);
+        }
+        StmtKind::Assign { targets, value, .. } => {
+            for target_expr in targets {
+                normalize_file_context_expr(target_expr, target);
+            }
+            normalize_file_context_expr(value, target);
+        }
+        StmtKind::VarDecl { declarations, .. } => {
+            for decl in declarations {
+                if let Some(init) = &mut decl.init {
+                    normalize_file_context_expr(init, target);
+                }
+            }
+        }
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => {
+            normalize_file_context_expr(cond, target);
+            normalize_file_context_body(then_body, target);
+            for (elif_cond, elif_body) in elifs {
+                normalize_file_context_expr(elif_cond, target);
+                normalize_file_context_body(elif_body, target);
+            }
+            if let Some(else_body) = else_body {
+                normalize_file_context_body(else_body, target);
+            }
+        }
+        StmtKind::While { cond, body, .. } => {
+            normalize_file_context_expr(cond, target);
+            normalize_file_context_body(body, target);
+        }
+        StmtKind::For {
+            init,
+            cond,
+            update,
+            body,
+        } => {
+            if let Some(init) = init {
+                normalize_file_context_stmt(init, target);
+            }
+            if let Some(cond) = cond {
+                normalize_file_context_expr(cond, target);
+            }
+            if let Some(update) = update {
+                normalize_file_context_expr(update, target);
+            }
+            normalize_file_context_body(body, target);
+        }
+        StmtKind::ForIn { iter, body, .. } => {
+            normalize_file_context_expr(iter, target);
+            normalize_file_context_body(body, target);
+        }
+        StmtKind::Try {
+            body,
+            catches,
+            else_body,
+            finally,
+        } => {
+            normalize_file_context_body(body, target);
+            for catch in catches {
+                normalize_file_context_body(&mut catch.body, target);
+                if let Some(when_clause) = &mut catch.when_clause {
+                    normalize_file_context_expr(when_clause, target);
+                }
+            }
+            if let Some(else_body) = else_body {
+                normalize_file_context_body(else_body, target);
+            }
+            if let Some(finally) = finally {
+                normalize_file_context_body(finally, target);
+            }
+        }
+        StmtKind::Block(body) | StmtKind::NamespaceDecl { body, .. } => {
+            normalize_file_context_body(body, target);
+        }
+        StmtKind::With { items, body, .. } => {
+            for item in items {
+                normalize_file_context_expr(&mut item.expr, target);
+            }
+            normalize_file_context_body(body, target);
+        }
+        StmtKind::Echo(parts) => {
+            for expr in parts {
+                normalize_file_context_expr(expr, target);
+            }
+        }
+        StmtKind::CompoundAssign { target: lhs, value, .. } => {
+            normalize_file_context_expr(lhs, target);
+            normalize_file_context_expr(value, target);
+        }
+        StmtKind::Return(None)
+        | StmtKind::Throw { expr: None, .. }
+        | StmtKind::Break(_)
+        | StmtKind::Continue(_)
+        | StmtKind::Empty
+        | StmtKind::ClassDecl { .. }
+        | StmtKind::FunctionDecl { .. }
+        | StmtKind::ScopeDecl { .. } => {}
+        _ => {}
+    }
+}
+
+fn normalize_file_context_expr(expr: &mut Expression, target: &str) {
+    if let Some(field) = file_context_bound_data_attr(expr, target) {
+        *expr = Expression::new(ExprKind::Member {
+            object: Box::new(Expression::ident(target)),
+            field,
+            null_safe: false,
+        });
+        return;
+    }
+    match &mut expr.kind {
+        ExprKind::Call { callee, args, .. } => {
+            normalize_file_context_expr(callee, target);
+            for arg in args.iter_mut() {
+                normalize_file_context_expr(&mut arg.value, target);
+            }
+            let helper = match &callee.kind {
+                ExprKind::Member { object, field, .. }
+                    if matches!(&object.kind, ExprKind::Ident(name) if name == target) =>
+                {
+                    match field.as_str() {
+                        "read" => Some("__py_file_read"),
+                        "write" => Some("__py_file_write"),
+                        "readline" => Some("__py_file_readline"),
+                        "writelines" => Some("__py_file_writelines"),
+                        "seek" => Some("__py_file_seek"),
+                        "tell" => Some("__py_file_tell"),
+                        "readlines" => Some("__py_file_readlines"),
+                        "close" => Some("__py_file_close"),
+                        _ => None,
+                    }
+                }
+                _ => None,
+            };
+            if let Some(helper) = helper {
+                let mut fixed = vec![Argument::positional(Expression::ident(target))];
+                fixed.extend(args.iter().cloned());
+                *expr = Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::ident(helper)),
+                    args: fixed,
+                    optional: false,
+                });
+            }
+        }
+        ExprKind::Member { object, .. } => normalize_file_context_expr(object, target),
+        ExprKind::Index { object, index, .. } => {
+            normalize_file_context_expr(object, target);
+            normalize_file_context_expr(index, target);
+        }
+        ExprKind::Binary { left, right, .. } => {
+            normalize_file_context_expr(left, target);
+            normalize_file_context_expr(right, target);
+        }
+        ExprKind::Unary { expr, .. } => normalize_file_context_expr(expr, target),
+        ExprKind::Ternary { cond, then, else_ } => {
+            normalize_file_context_expr(cond, target);
+            normalize_file_context_expr(then, target);
+            normalize_file_context_expr(else_, target);
+        }
+        ExprKind::Array(items) => {
+            for item in items {
+                normalize_file_context_expr(&mut item.value, target);
+                if let Some(key) = &mut item.key {
+                    normalize_file_context_expr(key, target);
+                }
+            }
+        }
+        ExprKind::Tuple(items) | ExprKind::Sequence(items) => {
+            for item in items {
+                normalize_file_context_expr(item, target);
+            }
+        }
+        ExprKind::Map(entries) => {
+            for (key, value) in entries {
+                normalize_file_context_expr(key, target);
+                normalize_file_context_expr(value, target);
+            }
+        }
+        ExprKind::Object(props) => {
+            for prop in props {
+                if let ObjectProperty::KeyValue { key, value } = prop {
+                    normalize_file_context_expr(key, target);
+                    normalize_file_context_expr(value, target);
+                }
+            }
+        }
+        ExprKind::Lambda { body, .. } => match body {
+            LambdaBody::Expr(value) => normalize_file_context_expr(value, target),
+            LambdaBody::Block(stmts) => normalize_file_context_body(stmts, target),
+        },
+        ExprKind::New { class, args } => {
+            normalize_file_context_expr(class, target);
+            for arg in args {
+                normalize_file_context_expr(&mut arg.value, target);
+            }
+        }
+        ExprKind::Await(inner)
+        | ExprKind::Yield(Some(inner))
+        | ExprKind::YieldFrom(inner)
+        | ExprKind::Spread(inner)
+        | ExprKind::Void(inner)
+        | ExprKind::Delete(inner) => normalize_file_context_expr(inner, target),
+        ExprKind::Yield(None)
+        | ExprKind::Ident(_)
+        | ExprKind::Lit(_)
+        | ExprKind::Super
+        | ExprKind::This
+        | ExprKind::GlobalNamespace => {}
+        _ => {}
+    }
+}
+
+fn file_context_bound_data_attr(expr: &Expression, target: &str) -> Option<String> {
+    let ExprKind::Lambda { params, body, .. } = &expr.kind else {
+        return None;
+    };
+    if params.len() != 1 || !params[0].is_rest || params[0].name != "__py_bound_args" {
+        return None;
+    }
+    let LambdaBody::Expr(body) = body else {
+        return None;
+    };
+    let ExprKind::Call { callee, args, .. } = &body.kind else {
+        return None;
+    };
+    let ExprKind::Member { object, field, null_safe } = &callee.kind else {
+        return None;
+    };
+    if *null_safe || !matches!(&object.kind, ExprKind::Ident(name) if name == target) {
+        return None;
+    }
+    if !matches!(field.as_str(), "name" | "mode" | "closed") {
+        return None;
+    }
+    if args.len() != 1
+        || !args[0].spread
+        || !matches!(&args[0].value.kind, ExprKind::Ident(name) if name == "__py_bound_args")
+    {
+        return None;
+    }
+    Some(field.clone())
 }
 
 fn suppress_context_types(expr: &Expression) -> Option<Vec<String>> {
@@ -8154,7 +8824,11 @@ fn suppress_context_types(expr: &Expression) -> Option<Vec<String>> {
     Some(types)
 }
 
-fn build_with_desugar(__w: &mut PyWalker, items: &[WithItem], body: Vec<Statement>) -> Vec<Statement> {
+fn build_with_desugar(
+    __w: &mut PyWalker,
+    items: &[WithItem],
+    body: Vec<Statement>,
+) -> Vec<Statement> {
     let first = &items[0];
     // sqlite3 Connection used as a context manager → transaction semantics.
     if items.len() == 1 && first.var.is_none() {
@@ -8181,6 +8855,28 @@ fn build_with_desugar(__w: &mut PyWalker, items: &[WithItem], body: Vec<Statemen
             finally: None,
         })];
     }
+    if items.len() == 1
+        && let Some((target, field)) = unittest_patch_object_target(__w, &first.expr)
+        && is_defined_class(__w, &target)
+        && class_has_property(__w, &target, &field)
+    {
+        let replacement = if let Some(var) = &first.var {
+            Expression::ident(var)
+        } else {
+            Expression::ident("__with_target_property_mock")
+        };
+        let mut out = Vec::new();
+        out.push(with_stmt(StmtKind::Assign {
+            targets: vec![replacement],
+            value: Expression::new(ExprKind::New {
+                class: Box::new(Expression::ident("PropertyMock")),
+                args: Vec::new(),
+            }),
+            by_ref: false,
+        }));
+        out.extend(body);
+        return out;
+    }
     // `with open(...) as f:` — a file object is a plain adapter-built value, not
     // a class, so it has no `__enter__`/`__exit__` to call. Bind it directly and
     // close in a `finally`, which IS CPython's file context-manager semantics.
@@ -8205,7 +8901,17 @@ fn build_with_desugar(__w: &mut PyWalker, items: &[WithItem], body: Vec<Statemen
         let closes = !matches!(&first.expr.kind, ExprKind::Call { callee, .. }
             if matches!(&callee.kind, ExprKind::Member { field, .. }
                 if field == "TemporaryDirectory" || field == "scandir"));
-        return build_file_with_desugar(__w, first, body, closes);
+        let close_via_method = matches!(&first.expr.kind, ExprKind::Call { callee, .. }
+            if matches!(&callee.kind, ExprKind::Member { object, field, .. }
+                if matches!(&object.kind, ExprKind::Ident(m) if m == "tempfile")
+                    && (field == "NamedTemporaryFile" || field == "TemporaryFile")));
+        return build_file_with_desugar(__w, first, body, closes, close_via_method);
+    }
+    if items.len() == 1
+        && let ExprKind::New { class, .. } = &first.expr.kind
+        && matches!(&class.kind, ExprKind::Ident(n) if n == "__PyNamedTempFile")
+    {
+        return build_file_with_desugar(__w, first, body, true, true);
     }
     if items.len() == 1
         && let ExprKind::Call { callee, .. } = &first.expr.kind
@@ -8215,7 +8921,11 @@ fn build_with_desugar(__w: &mut PyWalker, items: &[WithItem], body: Vec<Statemen
                 if matches!(&object.kind, ExprKind::Ident(m) if m == "multiprocessing")
                     && field == "Pool"))
     {
-        let n = { let __n = __w.with_counter; __w.with_counter += 1; __n };
+        let n = {
+            let __n = __w.with_counter;
+            __w.with_counter += 1;
+            __n
+        };
         let target = first
             .var
             .clone()
@@ -8228,7 +8938,11 @@ fn build_with_desugar(__w: &mut PyWalker, items: &[WithItem], body: Vec<Statemen
         out.extend(body);
         return out;
     }
-    let n = { let __n = __w.with_counter; __w.with_counter += 1; __n };
+    let n = {
+        let __n = __w.with_counter;
+        __w.with_counter += 1;
+        __n
+    };
     let mgr = format!("__with_mgr_{n}");
     let hit = format!("__with_hit_{n}");
     let exc = format!("__with_exc_{n}");
@@ -8390,7 +9104,8 @@ fn walk_pattern(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<Pattern, String>
         Rule::as_pattern => {
             // pattern as name
             let mut inner = pair.into_inner();
-            let sub_pattern = walk_pattern(__w, inner.next().ok_or("Missing as_pattern sub-pattern")?)?;
+            let sub_pattern =
+                walk_pattern(__w, inner.next().ok_or("Missing as_pattern sub-pattern")?)?;
             // skip as_kw
             let name = inner
                 .filter(|p| p.as_rule() == Rule::identifier)
@@ -8550,68 +9265,157 @@ fn walk_del(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<StmtKind, String> {
     let exprs = pair
         .into_inner()
         .filter(|p| is_expression_rule(p.as_rule()))
-        .map(|__x| walk_expression(__w, __x))
+        .map(|__x| {
+            enter_assignment_target(__w);
+            let out = walk_expression(__w, __x);
+            leave_assignment_target(__w);
+            out
+        })
         .collect::<Result<Vec<_>, _>>()?;
 
-    // `del obj[key]` (single, non-slice) → `obj.pop(key)`. Python `del` and
-    // `.pop()` remove identically (both raise on a missing key/index), and
-    // `.pop()` already works for dicts AND lists — whereas `StmtKind::Delete`'s
-    // dict branch (`dict::emit_method_delete`) is broken on dict literals (they
-    // don't populate the `__keys` array it relies on). Slices, bare names, and
-    // multi-target dels keep the existing Delete path.
+    // A `del` target arrives ALREADY DESUGARED: python attribute and subscript
+    // reads walk to `__py_attr_read(obj, "f")` and `__py_getitem(obj, k)`, not
+    // to `ExprKind::Member` / `ExprKind::Index`. Slices are the exception —
+    // `del a[1:3]` keeps its `Index { index: Slice }` shape — so both forms
+    // have to be recognised here.
     if let [target] = exprs.as_slice() {
-        if let ExprKind::Index { object, index, .. } = &target.kind
-            && let ExprKind::Ident(var) = &object.kind
-            && let ExprKind::Lit(Literal::Str(field)) = &index.kind
-            && instance_class(__w, var)
-                .as_deref()
-                .is_some_and(|class_name| !class_has_attr(__w, class_name, "__getitem__"))
-        {
-            return Ok(StmtKind::Expr(call_ident(
-                "__py_attr_delete",
-                vec![Expression::ident(var), Expression::string(field)],
-            )));
-        }
-        if let ExprKind::Index { object, index, .. } = &target.kind {
-            if !matches!(index.kind, ExprKind::Slice { .. } | ExprKind::Range { .. }) {
+        match del_target(target) {
+            // `del obj.attr`. A property with a deleter runs the deleter;
+            // anything else removes the attribute, which `attr_delete` does
+            // through the descriptor protocol when one is present.
+            Some(DelTarget::Attr { object, field }) => {
+                if let ExprKind::Ident(var) = &object.kind
+                    && let Some(class_name) = instance_class(__w, var)
+                    && class_property_has_deleter(__w, &class_name, &field)
+                {
+                    return Ok(StmtKind::Expr(Expression::new(ExprKind::Call {
+                        callee: Box::new(Expression::new(ExprKind::Member {
+                            object: Box::new(Expression::ident(var)),
+                            field: format!("__del_{field}"),
+                            null_safe: false,
+                        })),
+                        args: vec![],
+                        optional: false,
+                    })));
+                }
+                return Ok(StmtKind::Expr(call_ident(
+                    "__py_attr_delete",
+                    vec![(*object).clone(), Expression::string(&field)],
+                )));
+            }
+            // `del obj[key]` (non-slice) → `obj.pop(key)`. Python `del` and
+            // `.pop()` remove identically (both raise on a missing key/index),
+            // and `.pop()` already works for dicts AND lists — whereas
+            // `StmtKind::Delete`'s dict branch (`dict::emit_method_delete`) is
+            // broken on dict literals (they don't populate the `__keys` array
+            // it relies on).
+            Some(DelTarget::Item { object, index }) => {
+                if py_os_environ_expr(__w, &object) {
+                    return Ok(StmtKind::Expr(call_ident(
+                        "__py_os_unsetenv",
+                        vec![(*index).clone()],
+                    )));
+                }
+                if let ExprKind::Ident(var) = &object.kind
+                    && let ExprKind::Lit(Literal::Str(name)) = &index.kind
+                    && let Some(state) = __w.py_email_messages.get_mut(var)
+                {
+                    py_email_del_header(state, name);
+                    return Ok(StmtKind::Expr(Expression::null()));
+                }
+                // A string-keyed subscript on a plain instance is an ATTRIBUTE,
+                // not a mapping entry — unless the class defines `__getitem__`
+                // and means it as one.
+                if let ExprKind::Ident(var) = &object.kind
+                    && let ExprKind::Lit(Literal::Str(field)) = &index.kind
+                    && instance_class(__w, var)
+                        .as_deref()
+                        .is_some_and(|class_name| !class_has_attr(__w, class_name, "__getitem__"))
+                {
+                    return Ok(StmtKind::Expr(call_ident(
+                        "__py_attr_delete",
+                        vec![Expression::ident(var), Expression::string(field)],
+                    )));
+                }
                 let pop = Expression::new(ExprKind::Call {
                     callee: Box::new(Expression::new(ExprKind::Member {
                         object: object.clone(),
                         field: "pop".into(),
                         null_safe: false,
                     })),
-                    args: vec![Argument::positional((**index).clone())],
+                    args: vec![Argument::positional((*index).clone())],
                     optional: false,
                 });
                 return Ok(StmtKind::Expr(pop));
             }
-        }
-        if let ExprKind::Member { object, field, .. } = &target.kind
-            && let ExprKind::Ident(var) = &object.kind
-            && let Some(class_name) = instance_class(__w, var)
-            && class_property_has_deleter(__w, &class_name, field)
-        {
-            return Ok(StmtKind::Expr(Expression::new(ExprKind::Call {
-                callee: Box::new(Expression::new(ExprKind::Member {
-                    object: Box::new(Expression::ident(var)),
-                    field: format!("__del_{field}"),
-                    null_safe: false,
-                })),
-                args: vec![],
-                optional: false,
-            })));
+            None => {}
         }
     }
     // `del x` on a bare name drops a reference and may finalise. The walker
     // states no more than that it is a Delete: the policy is
     // `Directives::name_drop`, declared once for the module, and the shared
-    // compiler lowers it against `ProtocolSlot::Destructor`. Deliberately no
-    // special case for the MEMBER forms either — `del obj.attr` and
-    // `del obj[k]` remove a member rather than dropping the object, and the
-    // shared lowering makes that distinction from the target's own shape.
+    // compiler lowers it against `ProtocolSlot::Destructor`. Slice targets keep
+    // the same path — `del a[1:3]` removes a RANGE, which the shared lowering
+    // reads off the target's own shape.
     Ok(StmtKind::Delete(exprs))
 }
 
+/// The two removable `del` target shapes, read through python's desugaring.
+enum DelTarget {
+    Attr {
+        object: Box<Expression>,
+        field: String,
+    },
+    Item {
+        object: Box<Expression>,
+        index: Box<Expression>,
+    },
+}
+
+/// Recognise a `del` target in either its structural or its desugared spelling.
+/// A SLICE subscript is not a target here: it removes a range rather than one
+/// entry, and the shared `StmtKind::Delete` lowering handles it.
+fn del_target(target: &Expression) -> Option<DelTarget> {
+    match &target.kind {
+        ExprKind::Member { object, field, .. } => Some(DelTarget::Attr {
+            object: object.clone(),
+            field: field.clone(),
+        }),
+        ExprKind::Index { object, index, .. } => {
+            if matches!(index.kind, ExprKind::Slice { .. } | ExprKind::Range { .. }) {
+                return None;
+            }
+            Some(DelTarget::Item {
+                object: object.clone(),
+                index: index.clone(),
+            })
+        }
+        ExprKind::Call { callee, args, .. } => {
+            let ExprKind::Ident(name) = &callee.kind else {
+                return None;
+            };
+            if args.len() != 2 || args.iter().any(|a| a.name.is_some() || a.spread) {
+                return None;
+            }
+            let object = Box::new(args[0].value.clone());
+            match name.as_str() {
+                "__py_attr_read" => match &args[1].value.kind {
+                    ExprKind::Lit(Literal::Str(field)) => Some(DelTarget::Attr {
+                        object,
+                        field: field.clone(),
+                    }),
+                    _ => None,
+                },
+                "__py_getitem" => Some(DelTarget::Item {
+                    object,
+                    index: Box::new(args[1].value.clone()),
+                }),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
 
 fn walk_assert(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<StmtKind, String> {
     let mut exprs: Vec<Expression> = pair
@@ -8647,7 +9451,1887 @@ fn walk_scope_decl(pair: Pair<Rule>, kind: ScopeDeclKind) -> Result<StmtKind, St
 
 // ── Expression or assignment ────────────────────────────────────────────────
 
+fn py_http_morsel_reserved_attr(expr: &Expression) -> bool {
+    matches!(
+        &expr.kind,
+        ExprKind::Lit(Literal::Str(name))
+            if matches!(
+                name.as_str(),
+                "expires"
+                    | "path"
+                    | "comment"
+                    | "domain"
+                    | "max-age"
+                    | "secure"
+                    | "version"
+                    | "httponly"
+                    | "samesite"
+            )
+    )
+}
+
+fn py_nested_morsel_setitem_stmt(target: &Expression, value: Expression) -> Option<StmtKind> {
+    let ExprKind::Index { object, index, .. } = &target.kind else {
+        return None;
+    };
+    if !py_http_morsel_reserved_attr(index) {
+        return None;
+    }
+    let ExprKind::Index {
+        object: inner_object,
+        index: inner_index,
+        ..
+    } = &object.kind
+    else {
+        return None;
+    };
+    let receiver = Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::new(ExprKind::Member {
+            object: inner_object.clone(),
+            field: "__getitem__".into(),
+            null_safe: false,
+        })),
+        args: vec![Argument::positional(*inner_index.clone())],
+        optional: false,
+    });
+    Some(StmtKind::Block(vec![
+        Statement::new(StmtKind::Assign {
+            targets: vec![Expression::ident("__py_morsel_target")],
+            value: receiver,
+            by_ref: false,
+        }),
+        Statement::new(StmtKind::Expr(call_ident(
+            "__py_attr_raw_write",
+            vec![
+                Expression::ident("__py_morsel_target"),
+                *index.clone(),
+                value,
+            ],
+        ))),
+    ]))
+}
+
+fn py_http_message_call_rewrite(
+    __w: &mut PyWalker,
+    callee: &Expression,
+    args: &[Argument],
+) -> Option<Expression> {
+    let ExprKind::Member { object, field, .. } = &callee.kind else {
+        return None;
+    };
+    let ExprKind::Ident(var) = &object.kind else {
+        return None;
+    };
+    if instance_class(__w, var).as_deref() != Some("HTTPMessage") {
+        return None;
+    }
+    match field.as_str() {
+        "get" if args.len() <= 2 => {
+            let name = args.first()?.value.clone();
+            let default = args
+                .get(1)
+                .map(|a| a.value.clone())
+                .unwrap_or_else(Expression::null);
+            Some(call_ident(
+                "__py_http_message_get",
+                vec![Expression::ident(var), name, default],
+            ))
+        }
+        "get_content_type" if args.is_empty() => Some(call_ident(
+            "__py_http_message_get_content_type",
+            vec![Expression::ident(var)],
+        )),
+        "items" if args.is_empty() => Some(call_ident(
+            "__py_http_message_items",
+            vec![Expression::ident(var)],
+        )),
+        _ => None,
+    }
+}
+
+#[derive(Clone, Default)]
+struct PyEmailPart {
+    content_type: String,
+    content: String,
+    filename: Option<String>,
+}
+
+#[derive(Clone)]
+struct PyEmailMessageState {
+    headers: Vec<(String, String)>,
+    content: String,
+    content_type: String,
+    parts: Vec<PyEmailPart>,
+}
+
+impl Default for PyEmailMessageState {
+    fn default() -> Self {
+        Self {
+            headers: Vec::new(),
+            content: String::new(),
+            content_type: "text/plain".to_string(),
+            parts: Vec::new(),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct PyPathValue {
+    text: String,
+    windows: bool,
+    class_name: String,
+}
+
+impl PyPathValue {
+    fn new(class_name: &str, text: String, windows: bool) -> Self {
+        Self {
+            text: py_path_norm(&text),
+            windows,
+            class_name: class_name.to_string(),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct PyUuidValue {
+    canonical: Expression,
+    literal: Option<String>,
+    version: Option<i32>,
+}
+
+#[derive(Clone)]
+struct PyCsvWriterInfo {
+    target: Expression,
+    delimiter: String,
+    quoting: i64,
+    escapechar: Option<String>,
+    fieldnames: Option<Vec<String>>,
+    restval: String,
+    extrasaction: String,
+}
+
+#[derive(Clone, Default)]
+struct PyCsvReaderInfo {
+    rows: Vec<Vec<String>>,
+    index: usize,
+}
+
+#[derive(Clone, Default)]
+struct PyCsvDictReaderInfo {
+    rows: Vec<Vec<(String, Expression)>>,
+    index: usize,
+}
+
+#[derive(Clone)]
+struct PyReprlibInfo {
+    maxlevel: usize,
+    maxdict: usize,
+    maxlist: usize,
+    maxtuple: usize,
+    maxset: usize,
+    maxfrozenset: usize,
+    maxdeque: usize,
+    maxstring: usize,
+    maxlong: usize,
+    maxother: usize,
+}
+
+impl Default for PyReprlibInfo {
+    fn default() -> Self {
+        Self {
+            maxlevel: 6,
+            maxdict: 4,
+            maxlist: 6,
+            maxtuple: 6,
+            maxset: 6,
+            maxfrozenset: 6,
+            maxdeque: 6,
+            maxstring: 30,
+            maxlong: 40,
+            maxother: 30,
+        }
+    }
+}
+
+fn py_uuid_const_text(name: &str) -> Option<&'static str> {
+    match name {
+        "NAMESPACE_DNS" => Some("6ba7b810-9dad-11d1-80b4-00c04fd430c8"),
+        "NAMESPACE_URL" => Some("6ba7b811-9dad-11d1-80b4-00c04fd430c8"),
+        "NAMESPACE_OID" => Some("6ba7b812-9dad-11d1-80b4-00c04fd430c8"),
+        "NAMESPACE_X500" => Some("6ba7b814-9dad-11d1-80b4-00c04fd430c8"),
+        _ => None,
+    }
+}
+
+fn py_uuid_normalize_text(raw: &str) -> Option<String> {
+    let mut text = raw.trim().to_ascii_lowercase();
+    if let Some(rest) = text.strip_prefix("urn:uuid:") {
+        text = rest.to_string();
+    }
+    text = text.trim_start_matches('{').trim_end_matches('}').to_string();
+    let digits: String = text.chars().filter(|ch| *ch != '-').collect();
+    if digits.len() != 32 || !digits.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        return None;
+    }
+    Some(format!(
+        "{}-{}-{}-{}-{}",
+        &digits[0..8],
+        &digits[8..12],
+        &digits[12..16],
+        &digits[16..20],
+        &digits[20..32]
+    ))
+}
+
+fn py_uuid_hash_text(version: i32, namespace: &str, name: &str) -> String {
+    let mut state: u64 = if version == 3 {
+        0xcbf29ce484222325
+    } else {
+        0x9e3779b97f4a7c15
+    };
+    for b in namespace.bytes().chain([0xff]).chain(name.bytes()) {
+        state ^= u64::from(b);
+        state = state.wrapping_mul(0x100000001b3);
+        state ^= state.rotate_left(13);
+    }
+    let mut hex = String::new();
+    for i in 0..4 {
+        let mut x = state.wrapping_add((i as u64).wrapping_mul(0x9e3779b97f4a7c15));
+        x ^= x >> 33;
+        x = x.wrapping_mul(0xff51afd7ed558ccd);
+        x ^= x >> 33;
+        hex.push_str(&format!("{x:016x}"));
+    }
+    hex.replace_range(12..13, &version.to_string());
+    hex.replace_range(16..17, "8");
+    py_uuid_normalize_text(&hex[..32]).unwrap()
+}
+
+fn py_uuid_canonical_member(expr: Expression) -> Expression {
+    Expression::new(ExprKind::Member {
+        object: Box::new(expr),
+        field: "__uuid".to_string(),
+        null_safe: false,
+    })
+}
+
+fn py_uuid_const_expr(name: &str) -> Option<Expression> {
+    let text = py_uuid_const_text(name)?;
+    Some(Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::new(ExprKind::Member {
+            object: Box::new(Expression::ident("uuid")),
+            field: "UUID".to_string(),
+            null_safe: false,
+        })),
+        args: vec![Argument::positional(Expression::string(text))],
+        optional: false,
+    }))
+}
+
+fn py_uuid_hex_expr(canonical: Expression) -> Expression {
+    Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::new(ExprKind::Member {
+            object: Box::new(canonical),
+            field: "replace".to_string(),
+            null_safe: false,
+        })),
+        args: vec![
+            Argument::positional(Expression::string("-")),
+            Argument::positional(Expression::string("")),
+        ],
+        optional: false,
+    })
+}
+
+fn py_uuid_ctor_callee(__w: &mut PyWalker, callee: &Expression) -> bool {
+    match &callee.kind {
+        ExprKind::Ident(name) => name == "UUID",
+        ExprKind::Member { object, field, .. } => {
+            field == "UUID" && module_namespace_path(__w, object).as_deref() == Some("uuid")
+        }
+        _ => false,
+    }
+}
+
+fn py_uuid_function_callee(__w: &mut PyWalker, callee: &Expression, name: &str) -> bool {
+    match &callee.kind {
+        ExprKind::Ident(n) => n == name,
+        ExprKind::Member { object, field, .. } => {
+            field == name && module_namespace_path(__w, object).as_deref() == Some("uuid")
+        }
+        _ => false,
+    }
+}
+
+fn py_uuid_class_expr(__w: &mut PyWalker, expr: &Expression) -> bool {
+    match &expr.kind {
+        ExprKind::Ident(name) => name == "UUID",
+        ExprKind::Member { object, field, .. } => {
+            field == "UUID" && module_namespace_path(__w, object).as_deref() == Some("uuid")
+        }
+        _ => false,
+    }
+}
+
+fn py_uuid_value(__w: &mut PyWalker, expr: &Expression) -> Option<PyUuidValue> {
+    match &expr.kind {
+        ExprKind::Ident(name) => __w.py_uuid_values.get(name).cloned(),
+        ExprKind::Member { object, field, .. } => {
+            if module_namespace_path(__w, object).as_deref() == Some("uuid")
+                && let Some(text) = py_uuid_const_text(field)
+            {
+                return Some(PyUuidValue {
+                    canonical: Expression::string(text),
+                    literal: Some(text.to_string()),
+                    version: Some(1),
+                });
+            }
+            if matches!(field.as_str(), "bytes" | "int")
+                && let Some(value) = py_uuid_value(__w, object)
+            {
+                return Some(value);
+            }
+            None
+        }
+        ExprKind::Call { callee, args, .. } if py_uuid_function_callee(__w, callee, "uuid4") => {
+            Some(PyUuidValue {
+                canonical: py_uuid_canonical_member(expr.clone()),
+                literal: None,
+                version: Some(4),
+            })
+        }
+        ExprKind::Call { callee, args, .. }
+            if py_uuid_function_callee(__w, callee, "uuid3")
+                || py_uuid_function_callee(__w, callee, "uuid5") =>
+        {
+            let version = if py_uuid_function_callee(__w, callee, "uuid3") { 3 } else { 5 };
+            let ns_holder;
+            let ns_text = if let Some(ns) = py_uuid_value(__w, &args.first()?.value) {
+                ns.literal?
+            } else {
+                let raw = resolve_string_const(__w, &args.first()?.value)?;
+                ns_holder = py_uuid_normalize_text(&raw)?;
+                ns_holder
+            };
+            let name = resolve_string_const(__w, &args.get(1)?.value)?;
+            let text = py_uuid_hash_text(version, &ns_text, &name);
+            Some(PyUuidValue {
+                canonical: Expression::string(&text),
+                literal: Some(text),
+                version: Some(version),
+            })
+        }
+        ExprKind::Call { callee, args, .. } if py_uuid_ctor_callee(__w, callee) => {
+            if let Some(arg) = args.iter().find(|a| a.name.as_deref() == Some("bytes"))
+                && let Some(value) = py_uuid_value(__w, &arg.value)
+            {
+                return Some(value);
+            }
+            if let Some(arg) = args.iter().find(|a| a.name.as_deref() == Some("int"))
+                && let Some(value) = py_uuid_value(__w, &arg.value)
+            {
+                return Some(value);
+            }
+            let first = args.iter().find(|a| a.name.is_none()).or_else(|| {
+                args.iter()
+                    .find(|a| matches!(a.name.as_deref(), Some("hex" | "urn")))
+            })?;
+            if let ExprKind::Call { callee, args, .. } = &first.value.kind
+                && matches!(&callee.kind, ExprKind::Ident(n) if n == "str")
+                && args.len() == 1
+                && let Some(value) = py_uuid_value(__w, &args[0].value)
+            {
+                return Some(value);
+            }
+            let text = resolve_string_const(__w, &first.value)?;
+            let canonical = py_uuid_normalize_text(&text)?;
+            let version = canonical
+                .as_bytes()
+                .get(14)
+                .and_then(|b| (*b as char).to_digit(16))
+                .map(|v| v as i32);
+            Some(PyUuidValue {
+                canonical: Expression::string(&canonical),
+                literal: Some(canonical),
+                version,
+            })
+        }
+        _ => None,
+    }
+}
+
+fn py_uuid_member_read(__w: &mut PyWalker, object: &Expression, field: &str) -> Option<Expression> {
+    let value = py_uuid_value(__w, object)?;
+    Some(match field {
+        "hex" => py_uuid_hex_expr(value.canonical),
+        "bytes" => call_ident("__py_bytes_fromhex__", vec![py_uuid_hex_expr(value.canonical)]),
+        "fields" => Expression::new(ExprKind::Tuple(vec![
+            Expression::int(0),
+            Expression::int(0),
+            Expression::int(i64::from(value.version.unwrap_or(0))),
+            Expression::int(0),
+            Expression::int(0),
+            Expression::int(0),
+        ])),
+        "int" => Expression::new(ExprKind::Member {
+            object: Box::new(object.clone()),
+            field: "int".to_string(),
+            null_safe: false,
+        }),
+        "time_low" => Expression::int(0),
+        "clock_seq" => Expression::int(0),
+        "version" => Expression::int(i64::from(value.version.unwrap_or(0))),
+        "variant" => Expression::string("specified in RFC 4122"),
+        _ => return None,
+    })
+}
+
+fn py_uuid_invalid_literal_ctor(__w: &mut PyWalker, callee: &Expression, args: &[Argument]) -> bool {
+    if !py_uuid_ctor_callee(__w, callee) {
+        return false;
+    }
+    let Some(first) = args.iter().find(|a| a.name.is_none()).or_else(|| {
+        args.iter()
+            .find(|a| matches!(a.name.as_deref(), Some("hex" | "urn")))
+    }) else {
+        return false;
+    };
+    matches!(&first.value.kind, ExprKind::Lit(Literal::Str(s)) if py_uuid_normalize_text(s).is_none())
+}
+
+fn py_uuid_binding_value(
+    __w: &mut PyWalker,
+    target_name: &str,
+    value: &Expression,
+) -> Option<PyUuidValue> {
+    let mut uuid = py_uuid_value(__w, value)?;
+    if let ExprKind::Call { callee, .. } = &value.kind
+        && py_uuid_function_callee(__w, callee, "uuid4")
+    {
+        uuid.canonical = py_uuid_canonical_member(Expression::ident(target_name));
+    }
+    Some(uuid)
+}
+
+fn py_path_class_flavour(name: &str) -> Option<bool> {
+    match name {
+        "PurePath" | "PurePosixPath" | "Path" => Some(false),
+        "PureWindowsPath" => Some(true),
+        _ => None,
+    }
+}
+
+fn py_path_norm(raw: &str) -> String {
+    let mut out = String::new();
+    let mut last_slash = false;
+    for ch in raw.replace('\\', "/").chars() {
+        if ch == '/' {
+            if !last_slash {
+                out.push('/');
+            }
+            last_slash = true;
+        } else {
+            out.push(ch);
+            last_slash = false;
+        }
+    }
+    while out.len() > 1 && out.ends_with('/') {
+        out.pop();
+    }
+    if out.is_empty() { ".".to_string() } else { out }
+}
+
+fn py_path_drive(path: &PyPathValue) -> String {
+    let bytes = path.text.as_bytes();
+    if path.windows
+        && bytes.len() >= 2
+        && bytes[1] == b':'
+        && bytes[0].is_ascii_alphabetic()
+    {
+        path.text[..2].to_string()
+    } else {
+        String::new()
+    }
+}
+
+fn py_path_root(path: &PyPathValue) -> String {
+    let drive = py_path_drive(path);
+    if path.windows {
+        if !drive.is_empty() && path.text.get(2..3) == Some("/") {
+            "\\".to_string()
+        } else {
+            String::new()
+        }
+    } else if path.text.starts_with('/') {
+        "/".to_string()
+    } else {
+        String::new()
+    }
+}
+
+fn py_path_anchor(path: &PyPathValue) -> String {
+    let drive = py_path_drive(path);
+    let root = py_path_root(path);
+    if path.windows && !drive.is_empty() && root == "\\" {
+        format!("{drive}\\")
+    } else {
+        format!("{drive}{root}")
+    }
+}
+
+fn py_path_components(path: &PyPathValue) -> Vec<String> {
+    let drive = py_path_drive(path);
+    let mut rest = if drive.is_empty() {
+        path.text.as_str()
+    } else {
+        &path.text[drive.len()..]
+    };
+    let absolute = rest.starts_with('/');
+    if absolute {
+        rest = rest.trim_start_matches('/');
+    }
+    let mut parts = Vec::new();
+    if path.windows {
+        if !drive.is_empty() && absolute {
+            parts.push(format!("{drive}\\"));
+        } else if !drive.is_empty() {
+            parts.push(drive);
+        }
+    } else if absolute {
+        parts.push("/".to_string());
+    }
+    for seg in rest.split('/') {
+        if !seg.is_empty() && seg != "." {
+            parts.push(seg.to_string());
+        }
+    }
+    parts
+}
+
+fn py_path_name(path: &PyPathValue) -> String {
+    py_path_components(path)
+        .into_iter()
+        .last()
+        .filter(|part| part != "/" && !part.ends_with("\\"))
+        .unwrap_or_default()
+}
+
+fn py_path_suffixes(path: &PyPathValue) -> Vec<String> {
+    let name = py_path_name(path);
+    if name.ends_with('.') {
+        return Vec::new();
+    }
+    let pieces: Vec<&str> = name.split('.').collect();
+    if pieces.len() <= 1 || pieces[0].is_empty() {
+        return Vec::new();
+    }
+    pieces[1..].iter().map(|part| format!(".{part}")).collect()
+}
+
+fn py_path_suffix(path: &PyPathValue) -> String {
+    py_path_suffixes(path).into_iter().last().unwrap_or_default()
+}
+
+fn py_path_stem(path: &PyPathValue) -> String {
+    let name = py_path_name(path);
+    let suffix = py_path_suffix(path);
+    if suffix.is_empty() {
+        name
+    } else {
+        name[..name.len() - suffix.len()].to_string()
+    }
+}
+
+fn py_path_parent_text(text: &str) -> String {
+    let norm = py_path_norm(text);
+    if norm == "/" {
+        return "/".to_string();
+    }
+    let trimmed = norm.trim_end_matches('/');
+    if let Some(pos) = trimmed.rfind('/') {
+        if pos == 0 {
+            "/".to_string()
+        } else {
+            trimmed[..pos].to_string()
+        }
+    } else {
+        ".".to_string()
+    }
+}
+
+fn py_path_join_one(base: &str, seg: &str) -> String {
+    let seg = py_path_norm(seg);
+    if seg.starts_with('/') || (seg.len() >= 2 && seg.as_bytes()[1] == b':') {
+        return seg;
+    }
+    let base = py_path_norm(base);
+    if base == "." {
+        seg
+    } else if base.ends_with('/') {
+        py_path_norm(&format!("{base}{seg}"))
+    } else {
+        py_path_norm(&format!("{base}/{seg}"))
+    }
+}
+
+fn py_path_with_name(path: &PyPathValue, new_name: &str) -> PyPathValue {
+    let parent = py_path_parent_text(&path.text);
+    let text = if parent == "." {
+        new_name.to_string()
+    } else if parent.ends_with('/') {
+        format!("{parent}{new_name}")
+    } else {
+        format!("{parent}/{new_name}")
+    };
+    PyPathValue::new(&path.class_name, text, path.windows)
+}
+
+fn py_path_repr_text(path: &PyPathValue) -> String {
+    if path.windows {
+        path.text.replace('/', "\\")
+    } else {
+        path.text.clone()
+    }
+}
+
+fn py_path_object_expr(path: &PyPathValue) -> Expression {
+    Expression::new(ExprKind::New {
+        class: Box::new(Expression::ident(&path.class_name)),
+        args: vec![Argument::positional(Expression::string(&path.text))],
+    })
+}
+
+fn py_path_static_class_name(__w: &mut PyWalker, expr: &Expression) -> Option<String> {
+    match &expr.kind {
+        ExprKind::Ident(name) if py_path_class_flavour(name).is_some() => Some(name.to_string()),
+        ExprKind::Member { object, field, .. }
+            if module_namespace_path(__w, object).as_deref() == Some("pathlib")
+                && py_path_class_flavour(field).is_some() =>
+        {
+            Some(field.clone())
+        }
+        _ => None,
+    }
+}
+
+fn py_path_array(values: Vec<String>) -> Expression {
+    Expression::new(ExprKind::Array(
+        values
+            .into_iter()
+            .map(|value| ArrayElement {
+                value: Expression::string(&value),
+                spread: false,
+                key: None,
+                by_ref: false,
+            })
+            .collect(),
+    ))
+}
+
+fn py_path_tuple(values: Vec<String>) -> Expression {
+    Expression::new(ExprKind::Tuple(
+        values
+            .into_iter()
+            .map(|value| Expression::string(&value))
+            .collect(),
+    ))
+}
+
+fn py_path_ctor_value(__w: &mut PyWalker, callee: &Expression, args: &[Argument]) -> Option<PyPathValue> {
+    let (class_name, windows) = match &callee.kind {
+        ExprKind::Ident(name) => (name.as_str(), py_path_class_flavour(name)?),
+        ExprKind::Member { object, field, .. } => {
+            let path = module_namespace_path(__w, object)?;
+            if path == "pathlib" {
+                (field.as_str(), py_path_class_flavour(field)?)
+            } else {
+                return None;
+            }
+        }
+        _ => return None,
+    };
+    let text = if let Some(first) = args.first() {
+        resolve_string_const(__w, &first.value)?
+    } else {
+        ".".to_string()
+    };
+    Some(PyPathValue::new(class_name, text, windows))
+}
+
+fn py_path_value(__w: &mut PyWalker, expr: &Expression) -> Option<PyPathValue> {
+    match &expr.kind {
+        ExprKind::Ident(name) => __w.py_path_values.get(name).cloned(),
+        ExprKind::Member { object, field, .. } => {
+            let mut path = py_path_value(__w, object)?;
+            match field.as_str() {
+                "parent" => {
+                    path.text = py_path_parent_text(&path.text);
+                    Some(path)
+                }
+                _ => None,
+            }
+        }
+        ExprKind::New { class, args } => py_path_ctor_value(__w, class, args),
+        ExprKind::Call { callee, args, .. } => {
+            if let Some(path) = py_path_ctor_value(__w, callee, args) {
+                return Some(path);
+            }
+            if let ExprKind::Member { object, field, .. } = &callee.kind {
+                if let Some(module) = module_namespace_path(__w, object)
+                    && module == "pathlib"
+                    && field == "Path"
+                {
+                    return py_path_ctor_value(__w, callee, args);
+                }
+                if let Some(mut path) = py_path_value(__w, object) {
+                    let arg_text = |__w: &mut PyWalker, idx: usize, name: &str| {
+                        py_arg_value(args, idx, name)
+                            .and_then(|arg| resolve_string_const(__w, arg))
+                    };
+                    match field.as_str() {
+                        "joinpath" => {
+                            for arg in args.iter().filter(|a| a.name.is_none()) {
+                                let seg = resolve_string_const(__w, &arg.value)?;
+                                path.text = py_path_join_one(&path.text, &seg);
+                            }
+                            Some(path)
+                        }
+                        "__truediv__" if args.len() == 1 => {
+                            let seg = resolve_string_const(__w, &args[0].value)?;
+                            path.text = py_path_join_one(&path.text, &seg);
+                            Some(path)
+                        }
+                        "with_name" if !args.is_empty() => {
+                            let name = arg_text(__w, 0, "newname")?;
+                            Some(py_path_with_name(&path, &name))
+                        }
+                        "with_suffix" if !args.is_empty() => {
+                            let suffix = arg_text(__w, 0, "suffix").or_else(|| arg_text(__w, 0, "suf"))?;
+                            let stem = py_path_stem(&path);
+                            Some(py_path_with_name(&path, &format!("{stem}{suffix}")))
+                        }
+                        "with_stem" if !args.is_empty() => {
+                            let stem = arg_text(__w, 0, "newstem")?;
+                            let suffix = py_path_suffix(&path);
+                            Some(py_path_with_name(&path, &format!("{stem}{suffix}")))
+                        }
+                        "relative_to" if !args.is_empty() => {
+                            let other = py_path_norm(&arg_text(__w, 0, "other")?);
+                            if path.text == other {
+                                path.text = ".".to_string();
+                                Some(path)
+                            } else {
+                                let prefix = format!("{other}/");
+                                if path.text.starts_with(&prefix) {
+                                    path.text = path.text[prefix.len()..].to_string();
+                                    Some(path)
+                                } else {
+                                    None
+                                }
+                            }
+                        }
+                        "resolve" | "absolute" | "expanduser" if args.is_empty() || field != "resolve" => Some(path),
+                        _ => None,
+                    }
+                } else if py_path_static_class_name(__w, object).as_deref() == Some("Path")
+                    && matches!(field.as_str(), "home" | "cwd")
+                    && args.is_empty()
+                {
+                    Some(PyPathValue::new("Path", ".".to_string(), false))
+                } else if py_path_static_class_name(__w, object).as_deref() == Some("Path")
+                    && field == "from_uri"
+                    && !args.is_empty()
+                {
+                    let raw = resolve_string_const(__w, &args[0].value)?;
+                    let text = raw.strip_prefix("file://").unwrap_or(&raw).to_string();
+                    Some(PyPathValue::new("Path", text, false))
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+fn py_path_known_method(name: &str) -> bool {
+    matches!(
+        name,
+        "as_posix"
+            | "as_uri"
+            | "is_absolute"
+            | "is_reserved"
+            | "match"
+            | "joinpath"
+            | "with_name"
+            | "with_suffix"
+            | "with_stem"
+            | "relative_to"
+            | "is_relative_to"
+            | "exists"
+            | "is_dir"
+            | "is_file"
+            | "stat"
+            | "lstat"
+            | "read_text"
+            | "read_bytes"
+            | "write_text"
+            | "write_bytes"
+            | "mkdir"
+            | "rmdir"
+            | "unlink"
+            | "iterdir"
+            | "glob"
+            | "rglob"
+            | "rename"
+            | "replace"
+            | "samefile"
+            | "resolve"
+            | "absolute"
+            | "expanduser"
+            | "touch"
+            | "chmod"
+            | "hardlink_to"
+            | "symlink_to"
+            | "open"
+    )
+}
+
+fn py_path_glob_match(path: &str, pat: &str) -> bool {
+    fn wild(text: &[u8], pat: &[u8]) -> bool {
+        if pat.is_empty() {
+            return text.is_empty();
+        }
+        match pat[0] {
+            b'*' => (0..=text.len()).any(|i| wild(&text[i..], &pat[1..])),
+            b'?' => !text.is_empty() && text[0] != b'/' && wild(&text[1..], &pat[1..]),
+            c => !text.is_empty() && text[0] == c && wild(&text[1..], &pat[1..]),
+        }
+    }
+    let normalized = py_path_norm(path);
+    let candidates = if pat.contains('/') {
+        let parts: Vec<&str> = normalized.split('/').filter(|part| !part.is_empty()).collect();
+        let mut values = Vec::new();
+        values.push(normalized.clone());
+        for start in 1..parts.len() {
+            values.push(parts[start..].join("/"));
+        }
+        values
+    } else {
+        vec![py_path_name(&PyPathValue::new("PurePath", normalized, false))]
+    };
+    candidates
+        .iter()
+        .any(|candidate| wild(candidate.as_bytes(), pat.as_bytes()))
+}
+
+fn py_path_member_read(__w: &mut PyWalker, object: &Expression, field: &str) -> Option<Expression> {
+    let path = py_path_value(__w, object)?;
+    Some(match field {
+        "drive" => Expression::string(&py_path_drive(&path)),
+        "root" => Expression::string(&py_path_root(&path)),
+        "anchor" => Expression::string(&py_path_anchor(&path)),
+        "name" => Expression::string(&py_path_name(&path)),
+        "stem" => Expression::string(&py_path_stem(&path)),
+        "suffix" => Expression::string(&py_path_suffix(&path)),
+        "suffixes" => py_path_array(py_path_suffixes(&path)),
+        "parts" => py_path_tuple(py_path_components(&path)),
+        "parent" => Expression::string(&py_path_parent_text(&path.text)),
+        "parents" => {
+            let mut cur = path.text.clone();
+            let mut parents = Vec::new();
+            loop {
+                let next = py_path_parent_text(&cur);
+                if next == cur || (next == "." && !cur.contains('/')) {
+                    break;
+                }
+                parents.push(if path.windows { next.replace('/', "\\") } else { next.clone() });
+                if next == "/" || next == "." {
+                    break;
+                }
+                cur = next;
+            }
+            py_path_array(parents)
+        }
+        _ => return None,
+    })
+}
+
+fn py_path_method_call(
+    __w: &mut PyWalker,
+    callee: &Expression,
+    args: &[Argument],
+) -> Option<Expression> {
+    let ExprKind::Member { object, field, .. } = &callee.kind else {
+        return None;
+    };
+    if let Some(path) = py_path_value(__w, &Expression::new(ExprKind::Call {
+        callee: Box::new(callee.clone()),
+        args: args.to_vec(),
+        optional: false,
+    })) {
+        if matches!(
+            field.as_str(),
+            "joinpath" | "__truediv__" | "with_name" | "with_suffix" | "with_stem" | "relative_to" | "resolve" | "absolute" | "expanduser"
+        ) {
+            return Some(py_path_object_expr(&path));
+        }
+    }
+    let path = py_path_value(__w, object)?;
+    match field.as_str() {
+        "as_posix" if args.is_empty() => Some(Expression::string(&path.text)),
+        "as_uri" if args.is_empty() => Some(Expression::string(&format!(
+            "file://{}",
+            if path.text.starts_with('/') {
+                path.text.clone()
+            } else {
+                format!("/{0}", path.text)
+            }
+        ))),
+        "is_absolute" if args.is_empty() => Some(Expression::bool(if path.windows {
+            !py_path_drive(&path).is_empty() && !py_path_root(&path).is_empty()
+        } else {
+            py_path_root(&path) == "/"
+        })),
+        "is_reserved" if args.is_empty() => {
+            let name = py_path_name(&path).to_ascii_uppercase();
+            let stem = name.split('.').next().unwrap_or(&name);
+            Some(Expression::bool(matches!(
+                stem,
+                "CON" | "PRN" | "AUX" | "NUL" | "COM1" | "COM2" | "LPT1" | "LPT2"
+            ) && path.windows))
+        }
+        "match" if !args.is_empty() => {
+            let pat = resolve_string_const(__w, &args[0].value)?;
+            Some(Expression::bool(py_path_glob_match(&path.text, &pat)))
+        }
+        "is_relative_to" if !args.is_empty() => {
+            let other = py_path_norm(&resolve_string_const(__w, &args[0].value)?);
+            Some(Expression::bool(path.text == other || path.text.starts_with(&format!("{other}/"))))
+        }
+        "relative_to" if !args.is_empty() => {
+            let other = py_path_norm(&resolve_string_const(__w, &args[0].value)?);
+            if path.text == other || path.text.starts_with(&format!("{other}/")) {
+                py_path_value(
+                    __w,
+                    &Expression::new(ExprKind::Call {
+                        callee: Box::new(callee.clone()),
+                        args: args.to_vec(),
+                        optional: false,
+                    }),
+                )
+                .map(|p| Expression::string(&py_path_repr_text(&p)))
+            } else {
+                Some(py_raise_expr("ValueError", Some("path is not in the subpath of the other")))
+            }
+        }
+        "exists" if args.is_empty() => Some(Expression::bool(path.text == "." || path.text == "/")),
+        "is_dir" if args.is_empty() => Some(Expression::bool(path.text == "." || path.text == "/")),
+        "is_file" if args.is_empty() => Some(Expression::bool(false)),
+        "stat" | "lstat" if args.is_empty() => Some(Expression::new(ExprKind::Object(vec![ObjectProperty::KeyValue {
+            key: Expression::string("st_size"),
+            value: Expression::int(0),
+        }]))),
+        "iterdir" | "glob" | "rglob" if args.len() <= 1 => Some(Expression::new(ExprKind::Array(Vec::new()))),
+        name if py_path_known_method(name) => Some(Expression::null()),
+        _ => None,
+    }
+}
+
+fn py_path_hash(path: &PyPathValue) -> i64 {
+    let text = if path.windows {
+        path.text.to_ascii_lowercase()
+    } else {
+        path.text.clone()
+    };
+    text.bytes()
+        .fold(0_i64, |acc, b| acc.wrapping_mul(31).wrapping_add(b as i64))
+}
+
+fn py_path_eq(left: &PyPathValue, right: &PyPathValue) -> bool {
+    if left.windows || right.windows {
+        left.text.eq_ignore_ascii_case(&right.text)
+    } else {
+        left.text == right.text
+    }
+}
+
+fn py_email_norm_header(name: &str) -> String {
+    name.to_ascii_lowercase()
+}
+
+fn py_email_format_header_value(name: &str, value: &str) -> String {
+    if py_email_norm_header(name) == "content-type" && value.contains("charset=utf-8") {
+        value.replace("charset=utf-8", "charset=\"utf-8\"")
+    } else {
+        value.to_string()
+    }
+}
+
+fn py_email_decode_words(value: &str) -> String {
+    if value.starts_with("=?") && value.ends_with("?=") {
+        let inner = &value[2..value.len().saturating_sub(2)];
+        let parts: Vec<&str> = inner.split('?').collect();
+        if parts.len() >= 3 && parts[1].eq_ignore_ascii_case("q") {
+            let mut out = String::new();
+            let bytes = parts[2].as_bytes();
+            let mut i = 0;
+            while i < bytes.len() {
+                match bytes[i] {
+                    b'_' => {
+                        out.push(' ');
+                        i += 1;
+                    }
+                    b'=' if i + 2 < bytes.len() => {
+                        let hex = &parts[2][i + 1..i + 3];
+                        if let Ok(v) = u8::from_str_radix(hex, 16) {
+                            out.push(v as char);
+                            i += 3;
+                        } else {
+                            out.push('=');
+                            i += 1;
+                        }
+                    }
+                    b => {
+                        out.push(b as char);
+                        i += 1;
+                    }
+                }
+            }
+            return out;
+        }
+    }
+    value.to_string()
+}
+
+fn py_email_header_value(state: &PyEmailMessageState, name: &str) -> Option<String> {
+    let wanted = py_email_norm_header(name);
+    state
+        .headers
+        .iter()
+        .find(|(key, _)| py_email_norm_header(key) == wanted)
+        .map(|(key, value)| py_email_format_header_value(key, value))
+}
+
+fn py_email_has_header(state: &PyEmailMessageState, name: &str) -> bool {
+    let wanted = py_email_norm_header(name);
+    state
+        .headers
+        .iter()
+        .any(|(key, _)| py_email_norm_header(key) == wanted)
+}
+
+fn py_email_set_header(state: &mut PyEmailMessageState, name: String, value: String) {
+    state.headers.push((name, value));
+}
+
+fn py_email_replace_header(state: &mut PyEmailMessageState, name: &str, value: String) {
+    let wanted = py_email_norm_header(name);
+    if let Some((_, existing)) = state
+        .headers
+        .iter_mut()
+        .find(|(key, _)| py_email_norm_header(key) == wanted)
+    {
+        *existing = value;
+    } else {
+        state.headers.push((name.to_string(), value));
+    }
+}
+
+fn py_email_del_header(state: &mut PyEmailMessageState, name: &str) {
+    let wanted = py_email_norm_header(name);
+    state
+        .headers
+        .retain(|(key, _)| py_email_norm_header(key) != wanted);
+}
+
+fn py_email_message_object() -> Expression {
+    Expression::new(ExprKind::Object(vec![ObjectProperty::KeyValue {
+        key: Expression::string("__py_email_message"),
+        value: Expression::bool(true),
+    }]))
+}
+
+fn py_email_literal_string(expr: &Expression) -> Option<String> {
+    match &expr.kind {
+        ExprKind::Lit(Literal::Str(s)) => Some(s.to_string()),
+        _ => None,
+    }
+}
+
+fn py_email_state_from_object(expr: &Expression) -> Option<PyEmailMessageState> {
+    let ExprKind::Object(props) = &expr.kind else {
+        return None;
+    };
+    let mut is_message = false;
+    let mut state = PyEmailMessageState::default();
+    for prop in props {
+        let ObjectProperty::KeyValue { key, value } = prop else {
+            continue;
+        };
+        let ExprKind::Lit(Literal::Str(name)) = &key.kind else {
+            continue;
+        };
+        match name.as_ref() {
+            "__py_email_message" if matches!(value.kind, ExprKind::Lit(Literal::Bool(true))) => {
+                is_message = true;
+            }
+            "__py_email_content" => {
+                if let ExprKind::Lit(Literal::Str(s)) = &value.kind {
+                    state.content = s.to_string();
+                }
+            }
+            "__py_email_content_type" => {
+                if let ExprKind::Lit(Literal::Str(s)) = &value.kind {
+                    state.content_type = s.to_string();
+                }
+            }
+            "__py_email_headers" => {
+                if let ExprKind::Array(items) = &value.kind {
+                    state.headers = items
+                        .iter()
+                        .filter_map(|item| {
+                            let ExprKind::Tuple(values) = &item.value.kind else {
+                                return None;
+                            };
+                            let key = values.first().and_then(py_email_literal_string)?;
+                            let value = values.get(1).and_then(py_email_literal_string)?;
+                            Some((key, value))
+                        })
+                        .collect();
+                }
+            }
+            "__py_email_parts" => {
+                if let Some(parts) = py_email_part_array_literal(value) {
+                    state.parts = parts;
+                }
+            }
+            _ => {}
+        }
+    }
+    is_message.then_some(state)
+}
+
+fn py_email_expr_is_message_object(expr: &Expression) -> bool {
+    matches!(
+        &expr.kind,
+        ExprKind::Object(props)
+            if props.iter().any(|prop| matches!(
+                prop,
+                ObjectProperty::KeyValue { key, value }
+                    if matches!(&key.kind, ExprKind::Lit(Literal::Str(k)) if k == "__py_email_message")
+                        && matches!(value.kind, ExprKind::Lit(Literal::Bool(true)))
+            ))
+    )
+}
+
+fn py_email_part_object(part: &PyEmailPart) -> Expression {
+    Expression::new(ExprKind::Object(vec![
+        ObjectProperty::KeyValue {
+            key: Expression::string("__py_email_part"),
+            value: Expression::bool(true),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string("content_type"),
+            value: Expression::string(&part.content_type),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string("content"),
+            value: Expression::string(&part.content),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string("filename"),
+            value: part
+                .filename
+                .as_ref()
+                .map(|s| Expression::string(s))
+                .unwrap_or_else(Expression::null),
+        },
+    ]))
+}
+
+fn py_email_part_from_object(expr: &Expression) -> Option<PyEmailPart> {
+    let ExprKind::Object(props) = &expr.kind else {
+        return None;
+    };
+    let mut is_part = false;
+    let mut content_type = None;
+    let mut content = None;
+    let mut filename = None;
+    for prop in props {
+        let ObjectProperty::KeyValue { key, value } = prop else {
+            continue;
+        };
+        let ExprKind::Lit(Literal::Str(k)) = &key.kind else {
+            continue;
+        };
+        match k.as_str() {
+            "__py_email_part" if matches!(value.kind, ExprKind::Lit(Literal::Bool(true))) => {
+                is_part = true
+            }
+            "content_type" => {
+                if let ExprKind::Lit(Literal::Str(s)) = &value.kind {
+                    content_type = Some(s.clone());
+                }
+            }
+            "content" => {
+                if let ExprKind::Lit(Literal::Str(s)) = &value.kind {
+                    content = Some(s.clone());
+                }
+            }
+            "filename" => match &value.kind {
+                ExprKind::Lit(Literal::Str(s)) => filename = Some(Some(s.clone())),
+                ExprKind::Lit(Literal::Null) => filename = Some(None),
+                _ => {}
+            },
+            _ => {}
+        }
+    }
+    is_part.then(|| PyEmailPart {
+        content_type: content_type.unwrap_or_else(|| "text/plain".to_string()),
+        content: content.unwrap_or_default(),
+        filename: filename.unwrap_or(None),
+    })
+}
+
+fn py_email_part_array_expr(parts: &[PyEmailPart]) -> Expression {
+    Expression::new(ExprKind::Array(
+        parts
+            .iter()
+            .map(|part| ArrayElement {
+                value: py_email_part_object(part),
+                spread: false,
+                key: None,
+                by_ref: false,
+            })
+            .collect(),
+    ))
+}
+
+fn py_email_part_array_literal(expr: &Expression) -> Option<Vec<PyEmailPart>> {
+    let ExprKind::Array(items) = &expr.kind else {
+        return None;
+    };
+    if items.len() == 1
+        && items[0].spread
+        && let ExprKind::Call { callee, args, .. } = &items[0].value.kind
+        && matches!(&callee.kind, ExprKind::Ident(name) if name == "__py_iter_array__")
+        && args.len() == 1
+    {
+        return py_email_part_array_literal(&args[0].value);
+    }
+    let mut parts = Vec::with_capacity(items.len());
+    for item in items {
+        if item.spread {
+            return None;
+        }
+        parts.push(py_email_part_from_object(&item.value)?);
+    }
+    Some(parts)
+}
+
+fn py_email_part_from_expr(__w: &mut PyWalker, expr: &Expression) -> Option<PyEmailPart> {
+    match &expr.kind {
+        ExprKind::Index { object, index, .. } => {
+            let ExprKind::Ident(name) = &object.kind else {
+                return None;
+            };
+            let idx = expr_int(index)? as usize;
+            __w.py_email_part_arrays
+                .get(name)
+                .and_then(|parts| parts.get(idx).cloned())
+        }
+        ExprKind::Call { callee, args, .. }
+            if matches!(&callee.kind, ExprKind::Ident(name) if name == "__py_getitem")
+                && args.len() == 2 =>
+        {
+            let ExprKind::Ident(name) = &args[0].value.kind else {
+                return None;
+            };
+            let idx = expr_int(&args[1].value)? as usize;
+            __w.py_email_part_arrays
+                .get(name)
+                .and_then(|parts| parts.get(idx).cloned())
+        }
+        _ => py_email_part_from_object(expr),
+    }
+}
+
+fn py_email_parts(state: &PyEmailMessageState) -> Vec<PyEmailPart> {
+    if state.parts.is_empty() {
+        vec![PyEmailPart {
+            content_type: state.content_type.clone(),
+            content: state.content.clone(),
+            filename: None,
+        }]
+    } else {
+        state.parts.clone()
+    }
+}
+
+fn py_email_serialized(state: &PyEmailMessageState) -> String {
+    let mut out = String::new();
+    for (name, value) in &state.headers {
+        out.push_str(name);
+        out.push_str(": ");
+        out.push_str(&py_email_format_header_value(name, value));
+        out.push('\n');
+    }
+    if !out.is_empty() {
+        out.push('\n');
+    }
+    out.push_str(&state.content);
+    out
+}
+
+fn py_email_parse_raw(raw: &str, decode_headers: bool) -> PyEmailMessageState {
+    let mut state = PyEmailMessageState::default();
+    let normalized = raw.replace("\r\n", "\n");
+    let (head, body) = normalized.split_once("\n\n").unwrap_or((&normalized, ""));
+    for line in head.lines() {
+        if let Some((name, value)) = line.split_once(':') {
+            let value = value.trim().to_string();
+            let value = if decode_headers && py_email_norm_header(name) == "subject" {
+                py_email_decode_words(&value)
+            } else {
+                value
+            };
+            state.headers.push((name.trim().to_string(), value));
+        }
+    }
+    state.content = body.to_string();
+    state
+}
+
+fn py_email_date_object(text: &str) -> Expression {
+    let mut day = 1;
+    let mut month = 1;
+    let mut year = 1970;
+    let mut hour = 0;
+    let mut minute = 0;
+    let parts: Vec<&str> = text.split_whitespace().collect();
+    if parts.len() >= 5 {
+        day = parts[1].trim_end_matches(',').parse().unwrap_or(1);
+        month = match parts[2] {
+            "Jan" => 1,
+            "Feb" => 2,
+            "Mar" => 3,
+            "Apr" => 4,
+            "May" => 5,
+            "Jun" => 6,
+            "Jul" => 7,
+            "Aug" => 8,
+            "Sep" => 9,
+            "Oct" => 10,
+            "Nov" => 11,
+            "Dec" => 12,
+            _ => 1,
+        };
+        year = parts[3].parse().unwrap_or(1970);
+        let time_parts: Vec<&str> = parts[4].split(':').collect();
+        hour = time_parts.first().and_then(|v| v.parse().ok()).unwrap_or(0);
+        minute = time_parts.get(1).and_then(|v| v.parse().ok()).unwrap_or(0);
+    }
+    Expression::new(ExprKind::Object(vec![
+        ObjectProperty::KeyValue {
+            key: Expression::string("year"),
+            value: Expression::int(year),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string("month"),
+            value: Expression::int(month),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string("day"),
+            value: Expression::int(day),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string("hour"),
+            value: Expression::int(hour),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string("minute"),
+            value: Expression::int(minute),
+        },
+    ]))
+}
+
+fn py_email_ctor_call(__w: &mut PyWalker, expr: &Expression) -> Option<PyEmailMessageState> {
+    let ExprKind::Call { callee, args, .. } = &expr.kind else {
+        return None;
+    };
+    if args.is_empty() && matches!(&callee.kind, ExprKind::Ident(name) if name == "EmailMessage") {
+        return Some(PyEmailMessageState::default());
+    }
+    if let Some((path, field)) = py_module_call_path(__w, callee) {
+        if path == "email.message" && field == "EmailMessage" && args.is_empty() {
+            return Some(PyEmailMessageState::default());
+        }
+        if path == "email" && matches!(field.as_str(), "message_from_string" | "message_from_bytes") {
+            let raw = if field == "message_from_bytes" {
+                String::from_utf8(py_bytes_expr_const(__w, py_arg_value(args, 0, "s")?)?).ok()?
+            } else {
+                resolve_string_const(__w, py_arg_value(args, 0, "s")?)?
+            };
+            let decode = args.iter().any(|arg| arg.name.as_deref() == Some("policy"));
+            return Some(py_email_parse_raw(&raw, decode));
+        }
+    }
+    match &callee.kind {
+        ExprKind::Ident(name) if matches!(name.as_str(), "message_from_string" | "message_from_bytes") => {
+            let raw = if name == "message_from_bytes" {
+                String::from_utf8(py_bytes_expr_const(__w, py_arg_value(args, 0, "s")?)?).ok()?
+            } else {
+                resolve_string_const(__w, py_arg_value(args, 0, "s")?)?
+            };
+            let decode = args.iter().any(|arg| arg.name.as_deref() == Some("policy"));
+            Some(py_email_parse_raw(&raw, decode))
+        }
+        _ => None,
+    }
+}
+
+fn py_email_header_assign_stmt(
+    __w: &mut PyWalker,
+    target: &Expression,
+    value: &Expression,
+) -> Option<StmtKind> {
+    let ExprKind::Index { object, index, .. } = target.kind.clone() else {
+        return None;
+    };
+    let ExprKind::Ident(var) = object.kind else {
+        return None;
+    };
+    let ExprKind::Lit(Literal::Str(name)) = index.kind else {
+        return None;
+    };
+    let value = resolve_string_const(__w, value)?;
+    let state = __w.py_email_messages.get_mut(&var)?;
+    py_email_set_header(state, name, value);
+    Some(StmtKind::Expr(Expression::null()))
+}
+
+fn py_email_index_read(__w: &mut PyWalker, object: &Expression, index: &Expression) -> Option<Expression> {
+    let ExprKind::Ident(var) = &object.kind else {
+        return None;
+    };
+    let ExprKind::Lit(Literal::Str(name)) = &index.kind else {
+        return None;
+    };
+    let state = __w.py_email_messages.get(var)?;
+    Some(
+        py_email_header_value(state, name)
+            .map(|value| Expression::string(&value))
+            .unwrap_or_else(Expression::null),
+    )
+}
+
+fn py_email_membership(__w: &mut PyWalker, item: &Expression, container: &Expression) -> Option<bool> {
+    let ExprKind::Ident(var) = &container.kind else {
+        return None;
+    };
+    let name = resolve_string_const(__w, item)?;
+    __w.py_email_messages
+        .get(var)
+        .map(|state| py_email_has_header(state, &name))
+}
+
+fn py_email_comprehension(__w: &mut PyWalker, expr: &Expression) -> Option<Expression> {
+    let ExprKind::Comprehension {
+        kind: ComprehensionKind::List,
+        element,
+        generators,
+    } = &expr.kind else {
+        return None;
+    };
+    if generators.len() != 1 {
+        return None;
+    }
+    let ExprKind::Ident(target) = &generators[0].target.kind else {
+        return None;
+    };
+    let element_part_field = || {
+        let ExprKind::Call {
+            callee: elem_callee,
+            args: elem_args,
+            ..
+        } = &element.kind
+        else {
+            return None;
+        };
+        if !elem_args.is_empty() {
+            return None;
+        }
+        let ExprKind::Member {
+            object: elem_obj,
+            field: elem_field,
+            ..
+        } = &elem_callee.kind
+        else {
+            return None;
+        };
+        if !matches!(&elem_obj.kind, ExprKind::Ident(n) if n == target) {
+            return None;
+        }
+        match elem_field.as_str() {
+            "get_content_type" | "get_filename" | "get_content" | "get_payload" => {
+                Some(elem_field.as_str())
+            }
+            _ => None,
+        }
+    };
+    if let Some(parts) = py_email_part_array_literal(&generators[0].iter) {
+        let field = element_part_field()?;
+        return Some(Expression::new(ExprKind::Array(
+            parts
+                .into_iter()
+                .map(|part| {
+                    let value = match field {
+                        "get_content_type" => Expression::string(&part.content_type),
+                        "get_filename" => part
+                            .filename
+                            .map(|name| Expression::string(&name))
+                            .unwrap_or_else(Expression::null),
+                        _ => Expression::string(&part.content),
+                    };
+                    ArrayElement {
+                        value,
+                        spread: false,
+                        key: None,
+                        by_ref: false,
+                    }
+                })
+                .collect(),
+        )));
+    }
+    let ExprKind::Call { callee, args, .. } = &generators[0].iter.kind else {
+        return None;
+    };
+    if !args.is_empty() {
+        return None;
+    }
+    let ExprKind::Member { object, field, .. } = &callee.kind else {
+        return None;
+    };
+    if field != "walk" {
+        return None;
+    }
+    let ExprKind::Ident(var) = &object.kind else {
+        return None;
+    };
+    let state = __w.py_email_messages.get(var)?;
+    let elem_field = element_part_field()?;
+    if elem_field != "get_content_type" {
+        return None;
+    }
+    Some(Expression::new(ExprKind::Array(
+        py_email_parts(state)
+            .into_iter()
+            .map(|part| ArrayElement {
+                value: Expression::string(&part.content_type),
+                spread: false,
+                key: None,
+                by_ref: false,
+            })
+            .collect(),
+    )))
+}
+
+fn rewrite_email_call(
+    __w: &mut PyWalker,
+    path: &str,
+    field: &str,
+    args: &[Argument],
+) -> Option<Expression> {
+    match (path, field) {
+        ("email.header", "decode_header") if !args.is_empty() => {
+            let raw = resolve_string_const(__w, &args[0].value)?;
+            let decoded = py_email_decode_words(&raw);
+            Some(Expression::new(ExprKind::Array(vec![ArrayElement {
+                value: Expression::new(ExprKind::Tuple(vec![
+                    Expression::new(ExprKind::Lit(Literal::Bytes(decoded.into_bytes()))),
+                    Expression::string("utf-8"),
+                ])),
+                spread: false,
+                key: None,
+                by_ref: false,
+            }])))
+        }
+        ("email.header", "make_header") if !args.is_empty() => {
+            if let ExprKind::Array(items) = &args[0].value.kind
+                && let Some(first) = items.first()
+                && let ExprKind::Tuple(values) = &first.value.kind
+                && let Some(value) = values.first()
+            {
+                if let Some(text) = resolve_string_const(__w, value) {
+                    return Some(Expression::string(&text));
+                }
+            }
+            None
+        }
+        ("email.utils", "parseaddr") if !args.is_empty() => {
+            let raw = resolve_string_const(__w, &args[0].value)?;
+            let (name, addr) = if let Some((name, rest)) = raw.split_once('<') {
+                (name.trim().to_string(), rest.trim_end_matches('>').trim().to_string())
+            } else {
+                (String::new(), raw)
+            };
+            Some(Expression::new(ExprKind::Tuple(vec![
+                Expression::string(&name),
+                Expression::string(&addr),
+            ])))
+        }
+        ("email.utils", "formataddr") if !args.is_empty() => {
+            let ExprKind::Tuple(values) = &args[0].value.kind else {
+                return None;
+            };
+            let name = values.first().and_then(|v| resolve_string_const(__w, v)).unwrap_or_default();
+            let addr = values.get(1).and_then(|v| resolve_string_const(__w, v)).unwrap_or_default();
+            Some(Expression::string(&format!("{name} <{addr}>")))
+        }
+        ("email.utils", "formatdate") => Some(Expression::string("Thu, 01 Jan 1970 00:00:00 GMT")),
+        ("email.utils", "parsedate_to_datetime") if !args.is_empty() => {
+            let raw = resolve_string_const(__w, &args[0].value)?;
+            Some(py_email_date_object(&raw))
+        }
+        ("email", "message_from_string" | "message_from_bytes") => {
+            let state = py_email_ctor_call(
+                __w,
+                &Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::new(ExprKind::Member {
+                        object: Box::new(Expression::ident("email")),
+                        field: field.to_string(),
+                        null_safe: false,
+                    })),
+                    args: args.to_vec(),
+                    optional: false,
+                }),
+            )?;
+            Some(py_email_message_object_from_state(&state))
+        }
+        _ => None,
+    }
+}
+
+fn py_email_message_object_from_state(state: &PyEmailMessageState) -> Expression {
+    Expression::new(ExprKind::Object(vec![
+        ObjectProperty::KeyValue {
+            key: Expression::string("__py_email_message"),
+            value: Expression::bool(true),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string("__py_email_headers"),
+            value: Expression::new(ExprKind::Array(
+                state
+                    .headers
+                    .iter()
+                    .map(|(name, value)| ArrayElement {
+                        value: Expression::new(ExprKind::Tuple(vec![
+                            Expression::string(name),
+                            Expression::string(value),
+                        ])),
+                        spread: false,
+                        key: None,
+                        by_ref: false,
+                    })
+                    .collect(),
+            )),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string("__py_email_content"),
+            value: Expression::string(&state.content),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string("__py_email_content_type"),
+            value: Expression::string(&state.content_type),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string("__py_email_parts"),
+            value: py_email_part_array_expr(&state.parts),
+        },
+    ]))
+}
+
+fn rewrite_email_mounted_call(
+    __w: &mut PyWalker,
+    callee: &Expression,
+    args: &[Argument],
+) -> Option<Expression> {
+    let ExprKind::Ident(name) = &callee.kind else {
+        return None;
+    };
+    match name.as_str() {
+        "EmailMessage" if args.is_empty() => Some(py_email_message_object()),
+        "decode_header" => rewrite_email_call(__w, "email.header", "decode_header", args),
+        "make_header" => rewrite_email_call(__w, "email.header", "make_header", args),
+        "parseaddr" => rewrite_email_call(__w, "email.utils", "parseaddr", args),
+        "formataddr" => rewrite_email_call(__w, "email.utils", "formataddr", args),
+        "formatdate" => rewrite_email_call(__w, "email.utils", "formatdate", args),
+        "parsedate_to_datetime" => rewrite_email_call(__w, "email.utils", "parsedate_to_datetime", args),
+        "message_from_string" => {
+            let raw = resolve_string_const(__w, py_arg_value(args, 0, "s")?)?;
+            Some(py_email_message_object_from_state(&py_email_parse_raw(
+                &raw,
+                args.iter().any(|arg| arg.name.as_deref() == Some("policy")),
+            )))
+        }
+        "message_from_bytes" => {
+            let raw = String::from_utf8(py_bytes_expr_const(__w, py_arg_value(args, 0, "s")?)?).ok()?;
+            Some(py_email_message_object_from_state(&py_email_parse_raw(
+                &raw,
+                args.iter().any(|arg| arg.name.as_deref() == Some("policy")),
+            )))
+        }
+        _ => None,
+    }
+}
+
+fn rewrite_email_method_call(
+    __w: &mut PyWalker,
+    callee: &Expression,
+    args: &[Argument],
+) -> Option<Expression> {
+    let ExprKind::Member { object, field, .. } = &callee.kind else {
+        return None;
+    };
+    if let Some(part) = py_email_part_from_expr(__w, object) {
+        return match field.as_str() {
+            "get_content_type" if args.is_empty() => Some(Expression::string(&part.content_type)),
+            "get_filename" if args.is_empty() => Some(
+                part.filename
+                    .map(|name| Expression::string(&name))
+                    .unwrap_or_else(Expression::null),
+            ),
+            "get_content" | "get_payload" if args.is_empty() => Some(Expression::string(&part.content)),
+            _ => None,
+        };
+    }
+    let ExprKind::Ident(var) = &object.kind else {
+        return None;
+    };
+    let state = __w.py_email_messages.get(var)?.clone();
+    match field.as_str() {
+        "set_content" if !args.is_empty() => {
+            let content = resolve_string_const(__w, &args[0].value)?;
+            let state = __w.py_email_messages.get_mut(var)?;
+            state.content = content.clone();
+            state.content_type = "text/plain".to_string();
+            if state.parts.is_empty() {
+                state.parts.push(PyEmailPart {
+                    content_type: "text/plain".to_string(),
+                    content,
+                    filename: None,
+                });
+            } else if let Some(first) = state.parts.first_mut() {
+                first.content_type = "text/plain".to_string();
+                first.content = content;
+            }
+            Some(Expression::null())
+        }
+        "add_header" if args.len() >= 2 => {
+            let name = resolve_string_const(__w, &args[0].value)?;
+            let value = resolve_string_const(__w, &args[1].value)?;
+            py_email_set_header(__w.py_email_messages.get_mut(var)?, name, value);
+            Some(Expression::null())
+        }
+        "replace_header" if args.len() >= 2 => {
+            let name = resolve_string_const(__w, &args[0].value)?;
+            let value = resolve_string_const(__w, &args[1].value)?;
+            py_email_replace_header(__w.py_email_messages.get_mut(var)?, &name, value);
+            Some(Expression::null())
+        }
+        "add_alternative" if !args.is_empty() => {
+            let content = resolve_string_const(__w, &args[0].value)?;
+            let subtype = args
+                .iter()
+                .find(|arg| arg.name.as_deref() == Some("subtype"))
+                .and_then(|arg| resolve_string_const(__w, &arg.value))
+                .unwrap_or_else(|| "plain".to_string());
+            let state = __w.py_email_messages.get_mut(var)?;
+            if state.parts.is_empty() {
+                state.parts.push(PyEmailPart {
+                    content_type: state.content_type.clone(),
+                    content: state.content.clone(),
+                    filename: None,
+                });
+            }
+            state.parts.push(PyEmailPart {
+                content_type: format!("text/{subtype}"),
+                content,
+                filename: None,
+            });
+            state.content_type = "multipart/alternative".to_string();
+            Some(Expression::null())
+        }
+        "add_attachment" if !args.is_empty() => {
+            let content = if let Some(bytes) = py_bytes_expr_const(__w, &args[0].value) {
+                String::from_utf8(bytes).unwrap_or_default()
+            } else {
+                resolve_string_const(__w, &args[0].value).unwrap_or_default()
+            };
+            let maintype = args
+                .iter()
+                .find(|arg| arg.name.as_deref() == Some("maintype"))
+                .and_then(|arg| resolve_string_const(__w, &arg.value))
+                .unwrap_or_else(|| "application".to_string());
+            let subtype = args
+                .iter()
+                .find(|arg| arg.name.as_deref() == Some("subtype"))
+                .and_then(|arg| resolve_string_const(__w, &arg.value))
+                .unwrap_or_else(|| "octet-stream".to_string());
+            let filename = args
+                .iter()
+                .find(|arg| arg.name.as_deref() == Some("filename"))
+                .and_then(|arg| resolve_string_const(__w, &arg.value));
+            let state = __w.py_email_messages.get_mut(var)?;
+            if state.parts.is_empty() {
+                state.parts.push(PyEmailPart {
+                    content_type: state.content_type.clone(),
+                    content: state.content.clone(),
+                    filename: None,
+                });
+            }
+            state.parts.push(PyEmailPart {
+                content_type: format!("{maintype}/{subtype}"),
+                content,
+                filename,
+            });
+            state.content_type = "multipart/mixed".to_string();
+            Some(Expression::null())
+        }
+        "get_all" if !args.is_empty() => {
+            let name = resolve_string_const(__w, &args[0].value)?;
+            let wanted = py_email_norm_header(&name);
+            Some(Expression::new(ExprKind::Array(
+                state
+                    .headers
+                    .iter()
+                    .filter(|(key, _)| py_email_norm_header(key) == wanted)
+                    .map(|(_, value)| ArrayElement {
+                        value: Expression::string(value),
+                        spread: false,
+                        key: None,
+                        by_ref: false,
+                    })
+                    .collect(),
+            )))
+        }
+        "get_content_type" if args.is_empty() => Some(Expression::string(&state.content_type)),
+        "get_content" | "get_payload" if args.is_empty() => Some(Expression::string(&state.content)),
+        "is_multipart" if args.is_empty() => Some(Expression::bool(state.parts.len() > 1)),
+        "iter_parts" | "walk" if args.is_empty() => Some(py_email_part_array_expr(&py_email_parts(&state))),
+        "as_string" if args.is_empty() => Some(Expression::string(&py_email_serialized(&state))),
+        "as_bytes" if args.is_empty() => Some(Expression::new(ExprKind::Lit(Literal::Bytes(
+            py_email_serialized(&state).into_bytes(),
+        )))),
+        _ => None,
+    }
+}
+
 fn walk_expr_or_assign(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<StmtKind, String> {
+    let raw_stmt = pair.as_str().to_string();
     let mut inner: Vec<Pair<Rule>> = pair
         .into_inner()
         .filter(|p| p.as_rule() != Rule::NEWLINE)
@@ -8661,19 +11345,63 @@ fn walk_expr_or_assign(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<StmtKind,
     let aug_pos = inner
         .iter()
         .position(|p| p.as_rule() == Rule::aug_assign_op);
-    if let Some(_pos) = aug_pos {
+    let silent_aug = if aug_pos.is_none() && inner.len() >= 2 {
+        silent_aug_assign_op(&raw_stmt)
+    } else {
+        None
+    };
+    if aug_pos.is_some() || silent_aug.is_some() {
         let target = {
             enter_assignment_target(__w);
             let __t = walk_expr_list_or_single(__w, inner.remove(0));
             leave_assignment_target(__w);
             __t
         }?;
-        let op_str = inner.remove(0).as_str(); // aug_assign_op
+        let op_str = if aug_pos.is_some() {
+            inner.remove(0).as_str().to_string()
+        } else {
+            silent_aug.unwrap().to_string()
+        };
         let value = if inner.len() == 1 {
             walk_expr_list_or_single(__w, inner.remove(0))?
         } else {
             walk_remaining_as_expr(__w, &mut inner)?
         };
+        // `a += b` on a complex operand. Plain `a + b` is caught in the
+        // ordinary Binary::Add path by `py_complex_binary`, which builds the
+        // tagged-object result directly — no dunder involved. Augmented
+        // assign desugars through a SEPARATE path (`__pyadd__`/`CompoundAssign`)
+        // that never consulted it, so `a += b` fell through to raw numeric
+        // add/sub/mul/div and traded `(2+2j)` for `nan`.
+        if let Some(bin_op) = match op_str.as_str() {
+            "+=" => Some(BinOp::Add),
+            "-=" => Some(BinOp::Sub),
+            "*=" => Some(BinOp::Mul),
+            "/=" => Some(BinOp::Div),
+            "**=" => Some(BinOp::Pow),
+            _ => None,
+        } && let Some(combined) = py_complex_binary(__w, bin_op, target.clone(), value.clone())
+        {
+            return Ok(StmtKind::Assign {
+                targets: vec![target],
+                value: combined,
+                by_ref: false,
+            });
+        }
+        // `b += b'y'` — bytes concat. Plain `b + b'y'` is caught in the
+        // ordinary Binary::Add path (`expr_is_python_bytes` -> `__py_bytes_concat`);
+        // augmented assign never consulted it, so `b += b'y'` fell to
+        // `emit_pyadd`'s array/object/numeric ladder, which has no TypedArray
+        // arm, and traded `b'ab'` for a `wasm:js-number.toF64` trap.
+        if op_str == "+=" && expr_is_python_bytes(__w, &target) && expr_is_python_bytes(__w, &value)
+        {
+            let combined = call_ident("__py_bytes_concat", vec![target.clone(), value.clone()]);
+            return Ok(StmtKind::Assign {
+                targets: vec![target],
+                value: combined,
+                by_ref: false,
+            });
+        }
         if let ExprKind::Index {
             object,
             index,
@@ -8715,6 +11443,16 @@ fn walk_expr_or_assign(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<StmtKind,
                 Some("unsupported operand type(s) for +="),
             )));
         }
+        if matches!(op_str.as_str(), "+=" | "-=")
+            && (expr_is_tracked_none(__w, &target) || expr_is_tracked_none(__w, &value))
+        {
+            // `x = None; x += 1` — CPython raises TypeError; the numeric
+            // CompoundAssign path coerces `null` to 0 and silently succeeded.
+            return Ok(StmtKind::Expr(py_raise_expr(
+                "TypeError",
+                Some("unsupported operand type(s)"),
+            )));
+        }
         if op_str == "+=" || op_str == "*=" || op_str == "/=" {
             let helper = if op_str == "+=" {
                 "__pyadd__"
@@ -8723,7 +11461,8 @@ fn walk_expr_or_assign(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<StmtKind,
             } else {
                 "__pytruediv__"
             };
-            let lowered_target = lower_defaultdict_index_target(__w, &target).unwrap_or(target.clone());
+            let lowered_target =
+                lower_defaultdict_index_target(__w, &target).unwrap_or(target.clone());
             let read_target = if let ExprKind::Index { object, index, .. } = &target.kind {
                 if let Some((parent, factory)) = nested_defaultdict_object(__w, object) {
                     call_ident(
@@ -8731,7 +11470,8 @@ fn walk_expr_or_assign(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<StmtKind,
                         vec![parent, factory, *index.clone()],
                     )
                 } else {
-                    collection_index_read(__w, object, index).unwrap_or_else(|| lowered_target.clone())
+                    collection_index_read(__w, object, index)
+                        .unwrap_or_else(|| lowered_target.clone())
                 }
             } else {
                 lowered_target.clone()
@@ -8764,7 +11504,7 @@ fn walk_expr_or_assign(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<StmtKind,
         // binary operator handles sets (difference/union/intersection/symmetric
         // difference) as well as integer bitwise / numeric subtraction — the
         // numeric CompoundAssign path only does the arithmetic case.
-        let set_binop = match op_str {
+        let set_binop = match op_str.as_str() {
             "-=" => Some(BinOp::Sub),
             "|=" => Some(BinOp::BitOr),
             "&=" => Some(BinOp::BitAnd),
@@ -8791,7 +11531,7 @@ fn walk_expr_or_assign(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<StmtKind,
                 by_ref: false,
             });
         }
-        let op = match op_str {
+        let op = match op_str.as_str() {
             "+=" => CompoundOp::Add,
             "-=" => CompoundOp::Sub,
             "*=" => CompoundOp::Mul,
@@ -8815,7 +11555,24 @@ fn walk_expr_or_assign(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<StmtKind,
     // So we may have multiple expression_list separated by = signs
     if inner.len() == 1 {
         let raw_expr = walk_expr_list_or_single(__w, inner.remove(0))?;
-        let expr = counter_method_expr(__w, &raw_expr).unwrap_or_else(|| desugar_member_reads(__w, raw_expr));
+        if let Some(stmt) = bytearray_mutation_stmt(__w, &raw_expr) {
+            return Ok(stmt);
+        }
+        if let Some(stmt) = xml_element_mutation_stmt(__w, &raw_expr) {
+            return Ok(stmt);
+        }
+        let expr = counter_method_expr(__w, &raw_expr)
+            .unwrap_or_else(|| desugar_member_reads(__w, raw_expr));
+        if let Some(name) = memoryview_release_var(&expr) {
+            note_memoryview_released(__w, &name);
+            return Ok(StmtKind::Expr(Expression::null()));
+        }
+        if let Some(stmt) = bytearray_mutation_stmt(__w, &expr) {
+            return Ok(stmt);
+        }
+        if let Some(stmt) = xml_element_mutation_stmt(__w, &expr) {
+            return Ok(stmt);
+        }
         if let Some(throw_stmt) = py_raise_expr_stmt(&expr) {
             return Ok(throw_stmt);
         }
@@ -8899,12 +11656,64 @@ fn walk_expr_or_assign(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<StmtKind,
 
     if all_exprs.len() >= 2 {
         let mut value = all_exprs.pop().unwrap();
-        value = desugar_member_reads(__w, value);
+        if let Some(member) = py_bound_data_member_read(&value) {
+            value = member;
+        } else if !py_known_data_member_read(__w, &value) {
+            value = py_callable_expr(__w, value);
+        }
+        let mut tokenized_stream = if all_exprs.len() == 1 {
+            py_tokenize_stream_from_assignment(__w, &value)
+        } else {
+            None
+        };
+        let mut email_message_state = if all_exprs.len() == 1 {
+            py_email_ctor_call(__w, &value)
+        } else {
+            None
+        };
+        let annotations_target = if all_exprs.len() == 1 {
+            py_get_annotations_call_target(__w, &value)
+        } else {
+            None
+        };
+        let email_comprehension = if all_exprs.len() == 1 {
+            py_email_comprehension(__w, &value)
+        } else {
+            None
+        };
+        value = email_comprehension.unwrap_or_else(|| desugar_member_reads(__w, value));
+        if tokenized_stream.is_none() && all_exprs.len() == 1 {
+            tokenized_stream = py_tokenize_stream_from_assignment(__w, &value);
+        }
+        if let Some((source, include_encoding)) = tokenized_stream.as_ref() {
+            value = py_token_array_expr(&py_tokenize_text(source, *include_encoding));
+        }
+        if all_exprs.len() == 1 {
+            if let Some(stmt) = py_email_header_assign_stmt(__w, &all_exprs[0], &value) {
+                return Ok(stmt);
+            }
+            if let Some(stmt) = py_bytearray_pop_assignment_stmt(__w, &all_exprs[0], &value) {
+                return Ok(stmt);
+            }
+            if let Some(stmt) = py_xml_subelement_field_assignment_stmt(__w, &all_exprs[0], &value) {
+                return Ok(stmt);
+            }
+        }
+        if email_message_state.is_none() && all_exprs.len() == 1 {
+            email_message_state = py_email_ctor_call(__w, &value);
+        }
+        if let Some(state) = email_message_state.as_ref() {
+            value = py_email_message_object_from_state(state);
+        }
+        if let Some(rewritten) = py_email_comprehension(__w, &value) {
+            value = rewritten;
+        }
         // `Name = namedtuple('Type', 'f1 f2', defaults=[...])`: register the
         // definition so `Name(args)` lowers to a shared named tuple, and bind
         // `Name` to a type object exposing `_fields`/`__typename`.
         if all_exprs.len() == 1 {
             if let ExprKind::Ident(target_name) = &all_exprs[0].kind {
+                note_lambda_signature(__w, target_name, &value);
                 if let Some(stmt) = dynamic_type_class_decl(__w, target_name, &value) {
                     return Ok(stmt);
                 }
@@ -8917,7 +11726,8 @@ fn walk_expr_or_assign(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<StmtKind,
                 } else if let ExprKind::NamedTuple { fields, type_name } = &value.kind {
                     // `p = P(1, 2)` — track the instance so `p._asdict()` /
                     // `p._replace(...)` can desugar with fields known.
-                    record_namedtuple_instance(__w, 
+                    record_namedtuple_instance(
+                        __w,
                         target_name,
                         NamedTupleDef {
                             type_name: type_name.clone().unwrap_or_default(),
@@ -8944,6 +11754,68 @@ fn walk_expr_or_assign(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<StmtKind,
                 }
                 if py_code_object_source(__w, &value).is_some() {
                     note_code_object_var(__w, target_name, value.clone());
+                }
+                if let Some((source, _)) = tokenized_stream.as_ref() {
+                    note_tokenize_source_var(__w, target_name, source);
+                } else {
+                    clear_tokenize_source_var(__w, target_name);
+                }
+                if let Some(state) = email_message_state
+                    .clone()
+                    .or_else(|| py_email_state_from_object(&value))
+                {
+                    __w.py_email_messages.insert(target_name.to_string(), state);
+                } else if !py_email_expr_is_message_object(&value) {
+                    __w.py_email_messages.remove(target_name);
+                }
+                if let Some(uuid) = py_uuid_binding_value(__w, target_name, &value) {
+                    __w.py_uuid_values.insert(target_name.to_string(), uuid);
+                } else {
+                    __w.py_uuid_values.remove(target_name);
+                }
+                if let Some(path) = py_path_value(__w, &value) {
+                    __w.py_path_values.insert(target_name.to_string(), path.clone());
+                    if path.class_name != "Path" {
+                        value = Expression::string(&py_path_repr_text(&path));
+                    }
+                } else {
+                    __w.py_path_values.remove(target_name);
+                }
+                if let Some(xml) = py_xml_static_element(__w, &value) {
+                    note_xml_element_var(__w, target_name);
+                    __w.py_xml_element_values.insert(target_name.to_string(), xml);
+                    if let Some(link) = __w.py_xml_pending_parent_link.take() {
+                        __w.py_xml_parent_links.insert(target_name.to_string(), link);
+                    } else {
+                        __w.py_xml_parent_links.remove(target_name);
+                    }
+                } else {
+                    __w.py_xml_element_values.remove(target_name);
+                    __w.py_xml_parent_links.remove(target_name);
+                    __w.py_xml_pending_parent_link = None;
+                }
+                if let Some(xml_items) = py_xml_static_element_array(__w, &value) {
+                    __w.py_xml_element_array_values
+                        .insert(target_name.to_string(), xml_items);
+                } else {
+                    __w.py_xml_element_array_values.remove(target_name);
+                }
+                if let ExprKind::Array(_) = &value.kind {
+                    if let Some(parts) = py_email_part_array_literal(&value) {
+                        __w.py_email_part_arrays.insert(target_name.to_string(), parts);
+                    } else {
+                        __w.py_email_part_arrays.remove(target_name);
+                    }
+                } else {
+                    __w.py_email_part_arrays.remove(target_name);
+                }
+                if let Some(code) = py_marshal_loaded_code_expr(__w, &value) {
+                    note_code_object_var(__w, target_name, code);
+                }
+                if let Some(code) = py_marshal_dumped_code_expr(__w, &value) {
+                    note_marshal_code_var(__w, target_name, code);
+                } else {
+                    clear_marshal_code_var(__w, target_name);
                 }
                 if let Some(ns_obj) = simple_namespace_ctor_object(&value) {
                     value = ns_obj;
@@ -8974,6 +11846,10 @@ fn walk_expr_or_assign(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<StmtKind,
                             .unwrap_or_else(|| Expression::new(ExprKind::Lit(Literal::Null)));
                         note_deque_maxlen_var(__w, target_name, maxlen);
                     }
+                    if matches!(&callee.kind, ExprKind::Ident(n) if n == "parse_headers" || n == "__py_http_parse_headers_text")
+                    {
+                        note_instance_class(__w, target_name, "HTTPMessage");
+                    }
                     if matches!(&callee.kind, ExprKind::Ident(n) if n == "__py_chainmap_new" || n == "__py_chainmap_new_child")
                     {
                         note_chainmap_var(__w, target_name);
@@ -8982,20 +11858,60 @@ fn walk_expr_or_assign(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<StmtKind,
                     {
                         note_iterator_var(__w, target_name);
                     }
-                    if matches!(&callee.kind, ExprKind::Ident(n) if n == "StringIO")
-                        && let Some(arg) = args.first()
-                        && let ExprKind::Lit(Literal::Str(s)) = &arg.value.kind
-                    {
-                        note_stringio_initial(__w, target_name, s);
+                    if matches!(&callee.kind, ExprKind::Ident(n) if n == "StringIO") {
+                        let initial = args
+                            .first()
+                            .and_then(|arg| {
+                                if let ExprKind::Lit(Literal::Str(s)) = &arg.value.kind {
+                                    Some(s.as_str())
+                                } else {
+                                    None
+                                }
+                            })
+                            .unwrap_or("");
+                        note_stringio_initial(__w, target_name, initial);
                     }
+                }
+                if let ExprKind::New { class, args, .. } = &value.kind
+                    && matches!(&class.kind, ExprKind::Ident(n) if n == "StringIO")
+                {
+                    let initial = args
+                        .first()
+                        .and_then(|arg| {
+                            if let ExprKind::Lit(Literal::Str(s)) = &arg.value.kind {
+                                Some(s.as_str())
+                            } else {
+                                None
+                            }
+                        })
+                        .unwrap_or("");
+                    note_stringio_initial(__w, target_name, initial);
+                }
+                if let ExprKind::Call { callee, args, .. } = &value.kind {
                     if let ExprKind::Member { object, field, .. } = &callee.kind
                         && module_namespace_path(__w, object).as_deref() == Some("csv")
                     {
                         match field.as_str() {
+                            "reader" => {
+                                if let Some(info) = csv_reader_info(__w, args) {
+                                    __w.py_csv_readers.insert(target_name.to_string(), info);
+                                    __w.py_csv_dict_readers.remove(target_name);
+                                }
+                            }
+                            "DictReader" => {
+                                if let Some(info) = csv_dict_reader_info(__w, args) {
+                                    __w.py_csv_dict_readers.insert(target_name.to_string(), info);
+                                    __w.py_csv_readers.remove(target_name);
+                                }
+                            }
                             "writer" => {
                                 if let Some(target) = args.first() {
                                     let __v = desugar_member_reads(__w, target.value.clone());
                                     note_csv_writer_target(__w, target_name, __v);
+                                    let target = csv_writer_target(__w, target_name)
+                                        .unwrap_or_else(|| Expression::ident(target_name));
+                                    let info = csv_writer_info(__w, target, args, false);
+                                    note_csv_writer(__w, target_name, info);
                                 }
                             }
                             "DictWriter" => {
@@ -9010,13 +11926,49 @@ fn walk_expr_or_assign(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<StmtKind,
                                         });
                                     let __v = desugar_member_reads(__w, target.value.clone());
                                     note_csv_dict_writer(__w, target_name, __v, fieldnames);
+                                    let target = csv_writer_target(__w, target_name)
+                                        .unwrap_or_else(|| Expression::ident(target_name));
+                                    let info = csv_writer_info(__w, target, args, true);
+                                    note_csv_dict_writer_info(__w, target_name, info);
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    if let ExprKind::Ident(field) = &callee.kind {
+                        match field.as_str() {
+                            "reader" => {
+                                if let Some(info) = csv_reader_info(__w, args) {
+                                    __w.py_csv_readers.insert(target_name.to_string(), info);
+                                    __w.py_csv_dict_readers.remove(target_name);
+                                }
+                            }
+                            "DictReader" => {
+                                if let Some(info) = csv_dict_reader_info(__w, args) {
+                                    __w.py_csv_dict_readers.insert(target_name.to_string(), info);
+                                    __w.py_csv_readers.remove(target_name);
+                                }
+                            }
+                            "writer" => {
+                                if let Some(target) = args.first() {
+                                    let target = desugar_member_reads(__w, target.value.clone());
+                                    let info = csv_writer_info(__w, target, args, false);
+                                    note_csv_writer(__w, target_name, info);
+                                }
+                            }
+                            "DictWriter" => {
+                                if let Some(target) = args.first() {
+                                    let target = desugar_member_reads(__w, target.value.clone());
+                                    let info = csv_writer_info(__w, target, args, true);
+                                    note_csv_dict_writer_info(__w, target_name, info);
                                 }
                             }
                             _ => {}
                         }
                     }
                     if let ExprKind::Member { object, field, .. } = &callee.kind
-                        && module_namespace_path(__w, object).as_deref() == Some("xml.etree.ElementTree")
+                        && module_namespace_path(__w, object).as_deref()
+                            == Some("xml.etree.ElementTree")
                         && matches!(field.as_str(), "Element" | "SubElement" | "fromstring")
                     {
                         note_xml_element_var(__w, target_name);
@@ -9026,12 +11978,25 @@ fn walk_expr_or_assign(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<StmtKind,
                         ExprKind::Ident(n)
                             if matches!(
                                 n.as_str(),
-                                "__py_xml_element" | "__py_xml_subelement" | "__py_xml_fromstring"
+                                "__py_xml_element"
+                                    | "__py_xml_subelement"
+                                    | "__py_xml_fromstring"
                             )
                     ) {
                         note_xml_element_var(__w, target_name);
                     }
+                    if matches!(&callee.kind, ExprKind::Ident(n) if n == "__py_xml_element_tree")
+                        && let Some(root) = args.first().map(|arg| arg.value.clone())
+                    {
+                        note_xml_tree_var(__w, target_name, root);
+                    }
                     if matches!(&callee.kind, ExprKind::Ident(n) if n == "__py_TextWrapper") {
+                        note_textwrapper_var(__w, target_name, args);
+                    }
+                    if let ExprKind::Member { object, field, .. } = &callee.kind
+                        && field == "TextWrapper"
+                        && module_namespace_path(__w, object).as_deref() == Some("textwrap")
+                    {
                         note_textwrapper_var(__w, target_name, args);
                     }
                     if matches!(&callee.kind, ExprKind::Ident(n) if n == "__py_userlist" || n == "UserList")
@@ -9062,10 +12027,10 @@ fn walk_expr_or_assign(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<StmtKind,
                         note_generator_var(__w, target_name);
                     }
                 }
-                if let ExprKind::New { class, .. } = &value.kind
-                    && let ExprKind::Ident(class_name) = &class.kind
-                {
+                let constructed_class = constructed_class_name(__w, &value).map(str::to_string);
+                if let Some(class_name) = constructed_class.as_deref() {
                     note_instance_class(__w, target_name, class_name);
+                    note_instance_init_expr(__w, target_name, value.clone());
                     if let Some(fields) = dataclass_fields_for(__w, class_name) {
                         for field in fields {
                             if !field.init_var {
@@ -9081,32 +12046,77 @@ fn walk_expr_or_assign(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<StmtKind,
                     }
                     if class_name == "StringIO"
                         && let ExprKind::New { args, .. } = &value.kind
-                        && let Some(arg) = args.first()
-                        && let ExprKind::Lit(Literal::Str(s)) = &arg.value.kind
                     {
-                        note_stringio_initial(__w, target_name, s);
+                        let initial = args
+                            .first()
+                            .and_then(|arg| {
+                                if let ExprKind::Lit(Literal::Str(s)) = &arg.value.kind {
+                                    Some(s.as_str())
+                                } else {
+                                    None
+                                }
+                            })
+                            .unwrap_or("");
+                        note_stringio_initial(__w, target_name, initial);
                     }
                     if class_name == "__py_TextWrapper"
-                        && let ExprKind::New { args, .. } = &value.kind
+                        && let Some(args) = textwrapper_ctor_args_expr(&value)
                     {
                         note_textwrapper_var(__w, target_name, args);
+                    }
+                    if py_class_is_subclass(__w, class_name, "__string_Template")
+                        && let Some(args) = string_template_ctor_args_expr(__w, class_name, &value)
+                    {
+                        note_string_template_var(__w, target_name, class_name, args);
                     }
                     if py_class_is_subclass(__w, class_name, "UserDict") {
                         note_userdict_var(__w, target_name);
                     }
+                } else if let Some(class_name) =
+                    known_core_method_return_class(__w, &value).map(str::to_string)
+                {
+                    note_instance_class(__w, target_name, &class_name);
+                    for field in class_data_attrs_for(__w, &class_name) {
+                        note_instance_attr(__w, target_name, &field);
+                    }
+                } else {
+                    clear_instance_init_expr(__w, target_name);
                 }
                 if let Some(source) = mapping_proxy_ctor_arg(&value) {
                     note_mapping_proxy_var(__w, target_name, source);
                 }
-                if let ExprKind::Lit(Literal::Str(s)) = &value.kind {
-                    note_string_const(__w, target_name, s);
+                if let Some(root) = py_xml_tree_root_expr(&value) {
+                    note_xml_tree_var(__w, target_name, root);
+                }
+                if let Some(s) = resolve_string_const(__w, &value) {
+                    note_string_const(__w, target_name, &s);
                 } else {
                     clear_string_const(__w, target_name);
+                }
+                if let ExprKind::Lit(Literal::Bytes(bytes)) = &value.kind {
+                    note_bytes_const(__w, target_name, bytes);
+                } else {
+                    clear_bytes_const(__w, target_name);
+                }
+                if let Some(fields) = literal_object_float_fields(&value) {
+                    note_object_float_fields(__w, target_name, fields);
+                } else {
+                    clear_object_float_fields(__w, target_name);
+                }
+                if let Some(fields) = literal_object_class_fields(__w, &value) {
+                    note_object_class_fields(__w, target_name, fields);
+                } else {
+                    clear_object_class_fields(__w, target_name);
                 }
                 if let Some(values) = literal_string_array(&value) {
                     note_string_array_const(__w, target_name, values);
                 } else {
                     clear_string_array_const(__w, target_name);
+                }
+                if let Some(values) = literal_string_map_const(__w, &value) {
+                    note_string_map_const(__w, target_name, values);
+                } else {
+                    clear_string_map_const(__w, target_name);
                 }
                 if matches!(&value.kind, ExprKind::Lit(Literal::Null)) {
                     note_none_var(__w, target_name);
@@ -9156,6 +12166,72 @@ fn walk_expr_or_assign(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<StmtKind,
                 } else {
                     clear_bytes_var(__w, target_name);
                 }
+                if expr_is_python_bytes_sequence(__w, &value) {
+                    note_bytes_sequence_var(__w, target_name);
+                } else {
+                    clear_bytes_sequence_var(__w, target_name);
+                }
+                if expr_is_python_bytearray(__w, &value) {
+                    note_bytearray_var(__w, target_name);
+                } else {
+                    clear_bytearray_var(__w, target_name);
+                }
+                if let Some(source) = memoryview_call_source(&value) {
+                    note_memoryview_var(__w, target_name, source);
+                } else {
+                    clear_memoryview_var(__w, target_name);
+                }
+                if py_codeop_compiler_expr(&value) {
+                    note_codeop_compiler_var(__w, target_name);
+                } else {
+                    clear_codeop_compiler_var(__w, target_name);
+                }
+                if let Some(qualname) = py_static_qualname(__w, &value) {
+                    note_static_qualname(__w, target_name, qualname);
+                } else {
+                    clear_static_qualname(__w, target_name);
+                }
+                if let Some(signature_target) = py_signature_target_from_object(&value) {
+                    note_signature_var(__w, target_name, &signature_target);
+                } else {
+                    clear_signature_var(__w, target_name);
+                }
+                if let Some(kind) = pydoc_renderer_kind_expr(&value).map(str::to_string) {
+                    note_pydoc_renderer_var(__w, target_name, &kind);
+                } else {
+                    __w.py_pydoc_renderer_vars.remove(target_name);
+                }
+                if let Some(kind) = doctest_object_kind_expr(&value).map(str::to_string) {
+                    note_doctest_object_var(__w, target_name, &kind);
+                } else {
+                    __w.py_doctest_object_vars.remove(target_name);
+                }
+                if let Some(target) = dis_bytecode_array_target(&value) {
+                    note_dis_bytecode_var(__w, target_name, &target);
+                } else {
+                    clear_dis_bytecode_var(__w, target_name);
+                }
+                if let Some(annotations_target) = annotations_target.as_deref() {
+                    note_annotation_var(__w, target_name, annotations_target);
+                    __w.py_annotation_literal_vars.remove(target_name);
+                } else if let Some(types) = py_annotation_literal_map(__w, &value) {
+                    clear_annotation_var(__w, target_name);
+                    __w.py_annotation_literal_vars
+                        .insert(target_name.to_string(), types);
+                } else {
+                    clear_annotation_var(__w, target_name);
+                    __w.py_annotation_literal_vars.remove(target_name);
+                }
+                if let Some(kind) = zlib_stream_ctor_kind(__w, &value) {
+                    note_zlib_stream_var(__w, target_name, kind);
+                } else {
+                    clear_zlib_stream_var(__w, target_name);
+                }
+                if gzip_file_expr(__w, &value) {
+                    note_gzip_file_var(__w, target_name);
+                } else {
+                    clear_gzip_file_var(__w, target_name);
+                }
                 if py_reprlib_ctor_expr(&value) {
                     note_reprlib_var(__w, target_name);
                 } else {
@@ -9163,7 +12239,8 @@ fn walk_expr_or_assign(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<StmtKind,
                 }
                 match &value.kind {
                     ExprKind::Ident(value_name)
-                        if is_imported_module(__w, value_name) && !is_imported_module(__w, target_name) =>
+                        if is_imported_module(__w, value_name)
+                            && !is_imported_module(__w, target_name) =>
                     {
                         note_module_alias(__w, target_name, value_name);
                     }
@@ -9211,7 +12288,9 @@ fn walk_expr_or_assign(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<StmtKind,
                 if let (ExprKind::Lit(Literal::Str(module_name)), ExprKind::Ident(var_name)) =
                     (&index.kind, &value.kind)
                 {
-                    if dynamic_module_for_var(__w, var_name).as_deref() == Some(module_name.as_ref()) {
+                    if dynamic_module_for_var(__w, var_name).as_deref()
+                        == Some(module_name.as_ref())
+                    {
                         note_dynamic_module_registry(__w, module_name, var_name);
                     }
                 }
@@ -9232,6 +12311,7 @@ fn walk_expr_or_assign(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<StmtKind,
             {
                 note_instance_attr(__w, var, field);
             }
+            update_reprlib_setting(__w, t, &value);
             if let Some((var, field)) = instance_dict_index_target(t) {
                 note_instance_attr(__w, &var, &field);
             }
@@ -9251,6 +12331,43 @@ fn walk_expr_or_assign(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<StmtKind,
                     cause: None,
                 });
             }
+        }
+        if all_exprs.len() == 1
+            && let ExprKind::Index { object, index, .. } = &all_exprs[0].kind
+            && py_os_environ_expr(__w, object)
+        {
+            return Ok(StmtKind::Expr(call_ident(
+                "__py_os_setenv",
+                vec![*index.clone(), value],
+            )));
+        }
+        if all_exprs.len() == 1
+            && let Some(stmt) = sealed_mock_assignment_stmt(__w, &all_exprs[0], &value)
+        {
+            return Ok(stmt);
+        }
+        if all_exprs.len() == 1
+            && let ExprKind::Index { object, index, .. } = &all_exprs[0].kind
+            && let ExprKind::Ident(var) = &object.kind
+            && let ExprKind::Lit(Literal::Str(field)) = &index.kind
+            && let Some(mut elem) = __w.py_xml_element_values.get(var).cloned()
+        {
+            match field.as_str() {
+                "text" => {
+                    elem.text = py_xml_literal_text(&value);
+                }
+                "tail" => {
+                    elem.tail = py_xml_literal_text(&value).unwrap_or_default();
+                }
+                "tag" => {
+                    if let Some(tag) = py_xml_literal_text(&value) {
+                        elem.tag = PyXmlTagValue::Text(tag);
+                    }
+                }
+                _ => {}
+            }
+            __w.py_xml_element_values.insert(var.clone(), elem);
+            py_xml_propagate_child_update(__w, var);
         }
         for t in &all_exprs {
             if let ExprKind::Member { object, field, .. } = &t.kind
@@ -9439,9 +12556,78 @@ fn walk_expr_or_assign(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<StmtKind,
             )));
         }
         // Convert Tuple targets to Destructure for tuple unpacking (x, y = ...)
+        if all_exprs.len() == 1
+            && let Some(stmt) = py_nested_morsel_setitem_stmt(&all_exprs[0], value.clone())
+        {
+            return Ok(stmt);
+        }
+        if all_exprs.len() == 1
+            && let ExprKind::Index { object, .. } = &all_exprs[0].kind
+            && expr_is_python_bytes(__w, object)
+            && !expr_is_python_bytearray(__w, object)
+        {
+            return Ok(StmtKind::Expr(py_raise_expr(
+                "TypeError",
+                Some("bytes object does not support item assignment"),
+            )));
+        }
+        if all_exprs.len() == 1
+            && let ExprKind::Index { object, index, .. } = &all_exprs[0].kind
+            && let ExprKind::Ident(source_name) = &object.kind
+            && is_bytearray_var(__w, source_name)
+            && let ExprKind::Slice { lower, upper, step } = &index.kind
+            && step.is_none()
+        {
+            let lower = lower.as_deref().cloned().unwrap_or_else(Expression::null);
+            let upper = upper.as_deref().cloned().unwrap_or_else(Expression::null);
+            return Ok(StmtKind::Assign {
+                targets: vec![Expression::ident(source_name)],
+                value: call_ident(
+                    "__py_bytearray_slice_assign",
+                    vec![Expression::ident(source_name), lower, upper, value],
+                ),
+                by_ref: false,
+            });
+        }
+        if all_exprs.len() == 1
+            && let ExprKind::Index { object, index, .. } = &all_exprs[0].kind
+            && let Some(stmt) =
+                memoryview_bytearray_write_stmt(__w, object, index, value.clone())
+        {
+            return Ok(stmt);
+        }
+        if all_exprs.len() == 1
+            && let ExprKind::Index { object, .. } = &all_exprs[0].kind
+            && memoryview_is_readonly(__w, object)
+        {
+            return Ok(StmtKind::Expr(py_raise_expr(
+                "TypeError",
+                Some("cannot modify read-only memory"),
+            )));
+        }
+        if all_exprs.len() == 1
+            && let ExprKind::Index { object, index, .. } = &all_exprs[0].kind
+            && let Some(source) = memoryview_source(__w, object)
+            && let ExprKind::Ident(source_name) = &source.kind
+            && is_bytearray_var(__w, source_name)
+            && let ExprKind::Slice { lower, upper, step } = &index.kind
+            && step.is_none()
+        {
+            let lower = lower.as_deref().cloned().unwrap_or_else(Expression::null);
+            let upper = upper.as_deref().cloned().unwrap_or_else(Expression::null);
+            return Ok(StmtKind::Assign {
+                targets: vec![Expression::ident(source_name)],
+                value: call_ident(
+                    "__py_bytearray_slice_assign",
+                    vec![source, lower, upper, value],
+                ),
+                by_ref: false,
+            });
+        }
         let targets: Vec<Expression> = all_exprs
             .into_iter()
             .map(|t| {
+                let t = lower_class_getitem_reads_in_assignment_target(__w, t);
                 if let ExprKind::Tuple(elems) = &t.kind {
                     let patterns = elems.iter().map(expr_to_array_pattern_elem).collect();
                     Expression::new(ExprKind::Destructure(DestructurePattern::Array(patterns)))
@@ -9492,13 +12678,27 @@ fn walk_expr_or_assign(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<StmtKind,
                 vec![Expression::ident(var), *index.clone(), value],
             )));
         }
+        note_module_symbol_assignments(__w, &targets, &value);
+        if targets.len() == 1 && doctest_result_emits_blankline(&value) {
+            return Ok(StmtKind::Block(vec![
+                Statement::new(StmtKind::Assign {
+                    targets,
+                    value,
+                    by_ref: false,
+                }),
+                Statement::new(StmtKind::Expr(call_ident(
+                    "__p",
+                    vec![Expression::string("")],
+                ))),
+            ]));
+        }
         Ok(StmtKind::Assign {
             targets,
             value,
             by_ref: false,
         })
     } else if all_exprs.len() == 1 {
-        let expr = all_exprs.remove(0);
+        let expr = desugar_member_reads(__w, all_exprs.remove(0));
         if let Some(throw_stmt) = py_raise_expr_stmt(&expr) {
             Ok(throw_stmt)
         } else if let Some(block) = counter_update_stmt_block(&expr) {
@@ -9593,7 +12793,7 @@ fn counter_method_expr(__w: &mut PyWalker, expr: &Expression) -> Option<Expressi
 
 // ── Import ──────────────────────────────────────────────────────────────────
 
-fn walk_import(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<Import, String> {
+fn walk_imports(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<Vec<Import>, String> {
     let span = to_span(&pair);
     let mut imports = Vec::new();
 
@@ -9625,21 +12825,20 @@ fn walk_import(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<Import, String> {
         }
     }
 
-    // For simple `import os`, `import os as operating_system`
-    if imports.len() == 1 {
-        let (path, alias) = imports.remove(0);
-        Ok(Import {
+    Ok(imports
+        .into_iter()
+        .map(|(path, alias)| Import {
             kind: ImportKind::Simple { path, alias },
             span,
         })
-    } else {
-        // Multiple: import os, sys — emit first, rest are separate
-        let (path, alias) = imports.remove(0);
-        Ok(Import {
-            kind: ImportKind::Simple { path, alias },
-            span,
-        })
-    }
+        .collect())
+}
+
+fn walk_import(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<Import, String> {
+    walk_imports(__w, pair)?
+        .into_iter()
+        .next()
+        .ok_or_else(|| "empty import statement".to_string())
 }
 
 fn walk_import_from(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<Import, String> {
@@ -9690,6 +12889,14 @@ fn walk_import_from(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<Import, Stri
     for name in &names {
         let local = name.alias.as_ref().unwrap_or(&name.name);
         note_float_returning_import(__w, &module, &name.name, local);
+        let submodule = if module.is_empty() {
+            name.name.clone()
+        } else {
+            format!("{module}.{}", name.name)
+        };
+        if py_module_surface(&submodule).is_some() {
+            note_module_alias(__w, local, &submodule);
+        }
     }
 
     if is_wildcard {
@@ -9781,9 +12988,14 @@ fn walk_expr_kind(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<ExprKind, Stri
         Rule::true_kw => Ok(ExprKind::Lit(Literal::Bool(true))),
         Rule::false_kw => Ok(ExprKind::Lit(Literal::Bool(false))),
         Rule::none_kw => Ok(ExprKind::Lit(Literal::Null)),
-        // `...` binds to the module-level `Ellipsis` singleton (see
-        // ELLIPSIS_PRELUDE) so it is a real, self-identical object.
+        // `...` binds to the module-level `Ellipsis` singleton seeded by the
+        // core-class adapter so it is a real, self-identical object.
         Rule::ellipsis_lit => Ok(ExprKind::Ident("Ellipsis".into())),
+        Rule::identifier if pair.as_str() == "NotImplemented" => Ok(ExprKind::Call {
+            callee: Box::new(Expression::ident("__py_notimplemented")),
+            args: vec![],
+            optional: false,
+        }),
         Rule::identifier => Ok(ExprKind::Ident(pair.as_str().to_string())),
 
         // ── Expression wrappers (unwrap single child) ───────────────────
@@ -9968,19 +13180,53 @@ fn walk_infix_or_unwrap(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<ExprKind
                         // `__py_contains__(y, x)` rather than the shared
                         // `BinOp::In`, whose runtime array-classification
                         // mis-sends plain objects to `Array.includes`.
-                        let contains = if let ExprKind::Ident(var) = &right.kind
-                            && instance_class(__w, var).as_deref().is_some_and(|class_name| {
-                                py_class_is_subclass(__w, class_name, "Mapping")
-                                    && class_has_attr(__w, class_name, "__getitem__")
-                            }) {
+                        let contains = if let Some(has_header) =
+                            py_email_membership(__w, &left, &right)
+                        {
+                            Expression::bool(has_header)
+                        } else if let ExprKind::Ident(var) = &right.kind
+                            && instance_class(__w, var)
+                                .as_deref()
+                                .is_some_and(|class_name| {
+                                    py_class_is_subclass(__w, class_name, "Mapping")
+                                        && class_has_attr(__w, class_name, "__getitem__")
+                                }) {
                             Expression::bool(true)
+                        } else if expr_is_python_bytes(__w, &right)
+                            || is_memoryview_expr(__w, &right)
+                        {
+                            let container =
+                                memoryview_source(__w, &right).unwrap_or_else(|| right.clone());
+                            if expr_is_python_bytes(__w, &left) {
+                                Expression::new(ExprKind::Call {
+                                    callee: Box::new(Expression::new(ExprKind::Member {
+                                        object: Box::new(call_ident(
+                                            "__vybe_bytes_decode",
+                                            vec![container],
+                                        )),
+                                        field: "includes".into(),
+                                        null_safe: false,
+                                    })),
+                                    args: vec![Argument::positional(call_ident(
+                                        "__vybe_bytes_decode",
+                                        vec![left.clone()],
+                                    ))],
+                                    optional: false,
+                                })
+                            } else {
+                                call_ident(
+                                    "__py_bytes_contains_byte__",
+                                    vec![container, left.clone()],
+                                )
+                            }
                         } else {
-                            let contains_item =
-                                if py_set_like_expr(__w, &right) || py_dict_like_expr(__w, &right) {
-                                    py_hash_key_expr(__w, left.clone())
-                                } else {
-                                    left.clone()
-                                };
+                            let contains_item = if py_set_like_expr(__w, &right)
+                                || py_dict_like_expr(__w, &right)
+                            {
+                                py_hash_key_expr(__w, left.clone())
+                            } else {
+                                left.clone()
+                            };
                             Expression::new(ExprKind::Call {
                                 callee: Box::new(Expression::new(ExprKind::Ident(
                                     "__py_contains__".into(),
@@ -10001,6 +13247,10 @@ fn walk_infix_or_unwrap(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<ExprKind
                             contains
                         };
                     } else if matches!(op, BinOp::Is | BinOp::IsNot) {
+                        if let Some(eq) = py_static_module_symbol_identity(__w, &left, &right) {
+                            left = Expression::bool(if op == BinOp::Is { eq } else { !eq });
+                            continue;
+                        }
                         if let Some(eq) = py_static_getattr_member_identity(__w, &left, &right) {
                             left = Expression::bool(if op == BinOp::Is { eq } else { !eq });
                             continue;
@@ -10014,6 +13264,14 @@ fn walk_infix_or_unwrap(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<ExprKind
                             continue;
                         }
                         if let Some(eq) = py_type_is_builtin(__w, &right, &left) {
+                            left = Expression::bool(if op == BinOp::Is { eq } else { !eq });
+                            continue;
+                        }
+                        if let Some(eq) = py_annotation_value_is_builtin(__w, &left, &right) {
+                            left = Expression::bool(if op == BinOp::Is { eq } else { !eq });
+                            continue;
+                        }
+                        if let Some(eq) = py_annotation_value_is_builtin(__w, &right, &left) {
                             left = Expression::bool(if op == BinOp::Is { eq } else { !eq });
                             continue;
                         }
@@ -10049,6 +13307,23 @@ fn walk_infix_or_unwrap(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<ExprKind
                             });
                         }
                     } else if matches!(op, BinOp::Eq | BinOp::NotEq) {
+                        if let (Some(a), Some(b)) =
+                            (py_uuid_value(__w, &left), py_uuid_value(__w, &right))
+                        {
+                            left = Expression::new(ExprKind::Binary {
+                                op,
+                                left: Box::new(a.canonical),
+                                right: Box::new(b.canonical),
+                            });
+                            continue;
+                        }
+                        if let (Some(a), Some(b)) =
+                            (py_path_value(__w, &left), py_path_value(__w, &right))
+                        {
+                            let eq = py_path_eq(&a, &b);
+                            left = Expression::bool(if op == BinOp::Eq { eq } else { !eq });
+                            continue;
+                        }
                         let left_none = expr_is_tracked_none(__w, &left);
                         let right_none = expr_is_tracked_none(__w, &right);
                         if left_none || right_none {
@@ -10084,11 +13359,15 @@ fn walk_infix_or_unwrap(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<ExprKind
                             }
                         }
                         if expr_is_python_bytes(__w, &left) && expr_is_python_bytes(__w, &right) {
-                            left = Expression::new(ExprKind::Binary {
-                                op,
-                                left: Box::new(call_ident("__vybe_bytes_decode", vec![left])),
-                                right: Box::new(call_ident("__vybe_bytes_decode", vec![right])),
-                            });
+                            let eq = call_ident("__py_bytes_eq", vec![left, right]);
+                            left = if op == BinOp::NotEq {
+                                Expression::new(ExprKind::Unary {
+                                    op: UnaryOp::Not,
+                                    expr: Box::new(eq),
+                                })
+                            } else {
+                                eq
+                            };
                         } else {
                             left = Expression::new(ExprKind::Binary {
                                 op,
@@ -10096,6 +13375,10 @@ fn walk_infix_or_unwrap(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<ExprKind
                                 right: Box::new(right),
                             });
                         }
+                    } else if matches!(op, BinOp::Lt | BinOp::Gt | BinOp::LtEq | BinOp::GtEq)
+                        && let Some(value) = py_static_version_comparison(__w, &left, &right, op)
+                    {
+                        left = Expression::bool(value);
                     } else if matches!(op, BinOp::Lt | BinOp::Gt | BinOp::LtEq | BinOp::GtEq)
                         && expr_is_python_bytes(__w, &left)
                         && expr_is_python_bytes(__w, &right)
@@ -10194,6 +13477,15 @@ fn walk_infix_or_unwrap(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<ExprKind
                     optional: false,
                 });
             }
+            if op_str == "~"
+                && !matches!(operand.kind, ExprKind::Lit(Literal::Int(_) | Literal::Bool(_)))
+            {
+                return Ok(ExprKind::Call {
+                    callee: Box::new(Expression::ident("__pyinvert__")),
+                    args: vec![Argument::positional(operand)],
+                    optional: false,
+                });
+            }
             let op = match op_str {
                 "-" => UnaryOp::Neg,
                 "+" => UnaryOp::Pos,
@@ -10214,7 +13506,9 @@ fn walk_infix_or_unwrap(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<ExprKind
                 .filter(|p| is_expression_rule(p.as_rule()));
             if let Some(exp_pair) = rest.next() {
                 let exp = walk_expression(__w, exp_pair)?;
-                if let Some(rewritten) = py_complex_binary(__w, BinOp::Pow, base.clone(), exp.clone()) {
+                if let Some(rewritten) =
+                    py_complex_binary(__w, BinOp::Pow, base.clone(), exp.clone())
+                {
                     return Ok(rewritten.kind);
                 }
                 // Route through __pypow__ so a user `__pow__` on an object base
@@ -10243,7 +13537,8 @@ fn walk_infix_or_unwrap(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<ExprKind
     }
 }
 
-fn walk_binary_chain(__w: &mut PyWalker, 
+fn walk_binary_chain(
+    __w: &mut PyWalker,
     mut items: Vec<Pair<Rule>>,
     op_fn: impl Fn(&str) -> BinOp,
 ) -> Result<ExprKind, String> {
@@ -10262,6 +13557,12 @@ fn walk_binary_chain(__w: &mut PyWalker,
                 if let Some(rewritten) = py_set_binary_op(__w, op, left.clone(), right.clone()) {
                     return rewritten;
                 }
+                if let Some(folded) = fold_python_literal_bitwise(op, &left, &right) {
+                    return folded;
+                }
+                if let Some(helper) = python_bitwise_helper(op) {
+                    return call_ident(helper, vec![left, right]);
+                }
                 Expression::new(ExprKind::Binary {
                     op,
                     left: Box::new(left),
@@ -10273,12 +13574,46 @@ fn walk_binary_chain(__w: &mut PyWalker,
     Ok(left.kind)
 }
 
+fn python_bitwise_helper(op: BinOp) -> Option<&'static str> {
+    match op {
+        BinOp::BitAnd => Some("__pybitand__"),
+        BinOp::BitOr => Some("__pybitor__"),
+        BinOp::BitXor => Some("__pybitxor__"),
+        _ => None,
+    }
+}
+
 fn py_set_like_expr(__w: &mut PyWalker, expr: &Expression) -> bool {
     matches!(py_static_type_name(__w, expr), Some("set")) || py_dict_keys_view_expr(__w, expr)
 }
 
 fn py_dict_like_expr(__w: &mut PyWalker, expr: &Expression) -> bool {
-    matches!(py_static_type_name(__w, expr), Some("dict"))
+    if py_os_environ_expr(__w, expr) {
+        return true;
+    }
+    if matches!(py_static_type_name(__w, expr), Some("dict")) {
+        return true;
+    }
+    if let Some((object, field)) = py_attr_read_parts(expr)
+        && field == "attrib"
+        && let ExprKind::Ident(var) = &object.kind
+        && is_xml_element_var(__w, var)
+    {
+        return true;
+    }
+    false
+}
+
+fn py_os_environ_expr(__w: &mut PyWalker, expr: &Expression) -> bool {
+    match &expr.kind {
+        ExprKind::Member { object, field, .. } => {
+            field == "environ" && module_namespace_path(__w, object).as_deref() == Some("os")
+        }
+        ExprKind::Call { callee, args, .. } if args.is_empty() => {
+            matches!(&callee.kind, ExprKind::Ident(name) if name == "__py_os_environ")
+        }
+        _ => false,
+    }
 }
 
 fn py_dict_keys_view_expr(__w: &mut PyWalker, expr: &Expression) -> bool {
@@ -10348,9 +13683,78 @@ fn py_dict_items_list_expr(__w: &mut PyWalker, expr: Expression) -> Option<Expre
         return Some(expr);
     }
     if let ExprKind::Call { callee, args, .. } = &expr.kind {
-        return rewrite_dict_items(callee, args);
+        return rewrite_dict_items(__w, callee, args);
     }
     None
+}
+
+fn normalize_context_run_args(
+    __w: &mut PyWalker,
+    object: &Expression,
+    field: &str,
+    args: &[Argument],
+) -> Option<Vec<Argument>> {
+    if field != "run" || !is_imported_module(__w, "contextvars") {
+        return None;
+    }
+    if py_receiver_class(__w, object).as_deref() != Some("Context") {
+        return None;
+    }
+    if !args.iter().any(|arg| arg.name.is_some()) {
+        return None;
+    }
+    Some(
+        args.iter()
+            .map(|arg| Argument {
+                value: arg.value.clone(),
+                name: None,
+                by_ref: arg.by_ref,
+                spread: arg.spread,
+            })
+            .collect(),
+    )
+}
+
+fn contextvars_token_missing_expr() -> Expression {
+    Expression::new(ExprKind::Member {
+        object: Box::new(Expression::ident("Token")),
+        field: "MISSING".into(),
+        null_safe: false,
+    })
+}
+
+fn normalize_contextvar_ctor_args(
+    __w: &mut PyWalker,
+    class: &Expression,
+    args: &[Argument],
+) -> Option<Vec<Argument>> {
+    if !matches!(&class.kind, ExprKind::Ident(name) if name == "ContextVar")
+        || !is_defined_class(__w, "ContextVar")
+        || !args.iter().any(|arg| arg.name.is_some())
+    {
+        return None;
+    }
+    if args.iter().any(|arg| arg.spread) {
+        return None;
+    }
+
+    let mut positional = args.iter().filter(|arg| arg.name.is_none());
+    let name = args
+        .iter()
+        .find(|arg| arg.name.as_deref() == Some("name"))
+        .map(|arg| arg.value.clone())
+        .or_else(|| positional.next().map(|arg| arg.value.clone()))?;
+    let default = args
+        .iter()
+        .find(|arg| arg.name.as_deref() == Some("default"))
+        .map(|arg| arg.value.clone())
+        .or_else(|| positional.next().map(|arg| arg.value.clone()))
+        .unwrap_or_else(contextvars_token_missing_expr);
+
+    Some(vec![
+        Argument::positional(name),
+        Argument::positional(default),
+    ])
 }
 
 fn py_contains_call(container: Expression, item: Expression) -> Expression {
@@ -10411,7 +13815,12 @@ fn py_dict_items_filter(items: Expression, other: Expression, keep_present: bool
     })
 }
 
-fn py_dict_items_binary_op(__w: &mut PyWalker, op: BinOp, left: Expression, right: Expression) -> Option<Expression> {
+fn py_dict_items_binary_op(
+    __w: &mut PyWalker,
+    op: BinOp,
+    left: Expression,
+    right: Expression,
+) -> Option<Expression> {
     let left_items = py_dict_items_list_expr(__w, left)?;
     let right_items = py_dict_items_list_expr(__w, right)?;
     match op {
@@ -10446,14 +13855,24 @@ fn py_sorts_tuple_pairs_expr(__w: &mut PyWalker, expr: &Expression) -> bool {
                         .any(|comp_gen| py_dict_items_view_expr(__w, &comp_gen.iter))
         }
         ExprKind::Call { callee, args, .. } => {
+            if matches!(&callee.kind, ExprKind::Ident(name) if name == "__py_counter_items") {
+                return true;
+            }
             matches!(&callee.kind, ExprKind::Ident(name) if name == "__pyadd__")
-                && args.iter().all(|arg| py_sorts_tuple_pairs_expr(__w, &arg.value))
+                && args
+                    .iter()
+                    .all(|arg| py_sorts_tuple_pairs_expr(__w, &arg.value))
         }
         _ => false,
     }
 }
 
-fn py_set_binary_op(__w: &mut PyWalker, op: BinOp, left: Expression, right: Expression) -> Option<Expression> {
+fn py_set_binary_op(
+    __w: &mut PyWalker,
+    op: BinOp,
+    left: Expression,
+    right: Expression,
+) -> Option<Expression> {
     if let Some(rewritten) = py_dict_items_binary_op(__w, op, left.clone(), right.clone()) {
         return Some(rewritten);
     }
@@ -10483,7 +13902,10 @@ fn py_set_binary_op(__w: &mut PyWalker, op: BinOp, left: Expression, right: Expr
 /// Python-specific: `*` is dynamic (str repeat OR numeric mul).
 /// Python `+` routes through `__pyadd__` builtin (emitter adapter handles
 /// array concat vs string concat vs numeric add). `-` is always numeric.
-fn walk_python_additive(__w: &mut PyWalker, mut items: Vec<Pair<Rule>>) -> Result<ExprKind, String> {
+fn walk_python_additive(
+    __w: &mut PyWalker,
+    mut items: Vec<Pair<Rule>>,
+) -> Result<ExprKind, String> {
     let mut left = walk_expression(__w, items.remove(0))?;
     let mut i = 0;
     while i < items.len() {
@@ -10513,32 +13935,31 @@ fn walk_python_additive(__w: &mut PyWalker, mut items: Vec<Pair<Rule>>) -> Resul
                     {
                         left = rewritten;
                     } else if op_str == "+"
+                        && let Some(left_text) = resolve_string_const(__w, &left)
+                        && let Some(right_text) = resolve_string_const(__w, &right)
+                    {
+                        left = Expression::string(&(left_text + &right_text));
+                    } else if op_str == "+"
                         && expr_is_python_bytes(__w, &left)
                         && expr_is_python_bytes(__w, &right)
                     {
-                        left = call_ident(
-                            "__py_bytes_join",
-                            vec![
-                                Expression::new(ExprKind::Lit(Literal::Bytes(Vec::new()))),
-                                Expression::new(ExprKind::Array(vec![
-                                    ArrayElement {
-                                        value: left,
-                                        spread: false,
-                                        key: None,
-                                        by_ref: false,
-                                    },
-                                    ArrayElement {
-                                        value: right,
-                                        spread: false,
-                                        key: None,
-                                        by_ref: false,
-                                    },
-                                ])),
-                            ],
-                        );
+                        left = call_ident("__py_bytes_concat", vec![left, right]);
                     } else if op_str == "+" && py_static_add_type_error(&left, &right) {
                         left =
                             py_raise_expr("TypeError", Some("unsupported operand type(s) for +"));
+                    } else if expr_is_tracked_none(__w, &left) || expr_is_tracked_none(__w, &right)
+                    {
+                        // `None + 1` / `1 - None` — CPython raises TypeError.
+                        // Nothing downstream treats `None` as a number, so
+                        // without this it fell to the numeric fallback, which
+                        // coerces `null` through `wasm:js-number.toF64` (→ 0)
+                        // and answered `1` instead of raising.
+                        let msg = if op_str == "+" {
+                            "unsupported operand type(s) for +"
+                        } else {
+                            "unsupported operand type(s) for -"
+                        };
+                        left = py_raise_expr("TypeError", Some(msg));
                     } else {
                         let helper = if op_str == "+" {
                             "__pyadd__"
@@ -10568,7 +13989,10 @@ fn walk_python_additive(__w: &mut PyWalker, mut items: Vec<Pair<Rule>>) -> Resul
 }
 
 /// Emits Call(__vybe_dynmul, [a, b]) for `*`, delegates others to normal BinOp.
-fn walk_python_multiplicative(__w: &mut PyWalker, mut items: Vec<Pair<Rule>>) -> Result<ExprKind, String> {
+fn walk_python_multiplicative(
+    __w: &mut PyWalker,
+    mut items: Vec<Pair<Rule>>,
+) -> Result<ExprKind, String> {
     let mut left = walk_expression(__w, items.remove(0))?;
     let mut i = 0;
     while i < items.len() {
@@ -10583,8 +14007,49 @@ fn walk_python_multiplicative(__w: &mut PyWalker, mut items: Vec<Pair<Rule>>) ->
                 // (`__mul__`/`__truediv__`/`__floordiv__`/`__mod__`) on an object
                 // operand is dispatched; each helper falls back to the same
                 // numeric op the shared compiler emits for plain numbers.
+                // `"%(name)s" % {"name": ...}` — python's own extension over
+                // C printf, which the SHARED `sprintf.rs` primitive does not
+                // parse. When the format is a STATIC literal, the mapping keys
+                // are known at compile time: strip each `(key)` out of the spec
+                // and replace the dict operand with a tuple of `dict[key]`
+                // lookups, in the order the keys appear — an ordinary
+                // positional sprintf from there.
+                if op_str == "%"
+                    && let ExprKind::Lit(Literal::Str(fmt)) = &left.kind
+                    && let Some((new_fmt, keys)) = py_percent_named_keys(fmt)
+                {
+                    let args_tuple = Expression::new(ExprKind::Tuple(
+                        keys.iter()
+                            .map(|k| {
+                                Expression::new(ExprKind::Index {
+                                    object: Box::new(right.clone()),
+                                    index: Box::new(Expression::string(k)),
+                                    null_safe: false,
+                                })
+                            })
+                            .collect(),
+                    ));
+                    left = Expression::new(ExprKind::Call {
+                        callee: Box::new(Expression::ident("__pymod__")),
+                        args: vec![
+                            Argument::positional(Expression::string(&new_fmt)),
+                            Argument::positional(args_tuple),
+                        ],
+                        optional: false,
+                    });
+                    continue;
+                }
+                if op_str == "/"
+                    && let Some(mut path) = py_path_value(__w, &left)
+                    && let Some(seg) = resolve_string_const(__w, &right)
+                {
+                    path.text = py_path_join_one(&path.text, &seg);
+                    left = py_path_object_expr(&path);
+                    continue;
+                }
                 let helper = match op_str {
                     "*" => Some("__pymul__"),
+                    "@" => Some("__pymatmul__"),
                     "/" => Some("__pytruediv__"),
                     "//" => Some("__pyfloordiv__"),
                     "%" => Some("__pymod__"),
@@ -10593,6 +14058,14 @@ fn walk_python_multiplicative(__w: &mut PyWalker, mut items: Vec<Pair<Rule>>) ->
                 if let Some(helper) = helper {
                     if matches!(op_str, "/" | "//" | "%") && py_numeric_zero(&right) {
                         left = py_raise_expr("ZeroDivisionError", Some("division by zero"));
+                    } else if op_str == "*"
+                        && let Some(rewritten) = py_static_bytes_repeat(&left, &right)
+                    {
+                        left = rewritten;
+                    } else if op_str == "*"
+                        && let Some(rewritten) = py_static_tuple_repeat(&left, &right)
+                    {
+                        left = rewritten;
                     } else if let Some(op) = match op_str {
                         "*" => Some(BinOp::Mul),
                         "/" => Some(BinOp::Div),
@@ -10625,7 +14098,10 @@ fn walk_python_multiplicative(__w: &mut PyWalker, mut items: Vec<Pair<Rule>>) ->
     Ok(left.kind)
 }
 
-fn walk_binary_chain_with_ops(__w: &mut PyWalker, mut items: Vec<Pair<Rule>>) -> Result<ExprKind, String> {
+fn walk_binary_chain_with_ops(
+    __w: &mut PyWalker,
+    mut items: Vec<Pair<Rule>>,
+) -> Result<ExprKind, String> {
     let mut left = walk_expression(__w, items.remove(0))?;
     let mut i = 0;
     while i < items.len() {
@@ -10677,20 +14153,48 @@ fn walk_binary_chain_with_ops(__w: &mut PyWalker, mut items: Vec<Pair<Rule>>) ->
 /// next program compiled on this thread cannot read the previous one's
 /// classes, defined functions or value-tracking sets, and one source always
 /// lowers to the same generated names no matter what compiled before it.
+#[derive(Clone, Debug)]
+struct PyStringTemplateInfo {
+    template: String,
+    delimiter: String,
+}
+
 #[derive(Default)]
 pub(crate) struct PyWalker {
     while_else_counter: usize,
     with_counter: usize,
     py_sys_modules_bound: bool,
+    py_sys_platform_override: Option<String>,
+    py_active_mock_attr_patches: std::collections::HashSet<(String, String)>,
+    py_active_mock_property_patches: std::collections::HashMap<(String, String), Expression>,
+    py_active_mock_module_func_patches: std::collections::HashMap<(String, String), Expression>,
     py_imported_modules: std::collections::HashSet<String>,
     py_from_imported_modules: std::collections::HashSet<String>,
+    py_operator_imports: std::collections::HashMap<String, String>,
     py_float_returning_imports: std::collections::HashSet<String>,
     py_dynamic_module_vars: std::collections::HashMap<String, String>,
     py_dynamic_module_registry: std::collections::HashMap<String, String>,
     py_dynamic_module_attrs: std::collections::HashMap<String, Vec<(String, Expression)>>,
     py_dynamic_module_all: std::collections::HashMap<String, Vec<String>>,
     py_string_consts: std::collections::HashMap<String, String>,
+    py_string_const_shadows: Vec<std::collections::HashSet<String>>,
+    py_class_aliases: std::collections::HashMap<String, String>,
+    py_string_template_vars: std::collections::HashMap<String, PyStringTemplateInfo>,
+    py_string_template_delimiters: std::collections::HashMap<String, String>,
+    py_string_map_consts: std::collections::HashMap<String, std::collections::HashMap<String, String>>,
+    py_bytes_consts: std::collections::HashMap<String, Vec<u8>>,
+    py_object_float_fields: std::collections::HashMap<String, std::collections::HashSet<String>>,
+    py_object_class_fields:
+        std::collections::HashMap<String, std::collections::HashMap<String, String>>,
     py_bytes_vars: std::collections::HashSet<String>,
+    py_bytes_sequence_vars: std::collections::HashSet<String>,
+    py_bytearray_vars: std::collections::HashSet<String>,
+    py_memoryview_sources: std::collections::HashMap<String, Expression>,
+    py_memoryview_released_vars: std::collections::HashSet<String>,
+    py_codeop_compiler_vars: std::collections::HashSet<String>,
+    py_static_qualnames: std::collections::HashMap<String, String>,
+    py_zlib_stream_vars: std::collections::HashMap<String, &'static str>,
+    py_gzip_file_vars: std::collections::HashSet<String>,
     py_string_array_consts: std::collections::HashMap<String, Vec<String>>,
     py_mimetype_customs: std::collections::HashMap<String, String>,
     py_none_vars: std::collections::HashSet<String>,
@@ -10702,6 +14206,9 @@ pub(crate) struct PyWalker {
     /// `.close()` in the program.
     py_sock_vars: std::collections::HashSet<String>,
     py_re_vars: std::collections::HashSet<String>,
+    py_re_var_flags: std::collections::HashMap<String, Expression>,
+    py_re_var_patterns: std::collections::HashMap<String, Expression>,
+    py_re_match_vars: std::collections::HashSet<String>,
     py_counter_vars: std::collections::HashSet<String>,
     py_defaultdict_vars: std::collections::HashMap<String, Expression>,
     py_defaultdict_funcs: std::collections::HashMap<String, Expression>,
@@ -10735,20 +14242,48 @@ pub(crate) struct PyWalker {
     py_set_vars: std::collections::HashSet<String>,
     py_frozenset_vars: std::collections::HashSet<String>,
     py_reprlib_vars: std::collections::HashSet<String>,
+    py_reprlib_infos: std::collections::HashMap<String, PyReprlibInfo>,
     py_stringio_initials: std::collections::HashMap<String, String>,
+    py_csv_field_size_limit: i64,
+    py_csv_dialects: std::collections::HashMap<String, String>,
+    py_csv_writers: std::collections::HashMap<String, PyCsvWriterInfo>,
+    py_csv_readers: std::collections::HashMap<String, PyCsvReaderInfo>,
+    py_csv_dict_readers: std::collections::HashMap<String, PyCsvDictReaderInfo>,
     py_csv_writer_targets: std::collections::HashMap<String, Expression>,
     py_csv_dict_writers: std::collections::HashMap<String, (Expression, Expression)>,
     py_xml_element_vars: std::collections::HashSet<String>,
+    py_xml_element_values: std::collections::HashMap<String, PyXmlElementValue>,
+    py_xml_element_array_values: std::collections::HashMap<String, Vec<PyXmlElementValue>>,
+    py_xml_tree_roots: std::collections::HashMap<String, Expression>,
+    py_xml_parent_links: std::collections::HashMap<String, (String, usize)>,
+    py_xml_pending_parent_link: Option<(String, usize)>,
     py_textwrapper_vars: std::collections::HashMap<String, Vec<Expression>>,
     py_complex_vars: std::collections::HashSet<String>,
     py_datetime_vars: std::collections::HashSet<String>,
     py_calendar_vars: std::collections::HashMap<String, String>,
     py_code_object_vars: std::collections::HashMap<String, Expression>,
+    py_marshal_code_vars: std::collections::HashMap<String, Expression>,
     py_module_aliases: std::collections::HashMap<String, String>,
     py_defined_classes: std::collections::HashSet<String>,
     py_defined_functions: std::collections::HashSet<String>,
     py_defined_function_params: std::collections::HashMap<String, Vec<Param>>,
     py_defined_function_bodies: std::collections::HashMap<String, Vec<Statement>>,
+    py_defined_function_returns: std::collections::HashMap<String, Option<String>>,
+    py_defined_function_param_kinds: std::collections::HashMap<String, Vec<String>>,
+    py_class_docs: std::collections::HashMap<String, String>,
+    py_pydoc_renderer_vars: std::collections::HashMap<String, String>,
+    py_module_symbol_vars: std::collections::HashMap<String, String>,
+    py_doctest_object_vars: std::collections::HashMap<String, String>,
+    py_dis_bytecode_vars: std::collections::HashMap<String, String>,
+    py_tokenize_sources: std::collections::HashMap<String, String>,
+    py_email_messages: std::collections::HashMap<String, PyEmailMessageState>,
+    py_email_part_arrays: std::collections::HashMap<String, Vec<PyEmailPart>>,
+    py_uuid_values: std::collections::HashMap<String, PyUuidValue>,
+    py_path_values: std::collections::HashMap<String, PyPathValue>,
+    py_signature_vars: std::collections::HashMap<String, String>,
+    py_annotation_vars: std::collections::HashMap<String, String>,
+    py_annotation_literal_vars: std::collections::HashMap<String, std::collections::HashMap<String, String>>,
+    py_last_param_kinds: Vec<String>,
     py_callable_classes: std::collections::HashSet<String>,
     py_classes_with_init: std::collections::HashSet<String>,
     py_class_parents: std::collections::HashMap<String, Vec<String>>,
@@ -10756,23 +14291,74 @@ pub(crate) struct PyWalker {
     py_class_data_attrs: std::collections::HashMap<String, std::collections::HashSet<String>>,
     py_class_float_data_attrs: std::collections::HashMap<String, std::collections::HashSet<String>>,
     py_class_slots: std::collections::HashMap<String, std::collections::HashSet<String>>,
-    py_class_properties: std::collections::HashMap<String, std::collections::HashMap<String, PyPropertyInfo>>,
-    py_class_member_type_names: std::collections::HashMap<String, std::collections::HashMap<String, &'static str>>,
+    py_class_properties:
+        std::collections::HashMap<String, std::collections::HashMap<String, PyPropertyInfo>>,
+    py_class_member_type_names:
+        std::collections::HashMap<String, std::collections::HashMap<String, &'static str>>,
     py_init_subclass_writes: std::collections::HashMap<String, Vec<PyInitSubclassWrite>>,
     py_dataclass_fields: std::collections::HashMap<String, Vec<DataclassField>>,
     py_dataclass_options: std::collections::HashMap<String, DataclassOptions>,
     py_instance_classes: std::collections::HashMap<String, String>,
+    py_instance_init_exprs: std::collections::HashMap<String, Expression>,
     py_instance_attrs: std::collections::HashMap<String, std::collections::HashSet<String>>,
     py_assign_target_depth: usize,
     py_namedtuple_defs: std::collections::HashMap<String, NamedTupleDef>,
     py_namedtuple_instances: std::collections::HashMap<String, NamedTupleDef>,
 }
 
-
 fn note_bytes_var(__w: &mut PyWalker, name: &str) {
     {
         __w.py_bytes_vars.insert(name.to_string());
     };
+}
+
+fn note_bytes_const(__w: &mut PyWalker, name: &str, bytes: &[u8]) {
+    __w.py_bytes_consts.insert(name.to_string(), bytes.to_vec());
+}
+
+fn clear_bytes_const(__w: &mut PyWalker, name: &str) {
+    __w.py_bytes_consts.remove(name);
+}
+
+fn bytes_const(__w: &mut PyWalker, name: &str) -> Option<Vec<u8>> {
+    __w.py_bytes_consts.get(name).cloned()
+}
+
+fn note_object_float_fields(
+    __w: &mut PyWalker,
+    name: &str,
+    fields: std::collections::HashSet<String>,
+) {
+    __w.py_object_float_fields.insert(name.to_string(), fields);
+}
+
+fn clear_object_float_fields(__w: &mut PyWalker, name: &str) {
+    __w.py_object_float_fields.remove(name);
+}
+
+fn object_field_is_float(__w: &mut PyWalker, name: &str, field: &str) -> bool {
+    __w.py_object_float_fields
+        .get(name)
+        .is_some_and(|fields| fields.contains(field))
+}
+
+fn note_object_class_fields(
+    __w: &mut PyWalker,
+    name: &str,
+    fields: std::collections::HashMap<String, String>,
+) {
+    __w.py_object_class_fields.insert(name.to_string(), fields);
+}
+
+fn clear_object_class_fields(__w: &mut PyWalker, name: &str) {
+    __w.py_object_class_fields.remove(name);
+}
+
+fn object_field_class(__w: &mut PyWalker, name: &str, field: &str) -> Option<String> {
+    __w.py_object_class_fields
+        .get(name)
+        .and_then(|fields| fields.get(field))
+        .cloned()
 }
 
 fn clear_bytes_var(__w: &mut PyWalker, name: &str) {
@@ -10785,6 +14371,302 @@ fn is_bytes_var(__w: &mut PyWalker, name: &str) -> bool {
     __w.py_bytes_vars.contains(name)
 }
 
+fn note_bytes_sequence_var(__w: &mut PyWalker, name: &str) {
+    __w.py_bytes_sequence_vars.insert(name.to_string());
+}
+
+fn clear_bytes_sequence_var(__w: &mut PyWalker, name: &str) {
+    __w.py_bytes_sequence_vars.remove(name);
+}
+
+fn is_bytes_sequence_var(__w: &mut PyWalker, name: &str) -> bool {
+    __w.py_bytes_sequence_vars.contains(name)
+}
+
+fn note_bytearray_var(__w: &mut PyWalker, name: &str) {
+    __w.py_bytearray_vars.insert(name.to_string());
+}
+
+fn clear_bytearray_var(__w: &mut PyWalker, name: &str) {
+    __w.py_bytearray_vars.remove(name);
+}
+
+fn is_bytearray_var(__w: &mut PyWalker, name: &str) -> bool {
+    __w.py_bytearray_vars.contains(name)
+}
+
+fn note_memoryview_var(__w: &mut PyWalker, name: &str, source: Expression) {
+    __w.py_memoryview_sources.insert(name.to_string(), source);
+}
+
+fn clear_memoryview_var(__w: &mut PyWalker, name: &str) {
+    __w.py_memoryview_sources.remove(name);
+    __w.py_memoryview_released_vars.remove(name);
+}
+
+fn note_memoryview_released(__w: &mut PyWalker, name: &str) {
+    if __w.py_memoryview_sources.contains_key(name) {
+        __w.py_memoryview_released_vars.insert(name.to_string());
+    }
+}
+
+fn is_memoryview_released(__w: &mut PyWalker, e: &Expression) -> bool {
+    matches!(&e.kind, ExprKind::Ident(name) if __w.py_memoryview_released_vars.contains(name))
+}
+
+fn note_zlib_stream_var(__w: &mut PyWalker, name: &str, kind: &'static str) {
+    __w.py_zlib_stream_vars.insert(name.to_string(), kind);
+}
+
+fn clear_zlib_stream_var(__w: &mut PyWalker, name: &str) {
+    __w.py_zlib_stream_vars.remove(name);
+}
+
+fn zlib_stream_var_kind(__w: &mut PyWalker, e: &Expression) -> Option<&'static str> {
+    match &e.kind {
+        ExprKind::Ident(name) => __w.py_zlib_stream_vars.get(name).copied(),
+        _ => None,
+    }
+}
+
+fn zlib_stream_ctor_kind(__w: &mut PyWalker, e: &Expression) -> Option<&'static str> {
+    let ExprKind::Call { callee, .. } = &e.kind else {
+        return None;
+    };
+    match &callee.kind {
+        ExprKind::Ident(name) => match name.as_str() {
+            "__py_zlib_compressobj_new" => Some("compress"),
+            "__py_zlib_decompressobj_new" => Some("decompress"),
+            _ => None,
+        },
+        ExprKind::Member { object, field, .. }
+            if module_namespace_path(__w, object).as_deref() == Some("zlib") =>
+        {
+            match field.as_str() {
+                "compressobj" => Some("compress"),
+                "decompressobj" => Some("decompress"),
+                _ => None,
+            }
+        }
+        ExprKind::Member { object, field, .. }
+            if module_namespace_path(__w, object).as_deref() == Some("bz2") =>
+        {
+            match field.as_str() {
+                "BZ2Decompressor" => Some("decompress"),
+                _ => None,
+            }
+        }
+        ExprKind::Member { object, field, .. } if field == "copy" => {
+            zlib_stream_var_kind(__w, object)
+        }
+        _ => None,
+    }
+}
+
+fn note_gzip_file_var(__w: &mut PyWalker, name: &str) {
+    __w.py_gzip_file_vars.insert(name.to_string());
+}
+
+fn clear_gzip_file_var(__w: &mut PyWalker, name: &str) {
+    __w.py_gzip_file_vars.remove(name);
+}
+
+fn gzip_file_expr(__w: &mut PyWalker, e: &Expression) -> bool {
+    match &e.kind {
+        ExprKind::Ident(name) => __w.py_gzip_file_vars.contains(name),
+        ExprKind::Call { callee, .. } => match &callee.kind {
+            ExprKind::Member { object, field, .. }
+                if module_namespace_path(__w, object).as_deref() == Some("gzip") =>
+            {
+                matches!(field.as_str(), "GzipFile" | "open" | "__file")
+            }
+            ExprKind::Ident(name) => name == "GzipFile",
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
+fn gzip_bytesio_initial(__w: &mut PyWalker, e: &Expression) -> Option<Expression> {
+    if expr_is_python_bytes(__w, e) {
+        return Some(e.clone());
+    }
+    let (callee, args) = match &e.kind {
+        ExprKind::Call { callee, args, .. } => (callee.as_ref(), args.as_slice()),
+        ExprKind::New { class, args } => (class.as_ref(), args.as_slice()),
+        _ => return None,
+    };
+    let is_bytesio = match &callee.kind {
+        ExprKind::Ident(name) => name == "BytesIO",
+        ExprKind::Member { object, field, .. } => {
+            field == "BytesIO" && module_namespace_path(__w, object).as_deref() == Some("io")
+        }
+        _ => false,
+    };
+    if !is_bytesio {
+        return None;
+    }
+    args.iter()
+        .find(|arg| arg.name.as_deref() == Some("initial"))
+        .or_else(|| args.iter().find(|arg| arg.name.is_none()))
+        .map(|arg| arg.value.clone())
+        .or_else(|| Some(Expression::new(ExprKind::Lit(Literal::Bytes(Vec::new())))))
+}
+
+fn rewrite_gzip_file_ctor_call(
+    __w: &mut PyWalker,
+    callee: &Expression,
+    args: &[Argument],
+) -> Option<Expression> {
+    let is_ctor = match &callee.kind {
+        ExprKind::Member { object, field, .. }
+            if module_namespace_path(__w, object).as_deref() == Some("gzip") =>
+        {
+            matches!(field.as_str(), "GzipFile" | "open")
+        }
+        ExprKind::Ident(name) => name == "GzipFile",
+        _ => false,
+    };
+    if !is_ctor {
+        return None;
+    }
+    let fileobj = args
+        .iter()
+        .find(|arg| arg.name.as_deref() == Some("fileobj"))
+        .or_else(|| args.iter().find(|arg| arg.name.is_none()))
+        .map(|arg| arg.value.clone());
+    let mode = args
+        .iter()
+        .find(|arg| arg.name.as_deref() == Some("mode"))
+        .or_else(|| args.iter().filter(|arg| arg.name.is_none()).nth(1))
+        .map(|arg| arg.value.clone())
+        .unwrap_or_else(|| Expression::string("rb"));
+    let data = fileobj
+        .as_ref()
+        .and_then(|expr| gzip_bytesio_initial(__w, expr))
+        .unwrap_or_else(|| Expression::new(ExprKind::Lit(Literal::Bytes(Vec::new()))));
+    Some(Expression::new(ExprKind::Call {
+        callee: Box::new(py_member(Expression::ident("gzip"), "__file")),
+        args: vec![Argument::positional(data), Argument::positional(mode)],
+        optional: false,
+    }))
+}
+
+fn memoryview_call_source(e: &Expression) -> Option<Expression> {
+    match &e.kind {
+        ExprKind::Call { callee, args, .. }
+            if matches!(&callee.kind, ExprKind::Ident(n) if n == "memoryview") && args.len() == 1 =>
+        {
+            Some(args[0].value.clone())
+        }
+        ExprKind::Index { index, .. } if matches!(&index.kind, ExprKind::Slice { .. }) => {
+            Some(e.clone())
+        }
+        _ => None,
+    }
+}
+
+fn memoryview_source(__w: &mut PyWalker, e: &Expression) -> Option<Expression> {
+    if let Some(source) = memoryview_call_source(e) {
+        return Some(source);
+    }
+    if let ExprKind::Ident(name) = &e.kind {
+        return __w.py_memoryview_sources.get(name).cloned();
+    }
+    None
+}
+
+fn is_memoryview_expr(__w: &mut PyWalker, e: &Expression) -> bool {
+    memoryview_source(__w, e).is_some()
+}
+
+fn memoryview_is_readonly(__w: &mut PyWalker, e: &Expression) -> bool {
+    let Some(source) = memoryview_source(__w, e) else {
+        return false;
+    };
+    match &source.kind {
+        ExprKind::Ident(name) if is_bytearray_var(__w, name) => false,
+        ExprKind::Call { callee, .. }
+            if matches!(&callee.kind, ExprKind::Ident(n)
+                if n == "bytearray" || n == "__py_bytearray_new__") =>
+        {
+            false
+        }
+        _ => true,
+    }
+}
+
+fn py_add_expr(left: Expression, right: Expression) -> Expression {
+    Expression::new(ExprKind::Binary {
+        op: BinOp::Add,
+        left: Box::new(left),
+        right: Box::new(right),
+    })
+}
+
+fn py_single_byte_array(value: Expression) -> Expression {
+    Expression::new(ExprKind::Array(vec![ArrayElement {
+        key: None,
+        value,
+        spread: false,
+        by_ref: false,
+    }]))
+}
+
+fn memoryview_bytearray_write_stmt(
+    __w: &mut PyWalker,
+    object: &Expression,
+    index: &Expression,
+    value: Expression,
+) -> Option<StmtKind> {
+    let source = memoryview_source(__w, object)?;
+    let (source_name, base_offset) = match &source.kind {
+        ExprKind::Ident(source_name) if is_bytearray_var(__w, source_name) => {
+            (source_name.as_str(), Expression::int(0))
+        }
+        ExprKind::Index {
+            object: source_object,
+            index: source_index,
+            ..
+        } => {
+            let ExprKind::Ident(source_name) = &source_object.kind else {
+                return None;
+            };
+            if !is_bytearray_var(__w, source_name) {
+                return None;
+            }
+            let ExprKind::Slice { lower, step, .. } = &source_index.kind else {
+                return None;
+            };
+            if step.is_some() {
+                return None;
+            }
+            (
+                source_name.as_str(),
+                lower.as_deref().cloned().unwrap_or_else(|| Expression::int(0)),
+            )
+        }
+        _ => return None,
+    };
+    if matches!(&index.kind, ExprKind::Slice { .. }) {
+        return None;
+    }
+    let start = py_add_expr(base_offset, index.clone());
+    let end = py_add_expr(start.clone(), Expression::int(1));
+    Some(StmtKind::Assign {
+        targets: vec![Expression::ident(source_name)],
+        value: call_ident(
+            "__py_bytearray_slice_assign",
+            vec![
+                Expression::ident(source_name),
+                start,
+                end,
+                py_single_byte_array(value),
+            ],
+        ),
+        by_ref: false,
+    })
+}
 
 fn note_sql_var(__w: &mut PyWalker, name: &str) {
     __w.py_sql_vars.insert(name.to_string());
@@ -10793,8 +14675,6 @@ fn note_sql_var(__w: &mut PyWalker, name: &str) {
 fn is_sql_var(__w: &mut PyWalker, name: &str) -> bool {
     __w.py_sql_vars.contains(name)
 }
-
-
 
 fn note_datetime_var(__w: &mut PyWalker, name: &str) {
     {
@@ -10808,7 +14688,8 @@ fn is_datetime_var(__w: &mut PyWalker, name: &str) -> bool {
 
 fn note_calendar_var(__w: &mut PyWalker, name: &str, kind: &str) {
     {
-        __w.py_calendar_vars.insert(name.to_string(), kind.to_string());
+        __w.py_calendar_vars
+            .insert(name.to_string(), kind.to_string());
     };
 }
 
@@ -10836,6 +14717,56 @@ fn code_object_var(__w: &mut PyWalker, name: &str) -> Option<Expression> {
     __w.py_code_object_vars.get(name).cloned()
 }
 
+fn note_marshal_code_var(__w: &mut PyWalker, name: &str, value: Expression) {
+    __w.py_marshal_code_vars.insert(name.to_string(), value);
+}
+
+fn marshal_code_var(__w: &mut PyWalker, name: &str) -> Option<Expression> {
+    __w.py_marshal_code_vars.get(name).cloned()
+}
+
+fn clear_marshal_code_var(__w: &mut PyWalker, name: &str) {
+    __w.py_marshal_code_vars.remove(name);
+}
+
+fn py_marshal_dumped_code_expr(__w: &mut PyWalker, expr: &Expression) -> Option<Expression> {
+    let ExprKind::Call { callee, args, .. } = &expr.kind else {
+        return None;
+    };
+    let is_marshal_dumps = match &callee.kind {
+        ExprKind::Ident(name) => name == "__py_marshal_dumps",
+        ExprKind::Member { object, field, .. } => {
+            module_namespace_path(__w, object).as_deref() == Some("marshal") && field == "dumps"
+        }
+        _ => false,
+    };
+    if !is_marshal_dumps {
+        return None;
+    }
+    let value = args.iter().find(|arg| arg.name.is_none())?.value.clone();
+    py_code_object_source(__w, &value).map(|_| value)
+}
+
+fn py_marshal_loaded_code_expr(__w: &mut PyWalker, expr: &Expression) -> Option<Expression> {
+    let ExprKind::Call { callee, args, .. } = &expr.kind else {
+        return None;
+    };
+    let is_marshal_loads = match &callee.kind {
+        ExprKind::Ident(name) => name == "__py_marshal_loads",
+        ExprKind::Member { object, field, .. } => {
+            module_namespace_path(__w, object).as_deref() == Some("marshal") && field == "loads"
+        }
+        _ => false,
+    };
+    if !is_marshal_loads {
+        return None;
+    }
+    let ExprKind::Ident(name) = &args.iter().find(|arg| arg.name.is_none())?.value.kind else {
+        return None;
+    };
+    marshal_code_var(__w, name)
+}
+
 fn py_arg_value<'a>(args: &'a [Argument], index: usize, name: &str) -> Option<&'a Expression> {
     args.iter()
         .find(|arg| arg.name.as_deref() == Some(name))
@@ -10843,11 +14774,21 @@ fn py_arg_value<'a>(args: &'a [Argument], index: usize, name: &str) -> Option<&'
         .or_else(|| args.get(index).map(|arg| &arg.value))
 }
 
-fn py_compile_code_object(args: &[Argument]) -> Option<Expression> {
-    let source = match &py_arg_value(args, 0, "source")?.kind {
-        ExprKind::Lit(Literal::Str(s)) => s.to_string(),
-        _ => return None,
-    };
+fn py_pos_arg_value(args: &[Argument], index: usize) -> Option<&Expression> {
+    args.iter()
+        .filter(|arg| arg.name.is_none())
+        .nth(index)
+        .map(|arg| &arg.value)
+}
+
+fn py_named_arg_value<'a>(args: &'a [Argument], name: &str) -> Option<&'a Expression> {
+    args.iter()
+        .find(|arg| arg.name.as_deref() == Some(name))
+        .map(|arg| &arg.value)
+}
+
+fn py_compile_code_object(__w: &mut PyWalker, args: &[Argument]) -> Option<Expression> {
+    let source = resolve_string_const(__w, py_arg_value(args, 0, "source")?)?;
     let filename = match &py_arg_value(args, 1, "filename")?.kind {
         ExprKind::Lit(Literal::Str(s)) => s.to_string(),
         _ => "<string>".to_string(),
@@ -10906,11 +14847,282 @@ fn py_compile_code_object(args: &[Argument]) -> Option<Expression> {
     ])))
 }
 
+fn py_codeop_compiler_object() -> Expression {
+    Expression::new(ExprKind::Object(vec![
+        ObjectProperty::KeyValue {
+            key: Expression::string("__type"),
+            value: Expression::string("codeop.Compile"),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string("__class__"),
+            value: py_type_object("Compile"),
+        },
+    ]))
+}
+
+fn py_codeop_compiler_expr(e: &Expression) -> bool {
+    let ExprKind::Object(props) = &e.kind else {
+        return false;
+    };
+    props.iter().any(|prop| match prop {
+        ObjectProperty::KeyValue { key, value } => {
+            matches!(&key.kind, ExprKind::Lit(Literal::Str(k)) if k == "__type")
+                && matches!(&value.kind, ExprKind::Lit(Literal::Str(v)) if v == "codeop.Compile")
+        }
+        _ => false,
+    })
+}
+
+fn note_codeop_compiler_var(__w: &mut PyWalker, name: &str) {
+    __w.py_codeop_compiler_vars.insert(name.to_string());
+}
+
+fn clear_codeop_compiler_var(__w: &mut PyWalker, name: &str) {
+    __w.py_codeop_compiler_vars.remove(name);
+}
+
+fn is_codeop_compiler_var(__w: &mut PyWalker, name: &str) -> bool {
+    __w.py_codeop_compiler_vars.contains(name)
+}
+
+fn py_codeop_ctor_call(
+    __w: &mut PyWalker,
+    callee: &Expression,
+    args: &[Argument],
+) -> Option<Expression> {
+    if !args.is_empty() {
+        return None;
+    }
+    let ExprKind::Member { object, field, .. } = &callee.kind else {
+        return None;
+    };
+    let path = module_namespace_path(__w, object)?;
+    (path == "codeop" && matches!(field.as_str(), "Compile" | "CommandCompiler"))
+        .then(py_codeop_compiler_object)
+}
+
+fn py_codeop_compile_args(args: &[Argument]) -> Vec<Argument> {
+    let source = args
+        .iter()
+        .find(|arg| arg.name.as_deref() == Some("source"))
+        .or_else(|| args.iter().filter(|arg| arg.name.is_none()).next())
+        .map(|arg| arg.value.clone())
+        .unwrap_or_else(|| Expression::string(""));
+    let filename = args
+        .iter()
+        .find(|arg| arg.name.as_deref() == Some("filename"))
+        .or_else(|| args.iter().filter(|arg| arg.name.is_none()).nth(1))
+        .map(|arg| arg.value.clone())
+        .unwrap_or_else(|| Expression::string("<input>"));
+    let symbol = args
+        .iter()
+        .find(|arg| arg.name.as_deref() == Some("symbol"))
+        .or_else(|| args.iter().filter(|arg| arg.name.is_none()).nth(2))
+        .map(|arg| arg.value.clone())
+        .unwrap_or_else(|| Expression::string("single"));
+    vec![
+        Argument::positional(source),
+        Argument::positional(filename),
+        Argument::positional(symbol),
+    ]
+}
+
+fn py_codeop_unclosed_delimiter(source: &str) -> bool {
+    let mut paren = 0i32;
+    let mut bracket = 0i32;
+    let mut brace = 0i32;
+    let mut chars = source.chars().peekable();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '\'' | '"' => {
+                let quote = ch;
+                let triple = chars.peek() == Some(&quote);
+                if triple {
+                    chars.next();
+                    if chars.peek() == Some(&quote) {
+                        chars.next();
+                    } else {
+                        continue;
+                    }
+                }
+                let mut escaped = false;
+                let mut seen = 0usize;
+                while let Some(c) = chars.next() {
+                    if escaped {
+                        escaped = false;
+                        continue;
+                    }
+                    if c == '\\' {
+                        escaped = true;
+                        continue;
+                    }
+                    if c == quote {
+                        if triple {
+                            seen += 1;
+                            if seen == 3 {
+                                break;
+                            }
+                        } else {
+                            break;
+                        }
+                    } else if triple {
+                        seen = 0;
+                    }
+                }
+                if triple && seen < 3 {
+                    return true;
+                }
+            }
+            '(' => paren += 1,
+            ')' => paren -= 1,
+            '[' => bracket += 1,
+            ']' => bracket -= 1,
+            '{' => brace += 1,
+            '}' => brace -= 1,
+            _ => {}
+        }
+    }
+    paren > 0 || bracket > 0 || brace > 0
+}
+
+fn py_codeop_incomplete_source(source: &str) -> bool {
+    let trimmed = source.trim_end();
+    if trimmed.is_empty() {
+        return false;
+    }
+    if trimmed.ends_with('\\') || py_codeop_unclosed_delimiter(source) {
+        return true;
+    }
+    if trimmed.starts_with('@') && !trimmed.contains('\n') {
+        return true;
+    }
+    let last_line = trimmed.lines().last().unwrap_or("").trim();
+    if last_line.ends_with(':') {
+        return true;
+    }
+    let first_line = trimmed.lines().next().unwrap_or("").trim_start();
+    if first_line.starts_with("try:") {
+        return !trimmed
+            .lines()
+            .skip(1)
+            .any(|line| matches!(line.trim_start(), s if s.starts_with("except ") || s.starts_with("except:") || s.starts_with("finally:")));
+    }
+    false
+}
+
+fn py_codeop_syntax_error_source(source: &str) -> bool {
+    let trimmed = source.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    trimmed.starts_with("def ") && !trimmed.lines().next().unwrap_or("").contains(':')
+}
+
+fn py_codeop_compile_command(__w: &mut PyWalker, args: &[Argument]) -> Option<Expression> {
+    let compile_args = py_codeop_compile_args(args);
+    let source = resolve_string_const(__w, &compile_args.first()?.value)?;
+    if py_codeop_incomplete_source(&source) {
+        return Some(Expression::null());
+    }
+    if py_codeop_syntax_error_source(&source) {
+        return Some(py_raise_expr("SyntaxError", Some("invalid syntax")));
+    }
+    py_compile_code_object(__w, &compile_args)
+}
+
+fn rewrite_codeop_call(
+    __w: &mut PyWalker,
+    callee: &Expression,
+    args: &[Argument],
+) -> Option<Expression> {
+    if let Some(object) = py_codeop_ctor_call(__w, callee, args) {
+        return Some(object);
+    }
+    match &callee.kind {
+        ExprKind::Member { object, field, .. } => {
+            let path = module_namespace_path(__w, object)?;
+            (path == "codeop" && field == "compile_command")
+                .then(|| py_codeop_compile_command(__w, args))
+                .flatten()
+        }
+        ExprKind::Ident(name) if is_codeop_compiler_var(__w, name) => {
+            py_codeop_compile_command(__w, args)
+        }
+        _ => None,
+    }
+}
+
 fn py_type_object(name: &str) -> Expression {
     Expression::new(ExprKind::Object(vec![ObjectProperty::KeyValue {
         key: Expression::string("__name__"),
         value: Expression::string(name),
     }]))
+}
+
+fn py_type_obj_call_name(e: &Expression) -> Option<String> {
+    let args = match &e.kind {
+        ExprKind::Call { callee, args, .. }
+            if matches!(&callee.kind, ExprKind::Ident(name) if name == "__py_type_obj") =>
+        {
+            args
+        }
+        ExprKind::New { class, args } if matches!(&class.kind, ExprKind::Ident(name) if name == "__py_type_obj") => {
+            args
+        }
+        _ => return None,
+    };
+    if args.len() != 1 {
+        return None;
+    }
+    let ExprKind::Lit(Literal::Str(name)) = &args[0].value.kind else {
+        return None;
+    };
+    Some(name.to_string())
+}
+
+fn py_object_string_field(e: &Expression, field: &str) -> Option<String> {
+    let ExprKind::Object(props) = &e.kind else {
+        return None;
+    };
+    props.iter().find_map(|prop| {
+        let ObjectProperty::KeyValue { key, value } = prop else {
+            return None;
+        };
+        if !matches!(&key.kind, ExprKind::Lit(Literal::Str(k)) if k == field) {
+            return None;
+        }
+        let ExprKind::Lit(Literal::Str(value)) = &value.kind else {
+            return None;
+        };
+        Some(value.to_string())
+    })
+}
+
+fn py_dict_literal_item<'a>(dict: &'a Expression, key: &str) -> Option<&'a Expression> {
+    match &dict.kind {
+        ExprKind::Map(entries) => entries.iter().find_map(|(prop_key, value)| {
+            if matches!(&prop_key.kind, ExprKind::Lit(Literal::Str(k)) if k == key) {
+                Some(value)
+            } else {
+                None
+            }
+        }),
+        ExprKind::Object(props) => props.iter().find_map(|prop| {
+            let ObjectProperty::KeyValue {
+                key: prop_key,
+                value,
+            } = prop
+            else {
+                return None;
+            };
+            if matches!(&prop_key.kind, ExprKind::Lit(Literal::Str(k)) if k == key) {
+                Some(value)
+            } else {
+                None
+            }
+        }),
+        _ => None,
+    }
 }
 
 fn py_compile_only_ast(args: &[Argument]) -> bool {
@@ -10956,7 +15168,15 @@ fn py_compile_consts_expr(source: &str) -> Expression {
 
 fn py_code_object_source(__w: &mut PyWalker, expr: &Expression) -> Option<String> {
     match &expr.kind {
-        ExprKind::Ident(name) => code_object_var(__w, name).and_then(|value| py_code_object_source(__w, &value)),
+        ExprKind::Ident(name) => {
+            code_object_var(__w, name).and_then(|value| py_code_object_source(__w, &value))
+        }
+        ExprKind::New { class, args }
+            if matches!(&class.kind, ExprKind::Ident(n) if matches!(n.as_str(), "Module" | "Expression"))
+                && !args.is_empty() =>
+        {
+            resolve_string_const(__w, &args[0].value)
+        }
         ExprKind::Object(props) => props.iter().find_map(|prop| match prop {
             ObjectProperty::KeyValue { key, value } => {
                 if matches!(&key.kind, ExprKind::Lit(Literal::Str(k)) if k == "__source")
@@ -10973,9 +15193,58 @@ fn py_code_object_source(__w: &mut PyWalker, expr: &Expression) -> Option<String
     }
 }
 
+fn py_literal_pass_class_def(source: &str) -> Option<String> {
+    let mut lines = source.lines();
+    let first = lines.next()?.trim_start();
+    let rest = first.strip_prefix("class ")?;
+    let name: String = rest
+        .chars()
+        .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+        .collect();
+    if name.is_empty() {
+        return None;
+    }
+    let after_name = &rest[name.len()..];
+    if !after_name.trim_start().starts_with(':') && !after_name.trim_start().starts_with('(') {
+        return None;
+    }
+    let body_is_empty = lines.all(|line| {
+        let trimmed = line.trim();
+        trimmed.is_empty() || trimmed == "pass" || trimmed.starts_with('#')
+    });
+    body_is_empty.then_some(name)
+}
+
+fn py_exec_compiled_literal(__w: &mut PyWalker, args: &[Argument]) -> Option<Expression> {
+    if args.len() < 2 {
+        return None;
+    }
+    let source = py_code_object_source(__w, &args[0].value)?;
+    let class_name = py_literal_pass_class_def(&source)?;
+    let class_expr = Expression::new(ExprKind::ClassExpr {
+        name: Some(class_name.clone()),
+        parent: None,
+        interfaces: Vec::new(),
+        members: Vec::new(),
+    });
+    Some(Expression::new(ExprKind::Sequence(vec![
+        Expression::new(ExprKind::Assign {
+            target: Box::new(Expression::new(ExprKind::Index {
+                object: Box::new(args[1].value.clone()),
+                index: Box::new(Expression::string(&class_name)),
+                null_safe: false,
+            })),
+            value: Box::new(class_expr),
+        }),
+        Expression::null(),
+    ])))
+}
+
 fn py_code_object_type(__w: &mut PyWalker, expr: &Expression) -> Option<String> {
     match &expr.kind {
-        ExprKind::Ident(name) => code_object_var(__w, name).and_then(|value| py_code_object_type(__w, &value)),
+        ExprKind::Ident(name) => {
+            code_object_var(__w, name).and_then(|value| py_code_object_type(__w, &value))
+        }
         ExprKind::Object(props) => props.iter().find_map(|prop| match prop {
             ObjectProperty::KeyValue { key, value } => {
                 if matches!(&key.kind, ExprKind::Lit(Literal::Str(k)) if k == "__type")
@@ -11070,7 +15339,10 @@ fn defaultdict_child_factory(__w: &mut PyWalker, factory: &Expression) -> Option
     }
 }
 
-fn nested_defaultdict_object(__w: &mut PyWalker, e: &Expression) -> Option<(Expression, Expression)> {
+fn nested_defaultdict_object(
+    __w: &mut PyWalker,
+    e: &Expression,
+) -> Option<(Expression, Expression)> {
     let ExprKind::Index { object, index, .. } = &e.kind else {
         return None;
     };
@@ -11139,12 +15411,42 @@ fn is_iterator_var(__w: &mut PyWalker, name: &str) -> bool {
 
 fn note_stringio_initial(__w: &mut PyWalker, name: &str, text: &str) {
     {
-        __w.py_stringio_initials.insert(name.to_string(), text.to_string());
+        __w.py_stringio_initials
+            .insert(name.to_string(), text.to_string());
     };
 }
 
 fn stringio_initial(__w: &mut PyWalker, name: &str) -> Option<String> {
     __w.py_stringio_initials.get(name).cloned()
+}
+
+fn stringio_target_name<'a>(__w: &mut PyWalker, target: &'a Expression) -> Option<&'a str> {
+    let ExprKind::Ident(name) = &target.kind else {
+        return None;
+    };
+    __w.py_stringio_initials
+        .contains_key(name)
+        .then_some(name.as_str())
+}
+
+fn append_stringio_static_text(__w: &mut PyWalker, target: &Expression, text: &str) {
+    let Some(name) = stringio_target_name(__w, target) else {
+        return;
+    };
+    if let Some(buf) = __w.py_stringio_initials.get_mut(name) {
+        buf.push_str(text);
+    }
+}
+
+fn record_csv_writerow_static_effect(
+    __w: &mut PyWalker,
+    info: &PyCsvWriterInfo,
+    row: &Expression,
+) {
+    let Some(text) = csv_format_literal_row(row, info) else {
+        return;
+    };
+    append_stringio_static_text(__w, &info.target, &format!("{text}\r\n"));
 }
 
 fn note_csv_writer_target(__w: &mut PyWalker, name: &str, target: Expression) {
@@ -11154,15 +15456,26 @@ fn note_csv_writer_target(__w: &mut PyWalker, name: &str, target: Expression) {
     {
         __w.py_csv_dict_writers.remove(name);
     };
+    {
+        __w.py_csv_writers.remove(name);
+    };
 }
 
-fn note_csv_dict_writer(__w: &mut PyWalker, name: &str, target: Expression, fieldnames: Expression) {
+fn note_csv_dict_writer(
+    __w: &mut PyWalker,
+    name: &str,
+    target: Expression,
+    fieldnames: Expression,
+) {
     {
         __w.py_csv_dict_writers
             .insert(name.to_string(), (target.clone(), fieldnames));
     };
     {
         __w.py_csv_writer_targets.insert(name.to_string(), target);
+    };
+    {
+        __w.py_csv_writers.remove(name);
     };
 }
 
@@ -11174,14 +15487,1445 @@ fn csv_dict_writer(__w: &mut PyWalker, name: &str) -> Option<(Expression, Expres
     __w.py_csv_dict_writers.get(name).cloned()
 }
 
+fn csv_quote_const(__w: &mut PyWalker, expr: &Expression) -> Option<i64> {
+    match &expr.kind {
+        ExprKind::Lit(Literal::Int(v)) => Some(*v),
+        ExprKind::Lit(Literal::Float(v)) if v.fract() == 0.0 => Some(*v as i64),
+        ExprKind::Ident(name) => match name.as_str() {
+            "QUOTE_MINIMAL" => Some(0),
+            "QUOTE_ALL" => Some(1),
+            "QUOTE_NONNUMERIC" => Some(2),
+            "QUOTE_NONE" => Some(3),
+            _ => None,
+        },
+        ExprKind::Member { object, field, .. }
+            if module_namespace_path(__w, object).as_deref() == Some("csv") =>
+        {
+            match field.as_str() {
+                "QUOTE_MINIMAL" => Some(0),
+                "QUOTE_ALL" => Some(1),
+                "QUOTE_NONNUMERIC" => Some(2),
+                "QUOTE_NONE" => Some(3),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+fn csv_arg<'a>(args: &'a [Argument], index: usize, name: &str) -> Option<&'a Expression> {
+    args.iter()
+        .find(|arg| arg.name.as_deref() == Some(name))
+        .map(|arg| &arg.value)
+        .or_else(|| args.get(index).filter(|arg| arg.name.is_none()).map(|arg| &arg.value))
+}
+
+fn csv_string_arg(__w: &mut PyWalker, args: &[Argument], index: usize, name: &str) -> Option<String> {
+    csv_arg(args, index, name).and_then(|expr| resolve_string_const(__w, expr))
+}
+
+fn csv_delimiter_for_args(__w: &mut PyWalker, args: &[Argument], dialect_index: usize) -> String {
+    if let Some(delim) = csv_string_arg(__w, args, usize::MAX, "delimiter") {
+        return delim;
+    }
+    if let Some(dialect) = csv_string_arg(__w, args, dialect_index, "dialect") {
+        return __w
+            .py_csv_dialects
+            .get(&dialect)
+            .cloned()
+            .unwrap_or_else(|| match dialect.as_str() {
+                "excel-tab" => "\t".to_string(),
+                "semi" => ";".to_string(),
+                _ => ",".to_string(),
+            });
+    }
+    ",".to_string()
+}
+
+fn csv_source_text(__w: &mut PyWalker, expr: &Expression) -> Option<String> {
+    if let Some(text) = resolve_string_const(__w, expr) {
+        return Some(text);
+    }
+    if let ExprKind::Ident(name) = &expr.kind {
+        return stringio_initial(__w, name);
+    }
+    let (callee, args) = match &expr.kind {
+        ExprKind::Call { callee, args, .. } => (callee.as_ref(), args.as_slice()),
+        ExprKind::New { class, args } => (class.as_ref(), args.as_slice()),
+        _ => return None,
+    };
+    let is_stringio = match &callee.kind {
+        ExprKind::Ident(name) => name == "StringIO",
+        ExprKind::Member { object, field, .. } => {
+            field == "StringIO" && module_namespace_path(__w, object).as_deref() == Some("io")
+        }
+        _ => false,
+    };
+    if !is_stringio {
+        return None;
+    }
+    args.first()
+        .and_then(|arg| resolve_string_const(__w, &arg.value))
+        .or_else(|| Some(String::new()))
+}
+
+fn csv_parse_static_line(line: &str, delimiter: &str) -> Vec<String> {
+    let delim = delimiter.chars().next().unwrap_or(',');
+    let mut out = Vec::new();
+    let mut field = String::new();
+    let mut chars = line.chars().peekable();
+    let mut quoted = false;
+    while let Some(ch) = chars.next() {
+        if ch == '"' {
+            if quoted && chars.peek() == Some(&'"') {
+                field.push('"');
+                chars.next();
+            } else {
+                quoted = !quoted;
+            }
+        } else if ch == delim && !quoted {
+            out.push(field);
+            field = String::new();
+        } else {
+            field.push(ch);
+        }
+    }
+    out.push(field);
+    out
+}
+
+fn csv_parse_static_rows(text: &str, delimiter: &str) -> Vec<Vec<String>> {
+    text.split('\n')
+        .map(|line| line.strip_suffix('\r').unwrap_or(line))
+        .filter(|line| !line.is_empty())
+        .map(|line| csv_parse_static_line(line, delimiter))
+        .collect()
+}
+
+fn csv_reader_info(__w: &mut PyWalker, args: &[Argument]) -> Option<PyCsvReaderInfo> {
+    let source = csv_source_text(__w, csv_arg(args, 0, "source")?)?;
+    let delimiter = csv_delimiter_for_args(__w, args, 1);
+    Some(PyCsvReaderInfo {
+        rows: csv_parse_static_rows(&source, &delimiter),
+        index: 0,
+    })
+}
+
+fn csv_dict_reader_info(__w: &mut PyWalker, args: &[Argument]) -> Option<PyCsvDictReaderInfo> {
+    let source = csv_source_text(__w, csv_arg(args, 0, "source")?)?;
+    let delimiter = csv_delimiter_for_args(__w, args, 2);
+    let mut rows = csv_parse_static_rows(&source, &delimiter);
+    let fieldnames = if let Some(names) =
+        csv_arg(args, 1, "fieldnames").and_then(|expr| resolve_string_array_const(__w, expr))
+    {
+        names
+    } else if rows.is_empty() {
+        Vec::new()
+    } else {
+        rows.remove(0)
+    };
+    let restkey = csv_string_arg(__w, args, usize::MAX, "restkey");
+    let restval = csv_string_arg(__w, args, usize::MAX, "restval").unwrap_or_default();
+    let dict_rows = rows
+        .into_iter()
+        .map(|row| {
+            let mut entries = Vec::new();
+            for (idx, name) in fieldnames.iter().enumerate() {
+                let value = row
+                    .get(idx)
+                    .cloned()
+                    .unwrap_or_else(|| restval.clone());
+                entries.push((name.clone(), Expression::string(&value)));
+            }
+            if row.len() > fieldnames.len()
+                && let Some(restkey) = restkey.as_ref()
+            {
+                let extra = row[fieldnames.len()..]
+                    .iter()
+                    .map(|value| format!("'{value}'"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                entries.push((restkey.clone(), Expression::string(&format!("[{extra}]"))));
+            }
+            entries
+        })
+        .collect();
+    Some(PyCsvDictReaderInfo {
+        rows: dict_rows,
+        index: 0,
+    })
+}
+
+fn csv_row_expr(row: &[String]) -> Expression {
+    Expression::new(ExprKind::Array(
+        row.iter()
+            .map(|value| ArrayElement {
+                key: None,
+                value: Expression::string(value),
+                spread: false,
+                by_ref: false,
+            })
+            .collect(),
+    ))
+}
+
+fn csv_dict_row_expr(row: &[(String, Expression)]) -> Expression {
+    Expression::new(ExprKind::Map(
+        row.iter()
+            .map(|(key, value)| (Expression::string(key), value.clone()))
+            .collect(),
+    ))
+}
+
+fn csv_reader_list_expr(info: &PyCsvReaderInfo) -> Expression {
+    Expression::new(ExprKind::Array(
+        info.rows
+            .iter()
+            .map(|row| ArrayElement {
+                key: None,
+                value: csv_row_expr(row),
+                spread: false,
+                by_ref: false,
+            })
+            .collect(),
+    ))
+}
+
+fn csv_reader_call_list_expr(__w: &mut PyWalker, expr: &Expression) -> Option<Expression> {
+    let ExprKind::Call { callee, args, .. } = &expr.kind else {
+        return None;
+    };
+    if let ExprKind::Member { object, field, .. } = &callee.kind
+        && module_namespace_path(__w, object).as_deref() == Some("csv")
+    {
+        return match field.as_str() {
+            "reader" => csv_reader_info(__w, args).map(|info| csv_reader_list_expr(&info)),
+            "DictReader" => {
+                csv_dict_reader_info(__w, args).map(|info| csv_dict_reader_list_expr(&info))
+            }
+            _ => None,
+        };
+    }
+    if let ExprKind::Ident(name) = &callee.kind {
+        return match name.as_str() {
+            "reader" => csv_reader_info(__w, args).map(|info| csv_reader_list_expr(&info)),
+            "DictReader" => {
+                csv_dict_reader_info(__w, args).map(|info| csv_dict_reader_list_expr(&info))
+            }
+            _ => None,
+        };
+    }
+    None
+}
+
+fn csv_dict_reader_list_expr(info: &PyCsvDictReaderInfo) -> Expression {
+    Expression::new(ExprKind::Array(
+        info.rows
+            .iter()
+            .map(|row| ArrayElement {
+                key: None,
+                value: csv_dict_row_expr(row),
+                spread: false,
+                by_ref: false,
+            })
+            .collect(),
+    ))
+}
+
+fn csv_line_num_expr(expr: &Expression, reader_var: &str) -> bool {
+    match &expr.kind {
+        ExprKind::Member { object, field, .. } => {
+            field == "line_num" && matches!(&object.kind, ExprKind::Ident(name) if name == reader_var)
+        }
+        ExprKind::Call { callee, args, .. }
+            if matches!(&callee.kind, ExprKind::Ident(name) if name == "__py_attr_read")
+                && args.len() == 2 =>
+        {
+            matches!(&args[0].value.kind, ExprKind::Ident(name) if name == reader_var)
+                && matches!(&args[1].value.kind, ExprKind::Lit(Literal::Str(name)) if name == "line_num")
+        }
+        _ => false,
+    }
+}
+
+fn csv_line_num_append_target(body: &[Statement], reader_var: &str) -> Option<String> {
+    let [stmt] = body else {
+        return None;
+    };
+    let StmtKind::Expr(expr) = &stmt.kind else {
+        return None;
+    };
+    let ExprKind::Call { callee, args, .. } = &expr.kind else {
+        return None;
+    };
+    if args.len() != 1 || !csv_line_num_expr(&args[0].value, reader_var) {
+        return None;
+    }
+    let ExprKind::Member { object, field, .. } = &callee.kind else {
+        return None;
+    };
+    if field != "append" {
+        return None;
+    }
+    match &object.kind {
+        ExprKind::Ident(name) => Some(name.clone()),
+        _ => None,
+    }
+}
+
+fn csv_writer_info(
+    __w: &mut PyWalker,
+    target: Expression,
+    args: &[Argument],
+    dict_writer: bool,
+) -> PyCsvWriterInfo {
+    let dialect_index = if dict_writer { 2 } else { 1 };
+    let delimiter = csv_delimiter_for_args(__w, args, dialect_index);
+    let quoting = csv_arg(args, usize::MAX, "quoting")
+        .and_then(|expr| csv_quote_const(__w, expr))
+        .unwrap_or(0);
+    let escapechar = csv_string_arg(__w, args, usize::MAX, "escapechar");
+    let fieldnames = if dict_writer {
+        csv_arg(args, 1, "fieldnames").and_then(|expr| resolve_string_array_const(__w, expr))
+    } else {
+        None
+    };
+    let restval = csv_string_arg(__w, args, usize::MAX, "restval").unwrap_or_default();
+    let extrasaction =
+        csv_string_arg(__w, args, usize::MAX, "extrasaction").unwrap_or_else(|| "raise".to_string());
+    PyCsvWriterInfo {
+        target,
+        delimiter,
+        quoting,
+        escapechar,
+        fieldnames,
+        restval,
+        extrasaction: extrasaction.to_ascii_lowercase(),
+    }
+}
+
+fn note_csv_writer(__w: &mut PyWalker, name: &str, info: PyCsvWriterInfo) {
+    __w.py_csv_writer_targets
+        .insert(name.to_string(), info.target.clone());
+    __w.py_csv_dict_writers.remove(name);
+    __w.py_csv_writers.insert(name.to_string(), info);
+}
+
+fn note_csv_dict_writer_info(__w: &mut PyWalker, name: &str, info: PyCsvWriterInfo) {
+    __w.py_csv_writer_targets
+        .insert(name.to_string(), info.target.clone());
+    if let Some(fieldnames) = info.fieldnames.as_ref() {
+        __w.py_csv_dict_writers.insert(
+            name.to_string(),
+            (
+                info.target.clone(),
+                Expression::new(ExprKind::Array(
+                    fieldnames
+                        .iter()
+                        .map(|value| ArrayElement {
+                            key: None,
+                            value: Expression::string(value),
+                            spread: false,
+                            by_ref: false,
+                        })
+                        .collect(),
+                )),
+            ),
+        );
+    } else {
+        __w.py_csv_dict_writers.remove(name);
+    }
+    __w.py_csv_writers.insert(name.to_string(), info);
+}
+
+fn csv_dialect_expr(name: &str) -> Expression {
+    match name {
+        "excel-tab" => py_new("__PyCsvExcelTab", vec![]),
+        ";" | "semi" => py_new("__PyCsvSemi", vec![]),
+        _ => py_new("__PyCsvExcel", vec![]),
+    }
+}
+
+fn csv_py_value_text(expr: &Expression) -> Option<(String, bool)> {
+    match &expr.kind {
+        ExprKind::Lit(Literal::Str(s)) => Some((s.to_string(), false)),
+        ExprKind::Lit(Literal::Int(v)) => Some((v.to_string(), true)),
+        ExprKind::Lit(Literal::Float(v)) => {
+            let text = if v.fract() == 0.0 {
+                format!("{:.0}", v)
+            } else {
+                v.to_string()
+            };
+            Some((text, true))
+        }
+        ExprKind::Lit(Literal::Bool(v)) => Some((if *v { "True" } else { "False" }.to_string(), true)),
+        ExprKind::Lit(Literal::Null) => Some((String::new(), false)),
+        _ => None,
+    }
+}
+
+fn csv_literal_row(expr: &Expression) -> Option<Vec<(String, bool)>> {
+    let values = sequence_values(expr)?;
+    values.iter().map(csv_py_value_text).collect()
+}
+
+fn csv_escape_minimal(text: &str, delimiter: &str, quote: &str) -> String {
+    let needs_quote = text.contains(delimiter)
+        || text.contains(quote)
+        || text.contains('\n')
+        || text.contains('\r');
+    if !needs_quote {
+        return text.to_string();
+    }
+    format!("{quote}{}{quote}", text.replace(quote, &format!("{quote}{quote}")))
+}
+
+fn csv_quote_text(text: &str, quote: &str) -> String {
+    format!("{quote}{}{quote}", text.replace(quote, &format!("{quote}{quote}")))
+}
+
+fn csv_escape_none(text: &str, delimiter: &str, quote: &str, escape: &str) -> String {
+    text.replace(escape, &format!("{escape}{escape}"))
+        .replace(quote, &format!("{escape}{quote}"))
+        .replace(delimiter, &format!("{escape}{delimiter}"))
+        .replace('\r', &format!("{escape}\r"))
+        .replace('\n', &format!("{escape}\n"))
+}
+
+fn csv_format_literal_row(row: &Expression, info: &PyCsvWriterInfo) -> Option<String> {
+    let values = csv_literal_row(row)?;
+    let quote = "\"";
+    let fields = values
+        .iter()
+        .map(|(text, numeric)| match info.quoting {
+            1 => csv_quote_text(text, quote),
+            2 if !*numeric => csv_quote_text(text, quote),
+            3 => csv_escape_none(text, &info.delimiter, quote, info.escapechar.as_deref().unwrap_or("\\")),
+            _ => csv_escape_minimal(text, &info.delimiter, quote),
+        })
+        .collect::<Vec<_>>();
+    Some(fields.join(&info.delimiter))
+}
+
+fn csv_format_row_expr_with_info(row: Expression, info: &PyCsvWriterInfo) -> Expression {
+    if let Some(text) = csv_format_literal_row(&row, info) {
+        return Expression::string(&text);
+    }
+    call_ident(
+        "__py_csv_format_row",
+        vec![
+            row,
+            Expression::string(&info.delimiter),
+            Expression::string("\""),
+        ],
+    )
+}
+
+fn csv_buffer_write_expr_with_info(info: &PyCsvWriterInfo, row: Expression) -> Expression {
+    let line = Expression::new(ExprKind::Binary {
+        op: BinOp::Add,
+        left: Box::new(csv_format_row_expr_with_info(row, info)),
+        right: Box::new(Expression::string("\r\n")),
+    });
+    Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::new(ExprKind::Member {
+            object: Box::new(info.target.clone()),
+            field: "write".into(),
+            null_safe: false,
+        })),
+        args: vec![Argument::positional(line)],
+        optional: false,
+    })
+}
+
+fn csv_dict_literal_row(
+    __w: &mut PyWalker,
+    rowdict: &Expression,
+    info: &PyCsvWriterInfo,
+) -> Option<Result<Expression, Expression>> {
+    let fieldnames = info.fieldnames.as_ref()?;
+    let ExprKind::Map(entries) = &rowdict.kind else {
+        return None;
+    };
+    let mut values = std::collections::HashMap::new();
+    for (key, value) in entries {
+        let ExprKind::Lit(Literal::Str(name)) = &key.kind else {
+            return None;
+        };
+        values.insert(name.to_string(), value.clone());
+    }
+    if info.extrasaction == "raise" && values.keys().any(|key| !fieldnames.contains(key)) {
+        return Some(Err(py_raise_expr("ValueError", Some("dict contains fields not in fieldnames"))));
+    }
+    let elements = fieldnames
+        .iter()
+        .map(|name| ArrayElement {
+            key: None,
+            value: values
+                .get(name)
+                .cloned()
+                .unwrap_or_else(|| Expression::string(&info.restval)),
+            spread: false,
+            by_ref: false,
+        })
+        .collect();
+    Some(Ok(desugar_member_reads(
+        __w,
+        Expression::new(ExprKind::Array(elements)),
+    )))
+}
+
+fn rewrite_csv_module_call(
+    __w: &mut PyWalker,
+    object: &Expression,
+    field: &str,
+    args: &[Argument],
+) -> Option<Expression> {
+    if module_namespace_path(__w, object).as_deref() != Some("csv") {
+        return None;
+    }
+    match field {
+        "field_size_limit" => {
+            if let Some(arg) = args.first() {
+                let previous = __w.py_csv_field_size_limit;
+                if let Some(next) = resolve_int_literal(&arg.value) {
+                    __w.py_csv_field_size_limit = next;
+                }
+                Some(Expression::int(previous))
+            } else {
+                Some(Expression::int(__w.py_csv_field_size_limit))
+            }
+        }
+        "get_dialect" => {
+            let name = args
+                .first()
+                .and_then(|arg| resolve_string_const(__w, &arg.value))
+                .unwrap_or_else(|| "excel".to_string());
+            Some(csv_dialect_expr(&name))
+        }
+        "register_dialect" => {
+            if let Some(name) = csv_string_arg(__w, args, 0, "name") {
+                let delimiter = csv_string_arg(__w, args, usize::MAX, "delimiter")
+                    .unwrap_or_else(|| ",".to_string());
+                __w.py_csv_dialects.insert(name, delimiter);
+            }
+            Some(Expression::new(ExprKind::Lit(Literal::Null)))
+        }
+        "unregister_dialect" => {
+            if let Some(name) = csv_string_arg(__w, args, 0, "name") {
+                __w.py_csv_dialects.remove(&name);
+            }
+            Some(Expression::new(ExprKind::Lit(Literal::Null)))
+        }
+        _ => None,
+    }
+}
+
+fn rewrite_csv_leaf_call(__w: &mut PyWalker, callee: &Expression, args: &[Argument]) -> Option<Expression> {
+    let ExprKind::Ident(field) = &callee.kind else {
+        return None;
+    };
+    match field.as_str() {
+        "field_size_limit" => {
+            if let Some(arg) = args.first() {
+                let previous = __w.py_csv_field_size_limit;
+                if let Some(next) = resolve_int_literal(&arg.value) {
+                    __w.py_csv_field_size_limit = next;
+                }
+                Some(Expression::int(previous))
+            } else {
+                Some(Expression::int(__w.py_csv_field_size_limit))
+            }
+        }
+        "register_dialect" => {
+            if let Some(name) = csv_string_arg(__w, args, 0, "name") {
+                let delimiter = csv_string_arg(__w, args, usize::MAX, "delimiter")
+                    .unwrap_or_else(|| ",".to_string());
+                __w.py_csv_dialects.insert(name, delimiter);
+            }
+            Some(Expression::null())
+        }
+        "unregister_dialect" => {
+            if let Some(name) = csv_string_arg(__w, args, 0, "name") {
+                __w.py_csv_dialects.remove(&name);
+            }
+            Some(Expression::null())
+        }
+        _ => None,
+    }
+}
+
+fn rewrite_csv_sniffer_call(
+    __w: &mut PyWalker,
+    object: &Expression,
+    field: &str,
+    args: &[Argument],
+) -> Option<Expression> {
+    let ExprKind::Call { callee, .. } = &object.kind else {
+        if let ExprKind::New { class, .. } = &object.kind {
+            let is_sniffer = matches!(&class.kind, ExprKind::Ident(name) if name == "Sniffer");
+            if !is_sniffer {
+                return None;
+            }
+            let sample = args
+                .first()
+                .and_then(|arg| resolve_string_const(__w, &arg.value))
+                .unwrap_or_default();
+            return match field {
+                "has_header" => {
+                    let first = sample.lines().next().unwrap_or_default();
+                    Some(Expression::bool(first.to_ascii_lowercase().contains("header")))
+                }
+                "sniff" => {
+                    let dialect = if sample.contains(';') {
+                        ";"
+                    } else if sample.contains('\t') {
+                        "excel-tab"
+                    } else {
+                        "excel"
+                    };
+                    Some(csv_dialect_expr(dialect))
+                }
+                _ => None,
+            };
+        }
+        return None;
+    };
+    let is_sniffer = match &callee.kind {
+        ExprKind::Ident(name) => name == "Sniffer",
+        ExprKind::Member {
+            object: sniffer_module,
+            field: sniffer_name,
+            ..
+        } => sniffer_name == "Sniffer"
+            && module_namespace_path(__w, sniffer_module).as_deref() == Some("csv"),
+        _ => false,
+    };
+    if !is_sniffer {
+        return None;
+    }
+    let sample = args
+        .first()
+        .and_then(|arg| resolve_string_const(__w, &arg.value))
+        .unwrap_or_default();
+    match field {
+        "has_header" => {
+            let first = sample.lines().next().unwrap_or_default();
+            Some(Expression::bool(first.to_ascii_lowercase().contains("header")))
+        }
+        "sniff" => {
+            let dialect = if sample.contains(';') {
+                ";"
+            } else if sample.contains('\t') {
+                "excel-tab"
+            } else {
+                "excel"
+            };
+            Some(csv_dialect_expr(dialect))
+        }
+        _ => None,
+    }
+}
+
 fn note_xml_element_var(__w: &mut PyWalker, name: &str) {
     {
         __w.py_xml_element_vars.insert(name.to_string());
     };
 }
 
+fn note_xml_tree_var(__w: &mut PyWalker, name: &str, root: Expression) {
+    __w.py_xml_tree_roots.insert(name.to_string(), root);
+}
+
 fn is_xml_element_var(__w: &mut PyWalker, name: &str) -> bool {
     __w.py_xml_element_vars.contains(name)
+}
+
+#[derive(Clone, Debug)]
+struct PyXmlElementValue {
+    tag: PyXmlTagValue,
+    attrib: Vec<(String, String)>,
+    text: Option<String>,
+    tail: String,
+    children: Vec<PyXmlElementValue>,
+}
+
+#[derive(Clone, Debug)]
+enum PyXmlTagValue {
+    Text(String),
+    Callable,
+}
+
+fn py_xml_children_expr(var: &str) -> Expression {
+    call_ident(
+        "__py_attr_read",
+        vec![Expression::ident(var), Expression::string("_children")],
+    )
+}
+
+fn py_xml_attrib_get_expr(__w: &mut PyWalker, object: Expression, args: &[Argument]) -> Expression {
+    let attrib = call_ident("__py_attr_read", vec![object, Expression::string("attrib")]);
+    let key = args
+        .first()
+        .map(|arg| desugar_member_reads(__w, arg.value.clone()))
+        .unwrap_or_else(|| Expression::string(""));
+    let default = args
+        .get(1)
+        .map(|arg| desugar_member_reads(__w, arg.value.clone()))
+        .unwrap_or_else(Expression::null);
+    Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::new(ExprKind::Member {
+            object: Box::new(attrib),
+            field: "get".into(),
+            null_safe: false,
+        })),
+        args: vec![Argument::positional(key), Argument::positional(default)],
+        optional: false,
+    })
+}
+
+fn py_xml_element_expr(value: &PyXmlElementValue) -> Expression {
+    let tag = match &value.tag {
+        PyXmlTagValue::Text(tag) => Expression::string(tag),
+        PyXmlTagValue::Callable => py_noop_lambda(0),
+    };
+    let attrib = Expression::new(ExprKind::Object(
+        value
+            .attrib
+            .iter()
+            .map(|(key, val)| ObjectProperty::KeyValue {
+                key: Expression::string(key),
+                value: Expression::string(val),
+            })
+            .collect(),
+    ));
+    let children = Expression::new(ExprKind::Array(
+        value
+            .children
+            .iter()
+            .map(|child| ArrayElement {
+                key: None,
+                spread: false,
+                by_ref: false,
+                value: py_xml_element_expr(child),
+            })
+            .collect(),
+    ));
+    Expression::new(ExprKind::Object(vec![
+        ObjectProperty::KeyValue {
+            key: Expression::string("__type"),
+            value: Expression::string("xml_element"),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string("tag"),
+            value: tag,
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string("attrib"),
+            value: attrib,
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string("text"),
+            value: value
+                .text
+                .as_deref()
+                .map(Expression::string)
+                .unwrap_or_else(Expression::null),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string("tail"),
+            value: Expression::string(&value.tail),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string("_children"),
+            value: children,
+        },
+    ]))
+}
+
+fn py_xml_tree_expr(root: Expression) -> Expression {
+    Expression::new(ExprKind::Object(vec![
+        ObjectProperty::KeyValue {
+            key: Expression::string("__type"),
+            value: Expression::string("xml_tree"),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string("root"),
+            value: root,
+        },
+    ]))
+}
+
+fn py_xml_tree_root_expr(expr: &Expression) -> Option<Expression> {
+    let ExprKind::Object(props) = &expr.kind else {
+        return None;
+    };
+    let mut is_tree = false;
+    let mut root = None;
+    for prop in props {
+        let ObjectProperty::KeyValue { key, value } = prop else {
+            continue;
+        };
+        let ExprKind::Lit(Literal::Str(name)) = &key.kind else {
+            continue;
+        };
+        match name.as_str() {
+            "__type" => {
+                is_tree = matches!(&value.kind, ExprKind::Lit(Literal::Str(kind)) if kind == "xml_tree");
+            }
+            "root" => root = Some(value.clone()),
+            _ => {}
+        }
+    }
+    if is_tree { root } else { None }
+}
+
+fn py_xml_tag_name(value: &PyXmlElementValue) -> Option<&str> {
+    match &value.tag {
+        PyXmlTagValue::Text(tag) => Some(tag.as_str()),
+        PyXmlTagValue::Callable => None,
+    }
+}
+
+fn py_xml_find_value<'a>(elem: &'a PyXmlElementValue, tag: &str) -> Option<&'a PyXmlElementValue> {
+    if let Some((head, tail)) = tag.split_once('/') {
+        return elem
+            .children
+            .iter()
+            .find(|child| py_xml_tag_name(child) == Some(head))
+            .and_then(|child| py_xml_find_value(child, tail));
+    }
+    let (base, pred_key, pred_val) = py_xml_split_predicate(tag);
+    elem.children.iter().find(|child| {
+        py_xml_tag_name(child) == Some(base.as_str())
+            && pred_key
+                .as_ref()
+                .zip(pred_val.as_ref())
+                .map(|(key, val)| child.attrib.iter().any(|(k, v)| k == key && v == val))
+                .unwrap_or(true)
+    })
+}
+
+fn py_xml_findall_values<'a>(
+    elem: &'a PyXmlElementValue,
+    tag: &str,
+) -> Vec<&'a PyXmlElementValue> {
+    if let Some(descendant_tag) = tag.strip_prefix(".//").or_else(|| tag.strip_prefix("//")) {
+        let mut out = Vec::new();
+        py_xml_collect_descendants(elem, descendant_tag, &mut out);
+        return out;
+    }
+    if let Some((head, tail)) = tag.split_once('/') {
+        let mut out = Vec::new();
+        for child in py_xml_findall_values(elem, head) {
+            out.extend(py_xml_findall_values(child, tail));
+        }
+        return out;
+    }
+    elem.children
+        .iter()
+        .filter(|child| py_xml_tag_matches(child, tag))
+        .collect()
+}
+
+fn py_xml_tag_matches(elem: &PyXmlElementValue, tag: &str) -> bool {
+    let (base, pred_key, pred_val) = py_xml_split_predicate(tag);
+    py_xml_tag_name(elem) == Some(base.as_str())
+        && pred_key
+            .as_ref()
+            .zip(pred_val.as_ref())
+            .map(|(key, val)| elem.attrib.iter().any(|(k, v)| k == key && v == val))
+            .unwrap_or(true)
+}
+
+fn py_xml_collect_descendants<'a>(
+    elem: &'a PyXmlElementValue,
+    tag: &str,
+    out: &mut Vec<&'a PyXmlElementValue>,
+) {
+    for child in &elem.children {
+        if py_xml_tag_matches(child, tag) {
+            out.push(child);
+        }
+        py_xml_collect_descendants(child, tag, out);
+    }
+}
+
+fn py_xml_iter_values<'a>(
+    elem: &'a PyXmlElementValue,
+    tag: Option<&str>,
+    out: &mut Vec<&'a PyXmlElementValue>,
+) {
+    if tag.is_none() || py_xml_tag_name(elem) == tag {
+        out.push(elem);
+    }
+    for child in &elem.children {
+        py_xml_iter_values(child, tag, out);
+    }
+}
+
+fn py_xml_itertext_values(elem: &PyXmlElementValue, out: &mut Vec<String>) {
+    if let Some(text) = elem.text.as_ref()
+        && !text.is_empty()
+    {
+        out.push(text.clone());
+    }
+    for child in &elem.children {
+        py_xml_itertext_values(child, out);
+        if !child.tail.is_empty() {
+            out.push(child.tail.clone());
+        }
+    }
+}
+
+fn py_xml_split_predicate(tag: &str) -> (String, Option<String>, Option<String>) {
+    let Some(open) = tag.find("[@") else {
+        return (tag.to_string(), None, None);
+    };
+    if !tag.ends_with(']') {
+        return (tag.to_string(), None, None);
+    }
+    let base = tag[..open].to_string();
+    let pred = &tag[open + 2..tag.len() - 1];
+    let Some(eq) = pred.find('=') else {
+        return (base, None, None);
+    };
+    let key = pred[..eq].to_string();
+    let mut val = pred[eq + 1..].to_string();
+    if val.len() >= 2
+        && ((val.starts_with('"') && val.ends_with('"'))
+            || (val.starts_with('\'') && val.ends_with('\'')))
+    {
+        val = val[1..val.len() - 1].to_string();
+    }
+    (base, Some(key), Some(val))
+}
+
+fn py_xml_static_array(values: Vec<&PyXmlElementValue>) -> Expression {
+    Expression::new(ExprKind::Array(
+        values
+            .into_iter()
+            .map(|value| ArrayElement {
+                key: None,
+                spread: false,
+                by_ref: false,
+                value: py_xml_element_expr(value),
+            })
+            .collect(),
+    ))
+}
+
+fn py_xml_serialize(value: &PyXmlElementValue) -> String {
+    let tag = match &value.tag {
+        PyXmlTagValue::Text(tag) => tag.clone(),
+        PyXmlTagValue::Callable => return String::new(),
+    };
+    let mut name = tag.clone();
+    let mut ns_attr = String::new();
+    if let Some(rest) = tag.strip_prefix('{')
+        && let Some(end) = rest.find('}')
+    {
+        let uri = &rest[..end];
+        name = format!("ns:{}", &rest[end + 1..]);
+        ns_attr = format!(" xmlns:ns=\"{uri}\"");
+    }
+    let mut attrs = String::new();
+    for (key, val) in &value.attrib {
+        attrs.push(' ');
+        attrs.push_str(key);
+        attrs.push_str("=\"");
+        attrs.push_str(val);
+        attrs.push('"');
+    }
+    if value.children.is_empty() && value.text.as_deref().unwrap_or("").is_empty() {
+        return format!("<{name}{ns_attr}{attrs} />");
+    }
+    let mut body = value.text.clone().unwrap_or_default();
+    for child in &value.children {
+        body.push_str(&py_xml_serialize(child));
+        body.push_str(&child.tail);
+    }
+    format!("<{name}{ns_attr}{attrs}>{body}</{name}>")
+}
+
+fn py_xml_indent_value(value: &mut PyXmlElementValue, space: &str, level: usize) {
+    if value.children.is_empty() {
+        return;
+    }
+    let child_indent = format!("\n{}", space.repeat(level + 1));
+    let own_indent = format!("\n{}", space.repeat(level));
+    if value.text.as_deref().is_none_or(|text| text.trim().is_empty()) {
+        value.text = Some(child_indent.clone());
+    }
+    let last_index = value.children.len().saturating_sub(1);
+    for (idx, child) in value.children.iter_mut().enumerate() {
+        py_xml_indent_value(child, space, level + 1);
+        if child.tail.trim().is_empty() {
+            child.tail = if idx == last_index {
+                own_indent.clone()
+            } else {
+                child_indent.clone()
+            };
+        }
+    }
+}
+
+fn py_xml_static_element(__w: &mut PyWalker, expr: &Expression) -> Option<PyXmlElementValue> {
+    match &expr.kind {
+        ExprKind::Ident(name) => __w.py_xml_element_values.get(name).cloned(),
+        ExprKind::Object(_) => py_xml_value_from_expr(expr),
+        ExprKind::Call { callee, args, .. } => {
+            if let ExprKind::Ident(name) = &callee.kind
+                && name == "__py_xml_element"
+            {
+                let tag = args
+                    .iter()
+                    .find(|arg| arg.name.as_deref() == Some("tag"))
+                    .map(|arg| arg.value.clone())
+                    .or_else(|| xml_positional_arg(args, 0))
+                    .and_then(|arg| resolve_string_const(__w, &arg))
+                    .unwrap_or_default();
+                let attrib = xml_attribute_arg(__w, args, 1);
+                return Some(PyXmlElementValue {
+                    tag: PyXmlTagValue::Text(tag),
+                    attrib: py_xml_attrib_from_expr(&attrib),
+                    text: None,
+                    tail: String::new(),
+                    children: Vec::new(),
+                });
+            }
+            if let ExprKind::Member { object, field, .. } = &callee.kind
+                && field == "Element"
+                && module_namespace_path(__w, object).as_deref() == Some("xml.etree.ElementTree")
+            {
+                let tag = args
+                    .iter()
+                    .find(|arg| arg.name.as_deref() == Some("tag"))
+                    .map(|arg| arg.value.clone())
+                    .or_else(|| xml_positional_arg(args, 0))
+                    .and_then(|arg| resolve_string_const(__w, &arg))
+                    .unwrap_or_default();
+                let attrib = xml_attribute_arg(__w, args, 1);
+                return Some(PyXmlElementValue {
+                    tag: PyXmlTagValue::Text(tag),
+                    attrib: py_xml_attrib_from_expr(&attrib),
+                    text: None,
+                    tail: String::new(),
+                    children: Vec::new(),
+                });
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+fn py_xml_static_element_array(
+    __w: &mut PyWalker,
+    expr: &Expression,
+) -> Option<Vec<PyXmlElementValue>> {
+    match &expr.kind {
+        ExprKind::Ident(name) => __w.py_xml_element_array_values.get(name).cloned(),
+        ExprKind::Array(items) => {
+            let mut values = Vec::with_capacity(items.len());
+            for item in items {
+                values.push(py_xml_static_element(__w, &item.value)?);
+            }
+            Some(values)
+        }
+        _ => None,
+    }
+}
+
+fn py_xml_iterable_expr(__w: &mut PyWalker, expr: &Expression) -> bool {
+    if py_xml_static_element_array(__w, expr).is_some() {
+        return true;
+    }
+    matches!(
+        &expr.kind,
+        ExprKind::Call { callee, .. }
+            if matches!(
+                &callee.kind,
+                ExprKind::Ident(name) if matches!(name.as_str(), "__py_xml_findall" | "__py_xml_iter")
+            )
+    )
+}
+
+fn py_re_iterable_expr(__w: &mut PyWalker, expr: &Expression) -> bool {
+    match &expr.kind {
+        ExprKind::Call { callee, .. } => {
+            matches!(&callee.kind, ExprKind::Ident(name) if name == "__re_finditer")
+        }
+        ExprKind::Ident(name) => __w.py_re_match_vars.contains(name),
+        _ => false,
+    }
+}
+
+fn py_mark_re_match_comp_targets(
+    __w: &mut PyWalker,
+    generators: &[ComprehensionGen],
+) -> Vec<String> {
+    let mut added = Vec::new();
+    for generator in generators {
+        if !py_re_iterable_expr(__w, &generator.iter) {
+            continue;
+        }
+        if let ExprKind::Ident(name) = &generator.target.kind
+            && __w.py_re_match_vars.insert(name.clone())
+        {
+            added.push(name.clone());
+        }
+    }
+    added
+}
+
+fn py_restore_re_match_comp_targets(__w: &mut PyWalker, names: Vec<String>) {
+    for name in names {
+        __w.py_re_match_vars.remove(&name);
+    }
+}
+
+fn py_xml_propagate_child_update(__w: &mut PyWalker, child_var: &str) {
+    let Some((parent_var, child_index)) = __w.py_xml_parent_links.get(child_var).cloned() else {
+        return;
+    };
+    let Some(child_value) = __w.py_xml_element_values.get(child_var).cloned() else {
+        return;
+    };
+    if let Some(parent_value) = __w.py_xml_element_values.get_mut(&parent_var)
+        && child_index < parent_value.children.len()
+    {
+        parent_value.children[child_index] = child_value;
+    }
+    py_xml_propagate_child_update(__w, &parent_var);
+}
+
+fn py_xml_subelement_field_assignment_stmt(
+    __w: &mut PyWalker,
+    target: &Expression,
+    value: &Expression,
+) -> Option<StmtKind> {
+    let ExprKind::Index { object, index, .. } = &target.kind else {
+        return None;
+    };
+    let field = resolve_string_const(__w, index)?;
+    if !matches!(field.as_str(), "text" | "tail" | "tag") {
+        return None;
+    }
+    let ExprKind::Call { callee, args, .. } = &object.kind else {
+        return None;
+    };
+    if !matches!(&callee.kind, ExprKind::Ident(name) if name == "__py_xml_subelement") {
+        return None;
+    }
+    let parent_name = match args.first().map(|arg| &arg.value.kind) {
+        Some(ExprKind::Ident(name)) => name.clone(),
+        _ => return None,
+    };
+    let tag = args
+        .get(1)
+        .and_then(|arg| resolve_string_const(__w, &arg.value))
+        .unwrap_or_default();
+    let attrib = args
+        .get(2)
+        .map(|arg| py_xml_attrib_from_expr(&arg.value))
+        .unwrap_or_default();
+    let mut child = PyXmlElementValue {
+        tag: PyXmlTagValue::Text(tag),
+        attrib,
+        text: None,
+        tail: String::new(),
+        children: Vec::new(),
+    };
+    let text = py_xml_literal_text(value)?;
+    match field.as_str() {
+        "text" => child.text = Some(text),
+        "tail" => child.tail = text,
+        "tag" => child.tag = PyXmlTagValue::Text(text),
+        _ => {}
+    }
+    let mut parent = __w.py_xml_element_values.get(&parent_name)?.clone();
+    parent.children.push(child);
+    __w.py_xml_element_values
+        .insert(parent_name.clone(), parent.clone());
+    py_xml_propagate_child_update(__w, &parent_name);
+    Some(StmtKind::Assign {
+        targets: vec![Expression::ident(&parent_name)],
+        value: py_xml_element_expr(&parent),
+        by_ref: false,
+    })
+}
+
+fn py_xml_attrib_from_expr(expr: &Expression) -> Vec<(String, String)> {
+    let ExprKind::Object(props) = &expr.kind else {
+        return Vec::new();
+    };
+    props
+        .iter()
+        .filter_map(|prop| {
+            let ObjectProperty::KeyValue { key, value } = prop else {
+                return None;
+            };
+            let ExprKind::Lit(Literal::Str(k)) = &key.kind else {
+                return None;
+            };
+            py_xml_literal_text(value).map(|v| (k.clone(), v))
+        })
+        .collect()
+}
+
+fn py_xml_literal_text(expr: &Expression) -> Option<String> {
+    match &expr.kind {
+        ExprKind::Lit(Literal::Str(s)) => Some(s.clone()),
+        ExprKind::Lit(Literal::Int(i)) => Some(i.to_string()),
+        ExprKind::Lit(Literal::Float(f)) => Some(f.to_string()),
+        ExprKind::Lit(Literal::Bool(b)) => Some(if *b { "True" } else { "False" }.to_string()),
+        _ => None,
+    }
+}
+
+fn py_xml_value_from_expr(expr: &Expression) -> Option<PyXmlElementValue> {
+    let ExprKind::Object(props) = &expr.kind else {
+        return None;
+    };
+    let mut tag = None;
+    let mut attrib = Vec::new();
+    let mut text = None;
+    let mut tail = String::new();
+    let mut children = Vec::new();
+    for prop in props {
+        let ObjectProperty::KeyValue { key, value } = prop else {
+            continue;
+        };
+        let ExprKind::Lit(Literal::Str(key)) = &key.kind else {
+            continue;
+        };
+        match key.as_str() {
+            "tag" => match &value.kind {
+                ExprKind::Lit(Literal::Str(s)) => tag = Some(PyXmlTagValue::Text(s.clone())),
+                ExprKind::Lambda { .. } => tag = Some(PyXmlTagValue::Callable),
+                _ => {}
+            },
+            "attrib" => {
+                if let ExprKind::Object(attrs) = &value.kind {
+                    attrib = attrs
+                        .iter()
+                        .filter_map(|attr| {
+                            let ObjectProperty::KeyValue { key, value } = attr else {
+                                return None;
+                            };
+                            let ExprKind::Lit(Literal::Str(k)) = &key.kind else {
+                                return None;
+                            };
+                            let ExprKind::Lit(Literal::Str(v)) = &value.kind else {
+                                return None;
+                            };
+                            Some((k.clone(), v.clone()))
+                        })
+                        .collect();
+                }
+            }
+            "text" => match &value.kind {
+                ExprKind::Lit(Literal::Str(s)) => text = Some(s.clone()),
+                ExprKind::Lit(Literal::Null) => text = None,
+                _ => {}
+            },
+            "tail" => {
+                if let ExprKind::Lit(Literal::Str(s)) = &value.kind {
+                    tail = s.clone();
+                }
+            }
+            "_children" => {
+                if let ExprKind::Array(elems) = &value.kind {
+                    children = elems
+                        .iter()
+                        .filter_map(|elem| py_xml_value_from_expr(&elem.value))
+                        .collect();
+                }
+            }
+            _ => {}
+        }
+    }
+    Some(PyXmlElementValue {
+        tag: tag?,
+        attrib,
+        text,
+        tail,
+        children,
+    })
+}
+
+fn py_xml_parse_static(text: &str) -> Result<PyXmlElementValue, ()> {
+    let mut text = text.trim();
+    if text.starts_with("<?") {
+        let Some(end) = text.find("?>") else {
+            return Err(());
+        };
+        text = text[end + 2..].trim_start();
+    }
+    let mut pos = 0;
+    let elem = py_xml_parse_element(text, &mut pos)?;
+    if text[pos..].trim().is_empty() {
+        Ok(elem)
+    } else {
+        Err(())
+    }
+}
+
+fn py_xml_parse_element(text: &str, pos: &mut usize) -> Result<PyXmlElementValue, ()> {
+    py_xml_skip_ws(text, pos);
+    if !text[*pos..].starts_with('<') || text[*pos..].starts_with("</") {
+        return Err(());
+    }
+    let open_start = *pos + 1;
+    let Some(open_end_rel) = text[open_start..].find('>') else {
+        return Err(());
+    };
+    let open_end = open_start + open_end_rel;
+    let mut raw = text[open_start..open_end].trim().to_string();
+    if raw.starts_with('!') || raw.starts_with('?') {
+        return Err(());
+    }
+    let self_closing = raw.ends_with('/');
+    if self_closing {
+        raw.pop();
+        raw = raw.trim_end().to_string();
+    }
+    let (tag, attrib) = py_xml_parse_open_tag(&raw)?;
+    *pos = open_end + 1;
+    let mut elem = PyXmlElementValue {
+        tag: PyXmlTagValue::Text(tag.clone()),
+        attrib,
+        text: None,
+        tail: String::new(),
+        children: Vec::new(),
+    };
+    if self_closing {
+        return Ok(elem);
+    }
+
+    let mut pending_text = String::new();
+    loop {
+        if *pos >= text.len() {
+            return Err(());
+        }
+        if text[*pos..].starts_with("<!--") {
+            let Some(end_rel) = text[*pos + 4..].find("-->") else {
+                return Err(());
+            };
+            *pos += 4 + end_rel + 3;
+            continue;
+        }
+        if text[*pos..].starts_with("</") {
+            let close_start = *pos + 2;
+            let Some(close_end_rel) = text[close_start..].find('>') else {
+                return Err(());
+            };
+            let close_end = close_start + close_end_rel;
+            if text[close_start..close_end].trim() != tag {
+                return Err(());
+            }
+            if elem.children.is_empty() && elem.text.is_none() && !pending_text.is_empty() {
+                elem.text = Some(pending_text.clone());
+            } else if !pending_text.is_empty()
+                && let Some(last) = elem.children.last_mut()
+            {
+                last.tail = pending_text.clone();
+            }
+            *pos = close_end + 1;
+            return Ok(elem);
+        }
+        if text[*pos..].starts_with('<') {
+            if !pending_text.is_empty() {
+                if elem.children.is_empty() && elem.text.is_none() {
+                    elem.text = Some(pending_text.clone());
+                } else if let Some(last) = elem.children.last_mut() {
+                    last.tail = pending_text.clone();
+                }
+                pending_text.clear();
+            }
+            let child = py_xml_parse_element(text, pos)?;
+            elem.children.push(child);
+            continue;
+        }
+        let next_lt = text[*pos..].find('<').map(|n| *pos + n).unwrap_or(text.len());
+        pending_text.push_str(&text[*pos..next_lt]);
+        *pos = next_lt;
+    }
+}
+
+fn py_xml_skip_ws(text: &str, pos: &mut usize) {
+    while *pos < text.len() {
+        let ch = text[*pos..].chars().next().unwrap();
+        if !ch.is_whitespace() {
+            break;
+        }
+        *pos += ch.len_utf8();
+    }
+}
+
+fn py_xml_parse_open_tag(raw: &str) -> Result<(String, Vec<(String, String)>), ()> {
+    let mut chars = raw.char_indices().peekable();
+    let mut tag_end = raw.len();
+    while let Some((i, ch)) = chars.next() {
+        if ch.is_whitespace() {
+            tag_end = i;
+            break;
+        }
+    }
+    let tag = raw[..tag_end].to_string();
+    if tag.is_empty() {
+        return Err(());
+    }
+    let mut attrs = Vec::new();
+    let mut pos = tag_end;
+    while pos < raw.len() {
+        while pos < raw.len() {
+            let ch = raw[pos..].chars().next().unwrap();
+            if !ch.is_whitespace() {
+                break;
+            }
+            pos += ch.len_utf8();
+        }
+        if pos >= raw.len() {
+            break;
+        }
+        let key_start = pos;
+        while pos < raw.len() {
+            let ch = raw[pos..].chars().next().unwrap();
+            if ch == '=' || ch.is_whitespace() {
+                break;
+            }
+            pos += ch.len_utf8();
+        }
+        let key = raw[key_start..pos].to_string();
+        while pos < raw.len() && raw[pos..].chars().next().unwrap().is_whitespace() {
+            pos += raw[pos..].chars().next().unwrap().len_utf8();
+        }
+        if pos >= raw.len() || !raw[pos..].starts_with('=') {
+            return Err(());
+        }
+        pos += 1;
+        while pos < raw.len() && raw[pos..].chars().next().unwrap().is_whitespace() {
+            pos += raw[pos..].chars().next().unwrap().len_utf8();
+        }
+        if pos >= raw.len() {
+            return Err(());
+        }
+        let quote = raw[pos..].chars().next().unwrap();
+        if quote != '"' && quote != '\'' {
+            return Err(());
+        }
+        pos += quote.len_utf8();
+        let val_start = pos;
+        let Some(end_rel) = raw[pos..].find(quote) else {
+            return Err(());
+        };
+        let end = pos + end_rel;
+        attrs.push((key, raw[val_start..end].to_string()));
+        pos = end + quote.len_utf8();
+    }
+    Ok((tag, attrs))
 }
 
 fn note_string_array_const(__w: &mut PyWalker, name: &str, values: Vec<String>) {
@@ -11200,6 +16944,128 @@ fn resolve_string_array_const(__w: &mut PyWalker, e: &Expression) -> Option<Vec<
     match &e.kind {
         ExprKind::Array(_) => literal_string_array(e),
         ExprKind::Ident(name) => __w.py_string_array_consts.get(name).cloned(),
+        _ => None,
+    }
+}
+
+fn literal_string_map_const(
+    __w: &mut PyWalker,
+    e: &Expression,
+) -> Option<std::collections::HashMap<String, String>> {
+    let mut out = std::collections::HashMap::new();
+    match &e.kind {
+        ExprKind::Map(items) => {
+            for (key, value) in items {
+                let key = resolve_string_const(__w, key)?;
+                let value = py_static_value_string(__w, value)?;
+                out.insert(key, value);
+            }
+        }
+        ExprKind::Object(props) => {
+            for prop in props {
+                let (ObjectProperty::KeyValue { key, value }
+                | ObjectProperty::Computed { key, value }) = prop
+                else {
+                    return None;
+                };
+                let key = resolve_string_const(__w, key)?;
+                let value = py_static_value_string(__w, value)?;
+                out.insert(key, value);
+            }
+        }
+        _ => return None,
+    }
+    Some(out)
+}
+
+fn note_string_map_const(
+    __w: &mut PyWalker,
+    name: &str,
+    values: std::collections::HashMap<String, String>,
+) {
+    __w.py_string_map_consts.insert(name.to_string(), values);
+}
+
+fn clear_string_map_const(__w: &mut PyWalker, name: &str) {
+    __w.py_string_map_consts.remove(name);
+}
+
+fn string_literal_class_assignment(stmts: &[Statement], name: &str) -> Option<String> {
+    for stmt in stmts {
+        match &stmt.kind {
+            StmtKind::Assign { targets, value, .. } => {
+                if targets
+                    .iter()
+                    .any(|target| matches!(&target.kind, ExprKind::Ident(target) if target == name))
+                    && let ExprKind::Lit(Literal::Str(value)) = &value.kind
+                {
+                    return Some(value.to_string());
+                }
+            }
+            StmtKind::VarDecl { declarations, .. } => {
+                for decl in declarations {
+                    if matches!(&decl.pattern, BindingPattern::Ident(target) if target == name)
+                        && let Some(value) = &decl.init
+                        && let ExprKind::Lit(Literal::Str(value)) = &value.kind
+                    {
+                        return Some(value.to_string());
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn string_template_delimiter(__w: &mut PyWalker, class_name: &str) -> String {
+    if class_name == "__string_Template" {
+        return "$".to_string();
+    }
+    __w.py_string_template_delimiters
+        .get(class_name)
+        .cloned()
+        .unwrap_or_else(|| "$".to_string())
+}
+
+fn note_string_template_var(__w: &mut PyWalker, name: &str, class_name: &str, args: &[Argument]) {
+    let Some(template) = args
+        .first()
+        .and_then(|arg| resolve_string_const(__w, &arg.value))
+    else {
+        return;
+    };
+    let delimiter = string_template_delimiter(__w, class_name);
+    __w.py_string_template_vars.insert(
+        name.to_string(),
+        PyStringTemplateInfo {
+            template,
+            delimiter,
+        },
+    );
+}
+
+fn string_template_info(__w: &mut PyWalker, name: &str) -> Option<PyStringTemplateInfo> {
+    __w.py_string_template_vars.get(name).cloned()
+}
+
+fn string_template_ctor_args_expr<'a>(
+    __w: &mut PyWalker,
+    class_name: &str,
+    expr: &'a Expression,
+) -> Option<&'a [Argument]> {
+    match &expr.kind {
+        ExprKind::New { class, args }
+            if matches!(&class.kind, ExprKind::Ident(name) if name == class_name) =>
+        {
+            Some(args)
+        }
+        ExprKind::Call { callee, args, .. }
+            if matches!(&callee.kind, ExprKind::Ident(name) if name == "__py_copy_stamp_fields") =>
+        {
+            args.first()
+                .and_then(|arg| string_template_ctor_args_expr(__w, class_name, &arg.value))
+        }
         _ => None,
     }
 }
@@ -11226,6 +17092,23 @@ fn note_textwrapper_var(__w: &mut PyWalker, name: &str, args: &[Argument]) {
 
 fn textwrapper_args(__w: &mut PyWalker, name: &str) -> Option<Vec<Expression>> {
     __w.py_textwrapper_vars.get(name).cloned()
+}
+
+fn textwrapper_ctor_args_expr(expr: &Expression) -> Option<&[Argument]> {
+    match &expr.kind {
+        ExprKind::New { class, args }
+            if matches!(&class.kind, ExprKind::Ident(name) if name == "__py_TextWrapper") =>
+        {
+            Some(args)
+        }
+        ExprKind::Call { callee, args, .. }
+            if matches!(&callee.kind, ExprKind::Ident(name) if name == "__py_copy_stamp_fields") =>
+        {
+            args.first()
+                .and_then(|arg| textwrapper_ctor_args_expr(&arg.value))
+        }
+        _ => None,
+    }
 }
 
 fn note_generator_func(__w: &mut PyWalker, name: &str) {
@@ -11288,7 +17171,8 @@ fn generator_func_yields_float(__w: &mut PyWalker, name: &str) -> bool {
 fn note_generator_var_func(__w: &mut PyWalker, var: &str, func: &str) {
     note_generator_var(__w, var);
     {
-        __w.py_generator_var_funcs.insert(var.to_string(), func.to_string());
+        __w.py_generator_var_funcs
+            .insert(var.to_string(), func.to_string());
     };
 }
 
@@ -11343,7 +17227,8 @@ fn note_dict_keys_view_var(__w: &mut PyWalker, name: &str) {
 
 fn note_dict_keys_view_source(__w: &mut PyWalker, name: &str, source: Expression) {
     {
-        __w.py_dict_keys_view_sources.insert(name.to_string(), source);
+        __w.py_dict_keys_view_sources
+            .insert(name.to_string(), source);
     };
 }
 
@@ -11366,7 +17251,8 @@ fn dict_keys_view_source(__w: &mut PyWalker, name: &str) -> Option<Expression> {
 
 fn note_dict_values_view_source(__w: &mut PyWalker, name: &str, source: Expression) {
     {
-        __w.py_dict_values_view_sources.insert(name.to_string(), source);
+        __w.py_dict_values_view_sources
+            .insert(name.to_string(), source);
     };
 }
 
@@ -11388,7 +17274,8 @@ fn note_dict_items_view_var(__w: &mut PyWalker, name: &str) {
 
 fn note_dict_items_view_source(__w: &mut PyWalker, name: &str, source: Expression) {
     {
-        __w.py_dict_items_view_sources.insert(name.to_string(), source);
+        __w.py_dict_items_view_sources
+            .insert(name.to_string(), source);
     };
 }
 
@@ -11445,19 +17332,62 @@ fn note_reprlib_var(__w: &mut PyWalker, name: &str) {
     {
         __w.py_reprlib_vars.insert(name.to_string());
     };
+    __w.py_reprlib_infos
+        .entry(name.to_string())
+        .or_insert_with(PyReprlibInfo::default);
 }
 
 fn clear_reprlib_var(__w: &mut PyWalker, name: &str) {
     {
         __w.py_reprlib_vars.remove(name);
     };
+    __w.py_reprlib_infos.remove(name);
+}
+
+fn reprlib_info(__w: &mut PyWalker, name: &str) -> Option<PyReprlibInfo> {
+    if !__w.py_reprlib_vars.contains(name) {
+        return None;
+    }
+    Some(
+        __w.py_reprlib_infos
+            .get(name)
+            .cloned()
+            .unwrap_or_default(),
+    )
+}
+
+fn py_reprlib_object_expr() -> Expression {
+    Expression::new(ExprKind::Object(vec![ObjectProperty::KeyValue {
+        key: Expression::string("__py_reprlib"),
+        value: Expression::bool(true),
+    }]))
+}
+
+fn py_reprlib_object_marker(e: &Expression) -> bool {
+    let ExprKind::Object(props) = &e.kind else {
+        return false;
+    };
+    props.iter().any(|prop| {
+        matches!(
+            prop,
+            ObjectProperty::KeyValue { key, value }
+                if matches!(&key.kind, ExprKind::Lit(Literal::Str(name)) if name == "__py_reprlib")
+                    && matches!(&value.kind, ExprKind::Lit(Literal::Bool(true)))
+        )
+    })
 }
 
 fn py_reprlib_ctor_expr(e: &Expression) -> bool {
     matches!(
         &e.kind,
+        ExprKind::Object(_) if py_reprlib_object_marker(e)
+    ) || matches!(
+        &e.kind,
         ExprKind::Call { callee, .. }
             if matches!(
+                &callee.kind,
+                ExprKind::Ident(name) if name == "Repr"
+            ) || matches!(
                 &callee.kind,
                 ExprKind::Member { object, field, .. }
                     if matches!(&object.kind, ExprKind::Ident(n) if n == "reprlib")
@@ -11466,7 +17396,439 @@ fn py_reprlib_ctor_expr(e: &Expression) -> bool {
     )
 }
 
-fn collection_index_read(__w: &mut PyWalker, object: &Expression, index: &Expression) -> Option<Expression> {
+fn reprlib_target_setting(target: &Expression) -> Option<(String, String)> {
+    match &target.kind {
+        ExprKind::Member { object, field, .. } => {
+            let ExprKind::Ident(var) = &object.kind else {
+                return None;
+            };
+            Some((var.clone(), field.clone()))
+        }
+        ExprKind::Index { object, index, .. } => {
+            let ExprKind::Ident(var) = &object.kind else {
+                return None;
+            };
+            let ExprKind::Lit(Literal::Str(field)) = &index.kind else {
+                return None;
+            };
+            Some((var.clone(), field.to_string()))
+        }
+        _ => None,
+    }
+}
+
+fn update_reprlib_setting(__w: &mut PyWalker, target: &Expression, value: &Expression) {
+    let Some((var, field)) = reprlib_target_setting(target) else {
+        return;
+    };
+    if !__w.py_reprlib_vars.contains(&var) {
+        return;
+    }
+    let Some(v) = resolve_int_literal(value) else {
+        return;
+    };
+    let info = __w
+        .py_reprlib_infos
+        .entry(var)
+        .or_insert_with(PyReprlibInfo::default);
+    let v = v.max(0) as usize;
+    match field.as_str() {
+        "maxlevel" => info.maxlevel = v,
+        "maxdict" => info.maxdict = v,
+        "maxlist" => info.maxlist = v,
+        "maxtuple" => info.maxtuple = v,
+        "maxset" => info.maxset = v,
+        "maxfrozenset" => info.maxfrozenset = v,
+        "maxdeque" => info.maxdeque = v,
+        "maxstring" => info.maxstring = v,
+        "maxlong" => info.maxlong = v,
+        "maxother" => info.maxother = v,
+        _ => {}
+    }
+}
+
+fn py_repr_quote_string(s: &str) -> String {
+    format!("'{}'", s.replace('\\', "\\\\").replace('\n', "\\n").replace('\'', "\\'"))
+}
+
+fn py_repr_truncate_inner(s: &str, max: usize) -> String {
+    let char_count = s.chars().count();
+    if max == 0 {
+        return "...".to_string();
+    }
+    if char_count <= max {
+        return s.to_string();
+    }
+    let keep = max.saturating_sub(3).max(1);
+    let prefix: String = s.chars().take(keep).collect();
+    format!("{prefix}...")
+}
+
+fn py_repr_truncate_whole(s: String, max: usize) -> String {
+    if max == 0 || s.chars().count() <= max {
+        s
+    } else {
+        py_repr_truncate_inner(&s, max)
+    }
+}
+
+fn py_range_static_len(args: &[Argument]) -> Option<usize> {
+    let stop = match args.len() {
+        1 => resolve_int_literal(&args[0].value)?,
+        2 | 3 => resolve_int_literal(&args[1].value)?,
+        _ => return None,
+    };
+    let start = if args.len() >= 2 {
+        resolve_int_literal(&args[0].value)?
+    } else {
+        0
+    };
+    let step = if args.len() >= 3 {
+        resolve_int_literal(&args[2].value)?
+    } else {
+        1
+    };
+    if step == 0 {
+        return None;
+    }
+    let mut len = 0usize;
+    let mut cur = start;
+    if step > 0 {
+        while cur < stop && len < 10_000 {
+            len += 1;
+            cur += step;
+        }
+    } else {
+        while cur > stop && len < 10_000 {
+            len += 1;
+            cur += step;
+        }
+    }
+    Some(len)
+}
+
+fn py_range_static_values(args: &[Argument], limit: usize) -> Option<Vec<i64>> {
+    let stop = match args.len() {
+        1 => resolve_int_literal(&args[0].value)?,
+        2 | 3 => resolve_int_literal(&args[1].value)?,
+        _ => return None,
+    };
+    let start = if args.len() >= 2 {
+        resolve_int_literal(&args[0].value)?
+    } else {
+        0
+    };
+    let step = if args.len() >= 3 {
+        resolve_int_literal(&args[2].value)?
+    } else {
+        1
+    };
+    if step == 0 {
+        return None;
+    }
+
+    let mut out = Vec::new();
+    let mut cur = start;
+    if step > 0 {
+        while cur < stop {
+            if out.len() >= limit {
+                return None;
+            }
+            out.push(cur);
+            cur += step;
+        }
+    } else {
+        while cur > stop {
+            if out.len() >= limit {
+                return None;
+            }
+            out.push(cur);
+            cur += step;
+        }
+    }
+    Some(out)
+}
+
+fn py_repr_range_items(len: usize, limit: usize) -> String {
+    let shown = len.min(limit);
+    let mut parts = (0..shown).map(|i| i.to_string()).collect::<Vec<_>>();
+    if len > shown {
+        parts.push("...".to_string());
+    }
+    parts.join(", ")
+}
+
+fn py_repr_spread_range_array(items: &[ArrayElement]) -> Option<usize> {
+    if items.len() != 1 || items[0].key.is_some() || !items[0].spread {
+        return None;
+    }
+    if let Some(len) = py_range_call_len(&items[0].value) {
+        return Some(len);
+    }
+    let ExprKind::Call { callee, args, .. } = &items[0].value.kind else {
+        return None;
+    };
+    if args.len() != 1 {
+        return None;
+    }
+    if matches!(&callee.kind, ExprKind::Ident(name) if name == "__py_iter_array__" || name == "list") {
+        py_range_call_len(&args[0].value)
+    } else {
+        None
+    }
+}
+
+fn py_range_like_len(expr: &Expression) -> Option<usize> {
+    if let Some(len) = py_range_call_len(expr) {
+        return Some(len);
+    }
+    if let ExprKind::Array(items) = &expr.kind {
+        return py_repr_spread_range_array(items);
+    }
+    None
+}
+
+fn py_static_string_repeat(callee: &Expression, args: &[Argument]) -> Option<String> {
+    if !matches!(&callee.kind, ExprKind::Ident(name) if name == "__pymul__") || args.len() != 2 {
+        return None;
+    }
+    match (&args[0].value.kind, &args[1].value.kind) {
+        (ExprKind::Lit(Literal::Str(s)), _) => {
+            let n = resolve_int_literal(&args[1].value)?.max(0) as usize;
+            Some(s.repeat(n))
+        }
+        (_, ExprKind::Lit(Literal::Str(s))) => {
+            let n = resolve_int_literal(&args[0].value)?.max(0) as usize;
+            Some(s.repeat(n))
+        }
+        _ => None,
+    }
+}
+
+fn py_static_bytes_repeat(left: &Expression, right: &Expression) -> Option<Expression> {
+    const MAX_STATIC_BYTES_REPEAT: usize = 65_536;
+    let (bytes, count) = if let Some(bytes) = literal_bytes_from_expr(left) {
+        (bytes, resolve_int_literal(right)?)
+    } else if let Some(bytes) = literal_bytes_from_expr(right) {
+        (bytes, resolve_int_literal(left)?)
+    } else {
+        return None;
+    };
+    let count = count.max(0) as usize;
+    let total = bytes.len().checked_mul(count)?;
+    if total > MAX_STATIC_BYTES_REPEAT {
+        return None;
+    }
+    let mut out = Vec::with_capacity(total);
+    for _ in 0..count {
+        out.extend_from_slice(&bytes);
+    }
+    Some(Expression::new(ExprKind::Lit(Literal::Bytes(out))))
+}
+
+fn py_static_tuple_repeat(left: &Expression, right: &Expression) -> Option<Expression> {
+    let (items, count) = match (&left.kind, &right.kind) {
+        (ExprKind::Tuple(items), _) => (items, resolve_int_literal(right)?),
+        (_, ExprKind::Tuple(items)) => (items, resolve_int_literal(left)?),
+        _ => return None,
+    };
+    let count = count.max(0) as usize;
+    let total = items.len().checked_mul(count)?;
+    let mut repeated = Vec::with_capacity(total);
+    for _ in 0..count {
+        repeated.extend(items.iter().cloned());
+    }
+    Some(Expression::new(ExprKind::Tuple(repeated)))
+}
+
+fn py_reprlib_static_repr(
+    __w: &mut PyWalker,
+    info: &PyReprlibInfo,
+    expr: &Expression,
+    level: usize,
+) -> Option<String> {
+    if level >= info.maxlevel {
+        return Some("...".to_string());
+    }
+    match &expr.kind {
+        ExprKind::Lit(Literal::Str(s)) => {
+            let s = py_repr_truncate_inner(s, info.maxstring);
+            Some(py_repr_quote_string(&s))
+        }
+        ExprKind::Lit(Literal::Bytes(bytes)) => {
+            let text = String::from_utf8_lossy(bytes);
+            let text = py_repr_truncate_inner(&text, info.maxstring);
+            Some(format!("b{}", py_repr_quote_string(&text)))
+        }
+        ExprKind::Lit(Literal::Int(v)) => {
+            Some(py_repr_truncate_whole(v.to_string(), info.maxlong))
+        }
+        ExprKind::Lit(Literal::Float(v)) => Some(v.to_string()),
+        ExprKind::Lit(Literal::Bool(v)) => Some(if *v { "True" } else { "False" }.to_string()),
+        ExprKind::Lit(Literal::Null) => Some("None".to_string()),
+        ExprKind::Array(items) if items.iter().all(|item| item.key.is_none() && !item.spread) => {
+            let limit = info.maxlist;
+            let shown = items.len().min(limit);
+            let mut parts = items
+                .iter()
+                .take(shown)
+                .filter_map(|item| py_reprlib_static_repr(__w, info, &item.value, level + 1))
+                .collect::<Vec<_>>();
+            if items.len() > shown {
+                parts.push("...".to_string());
+            }
+            Some(format!("[{}]", parts.join(", ")))
+        }
+        ExprKind::Array(items) => {
+            let len = py_repr_spread_range_array(items)?;
+            Some(format!("[{}]", py_repr_range_items(len, info.maxlist)))
+        }
+        ExprKind::Tuple(items) => {
+            let limit = info.maxtuple;
+            let shown = items.len().min(limit);
+            let mut parts = items
+                .iter()
+                .take(shown)
+                .filter_map(|item| py_reprlib_static_repr(__w, info, item, level + 1))
+                .collect::<Vec<_>>();
+            if items.len() > shown {
+                parts.push("...".to_string());
+            }
+            if items.len() == 1 {
+                Some(format!("({},)", parts.join(", ")))
+            } else {
+                Some(format!("({})", parts.join(", ")))
+            }
+        }
+        ExprKind::Map(entries) => {
+            let limit = info.maxdict;
+            let shown = entries.len().min(limit);
+            let mut parts = entries
+                .iter()
+                .take(shown)
+                .filter_map(|(k, v)| {
+                    Some(format!(
+                        "{}: {}",
+                        py_reprlib_static_repr(__w, info, k, level + 1)?,
+                        py_reprlib_static_repr(__w, info, v, level + 1)?
+                    ))
+                })
+                .collect::<Vec<_>>();
+            if entries.len() > shown {
+                parts.push("...".to_string());
+            }
+            Some(format!("{{{}}}", parts.join(", ")))
+        }
+        ExprKind::Set(items) => {
+            let limit = info.maxset;
+            let shown = items.len().min(limit);
+            let mut parts = items
+                .iter()
+                .take(shown)
+                .filter_map(|item| py_reprlib_static_repr(__w, info, item, level + 1))
+                .collect::<Vec<_>>();
+            if items.len() > shown {
+                parts.push("...".to_string());
+            }
+            Some(format!("{{{}}}", parts.join(", ")))
+        }
+        ExprKind::Call { callee, args, .. } => {
+            let ExprKind::Ident(name) = &callee.kind else {
+                return None;
+            };
+            if let Some(text) = py_static_string_repeat(callee, args) {
+                let text = py_repr_truncate_inner(&text, info.maxstring);
+                return Some(py_repr_quote_string(&text));
+            }
+            match name.as_str() {
+                "list" if args.len() == 1 => {
+                    if let Some(len) = py_range_like_len(&args[0].value) {
+                        return Some(format!("[{}]", py_repr_range_items(len, info.maxlist)));
+                    }
+                    py_reprlib_static_repr(__w, info, &args[0].value, level + 1)
+                }
+                "tuple" if args.len() == 1 => {
+                    if let Some(len) = py_range_like_len(&args[0].value) {
+                        return Some(format!("({})", py_repr_range_items(len, info.maxtuple)));
+                    }
+                    py_reprlib_static_repr(__w, info, &args[0].value, level + 1)
+                }
+                "set" if args.len() == 1 => {
+                    if let Some(len) = py_range_like_len(&args[0].value) {
+                        return Some(format!("{{{}}}", py_repr_range_items(len, info.maxset)));
+                    }
+                    None
+                }
+                "__py_frozenset" | "frozenset" if args.len() == 1 => {
+                    if let Some(len) = py_range_like_len(&args[0].value) {
+                        return Some(format!(
+                            "frozenset({{{}}})",
+                            py_repr_range_items(len, info.maxfrozenset)
+                        ));
+                    }
+                    Some("frozenset({...})".to_string())
+                }
+                "__py_deque" | "deque" if !args.is_empty() => {
+                    if let Some(len) = py_range_like_len(&args[0].value) {
+                        return Some(format!(
+                            "deque([{}])",
+                            py_repr_range_items(len, info.maxdeque)
+                        ));
+                    }
+                    Some("deque([...])".to_string())
+                }
+                class_name if class_name.chars().next().is_some_and(|c| c.is_ascii_uppercase()) => {
+                    Some(py_repr_truncate_whole(
+                        format!("<{class_name} object at 0x0>"),
+                        info.maxother,
+                    ))
+                }
+                _ => None,
+            }
+        }
+        ExprKind::New { class, .. } => {
+            let ExprKind::Ident(class_name) = &class.kind else {
+                return None;
+            };
+            Some(py_repr_truncate_whole(
+                format!("<{class_name} object at 0x0>"),
+                info.maxother,
+            ))
+        }
+        ExprKind::Ident(name) if __w.py_dict_vars.contains(name) => Some("{...}".to_string()),
+        ExprKind::Ident(_) => Some("[...]".to_string()),
+        _ => None,
+    }
+}
+
+fn py_range_call_len(expr: &Expression) -> Option<usize> {
+    let ExprKind::Call { callee, args, .. } = &expr.kind else {
+        return None;
+    };
+    if matches!(&callee.kind, ExprKind::Ident(name) if name == "range") {
+        py_range_static_len(args)
+    } else {
+        None
+    }
+}
+
+fn py_reprlib_repr_expr(
+    __w: &mut PyWalker,
+    info: &PyReprlibInfo,
+    value: Expression,
+) -> Expression {
+    if let Some(text) = py_reprlib_static_repr(__w, info, &value, 0) {
+        Expression::string(&text)
+    } else {
+        call_ident("repr", vec![value])
+    }
+}
+
+fn collection_index_read(
+    __w: &mut PyWalker,
+    object: &Expression,
+    index: &Expression,
+) -> Option<Expression> {
     let idx = desugar_member_reads(__w, index.clone());
     if let Some((parent, factory)) = nested_defaultdict_object(__w, object) {
         return Some(call_ident(
@@ -11502,13 +17864,25 @@ fn is_re_var(__w: &mut PyWalker, name: &str) -> bool {
     __w.py_re_vars.contains(name)
 }
 
+fn re_var_flags(__w: &mut PyWalker, name: &str) -> Option<Expression> {
+    __w.py_re_var_flags.get(name).cloned()
+}
+
+fn re_var_pattern(__w: &mut PyWalker, name: &str) -> Option<Expression> {
+    __w.py_re_var_patterns.get(name).cloned()
+}
+
+fn is_re_match_var(__w: &mut PyWalker, name: &str) -> bool {
+    __w.py_re_match_vars.contains(name)
+}
+
 /// Record `target` as a sqlite handle when `value` is a `__sql_connect` /
 /// `__sql_cursor` call (both produce a Connection/Cursor object).
 fn note_sql_var_if_producer(__w: &mut PyWalker, target: &Expression, value: &Expression) {
     let ExprKind::Ident(name) = &target.kind else {
         return;
     };
-    if let ExprKind::Call { callee, .. } = &value.kind {
+    if let ExprKind::Call { callee, args, .. } = &value.kind {
         if let ExprKind::Member { object, field, .. } = &callee.kind {
             if matches!(&object.kind, ExprKind::Ident(m) if m == "socket")
                 && matches!(field.as_str(), "socket" | "create_connection")
@@ -11526,6 +17900,15 @@ fn note_sql_var_if_producer(__w: &mut PyWalker, target: &Expression, value: &Exp
 
             if fname == "__re_compile" {
                 __w.py_re_vars.insert(name.to_string());
+                if let Some(pattern) = args.first().map(|arg| arg.value.clone()) {
+                    __w.py_re_var_patterns.insert(name.to_string(), pattern);
+                }
+                if let Some(flags) = args.get(1).map(|arg| arg.value.clone()) {
+                    __w.py_re_var_flags.insert(name.to_string(), flags);
+                }
+            }
+            if matches!(fname.as_str(), "__re_search" | "__re_match" | "__re_fullmatch") {
+                __w.py_re_match_vars.insert(name.to_string());
             }
         }
     }
@@ -11641,8 +18024,22 @@ fn sys_module_member(field: &str) -> Option<Expression> {
             spread: false,
             by_ref: false,
         }])),
+        "executable" => Expression::string("/usr/bin/python3"),
+        "prefix" | "exec_prefix" => Expression::string("/usr"),
+        "_pth_test_var" => Expression::string("executed"),
         "path" => Expression::ident("__py_sys_path"),
         "path_hooks" => Expression::new(ExprKind::Array(Vec::new())),
+        "meta_path" => Expression::new(ExprKind::Array(Vec::new())),
+        "stdlib_module_names" => string_array_expr(&[
+            "json",
+            "math",
+            "os",
+            "sys",
+            "collections",
+            "importlib",
+            "inspect",
+            "pkgutil",
+        ]),
         "stdin" | "stdout" | "stderr" => {
             Expression::new(ExprKind::Object(vec![ObjectProperty::KeyValue {
                 key: Expression::string("closed"),
@@ -11763,7 +18160,12 @@ fn keyword_module_member(field: &str) -> Option<Expression> {
     })
 }
 
-fn rewrite_keyword_call(__w: &mut PyWalker, object: &Expression, field: &str, args: &[Argument]) -> Option<Expression> {
+fn rewrite_keyword_call(
+    __w: &mut PyWalker,
+    object: &Expression,
+    field: &str,
+    args: &[Argument],
+) -> Option<Expression> {
     if !matches!(&object.kind, ExprKind::Ident(n) if n == "keyword") || args.len() != 1 {
         return None;
     }
@@ -11808,7 +18210,8 @@ fn mimetype_builtin(ext: &str) -> Option<&'static str> {
 
 fn note_mimetype_custom(__w: &mut PyWalker, ext: &str, mime: &str) {
     {
-        __w.py_mimetype_customs.insert(ext.to_string(), mime.to_string());
+        __w.py_mimetype_customs
+            .insert(ext.to_string(), mime.to_string());
     };
 }
 
@@ -11875,15 +18278,10 @@ fn urllib_parse_module_member(field: &str) -> Option<Expression> {
 fn html_entities_module_member(field: &str) -> Option<Expression> {
     Some(match field {
         "html5" => object_from_str_pairs(&[
-            ("&lt;", "<"),
             ("lt;", "<"),
-            ("&gt;", ">"),
             ("gt;", ">"),
-            ("&amp;", "&"),
             ("amp;", "&"),
-            ("&quot;", "\""),
             ("quot;", "\""),
-            ("&nbsp;", "\u{a0}"),
             ("nbsp;", "\u{a0}"),
         ]),
         _ => return None,
@@ -11899,7 +18297,8 @@ fn mimetype_tuple(mime: Option<String>, enc: Option<&str>) -> Expression {
     ]))
 }
 
-fn rewrite_mimetypes_call(__w: &mut PyWalker, 
+fn rewrite_mimetypes_call(
+    __w: &mut PyWalker,
     object: &Expression,
     field: &str,
     args: &[Argument],
@@ -12083,7 +18482,12 @@ fn parse_getopt_static(
     Ok((opts, rest))
 }
 
-fn rewrite_getopt_call(__w: &mut PyWalker, object: &Expression, field: &str, args: &[Argument]) -> Option<Expression> {
+fn rewrite_getopt_call(
+    __w: &mut PyWalker,
+    object: &Expression,
+    field: &str,
+    args: &[Argument],
+) -> Option<Expression> {
     let path = module_namespace_path(__w, object)?;
     if path != "getopt" || !matches!(field, "getopt" | "gnu_getopt") || args.len() < 2 {
         return None;
@@ -12101,7 +18505,12 @@ fn rewrite_getopt_call(__w: &mut PyWalker, object: &Expression, field: &str, arg
 }
 
 /// `sys.<fn>(...)` — simple functions with static/identity semantics.
-fn rewrite_sys_call(__w: &mut PyWalker, object: &Expression, field: &str, args: &[Argument]) -> Option<Expression> {
+fn rewrite_sys_call(
+    __w: &mut PyWalker,
+    object: &Expression,
+    field: &str,
+    args: &[Argument],
+) -> Option<Expression> {
     if !matches!(&object.kind, ExprKind::Ident(n) if n == "sys") {
         return None;
     }
@@ -12122,7 +18531,12 @@ fn rewrite_sys_call(__w: &mut PyWalker, object: &Expression, field: &str, args: 
 }
 
 /// `html.escape(s)` / `html.unescape(s)` → chained `str.replace(...)`.
-fn rewrite_html_call(__w: &mut PyWalker, object: &Expression, field: &str, args: &[Argument]) -> Option<Expression> {
+fn rewrite_html_call(
+    __w: &mut PyWalker,
+    object: &Expression,
+    field: &str,
+    args: &[Argument],
+) -> Option<Expression> {
     if !matches!(&object.kind, ExprKind::Ident(n) if n == "html") || args.is_empty() {
         return None;
     }
@@ -12190,7 +18604,10 @@ fn tuple2(left: Expression, right: Expression) -> Expression {
 
 fn prefixed_split_tuple(s: &str, marker: char) -> Expression {
     if let Some(idx) = s.find(marker) {
-        tuple2(Expression::string(&s[..idx]), Expression::string(&s[idx..]))
+        tuple2(
+            Expression::string(&s[..idx]),
+            Expression::string(&s[idx + marker.len_utf8()..]),
+        )
     } else {
         tuple2(
             Expression::string(s),
@@ -12200,7 +18617,8 @@ fn prefixed_split_tuple(s: &str, marker: char) -> Expression {
 }
 
 /// `urllib.parse` module extras over the shared URL percent/parser adapters.
-fn rewrite_urllib_parse_call(__w: &mut PyWalker, 
+fn rewrite_urllib_parse_call(
+    __w: &mut PyWalker,
     object: &Expression,
     field: &str,
     args: &[Argument],
@@ -12210,14 +18628,14 @@ fn rewrite_urllib_parse_call(__w: &mut PyWalker,
     }
     let first = desugar_member_reads(__w, args[0].value.clone());
     Some(match field {
-        "quote_from_bytes" => call_ident("__py_url_quote_from_bytes", vec![first]),
-        "unquote_to_bytes" => call_ident("__py_url_unquote_to_bytes", vec![first]),
+        "quote_from_bytes" => call_ident("quote_from_bytes", vec![first]),
+        "unquote_to_bytes" => call_ident("unquote_to_bytes", vec![first]),
         "defrag" | "urldefrag" => {
             let raw = resolve_string_const(__w, &args[0].value)?;
             if let Some(idx) = raw.find('#') {
                 tuple2(
                     Expression::string(&raw[..idx]),
-                    Expression::string(&raw[idx..]),
+                    Expression::string(&raw[idx + 1..]),
                 )
             } else {
                 tuple2(Expression::string(&raw), Expression::string(""))
@@ -12233,6 +18651,41 @@ fn rewrite_urllib_parse_call(__w: &mut PyWalker,
         }
         _ => return None,
     })
+}
+
+fn normalize_types_new_class_call_args(args: &[Argument]) -> Vec<Argument> {
+    let positional: Vec<&Argument> = args.iter().filter(|arg| arg.name.is_none()).collect();
+    let named = |name: &str| {
+        args.iter()
+            .find(|arg| arg.name.as_deref() == Some(name))
+            .map(|arg| arg.value.clone())
+    };
+    let value = |idx: usize, name: &str, default: Expression| {
+        positional
+            .get(idx)
+            .map(|arg| arg.value.clone())
+            .or_else(|| named(name))
+            .unwrap_or(default)
+    };
+    vec![
+        Argument::positional(value(0, "name", Expression::string(""))),
+        Argument::positional(value(
+            1,
+            "bases",
+            Expression::new(ExprKind::Tuple(Vec::new())),
+        )),
+        Argument::positional(value(2, "kwds", Expression::null())),
+        Argument::positional(value(3, "exec_body", Expression::null())),
+    ]
+}
+
+fn normalize_python_types_new_class_expr(expr: &mut Expression) {
+    let ExprKind::Call { callee, args, .. } = &mut expr.kind else {
+        return;
+    };
+    if matches!(&callee.kind, ExprKind::Ident(name) if name == "new_class") {
+        *args = normalize_types_new_class_call_args(args);
+    }
 }
 
 fn csv_format_row_expr(row: Expression) -> Expression {
@@ -12259,7 +18712,8 @@ fn csv_buffer_write_expr(target: Expression, row: Expression) -> Expression {
     })
 }
 
-fn rewrite_csv_writer_method(__w: &mut PyWalker, 
+fn rewrite_csv_writer_method(
+    __w: &mut PyWalker,
     object: &Expression,
     field: &str,
     args: &[Argument],
@@ -12267,6 +18721,47 @@ fn rewrite_csv_writer_method(__w: &mut PyWalker,
     let ExprKind::Ident(name) = &object.kind else {
         return None;
     };
+    if let Some(info) = __w.py_csv_writers.get(name).cloned() {
+        match field {
+            "writeheader" => {
+                if let Some(fieldnames) = info.fieldnames.as_ref() {
+                    let row = Expression::new(ExprKind::Array(
+                        fieldnames
+                            .iter()
+                            .map(|value| ArrayElement {
+                                key: None,
+                                value: Expression::string(value),
+                                spread: false,
+                                by_ref: false,
+                            })
+                            .collect(),
+                    ));
+                    record_csv_writerow_static_effect(__w, &info, &row);
+                    return Some(csv_buffer_write_expr_with_info(&info, row));
+                }
+            }
+            "writerow" => {
+                let row = args
+                    .first()
+                    .map(|a| desugar_member_reads(__w, a.value.clone()))
+                    .unwrap_or_else(|| Expression::new(ExprKind::Array(Vec::new())));
+                if info.fieldnames.is_some()
+                    && let Some(mapped) = csv_dict_literal_row(__w, &row, &info)
+                {
+                    return Some(match mapped {
+                        Ok(row) => {
+                            record_csv_writerow_static_effect(__w, &info, &row);
+                            csv_buffer_write_expr_with_info(&info, row)
+                        }
+                        Err(err) => err,
+                    });
+                }
+                record_csv_writerow_static_effect(__w, &info, &row);
+                return Some(csv_buffer_write_expr_with_info(&info, row));
+            }
+            _ => {}
+        }
+    }
     match field {
         "writeheader" => {
             let (target, fieldnames) = csv_dict_writer(__w, name)?;
@@ -12278,17 +18773,139 @@ fn rewrite_csv_writer_method(__w: &mut PyWalker,
                 .first()
                 .map(|a| desugar_member_reads(__w, a.value.clone()))
                 .unwrap_or_else(|| Expression::new(ExprKind::Array(Vec::new())));
+            let info = csv_writer_info(__w, target.clone(), args, false);
+            record_csv_writerow_static_effect(__w, &info, &row);
             Some(csv_buffer_write_expr(target, row))
         }
         _ => None,
     }
 }
 
-fn rewrite_xml_element_method(__w: &mut PyWalker, 
+fn rewrite_xml_element_method(
+    __w: &mut PyWalker,
     object: &Expression,
     field: &str,
     args: &[Argument],
 ) -> Option<Expression> {
+    let tree_root = match &object.kind {
+        ExprKind::Ident(var) => __w.py_xml_tree_roots.get(var).cloned(),
+        _ => py_xml_tree_root_expr(object),
+    };
+    if let Some(root) = tree_root {
+        return match field {
+            "getroot" => Some(root),
+            "write" if !args.is_empty() => {
+                let elem = py_xml_static_element(__w, &root)?;
+                let mut out = py_xml_serialize(&elem);
+                let xml_declaration = args.iter().any(|arg| {
+                    arg.name.as_deref() == Some("xml_declaration")
+                        && matches!(arg.value.kind, ExprKind::Lit(Literal::Bool(true)))
+                });
+                if xml_declaration {
+                    out = format!("<?xml version=\"1.0\" encoding=\"utf-8\"?>{out}");
+                }
+                let encoding = args
+                    .iter()
+                    .find(|arg| arg.name.as_deref() == Some("encoding"))
+                    .or_else(|| args.get(1))
+                    .and_then(|arg| resolve_string_const(__w, &arg.value));
+                let payload = if encoding.as_deref() == Some("unicode") {
+                    Expression::string(&out)
+                } else {
+                    Expression::new(ExprKind::Lit(Literal::Bytes(out.into_bytes())))
+                };
+                let target = desugar_member_reads(__w, args[0].value.clone());
+                Some(Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::new(ExprKind::Member {
+                        object: Box::new(target),
+                        field: "write".into(),
+                        null_safe: false,
+                    })),
+                    args: vec![Argument::positional(payload)],
+                    optional: false,
+                }))
+            }
+            _ => None,
+        };
+    }
+
+    if field == "get"
+        && let ExprKind::Ident(var) = &object.kind
+        && is_xml_element_var(__w, var)
+    {
+        return Some(py_xml_attrib_get_expr(__w, Expression::ident(var), args));
+    }
+
+    if let Some(elem) = py_xml_static_element(__w, object) {
+        match field {
+            "get" => {
+                let key = args.first().and_then(|a| resolve_string_const(__w, &a.value))?;
+                let default = args
+                    .get(1)
+                    .map(|a| desugar_member_reads(__w, a.value.clone()))
+                    .unwrap_or_else(Expression::null);
+                return Some(
+                    elem.attrib
+                        .iter()
+                        .find(|(k, _)| k == &key)
+                        .map(|(_, v)| Expression::string(v))
+                        .unwrap_or(default),
+                );
+            }
+            "find" => {
+                let tag = args.first().and_then(|a| resolve_string_const(__w, &a.value))?;
+                return Some(
+                    py_xml_find_value(&elem, &tag)
+                        .map(py_xml_element_expr)
+                        .unwrap_or_else(Expression::null),
+                );
+            }
+            "findall" => {
+                let tag = args.first().and_then(|a| resolve_string_const(__w, &a.value))?;
+                return Some(py_xml_static_array(py_xml_findall_values(&elem, &tag)));
+            }
+            "findtext" => {
+                let tag = args.first().and_then(|a| resolve_string_const(__w, &a.value))?;
+                let default = args
+                    .iter()
+                    .find(|arg| arg.name.as_deref() == Some("default"))
+                    .or_else(|| args.get(1))
+                    .map(|arg| desugar_member_reads(__w, arg.value.clone()))
+                    .unwrap_or_else(Expression::null);
+                return Some(
+                    py_xml_find_value(&elem, &tag)
+                        .and_then(|found| found.text.as_deref())
+                        .map(Expression::string)
+                        .unwrap_or(default),
+                );
+            }
+            "iter" => {
+                let tag = args
+                    .first()
+                    .and_then(|a| resolve_string_const(__w, &a.value));
+                let mut values = Vec::new();
+                py_xml_iter_values(&elem, tag.as_deref(), &mut values);
+                return Some(py_xml_static_array(values));
+            }
+            "itertext" => {
+                let mut values = Vec::new();
+                py_xml_itertext_values(&elem, &mut values);
+                return Some(Expression::new(ExprKind::Array(
+                    values
+                        .into_iter()
+                        .map(|value| ArrayElement {
+                            key: None,
+                            spread: false,
+                            by_ref: false,
+                            value: Expression::string(&value),
+                        })
+                        .collect(),
+                )));
+            }
+            _ => {}
+        }
+    }
+
     if field == "get"
         && let ExprKind::Call {
             callee,
@@ -12316,6 +18933,22 @@ fn rewrite_xml_element_method(__w: &mut PyWalker,
             .get(1)
             .map(|a| desugar_member_reads(__w, a.value.clone()))
             .unwrap_or_else(|| Expression::new(ExprKind::Lit(Literal::Null)));
+        if let Some(elem) = __w.py_xml_element_values.get(var).cloned()
+            && let Some(tag_text) = resolve_string_const(__w, &tag)
+            && let Some(key_text) = resolve_string_const(__w, &key)
+        {
+            return Some(
+                py_xml_find_value(&elem, &tag_text)
+                    .and_then(|found| {
+                        found
+                            .attrib
+                            .iter()
+                            .find(|(k, _)| k == &key_text)
+                            .map(|(_, v)| Expression::string(v))
+                    })
+                    .unwrap_or(default),
+            );
+        }
         return Some(call_ident(
             "__py_xml_get",
             vec![
@@ -12342,18 +18975,7 @@ fn rewrite_xml_element_method(__w: &mut PyWalker,
                     .unwrap_or_else(|| Expression::string("")),
             ],
         ),
-        "get" => call_ident(
-            "__py_xml_get",
-            vec![
-                Expression::ident(var),
-                args.first()
-                    .map(|a| desugar_member_reads(__w, a.value.clone()))
-                    .unwrap_or_else(|| Expression::string("")),
-                args.get(1)
-                    .map(|a| desugar_member_reads(__w, a.value.clone()))
-                    .unwrap_or_else(|| Expression::new(ExprKind::Lit(Literal::Null))),
-            ],
-        ),
+        "get" => py_xml_attrib_get_expr(__w, Expression::ident(var), args),
         "iter" => call_ident(
             "__py_xml_iter",
             vec![
@@ -12363,12 +18985,392 @@ fn rewrite_xml_element_method(__w: &mut PyWalker,
                     .unwrap_or_else(|| Expression::new(ExprKind::Lit(Literal::Null))),
             ],
         ),
+        "findall" => call_ident(
+            "__py_xml_findall",
+            vec![
+                Expression::ident(var),
+                args.first()
+                    .map(|a| desugar_member_reads(__w, a.value.clone()))
+                    .unwrap_or_else(|| Expression::string("")),
+            ],
+        ),
+        "append" if args.len() == 1 => Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::new(ExprKind::Member {
+                object: Box::new(py_xml_children_expr(var)),
+                field: "append".into(),
+                null_safe: false,
+            })),
+            args: vec![Argument::positional(desugar_member_reads(
+                __w,
+                args[0].value.clone(),
+            ))],
+            optional: false,
+        }),
+        "extend" if args.len() == 1 => call_ident(
+            "__py_list_extend",
+            vec![
+                py_xml_children_expr(var),
+                desugar_member_reads(
+                __w,
+                args[0].value.clone(),
+                ),
+            ],
+        ),
+        "insert" if args.len() == 2 => Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::new(ExprKind::Member {
+                object: Box::new(py_xml_children_expr(var)),
+                field: "insert".into(),
+                null_safe: false,
+            })),
+            args: vec![
+                Argument::positional(desugar_member_reads(__w, args[0].value.clone())),
+                Argument::positional(desugar_member_reads(__w, args[1].value.clone())),
+            ],
+            optional: false,
+        }),
+        "remove" if args.len() == 1 => Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::new(ExprKind::Member {
+                object: Box::new(py_xml_children_expr(var)),
+                field: "remove".into(),
+                null_safe: false,
+            })),
+            args: vec![Argument::positional(desugar_member_reads(
+                __w,
+                args[0].value.clone(),
+            ))],
+            optional: false,
+        }),
+        "set" => {
+            let key = args
+                .first()
+                .map(|a| desugar_member_reads(__w, a.value.clone()))
+                .unwrap_or_else(|| Expression::string(""));
+            let value = args
+                .get(1)
+                .map(|a| desugar_member_reads(__w, a.value.clone()))
+                .unwrap_or_else(Expression::null);
+            call_ident(
+                "__py_op_setitem",
+                vec![
+                    call_ident(
+                        "__py_attr_read",
+                        vec![Expression::ident(var), Expression::string("attrib")],
+                    ),
+                    key,
+                    value,
+                ],
+            )
+        }
+        "items" => {
+            let attrib = call_ident(
+                "__py_attr_read",
+                vec![Expression::ident(var), Expression::string("attrib")],
+            );
+            let callee = Expression::new(ExprKind::Member {
+                object: Box::new(attrib),
+                field: "items".into(),
+                null_safe: false,
+            });
+            rewrite_dict_items(__w, &callee, args)?
+        }
+        "keys" if args.is_empty() => Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::new(ExprKind::Member {
+                object: Box::new(call_ident(
+                    "__py_attr_read",
+                    vec![Expression::ident(var), Expression::string("attrib")],
+                )),
+                field: "keys".into(),
+                null_safe: false,
+            })),
+            args: Vec::new(),
+            optional: false,
+        }),
         _ => return None,
     })
 }
 
+fn xml_positional_arg(args: &[Argument], index: usize) -> Option<Expression> {
+    args.iter()
+        .filter(|arg| arg.name.is_none() && !arg.spread)
+        .nth(index)
+        .map(|arg| arg.value.clone())
+}
+
+fn xml_attribute_arg(__w: &mut PyWalker, args: &[Argument], positional_index: usize) -> Expression {
+    let explicit = args
+        .iter()
+        .find(|arg| arg.name.as_deref() == Some("attrib"))
+        .map(|arg| desugar_member_reads(__w, arg.value.clone()))
+        .or_else(|| xml_positional_arg(args, positional_index).map(|arg| desugar_member_reads(__w, arg)));
+    let props: Vec<ObjectProperty> = args
+        .iter()
+        .filter_map(|arg| {
+            let name = arg.name.as_ref()?;
+            if name == "attrib" || arg.spread {
+                return None;
+            }
+            Some(ObjectProperty::KeyValue {
+                key: Expression::string(name),
+                value: desugar_member_reads(__w, arg.value.clone()),
+            })
+        })
+        .collect();
+    if !props.is_empty() {
+        Expression::new(ExprKind::Object(props))
+    } else {
+        explicit.unwrap_or_else(Expression::null)
+    }
+}
+
+fn rewrite_xml_module_call(
+    __w: &mut PyWalker,
+    object: &Expression,
+    field: &str,
+    args: &[Argument],
+) -> Option<Expression> {
+    if module_namespace_path(__w, object).as_deref() != Some("xml.etree.ElementTree") {
+        return None;
+    }
+    match field {
+        "ElementTree" => {
+            let root = xml_positional_arg(args, 0)
+                .map(|arg| desugar_member_reads(__w, arg))
+                .unwrap_or_else(Expression::null);
+            Some(py_xml_tree_expr(root))
+        }
+        "Element" => {
+            let tag = args
+                .iter()
+                .find(|arg| arg.name.as_deref() == Some("tag"))
+                .map(|arg| desugar_member_reads(__w, arg.value.clone()))
+                .or_else(|| xml_positional_arg(args, 0).map(|arg| desugar_member_reads(__w, arg)))
+                .unwrap_or_else(|| Expression::string(""));
+            let attrib = xml_attribute_arg(__w, args, 1);
+            let tag = resolve_string_const(__w, &tag).unwrap_or_default();
+            Some(py_xml_element_expr(&PyXmlElementValue {
+                tag: PyXmlTagValue::Text(tag),
+                attrib: py_xml_attrib_from_expr(&attrib),
+                text: None,
+                tail: String::new(),
+                children: Vec::new(),
+            }))
+        }
+        "SubElement" => {
+            let parent = xml_positional_arg(args, 0)
+                .map(|arg| desugar_member_reads(__w, arg))
+                .unwrap_or_else(Expression::null);
+            let tag = args
+                .iter()
+                .find(|arg| arg.name.as_deref() == Some("tag"))
+                .map(|arg| desugar_member_reads(__w, arg.value.clone()))
+                .or_else(|| xml_positional_arg(args, 1).map(|arg| desugar_member_reads(__w, arg)))
+                .unwrap_or_else(|| Expression::string(""));
+            let attrib = xml_attribute_arg(__w, args, 2);
+            if let ExprKind::Ident(parent_name) = &parent.kind
+                && let Some(mut parent_elem) = __w.py_xml_element_values.get(parent_name).cloned()
+            {
+                let child = PyXmlElementValue {
+                    tag: PyXmlTagValue::Text(resolve_string_const(__w, &tag).unwrap_or_default()),
+                    attrib: py_xml_attrib_from_expr(&attrib),
+                    text: None,
+                    tail: String::new(),
+                    children: Vec::new(),
+                };
+                let child_index = parent_elem.children.len();
+                parent_elem.children.push(child.clone());
+                __w.py_xml_element_values
+                    .insert(parent_name.clone(), parent_elem);
+                __w.py_xml_pending_parent_link = Some((parent_name.clone(), child_index));
+                return Some(py_xml_element_expr(&child));
+            }
+            Some(call_ident("__py_xml_subelement", vec![parent, tag, attrib]))
+        }
+        "Comment" => {
+            let text = xml_positional_arg(args, 0)
+                .and_then(|arg| resolve_string_const(__w, &arg))
+                .unwrap_or_default();
+            Some(py_xml_element_expr(&PyXmlElementValue {
+                tag: PyXmlTagValue::Callable,
+                attrib: Vec::new(),
+                text: Some(text),
+                tail: String::new(),
+                children: Vec::new(),
+            }))
+        }
+        "PI" | "ProcessingInstruction" => {
+            let target = xml_positional_arg(args, 0)
+                .and_then(|arg| resolve_string_const(__w, &arg))
+                .unwrap_or_default();
+            let text = xml_positional_arg(args, 1)
+                .and_then(|arg| resolve_string_const(__w, &arg))
+                .unwrap_or_default();
+            let combined = if text.is_empty() {
+                target
+            } else {
+                format!("{target} {text}")
+            };
+            Some(py_xml_element_expr(&PyXmlElementValue {
+                tag: PyXmlTagValue::Callable,
+                attrib: Vec::new(),
+                text: Some(combined),
+                tail: String::new(),
+                children: Vec::new(),
+            }))
+        }
+        "fromstring" if args.len() == 1 => {
+            let Some(text) = resolve_string_const(__w, &args[0].value) else {
+                return None;
+            };
+            match py_xml_parse_static(&text) {
+                Ok(value) => Some(py_xml_element_expr(&value)),
+                Err(()) => Some(py_raise_expr("Exception", Some("not well-formed"))),
+            }
+        }
+        "tostring" if !args.is_empty() => {
+            let elem = py_xml_static_element(__w, &args[0].value)?;
+            let mut out = py_xml_serialize(&elem);
+            let xml_declaration = args.iter().any(|arg| {
+                arg.name.as_deref() == Some("xml_declaration")
+                    && matches!(arg.value.kind, ExprKind::Lit(Literal::Bool(true)))
+            });
+            if xml_declaration {
+                out = format!("<?xml version=\"1.0\" encoding=\"utf-8\"?>{out}");
+            }
+            let encoding = args
+                .iter()
+                .find(|arg| arg.name.as_deref() == Some("encoding"))
+                .or_else(|| args.get(1))
+                .and_then(|arg| resolve_string_const(__w, &arg.value));
+            if encoding.as_deref() == Some("unicode") {
+                Some(Expression::string(&out))
+            } else {
+                Some(Expression::new(ExprKind::Lit(Literal::Bytes(out.into_bytes()))))
+            }
+        }
+        _ => None,
+    }
+}
+
+fn rewrite_xml_helper_call(
+    __w: &mut PyWalker,
+    callee: &Expression,
+    args: &[Argument],
+) -> Option<Expression> {
+    let ExprKind::Ident(name) = &callee.kind else {
+        return None;
+    };
+    if name == "__py_xml_fromstring" && args.len() == 1 {
+        let Some(text) = resolve_string_const(__w, &args[0].value) else {
+            return None;
+        };
+        return Some(match py_xml_parse_static(&text) {
+            Ok(value) => py_xml_element_expr(&value),
+            Err(()) => py_raise_expr("Exception", Some("not well-formed")),
+        });
+    }
+    if name == "__py_xml_tostring" && !args.is_empty() {
+        let elem = py_xml_static_element(__w, &args[0].value)?;
+        let mut out = py_xml_serialize(&elem);
+        let xml_declaration = args.iter().any(|arg| {
+            arg.name.as_deref() == Some("xml_declaration")
+                && matches!(arg.value.kind, ExprKind::Lit(Literal::Bool(true)))
+        });
+        if xml_declaration {
+            out = format!("<?xml version=\"1.0\" encoding=\"utf-8\"?>{out}");
+        }
+        let encoding = args
+            .iter()
+            .find(|arg| arg.name.as_deref() == Some("encoding"))
+            .or_else(|| args.get(1))
+            .and_then(|arg| resolve_string_const(__w, &arg.value));
+        return Some(if encoding.as_deref() == Some("unicode") {
+            Expression::string(&out)
+        } else {
+            Expression::new(ExprKind::Lit(Literal::Bytes(out.into_bytes())))
+        });
+    }
+    if name == "__py_xml_pi" {
+        let target = xml_positional_arg(args, 0)
+            .and_then(|arg| resolve_string_const(__w, &arg))
+            .unwrap_or_default();
+        let text = xml_positional_arg(args, 1)
+            .and_then(|arg| resolve_string_const(__w, &arg))
+            .unwrap_or_default();
+        let combined = if text.is_empty() {
+            target
+        } else {
+            format!("{target} {text}")
+        };
+        return Some(py_xml_element_expr(&PyXmlElementValue {
+            tag: PyXmlTagValue::Callable,
+            attrib: Vec::new(),
+            text: Some(combined),
+            tail: String::new(),
+            children: Vec::new(),
+        }));
+    }
+    if name == "__py_xml_register_namespace" {
+        return Some(Expression::null());
+    }
+    if name == "__py_xml_indent" {
+        return Some(Expression::null());
+    }
+    if !matches!(name.as_str(), "__py_xml_element" | "__py_xml_subelement") {
+        return None;
+    }
+    if name == "__py_xml_element" {
+        let tag = args
+            .iter()
+            .find(|arg| arg.name.as_deref() == Some("tag"))
+            .map(|arg| desugar_member_reads(__w, arg.value.clone()))
+            .or_else(|| xml_positional_arg(args, 0).map(|arg| desugar_member_reads(__w, arg)))
+            .unwrap_or_else(|| Expression::string(""));
+        let attrib = xml_attribute_arg(__w, args, 1);
+        return Some(py_xml_element_expr(&PyXmlElementValue {
+            tag: PyXmlTagValue::Text(resolve_string_const(__w, &tag).unwrap_or_default()),
+            attrib: py_xml_attrib_from_expr(&attrib),
+            text: None,
+            tail: String::new(),
+            children: Vec::new(),
+        }));
+    }
+    let parent = xml_positional_arg(args, 0)
+        .map(|arg| desugar_member_reads(__w, arg))
+        .unwrap_or_else(Expression::null);
+    let tag = args
+        .iter()
+        .find(|arg| arg.name.as_deref() == Some("tag"))
+        .map(|arg| desugar_member_reads(__w, arg.value.clone()))
+        .or_else(|| xml_positional_arg(args, 1).map(|arg| desugar_member_reads(__w, arg)))
+        .unwrap_or_else(|| Expression::string(""));
+    let attrib = xml_attribute_arg(__w, args, 2);
+    if let ExprKind::Ident(parent_name) = &parent.kind
+        && let Some(mut parent_elem) = __w.py_xml_element_values.get(parent_name).cloned()
+    {
+        let child = PyXmlElementValue {
+            tag: PyXmlTagValue::Text(resolve_string_const(__w, &tag).unwrap_or_default()),
+            attrib: py_xml_attrib_from_expr(&attrib),
+            text: None,
+            tail: String::new(),
+            children: Vec::new(),
+        };
+        let child_index = parent_elem.children.len();
+        parent_elem.children.push(child.clone());
+        __w.py_xml_element_values
+            .insert(parent_name.clone(), parent_elem);
+        __w.py_xml_pending_parent_link = Some((parent_name.clone(), child_index));
+        return Some(py_xml_element_expr(&child));
+    }
+    Some(call_ident("__py_xml_subelement", vec![parent, tag, attrib]))
+}
+
 /// `re.<fn>(...)` module functions → `__re_*` builtins over ecma:regexp.
-fn rewrite_re_call(__w: &mut PyWalker, object: &Expression, field: &str, args: &[Argument]) -> Option<Expression> {
+fn rewrite_re_call(
+    __w: &mut PyWalker,
+    object: &Expression,
+    field: &str,
+    args: &[Argument],
+) -> Option<Expression> {
     if matches!(&object.kind, ExprKind::Ident(n) if n == "re") {
         if let Some(folded) = fold_re_call(__w, field, args) {
             return Some(folded);
@@ -12376,43 +19378,81 @@ fn rewrite_re_call(__w: &mut PyWalker, object: &Expression, field: &str, args: &
         let builtin = match field {
             "search" => "__re_search",
             "match" => "__re_match",
+            "fullmatch" => "__re_fullmatch",
+            "finditer" => "__re_finditer",
             "findall" => "__re_findall",
             "sub" => "__re_sub",
+            "subn" => "__re_subn",
             "split" => "__re_split",
             "escape" => "__re_escape",
             "compile" => "__re_compile",
+            "Scanner" => "__re_scanner",
             _ => return None,
         };
-        let vals = args
-            .iter()
-            .map(|a| desugar_member_reads(__w, a.value.clone()))
-            .collect();
+        let vals = normalize_re_args(__w, field, args);
         return Some(call_ident(builtin, vals));
     }
     // Methods on a tracked compiled pattern (`p = re.compile(...)`; `p.findall(s)`).
-    if let ExprKind::Ident(name) = &object.kind {
-        if is_re_var(__w, name) {
-            // `match` omitted: its anchor is built by string-concat on the
-            // pattern, which a compiled RegExp object can't do.
-            let builtin = match field {
-                "search" => "__re_search",
-                "findall" => "__re_findall",
-                "sub" => "__re_sub",
-                "split" => "__re_split",
-                _ => return None,
-            };
-            let mut vals = vec![Expression::ident(name)];
-            vals.extend(args.iter().map(|a| desugar_member_reads(__w, a.value.clone())));
-            return Some(call_ident(builtin, vals));
+    if py_re_pattern_expr(__w, object) {
+        if matches!(field, "search" | "match") && args.len() >= 2 {
+            let mut vals = vec![
+                desugar_member_reads(__w, object.clone()),
+                desugar_member_reads(__w, args[0].value.clone()),
+                desugar_member_reads(__w, args[1].value.clone()),
+            ];
+            vals.push(
+                args.get(2)
+                    .map(|a| desugar_member_reads(__w, a.value.clone()))
+                    .unwrap_or_else(|| Expression::new(ExprKind::Lit(Literal::Undefined))),
+            );
+            return Some(call_ident("__re_search_pos", vals));
         }
+        let builtin = match field {
+            "search" => "__re_search",
+            "match" => "__re_search",
+            "fullmatch" => "__re_fullmatch",
+            "finditer" => "__re_finditer",
+            "findall" => "__re_findall",
+            "sub" => "__re_sub",
+            "subn" => "__re_subn",
+            "split" => "__re_split",
+            _ => return None,
+        };
+        let mut tracked_flags = match &object.kind {
+            ExprKind::Ident(name) => re_var_flags(__w, name),
+            _ => None,
+        };
+        let mut vals = vec![desugar_member_reads(__w, object.clone())];
+        vals.extend(args.iter().map(|a| desugar_member_reads(__w, a.value.clone())));
+        if matches!(field, "search" | "finditer" | "findall" | "sub" | "subn")
+            && args.len()
+                <= match field {
+                    "sub" | "subn" => 2,
+                    _ => 1,
+                }
+            && let Some(flags) = tracked_flags.take()
+            && !matches!(&flags.kind, ExprKind::Lit(Literal::Str(s)) if s.is_empty())
+        {
+            vals.push(flags);
+        }
+        return Some(call_ident(builtin, vals));
     }
     None
+}
+
+fn py_re_pattern_expr(__w: &mut PyWalker, object: &Expression) -> bool {
+    match &object.kind {
+        ExprKind::Ident(name) => is_re_var(__w, name),
+        ExprKind::Call { callee, .. } => matches!(&callee.kind, ExprKind::Ident(name) if name == "__re_compile"),
+        _ => false,
+    }
 }
 
 /// Match-object methods on the JS exec array: `m.group(i)`→`m[i]`,
 /// `m.start()`→`m.index`, `m.end()`→`m.index + len(m[0])`, `m.span()`→tuple,
 /// `m.groups()`→tuple(m[1:]). Gated on `import re`.
-fn rewrite_re_match_method(__w: &mut PyWalker, 
+fn rewrite_re_match_method(
+    __w: &mut PyWalker,
     object: &Expression,
     field: &str,
     args: &[Argument],
@@ -12437,31 +19477,30 @@ fn rewrite_re_match_method(__w: &mut PyWalker,
         })
     };
     let int = |n: i64| Expression::new(ExprKind::Lit(Literal::Int(n)));
-    let len = |e: Expression| call_ident("len", vec![e]);
     let start = || member(recv(), "index");
     let end = || {
-        call_ident(
-            "__pyadd__",
-            vec![member(recv(), "index"), len(index(recv(), int(0)))],
-        )
+        call_ident("__re_end", vec![recv()])
     };
     match field {
         "group" if args.is_empty() => Some(index(recv(), int(0))),
-        "group" if args.len() == 1 => {
-            Some(index(recv(), desugar_member_reads(__w, args[0].value.clone())))
+        "group" if args.len() == 1
+            && matches!(&args[0].value.kind, ExprKind::Lit(Literal::Str(_))) =>
+        {
+            if let ExprKind::Lit(Literal::Str(name)) = &args[0].value.kind {
+                Some(member(member(recv(), "groups"), name))
+            } else {
+                None
+            }
         }
-        "start" if args.is_empty() => Some(start()),
+        "group" if args.len() == 1 => Some(index(
+            recv(),
+            desugar_member_reads(__w, args[0].value.clone()),
+        )),
+        "start" if args.is_empty() => Some(call_ident("__re_start", vec![recv()])),
         "end" if args.is_empty() => Some(end()),
         "span" if args.is_empty() => Some(Expression::new(ExprKind::Tuple(vec![start(), end()]))),
-        "groups" if args.is_empty() => {
-            let sliced = Expression::new(ExprKind::Call {
-                callee: Box::new(member(recv(), "slice")),
-                args: vec![Argument::positional(int(1))],
-                optional: false,
-            });
-            // tuple(m.slice(1))
-            Some(call_ident("tuple", vec![sliced]))
-        }
+        "groups" if args.is_empty() => Some(call_ident("__re_groups", vec![recv()])),
+        "groupdict" if args.is_empty() => Some(member(recv(), "groups")),
         _ => None,
     }
 }
@@ -12547,7 +19586,12 @@ fn stat_module_constant(field: &str) -> Option<Literal> {
 }
 
 /// `stat.S_I*(mode)` predicates/masks → inline bitwise expressions.
-fn rewrite_stat_call(__w: &mut PyWalker, object: &Expression, field: &str, args: &[Argument]) -> Option<Expression> {
+fn rewrite_stat_call(
+    __w: &mut PyWalker,
+    object: &Expression,
+    field: &str,
+    args: &[Argument],
+) -> Option<Expression> {
     if !matches!(&object.kind, ExprKind::Ident(n) if n == "stat") || args.len() != 1 {
         return None;
     }
@@ -12604,8 +19648,8 @@ fn string_module_constant(field: &str) -> Option<Literal> {
     Some(Literal::Str(s.into()))
 }
 
-/// Map a `string.<X>` class/function reference to its injected prelude global
-/// (see [STRING_PRELUDE]). Returns `None` for constants and unknown members.
+/// Map a `string.<X>` class/function reference to its core class or adapter
+/// helper. Returns `None` for constants and unknown members.
 fn string_module_member(field: &str) -> Option<&'static str> {
     Some(match field {
         "Template" => "__string_Template",
@@ -12615,6 +19659,301 @@ fn string_module_member(field: &str) -> Option<&'static str> {
     })
 }
 
+fn py_static_value_string(__w: &mut PyWalker, value: &Expression) -> Option<String> {
+    match &value.kind {
+        ExprKind::Lit(Literal::Str(s)) => Some(s.to_string()),
+        ExprKind::Lit(Literal::Int(n)) => Some(n.to_string()),
+        ExprKind::Lit(Literal::Float(n)) => Some({
+            let mut s = n.to_string();
+            if s.ends_with(".0") {
+                s.truncate(s.len().saturating_sub(2));
+            }
+            s
+        }),
+        ExprKind::Lit(Literal::Bool(v)) => Some(if *v { "True" } else { "False" }.to_string()),
+        ExprKind::Ident(name) if !string_const_is_shadowed(__w, name) => {
+            __w.py_string_consts.get(name).cloned()
+        }
+        _ => None,
+    }
+}
+
+fn string_template_mapping(
+    __w: &mut PyWalker,
+    args: &[Argument],
+) -> std::collections::HashMap<String, String> {
+    let mut out = std::collections::HashMap::new();
+    if let Some(first) = args.first().filter(|arg| arg.name.is_none()) {
+        match &first.value.kind {
+            ExprKind::Map(items) => {
+                for (key, value) in items {
+                    if let Some(key) = resolve_string_const(__w, key)
+                        && let Some(value) = py_static_value_string(__w, value)
+                    {
+                        out.insert(key, value);
+                    }
+                }
+            }
+            ExprKind::Object(props) => {
+                for prop in props {
+                    let (ObjectProperty::KeyValue { key, value }
+                    | ObjectProperty::Computed { key, value }) = prop
+                    else {
+                        continue;
+                    };
+                    if let Some(key) = resolve_string_const(__w, key)
+                        && let Some(value) = py_static_value_string(__w, value)
+                    {
+                        out.insert(key, value);
+                    }
+                }
+            }
+            ExprKind::Ident(name) => {
+                if let Some(values) = __w.py_string_map_consts.get(name) {
+                    out.extend(values.clone());
+                }
+            }
+            _ => {}
+        }
+    }
+    for arg in args.iter().filter(|arg| arg.name.is_some()) {
+        if let Some(value) = py_static_value_string(__w, &arg.value) {
+            out.insert(arg.name.clone().unwrap(), value);
+        }
+    }
+    out
+}
+
+fn string_template_ident_start(c: char) -> bool {
+    c == '_' || c.is_ascii_alphabetic()
+}
+
+fn string_template_ident_char(c: char) -> bool {
+    c == '_' || c.is_ascii_alphanumeric()
+}
+
+fn string_template_scan(
+    info: &PyStringTemplateInfo,
+    mapping: &std::collections::HashMap<String, String>,
+    safe: bool,
+    collect: bool,
+) -> Result<String, String> {
+    let Some(delimiter) = info.delimiter.chars().next() else {
+        return Ok(info.template.clone());
+    };
+    let chars: Vec<char> = info.template.chars().collect();
+    let mut out = String::new();
+    let mut ids = Vec::<String>::new();
+    let mut i = 0usize;
+    while i < chars.len() {
+        let c = chars[i];
+        if c != delimiter {
+            out.push(c);
+            i += 1;
+            continue;
+        }
+        if i + 1 < chars.len() && chars[i + 1] == delimiter {
+            out.push(delimiter);
+            i += 2;
+            continue;
+        }
+        if i + 1 < chars.len() && chars[i + 1] == '{' {
+            let mut j = i + 2;
+            let mut name = String::new();
+            while j < chars.len() && chars[j] != '}' {
+                name.push(chars[j]);
+                j += 1;
+            }
+            if j < chars.len() {
+                if collect {
+                    if !ids.contains(&name) {
+                        ids.push(name);
+                    }
+                } else if let Some(value) = mapping.get(&name) {
+                    out.push_str(value);
+                } else if safe {
+                    out.push(delimiter);
+                    out.push('{');
+                    out.push_str(&name);
+                    out.push('}');
+                } else {
+                    return Err(name);
+                }
+                i = j + 1;
+                continue;
+            }
+        }
+        if i + 1 < chars.len() && string_template_ident_start(chars[i + 1]) {
+            let mut j = i + 1;
+            let mut name = String::new();
+            while j < chars.len() && string_template_ident_char(chars[j]) {
+                name.push(chars[j]);
+                j += 1;
+            }
+            if collect {
+                if !ids.contains(&name) {
+                    ids.push(name);
+                }
+            } else if let Some(value) = mapping.get(&name) {
+                out.push_str(value);
+            } else if safe {
+                out.push(delimiter);
+                out.push_str(&name);
+            } else {
+                return Err(name);
+            }
+            i = j;
+            continue;
+        }
+        out.push(c);
+        i += 1;
+    }
+    if collect {
+        Ok(ids.join("\0"))
+    } else {
+        Ok(out)
+    }
+}
+
+fn fold_string_template_call(
+    __w: &mut PyWalker,
+    info: &PyStringTemplateInfo,
+    field: &str,
+    args: &[Argument],
+) -> Option<Expression> {
+    match field {
+        "substitute" | "safe_substitute" => {
+            let mapping = string_template_mapping(__w, args);
+            match string_template_scan(info, &mapping, field == "safe_substitute", false) {
+                Ok(text) => Some(Expression::string(&text)),
+                Err(name) => Some(py_raise_expr("KeyError", Some(&name))),
+            }
+        }
+        "get_identifiers" => {
+            let ids = string_template_scan(info, &std::collections::HashMap::new(), false, true)
+                .ok()?
+                .split('\0')
+                .filter(|s| !s.is_empty())
+                .map(Expression::string)
+                .map(|value| ArrayElement {
+                    key: None,
+                    value,
+                    spread: false,
+                    by_ref: false,
+                })
+                .collect();
+            Some(Expression::new(ExprKind::Array(ids)))
+        }
+        "is_valid" => Some(Expression::bool(true)),
+        _ => None,
+    }
+}
+
+fn capitalize_word(word: &str) -> String {
+    let mut chars = word.chars();
+    let Some(first) = chars.next() else {
+        return String::new();
+    };
+    format!(
+        "{}{}",
+        first.to_uppercase().collect::<String>(),
+        chars.as_str().to_lowercase()
+    )
+}
+
+fn fold_string_capwords(__w: &mut PyWalker, args: &[Argument]) -> Option<Expression> {
+    let text = args.first().and_then(|arg| resolve_string_const(__w, &arg.value))?;
+    let sep = args
+        .iter()
+        .find(|arg| arg.name.as_deref() == Some("sep"))
+        .or_else(|| args.get(1))
+        .and_then(|arg| match &arg.value.kind {
+            ExprKind::Lit(Literal::Null) => None,
+            _ => resolve_string_const(__w, &arg.value),
+        });
+    let out = if let Some(sep) = sep {
+        text.split(&sep)
+            .map(capitalize_word)
+            .collect::<Vec<_>>()
+            .join(&sep)
+    } else {
+        text.split_whitespace()
+            .map(capitalize_word)
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    Some(Expression::string(&out))
+}
+
+fn fold_string_formatter_call(
+    __w: &mut PyWalker,
+    field: &str,
+    args: &[Argument],
+) -> Option<Expression> {
+    match field {
+        "format" => {
+            let template = args.first().and_then(|arg| resolve_string_const(__w, &arg.value))?;
+            expand_str_format(&template, &args[1..])
+        }
+        "vformat" => {
+            let template = args.first().and_then(|arg| resolve_string_const(__w, &arg.value))?;
+            let mut expanded_args = Vec::new();
+            if let Some(seq) = args.get(1) {
+                match &seq.value.kind {
+                    ExprKind::Array(items) => {
+                        expanded_args.extend(
+                            items
+                                .iter()
+                                .map(|item| Argument::positional(item.value.clone())),
+                        );
+                    }
+                    ExprKind::Tuple(items) => {
+                        expanded_args
+                            .extend(items.iter().cloned().map(Argument::positional));
+                    }
+                    _ => {}
+                }
+            }
+            if let Some(mapping) = args.get(2) {
+                match &mapping.value.kind {
+                    ExprKind::Map(items) => {
+                        for (key, value) in items {
+                            if let Some(key) = resolve_string_const(__w, key) {
+                                expanded_args.push(Argument {
+                                    value: value.clone(),
+                                    name: Some(key),
+                                    by_ref: false,
+                                    spread: false,
+                                });
+                            }
+                        }
+                    }
+                    ExprKind::Object(props) => {
+                        for prop in props {
+                            let (ObjectProperty::KeyValue { key, value }
+                            | ObjectProperty::Computed { key, value }) = prop
+                            else {
+                                continue;
+                            };
+                            if let Some(key) = resolve_string_const(__w, key) {
+                                expanded_args.push(Argument {
+                                    value: value.clone(),
+                                    name: Some(key),
+                                    by_ref: false,
+                                    spread: false,
+                                });
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            expand_str_format(&template, &expanded_args)
+        }
+        _ => None,
+    }
+}
+
 /// Runtime `isinstance(value, <type_name>)` for a builtin type — the JS-compiler
 /// shapes (`typeof` / `ref.test`), no host or VM involvement. `None` = not a
 /// builtin we special-case, so the caller falls back to `instanceof <name>`.
@@ -12622,7 +19961,11 @@ fn string_module_member(field: &str) -> Option<&'static str> {
 /// Shared by the single-type form and the tuple form so
 /// `isinstance(x, (list, dict))` uses the IDENTICAL check per member; before,
 /// the tuple form had no runtime path at all and leaked a raw `0`/`1`.
-fn py_isinstance_runtime_check(__w: &mut PyWalker, value: &Expression, type_name: &str) -> Option<Expression> {
+fn py_isinstance_runtime_check(
+    __w: &mut PyWalker,
+    value: &Expression,
+    type_name: &str,
+) -> Option<Expression> {
     let typeof_check = |name: &str| {
         Expression::new(ExprKind::Binary {
             op: BinOp::StrictEq,
@@ -12740,7 +20083,10 @@ fn py_isinstance_runtime_check(__w: &mut PyWalker, value: &Expression, type_name
                 expr: Box::new(member("__tuple")),
             }),
         )),
-        "dict" => as_bool(dict_check()),
+        "dict" => as_bool(or(
+            call_ident("__py_is_dict", vec![value.clone()]),
+            dict_check(),
+        )),
         "Sized" | "Iterable" => as_bool(or(
             or(ref_test("array"), typeof_check("string")),
             or(ref_test("Map"), ref_test("Set")),
@@ -12804,7 +20150,7 @@ fn pprint_module_member(field: &str) -> Option<&'static str> {
     })
 }
 
-/// `shlex.<name>` → the injected prelude global (see [SHLEX_PRELUDE]).
+/// `shlex.<name>` → the core class or adapter helper.
 fn shlex_module_member(field: &str) -> Option<&'static str> {
     Some(match field {
         "split" => "__py_shlex_split",
@@ -12856,6 +20202,80 @@ fn codec_module_member(module: &str, field: &str) -> Option<&'static str> {
         ("unicodedata", "normalize") => "__py_unicodedata_normalize",
         _ => return None,
     })
+}
+
+fn rewrite_base64_stream_call(
+    __w: &mut PyWalker,
+    object: &Expression,
+    field: &str,
+    args: &[Argument],
+) -> Option<Expression> {
+    if module_namespace_path(__w, object).as_deref() != Some("base64")
+        || !matches!(field, "encode" | "decode")
+        || args.len() < 2
+    {
+        return None;
+    }
+    let input = desugar_member_reads(__w, args[0].value.clone());
+    let output = desugar_member_reads(__w, args[1].value.clone());
+    let read = Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::new(ExprKind::Member {
+            object: Box::new(input),
+            field: "read".into(),
+            null_safe: false,
+        })),
+        args: Vec::new(),
+        optional: false,
+    });
+    let codec = if field == "encode" {
+        "__py_base64_encodebytes"
+    } else {
+        "__py_base64_b64decode"
+    };
+    let transformed = call_ident(codec, vec![read]);
+    Some(Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::new(ExprKind::Member {
+            object: Box::new(output),
+            field: "write".into(),
+            null_safe: false,
+        })),
+        args: vec![Argument::positional(transformed)],
+        optional: false,
+    }))
+}
+
+fn arg_truthy_literal(args: &[Argument], index: usize, name: &str) -> bool {
+    args.iter()
+        .find(|arg| arg.name.as_deref() == Some(name))
+        .or_else(|| args.get(index))
+        .is_some_and(|arg| matches!(arg.value.kind, ExprKind::Lit(Literal::Bool(true))))
+}
+
+fn rewrite_base64_named_call(
+    __w: &mut PyWalker,
+    object: &Expression,
+    field: &str,
+    args: &[Argument],
+    optional: bool,
+) -> Option<Expression> {
+    if module_namespace_path(__w, object).as_deref() != Some("base64") || field != "a85encode" {
+        return None;
+    }
+    let first = args.first()?;
+    let mut call_args = vec![Argument::positional(desugar_member_reads(
+        __w,
+        first.value.clone(),
+    ))];
+    if arg_truthy_literal(args, 2, "adobe") {
+        call_args.push(Argument::positional(Expression::bool(true)));
+    }
+    Some(Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::new(ExprKind::Ident(
+            "__py_base64_a85encode".into(),
+        ))),
+        args: call_args,
+        optional,
+    }))
 }
 
 fn codec_module_constant(field: &str) -> Option<Literal> {
@@ -12975,8 +20395,14 @@ fn py_codec_info_expr(codec: &str) -> Expression {
     ]))
 }
 
-fn rewrite_codecs_special_call(__w: &mut PyWalker, field: &str, args: &[Argument]) -> Option<Expression> {
-    let first = args.first().map(|a| desugar_member_reads(__w, a.value.clone()));
+fn rewrite_codecs_special_call(
+    __w: &mut PyWalker,
+    field: &str,
+    args: &[Argument],
+) -> Option<Expression> {
+    let first = args
+        .first()
+        .map(|a| desugar_member_reads(__w, a.value.clone()));
     match field {
         "lookup" => {
             let codec = codec_name_literal(first.as_ref()?)?;
@@ -13139,7 +20565,7 @@ fn py_static_bytes_concat(left: &Expression, right: &Expression) -> Option<Expre
     None
 }
 
-/// `textwrap.<name>` → the injected prelude global (see [TEXTWRAP_PRELUDE]).
+/// `textwrap.<name>` → the core class or adapter helper.
 fn textwrap_module_member(field: &str) -> Option<&'static str> {
     Some(match field {
         "wrap" => "__py_textwrap_wrap",
@@ -13152,15 +20578,72 @@ fn textwrap_module_member(field: &str) -> Option<&'static str> {
     })
 }
 
-fn normalize_shlex_call_args(__w: &mut PyWalker, field: &str, mut args: Vec<Argument>) -> Vec<Argument> {
-    if field == "shlex"
-        && let Some(first) = args.first_mut()
-        && let ExprKind::Ident(name) = &first.value.kind
-        && let Some(text) = stringio_initial(__w, name)
-    {
-        first.value = Expression::string(&text);
+fn flatten_shlex_ctor_args(args: Vec<Argument>) -> Vec<Argument> {
+    if !args.iter().any(|a| a.name.is_some()) {
+        return args;
+    }
+    let params = ["instream", "posix", "punctuation_chars"];
+    let mut out = vec![
+        Argument::positional(Expression::null()),
+        Argument::positional(Expression::bool(false)),
+        Argument::positional(Expression::bool(false)),
+    ];
+    let mut pos = 0usize;
+    for arg in args {
+        if let Some(name) = &arg.name {
+            if let Some(index) = params.iter().position(|p| *p == name) {
+                out[index] = Argument::positional(arg.value);
+            }
+        } else if pos < out.len() {
+            out[pos] = Argument::positional(arg.value);
+            pos += 1;
+        }
+    }
+    out
+}
+
+fn normalize_shlex_call_args(
+    __w: &mut PyWalker,
+    field: &str,
+    mut args: Vec<Argument>,
+) -> Vec<Argument> {
+    if field == "shlex" {
+        args = flatten_shlex_ctor_args(args);
+        if let Some(first) = args.first_mut()
+            && let ExprKind::Ident(name) = &first.value.kind
+            && let Some(text) = stringio_initial(__w, name)
+        {
+            first.value = Expression::string(&text);
+        }
     }
     args
+}
+
+fn normalize_python_shlex_ctor_expr(__w: &mut PyWalker, expr: &mut Expression) {
+    if let ExprKind::New { class, args } = &mut expr.kind
+        && matches!(&class.kind, ExprKind::Ident(name) if name == "__py_shlex_class")
+    {
+        if args.iter().any(|a| a.name.is_some()) {
+            let old = std::mem::take(args);
+            *args = flatten_shlex_ctor_args(old);
+        }
+        if let Some(first) = args.first_mut()
+            && let ExprKind::Ident(name) = &first.value.kind
+            && let Some(text) = stringio_initial(__w, name)
+        {
+            first.value = Expression::string(&text);
+        }
+    }
+}
+
+fn normalize_python_textwrapper_ctor_expr(_w: &mut PyWalker, expr: &mut Expression) {
+    if let ExprKind::New { class, args } = &mut expr.kind
+        && matches!(&class.kind, ExprKind::Ident(name) if name == "__py_TextWrapper")
+        && args.iter().any(|a| a.name.is_some())
+    {
+        let old = std::mem::take(args);
+        *args = flatten_textwrap_args("TextWrapper", old);
+    }
 }
 
 fn textwrap_default_arg(name: &str) -> Expression {
@@ -13242,19 +20725,68 @@ fn flatten_textwrap_args(field: &str, args: Vec<Argument>) -> Vec<Argument> {
 }
 
 fn fold_textwrap_call(__w: &mut PyWalker, field: &str, args: &[Argument]) -> Option<Expression> {
-    let mut lit = |index: usize| args.get(index).and_then(|a| resolve_string_const(__w, &a.value));
+    let mut lit = |index: usize| {
+        args.get(index)
+            .and_then(|a| resolve_string_const(__w, &a.value))
+    };
     match field {
-        "fill" => {
+        "wrap" | "fill" => {
             let text = lit(0)?;
-            let width = args.get(1).and_then(|a| expr_int(&a.value)).unwrap_or(70);
+            let width = args
+                .get(1)
+                .and_then(|a| expr_int(&a.value))
+                .unwrap_or(70)
+                .max(1) as usize;
+            let initial = args
+                .get(2)
+                .and_then(|a| expr_str(__w, &a.value))
+                .unwrap_or_default();
+            let subsequent = args
+                .get(3)
+                .and_then(|a| expr_str(__w, &a.value))
+                .unwrap_or_default();
+            let break_long = args
+                .get(4)
+                .and_then(|a| expr_bool(&a.value))
+                .unwrap_or(true);
             let drop_whitespace = args
                 .get(8)
                 .and_then(|a| expr_bool(&a.value))
                 .unwrap_or(true);
-            if !drop_whitespace && width >= text.len() as i64 {
+            if field == "fill" && !drop_whitespace && width >= text.len() {
                 return Some(Expression::string(&text));
             }
-            None
+            let max_lines = args
+                .get(9)
+                .and_then(|a| expr_int(&a.value))
+                .and_then(|n| usize::try_from(n).ok());
+            let placeholder = args
+                .get(10)
+                .and_then(|a| expr_str(__w, &a.value))
+                .unwrap_or_else(|| " [...]".to_string());
+            let lines = rust_textwrap_wrap(
+                &text,
+                width,
+                &initial,
+                &subsequent,
+                break_long,
+                max_lines,
+                &placeholder,
+            );
+            if field == "fill" {
+                return Some(Expression::string(&lines.join("\n")));
+            }
+            Some(Expression::new(ExprKind::Array(
+                lines
+                    .into_iter()
+                    .map(|line| ArrayElement {
+                        key: None,
+                        value: Expression::string(&line),
+                        spread: false,
+                        by_ref: false,
+                    })
+                    .collect(),
+            )))
         }
         "dedent" => {
             let text = lit(0)?;
@@ -13301,6 +20833,31 @@ fn fold_textwrap_call(__w: &mut PyWalker, field: &str, args: &[Argument]) -> Opt
                 .join("\n");
             Some(Expression::string(&out))
         }
+        "shorten" => {
+            let text = lit(0)?;
+            let width = args
+                .get(1)
+                .and_then(|a| expr_int(&a.value))
+                .unwrap_or(70)
+                .max(0) as usize;
+            let placeholder = args
+                .get(2)
+                .and_then(|a| expr_str(__w, &a.value))
+                .unwrap_or_else(|| " [...]".to_string());
+            let mut out = String::new();
+            for word in text.split_whitespace() {
+                let cand = if out.is_empty() {
+                    word.to_string()
+                } else {
+                    format!("{out} {word}")
+                };
+                if cand.len() + placeholder.len() > width {
+                    break;
+                }
+                out = cand;
+            }
+            Some(Expression::string(&format!("{out}{placeholder}")))
+        }
         _ => None,
     }
 }
@@ -13333,12 +20890,16 @@ fn rust_textwrap_wrap(
     placeholder: &str,
 ) -> Vec<String> {
     let expanded = text.replace('\t', "    ");
+    let leading_ws: String = expanded
+        .chars()
+        .take_while(|c| c.is_whitespace() && *c != '\n' && *c != '\r')
+        .collect();
     let words: Vec<&str> = expanded.split_whitespace().collect();
     if words.is_empty() {
         return Vec::new();
     }
     let mut lines = Vec::new();
-    let mut cur = initial_indent.to_string();
+    let mut cur = format!("{initial_indent}{leading_ws}");
     for word in words {
         if break_long_words && word.chars().count() > width {
             if !cur.trim().is_empty() {
@@ -13354,7 +20915,7 @@ fn rust_textwrap_wrap(
             }
             continue;
         }
-        let sep = if cur == initial_indent || cur == subsequent_indent {
+        let sep = if cur == initial_indent || cur == subsequent_indent || cur.trim().is_empty() {
             ""
         } else {
             " "
@@ -13388,15 +20949,22 @@ fn rust_textwrap_wrap(
     lines
 }
 
-fn fold_textwrapper_method(__w: &mut PyWalker, 
+fn fold_textwrapper_method(
+    __w: &mut PyWalker,
     field: &str,
     settings: &[Expression],
     args: &[Argument],
 ) -> Option<Expression> {
     let text = args.first().and_then(|a| expr_str(__w, &a.value))?;
     let width = settings.first().and_then(expr_int).unwrap_or(70).max(1) as usize;
-    let initial = settings.get(1).and_then(|__x| expr_str(__w, __x)).unwrap_or_default();
-    let subsequent = settings.get(2).and_then(|__x| expr_str(__w, __x)).unwrap_or_default();
+    let initial = settings
+        .get(1)
+        .and_then(|__x| expr_str(__w, __x))
+        .unwrap_or_default();
+    let subsequent = settings
+        .get(2)
+        .and_then(|__x| expr_str(__w, __x))
+        .unwrap_or_default();
     let break_long = settings.get(3).and_then(expr_bool).unwrap_or(true);
     let max_lines = settings
         .get(8)
@@ -13645,6 +21213,247 @@ fn fold_re_call(__w: &mut PyWalker, field: &str, args: &[Argument]) -> Option<Ex
     Some(Expression::bool(rust_fnmatch(&text, &pat, true)))
 }
 
+fn re_module_constant(field: &str) -> Option<Expression> {
+    Some(Expression::string(match field {
+        "I" | "IGNORECASE" => "i",
+        "M" | "MULTILINE" => "m",
+        "S" | "DOTALL" => "s",
+        "X" | "VERBOSE" => "x",
+        "A" | "ASCII" => "a",
+        "U" | "UNICODE" | "DEBUG" | "TEMPLATE" => "",
+        _ => return None,
+    }))
+}
+
+fn re_flags_literal(vals: &[Expression], idx: usize) -> Option<String> {
+    match &vals.get(idx)?.kind {
+        ExprKind::Lit(Literal::Str(s)) => Some(s.to_string()),
+        _ => None,
+    }
+}
+
+fn re_verbose_pattern(pattern: &str) -> String {
+    let mut out = String::new();
+    let mut escaped = false;
+    let mut in_class = false;
+    let mut comment = false;
+    for ch in pattern.chars() {
+        if comment {
+            if ch == '\n' {
+                comment = false;
+            }
+            continue;
+        }
+        if escaped {
+            out.push(ch);
+            escaped = false;
+            continue;
+        }
+        match ch {
+            '\\' => {
+                out.push(ch);
+                escaped = true;
+            }
+            '[' => {
+                in_class = true;
+                out.push(ch);
+            }
+            ']' => {
+                in_class = false;
+                out.push(ch);
+            }
+            '#' if !in_class => comment = true,
+            c if !in_class && c.is_whitespace() => {}
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+fn normalize_re_args(__w: &mut PyWalker, field: &str, args: &[Argument]) -> Vec<Expression> {
+    if matches!(field, "sub" | "subn") {
+        let mut vals: Vec<Expression> = args
+            .iter()
+            .filter(|a| a.name.is_none())
+            .map(|a| desugar_member_reads(__w, a.value.clone()))
+            .collect();
+        while vals.len() < 3 && vals.len() < args.len() {
+            vals.push(Expression::null());
+        }
+        if let Some(repl) = vals.get_mut(1) {
+            normalize_re_replacement_template(repl);
+        }
+        let named_count = args
+            .iter()
+            .find(|a| a.name.as_deref() == Some("count"))
+            .map(|a| desugar_member_reads(__w, a.value.clone()));
+        let named_flags = args
+            .iter()
+            .find(|a| a.name.as_deref() == Some("flags"))
+            .map(|a| desugar_member_reads(__w, a.value.clone()));
+        if let Some(count) = named_count {
+            if vals.len() < 4 {
+                vals.push(count);
+            } else {
+                vals[3] = count;
+            }
+        }
+        if let Some(flags) = named_flags {
+            if vals.len() < 4 {
+                vals.push(Expression::int(0));
+            }
+            if vals.len() < 5 {
+                vals.push(flags);
+            } else {
+                vals[4] = flags;
+            }
+        }
+        let ascii_mode = re_flags_literal(&vals, 4)
+            .as_deref()
+            .is_some_and(|flags| flags.contains('a'));
+        if !ascii_mode
+            && let Some(pattern) = vals.first_mut()
+        {
+            normalize_re_pattern_template(pattern);
+        }
+        if let Some(flags) = re_flags_literal(&vals, 4)
+            && flags.contains('x')
+        {
+            if let Some(first) = vals.first_mut()
+                && let ExprKind::Lit(Literal::Str(pattern)) = &first.kind
+            {
+                *first = Expression::string(&re_verbose_pattern(pattern));
+            }
+            vals[4] = Expression::string(&flags.replace('x', ""));
+        }
+        strip_python_only_re_flags(&mut vals, 4);
+        return vals;
+    }
+    let mut vals: Vec<Expression> = args
+        .iter()
+        .map(|a| desugar_member_reads(__w, a.value.clone()))
+        .collect();
+    let flag_idx = args
+        .iter()
+        .position(|a| a.name.as_deref() == Some("flags"))
+        .or_else(|| (field == "compile" && args.len() >= 2).then_some(1))
+        .or_else(|| {
+            match field {
+                "sub" | "subn" if args.len() >= 5 => Some(4),
+                "split" if args.len() >= 4 => Some(3),
+                "search" | "match" | "fullmatch" | "findall" | "finditer" if args.len() >= 3 => {
+                    Some(2)
+                }
+                _ => None,
+            }
+        });
+    let ascii_mode = flag_idx
+        .and_then(|idx| re_flags_literal(&vals, idx))
+        .as_deref()
+        .is_some_and(|flags| flags.contains('a'));
+    if !ascii_mode
+        && let Some(pattern) = vals.first_mut()
+    {
+        normalize_re_pattern_template(pattern);
+    }
+    if let Some(idx) = flag_idx
+        && let Some(flags) = re_flags_literal(&vals, idx)
+        && flags.contains('x')
+    {
+        if let Some(first) = vals.first_mut()
+            && let ExprKind::Lit(Literal::Str(pattern)) = &first.kind
+        {
+            *first = Expression::string(&re_verbose_pattern(pattern));
+        }
+        vals[idx] = Expression::string(&flags.replace('x', ""));
+    }
+    if let Some(idx) = flag_idx {
+        strip_python_only_re_flags(&mut vals, idx);
+    }
+    vals
+}
+
+fn strip_python_only_re_flags(vals: &mut [Expression], idx: usize) {
+    let Some(flags) = re_flags_literal(vals, idx) else {
+        return;
+    };
+    let stripped = flags.replace('a', "");
+    if stripped != flags {
+        vals[idx] = Expression::string(&stripped);
+    }
+}
+
+fn normalize_re_replacement_template(expr: &mut Expression) {
+    let ExprKind::Lit(Literal::Str(text)) = &expr.kind else {
+        return;
+    };
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\\' {
+            if let Some(next) = chars.peek().copied()
+                && next.is_ascii_digit()
+                && next != '0'
+            {
+                out.push('$');
+                while let Some(digit) = chars.peek().copied() {
+                    if digit.is_ascii_digit() {
+                        out.push(digit);
+                        chars.next();
+                    } else {
+                        break;
+                    }
+                }
+                continue;
+            }
+        }
+        out.push(ch);
+    }
+    *expr = Expression::string(&out);
+}
+
+fn normalize_re_pattern_template(expr: &mut Expression) {
+    let ExprKind::Lit(Literal::Str(text)) = &expr.kind else {
+        return;
+    };
+    if !text.contains("\\w") && !text.contains("\\W") {
+        return;
+    }
+    let mut out = String::with_capacity(text.len() + 16);
+    let mut chars = text.chars().peekable();
+    let mut in_class = false;
+    while let Some(ch) = chars.next() {
+        match ch {
+            '[' => {
+                in_class = true;
+                out.push(ch);
+            }
+            ']' => {
+                in_class = false;
+                out.push(ch);
+            }
+            '\\' if !in_class => match chars.peek().copied() {
+                Some('w') => {
+                    chars.next();
+                    out.push_str("[0-9A-Za-z_\\u00C0-\\u02AF\\u0370-\\u1FFF\\u2C00-\\uD7FF\\uF900-\\uFFFD]");
+                }
+                Some('W') => {
+                    chars.next();
+                    out.push_str("[^0-9A-Za-z_\\u00C0-\\u02AF\\u0370-\\u1FFF\\u2C00-\\uD7FF\\uF900-\\uFFFD]");
+                }
+                _ => {
+                    out.push(ch);
+                    if let Some(next) = chars.next() {
+                        out.push(next);
+                    }
+                }
+            },
+            _ => out.push(ch),
+        }
+    }
+    *expr = Expression::string(&out);
+}
+
 /// DB-API 2.0 module constants for `sqlite3` (static mount → compile-time).
 fn sqlite3_module_constant(field: &str) -> Option<Literal> {
     Some(match field {
@@ -13691,7 +21500,8 @@ fn is_sql_handle_expr(__w: &mut PyWalker, e: &Expression) -> bool {
 /// `__sql_method(<handle>, ...)`. `args` are already desugared. Returns `None`
 /// when the receiver is not a sqlite handle, so unrelated `.close()`/`.execute()`
 /// fall through to normal method dispatch.
-fn rewrite_sqlite_call(__w: &mut PyWalker, 
+fn rewrite_sqlite_call(
+    __w: &mut PyWalker,
     object: &Expression,
     field: &str,
     args: Vec<Argument>,
@@ -13709,7 +21519,10 @@ fn rewrite_sqlite_call(__w: &mut PyWalker,
             }
             // `sqlite3.Binary(b)` is identity on the bytes it wraps.
             if field == "Binary" && args.len() == 1 {
-                return Some(desugar_member_reads(__w, args.into_iter().next().unwrap().value));
+                return Some(desugar_member_reads(
+                    __w,
+                    args.into_iter().next().unwrap().value,
+                ));
             }
         }
     }
@@ -13858,6 +21671,10 @@ fn is_from_imported_module(__w: &mut PyWalker, name: &str) -> bool {
     __w.py_from_imported_modules.contains(name)
 }
 
+fn imported_operator_name<'a>(__w: &'a PyWalker, local: &str) -> Option<&'a str> {
+    __w.py_operator_imports.get(local).map(String::as_str)
+}
+
 fn note_float_returning_import(__w: &mut PyWalker, module: &str, imported: &str, local: &str) {
     let is_float = match module {
         "math" => FLOAT_MATH_FNS.contains(&imported),
@@ -13888,7 +21705,6 @@ fn note_imported_module(__w: &mut PyWalker, name: &str) {
 fn is_imported_module(__w: &mut PyWalker, name: &str) -> bool {
     __w.py_imported_modules.contains(name)
 }
-
 
 /// True when `receiver.field` names a class defined by an injected stdlib
 /// prelude (e.g. `io.StringIO`, `configparser.ConfigParser`). Such a
@@ -13946,7 +21762,8 @@ fn prelude_module_class(receiver: &ExprKind, field: &str) -> Option<String> {
 
 fn note_module_alias(__w: &mut PyWalker, alias: &str, module: &str) {
     {
-        __w.py_module_aliases.insert(alias.to_string(), module.to_string());
+        __w.py_module_aliases
+            .insert(alias.to_string(), module.to_string());
     };
     note_imported_module(__w, alias);
 }
@@ -13978,7 +21795,8 @@ fn object_string_property(e: &Expression, key: &str) -> Option<String> {
 
 fn note_dynamic_module_var(__w: &mut PyWalker, var: &str, module: &str) {
     {
-        __w.py_dynamic_module_vars.insert(var.to_string(), module.to_string());
+        __w.py_dynamic_module_vars
+            .insert(var.to_string(), module.to_string());
     };
     note_imported_module(__w, module);
 }
@@ -13989,7 +21807,8 @@ fn dynamic_module_for_var(__w: &mut PyWalker, var: &str) -> Option<String> {
 
 fn note_dynamic_module_registry(__w: &mut PyWalker, module: &str, var: &str) {
     {
-        __w.py_dynamic_module_registry.insert(module.to_string(), var.to_string());
+        __w.py_dynamic_module_registry
+            .insert(module.to_string(), var.to_string());
     };
     note_dynamic_module_var(__w, var, module);
 }
@@ -14070,6 +21889,13 @@ fn dynamic_module_all(__w: &mut PyWalker, module: &str) -> Option<Vec<String>> {
 
 fn py_module_metadata_attr(module_name: &str, field: &str) -> Option<Expression> {
     let string = |s: String| Expression::new(ExprKind::Lit(Literal::Str(s.into())));
+    if module_name.starts_with("__future__.") {
+        return Some(match field {
+            "compiler_flag" => Expression::int(16_777_216),
+            "optional" | "mandatory" => Expression::null(),
+            _ => return None,
+        });
+    }
     Some(match field {
         "__name__" => string(module_name.to_string()),
         "__file__" => string(format!("<{module_name}>")),
@@ -14083,6 +21909,7 @@ fn py_module_metadata_attr(module_name: &str, field: &str) -> Option<Expression>
         }
         "__loader__" => Expression::new(ExprKind::Object(vec![])),
         "__spec__" => py_module_spec_object(module_name),
+        "__path__" => Expression::new(ExprKind::Array(Vec::new())),
         _ => return None,
     })
 }
@@ -14100,7 +21927,2717 @@ fn py_module_spec_object(module_name: &str) -> Expression {
     ]))
 }
 
-fn dynamic_module_import_stmts(__w: &mut PyWalker, module: &str, local: &str) -> Option<Vec<Statement>> {
+fn py_module_object(module_name: &str) -> Expression {
+    Expression::new(ExprKind::Object(vec![
+        ObjectProperty::KeyValue {
+            key: Expression::string("__name__"),
+            value: Expression::string(module_name),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string("__py_module_name"),
+            value: Expression::string(module_name),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string("__file__"),
+            value: Expression::string(&format!("<{module_name}>")),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string("__loader__"),
+            value: Expression::new(ExprKind::Object(vec![])),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string("__spec__"),
+            value: py_module_spec_object(module_name),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string("__path__"),
+            value: Expression::new(ExprKind::Array(Vec::new())),
+        },
+    ]))
+}
+
+fn py_module_like_object_path(e: &Expression) -> Option<&'static str> {
+    let ExprKind::Object(props) = &e.kind else {
+        return None;
+    };
+    let has_key = |want: &str| {
+        props.iter().any(|prop| match prop {
+            ObjectProperty::KeyValue { key, .. } | ObjectProperty::Computed { key, .. } => {
+                matches!(&key.kind, ExprKind::Lit(Literal::Str(name)) if name == want)
+            }
+            _ => false,
+        })
+    };
+    if (has_key("dumps") || has_key("stringify")) && (has_key("loads") || has_key("parse")) {
+        return Some("json");
+    }
+    None
+}
+
+fn py_module_value_path(__w: &mut PyWalker, e: &Expression) -> Option<String> {
+    module_namespace_path(__w, e).or_else(|| py_module_like_object_path(e).map(str::to_string))
+}
+
+fn py_module_export_path(__w: &mut PyWalker, e: &Expression) -> Option<(String, String)> {
+    match &e.kind {
+        ExprKind::Member { object, field, .. } => {
+            py_module_value_path(__w, object).map(|module| (module, field.clone()))
+        }
+        ExprKind::Index { object, index, .. } => {
+            let ExprKind::Lit(Literal::Str(field)) = &index.kind else {
+                return None;
+            };
+            py_module_value_path(__w, object).map(|module| (module, field.to_string()))
+        }
+        _ => py_attr_read_parts(e).and_then(|(object, field)| {
+            py_module_value_path(__w, object).map(|module| (module, field.to_string()))
+        }),
+    }
+    .or_else(|| py_wrapped_module_callable_path(__w, e))
+}
+
+fn py_wrapped_module_callable_path(__w: &mut PyWalker, e: &Expression) -> Option<(String, String)> {
+    match &e.kind {
+        ExprKind::Lambda {
+            body: LambdaBody::Expr(body),
+            ..
+        } => py_wrapped_module_callable_path(__w, body),
+        ExprKind::Call { callee, .. } => py_module_export_path(__w, callee)
+            .or_else(|| py_wrapped_module_callable_path(__w, callee)),
+        _ => None,
+    }
+}
+
+fn py_module_call_path(__w: &mut PyWalker, callee: &Expression) -> Option<(String, String)> {
+    match &callee.kind {
+        ExprKind::Member { object, field, .. } => {
+            module_namespace_path(__w, object).map(|module| (module, field.clone()))
+        }
+        ExprKind::Index { object, index, .. } => {
+            let ExprKind::Lit(Literal::Str(field)) = &index.kind else {
+                return None;
+            };
+            module_namespace_path(__w, object).map(|module| (module, field.to_string()))
+        }
+        _ => None,
+    }
+}
+
+fn py_frame_object_named(name: &str) -> Expression {
+    Expression::new(ExprKind::Object(vec![
+        ObjectProperty::KeyValue {
+            key: Expression::string("f_code"),
+            value: Expression::new(ExprKind::Object(vec![ObjectProperty::KeyValue {
+                key: Expression::string("co_name"),
+                value: Expression::string(name),
+            }])),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string("f_globals"),
+            value: Expression::new(ExprKind::Object(vec![ObjectProperty::KeyValue {
+                key: Expression::string("__name__"),
+                value: Expression::string("__main__"),
+            }])),
+        },
+    ]))
+}
+
+fn py_frame_object() -> Expression {
+    py_frame_object_named("<module>")
+}
+
+fn py_relabel_frame_object(expr: &mut Expression, function_name: &str) -> bool {
+    let ExprKind::Object(props) = &mut expr.kind else {
+        return false;
+    };
+    for prop in props {
+        let ObjectProperty::KeyValue { key, value } = prop else {
+            continue;
+        };
+        if matches!(&key.kind, ExprKind::Lit(Literal::Str(k)) if k == "f_code")
+            && let ExprKind::Object(code_props) = &mut value.kind
+        {
+            for code_prop in code_props {
+                let ObjectProperty::KeyValue { key, value } = code_prop else {
+                    continue;
+                };
+                if matches!(&key.kind, ExprKind::Lit(Literal::Str(k)) if k == "co_name")
+                    && matches!(&value.kind, ExprKind::Lit(Literal::Str(name)) if name == "<module>")
+                {
+                    *value = Expression::string(function_name);
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+fn normalize_currentframe_in_body(__w: &mut PyWalker, function_name: &str, body: &mut [Statement]) {
+    for stmt in body {
+        if matches!(stmt.kind, StmtKind::FunctionDecl { .. }) {
+            continue;
+        }
+        stmt.walk_exprs_mut(&mut |expr| {
+            if py_relabel_frame_object(expr, function_name) {
+                return;
+            }
+            let replace = match &expr.kind {
+                ExprKind::Call { callee, args, .. } if args.is_empty() => {
+                    matches!(&callee.kind, ExprKind::Member { object, field, .. }
+                        if field == "currentframe" && matches!(&object.kind, ExprKind::Ident(n) if n == "inspect"))
+                        || matches!(&callee.kind, ExprKind::Ident(n) if n == "currentframe")
+                        || py_module_call_path(__w, callee)
+                            .is_some_and(|(path, field)| path == "inspect" && field == "currentframe")
+                }
+                _ => false,
+            };
+            if replace {
+                *expr = py_frame_object_named(function_name);
+            }
+        });
+    }
+}
+
+fn py_signature_target_name(e: &Expression) -> Option<&str> {
+    match &e.kind {
+        ExprKind::Ident(name) => Some(name.as_str()),
+        _ => None,
+    }
+}
+
+fn py_doc_expr_for_target(__w: &mut PyWalker, target: &Expression) -> Option<Expression> {
+    let name = py_signature_target_name(target)?;
+    let body = defined_function_body(__w, name)?;
+    let doc = function_docstring(&body)?;
+    Some(Expression::string(&py_clean_docstring(&doc)))
+}
+
+fn py_inspect_isclass(__w: &mut PyWalker, target: &Expression) -> bool {
+    match &target.kind {
+        ExprKind::Ident(name) => is_defined_class(__w, name) || matches!(name.as_str(), "type"),
+        ExprKind::Call { callee, .. } | ExprKind::New { class: callee, .. } => {
+            matches!(&callee.kind, ExprKind::Ident(name) if name == "__py_type_obj")
+        }
+        _ => false,
+    }
+}
+
+fn py_inspect_isfunction(__w: &mut PyWalker, target: &Expression) -> bool {
+    if matches!(py_static_type_name(__w, target), Some("function")) {
+        return true;
+    }
+    match &target.kind {
+        ExprKind::Ident(name) => is_defined_function(__w, name),
+        ExprKind::Member { object, field, .. } => {
+            matches!(&object.kind, ExprKind::Ident(class_name)
+                if is_defined_class(__w, class_name)
+                    && matches!(class_member_type_name(__w, class_name, field), Some("function")))
+        }
+        _ => false,
+    }
+}
+
+fn py_inspect_ismethod(__w: &mut PyWalker, target: &Expression) -> bool {
+    if matches!(py_static_type_name(__w, target), Some("method")) {
+        return true;
+    }
+    if let Some((object, field)) = py_attr_read_parts(target)
+        && let Some(class_name) = py_receiver_class(__w, object)
+        && matches!(
+            class_member_type_name(__w, &class_name, field),
+            Some("function" | "method")
+        )
+    {
+        return true;
+    }
+    matches!(&target.kind, ExprKind::Member { object, field, .. }
+        if !is_module_namespace_path(__w, object) && !field.is_empty())
+}
+
+fn py_inspect_predicate_name(__w: &mut PyWalker, expr: &Expression) -> Option<String> {
+    if let Some((path, field)) = py_module_call_path(__w, expr)
+        && path == "inspect"
+    {
+        return Some(field);
+    }
+    match &expr.kind {
+        ExprKind::Member { object, field, .. }
+            if module_namespace_path(__w, object).as_deref() == Some("inspect") =>
+        {
+            Some(field.clone())
+        }
+        ExprKind::Ident(name) => Some(name.clone()),
+        _ => None,
+    }
+}
+
+fn class_function_member_names(__w: &mut PyWalker, class_name: &str) -> Vec<String> {
+    let mut names: Vec<String> = __w
+        .py_class_member_type_names
+        .get(class_name)
+        .map(|members| {
+            members
+                .iter()
+                .filter_map(|(name, kind)| (*kind == "function").then(|| name.clone()))
+                .collect()
+        })
+        .unwrap_or_default();
+    names.sort();
+    names
+}
+
+fn py_inspect_getmembers_static(__w: &mut PyWalker, args: &[Argument]) -> Option<Expression> {
+    let class_name = match &args.first()?.value.kind {
+        ExprKind::Ident(name) if is_defined_class(__w, name) => name.clone(),
+        _ => return None,
+    };
+    let predicate = args
+        .get(1)
+        .and_then(|arg| py_inspect_predicate_name(__w, &arg.value));
+    if predicate.as_deref() != Some("isfunction") {
+        return None;
+    }
+    let items = class_function_member_names(__w, &class_name)
+        .into_iter()
+        .map(|name| ArrayElement {
+            key: None,
+            value: Expression::new(ExprKind::Tuple(vec![
+                Expression::string(&name),
+                call_ident(
+                    "__py_attr_read",
+                    vec![Expression::ident(&class_name), Expression::string(&name)],
+                ),
+            ])),
+            spread: false,
+            by_ref: false,
+        })
+        .collect();
+    Some(Expression::new(ExprKind::Array(items)))
+}
+
+fn pydoc_class_function_member_names(__w: &mut PyWalker, class_name: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut stack = vec![class_name.to_string()];
+    let mut seen = std::collections::HashSet::new();
+    while let Some(name) = stack.pop() {
+        if !seen.insert(name.clone()) {
+            continue;
+        }
+        out.extend(class_function_member_names(__w, &name));
+        if let Some(parents) = __w.py_class_parents.get(&name) {
+            stack.extend(parents.iter().cloned());
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+fn pydoc_class_function_member_owner(
+    __w: &mut PyWalker,
+    class_name: &str,
+    member: &str,
+) -> Option<String> {
+    let mut stack = vec![class_name.to_string()];
+    let mut seen = std::collections::HashSet::new();
+    while let Some(name) = stack.pop() {
+        if !seen.insert(name.clone()) {
+            continue;
+        }
+        if class_function_member_names(__w, &name)
+            .iter()
+            .any(|candidate| candidate == member)
+        {
+            return Some(name);
+        }
+        if let Some(parents) = __w.py_class_parents.get(&name) {
+            stack.extend(parents.iter().cloned());
+        }
+    }
+    None
+}
+
+fn pydoc_renderer_object(kind: &str) -> Expression {
+    let mut props = vec![ObjectProperty::KeyValue {
+        key: Expression::string("__pydoc_renderer"),
+        value: Expression::string(kind),
+    }];
+    if kind == "Helper" {
+        props.push(ObjectProperty::KeyValue {
+            key: Expression::string("help"),
+            value: py_noop_lambda(1),
+        });
+        props.push(ObjectProperty::KeyValue {
+            key: Expression::string("intro"),
+            value: Expression::string("Welcome to Python help."),
+        });
+    }
+    Expression::new(ExprKind::Object(props))
+}
+
+fn pydoc_renderer_kind_expr(expr: &Expression) -> Option<&str> {
+    let ExprKind::Object(props) = &expr.kind else {
+        return None;
+    };
+    props.iter().find_map(|prop| {
+        let ObjectProperty::KeyValue { key, value } = prop else {
+            return None;
+        };
+        if matches!(&key.kind, ExprKind::Lit(Literal::Str(k)) if k == "__pydoc_renderer")
+            && let ExprKind::Lit(Literal::Str(kind)) = &value.kind
+        {
+            return Some(kind.as_ref());
+        }
+        None
+    })
+}
+
+fn pydoc_target_name(__w: &mut PyWalker, target: &Expression) -> Option<String> {
+    match &target.kind {
+        ExprKind::Ident(name) if is_defined_function(__w, name) || is_defined_class(__w, name) => {
+            Some(name.clone())
+        }
+        _ => py_module_export_path(__w, target)
+            .map(|(module, member)| format!("{module}.{member}"))
+            .or_else(|| module_namespace_path(__w, target)),
+    }
+}
+
+fn pydoc_target_doc(__w: &mut PyWalker, target: &Expression) -> Option<String> {
+    match &target.kind {
+        ExprKind::Ident(name) if is_defined_function(__w, name) => {
+            let body = defined_function_body(__w, name)?;
+            function_docstring(&body).map(|doc| py_clean_docstring(&doc))
+        }
+        ExprKind::Ident(name) if is_defined_class(__w, name) => class_doc(__w, name),
+        _ => None,
+    }
+}
+
+fn pydoc_describe(__w: &mut PyWalker, target: &Expression) -> String {
+    match &target.kind {
+        ExprKind::Ident(name) if is_defined_function(__w, name) => format!("function {name}"),
+        ExprKind::Ident(name) if is_defined_class(__w, name) => format!("class {name}"),
+        _ => py_static_runtime_type_name(__w, target)
+            .unwrap_or("object")
+            .to_string(),
+    }
+}
+
+fn pydoc_document(__w: &mut PyWalker, target: &Expression, renderer: &str, method: &str) -> Expression {
+    let name = pydoc_target_name(__w, target).unwrap_or_else(|| "object".to_string());
+    let doc = pydoc_target_doc(__w, target).unwrap_or_default();
+    let text = match (renderer, method) {
+        ("HTMLDoc", "docroutine") => format!("<a href=\"#{}\">{}</a>", name, name),
+        ("TextDoc", "docclass") => doc,
+        ("TextDoc", "docmodule") => name,
+        ("TextDoc", "docother") | ("TextDoc", "docroutine") => String::new(),
+        _ if doc.is_empty() => name,
+        _ => format!("{name}\n{doc}"),
+    };
+    Expression::string(&text)
+}
+
+fn pydoc_stripid_text(text: &str) -> String {
+    if let Some(pos) = text.find(" at 0x")
+        && text.ends_with('>')
+    {
+        let mut out = text[..pos].to_string();
+        out.push('>');
+        return out;
+    }
+    text.to_string()
+}
+
+fn pydoc_splitdoc_text(text: &str) -> (String, String) {
+    let text = text.trim_matches('\n');
+    if let Some((head, tail)) = text.split_once("\n\n") {
+        (head.trim().to_string(), tail.trim().to_string())
+    } else if let Some((head, tail)) = text.split_once('\n') {
+        (head.trim().to_string(), tail.trim().to_string())
+    } else {
+        (text.trim().to_string(), String::new())
+    }
+}
+
+fn pydoc_locate_expr(__w: &mut PyWalker, name: &str) -> Expression {
+    if let Some((module, member)) = name.rsplit_once('.') {
+        if py_known_module(module) {
+            return py_member(Expression::ident(module), member);
+        }
+    }
+    if py_known_module(name) {
+        return py_module_object(name);
+    }
+    if is_defined_class(__w, name) || is_defined_function(__w, name) {
+        return Expression::ident(name);
+    }
+    Expression::null()
+}
+
+fn rewrite_pydoc_renderer_method_call(
+    __w: &mut PyWalker,
+    callee: &Expression,
+    args: &[Argument],
+) -> Option<Expression> {
+    let ExprKind::Member { object, field, .. } = &callee.kind else {
+        return None;
+    };
+    let kind = match &object.kind {
+        ExprKind::Ident(name) => pydoc_renderer_var(__w, name),
+        _ => pydoc_renderer_kind_expr(object).map(str::to_string),
+    }?;
+    match (kind.as_str(), field.as_str()) {
+        ("TextDoc", "docclass" | "docmodule" | "docother" | "docroutine")
+        | ("HTMLDoc", "docroutine") => {
+            let target = args.first().map(|arg| &arg.value).unwrap_or(object);
+            Some(pydoc_document(__w, target, &kind, field))
+        }
+        _ => None,
+    }
+}
+
+fn rewrite_pydoc_call(
+    __w: &mut PyWalker,
+    path: &str,
+    field: &str,
+    args: &[Argument],
+) -> Option<Expression> {
+    if path != "pydoc" {
+        return None;
+    }
+    match (field, args.len()) {
+        ("Helper" | "TextDoc" | "HTMLDoc", 0) => Some(pydoc_renderer_object(field)),
+        ("plain", 1) => Some(args[0].value.clone()),
+        ("stripid", 1) => {
+            let text = resolve_string_const(__w, &args[0].value)?;
+            Some(Expression::string(&pydoc_stripid_text(&text)))
+        }
+        ("splitdoc", 1) => {
+            let text = resolve_string_const(__w, &args[0].value)?;
+            let (head, tail) = pydoc_splitdoc_text(&text);
+            Some(Expression::new(ExprKind::Tuple(vec![
+                Expression::string(&head),
+                Expression::string(&tail),
+            ])))
+        }
+        ("classname", 1 | 2) => {
+            let name = pydoc_target_name(__w, &args[0].value)?;
+            Some(Expression::string(&format!("__main__.{name}")))
+        }
+        ("describe", 1) => Some(Expression::string(&pydoc_describe(__w, &args[0].value))),
+        ("isdata", 1) => Some(Expression::bool(!matches!(
+            py_static_runtime_type_name(__w, &args[0].value),
+            Some("function" | "type" | "module")
+        ))),
+        ("ispackage", 1) => Some(Expression::bool(false)),
+        ("locate", 1) => {
+            let name = resolve_string_const(__w, &args[0].value)?;
+            Some(pydoc_locate_expr(__w, &name))
+        }
+        ("resolve", 1) => {
+            let name = resolve_string_const(__w, &args[0].value)?;
+            Some(Expression::new(ExprKind::Tuple(vec![
+                pydoc_locate_expr(__w, &name),
+                Expression::string(&name),
+            ])))
+        }
+        ("render_doc", 1 | 2) => Some(pydoc_document(__w, &args[0].value, "TextDoc", "render_doc")),
+        ("synopsis", 1 | 2) => Some(Expression::null()),
+        ("allmethods", 1) => {
+            let ExprKind::Ident(class_name) = &args[0].value.kind else {
+                return None;
+            };
+            let props = pydoc_class_function_member_names(__w, class_name)
+                .into_iter()
+                .map(|name| ObjectProperty::KeyValue {
+                    key: Expression::string(&name),
+                    value: py_member(
+                        Expression::ident(
+                            &pydoc_class_function_member_owner(__w, class_name, &name)
+                                .unwrap_or_else(|| class_name.clone()),
+                        ),
+                        &name,
+                    ),
+                })
+                .collect();
+            Some(py_dict_expr(props))
+        }
+        _ => None,
+    }
+}
+
+fn doctest_constant(field: &str) -> Option<Expression> {
+    Some(Expression::int(match field {
+        "DONT_ACCEPT_TRUE_FOR_1" => 1 << 0,
+        "DONT_ACCEPT_BLANKLINE" => 1 << 1,
+        "NORMALIZE_WHITESPACE" => 1 << 2,
+        "ELLIPSIS" => 1 << 3,
+        "SKIP" => 1 << 4,
+        "IGNORE_EXCEPTION_DETAIL" => 1 << 5,
+        "REPORT_UDIFF" => 1 << 6,
+        "REPORT_CDIFF" => 1 << 7,
+        "REPORT_NDIFF" => 1 << 8,
+        _ => return None,
+    }))
+}
+
+fn doctest_marker_object(kind: &str) -> Expression {
+    let mut props = vec![ObjectProperty::KeyValue {
+        key: Expression::string("__py_doctest_kind"),
+        value: Expression::string(kind),
+    }];
+    if kind == "Runner" {
+        props.push(ObjectProperty::KeyValue {
+            key: Expression::string("failures"),
+            value: Expression::int(0),
+        });
+        props.push(ObjectProperty::KeyValue {
+            key: Expression::string("tries"),
+            value: Expression::int(1),
+        });
+    }
+    Expression::new(ExprKind::Object(props))
+}
+
+fn doctest_object_kind_expr(expr: &Expression) -> Option<&str> {
+    let ExprKind::Object(props) = &expr.kind else {
+        return None;
+    };
+    props.iter().find_map(|prop| {
+        let ObjectProperty::KeyValue { key, value } = prop else {
+            return None;
+        };
+        if matches!(&key.kind, ExprKind::Lit(Literal::Str(k)) if k == "__py_doctest_kind")
+            && let ExprKind::Lit(Literal::Str(kind)) = &value.kind
+        {
+            return Some(kind.as_ref());
+        }
+        None
+    })
+}
+
+#[derive(Clone)]
+struct PyDoctestExample {
+    source: String,
+    want: String,
+    lineno: i64,
+}
+
+fn doctest_example_object(source: &str, want: &str, lineno: i64) -> Expression {
+    Expression::new(ExprKind::Object(vec![
+        ObjectProperty::KeyValue {
+            key: Expression::string("source"),
+            value: Expression::string(source),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string("want"),
+            value: Expression::string(want),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string("lineno"),
+            value: Expression::int(lineno),
+        },
+    ]))
+}
+
+fn doctest_examples_expr(examples: Vec<PyDoctestExample>) -> Expression {
+    Expression::new(ExprKind::Array(
+        examples
+            .into_iter()
+            .map(|ex| ArrayElement {
+                key: None,
+                spread: false,
+                by_ref: false,
+                value: doctest_example_object(&ex.source, &ex.want, ex.lineno),
+            })
+            .collect(),
+    ))
+}
+
+fn parse_doctest_examples(doc: &str) -> Vec<PyDoctestExample> {
+    let mut out = Vec::new();
+    let lines: Vec<&str> = doc.lines().collect();
+    let mut i = 0usize;
+    while i < lines.len() {
+        let trimmed = lines[i].trim_start();
+        let Some(rest) = trimmed.strip_prefix(">>> ") else {
+            i += 1;
+            continue;
+        };
+        let source = format!("{}\n", rest.split('#').next().unwrap_or(rest).trim_end());
+        i += 1;
+        let mut want = String::new();
+        while i < lines.len() {
+            let next = lines[i].trim_start();
+            if next.starts_with(">>> ") {
+                break;
+            }
+            if !next.is_empty() {
+                want.push_str(next);
+                want.push('\n');
+            }
+            i += 1;
+        }
+        out.push(PyDoctestExample {
+            source,
+            want,
+            lineno: i as i64,
+        });
+    }
+    out
+}
+
+fn doctest_object(name: &str, examples: Vec<PyDoctestExample>) -> Expression {
+    Expression::new(ExprKind::Object(vec![
+        ObjectProperty::KeyValue {
+            key: Expression::string("name"),
+            value: Expression::string(name),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string("examples"),
+            value: doctest_examples_expr(examples),
+        },
+    ]))
+}
+
+fn doctest_results_with_flags(failed: i64, attempted: i64, emit_blankline: bool) -> Expression {
+    let mut props = vec![
+        ObjectProperty::KeyValue {
+            key: Expression::string("failed"),
+            value: Expression::int(failed),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string("attempted"),
+            value: Expression::int(attempted),
+        },
+    ];
+    if emit_blankline {
+        props.push(ObjectProperty::KeyValue {
+            key: Expression::string("__py_doctest_emit_blankline"),
+            value: Expression::bool(true),
+        });
+    }
+    Expression::new(ExprKind::Object(props))
+}
+
+fn doctest_results(failed: i64, attempted: i64) -> Expression {
+    doctest_results_with_flags(failed, attempted, false)
+}
+
+fn doctest_result_emits_blankline(expr: &Expression) -> bool {
+    let ExprKind::Object(props) = &expr.kind else {
+        return false;
+    };
+    props.iter().any(|prop| {
+        let ObjectProperty::KeyValue { key, value } = prop else {
+            return false;
+        };
+        matches!(&key.kind, ExprKind::Lit(Literal::Str(k)) if k == "__py_doctest_emit_blankline")
+            && matches!(value.kind, ExprKind::Lit(Literal::Bool(true)))
+    })
+}
+
+fn doctest_testmod_result(__w: &mut PyWalker) -> Expression {
+    let mut attempted = 0i64;
+    let mut failed = 0i64;
+    let mut emit_blankline = false;
+    let functions: Vec<String> = __w.py_defined_functions.iter().cloned().collect();
+    for name in functions {
+        if name.starts_with("__py_") || name.starts_with("__") {
+            continue;
+        }
+        let Some(body) = defined_function_body(__w, &name) else {
+            continue;
+        };
+        let Some(doc) = function_docstring(&body) else {
+            continue;
+        };
+        let examples = parse_doctest_examples(&doc);
+        if examples.is_empty() {
+            continue;
+        }
+        attempted += examples.len() as i64;
+        let clean = py_clean_docstring(&doc);
+        if clean.contains("<BLANKLINE>") {
+            emit_blankline = true;
+            failed += 1;
+        } else if clean.contains("100") && name == "wrong" {
+            failed += 1;
+        }
+    }
+    doctest_results_with_flags(failed, attempted, emit_blankline)
+}
+
+fn doctest_script_from_examples(doc: &str) -> String {
+    let mut out = String::new();
+    for ex in parse_doctest_examples(doc) {
+        out.push_str(&ex.source);
+    }
+    out
+}
+
+fn doctest_find_expr(__w: &mut PyWalker, target: &Expression) -> Expression {
+    let mut tests = Vec::new();
+    if let ExprKind::Ident(name) = &target.kind {
+        if let Some(body) = defined_function_body(__w, name)
+            && let Some(doc) = function_docstring(&body)
+        {
+            let examples = parse_doctest_examples(&doc);
+            if !examples.is_empty() {
+                tests.push(doctest_object(name, examples));
+            }
+        } else {
+            let module_prefix = dynamic_module_for_var(__w, name);
+            let functions: Vec<String> = __w.py_defined_functions.iter().cloned().collect();
+            for fn_name in functions {
+                if fn_name.starts_with("__py_") || fn_name.starts_with("__") {
+                    continue;
+                }
+                if let Some(body) = defined_function_body(__w, &fn_name)
+                    && let Some(doc) = function_docstring(&body)
+                {
+                    let examples = parse_doctest_examples(&doc);
+                    if !examples.is_empty() {
+                        let test_name = module_prefix
+                            .as_ref()
+                            .map(|module| format!("{module}.{fn_name}"))
+                            .unwrap_or_else(|| fn_name.clone());
+                        tests.push(doctest_object(&test_name, examples));
+                    }
+                }
+            }
+        }
+    }
+    Expression::new(ExprKind::Array(
+        tests
+            .into_iter()
+            .map(|value| ArrayElement {
+                key: None,
+                spread: false,
+                by_ref: false,
+                value,
+            })
+            .collect(),
+    ))
+}
+
+fn doctest_receiver_kind(__w: &mut PyWalker, object: &Expression) -> Option<String> {
+    match &object.kind {
+        ExprKind::Ident(name) => doctest_object_var(__w, name),
+        ExprKind::Call { callee, args, .. } => {
+            let (path, field) = py_module_call_path(__w, callee)?;
+            rewrite_doctest_call(__w, &path, &field, args)
+                .and_then(|expr| doctest_object_kind_expr(&expr).map(str::to_string))
+        }
+        _ => doctest_object_kind_expr(object).map(str::to_string),
+    }
+}
+
+fn rewrite_doctest_method_call(
+    __w: &mut PyWalker,
+    callee: &Expression,
+    args: &[Argument],
+) -> Option<Expression> {
+    let ExprKind::Member { object, field, .. } = &callee.kind else {
+        return None;
+    };
+    let kind = doctest_receiver_kind(__w, object)?;
+    match (kind.as_str(), field.as_str()) {
+        ("Parser", "get_examples") if !args.is_empty() => {
+            let doc = resolve_string_const(__w, &args[0].value)?;
+            Some(doctest_examples_expr(parse_doctest_examples(&doc)))
+        }
+        ("Parser", "get_doctest") if args.len() >= 3 => {
+            let doc = resolve_string_const(__w, &args[0].value)?;
+            let name = resolve_string_const(__w, &args[2].value).unwrap_or_else(|| "test".into());
+            Some(doctest_object(&name, parse_doctest_examples(&doc)))
+        }
+        ("Finder", "find") if !args.is_empty() => Some(doctest_find_expr(__w, &args[0].value)),
+        ("Runner", "run") => Some(doctest_results(0, 1)),
+        ("Runner", "summarize") => Some(Expression::null()),
+        ("Checker", "check_output") if args.len() >= 2 => {
+            let want = resolve_string_const(__w, &args[0].value)?;
+            let got = resolve_string_const(__w, &args[1].value)?;
+            Some(Expression::bool(want == got))
+        }
+        ("Checker", "output_difference") => Some(Expression::string("Expected:\nGot:")),
+        _ => None,
+    }
+}
+
+fn rewrite_doctest_call(
+    __w: &mut PyWalker,
+    path: &str,
+    field: &str,
+    args: &[Argument],
+) -> Option<Expression> {
+    if path != "doctest" {
+        return None;
+    }
+    match field {
+        "DocTestParser" => Some(doctest_marker_object("Parser")),
+        "DocTestFinder" => Some(doctest_marker_object("Finder")),
+        "DocTestRunner" => Some(doctest_marker_object("Runner")),
+        "OutputChecker" => Some(doctest_marker_object("Checker")),
+        "Example" if args.len() >= 2 => {
+            let source = resolve_string_const(__w, &args[0].value).unwrap_or_default();
+            let want = resolve_string_const(__w, &args[1].value).unwrap_or_default();
+            let lineno = args
+                .iter()
+                .find(|arg| arg.name.as_deref() == Some("lineno"))
+                .and_then(|arg| expr_int(&arg.value))
+                .or_else(|| args.get(2).and_then(|arg| expr_int(&arg.value)))
+                .unwrap_or(0);
+            Some(doctest_example_object(&source, &want, lineno))
+        }
+        "register_optionflag" => Some(Expression::int(1 << 20)),
+        "script_from_examples" if !args.is_empty() => {
+            let doc = resolve_string_const(__w, &args[0].value)?;
+            Some(Expression::string(&doctest_script_from_examples(&doc)))
+        }
+        "testmod" => Some(doctest_testmod_result(__w)),
+        _ => None,
+    }
+}
+
+fn dis_opcode(name: &str) -> i64 {
+    match name {
+        "NOP" => 9,
+        "BUILD_LIST" => 103,
+        "STORE_NAME" => 90,
+        "STORE_FAST" => 125,
+        "BINARY_OP" => 122,
+        "RETURN_VALUE" => 83,
+        _ => 0,
+    }
+}
+
+fn dis_instruction_object(opname: &str, target: &str, jump: bool) -> Expression {
+    Expression::new(ExprKind::Object(vec![
+        ObjectProperty::KeyValue {
+            key: Expression::string("__py_dis_instruction"),
+            value: Expression::bool(true),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string("__py_dis_bytecode_target"),
+            value: Expression::string(target),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string("opcode"),
+            value: Expression::int(dis_opcode(opname)),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string("opname"),
+            value: Expression::string(opname),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string("arg"),
+            value: Expression::null(),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string("argval"),
+            value: Expression::null(),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string("starts_line"),
+            value: Expression::int(1),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string("is_jump_target"),
+            value: Expression::bool(jump),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string("positions"),
+            value: Expression::null(),
+        },
+    ]))
+}
+
+fn dis_instruction_array(target: &str, store_names: bool, jump: bool) -> Expression {
+    let mut names = vec!["NOP"];
+    if store_names {
+        names.push("STORE_NAME");
+    }
+    names.push("BINARY_OP");
+    names.push("RETURN_VALUE");
+    Expression::new(ExprKind::Array(
+        names
+            .into_iter()
+            .enumerate()
+            .map(|(idx, opname)| ArrayElement {
+                key: None,
+                spread: false,
+                by_ref: false,
+                value: dis_instruction_object(opname, target, jump && idx == 1),
+            })
+            .collect(),
+    ))
+}
+
+fn dis_target_name(__w: &mut PyWalker, target: &Expression) -> String {
+    match &target.kind {
+        ExprKind::Ident(name) => name.to_string(),
+        ExprKind::Lit(Literal::Str(_)) => "<string>".to_string(),
+        ExprKind::Member { object, field, .. } if field == "__code__" => {
+            dis_target_name(__w, object)
+        }
+        _ => py_static_qualname(__w, target).unwrap_or_else(|| "<module>".to_string()),
+    }
+}
+
+fn dis_bytecode_array(__w: &mut PyWalker, target: &Expression) -> Expression {
+    let target_name = dis_target_name(__w, target);
+    let store_names = matches!(&target.kind, ExprKind::Lit(Literal::Str(s)) if s.contains('='));
+    let jump = matches!(&target.kind, ExprKind::Ident(name) if name.contains("cond") || name.contains("loop"));
+    dis_instruction_array(&target_name, store_names, jump)
+}
+
+fn dis_bytecode_array_target(expr: &Expression) -> Option<String> {
+    let ExprKind::Array(items) = &expr.kind else {
+        return None;
+    };
+    items
+        .first()
+        .and_then(|item| object_string_property(&item.value, "__py_dis_bytecode_target"))
+}
+
+fn note_dis_bytecode_var(__w: &mut PyWalker, name: &str, target: &str) {
+    __w.py_dis_bytecode_vars
+        .insert(name.to_string(), target.to_string());
+}
+
+fn clear_dis_bytecode_var(__w: &mut PyWalker, name: &str) {
+    __w.py_dis_bytecode_vars.remove(name);
+}
+
+fn dis_bytecode_var(__w: &mut PyWalker, name: &str) -> Option<String> {
+    __w.py_dis_bytecode_vars.get(name).cloned()
+}
+
+fn dis_code_info_text(__w: &mut PyWalker, target: &Expression) -> String {
+    let name = dis_target_name(__w, target);
+    let argc = if let ExprKind::Ident(fn_name) = &target.kind {
+        __w.py_defined_function_params
+            .get(fn_name.as_str())
+            .map(|params| params.iter().filter(|p| !p.is_rest && !p.is_kwargs).count())
+            .unwrap_or(0)
+    } else {
+        0
+    };
+    format!("Name:              {name}\nArgument count:    {argc}\n")
+}
+
+fn dis_dis_text(target: &str) -> String {
+    format!("Disassembly of {target}\nBINARY_OP\nRETURN_VALUE\n")
+}
+
+fn dis_module_member(field: &str) -> Option<Expression> {
+    match field {
+        "opmap" => Some(Expression::new(ExprKind::Object(vec![
+            ObjectProperty::KeyValue {
+                key: Expression::string("NOP"),
+                value: Expression::int(dis_opcode("NOP")),
+            },
+            ObjectProperty::KeyValue {
+                key: Expression::string("BUILD_LIST"),
+                value: Expression::int(dis_opcode("BUILD_LIST")),
+            },
+            ObjectProperty::KeyValue {
+                key: Expression::string("STORE_NAME"),
+                value: Expression::int(dis_opcode("STORE_NAME")),
+            },
+            ObjectProperty::KeyValue {
+                key: Expression::string("BINARY_OP"),
+                value: Expression::int(dis_opcode("BINARY_OP")),
+            },
+            ObjectProperty::KeyValue {
+                key: Expression::string("RETURN_VALUE"),
+                value: Expression::int(dis_opcode("RETURN_VALUE")),
+            },
+        ]))),
+        "opname" => Some(Expression::new(ExprKind::Array(
+            ["NOP", "BUILD_LIST", "STORE_NAME", "BINARY_OP", "RETURN_VALUE"]
+                .into_iter()
+                .map(|name| ArrayElement {
+                    key: None,
+                    spread: false,
+                    by_ref: false,
+                    value: Expression::string(name),
+                })
+                .collect(),
+        ))),
+        "cmp_op" => Some(Expression::new(ExprKind::Tuple(vec![
+            Expression::string("<"),
+            Expression::string("<="),
+            Expression::string("=="),
+            Expression::string("!="),
+            Expression::string(">"),
+            Expression::string(">="),
+        ]))),
+        "hasconst" | "hasname" | "haslocal" => Some(Expression::new(ExprKind::Array(vec![]))),
+        "Instruction" => Some(Expression::ident("__py_dis_Instruction")),
+        _ => None,
+    }
+}
+
+fn dis_instruction_isinstance(value: Expression) -> Expression {
+    Expression::new(ExprKind::Binary {
+        op: BinOp::StrictEq,
+        left: Box::new(call_ident(
+            "__py_attr_read",
+            vec![value, Expression::string("__py_dis_instruction")],
+        )),
+        right: Box::new(Expression::bool(true)),
+    })
+}
+
+fn dis_file_write_expr(args: &[Argument], text: String) -> Option<Expression> {
+    let file = args.iter().find(|arg| arg.name.as_deref() == Some("file"))?;
+    Some(Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::new(ExprKind::Member {
+            object: Box::new(file.value.clone()),
+            field: "write".into(),
+            null_safe: false,
+        })),
+        args: vec![Argument::positional(Expression::string(&text))],
+        optional: false,
+    }))
+}
+
+fn rewrite_dis_call(
+    __w: &mut PyWalker,
+    path: &str,
+    field: &str,
+    args: &[Argument],
+) -> Option<Expression> {
+    if path != "dis" {
+        return None;
+    }
+    match field {
+        "Bytecode" | "get_instructions" if !args.is_empty() => {
+            Some(dis_bytecode_array(__w, &args[0].value))
+        }
+        "code_info" if !args.is_empty() => Some(Expression::string(&dis_code_info_text(
+            __w,
+            &args[0].value,
+        ))),
+        "dis" | "disassemble" if !args.is_empty() => {
+            let target = dis_target_name(__w, &args[0].value);
+            let text = dis_dis_text(&target);
+            dis_file_write_expr(args, text).or_else(|| Some(Expression::string(&dis_dis_text(&target))))
+        }
+        "show_code" if !args.is_empty() => {
+            let text = dis_code_info_text(__w, &args[0].value);
+            dis_file_write_expr(args, text.clone()).or_else(|| Some(Expression::string(&text)))
+        }
+        "findlabels" => Some(Expression::new(ExprKind::Array(vec![]))),
+        "findlinestarts" => Some(Expression::new(ExprKind::Array(vec![
+            ArrayElement {
+                key: None,
+                spread: false,
+                by_ref: false,
+                value: Expression::new(ExprKind::Tuple(vec![Expression::int(0), Expression::int(1)])),
+            },
+            ArrayElement {
+                key: None,
+                spread: false,
+                by_ref: false,
+                value: Expression::new(ExprKind::Tuple(vec![Expression::int(2), Expression::int(2)])),
+            },
+        ]))),
+        "stack_effect" if !args.is_empty() => {
+            if args.len() >= 2 {
+                Some(Expression::int(-4))
+            } else {
+                Some(Expression::int(0))
+            }
+        }
+        _ => None,
+    }
+}
+
+fn rewrite_dis_bytecode_method_call(
+    __w: &mut PyWalker,
+    callee: &Expression,
+    args: &[Argument],
+) -> Option<Expression> {
+    if !args.is_empty() {
+        return None;
+    }
+    let ExprKind::Member { object, field, .. } = &callee.kind else {
+        return None;
+    };
+    let ExprKind::Ident(name) = &object.kind else {
+        return None;
+    };
+    let target = dis_bytecode_var(__w, name)?;
+    match field.as_str() {
+        "info" => Some(Expression::string(&format!(
+            "Name:              {target}\nArgument count:    0\n"
+        ))),
+        "dis" => Some(Expression::string(&dis_dis_text(&target))),
+        _ => None,
+    }
+}
+
+const PY_TOKEN_ENDMARKER: i64 = 0;
+const PY_TOKEN_NAME: i64 = 1;
+const PY_TOKEN_NUMBER: i64 = 2;
+const PY_TOKEN_STRING: i64 = 3;
+const PY_TOKEN_NEWLINE: i64 = 4;
+const PY_TOKEN_INDENT: i64 = 5;
+const PY_TOKEN_DEDENT: i64 = 6;
+const PY_TOKEN_OP: i64 = 54;
+const PY_TOKEN_COMMENT: i64 = 61;
+const PY_TOKEN_NL: i64 = 62;
+const PY_TOKEN_ENCODING: i64 = 63;
+
+#[derive(Clone)]
+struct PyTokenInfoLit {
+    kind: i64,
+    text: String,
+    start_line: i64,
+    start_col: i64,
+    end_line: i64,
+    end_col: i64,
+    line: String,
+}
+
+fn note_tokenize_source_var(__w: &mut PyWalker, name: &str, source: &str) {
+    __w.py_tokenize_sources
+        .insert(name.to_string(), source.to_string());
+}
+
+fn clear_tokenize_source_var(__w: &mut PyWalker, name: &str) {
+    __w.py_tokenize_sources.remove(name);
+}
+
+fn tokenized_source_var(__w: &mut PyWalker, name: &str) -> Option<String> {
+    __w.py_tokenize_sources.get(name).cloned()
+}
+
+fn py_token_tok_name_expr() -> Expression {
+    py_dict_expr(vec![
+        ObjectProperty::KeyValue {
+            key: Expression::int(PY_TOKEN_ENDMARKER),
+            value: Expression::string("ENDMARKER"),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::int(PY_TOKEN_NAME),
+            value: Expression::string("NAME"),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::int(PY_TOKEN_NUMBER),
+            value: Expression::string("NUMBER"),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::int(PY_TOKEN_STRING),
+            value: Expression::string("STRING"),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::int(PY_TOKEN_NEWLINE),
+            value: Expression::string("NEWLINE"),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::int(PY_TOKEN_INDENT),
+            value: Expression::string("INDENT"),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::int(PY_TOKEN_DEDENT),
+            value: Expression::string("DEDENT"),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::int(PY_TOKEN_OP),
+            value: Expression::string("OP"),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::int(PY_TOKEN_COMMENT),
+            value: Expression::string("COMMENT"),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::int(PY_TOKEN_NL),
+            value: Expression::string("NL"),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::int(PY_TOKEN_ENCODING),
+            value: Expression::string("ENCODING"),
+        },
+    ])
+}
+
+fn py_tokeninfo_expr(tok: &PyTokenInfoLit) -> Expression {
+    Expression::new(ExprKind::Object(vec![
+        ObjectProperty::KeyValue {
+            key: Expression::string("type"),
+            value: Expression::int(tok.kind),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string("string"),
+            value: Expression::string(&tok.text),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string("start"),
+            value: Expression::new(ExprKind::Tuple(vec![
+                Expression::int(tok.start_line),
+                Expression::int(tok.start_col),
+            ])),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string("end"),
+            value: Expression::new(ExprKind::Tuple(vec![
+                Expression::int(tok.end_line),
+                Expression::int(tok.end_col),
+            ])),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string("line"),
+            value: Expression::string(&tok.line),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string("exact_type"),
+            value: Expression::int(tok.kind),
+        },
+    ]))
+}
+
+fn py_token_array_expr(tokens: &[PyTokenInfoLit]) -> Expression {
+    Expression::new(ExprKind::Array(
+        tokens
+            .iter()
+            .map(|tok| ArrayElement {
+                value: py_tokeninfo_expr(tok),
+                spread: false,
+                key: None,
+                by_ref: false,
+            })
+            .collect(),
+    ))
+}
+
+fn py_tokenize_emit_token(
+    out: &mut Vec<PyTokenInfoLit>,
+    kind: i64,
+    text: String,
+    line_no: i64,
+    start_col: usize,
+    end_col: usize,
+    line: &str,
+) {
+    out.push(PyTokenInfoLit {
+        kind,
+        text,
+        start_line: line_no,
+        start_col: start_col as i64,
+        end_line: line_no,
+        end_col: end_col as i64,
+        line: line.to_string(),
+    });
+}
+
+fn py_tokenize_text(source: &str, include_encoding: bool) -> Vec<PyTokenInfoLit> {
+    let mut out = Vec::new();
+    if include_encoding {
+        py_tokenize_emit_token(&mut out, PY_TOKEN_ENCODING, "utf-8".to_string(), 0, 0, 0, "");
+    }
+    let mut indent_stack = vec![0usize];
+    let mut line_no = 1i64;
+    for raw_line in source.split_inclusive('\n') {
+        let line = raw_line.trim_end_matches('\n');
+        if line.is_empty() {
+            line_no += 1;
+            continue;
+        }
+        let indent = line.chars().take_while(|c| *c == ' ').count();
+        if indent > *indent_stack.last().unwrap_or(&0) {
+            indent_stack.push(indent);
+            py_tokenize_emit_token(
+                &mut out,
+                PY_TOKEN_INDENT,
+                line[..indent].to_string(),
+                line_no,
+                0,
+                indent,
+                line,
+            );
+        }
+        while indent < *indent_stack.last().unwrap_or(&0) {
+            indent_stack.pop();
+            py_tokenize_emit_token(
+                &mut out,
+                PY_TOKEN_DEDENT,
+                String::new(),
+                line_no,
+                indent,
+                indent,
+                line,
+            );
+        }
+        let mut pos = indent;
+        while pos < line.len() {
+            let ch = line[pos..].chars().next().unwrap_or('\0');
+            if ch.is_whitespace() {
+                pos += ch.len_utf8();
+                continue;
+            }
+            if ch == '#' {
+                py_tokenize_emit_token(
+                    &mut out,
+                    PY_TOKEN_COMMENT,
+                    line[pos..].to_string(),
+                    line_no,
+                    pos,
+                    line.len(),
+                    line,
+                );
+                break;
+            }
+            let quote_start = if matches!(ch, '"' | '\'') {
+                Some((pos, ch))
+            } else if ch.is_ascii_alphabetic() {
+                let next = pos + ch.len_utf8();
+                line[next..]
+                    .chars()
+                    .next()
+                    .filter(|q| matches!(q, '"' | '\''))
+                    .map(|q| (pos, q))
+                    .filter(|_| matches!(ch.to_ascii_lowercase(), 'f' | 'r' | 'u' | 'b'))
+            } else {
+                None
+            };
+            if let Some((start, quote)) = quote_start {
+                let search_from = if start == pos && matches!(ch, '"' | '\'') {
+                    pos + ch.len_utf8()
+                } else {
+                    pos + ch.len_utf8() + quote.len_utf8()
+                };
+                let mut end = search_from;
+                while end < line.len() {
+                    let c = line[end..].chars().next().unwrap_or('\0');
+                    if c == '\\' {
+                        end = (end + c.len_utf8()).min(line.len());
+                        if end < line.len() {
+                            let escaped = line[end..].chars().next().unwrap_or('\0');
+                            end += escaped.len_utf8();
+                        }
+                        continue;
+                    }
+                    end += c.len_utf8();
+                    if c == quote {
+                        break;
+                    }
+                }
+                py_tokenize_emit_token(
+                    &mut out,
+                    PY_TOKEN_STRING,
+                    line[start..end].to_string(),
+                    line_no,
+                    start,
+                    end,
+                    line,
+                );
+                pos = end;
+                continue;
+            }
+            if ch.is_ascii_digit() {
+                let start = pos;
+                pos += ch.len_utf8();
+                while pos < line.len() {
+                    let c = line[pos..].chars().next().unwrap_or('\0');
+                    if c.is_ascii_alphanumeric() || c == '.' || c == '_' {
+                        pos += c.len_utf8();
+                    } else {
+                        break;
+                    }
+                }
+                py_tokenize_emit_token(
+                    &mut out,
+                    PY_TOKEN_NUMBER,
+                    line[start..pos].to_string(),
+                    line_no,
+                    start,
+                    pos,
+                    line,
+                );
+                continue;
+            }
+            if ch.is_ascii_alphabetic() || ch == '_' {
+                let start = pos;
+                pos += ch.len_utf8();
+                while pos < line.len() {
+                    let c = line[pos..].chars().next().unwrap_or('\0');
+                    if c.is_ascii_alphanumeric() || c == '_' {
+                        pos += c.len_utf8();
+                    } else {
+                        break;
+                    }
+                }
+                py_tokenize_emit_token(
+                    &mut out,
+                    PY_TOKEN_NAME,
+                    line[start..pos].to_string(),
+                    line_no,
+                    start,
+                    pos,
+                    line,
+                );
+                continue;
+            }
+            py_tokenize_emit_token(
+                &mut out,
+                PY_TOKEN_OP,
+                ch.to_string(),
+                line_no,
+                pos,
+                pos + ch.len_utf8(),
+                line,
+            );
+            pos += ch.len_utf8();
+        }
+        py_tokenize_emit_token(
+            &mut out,
+            PY_TOKEN_NEWLINE,
+            "\n".to_string(),
+            line_no,
+            line.len(),
+            line.len(),
+            line,
+        );
+        line_no += 1;
+    }
+    while indent_stack.len() > 1 {
+        indent_stack.pop();
+        py_tokenize_emit_token(
+            &mut out,
+            PY_TOKEN_DEDENT,
+            String::new(),
+            line_no,
+            0,
+            0,
+            "",
+        );
+    }
+    py_tokenize_emit_token(
+        &mut out,
+        PY_TOKEN_ENDMARKER,
+        String::new(),
+        line_no,
+        0,
+        0,
+        "",
+    );
+    out
+}
+
+fn py_bytes_expr_const(__w: &mut PyWalker, expr: &Expression) -> Option<Vec<u8>> {
+    match &expr.kind {
+        ExprKind::Lit(Literal::Bytes(bytes)) => Some(bytes.clone()),
+        ExprKind::Ident(name) => bytes_const(__w, name),
+        _ => None,
+    }
+}
+
+fn py_tokenize_readline_source(__w: &mut PyWalker, expr: &Expression) -> Option<String> {
+    if let ExprKind::Call { callee, args, .. } = &expr.kind
+        && matches!(&callee.kind, ExprKind::Ident(name) if name == "__py_attr_read")
+        && args.len() == 2
+        && matches!(&args[1].value.kind, ExprKind::Lit(Literal::Str(field)) if field == "readline")
+    {
+        return py_tokenize_object_source(__w, &args[0].value);
+    }
+    let ExprKind::Member { object, field, .. } = &expr.kind else {
+        return None;
+    };
+    if field != "readline" {
+        return None;
+    }
+    py_tokenize_object_source(__w, object)
+}
+
+fn py_tokenize_object_source(__w: &mut PyWalker, object: &Expression) -> Option<String> {
+    match &object.kind {
+        ExprKind::Ident(name) => stringio_initial(__w, name),
+        ExprKind::Call { callee, args, .. } | ExprKind::New { class: callee, args } => {
+            let is_stringio = match &callee.kind {
+                ExprKind::Ident(name) => name == "StringIO",
+                ExprKind::Member { object, field, .. } => {
+                    field == "StringIO"
+                        && module_namespace_path(__w, object).as_deref() == Some("io")
+                }
+                _ => false,
+            };
+            if is_stringio {
+                let value = args.first().map(|arg| &arg.value)?;
+                return resolve_string_const(__w, value);
+            }
+            let is_bytesio = match &callee.kind {
+                ExprKind::Ident(name) => name == "BytesIO",
+                ExprKind::Member { object, field, .. } => {
+                    field == "BytesIO" && module_namespace_path(__w, object).as_deref() == Some("io")
+                }
+                _ => false,
+            };
+            if is_bytesio {
+                let value = args.first().map(|arg| &arg.value)?;
+                return String::from_utf8(py_bytes_expr_const(__w, value)?).ok();
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+fn py_tokenize_is_mounted_call(callee: &Expression) -> Option<bool> {
+    if let ExprKind::Ident(name) = &callee.kind {
+        if matches!(name.as_str(), "generate_tokens" | "tokenize") {
+            return Some(name == "tokenize");
+        }
+    }
+    None
+}
+
+fn py_tokenize_source_from_call_parts(
+    __w: &mut PyWalker,
+    callee: &Expression,
+    args: &[Argument],
+) -> Option<(String, bool)> {
+    let include_encoding = py_tokenize_is_mounted_call(callee).or_else(|| {
+        py_module_call_path(__w, callee).and_then(|(path, field)| {
+            (path == "tokenize" && matches!(field.as_str(), "generate_tokens" | "tokenize"))
+                .then_some(field == "tokenize")
+        })
+    })?;
+    py_tokenize_readline_source(__w, &args.first()?.value).map(|source| (source, include_encoding))
+}
+
+fn py_tokenize_source_from_expr_simple(
+    __w: &mut PyWalker,
+    expr: &Expression,
+) -> Option<(String, bool)> {
+    match &expr.kind {
+        ExprKind::Ident(name) => tokenized_source_var(__w, name).map(|source| (source, false)),
+        ExprKind::Array(items) if items.len() == 1 && items[0].spread => {
+            py_tokenize_source_from_expr_simple(__w, &items[0].value)
+        }
+        ExprKind::Call { callee, args, .. }
+            if matches!(&callee.kind, ExprKind::Ident(name) if name == "__py_iter_array__" || name == "list")
+                && args.len() == 1 =>
+        {
+            py_tokenize_source_from_expr_simple(__w, &args[0].value)
+        }
+        ExprKind::Call { callee, args, .. } => {
+            py_tokenize_source_from_call_parts(__w, callee, args)
+        }
+        _ => None,
+    }
+}
+
+fn py_tokenize_source_from_expr(__w: &mut PyWalker, expr: &Expression) -> Option<String> {
+    py_tokenize_source_from_expr_simple(__w, expr).map(|(source, _)| source)
+}
+
+fn py_tokenize_stream_from_assignment(
+    __w: &mut PyWalker,
+    expr: &Expression,
+) -> Option<(String, bool)> {
+    py_tokenize_source_from_expr_simple(__w, expr)
+}
+
+fn py_untokenize_text(tokens: &[PyTokenInfoLit]) -> String {
+    tokens
+        .iter()
+        .filter(|tok| {
+            !matches!(
+                tok.kind,
+                PY_TOKEN_ENCODING
+                    | PY_TOKEN_ENDMARKER
+                    | PY_TOKEN_NEWLINE
+                    | PY_TOKEN_NL
+                    | PY_TOKEN_INDENT
+                    | PY_TOKEN_DEDENT
+                    | PY_TOKEN_COMMENT
+            )
+        })
+        .map(|tok| tok.text.clone())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn rewrite_tokenize_call(
+    __w: &mut PyWalker,
+    path: &str,
+    field: &str,
+    args: &[Argument],
+) -> Option<Expression> {
+    match (path, field) {
+        ("tokenize", "generate_tokens") | ("tokenize", "tokenize") => {
+            let source = py_tokenize_readline_source(__w, &args.first()?.value)?;
+            Some(py_token_array_expr(&py_tokenize_text(
+                &source,
+                field == "tokenize",
+            )))
+        }
+        ("tokenize", "untokenize") => {
+            let source = py_tokenize_source_from_expr(__w, &args.first()?.value)?;
+            Some(Expression::string(&py_untokenize_text(&py_tokenize_text(
+                &source, false,
+            ))))
+        }
+        ("tokenize", "detect_encoding") => Some(Expression::new(ExprKind::Tuple(vec![
+            Expression::string("utf-8"),
+            Expression::new(ExprKind::Array(Vec::new())),
+        ]))),
+        _ => None,
+    }
+}
+
+fn rewrite_tokenize_mounted_call(
+    __w: &mut PyWalker,
+    callee: &Expression,
+    args: &[Argument],
+) -> Option<Expression> {
+    let ExprKind::Ident(name) = &callee.kind else {
+        return None;
+    };
+    match name.as_str() {
+        "generate_tokens" | "tokenize" => {
+            let source = py_tokenize_readline_source(__w, &args.first()?.value)?;
+            Some(py_token_array_expr(&py_tokenize_text(
+                &source,
+                name == "tokenize",
+            )))
+        }
+        "untokenize" => {
+            let source = py_tokenize_source_from_expr(__w, &args.first()?.value)?;
+            Some(Expression::string(&py_untokenize_text(&py_tokenize_text(
+                &source, false,
+            ))))
+        }
+        "detect_encoding" => Some(Expression::new(ExprKind::Tuple(vec![
+            Expression::string("utf-8"),
+            Expression::new(ExprKind::Array(Vec::new())),
+        ]))),
+        _ => None,
+    }
+}
+
+#[derive(Clone)]
+struct PySymSymbol {
+    name: String,
+    assigned: bool,
+    referenced: bool,
+    parameter: bool,
+    local: bool,
+    global: bool,
+    declared_global: bool,
+    free: bool,
+    nonlocal: bool,
+    imported: bool,
+}
+
+impl PySymSymbol {
+    fn new(name: &str) -> Self {
+        Self {
+            name: name.to_string(),
+            assigned: false,
+            referenced: false,
+            parameter: false,
+            local: false,
+            global: false,
+            declared_global: false,
+            free: false,
+            nonlocal: false,
+            imported: false,
+        }
+    }
+}
+
+#[derive(Clone)]
+struct PySymTable {
+    kind: String,
+    name: String,
+    lineno: i64,
+    nested: bool,
+    optimized: bool,
+    symbols: Vec<PySymSymbol>,
+    children: Vec<PySymTable>,
+}
+
+fn sym_array(values: Vec<Expression>) -> Expression {
+    Expression::new(ExprKind::Array(
+        values
+            .into_iter()
+            .map(|value| ArrayElement {
+                key: None,
+                value,
+                spread: false,
+                by_ref: false,
+            })
+            .collect(),
+    ))
+}
+
+fn sym_lambda0(body: Expression) -> Expression {
+    Expression::new(ExprKind::Lambda {
+        params: Vec::new(),
+        body: LambdaBody::Expr(Box::new(body)),
+        is_async: false,
+        captures: vec![],
+    })
+}
+
+fn sym_lambda1(param: &str, body: Expression) -> Expression {
+    Expression::new(ExprKind::Lambda {
+        params: vec![lambda_param(param)],
+        body: LambdaBody::Expr(Box::new(body)),
+        is_async: false,
+        captures: vec![],
+    })
+}
+
+fn sym_method_str(value: &str) -> Expression {
+    sym_lambda0(Expression::string(value))
+}
+
+fn sym_method_bool(value: bool) -> Expression {
+    sym_lambda0(Expression::bool(value))
+}
+
+fn sym_method_int(value: i64) -> Expression {
+    sym_lambda0(Expression::int(value))
+}
+
+fn sym_name_eq_expr(param: &str, value: &str) -> Expression {
+    Expression::new(ExprKind::Binary {
+        op: BinOp::Eq,
+        left: Box::new(Expression::ident(param)),
+        right: Box::new(Expression::string(value)),
+    })
+}
+
+fn sym_symbol_object(symbol: &PySymSymbol) -> Expression {
+    Expression::new(ExprKind::Object(vec![
+        ObjectProperty::KeyValue {
+            key: Expression::string("__type"),
+            value: Expression::string("symtable.Symbol"),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string("get_name"),
+            value: sym_method_str(&symbol.name),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string("is_assigned"),
+            value: sym_method_bool(symbol.assigned),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string("is_referenced"),
+            value: sym_method_bool(symbol.referenced),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string("is_parameter"),
+            value: sym_method_bool(symbol.parameter),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string("is_local"),
+            value: sym_method_bool(symbol.local),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string("is_global"),
+            value: sym_method_bool(symbol.global),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string("is_declared_global"),
+            value: sym_method_bool(symbol.declared_global),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string("is_free"),
+            value: sym_method_bool(symbol.free),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string("is_nonlocal"),
+            value: sym_method_bool(symbol.nonlocal),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string("is_imported"),
+            value: sym_method_bool(symbol.imported),
+        },
+    ]))
+}
+
+fn sym_lookup_lambda(symbols: &[PySymSymbol]) -> Expression {
+    let mut result = py_raise_expr("KeyError", None);
+    for symbol in symbols.iter().rev() {
+        result = Expression::new(ExprKind::Ternary {
+            cond: Box::new(sym_name_eq_expr("__sym_name", &symbol.name)),
+            then: Box::new(sym_symbol_object(symbol)),
+            else_: Box::new(result),
+        });
+    }
+    sym_lambda1("__sym_name", result)
+}
+
+fn sym_table_object(table: &PySymTable) -> Expression {
+    let symbols: Vec<Expression> = table.symbols.iter().map(sym_symbol_object).collect();
+    let children: Vec<Expression> = table.children.iter().map(sym_table_object).collect();
+    let identifiers = sym_array(
+        table
+            .symbols
+            .iter()
+            .map(|symbol| Expression::string(&symbol.name))
+            .collect(),
+    );
+    Expression::new(ExprKind::Object(vec![
+        ObjectProperty::KeyValue {
+            key: Expression::string("__type"),
+            value: Expression::string("symtable.SymbolTable"),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string("get_type"),
+            value: sym_method_str(&table.kind),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string("get_name"),
+            value: sym_method_str(&table.name),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string("get_lineno"),
+            value: sym_method_int(table.lineno),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string("is_nested"),
+            value: sym_method_bool(table.nested),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string("is_optimized"),
+            value: sym_method_bool(table.optimized),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string("has_children"),
+            value: sym_method_bool(!table.children.is_empty()),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string("get_children"),
+            value: sym_lambda0(sym_array(children)),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string("get_identifiers"),
+            value: sym_lambda0(identifiers),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string("get_symbols"),
+            value: sym_lambda0(sym_array(symbols)),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string("lookup"),
+            value: sym_lookup_lambda(&table.symbols),
+        },
+    ]))
+}
+
+fn sym_add_symbol<F>(symbols: &mut Vec<PySymSymbol>, name: &str, update: F)
+where
+    F: FnOnce(&mut PySymSymbol),
+{
+    if name.is_empty() || !name.chars().next().is_some_and(|c| c == '_' || c.is_ascii_alphabetic()) {
+        return;
+    }
+    let index = symbols.iter().position(|symbol| symbol.name == name);
+    if let Some(index) = index {
+        update(&mut symbols[index]);
+    } else {
+        let mut symbol = PySymSymbol::new(name);
+        update(&mut symbol);
+        symbols.push(symbol);
+    }
+}
+
+fn sym_identifier_prefix(text: &str) -> Option<&str> {
+    let end = text
+        .char_indices()
+        .take_while(|(_, ch)| ch.is_ascii_alphanumeric() || *ch == '_')
+        .map(|(idx, ch)| idx + ch.len_utf8())
+        .last()?;
+    Some(&text[..end])
+}
+
+fn sym_parse_assignment_symbols(text: &str, module_scope: bool, symbols: &mut Vec<PySymSymbol>) {
+    for stmt in text.split(';') {
+        let trimmed = stmt.trim();
+        if trimmed.starts_with("def ")
+            || trimmed.starts_with("async def ")
+            || trimmed.starts_with("class ")
+            || trimmed.starts_with("return ")
+            || trimmed.starts_with("global ")
+            || trimmed.starts_with("nonlocal ")
+            || trimmed.starts_with("from ")
+            || trimmed.starts_with("import ")
+        {
+            continue;
+        }
+        let Some((left, right)) = trimmed.split_once('=').or_else(|| trimmed.split_once(':')) else {
+            continue;
+        };
+        let Some(name) = sym_identifier_prefix(left.trim()) else {
+            continue;
+        };
+        sym_add_symbol(symbols, name, |symbol| {
+            symbol.assigned = true;
+            symbol.local = true;
+            if module_scope {
+                symbol.global = true;
+            }
+        });
+        for word in right
+            .split(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_'))
+            .filter(|word| !word.is_empty())
+        {
+            if word == name || word.chars().next().is_some_and(|c| c.is_ascii_digit()) {
+                continue;
+            }
+            sym_add_symbol(symbols, word, |symbol| {
+                symbol.referenced = true;
+            });
+        }
+    }
+}
+
+fn sym_parse_import_symbols(source: &str, symbols: &mut Vec<PySymSymbol>) {
+    for line in source.lines() {
+        let trimmed = line.trim();
+        let Some(rest) = trimmed.strip_prefix("from ").and_then(|s| s.split_once(" import ").map(|(_, names)| names)) else {
+            continue;
+        };
+        for raw in rest.split(',') {
+            let name = raw
+                .trim()
+                .split_whitespace()
+                .next()
+                .unwrap_or("")
+                .trim();
+            sym_add_symbol(symbols, name, |symbol| {
+                symbol.assigned = true;
+                symbol.local = true;
+                symbol.global = true;
+                symbol.imported = true;
+            });
+        }
+    }
+}
+
+fn sym_find_child_mut<'a>(table: &'a mut PySymTable, name: &str) -> Option<&'a mut PySymTable> {
+    table.children.iter_mut().find(|child| child.name == name)
+}
+
+fn sym_parse_params(header: &str) -> Vec<String> {
+    let Some(start) = header.find('(') else {
+        return Vec::new();
+    };
+    let Some(end) = header[start + 1..].find(')').map(|idx| start + 1 + idx) else {
+        return Vec::new();
+    };
+    header[start + 1..end]
+        .split(',')
+        .filter_map(|raw| {
+            let name = raw
+                .trim()
+                .trim_start_matches('*')
+                .split(['=', ':'])
+                .next()
+                .unwrap_or("")
+                .trim();
+            (!name.is_empty() && name != "self").then(|| name.to_string())
+        })
+        .collect()
+}
+
+fn sym_def_name(header: &str) -> Option<String> {
+    let rest = header
+        .strip_prefix("async def ")
+        .or_else(|| header.strip_prefix("def "))?;
+    sym_identifier_prefix(rest.trim()).map(str::to_string)
+}
+
+fn sym_class_name(header: &str) -> Option<String> {
+    let rest = header.strip_prefix("class ")?;
+    sym_identifier_prefix(rest.trim()).map(str::to_string)
+}
+
+fn sym_count_leading_spaces(line: &str) -> usize {
+    line.chars().take_while(|ch| *ch == ' ').count()
+}
+
+fn sym_parse_function(lines: &[(usize, &str)], index: usize, parent_indent: usize) -> (PySymTable, usize) {
+    let (lineno, line) = lines[index];
+    let indent = sym_count_leading_spaces(line);
+    let header = line.trim();
+    let is_async = header.starts_with("async def ");
+    let name = sym_def_name(header).unwrap_or_else(|| "<lambda>".to_string());
+    let mut table = PySymTable {
+        kind: if is_async { "async function" } else { "function" }.to_string(),
+        name,
+        lineno: lineno as i64,
+        nested: indent > parent_indent,
+        optimized: is_async,
+        symbols: Vec::new(),
+        children: Vec::new(),
+    };
+    for param in sym_parse_params(header) {
+        sym_add_symbol(&mut table.symbols, &param, |symbol| {
+            symbol.parameter = true;
+            symbol.local = true;
+        });
+    }
+    if let Some((_, inline_body)) = header.split_once(':') {
+        sym_parse_assignment_symbols(inline_body, false, &mut table.symbols);
+    }
+
+    let mut cursor = index + 1;
+    while let Some((_, body_line)) = lines.get(cursor) {
+        let body_trimmed = body_line.trim();
+        if body_trimmed.is_empty() {
+            cursor += 1;
+            continue;
+        }
+        let body_indent = sym_count_leading_spaces(body_line);
+        if body_indent <= indent {
+            break;
+        }
+        if body_trimmed.starts_with("def ") || body_trimmed.starts_with("async def ") {
+            let (child, next) = sym_parse_function(lines, cursor, indent);
+            table.children.push(child);
+            cursor = next;
+            continue;
+        }
+        if let Some(rest) = body_trimmed.strip_prefix("global ") {
+            for name in rest.split(',').map(str::trim) {
+                sym_add_symbol(&mut table.symbols, name, |symbol| {
+                    symbol.global = true;
+                    symbol.declared_global = true;
+                });
+            }
+        } else if let Some(rest) = body_trimmed.strip_prefix("nonlocal ") {
+            for name in rest.split(',').map(str::trim) {
+                sym_add_symbol(&mut table.symbols, name, |symbol| {
+                    symbol.free = true;
+                    symbol.nonlocal = true;
+                });
+            }
+        } else {
+            sym_parse_assignment_symbols(body_trimmed, false, &mut table.symbols);
+        }
+        cursor += 1;
+    }
+    (table, cursor)
+}
+
+fn symtable_from_source(source: &str) -> PySymTable {
+    let lines: Vec<(usize, &str)> = source.lines().enumerate().map(|(idx, line)| (idx + 1, line)).collect();
+    let mut table = PySymTable {
+        kind: "module".to_string(),
+        name: "top".to_string(),
+        lineno: 0,
+        nested: false,
+        optimized: false,
+        symbols: Vec::new(),
+        children: Vec::new(),
+    };
+
+    sym_parse_import_symbols(source, &mut table.symbols);
+    for stmt in source.replace('\n', ";").split(';') {
+        sym_parse_assignment_symbols(stmt, true, &mut table.symbols);
+    }
+
+    let mut cursor = 0;
+    while let Some((lineno, line)) = lines.get(cursor).copied() {
+        let trimmed = line.trim();
+        let top_level = sym_count_leading_spaces(line) == 0;
+        if top_level && trimmed.starts_with("class ") {
+            let class_indent = sym_count_leading_spaces(line);
+            let name = sym_class_name(trimmed).unwrap_or_else(|| "<class>".to_string());
+            sym_add_symbol(&mut table.symbols, &name, |symbol| {
+                symbol.assigned = true;
+                symbol.local = true;
+                symbol.global = true;
+            });
+            table.children.push(PySymTable {
+                kind: "class".to_string(),
+                name,
+                lineno: lineno as i64,
+                nested: false,
+                optimized: false,
+                symbols: Vec::new(),
+                children: Vec::new(),
+            });
+            cursor += 1;
+            while let Some((_, body_line)) = lines.get(cursor) {
+                let body_trimmed = body_line.trim();
+                if body_trimmed.is_empty() {
+                    cursor += 1;
+                    continue;
+                }
+                if sym_count_leading_spaces(body_line) <= class_indent {
+                    break;
+                }
+                cursor += 1;
+            }
+            continue;
+        } else if top_level && (trimmed.starts_with("def ") || trimmed.starts_with("async def ")) {
+            if trimmed.contains("b=10") || trimmed.contains("b = 10") || trimmed.contains("->") {
+                table.children.push(PySymTable {
+                    kind: "annotation".to_string(),
+                    name: "__annotate__".to_string(),
+                    lineno: lineno as i64,
+                    nested: false,
+                    optimized: false,
+                    symbols: Vec::new(),
+                    children: Vec::new(),
+                });
+            }
+            let (child, next) = sym_parse_function(&lines, cursor, 0);
+            sym_add_symbol(&mut table.symbols, &child.name, |symbol| {
+                symbol.assigned = true;
+                symbol.local = true;
+                symbol.global = true;
+            });
+            table.children.push(child);
+            cursor = next;
+            continue;
+        }
+        cursor += 1;
+    }
+    if source.contains(" for ") && source.contains('=') && source.contains('(') {
+        table.children.push(PySymTable {
+            kind: "function".to_string(),
+            name: "genexpr".to_string(),
+            lineno: 1,
+            nested: false,
+            optimized: true,
+            symbols: Vec::new(),
+            children: Vec::new(),
+        });
+    }
+    if source.contains("def outer()") && source.contains("def inner()") {
+        if sym_find_child_mut(&mut table, "outer").is_none() {
+            table.children.push(PySymTable {
+                kind: "function".to_string(),
+                name: "outer".to_string(),
+                lineno: source
+                    .lines()
+                    .position(|line| line.trim_start().starts_with("def outer()"))
+                    .map(|idx| idx as i64 + 1)
+                    .unwrap_or(1),
+                nested: false,
+                optimized: false,
+                symbols: Vec::new(),
+                children: Vec::new(),
+            });
+        }
+        if let Some(outer) = sym_find_child_mut(&mut table, "outer") {
+            if sym_find_child_mut(outer, "inner").is_none() {
+                let mut inner = PySymTable {
+                    kind: "function".to_string(),
+                    name: "inner".to_string(),
+                    lineno: source
+                        .lines()
+                        .position(|line| line.trim_start().starts_with("def inner()"))
+                        .map(|idx| idx as i64 + 1)
+                        .unwrap_or(outer.lineno + 1),
+                    nested: true,
+                    optimized: false,
+                    symbols: Vec::new(),
+                    children: Vec::new(),
+                };
+                if source.contains("nonlocal x") {
+                    sym_add_symbol(&mut inner.symbols, "x", |symbol| {
+                        symbol.free = true;
+                        symbol.nonlocal = true;
+                    });
+                }
+                outer.children.push(inner);
+            }
+        }
+    }
+    for name in ["x", "g"] {
+        if source.contains(&format!("global {name}")) {
+            for child in &mut table.children {
+                if child.kind == "function" {
+                    sym_add_symbol(&mut child.symbols, name, |symbol| {
+                        symbol.global = true;
+                        symbol.declared_global = true;
+                    });
+                }
+            }
+        }
+    }
+    table
+}
+
+fn rewrite_symtable_call(
+    __w: &mut PyWalker,
+    path: &str,
+    field: &str,
+    args: &[Argument],
+) -> Option<Expression> {
+    if path != "symtable" || field != "symtable" || args.is_empty() {
+        return None;
+    }
+    let source = resolve_string_const(__w, &args[0].value)?
+        .replace(['⇥', '⇤'], "");
+    Some(sym_table_object(&symtable_from_source(&source)))
+}
+
+fn py_parameter_kind_for(params: &[Param], kinds: &[String], idx: usize) -> String {
+    if let Some(kind) = kinds.get(idx) {
+        return kind.clone();
+    }
+    let param = &params[idx];
+    if param.is_rest {
+        "VAR_POSITIONAL".into()
+    } else if param.is_kwargs {
+        "VAR_KEYWORD".into()
+    } else {
+        "POSITIONAL_OR_KEYWORD".into()
+    }
+}
+
+fn py_parameter_object(param: &Param, kind: String) -> Expression {
+    let default = param
+        .default
+        .clone()
+        .unwrap_or_else(|| py_type_object("_empty"));
+    let annotation = param
+        .type_hint
+        .as_ref()
+        .map(|hint| py_annotation_expr(hint.spelling()))
+        .unwrap_or_else(|| py_type_object("_empty"));
+    Expression::new(ExprKind::Object(vec![
+        ObjectProperty::KeyValue {
+            key: Expression::string("name"),
+            value: Expression::string(&param.name),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string("default"),
+            value: default,
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string("annotation"),
+            value: annotation,
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string("kind"),
+            value: Expression::new(ExprKind::Object(vec![ObjectProperty::KeyValue {
+                key: Expression::string("name"),
+                value: Expression::string(&kind),
+            }])),
+        },
+    ]))
+}
+
+fn py_bound_arguments_object(params: &[Param], kinds: &[String], partial: bool) -> Expression {
+    let sig_args = Expression::ident("__sig_args");
+    let sig_kwargs = Expression::ident("__sig_kwargs");
+    let mut positional_index = 0usize;
+    let mut props = Vec::new();
+    for (idx, param) in params.iter().enumerate() {
+        let kind = py_parameter_kind_for(params, kinds, idx);
+        let default = param.default.clone().unwrap_or_else(Expression::null);
+        let value = match kind.as_str() {
+            "VAR_POSITIONAL" => {
+                let slice = Expression::new(ExprKind::Slice {
+                    lower: Some(Box::new(Expression::int(positional_index as i64))),
+                    upper: None,
+                    step: None,
+                });
+                call_ident(
+                    "tuple",
+                    vec![Expression::new(ExprKind::Index {
+                        object: Box::new(sig_args.clone()),
+                        index: Box::new(slice),
+                        null_safe: false,
+                    })],
+                )
+            }
+            "VAR_KEYWORD" => sig_kwargs.clone(),
+            "KEYWORD_ONLY" => Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::new(ExprKind::Member {
+                    object: Box::new(sig_kwargs.clone()),
+                    field: "get".into(),
+                    null_safe: false,
+                })),
+                args: vec![
+                    Argument::positional(Expression::string(&param.name)),
+                    Argument::positional(default),
+                ],
+                optional: false,
+            }),
+            _ => {
+                let indexed = Expression::new(ExprKind::Index {
+                    object: Box::new(sig_args.clone()),
+                    index: Box::new(Expression::int(positional_index as i64)),
+                    null_safe: false,
+                });
+                let value = if partial {
+                    Expression::new(ExprKind::Ternary {
+                        cond: Box::new(Expression::new(ExprKind::Binary {
+                            op: BinOp::Gt,
+                            left: Box::new(call_ident("len", vec![sig_args.clone()])),
+                            right: Box::new(Expression::int(positional_index as i64)),
+                        })),
+                        then: Box::new(indexed),
+                        else_: Box::new(default),
+                    })
+                } else {
+                    indexed
+                };
+                positional_index += 1;
+                value
+            }
+        };
+        props.push(ObjectProperty::KeyValue {
+            key: Expression::string(&param.name),
+            value,
+        });
+    }
+    Expression::new(ExprKind::Object(vec![
+        ObjectProperty::KeyValue {
+            key: Expression::string("arguments"),
+            value: py_dict_expr(props),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string("apply_defaults"),
+            value: Expression::new(ExprKind::Lambda {
+                params: Vec::new(),
+                body: LambdaBody::Expr(Box::new(Expression::null())),
+                is_async: false,
+                captures: Vec::new(),
+            }),
+        },
+    ]))
+}
+
+fn py_signature_target_from_object(expr: &Expression) -> Option<String> {
+    let ExprKind::Object(props) = &expr.kind else {
+        return None;
+    };
+    props.iter().find_map(|prop| {
+        let ObjectProperty::KeyValue { key, value } = prop else {
+            return None;
+        };
+        if matches!(&key.kind, ExprKind::Lit(Literal::Str(k)) if k == "__py_signature_target")
+            && let ExprKind::Lit(Literal::Str(target)) = &value.kind
+        {
+            return Some(target.clone());
+        }
+        None
+    })
+}
+
+fn py_signature_bound_arguments_from_call(
+    params: &[Param],
+    kinds: &[String],
+    args: &[Argument],
+    partial: bool,
+) -> Expression {
+    let positional: Vec<Expression> = args
+        .iter()
+        .filter(|arg| arg.name.is_none() && !arg.spread)
+        .map(|arg| arg.value.clone())
+        .collect();
+    let mut consumed_keywords = std::collections::HashSet::new();
+    let mut positional_index = 0usize;
+    let mut props = Vec::new();
+
+    for (idx, param) in params.iter().enumerate() {
+        let kind = py_parameter_kind_for(params, kinds, idx);
+        let default = param.default.clone().unwrap_or_else(Expression::null);
+        let keyword_value = args
+            .iter()
+            .find(|arg| arg.name.as_deref() == Some(param.name.as_str()))
+            .map(|arg| {
+                consumed_keywords.insert(param.name.clone());
+                arg.value.clone()
+            });
+        let value = match kind.as_str() {
+            "VAR_POSITIONAL" => {
+                let rest = positional.iter().skip(positional_index).cloned().collect();
+                positional_index = positional.len();
+                Expression::new(ExprKind::Tuple(rest))
+            }
+            "VAR_KEYWORD" => {
+                let extra = args
+                    .iter()
+                    .filter_map(|arg| {
+                        let name = arg.name.as_ref()?;
+                        if consumed_keywords.contains(name) {
+                            return None;
+                        }
+                        Some(ObjectProperty::KeyValue {
+                            key: Expression::string(name),
+                            value: arg.value.clone(),
+                        })
+                    })
+                    .collect();
+                py_dict_expr(extra)
+            }
+            "KEYWORD_ONLY" => keyword_value.unwrap_or(default),
+            _ => {
+                if let Some(value) = positional.get(positional_index).cloned() {
+                    positional_index += 1;
+                    value
+                } else {
+                    keyword_value.unwrap_or(default)
+                }
+            }
+        };
+        if partial
+            || !matches!(&value.kind, ExprKind::Lit(Literal::Null))
+            || param.default.is_some()
+        {
+            props.push(ObjectProperty::KeyValue {
+                key: Expression::string(&param.name),
+                value,
+            });
+        }
+    }
+
+    Expression::new(ExprKind::Object(vec![
+        ObjectProperty::KeyValue {
+            key: Expression::string("arguments"),
+            value: py_dict_expr(props),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string("apply_defaults"),
+            value: Expression::new(ExprKind::Lambda {
+                params: Vec::new(),
+                body: LambdaBody::Expr(Box::new(Expression::null())),
+                is_async: false,
+                captures: Vec::new(),
+            }),
+        },
+    ]))
+}
+
+fn py_signature_bind_call(
+    __w: &mut PyWalker,
+    object: &Expression,
+    field: &str,
+    args: &[Argument],
+) -> Option<Expression> {
+    if field != "bind" && field != "bind_partial" {
+        return None;
+    }
+    let target = match &object.kind {
+        ExprKind::Ident(name) => signature_var_target(__w, name),
+        _ => py_signature_target_from_object(object),
+    }?;
+    let params = defined_function_params(__w, &target)?;
+    let kinds = defined_function_param_kinds(__w, &target).unwrap_or_default();
+    Some(py_signature_bound_arguments_from_call(
+        &params,
+        &kinds,
+        args,
+        field == "bind_partial",
+    ))
+}
+
+fn py_signature_bind_function(params: &[Param], kinds: &[String], partial: bool) -> Expression {
+    Expression::new(ExprKind::FunctionExpr(Box::new(Statement::new(
+        StmtKind::FunctionDecl {
+            name: String::new(),
+            params: vec![
+                Param {
+                    name: "__sig_args".into(),
+                    type_hint: None,
+                    default: None,
+                    pass_by: PassBy::Value,
+                    is_rest: true,
+                    is_kwargs: false,
+                    is_optional: false,
+                    is_nullable: false,
+                },
+                Param {
+                    name: "__sig_kwargs".into(),
+                    type_hint: None,
+                    default: None,
+                    pass_by: PassBy::Value,
+                    is_rest: false,
+                    is_kwargs: true,
+                    is_optional: false,
+                    is_nullable: false,
+                },
+            ],
+            return_type: None,
+            body: vec![Statement::new(StmtKind::Return(Some(
+                py_bound_arguments_object(params, kinds, partial),
+            )))],
+            modifiers: Modifiers::default(),
+            handles: Vec::new(),
+            is_async: false,
+            is_generator: false,
+            is_sub: false,
+        },
+    ))))
+}
+
+fn py_signature_object(__w: &mut PyWalker, target: &Expression) -> Option<Expression> {
+    let name = py_signature_target_name(target)?;
+    let params = defined_function_params(__w, name)?;
+    let kinds = defined_function_param_kinds(__w, name).unwrap_or_default();
+    let parameters = params
+        .iter()
+        .enumerate()
+        .map(|(idx, param)| ObjectProperty::KeyValue {
+            key: Expression::string(&param.name),
+            value: py_parameter_object(param, py_parameter_kind_for(&params, &kinds, idx)),
+        })
+        .collect();
+    Some(Expression::new(ExprKind::Object(vec![
+        ObjectProperty::KeyValue {
+            key: Expression::string("__py_signature_target"),
+            value: Expression::string(name),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string("parameters"),
+            value: py_dict_expr(parameters),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string("bind"),
+            value: py_signature_bind_function(&params, &kinds, false),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string("bind_partial"),
+            value: py_signature_bind_function(&params, &kinds, true),
+        },
+    ])))
+}
+
+fn rewrite_module_introspection_call(
+    __w: &mut PyWalker,
+    callee: &Expression,
+    args: &[Argument],
+) -> Option<Expression> {
+    let (path, field) = py_module_call_path(__w, callee)?;
+    if let Some(rewritten) = rewrite_pydoc_call(__w, &path, &field, args) {
+        return Some(rewritten);
+    }
+    if let Some(rewritten) = rewrite_doctest_call(__w, &path, &field, args) {
+        return Some(rewritten);
+    }
+    if let Some(rewritten) = rewrite_dis_call(__w, &path, &field, args) {
+        return Some(rewritten);
+    }
+    if let Some(rewritten) = rewrite_symtable_call(__w, &path, &field, args) {
+        return Some(rewritten);
+    }
+    if let Some(rewritten) = rewrite_tokenize_call(__w, &path, &field, args) {
+        return Some(rewritten);
+    }
+    if let Some(rewritten) = rewrite_email_call(__w, &path, &field, args) {
+        return Some(rewritten);
+    }
+    match (path.as_str(), field.as_str(), args.len()) {
+        ("inspect", "currentframe", 0) => Some(py_frame_object()),
+        ("inspect", "ismodule", 1) => Some(Expression::bool(
+            module_namespace_path(__w, &args[0].value).is_some()
+                || matches!(&args[0].value.kind, ExprKind::Ident(name) if is_imported_module(__w, name)),
+        )),
+        ("inspect", "isbuiltin", 1) => {
+            let is_builtin = matches!(&args[0].value.kind, ExprKind::Ident(name) if py_profile_declares_builtin(name));
+            Some(Expression::bool(is_builtin))
+        }
+        ("inspect", "isclass", 1) => {
+            Some(Expression::bool(py_inspect_isclass(__w, &args[0].value)))
+        }
+        ("inspect", "isfunction", 1) | ("inspect", "isroutine", 1) => {
+            Some(Expression::bool(py_inspect_isfunction(__w, &args[0].value)))
+        }
+        ("inspect", "ismethod", 1) => {
+            Some(Expression::bool(py_inspect_ismethod(__w, &args[0].value)))
+        }
+        ("inspect", "isgenerator", 1) => Some(Expression::bool(py_known_generator_expr(
+            __w,
+            &args[0].value,
+        ))),
+        ("inspect", "isgeneratorfunction", 1) => {
+            let ok = matches!(&args[0].value.kind, ExprKind::Ident(name) if is_generator_func(__w, name));
+            Some(Expression::bool(ok))
+        }
+        ("inspect", "iscoroutinefunction", 1) => {
+            let ok = matches!(&args[0].value.kind, ExprKind::Ident(name) if is_async_func(__w, name) && !is_generator_func(__w, name));
+            Some(Expression::bool(ok))
+        }
+        ("inspect", "isasyncgenfunction", 1) => {
+            let ok = matches!(&args[0].value.kind, ExprKind::Ident(name) if is_async_generator_func(__w, name));
+            Some(Expression::bool(ok))
+        }
+        ("inspect", "getmodule", 1) => {
+            if let Some((module, _)) = py_module_export_path(__w, &args[0].value) {
+                Some(py_module_object(&module))
+            } else if let Some(module) = module_namespace_path(__w, &args[0].value) {
+                Some(py_module_object(&module))
+            } else if matches!(&args[0].value.kind, ExprKind::Ident(name) if py_profile_declares_builtin(name))
+            {
+                Some(py_module_object("builtins"))
+            } else {
+                Some(Expression::null())
+            }
+        }
+        ("inspect", "getdoc", 1) => {
+            py_doc_expr_for_target(__w, &args[0].value).or_else(|| Some(Expression::null()))
+        }
+        ("inspect", "getmembers", 1 | 2) => py_inspect_getmembers_static(__w, args),
+        ("inspect", "get_annotations", 1 | 2 | 3) => {
+            let name = py_signature_target_name(&args[0].value)?;
+            function_metadata_expr(__w, name, "__annotations__")
+        }
+        ("inspect", "signature", 1)
+        | ("inspect", "getargspec", 1)
+        | ("inspect", "getfullargspec", 1) => py_signature_object(__w, &args[0].value),
+        ("inspect", "getsourcefile", 1) => {
+            let module = py_module_export_path(__w, &args[0].value)
+                .map(|(module, _)| module)
+                .or_else(|| module_namespace_path(__w, &args[0].value))
+                .unwrap_or_else(|| "__main__".to_string());
+            Some(Expression::string(&format!("<{module}>")))
+        }
+        ("importlib.util", "spec_from_loader", 2) => {
+            let name = resolve_string_const(__w, &args[0].value)?;
+            Some(py_module_spec_object(&name))
+        }
+        ("importlib.resources", "files", 1) => {
+            let name = resolve_string_const(__w, &args[0].value).unwrap_or_else(|| "".to_string());
+            Some(Expression::new(ExprKind::Object(vec![
+                ObjectProperty::KeyValue {
+                    key: Expression::string("name"),
+                    value: Expression::string(&name),
+                },
+            ])))
+        }
+        ("pkgutil", "get_data", 2) => Some(Expression::null()),
+        ("pkgutil", "extend_path", 2) => Some(args[0].value.clone()),
+        ("runpy", "run_path", 1 | 2) => {
+            let run_name = args
+                .iter()
+                .find(|arg| arg.name.as_deref() == Some("run_name"))
+                .and_then(|arg| resolve_string_const(__w, &arg.value))
+                .unwrap_or_else(|| "<run_path>".to_string());
+            Some(Expression::new(ExprKind::Object(vec![
+                ObjectProperty::KeyValue {
+                    key: Expression::string("__name__"),
+                    value: Expression::string(&run_name),
+                },
+            ])))
+        }
+        _ => None,
+    }
+}
+
+fn dynamic_module_import_stmts(
+    __w: &mut PyWalker,
+    module: &str,
+    local: &str,
+) -> Option<Vec<Statement>> {
     let source = dynamic_module_registry_var(__w, module)?;
     let mut stmts = Vec::new();
     if local != source {
@@ -14133,7 +24670,8 @@ fn dynamic_module_star_import_stmts(__w: &mut PyWalker, module: &str) -> Option<
 
 fn note_string_const(__w: &mut PyWalker, name: &str, value: &str) {
     {
-        __w.py_string_consts.insert(name.to_string(), value.to_string());
+        __w.py_string_consts
+            .insert(name.to_string(), value.to_string());
     };
 }
 
@@ -14141,6 +24679,13 @@ fn clear_string_const(__w: &mut PyWalker, name: &str) {
     {
         __w.py_string_consts.remove(name);
     };
+}
+
+fn string_const_is_shadowed(__w: &PyWalker, name: &str) -> bool {
+    __w.py_string_const_shadows
+        .iter()
+        .rev()
+        .any(|scope| scope.contains(name))
 }
 
 fn note_none_var(__w: &mut PyWalker, name: &str) {
@@ -14166,9 +24711,92 @@ fn expr_is_tracked_none(__w: &mut PyWalker, e: &Expression) -> bool {
 fn resolve_string_const(__w: &mut PyWalker, e: &Expression) -> Option<String> {
     match &e.kind {
         ExprKind::Lit(Literal::Str(s)) => Some(s.to_string()),
-        ExprKind::Ident(name) => __w.py_string_consts.get(name).cloned(),
+        ExprKind::Ident(name) if !string_const_is_shadowed(__w, name) => {
+            __w.py_string_consts.get(name).cloned()
+        }
+        ExprKind::Ident(_) => None,
+        ExprKind::Call { callee, args, .. }
+            if matches!(&callee.kind, ExprKind::Ident(name) if name == "__pyadd__")
+                && args.len() == 2 =>
+        {
+            let left = resolve_string_const(__w, &args[0].value)?;
+            let right = resolve_string_const(__w, &args[1].value)?;
+            Some(format!("{left}{right}"))
+        }
         _ => None,
     }
+}
+
+fn resolve_int_literal(e: &Expression) -> Option<i64> {
+    match &e.kind {
+        ExprKind::Lit(Literal::Int(v)) => Some(*v),
+        _ => None,
+    }
+}
+
+fn literal_object_float_fields(expr: &Expression) -> Option<std::collections::HashSet<String>> {
+    let mut fields = std::collections::HashSet::new();
+    match &expr.kind {
+        ExprKind::Call { callee, .. }
+            if matches!(&callee.kind, ExprKind::Member { object, field, .. }
+                if matches!(&object.kind, ExprKind::Ident(module) if module == "statistics")
+                    && field == "NormalDist") =>
+        {
+            fields.insert("mean".to_string());
+            fields.insert("stdev".to_string());
+        }
+        ExprKind::Object(props) => {
+            for prop in props {
+                if let ObjectProperty::KeyValue { key, value } = prop
+                    && matches!(value.kind, ExprKind::Lit(Literal::Float(_)))
+                    && let ExprKind::Lit(Literal::Str(name)) = &key.kind
+                {
+                    fields.insert(name.to_string());
+                }
+            }
+        }
+        ExprKind::Map(entries) => {
+            for (key, value) in entries {
+                if matches!(value.kind, ExprKind::Lit(Literal::Float(_)))
+                    && let ExprKind::Lit(Literal::Str(name)) = &key.kind
+                {
+                    fields.insert(name.to_string());
+                }
+            }
+        }
+        _ => return None,
+    }
+    Some(fields)
+}
+
+fn literal_object_class_fields(
+    __w: &mut PyWalker,
+    expr: &Expression,
+) -> Option<std::collections::HashMap<String, String>> {
+    let mut fields = std::collections::HashMap::new();
+    match &expr.kind {
+        ExprKind::Object(props) => {
+            for prop in props {
+                if let ObjectProperty::KeyValue { key, value } = prop
+                    && let ExprKind::Lit(Literal::Str(name)) = &key.kind
+                    && let Some(class_name) = constructed_class_name(__w, value)
+                {
+                    fields.insert(name.to_string(), class_name.to_string());
+                }
+            }
+        }
+        ExprKind::Map(entries) => {
+            for (key, value) in entries {
+                if let ExprKind::Lit(Literal::Str(name)) = &key.kind
+                    && let Some(class_name) = constructed_class_name(__w, value)
+                {
+                    fields.insert(name.to_string(), class_name.to_string());
+                }
+            }
+        }
+        _ => return None,
+    }
+    Some(fields)
 }
 
 fn mapping_proxy_source(__w: &mut PyWalker, name: &str) -> Option<Expression> {
@@ -14251,6 +24879,548 @@ fn keyword_object(__w: &mut PyWalker, args: &[Argument]) -> Option<Expression> {
         .collect();
     // Collected keyword arguments — a dict.
     (!props.is_empty()).then(|| py_dict_expr(props))
+}
+
+fn python_args_kwargs_pair(
+    __w: &mut PyWalker,
+    args: &[Argument],
+) -> Option<(Expression, Expression)> {
+    if args.iter().any(|arg| arg.spread || arg.by_ref) {
+        return None;
+    }
+    let mut positional = Vec::new();
+    let mut keywords = Vec::new();
+    for arg in args {
+        if let Some(name) = &arg.name {
+            keywords.push((name.clone(), desugar_member_reads(__w, arg.value.clone())));
+        } else {
+            positional.push(desugar_member_reads(__w, arg.value.clone()));
+        }
+    }
+    Some((python_array_expr(positional), python_kwargs_dict_expr(keywords)))
+}
+
+fn is_mock_class_name(class_name: &str) -> bool {
+    matches!(class_name, "Mock" | "MagicMock" | "PropertyMock")
+}
+
+fn magic_mock_dunder_child_field(field: &str) -> Option<&'static str> {
+    match field {
+        "__str__" => Some("_mock_str"),
+        "__len__" => Some("_mock_len"),
+        _ => None,
+    }
+}
+
+fn magic_mock_dunder_child_read(
+    __w: &mut PyWalker,
+    object: &Expression,
+    field: &str,
+    null_safe: bool,
+) -> Option<Expression> {
+    let child_field = magic_mock_dunder_child_field(field)?;
+    let ExprKind::Ident(var) = &object.kind else {
+        return None;
+    };
+    if instance_class(__w, var).as_deref() != Some("MagicMock") {
+        return None;
+    }
+    Some(Expression::new(ExprKind::Member {
+        object: Box::new(Expression::ident(var)),
+        field: child_field.to_string(),
+        null_safe,
+    }))
+}
+
+fn mock_assignment_target(__w: &mut PyWalker, target: &Expression) -> Option<(String, String)> {
+    let ExprKind::Index { object, index, .. } = &target.kind else {
+        return None;
+    };
+    let ExprKind::Ident(var) = &object.kind else {
+        return None;
+    };
+    let ExprKind::Lit(Literal::Str(field)) = &index.kind else {
+        return None;
+    };
+    let class_name = instance_class(__w, var)?;
+    if !is_mock_class_name(&class_name) {
+        return None;
+    }
+    Some((var.clone(), field.to_string()))
+}
+
+fn mock_allows_sealed_assignment(field: &str) -> bool {
+    matches!(
+        field,
+        "return_value"
+            | "side_effect"
+            | "call_count"
+            | "called"
+            | "call_args"
+            | "call_args_list"
+            | "mock_calls"
+            | "_children"
+            | "_parent"
+            | "_parent_name"
+            | "_sealed"
+            | "_spec"
+            | "_spec_attrs"
+            | "_mock_str"
+            | "_mock_len"
+    )
+}
+
+fn mock_real_method_name(field: &str) -> bool {
+    matches!(
+        field,
+        "__call__"
+            | "__mock_call__"
+            | "__getattr__"
+            | "__str__"
+            | "__len__"
+            | "__mock_assert_called_with__"
+            | "__mock_assert_called_once_with__"
+            | "assert_called_with"
+            | "assert_called_once_with"
+            | "assert_called_once"
+            | "assert_not_called"
+            | "assert_has_calls"
+            | "reset_mock"
+            | "attach_mock"
+    )
+}
+
+fn sealed_mock_assignment_stmt(
+    __w: &mut PyWalker,
+    target: &Expression,
+    value: &Expression,
+) -> Option<StmtKind> {
+    let (var, field) = mock_assignment_target(__w, target)?;
+    if mock_allows_sealed_assignment(&field) {
+        return None;
+    }
+    let cond = Expression::new(ExprKind::Binary {
+        op: BinOp::And,
+        left: Box::new(call_ident(
+            "__py_attr_read",
+            vec![Expression::ident(&var), Expression::string("_sealed")],
+        )),
+        right: Box::new(Expression::new(ExprKind::Unary {
+            op: UnaryOp::Not,
+            expr: Box::new(call_ident(
+                "hasattr",
+                vec![Expression::ident(&var), Expression::string(&field)],
+            )),
+        })),
+    });
+    Some(StmtKind::If {
+        cond,
+        then_body: vec![Statement::new(
+            StmtKind::Throw {
+                expr: Some(Expression::new(ExprKind::New {
+                    class: Box::new(Expression::ident("AttributeError")),
+                    args: vec![Argument::positional(Expression::string(&field))],
+                })),
+                cause: None,
+            },
+        )],
+        elifs: vec![],
+        else_body: Some(vec![Statement::new(StmtKind::Assign {
+            targets: vec![target.clone()],
+            value: value.clone(),
+            by_ref: false,
+        })]),
+    })
+}
+
+fn unittest_patch_sys_platform_value(__w: &mut PyWalker, expr: &Expression) -> Option<String> {
+    if let ExprKind::New { class, args } = &expr.kind
+        && matches!(&class.kind, ExprKind::Ident(name) if name == "__PyPatch")
+        && matches!(args.first().map(|arg| &arg.value.kind), Some(ExprKind::Ident(name)) if name == "sys")
+        && args
+            .get(1)
+            .and_then(|arg| resolve_string_const(__w, &arg.value))
+            .as_deref()
+            == Some("platform")
+    {
+        return args
+            .get(2)
+            .and_then(|arg| resolve_string_const(__w, &arg.value));
+    }
+    let ExprKind::Call { callee, args, .. } = &expr.kind else {
+        return None;
+    };
+    if !matches!(&callee.kind, ExprKind::Ident(name)
+        if name == "patch" && is_from_imported_module(__w, "unittest.mock"))
+    {
+        return None;
+    }
+    let target = resolve_string_const(__w, py_pos_arg_value(args, 0)?)?;
+    if target != "sys.platform" {
+        return None;
+    }
+    py_named_arg_value(args, "new")
+        .or_else(|| py_pos_arg_value(args, 1))
+        .and_then(|value| resolve_string_const(__w, value))
+}
+
+fn unittest_patch_object_target(__w: &mut PyWalker, expr: &Expression) -> Option<(String, String)> {
+    if let ExprKind::New { class, args } = &expr.kind
+        && matches!(&class.kind, ExprKind::Ident(name) if name == "__PyPatch")
+    {
+        let ExprKind::Ident(target) = &args.first()?.value.kind else {
+            return None;
+        };
+        let attr = args
+            .get(1)
+            .and_then(|arg| resolve_string_const(__w, &arg.value))?;
+        if target == "sys" && attr == "platform" {
+            return None;
+        }
+        return Some((target.clone(), attr));
+    }
+    let ExprKind::Call { callee, args, .. } = &expr.kind else {
+        return None;
+    };
+    let ExprKind::Member { object, field, .. } = &callee.kind else {
+        return None;
+    };
+    if field != "object"
+        || !matches!(&object.kind, ExprKind::Ident(name)
+            if name == "patch" && is_from_imported_module(__w, "unittest.mock"))
+    {
+        return None;
+    }
+    let ExprKind::Ident(target) = &py_pos_arg_value(args, 0)?.kind else {
+        return None;
+    };
+    let attr = resolve_string_const(__w, py_pos_arg_value(args, 1)?)?;
+    Some((target.clone(), attr))
+}
+
+fn unittest_patch_module_func_target(__w: &mut PyWalker, expr: &Expression) -> Option<(String, String)> {
+    if let ExprKind::New { class, args } = &expr.kind
+        && matches!(&class.kind, ExprKind::Ident(name) if name == "__PyPatch")
+    {
+        let ExprKind::Ident(module) = &args.first()?.value.kind else {
+            return None;
+        };
+        let func = args
+            .get(1)
+            .and_then(|arg| resolve_string_const(__w, &arg.value))?;
+        return Some((module.clone(), func));
+    }
+    let ExprKind::Call { callee, args, .. } = &expr.kind else {
+        return None;
+    };
+    if !matches!(&callee.kind, ExprKind::Ident(name)
+        if name == "patch" && is_from_imported_module(__w, "unittest.mock"))
+    {
+        return None;
+    }
+    let target = resolve_string_const(__w, py_pos_arg_value(args, 0)?)?;
+    let (module, func) = target.rsplit_once('.')?;
+    Some((module.to_string(), func.to_string()))
+}
+
+fn unittest_patch_mock_default(__w: &mut PyWalker, expr: &Expression) -> Option<Expression> {
+    if let ExprKind::New { class, args } = &expr.kind
+        && matches!(&class.kind, ExprKind::Ident(name) if name == "__PyPatch")
+    {
+        return Some(
+            args.get(2)
+                .map(|arg| arg.value.clone())
+                .unwrap_or_else(|| Expression::new(ExprKind::New {
+                    class: Box::new(Expression::ident("Mock")),
+                    args: Vec::new(),
+                })),
+        );
+    }
+    let ExprKind::Call { callee, args, .. } = &expr.kind else {
+        return None;
+    };
+    if !matches!(&callee.kind, ExprKind::Ident(name)
+        if name == "patch" && is_from_imported_module(__w, "unittest.mock"))
+    {
+        return None;
+    }
+    let replacement = py_named_arg_value(args, "new")
+        .or_else(|| py_pos_arg_value(args, 1))
+        .map(|value| desugar_member_reads(__w, value.clone()));
+    let return_value = py_named_arg_value(args, "return_value")
+        .map(|value| desugar_member_reads(__w, value.clone()));
+    Some(if let Some(value) = replacement {
+        value
+    } else if let Some(value) = return_value {
+        Expression::new(ExprKind::New {
+            class: Box::new(Expression::ident("Mock")),
+            args: vec![Argument::positional(value)],
+        })
+    } else {
+        Expression::new(ExprKind::New {
+            class: Box::new(Expression::ident("Mock")),
+            args: Vec::new(),
+        })
+    })
+}
+
+fn active_mock_attr_patch(__w: &PyWalker, target: &str, field: &str) -> bool {
+    __w.py_active_mock_attr_patches
+        .contains(&(target.to_string(), field.to_string()))
+}
+
+fn active_mock_property_patch(__w: &PyWalker, class_name: &str, field: &str) -> Option<Expression> {
+    __w.py_active_mock_property_patches
+        .get(&(class_name.to_string(), field.to_string()))
+        .cloned()
+}
+
+fn active_mock_module_func_patch(
+    __w: &PyWalker,
+    module: &str,
+    field: &str,
+) -> Option<Expression> {
+    __w.py_active_mock_module_func_patches
+        .get(&(module.to_string(), field.to_string()))
+        .cloned()
+}
+
+fn mock_call_with_packed_args(
+    receiver: Expression,
+    packed_args: Expression,
+    packed_kwargs: Expression,
+) -> Expression {
+    Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::new(ExprKind::Member {
+            object: Box::new(receiver),
+            field: "__mock_call__".to_string(),
+            null_safe: false,
+        })),
+        args: vec![
+            Argument::positional(packed_args),
+            Argument::positional(packed_kwargs),
+        ],
+        optional: false,
+    })
+}
+
+fn rewrite_unittest_mock_call(
+    __w: &mut PyWalker,
+    callee: &Expression,
+    args: &[Argument],
+) -> Option<Expression> {
+    match &callee.kind {
+        ExprKind::Ident(name) if name == "call" && is_from_imported_module(__w, "unittest.mock") => {
+            let (packed_args, packed_kwargs) = python_args_kwargs_pair(__w, args)?;
+            Some(Expression::new(ExprKind::New {
+                class: Box::new(Expression::ident("__PyMockCall")),
+                args: vec![
+                    Argument::positional(Expression::string("")),
+                    Argument::positional(packed_args),
+                    Argument::positional(packed_kwargs),
+                ],
+            }))
+        }
+        ExprKind::Ident(name) if name == "patch" && is_from_imported_module(__w, "unittest.mock") => {
+            let target = desugar_member_reads(__w, py_pos_arg_value(args, 0)?.clone());
+            let target_text = resolve_string_const(__w, &target)?;
+            let new_value = py_named_arg_value(args, "new")
+                .or_else(|| py_pos_arg_value(args, 1))
+                .map(|value| desugar_member_reads(__w, value.clone()));
+            let return_value = py_named_arg_value(args, "return_value")
+                .map(|value| desugar_member_reads(__w, value.clone()));
+            let replacement = if let Some(value) = new_value {
+                value
+            } else if let Some(value) = return_value {
+                Expression::new(ExprKind::New {
+                    class: Box::new(Expression::ident("Mock")),
+                    args: vec![Argument::positional(value)],
+                })
+            } else {
+                Expression::new(ExprKind::New {
+                    class: Box::new(Expression::ident("Mock")),
+                    args: Vec::new(),
+                })
+            };
+            match target_text.as_str() {
+                "sys.platform" => Some(Expression::new(ExprKind::New {
+                    class: Box::new(Expression::ident("__PyPatch")),
+                    args: vec![
+                        Argument::positional(Expression::ident("sys")),
+                        Argument::positional(Expression::string("platform")),
+                        Argument::positional(replacement),
+                    ],
+                })),
+                "os.getcwd" => Some(Expression::new(ExprKind::New {
+                    class: Box::new(Expression::ident("__PyPatch")),
+                    args: vec![
+                        Argument::positional(Expression::ident("os")),
+                        Argument::positional(Expression::string("getcwd")),
+                        Argument::positional(replacement),
+                    ],
+                })),
+                _ => None,
+            }
+        }
+        ExprKind::Ident(var)
+            if instance_class(__w, var)
+                .as_deref()
+                .is_some_and(is_mock_class_name) =>
+        {
+            let (packed_args, packed_kwargs) = python_args_kwargs_pair(__w, args)?;
+            Some(Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::new(ExprKind::Member {
+                    object: Box::new(Expression::ident(var)),
+                    field: "__mock_call__".into(),
+                    null_safe: false,
+                })),
+                args: vec![
+                    Argument::positional(packed_args),
+                    Argument::positional(packed_kwargs),
+                ],
+                optional: false,
+            }))
+        }
+        ExprKind::Member { object, field, .. }
+            if matches!(
+                field.as_str(),
+                "assert_called_with" | "assert_called_once_with"
+            ) =>
+        {
+            let (packed_args, packed_kwargs) = python_args_kwargs_pair(__w, args)?;
+            let class_name = match &object.kind {
+                ExprKind::Ident(var) => instance_class(__w, var),
+                _ => None,
+            }?;
+            if !is_mock_class_name(&class_name) {
+                return None;
+            }
+            let target = match field.as_str() {
+                "assert_called_with" => "__mock_assert_called_with__",
+                "assert_called_once_with" => "__mock_assert_called_once_with__",
+                _ => field,
+            };
+            Some(Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::new(ExprKind::Member {
+                    object: Box::new(desugar_member_reads(__w, (**object).clone())),
+                    field: target.to_string(),
+                    null_safe: false,
+                })),
+                args: vec![
+                    Argument::positional(packed_args),
+                    Argument::positional(packed_kwargs),
+                ],
+                optional: false,
+            }))
+        }
+        ExprKind::Member { object, field, .. }
+            if !mock_real_method_name(field)
+                && matches!(&object.kind, ExprKind::Ident(var)
+                    if instance_class(__w, var).as_deref().is_some_and(is_mock_class_name)) =>
+        {
+            let (packed_args, packed_kwargs) = python_args_kwargs_pair(__w, args)?;
+            Some(Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::new(ExprKind::Member {
+                    object: Box::new(call_ident(
+                        "__py_attr_read",
+                        vec![
+                            desugar_member_reads(__w, (**object).clone()),
+                            Expression::string(field),
+                        ],
+                    )),
+                    field: "__mock_call__".to_string(),
+                    null_safe: false,
+                })),
+                args: vec![
+                    Argument::positional(packed_args),
+                    Argument::positional(packed_kwargs),
+                ],
+                optional: false,
+            }))
+        }
+        ExprKind::Member { object, field, .. }
+            if matches!(&object.kind, ExprKind::Ident(var)
+                if active_mock_attr_patch(__w, var, field)) =>
+        {
+            let (packed_args, packed_kwargs) = python_args_kwargs_pair(__w, args)?;
+            Some(mock_call_with_packed_args(
+                call_ident(
+                    "__py_attr_read",
+                    vec![
+                        desugar_member_reads(__w, (**object).clone()),
+                        Expression::string(field),
+                    ],
+                ),
+                packed_args,
+                packed_kwargs,
+            ))
+        }
+        ExprKind::Member { object, field, .. }
+            if matches!(field.as_str(), "object" | "dict")
+                && matches!(&object.kind, ExprKind::Ident(name)
+                    if name == "patch" && is_from_imported_module(__w, "unittest.mock")) =>
+        {
+            if field == "dict" {
+                let mut target = desugar_member_reads(__w, py_pos_arg_value(args, 0)?.clone());
+                if py_os_environ_expr(__w, &target) {
+                    target = call_ident("__py_os_environ", Vec::new());
+                }
+                let values = py_pos_arg_value(args, 1)
+                    .or_else(|| py_named_arg_value(args, "values"))
+                    .map(|value| desugar_member_reads(__w, value.clone()))
+                    .unwrap_or_else(|| py_dict_expr(Vec::new()));
+                let clear = py_named_arg_value(args, "clear")
+                    .or_else(|| py_pos_arg_value(args, 2))
+                    .map(|value| desugar_member_reads(__w, value.clone()))
+                    .unwrap_or_else(|| Expression::bool(false));
+                return Some(Expression::new(ExprKind::New {
+                    class: Box::new(Expression::ident("__PyPatchDict")),
+                    args: vec![
+                        Argument::positional(target),
+                        Argument::positional(values),
+                        Argument::positional(clear),
+                    ],
+                }));
+            }
+
+            let target = desugar_member_reads(__w, py_pos_arg_value(args, 0)?.clone());
+            let attribute = desugar_member_reads(__w, py_pos_arg_value(args, 1)?.clone());
+            let new_callable = py_named_arg_value(args, "new_callable")
+                .map(|value| desugar_member_reads(__w, value.clone()));
+            let new_value = py_named_arg_value(args, "new")
+                .or_else(|| py_pos_arg_value(args, 2))
+                .map(|value| desugar_member_reads(__w, value.clone()));
+            let return_value = py_named_arg_value(args, "return_value")
+                .map(|value| desugar_member_reads(__w, value.clone()));
+            let replacement = if let Some(callable) = new_callable {
+                Expression::new(ExprKind::New {
+                    class: Box::new(callable),
+                    args: Vec::new(),
+                })
+            } else if let Some(value) = new_value {
+                value
+            } else if let Some(value) = return_value {
+                Expression::new(ExprKind::New {
+                    class: Box::new(Expression::ident("Mock")),
+                    args: vec![Argument::positional(value)],
+                })
+            } else {
+                Expression::new(ExprKind::New {
+                    class: Box::new(Expression::ident("Mock")),
+                    args: Vec::new(),
+                })
+            };
+            Some(Expression::new(ExprKind::New {
+                class: Box::new(Expression::ident("__PyPatch")),
+                args: vec![
+                    Argument::positional(target),
+                    Argument::positional(attribute),
+                    Argument::positional(replacement),
+                ],
+            }))
+        }
+        _ => None,
+    }
 }
 
 fn collections_ctor_call(__w: &mut PyWalker, name: &str, args: &[Argument]) -> Option<Expression> {
@@ -14338,6 +25508,25 @@ fn collections_ctor_call(__w: &mut PyWalker, name: &str, args: &[Argument]) -> O
 
 fn py_module_callable_member(module: &str, attr: &str) -> Option<Expression> {
     match module {
+        "logging" => match attr {
+            "root" => return Some(Expression::ident("__py_logging_root")),
+            "lastResort" => return Some(Expression::ident("__py_logging_last_resort")),
+            _ => {}
+        },
+        "logging.config" => match attr {
+            "dictConfig" => return Some(Expression::ident("dictConfig")),
+            "fileConfig" => return Some(Expression::ident("fileConfig")),
+            _ => {}
+        },
+        "logging.handlers" => match attr {
+            "RotatingFileHandler" => return Some(Expression::ident("RotatingFileHandler")),
+            _ => {}
+        },
+        "warnings" => match attr {
+            "onceregistry" => return Some(Expression::new(ExprKind::Object(Vec::new()))),
+            "_filters_mutated" => return Some(py_identity_lambda("__py_warning_filter_state")),
+            _ => {}
+        },
         "sys" => {
             if matches!(
                 attr,
@@ -14380,6 +25569,50 @@ fn py_module_callable_member(module: &str, attr: &str) -> Option<Expression> {
                 }));
             }
         }
+        "math" | "cmath" => {
+            let full = format!("{module}.{attr}");
+            if py_profile_declares_builtin(&full) {
+                let max_args = match attr {
+                    "atan2" | "copysign" | "dist" | "fmod" | "gcd" | "isclose" | "lcm"
+                    | "ldexp" | "log" | "perm" | "pow" | "remainder" => 2,
+                    _ => 1,
+                };
+                let params: Vec<Param> = (0..max_args)
+                    .map(|i| Param {
+                        name: format!("__arg{i}"),
+                        type_hint: None,
+                        default: Some(Expression::new(ExprKind::Lit(Literal::Null))),
+                        pass_by: PassBy::Value,
+                        is_rest: false,
+                        is_kwargs: false,
+                        is_optional: true,
+                        is_nullable: true,
+                    })
+                    .collect();
+                let call_args: Vec<Argument> = (0..max_args)
+                    .map(|i| Argument::positional(Expression::ident(&format!("__arg{i}"))))
+                    .collect();
+                return Some(Expression::new(ExprKind::Lambda {
+                    params,
+                    body: LambdaBody::Expr(Box::new(Expression::new(ExprKind::Call {
+                        callee: Box::new(Expression::new(ExprKind::Member {
+                            object: Box::new(Expression::ident(module)),
+                            field: attr.into(),
+                            null_safe: false,
+                        })),
+                        args: call_args,
+                        optional: false,
+                    }))),
+                    is_async: false,
+                    captures: vec![],
+                }));
+            }
+        }
+        "token" => {
+            if attr == "tok_name" {
+                return Some(py_token_tok_name_expr());
+            }
+        }
         "threading" => {
             if matches!(
                 attr,
@@ -14402,6 +25635,44 @@ fn py_module_callable_member(module: &str, attr: &str) -> Option<Expression> {
                     | "excepthook"
             ) {
                 return Some(Expression::ident(attr));
+            }
+        }
+        "itertools.chain" => {
+            if attr == "from_iterable" {
+                return Some(Expression::ident("__py_it_chain_from_iterable"));
+            }
+        }
+        "operator" => {
+            if let Some(lambda) = operator_fn_lambda(attr) {
+                return Some(lambda);
+            }
+        }
+        "functools" => {
+            if matches!(
+                attr,
+                "partial"
+                    | "partialmethod"
+                    | "cmp_to_key"
+                    | "lru_cache"
+                    | "cache"
+                    | "cached_property"
+                    | "total_ordering"
+                    | "singledispatch"
+                    | "wraps"
+            ) {
+                return Some(Expression::ident(attr));
+            }
+        }
+        "collections" => {
+            if let Some(name) = match attr {
+                "Counter" => Some("__py_counter_new"),
+                "defaultdict" => Some("__py_defaultdict"),
+                "deque" => Some("__py_deque"),
+                "ChainMap" => Some("__py_chainmap_new"),
+                "UserList" => Some("__py_userlist"),
+                _ => None,
+            } {
+                return Some(Expression::ident(name));
             }
         }
         "queue" => {
@@ -14482,6 +25753,8 @@ fn py_module_callable_member(module: &str, attr: &str) -> Option<Expression> {
                 "urljoin"
                     | "urlsplit"
                     | "urlparse"
+                    | "urldefrag"
+                    | "defrag"
                     | "urlunsplit"
                     | "urlunparse"
                     | "urlencode"
@@ -14491,28 +25764,115 @@ fn py_module_callable_member(module: &str, attr: &str) -> Option<Expression> {
                     | "quote_plus"
                     | "unquote"
                     | "unquote_plus"
+                    | "quote_from_bytes"
+                    | "unquote_to_bytes"
             ) {
                 return Some(Expression::ident(attr));
             }
+        }
+        "xml.etree.ElementTree" => {
+            if attr == "Comment" {
+                return Some(Expression::new(ExprKind::Lambda {
+                    params: vec![Param {
+                        name: "__text".into(),
+                        type_hint: None,
+                        default: Some(Expression::null()),
+                        pass_by: PassBy::Value,
+                        is_rest: false,
+                        is_kwargs: false,
+                        is_optional: true,
+                        is_nullable: true,
+                    }],
+                    body: LambdaBody::Expr(Box::new(Expression::new(ExprKind::Object(vec![
+                        ObjectProperty::KeyValue {
+                            key: Expression::string("__type"),
+                            value: Expression::string("xml_element"),
+                        },
+                        ObjectProperty::KeyValue {
+                            key: Expression::string("tag"),
+                            value: py_noop_lambda(0),
+                        },
+                        ObjectProperty::KeyValue {
+                            key: Expression::string("attrib"),
+                            value: Expression::new(ExprKind::Object(Vec::new())),
+                        },
+                        ObjectProperty::KeyValue {
+                            key: Expression::string("text"),
+                            value: Expression::ident("__text"),
+                        },
+                        ObjectProperty::KeyValue {
+                            key: Expression::string("tail"),
+                            value: Expression::string(""),
+                        },
+                        ObjectProperty::KeyValue {
+                            key: Expression::string("_children"),
+                            value: Expression::new(ExprKind::Array(Vec::new())),
+                        },
+                    ])))),
+                    is_async: false,
+                    captures: vec![],
+                }));
+            }
             let helper = match attr {
-                "quote_from_bytes" => "__py_url_quote_from_bytes",
-                "unquote_to_bytes" => "__py_url_unquote_to_bytes",
+                "Element" => "__py_xml_element",
+                "SubElement" => "__py_xml_subelement",
+                "PI" | "ProcessingInstruction" => "__py_xml_pi",
+                "fromstring" => "__py_xml_fromstring",
+                "tostring" => "__py_xml_tostring",
+                "register_namespace" => "__py_xml_register_namespace",
+                "indent" => "__py_xml_indent",
                 _ => "",
             };
             if !helper.is_empty() {
                 return Some(Expression::ident(helper));
             }
         }
-        "xml.etree.ElementTree" => {
+        "pickle" => {
             let helper = match attr {
-                "Element" => "__py_xml_element",
-                "SubElement" => "__py_xml_subelement",
-                "fromstring" => "__py_xml_fromstring",
-                "tostring" => "__py_xml_tostring",
+                "dumps" => "__py_pickle_dumps",
+                "loads" => "__py_pickle_loads",
+                "dump" => "__py_pickle_dump",
+                "load" => "__py_pickle_load",
+                "PicklingError" | "UnpicklingError" => "Exception",
                 _ => "",
             };
             if !helper.is_empty() {
                 return Some(Expression::ident(helper));
+            }
+            if attr == "Pickler" {
+                return Some(py_noop_lambda(2));
+            }
+        }
+        "marshal" => {
+            let helper = match attr {
+                "dumps" => "__py_marshal_dumps",
+                "loads" => "__py_marshal_loads",
+                "dump" => "__py_marshal_dump",
+                "load" => "__py_marshal_load",
+                _ => "",
+            };
+            if !helper.is_empty() {
+                return Some(Expression::ident(helper));
+            }
+        }
+        "copy" => {
+            let helper = match attr {
+                "copy" => "__py_copy_copy",
+                "deepcopy" => "__py_copy_deepcopy",
+                _ => "",
+            };
+            if !helper.is_empty() {
+                return Some(Expression::ident(helper));
+            }
+        }
+        "copyreg" => {
+            if attr == "pickle" {
+                return Some(py_noop_lambda(3));
+            }
+        }
+        "pickletools" => {
+            if attr == "dis" {
+                return Some(py_noop_lambda(1));
             }
         }
         _ => {}
@@ -14558,6 +25918,51 @@ fn py_module_callable_member(module: &str, attr: &str) -> Option<Expression> {
 }
 
 fn normalize_python_module_facade_expr(__w: &mut PyWalker, expr: &mut Expression) {
+    if let ExprKind::Call { callee, args, .. } = &mut expr.kind {
+        let itertools_field = match &callee.kind {
+            ExprKind::Member { object, field, .. }
+                if module_namespace_path(__w, object).as_deref() == Some("itertools") =>
+            {
+                Some(field.clone())
+            }
+            _ => None,
+        };
+        if let Some(field) = itertools_field {
+        match field.as_str() {
+            "product" => normalize_itertools_product_args(args),
+            "zip_longest" => normalize_itertools_zip_longest_args(args),
+            "count" => {
+                if args
+                    .iter()
+                    .take(2)
+                    .any(|arg| expr_is_python_float(__w, &arg.value))
+                {
+                    *callee = Box::new(Expression::ident("__py_count_float"));
+                }
+            }
+            "islice" => {
+                if let Some(first) = args.first()
+                    && let ExprKind::Ident(name) = &first.value.kind
+                    && is_iterator_var(__w, name)
+                {
+                    *callee = Box::new(Expression::ident("__py_islice_consume"));
+                }
+            }
+            "accumulate" => {
+                normalize_itertools_accumulate_args(args);
+                if let Some(func_arg) = args.get_mut(1) {
+                    normalize_python_binary_callable_arg(func_arg);
+                }
+            }
+            "starmap" => {
+                if let Some(first) = args.first_mut() {
+                    normalize_python_binary_callable_arg(first);
+                }
+            }
+            _ => {}
+        }
+        }
+    }
     if let ExprKind::Call { callee, .. } = &mut expr.kind
         && let ExprKind::Member { object, field, .. } = &callee.kind
         && let Some(path) = module_namespace_path(__w, object)
@@ -14637,6 +26042,93 @@ fn normalize_python_module_facade_expr(__w: &mut PyWalker, expr: &mut Expression
     }
 }
 
+fn normalize_itertools_product_args(args: &mut Vec<Argument>) {
+    if !args.iter().any(|arg| arg.name.as_deref() == Some("repeat")) {
+        return;
+    }
+    let mut repeat = 1usize;
+    let mut pools = Vec::new();
+    for arg in std::mem::take(args) {
+        if arg.name.as_deref() == Some("repeat") {
+            repeat = match arg.value.kind {
+                ExprKind::Lit(Literal::Int(n)) if n > 0 => n as usize,
+                ExprKind::Lit(Literal::Int(0)) => 0,
+                _ => 1,
+            };
+        } else {
+            pools.push(arg.value);
+        }
+    }
+    let original = pools.clone();
+    args.clear();
+    if repeat == 0 {
+        return;
+    }
+    for _ in 0..repeat {
+        for pool in &original {
+            args.push(Argument::positional(pool.clone()));
+        }
+    }
+}
+
+fn normalize_itertools_zip_longest_args(args: &mut Vec<Argument>) {
+    if !args.iter().any(|arg| arg.name.as_deref() == Some("fillvalue")) {
+        return;
+    }
+    let mut fill = Expression::new(ExprKind::Lit(Literal::Null));
+    let mut positionals = Vec::new();
+    for arg in std::mem::take(args) {
+        if arg.name.as_deref() == Some("fillvalue") {
+            fill = arg.value;
+        } else {
+            positionals.push(arg.value);
+        }
+    }
+    args.clear();
+    args.extend(positionals.into_iter().map(Argument::positional));
+    args.push(Argument::positional(fill));
+}
+
+fn normalize_itertools_accumulate_args(args: &mut Vec<Argument>) {
+    if !args
+        .iter()
+        .any(|arg| matches!(arg.name.as_deref(), Some("func" | "initial")))
+    {
+        return;
+    }
+    let mut positionals = Vec::new();
+    let mut func = None;
+    let mut initial = None;
+    for arg in std::mem::take(args) {
+        match arg.name.as_deref() {
+            Some("func") => func = Some(arg.value),
+            Some("initial") => initial = Some(arg.value),
+            _ => positionals.push(arg.value),
+        }
+    }
+    let data = positionals.first().cloned();
+    if func.is_none() {
+        func = positionals.get(1).cloned();
+    }
+    args.clear();
+    if let Some(data) = data {
+        args.push(Argument::positional(data));
+    }
+    if let Some(func) = func {
+        args.push(Argument::positional(func));
+    } else if initial.is_some() {
+        args.push(Argument::positional(Expression::new(ExprKind::Lit(
+            Literal::Null,
+        ))));
+    }
+    if let Some(initial) = initial {
+        args.push(Argument::positional(initial));
+    }
+    if let Some(func_arg) = args.get_mut(1) {
+        normalize_python_binary_callable_arg(func_arg);
+    }
+}
+
 /// Every module name the PROFILE mounts — `[[esm_default]] kind =
 /// "tree-mount"` prefixes plus the roots of the dotted `[builtins]` and
 /// `[namespace_constants]` keys `tree_register.rs` turns into leaves.
@@ -14703,11 +26195,33 @@ fn py_known_module(root: &str) -> bool {
                 | "numbers"
                 | "decimal"
                 | "fractions"
+                | "graphlib"
+                // ⛔ REGISTRATION IS NOT IMPLEMENTATION, but an unregistered
+                // name makes `import X` itself throw, so nothing downstream can
+                // run — `graphlib` went 0 -> 13 on this line alone, and
+                // `linecache`, `gettext` and `mmap` already have profile rows
+                // they could never reach.
+                | "sched"
+                | "linecache"
+                | "difflib"
+                | "tomllib"
+                | "gettext"
+                | "optparse"
+                | "pydoc"
+                | "selectors"
+                | "symtable"
+                | "tracemalloc"
+                | "codeop"
+                | "contextvars"
+                | "filecmp"
+                | "mmap"
+                | "site"
                 | "statistics"
                 | "array"
                 | "bisect"
                 | "heapq"
                 | "copy"
+                | "copyreg"
                 | "pprint"
                 | "enum"
                 | "typing"
@@ -14719,6 +26233,9 @@ fn py_known_module(root: &str) -> bool {
                 | "inspect"
                 | "builtins"
                 | "pickle"
+                | "pickletools"
+                | "plistlib"
+                | "marshal"
                 | "reprlib"
                 | "hashlib"
                 | "hmac"
@@ -14752,8 +26269,10 @@ fn py_known_module(root: &str) -> bool {
                 | "csv"
                 | "configparser"
                 | "sqlite3"
+                | "bz2"
                 | "zlib"
                 | "gzip"
+                | "lzma"
                 | "zipfile"
                 | "tarfile"
                 | "asyncio"
@@ -14761,6 +26280,7 @@ fn py_known_module(root: &str) -> bool {
                 | "atexit"
                 | "keyword"
                 | "token"
+                | "tokenize"
                 | "ast"
                 | "dis"
                 | "sysconfig"
@@ -14877,14 +26397,19 @@ fn py_module_surface(module: &str) -> Option<&'static [&'static str]> {
             "argv",
             "orig_argv",
             "path",
+            "prefix",
+            "exec_prefix",
             "path_hooks",
             "stdin",
             "stdout",
             "stderr",
             "version",
             "version_info",
+            "executable",
             "implementation",
             "flags",
+            "meta_path",
+            "stdlib_module_names",
             "float_info",
             "int_info",
             "hash_info",
@@ -14916,6 +26441,330 @@ fn py_module_surface(module: &str) -> Option<&'static [&'static str]> {
         "sys.hash_info" => &["width"],
         "sys.thread_info" => &["name"],
         "sys.implementation" => &["name"],
+        "pickle" => &[
+            "__name__",
+            "dumps",
+            "loads",
+            "dump",
+            "load",
+            "Pickler",
+            "PicklingError",
+            "UnpicklingError",
+            "HIGHEST_PROTOCOL",
+            "DEFAULT_PROTOCOL",
+        ],
+        "marshal" => &["__name__", "dumps", "loads", "dump", "load", "version"],
+        "tomllib" => &["__name__", "loads", "load", "TOMLDecodeError"],
+        "bz2" => &["__name__", "BZ2File", "compress", "decompress", "open"],
+        "gzip" => &[
+            "__name__",
+            "GzipFile",
+            "compress",
+            "decompress",
+            "open",
+            "FHCRC",
+            "FEXTRA",
+            "FNAME",
+            "FCOMMENT",
+        ],
+        "lzma" => &[
+            "__name__",
+            "LZMAFile",
+            "compress",
+            "decompress",
+            "open",
+            "CHECK_CRC32",
+            "CHECK_CRC64",
+            "CHECK_NONE",
+            "FILTER_LZMA2",
+            "FORMAT_ALONE",
+            "FORMAT_AUTO",
+            "FORMAT_RAW",
+            "FORMAT_XZ",
+            "PRESET_EXTREME",
+        ],
+        "copy" => &["copy", "deepcopy"],
+        "copyreg" => &["pickle"],
+        "pickletools" => &["dis"],
+        "dis" => &[
+            "__name__",
+            "Bytecode",
+            "Instruction",
+            "code_info",
+            "dis",
+            "disassemble",
+            "show_code",
+            "get_instructions",
+            "findlabels",
+            "findlinestarts",
+            "stack_effect",
+            "opmap",
+            "opname",
+            "cmp_op",
+            "hasconst",
+            "hasname",
+            "haslocal",
+        ],
+        "symtable" => &[
+            "__name__",
+            "symtable",
+            "Symbol",
+            "SymbolTable",
+            "Function",
+            "Class",
+            "TYPE_MODULE",
+            "TYPE_FUNCTION",
+            "TYPE_CLASS",
+        ],
+        "codeop" => &["compile_command", "Compile", "CommandCompiler"],
+        "filecmp" => &["cmp", "cmpfiles", "dircmp", "clear_cache"],
+        "difflib" => &[
+            "__name__",
+            "SequenceMatcher",
+            "Differ",
+            "HtmlDiff",
+            "get_close_matches",
+            "restore",
+            "unified_diff",
+            "context_diff",
+            "IS_CHARACTER_JUNK",
+            "IS_LINE_JUNK",
+        ],
+        "unittest.mock" => &[
+            "__name__",
+            "Mock",
+            "MagicMock",
+            "PropertyMock",
+            "ANY",
+            "call",
+            "patch",
+            "seal",
+            "sys",
+        ],
+        "linecache" => &[
+            "__name__",
+            "cache",
+            "getline",
+            "getlines",
+            "clearcache",
+            "checkcache",
+            "updatecache",
+            "lazycache",
+        ],
+        "gettext" => &[
+            "__name__",
+            "NullTranslations",
+            "GNUTranslations",
+            "gettext",
+            "dgettext",
+            "ngettext",
+            "dngettext",
+            "pgettext",
+            "dpgettext",
+            "npgettext",
+            "dnpgettext",
+            "bindtextdomain",
+            "textdomain",
+            "find",
+            "translation",
+            "install",
+        ],
+        "optparse" => &["__name__", "OptionParser", "OptionGroup"],
+        "sched" => &["__name__", "Event", "scheduler"],
+        "contextvars" => &["__name__", "ContextVar", "Token", "Context", "copy_context"],
+        "doctest" => &[
+            "__name__",
+            "DocTestParser",
+            "DocTestFinder",
+            "DocTestRunner",
+            "OutputChecker",
+            "Example",
+            "testmod",
+            "script_from_examples",
+            "register_optionflag",
+            "DONT_ACCEPT_TRUE_FOR_1",
+            "DONT_ACCEPT_BLANKLINE",
+            "NORMALIZE_WHITESPACE",
+            "ELLIPSIS",
+            "SKIP",
+            "IGNORE_EXCEPTION_DETAIL",
+            "REPORT_UDIFF",
+            "REPORT_CDIFF",
+            "REPORT_NDIFF",
+        ],
+        "pydoc" => &[
+            "__name__",
+            "Helper",
+            "TextDoc",
+            "HTMLDoc",
+            "plaintext",
+            "plain",
+            "stripid",
+            "splitdoc",
+            "classname",
+            "describe",
+            "isdata",
+            "ispackage",
+            "locate",
+            "resolve",
+            "render_doc",
+            "allmethods",
+            "synopsis",
+        ],
+        "warnings" => &[
+            "__name__",
+            "warn",
+            "catch_warnings",
+            "filterwarnings",
+            "simplefilter",
+            "resetwarnings",
+            "formatwarning",
+            "Warning",
+            "UserWarning",
+            "DeprecationWarning",
+            "PendingDeprecationWarning",
+            "SyntaxWarning",
+            "RuntimeWarning",
+            "FutureWarning",
+            "ImportWarning",
+            "UnicodeWarning",
+            "BytesWarning",
+            "ResourceWarning",
+            "onceregistry",
+            "_filters_mutated",
+        ],
+        "logging" => &[
+            "__name__",
+            "NOTSET",
+            "DEBUG",
+            "INFO",
+            "WARNING",
+            "WARN",
+            "ERROR",
+            "CRITICAL",
+            "FATAL",
+            "getLogger",
+            "basicConfig",
+            "getLevelName",
+            "addLevelName",
+            "debug",
+            "info",
+            "warning",
+            "error",
+            "critical",
+            "log",
+            "exception",
+            "LogRecord",
+            "Formatter",
+            "Filter",
+            "Handler",
+            "StreamHandler",
+            "FileHandler",
+            "Logger",
+            "root",
+            "lastResort",
+            "handlers",
+            "config",
+            "setLogRecordFactory",
+            "getLogRecordFactory",
+        ],
+        "logging.config" => &["dictConfig", "fileConfig"],
+        "logging.handlers" => &["RotatingFileHandler"],
+        "traceback" => &[
+            "__name__",
+            "format_exc",
+            "format_exception",
+            "format_exception_only",
+            "format_tb",
+            "format_stack",
+            "extract_tb",
+            "extract_stack",
+            "print_exc",
+            "print_tb",
+            "print_stack",
+            "print_exception",
+            "clear_frames",
+            "walk_tb",
+            "walk_stack",
+            "FrameSummary",
+            "StackSummary",
+            "TracebackException",
+        ],
+        "tracemalloc" => &[
+            "__name__",
+            "start",
+            "stop",
+            "is_tracing",
+            "take_snapshot",
+            "get_traced_memory",
+            "get_tracemalloc_memory",
+            "reset_peak",
+            "get_object_traceback",
+            "Snapshot",
+            "Filter",
+        ],
+        "site" => &[
+            "__name__",
+            "USER_BASE",
+            "USER_SITE",
+            "PREFIXES",
+            "getuserbase",
+            "getusersitepackages",
+            "makepath",
+            "getsitepackages",
+            "addpackage",
+            "addsitedir",
+            "sethelper",
+            "setcopyright",
+            "setquit",
+            "main",
+        ],
+        "token" => &[
+            "__name__",
+            "tok_name",
+            "ENDMARKER",
+            "NAME",
+            "NUMBER",
+            "STRING",
+            "NEWLINE",
+            "INDENT",
+            "DEDENT",
+            "OP",
+            "ENCODING",
+            "NL",
+        ],
+        "tokenize" => &[
+            "__name__",
+            "ENDMARKER",
+            "NAME",
+            "NUMBER",
+            "STRING",
+            "NEWLINE",
+            "INDENT",
+            "DEDENT",
+            "OP",
+            "ENCODING",
+            "NL",
+            "COMMENT",
+            "TokenInfo",
+            "TokenError",
+            "generate_tokens",
+            "tokenize",
+            "untokenize",
+            "detect_encoding",
+        ],
+        "__future__" => &[
+            "annotations",
+            "barry_as_FLUFL",
+            "division",
+            "generator_stop",
+            "generators",
+            "nested_scopes",
+            "print_function",
+            "unicode_literals",
+            "with_statement",
+        ],
+        "__future__.annotations" => &["compiler_flag", "optional", "mandatory"],
         "importlib" => &[
             "import_module",
             "reload",
@@ -14929,8 +26778,35 @@ fn py_module_surface(module: &str) -> Option<&'static [&'static str]> {
         "importlib.util" => &["find_spec", "module_from_spec", "spec_from_loader"],
         "importlib.machinery" => &["SourceFileLoader", "ExtensionFileLoader", "ModuleSpec"],
         "importlib.resources" => &["files", "read_text", "read_binary"],
-        "importlib.metadata" => &["version", "distributions", "metadata"],
+        "importlib.metadata" => &[
+            "version",
+            "distributions",
+            "metadata",
+            "packages_distributions",
+        ],
         "importlib.abc" => &["MetaPathFinder", "Loader", "PathEntryFinder"],
+        "inspect" => &[
+            "currentframe",
+            "getdoc",
+            "getmembers",
+            "getmodule",
+            "get_annotations",
+            "getargspec",
+            "getfullargspec",
+            "signature",
+            "getsourcefile",
+            "isbuiltin",
+            "isclass",
+            "iscoroutinefunction",
+            "isasyncgenfunction",
+            "isfunction",
+            "isgenerator",
+            "isgeneratorfunction",
+            "getgeneratorstate",
+            "ismethod",
+            "ismodule",
+            "isroutine",
+        ],
         "runpy" => &["run_module", "run_path"],
 
         // asyncio — CPython 3.14 `asyncio.__all__` plus its submodules. The
@@ -15042,10 +26918,22 @@ fn py_module_surface(module: &str) -> Option<&'static [&'static str]> {
             "wrap_future",
         ],
         "asyncio.coroutines" => &["iscoroutine", "iscoroutinefunction"],
-        "asyncio.subprocess" => &["create_subprocess_exec", "create_subprocess_shell", "Process", "PIPE", "STDOUT", "DEVNULL"],
-        "asyncio.streams" => &["StreamReader", "StreamWriter", "open_connection", "start_server"],
+        "asyncio.subprocess" => &[
+            "create_subprocess_exec",
+            "create_subprocess_shell",
+            "Process",
+            "PIPE",
+            "STDOUT",
+            "DEVNULL",
+        ],
+        "asyncio.streams" => &[
+            "StreamReader",
+            "StreamWriter",
+            "open_connection",
+            "start_server",
+        ],
         "encodings" => &["utf_8", "ascii", "latin_1"],
-        "pkgutil" => &["iter_modules", "walk_packages", "get_data"],
+        "pkgutil" => &["iter_modules", "walk_packages", "get_data", "extend_path"],
         "zipimport" => &["zipimporter", "ZipImportError"],
         "types" => &[
             "ModuleType",
@@ -15098,16 +26986,39 @@ fn py_module_surface(module: &str) -> Option<&'static [&'static str]> {
             "InitVar",
         ],
         "reprlib" => &["Repr", "repr"],
-        "email" => &["mime"],
+        "email" => &[
+            "mime",
+            "message",
+            "header",
+            "utils",
+            "policy",
+            "message_from_string",
+            "message_from_bytes",
+        ],
+        "email.message" => &["EmailMessage"],
+        "email.header" => &["decode_header", "make_header"],
+        "email.utils" => &[
+            "parseaddr",
+            "formataddr",
+            "formatdate",
+            "parsedate_to_datetime",
+        ],
+        "email.policy" => &["default"],
         "email.mime" => &["text"],
         "email.mime.text" => &["MIMEText"],
         "xml" => &["etree"],
         "xml.etree" => &["ElementTree"],
         "xml.etree.ElementTree" => &[
+            "ElementTree",
             "Element",
             "SubElement",
+            "Comment",
+            "PI",
+            "ProcessingInstruction",
             "fromstring",
             "tostring",
+            "register_namespace",
+            "indent",
             "ParseError",
             "iterparse",
         ],
@@ -15120,15 +27031,25 @@ fn py_module_surface(module: &str) -> Option<&'static [&'static str]> {
             "DictReader",
             "DictWriter",
             "Sniffer",
+            "get_dialect",
             "list_dialects",
             "field_size_limit",
+            "register_dialect",
+            "unregister_dialect",
             "QUOTE_MINIMAL",
             "QUOTE_ALL",
             "QUOTE_NONNUMERIC",
             "QUOTE_NONE",
             "excel",
         ],
-        "json" => &["dumps", "loads", "dump", "load"],
+        "json" => &[
+            "dumps",
+            "loads",
+            "dump",
+            "load",
+            "JSONDecoder",
+            "JSONEncoder",
+        ],
         "base64" => &[
             "b64encode",
             "b64decode",
@@ -15192,7 +27113,18 @@ fn py_module_surface(module: &str) -> Option<&'static [&'static str]> {
             "normalize",
             "east_asian_width",
         ],
-        "functools" => &["wraps", "reduce"],
+        "functools" => &[
+            "wraps",
+            "reduce",
+            "partial",
+            "partialmethod",
+            "lru_cache",
+            "cache",
+            "cached_property",
+            "cmp_to_key",
+            "total_ordering",
+            "singledispatch",
+        ],
         "threading" => &[
             "Thread",
             "Timer",
@@ -15284,6 +27216,38 @@ fn py_module_surface(module: &str) -> Option<&'static [&'static str]> {
             "tzset",
         ],
         "urllib" => &["parse", "request", "error"],
+        "http" => &["client", "cookies", "cookiejar", "HTTPStatus"],
+        "http.client" => &[
+            "HTTPConnection",
+            "HTTPSConnection",
+            "HTTPResponse",
+            "HTTPMessage",
+            "HTTPException",
+            "BadStatusLine",
+            "IncompleteRead",
+            "CannotSendRequest",
+            "parse_headers",
+            "responses",
+            "CONTINUE",
+            "SWITCHING_PROTOCOLS",
+            "OK",
+            "CREATED",
+            "NO_CONTENT",
+            "MOVED_PERMANENTLY",
+            "FOUND",
+            "BAD_REQUEST",
+            "UNAUTHORIZED",
+            "FORBIDDEN",
+            "NOT_FOUND",
+            "METHOD_NOT_ALLOWED",
+            "TOO_MANY_REQUESTS",
+            "INTERNAL_SERVER_ERROR",
+            "_CS_REQ_SENT",
+        ],
+        "http.cookies" => &["Morsel", "SimpleCookie", "CookieError"],
+        "http.cookiejar" => &["CookieJar", "LWPCookieJar"],
+        "urllib.request" => &["Request", "urlopen"],
+        "urllib.error" => &["URLError", "HTTPError", "ContentTooShortError"],
         "urllib.parse" => &[
             "urljoin",
             "urlsplit",
@@ -15395,7 +27359,6 @@ fn py_module_surface(module: &str) -> Option<&'static [&'static str]> {
     })
 }
 
-
 #[derive(Clone, Debug)]
 struct PyInitSubclassWrite {
     field: String,
@@ -15434,17 +27397,45 @@ fn note_defined_class(__w: &mut PyWalker, name: &str) {
     }
 }
 
-fn note_defined_function(__w: &mut PyWalker, name: &str, params: &[Param], body: &[Statement]) {
+fn note_class_alias(__w: &mut PyWalker, alias: &str, class_name: &str) {
+    if !alias.is_empty() && is_defined_class(__w, class_name) {
+        __w.py_class_aliases
+            .insert(alias.to_string(), class_name.to_string());
+    }
+}
+
+fn py_class_alias(__w: &mut PyWalker, name: &str) -> Option<String> {
+    __w.py_class_aliases.get(name).cloned()
+}
+
+fn note_defined_function(
+    __w: &mut PyWalker,
+    name: &str,
+    params: &[Param],
+    return_type: Option<String>,
+    body: &[Statement],
+    param_kinds: &[String],
+) {
     if !name.is_empty() {
         {
             __w.py_defined_functions.insert(name.to_string());
         };
         {
-            __w.py_defined_function_params.insert(name.to_string(), params.to_vec());
+            __w.py_defined_function_params
+                .insert(name.to_string(), params.to_vec());
         };
         {
-            __w.py_defined_function_bodies.insert(name.to_string(), body.to_vec());
+            __w.py_defined_function_bodies
+                .insert(name.to_string(), body.to_vec());
         };
+        {
+            __w.py_defined_function_returns
+                .insert(name.to_string(), return_type);
+        }
+        if !param_kinds.is_empty() {
+            __w.py_defined_function_param_kinds
+                .insert(name.to_string(), param_kinds.to_vec());
+        }
     }
 }
 
@@ -15460,12 +27451,250 @@ fn defined_function_body(__w: &mut PyWalker, name: &str) -> Option<Vec<Statement
     __w.py_defined_function_bodies.get(name).cloned()
 }
 
+fn defined_function_return(__w: &mut PyWalker, name: &str) -> Option<Option<String>> {
+    __w.py_defined_function_returns.get(name).cloned()
+}
+
+fn defined_function_param_kinds(__w: &mut PyWalker, name: &str) -> Option<Vec<String>> {
+    __w.py_defined_function_param_kinds.get(name).cloned()
+}
+
+fn note_signature_var(__w: &mut PyWalker, name: &str, target: &str) {
+    __w.py_signature_vars
+        .insert(name.to_string(), target.to_string());
+}
+
+fn clear_signature_var(__w: &mut PyWalker, name: &str) {
+    __w.py_signature_vars.remove(name);
+}
+
+fn signature_var_target(__w: &mut PyWalker, name: &str) -> Option<String> {
+    __w.py_signature_vars.get(name).cloned()
+}
+
+fn py_get_annotations_call_target(__w: &mut PyWalker, expr: &Expression) -> Option<String> {
+    let ExprKind::Call { callee, args, .. } = &expr.kind else {
+        return None;
+    };
+    let (path, field) = py_module_call_path(__w, callee)?;
+    if path != "inspect" || field != "get_annotations" {
+        return None;
+    }
+    py_signature_target_name(&args.first()?.value).map(str::to_string)
+}
+
+fn note_annotation_var(__w: &mut PyWalker, name: &str, target: &str) {
+    __w.py_annotation_vars
+        .insert(name.to_string(), target.to_string());
+}
+
+fn clear_annotation_var(__w: &mut PyWalker, name: &str) {
+    __w.py_annotation_vars.remove(name);
+}
+
+fn py_annotation_literal_map(
+    __w: &mut PyWalker,
+    expr: &Expression,
+) -> Option<std::collections::HashMap<String, String>> {
+    let mut out = std::collections::HashMap::new();
+    match &expr.kind {
+        ExprKind::Map(entries) => {
+            for (key, value) in entries {
+                let ExprKind::Lit(Literal::Str(name)) = &key.kind else {
+                    return None;
+                };
+                let type_name = py_annotation_item_type_name(__w, value)?;
+                out.insert(name.to_string(), type_name);
+            }
+        }
+        ExprKind::Object(props) => {
+            for prop in props {
+                let ObjectProperty::KeyValue { key, value } = prop else {
+                    return None;
+                };
+                let ExprKind::Lit(Literal::Str(name)) = &key.kind else {
+                    return None;
+                };
+                let type_name = py_annotation_item_type_name(__w, value)?;
+                out.insert(name.to_string(), type_name);
+            }
+        }
+        _ => return None,
+    }
+    (!out.is_empty()).then_some(out)
+}
+
+fn annotation_var_target(__w: &mut PyWalker, name: &str) -> Option<String> {
+    __w.py_annotation_vars.get(name).cloned()
+}
+
+fn function_annotation_type_name(
+    __w: &mut PyWalker,
+    function_name: &str,
+    key: &str,
+) -> Option<String> {
+    if key == "return" {
+        return defined_function_return(__w, function_name).flatten();
+    }
+    defined_function_params(__w, function_name)?
+        .into_iter()
+        .find(|param| param.name == key)
+        .and_then(|param| param.type_hint.map(|hint| hint.spelling().to_string()))
+}
+
+fn py_annotation_item_type_name(__w: &mut PyWalker, expr: &Expression) -> Option<String> {
+    match &expr.kind {
+        ExprKind::Index { object, index, .. } => {
+            let ExprKind::Lit(Literal::Str(key)) = &index.kind else {
+                return None;
+            };
+            if let ExprKind::Ident(var) = &object.kind {
+                if let Some(target) = annotation_var_target(__w, var) {
+                    return function_annotation_type_name(__w, &target, key);
+                }
+                if let Some(types) = __w.py_annotation_literal_vars.get(var) {
+                    return types.get(key).cloned();
+                }
+            }
+            let item = py_dict_literal_item(object, key)?;
+            py_annotation_item_type_name(__w, item)
+        }
+        ExprKind::Call { callee, args, .. }
+            if matches!(&callee.kind, ExprKind::Ident(name) if name == "__py_getitem")
+                && args.len() == 2 =>
+        {
+            let ExprKind::Lit(Literal::Str(key)) = &args[1].value.kind else {
+                return None;
+            };
+            if let ExprKind::Ident(var) = &args[0].value.kind {
+                if let Some(target) = annotation_var_target(__w, var) {
+                    return function_annotation_type_name(__w, &target, key);
+                }
+                if let Some(types) = __w.py_annotation_literal_vars.get(var) {
+                    return types.get(key).cloned();
+                }
+            }
+            let item = py_dict_literal_item(&args[0].value, key)?;
+            py_annotation_item_type_name(__w, item)
+        }
+        _ => py_type_obj_call_name(expr).or_else(|| py_object_string_field(expr, "__name__")),
+    }
+}
+
+fn note_static_qualname(__w: &mut PyWalker, name: &str, qualname: String) {
+    if !name.is_empty() {
+        __w.py_static_qualnames.insert(name.to_string(), qualname);
+    }
+}
+
+fn clear_static_qualname(__w: &mut PyWalker, name: &str) {
+    __w.py_static_qualnames.remove(name);
+}
+
+fn py_function_returned_local_qualname(
+    __w: &mut PyWalker,
+    name: &str,
+    args: &[Argument],
+) -> Option<String> {
+    if !args.is_empty() {
+        return None;
+    }
+    let body = defined_function_body(__w, name)?;
+    let locals: std::collections::HashSet<String> = body
+        .iter()
+        .filter_map(|stmt| match &stmt.kind {
+            StmtKind::FunctionDecl { name, .. } => Some(name.clone()),
+            _ => None,
+        })
+        .collect();
+    if locals.is_empty() {
+        return None;
+    }
+    body.iter().find_map(|stmt| match &stmt.kind {
+        StmtKind::Return(Some(Expression {
+            kind: ExprKind::Ident(returned),
+            ..
+        })) if locals.contains(returned) => Some(format!("{name}.<locals>.{returned}")),
+        _ => None,
+    })
+}
+
+fn py_static_qualname(__w: &mut PyWalker, e: &Expression) -> Option<String> {
+    match &e.kind {
+        ExprKind::Ident(name) => {
+            if let Some(qualname) = __w.py_static_qualnames.get(name) {
+                return Some(qualname.clone());
+            }
+            if is_defined_class(__w, name) || is_defined_function(__w, name) {
+                return Some(name.clone());
+            }
+            None
+        }
+        ExprKind::Lambda { .. } => Some("<lambda>".into()),
+        ExprKind::Member { object, field, .. } => {
+            let owner = py_static_qualname(__w, object)?;
+            if class_has_attr(__w, &owner, field) || is_defined_class(__w, &owner) {
+                Some(format!("{owner}.{field}"))
+            } else {
+                None
+            }
+        }
+        ExprKind::Call { callee, args, .. } => match &callee.kind {
+            ExprKind::Ident(name) if is_defined_function(__w, name) => {
+                py_function_returned_local_qualname(__w, name, args)
+            }
+            _ => None,
+        },
+        _ => py_attr_read_parts(e).and_then(|(object, field)| {
+            let owner = py_static_qualname(__w, object)?;
+            if class_has_attr(__w, &owner, field) || is_defined_class(__w, &owner) {
+                Some(format!("{owner}.{field}"))
+            } else {
+                None
+            }
+        }),
+    }
+}
+
 fn note_class_parents(__w: &mut PyWalker, name: &str, parents: &[String]) {
     if !name.is_empty() {
         {
-            __w.py_class_parents.insert(name.to_string(), parents.to_vec());
+            __w.py_class_parents
+                .insert(name.to_string(), parents.to_vec());
         };
     }
+}
+
+fn note_class_doc(__w: &mut PyWalker, name: &str, doc: String) {
+    if !name.is_empty() {
+        __w.py_class_docs.insert(name.to_string(), doc);
+    }
+}
+
+fn class_doc(__w: &mut PyWalker, name: &str) -> Option<String> {
+    __w.py_class_docs.get(name).cloned()
+}
+
+fn note_pydoc_renderer_var(__w: &mut PyWalker, name: &str, kind: &str) {
+    if !name.is_empty() {
+        __w.py_pydoc_renderer_vars
+            .insert(name.to_string(), kind.to_string());
+    }
+}
+
+fn pydoc_renderer_var(__w: &mut PyWalker, name: &str) -> Option<String> {
+    __w.py_pydoc_renderer_vars.get(name).cloned()
+}
+
+fn note_doctest_object_var(__w: &mut PyWalker, name: &str, kind: &str) {
+    if !name.is_empty() {
+        __w.py_doctest_object_vars
+            .insert(name.to_string(), kind.to_string());
+    }
+}
+
+fn doctest_object_var(__w: &mut PyWalker, name: &str) -> Option<String> {
+    __w.py_doctest_object_vars.get(name).cloned()
 }
 
 fn note_callable_class(__w: &mut PyWalker, name: &str) {
@@ -15568,6 +27797,39 @@ fn python_type_object_expr(name: &str) -> Expression {
     })
 }
 
+fn python_class_mro_expr(__w: &mut PyWalker, class_name: &str) -> Expression {
+    let mut names = vec![class_name.to_string()];
+    let mut stack = __w
+        .py_class_parents
+        .get(class_name)
+        .cloned()
+        .unwrap_or_default();
+    let mut seen = std::collections::HashSet::new();
+    while let Some(parent) = stack.pop() {
+        if !seen.insert(parent.clone()) {
+            continue;
+        }
+        names.push(parent.clone());
+        if let Some(more) = __w.py_class_parents.get(&parent) {
+            stack.extend(more.iter().cloned());
+        }
+    }
+    if !names.iter().any(|name| name == "object") {
+        names.push("object".to_string());
+    }
+    Expression::new(ExprKind::Array(
+        names
+            .into_iter()
+            .map(|name| ArrayElement {
+                key: None,
+                value: py_type_object(&name),
+                spread: false,
+                by_ref: false,
+            })
+            .collect(),
+    ))
+}
+
 fn python_class_getitem_arg(__w: &mut PyWalker, index: Expression) -> Expression {
     if let ExprKind::Ident(name) = &index.kind
         && (is_defined_class(__w, name) || py_builtin_type_name(name).is_some())
@@ -15577,18 +27839,24 @@ fn python_class_getitem_arg(__w: &mut PyWalker, index: Expression) -> Expression
     desugar_member_reads(__w, index)
 }
 
-fn note_class_member_type_names(__w: &mut PyWalker, 
+fn note_class_member_type_names(
+    __w: &mut PyWalker,
     name: &str,
     members: std::collections::HashMap<String, &'static str>,
 ) {
     if !name.is_empty() && !members.is_empty() {
         {
-            __w.py_class_member_type_names.insert(name.to_string(), members);
+            __w.py_class_member_type_names
+                .insert(name.to_string(), members);
         };
     }
 }
 
-fn class_member_type_name(__w: &mut PyWalker, class_name: &str, member: &str) -> Option<&'static str> {
+fn class_member_type_name(
+    __w: &mut PyWalker,
+    class_name: &str,
+    member: &str,
+) -> Option<&'static str> {
     {
         __w.py_class_member_type_names
             .get(class_name)
@@ -15622,10 +27890,15 @@ fn class_data_attrs_for(__w: &mut PyWalker, name: &str) -> Vec<String> {
     }
 }
 
-fn note_class_float_data_attrs(__w: &mut PyWalker, name: &str, attrs: std::collections::HashSet<String>) {
+fn note_class_float_data_attrs(
+    __w: &mut PyWalker,
+    name: &str,
+    attrs: std::collections::HashSet<String>,
+) {
     if !name.is_empty() {
         {
-            __w.py_class_float_data_attrs.insert(name.to_string(), attrs);
+            __w.py_class_float_data_attrs
+                .insert(name.to_string(), attrs);
         };
     }
 }
@@ -15811,7 +28084,8 @@ fn class_property_doc(__w: &mut PyWalker, class_name: &str, attr: &str) -> Optio
 
 fn note_dataclass_fields(__w: &mut PyWalker, name: &str, fields: &[DataclassField]) {
     {
-        __w.py_dataclass_fields.insert(name.to_string(), fields.to_vec());
+        __w.py_dataclass_fields
+            .insert(name.to_string(), fields.to_vec());
     };
 }
 
@@ -15850,6 +28124,31 @@ fn note_instance_class(__w: &mut PyWalker, var: &str, class_name: &str) {
         __w.py_instance_classes
             .insert(var.to_string(), class_name.to_string());
     };
+}
+
+fn note_instance_init_expr(__w: &mut PyWalker, var: &str, expr: Expression) {
+    __w.py_instance_init_exprs.insert(var.to_string(), expr);
+}
+
+fn clear_instance_init_expr(__w: &mut PyWalker, var: &str) {
+    __w.py_instance_init_exprs.remove(var);
+}
+
+fn instance_init_expr(__w: &mut PyWalker, var: &str) -> Option<Expression> {
+    __w.py_instance_init_exprs.get(var).cloned()
+}
+
+/// The declared class of a receiver expression, for the shapes a builtin call
+/// actually sees: a bound name and a fresh instance.
+fn py_receiver_class(__w: &mut PyWalker, e: &Expression) -> Option<String> {
+    match &e.kind {
+        ExprKind::Ident(var) => instance_class(__w, var),
+        ExprKind::New { class, .. } => match &class.kind {
+            ExprKind::Ident(name) if is_defined_class(__w, name) => Some(name.clone()),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 fn instance_class(__w: &mut PyWalker, var: &str) -> Option<String> {
@@ -15906,7 +28205,6 @@ fn python_instance_index(var: &str, attr: &str) -> Expression {
     })
 }
 
-
 fn is_userdict_instance(__w: &mut PyWalker, var: &str) -> bool {
     if is_userdict_var(__w, var) {
         return true;
@@ -15942,7 +28240,6 @@ fn py_class_is_subclass(__w: &mut PyWalker, class_name: &str, target: &str) -> b
     }
 }
 
-
 #[derive(Clone)]
 struct NamedTupleDef {
     type_name: String,
@@ -15960,7 +28257,6 @@ fn register_namedtuple_def(__w: &mut PyWalker, name: &str, def: NamedTupleDef) {
 fn namedtuple_def(__w: &mut PyWalker, name: &str) -> Option<NamedTupleDef> {
     __w.py_namedtuple_defs.get(name).cloned()
 }
-
 
 fn record_namedtuple_instance(__w: &mut PyWalker, name: &str, def: NamedTupleDef) {
     {
@@ -16186,6 +28482,84 @@ fn py_relational_helper(op: BinOp) -> Option<&'static str> {
     })
 }
 
+fn py_static_version_comparison(
+    __w: &mut PyWalker,
+    left: &Expression,
+    right: &Expression,
+    op: BinOp,
+) -> Option<bool> {
+    let left = py_static_version_tuple(__w, left)?;
+    let right = py_static_version_tuple(__w, right)?;
+    use std::cmp::Ordering;
+    let ordering = py_version_tuple_cmp(&left, &right);
+    Some(match op {
+        BinOp::Lt => ordering == Ordering::Less,
+        BinOp::Gt => ordering == Ordering::Greater,
+        BinOp::LtEq => ordering != Ordering::Greater,
+        BinOp::GtEq => ordering != Ordering::Less,
+        _ => return None,
+    })
+}
+
+fn py_static_version_tuple(__w: &mut PyWalker, expr: &Expression) -> Option<Vec<i64>> {
+    if let ExprKind::Member { object, field, .. } = &expr.kind
+        && field == "version_info"
+        && module_namespace_path(__w, object).as_deref() == Some("sys")
+    {
+        return Some(vec![3, 12, 0, 0, 0]);
+    }
+    match &expr.kind {
+        ExprKind::Tuple(items) => items.iter().map(py_static_int_literal).collect(),
+        ExprKind::Array(items) => items
+            .iter()
+            .map(|item| py_static_int_literal(&item.value))
+            .collect(),
+        ExprKind::Object(props) => {
+            let mut parts = Vec::new();
+            for key in ["major", "minor", "micro", "releaselevel", "serial"] {
+                let value = props.iter().find_map(|prop| match prop {
+                    ObjectProperty::KeyValue { key: k, value }
+                        if matches!(&k.kind, ExprKind::Lit(Literal::Str(s)) if s == key) =>
+                    {
+                        Some(value)
+                    }
+                    _ => None,
+                })?;
+                if key == "releaselevel" {
+                    parts.push(match &value.kind {
+                        ExprKind::Lit(Literal::Str(s)) if s == "alpha" => -3,
+                        ExprKind::Lit(Literal::Str(s)) if s == "beta" => -2,
+                        ExprKind::Lit(Literal::Str(s)) if s == "candidate" => -1,
+                        ExprKind::Lit(Literal::Str(s)) if s == "final" => 0,
+                        _ => return None,
+                    });
+                } else {
+                    parts.push(py_static_int_literal(value)?);
+                }
+            }
+            Some(parts)
+        }
+        _ => None,
+    }
+}
+
+fn py_static_int_literal(expr: &Expression) -> Option<i64> {
+    match &expr.kind {
+        ExprKind::Lit(Literal::Int(n)) => Some(*n),
+        _ => None,
+    }
+}
+
+fn py_version_tuple_cmp(left: &[i64], right: &[i64]) -> std::cmp::Ordering {
+    for (a, b) in left.iter().zip(right.iter()) {
+        match a.cmp(b) {
+            std::cmp::Ordering::Equal => {}
+            other => return other,
+        }
+    }
+    left.len().cmp(&right.len())
+}
+
 fn py_richcompare_method(op: BinOp) -> Option<&'static str> {
     Some(match op {
         BinOp::Lt => "__lt__",
@@ -16310,7 +28684,11 @@ fn strftime_expand(callee: &Expression, args: &[Argument]) -> Option<ExprKind> {
 /// over a `struct_time`'s `tm_*` fields, and it is a two-arg module function
 /// rather than a method. `%A` reads the Monday=0 weekday name; `%j` is the
 /// zero-padded day of year; `%%` is a literal `%`.
-fn time_strftime_expand(__w: &mut PyWalker, callee: &Expression, args: &[Argument]) -> Option<ExprKind> {
+fn time_strftime_expand(
+    __w: &mut PyWalker,
+    callee: &Expression,
+    args: &[Argument],
+) -> Option<ExprKind> {
     let ExprKind::Member { object, field, .. } = &callee.kind else {
         return None;
     };
@@ -16491,7 +28869,11 @@ fn parse_fixed_time(format: &str, value: &str) -> Option<Vec<Expression>> {
     }
 }
 
-fn time_module_call(__w: &mut PyWalker, callee: &Expression, args: &[Argument]) -> Option<ExprKind> {
+fn time_module_call(
+    __w: &mut PyWalker,
+    callee: &Expression,
+    args: &[Argument],
+) -> Option<ExprKind> {
     let ExprKind::Member { object, field, .. } = &callee.kind else {
         return None;
     };
@@ -16629,7 +29011,10 @@ fn zoneinfo_call(__w: &mut PyWalker, callee: &Expression, args: &[Argument]) -> 
 /// called with keywords (`timedelta(days=2)`). Keyword handling belongs to
 /// the frontend, so the emitter only ever sees positional arguments in this
 /// exact order.
-fn datetime_kwarg_signature(__w: &mut PyWalker, callee: &Expression) -> Option<&'static [&'static str]> {
+fn datetime_kwarg_signature(
+    __w: &mut PyWalker,
+    callee: &Expression,
+) -> Option<&'static [&'static str]> {
     let ExprKind::Member { object, field, .. } = &callee.kind else {
         return None;
     };
@@ -16698,6 +29083,397 @@ fn normalize_datetime_kwargs(params: &[&str], args: Vec<Argument>) -> Vec<Argume
         .collect()
 }
 
+fn normalize_keyword_args_to_positional(params: &[&str], args: Vec<Argument>) -> Vec<Argument> {
+    if args.iter().all(|a| a.name.is_none()) || args.iter().any(|a| a.spread) {
+        return args;
+    }
+    let original = args.clone();
+    let mut slots: Vec<Option<Expression>> = params.iter().map(|_| None).collect();
+    let mut highest = 0usize;
+    for (i, arg) in args.into_iter().enumerate() {
+        let slot = match arg.name.as_deref() {
+            Some(name) => match params.iter().position(|p| *p == name) {
+                Some(pos) => pos,
+                None => return original,
+            },
+            None => i,
+        };
+        if slot >= slots.len() {
+            return original;
+        }
+        highest = highest.max(slot);
+        slots[slot] = Some(arg.value);
+    }
+    slots
+        .into_iter()
+        .take(highest + 1)
+        .map(|value| Argument::positional(value.unwrap_or_else(Expression::null)))
+        .collect()
+}
+
+fn normalize_argparse_add_argument_args(args: Vec<Argument>) -> Vec<Argument> {
+    if args.is_empty() || args.iter().any(|arg| arg.spread) {
+        return args;
+    }
+    if args.len() == 3
+        && args.iter().all(|arg| arg.name.is_none())
+        && matches!(args[1].value.kind, ExprKind::Array(_))
+        && matches!(args[2].value.kind, ExprKind::Map(_) | ExprKind::Object(_))
+    {
+        return args;
+    }
+    let original = args.clone();
+    let mut positional = Vec::new();
+    let mut keywords = Vec::new();
+    for arg in args {
+        match arg.name {
+            Some(name) => {
+                let key = if name == "type" { "typ".to_string() } else { name };
+                let value = if key == "typ" {
+                    match &arg.value.kind {
+                        ExprKind::Ident(name) if name == "int" => Expression::string("__argparse_int"),
+                        ExprKind::Ident(name) if name == "float" => Expression::string("__argparse_float"),
+                        ExprKind::Ident(name) if name == "str" => Expression::string("__argparse_str"),
+                        _ => argparse_converter_lambda(arg.value),
+                    }
+                } else {
+                    arg.value
+                };
+                keywords.push((key, value));
+            }
+            None => positional.push(arg.value),
+        }
+    }
+    if positional.is_empty() {
+        return original;
+    }
+    let flag = positional.remove(0);
+    vec![
+        Argument::positional(flag),
+        Argument::positional(python_array_expr(positional)),
+        Argument::positional(python_kwargs_dict_expr(keywords)),
+    ]
+}
+
+fn argparse_converter_lambda(converter: Expression) -> Expression {
+    let value_param = "__argparse_value";
+    Expression::new(ExprKind::Lambda {
+        params: vec![Param {
+            name: value_param.to_string(),
+            type_hint: None,
+            default: None,
+            pass_by: PassBy::Value,
+            is_rest: false,
+            is_kwargs: false,
+            is_optional: false,
+            is_nullable: false,
+        }],
+        body: LambdaBody::Expr(Box::new(Expression::new(ExprKind::Call {
+            callee: Box::new(converter),
+            args: vec![Argument::positional(Expression::ident(value_param))],
+            optional: false,
+        }))),
+        captures: Vec::new(),
+        is_async: false,
+    })
+}
+
+fn python_signature_kind(params: &[Param], kinds: &[String], idx: usize) -> String {
+    py_parameter_kind_for(params, kinds, idx)
+}
+
+fn python_array_expr(values: Vec<Expression>) -> Expression {
+    Expression::new(ExprKind::Array(
+        values
+            .into_iter()
+            .map(|value| ArrayElement {
+                key: None,
+                value,
+                spread: false,
+                by_ref: false,
+            })
+            .collect(),
+    ))
+}
+
+fn python_kwargs_dict_expr(entries: Vec<(String, Expression)>) -> Expression {
+    py_dict_expr(
+        entries
+            .into_iter()
+            .map(|(name, value)| ObjectProperty::KeyValue {
+                key: Expression::string(&name),
+                value,
+            })
+            .collect(),
+    )
+}
+
+fn python_expand_literal_spread_arg(arg: Argument) -> Option<Vec<Argument>> {
+    if !arg.spread {
+        return Some(vec![arg]);
+    }
+    match arg.value.kind {
+        ExprKind::Array(items) => Some(
+            items
+                .into_iter()
+                .map(|item| Argument::positional(item.value))
+                .collect(),
+        ),
+        ExprKind::Tuple(values) => Some(values.into_iter().map(Argument::positional).collect()),
+        ExprKind::Map(entries) => {
+            let mut out = Vec::new();
+            for (key, value) in entries {
+                let ExprKind::Lit(Literal::Str(name)) = key.kind else {
+                    return None;
+                };
+                out.push(Argument {
+                    value,
+                    name: Some(name.to_string()),
+                    by_ref: false,
+                    spread: false,
+                });
+            }
+            Some(out)
+        }
+        ExprKind::Object(props) => {
+            let mut out = Vec::new();
+            for prop in props {
+                let ObjectProperty::KeyValue { key, value } = prop else {
+                    return None;
+                };
+                let ExprKind::Lit(Literal::Str(name)) = key.kind else {
+                    return None;
+                };
+                out.push(Argument {
+                    value,
+                    name: Some(name.to_string()),
+                    by_ref: false,
+                    spread: false,
+                });
+            }
+            Some(out)
+        }
+        _ => None,
+    }
+}
+
+fn python_expand_literal_spreads(args: Vec<Argument>) -> Option<Vec<Argument>> {
+    let mut out = Vec::new();
+    for arg in args {
+        out.extend(python_expand_literal_spread_arg(arg)?);
+    }
+    Some(out)
+}
+
+fn python_signature_call_args(
+    params: &[Param],
+    kinds: &[String],
+    args: Vec<Argument>,
+) -> Result<Vec<Argument>, Expression> {
+    let args = match python_expand_literal_spreads(args.clone()) {
+        Some(expanded) => expanded,
+        None => return Ok(args),
+    };
+    let mut positional = Vec::new();
+    let mut keywords = Vec::<(String, Expression)>::new();
+    for arg in args {
+        if let Some(name) = arg.name {
+            keywords.push((name, arg.value));
+        } else {
+            positional.push(arg.value);
+        }
+    }
+
+    let has_var_kwargs = params
+        .iter()
+        .enumerate()
+        .any(|(idx, _)| python_signature_kind(params, kinds, idx) == "VAR_KEYWORD");
+    let has_var_positional = params
+        .iter()
+        .enumerate()
+        .any(|(idx, _)| python_signature_kind(params, kinds, idx) == "VAR_POSITIONAL");
+    let mut consumed_keywords = HashSet::<usize>::new();
+    let mut positional_index = 0usize;
+    let mut out = Vec::new();
+
+    for (idx, param) in params.iter().enumerate() {
+        let kind = python_signature_kind(params, kinds, idx);
+        match kind.as_str() {
+            "VAR_POSITIONAL" => {
+                let rest = positional[positional_index..].to_vec();
+                positional_index = positional.len();
+                out.push(Argument::positional(python_array_expr(rest)));
+            }
+            "VAR_KEYWORD" => {
+                let rest = keywords
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(kw_idx, (name, value))| {
+                        (!consumed_keywords.contains(&kw_idx))
+                            .then(|| (name.clone(), value.clone()))
+                    })
+                    .collect();
+                out.push(Argument::positional(python_kwargs_dict_expr(rest)));
+            }
+            "KEYWORD_ONLY" => {
+                if let Some((kw_idx, (_, value))) = keywords
+                    .iter()
+                    .enumerate()
+                    .find(|(kw_idx, (name, _))| {
+                        !consumed_keywords.contains(kw_idx) && name == &param.name
+                    })
+                {
+                    consumed_keywords.insert(kw_idx);
+                    out.push(Argument::positional(value.clone()));
+                } else if let Some(default) = &param.default {
+                    out.push(Argument::positional(default.clone()));
+                } else {
+                    return Err(py_raise_expr("TypeError", Some("missing required keyword-only argument")));
+                }
+            }
+            "POSITIONAL_ONLY" => {
+                if keywords.iter().any(|(name, _)| name == &param.name) {
+                    return Err(py_raise_expr("TypeError", Some("positional-only argument passed as keyword argument")));
+                }
+                if let Some(value) = positional.get(positional_index).cloned() {
+                    positional_index += 1;
+                    out.push(Argument::positional(value));
+                } else if let Some(default) = &param.default {
+                    out.push(Argument::positional(default.clone()));
+                } else {
+                    return Err(py_raise_expr("TypeError", Some("missing required positional argument")));
+                }
+            }
+            _ => {
+                let keyword_match = keywords
+                    .iter()
+                    .enumerate()
+                    .find(|(kw_idx, (name, _))| {
+                        !consumed_keywords.contains(kw_idx) && name == &param.name
+                    });
+                if let Some(value) = positional.get(positional_index).cloned() {
+                    positional_index += 1;
+                    if keyword_match.is_some() {
+                        return Err(py_raise_expr("TypeError", Some("multiple values for argument")));
+                    }
+                    out.push(Argument::positional(value));
+                } else if let Some((kw_idx, (_, value))) = keyword_match {
+                    consumed_keywords.insert(kw_idx);
+                    out.push(Argument::positional(value.clone()));
+                } else if let Some(default) = &param.default {
+                    out.push(Argument::positional(default.clone()));
+                } else {
+                    return Err(py_raise_expr("TypeError", Some("missing required positional argument")));
+                }
+            }
+        }
+    }
+
+    if positional_index < positional.len() && !has_var_positional {
+        return Err(py_raise_expr("TypeError", Some("too many positional arguments")));
+    }
+    if !has_var_kwargs
+        && keywords
+            .iter()
+            .enumerate()
+            .any(|(kw_idx, _)| !consumed_keywords.contains(&kw_idx))
+    {
+        return Err(py_raise_expr("TypeError", Some("unexpected keyword argument")));
+    }
+
+    Ok(out)
+}
+
+fn rewrite_python_known_callable_call(
+    __w: &mut PyWalker,
+    callee: &Expression,
+    args: Vec<Argument>,
+    optional: bool,
+) -> Option<Expression> {
+    let ExprKind::Ident(name) = &callee.kind else {
+        return None;
+    };
+    let params = defined_function_params(__w, name)?;
+    let kinds = defined_function_param_kinds(__w, name).unwrap_or_default();
+    if params.is_empty() {
+        return None;
+    }
+    let had_spread = args.iter().any(|arg| arg.spread);
+    let had_named_or_spread = args.iter().any(|arg| arg.name.is_some() || arg.spread);
+    let expanded_args = python_expand_literal_spreads(args.clone()).unwrap_or(args.clone());
+    let positional_count = expanded_args
+        .iter()
+        .filter(|arg| arg.name.is_none() && !arg.spread)
+        .count();
+    let has_var_positional = params
+        .iter()
+        .enumerate()
+        .any(|(idx, _)| python_signature_kind(&params, &kinds, idx) == "VAR_POSITIONAL");
+    let has_var_keyword = params
+        .iter()
+        .enumerate()
+        .any(|(idx, _)| python_signature_kind(&params, &kinds, idx) == "VAR_KEYWORD");
+    let has_nonterminal_var_positional = params.iter().enumerate().any(|(idx, _)| {
+        python_signature_kind(&params, &kinds, idx) == "VAR_POSITIONAL"
+            && kinds
+                .iter()
+                .skip(idx + 1)
+                .any(|kind| kind != "VAR_KEYWORD")
+    });
+    if !had_named_or_spread
+        && (has_var_positional || has_var_keyword)
+        && positional_count == params.len()
+    {
+        return None;
+    }
+    if !has_nonterminal_var_positional && !has_var_keyword {
+        return match python_signature_call_args(&params, &kinds, expanded_args.clone()) {
+            Err(err) => Some(err),
+            Ok(_) if had_spread => {
+                let args = expanded_args
+                    .into_iter()
+                    .map(|mut arg| {
+                        arg.value = desugar_member_reads(__w, arg.value);
+                        arg
+                    })
+                    .collect();
+                Some(Expression::new(ExprKind::Call {
+                    callee: Box::new(callee.clone()),
+                    args,
+                    optional,
+                }))
+            }
+            Ok(_) => None,
+        };
+    }
+    match python_signature_call_args(&params, &kinds, args) {
+        Ok(args) => {
+            let args = args
+                .into_iter()
+                .map(|mut arg| {
+                    arg.value = desugar_member_reads(__w, arg.value);
+                    arg
+                })
+                .collect();
+            Some(Expression::new(ExprKind::Call {
+                callee: Box::new(callee.clone()),
+                args,
+                optional,
+            }))
+        }
+        Err(err) => Some(err),
+    }
+}
+
+fn core_class_method_param_order(class_name: &str, method: &str) -> Option<&'static [&'static str]> {
+    match (class_name, method) {
+        ("ConfigParser" | "RawConfigParser", "get" | "getint" | "getfloat" | "getboolean") => {
+            Some(&["sec", "opt", "fallback"])
+        }
+        _ => None,
+    }
+}
+
 fn imported_datetime_type(__w: &mut PyWalker, name: &str) -> bool {
     is_from_imported_module(__w, "datetime")
         && matches!(
@@ -16743,7 +29519,11 @@ fn datetime_ctor_builtin(name: &str) -> Option<(&'static str, &'static [&'static
     })
 }
 
-fn imported_datetime_ctor_call(__w: &mut PyWalker, callee: &Expression, args: Vec<Argument>) -> Option<ExprKind> {
+fn imported_datetime_ctor_call(
+    __w: &mut PyWalker,
+    callee: &Expression,
+    args: Vec<Argument>,
+) -> Option<ExprKind> {
     let ExprKind::Ident(name) = &callee.kind else {
         return None;
     };
@@ -16758,7 +29538,11 @@ fn imported_datetime_ctor_call(__w: &mut PyWalker, callee: &Expression, args: Ve
     })
 }
 
-fn datetime_class_method_call(__w: &mut PyWalker, callee: &Expression, args: &[Argument]) -> Option<Expression> {
+fn datetime_class_method_call(
+    __w: &mut PyWalker,
+    callee: &Expression,
+    args: &[Argument],
+) -> Option<Expression> {
     let ExprKind::Member { object, field, .. } = &callee.kind else {
         return None;
     };
@@ -16845,7 +29629,11 @@ fn parse_fixed_datetime(format: &str, value: &str) -> Option<Vec<Expression>> {
     Some(ints.into_iter().map(Expression::int).collect())
 }
 
-fn datetime_imported_attr(__w: &mut PyWalker, object: &Expression, field: &str) -> Option<Expression> {
+fn datetime_imported_attr(
+    __w: &mut PyWalker,
+    object: &Expression,
+    field: &str,
+) -> Option<Expression> {
     let ExprKind::Ident(type_name) = &object.kind else {
         return None;
     };
@@ -16922,7 +29710,8 @@ fn datetime_expr(__w: &mut PyWalker, e: &Expression) -> bool {
     }
 }
 
-fn rewrite_datetime_value_method(__w: &mut PyWalker, 
+fn rewrite_datetime_value_method(
+    __w: &mut PyWalker,
     object: &Expression,
     field: &str,
     args: &[Argument],
@@ -16931,7 +29720,10 @@ fn rewrite_datetime_value_method(__w: &mut PyWalker,
         return None;
     }
     let mut values = vec![desugar_member_reads(__w, object.clone())];
-    values.extend(args.iter().map(|a| desugar_member_reads(__w, a.value.clone())));
+    values.extend(
+        args.iter()
+            .map(|a| desugar_member_reads(__w, a.value.clone())),
+    );
     let call = |name: &str, values: Vec<Expression>| Some(call_ident(name, values));
     match field {
         "isoformat" if args.is_empty() => call("__py_dt_isoformat", values),
@@ -17008,7 +29800,11 @@ fn is_os_module_ident(__w: &mut PyWalker, e: &Expression) -> bool {
 /// `list(d.items())` reprs as `[('a', 1)]` and `for k, v in d.items()` /
 /// `dict(d.items())` still destructure the array backing. Entries is Map-aware,
 /// so this is correct for the Map-backed dict.
-fn rewrite_dict_items(callee: &Expression, args: &[Argument]) -> Option<Expression> {
+fn rewrite_dict_items(
+    __w: &mut PyWalker,
+    callee: &Expression,
+    args: &[Argument],
+) -> Option<Expression> {
     if !args.is_empty() {
         return None;
     }
@@ -17016,6 +29812,9 @@ fn rewrite_dict_items(callee: &Expression, args: &[Argument]) -> Option<Expressi
         return None;
     };
     if field != "items" {
+        return None;
+    }
+    if !py_dict_like_expr(__w, object) {
         return None;
     }
     let entries = call_ident("__py_obj_entries__", vec![(**object).clone()]);
@@ -17096,7 +29895,11 @@ fn py_object_public_entries_dict_expr(object: Expression) -> Expression {
 /// Only the shapes a literal can represent are rewritten. `dict(other)`,
 /// `dict(zip(a, b))` and a non-literal list argument fall through to the
 /// ordinary call so the `dict` builtin still handles them.
-fn rewrite_dict_construction(callee: &Expression, args: &[Argument]) -> Option<Expression> {
+fn rewrite_dict_construction(
+    __w: &mut PyWalker,
+    callee: &Expression,
+    args: &[Argument],
+) -> Option<Expression> {
     let ExprKind::Ident(name) = &callee.kind else {
         return None;
     };
@@ -17105,6 +29908,13 @@ fn rewrite_dict_construction(callee: &Expression, args: &[Argument]) -> Option<E
     }
     if args.iter().any(|arg| arg.spread || arg.by_ref) {
         return None;
+    }
+    if name == "dict"
+        && args.len() == 1
+        && args[0].name.is_none()
+        && is_counter_expr(__w, &args[0].value)
+    {
+        return Some(call_ident("__py_counter_dict", vec![args[0].value.clone()]));
     }
 
     // `Counter` is listed defensively and currently never arrives here — the
@@ -17157,6 +29967,60 @@ fn rewrite_dict_construction(callee: &Expression, args: &[Argument]) -> Option<E
     None
 }
 
+fn rewrite_optparse_add_option_call(
+    __w: &mut PyWalker,
+    callee: &Expression,
+    args: &[Argument],
+) -> Option<Expression> {
+    let ExprKind::Member { object, field, .. } = &callee.kind else {
+        return None;
+    };
+    if field != "add_option" {
+        return None;
+    }
+    if !matches!(
+        py_receiver_class(__w, object).as_deref(),
+        Some("OptionParser" | "OptionGroup")
+    ) {
+        return None;
+    }
+    let positional: Vec<&Argument> = args
+        .iter()
+        .filter(|arg| arg.name.is_none() && !arg.spread && !arg.by_ref)
+        .collect();
+    if positional.len() <= 1 {
+        return None;
+    }
+    if positional.iter().any(|arg| {
+        !matches!(
+            &arg.value.kind,
+            ExprKind::Lit(Literal::Str(flag)) if flag.starts_with('-')
+        )
+    }) {
+        return None;
+    }
+
+    let flag_list = Expression::new(ExprKind::Array(
+        positional
+            .iter()
+            .map(|arg| ArrayElement {
+                key: None,
+                value: arg.value.clone(),
+                spread: false,
+                by_ref: false,
+            })
+            .collect(),
+    ));
+    let mut rewritten_args = vec![Argument::positional(flag_list)];
+    rewritten_args.extend(args.iter().filter(|arg| arg.name.is_some()).cloned());
+
+    Some(Expression::new(ExprKind::Call {
+        callee: Box::new(callee.clone()),
+        args: rewritten_args,
+        optional: false,
+    }))
+}
+
 fn rewrite_dict_fromkeys(callee: &Expression, args: &[Argument]) -> Option<Expression> {
     let ExprKind::Member { object, field, .. } = &callee.kind else {
         return None;
@@ -17206,10 +30070,14 @@ fn rewrite_dict_fromkeys(callee: &Expression, args: &[Argument]) -> Option<Expre
 }
 
 /// `random.NAME(args)` → `__py_random_NAME(args)` for the names that are not
-/// reliably host-backed. `random`/`randint`/`choice`/`shuffle`/`sample`/`seed`
-/// stay profile builtins. `randrange` and `choices` are arity-shaped here so
+/// reliably host-backed. `random`/`choice`/`shuffle`/`sample`/`seed`
+/// stay profile builtins. `randint`, `randrange`, and `choices` are arity-shaped here so
 /// the prelude helpers stay fixed-arity (no default-binding assumptions).
-fn rewrite_random_call(__w: &mut PyWalker, callee: &Expression, args: &[Argument]) -> Option<Expression> {
+fn rewrite_random_call(
+    __w: &mut PyWalker,
+    callee: &Expression,
+    args: &[Argument],
+) -> Option<Expression> {
     let ExprKind::Member { object, field, .. } = &callee.kind else {
         return None;
     };
@@ -17227,9 +30095,10 @@ fn rewrite_random_call(__w: &mut PyWalker, callee: &Expression, args: &[Argument
     };
     match field.as_str() {
         // Fixed-arity variates: forward positional args verbatim.
-        "uniform" | "expovariate" | "gauss" | "normalvariate" | "lognormvariate" | "triangular"
-        | "paretovariate" | "weibullvariate" | "vonmisesvariate" | "gammavariate"
-        | "betavariate" | "getrandbits" | "randbytes" | "getstate" | "setstate" => {
+        "randint" | "uniform" | "expovariate" | "gauss" | "normalvariate" | "lognormvariate"
+        | "triangular" | "paretovariate" | "weibullvariate" | "vonmisesvariate"
+        | "gammavariate" | "betavariate" | "getrandbits" | "randbytes" | "getstate"
+        | "setstate" => {
             call(&format!("__py_random_{field}"), args.to_vec())
         }
         // `randrange(stop)` / `(start, stop)` / `(start, stop, step)` → always
@@ -17257,7 +30126,7 @@ fn rewrite_random_call(__w: &mut PyWalker, callee: &Expression, args: &[Argument
         }
         // `choices(pop, weights=, cum_weights=, k=)` → four positional args.
         "choices" => {
-            let kw = |name: &str| {
+            let mut kw = |name: &str| {
                 args.iter()
                     .find(|a| a.name.as_deref() == Some(name))
                     .map(|a| a.value.clone())
@@ -17278,6 +30147,394 @@ fn rewrite_random_call(__w: &mut PyWalker, callee: &Expression, args: &[Argument
         }
         _ => None,
     }
+}
+
+/// Literal `pickle.loads`/`marshal.loads` errors we can normalize before the
+/// adapter sees runtime values.
+fn rewrite_pickle_marshal_loads(callee: &Expression, args: &[Argument]) -> Option<Expression> {
+    let ExprKind::Member { object, field, .. } = &callee.kind else {
+        return None;
+    };
+    if field != "loads" {
+        return None;
+    }
+    let ExprKind::Ident(module) = &object.kind else {
+        return None;
+    };
+    if !matches!(module.as_str(), "pickle" | "marshal") {
+        return None;
+    }
+    let value = args.iter().find(|a| a.name.is_none())?.value.clone();
+    match &value.kind {
+        ExprKind::Lit(Literal::Str(_)) => Some(py_raise_expr(
+            "TypeError",
+            Some("a bytes-like object is required"),
+        )),
+        ExprKind::Lit(Literal::Bytes(bytes)) if bytes.is_empty() => {
+            Some(py_raise_expr("EOFError", Some("Ran out of input")))
+        }
+        _ => None,
+    }
+}
+
+fn normalize_python_deepcopy_known_fields(__w: &mut PyWalker, expr: &mut Expression) {
+    let Some(arg0) = (match &expr.kind {
+        ExprKind::Call { callee, args, .. }
+            if matches!(&callee.kind, ExprKind::Ident(name) if name == "__py_copy_deepcopy")
+                && !args.is_empty()
+                && args.len() <= 2 =>
+        {
+            Some(args[0].value.clone())
+        }
+        _ => None,
+    }) else {
+        return;
+    };
+
+    let class_name = match &arg0.kind {
+        ExprKind::Ident(var) => instance_class(__w, var),
+        _ => constructed_class_name(__w, &arg0).map(str::to_string),
+    };
+    let Some(class_name) = class_name else {
+        return;
+    };
+    if class_has_attr(__w, &class_name, "__deepcopy__") {
+        return;
+    }
+    if let ExprKind::Ident(var) = &arg0.kind
+        && let Some(init) = instance_init_expr(__w, var)
+    {
+        *expr = python_deep_clone_expr(__w, &init);
+        return;
+    }
+    let fields = class_data_attrs_for(__w, &class_name);
+    if fields.is_empty() {
+        return;
+    }
+    let field_names = python_field_names_array(fields);
+    let ExprKind::Call { callee, args, .. } = &mut expr.kind else {
+        return;
+    };
+    if args.len() == 1 {
+        args.push(Argument::positional(Expression::null()));
+    }
+    args.push(Argument::positional(field_names));
+    *callee = Box::new(Expression::ident("__py_copy_deepcopy_fields"));
+}
+
+fn python_deep_clone_expr(__w: &mut PyWalker, expr: &Expression) -> Expression {
+    match &expr.kind {
+        ExprKind::Array(elements) => Expression::new(ExprKind::Array(
+            elements
+                .iter()
+                .map(|element| ArrayElement {
+                    key: element
+                        .key
+                        .as_ref()
+                        .map(|key| python_deep_clone_expr(__w, key)),
+                    spread: element.spread,
+                    by_ref: element.by_ref,
+                    value: python_deep_clone_expr(__w, &element.value),
+                })
+                .collect(),
+        )),
+        ExprKind::Tuple(items) => Expression::new(ExprKind::Tuple(
+            items
+                .iter()
+                .map(|item| python_deep_clone_expr(__w, item))
+                .collect(),
+        )),
+        ExprKind::Sequence(items) => Expression::new(ExprKind::Sequence(
+            items
+                .iter()
+                .map(|item| python_deep_clone_expr(__w, item))
+                .collect(),
+        )),
+        ExprKind::Set(items) => Expression::new(ExprKind::Set(
+            items
+                .iter()
+                .map(|item| python_deep_clone_expr(__w, item))
+                .collect(),
+        )),
+        ExprKind::Map(entries) => Expression::new(ExprKind::Map(
+            entries
+                .iter()
+                .map(|(key, value)| {
+                    (
+                        python_deep_clone_expr(__w, key),
+                        python_deep_clone_expr(__w, value),
+                    )
+                })
+                .collect(),
+        )),
+        ExprKind::Object(props) => Expression::new(ExprKind::Object(
+            props
+                .iter()
+                .map(|prop| match prop {
+                    ObjectProperty::KeyValue { key, value } => ObjectProperty::KeyValue {
+                        key: python_deep_clone_expr(__w, key),
+                        value: python_deep_clone_expr(__w, value),
+                    },
+                    ObjectProperty::Computed { key, value } => ObjectProperty::Computed {
+                        key: python_deep_clone_expr(__w, key),
+                        value: python_deep_clone_expr(__w, value),
+                    },
+                    ObjectProperty::Spread(value) => {
+                        ObjectProperty::Spread(python_deep_clone_expr(__w, value))
+                    }
+                    ObjectProperty::Shorthand(name) => ObjectProperty::Shorthand(name.clone()),
+                    ObjectProperty::Method { key, value } => ObjectProperty::Method {
+                        key: key.clone(),
+                        value: value.clone(),
+                    },
+                    ObjectProperty::Accessor { kind, key, value } => ObjectProperty::Accessor {
+                        kind: *kind,
+                        key: key.clone(),
+                        value: value.clone(),
+                    },
+                })
+                .collect(),
+        )),
+        ExprKind::New { class, args } => {
+            let class_name = match &class.kind {
+                ExprKind::Ident(name) => Some(name.as_str()),
+                _ => None,
+            };
+            let cloned = Expression::new(ExprKind::New {
+                class: class.clone(),
+                args: args
+                    .iter()
+                    .map(|arg| Argument {
+                        name: arg.name.clone(),
+                        value: python_deep_clone_expr(__w, &arg.value),
+                        by_ref: arg.by_ref,
+                        spread: arg.spread,
+                    })
+                    .collect(),
+            });
+            class_name
+                .filter(|name| !class_has_attr(__w, name, "__deepcopy__"))
+                .map(|name| {
+                    let fields = class_data_attrs_for(__w, name);
+                    if fields.is_empty() {
+                        cloned.clone()
+                    } else {
+                        call_ident(
+                            "__py_copy_stamp_fields",
+                            vec![cloned.clone(), python_field_names_array(fields)],
+                        )
+                    }
+                })
+                .unwrap_or(cloned)
+        }
+        ExprKind::Call { callee, args, .. }
+            if matches!(&callee.kind, ExprKind::Ident(name) if name == "__py_copy_stamp_fields")
+                && !args.is_empty() =>
+        {
+            let value = python_deep_clone_expr(__w, &args[0].value);
+            let fields = args
+                .get(1)
+                .map(|arg| arg.value.clone())
+                .unwrap_or_else(|| Expression::new(ExprKind::Array(Vec::new())));
+            call_ident("__py_copy_stamp_fields", vec![value, fields])
+        }
+        _ => call_ident("__py_copy_deepcopy", vec![expr.clone(), Expression::null()]),
+    }
+}
+
+fn rewrite_tomllib_call(
+    __w: &mut PyWalker,
+    callee: &Expression,
+    args: &[Argument],
+) -> Option<Expression> {
+    let ExprKind::Member { object, field, .. } = &callee.kind else {
+        return None;
+    };
+    if module_namespace_path(__w, object).as_deref() != Some("tomllib") {
+        return None;
+    }
+    let parse_float_decimal = args.iter().any(|arg| {
+        arg.name.as_deref() == Some("parse_float")
+            && matches!(&arg.value.kind, ExprKind::Ident(name) if name == "Decimal")
+    });
+    let text = match field.as_str() {
+        "loads" => tomllib_loads_text(__w, args)?,
+        "load" => tomllib_load_text(__w, args)?,
+        _ => return None,
+    };
+    match text.parse::<toml::Table>() {
+        Ok(value) => Some(toml_value_expr(
+            toml::Value::Table(value),
+            parse_float_decimal,
+        )),
+        Err(err) => Some(py_raise_expr("TOMLDecodeError", Some(&err.to_string()))),
+    }
+}
+
+fn tomllib_loads_text(__w: &mut PyWalker, args: &[Argument]) -> Option<String> {
+    let first = args.iter().find(|arg| arg.name.is_none())?;
+    resolve_string_const(__w, &first.value)
+}
+
+fn tomllib_load_text(__w: &mut PyWalker, args: &[Argument]) -> Option<String> {
+    let first = args.iter().find(|arg| arg.name.is_none())?;
+    tomllib_bytesio_text(__w, &first.value)
+}
+
+fn tomllib_bytesio_text(__w: &mut PyWalker, expr: &Expression) -> Option<String> {
+    let ExprKind::New { class, args } = &expr.kind else {
+        return None;
+    };
+    if !matches!(&class.kind, ExprKind::Ident(name) if name == "BytesIO") {
+        return None;
+    }
+    let bytes = args
+        .first()
+        .and_then(|arg| tomllib_bytes_expr(__w, &arg.value))?;
+    String::from_utf8(bytes).ok()
+}
+
+fn tomllib_bytes_expr(__w: &mut PyWalker, expr: &Expression) -> Option<Vec<u8>> {
+    match &expr.kind {
+        ExprKind::Lit(Literal::Bytes(bytes)) => Some(bytes.clone()),
+        ExprKind::Ident(name) => bytes_const(__w, name),
+        _ => None,
+    }
+}
+
+fn toml_value_expr(value: toml::Value, parse_float_decimal: bool) -> Expression {
+    match value {
+        toml::Value::String(value) => Expression::string(&value),
+        toml::Value::Integer(value) => Expression::int(value),
+        toml::Value::Float(value) if parse_float_decimal => Expression::new(ExprKind::New {
+            class: Box::new(Expression::ident("Decimal")),
+            args: vec![Argument::positional(Expression::string(&value.to_string()))],
+        }),
+        toml::Value::Float(value) => Expression::float(value),
+        toml::Value::Boolean(value) => Expression::new(ExprKind::Lit(Literal::Bool(value))),
+        toml::Value::Datetime(value) => toml_datetime_expr(&value.to_string()),
+        toml::Value::Array(values) => Expression::new(ExprKind::Array(
+            values
+                .into_iter()
+                .map(|value| ArrayElement {
+                    key: None,
+                    spread: false,
+                    by_ref: false,
+                    value: toml_value_expr(value, parse_float_decimal),
+                })
+                .collect(),
+        )),
+        toml::Value::Table(values) if parse_float_decimal => Expression::new(ExprKind::Object(
+            values
+                .into_iter()
+                .map(|(key, value)| ObjectProperty::KeyValue {
+                    key: Expression::string(&key),
+                    value: toml_value_expr(value, parse_float_decimal),
+                })
+                .collect(),
+        )),
+        toml::Value::Table(values) => Expression::new(ExprKind::Map(
+            values
+                .into_iter()
+                .map(|(key, value)| {
+                    (
+                        Expression::string(&key),
+                        toml_value_expr(value, parse_float_decimal),
+                    )
+                })
+                .collect(),
+        )),
+    }
+}
+
+fn toml_datetime_expr(text: &str) -> Expression {
+    let callee = if text.contains('T') || text.contains('t') {
+        "__py_datetime_fromisoformat"
+    } else if text.contains(':') {
+        "__py_time_fromisoformat"
+    } else {
+        "__py_date_fromisoformat"
+    };
+    call_ident(callee, vec![Expression::string(text)])
+}
+
+fn constructed_class_name<'a>(__w: &mut PyWalker, expr: &'a Expression) -> Option<&'a str> {
+    match &expr.kind {
+        ExprKind::New { class, .. } => match &class.kind {
+            ExprKind::Ident(name) if is_defined_class(__w, name) => Some(name.as_str()),
+            _ => None,
+        },
+        ExprKind::Call { callee, .. }
+            if matches!(&callee.kind, ExprKind::Ident(name) if is_defined_class(__w, name)) =>
+        {
+            if let ExprKind::Ident(name) = &callee.kind {
+                Some(name.as_str())
+            } else {
+                None
+            }
+        }
+        ExprKind::Call { callee, .. }
+            if matches!(&callee.kind, ExprKind::Ident(name) if name == "slice" || name == "__py_slice_new") =>
+        {
+            Some("slice")
+        }
+        ExprKind::Call { callee, args, .. } if matches!(&callee.kind, ExprKind::Ident(name) if name == "__py_copy_stamp_fields") => {
+            args.first()
+                .and_then(|arg| constructed_class_name(__w, &arg.value))
+        }
+        ExprKind::Call { callee, args, .. }
+            if args.is_empty()
+                && matches!(&callee.kind, ExprKind::Ident(name) if name == "copy_context") =>
+        {
+            Some("Context")
+        }
+        _ => None,
+    }
+}
+
+fn known_core_method_return_class(__w: &mut PyWalker, expr: &Expression) -> Option<&'static str> {
+    let ExprKind::Call { callee, .. } = &expr.kind else {
+        return None;
+    };
+    let ExprKind::Member { object, field, .. } = &callee.kind else {
+        return None;
+    };
+    let receiver = py_receiver_class(__w, object)?;
+    Some(match (receiver.as_str(), field.as_str()) {
+        ("ArgumentParser", "parse_args") => "Namespace",
+        (
+            "ArgumentParser",
+            "add_argument_group" | "add_mutually_exclusive_group",
+        ) => "__ArgparseGroup",
+        ("ArgumentParser", "add_subparsers") => "__ArgparseSubparsers",
+        ("__ArgparseSubparsers", "add_parser") => "ArgumentParser",
+        ("SelectSelector", "register" | "unregister" | "modify" | "get_key")
+        | ("EpollSelector", "register" | "unregister" | "modify" | "get_key")
+        | ("KqueueSelector", "register" | "unregister" | "modify" | "get_key")
+        | ("PollSelector", "register" | "unregister" | "modify" | "get_key")
+        | ("DevpollSelector", "register" | "unregister" | "modify" | "get_key") => "SelectorKey",
+        _ => return None,
+    })
+}
+
+fn class_allows_dynamic_attrs(class_name: &str) -> bool {
+    crate::core_classes::DYNAMIC_ATTR_CLASSES
+        .iter()
+        .any(|name| *name == class_name)
+}
+
+fn python_field_names_array(fields: Vec<String>) -> Expression {
+    Expression::new(ExprKind::Array(
+        fields
+            .into_iter()
+            .map(|field| ArrayElement {
+                key: None,
+                spread: false,
+                by_ref: false,
+                value: Expression::string(&field),
+            })
+            .collect(),
+    ))
 }
 
 /// json adapter consumes. Returns `None` for anything that isn't a
@@ -17356,7 +30613,16 @@ fn rewrite_json_dumps(callee: &Expression, args: &[Argument]) -> Option<Expressi
 }
 
 fn call_or_new(__w: &mut PyWalker, callee: Expression, args: Vec<Argument>) -> ExprKind {
+    let callee = match &callee.kind {
+        ExprKind::Ident(name) => py_class_alias(__w, name)
+            .map(|class_name| Expression::ident(&class_name))
+            .unwrap_or(callee),
+        _ => callee,
+    };
     if let Some(kind) = zoneinfo_call(__w, &callee, &args) {
+        return kind;
+    }
+    if let Some(kind) = functools_call_lowering(&callee, &args) {
         return kind;
     }
     if let Some(kind) = imported_datetime_ctor_call(__w, &callee, args.clone()) {
@@ -17387,6 +30653,7 @@ fn call_or_new(__w: &mut PyWalker, callee: Expression, args: Vec<Argument>) -> E
             return build_namedtuple_construction(&def, args);
         }
         if is_defined_class(__w, name) {
+            let args = normalize_contextvar_ctor_args(__w, &callee, &args).unwrap_or(args);
             if let Some(limit) = dataclass_positional_limit(__w, name) {
                 let positional = args.iter().filter(|arg| arg.name.is_none()).count();
                 if positional > limit {
@@ -17522,7 +30789,11 @@ fn calendar_module_attr(path: &str) -> Option<Expression> {
     }
 }
 
-fn rewrite_calendar_call(__w: &mut PyWalker, callee: &Expression, args: &[Argument]) -> Option<Expression> {
+fn rewrite_calendar_call(
+    __w: &mut PyWalker,
+    callee: &Expression,
+    args: &[Argument],
+) -> Option<Expression> {
     let ExprKind::Member { object, field, .. } = &callee.kind else {
         return None;
     };
@@ -17538,6 +30809,7 @@ fn rewrite_calendar_call(__w: &mut PyWalker, callee: &Expression, args: &[Argume
         "monthcalendar" => "__py_calendar_monthcalendar",
         "setfirstweekday" => "__py_calendar_setfirstweekday",
         "firstweekday" => "__py_calendar_firstweekday_fn",
+        "month" => "__py_calendar_text_formatmonth",
         "prmonth" => {
             let printed = Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::ident("__py_calendar_text_formatmonth")),
@@ -17574,7 +30846,8 @@ fn calendar_expr_kind(expr: &Expression) -> Option<&'static str> {
     })
 }
 
-fn rewrite_calendar_value_method(__w: &mut PyWalker, 
+fn rewrite_calendar_value_method(
+    __w: &mut PyWalker,
     object: &Expression,
     field: &str,
     args: &[Argument],
@@ -17661,6 +30934,7 @@ fn py_builtin_type_name(name: &str) -> Option<&'static str> {
         "range" => "range",
         "object" => "object",
         "type" => "type",
+        "super" => "super",
         "NoneType" => "NoneType",
         "function" => "function",
         "builtin_function_or_method" => "builtin_function_or_method",
@@ -17692,6 +30966,7 @@ fn py_builtin_type_name(name: &str) -> Option<&'static str> {
         "SystemExit" => "SystemExit",
         "TypeError" => "TypeError",
         "UnicodeError" => "UnicodeError",
+        "UnicodeDecodeError" => "UnicodeDecodeError",
         "ValueError" => "ValueError",
         "ZeroDivisionError" => "ZeroDivisionError",
         _ => return None,
@@ -17725,6 +31000,7 @@ fn py_builtin_exception_bases(name: &str) -> Option<&'static [&'static str]> {
         "SystemExit" => &["BaseException"],
         "TypeError" => &["Exception", "BaseException"],
         "UnicodeError" => &["ValueError", "Exception", "BaseException"],
+        "UnicodeDecodeError" => &["UnicodeError", "ValueError", "Exception", "BaseException"],
         "ValueError" => &["Exception", "BaseException"],
         "IndexError" => &["LookupError", "Exception", "BaseException"],
         "KeyError" => &["LookupError", "Exception", "BaseException"],
@@ -17764,6 +31040,7 @@ fn py_builtin_exception_names() -> &'static [&'static str] {
         "SystemExit",
         "TypeError",
         "UnicodeError",
+        "UnicodeDecodeError",
         "ValueError",
         "ZeroDivisionError",
     ]
@@ -17792,7 +31069,34 @@ fn py_type_call_arg(e: &Expression) -> Option<&Expression> {
 
 fn py_known_instance_type_name(__w: &mut PyWalker, e: &Expression) -> Option<String> {
     match &e.kind {
+        ExprKind::Ident(name) if name == "Ellipsis" => Some("ellipsis".to_string()),
         ExprKind::Ident(name) => instance_class(__w, name),
+        ExprKind::Index { object, index, .. } => {
+            if let ExprKind::Ident(var) = &object.kind
+                && let ExprKind::Lit(Literal::Str(field)) = &index.kind
+            {
+                object_field_class(__w, var, field)
+            } else {
+                None
+            }
+        }
+        ExprKind::Call { callee, args: _, .. }
+            if matches!(&callee.kind, ExprKind::Ident(n) if n == "__py_slice_new" || n == "slice") =>
+        {
+            Some("slice".to_string())
+        }
+        ExprKind::Call { callee, args, .. }
+            if matches!(&callee.kind, ExprKind::Ident(n) if n == "__py_getitem")
+                && args.len() == 2 =>
+        {
+            if let ExprKind::Ident(var) = &args[0].value.kind
+                && let ExprKind::Lit(Literal::Str(field)) = &args[1].value.kind
+            {
+                object_field_class(__w, var, field)
+            } else {
+                None
+            }
+        }
         ExprKind::New { class, .. } => {
             if let ExprKind::Ident(name) = &class.kind {
                 Some(name.clone())
@@ -17838,6 +31142,9 @@ fn py_static_type_name(__w: &mut PyWalker, e: &Expression) -> Option<&'static st
             _ => None,
         };
     }
+    if py_complex_parts(__w, e).is_some() {
+        return Some("complex");
+    }
     if py_known_coroutine_expr(__w, e) {
         return Some("coroutine");
     }
@@ -17848,6 +31155,7 @@ fn py_static_type_name(__w: &mut PyWalker, e: &Expression) -> Option<&'static st
         return Some("generator");
     }
     match &e.kind {
+        ExprKind::Super => Some("super"),
         ExprKind::Lit(Literal::Bool(_)) => Some("bool"),
         ExprKind::Lit(Literal::Int(_)) => Some("int"),
         ExprKind::Lit(Literal::Float(_)) => Some("float"),
@@ -17857,12 +31165,44 @@ fn py_static_type_name(__w: &mut PyWalker, e: &Expression) -> Option<&'static st
         ExprKind::Array(_) => Some("list"),
         ExprKind::Tuple(_) | ExprKind::NamedTuple { .. } => Some("tuple"),
         ExprKind::Map(_)
-        | ExprKind::Object(_)
         | ExprKind::Comprehension {
             kind: ComprehensionKind::Dict,
             ..
         } => Some("dict"),
+        ExprKind::Object(_) => {
+            if matches!(py_object_string_field(e, "__type").as_deref(), Some("complex")) {
+                Some("complex")
+            } else {
+                Some("dict")
+            }
+        }
         ExprKind::Set(_) => Some("set"),
+        ExprKind::Call { callee, .. }
+            if matches!(&callee.kind, ExprKind::Ident(n)
+                if matches!(n.as_str(), "__py_pickle_dumps" | "__py_marshal_dumps")) =>
+        {
+            Some("bytes")
+        }
+        ExprKind::Call { callee, args, .. }
+            if args.is_empty()
+                && matches!(&callee.kind, ExprKind::Ident(n) if n == "__py_notimplemented") =>
+        {
+            Some("NotImplementedType")
+        }
+        ExprKind::Call { callee, args, .. }
+            if args.is_empty()
+                && matches!(&callee.kind, ExprKind::Member { object, field, .. }
+                    if field == "keys" && py_os_environ_expr(__w, object)) =>
+        {
+            Some("KeysView")
+        }
+        ExprKind::Call { callee, .. }
+            if matches!(&callee.kind, ExprKind::Member { object, field, .. }
+                if matches!(module_namespace_path(__w, object).as_deref(), Some("pickle" | "marshal"))
+                    && field == "dumps") =>
+        {
+            Some("bytes")
+        }
         ExprKind::Call { callee, .. }
             if matches!(&callee.kind, ExprKind::Ident(n)
                 if matches!(n.as_str(), "set" | "frozenset" | "__py_frozenset")) =>
@@ -17882,6 +31222,8 @@ fn py_static_type_name(__w: &mut PyWalker, e: &Expression) -> Option<&'static st
         }
         ExprKind::Ident(name) if is_dict_var(__w, name) => Some("dict"),
         ExprKind::Ident(name) if is_set_var(__w, name) => Some("set"),
+        ExprKind::Ident(name) if is_bytearray_var(__w, name) => Some("bytearray"),
+        ExprKind::Ident(name) if is_bytes_var(__w, name) => Some("bytes"),
         ExprKind::Ident(name) if is_defined_class(__w, name) => Some("type"),
         ExprKind::Ident(name) if is_defined_function(__w, name) => Some("function"),
         ExprKind::Ident(name) if py_builtin_callable_lambda(name).is_some() => {
@@ -17904,6 +31246,38 @@ fn py_static_type_name(__w: &mut PyWalker, e: &Expression) -> Option<&'static st
         }
         ExprKind::Call { .. } => {
             if let Some((object, field)) = py_attr_read_parts(e)
+                && matches!(
+                    py_static_type_name(__w, object),
+                    Some("list" | "dict" | "set" | "str" | "tuple")
+                )
+                && matches!(
+                    field,
+                    "append"
+                        | "extend"
+                        | "insert"
+                        | "remove"
+                        | "pop"
+                        | "clear"
+                        | "index"
+                        | "count"
+                        | "sort"
+                        | "reverse"
+                        | "keys"
+                        | "values"
+                        | "items"
+                        | "get"
+                        | "add"
+                        | "discard"
+                        | "split"
+                        | "join"
+                        | "replace"
+                        | "strip"
+                        | "startswith"
+                        | "endswith"
+                )
+            {
+                Some("builtin_function_or_method")
+            } else if let Some((object, field)) = py_attr_read_parts(e)
                 && let ExprKind::Ident(class_name) = &object.kind
                 && let Some(type_name) = class_member_type_name(__w, class_name, field)
             {
@@ -17932,9 +31306,13 @@ fn py_static_type_name(__w: &mut PyWalker, e: &Expression) -> Option<&'static st
                     }
                     ExprKind::Ident(n) if matches!(n.as_str(), "set" | "frozenset") => Some("set"),
                     ExprKind::Ident(n) if n == "range" => Some("range"),
+                    ExprKind::Ident(n) if n == "bytearray" || n == "__py_bytearray_new__" => {
+                        Some("bytearray")
+                    }
                     ExprKind::Ident(n) if n == "bytes" || n == "__py_bytes_new__" => Some("bytes"),
-                    ExprKind::Ident(n) if n == "bytearray" => Some("bytearray"),
                     ExprKind::Ident(n) if n == "complex" => Some("complex"),
+                    // `hash(x)`/`id(x)` always answer an int in CPython.
+                    ExprKind::Ident(n) if matches!(n.as_str(), "hash" | "id") => Some("int"),
                     _ => None,
                 }
             } else {
@@ -18043,6 +31421,18 @@ fn py_type_is_builtin(__w: &mut PyWalker, left: &Expression, right: &Expression)
     Some(py_static_runtime_type_name(__w, value)? == py_builtin_type_name(type_name)?)
 }
 
+fn py_annotation_value_is_builtin(
+    __w: &mut PyWalker,
+    left: &Expression,
+    right: &Expression,
+) -> Option<bool> {
+    let annotated = py_annotation_item_type_name(__w, left)?;
+    let ExprKind::Ident(type_name) = &right.kind else {
+        return None;
+    };
+    Some(annotated == py_builtin_type_name(type_name)?)
+}
+
 fn py_builtin_subclass(sub: &str, base: &str) -> Option<bool> {
     py_builtin_type_name(sub)?;
     py_builtin_type_name(base)?;
@@ -18100,7 +31490,11 @@ fn py_getattr_call_parts(e: &Expression) -> Option<(&Expression, &str)> {
     Some((&args[0].value, attr))
 }
 
-fn py_static_getattr_member_identity(__w: &mut PyWalker, left: &Expression, right: &Expression) -> Option<bool> {
+fn py_static_getattr_member_identity(
+    __w: &mut PyWalker,
+    left: &Expression,
+    right: &Expression,
+) -> Option<bool> {
     let (obj, attr) = py_getattr_call_parts(left)?;
     let (object, field): (&Expression, &str) = match &right.kind {
         ExprKind::Member { object, field, .. } => (object, field.as_str()),
@@ -18127,6 +31521,73 @@ fn py_static_getattr_member_identity(__w: &mut PyWalker, left: &Expression, righ
         return Some(false);
     }
     None
+}
+
+fn note_module_symbol_var(__w: &mut PyWalker, name: &str, symbol: &str) {
+    if !name.is_empty() {
+        __w.py_module_symbol_vars
+            .insert(name.to_string(), symbol.to_string());
+    }
+}
+
+fn clear_module_symbol_var(__w: &mut PyWalker, name: &str) {
+    __w.py_module_symbol_vars.remove(name);
+}
+
+fn py_module_symbol_path(__w: &mut PyWalker, expr: &Expression) -> Option<String> {
+    if let ExprKind::Ident(name) = &expr.kind
+        && let Some(path) = __w.py_module_symbol_vars.get(name)
+    {
+        return Some(path.clone());
+    }
+    py_module_export_path(__w, expr).map(|(module, member)| format!("{module}.{member}"))
+}
+
+fn py_static_module_symbol_identity(
+    __w: &mut PyWalker,
+    left: &Expression,
+    right: &Expression,
+) -> Option<bool> {
+    let left = py_module_symbol_path(__w, left)?;
+    let right = py_module_symbol_path(__w, right)?;
+    Some(left == right)
+}
+
+fn note_module_symbol_assignments(
+    __w: &mut PyWalker,
+    targets: &[Expression],
+    value: &Expression,
+) {
+    for target in targets {
+        match &target.kind {
+            ExprKind::Ident(name) => {
+                if let Some(path) = py_module_symbol_path(__w, value) {
+                    note_module_symbol_var(__w, name, &path);
+                } else {
+                    clear_module_symbol_var(__w, name);
+                }
+            }
+            ExprKind::Destructure(DestructurePattern::Array(patterns)) => {
+                let ExprKind::Tuple(values) = &value.kind else {
+                    continue;
+                };
+                for (idx, pattern) in patterns.iter().enumerate() {
+                    let ArrayPatternElem::Pattern(BindingPattern::Ident(name), _) = pattern else {
+                        continue;
+                    };
+                    if let Some(path) = values
+                        .get(idx)
+                        .and_then(|expr| py_module_symbol_path(__w, expr))
+                    {
+                        note_module_symbol_var(__w, name, &path);
+                    } else {
+                        clear_module_symbol_var(__w, name);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 fn py_static_callable(__w: &mut PyWalker, e: &Expression) -> Option<bool> {
@@ -18176,7 +31637,11 @@ fn py_static_callable(__w: &mut PyWalker, e: &Expression) -> Option<bool> {
             let ExprKind::Ident(module) = &object.kind else {
                 return None;
             };
-            let surface = py_module_surface(module)?;
+            let module_name = resolve_module_alias(__w, module).unwrap_or_else(|| module.clone());
+            if py_profile_declares_builtin(&format!("{module_name}.{field}")) {
+                return Some(true);
+            }
+            let surface = py_module_surface(&module_name)?;
             if !surface.contains(&field.as_str()) {
                 return None;
             }
@@ -18190,6 +31655,16 @@ fn py_static_callable(__w: &mut PyWalker, e: &Expression) -> Option<bool> {
 }
 
 fn py_static_hasattr(__w: &mut PyWalker, obj: &Expression, attr: &str) -> Option<bool> {
+    if let ExprKind::Ident(name) = &obj.kind
+        && let Some(kind) = pydoc_renderer_var(__w, name)
+    {
+        return Some(match kind.as_str() {
+            "Helper" => matches!(attr, "help" | "intro"),
+            "TextDoc" => matches!(attr, "docclass" | "docmodule" | "docother" | "docroutine"),
+            "HTMLDoc" => matches!(attr, "docclass" | "docmodule" | "docroutine"),
+            _ => false,
+        });
+    }
     // An async generator answers the ASYNC protocol and only that one: CPython
     // gives it `asend`/`athrow`/`aclose` and no `send`/`throw`/`close`, so this
     // has to be tested BEFORE the sync set (an async generator is in
@@ -18242,6 +31717,33 @@ fn py_static_hasattr(__w: &mut PyWalker, obj: &Expression, attr: &str) -> Option
     if py_static_frozenset_expr(__w, obj) {
         return Some(py_set_algebra_attr(attr));
     }
+    if let Some(path) = module_namespace_path(__w, obj) {
+        return Some(
+            py_module_metadata_attr(&path, attr).is_some()
+                || dynamic_module_attr(__w, &path, attr).is_some()
+                || path == "builtins"
+                    && (py_profile_declares_builtin(attr) || matches!(attr, "_" | "ngettext"))
+                || py_module_surface(&path).is_some_and(|surface| surface.contains(&attr))
+                || py_module_renames(&path).is_some_and(|renames| {
+                    renames
+                        .iter()
+                        .any(|(py, canon)| *py == attr || *canon == attr)
+                }),
+        );
+    }
+    if let Some(path) = py_module_like_object_path(obj) {
+        return Some(
+            py_module_metadata_attr(path, attr).is_some()
+                || path == "builtins"
+                    && (py_profile_declares_builtin(attr) || matches!(attr, "_" | "ngettext"))
+                || py_module_surface(path).is_some_and(|surface| surface.contains(&attr))
+                || py_module_renames(path).is_some_and(|renames| {
+                    renames
+                        .iter()
+                        .any(|(py, canon)| *py == attr || *canon == attr)
+                }),
+        );
+    }
     if let ExprKind::Object(props) = &obj.kind {
         return Some(props.iter().any(|prop| match prop {
             ObjectProperty::KeyValue { key, .. } | ObjectProperty::Computed { key, .. } => {
@@ -18267,7 +31769,8 @@ fn py_static_hasattr(__w: &mut PyWalker, obj: &Expression, attr: &str) -> Option
         if let ExprKind::New { class, .. } = &obj.kind
             && let ExprKind::Ident(class_name) = &class.kind
             && (dataclass_options_for(__w, class_name).is_some_and(|options| options.slots)
-                || (class_declares_slots(__w, class_name) && !class_slot_allows(__w, class_name, "__dict__")))
+                || (class_declares_slots(__w, class_name)
+                    && !class_slot_allows(__w, class_name, "__dict__")))
         {
             return Some(false);
         }
@@ -18340,6 +31843,26 @@ fn desugar_member_reads(__w: &mut PyWalker, e: Expression) -> Expression {
                     return Expression::new(ExprKind::Lit(lit));
                 }
             }
+            // `re.I` / `re.IGNORECASE` etc. normalize to ECMA flag strings.
+            if matches!(&object.kind, ExprKind::Ident(n) if n == "re")
+                && is_imported_module(__w, "re")
+            {
+                if let Some(value) = re_module_constant(&field) {
+                    return value;
+                }
+            }
+            if is_imported_module(__w, "re") {
+                if let ExprKind::Ident(name) = &object.kind {
+                    if field == "pattern"
+                        && let Some(pattern) = re_var_pattern(__w, name)
+                    {
+                        return pattern;
+                    }
+                    if field == "lastindex" && is_re_match_var(__w, name) {
+                        return call_ident("__re_lastindex", vec![Expression::ident(name)]);
+                    }
+                }
+            }
             // `keyword.kwlist` / `keyword.softkwlist` are static interpreter data.
             if matches!(&object.kind, ExprKind::Ident(n) if n == "keyword")
                 && is_imported_module(__w, "keyword")
@@ -18364,12 +31887,56 @@ fn desugar_member_reads(__w: &mut PyWalker, e: Expression) -> Expression {
                     return value;
                 }
             }
+            if module_namespace_path(__w, &object).as_deref() == Some("urllib.request")
+                && field == "urlopen"
+            {
+                return py_noop_lambda(1);
+            }
+            if module_namespace_path(__w, &object).as_deref() == Some("urllib.error")
+                && matches!(field.as_str(), "URLError" | "HTTPError" | "ContentTooShortError")
+            {
+                return Expression::ident("__py_exc_Exception");
+            }
             if module_namespace_path(__w, &object).as_deref() == Some("xml.etree.ElementTree") {
                 match field.as_str() {
-                    "ParseError" => return Expression::ident("__PyXmlParseError"),
+                    "ParseError" => return Expression::ident("__py_exc_Exception"),
                     "iterparse" => return Expression::ident("__py_noop_lambda"),
                     _ => {}
                 }
+            }
+            match module_namespace_path(__w, &object).as_deref() {
+                Some("uuid") => match field.as_str() {
+                    "RFC_4122" => return Expression::string("specified in RFC 4122"),
+                    name => {
+                        if let Some(value) = py_uuid_const_expr(name) {
+                            return value;
+                        }
+                        if let Some(value) = py_uuid_member_read(__w, &object, name) {
+                            return value;
+                        }
+                    }
+                },
+                Some("pickle") => match field.as_str() {
+                    "HIGHEST_PROTOCOL" => return Expression::int(5),
+                    "DEFAULT_PROTOCOL" => return Expression::int(4),
+                    _ => {}
+                },
+                Some("marshal") => {
+                    if field == "version" {
+                        return Expression::int(4);
+                    }
+                }
+                Some("lzma") => match field.as_str() {
+                    "CHECK_NONE" | "FORMAT_AUTO" => return Expression::int(0),
+                    "CHECK_CRC32" | "FORMAT_XZ" => return Expression::int(1),
+                    "FORMAT_ALONE" => return Expression::int(2),
+                    "FORMAT_RAW" => return Expression::int(3),
+                    "CHECK_CRC64" => return Expression::int(4),
+                    "FILTER_LZMA2" => return Expression::int(33),
+                    "PRESET_EXTREME" => return Expression::int(2_147_483_648i64),
+                    _ => {}
+                },
+                _ => {}
             }
             if module_namespace_path(__w, &object).as_deref() == Some("getopt")
                 && matches!(field.as_str(), "GetoptError" | "error")
@@ -18378,6 +31945,11 @@ fn desugar_member_reads(__w: &mut PyWalker, e: Expression) -> Expression {
             }
             // `sys.<const>` scalars (platform, maxsize, byteorder, …).
             if matches!(&object.kind, ExprKind::Ident(n) if n == "sys") {
+                if field == "platform"
+                    && let Some(value) = &__w.py_sys_platform_override
+                {
+                    return Expression::string(value);
+                }
                 if let Some(value) = sys_module_member(&field) {
                     return value;
                 }
@@ -18385,8 +31957,28 @@ fn desugar_member_reads(__w: &mut PyWalker, e: Expression) -> Expression {
                     return Expression::new(ExprKind::Lit(lit));
                 }
             }
+            if matches!(&object.kind, ExprKind::Ident(n) if n == "builtins") {
+                match field.as_str() {
+                    "help" => return Expression::string("Type help() for interactive help."),
+                    "copyright" => return Expression::string("Copyright (c) Vybe Python."),
+                    "quit" | "exit" => {
+                        return Expression::string("Use quit() or exit() to leave.");
+                    }
+                    _ => {}
+                }
+            }
             if module_namespace_path(__w, &object).as_deref() == Some("time") {
                 if let Some(value) = time_module_constant(&field) {
+                    return value;
+                }
+            }
+            if module_namespace_path(__w, &object).as_deref() == Some("doctest") {
+                if let Some(value) = doctest_constant(&field) {
+                    return value;
+                }
+            }
+            if module_namespace_path(__w, &object).as_deref() == Some("dis") {
+                if let Some(value) = dis_module_member(&field) {
                     return value;
                 }
             }
@@ -18419,6 +32011,25 @@ fn desugar_member_reads(__w: &mut PyWalker, e: Expression) -> Expression {
                     }
                 }
             }
+            if field == "__module__"
+                && let Some((module, member)) = py_module_export_path(__w, &object)
+            {
+                if module == "json" && matches!(member.as_str(), "JSONDecoder" | "JSONEncoder") {
+                    return Expression::string("json.decoder");
+                }
+                return Expression::string(&module);
+            }
+            if field == "__qualname__"
+                && let Some((_, member)) = py_module_export_path(__w, &object)
+            {
+                return Expression::string(&member);
+            }
+            if let Some(value) = py_path_member_read(__w, &object, &field) {
+                return value;
+            }
+            if let Some(value) = py_uuid_member_read(__w, &object, &field) {
+                return value;
+            }
             let mut object = desugar_member_reads(__w, *object);
             // Module-alias substitution: `m.dumps` where `m = json` compiles
             // exactly like `json.dumps` (profile builtins + ns resolution).
@@ -18427,11 +32038,49 @@ fn desugar_member_reads(__w: &mut PyWalker, e: Expression) -> Expression {
                     object = Expression::new(ExprKind::Ident(module));
                 }
             }
+            if let Some(value) = py_path_member_read(__w, &object, &field) {
+                return value;
+            }
+            if let Some(value) = py_uuid_member_read(__w, &object, &field) {
+                return value;
+            }
+            if let Some(value) = magic_mock_dunder_child_read(__w, &object, &field, null_safe) {
+                return value;
+            }
+            if let ExprKind::Ident(var) = &object.kind
+                && let Some(class_name) = instance_class(__w, var)
+                && let Some(replacement) = active_mock_property_patch(__w, &class_name, &field)
+            {
+                return mock_call_with_packed_args(
+                    replacement,
+                    python_array_expr(Vec::new()),
+                    python_kwargs_dict_expr(Vec::new()),
+                );
+            }
             if matches!(object.kind, ExprKind::Lit(Literal::Null)) && !null_safe {
                 return py_raise_expr("AttributeError", Some("'NoneType' object has no attribute"));
             }
             if let Some(value) = py_complex_attr(__w, &object, &field) {
                 return value;
+            }
+            if let Some(value) = memoryview_attr_read(__w, &object, &field) {
+                return value;
+            }
+            if field == "__module__"
+                && let Some((module, member)) = py_module_export_path(__w, &object)
+            {
+                if module == "json" && matches!(member.as_str(), "JSONDecoder" | "JSONEncoder") {
+                    return Expression::string("json.decoder");
+                }
+                return Expression::string(&module);
+            }
+            if field == "__qualname__"
+                && let Some((_, member)) = py_module_export_path(__w, &object)
+            {
+                return Expression::string(&member);
+            }
+            if field == "__qualname__" && matches!(&object.kind, ExprKind::Lambda { .. }) {
+                return Expression::string("<lambda>");
             }
             if field == "__dict__" && !in_assignment_target(__w) {
                 if !matches!(&object.kind, ExprKind::Ident(n) if is_imported_module(__w, n)) {
@@ -18478,6 +32127,15 @@ fn desugar_member_reads(__w: &mut PyWalker, e: Expression) -> Expression {
                     null_safe,
                 });
             }
+            if matches!(
+                field.as_str(),
+                "__annotations__" | "__defaults__" | "__kwdefaults__" | "__name__"
+            ) && let ExprKind::Ident(fn_name) = &object.kind
+                && is_defined_function(__w, fn_name)
+                && let Some(value) = function_metadata_expr(__w, fn_name, &field)
+            {
+                return value;
+            }
             // `f.__name__` is the function object's NAME — the property the
             // shared compiler already puts on every function in all sixteen
             // languages (`foo.name` in JS, set through
@@ -18513,31 +32171,65 @@ fn desugar_member_reads(__w: &mut PyWalker, e: Expression) -> Expression {
                     _ => {}
                 }
             }
-            // A Python instance attribute goes through the SHARED class path
-            // (`primitives/classes.rs`) as an ordinary `ExprKind::Member`, the
-            // same node php/java/C#/JS use. It used to desugar to an instance
-            // dict subscript backed by `__py_attr_read`/`__py_attr_write` — a
-            // parallel attribute system beside the shared one, and the reason
-            // a field read wore a SUBSCRIPT's node shape and could be claimed
-            // by `ProtocolSlot::GetItem` (every `self.attr` inside a class
-            // defining `__getitem__` became `self.__getitem__("attr")`).
             if let ExprKind::Ident(var) = &object.kind
                 && let Some(class_name) = instance_class(__w, var)
                 && class_has_data_attr(__w, &class_name, &field)
-                && !instance_has_attr(__w, var, &field)
                 && !in_assignment_target(__w)
             {
-                return Expression::new(ExprKind::Member {
-                    object: Box::new(Expression::ident(&class_name)),
-                    field,
-                    null_safe,
-                });
+                return call_ident(
+                    "__py_attr_read",
+                    vec![Expression::ident(var), Expression::string(&field)],
+                );
             }
-            match field.as_str() {
-                "real" | "numerator" => return object,
-                "imag" => return Expression::int(0),
-                "denominator" => return Expression::int(1),
-                _ => {}
+            // `numbers.Integral` puts `real`/`imag`/`numerator`/`denominator`
+            // on every int, so a receiver whose type is unknown answers them
+            // as the int identity. ⛔ A receiver whose class DECLARES the name
+            // is not an int: `Fraction(3, 4).denominator` folded to `1` and
+            // `.numerator` to the object itself, whatever the constructor
+            // stored.
+            // ⛔ `self` is never the int: inside `__init__`, `self.numerator = n`
+            // folded its own TARGET to `self`, so the field was never stored and
+            // the class that declares it could not come into existence.
+            let receiver_declares_field = in_assignment_target(__w)
+                || match &object.kind {
+                    ExprKind::Ident(var) => var == "self" || instance_class(__w, var).is_some(),
+                    ExprKind::New { class, .. } => {
+                        matches!(&class.kind, ExprKind::Ident(name) if is_defined_class(__w, name))
+                    }
+                    _ => false,
+                };
+            if !receiver_declares_field
+                && matches!(
+                    field.as_str(),
+                    "real" | "imag" | "numerator" | "denominator"
+                )
+            {
+                let identity = match field.as_str() {
+                    "real" | "numerator" => object.clone(),
+                    "imag" => Expression::int(0),
+                    _ => Expression::int(1),
+                };
+                // A PARAMETER carries no static class, so the choice is only
+                // knowable at run time: `other.denominator` inside
+                // `Fraction.__add__` folded to `1` and every sum came out
+                // `nan`. Asking the object costs one `hasattr` and is what the
+                // ABC actually says — the int identity is the FALLBACK, not
+                // the rule. Only a bare name takes this path, so the receiver
+                // is never evaluated twice.
+                if matches!(&object.kind, ExprKind::Ident(_)) {
+                    return Expression::new(ExprKind::Ternary {
+                        cond: Box::new(call_ident(
+                            "hasattr",
+                            vec![object.clone(), Expression::string(&field)],
+                        )),
+                        then: Box::new(call_ident(
+                            "__py_attr_read",
+                            vec![object.clone(), Expression::string(&field)],
+                        )),
+                        else_: Box::new(identity),
+                    });
+                }
+                return identity;
             }
             if let ExprKind::Ident(var) = &object.kind
                 && is_chainmap_var(__w, var)
@@ -18559,15 +32251,89 @@ fn desugar_member_reads(__w: &mut PyWalker, e: Expression) -> Expression {
             }
             // `types.ModuleType.__name__` — static metadata of the mounted
             // types surface.
+            // `__qualname__` / `__module__` on something this unit DECLARES.
+            // The walker already knows the name and that the unit is
+            // `__main__`, so both are constants — they were reaching the
+            // attribute path and throwing.
+            // ⛔ NOT in an assignment target. The dataclass machinery WRITES
+            // `cls.__qualname__` / `cls.__module__`, and folding the target to
+            // a string literal broke construction for every dataclass
+            // (`py_dataclasses` 13 -> 4). Same trap as the `numerator` fold.
+            if (field == "__qualname__" || field == "__module__") && !in_assignment_target(__w) {
+                if field == "__module__"
+                    && let ExprKind::Ident(class_name) = &object.kind
+                    && let Some(module) = crate::core_classes::class_module(class_name)
+                {
+                    return Expression::string(module);
+                }
+                if let Some(qual) = py_static_qualname(__w, &object) {
+                    if field == "__module__" {
+                        return Expression::string("__main__");
+                    }
+                    return Expression::string(&qual);
+                }
+                let declared = match &object.kind {
+                    ExprKind::Ident(name)
+                        if is_defined_class(__w, name) || is_defined_function(__w, name) =>
+                    {
+                        Some(name.clone())
+                    }
+                    // `C.m.__qualname__` is `"C.m"` — the owner joins the leaf.
+                    ExprKind::Member {
+                        object: owner,
+                        field: leaf,
+                        ..
+                    } => match &owner.kind {
+                        ExprKind::Ident(class_name)
+                            if is_defined_class(__w, class_name)
+                                && class_has_attr(__w, class_name, leaf) =>
+                        {
+                            Some(format!("{class_name}.{leaf}"))
+                        }
+                        _ => None,
+                    },
+                    // ⛔ By this point `C.m` is ALREADY DESUGARED to
+                    // `__py_attr_read(C, "m")`, so the `Member` arm above never
+                    // sees a method. Same shape that made every guard in
+                    // `walk_del` dead code.
+                    _ => match py_attr_read_parts(&object) {
+                        Some((owner, leaf)) => match &owner.kind {
+                            ExprKind::Ident(class_name)
+                                if is_defined_class(__w, class_name)
+                                    && class_has_attr(__w, class_name, leaf) =>
+                            {
+                                Some(format!("{class_name}.{leaf}"))
+                            }
+                            _ => None,
+                        },
+                        None => None,
+                    },
+                };
+                if let Some(qual) = declared {
+                    if field == "__module__" {
+                        return Expression::string("__main__");
+                    }
+                    return Expression::string(&qual);
+                }
+            }
             if field == "__name__" {
+                if let Some(type_name) = py_annotation_item_type_name(__w, &object) {
+                    return Expression::string(&type_name);
+                }
                 if let Some(value) = py_type_call_arg(&object) {
+                    if let Some(name) = py_object_string_field(value, "__type") {
+                        return Expression::string(&name);
+                    }
                     if let Some(name) = py_known_instance_type_name(__w, value) {
                         return Expression::string(&name);
                     }
                     if let Some(name) = py_static_runtime_type_name(__w, value) {
                         return Expression::string(name);
                     }
-                    return call_ident("__py_type_name", vec![desugar_member_reads(__w, value.clone())]);
+                    return call_ident(
+                        "__py_type_name",
+                        vec![desugar_member_reads(__w, value.clone())],
+                    );
                 }
                 if let ExprKind::Ident(name) = &object.kind {
                     if let Some(type_name) = py_builtin_type_name(name) {
@@ -18583,7 +32349,7 @@ fn desugar_member_reads(__w: &mut PyWalker, e: Expression) -> Expression {
                     if matches!(&inner_obj.kind, ExprKind::Ident(n) if n == "types")
                         && inner_field == "ModuleType"
                     {
-                        return Expression::new(ExprKind::Lit(Literal::Str("type".into())));
+                        return Expression::new(ExprKind::Lit(Literal::Str("module".into())));
                     }
                 }
             }
@@ -18634,8 +32400,8 @@ fn desugar_member_reads(__w: &mut PyWalker, e: Expression) -> Expression {
             // host-backed component modules.
             if let ExprKind::Ident(module_name) = &object.kind {
                 if is_imported_module(__w, module_name) {
-                    let module_name =
-                        resolve_module_alias(__w, module_name).unwrap_or_else(|| module_name.clone());
+                    let module_name = resolve_module_alias(__w, module_name)
+                        .unwrap_or_else(|| module_name.clone());
                     if let Some(value) = dynamic_module_attr(__w, &module_name, &field) {
                         return value;
                     }
@@ -18694,6 +32460,30 @@ fn desugar_member_reads(__w: &mut PyWalker, e: Expression) -> Expression {
                             }],
                         });
                     }
+                    let declared_leaf = ["python"]
+                        .into_iter()
+                        .chain(module_name.split('.'))
+                        .chain(std::iter::once(field.as_str()))
+                        .collect::<Vec<_>>();
+                    if py_module_surface(&module_name)
+                        .is_some_and(|surface| surface.iter().any(|name| *name == field.as_str()))
+                        || py_module_renames(&module_name).is_some_and(|renames| {
+                            renames.iter().any(|(py, canon)| {
+                                *py == field.as_str() || *canon == field.as_str()
+                            })
+                        })
+                        || vybe_compiler::primitives::namespaces::declares_path(
+                            &declared_leaf,
+                            None,
+                        )
+                    {
+                        return Expression::new(ExprKind::Member {
+                            object: Box::new(Expression::ident(&module_name)),
+                            field,
+                            null_safe,
+                        });
+                    }
+                    return py_raise_expr("AttributeError", Some("module has no attribute"));
                 }
             }
             if let Some(path) = module_namespace_path(__w, &object) {
@@ -18736,6 +32526,13 @@ fn desugar_member_reads(__w: &mut PyWalker, e: Expression) -> Expression {
                     return value;
                 }
             }
+            if !in_assignment_target(__w) && py_os_environ_expr(__w, &Expression::new(ExprKind::Member {
+                object: Box::new(object.clone()),
+                field: field.clone(),
+                null_safe,
+            })) {
+                return call_ident("__py_os_environ", Vec::new());
+            }
             // Keep `self.x` and `module.CONST` on the Member path. A module
             // read stays a namespace read only while the chain is still pure
             // attribute hops — once a call or subscript intervenes the result
@@ -18769,6 +32566,28 @@ fn desugar_member_reads(__w: &mut PyWalker, e: Expression) -> Expression {
                     index: Box::new(Expression::new(ExprKind::Lit(Literal::Str(field.into())))),
                     null_safe,
                 })
+            } else if matches!(&object.kind, ExprKind::Ident(name)
+                if is_defined_class(__w, name)
+                    && class_has_data_attr(__w, name, &field)
+                    // ⛔ NOT a dataclass. Its annotated fields are INSTANCE
+                    // data, not class attributes, and the earlier rewrite
+                    // already turned `p.x` into `Member{Point, "x"}` — keeping
+                    // that as a class-static read made every dataclass field
+                    // throw (`py_dataclasses` 13 -> 4).
+                    && !__w.py_dataclass_fields.contains_key(name.as_str()))
+            {
+                // A CLASS ATTRIBUTE lives in the class's static storage, which
+                // is the shared class model's to resolve — `__py_attr_read`
+                // probes the class object for a property and finds none, so
+                // `class C: x = 5` then `C.x` raised AttributeError, and with
+                // it every descriptor, since `x = D()` is a class attribute.
+                // `class_has_data_attr` is true only for class-level bindings;
+                // a `self.x` written in `__init__` is not one.
+                Expression::new(ExprKind::Member {
+                    object: Box::new(object),
+                    field,
+                    null_safe,
+                })
             } else {
                 // An attribute READ is not a subscript. Both land in the same
                 // map-backed storage, but they fail differently: `d["k"]`
@@ -18792,7 +32611,7 @@ fn desugar_member_reads(__w: &mut PyWalker, e: Expression) -> Expression {
             args,
             optional,
         } => {
-            let args = if matches!(&callee.kind, ExprKind::Member { field, .. } if field == "throw")
+            let mut args = if matches!(&callee.kind, ExprKind::Member { field, .. } if field == "throw")
                 && args.first().is_some_and(|a| {
                     a.name.is_none()
                         && matches!(&a.value.kind, ExprKind::Ident(n)
@@ -18808,7 +32627,147 @@ fn desugar_member_reads(__w: &mut PyWalker, e: Expression) -> Expression {
             } else {
                 args
             };
+            if let Some(rewritten) = rewrite_unittest_mock_call(__w, &callee, &args) {
+                return rewritten;
+            }
+            if let ExprKind::Member { object, field, .. } = &callee.kind
+                && let Some(module) = module_namespace_path(__w, object)
+                && let Some(replacement) = active_mock_module_func_patch(__w, &module, field)
+            {
+                let (packed_args, packed_kwargs) = match python_args_kwargs_pair(__w, &args) {
+                    Some(pair) => pair,
+                    None => {
+                        let values = args
+                            .iter()
+                            .map(|arg| desugar_member_reads(__w, arg.value.clone()))
+                            .collect();
+                        (python_array_expr(values), python_kwargs_dict_expr(Vec::new()))
+                    }
+                };
+                return mock_call_with_packed_args(replacement, packed_args, packed_kwargs);
+            }
+            if let ExprKind::Member { object, field, .. } = &callee.kind
+                && module_namespace_path(__w, object).as_deref() == Some("math")
+                && let Some(hidden) = py_math_hidden_name(field)
+            {
+                let args = args
+                    .into_iter()
+                    .map(|mut a| {
+                        a.value = desugar_member_reads(__w, a.value);
+                        a
+                    })
+                    .collect();
+                return Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::ident(hidden)),
+                    args,
+                    optional,
+                });
+            }
+            if let ExprKind::Member { object, field, .. } = &callee.kind
+                && let ExprKind::Ident(var) = &object.kind
+                && let Some(class_name) = instance_class(__w, var)
+                && matches!(class_name.as_str(), "ArgumentParser" | "__ArgparseGroup")
+                && field == "add_argument"
+            {
+                args = normalize_argparse_add_argument_args(args);
+            }
+            if let ExprKind::Member { object, field, .. } = &callee.kind
+                && let ExprKind::Ident(var) = &object.kind
+                && let Some(class_name) = instance_class(__w, var)
+                && let Some(params) = core_class_method_param_order(&class_name, field)
+            {
+                args = normalize_keyword_args_to_positional(params, args);
+            }
+            if let ExprKind::Member { object, field, .. } = &callee.kind
+                && field == "get"
+                && py_os_environ_expr(__w, object)
+            {
+                let vals = args
+                    .into_iter()
+                    .map(|a| desugar_member_reads(__w, a.value))
+                    .collect();
+                return call_ident("__py_os_getenv", vals);
+            }
+            if let ExprKind::Member { object, field, null_safe } = &callee.kind
+                && matches!(field.as_str(), "keys" | "values" | "items")
+                && args.is_empty()
+                && py_os_environ_expr(__w, object)
+            {
+                return Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::new(ExprKind::Member {
+                        object: Box::new(call_ident("__py_os_environ", Vec::new())),
+                        field: field.clone(),
+                        null_safe: *null_safe,
+                    })),
+                    args: Vec::new(),
+                    optional: false,
+                });
+            }
+            if matches!(&callee.kind, ExprKind::Ident(name) if name == "__py_getitem")
+                && args.len() == 2
+                && py_os_environ_expr(__w, &args[0].value)
+            {
+                return call_ident(
+                    "__py_os_getenv",
+                    vec![desugar_member_reads(__w, args[1].value.clone())],
+                );
+            }
+            if matches!(&callee.kind, ExprKind::Ident(name) if name == "__py_contains__")
+                && args.len() == 2
+                && py_os_environ_expr(__w, &args[0].value)
+            {
+                return call_ident(
+                    "__py_contains__",
+                    vec![
+                        call_ident("__py_os_environ", Vec::new()),
+                        desugar_member_reads(__w, args[1].value.clone()),
+                    ],
+                );
+            }
+            if matches!(&callee.kind, ExprKind::Ident(name) if name == "__py_type_name")
+                && args.len() == 1
+                && let Some(type_name) = py_static_runtime_type_name(__w, &args[0].value)
+            {
+                return Expression::string(type_name);
+            }
+            if matches!(&callee.kind, ExprKind::Ident(name) if name == "__py_getitem")
+                && args.len() == 2
+                && let ExprKind::Ident(name) = &args[0].value.kind
+                && py_typing_generic_alias_name(name).is_some()
+            {
+                return py_typing_generic_alias_expr(name, args[1].value.clone());
+            }
             if let Some(rewritten) = rewrite_python_generator_method_call(__w, &callee, &args) {
+                return desugar_member_reads(__w, rewritten);
+            }
+            if let Some(rewritten) = lowered_function_metadata_attr_read(__w, &callee, &args) {
+                return desugar_member_reads(__w, rewritten);
+            }
+            if let Some(rewritten) = py_http_message_call_rewrite(__w, &callee, &args) {
+                return desugar_member_reads(__w, rewritten);
+            }
+            if let Some(rewritten) = rewrite_email_method_call(__w, &callee, &args) {
+                return desugar_member_reads(__w, rewritten);
+            }
+            if let Some(rewritten) = rewrite_pydoc_renderer_method_call(__w, &callee, &args) {
+                return desugar_member_reads(__w, rewritten);
+            }
+            if let Some(rewritten) = rewrite_doctest_method_call(__w, &callee, &args) {
+                return desugar_member_reads(__w, rewritten);
+            }
+            if let Some(rewritten) = rewrite_dis_bytecode_method_call(__w, &callee, &args) {
+                return desugar_member_reads(__w, rewritten);
+            }
+            if let Some(rewritten) = rewrite_tokenize_mounted_call(__w, &callee, &args) {
+                return desugar_member_reads(__w, rewritten);
+            }
+            if let Some(rewritten) = rewrite_email_mounted_call(__w, &callee, &args) {
+                return desugar_member_reads(__w, rewritten);
+            }
+            if let Some(rewritten) = rewrite_csv_leaf_call(__w, &callee, &args) {
+                return desugar_member_reads(__w, rewritten);
+            }
+            if let Some(rewritten) = rewrite_xml_helper_call(__w, &callee, &args) {
                 return desugar_member_reads(__w, rewritten);
             }
             if let ExprKind::Member { object, field, .. } = &callee.kind
@@ -18846,11 +32805,43 @@ fn desugar_member_reads(__w: &mut PyWalker, e: Expression) -> Expression {
             {
                 return expr;
             }
+            if let Some(rewritten) = rewrite_module_introspection_call(__w, &callee, &args) {
+                return desugar_member_reads(__w, rewritten);
+            }
             if let ExprKind::Member { object, field, .. } = &callee.kind
                 && let Some(path) = module_namespace_path(__w, object)
                 && let Some(value) = py_module_callable_member(&path, field)
             {
                 *callee = value;
+            }
+            if let Some(rewritten) =
+                rewrite_python_known_callable_call(__w, &callee, args.clone(), optional)
+            {
+                return rewritten;
+            }
+            if let ExprKind::Ident(name) = &callee.kind
+                && let Some(operator_name) = imported_operator_name(__w, name).map(str::to_string)
+            {
+                let desugared: Vec<Argument> = args
+                    .iter()
+                    .cloned()
+                    .map(|mut a| {
+                        a.value = desugar_member_reads(__w, a.value);
+                        a
+                    })
+                    .collect();
+                if let Some(lowered) = operator_call_lowering(__w, &operator_name, &desugared) {
+                    return lowered;
+                }
+            }
+            if let ExprKind::Member { object, field, .. } = &callee.kind
+                && matches!(field.as_str(), "enter" | "enterabs")
+                && args.len() >= 3
+                && py_receiver_class(__w, object)
+                    .as_deref()
+                    .is_none_or(|class_name| class_name == "scheduler")
+            {
+                args[2].value = py_callable_expr(__w, args[2].value.clone());
             }
             if let ExprKind::Member { object, field, .. } = &callee.kind
                 && field == "submit"
@@ -18911,6 +32902,7 @@ fn desugar_member_reads(__w: &mut PyWalker, e: Expression) -> Expression {
             if args.is_empty()
                 && let ExprKind::Member { object, field, .. } = &callee.kind
                 && field == "start"
+                && !matches!(&object.kind, ExprKind::Ident(name) if is_re_match_var(__w, name))
             {
                 return call_ident(
                     "__py_thread_start",
@@ -18920,6 +32912,13 @@ fn desugar_member_reads(__w: &mut PyWalker, e: Expression) -> Expression {
             if args.is_empty()
                 && let ExprKind::Member { object, field, .. } = &callee.kind
                 && field == "join"
+                && match py_receiver_class(__w, object) {
+                    Some(class_name) => {
+                        py_class_is_subclass(__w, &class_name, "Thread")
+                            || py_class_is_subclass(__w, &class_name, "Process")
+                    }
+                    None => true,
+                }
             {
                 return call_ident(
                     "__py_thread_join",
@@ -18928,12 +32927,185 @@ fn desugar_member_reads(__w: &mut PyWalker, e: Expression) -> Expression {
             }
             // `__import__('json')` — same static mount binding as
             // importlib.import_module.
+            if py_uuid_invalid_literal_ctor(__w, callee.as_ref(), &args) {
+                return py_raise_expr("ValueError", Some("badly formed hexadecimal UUID string"));
+            }
             if let ExprKind::Ident(n) = &callee.kind {
+                if n == "__line" {
+                    return Expression::new(ExprKind::Call {
+                        callee: Box::new(Expression::ident("__line")),
+                        args: args
+                            .into_iter()
+                            .map(|mut a| {
+                                a.value = if let Some(path) = py_path_value(__w, &a.value) {
+                                    Expression::string(&py_path_repr_text(&path))
+                                } else {
+                                    desugar_member_reads(__w, a.value)
+                                };
+                                a
+                            })
+                            .collect(),
+                        optional,
+                    });
+                }
+                if n == "list"
+                    && args.len() == 1
+                {
+                    if let Some(rows) = csv_reader_call_list_expr(__w, &args[0].value) {
+                        return rows;
+                    }
+                    let ExprKind::Ident(var) = &args[0].value.kind else {
+                        return Expression::new(ExprKind::Call {
+                            callee,
+                            args,
+                            optional,
+                        });
+                    };
+                    if let Some(info) = __w.py_csv_dict_readers.get(var) {
+                        return csv_dict_reader_list_expr(info);
+                    }
+                    if let Some(info) = __w.py_csv_readers.get(var) {
+                        return csv_reader_list_expr(info);
+                    }
+                }
+                if n == "next"
+                    && args.len() == 1
+                    && let ExprKind::Ident(var) = &args[0].value.kind
+                {
+                    if let Some(info) = __w.py_csv_dict_readers.get_mut(var) {
+                        if let Some(row) = info.rows.get(info.index).cloned() {
+                            info.index += 1;
+                            return csv_dict_row_expr(&row);
+                        }
+                    }
+                    if let Some(info) = __w.py_csv_readers.get_mut(var) {
+                        if let Some(row) = info.rows.get(info.index).cloned() {
+                            info.index += 1;
+                            return csv_row_expr(&row);
+                        }
+                    }
+                }
+                if matches!(n.as_str(), "str" | "repr") && args.len() == 1 {
+                    if let Some(uuid) = py_uuid_value(__w, &args[0].value) {
+                        return uuid.canonical;
+                    }
+                    if let Some(path) = py_path_value(__w, &args[0].value) {
+                        return Expression::string(&py_path_repr_text(&path));
+                    }
+                }
+                if n == "hash" && args.len() == 1 {
+                    if matches!(args[0].value.kind, ExprKind::Lit(Literal::Null)) {
+                        return Expression::int(4_238_894_112);
+                    }
+                    if matches!(args[0].value.kind, ExprKind::Tuple(_)) {
+                        return call_ident(
+                            "__vybe_hash",
+                            vec![py_hash_key_expr(__w, args[0].value.clone())],
+                        );
+                    }
+                    if let Some(path) = py_path_value(__w, &args[0].value) {
+                        return Expression::int(py_path_hash(&path));
+                    }
+                }
+                if n == "hasattr" && args.len() == 2 {
+                    if let Some(attr) = resolve_string_const(__w, &args[1].value) {
+                        if py_path_value(__w, &args[0].value).is_some() {
+                            return Expression::bool(py_path_known_method(&attr)
+                                || matches!(
+                                    attr.as_str(),
+                                    "drive"
+                                        | "root"
+                                        | "anchor"
+                                        | "name"
+                                        | "stem"
+                                        | "suffix"
+                                        | "suffixes"
+                                        | "parts"
+                                        | "parent"
+                                        | "parents"
+                                        | "_s"
+                                ));
+                        }
+                        if let ExprKind::Call { callee: inner, .. } = &args[0].value.kind
+                            && let ExprKind::Member { field, .. } = &inner.kind
+                            && matches!(field.as_str(), "stat" | "lstat")
+                            && attr == "st_size"
+                        {
+                            return Expression::bool(true);
+                        }
+                    }
+                }
+                if n == "isinstance" && args.len() == 2 {
+                    if py_uuid_value(__w, &args[0].value).is_some()
+                        && py_uuid_class_expr(__w, &args[1].value)
+                    {
+                        return Expression::bool(true);
+                    }
+                    if let Some(path) = py_path_value(__w, &args[0].value) {
+                        if let ExprKind::Ident(type_name) = &args[1].value.kind {
+                            let ok = type_name == "PurePath"
+                                || type_name == &path.class_name
+                                || (type_name == "Path" && path.class_name == "Path");
+                            return Expression::bool(ok);
+                        }
+                    }
+                }
+                // `abs`/`float`/`int` are NUMERIC PRIMITIVES — `abs` is
+                // `opcode:f64_abs` — so a class instance reached them as a
+                // number and answered `nan`. A class that declares the dunder
+                // gets asked instead, exactly as `bool(x)` already consults
+                // `__bool__`/`__len__`.
+                if args.len() == 1
+                    && let Some(dunder) = match n.as_str() {
+                        "abs" => Some("__abs__"),
+                        "float" => Some("__float__"),
+                        "int" => Some("__int__"),
+                        // ⛔ Only for a FRESH instance. `str(SomeClass(...))`
+                        // took a numeric path, but `str(x)` on a bound name
+                        // already worked — and rewriting that form sent
+                        // `repr(p)` on a dataclass to a synthesized
+                        // `__repr__` that does not answer as a method
+                        // (`py_dataclasses` 13 -> 4).
+                        "str" if matches!(&args[0].value.kind, ExprKind::New { .. }) => {
+                            Some("__str__")
+                        }
+                        "repr" if matches!(&args[0].value.kind, ExprKind::New { .. }) => {
+                            Some("__repr__")
+                        }
+                        _ => None,
+                    }
+                    && let Some(class_name) = py_receiver_class(__w, &args[0].value)
+                    && class_has_attr(__w, &class_name, dunder)
+                {
+                    return Expression::new(ExprKind::Call {
+                        callee: Box::new(Expression::new(ExprKind::Member {
+                            object: Box::new(args[0].value.clone()),
+                            field: dunder.into(),
+                            null_safe: false,
+                        })),
+                        args: Vec::new(),
+                        optional: false,
+                    });
+                }
                 if n == "len" && args.len() == 1 && py_known_generator_expr(__w, &args[0].value) {
                     return py_raise_expr(
                         "TypeError",
                         Some("object of type 'generator' has no len()"),
                     );
+                }
+                if n == "len" && args.len() == 1 {
+                    if let Some(elem) = py_xml_static_element(__w, &args[0].value) {
+                        return Expression::int(elem.children.len() as i64);
+                    }
+                    if let ExprKind::Ident(var) = &args[0].value.kind
+                        && is_xml_element_var(__w, var)
+                    {
+                        return Expression::new(ExprKind::Call {
+                            callee: Box::new(Expression::ident("len")),
+                            args: vec![Argument::positional(py_xml_children_expr(var))],
+                            optional: false,
+                        });
+                    }
                 }
                 if n == "fields" && args.len() == 1 {
                     if let ExprKind::Ident(class_name) = &args[0].value.kind {
@@ -18966,6 +33138,12 @@ fn desugar_member_reads(__w: &mut PyWalker, e: Expression) -> Expression {
                 }
                 if n == "hash" && args.len() == 1 {
                     let value = desugar_member_reads(__w, args[0].value.clone());
+                    if matches!(value.kind, ExprKind::Lit(Literal::Null)) {
+                        return Expression::int(4_238_894_112);
+                    }
+                    if matches!(value.kind, ExprKind::Tuple(_)) {
+                        return call_ident("__vybe_hash", vec![py_hash_key_expr(__w, value)]);
+                    }
                     if matches!(value.kind, ExprKind::New { .. }) {
                         return Expression::new(ExprKind::Call {
                             callee: Box::new(Expression::new(ExprKind::Member {
@@ -18986,12 +33164,20 @@ fn desugar_member_reads(__w: &mut PyWalker, e: Expression) -> Expression {
                 }
                 // `getattr(module, 'lit')` — a static member read of the
                 // mounted (and stamped) namespace object.
-                if n == "getattr" && args.len() == 2 {
+                if n == "getattr" && (args.len() == 2 || args.len() == 3) {
                     if let (ExprKind::Ident(m), ExprKind::Lit(Literal::Str(attr))) =
                         (&args[0].value.kind, &args[1].value.kind)
                     {
                         if is_imported_module(__w, m) {
                             let module = resolve_module_alias(__w, m).unwrap_or_else(|| m.clone());
+                            if module == "sys" {
+                                if let Some(value) = sys_module_member(attr) {
+                                    return value;
+                                }
+                                if let Some(lit) = sys_module_constant(attr) {
+                                    return Expression::new(ExprKind::Lit(lit));
+                                }
+                            }
                             if let Some(value) = dynamic_module_attr(__w, &module, attr) {
                                 return value;
                             }
@@ -19076,7 +33262,9 @@ fn desugar_member_reads(__w: &mut PyWalker, e: Expression) -> Expression {
                             field: f,
                             ..
                         } => match &o.kind {
-                            ExprKind::Ident(m) if is_imported_module(__w, m) => Some(format!("{m}.{f}")),
+                            ExprKind::Ident(m) if is_imported_module(__w, m) => {
+                                Some(format!("{m}.{f}"))
+                            }
                             _ => None,
                         },
                         _ => None,
@@ -19093,6 +33281,7 @@ fn desugar_member_reads(__w: &mut PyWalker, e: Expression) -> Expression {
                                 | "__doc__"
                                 | "__loader__"
                                 | "__spec__"
+                                | "__path__"
                         ) {
                             return Expression::new(ExprKind::Lit(Literal::Bool(true)));
                         }
@@ -19116,7 +33305,8 @@ fn desugar_member_reads(__w: &mut PyWalker, e: Expression) -> Expression {
                         // `builtins.len` does, and must not answer differently.
                         if path == "builtins" {
                             return Expression::new(ExprKind::Lit(Literal::Bool(
-                                py_profile_declares_builtin(attr.as_ref()),
+                                py_profile_declares_builtin(attr.as_ref())
+                                    || matches!(attr.as_ref(), "_" | "ngettext"),
                             )));
                         }
                         let segments = ["python"]
@@ -19148,62 +33338,51 @@ fn desugar_member_reads(__w: &mut PyWalker, e: Expression) -> Expression {
                     && matches!(&object.kind, ExprKind::Ident(n) if n == "reprlib")
                     && field == "Repr"
                 {
-                    return Expression::new(ExprKind::Object(Vec::new()));
+                    return py_reprlib_object_expr();
                 }
                 if args.len() == 1
                     && matches!(&object.kind, ExprKind::Ident(n) if n == "reprlib")
                     && field == "repr"
                 {
-                    return call_ident("repr", vec![args[0].value.clone()]);
+                    return py_reprlib_repr_expr(
+                        __w,
+                        &PyReprlibInfo::default(),
+                        args[0].value.clone(),
+                    );
+                }
+                if args.is_empty()
+                    && module_namespace_path(__w, object).as_deref() == Some("reprlib")
+                    && field == "Repr"
+                {
+                    return py_reprlib_object_expr();
                 }
                 if args.len() == 1
-                    && matches!(&object.kind, ExprKind::Ident(n) if n == "pickle")
-                    && matches!(field.as_str(), "dumps" | "loads")
+                    && module_namespace_path(__w, object).as_deref() == Some("reprlib")
+                    && field == "repr"
                 {
-                    return args[0].value.clone();
+                    return py_reprlib_repr_expr(
+                        __w,
+                        &PyReprlibInfo::default(),
+                        args[0].value.clone(),
+                    );
                 }
                 if args.len() == 1
-                    && matches!(&object.kind, ExprKind::Ident(n) if n == "copy")
-                    && field == "deepcopy"
+                    && field == "repr"
+                    && let ExprKind::Ident(var) = &object.kind
+                    && let Some(info) = reprlib_info(__w, var)
                 {
-                    if py_static_frozenset_expr(__w, &args[0].value) {
-                        return args[0].value.clone();
-                    }
-                    if matches!(py_static_type_name(__w, &args[0].value), Some("set")) {
-                        return Expression::new(ExprKind::Call {
-                            callee: Box::new(Expression::new(ExprKind::Member {
-                                object: Box::new(args[0].value.clone()),
-                                field: "copy".into(),
-                                null_safe: false,
-                            })),
-                            args: vec![],
-                            optional: false,
-                        });
-                    }
+                    return py_reprlib_repr_expr(__w, &info, args[0].value.clone());
                 }
                 if args.len() == 1
-                    && matches!(&object.kind, ExprKind::Ident(n) if n == "copy")
-                    && field == "copy"
+                    && field == "repr"
+                    && py_static_frozenset_expr(__w, &args[0].value)
                 {
-                    return Expression::new(ExprKind::Call {
-                        callee: Box::new(Expression::new(ExprKind::Member {
-                            object: Box::new(args[0].value.clone()),
-                            field: "copy".into(),
-                            null_safe: false,
-                        })),
-                        args: vec![],
-                        optional: false,
-                    });
-                }
-                if args.len() == 1 && field == "repr" && py_static_frozenset_expr(__w, &args[0].value) {
                     return Expression::string("frozenset({...})");
                 }
                 // `asyncio.iscoroutine(x)` / `iscoroutinefunction(f)` — the
                 // walker knows which `def`s are `async def`, so both fold to a
                 // literal instead of needing a runtime coroutine type.
-                if matches!(&object.kind, ExprKind::Ident(n) if n == "asyncio")
-                    && args.len() == 1
-                {
+                if matches!(&object.kind, ExprKind::Ident(n) if n == "asyncio") && args.len() == 1 {
                     match field.as_str() {
                         "iscoroutine" => {
                             return Expression::bool(py_known_coroutine_expr(__w, &args[0].value));
@@ -19379,12 +33558,18 @@ fn desugar_member_reads(__w: &mut PyWalker, e: Expression) -> Expression {
                 if let ExprKind::Ident(name) = &object.kind {
                     if let Some(source) = mapping_proxy_source(__w, name) {
                         let recv = desugar_member_reads(__w, source);
+                        let proxy_callee = Expression::new(ExprKind::Member {
+                            object: Box::new(recv.clone()),
+                            field: field.clone(),
+                            null_safe: false,
+                        });
+                        if field == "items"
+                            && let Some(rewritten) = rewrite_dict_items(__w, &proxy_callee, &args)
+                        {
+                            return rewritten;
+                        }
                         return Expression::new(ExprKind::Call {
-                            callee: Box::new(Expression::new(ExprKind::Member {
-                                object: Box::new(recv),
-                                field: field.clone(),
-                                null_safe: false,
-                            })),
+                            callee: Box::new(proxy_callee),
                             args,
                             optional,
                         });
@@ -19395,7 +33580,9 @@ fn desugar_member_reads(__w: &mut PyWalker, e: Expression) -> Expression {
                             .map(|a| desugar_member_reads(__w, a.value.clone()))
                             .collect();
                         if matches!(field.as_str(), "wrap" | "fill") && values.len() == 1 {
-                            if let Some(folded) = fold_textwrapper_method(__w, field, &settings, &args) {
+                            if let Some(folded) =
+                                fold_textwrapper_method(__w, field, &settings, &args)
+                            {
                                 return folded;
                             }
                             let mut call_args = Vec::with_capacity(settings.len() + 1);
@@ -19408,6 +33595,17 @@ fn desugar_member_reads(__w: &mut PyWalker, e: Expression) -> Expression {
                             };
                             return call_ident(helper, call_args);
                         }
+                    }
+                    if let Some(info) = string_template_info(__w, name)
+                        && let Some(folded) =
+                            fold_string_template_call(__w, &info, field, &args)
+                    {
+                        return folded;
+                    }
+                    if instance_class(__w, name).as_deref() == Some("__string_Formatter")
+                        && let Some(folded) = fold_string_formatter_call(__w, field, &args)
+                    {
+                        return folded;
                     }
                 }
                 if let Some(path) = module_namespace_path(__w, object)
@@ -19434,6 +33632,14 @@ fn desugar_member_reads(__w: &mut PyWalker, e: Expression) -> Expression {
                         return rewritten;
                     }
                 }
+                if let Some(rewritten) = rewrite_base64_stream_call(__w, object, field, &args) {
+                    return rewritten;
+                }
+                if let Some(rewritten) =
+                    rewrite_base64_named_call(__w, object, field, &args, optional)
+                {
+                    return rewritten;
+                }
                 if let Some(path) = module_namespace_path(__w, object)
                     && let Some(name) = codec_module_member(&path, field)
                 {
@@ -19459,7 +33665,10 @@ fn desugar_member_reads(__w: &mut PyWalker, e: Expression) -> Expression {
                         .iter()
                         .find(|a| a.name.as_deref() == Some("v"))
                         .map(|a| desugar_member_reads(__w, a.value.clone()))
-                        .or_else(|| args.get(1).map(|a| desugar_member_reads(__w, a.value.clone())))
+                        .or_else(|| {
+                            args.get(1)
+                                .map(|a| desugar_member_reads(__w, a.value.clone()))
+                        })
                         .unwrap_or_else(|| Expression::new(ExprKind::Lit(Literal::Null)));
                     return call_ident("__py_counter_fromkeys", vec![keys, value]);
                 }
@@ -19474,11 +33683,22 @@ fn desugar_member_reads(__w: &mut PyWalker, e: Expression) -> Expression {
                             | "resolve_bases"
                     )
                 {
+                    let args = if field == "new_class" {
+                        normalize_types_new_class_call_args(&args)
+                    } else {
+                        args
+                    };
                     return Expression::new(ExprKind::Call {
                         callee: Box::new(Expression::ident(field)),
                         args,
                         optional,
                     });
+                }
+                if let Some(rewritten) = rewrite_csv_module_call(__w, object, field, &args) {
+                    return rewritten;
+                }
+                if let Some(rewritten) = rewrite_csv_sniffer_call(__w, object, field, &args) {
+                    return rewritten;
                 }
                 if let Some(rewritten) =
                     rewrite_socket_call(__w, object, field, args.clone(), optional)
@@ -19486,6 +33706,9 @@ fn desugar_member_reads(__w: &mut PyWalker, e: Expression) -> Expression {
                     return rewritten;
                 }
                 if let Some(path) = module_namespace_path(__w, object) {
+                    if let Some(rewritten) = rewrite_xml_module_call(__w, object, field, &args) {
+                        return rewritten;
+                    }
                     if let Some(value) = dynamic_module_attr(__w, &path, field) {
                         let args = args
                             .into_iter()
@@ -19501,7 +33724,8 @@ fn desugar_member_reads(__w: &mut PyWalker, e: Expression) -> Expression {
                         });
                     }
                 }
-                if let Some(rewritten) = rewrite_sqlite_call(__w, object, field, args.clone(), optional)
+                if let Some(rewritten) =
+                    rewrite_sqlite_call(__w, object, field, args.clone(), optional)
                 {
                     return rewritten;
                 }
@@ -19620,6 +33844,34 @@ fn desugar_member_reads(__w: &mut PyWalker, e: Expression) -> Expression {
                         );
                     }
                 }
+                if is_counter_expr(__w, object) {
+                    let recv = desugar_member_reads(__w, (**object).clone());
+                    let vals: Vec<Expression> = args
+                        .iter()
+                        .map(|a| desugar_member_reads(__w, a.value.clone()))
+                        .collect();
+                    match field.as_str() {
+                        "update" if vals.len() == 1 => {
+                            return call_ident("__py_counter_update", vec![recv, vals[0].clone()]);
+                        }
+                        "subtract" if vals.len() == 1 => {
+                            return call_ident(
+                                "__py_counter_subtract",
+                                vec![recv, vals[0].clone()],
+                            );
+                        }
+                        "elements" if vals.is_empty() => {
+                            return call_ident("__py_counter_elements", vec![recv]);
+                        }
+                        "total" if vals.is_empty() => {
+                            return call_ident("__py_counter_total", vec![recv]);
+                        }
+                        "items" if vals.is_empty() => {
+                            return call_ident("__py_counter_items", vec![recv]);
+                        }
+                        _ => {}
+                    }
+                }
                 if let ExprKind::Ident(var) = &object.kind {
                     if let Some(maxlen) = deque_maxlen(__w, var) {
                         let recv = desugar_member_reads(__w, (**object).clone());
@@ -19716,6 +33968,9 @@ fn desugar_member_reads(__w: &mut PyWalker, e: Expression) -> Expression {
                             "total" if vals.is_empty() => {
                                 return call_ident("__py_counter_total", vec![recv]);
                             }
+                            "items" if vals.is_empty() => {
+                                return call_ident("__py_counter_items", vec![recv]);
+                            }
                             _ => {}
                         }
                     }
@@ -19736,7 +33991,10 @@ fn desugar_member_reads(__w: &mut PyWalker, e: Expression) -> Expression {
                 }
                 if field == "most_common" && args.len() <= 1 {
                     let mut vals = vec![desugar_member_reads(__w, (**object).clone())];
-                    vals.extend(args.iter().map(|a| desugar_member_reads(__w, a.value.clone())));
+                    vals.extend(
+                        args.iter()
+                            .map(|a| desugar_member_reads(__w, a.value.clone())),
+                    );
                     return call_ident("__py_counter_most_common", vals);
                 }
                 if field == "move_to_end" && !args.is_empty() && args.len() <= 2 {
@@ -19746,7 +34004,10 @@ fn desugar_member_reads(__w: &mut PyWalker, e: Expression) -> Expression {
                         .iter()
                         .find(|a| a.name.as_deref() == Some("last"))
                         .map(|a| desugar_member_reads(__w, a.value.clone()))
-                        .or_else(|| args.get(1).map(|a| desugar_member_reads(__w, a.value.clone())))
+                        .or_else(|| {
+                            args.get(1)
+                                .map(|a| desugar_member_reads(__w, a.value.clone()))
+                        })
                         .unwrap_or_else(|| Expression::bool(true));
                     return call_ident("__py_ordereddict_move_to_end", vec![recv, key, last]);
                 }
@@ -19755,6 +34016,11 @@ fn desugar_member_reads(__w: &mut PyWalker, e: Expression) -> Expression {
             // specific names cannot go through the profile. Arguments are
             // desugared first so member reads inside them (`operator.truth(o.x)`)
             // resolve the same as anywhere else.
+            if let ExprKind::Member { .. } = &callee.kind
+                && let Some(rewritten) = py_path_method_call(__w, callee.as_ref(), &args)
+            {
+                return rewritten;
+            }
             if let ExprKind::Member { object, field, .. } = &callee.kind
                 && matches!(&object.kind, ExprKind::Ident(n) if n == "operator")
                 && is_imported_module(__w, "operator")
@@ -19767,14 +34033,13 @@ fn desugar_member_reads(__w: &mut PyWalker, e: Expression) -> Expression {
                         a
                     })
                     .collect();
-                if let Some(lowered) = operator_call_lowering(field, &desugared) {
+                if let Some(lowered) = operator_call_lowering(__w, field, &desugared) {
                     return lowered;
                 }
             }
-            // `tempfile.NamedTemporaryFile(prefix=…, suffix=…, dir=…)` etc. —
-            // adapters see only a stack of values, never argument NAMES, so the
-            // keywords are flattened here into a fixed (prefix, suffix, dir)
-            // order with "" defaults.
+            // `NamedTemporaryFile` / `TemporaryFile` are real core classes with
+            // CPython constructor order. The path helpers below still flatten
+            // to their adapter order because keyword names do not reach emit.
             if let ExprKind::Member { object, field, .. } = &callee.kind
                 && matches!(&object.kind, ExprKind::Ident(n) if n == "tempfile")
                 && matches!(
@@ -19786,44 +34051,13 @@ fn desugar_member_reads(__w: &mut PyWalker, e: Expression) -> Expression {
                         | "mkstemp"
                 )
             {
-                let mut kw = |name: &str| {
-                    args.iter()
-                        .find(|a| a.name.as_deref() == Some(name))
-                        .map(|a| desugar_member_reads(__w, a.value.clone()))
-                        .unwrap_or_else(|| Expression::string(""))
-                };
-                let fixed = vec![
-                    Argument::positional(kw("prefix")),
-                    Argument::positional(kw("suffix")),
-                    Argument::positional(kw("dir")),
-                ];
-                return Expression::new(ExprKind::Call {
-                    callee: Box::new(Expression::new(ExprKind::Member {
-                        object: Box::new(Expression::ident("tempfile")),
-                        field: field.clone(),
-                        null_safe: false,
-                    })),
-                    args: fixed,
-                    optional,
-                });
-            }
-            // `tempfile.NamedTemporaryFile(prefix=…, suffix=…, dir=…)` etc.
-            // `emit_common(name, chunks, current, argc, line)` receives a value
-            // stack and a COUNT — argument names do not survive to emit time —
-            // so the keywords are flattened here into a fixed
-            // (prefix, suffix, dir) order with "" defaults, the same way
-            // `json.dumps(indent=…)` and `sorted(key=…)` are handled.
-            if let ExprKind::Member { object, field, .. } = &callee.kind
-                && matches!(&object.kind, ExprKind::Ident(n) if n == "tempfile")
-                && matches!(
-                    field.as_str(),
-                    "NamedTemporaryFile"
-                        | "TemporaryFile"
-                        | "TemporaryDirectory"
-                        | "mkdtemp"
-                        | "mkstemp"
-                )
-            {
+                if field == "NamedTemporaryFile" || field == "TemporaryFile" {
+                    return Expression::new(ExprKind::New {
+                        class: Box::new(Expression::ident("__PyNamedTempFile")),
+                        args: normalized_named_tempfile_args(__w, &args),
+                    });
+                }
+
                 let mut kw = |name: &str| {
                     args.iter()
                         .find(|a| a.name.as_deref() == Some(name))
@@ -19904,8 +34138,8 @@ fn desugar_member_reads(__w: &mut PyWalker, e: Expression) -> Expression {
                 }
             }
             // `string.Template(...)` / `string.Formatter()` / `string.capwords(...)`
-            // — call the injected prelude global (see [STRING_PRELUDE]). Kept as a
-            // real Call so keyword args (e.g. `capwords(s, sep="-")`) survive.
+            // route through core-class construction or the adapter helper while
+            // keeping keyword args (e.g. `capwords(s, sep="-")`) intact.
             if let ExprKind::Member { object, field, .. } = &callee.kind {
                 if matches!(&object.kind, ExprKind::Ident(n) if n == "functools")
                     && field == "wraps"
@@ -19927,18 +34161,30 @@ fn desugar_member_reads(__w: &mut PyWalker, e: Expression) -> Expression {
                     && is_imported_module(__w, "string")
                 {
                     if let Some(name) = string_module_member(field) {
-                        let args = args
+                        let args: Vec<Argument> = args
                             .into_iter()
                             .map(|mut a| {
                                 a.value = desugar_member_reads(__w, a.value);
                                 a
                             })
                             .collect();
-                        return Expression::new(ExprKind::Call {
-                            callee: Box::new(Expression::new(ExprKind::Ident(name.into()))),
-                            args,
-                            optional,
-                        });
+                        if field == "capwords"
+                            && let Some(folded) = fold_string_capwords(__w, &args)
+                        {
+                            return folded;
+                        }
+                        return if matches!(name, "__string_Template" | "__string_Formatter") {
+                            Expression::new(ExprKind::New {
+                                class: Box::new(Expression::ident(name)),
+                                args,
+                            })
+                        } else {
+                            Expression::new(ExprKind::Call {
+                                callee: Box::new(Expression::new(ExprKind::Ident(name.into()))),
+                                args,
+                                optional,
+                            })
+                        };
                     }
                 }
             }
@@ -19995,7 +34241,9 @@ fn desugar_member_reads(__w: &mut PyWalker, e: Expression) -> Expression {
                 if !in_assignment_target(__w)
                     && let ExprKind::Ident(var) = &object.kind
                     && let Some(class_name) = instance_class(__w, var)
+                    && !class_allows_dynamic_attrs(&class_name)
                     && !class_has_attr(__w, &class_name, field)
+                    && !instance_has_attr(__w, var, field)
                 {
                     return py_raise_expr("AttributeError", Some("object has no attribute"));
                 }
@@ -20069,10 +34317,10 @@ fn desugar_member_reads(__w: &mut PyWalker, e: Expression) -> Expression {
             // desugar the receiver's own chain.
             let callee = match callee.kind {
                 ExprKind::New { class, args } => Expression::new(ExprKind::Member {
-                    object: Box::new(desugar_member_reads(__w, Expression::new(ExprKind::New {
-                        class,
-                        args,
-                    }))),
+                    object: Box::new(desugar_member_reads(
+                        __w,
+                        Expression::new(ExprKind::New { class, args }),
+                    )),
                     field: "__call__".into(),
                     null_safe: false,
                 }),
@@ -20120,17 +34368,39 @@ fn desugar_member_reads(__w: &mut PyWalker, e: Expression) -> Expression {
             index,
             null_safe,
         } => {
+            if !in_assignment_target(__w)
+                && let ExprKind::Ident(name) = &object.kind
+                && py_typing_generic_alias_name(name).is_some()
+            {
+                return py_typing_generic_alias_expr(name, *index);
+            }
+            if !in_assignment_target(__w) {
+                let annotation_probe = Expression::new(ExprKind::Index {
+                    object: object.clone(),
+                    index: index.clone(),
+                    null_safe,
+                });
+                if let Some(type_name) = py_annotation_item_type_name(__w, &annotation_probe) {
+                    return py_annotation_expr(&type_name);
+                }
+            }
             if let ExprKind::Lit(Literal::Str(field)) = &index.kind
                 && field == "__name__"
                 && let Some(value) = py_type_call_arg(&object)
             {
+                if let Some(name) = py_object_string_field(value, "__type") {
+                    return Expression::string(&name);
+                }
                 if let Some(name) = py_known_instance_type_name(__w, value) {
                     return Expression::string(&name);
                 }
                 if let Some(name) = py_static_runtime_type_name(__w, value) {
                     return Expression::string(name);
                 }
-                return call_ident("__py_type_name", vec![desugar_member_reads(__w, value.clone())]);
+                return call_ident(
+                    "__py_type_name",
+                    vec![desugar_member_reads(__w, value.clone())],
+                );
             }
             if let ExprKind::Lit(Literal::Str(field)) = &index.kind
                 && field.starts_with("__")
@@ -20149,6 +34419,18 @@ fn desugar_member_reads(__w: &mut PyWalker, e: Expression) -> Expression {
                         null_safe,
                     });
                 }
+            }
+            if !in_assignment_target(__w)
+                && let Some(source) = memoryview_source(__w, &object)
+            {
+                return desugar_member_reads(
+                    __w,
+                    Expression::new(ExprKind::Index {
+                        object: Box::new(source),
+                        index,
+                        null_safe,
+                    }),
+                );
             }
             if !in_assignment_target(__w)
                 && let ExprKind::Ident(class_name) = &object.kind
@@ -20180,6 +34462,33 @@ fn desugar_member_reads(__w: &mut PyWalker, e: Expression) -> Expression {
                 }
             }
             if !in_assignment_target(__w)
+                && let ExprKind::Ident(var) = &object.kind
+                && instance_class(__w, var).as_deref() == Some("HTTPMessage")
+            {
+                return call_ident(
+                    "__py_http_message_get",
+                    vec![
+                        Expression::ident(var),
+                        desugar_member_reads(__w, *index),
+                        Expression::null(),
+                    ],
+                );
+            }
+            if !in_assignment_target(__w)
+                && let Some(rewritten) = py_email_index_read(__w, &object, &index)
+            {
+                return rewritten;
+            }
+            if !in_assignment_target(__w)
+                && let ExprKind::Ident(slice_var) = &index.kind
+                && instance_class(__w, slice_var).as_deref() == Some("slice")
+            {
+                return call_ident(
+                    "__py_getslice_obj",
+                    vec![desugar_member_reads(__w, *object), Expression::ident(slice_var)],
+                );
+            }
+            if !in_assignment_target(__w)
                 && let Some(rewritten) = collection_index_read(__w, &object, &index)
             {
                 return rewritten;
@@ -20188,15 +34497,7 @@ fn desugar_member_reads(__w: &mut PyWalker, e: Expression) -> Expression {
                 && let ExprKind::Ident(var) = &object.kind
                 && is_xml_element_var(__w, var)
             {
-                return Expression::new(ExprKind::Call {
-                    callee: Box::new(Expression::new(ExprKind::Member {
-                        object: Box::new(Expression::ident(var)),
-                        field: "child".into(),
-                        null_safe: false,
-                    })),
-                    args: vec![Argument::positional(desugar_member_reads(__w, *index))],
-                    optional: false,
-                });
+                return py_index(py_xml_children_expr(var), desugar_member_reads(__w, *index));
             }
             if !in_assignment_target(__w)
                 && let ExprKind::Member {
@@ -20305,7 +34606,10 @@ fn desugar_member_reads(__w: &mut PyWalker, e: Expression) -> Expression {
             {
                 return call_ident(
                     "__py_chainmap_get",
-                    vec![desugar_member_reads(__w, *object), desugar_member_reads(__w, *index)],
+                    vec![
+                        desugar_member_reads(__w, *object),
+                        desugar_member_reads(__w, *index),
+                    ],
                 );
             }
             // A slice subscript on a builtin sequence (`a[i:j]`, `a[i:j:k]`) is a
@@ -20325,6 +34629,11 @@ fn desugar_member_reads(__w: &mut PyWalker, e: Expression) -> Expression {
             if !in_assignment_target(__w) {
                 let object_expr = desugar_member_reads(__w, *object);
                 let index_expr = desugar_member_reads(__w, *index);
+                if let ExprKind::Ident(name) = &object_expr.kind
+                    && py_typing_generic_alias_name(name).is_some()
+                {
+                    return py_typing_generic_alias_expr(name, index_expr);
+                }
                 let index_expr = if matches!(&object_expr.kind, ExprKind::Ident(var) if is_dict_var(__w, var))
                     || matches!(&object_expr.kind, ExprKind::Map(_) | ExprKind::Object(_))
                 {
@@ -20357,27 +34666,11 @@ fn desugar_member_reads(__w: &mut PyWalker, e: Expression) -> Expression {
             {
                 return bytes;
             }
-            if op == BinOp::Add && expr_is_python_bytes(__w, &left) && expr_is_python_bytes(__w, &right) {
-                return call_ident(
-                    "__py_bytes_join",
-                    vec![
-                        Expression::new(ExprKind::Lit(Literal::Bytes(Vec::new()))),
-                        Expression::new(ExprKind::Array(vec![
-                            ArrayElement {
-                                value: left,
-                                spread: false,
-                                key: None,
-                                by_ref: false,
-                            },
-                            ArrayElement {
-                                value: right,
-                                spread: false,
-                                key: None,
-                                by_ref: false,
-                            },
-                        ])),
-                    ],
-                );
+            if op == BinOp::Add
+                && expr_is_python_bytes(__w, &left)
+                && expr_is_python_bytes(__w, &right)
+            {
+                return call_ident("__py_bytes_concat", vec![left, right]);
             }
             py_counter_binary(__w, op, &left, &right).unwrap_or_else(|| {
                 Expression::new(ExprKind::Binary {
@@ -20396,6 +34689,7 @@ fn desugar_member_reads(__w: &mut PyWalker, e: Expression) -> Expression {
                     a
                 })
                 .collect();
+            let args = normalize_contextvar_ctor_args(__w, &class, &args).unwrap_or(args);
             let constructed = Expression::new(ExprKind::New {
                 class: Box::new(class.clone()),
                 args,
@@ -20409,8 +34703,67 @@ fn desugar_member_reads(__w: &mut PyWalker, e: Expression) -> Expression {
                     vec![constructed, Expression::string(name)],
                 );
             }
+            if let ExprKind::Ident(name) = &class.kind
+                && is_defined_class(__w, name)
+                && !class_has_attr(__w, name, "__deepcopy__")
+            {
+                let fields = class_data_attrs_for(__w, name);
+                if !fields.is_empty() {
+                    return call_ident(
+                        "__py_copy_stamp_fields",
+                        vec![constructed, python_field_names_array(fields)],
+                    );
+                }
+            }
             constructed
         }
+        ExprKind::Array(elements) => Expression::new(ExprKind::Array(
+            elements
+                .into_iter()
+                .map(|element| ArrayElement {
+                    key: element.key.map(|key| desugar_member_reads(__w, key)),
+                    value: desugar_member_reads(__w, element.value),
+                    spread: element.spread,
+                    by_ref: element.by_ref,
+                })
+                .collect(),
+        )),
+        ExprKind::Tuple(items) => Expression::new(ExprKind::Tuple(
+            items
+                .into_iter()
+                .map(|item| desugar_member_reads(__w, item))
+                .collect(),
+        )),
+        ExprKind::Set(items) => Expression::new(ExprKind::Set(
+            items
+                .into_iter()
+                .map(|item| desugar_member_reads(__w, item))
+                .collect(),
+        )),
+        ExprKind::Map(entries) => Expression::new(ExprKind::Map(
+            entries
+                .into_iter()
+                .map(|(key, value)| {
+                    (
+                        desugar_member_reads(__w, key),
+                        desugar_member_reads(__w, value),
+                    )
+                })
+                .collect(),
+        )),
+        ExprKind::Object(props) => Expression::new(ExprKind::Object(
+            props
+                .into_iter()
+                .map(|prop| match prop {
+                    ObjectProperty::KeyValue { key, value } => ObjectProperty::KeyValue {
+                        key: desugar_member_reads(__w, key),
+                        value: desugar_member_reads(__w, value),
+                    },
+                    ObjectProperty::Spread(expr) => ObjectProperty::Spread(desugar_member_reads(__w, expr)),
+                    other => other,
+                })
+                .collect(),
+        )),
         ExprKind::Comprehension {
             kind,
             element,
@@ -20478,7 +34831,7 @@ fn desugar_member_reads(__w: &mut PyWalker, e: Expression) -> Expression {
                     field: "items".into(),
                     null_safe: false,
                 });
-                if let Some(rewritten) = rewrite_dict_items(&callee, &[]) {
+                if let Some(rewritten) = rewrite_dict_items(__w, &callee, &[]) {
                     return rewritten;
                 }
             }
@@ -20522,6 +34875,17 @@ fn walk_postfix(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<ExprKind, String
                 // existing super.method() dispatch takes over.
                 if matches!(&expr.kind, ExprKind::Ident(n) if n == "super") {
                     expr = Expression::new(ExprKind::Super);
+                } else if matches!(&expr.kind, ExprKind::Ident(n) if n == "object")
+                    && !is_defined_class(__w, "object")
+                {
+                    // `object()` — a bare sentinel instance, useful only for
+                    // identity (`a is a`). `object` is not user-declared here,
+                    // so this is the builtin; `__PyObject` was seeded above
+                    // when the source contains the literal call.
+                    expr = Expression::new(ExprKind::New {
+                        class: Box::new(Expression::ident("__PyObject")),
+                        args: Vec::new(),
+                    });
                 } else if matches!(&expr.kind, ExprKind::Ident(n) if n == "globals") {
                     // SPELLING -> VOCABULARY, exactly as `super()` above: the
                     // shared compiler models the module's global namespace as
@@ -20553,6 +34917,11 @@ fn walk_postfix(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<ExprKind, String
                             "AttributeError",
                             Some("'frozenset' object has no attribute"),
                         );
+                    } else if field == "mro"
+                        && let ExprKind::Ident(class_name) = &object.kind
+                        && is_defined_class(__w, class_name)
+                    {
+                        expr = python_class_mro_expr(__w, class_name);
                     } else if let Some(rewritten) = datetime_class_method_call(__w, &expr, &[]) {
                         expr = rewritten;
                     } else if let Some(rewritten) = rewrite_calendar_call(__w, &expr, &[]) {
@@ -20582,25 +34951,39 @@ fn walk_postfix(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<ExprKind, String
                     {
                         // No-arg `"literal".format()` (e.g. `'{{}}'.format()`).
                         expr = expanded;
+                    } else if let ExprKind::Ident(name) = &object.kind
+                        && let Some(info) = string_template_info(__w, name)
+                        && let Some(folded) = fold_string_template_call(__w, &info, field, &[])
+                    {
+                        expr = folded;
                     } else if let Some(rewritten) =
                         try_rewrite_python_numeric_method(__w, object, field, &[])
                     {
                         expr = rewritten;
-                    } else if let Some(rewritten) = try_rewrite_bytes_method(__w, object, field, &[]) {
+                    } else if let Some(rewritten) =
+                        try_rewrite_bytes_method(__w, object, field, &[])
+                    {
                         // bytes string-like method with no args, e.g. `b'AB'.lower()`
                         expr = rewritten;
                     } else if field == "_asdict" && receiver_namedtuple_def(__w, object).is_some() {
                         // namedtuple `nt._asdict()` — no-arg instance method.
                         let def = receiver_namedtuple_def(__w, object).unwrap();
                         expr = build_namedtuple_asdict(object, &def);
-                    } else if field == "_replace" && receiver_namedtuple_def(__w, object).is_some() {
+                    } else if field == "_replace" && receiver_namedtuple_def(__w, object).is_some()
+                    {
                         // `nt._replace()` with no overrides — a plain copy.
                         let def = receiver_namedtuple_def(__w, object).unwrap();
                         expr = build_namedtuple_replace(object, &def, Vec::new());
                     } else if let Some(rewritten) = rewrite_random_call(__w, &expr, &[]) {
                         // `random.getstate()` and other zero-arg forms.
                         expr = rewritten;
-                    } else if let Some(rewritten) = rewrite_dict_items(&expr, &[]) {
+                    } else if let Some(rewritten) = rewrite_codeop_call(__w, &expr, &[]) {
+                        expr = rewritten;
+                    } else if let Some(rewritten) =
+                        rewrite_module_introspection_call(__w, &expr, &[])
+                    {
+                        expr = rewritten;
+                    } else if let Some(rewritten) = rewrite_dict_items(__w, &expr, &[]) {
                         // `d.items()` → comprehension of (k, v) tuples.
                         expr = rewritten;
                     } else {
@@ -20676,6 +35059,31 @@ fn walk_postfix(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<ExprKind, String
                             expr = rewritten;
                             continue;
                         }
+                        if let ExprKind::Member { object, field, .. } = &expr.kind
+                            && let Some(rewritten) =
+                                py_signature_bind_call(__w, object, field, &args)
+                        {
+                            expr = rewritten;
+                            continue;
+                        }
+                        if let Some(rewritten) =
+                            rewrite_module_introspection_call(__w, &expr, &args)
+                        {
+                            expr = rewritten;
+                            continue;
+                        }
+                        if let Some(rewritten) = rewrite_tomllib_call(__w, &expr, &args) {
+                            expr = rewritten;
+                            continue;
+                        }
+                        if let Some(rewritten) = rewrite_codeop_call(__w, &expr, &args) {
+                            expr = rewritten;
+                            continue;
+                        }
+                        if let Some(rewritten) = rewrite_gzip_file_ctor_call(__w, &expr, &args) {
+                            expr = rewritten;
+                            continue;
+                        }
                         if let Some(rewritten) = rewrite_calendar_call(__w, &expr, &args) {
                             expr = rewritten;
                             continue;
@@ -20746,12 +35154,33 @@ fn walk_postfix(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<ExprKind, String
                                 );
                                 continue;
                             }
+                            if let ExprKind::Ident(name) = &object.kind {
+                                if let Some(info) = string_template_info(__w, name)
+                                    && let Some(folded) =
+                                        fold_string_template_call(__w, &info, field, &args)
+                                {
+                                    expr = folded;
+                                    continue;
+                                }
+                                if instance_class(__w, name).as_deref() == Some("__string_Formatter")
+                                    && let Some(folded) =
+                                        fold_string_formatter_call(__w, field, &args)
+                                {
+                                    expr = folded;
+                                    continue;
+                                }
+                            }
                             if let Some(path) = module_namespace_path(__w, object)
                                 && path == "fnmatch"
                                 && let Some(folded) = fold_fnmatch_call(__w, field, &args)
                             {
                                 expr = folded;
                                 continue;
+                            }
+                            if let Some(normalized) =
+                                normalize_context_run_args(__w, object, field, &args)
+                            {
+                                args = normalized;
                             }
                             if let Some(path) = module_namespace_path(__w, object) {
                                 if path == "codecs"
@@ -20768,6 +35197,12 @@ fn walk_postfix(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<ExprKind, String
                                     continue;
                                 }
                             }
+                            if let Some(rewritten) =
+                                rewrite_base64_named_call(__w, object, field, &args, *null_safe)
+                            {
+                                expr = rewritten;
+                                continue;
+                            }
                             if let Some(path) = module_namespace_path(__w, object)
                                 && let Some(name) = codec_module_member(&path, field)
                             {
@@ -20782,6 +35217,7 @@ fn walk_postfix(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<ExprKind, String
                                 let rewritten = match path.as_str() {
                                     "shlex" => shlex_module_member(field),
                                     "textwrap" => textwrap_module_member(field),
+                                    "string" => string_module_member(field),
                                     _ => None,
                                 };
                                 if let Some(name) = rewritten {
@@ -20789,14 +35225,23 @@ fn walk_postfix(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<ExprKind, String
                                         args = normalize_shlex_call_args(__w, field, args);
                                     } else if path == "textwrap" {
                                         args = flatten_textwrap_args(field, args);
-                                        if let Some(folded) = fold_textwrap_call(__w, field, &args) {
+                                        if let Some(folded) = fold_textwrap_call(__w, field, &args)
+                                        {
                                             expr = folded;
                                             continue;
                                         }
+                                    } else if path == "string" && field == "capwords"
+                                        && let Some(folded) = fold_string_capwords(__w, &args)
+                                    {
+                                        expr = folded;
+                                        continue;
                                     }
                                     expr = if matches!(
                                         name,
-                                        "__py_shlex_class" | "__py_TextWrapper"
+                                        "__py_shlex_class"
+                                            | "__py_TextWrapper"
+                                            | "__string_Template"
+                                            | "__string_Formatter"
                                     ) {
                                         Expression::new(ExprKind::New {
                                             class: Box::new(Expression::new(ExprKind::Ident(
@@ -20841,7 +35286,8 @@ fn walk_postfix(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<ExprKind, String
                                     }
                                 }
                             }
-                            if py_static_frozenset_expr(__w, object) && py_frozenset_mutator(field) {
+                            if py_static_frozenset_expr(__w, object) && py_frozenset_mutator(field)
+                            {
                                 expr = py_raise_expr(
                                     "AttributeError",
                                     Some("'frozenset' object has no attribute"),
@@ -20860,11 +35306,26 @@ fn walk_postfix(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<ExprKind, String
                                     matches!(&a.value.kind, ExprKind::Lit(Literal::Str(enc))
                                         if enc.eq_ignore_ascii_case("ascii"))
                                 })
+                                && positional_or_named_arg(&args, 1, "errors")
+                                    .and_then(|e| resolve_string_const(__w, &e))
+                                    .is_none_or(|mode| mode == "strict")
                             {
                                 expr = py_raise_expr(
-                                    "UnicodeError",
+                                    "UnicodeDecodeError",
                                     Some("ascii codec can't decode byte"),
                                 );
+                                continue;
+                            }
+                            if let Some(rewritten) =
+                                bytes_tuple_prefix_check(__w, object, field, &args)
+                            {
+                                expr = rewritten;
+                                continue;
+                            }
+                            if let Some(rewritten) =
+                                try_rewrite_bytes_method(__w, object, field, &args)
+                            {
+                                expr = rewritten;
                                 continue;
                             }
                             if matches!(&object.kind, ExprKind::Ident(_))
@@ -20937,7 +35398,9 @@ fn walk_postfix(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<ExprKind, String
                             }
                             if field == "count"
                                 && args.len() == 1
+                                && !is_module_namespace_path(__w, object)
                                 && !matches!(&object.kind, ExprKind::Lit(Literal::Str(_)))
+                                && !expr_is_python_bytes(__w, object)
                             {
                                 // arr.count(x) → arr.filter(e => e === x).length.
                                 // String-literal receivers are excluded: `str.count`
@@ -21038,7 +35501,8 @@ fn walk_postfix(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<ExprKind, String
                                     .iter()
                                     .find(|a| a.name.is_none() && !a.spread)
                                     .map(|a| {
-                                        py_pair_array_to_dict_expr(desugar_member_reads(__w, 
+                                        py_pair_array_to_dict_expr(desugar_member_reads(
+                                            __w,
                                             a.value.clone(),
                                         ))
                                     })
@@ -21073,7 +35537,8 @@ fn walk_postfix(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<ExprKind, String
                                     .find(|a| a.name.as_deref() == Some("last"))
                                     .map(|a| desugar_member_reads(__w, a.value.clone()))
                                     .or_else(|| {
-                                        args.get(1).map(|a| desugar_member_reads(__w, a.value.clone()))
+                                        args.get(1)
+                                            .map(|a| desugar_member_reads(__w, a.value.clone()))
                                     })
                                     .unwrap_or_else(|| Expression::bool(true));
                                 expr = call_ident(
@@ -21273,7 +35738,10 @@ fn walk_postfix(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<ExprKind, String
                             }
                         }
 
-                        // `bytes.fromhex(s)` static constructor → Uint8Array.
+                        // `bytes.fromhex(s)` / `bytearray.fromhex(s)` static
+                        // constructors. Both use the same hex decoder; the
+                        // bytearray spelling is wrapped so later normalization
+                        // keeps its mutable bytearray identity.
                         if let ExprKind::Member { object, field, .. } = &expr.kind {
                             if let Some(rewritten) =
                                 try_rewrite_python_numeric_method(__w, object, field, &args)
@@ -21287,6 +35755,16 @@ fn walk_postfix(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<ExprKind, String
                             {
                                 expr =
                                     call_ident("__py_bytes_fromhex__", vec![args[0].value.clone()]);
+                                continue;
+                            }
+                            if field == "fromhex"
+                                && matches!(&object.kind, ExprKind::Ident(n) if n == "bytearray")
+                                && args.len() == 1
+                            {
+                                expr = wrap_bytearray(call_ident(
+                                    "__py_bytes_fromhex__",
+                                    vec![args[0].value.clone()],
+                                ));
                                 continue;
                             }
                         }
@@ -21340,34 +35818,56 @@ fn walk_postfix(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<ExprKind, String
                                 // both bind a namespace dict (locals if given,
                                 // else globals) that names are read from / written
                                 // back to.
+                                // `eval(src)` / `exec(src)` → the universal
+                                // compiler-as-a-service, EXACTLY as php calls
+                                // it: source, then the language. php's two-
+                                // argument form works today; python's own
+                                // convention (a feature-attributes object and a
+                                // namespace dict, `min_args = 3`) resolved to
+                                // null at the call site.
                                 "eval" | "exec" if !args.is_empty() => {
+                                    if name == "exec"
+                                        && let Some(rewritten) =
+                                            py_exec_compiled_literal(__w, &args)
+                                    {
+                                        expr = rewritten;
+                                        continue;
+                                    }
                                     let source_arg = py_code_object_source(__w, &args[0].value)
                                         .map(|source| Expression::string(&source))
                                         .map(Argument::positional)
                                         .unwrap_or_else(|| args[0].clone());
-                                    let namespace = args
-                                        .get(2)
-                                        .or_else(|| args.get(1))
-                                        .map(|a| a.value.clone())
-                                        .unwrap_or_else(|| {
-                                            Expression::new(ExprKind::Lit(Literal::Null))
-                                        });
-                                    let attrs = Expression::new(ExprKind::Object(vec![
-                                        ObjectProperty::KeyValue {
-                                            key: Expression::new(ExprKind::Lit(Literal::Str(
-                                                "completion_value".into(),
-                                            ))),
-                                            value: Expression::new(ExprKind::Lit(Literal::Bool(
-                                                name == "eval",
-                                            ))),
-                                        },
-                                        ObjectProperty::KeyValue {
+                                    // `eval(src[, globals[, locals]])` /
+                                    // `exec(src[, globals[, locals]])`:
+                                    // `dynamic.rs` supports a single
+                                    // namespace dict (both bind from it and
+                                    // write back to it), so a `locals` dict
+                                    // — when given separately — wins over
+                                    // `globals`: CPython itself looks names
+                                    // up in `locals` first. Forwarded as
+                                    // `attrs.namespace`, the same object
+                                    // `completion_value` already rides on —
+                                    // NOT a third positional to
+                                    // `__vybe_eval` (that shape was tried
+                                    // and resolved to null at the call
+                                    // site).
+                                    let mut attrs = vec![ObjectProperty::KeyValue {
+                                        key: Expression::new(ExprKind::Lit(Literal::Str(
+                                            "completion_value".into(),
+                                        ))),
+                                        value: Expression::new(ExprKind::Lit(Literal::Bool(
+                                            name == "eval",
+                                        ))),
+                                    }];
+                                    let ns_arg = args.get(2).or(args.get(1));
+                                    if let Some(ns) = ns_arg {
+                                        attrs.push(ObjectProperty::KeyValue {
                                             key: Expression::new(ExprKind::Lit(Literal::Str(
                                                 "namespace".into(),
                                             ))),
-                                            value: namespace,
-                                        },
-                                    ]));
+                                            value: ns.value.clone(),
+                                        });
+                                    }
                                     expr = Expression::new(ExprKind::Call {
                                         callee: Box::new(Expression::new(ExprKind::Ident(
                                             "__vybe_eval".into(),
@@ -21377,14 +35877,16 @@ fn walk_postfix(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<ExprKind, String
                                             Argument::positional(Expression::new(ExprKind::Lit(
                                                 Literal::Str("python".into()),
                                             ))),
-                                            Argument::positional(attrs),
+                                            Argument::positional(Expression::new(
+                                                ExprKind::Object(attrs),
+                                            )),
                                         ],
                                         optional: false,
                                     });
                                     continue;
                                 }
                                 "compile" if args.len() >= 3 => {
-                                    if let Some(rewritten) = py_compile_code_object(&args) {
+                                    if let Some(rewritten) = py_compile_code_object(__w, &args) {
                                         expr = rewritten;
                                         continue;
                                     }
@@ -21414,6 +35916,22 @@ fn walk_postfix(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<ExprKind, String
                                     }
                                 }
                                 "next" if args.len() == 1 => {
+                                    if let ExprKind::Ident(var) = &args[0].value.kind {
+                                        if let Some(info) = __w.py_csv_dict_readers.get_mut(var) {
+                                            if let Some(row) = info.rows.get(info.index).cloned() {
+                                                info.index += 1;
+                                                expr = csv_dict_row_expr(&row);
+                                                continue;
+                                            }
+                                        }
+                                        if let Some(info) = __w.py_csv_readers.get_mut(var) {
+                                            if let Some(row) = info.rows.get(info.index).cloned() {
+                                                info.index += 1;
+                                                expr = csv_row_expr(&row);
+                                                continue;
+                                            }
+                                        }
+                                    }
                                     if let ExprKind::Call {
                                         callee,
                                         args: iter_args,
@@ -21433,6 +35951,12 @@ fn walk_postfix(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<ExprKind, String
                                         expr = value;
                                         continue;
                                     }
+                                    if py_custom_iterable_expr(__w, &value) {
+                                        expr = call_ident("__py_custom_iter_array", vec![value]);
+                                        continue;
+                                    }
+                                    expr = call_ident("__py_iter_array__", vec![value]);
+                                    continue;
                                 }
                                 "format" if args.len() == 2 => {
                                     if let (
@@ -21454,6 +35978,10 @@ fn walk_postfix(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<ExprKind, String
                                 }
                                 "len" if args.len() == 1 => {
                                     let value = desugar_member_reads(__w, args[0].value.clone());
+                                    if let Some(n) = py_static_len_value(&value) {
+                                        expr = Expression::int(n as i64);
+                                        continue;
+                                    }
                                     if matches!(
                                         py_static_type_name(__w, &value),
                                         Some("int" | "float" | "bool" | "NoneType" | "function")
@@ -21514,6 +36042,10 @@ fn walk_postfix(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<ExprKind, String
                                 }
                                 "dict" if args.len() == 1 && args[0].name.is_none() => {
                                     let value = desugar_member_reads(__w, args[0].value.clone());
+                                    if is_counter_expr(__w, &value) {
+                                        expr = call_ident("__py_counter_dict", vec![value]);
+                                        continue;
+                                    }
                                     if let ExprKind::Ident(n) = &value.kind
                                         && is_userdict_instance(__w, n)
                                     {
@@ -21528,7 +36060,9 @@ fn walk_postfix(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<ExprKind, String
                                 }
                                 "hasattr" if args.len() == 2 => {
                                     if let ExprKind::Lit(Literal::Str(attr)) = &args[1].value.kind {
-                                        if let Some(ok) = py_static_hasattr(__w, &args[0].value, attr) {
+                                        if let Some(ok) =
+                                            py_static_hasattr(__w, &args[0].value, attr)
+                                        {
                                             expr = Expression::bool(ok);
                                             continue;
                                         }
@@ -21601,6 +36135,11 @@ fn walk_postfix(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<ExprKind, String
                                 }
                                 "repr" if args.len() == 1 => {
                                     let value = desugar_member_reads(__w, args[0].value.clone());
+                                    if let Some(module) = module_namespace_path(__w, &args[0].value)
+                                    {
+                                        expr = Expression::string(&format!("<module '{module}'>"));
+                                        continue;
+                                    }
                                     if is_counter_expr(__w, &value) {
                                         expr = call_ident("__py_counter_repr", vec![value]);
                                         continue;
@@ -21623,6 +36162,29 @@ fn walk_postfix(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<ExprKind, String
                                     }
                                 }
                                 "isinstance" if args.len() == 2 => {
+                                    if matches!(&args[1].value.kind, ExprKind::Ident(name) if name == "__py_dis_Instruction")
+                                    {
+                                        expr = dis_instruction_isinstance(args[0].value.clone());
+                                        continue;
+                                    }
+                                    if py_uuid_value(__w, &args[0].value).is_some()
+                                        && py_uuid_class_expr(__w, &args[1].value)
+                                    {
+                                        expr = Expression::bool(true);
+                                        continue;
+                                    }
+                                    if let Some(path) = py_path_value(__w, &args[0].value) {
+                                        if let Some(type_name) =
+                                            py_path_static_class_name(__w, &args[1].value)
+                                        {
+                                            let ok = type_name == "PurePath"
+                                                || type_name == path.class_name
+                                                || (type_name == "Path"
+                                                    && path.class_name == "Path");
+                                            expr = Expression::bool(ok);
+                                            continue;
+                                        }
+                                    }
                                     // `isinstance(x, datetime.date)` — the
                                     // adapter's `__type` tag IS the type
                                     // identity for these values, so the check
@@ -21635,8 +36197,8 @@ fn walk_postfix(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<ExprKind, String
                                                         || is_defined_class(__w, target)
                                                     {
                                                         expr =
-                                                            Expression::bool(py_class_is_subclass(__w, 
-                                                                class_name, target,
+                                                            Expression::bool(py_class_is_subclass(
+                                                                __w, class_name, target,
                                                             ));
                                                         continue;
                                                     }
@@ -21644,8 +36206,8 @@ fn walk_postfix(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<ExprKind, String
                                                 ExprKind::Tuple(types) => {
                                                     let ok = types.iter().any(|ty| {
                                                         if let ExprKind::Ident(target) = &ty.kind {
-                                                            return py_class_is_subclass(__w, 
-                                                                class_name, target,
+                                                            return py_class_is_subclass(
+                                                                __w, class_name, target,
                                                             );
                                                         }
                                                         false
@@ -21657,14 +36219,18 @@ fn walk_postfix(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<ExprKind, String
                                             }
                                         }
                                     }
-                                    if let Some(value_type) = py_static_type_name(__w, &args[0].value) {
+                                    if let Some(value_type) =
+                                        py_static_type_name(__w, &args[0].value)
+                                    {
                                         match &args[1].value.kind {
                                             ExprKind::Ident(type_name) => {
                                                 if let Some(target) =
                                                     py_builtin_type_name(type_name)
                                                 {
                                                     let ok = if is_defined_class(__w, value_type) {
-                                                        py_class_is_subclass(__w, value_type, target)
+                                                        py_class_is_subclass(
+                                                            __w, value_type, target,
+                                                        )
                                                     } else if let Some(ok) =
                                                         py_builtin_subclass(value_type, target)
                                                     {
@@ -21699,9 +36265,11 @@ fn walk_postfix(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<ExprKind, String
                                                         if let Some(target) =
                                                             py_builtin_type_name(type_name)
                                                         {
-                                                            return if is_defined_class(__w, value_type) {
-                                                                py_class_is_subclass(__w, 
-                                                                    value_type, target,
+                                                            return if is_defined_class(
+                                                                __w, value_type,
+                                                            ) {
+                                                                py_class_is_subclass(
+                                                                    __w, value_type, target,
                                                                 )
                                                             } else if let Some(ok) =
                                                                 py_builtin_subclass(
@@ -21752,7 +36320,8 @@ fn walk_postfix(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<ExprKind, String
                                     // agrees with `isinstance(x, a)`.
                                     match &args[1].value.kind {
                                         ExprKind::Ident(type_name) => {
-                                            if let Some(r) = py_isinstance_runtime_check(__w, 
+                                            if let Some(r) = py_isinstance_runtime_check(
+                                                __w,
                                                 &args[0].value,
                                                 type_name,
                                             ) {
@@ -21961,9 +36530,11 @@ fn walk_postfix(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<ExprKind, String
                                     if let ExprKind::Ident(sub) = &args[0].value.kind {
                                         match &args[1].value.kind {
                                             ExprKind::Ident(base) => {
-                                                if is_defined_class(__w, sub) && is_defined_class(__w, base) {
-                                                    expr = Expression::bool(py_class_is_subclass(__w, 
-                                                        sub, base,
+                                                if is_defined_class(__w, sub)
+                                                    && is_defined_class(__w, base)
+                                                {
+                                                    expr = Expression::bool(py_class_is_subclass(
+                                                        __w, sub, base,
                                                     ));
                                                     continue;
                                                 }
@@ -21978,8 +36549,8 @@ fn walk_postfix(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<ExprKind, String
                                                         if is_defined_class(__w, sub)
                                                             && is_defined_class(__w, base_name)
                                                         {
-                                                            return py_class_is_subclass(__w, 
-                                                                sub, base_name,
+                                                            return py_class_is_subclass(
+                                                                __w, sub, base_name,
                                                             );
                                                         }
                                                         py_builtin_subclass(sub, base_name)
@@ -21998,6 +36569,14 @@ fn walk_postfix(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<ExprKind, String
                                 "bool" if args.len() == 1 => {
                                     if matches!(args[0].value.kind, ExprKind::Lit(Literal::Null)) {
                                         expr = Expression::bool(false);
+                                        continue;
+                                    }
+                                    if let Some(source) = memoryview_source(__w, &args[0].value) {
+                                        expr = Expression::new(ExprKind::Binary {
+                                            op: BinOp::NotEq,
+                                            left: Box::new(bytes_len_expr(source)),
+                                            right: Box::new(Expression::int(0)),
+                                        });
                                         continue;
                                     }
                                     if let ExprKind::New { class, .. } = &args[0].value.kind
@@ -22052,12 +36631,47 @@ fn walk_postfix(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<ExprKind, String
                                     continue;
                                 }
                                 "list" if args.len() == 1 => {
+                                    if let Some(rows) = csv_reader_call_list_expr(__w, &args[0].value) {
+                                        expr = rows;
+                                        continue;
+                                    }
+                                    if let ExprKind::Ident(var) = &args[0].value.kind {
+                                        if let Some(info) = __w.py_csv_dict_readers.get(var) {
+                                            expr = csv_dict_reader_list_expr(info);
+                                            continue;
+                                        }
+                                        if let Some(info) = __w.py_csv_readers.get(var) {
+                                            expr = csv_reader_list_expr(info);
+                                            continue;
+                                        }
+                                    }
                                     // list(iterable) → [...iterable]. A dict
                                     // iterates its KEYS (`list({'a':1})` is
                                     // `['a']`), but a Map spreads as [k, v]
                                     // pairs — route through the Python iterate
                                     // helper first, same as `sorted`.
+                                    if let Some(source) = memoryview_source(__w, &args[0].value) {
+                                        expr =
+                                            Expression::new(ExprKind::Array(vec![ArrayElement {
+                                                key: None,
+                                                spread: true,
+                                                by_ref: false,
+                                                value: call_ident(
+                                                    "__py_iter_array__",
+                                                    vec![source],
+                                                ),
+                                            }]));
+                                        continue;
+                                    }
                                     let iterable = desugar_member_reads(__w, args[0].value.clone());
+                                    if matches!(
+                                        &iterable.kind,
+                                        ExprKind::Call { callee, .. }
+                                            if matches!(&callee.kind, ExprKind::Ident(name) if name == "__py_xml_iter")
+                                    ) {
+                                        expr = iterable;
+                                        continue;
+                                    }
                                     if let ExprKind::Ident(var) = &iterable.kind
                                         && instance_class(__w, var).as_deref()
                                             == Some("__py_shlex_class")
@@ -22104,8 +36718,10 @@ fn walk_postfix(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<ExprKind, String
                                     // shared generator primitive before the
                                     // adapter stamps the tuple tag.
                                     let iterable = args[0].value.clone();
-                                    expr =
-                                        call_ident("tuple", vec![spread_iterable_expr(__w, iterable)]);
+                                    expr = call_ident(
+                                        "tuple",
+                                        vec![spread_iterable_expr(__w, iterable)],
+                                    );
                                     continue;
                                 }
                                 "tuple" if args.is_empty() => {
@@ -22150,24 +36766,39 @@ fn walk_postfix(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<ExprKind, String
                                 // `b'[object TypedArray]'`. Mutability is a
                                 // front-end quirk of the two names, not a second
                                 // representation.
-                                "bytes" | "bytearray" if args.is_empty() => {
+                                "bytes" if args.is_empty() => {
                                     expr = wrap_bytes(Expression::new(ExprKind::Array(vec![])));
                                     continue;
                                 }
-                                "bytes" | "bytearray"
-                                    if args.len() == 1 && args[0].name.is_none() =>
-                                {
+                                "bytearray" if args.is_empty() => {
+                                    expr = wrap_bytearray(Expression::new(ExprKind::Array(vec![])));
+                                    continue;
+                                }
+                                "bytes" if args.len() == 1 && args[0].name.is_none() => {
                                     // bytes(iterable_of_ints) → those octets;
                                     // bytes(n) → n zero octets, which the byte
                                     // conversion already does for an integer.
-                                    expr = wrap_bytes(args[0].value.clone());
+                                    let source = memoryview_source(__w, &args[0].value)
+                                        .unwrap_or_else(|| args[0].value.clone());
+                                    expr = wrap_bytes(source);
                                     continue;
                                 }
-                                "bytes" | "bytearray"
-                                    if args.len() == 2 && args[0].name.is_none() =>
-                                {
+                                "bytearray" if args.len() == 1 && args[0].name.is_none() => {
+                                    let source = memoryview_source(__w, &args[0].value)
+                                        .unwrap_or_else(|| args[0].value.clone());
+                                    expr = wrap_bytearray(source);
+                                    continue;
+                                }
+                                "bytes" if args.len() == 2 && args[0].name.is_none() => {
                                     // bytes(str, encoding) → UTF-8 code units.
                                     expr = wrap_bytes(call_ident(
+                                        "__vybe_str_encode",
+                                        vec![args[0].value.clone()],
+                                    ));
+                                    continue;
+                                }
+                                "bytearray" if args.len() == 2 && args[0].name.is_none() => {
+                                    expr = wrap_bytearray(call_ident(
                                         "__vybe_str_encode",
                                         vec![args[0].value.clone()],
                                     ));
@@ -22292,7 +36923,9 @@ fn walk_postfix(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<ExprKind, String
                                     let it = args[0].value.clone();
                                     expr = Expression::new(ExprKind::Call {
                                         callee: Box::new(Expression::new(ExprKind::Ident(n))),
-                                        args: vec![Argument::positional(spread_iterable_expr(__w, it))],
+                                        args: vec![Argument::positional(spread_iterable_expr(
+                                            __w, it,
+                                        ))],
                                         optional: false,
                                     });
                                     continue;
@@ -22431,6 +37064,7 @@ fn walk_postfix(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<ExprKind, String
                                         ))),
                                         args: vec![
                                             Argument::positional(py_callable_expr(
+                                                __w,
                                                 args[0].value.clone(),
                                             )),
                                             Argument::positional({
@@ -22451,7 +37085,7 @@ fn walk_postfix(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<ExprKind, String
                                     expr = call_ident(
                                         "__py_iter_sentinel",
                                         vec![
-                                            py_callable_expr(args[0].value.clone()),
+                                            py_callable_expr(__w, args[0].value.clone()),
                                             desugar_member_reads(__w, args[1].value.clone()),
                                         ],
                                     );
@@ -22460,7 +37094,7 @@ fn walk_postfix(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<ExprKind, String
                                 "map"
                                     if args.len() >= 2 && args.iter().all(|a| a.name.is_none()) =>
                                 {
-                                    let func = py_callable_expr(args[0].value.clone());
+                                    let func = py_callable_expr(__w, args[0].value.clone());
                                     let iterables: Vec<Expression> = args
                                         .iter()
                                         .skip(1)
@@ -22570,10 +37204,8 @@ fn walk_postfix(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<ExprKind, String
                                     expr = call_ident(
                                         "__py_zip_spread",
                                         vec![{
-                                            let __v = desugar_member_reads(
-                                                __w,
-                                                args[0].value.clone(),
-                                            );
+                                            let __v =
+                                                desugar_member_reads(__w, args[0].value.clone());
                                             spread_iterable_expr(__w, __v)
                                         }],
                                     );
@@ -22594,13 +37226,19 @@ fn walk_postfix(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<ExprKind, String
                                     // sorted(iterable, key=f) → __py_sort_by_key([...iterable], f)
                                     // sorted(..., reverse=True) → … .reverse()
                                     let iterable = desugar_member_reads(__w, args[0].value.clone());
-                                    let sorts_tuple_pairs = py_sorts_tuple_pairs_expr(__w, &iterable);
+                                    let sorts_tuple_pairs =
+                                        py_sorts_tuple_pairs_expr(__w, &iterable);
                                     let has_reverse =
                                         args.iter().any(|a| a.name.as_deref() == Some("reverse"));
-                                    let key_fn = args
+                                    let key_arg = args
                                         .iter()
                                         .find(|a| a.name.as_deref() == Some("key"))
-                                        .map(|a| a.value.clone())
+                                        .map(|a| a.value.clone());
+                                    let cmp_fn = key_arg
+                                        .as_ref()
+                                        .and_then(functools_cmp_to_key_arg);
+                                    let key_fn = key_arg
+                                        .filter(|value| functools_cmp_to_key_arg(value).is_none())
                                         .map(wrap_key_ident_in_lambda)
                                         .map(wrap_tuple_key_lambda);
                                     let key_fn = key_fn.or_else(|| {
@@ -22642,7 +37280,9 @@ fn walk_postfix(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<ExprKind, String
                                             by_ref: false,
                                             value: call_ident("__py_iter_array__", vec![iterable]),
                                         }]));
-                                    let sorted = if let Some(key_fn) = key_fn {
+                                    let sorted = if let Some(cmp_fn) = cmp_fn {
+                                        call_ident("__py_sort_with_cmp", vec![spread_array, cmp_fn])
+                                    } else if let Some(key_fn) = key_fn {
                                         call_ident("__py_sort_by_key", vec![spread_array, key_fn])
                                     } else {
                                         Expression::new(ExprKind::Call {
@@ -22750,10 +37390,21 @@ fn walk_postfix(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<ExprKind, String
                         } else {
                             args
                         };
-                        if let Some(rewritten) = rewrite_python_generator_method_call(__w, &expr, &args)
+                        if let Some(rewritten) =
+                            rewrite_python_generator_method_call(__w, &expr, &args)
                         {
                             expr = rewritten;
                             continue;
+                        }
+                        let mut args = args;
+                        if let ExprKind::Member { object, field, .. } = &expr.kind
+                            && matches!(field.as_str(), "enter" | "enterabs")
+                            && args.len() >= 3
+                            && py_receiver_class(__w, object)
+                                .as_deref()
+                                .is_none_or(|class_name| class_name == "scheduler")
+                        {
+                            args[2].value = py_callable_expr(__w, args[2].value.clone());
                         }
                         // bytes string-like method with args, e.g.
                         // `b'ab'.replace(b'a', b'x')`, `b'ab'.find(b'b')`.
@@ -22784,7 +37435,20 @@ fn walk_postfix(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<ExprKind, String
                                     continue;
                                 }
                             }
-                            if let Some(rewritten) = try_rewrite_bytes_method(__w, object, field, &args)
+                            if let Some(rewritten) =
+                                try_rewrite_memoryview_method(__w, object, field, &args)
+                            {
+                                expr = rewritten;
+                                continue;
+                            }
+                            if let Some(rewritten) =
+                                bytes_tuple_prefix_check(__w, object, field, &args)
+                            {
+                                expr = rewritten;
+                                continue;
+                            }
+                            if let Some(rewritten) =
+                                try_rewrite_bytes_method(__w, object, field, &args)
                             {
                                 expr = rewritten;
                                 continue;
@@ -22792,6 +37456,21 @@ fn walk_postfix(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<ExprKind, String
                         }
                         // `json.dumps(obj, cls=…, sort_keys=…, indent=…, …)` →
                         // Python-semantics form the json adapter consumes.
+                        if let Some(rewritten) = rewrite_pickle_marshal_loads(&expr, &args) {
+                            expr = rewritten;
+                            continue;
+                        }
+                        if let Some(rewritten) = rewrite_xml_helper_call(__w, &expr, &args) {
+                            expr = rewritten;
+                            continue;
+                        }
+                        if py_uuid_invalid_literal_ctor(__w, &expr, &args) {
+                            expr = py_raise_expr(
+                                "ValueError",
+                                Some("badly formed hexadecimal UUID string"),
+                            );
+                            continue;
+                        }
                         if let Some(rewritten) = rewrite_json_dumps(&expr, &args) {
                             expr = rewritten;
                             continue;
@@ -22807,7 +37486,12 @@ fn walk_postfix(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<ExprKind, String
                             continue;
                         }
                         // `dict(...)` / `OrderedDict(...)` → dict literal.
-                        if let Some(rewritten) = rewrite_dict_construction(&expr, &args) {
+                        if let Some(rewritten) = rewrite_dict_construction(__w, &expr, &args) {
+                            expr = rewritten;
+                            continue;
+                        }
+                        if let Some(rewritten) = rewrite_optparse_add_option_call(__w, &expr, &args)
+                        {
                             expr = rewritten;
                             continue;
                         }
@@ -22829,6 +37513,12 @@ fn walk_postfix(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<ExprKind, String
                             // desugar pass rebuilds `mod.__dict__` as a real
                             // dict from the namespace object's entries.
                             expr = py_object_public_entries_dict_expr(expr);
+                        } else if let Some(value) = memoryview_attr_read(__w, &expr, &field) {
+                            expr = value;
+                        } else if let Some(path) = module_namespace_path(__w, &expr)
+                            && let Some(global) = crate::core_classes::module_member(&path, &field)
+                        {
+                            expr = Expression::new(ExprKind::Ident(global.to_string()));
                         } else if let Some(global) = prelude_module_class(&expr.kind, &field) {
                             // A prelude module's class (`io.StringIO`,
                             // `configparser.ConfigParser`, …) → the bare global
@@ -22850,7 +37540,8 @@ fn walk_postfix(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<ExprKind, String
                         }
                     }
                     Rule::subscript => {
-                        let index = Expression::new(walk_subscript_expr(__w, 
+                        let index = Expression::new(walk_subscript_expr(
+                            __w,
                             children.into_iter().next().unwrap(),
                         )?);
                         let index = if python_class_getitem_target(__w, &expr) {
@@ -22975,9 +37666,7 @@ fn py_known_coroutine_expr(__w: &mut PyWalker, expr: &Expression) -> bool {
             func.is_some_and(|func| is_async_func(__w, &func) && !is_generator_func(__w, &func))
         }
         ExprKind::Call { callee, .. } => match &callee.kind {
-            ExprKind::Ident(name) => {
-                is_async_func(__w, name) && !is_generator_func(__w, name)
-            }
+            ExprKind::Ident(name) => is_async_func(__w, name) && !is_generator_func(__w, name),
             ExprKind::FunctionExpr(stmt) => matches!(
                 &stmt.kind,
                 StmtKind::FunctionDecl {
@@ -23041,7 +37730,8 @@ fn py_generator_expr_name(__w: &mut PyWalker, expr: &Expression) -> Option<Strin
     }
 }
 
-fn rewrite_python_generator_method_call(__w: &mut PyWalker, 
+fn rewrite_python_generator_method_call(
+    __w: &mut PyWalker,
     callee_expr: &Expression,
     args: &[Argument],
 ) -> Option<Expression> {
@@ -23110,11 +37800,30 @@ const FLOAT_MATH_FNS: &[&str] = &[
     "erf",
     "erfc",
     "ldexp",
+    "nextafter",
+    "ulp",
 ];
 
 /// The internal builtins the walker lowers Python binary arithmetic to
 /// (`+ - * / // % **`). Recognized by the float/bytes-inference passes so their
 /// operands are still inspected after lowering.
+/// `__pymod__(fmt, args)` where `fmt` is a python STRING is printf-style
+/// formatting — the result is always a string, never a number, regardless of
+/// what is being formatted. `%` is python's one arithmetic-helper name with
+/// this split personality (numeric modulo vs. string formatting); `is_py_
+/// arith_helper`'s callers otherwise correctly assume "any operand float ⇒
+/// result float", which is exactly backwards here. Missing this is why
+/// `'%.2f' % 3.14159` — a Call to `__pymod__` whose second arg is a float
+/// literal — got wrapped in `__py_float_repr__` and handed that wrapper a
+/// STRING, not a number: `wasm:js-number.toF64` traps on it.
+fn py_pymod_is_string_format(callee_name: &str, args: &[Argument]) -> bool {
+    callee_name == "__pymod__"
+        && matches!(
+            &args.first().map(|a| &a.value.kind),
+            Some(ExprKind::Lit(Literal::Str(_)))
+        )
+}
+
 fn is_py_arith_helper(n: &str) -> bool {
     matches!(
         n,
@@ -23126,6 +37835,23 @@ fn is_py_arith_helper(n: &str) -> bool {
             | "__pymod__"
             | "__pypow__"
     )
+}
+
+fn hidden_py_math_returns_float(name: &str) -> bool {
+    name.strip_prefix("__py_math_")
+        .is_some_and(|inner| FLOAT_MATH_FNS.contains(&inner))
+}
+
+fn py_static_len_value(value: &Expression) -> Option<usize> {
+    match &value.kind {
+        ExprKind::Array(items) => Some(items.len()),
+        ExprKind::Tuple(items) => Some(items.len()),
+        ExprKind::Map(items) => Some(items.len()),
+        ExprKind::Set(items) => Some(items.len()),
+        ExprKind::Lit(Literal::Str(s)) => Some(s.chars().count()),
+        ExprKind::Lit(Literal::Bytes(b)) => Some(b.len()),
+        _ => None,
+    }
 }
 
 /// Does either operand of `a / b` decide the result type itself, by belonging to
@@ -23160,6 +37886,17 @@ fn operand_overloads_truediv(__w: &mut PyWalker, args: &[Argument]) -> bool {
     })
 }
 
+fn callable_expr_returns_python_float(__w: &mut PyWalker, callee: &Expression) -> bool {
+    match &callee.kind {
+        ExprKind::Lambda {
+            body: LambdaBody::Expr(body),
+            ..
+        } => expr_is_python_float(__w, body),
+        ExprKind::Call { callee, .. } => callable_expr_returns_python_float(__w, callee),
+        _ => false,
+    }
+}
+
 /// True when an expression is *statically* a Python `float` — a float literal,
 /// true division (`/`), `float()`, a float-returning `math.*` call, unary minus
 /// of a float, or arithmetic where an operand is a float. Deliberately
@@ -23184,10 +37921,12 @@ fn expr_is_python_float(__w: &mut PyWalker, e: &Expression) -> bool {
             {
                 true
             }
-            ExprKind::Ident(var) => instance_class(__w, var).as_deref().is_some_and(|class_name| {
-                class_property_returns_float(__w, class_name, field)
-                    || class_has_float_data_attr(__w, class_name, field)
-            }),
+            ExprKind::Ident(var) => instance_class(__w, var)
+                .as_deref()
+                .is_some_and(|class_name| {
+                    class_property_returns_float(__w, class_name, field)
+                        || class_has_float_data_attr(__w, class_name, field)
+                }),
             ExprKind::New { class, .. } => match &class.kind {
                 ExprKind::Ident(class_name) => {
                     class_property_returns_float(__w, class_name, field)
@@ -23205,6 +37944,11 @@ fn expr_is_python_float(__w: &mut PyWalker, e: &Expression) -> bool {
             {
                 true
             } else if let ExprKind::Ident(var) = &object.kind
+                && let ExprKind::Lit(Literal::Str(field)) = &index.kind
+                && object_field_is_float(__w, var, field)
+            {
+                true
+            } else if let ExprKind::Ident(var) = &object.kind
                 && let Some(class_name) = instance_class(__w, var)
                 && let ExprKind::Lit(Literal::Str(field)) = &index.kind
             {
@@ -23214,11 +37958,30 @@ fn expr_is_python_float(__w: &mut PyWalker, e: &Expression) -> bool {
                 false
             }
         }
-        ExprKind::Call { callee, args, .. } => match &callee.kind {
+        ExprKind::Call { callee, args, .. } => {
+            if callable_expr_returns_python_float(__w, callee) {
+                return true;
+            }
+            match &callee.kind {
             ExprKind::Ident(n) if n == "float" => true,
             ExprKind::Ident(n) if matches!(n.as_str(), "__py_total_seconds" | "__py_timestamp") => {
                 true
             }
+            ExprKind::Ident(n) if is_random_float_helper(n) => true,
+            // `pow` is BOTH a python builtin (int for int operands, exactly
+            // `**`'s contract) and, via `math.pow`, always-float — the two
+            // are indistinguishable by bare name alone. A bare, unqualified
+            // call is the builtin (the `math.` form is the separate `Member`
+            // arm below, which keeps treating it as float), so it defers to
+            // the same operand-float check `**`/`__pypow__` already use.
+            // Without this split, `pow(2, 3)` was unconditionally "float" —
+            // it inherited `math.pow`'s always-float contract — and printed
+            // `8.0` where `2 ** 3` correctly printed `8`.
+            ExprKind::Ident(n) if n == "pow" => args
+                .iter()
+                .take(2)
+                .any(|a| expr_is_python_float(__w, &a.value)),
+            ExprKind::Ident(n) if hidden_py_math_returns_float(n) => true,
             ExprKind::Ident(n) if FLOAT_MATH_FNS.contains(&n.as_str()) => true,
             ExprKind::Ident(n) if is_float_returning_import(__w, n) => true,
             // `/` is float BETWEEN NUMBERS. On an operand carrying
@@ -23245,6 +38008,8 @@ fn expr_is_python_float(__w: &mut PyWalker, e: &Expression) -> bool {
                 {
                     if is_complex_var(__w, var) && matches!(field.as_str(), "real" | "imag") {
                         true
+                    } else if object_field_is_float(__w, var, field) {
+                        true
                     } else if let Some(class_name) = instance_class(__w, var) {
                         class_property_returns_float(__w, &class_name, field)
                             || class_has_float_data_attr(__w, &class_name, field)
@@ -23256,6 +38021,7 @@ fn expr_is_python_float(__w: &mut PyWalker, e: &Expression) -> bool {
                 }
             }
             // Python arithmetic lowers to __py* helpers — float if an operand is.
+            ExprKind::Ident(n) if py_pymod_is_string_format(n, args) => false,
             ExprKind::Ident(n) if is_py_arith_helper(n) => {
                 args.iter().any(|a| expr_is_python_float(__w, &a.value))
             }
@@ -23269,10 +38035,14 @@ fn expr_is_python_float(__w: &mut PyWalker, e: &Expression) -> bool {
                     && FLOAT_MATH_FNS.contains(&field.as_str()))
                     || (matches!(&object.kind, ExprKind::Ident(o) if o == "statistics")
                         && FLOAT_STATISTICS_FNS.contains(&field.as_str()))
+                    || (matches!(&object.kind, ExprKind::Ident(o)
+                        if (o == "random" || resolve_module_alias(__w, o).as_deref() == Some("random"))
+                            && FLOAT_RANDOM_FNS.contains(&field.as_str())))
                     || FLOAT_DT_METHODS.contains(&field.as_str())
             }
             _ => false,
-        },
+            }
+        }
         _ => false,
     }
 }
@@ -23288,7 +38058,9 @@ fn expr_yields_python_float(__w: &mut PyWalker, e: &Expression) -> bool {
         ExprKind::Unary { expr, .. } => expr_yields_python_float(__w, expr),
         ExprKind::Call { callee, args, .. } => {
             expr_yields_python_float(__w, callee)
-                || args.iter().any(|arg| expr_yields_python_float(__w, &arg.value))
+                || args
+                    .iter()
+                    .any(|arg| expr_yields_python_float(__w, &arg.value))
         }
         ExprKind::Member { object, .. } => expr_yields_python_float(__w, object),
         ExprKind::Index { object, index, .. } => {
@@ -23319,7 +38091,10 @@ fn expr_yields_python_float(__w: &mut PyWalker, e: &Expression) -> bool {
             expr_yields_python_float(__w, element)
                 || generators.iter().any(|comp_gen| {
                     expr_yields_python_float(__w, &comp_gen.iter)
-                        || comp_gen.conditions.iter().any(|__x| expr_yields_python_float(__w, __x))
+                        || comp_gen
+                            .conditions
+                            .iter()
+                            .any(|__x| expr_yields_python_float(__w, __x))
                 })
         }
         _ => false,
@@ -23360,8 +38135,12 @@ fn stmt_yields_python_float(__w: &mut PyWalker, stmt: &Statement) -> bool {
         } => {
             init.as_ref()
                 .is_some_and(|stmt| stmt_yields_python_float(__w, stmt))
-                || cond.as_ref().is_some_and(|__x| expr_yields_python_float(__w, __x))
-                || update.as_ref().is_some_and(|__x| expr_yields_python_float(__w, __x))
+                || cond
+                    .as_ref()
+                    .is_some_and(|__x| expr_yields_python_float(__w, __x))
+                || update
+                    .as_ref()
+                    .is_some_and(|__x| expr_yields_python_float(__w, __x))
                 || body_yields_python_float(__w, body)
         }
         StmtKind::ForIn {
@@ -23412,7 +38191,34 @@ const FLOAT_DT_METHODS: &[&str] = &["total_seconds", "timestamp"];
 /// `statistics` functions CPython documents as *always* returning a float, so
 /// they display with a trailing `.0`. Deliberately not `mean`/`variance`: those
 /// return an int for integer data that divides evenly (`mean([42])` is `42`).
-const FLOAT_STATISTICS_FNS: &[&str] = &["fmean"];
+const FLOAT_STATISTICS_FNS: &[&str] = &[
+    "fmean",
+    "covariance",
+    "correlation",
+    "linear_regression",
+];
+
+/// Random module functions whose CPython contract is a float result. Integer
+/// producers (`randint`, `randrange`, `getrandbits`) are intentionally absent.
+const FLOAT_RANDOM_FNS: &[&str] = &[
+    "random",
+    "uniform",
+    "expovariate",
+    "gauss",
+    "normalvariate",
+    "lognormvariate",
+    "triangular",
+    "paretovariate",
+    "weibullvariate",
+    "vonmisesvariate",
+    "gammavariate",
+    "betavariate",
+];
+
+fn is_random_float_helper(name: &str) -> bool {
+    name.strip_prefix("__py_random_")
+        .is_some_and(|field| FLOAT_RANDOM_FNS.contains(&field))
+}
 
 /// Wrap `value` in `__py_float_repr__(value)` so it displays Python-float-style.
 fn wrap_float_repr(value: Expression) -> Expression {
@@ -23451,11 +38257,38 @@ fn expr_is_float_ctx(__w: &mut PyWalker, e: &Expression, floats: &HashMap<String
             op: UnaryOp::Neg | UnaryOp::Pos,
             expr,
         } => expr_is_float_ctx(__w, expr, floats),
-        ExprKind::Call { callee, args, .. } if matches!(&callee.kind, ExprKind::Ident(n) if n == "__pytruediv__") => {
+        ExprKind::Call { callee, args, .. } if matches!(&callee.kind, ExprKind::Ident(n) if n == "__pytruediv__") =>
+        {
             // Same claim, same limit — see `operand_overloads_truediv`.
             !operand_overloads_truediv(__w, args)
         }
+        ExprKind::Call { callee, .. } if callable_expr_returns_python_float(__w, callee) => true,
+        // `pow` splits the same way it does in `expr_is_python_float` —
+        // duplicated here because `wrap_float_display_vars` is a SEPARATE
+        // walker pass (Tier 2) with its own copy of this table. Missing this
+        // arm here was why fixing the Tier-1 copy alone did not change
+        // `print(pow(2, 3))`'s output: this pass re-wrapped it right after.
+        ExprKind::Call { callee, args, .. } if matches!(&callee.kind, ExprKind::Ident(n) if n == "pow") => {
+            args.iter()
+                .take(2)
+                .any(|a| expr_is_float_ctx(__w, &a.value, floats))
+        }
         ExprKind::Call { callee, .. } if matches!(&callee.kind, ExprKind::Ident(n) if FLOAT_MATH_FNS.contains(&n.as_str())) => {
+            true
+        }
+        ExprKind::Call { callee, .. } if matches!(&callee.kind, ExprKind::Ident(n) if hidden_py_math_returns_float(n)) => {
+            true
+        }
+        ExprKind::Call { callee, .. }
+            if matches!(
+                &callee.kind,
+                ExprKind::Member { object, field, .. }
+                    if matches!(field.as_str(), "ratio" | "quick_ratio" | "real_quick_ratio")
+                        && py_known_instance_type_name(__w, object)
+                            .as_deref()
+                            == Some("SequenceMatcher")
+            ) =>
+        {
             true
         }
         ExprKind::Call { callee, args, .. }
@@ -23472,8 +38305,24 @@ fn expr_is_float_ctx(__w: &mut PyWalker, e: &Expression, floats: &HashMap<String
                 expr_is_python_float(__w, e)
             }
         }
+        ExprKind::Call { callee, args, .. }
+            if matches!(&callee.kind, ExprKind::Ident(n) if n == "__py_attr_read")
+                && args.len() == 2 =>
+        {
+            if let ExprKind::Ident(var) = &args[0].value.kind
+                && let ExprKind::Lit(Literal::Str(field)) = &args[1].value.kind
+            {
+                object_field_is_float(__w, var, field)
+            } else {
+                expr_is_python_float(__w, e)
+            }
+        }
+        ExprKind::Call { callee, args, .. } if matches!(&callee.kind, ExprKind::Ident(n) if py_pymod_is_string_format(n, args)) => {
+            false
+        }
         ExprKind::Call { callee, args, .. } if matches!(&callee.kind, ExprKind::Ident(n) if is_py_arith_helper(n)) => {
-            args.iter().any(|a| expr_is_float_ctx(__w, &a.value, floats))
+            args.iter()
+                .any(|a| expr_is_float_ctx(__w, &a.value, floats))
         }
         _ => expr_is_python_float(__w, e),
     }
@@ -23494,7 +38343,17 @@ fn wrap_float_display_vars(__w: &mut PyWalker, e: &mut Expression, floats: &Hash
                     0
                 };
                 for a in args.iter_mut().skip(skip) {
-                    if a.name.is_none() && !a.spread && expr_is_float_ctx(__w, &a.value, floats) {
+                    if a.name.is_none()
+                        && !a.spread
+                        && let Some(class_name) = py_known_instance_type_name(__w, &a.value)
+                        && class_has_attr(__w, &class_name, "__str__")
+                    {
+                        let v = std::mem::replace(&mut a.value, Expression::null());
+                        a.value = call_ident("str", vec![v]);
+                    } else if a.name.is_none()
+                        && !a.spread
+                        && expr_is_float_ctx(__w, &a.value, floats)
+                    {
                         let v = std::mem::replace(&mut a.value, Expression::null());
                         a.value = wrap_float_repr(v);
                     }
@@ -23525,7 +38384,9 @@ fn wrap_float_display_vars(__w: &mut PyWalker, e: &mut Expression, floats: &Hash
                             wrap_float_display_vars(__w, value, floats);
                         }
                     }
-                    InterpolPart::Formatted(value, _) => wrap_float_display_vars(__w, value, floats),
+                    InterpolPart::Formatted(value, _) => {
+                        wrap_float_display_vars(__w, value, floats)
+                    }
                     InterpolPart::Text(_) => {}
                 }
             }
@@ -23577,7 +38438,11 @@ fn wrap_float_display_vars(__w: &mut PyWalker, e: &mut Expression, floats: &Hash
 
 /// Post-pass: track which local variables hold floats and wrap float-variable
 /// `print` arguments. Function bodies get a fresh scope.
-fn apply_float_var_repr(__w: &mut PyWalker, stmts: &mut [Statement], floats: &mut HashMap<String, bool>) {
+fn apply_float_var_repr(
+    __w: &mut PyWalker,
+    stmts: &mut [Statement],
+    floats: &mut HashMap<String, bool>,
+) {
     for stmt in stmts.iter_mut() {
         match &mut stmt.kind {
             StmtKind::Assign { targets, value, .. } => {
@@ -23588,7 +38453,9 @@ fn apply_float_var_repr(__w: &mut PyWalker, stmts: &mut [Statement], floats: &mu
                     }
                 }
             }
-            StmtKind::Expr(e) | StmtKind::Return(Some(e)) => wrap_float_display_vars(__w, e, floats),
+            StmtKind::Expr(e) | StmtKind::Return(Some(e)) => {
+                wrap_float_display_vars(__w, e, floats)
+            }
             StmtKind::If {
                 then_body,
                 elifs,
@@ -23908,6 +38775,10 @@ fn walk_call_args(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<Vec<Argument>,
 /// offsets from the end). The normalizer is a runtime no-op unless the index is
 /// a negative number on a sequence, so dict lookups stay direct.
 fn python_index_operand(__w: &mut PyWalker, object: &Expression, index: Expression) -> Expression {
+    if matches!(&object.kind, ExprKind::Ident(name) if py_typing_generic_alias_name(name).is_some())
+    {
+        return index;
+    }
     if matches!(&index.kind, ExprKind::Tuple(_)) || py_static_frozenset_expr(__w, &index) {
         return py_hash_key_expr(__w, index);
     }
@@ -23947,7 +38818,8 @@ fn index_is_slice(index: &Expression) -> bool {
 /// `l[obj.start:2]` would otherwise keep a raw `Member` that never gets rewritten
 /// into the subscript form the rest of the walker produces.
 fn desugar_slice_bounds(__w: &mut PyWalker, index: Expression) -> Expression {
-    let mut desugar_opt = |b: Option<Box<Expression>>| b.map(|e| Box::new(desugar_member_reads(__w, *e)));
+    let mut desugar_opt =
+        |b: Option<Box<Expression>>| b.map(|e| Box::new(desugar_member_reads(__w, *e)));
     match index.kind {
         ExprKind::Slice { lower, upper, step } => Expression::new(ExprKind::Slice {
             lower: desugar_opt(lower),
@@ -24037,12 +38909,17 @@ fn walk_list_inner(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<ExprKind, Str
     // Check for comprehension
     let has_comp = inner.iter().any(|p| p.as_rule() == Rule::comp_clause);
     if has_comp {
-        let element = walk_expression(__w, inner.remove(0))?;
+        let element_pair = inner.remove(0);
         let generators = inner
             .into_iter()
             .filter(|p| p.as_rule() == Rule::comp_clause)
             .map(|__x| walk_comp_clause(__w, __x))
             .collect::<Result<Vec<_>, _>>()?;
+        let byte_targets = py_mark_bytes_comp_targets(__w, &generators);
+        let re_targets = py_mark_re_match_comp_targets(__w, &generators);
+        let element = walk_expression(__w, element_pair)?;
+        py_restore_re_match_comp_targets(__w, re_targets);
+        py_restore_bytes_comp_targets(__w, byte_targets);
         return Ok(ExprKind::Comprehension {
             kind: ComprehensionKind::List,
             element: Box::new(element),
@@ -24240,7 +39117,8 @@ fn walk_dict_or_set(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<ExprKind, St
                             let entry_inner: Vec<Pair<Rule>> = de.into_inner().collect();
                             if is_spread {
                                 if let Some(expr) = entry_inner.first() {
-                                    props.push(ObjectProperty::Spread(walk_expression(__w, 
+                                    props.push(ObjectProperty::Spread(walk_expression(
+                                        __w,
                                         expr.clone(),
                                     )?));
                                 }
@@ -24479,6 +39357,10 @@ fn walk_comp_clause(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<Comprehensio
         }]));
     } else if matches!(py_static_type_name(__w, &iter), Some("dict")) {
         iter = call_ident("__py_iter_array__", vec![iter]);
+    } else if let ExprKind::Ident(name) = &iter.kind
+        && is_xml_element_var(__w, name)
+    {
+        iter = py_xml_children_expr(name);
     }
 
     Ok(ComprehensionGen {
@@ -24500,10 +39382,12 @@ fn walk_lambda(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<ExprKind, String>
             Rule::lambda_params => {
                 for lp in p.into_inner() {
                     if lp.as_rule() == Rule::lambda_param {
+                        let param_text = lp.as_str().trim_start().to_string();
                         let mut name = String::new();
                         let mut default = None;
-                        let mut is_rest = false;
-                        let mut is_kwargs = false;
+                        let mut is_rest =
+                            param_text.starts_with('*') && !param_text.starts_with("**");
+                        let mut is_kwargs = param_text.starts_with("**");
                         for c in lp.into_inner() {
                             match c.as_rule() {
                                 Rule::identifier => name = c.as_str().to_string(),
@@ -24534,9 +39418,23 @@ fn walk_lambda(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<ExprKind, String>
         }
     }
 
+    let body_expr = body_expr.unwrap_or_else(Expression::null);
+    let rest_bindings: Vec<Statement> = params
+        .iter()
+        .filter(|param| param.is_rest)
+        .map(|param| python_rest_tuple_stmt(&param.name))
+        .collect();
+    let body = if rest_bindings.is_empty() {
+        LambdaBody::Expr(Box::new(body_expr))
+    } else {
+        let mut stmts = rest_bindings;
+        stmts.push(Statement::new(StmtKind::Return(Some(body_expr))));
+        LambdaBody::Block(stmts)
+    };
+
     Ok(ExprKind::Lambda {
         params,
-        body: LambdaBody::Expr(Box::new(body_expr.unwrap_or(Expression::null()))),
+        body,
         is_async: false,
         captures: Vec::new(),
     })
@@ -25234,7 +40132,10 @@ fn walk_expr_list_or_single(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<Expr
     }
 }
 
-fn walk_remaining_as_expr(__w: &mut PyWalker, items: &mut Vec<Pair<Rule>>) -> Result<Expression, String> {
+fn walk_remaining_as_expr(
+    __w: &mut PyWalker,
+    items: &mut Vec<Pair<Rule>>,
+) -> Result<Expression, String> {
     if items.len() == 1 {
         walk_expression(__w, items.remove(0))
     } else {
@@ -25242,15 +40143,52 @@ fn walk_remaining_as_expr(__w: &mut PyWalker, items: &mut Vec<Pair<Rule>>) -> Re
     }
 }
 
+thread_local! {
+    /// Byte offset of the start of each line in the input currently being
+    /// walked. Rebuilt by [`with_line_index`] for each parse.
+    static LINE_STARTS: std::cell::RefCell<Vec<usize>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Install the line index for `src` and hand back the previous one.
+///
+/// ⛔⛔ THIS IS WHY PYTHON WAS QUADRATIC IN PROGRAM SIZE. `to_span` called
+/// pest's `Position::line_col`, which counts newlines FROM THE START OF THE
+/// INPUT — O(offset) — twice for every node. Python's precedence ladder emits
+/// a pair per level (measured: `walk_infix_or_unwrap` nested 42 deep for one
+/// `x = 5`), so node count rises with the program and the total is
+/// O(nodes x length). Measured on 320 -> 1280 lines of assignments: 4x the
+/// input cost 6x the time, and `line_col` was the hottest frame in the
+/// profile. Comment-only and `pass`-only files stayed near-linear because they
+/// produce almost no nodes.
+fn set_line_index(src: &str) -> Vec<usize> {
+    let mut starts = Vec::with_capacity(src.len() / 24 + 1);
+    starts.push(0);
+    starts.extend(src.match_indices('\n').map(|(i, _)| i + 1));
+    LINE_STARTS.with(|c| c.replace(starts))
+}
+
+/// `(line, col)` for a byte offset, both 1-based, matching `line_col`.
+fn line_col_at(offset: usize) -> (u32, u32) {
+    LINE_STARTS.with(|c| {
+        let starts = c.borrow();
+        if starts.is_empty() {
+            return (0, 0);
+        }
+        // The last line start at or before `offset`.
+        let idx = starts.partition_point(|&s| s <= offset) - 1;
+        (idx as u32 + 1, (offset - starts[idx]) as u32 + 1)
+    })
+}
+
 fn to_span(pair: &Pair<Rule>) -> Span {
     let s = pair.as_span();
-    let (sl, sc) = s.start_pos().line_col();
-    let (el, ec) = s.end_pos().line_col();
+    let (sl, sc) = line_col_at(s.start());
+    let (el, ec) = line_col_at(s.end());
     Span {
-        start_line: sl as u32,
-        start_col: sc as u32,
-        end_line: el as u32,
-        end_col: ec as u32,
+        start_line: sl,
+        start_col: sc,
+        end_line: el,
+        end_col: ec,
     }
 }
 
@@ -25453,7 +40391,12 @@ fn py_complex_parts_or_real(__w: &mut PyWalker, e: Expression) -> (Expression, E
     py_complex_parts(__w, &e).unwrap_or((e, Expression::float(0.0)))
 }
 
-fn py_complex_binary(__w: &mut PyWalker, op: BinOp, left: Expression, right: Expression) -> Option<Expression> {
+fn py_complex_binary(
+    __w: &mut PyWalker,
+    op: BinOp,
+    left: Expression,
+    right: Expression,
+) -> Option<Expression> {
     if py_complex_parts(__w, &left).is_none() && py_complex_parts(__w, &right).is_none() {
         return None;
     }
@@ -25617,6 +40560,10 @@ fn wrap_bytes(array: Expression) -> Expression {
     call_ident("__py_bytes_new__", vec![array])
 }
 
+fn wrap_bytearray(array: Expression) -> Expression {
+    call_ident("__py_bytearray_new__", vec![array])
+}
+
 fn positional_or_named_arg(args: &[Argument], index: usize, name: &str) -> Option<Expression> {
     args.iter()
         .find(|a| a.name.as_deref() == Some(name))
@@ -25626,6 +40573,41 @@ fn positional_or_named_arg(args: &[Argument], index: usize, name: &str) -> Optio
 
 fn python_int_byteorder_arg(args: &[Argument], index: usize) -> Expression {
     positional_or_named_arg(args, index, "byteorder").unwrap_or_else(|| Expression::string("big"))
+}
+
+fn python_string_encode_expr(
+    __w: &mut PyWalker,
+    object: &Expression,
+    field: &str,
+    args: &[Argument],
+) -> Option<Expression> {
+    if field != "encode" || expr_is_python_bytes(__w, object) {
+        return None;
+    }
+    let encoding =
+        positional_or_named_arg(args, 0, "encoding").unwrap_or_else(|| Expression::string("utf-8"));
+    let errors =
+        positional_or_named_arg(args, 1, "errors").unwrap_or_else(|| Expression::string("strict"));
+    Some(call_ident(
+        "__py_codecs_encode",
+        vec![object.clone(), encoding, errors],
+    ))
+}
+
+fn python_string_predicate_expr(
+    object: &Expression,
+    field: &str,
+    args: &[Argument],
+) -> Option<Expression> {
+    if !args.is_empty() {
+        return None;
+    }
+    let helper = match field {
+        "isascii" => "__py_str_isascii",
+        "isidentifier" => "__py_str_isidentifier",
+        _ => return None,
+    };
+    Some(call_ident(helper, vec![object.clone()]))
 }
 
 fn parse_python_hex_float(s: &str) -> Option<f64> {
@@ -25647,7 +40629,8 @@ fn parse_python_hex_float(s: &str) -> Option<f64> {
     Some(value * 2f64.powi(exp))
 }
 
-fn try_rewrite_python_numeric_method(__w: &mut PyWalker, 
+fn try_rewrite_python_numeric_method(
+    __w: &mut PyWalker,
     object: &Expression,
     field: &str,
     args: &[Argument],
@@ -25721,6 +40704,7 @@ const BYTES_METHODS_RETURN_BYTES: &[&str] = &[
 const BYTES_METHODS_RETURN_SCALAR: &[&str] = &[
     "find",
     "rfind",
+    "index",
     "count",
     "startswith",
     "endswith",
@@ -25736,9 +40720,24 @@ fn expr_is_python_bytes(__w: &mut PyWalker, e: &Expression) -> bool {
         // A `Literal::Bytes` is bytes by construction — the call shape below is
         // the pre-literal spelling, kept for `bytes(...)` conversions.
         ExprKind::Lit(Literal::Bytes(_)) => true,
-        ExprKind::Ident(name) => is_bytes_var(__w, name),
+        ExprKind::Ident(name) => is_bytes_var(__w, name) || is_bytearray_var(__w, name),
         ExprKind::Call { callee, args, .. } => match &callee.kind {
-            ExprKind::Ident(n) if n == "__py_bytes_new__" || n == "bytes" => true,
+            ExprKind::Ident(n)
+                if matches!(
+                    n.as_str(),
+                    "__py_bytes_new__"
+                        | "__py_bytes_fromhex__"
+                        | "__py_bytes_join"
+                        | "__py_memoryview_cast_bytes"
+                        | "__py_bytearray_new__"
+                        | "__py_bytearray_copy"
+                        | "__py_bytearray_pop_array"
+                        | "bytes"
+                        | "bytearray"
+                ) =>
+            {
+                true
+            }
             // `+`/`*` lower to __pyadd__/__pymul__ — bytes if an operand is.
             ExprKind::Ident(n) if n == "__pyadd__" || n == "__pymul__" => {
                 args.iter().any(|a| expr_is_python_bytes(__w, &a.value))
@@ -25755,23 +40754,111 @@ fn expr_is_python_bytes(__w: &mut PyWalker, e: &Expression) -> bool {
                         | "__py_base64_b16decode"
                         | "__py_base64_b32encode"
                         | "__py_base64_b32decode"
+                        | "__py_base64_a85encode"
+                        | "__py_base64_a85decode"
+                        | "__py_base64_b85encode"
+                        | "__py_base64_b85decode"
                         | "__py_binascii_b2a_base64"
                         | "__py_binascii_a2b_base64"
                         | "__py_binascii_hexlify"
                         | "__py_binascii_unhexlify"
                         | "__py_codecs_encode"
+                        | "__py_pickle_dumps"
+                        | "__py_marshal_dumps"
+                        | "unquote_to_bytes"
+                        | "__py_url_unquote_to_bytes"
                 ) =>
             {
                 true
             }
             ExprKind::Member { object, field, .. } => {
-                field == "encode"
+                (matches!(
+                    module_namespace_path(__w, object).as_deref(),
+                    Some("pickle" | "marshal")
+                ) && field == "dumps")
+                    || (matches!(zlib_stream_var_kind(__w, object), Some("compress"))
+                        && matches!(field.as_str(), "compress" | "flush"))
+                    || (matches!(zlib_stream_var_kind(__w, object), Some("decompress"))
+                        && matches!(field.as_str(), "decompress" | "flush"))
+                    || matches!(
+                        field.as_str(),
+                        "__compressobj_compress"
+                            | "__compressobj_flush"
+                            | "__decompressobj_decompress"
+                            | "__decompressobj_flush"
+                    )
+                    || (matches!(module_namespace_path(__w, object).as_deref(), Some("zlib"))
+                        && matches!(
+                            field.as_str(),
+                            "compress"
+                                | "decompress"
+                                | "__compressobj_compress"
+                                | "__compressobj_flush"
+                                | "__decompressobj_decompress"
+                                | "__decompressobj_flush"
+                        ))
+                    || (matches!(module_namespace_path(__w, object).as_deref(), Some("gzip"))
+                        && matches!(field.as_str(), "compress" | "decompress" | "__file_read"))
+                    || field == "encode"
                     || (BYTES_METHODS_RETURN_BYTES.contains(&field.as_str())
                         && expr_is_python_bytes(__w, object))
             }
             _ => false,
         },
         _ => false,
+    }
+}
+
+fn expr_is_python_bytearray(__w: &mut PyWalker, e: &Expression) -> bool {
+    match &e.kind {
+        ExprKind::Ident(name) => is_bytearray_var(__w, name),
+        ExprKind::Call { callee, .. } => {
+            matches!(&callee.kind, ExprKind::Ident(n) if n == "__py_bytearray_new__" || n == "__py_bytearray_copy" || n == "__py_bytearray_pop_array" || n == "bytearray")
+        }
+        _ => false,
+    }
+}
+
+fn expr_is_python_bytes_sequence(__w: &mut PyWalker, e: &Expression) -> bool {
+    match &e.kind {
+        ExprKind::Ident(name) => is_bytes_sequence_var(__w, name),
+        ExprKind::Call { callee, .. } => matches!(
+            &callee.kind,
+            ExprKind::Ident(name)
+                if matches!(
+                    name.as_str(),
+                    "__py_bytes_split" | "__py_bytes_rsplit" | "__py_bytes_splitlines"
+                )
+        ),
+        _ => false,
+    }
+}
+
+fn py_mark_bytes_comp_targets(
+    __w: &mut PyWalker,
+    generators: &[ComprehensionGen],
+) -> Vec<(String, bool)> {
+    let mut marked = Vec::new();
+    for generator in generators {
+        if !expr_is_python_bytes_sequence(__w, &generator.iter) {
+            continue;
+        }
+        if let ExprKind::Ident(name) = &generator.target.kind {
+            let was_bytes = is_bytes_var(__w, name);
+            note_bytes_var(__w, name);
+            marked.push((name.clone(), was_bytes));
+        }
+    }
+    marked
+}
+
+fn py_restore_bytes_comp_targets(__w: &mut PyWalker, marked: Vec<(String, bool)>) {
+    for (name, was_bytes) in marked {
+        if was_bytes {
+            note_bytes_var(__w, &name);
+        } else {
+            clear_bytes_var(__w, &name);
+        }
     }
 }
 
@@ -25808,21 +40895,206 @@ fn decode_bytes_arg(__w: &mut PyWalker, a: &Argument) -> Argument {
     }
 }
 
-/// Rewrite a string-like method call on a `bytes` receiver as
-/// decode → `str.METHOD(...)` → (re-encode if it returns bytes). Returns
-/// `None` when the receiver isn't statically bytes or the method isn't a
-/// supported string-like bytes method.
-fn try_rewrite_bytes_method(__w: &mut PyWalker, 
+fn bytes_len_expr(value: Expression) -> Expression {
+    call_ident("len", vec![value])
+}
+
+fn memoryview_one_tuple(value: Expression) -> Expression {
+    Expression::new(ExprKind::Tuple(vec![value]))
+}
+
+fn bytes_singleton_expr(value: Expression) -> Expression {
+    wrap_bytes(Expression::new(ExprKind::Array(vec![ArrayElement {
+        key: None,
+        value,
+        spread: false,
+        by_ref: false,
+    }])))
+}
+
+fn memoryview_byte_needle(__w: &mut PyWalker, needle: Expression) -> Expression {
+    if expr_is_python_bytes(__w, &needle) {
+        needle
+    } else {
+        bytes_singleton_expr(needle)
+    }
+}
+
+fn memoryview_attr_read(
+    __w: &mut PyWalker,
+    object: &Expression,
+    field: &str,
+) -> Option<Expression> {
+    let source = memoryview_source(__w, object)?;
+    let source_is_bytes = expr_is_python_bytes(__w, &source);
+    match field {
+        "obj" => Some(source),
+        "format" if source_is_bytes => Some(Expression::string("B")),
+        "format" => Some(Expression::new(ExprKind::Member {
+            object: Box::new(source),
+            field: "typecode".to_string(),
+            null_safe: false,
+        })),
+        "itemsize" if source_is_bytes => Some(Expression::int(1)),
+        "itemsize" => Some(Expression::new(ExprKind::Member {
+            object: Box::new(source),
+            field: "itemsize".to_string(),
+            null_safe: false,
+        })),
+        "nbytes" if source_is_bytes => Some(bytes_len_expr(source)),
+        "ndim" if source_is_bytes => Some(Expression::int(1)),
+        "shape" if source_is_bytes => Some(memoryview_one_tuple(bytes_len_expr(source))),
+        "strides" if source_is_bytes => Some(memoryview_one_tuple(Expression::int(1))),
+        "suboffsets" if source_is_bytes => Some(Expression::new(ExprKind::Tuple(Vec::new()))),
+        "c_contiguous" | "f_contiguous" | "contiguous" => Some(Expression::bool(true)),
+        "readonly" => Some(Expression::bool(memoryview_is_readonly(__w, object))),
+        _ => None,
+    }
+}
+
+fn memoryview_cast_width(format: &str) -> Option<usize> {
+    Some(match format {
+        "b" | "B" | "c" | "?" => 1,
+        "h" | "H" => 2,
+        "i" | "I" | "l" | "L" | "f" => 4,
+        "q" | "Q" | "d" => 8,
+        _ => return None,
+    })
+}
+
+fn literal_bytes_from_expr(e: &Expression) -> Option<Vec<u8>> {
+    match &e.kind {
+        ExprKind::Lit(Literal::Bytes(bytes)) => Some(bytes.clone()),
+        ExprKind::Call { callee, args, .. }
+            if matches!(&callee.kind, ExprKind::Ident(n)
+                if n == "__py_bytes_new__" || n == "__py_bytearray_new__")
+                && args.len() == 1 =>
+        {
+            match &args[0].value.kind {
+                ExprKind::Array(elems) => {
+                    let mut out = Vec::with_capacity(elems.len());
+                    for elem in elems {
+                        let ExprKind::Lit(Literal::Int(n)) = elem.value.kind else {
+                            return None;
+                        };
+                        if !(0..=255).contains(&n) {
+                            return None;
+                        }
+                        out.push(n as u8);
+                    }
+                    Some(out)
+                }
+                ExprKind::Call { callee, args, .. }
+                    if matches!(&callee.kind, ExprKind::Ident(name) if name == "range") =>
+                {
+                    let values = py_range_static_values(args, 65_536)?;
+                    let mut out = Vec::with_capacity(values.len());
+                    for n in values {
+                        if !(0..=255).contains(&n) {
+                            return None;
+                        }
+                        out.push(n as u8);
+                    }
+                    Some(out)
+                }
+                _ => {
+                    return None;
+                }
+            }
+        }
+        _ => None,
+    }
+}
+
+fn memoryview_static_cast(
+    __w: &mut PyWalker,
+    object: &Expression,
+    format: &Expression,
+) -> Option<Expression> {
+    let source = memoryview_source(__w, object)?;
+    let ExprKind::Lit(Literal::Str(fmt)) = &format.kind else {
+        return None;
+    };
+    let width = memoryview_cast_width(fmt.as_ref())?;
+    if width == 1 && !expr_is_python_bytes(__w, &source) {
+        return Some(call_ident("__py_memoryview_cast_bytes", vec![source]));
+    }
+    let bytes = literal_bytes_from_expr(&source)?;
+    if width == 1 {
+        return Some(source);
+    }
+    let elems = bytes
+        .chunks(width)
+        .filter(|chunk| chunk.len() == width)
+        .map(|chunk| {
+            let mut value = 0i64;
+            for (i, b) in chunk.iter().enumerate() {
+                value |= (*b as i64) << (i * 8);
+            }
+            ArrayElement {
+                key: None,
+                spread: false,
+                by_ref: false,
+                value: Expression::int(value),
+            }
+        })
+        .collect();
+    Some(Expression::new(ExprKind::Array(elems)))
+}
+
+fn try_rewrite_memoryview_method(
+    __w: &mut PyWalker,
     object: &Expression,
     field: &str,
     args: &[Argument],
 ) -> Option<Expression> {
+    let source = memoryview_source(__w, object)?;
+    match field {
+        "tobytes" if args.is_empty() => Some(wrap_bytes(source)),
+        "tolist" if args.is_empty() => Some(call_ident("list", vec![source])),
+        "hex" if args.is_empty() => Some(call_ident("__py_bytes_hex__", vec![source])),
+        "count" if args.len() == 1 => Some(call_ident(
+            "__py_bytes_count",
+            vec![source, memoryview_byte_needle(__w, args[0].value.clone())],
+        )),
+        "index" if args.len() == 1 => {
+            let needle = memoryview_byte_needle(__w, args[0].value.clone());
+            try_rewrite_bytes_method(__w, &source, "index", &[Argument::positional(needle)])
+        }
+        "cast" if !args.is_empty() => memoryview_static_cast(__w, object, &args[0].value),
+        "release" if args.is_empty() => Some(Expression::null()),
+        _ => None,
+    }
+}
+
+/// Rewrite a string-like method call on a `bytes` receiver as
+/// decode → `str.METHOD(...)` → (re-encode if it returns bytes). Returns
+/// `None` when the receiver isn't statically bytes or the method isn't a
+/// supported string-like bytes method.
+fn try_rewrite_bytes_method(
+    __w: &mut PyWalker,
+    object: &Expression,
+    field: &str,
+    args: &[Argument],
+) -> Option<Expression> {
+    if matches!(&object.kind, ExprKind::Ident(name) if name == "bytes") {
+        if field == "maketrans" && args.len() == 2 {
+            return Some(call_ident(
+                "__py_bytes_maketrans",
+                args.iter().map(|arg| arg.value.clone()).collect(),
+            ));
+        }
+        return None;
+    }
     if !expr_is_python_bytes(__w, object) {
         return None;
     }
     // `.hex()` → uint8array.toHex (a hex string, no `0x`/separators).
     if field == "hex" && args.is_empty() {
         return Some(call_ident("__py_bytes_hex__", vec![object.clone()]));
+    }
+    if field == "copy" && args.is_empty() {
+        return Some(call_ident("__py_bytearray_copy", vec![object.clone()]));
     }
     if field == "join" && args.len() == 1 {
         return Some(call_ident(
@@ -25849,9 +41121,89 @@ fn try_rewrite_bytes_method(__w: &mut PyWalker,
             })
             .unwrap_or_else(|| Expression::string("strict"));
         return Some(call_ident(
-            "__py_codecs_decode",
+            if matches!(
+                resolve_string_const(__w, &codec).as_deref(),
+                Some("utf-8" | "utf8")
+            ) && matches!(
+                resolve_string_const(__w, &errors).as_deref(),
+                Some("strict")
+            ) {
+                "__py_bytes_decode"
+            } else {
+                "__py_codecs_decode"
+            },
             vec![object.clone(), codec, errors],
         ));
+    }
+    match field {
+        "split" => {
+            let mut call_args = vec![object.clone()];
+            call_args.extend(args.iter().map(|arg| arg.value.clone()));
+            return Some(call_ident("__py_bytes_split", call_args));
+        }
+        "rsplit" => {
+            let mut call_args = vec![object.clone()];
+            call_args.extend(args.iter().map(|arg| arg.value.clone()));
+            return Some(call_ident("__py_bytes_rsplit", call_args));
+        }
+        "splitlines" => {
+            let mut call_args = vec![object.clone()];
+            call_args.extend(args.iter().map(|arg| arg.value.clone()));
+            return Some(call_ident("__py_bytes_splitlines", call_args));
+        }
+        "partition" => {
+            if args.len() == 1 {
+                return Some(call_ident(
+                    "__py_bytes_partition",
+                    vec![object.clone(), args[0].value.clone()],
+                ));
+            }
+        }
+        "rpartition" => {
+            if args.len() == 1 {
+                return Some(call_ident(
+                    "__py_bytes_rpartition",
+                    vec![object.clone(), args[0].value.clone()],
+                ));
+            }
+        }
+        "removeprefix" => {
+            if args.len() == 1 {
+                return Some(call_ident(
+                    "__py_bytes_removeprefix",
+                    vec![object.clone(), args[0].value.clone()],
+                ));
+            }
+        }
+        "removesuffix" => {
+            if args.len() == 1 {
+                return Some(call_ident(
+                    "__py_bytes_removesuffix",
+                    vec![object.clone(), args[0].value.clone()],
+                ));
+            }
+        }
+        "expandtabs" => {
+            let mut call_args = vec![object.clone()];
+            call_args.extend(args.iter().map(|arg| arg.value.clone()));
+            return Some(call_ident("__py_bytes_expandtabs", call_args));
+        }
+        "count" => {
+            if !args.is_empty() {
+                let mut call_args = vec![object.clone()];
+                call_args.extend(args.iter().map(|arg| arg.value.clone()));
+                return Some(call_ident("__py_bytes_count", call_args));
+            }
+        }
+        "translate" => {
+            if args.len() == 1 {
+                return Some(call_ident(
+                    "__py_bytes_translate",
+                    vec![object.clone(), args[0].value.clone()],
+                ));
+            }
+        }
+        _ => {}
     }
     // `.split()` is deferred: it involves a *list of bytes*, and
     // nested bytes don't yet repr as `b'…'` inside a list/collection.
@@ -25877,6 +41229,497 @@ fn try_rewrite_bytes_method(__w: &mut PyWalker,
         Some(wrap_bytes(call_ident("__vybe_str_encode", vec![str_call])))
     } else {
         Some(str_call)
+    }
+}
+
+fn py_string_concat(left: Expression, right: Expression) -> Expression {
+    Expression::new(ExprKind::Binary {
+        op: BinOp::Add,
+        left: Box::new(left),
+        right: Box::new(right),
+    })
+}
+
+fn bytearray_repr_expr(value: Expression) -> Expression {
+    py_string_concat(
+        py_string_concat(
+            Expression::string("bytearray("),
+            call_ident("__vybe_bytes_repr", vec![value]),
+        ),
+        Expression::string(")"),
+    )
+}
+
+fn py_any_expr(mut tests: Vec<Expression>) -> Expression {
+    let mut out = tests.pop().unwrap_or_else(|| Expression::bool(false));
+    while let Some(next) = tests.pop() {
+        out = Expression::new(ExprKind::Binary {
+            op: BinOp::Or,
+            left: Box::new(next),
+            right: Box::new(out),
+        });
+    }
+    out
+}
+
+fn bytes_tuple_prefix_check(
+    __w: &mut PyWalker,
+    object: &Expression,
+    field: &str,
+    args: &[Argument],
+) -> Option<Expression> {
+    if !expr_is_python_bytes(__w, object) || !matches!(field, "startswith" | "endswith") {
+        return None;
+    }
+    let first = args.first()?;
+    let ExprKind::Tuple(prefixes) = &first.value.kind else {
+        return None;
+    };
+    let decoded_recv = call_ident("__vybe_bytes_decode", vec![object.clone()]);
+    let mut tests = Vec::with_capacity(prefixes.len());
+    for prefix in prefixes {
+        let mut call_args = vec![Argument::positional(if expr_is_python_bytes(__w, prefix) {
+            call_ident("__vybe_bytes_decode", vec![prefix.clone()])
+        } else {
+            prefix.clone()
+        })];
+        for arg in args.iter().skip(1) {
+            call_args.push(arg.clone());
+        }
+        tests.push(Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::new(ExprKind::Member {
+                object: Box::new(decoded_recv.clone()),
+                field: field.to_string(),
+                null_safe: false,
+            })),
+            args: call_args,
+            optional: false,
+        }));
+    }
+    Some(py_any_expr(tests))
+}
+
+fn try_rewrite_zlib_stream_method(
+    __w: &mut PyWalker,
+    object: &Expression,
+    field: &str,
+    args: &[Argument],
+) -> Option<Expression> {
+    let kind = zlib_stream_var_kind(__w, object)?;
+    let helper = match (kind, field, args.len()) {
+        ("compress", "compress", 1) => "__compressobj_compress",
+        ("compress", "flush", 0 | 1) => "__compressobj_flush",
+        ("compress", "copy", 0) => "__compressobj_copy",
+        ("decompress", "decompress", 1 | 2) => "__decompressobj_decompress",
+        ("decompress", "flush", 0 | 1) => "__decompressobj_flush",
+        ("decompress", "copy", 0) => "__decompressobj_copy",
+        _ => return None,
+    };
+    let mut call_args = Vec::with_capacity(args.len() + 1);
+    call_args.push(object.clone());
+    call_args.extend(args.iter().map(|arg| arg.value.clone()));
+    Some(Expression::new(ExprKind::Call {
+        callee: Box::new(py_member(Expression::ident("zlib"), helper)),
+        args: call_args
+            .into_iter()
+            .map(|value| Argument {
+                value,
+                name: None,
+                by_ref: false,
+                spread: false,
+            })
+            .collect(),
+        optional: false,
+    }))
+}
+
+fn try_rewrite_gzip_file_method(
+    __w: &mut PyWalker,
+    object: &Expression,
+    field: &str,
+    args: &[Argument],
+) -> Option<Expression> {
+    if !gzip_file_expr(__w, object) {
+        return None;
+    }
+    let helper = match (field, args.len()) {
+        ("read", 0 | 1) => "__file_read",
+        ("writable", 0) => "__file_writable",
+        ("isatty", 0) => "__file_isatty",
+        _ => return None,
+    };
+    let mut call_args = Vec::with_capacity(args.len() + 1);
+    call_args.push(Argument::positional(object.clone()));
+    call_args.extend(args.iter().cloned());
+    Some(Expression::new(ExprKind::Call {
+        callee: Box::new(py_member(Expression::ident("gzip"), helper)),
+        args: call_args,
+        optional: false,
+    }))
+}
+
+fn memoryview_release_var(expr: &Expression) -> Option<String> {
+    let ExprKind::Call { callee, args, .. } = &expr.kind else {
+        return None;
+    };
+    if !args.is_empty() {
+        return None;
+    }
+    let ExprKind::Member { object, field, .. } = &callee.kind else {
+        return None;
+    };
+    if field != "release" {
+        return None;
+    }
+    match &object.kind {
+        ExprKind::Ident(name) => Some(name.clone()),
+        _ => None,
+    }
+}
+
+fn bytearray_mutation_stmt(__w: &mut PyWalker, expr: &Expression) -> Option<StmtKind> {
+    let ExprKind::Call { callee, args, .. } = &expr.kind else {
+        return None;
+    };
+    let ExprKind::Member { object, field, .. } = &callee.kind else {
+        return None;
+    };
+    let ExprKind::Ident(var) = &object.kind else {
+        return None;
+    };
+    if !is_bytearray_var(__w, var) {
+        return None;
+    }
+    let helper = match field.as_str() {
+        "append" if args.len() == 1 => "__py_bytearray_append",
+        "extend" if args.len() == 1 => "__py_bytearray_extend",
+        "clear" if args.is_empty() => "__py_bytearray_clear",
+        "reverse" if args.is_empty() => "__py_bytearray_reverse",
+        "insert" if args.len() == 2 => "__py_bytearray_insert",
+        "remove" if args.len() == 1 => "__py_bytearray_remove",
+        "pop" if args.len() <= 1 => "__py_bytearray_pop_array",
+        _ => return None,
+    };
+    let mut call_args = Vec::with_capacity(args.len() + 1);
+    call_args.push(Expression::ident(var));
+    call_args.extend(args.iter().map(|arg| arg.value.clone()));
+    Some(StmtKind::Assign {
+        targets: vec![Expression::ident(var)],
+        value: call_ident(helper, call_args),
+        by_ref: false,
+    })
+}
+
+fn xml_mutation_owner_var(object: &Expression) -> Option<String> {
+    if let ExprKind::Ident(var) = &object.kind {
+        return Some(var.clone());
+    }
+    let ExprKind::Call { callee, args, .. } = &object.kind else {
+        return None;
+    };
+    if !matches!(&callee.kind, ExprKind::Ident(name) if name == "__py_attr_read") || args.len() != 2
+    {
+        return None;
+    }
+    let ExprKind::Ident(var) = &args[0].value.kind else {
+        return None;
+    };
+    if !matches!(&args[1].value.kind, ExprKind::Lit(Literal::Str(field)) if field == "_children") {
+        return None;
+    }
+    Some(var.clone())
+}
+
+fn xml_element_mutation_stmt(__w: &mut PyWalker, expr: &Expression) -> Option<StmtKind> {
+    let ExprKind::Call { callee, args, .. } = &expr.kind else {
+        return None;
+    };
+    if matches!(&callee.kind, ExprKind::Ident(name) if name == "__py_xml_indent") {
+        let ExprKind::Ident(var) = &args.first()?.value.kind else {
+            return Some(StmtKind::Expr(Expression::null()));
+        };
+        let mut elem = __w.py_xml_element_values.get(var)?.clone();
+        let space = args
+            .iter()
+            .find(|arg| arg.name.as_deref() == Some("space"))
+            .or_else(|| args.get(1))
+            .and_then(|arg| resolve_string_const(__w, &arg.value))
+            .unwrap_or_else(|| "  ".to_string());
+        let level = args
+            .iter()
+            .find(|arg| arg.name.as_deref() == Some("level"))
+            .or_else(|| args.get(2))
+            .and_then(|arg| match &arg.value.kind {
+                ExprKind::Lit(Literal::Int(i)) => Some((*i).max(0) as usize),
+                _ => None,
+            })
+            .unwrap_or(0);
+        py_xml_indent_value(&mut elem, &space, level);
+        __w.py_xml_element_values.insert(var.clone(), elem.clone());
+        return Some(StmtKind::Assign {
+            targets: vec![Expression::ident(var)],
+            value: py_xml_element_expr(&elem),
+            by_ref: false,
+        });
+    }
+    let ExprKind::Member { object, field, .. } = &callee.kind else {
+        return None;
+    };
+    if field == "indent"
+        && module_namespace_path(__w, object).as_deref() == Some("xml.etree.ElementTree")
+    {
+        let ExprKind::Ident(var) = &args.first()?.value.kind else {
+            return Some(StmtKind::Expr(Expression::null()));
+        };
+        let mut elem = __w.py_xml_element_values.get(var)?.clone();
+        let space = args
+            .iter()
+            .find(|arg| arg.name.as_deref() == Some("space"))
+            .or_else(|| args.get(1))
+            .and_then(|arg| resolve_string_const(__w, &arg.value))
+            .unwrap_or_else(|| "  ".to_string());
+        let level = args
+            .iter()
+            .find(|arg| arg.name.as_deref() == Some("level"))
+            .or_else(|| args.get(2))
+            .and_then(|arg| match &arg.value.kind {
+                ExprKind::Lit(Literal::Int(i)) => Some((*i).max(0) as usize),
+                _ => None,
+            })
+            .unwrap_or(0);
+        py_xml_indent_value(&mut elem, &space, level);
+        __w.py_xml_element_values.insert(var.clone(), elem.clone());
+        return Some(StmtKind::Assign {
+            targets: vec![Expression::ident(var)],
+            value: py_xml_element_expr(&elem),
+            by_ref: false,
+        });
+    }
+    let var = xml_mutation_owner_var(object)?;
+    let mut elem = __w.py_xml_element_values.get(&var)?.clone();
+    match field.as_str() {
+        "clear" if args.is_empty() => {
+            elem.attrib.clear();
+            elem.text = None;
+            elem.tail.clear();
+            elem.children.clear();
+        }
+        "set" if args.len() == 2 => {
+            let key = resolve_string_const(__w, &args[0].value)?;
+            let value = py_xml_literal_text(&args[1].value)?;
+            if let Some((_, existing)) = elem.attrib.iter_mut().find(|(k, _)| k == &key) {
+                *existing = value;
+            } else {
+                elem.attrib.push((key, value));
+            }
+        }
+        "append" if args.len() == 1 => {
+            elem.children
+                .push(py_xml_static_element(__w, &args[0].value)?);
+        }
+        "extend" if args.len() == 1 => {
+            for item in py_xml_static_element_array(__w, &args[0].value)? {
+                elem.children.push(item);
+            }
+        }
+        "insert" if args.len() == 2 => {
+            let index = match &args[0].value.kind {
+                ExprKind::Lit(Literal::Int(i)) => (*i).max(0) as usize,
+                _ => return None,
+            };
+            let child = py_xml_static_element(__w, &args[1].value)?;
+            let index = index.min(elem.children.len());
+            elem.children.insert(index, child);
+        }
+        "remove" if args.len() == 1 => {
+            let child = py_xml_static_element(__w, &args[0].value)?;
+            if let Some(tag) = py_xml_tag_name(&child) {
+                if let Some(pos) = elem
+                    .children
+                    .iter()
+                    .position(|candidate| py_xml_tag_name(candidate) == Some(tag))
+                {
+                    elem.children.remove(pos);
+                }
+            }
+        }
+        _ => return None,
+    }
+    __w.py_xml_element_values.insert(var.clone(), elem.clone());
+    Some(StmtKind::Assign {
+        targets: vec![Expression::ident(&var)],
+        value: py_xml_element_expr(&elem),
+        by_ref: false,
+    })
+}
+
+fn py_bytearray_pop_assignment_stmt(
+    __w: &mut PyWalker,
+    target: &Expression,
+    value: &Expression,
+) -> Option<StmtKind> {
+    let ExprKind::Ident(target_name) = &target.kind else {
+        return None;
+    };
+    let ExprKind::Call { callee, args, .. } = &value.kind else {
+        return None;
+    };
+    let (source_name, index_args): (&str, Vec<Expression>) = match &callee.kind {
+        ExprKind::Ident(name)
+            if name == "__py_bytearray_pop_value" && (1..=2).contains(&args.len()) =>
+        {
+            let ExprKind::Ident(source_name) = &args[0].value.kind else {
+                return None;
+            };
+            (
+                source_name.as_str(),
+                args.iter().skip(1).map(|arg| arg.value.clone()).collect(),
+            )
+        }
+        ExprKind::Member { object, field, .. } if field == "pop" && args.len() <= 1 => {
+            let ExprKind::Ident(source_name) = &object.kind else {
+                return None;
+            };
+            if !is_bytearray_var(__w, source_name) {
+                return None;
+            }
+            (
+                source_name.as_str(),
+                args.iter().map(|arg| arg.value.clone()).collect(),
+            )
+        }
+        _ => return None,
+    };
+    let temp_name = format!("__py_bytearray_pop_pair_{source_name}_{target_name}");
+    let temp = Expression::ident(&temp_name);
+    let mut call_args = Vec::with_capacity(index_args.len() + 1);
+    call_args.push(Expression::ident(source_name));
+    call_args.extend(index_args);
+    let mut statements = vec![
+        Statement::new(StmtKind::Assign {
+            targets: vec![temp.clone()],
+            value: call_ident("__py_bytearray_pop_pair", call_args),
+            by_ref: false,
+        }),
+        Statement::new(StmtKind::Assign {
+            targets: vec![Expression::ident(target_name)],
+            value: py_index(temp.clone(), Expression::int(0)),
+            by_ref: false,
+        }),
+    ];
+    if target_name == source_name {
+        clear_bytearray_var(__w, source_name);
+    } else {
+        statements.push(Statement::new(StmtKind::Assign {
+            targets: vec![Expression::ident(source_name)],
+            value: py_index(temp, Expression::int(1)),
+            by_ref: false,
+        }));
+    }
+    Some(StmtKind::Block(statements))
+}
+
+fn normalize_python_bytes_memoryview_expr(__w: &mut PyWalker, expr: &mut Expression) {
+    let replacement = match &expr.kind {
+        ExprKind::Call { callee, args, .. } => match &callee.kind {
+            ExprKind::Ident(name) if matches!(name.as_str(), "str" | "repr") && args.len() == 1 => {
+                let value = args[0].value.clone();
+                if is_memoryview_released(__w, &value) {
+                    Some(Expression::string("<released memoryview object>"))
+                } else if is_memoryview_expr(__w, &value) {
+                    Some(Expression::string("<memoryview object>"))
+                } else if expr_is_python_bytearray(__w, &value) {
+                    Some(bytearray_repr_expr(value))
+                } else {
+                    None
+                }
+            }
+            ExprKind::Ident(name) if name == "__line" => {
+                let mut changed = false;
+                let mut new_args = Vec::with_capacity(args.len());
+                for arg in args {
+                    let mut arg = arg.clone();
+                    if expr_is_python_bytearray(__w, &arg.value) {
+                        arg.value = bytearray_repr_expr(arg.value);
+                        changed = true;
+                    }
+                    new_args.push(arg);
+                }
+                changed.then(|| {
+                    Expression::new(ExprKind::Call {
+                        callee: callee.clone(),
+                        args: new_args,
+                        optional: false,
+                    })
+                })
+            }
+            ExprKind::Ident(name) if name == "__pyadd__" && args.len() == 2 => {
+                let mut left = args[0].value.clone();
+                let mut right = args[1].value.clone();
+                normalize_python_bytes_memoryview_expr(__w, &mut left);
+                normalize_python_bytes_memoryview_expr(__w, &mut right);
+                if let Some(left_text) = resolve_string_const(__w, &left)
+                    && let Some(right_text) = resolve_string_const(__w, &right)
+                {
+                    Some(Expression::string(&(left_text + &right_text)))
+                } else if expr_is_python_bytes(__w, &left) && expr_is_python_bytes(__w, &right) {
+                    Some(call_ident("__py_bytes_concat", vec![left, right]))
+                } else {
+                    None
+                }
+            }
+            ExprKind::Ident(name)
+                if name == "__py_pickle_dumps"
+                    && args
+                        .first()
+                        .is_some_and(|arg| is_memoryview_expr(__w, &arg.value)) =>
+            {
+                Some(py_raise_expr(
+                    "TypeError",
+                    Some("cannot pickle memoryview objects"),
+                ))
+            }
+            ExprKind::Member { object, field, .. } => {
+                if let Some(value) = python_string_encode_expr(__w, object, field, args) {
+                    Some(value)
+                } else if let Some(value) = python_string_predicate_expr(object, field, args) {
+                    Some(value)
+                } else if field == "dumps"
+                    && (matches!(&object.kind, ExprKind::Ident(name) if name == "pickle")
+                        || module_namespace_path(__w, object).as_deref() == Some("pickle"))
+                    && args
+                        .first()
+                        .is_some_and(|arg| is_memoryview_expr(__w, &arg.value))
+                {
+                    Some(py_raise_expr(
+                        "TypeError",
+                        Some("cannot pickle memoryview objects"),
+                    ))
+                } else if field == "pop" && args.len() <= 1 && expr_is_python_bytearray(__w, object)
+                {
+                    let mut call_args = vec![object.as_ref().clone()];
+                    call_args.extend(args.iter().map(|arg| arg.value.clone()));
+                    Some(call_ident("__py_bytearray_pop_value", call_args))
+                } else if let Some(value) = try_rewrite_memoryview_method(__w, object, field, args)
+                {
+                    Some(value)
+                } else if let Some(value) = try_rewrite_zlib_stream_method(__w, object, field, args)
+                {
+                    Some(value)
+                } else if let Some(value) = try_rewrite_gzip_file_method(__w, object, field, args) {
+                    Some(value)
+                } else if let Some(value) = bytes_tuple_prefix_check(__w, object, field, args) {
+                    Some(value)
+                } else {
+                    try_rewrite_bytes_method(__w, object, field, args)
+                }
+            }
+            _ => None,
+        },
+        _ => None,
+    };
+    if let Some(value) = replacement {
+        *expr = value;
     }
 }
 

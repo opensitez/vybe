@@ -29,10 +29,7 @@ fn len_of(e: vybe_ast::Expression) -> vybe_ast::Expression {
 
 /// The last non-empty segment of `rest`, as a loop — `name`/`parts` share it.
 fn split_segments(src: vybe_ast::Expression) -> Statement {
-    assign(
-        ident("__seg"),
-        call(member(src, "split"), vec![slash()]),
-    )
+    assign(ident("__seg"), call(member(src, "split"), vec![slash()]))
 }
 
 pub(super) fn pure_path() -> Statement {
@@ -44,10 +41,7 @@ pub(super) fn pure_path() -> Statement {
                 vec![
                     set_this(
                         "_s",
-                        call_global(
-                            "_pp_norm",
-                            vec![call_global("_pp_str", vec![ident("p")])],
-                        ),
+                        call_global("_pp_norm", vec![call_global("_pp_str", vec![ident("p")])]),
                     ),
                     // ⛔ A FIELD, not a method. `self._is_win()` inside a
                     // PROPERTY accessor does not bind its receiver — the
@@ -69,20 +63,13 @@ pub(super) fn pure_path() -> Statement {
             getter(
                 "drive",
                 vec![
-                    if_stmt(
-                        unary_not(this_field("_win")),
-                        vec![ret(str_lit(""))],
-                    ),
+                    if_stmt(unary_not(this_field("_win")), vec![ret(str_lit(""))]),
                     s_local(),
                     if_stmt(
                         binary(
                             BinOp::And,
                             binary(BinOp::GtEq, len_of(ident("__s")), num(2.0)),
-                            binary(
-                                BinOp::Eq,
-                                index(ident("__s"), num(1.0)),
-                                str_lit(":"),
-                            ),
+                            binary(BinOp::Eq, index(ident("__s"), num(1.0)), str_lit(":")),
                         ),
                         vec![ret(slice_range(ident("__s"), num(0.0), num(2.0)))],
                     ),
@@ -181,10 +168,7 @@ pub(super) fn pure_path() -> Statement {
                         vec![
                             expr_stmt(call(
                                 member(ident("__out"), "append"),
-                                vec![add(
-                                    str_lit("."),
-                                    index(ident("__pieces"), ident("__i")),
-                                )],
+                                vec![add(str_lit("."), index(ident("__pieces"), ident("__i")))],
                             )),
                             assign(ident("__i"), add(ident("__i"), num(1.0))),
                         ],
@@ -435,10 +419,7 @@ pub(super) fn pure_path() -> Statement {
                 "is_reserved",
                 vec![],
                 vec![
-                    if_stmt(
-                        unary_not(this_field("_win")),
-                        vec![ret(bool_lit(false))],
-                    ),
+                    if_stmt(unary_not(this_field("_win")), vec![ret(bool_lit(false))]),
                     assign(
                         ident("__nm"),
                         call(member(this_field("name"), "upper"), vec![]),
@@ -457,8 +438,14 @@ pub(super) fn pure_path() -> Statement {
                     for_in(
                         "__r",
                         list_of(vec![
-                            str_lit("CON"), str_lit("PRN"), str_lit("AUX"), str_lit("NUL"),
-                            str_lit("COM1"), str_lit("COM2"), str_lit("LPT1"), str_lit("LPT2"),
+                            str_lit("CON"),
+                            str_lit("PRN"),
+                            str_lit("AUX"),
+                            str_lit("NUL"),
+                            str_lit("COM1"),
+                            str_lit("COM2"),
+                            str_lit("LPT1"),
+                            str_lit("LPT2"),
                         ]),
                         vec![if_stmt(
                             binary(BinOp::Eq, ident("__nm"), ident("__r")),
@@ -473,10 +460,7 @@ pub(super) fn pure_path() -> Statement {
                 vec![param("other", None)],
                 vec![
                     if_stmt(
-                        unary_not(call_global(
-                            "hasattr",
-                            vec![ident("other"), str_lit("_s")],
-                        )),
+                        unary_not(call_global("hasattr", vec![ident("other"), str_lit("_s")])),
                         vec![ret(bool_lit(false))],
                     ),
                     ret(binary(
@@ -512,8 +496,7 @@ pub(super) fn pure_path() -> Statement {
 }
 
 /// The two flavours differ only in `_is_win` — the parent carries everything.
-pub(super) const FLAVOURS: &[(&str, bool)] =
-    &[("PurePosixPath", false), ("PureWindowsPath", true)];
+pub(super) const FLAVOURS: &[(&str, bool)] = &[("PurePosixPath", false), ("PureWindowsPath", true)];
 
 pub(super) fn flavour(name: &'static str, windows: bool) -> Statement {
     class_extending(
@@ -605,10 +588,7 @@ pub(super) fn path() -> Statement {
                     param("exist_ok", Some(bool_lit(false))),
                 ],
                 vec![
-                    if_stmt(
-                        ident("parents"),
-                        vec![ret(fs1("__py_fs_mkdir_all"))],
-                    ),
+                    if_stmt(ident("parents"), vec![ret(fs1("__py_fs_mkdir_all"))]),
                     ret(fs1("__py_fs_mkdir")),
                 ],
             ),
@@ -663,10 +643,7 @@ pub(super) fn path() -> Statement {
             method(
                 "rglob",
                 vec![param("pat", None)],
-                vec![ret(call(
-                    member(ident("self"), "glob"),
-                    vec![ident("pat")],
-                ))],
+                vec![ret(call(member(ident("self"), "glob"), vec![ident("pat")]))],
             ),
             method(
                 "rename",

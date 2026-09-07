@@ -44,7 +44,11 @@ pub(super) fn executor(name: &'static str) -> Statement {
             ),
             method(
                 "submit",
-                vec![param("fn", None), rest_param("args"), kwargs_param("kwargs")],
+                vec![
+                    param("fn", None),
+                    rest_param("args"),
+                    kwargs_param("kwargs"),
+                ],
                 vec![
                     assign(
                         ident("__f"),
@@ -121,7 +125,11 @@ pub(super) fn module_functions() -> Vec<Statement> {
         ),
         function(
             "__py_executor_map",
-            vec![param("_executor", None), param("fn", None), param("iterable", None)],
+            vec![
+                param("_executor", None),
+                param("fn", None),
+                param("iterable", None),
+            ],
             vec![
                 assign(ident("__out"), call_global("list", vec![])),
                 for_in(

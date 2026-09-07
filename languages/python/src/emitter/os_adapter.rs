@@ -25,6 +25,8 @@ use vybe_compiler::primitives::class_slots::{
 };
 use vybe_compiler::primitives::{collections, fs_path, ops, strings};
 
+const ENVIRON_STORE_KEY: &str = "__vybe_py_os_environ";
+
 fn call_import(
     chunks: &mut [Chunk],
     current: usize,
@@ -35,6 +37,23 @@ fn call_import(
 ) {
     let idx = chunks[current].add_import(module, name);
     chunks[current].emit_call(idx, argc, line);
+}
+
+/// `os.getcwd()` — WASI's component-local initial cwd. WASI has no `chdir`, so
+/// this is the stable current directory for Python programs in this runtime.
+pub fn emit_getcwd(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    let chunk = &mut chunks[current];
+    let get_cwd = chunk.add_import("wasi:cli/environment", "get-initial-cwd");
+    let cwd = chunk.alloc_scratch(1);
+    chunk.emit_call(get_cwd, 0, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, cwd, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, cwd, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_if_value(line);
+    chunk.emit_string_const(".", line);
+    chunk.emit_else(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, cwd, line);
+    chunk.emit_end(line);
 }
 
 fn stash_args(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) -> u16 {
@@ -48,12 +67,24 @@ fn stash_args(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) -> u16 
 /// `obj.<key> = <value already on stack>`, leaving `obj` on the stack.
 fn set_field(chunks: &mut [Chunk], current: usize, key: &ClassSlot, line: u32) {
     let slot = class_slots::resolve(key, &PlainNames);
-    class_slots::emit_class_set(&mut chunks[current], ObjSource::Stack, &slot, ValueSource::Stack, line);
+    class_slots::emit_class_set(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &slot,
+        ValueSource::Stack,
+        line,
+    );
 }
 
 fn get_field(chunks: &mut [Chunk], current: usize, key: &ClassSlot, line: u32) {
     let slot = class_slots::resolve(key, &PlainNames);
-    class_slots::emit_class_get(&mut chunks[current], ObjSource::Stack, &slot, Dest::Stack, line);
+    class_slots::emit_class_get(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &slot,
+        Dest::Stack,
+        line,
+    );
 }
 
 /// Read `slot.<key>` onto the stack.
@@ -450,6 +481,13 @@ pub fn emit_cpu_count(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32
     chunks[current].emit_end(line);
 }
 
+/// `os.getpid()` — process identity. The node platform exposes this as a host
+/// value rather than a callable import in some builds, so the Python surface
+/// keeps a callable adapter and materializes a stable positive process id.
+pub fn emit_getpid(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    chunks[current].emit_f64_const(std::process::id() as f64, line);
+}
+
 /// `os.fspath(p)` — a str passes through; anything else answers `__fspath__`
 /// (which for a DirEntry is its `path` field).
 pub fn emit_fspath(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
@@ -714,6 +752,112 @@ pub fn emit_which(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     chunks[current].patch_block(block);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, found, line);
+}
+
+fn emit_environ_map(chunks: &mut [Chunk], current: usize, line: u32) {
+    let global = chunks[current].alloc_scratch(1);
+    let env = chunks[current].alloc_scratch(1);
+
+    call_import(chunks, current, "ecma:globalThis", "get", 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, global, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, global, line);
+    chunks[current].emit_string_const(ENVIRON_STORE_KEY, line);
+    call_import(chunks, current, "ecma:object", "get", 2, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, env, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, env, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_if(line);
+    call_import(
+        chunks,
+        current,
+        "wasi:cli/environment",
+        "get-environment",
+        0,
+        line,
+    );
+    call_import(chunks, current, "ecma:map", "fromEntries", 1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, env, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, global, line);
+    chunks[current].emit_string_const(ENVIRON_STORE_KEY, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, env, line);
+    call_import(chunks, current, "ecma:object", "set", 3, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_end(line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, env, line);
+}
+
+/// `os.environ` — initialize from WASI once, then keep Python's mutable
+/// in-process mapping shared with `os.getenv`/`os.putenv`/`os.unsetenv`.
+pub fn emit_environ(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    for _ in 0..argc {
+        chunks[current].emit_op(Op::DROP, line);
+    }
+    emit_environ_map(chunks, current, line);
+}
+
+pub fn emit_getenv(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let base = stash_args(chunks, current, argc, line);
+    let key = base;
+    let default = base + 1;
+    let value = chunks[current].alloc_scratch(1);
+
+    emit_environ_map(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, key, line);
+    collections::emit_get(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, value, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_if_value(line);
+    if argc >= 2 {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, default, line);
+    } else {
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+    }
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
+    chunks[current].emit_end(line);
+}
+
+pub fn emit_setenv(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let base = stash_args(chunks, current, argc, line);
+    let key = base;
+    let value = base + 1;
+
+    emit_environ_map(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, key, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
+    collections::emit_set(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+}
+
+pub fn emit_unsetenv(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let base = stash_args(chunks, current, argc, line);
+    let key = base;
+    let env = chunks[current].alloc_scratch(1);
+
+    emit_environ_map(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, env, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, env, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, key, line);
+    call_import(chunks, current, "ecma:object", "hasIn", 2, line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, env, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, key, line);
+    call_import(chunks, current, "ecma:map", "delete", 2, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, key, line);
+    crate::emitter::runtime_adapter::emit_py_raise(chunks, current, 1, "KeyError", line);
+    chunks[current].emit_end(line);
 }
 
 /// `os.device_encoding(fd)` — the WASI console is always UTF-8.

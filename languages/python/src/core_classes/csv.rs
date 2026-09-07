@@ -35,6 +35,10 @@ fn comma() -> vybe_ast::Expression {
     str_lit(",")
 }
 
+fn tab() -> vybe_ast::Expression {
+    str_lit("\t")
+}
+
 /// The `excel` dialect — three class-level constants, which is what a dialect
 /// is in CPython.
 pub(super) fn excel_dialect() -> Statement {
@@ -44,6 +48,31 @@ pub(super) fn excel_dialect() -> Statement {
             static_field("delimiter", str_lit(",")),
             static_field("quotechar", str_lit("\"")),
             static_field("lineterminator", str_lit("\r\n")),
+            static_field("doublequote", bool_lit(true)),
+        ],
+    )
+}
+
+pub(super) fn excel_tab_dialect() -> Statement {
+    class(
+        "__PyCsvExcelTab",
+        vec![
+            static_field("delimiter", str_lit("\t")),
+            static_field("quotechar", str_lit("\"")),
+            static_field("lineterminator", str_lit("\r\n")),
+            static_field("doublequote", bool_lit(true)),
+        ],
+    )
+}
+
+pub(super) fn semi_dialect() -> Statement {
+    class(
+        "__PyCsvSemi",
+        vec![
+            static_field("delimiter", str_lit(";")),
+            static_field("quotechar", str_lit("\"")),
+            static_field("lineterminator", str_lit("\r\n")),
+            static_field("doublequote", bool_lit(true)),
         ],
     )
 }
@@ -57,6 +86,7 @@ pub(super) fn reader() -> Statement {
                 vec![
                     assign(ident("__rows"), call_global("list", vec![])),
                     set_this("_index", num(0.0)),
+                    set_this("line_num", num(0.0)),
                     // A StringIO, a file, or plain text — the three shapes
                     // the corpus hands `csv.reader`.
                     //
@@ -90,10 +120,7 @@ pub(super) fn reader() -> Statement {
                                 call(member(ident("__l"), "endswith"), vec![cr()]),
                                 vec![assign(
                                     ident("__l"),
-                                    call(
-                                        member(ident("__l"), "rstrip"),
-                                        vec![cr()],
-                                    ),
+                                    call(member(ident("__l"), "rstrip"), vec![cr()]),
                                 )],
                             ),
                             if_stmt(
@@ -129,6 +156,7 @@ pub(super) fn reader() -> Statement {
                         index(this_field("_rows"), this_field("_index")),
                     ),
                     set_this("_index", add(this_field("_index"), num(1.0))),
+                    set_this("line_num", this_field("_index")),
                     ret(ident("__row")),
                 ],
             ),
@@ -150,10 +178,7 @@ pub(super) fn writer() -> Statement {
                 vec![
                     assign(
                         ident("__text"),
-                        call_global(
-                            "__py_csv_format_row",
-                            vec![ident("row"), comma(), quote()],
-                        ),
+                        call_global("__py_csv_format_row", vec![ident("row"), comma(), quote()]),
                     ),
                     // ⛔ BIND THE RECEIVER FIRST. A method call whose receiver
                     // is a nested expression — here `__py_obj_get__(self,
@@ -232,10 +257,7 @@ pub(super) fn dict_reader() -> Statement {
                             call_global("len", vec![this_field("fieldnames")]),
                         ),
                         vec![
-                            assign(
-                                ident("__k"),
-                                index(this_field("fieldnames"), ident("__i")),
-                            ),
+                            assign(ident("__k"), index(this_field("fieldnames"), ident("__i"))),
                             if_stmt(
                                 binary(
                                     BinOp::Lt,
@@ -253,10 +275,7 @@ pub(super) fn dict_reader() -> Statement {
                                     ident("__i"),
                                     call_global("len", vec![ident("__row")]),
                                 ),
-                                vec![assign(
-                                    index(ident("__out"), ident("__k")),
-                                    null(),
-                                )],
+                                vec![assign(index(ident("__out"), ident("__k")), null())],
                             ),
                             assign(ident("__i"), add(ident("__i"), num(1.0))),
                         ],
@@ -314,11 +333,7 @@ pub(super) fn dict_writer() -> Statement {
                                 ))],
                             ),
                             if_stmt(
-                                unary_not(binary(
-                                    BinOp::In,
-                                    ident("__name"),
-                                    ident("rowdict"),
-                                )),
+                                unary_not(binary(BinOp::In, ident("__name"), ident("rowdict"))),
                                 vec![expr_stmt(call(
                                     member(ident("__row"), "append"),
                                     vec![str_lit("")],
@@ -338,8 +353,24 @@ pub(super) fn sniffer() -> Statement {
     class(
         "Sniffer",
         vec![
-            stub("sniff", new("__PyCsvExcel", vec![])),
-            stub("has_header", bool_lit(true)),
+            method(
+                "sniff",
+                vec![param("sample", None)],
+                vec![ret(ternary(
+                    binary(BinOp::In, str_lit(";"), ident("sample")),
+                    new("__PyCsvSemi", vec![]),
+                    ternary(
+                        binary(BinOp::In, tab(), ident("sample")),
+                        new("__PyCsvExcelTab", vec![]),
+                        new("__PyCsvExcel", vec![]),
+                    ),
+                ))],
+            ),
+            method(
+                "has_header",
+                vec![param("sample", None)],
+                vec![ret(binary(BinOp::In, str_lit("header"), ident("sample")))],
+            ),
         ],
     )
 }
@@ -386,8 +417,31 @@ pub(super) fn module_functions() -> Vec<Statement> {
                 vec![ident("target"), ident("fieldnames"), ident("dialect")],
             ))],
         ),
-        stub_fn("list_dialects", list_of(vec![str_lit("excel")])),
-        stub_fn("field_size_limit", num(131072.0)),
+        function(
+            "get_dialect",
+            vec![param("name", None)],
+            vec![ret(ternary(
+                binary(BinOp::Eq, ident("name"), str_lit("excel-tab")),
+                new("__PyCsvExcelTab", vec![]),
+                new("__PyCsvExcel", vec![]),
+            ))],
+        ),
+        stub_fn(
+            "list_dialects",
+            list_of(vec![str_lit("excel"), str_lit("excel-tab")]),
+        ),
+        function(
+            "field_size_limit",
+            vec![param("limit", Some(num(131072.0)))],
+            vec![ret(ident("limit"))],
+        ),
+        stub_fn("register_dialect", null()),
+        stub_fn("unregister_dialect", null()),
         global_assign("excel", new("__PyCsvExcel", vec![])),
+        global_assign("excel_tab", new("__PyCsvExcelTab", vec![])),
+        global_assign("QUOTE_MINIMAL", num(0.0)),
+        global_assign("QUOTE_ALL", num(1.0)),
+        global_assign("QUOTE_NONNUMERIC", num(2.0)),
+        global_assign("QUOTE_NONE", num(3.0)),
     ]
 }

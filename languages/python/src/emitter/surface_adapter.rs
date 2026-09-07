@@ -15,13 +15,11 @@
 //! call. Nothing here silently succeeds — a use that cannot be honoured raises
 //! at the call site, loudly, with the name in the message.
 
-use vybe_runtime::opcode::Op;
 use vybe_runtime::Chunk;
+use vybe_runtime::opcode::Op;
 
 use super::adapter_util::{new_object, struct_set};
-use vybe_compiler::primitives::class_slots::{
-    self, ClassSlot, ObjSource, PlainNames, ValueSource,
-};
+use vybe_compiler::primitives::class_slots::{self, ClassSlot, ObjSource, PlainNames, ValueSource};
 
 /// Build (once per name) a chunk that raises `NotImplementedError`, and leave
 /// a reference to it on the stack — the value a bare `module.name` read is.
@@ -45,13 +43,7 @@ fn push_raising_callable(chunks: &mut Vec<Chunk>, current: usize, what: &str, li
 fn emit_raise(chunks: &mut [Chunk], current: usize, what: &str, line: u32) {
     let message = format!("{what} is not implemented by this Python runtime");
     chunks[current].emit_string_const(&message, line);
-    crate::emitter::runtime_adapter::emit_py_raise(
-        chunks,
-        current,
-        1,
-        "NotImplementedError",
-        line,
-    );
+    crate::emitter::runtime_adapter::emit_py_raise(chunks, current, 1, "NotImplementedError", line);
     // `emit_py_raise` leaves a null behind for the value position it replaces;
     // the throw above means it is never observed, but the stack has to balance.
 }
@@ -76,13 +68,7 @@ pub fn emit_function_surface(
 
 /// `python.typeobj.<module>.<Name>` — a type-shaped surface. The read yields
 /// the type object; construction raises.
-pub fn emit_type_surface(
-    chunks: &mut Vec<Chunk>,
-    current: usize,
-    argc: u8,
-    what: &str,
-    line: u32,
-) {
+pub fn emit_type_surface(chunks: &mut Vec<Chunk>, current: usize, argc: u8, what: &str, line: u32) {
     if argc > 0 {
         for _ in 0..argc {
             chunks[current].emit_op(Op::DROP, line);

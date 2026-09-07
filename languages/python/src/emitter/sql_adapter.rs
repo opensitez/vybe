@@ -97,7 +97,11 @@ fn emit_row_to_tuple(chunks: &mut [Chunk], current: usize, row_slot: u16, line: 
 
     // names = row.__col_names
     lget(&mut chunks[current], row_slot, line);
-    struct_get_key(&mut chunks[current], &ClassSlot::internal("__col_names"), line);
+    struct_get_key(
+        &mut chunks[current],
+        &ClassSlot::internal("__col_names"),
+        line,
+    );
     lset(&mut chunks[current], names, line);
 
     // tup = []
@@ -165,7 +169,11 @@ fn emit_row_factory_flag(
 ) {
     lget(&mut chunks[current], cursor, line);
     struct_get_key(&mut chunks[current], &ClassSlot::internal("__conn"), line);
-    struct_get_key(&mut chunks[current], &ClassSlot::internal("row_factory"), line);
+    struct_get_key(
+        &mut chunks[current],
+        &ClassSlot::internal("row_factory"),
+        line,
+    );
     vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     lset(&mut chunks[current], flag_slot, line);
 }
@@ -229,7 +237,11 @@ pub fn emit_connect(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     // Python `Connection.isolation_level` defaults to "" (deferred BEGIN).
     lget(&mut chunks[current], conn, line);
     push_str(&mut chunks[current], "", line);
-    struct_set_key(&mut chunks[current], &ClassSlot::internal("isolation_level"), line);
+    struct_set_key(
+        &mut chunks[current],
+        &ClassSlot::internal("isolation_level"),
+        line,
+    );
     lget(&mut chunks[current], conn, line);
     // result: connection object
 }
@@ -245,7 +257,13 @@ pub fn emit_cursor(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     lget(&mut chunks[current], cur, line);
     push_str(&mut chunks[current], "SqlCursor", line);
     let cs_id = class_slots::resolve(&ClassSlot::TypeIdentity, &PlainNames);
-    class_slots::emit_class_set(&mut chunks[current], ObjSource::Stack, &cs_id, ValueSource::Stack, line);
+    class_slots::emit_class_set(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &cs_id,
+        ValueSource::Stack,
+        line,
+    );
 
     lget(&mut chunks[current], cur, line);
     lget(&mut chunks[current], base, line);
@@ -261,7 +279,11 @@ pub fn emit_cursor(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
 
     lget(&mut chunks[current], cur, line);
     chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
-    struct_set_key(&mut chunks[current], &ClassSlot::internal("lastrowid"), line);
+    struct_set_key(
+        &mut chunks[current],
+        &ClassSlot::internal("lastrowid"),
+        line,
+    );
 
     lget(&mut chunks[current], cur, line);
     chunks[current].emit_i32_const(-1, line);
@@ -342,7 +364,11 @@ pub fn emit_execute(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         lset(&mut chunks[current], lastid, line);
         lget(&mut chunks[current], cursor, line);
         lget(&mut chunks[current], lastid, line);
-        struct_set_key(&mut chunks[current], &ClassSlot::internal("lastrowid"), line);
+        struct_set_key(
+            &mut chunks[current],
+            &ClassSlot::internal("lastrowid"),
+            line,
+        );
     }
     chunks[current].emit_end(line);
 

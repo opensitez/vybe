@@ -9,12 +9,16 @@
 //! No new host fns.
 
 use vybe_compiler::primitives::instructions::core_wasm;
+use vybe_compiler::primitives::class_slots::{
+    self, ClassSlot, ObjSource, PlainNames, ValueSource,
+};
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
 
 /// How many items an infinite generator (`count`, `cycle`) materialises.
 /// Bounded because the list is eager; callers take a prefix via `next`/`islice`.
 const INFINITE_PREFIX: i32 = 1000;
+const FLOAT_ITEMS_TAG: &str = "__py_float_items";
 
 fn push(chunk: &mut Chunk, line: u32) {
     let p = chunk.add_import("ecma:array", "push");
@@ -25,6 +29,80 @@ fn push(chunk: &mut Chunk, line: u32) {
 fn len_of(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
     vybe_compiler::primitives::collections::emit_len(chunks, current, line);
+}
+
+fn get_index(chunks: &mut [Chunk], current: usize, slot: u16, index: i32, line: u32) {
+    chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
+    core_wasm::i32_const(&mut chunks[current], line, index);
+    vybe_compiler::primitives::collections::emit_get(chunks, current, line);
+}
+
+fn get_index_slot(chunks: &mut [Chunk], current: usize, slot: u16, index: u16, line: u32) {
+    chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, index, line);
+    vybe_compiler::primitives::collections::emit_get(chunks, current, line);
+}
+
+fn set_index_from_stack(chunks: &mut [Chunk], current: usize, slot: u16, index: u16, line: u32) {
+    let value = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, value, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, index, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
+    vybe_compiler::primitives::collections::emit_set(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+}
+
+fn push_empty_tuple(chunks: &mut [Chunk], current: usize, out: u16, line: u32) {
+    chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
+    vybe_compiler::primitives::tuples::emit_tuple(chunks, current, 0, line);
+    push(&mut chunks[current], line);
+}
+
+fn push_tuple_from_indices(
+    chunks: &mut [Chunk],
+    current: usize,
+    out: u16,
+    data: u16,
+    indices: u16,
+    r: u16,
+    line: u32,
+) {
+    let tuple = chunks[current].alloc_scratch(1);
+    let j = chunks[current].alloc_scratch(1);
+    vybe_compiler::primitives::collections::emit_array_new(chunks, current, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, tuple, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, j, line);
+
+    let tuple_loop = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, j, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, r, line);
+    chunks[current].emit_op(Op::I32_LT_S, line);
+    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, tuple, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, data, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, indices, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, j, line);
+    chunks[current].emit_op(Op::ARRAY_GET, line);
+    chunks[current].emit_op(Op::ARRAY_GET, line);
+    push(&mut chunks[current], line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, j, line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, j, line);
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, tuple_loop, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, tuple, line);
+    vybe_compiler::primitives::tuples::emit_tag(chunks, current, line);
+    push(&mut chunks[current], line);
+}
+
+fn array_from_slot(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
+    chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
+    let from = chunks[current].add_import("ecma:array", "from");
+    chunks[current].emit_call(from, 1, line);
 }
 
 // ── operator module ────────────────────────────────────────────────────────
@@ -201,14 +279,29 @@ fn emit_pred_filter(chunks: &mut [Chunk], current: usize, spec: Filter, line: u3
     chunk.emit_op(Op::I32_LT_S, line);
     vybe_compiler::primitives::loops::emit_loop_cond(std::slice::from_mut(chunk), 0, line);
 
-    // p = truthy(f(xs[i]))
+    // p = truthy(f(xs[i])) or truthy(xs[i]) when predicate is None.
     let p = chunk.alloc_scratch(1);
-    chunk.emit_op_u16(Op::LOCAL_GET, f, line);
+    let item = chunk.alloc_scratch(1);
     chunk.emit_op_u16(Op::LOCAL_GET, xs, line);
     chunk.emit_op_u16(Op::LOCAL_GET, i, line);
     chunk.emit_op(Op::ARRAY_GET, line);
-    vybe_compiler::primitives::callable::emit_direct_invoke_chunk(chunk, 1, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, item, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, f, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_if_value(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, item, line);
     vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_else(line);
+    let recv = vybe_compiler::primitives::callable::push_callback_from_slot(
+        std::slice::from_mut(chunk),
+        0,
+        f,
+        line,
+    );
+    chunk.emit_op_u16(Op::LOCAL_GET, item, line);
+    vybe_compiler::primitives::callable::emit_direct_invoke_chunk(chunk, 1 + recv, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_end(line);
     chunk.emit_op_u16(Op::LOCAL_SET, p, line);
 
     if spec.stop_at_first_false {
@@ -312,9 +405,10 @@ pub fn emit_dropwhile(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32
     );
 }
 
-/// `itertools.zip_longest(a, b)` — pairs padded with None to the longer input.
-/// Stack: `[a, b]` → `[array]`.
-pub fn emit_zip_longest(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+/// `itertools.zip_longest(a, b[, fillvalue])` — pairs padded to the longer input.
+/// Stack: `[a, b, fill?]` → `[array]`.
+pub fn emit_zip_longest(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let fill = chunks[current].alloc_scratch(1);
     let b = chunks[current].alloc_scratch(1);
     let a = chunks[current].alloc_scratch(1);
     let na = chunks[current].alloc_scratch(1);
@@ -322,8 +416,18 @@ pub fn emit_zip_longest(chunks: &mut [Chunk], current: usize, _argc: u8, line: u
     let n = chunks[current].alloc_scratch(1);
     let i = chunks[current].alloc_scratch(1);
     let out = chunks[current].alloc_scratch(1);
+    if argc >= 3 {
+        chunks[current].emit_op_u16(Op::LOCAL_SET, fill, line);
+    } else {
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, fill, line);
+    }
     chunks[current].emit_op_u16(Op::LOCAL_SET, b, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, a, line);
+    array_from_slot(chunks, current, a, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, a, line);
+    array_from_slot(chunks, current, b, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, b, line);
     len_of(chunks, current, a, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, na, line);
     len_of(chunks, current, b, line);
@@ -363,7 +467,7 @@ pub fn emit_zip_longest(chunks: &mut [Chunk], current: usize, _argc: u8, line: u
         chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
         chunks[current].emit_op(Op::ARRAY_GET, line);
         chunks[current].emit_else(line);
-        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, fill, line);
         chunks[current].emit_end(line);
     }
     vybe_compiler::primitives::tuples::emit_tuple(chunks, current, 2, line);
@@ -396,6 +500,900 @@ pub fn emit_chain(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         let concat = chunk.add_import("ecma:array", "concat");
         chunk.emit_call(concat, 2, line);
     }
+}
+
+/// `itertools.product(*iterables)` — Cartesian product as tuples.
+/// Stack: `[iter0, iter1, …]` → `[array]`.
+pub fn emit_product(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let out = chunks[current].alloc_scratch(1);
+    let next = chunks[current].alloc_scratch(1);
+    let pool = chunks[current].alloc_scratch(1);
+    let pool_len = chunks[current].alloc_scratch(1);
+    let p = chunks[current].alloc_scratch(1);
+    let out_len = chunks[current].alloc_scratch(1);
+    let oi = chunks[current].alloc_scratch(1);
+    let ii = chunks[current].alloc_scratch(1);
+    let prefix = chunks[current].alloc_scratch(1);
+    let tuple = chunks[current].alloc_scratch(1);
+    let pools = chunks[current].alloc_scratch(1);
+
+    vybe_compiler::primitives::collections::emit_array_new(chunks, current, argc as u16, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, pools, line);
+
+    vybe_compiler::primitives::collections::emit_array_new(chunks, current, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, out, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
+    vybe_compiler::primitives::collections::emit_array_new(chunks, current, 0, line);
+    vybe_compiler::primitives::tuples::emit_tag(chunks, current, line);
+    push(&mut chunks[current], line);
+
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, p, line);
+    let pools_loop = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, p, line);
+    core_wasm::i32_const(&mut chunks[current], line, argc as i32);
+    chunks[current].emit_op(Op::I32_LT_S, line);
+    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, pools, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, p, line);
+    vybe_compiler::primitives::collections::emit_get(chunks, current, line);
+    let from = chunks[current].add_import("ecma:array", "from");
+    chunks[current].emit_call(from, 1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, pool, line);
+    len_of(chunks, current, pool, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, pool_len, line);
+    len_of(chunks, current, out, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, out_len, line);
+    vybe_compiler::primitives::collections::emit_array_new(chunks, current, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, next, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, oi, line);
+
+    let outer = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, oi, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, out_len, line);
+    chunks[current].emit_op(Op::I32_LT_S, line);
+    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, oi, line);
+    chunks[current].emit_op(Op::ARRAY_GET, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, prefix, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, ii, line);
+
+    let inner = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, ii, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, pool_len, line);
+    chunks[current].emit_op(Op::I32_LT_S, line);
+    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, prefix, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    vybe_compiler::primitives::expressions::emit_undefined(&mut chunks[current], line);
+    let slice = chunks[current].add_import("ecma:array", "slice");
+    chunks[current].emit_call(slice, 3, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, tuple, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, tuple, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, pool, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, ii, line);
+    chunks[current].emit_op(Op::ARRAY_GET, line);
+    push(&mut chunks[current], line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, next, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, tuple, line);
+    vybe_compiler::primitives::tuples::emit_tag(chunks, current, line);
+    push(&mut chunks[current], line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, ii, line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, ii, line);
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, inner, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, oi, line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, oi, line);
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, outer, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, next, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, out, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, p, line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, p, line);
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, pools_loop, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
+}
+
+/// `itertools.combinations(iterable, r)` — lexicographic r-length subsequences.
+/// Stack: `[iterable, r]` → `[array-of-tuples]`.
+pub fn emit_combinations(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    let r = chunks[current].alloc_scratch(1);
+    let data = chunks[current].alloc_scratch(1);
+    let n = chunks[current].alloc_scratch(1);
+    let out = chunks[current].alloc_scratch(1);
+    let indices = chunks[current].alloc_scratch(1);
+    let i = chunks[current].alloc_scratch(1);
+    let j = chunks[current].alloc_scratch(1);
+    let prev = chunks[current].alloc_scratch(1);
+    let found = chunks[current].alloc_scratch(1);
+    let found_idx = chunks[current].alloc_scratch(1);
+    let done = chunks[current].alloc_scratch(1);
+
+    chunks[current].emit_op_u16(Op::LOCAL_SET, r, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, data, line);
+    array_from_slot(chunks, current, data, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, data, line);
+    len_of(chunks, current, data, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, n, line);
+    vybe_compiler::primitives::collections::emit_array_new(chunks, current, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, out, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, r, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    chunks[current].emit_op(Op::I32_EQ, line);
+    chunks[current].emit_if(line);
+    push_empty_tuple(chunks, current, out, line);
+    chunks[current].emit_else(line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, n, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, r, line);
+    chunks[current].emit_op(Op::I32_LT_S, line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_if(line);
+
+    vybe_compiler::primitives::collections::emit_array_new(chunks, current, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, indices, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
+    let init = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, r, line);
+    chunks[current].emit_op(Op::I32_LT_S, line);
+    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, indices, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    push(&mut chunks[current], line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, init, line);
+
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, done, line);
+    let outer = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, done, line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
+
+    push_tuple_from_indices(chunks, current, out, data, indices, r, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, found, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, r, line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    chunks[current].emit_op(Op::I32_SUB, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
+
+    let scan = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    chunks[current].emit_op(Op::I32_GE_S, line);
+    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, found, line);
+    chunks[current].emit_if(line);
+    core_wasm::i32_const(&mut chunks[current], line, -1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
+    chunks[current].emit_else(line);
+    get_index_slot(chunks, current, indices, i, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, n, line);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, r, line);
+    chunks[current].emit_op(Op::I32_SUB, line);
+    chunks[current].emit_op(Op::I32_NE, line);
+    chunks[current].emit_if(line);
+    get_index_slot(chunks, current, indices, i, line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    set_index_from_stack(chunks, current, indices, i, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, found_idx, line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, found, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    chunks[current].emit_op(Op::I32_SUB, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, scan, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, found, line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_if(line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, done, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, found_idx, line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, j, line);
+    let tail = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, j, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, r, line);
+    chunks[current].emit_op(Op::I32_LT_S, line);
+    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, j, line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    chunks[current].emit_op(Op::I32_SUB, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, prev, line);
+    get_index_slot(chunks, current, indices, prev, line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    set_index_from_stack(chunks, current, indices, j, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, j, line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, j, line);
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, tail, line);
+    chunks[current].emit_end(line);
+
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, outer, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
+}
+
+/// `itertools.combinations_with_replacement(iterable, r)`.
+/// Stack: `[iterable, r]` → `[array-of-tuples]`.
+pub fn emit_combinations_with_replacement(
+    chunks: &mut [Chunk],
+    current: usize,
+    _argc: u8,
+    line: u32,
+) {
+    let r = chunks[current].alloc_scratch(1);
+    let data = chunks[current].alloc_scratch(1);
+    let n = chunks[current].alloc_scratch(1);
+    let out = chunks[current].alloc_scratch(1);
+    let indices = chunks[current].alloc_scratch(1);
+    let i = chunks[current].alloc_scratch(1);
+    let j = chunks[current].alloc_scratch(1);
+    let found = chunks[current].alloc_scratch(1);
+    let found_idx = chunks[current].alloc_scratch(1);
+    let done = chunks[current].alloc_scratch(1);
+    let next_val = chunks[current].alloc_scratch(1);
+
+    chunks[current].emit_op_u16(Op::LOCAL_SET, r, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, data, line);
+    array_from_slot(chunks, current, data, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, data, line);
+    len_of(chunks, current, data, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, n, line);
+    vybe_compiler::primitives::collections::emit_array_new(chunks, current, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, out, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, r, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    chunks[current].emit_op(Op::I32_EQ, line);
+    chunks[current].emit_if(line);
+    push_empty_tuple(chunks, current, out, line);
+    chunks[current].emit_else(line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, n, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    chunks[current].emit_op(Op::I32_GT_S, line);
+    chunks[current].emit_if(line);
+    vybe_compiler::primitives::collections::emit_array_new(chunks, current, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, indices, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
+    let init = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, r, line);
+    chunks[current].emit_op(Op::I32_LT_S, line);
+    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, indices, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    push(&mut chunks[current], line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, init, line);
+
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, done, line);
+    let outer = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, done, line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
+    push_tuple_from_indices(chunks, current, out, data, indices, r, line);
+
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, found, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, r, line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    chunks[current].emit_op(Op::I32_SUB, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
+    let scan = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    chunks[current].emit_op(Op::I32_GE_S, line);
+    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, found, line);
+    chunks[current].emit_if(line);
+    core_wasm::i32_const(&mut chunks[current], line, -1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
+    chunks[current].emit_else(line);
+    get_index_slot(chunks, current, indices, i, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, n, line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    chunks[current].emit_op(Op::I32_SUB, line);
+    chunks[current].emit_op(Op::I32_NE, line);
+    chunks[current].emit_if(line);
+    get_index_slot(chunks, current, indices, i, line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, next_val, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, found_idx, line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, found, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    chunks[current].emit_op(Op::I32_SUB, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, scan, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, found, line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_if(line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, done, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, found_idx, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, j, line);
+    let fill = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, j, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, r, line);
+    chunks[current].emit_op(Op::I32_LT_S, line);
+    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, next_val, line);
+    set_index_from_stack(chunks, current, indices, j, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, j, line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, j, line);
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, fill, line);
+    chunks[current].emit_end(line);
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, outer, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
+}
+
+/// `itertools.permutations(iterable[, r])` — CPython's cycles algorithm.
+/// Stack: `[iterable, r?]` → `[array-of-tuples]`.
+pub fn emit_permutations(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let r = chunks[current].alloc_scratch(1);
+    let data = chunks[current].alloc_scratch(1);
+    let n = chunks[current].alloc_scratch(1);
+    let out = chunks[current].alloc_scratch(1);
+    let indices = chunks[current].alloc_scratch(1);
+    let cycles = chunks[current].alloc_scratch(1);
+    let i = chunks[current].alloc_scratch(1);
+    let j = chunks[current].alloc_scratch(1);
+    let done = chunks[current].alloc_scratch(1);
+    let advanced = chunks[current].alloc_scratch(1);
+    let tmp = chunks[current].alloc_scratch(1);
+    let swap_idx = chunks[current].alloc_scratch(1);
+
+    if argc >= 2 {
+        chunks[current].emit_op_u16(Op::LOCAL_SET, r, line);
+    }
+    chunks[current].emit_op_u16(Op::LOCAL_SET, data, line);
+    array_from_slot(chunks, current, data, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, data, line);
+    len_of(chunks, current, data, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, n, line);
+    if argc < 2 {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, n, line);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, r, line);
+    }
+    vybe_compiler::primitives::collections::emit_array_new(chunks, current, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, out, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, r, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    chunks[current].emit_op(Op::I32_EQ, line);
+    chunks[current].emit_if(line);
+    push_empty_tuple(chunks, current, out, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, n, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, r, line);
+    chunks[current].emit_op(Op::I32_LT_S, line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_if(line);
+
+    vybe_compiler::primitives::collections::emit_array_new(chunks, current, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, indices, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
+    let init_idx = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, n, line);
+    chunks[current].emit_op(Op::I32_LT_S, line);
+    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, indices, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    push(&mut chunks[current], line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, init_idx, line);
+
+    vybe_compiler::primitives::collections::emit_array_new(chunks, current, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, cycles, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
+    let init_cycles = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, r, line);
+    chunks[current].emit_op(Op::I32_LT_S, line);
+    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, cycles, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, n, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    chunks[current].emit_op(Op::I32_SUB, line);
+    push(&mut chunks[current], line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, init_cycles, line);
+
+    push_tuple_from_indices(chunks, current, out, data, indices, r, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, done, line);
+    let outer = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, done, line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, advanced, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, r, line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    chunks[current].emit_op(Op::I32_SUB, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
+
+    let scan = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    chunks[current].emit_op(Op::I32_GE_S, line);
+    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, advanced, line);
+    chunks[current].emit_if(line);
+    core_wasm::i32_const(&mut chunks[current], line, -1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
+    chunks[current].emit_else(line);
+
+    get_index_slot(chunks, current, cycles, i, line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    chunks[current].emit_op(Op::I32_SUB, line);
+    set_index_from_stack(chunks, current, cycles, i, line);
+    get_index_slot(chunks, current, cycles, i, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    chunks[current].emit_op(Op::I32_EQ, line);
+    chunks[current].emit_if(line);
+
+    get_index_slot(chunks, current, indices, i, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, tmp, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, j, line);
+    let rotate = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, j, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, n, line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    chunks[current].emit_op(Op::I32_SUB, line);
+    chunks[current].emit_op(Op::I32_LT_S, line);
+    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, j, line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, swap_idx, line);
+    get_index_slot(chunks, current, indices, swap_idx, line);
+    set_index_from_stack(chunks, current, indices, j, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, j, line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, j, line);
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, rotate, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, n, line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    chunks[current].emit_op(Op::I32_SUB, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, j, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, tmp, line);
+    set_index_from_stack(chunks, current, indices, j, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, n, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    chunks[current].emit_op(Op::I32_SUB, line);
+    set_index_from_stack(chunks, current, cycles, i, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    chunks[current].emit_op(Op::I32_SUB, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
+
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, n, line);
+    get_index_slot(chunks, current, cycles, i, line);
+    chunks[current].emit_op(Op::I32_SUB, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, swap_idx, line);
+    get_index_slot(chunks, current, indices, i, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, tmp, line);
+    get_index_slot(chunks, current, indices, swap_idx, line);
+    set_index_from_stack(chunks, current, indices, i, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, tmp, line);
+    set_index_from_stack(chunks, current, indices, swap_idx, line);
+    push_tuple_from_indices(chunks, current, out, data, indices, r, line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, advanced, line);
+    core_wasm::i32_const(&mut chunks[current], line, -1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, scan, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, advanced, line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_if(line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, done, line);
+    chunks[current].emit_end(line);
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, outer, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
+}
+
+/// `itertools.chain.from_iterable(iterables)` — flatten one level.
+/// Stack: `[nested]` → `[array]`.
+pub fn emit_chain_from_iterable(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    let nested = chunks[current].alloc_scratch(1);
+    let outer_len = chunks[current].alloc_scratch(1);
+    let i = chunks[current].alloc_scratch(1);
+    let part = chunks[current].alloc_scratch(1);
+    let inner_len = chunks[current].alloc_scratch(1);
+    let j = chunks[current].alloc_scratch(1);
+    let out = chunks[current].alloc_scratch(1);
+
+    chunks[current].emit_op_u16(Op::LOCAL_SET, nested, line);
+    array_from_slot(chunks, current, nested, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, nested, line);
+    len_of(chunks, current, nested, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, outer_len, line);
+    vybe_compiler::primitives::collections::emit_array_new(chunks, current, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, out, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
+
+    let outer = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, outer_len, line);
+    chunks[current].emit_op(Op::I32_LT_S, line);
+    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, nested, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    chunks[current].emit_op(Op::ARRAY_GET, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, part, line);
+    array_from_slot(chunks, current, part, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, part, line);
+    len_of(chunks, current, part, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, inner_len, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, j, line);
+
+    let inner = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, j, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, inner_len, line);
+    chunks[current].emit_op(Op::I32_LT_S, line);
+    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, part, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, j, line);
+    chunks[current].emit_op(Op::ARRAY_GET, line);
+    push(&mut chunks[current], line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, j, line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, j, line);
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, inner, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, outer, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
+}
+
+/// `itertools.compress(data, selectors)` — keep items whose selector is true.
+/// Stack: `[data, selectors]` → `[array]`.
+pub fn emit_compress(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    let selectors = chunks[current].alloc_scratch(1);
+    let data = chunks[current].alloc_scratch(1);
+    let n_data = chunks[current].alloc_scratch(1);
+    let n_sel = chunks[current].alloc_scratch(1);
+    let n = chunks[current].alloc_scratch(1);
+    let i = chunks[current].alloc_scratch(1);
+    let out = chunks[current].alloc_scratch(1);
+
+    chunks[current].emit_op_u16(Op::LOCAL_SET, selectors, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, data, line);
+    array_from_slot(chunks, current, data, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, data, line);
+    array_from_slot(chunks, current, selectors, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, selectors, line);
+    len_of(chunks, current, data, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, n_data, line);
+    len_of(chunks, current, selectors, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, n_sel, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, n_data, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, n, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, n_sel, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, n_data, line);
+    chunks[current].emit_op(Op::I32_LT_S, line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, n_sel, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, n, line);
+    chunks[current].emit_end(line);
+
+    vybe_compiler::primitives::collections::emit_array_new(chunks, current, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, out, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
+
+    let state = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, n, line);
+    chunks[current].emit_op(Op::I32_LT_S, line);
+    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, selectors, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    chunks[current].emit_op(Op::ARRAY_GET, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, data, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    chunks[current].emit_op(Op::ARRAY_GET, line);
+    push(&mut chunks[current], line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, state, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
+}
+
+/// `itertools.starmap(f, iterable)` — call `f(*args)` for every argument row.
+/// Stack: `[f, iterable]` → `[array]`.
+pub fn emit_starmap(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    let data = chunks[current].alloc_scratch(1);
+    let func = chunks[current].alloc_scratch(1);
+    let n = chunks[current].alloc_scratch(1);
+    let i = chunks[current].alloc_scratch(1);
+    let row = chunks[current].alloc_scratch(1);
+    let row_len = chunks[current].alloc_scratch(1);
+    let out = chunks[current].alloc_scratch(1);
+
+    chunks[current].emit_op_u16(Op::LOCAL_SET, data, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, func, line);
+    array_from_slot(chunks, current, data, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, data, line);
+    len_of(chunks, current, data, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, n, line);
+    vybe_compiler::primitives::collections::emit_array_new(chunks, current, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, out, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
+
+    let state = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, n, line);
+    chunks[current].emit_op(Op::I32_LT_S, line);
+    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, data, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    chunks[current].emit_op(Op::ARRAY_GET, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, row, line);
+    len_of(chunks, current, row, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, row_len, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, row_len, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    chunks[current].emit_op(Op::I32_EQ, line);
+    chunks[current].emit_if_value(line);
+    let recv =
+        vybe_compiler::primitives::callable::push_callback_from_slot(chunks, current, func, line);
+    vybe_compiler::primitives::callable::emit_direct_invoke_chunk(
+        &mut chunks[current],
+        recv,
+        line,
+    );
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, row_len, line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    chunks[current].emit_op(Op::I32_EQ, line);
+    chunks[current].emit_if_value(line);
+    let recv =
+        vybe_compiler::primitives::callable::push_callback_from_slot(chunks, current, func, line);
+    get_index(chunks, current, row, 0, line);
+    vybe_compiler::primitives::callable::emit_direct_invoke_chunk(
+        &mut chunks[current],
+        1 + recv,
+        line,
+    );
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, row_len, line);
+    core_wasm::i32_const(&mut chunks[current], line, 2);
+    chunks[current].emit_op(Op::I32_EQ, line);
+    chunks[current].emit_if_value(line);
+    let recv =
+        vybe_compiler::primitives::callable::push_callback_from_slot(chunks, current, func, line);
+    get_index(chunks, current, row, 0, line);
+    get_index(chunks, current, row, 1, line);
+    vybe_compiler::primitives::callable::emit_direct_invoke_chunk(
+        &mut chunks[current],
+        2 + recv,
+        line,
+    );
+    chunks[current].emit_else(line);
+    let recv =
+        vybe_compiler::primitives::callable::push_callback_from_slot(chunks, current, func, line);
+    get_index(chunks, current, row, 0, line);
+    get_index(chunks, current, row, 1, line);
+    get_index(chunks, current, row, 2, line);
+    vybe_compiler::primitives::callable::emit_direct_invoke_chunk(
+        &mut chunks[current],
+        3 + recv,
+        line,
+    );
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+    push(&mut chunks[current], line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, state, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
+}
+
+fn emit_group_pair(
+    chunks: &mut [Chunk],
+    current: usize,
+    out: u16,
+    key: u16,
+    group: u16,
+    line: u32,
+) {
+    chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, key, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, group, line);
+    vybe_compiler::primitives::tuples::emit_tuple(chunks, current, 2, line);
+    push(&mut chunks[current], line);
+}
+
+/// `itertools.groupby(data[, key])` — consecutive groups as `(key, group)` tuples.
+/// Stack: `[data, key?]` → `[array]`.
+pub fn emit_groupby(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let key_func = chunks[current].alloc_scratch(1);
+    let data = chunks[current].alloc_scratch(1);
+    let n = chunks[current].alloc_scratch(1);
+    let i = chunks[current].alloc_scratch(1);
+    let out = chunks[current].alloc_scratch(1);
+    let group = chunks[current].alloc_scratch(1);
+    let cur_key = chunks[current].alloc_scratch(1);
+    let key = chunks[current].alloc_scratch(1);
+    let item = chunks[current].alloc_scratch(1);
+    let started = chunks[current].alloc_scratch(1);
+
+    if argc >= 2 {
+        chunks[current].emit_op_u16(Op::LOCAL_SET, key_func, line);
+    } else {
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, key_func, line);
+    }
+    chunks[current].emit_op_u16(Op::LOCAL_SET, data, line);
+    array_from_slot(chunks, current, data, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, data, line);
+    len_of(chunks, current, data, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, n, line);
+    vybe_compiler::primitives::collections::emit_array_new(chunks, current, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, out, line);
+    vybe_compiler::primitives::collections::emit_array_new(chunks, current, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, group, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, started, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
+
+    let state = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, n, line);
+    chunks[current].emit_op(Op::I32_LT_S, line);
+    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, data, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    chunks[current].emit_op(Op::ARRAY_GET, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, item, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, key_func, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, item, line);
+    chunks[current].emit_else(line);
+    let recv =
+        vybe_compiler::primitives::callable::push_callback_from_slot(chunks, current, key_func, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, item, line);
+    vybe_compiler::primitives::callable::emit_direct_invoke_chunk(
+        &mut chunks[current],
+        1 + recv,
+        line,
+    );
+    chunks[current].emit_end(line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, key, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, started, line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, key, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, cur_key, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_if(line);
+    emit_group_pair(chunks, current, out, cur_key, group, line);
+    vybe_compiler::primitives::collections::emit_array_new(chunks, current, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, group, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, key, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, cur_key, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, key, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, cur_key, line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, started, line);
+    chunks[current].emit_end(line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, group, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, item, line);
+    push(&mut chunks[current], line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, state, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, started, line);
+    chunks[current].emit_if(line);
+    emit_group_pair(chunks, current, out, cur_key, group, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
 }
 
 /// `itertools.repeat(x, n)`. Stack: `[x, n]` → `[array]`.
@@ -482,6 +1480,26 @@ pub fn emit_count(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
 }
 
+/// Float-origin `itertools.count`; same sequence as `count`, with a Python repr
+/// tag so integral float values display as `1.0`, matching CPython.
+pub fn emit_count_float(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    emit_count(chunks, current, argc, line);
+    chunks[current].emit_dup(line);
+    chunks[current].emit_bool_const(true, line);
+    let slot = class_slots::resolve_interned(
+        &mut chunks[current],
+        &ClassSlot::internal(FLOAT_ITEMS_TAG),
+        &PlainNames,
+    );
+    class_slots::emit_class_set(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &slot,
+        ValueSource::Stack,
+        line,
+    );
+}
+
 /// `itertools.cycle(iterable)` — infinite, so a bounded prefix of repeats.
 /// Stack: `[data]` → `[array]`.
 pub fn emit_cycle(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
@@ -519,60 +1537,186 @@ pub fn emit_cycle(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
 }
 
+fn emit_islice_array_loop(
+    chunks: &mut [Chunk],
+    current: usize,
+    data: u16,
+    start: u16,
+    stop: u16,
+    step: u16,
+    line: u32,
+) {
+    let i = chunks[current].alloc_scratch(1);
+    let out = chunks[current].alloc_scratch(1);
+    array_from_slot(chunks, current, data, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, data, line);
+    vybe_compiler::primitives::collections::emit_array_new(chunks, current, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, out, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, start, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
+    let state = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, stop, line);
+    chunks[current].emit_op(Op::I32_LT_S, line);
+    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, data, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    chunks[current].emit_op(Op::ARRAY_GET, line);
+    push(&mut chunks[current], line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, step, line);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, state, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
+}
+
 /// `itertools.islice(iterable, stop)` / `(iterable, start, stop[, step])`.
 /// Stack: `[data, …]` → `[array]`.
 pub fn emit_islice(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
-    let b = chunks[current].alloc_scratch(1);
-    let a = chunks[current].alloc_scratch(1);
+    let step = chunks[current].alloc_scratch(1);
+    let stop = chunks[current].alloc_scratch(1);
+    let start = chunks[current].alloc_scratch(1);
     let data = chunks[current].alloc_scratch(1);
+    if argc >= 4 {
+        chunks[current].emit_op_u16(Op::LOCAL_SET, step, line);
+    } else {
+        core_wasm::i32_const(&mut chunks[current], line, 1);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, step, line);
+    }
     if argc >= 3 {
-        chunks[current].emit_op_u16(Op::LOCAL_SET, b, line);
-        chunks[current].emit_op_u16(Op::LOCAL_SET, a, line);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, stop, line);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, start, line);
     } else {
         // islice(it, stop) — one bound, which is the stop.
-        chunks[current].emit_op_u16(Op::LOCAL_SET, b, line);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, stop, line);
         core_wasm::i32_const(&mut chunks[current], line, 0);
-        chunks[current].emit_op_u16(Op::LOCAL_SET, a, line);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, start, line);
     }
     chunks[current].emit_op_u16(Op::LOCAL_SET, data, line);
 
-    // Generator continuations are not arrays, and host `Array.slice` cannot
-    // resume them. Keep this on the shared WASM generator primitive: for the
-    // common bounded form `islice(gen, stop)`, take exactly `stop` yielded
-    // values without draining an infinite generator.
+    if argc == 2 {
+        // Generator continuations are not arrays, and host `Array.slice` cannot
+        // resume them. Keep the bounded generator form on the shared generator
+        // primitive so `islice(count(), n)` never drains an infinite source.
+        chunks[current].emit_op_u16(Op::LOCAL_GET, data, line);
+        let is_gen = chunks[current].add_import("ecma:value", "isGenerator");
+        chunks[current].emit_call(is_gen, 1, line);
+        vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+        chunks[current].emit_if_value(line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, data, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, stop, line);
+        vybe_compiler::primitives::generators::emit_take_into_array(chunks, current, line);
+        chunks[current].emit_else(line);
+        emit_islice_array_loop(chunks, current, data, start, stop, step, line);
+        chunks[current].emit_end(line);
+    } else {
+        emit_islice_array_loop(chunks, current, data, start, stop, step, line);
+    }
+}
+
+/// Consuming form used for `islice(iter(seq), ...)`. Python iterators advance as
+/// they are sliced; regular sequences do not, so the walker only routes known
+/// iterator variables here.
+pub fn emit_islice_consume(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let step = chunks[current].alloc_scratch(1);
+    let stop = chunks[current].alloc_scratch(1);
+    let start = chunks[current].alloc_scratch(1);
+    let data = chunks[current].alloc_scratch(1);
+    let prefix = chunks[current].alloc_scratch(1);
+    let limit = chunks[current].alloc_scratch(1);
+
+    if argc >= 4 {
+        chunks[current].emit_op_u16(Op::LOCAL_SET, step, line);
+    } else {
+        core_wasm::i32_const(&mut chunks[current], line, 1);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, step, line);
+    }
+    if argc >= 3 {
+        chunks[current].emit_op_u16(Op::LOCAL_SET, stop, line);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, start, line);
+    } else {
+        chunks[current].emit_op_u16(Op::LOCAL_SET, stop, line);
+        core_wasm::i32_const(&mut chunks[current], line, 0);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, start, line);
+    }
+    chunks[current].emit_op_u16(Op::LOCAL_SET, data, line);
+
     chunks[current].emit_op_u16(Op::LOCAL_GET, data, line);
     let is_gen = chunks[current].add_import("ecma:value", "isGenerator");
     chunks[current].emit_call(is_gen, 1, line);
     vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if_value(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, data, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, b, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, stop, line);
     vybe_compiler::primitives::generators::emit_take_into_array(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, prefix, line);
     chunks[current].emit_else(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, data, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, a, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, b, line);
-    let slice = chunks[current].add_import("ecma:array", "slice");
-    chunks[current].emit_call(slice, 3, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, stop, line);
+    let splice = chunks[current].add_import("ecma:array", "splice");
+    chunks[current].emit_call(splice, 3, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, prefix, line);
     chunks[current].emit_end(line);
+
+    len_of(chunks, current, prefix, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, limit, line);
+    emit_islice_array_loop(chunks, current, prefix, start, limit, step, line);
 }
 
-/// `itertools.accumulate(data)` — running sums. Stack: `[data]` → `[array]`.
-pub fn emit_accumulate(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+/// `itertools.accumulate(data[, func[, initial]])`.
+/// Stack: `[data, func?, initial?]` → `[array]`.
+pub fn emit_accumulate(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let initial = chunks[current].alloc_scratch(1);
+    let func = chunks[current].alloc_scratch(1);
     let data = chunks[current].alloc_scratch(1);
     let n = chunks[current].alloc_scratch(1);
     let i = chunks[current].alloc_scratch(1);
     let acc = chunks[current].alloc_scratch(1);
+    let item = chunks[current].alloc_scratch(1);
     let out = chunks[current].alloc_scratch(1);
+    if argc >= 3 {
+        chunks[current].emit_op_u16(Op::LOCAL_SET, initial, line);
+    }
+    if argc >= 2 {
+        chunks[current].emit_op_u16(Op::LOCAL_SET, func, line);
+    } else {
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, func, line);
+    }
+    chunks[current].emit_op_u16(Op::LOCAL_SET, data, line);
+    array_from_slot(chunks, current, data, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, data, line);
     len_of(chunks, current, data, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, n, line);
     vybe_compiler::primitives::collections::emit_array_new(chunks, current, 0, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, out, line);
-    core_wasm::f64_const(&mut chunks[current], line, 0.0);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, acc, line);
-    core_wasm::i32_const(&mut chunks[current], line, 0);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
+    if argc >= 3 {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, initial, line);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, acc, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, acc, line);
+        push(&mut chunks[current], line);
+        core_wasm::i32_const(&mut chunks[current], line, 0);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
+    } else {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, n, line);
+        core_wasm::i32_const(&mut chunks[current], line, 0);
+        chunks[current].emit_op(Op::I32_GT_S, line);
+        chunks[current].emit_if(line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, data, line);
+        core_wasm::i32_const(&mut chunks[current], line, 0);
+        chunks[current].emit_op(Op::ARRAY_GET, line);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, acc, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, acc, line);
+        push(&mut chunks[current], line);
+        chunks[current].emit_end(line);
+        core_wasm::i32_const(&mut chunks[current], line, 1);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
+    }
 
     let state = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
     let chunk = &mut chunks[current];
@@ -580,11 +1724,27 @@ pub fn emit_accumulate(chunks: &mut [Chunk], current: usize, _argc: u8, line: u3
     chunk.emit_op_u16(Op::LOCAL_GET, n, line);
     chunk.emit_op(Op::I32_LT_S, line);
     vybe_compiler::primitives::loops::emit_loop_cond(std::slice::from_mut(chunk), 0, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, acc, line);
     chunk.emit_op_u16(Op::LOCAL_GET, data, line);
     chunk.emit_op_u16(Op::LOCAL_GET, i, line);
     chunk.emit_op(Op::ARRAY_GET, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, item, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, func, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_if_value(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, acc, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, item, line);
     chunk.emit_op(Op::F64_ADD, line);
+    chunk.emit_else(line);
+    let recv = vybe_compiler::primitives::callable::push_callback_from_slot(
+        std::slice::from_mut(chunk),
+        0,
+        func,
+        line,
+    );
+    chunk.emit_op_u16(Op::LOCAL_GET, acc, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, item, line);
+    vybe_compiler::primitives::callable::emit_direct_invoke_chunk(chunk, 2 + recv, line);
+    chunk.emit_end(line);
     chunk.emit_op_u16(Op::LOCAL_SET, acc, line);
     chunk.emit_op_u16(Op::LOCAL_GET, out, line);
     chunk.emit_op_u16(Op::LOCAL_GET, acc, line);
@@ -687,6 +1847,19 @@ pub fn emit_tee(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         chunks[current].emit_op_u16(Op::LOCAL_SET, n, line);
     }
     chunks[current].emit_op_u16(Op::LOCAL_SET, data, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, data, line);
+    let is_gen = chunks[current].add_import("ecma:value", "isGenerator");
+    chunks[current].emit_call(is_gen, 1, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, data, line);
+    core_wasm::i32_const(&mut chunks[current], line, INFINITE_PREFIX);
+    vybe_compiler::primitives::generators::emit_take_into_array(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, data, line);
+    chunks[current].emit_else(line);
+    array_from_slot(chunks, current, data, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, data, line);
+    chunks[current].emit_end(line);
     vybe_compiler::primitives::collections::emit_array_new(chunks, current, 0, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, out, line);
     core_wasm::i32_const(&mut chunks[current], line, 0);

@@ -15,9 +15,9 @@ vybe_ast = { workspace = true }
 vybe_runtime = { workspace = true }
 pest = { workspace = true }
 pest_derive = { workspace = true }
+toml = "1.1"
 
 [dev-dependencies]
 vybe_compiler = { workspace = true }
 vybe_runtime = { workspace = true }
 vybe_ast = { workspace = true }
-

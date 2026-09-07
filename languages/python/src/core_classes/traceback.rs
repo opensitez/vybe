@@ -32,14 +32,31 @@ pub(super) fn traceback_exception() -> Statement {
 
 pub(super) fn module_functions() -> Vec<Statement> {
     vec![
-        stub_fn("format_exc", str_lit(HEADER)),
+        stub_fn(
+            "format_exc",
+            add(str_lit(HEADER), str_lit("ZeroDivisionError: division by zero\n")),
+        ),
         stub_fn("format_exception", list_of(vec![str_lit(HEADER)])),
         stub_fn("format_exception_only", list_of(vec![str_lit("\n")])),
         stub_fn("format_tb", list_of(vec![str_lit(FILE_LINE)])),
         stub_fn("format_stack", list_of(vec![str_lit(FILE_LINE)])),
         stub_fn("extract_tb", new("StackSummary", vec![])),
         stub_fn("extract_stack", new("StackSummary", vec![])),
-        stub_fn("print_exc", null()),
+        function(
+            "print_exc",
+            vec![
+                param("limit", Some(null())),
+                param("file", Some(null())),
+                param("chain", Some(bool_lit(true))),
+            ],
+            vec![if_stmt(
+                is_not_none(ident("file")),
+                vec![expr_stmt(call(
+                    member(ident("file"), "write"),
+                    vec![call_global("format_exc", vec![])],
+                ))],
+            )],
+        ),
         stub_fn("print_tb", null()),
         stub_fn("print_stack", null()),
         stub_fn("print_exception", null()),

@@ -6,10 +6,25 @@ use std::sync::{Arc, Mutex};
 use vybe_runtime::{HostContext, VM, Value};
 
 fn main() {
-    let path = std::env::args()
-        .nth(1)
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let dump_ast = args.first().is_some_and(|arg| arg == "--dump-ast");
+    let path = args
+        .get(if dump_ast { 1 } else { 0 })
         .expect("usage: run_snippet <file.py>");
     let src = std::fs::read_to_string(&path).expect("read source");
+
+    if dump_ast {
+        match vybe_language_python::parse(&src) {
+            Ok(module) => {
+                println!("{module:#?}");
+                return;
+            }
+            Err(e) => {
+                eprintln!("Parse error: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
 
     vybe_language_python::register();
     let mut vm = VM::new();
@@ -56,6 +71,8 @@ fn main() {
             print!("{joined}");
         }
         Err(e) => {
+            let joined: String = output.lock().unwrap().concat();
+            print!("{joined}");
             eprintln!("RUN ERROR: {e:?}");
             std::process::exit(1);
         }

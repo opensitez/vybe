@@ -140,11 +140,7 @@ pub(super) fn module_functions() -> Vec<Statement> {
                             call_global("len", vec![ident("args")]),
                             num(2.0),
                         ),
-                        binary(
-                            BinOp::Eq,
-                            index(ident("args"), num(0.0)),
-                            str_lit("echo"),
-                        ),
+                        binary(BinOp::Eq, index(ident("args"), num(0.0)), str_lit("echo")),
                     ),
                     vec![ret(add(
                         call_global("str", vec![index(ident("args"), num(1.0))]),

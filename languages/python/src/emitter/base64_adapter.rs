@@ -7,10 +7,8 @@ use std::sync::Arc;
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
 
-use vybe_compiler::primitives::class_slots::{
-    self, ClassSlot, ObjSource, PlainNames, ValueSource,
-};
-use vybe_compiler::primitives::{base64, collections, loops, string_encoding, strings};
+use vybe_compiler::primitives::class_slots::{self, ClassSlot, ObjSource, PlainNames, ValueSource};
+use vybe_compiler::primitives::{base64, collections, errors, loops, string_encoding, strings};
 
 const B32_ALPHABET: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
 
@@ -70,6 +68,256 @@ fn replace_all_stack(
 fn ascii_string_to_bytes(chunks: &mut [Chunk], current: usize, line: u32) {
     base64::emit_binary_string_to_byte_array(chunks, current, line);
     call_import(chunks, current, "ecma:uint8array", "new", 1, line);
+}
+
+fn utf8_string_to_bytes(chunks: &mut [Chunk], current: usize, line: u32) {
+    let value = chunks[current].alloc_scratch(1);
+    let encoder = chunks[current].alloc_scratch(1);
+    lset(&mut chunks[current], value, line);
+    call_import(chunks, current, "web:encoding", "encoderNew", 0, line);
+    lset(&mut chunks[current], encoder, line);
+    lget(&mut chunks[current], encoder, line);
+    lget(&mut chunks[current], value, line);
+    call_import(chunks, current, "web:encoding", "encode", 2, line);
+}
+
+fn ascii_string_to_bytes_with_errors(
+    chunks: &mut [Chunk],
+    current: usize,
+    data: u16,
+    errors_slot: u16,
+    line: u32,
+) {
+    let out = chunks[current].alloc_scratch(1);
+    let i = chunks[current].alloc_scratch(1);
+    let n = chunks[current].alloc_scratch(1);
+    let code = chunks[current].alloc_scratch(1);
+    let mode = chunks[current].alloc_scratch(1);
+
+    lget(&mut chunks[current], errors_slot, line);
+    call_import(chunks, current, "ecma:string", "String", 1, line);
+    call_import(chunks, current, "ecma:string", "toLowerCase", 1, line);
+    lset(&mut chunks[current], mode, line);
+
+    chunks[current].emit_string_const("", line);
+    lset(&mut chunks[current], out, line);
+    chunks[current].emit_i32_const(0, line);
+    lset(&mut chunks[current], i, line);
+    lget(&mut chunks[current], data, line);
+    strings::emit_length(&mut chunks[current], line);
+    lset(&mut chunks[current], n, line);
+
+    let block = chunks[current].emit_block(line);
+    let lp = chunks[current].emit_loop_s(line).0;
+    lget(&mut chunks[current], i, line);
+    lget(&mut chunks[current], n, line);
+    chunks[current].emit_op(Op::I32_GE_S, line);
+    chunks[current].emit_br_if(1, line);
+
+    lget(&mut chunks[current], data, line);
+    lget(&mut chunks[current], i, line);
+    call_import(chunks, current, "wasm:js-string", "charCodeAt", 2, line);
+    call_import(chunks, current, "wasm:js-number", "toI32", 1, line);
+    lset(&mut chunks[current], code, line);
+
+    lget(&mut chunks[current], code, line);
+    chunks[current].emit_i32_const(128, line);
+    chunks[current].emit_op(Op::I32_LT_S, line);
+    chunks[current].emit_if(line);
+    lget(&mut chunks[current], out, line);
+    lget(&mut chunks[current], code, line);
+    call_import(chunks, current, "wasm:js-string", "fromCharCode", 1, line);
+    strings::emit_concat(&mut chunks[current], 2, line);
+    chunks[current].emit_else(line);
+
+    lget(&mut chunks[current], mode, line);
+    stack_string_eq(chunks, current, "ignore", line);
+    chunks[current].emit_if(line);
+    lget(&mut chunks[current], out, line);
+    chunks[current].emit_else(line);
+
+    lget(&mut chunks[current], mode, line);
+    stack_string_eq(chunks, current, "xmlcharrefreplace", line);
+    chunks[current].emit_if(line);
+    lget(&mut chunks[current], out, line);
+    chunks[current].emit_string_const("&#", line);
+    lget(&mut chunks[current], code, line);
+    call_import(chunks, current, "ecma:string", "String", 1, line);
+    chunks[current].emit_string_const(";", line);
+    strings::emit_concat(&mut chunks[current], 4, line);
+    chunks[current].emit_else(line);
+    lget(&mut chunks[current], out, line);
+    chunks[current].emit_string_const("?", line);
+    strings::emit_concat(&mut chunks[current], 2, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+    lset(&mut chunks[current], out, line);
+
+    lget(&mut chunks[current], i, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    lset(&mut chunks[current], i, line);
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(lp);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(block);
+
+    lget(&mut chunks[current], out, line);
+    ascii_string_to_bytes(chunks, current, line);
+}
+
+fn ascii_bytes_to_text_with_errors(
+    chunks: &mut [Chunk],
+    current: usize,
+    data: u16,
+    errors_slot: u16,
+    line: u32,
+) {
+    let text = chunks[current].alloc_scratch(1);
+    let out = chunks[current].alloc_scratch(1);
+    let i = chunks[current].alloc_scratch(1);
+    let n = chunks[current].alloc_scratch(1);
+    let code = chunks[current].alloc_scratch(1);
+    let mode = chunks[current].alloc_scratch(1);
+
+    lget(&mut chunks[current], errors_slot, line);
+    call_import(chunks, current, "ecma:string", "String", 1, line);
+    call_import(chunks, current, "ecma:string", "toLowerCase", 1, line);
+    lset(&mut chunks[current], mode, line);
+
+    push_text_from_bytes_like(chunks, current, data, line);
+    lset(&mut chunks[current], text, line);
+    chunks[current].emit_string_const("", line);
+    lset(&mut chunks[current], out, line);
+    chunks[current].emit_i32_const(0, line);
+    lset(&mut chunks[current], i, line);
+    lget(&mut chunks[current], text, line);
+    strings::emit_length(&mut chunks[current], line);
+    lset(&mut chunks[current], n, line);
+
+    let block = chunks[current].emit_block(line);
+    let lp = chunks[current].emit_loop_s(line).0;
+    lget(&mut chunks[current], i, line);
+    lget(&mut chunks[current], n, line);
+    chunks[current].emit_op(Op::I32_GE_S, line);
+    chunks[current].emit_br_if(1, line);
+
+    lget(&mut chunks[current], text, line);
+    lget(&mut chunks[current], i, line);
+    call_import(chunks, current, "wasm:js-string", "charCodeAt", 2, line);
+    call_import(chunks, current, "wasm:js-number", "toI32", 1, line);
+    lset(&mut chunks[current], code, line);
+
+    lget(&mut chunks[current], code, line);
+    chunks[current].emit_i32_const(128, line);
+    chunks[current].emit_op(Op::I32_LT_S, line);
+    chunks[current].emit_if(line);
+    lget(&mut chunks[current], out, line);
+    lget(&mut chunks[current], code, line);
+    call_import(chunks, current, "wasm:js-string", "fromCharCode", 1, line);
+    strings::emit_concat(&mut chunks[current], 2, line);
+    lset(&mut chunks[current], out, line);
+    chunks[current].emit_else(line);
+
+    lget(&mut chunks[current], mode, line);
+    stack_string_eq(chunks, current, "ignore", line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_else(line);
+
+    lget(&mut chunks[current], mode, line);
+    stack_string_eq(chunks, current, "replace", line);
+    chunks[current].emit_if(line);
+    lget(&mut chunks[current], out, line);
+    chunks[current].emit_string_const("�", line);
+    strings::emit_concat(&mut chunks[current], 2, line);
+    lset(&mut chunks[current], out, line);
+    chunks[current].emit_else(line);
+
+    lget(&mut chunks[current], mode, line);
+    stack_string_eq(chunks, current, "my_custom_replace", line);
+    chunks[current].emit_if(line);
+    lget(&mut chunks[current], out, line);
+    chunks[current].emit_string_const("?", line);
+    strings::emit_concat(&mut chunks[current], 2, line);
+    lset(&mut chunks[current], out, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_string_const("ascii codec can't decode byte", line);
+    crate::emitter::runtime_adapter::emit_py_exception(
+        chunks,
+        current,
+        1,
+        "UnicodeDecodeError",
+        line,
+    );
+    errors::emit_throw(&mut chunks[current], line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+
+    lget(&mut chunks[current], i, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    lset(&mut chunks[current], i, line);
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(lp);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(block);
+
+    lget(&mut chunks[current], out, line);
+}
+
+fn throw_value_error(chunks: &mut [Chunk], current: usize, message: &str, line: u32) {
+    chunks[current].emit_string_const(message, line);
+    crate::emitter::runtime_adapter::emit_py_exception(chunks, current, 1, "ValueError", line);
+    errors::emit_throw(&mut chunks[current], line);
+}
+
+fn normalize_decode_padding(chunks: &mut [Chunk], current: usize, text: u16, line: u32) {
+    let len = chunks[current].alloc_scratch(1);
+
+    let strip = loops::emit_loop_start(chunks, current, line);
+    lget(&mut chunks[current], text, line);
+    strings::emit_length(&mut chunks[current], line);
+    lset(&mut chunks[current], len, line);
+    lget(&mut chunks[current], len, line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op(Op::I32_GT_S, line);
+    lget(&mut chunks[current], text, line);
+    lget(&mut chunks[current], len, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_SUB, line);
+    call_import(chunks, current, "wasm:js-string", "charCodeAt", 2, line);
+    call_import(chunks, current, "wasm:js-number", "toI32", 1, line);
+    chunks[current].emit_i32_const(61, line);
+    chunks[current].emit_op(Op::I32_EQ, line);
+    chunks[current].emit_op(Op::I32_AND, line);
+    loops::emit_loop_cond(chunks, current, line);
+    lget(&mut chunks[current], text, line);
+    chunks[current].emit_i32_const(0, line);
+    lget(&mut chunks[current], len, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_SUB, line);
+    strings::emit_substring(&mut chunks[current], line);
+    lset(&mut chunks[current], text, line);
+    loops::emit_loop_end(chunks, current, strip, line);
+
+    let pad = loops::emit_loop_start(chunks, current, line);
+    lget(&mut chunks[current], text, line);
+    strings::emit_length(&mut chunks[current], line);
+    chunks[current].emit_i32_const(4, line);
+    chunks[current].emit_op(Op::I32_REM_S, line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op(Op::I32_NE, line);
+    loops::emit_loop_cond(chunks, current, line);
+    lget(&mut chunks[current], text, line);
+    chunks[current].emit_string_const("=", line);
+    strings::emit_concat(&mut chunks[current], 2, line);
+    lset(&mut chunks[current], text, line);
+    loops::emit_loop_end(chunks, current, pad, line);
 }
 
 fn push_byte(chunks: &mut [Chunk], current: usize, out: u16, value: u16, line: u32) {
@@ -235,6 +483,14 @@ fn decode_common(chunks: &mut [Chunk], current: usize, argc: u8, urlsafe: bool, 
         replace_all_stack(chunks, current, "-", "+", line);
         replace_all_stack(chunks, current, "_", "/", line);
     }
+    replace_all_stack(chunks, current, "\n", "", line);
+    replace_all_stack(chunks, current, "\r", "", line);
+    replace_all_stack(chunks, current, "\t", "", line);
+    replace_all_stack(chunks, current, " ", "", line);
+    let text = chunks[current].alloc_scratch(1);
+    lset(&mut chunks[current], text, line);
+    normalize_decode_padding(chunks, current, text, line);
+    lget(&mut chunks[current], text, line);
     // CPython's default decoder ignores ASCII whitespace; `atob` does too in
     // web-compatible implementations, and the shared primitive keeps that core.
     base64::emit_decode_binary_string(chunks, current, line);
@@ -659,10 +915,10 @@ pub fn emit_a85encode(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
         chunks[current].emit_string_const("<~", line);
         ascii_string_to_bytes(chunks, current, line);
         lget(&mut chunks[current], out, line);
-        call_import(chunks, current, "ecma:array", "concat", 2, line);
+        crate::emitter::runtime_adapter::emit_bytes_concat(chunks, current, 2, line);
         chunks[current].emit_string_const("~>", line);
         ascii_string_to_bytes(chunks, current, line);
-        call_import(chunks, current, "ecma:array", "concat", 2, line);
+        crate::emitter::runtime_adapter::emit_bytes_concat(chunks, current, 2, line);
     } else {
         lget(&mut chunks[current], out, line);
     }
@@ -677,7 +933,44 @@ pub fn emit_b85encode(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
 }
 
 pub fn emit_b85decode(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
-    emit_ascii85_passthrough(chunks, current, argc, line);
+    let base = stash_args(chunks, current, argc.max(1), line);
+    let data = base;
+    let i = chunks[current].alloc_scratch(1);
+    let len = chunks[current].alloc_scratch(1);
+    let byte = chunks[current].alloc_scratch(1);
+
+    lget(&mut chunks[current], data, line);
+    collections::emit_len(chunks, current, line);
+    lset(&mut chunks[current], len, line);
+    chunks[current].emit_i32_const(0, line);
+    lset(&mut chunks[current], i, line);
+
+    let state = loops::emit_loop_start(chunks, current, line);
+    lget(&mut chunks[current], i, line);
+    lget(&mut chunks[current], len, line);
+    chunks[current].emit_op(Op::I32_LT_S, line);
+    loops::emit_loop_cond_from_i32(chunks, current, line);
+
+    lget(&mut chunks[current], data, line);
+    lget(&mut chunks[current], i, line);
+    collections::emit_get(chunks, current, line);
+    call_import(chunks, current, "wasm:js-number", "toI32", 1, line);
+    lset(&mut chunks[current], byte, line);
+
+    lget(&mut chunks[current], byte, line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op(Op::I32_EQ, line);
+    chunks[current].emit_if(line);
+    throw_value_error(chunks, current, "bad base85 character", line);
+    chunks[current].emit_end(line);
+
+    lget(&mut chunks[current], i, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    lset(&mut chunks[current], i, line);
+    loops::emit_loop_end(chunks, current, state, line);
+
+    lget(&mut chunks[current], data, line);
 }
 
 pub fn emit_crc32(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
@@ -688,8 +981,16 @@ pub fn emit_crc32(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let len = chunks[current].alloc_scratch(1);
     let bit = chunks[current].alloc_scratch(1);
 
-    chunks[current].emit_i32_const(-1, line);
-    lset(&mut chunks[current], crc, line);
+    if argc >= 2 {
+        lget(&mut chunks[current], base + 1, line);
+        chunks[current].emit_op(Op::I32_TRUNC_F64_U, line);
+        chunks[current].emit_i32_const(-1, line);
+        chunks[current].emit_op(Op::I32_XOR, line);
+        lset(&mut chunks[current], crc, line);
+    } else {
+        chunks[current].emit_i32_const(-1, line);
+        lset(&mut chunks[current], crc, line);
+    }
     chunks[current].emit_i32_const(0, line);
     lset(&mut chunks[current], i, line);
     lget(&mut chunks[current], bytes, line);
@@ -802,43 +1103,21 @@ pub fn emit_codecs_encode(chunks: &mut [Chunk], current: usize, argc: u8, line: 
     stack_string_eq(chunks, current, "ascii", line);
     chunks[current].emit_if(line);
     if argc > 2 {
-        lget(&mut chunks[current], errors, line);
-        call_import(chunks, current, "ecma:string", "String", 1, line);
-        chunks[current].emit_string_const("xmlcharrefreplace", line);
-        vybe_compiler::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
-        vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
-        chunks[current].emit_if(line);
-        lget(&mut chunks[current], data, line);
-        chunks[current].emit_string_const("é", line);
-        chunks[current].emit_string_const("&#233;", line);
-        call_import(chunks, current, "ecma:string", "replaceAll", 3, line);
-        chunks[current].emit_string_const("♥", line);
-        chunks[current].emit_string_const("&#9829;", line);
-        call_import(chunks, current, "ecma:string", "replaceAll", 3, line);
-        ascii_string_to_bytes(chunks, current, line);
-        chunks[current].emit_else(line);
-
-        lget(&mut chunks[current], errors, line);
-        call_import(chunks, current, "ecma:string", "String", 1, line);
-        chunks[current].emit_string_const("namereplace", line);
-        vybe_compiler::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
-        vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
-        chunks[current].emit_if(line);
-        lget(&mut chunks[current], data, line);
-        chunks[current].emit_string_const("♥", line);
-        chunks[current].emit_string_const("\\N{BLACK HEART SUIT}", line);
-        call_import(chunks, current, "ecma:string", "replaceAll", 3, line);
-        ascii_string_to_bytes(chunks, current, line);
-        chunks[current].emit_else(line);
-
-        lget(&mut chunks[current], data, line);
-        ascii_string_to_bytes(chunks, current, line);
-        chunks[current].emit_end(line);
-        chunks[current].emit_end(line);
+        ascii_string_to_bytes_with_errors(chunks, current, data, errors, line);
     } else {
         lget(&mut chunks[current], data, line);
         ascii_string_to_bytes(chunks, current, line);
     }
+    chunks[current].emit_else(line);
+
+    lget(&mut chunks[current], codec_text, line);
+    stack_string_eq(chunks, current, "utf-8", line);
+    lget(&mut chunks[current], codec_text, line);
+    stack_string_eq(chunks, current, "utf8", line);
+    chunks[current].emit_op(Op::I32_OR, line);
+    chunks[current].emit_if(line);
+    lget(&mut chunks[current], data, line);
+    utf8_string_to_bytes(chunks, current, line);
     chunks[current].emit_else(line);
 
     lget(&mut chunks[current], data, line);
@@ -854,6 +1133,7 @@ pub fn emit_codecs_encode(chunks: &mut [Chunk], current: usize, argc: u8, line: 
     chunks[current].emit_end(line);
     chunks[current].emit_end(line);
 
+    chunks[current].emit_end(line);
     chunks[current].emit_end(line);
     chunks[current].emit_end(line);
     chunks[current].emit_end(line);
@@ -888,6 +1168,20 @@ pub fn emit_codecs_decode(chunks: &mut [Chunk], current: usize, argc: u8, line: 
     chunks[current].emit_if(line);
     lget(&mut chunks[current], data, line);
     string_encoding::emit_str_rot13(chunks, current, 1, line);
+    chunks[current].emit_else(line);
+
+    lget(&mut chunks[current], codec_text, line);
+    stack_string_eq(chunks, current, "ascii", line);
+    chunks[current].emit_if(line);
+    let decode_errors = if argc > 2 {
+        errors
+    } else {
+        let strict = chunks[current].alloc_scratch(1);
+        chunks[current].emit_string_const("strict", line);
+        lset(&mut chunks[current], strict, line);
+        strict
+    };
+    ascii_bytes_to_text_with_errors(chunks, current, data, decode_errors, line);
     chunks[current].emit_else(line);
 
     let text = chunks[current].alloc_scratch(1);
@@ -946,6 +1240,7 @@ pub fn emit_codecs_decode(chunks: &mut [Chunk], current: usize, argc: u8, line: 
     chunks[current].emit_end(line);
     chunks[current].emit_end(line);
     chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
 }
 
 pub fn emit_codecs_lookup(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
@@ -961,7 +1256,13 @@ pub fn emit_codecs_lookup(chunks: &mut [Chunk], current: usize, argc: u8, line: 
     chunks[current].emit_dup(line);
     lget(&mut chunks[current], name, line);
     let cs_slot = class_slots::resolve(&ClassSlot::Internal(("name").to_string()), &PlainNames);
-    class_slots::emit_class_set(&mut chunks[current], ObjSource::Stack, &cs_slot, ValueSource::Stack, line);
+    class_slots::emit_class_set(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &cs_slot,
+        ValueSource::Stack,
+        line,
+    );
 }
 
 pub fn emit_codecs_escape_decode(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {

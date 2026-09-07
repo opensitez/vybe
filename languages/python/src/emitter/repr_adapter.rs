@@ -16,15 +16,14 @@
 //! scanning `chunks` for that name), since `repr` runs on every `print`/`str`.
 
 use std::sync::Arc;
-use vybe_compiler::primitives::class_slots::{
-    self, ClassSlot, Dest, ObjSource, PlainNames,
-};
+use vybe_compiler::primitives::class_slots::{self, ClassSlot, Dest, ObjSource, PlainNames};
 use vybe_compiler::primitives::functions::create_function_chunk;
 use vybe_compiler::primitives::tuples::{FIELDS_TAG, TUPLE_TAG, TYPENAME_TAG};
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
 
 const REPR_CHUNK: &str = "__py_repr";
+const FLOAT_ITEMS_TAG: &str = "__py_float_items";
 
 fn lget(chunk: &mut Chunk, slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
@@ -39,6 +38,76 @@ fn str_const(chunk: &mut Chunk, s: &str, line: u32) {
 fn concat(chunk: &mut Chunk, line: u32) {
     let idx = chunk.add_import("wasm:js-string", "concat");
     chunk.emit_call(idx, 2, line);
+}
+
+fn emit_is_notimplemented(chunk: &mut Chunk, slot: u16, line: u32) {
+    let typeof_fn = chunk.add_import("ecma:value", "typeof");
+    lget(chunk, slot, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    lget(chunk, slot, line);
+    chunk.emit_call(typeof_fn, 1, line);
+    str_const(chunk, "object", line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    chunk.emit_op(Op::I32_AND, line);
+    chunk.emit_if_value(line);
+    let marker = class_slots::resolve(&ClassSlot::internal("__py_notimplemented"), &PlainNames);
+    class_slots::emit_class_has(chunk, ObjSource::Local(slot), &marker, Dest::Stack, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_else(line);
+    chunk.emit_i32_const(0, line);
+    chunk.emit_end(line);
+}
+
+/// Python float display for a value already on the stack.
+fn float_repr_from_stack(chunk: &mut Chunk, line: u32) {
+    let x = chunk.alloc_scratch(1);
+    chunk.emit_op_u16(Op::LOCAL_SET, x, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, x, line);
+    let is_nan = chunk.add_import("ecma:number", "isNaN");
+    chunk.emit_call(is_nan, 1, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if_value(line);
+    chunk.emit_string_const("nan", line);
+    chunk.emit_else(line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, x, line);
+    let is_finite = chunk.add_import("ecma:number", "isFinite");
+    chunk.emit_call(is_finite, 1, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_if_value(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, x, line);
+    let to_f64 = chunk.add_import("wasm:js-number", "toF64");
+    chunk.emit_call(to_f64, 1, line);
+    chunk.emit_f64_const(0.0, line);
+    chunk.emit_op(Op::F64_LT, line);
+    chunk.emit_if_value(line);
+    chunk.emit_string_const("-inf", line);
+    chunk.emit_else(line);
+    chunk.emit_string_const("inf", line);
+    chunk.emit_end(line);
+    chunk.emit_else(line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, x, line);
+    let is_int = chunk.add_import("ecma:number", "isInteger");
+    chunk.emit_call(is_int, 1, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if_value(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, x, line);
+    let to_str = chunk.add_import("ecma:string", "String");
+    chunk.emit_call(to_str, 1, line);
+    chunk.emit_string_const(".0", line);
+    concat(chunk, line);
+    chunk.emit_else(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, x, line);
+    let to_str = chunk.add_import("ecma:string", "String");
+    chunk.emit_call(to_str, 1, line);
+    chunk.emit_end(line);
+
+    chunk.emit_end(line);
+    chunk.emit_end(line);
 }
 /// Recurse: `[value] -> [repr_string]` by calling this same chunk.
 fn recurse(chunk: &mut Chunk, self_idx: usize, line: u32) {
@@ -219,6 +288,18 @@ fn build_py_repr_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     c.emit_op(Op::RETURN, line);
     c.emit_end(line);
 
+    // ── bytes / bytearray typed arrays → b'...' ─────────────────────────
+    lget(&mut c, value, line);
+    {
+        let idx = c.add_import("ecma:arraybuffer", "isView");
+        c.emit_call(idx, 1, line);
+    }
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut c, line);
+    c.emit_if(line);
+    emit_bytes_repr(&mut c, value, out, i, n, line);
+    c.emit_op(Op::RETURN, line);
+    c.emit_end(line);
+
     // ── array → named tuple / tuple / list ──────────────────────────────
     lget(&mut c, value, line);
     {
@@ -311,6 +392,31 @@ fn build_py_repr_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     }
     c.emit_end(line);
 
+    // ── NotImplemented sentinel ────────────────────────────────────────
+    emit_is_notimplemented(&mut c, value, line);
+    c.emit_if(line);
+    str_const(&mut c, "NotImplemented", line);
+    c.emit_op(Op::RETURN, line);
+    c.emit_end(line);
+
+    // ── module object → `<module 'name' (built-in)>` ────────────────────
+    {
+        let marker = class_slots::resolve(&ClassSlot::internal("__py_module_name"), &PlainNames);
+        let module_name = c.alloc_scratch(1);
+        class_slots::emit_class_get(&mut c, ObjSource::Local(value), &marker, Dest::Local(module_name), line);
+        lget(&mut c, module_name, line);
+        c.emit_op(Op::REF_IS_NULL, line);
+        c.emit_op(Op::I32_EQZ, line);
+        c.emit_if(line);
+        str_const(&mut c, "<module '", line);
+        lget(&mut c, module_name, line);
+        concat(&mut c, line);
+        str_const(&mut c, "' (built-in)>", line);
+        concat(&mut c, line);
+        c.emit_op(Op::RETURN, line);
+        c.emit_end(line);
+    }
+
     // ── range → `range(0, 3)` / `range(1, 10, 2)` ───────────────────────
     // A range is lazy and opaque, so `emit_range` stamps its bounds onto the
     // object for exactly this. CPython omits the step when it is 1.
@@ -381,7 +487,10 @@ fn build_py_repr_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
         c.emit_op(Op::I32_EQZ, line); // 1 if a method was found
         c.emit_if(line);
         lget(&mut c, m, line);
-        lget(&mut c, value, line);
+        c.emit_dup(line);
+        let receiver_slot =
+            class_slots::resolve(&ClassSlot::internal("__vybe_method_receiver"), &PlainNames);
+        class_slots::emit_class_get(&mut c, ObjSource::Stack, &receiver_slot, Dest::Stack, line);
         vybe_compiler::primitives::callable::emit_direct_invoke_chunk(&mut c, 1, line);
         c.emit_op(Op::RETURN, line);
         c.emit_end(line);
@@ -666,6 +775,116 @@ fn emit_sep_comma(chunk: &mut Chunk, out: u16, i: u16, line: u32) {
     chunk.emit_end(line);
 }
 
+fn emit_append_byte_escape(
+    chunk: &mut Chunk,
+    out: u16,
+    byte: u16,
+    done: u16,
+    expected: i32,
+    text: &str,
+    line: u32,
+) {
+    lget(chunk, byte, line);
+    emit_i32_const(chunk, expected, line);
+    chunk.emit_op(Op::I32_EQ, line);
+    chunk.emit_if(line);
+    lget(chunk, out, line);
+    str_const(chunk, text, line);
+    concat(chunk, line);
+    lset(chunk, out, line);
+    emit_i32_const(chunk, 1, line);
+    lset(chunk, done, line);
+    chunk.emit_end(line);
+}
+
+fn emit_hex_digit(chunk: &mut Chunk, byte: u16, high: bool, line: u32) {
+    str_const(chunk, "0123456789abcdef", line);
+    lget(chunk, byte, line);
+    if high {
+        emit_i32_const(chunk, 4, line);
+        chunk.emit_op(Op::I32_SHR_S, line);
+    } else {
+        emit_i32_const(chunk, 15, line);
+        chunk.emit_op(Op::I32_AND, line);
+    }
+    let char_at = chunk.add_import("ecma:string", "charAt");
+    chunk.emit_call(char_at, 2, line);
+}
+
+fn emit_bytes_repr(chunk: &mut Chunk, value: u16, out: u16, i: u16, n: u16, line: u32) {
+    let arr = chunk.alloc_scratch(1);
+    let byte = chunk.alloc_scratch(1);
+    let done = chunk.alloc_scratch(1);
+    let from = chunk.add_import("ecma:array", "from");
+    let to_f64 = chunk.add_import("wasm:js-number", "toF64");
+    let from_code_point = chunk.add_import("ecma:string", "fromCodePoint");
+
+    lget(chunk, value, line);
+    chunk.emit_call(from, 1, line);
+    lset(chunk, arr, line);
+    lget(chunk, arr, line);
+    chunk.emit_op(Op::ARRAY_LENGTH, line);
+    lset(chunk, n, line);
+    str_const(chunk, "b'", line);
+    lset(chunk, out, line);
+    emit_i32_zero(chunk, i, line);
+
+    let lp = loop_start(chunk, line);
+    loop_break_if_ge(chunk, i, n, line);
+    lget(chunk, arr, line);
+    lget(chunk, i, line);
+    chunk.emit_op(Op::ARRAY_GET, line);
+    chunk.emit_call(to_f64, 1, line);
+    chunk.emit_op(Op::I32_TRUNC_SAT_F64_S, line);
+    lset(chunk, byte, line);
+    emit_i32_zero(chunk, done, line);
+
+    emit_append_byte_escape(chunk, out, byte, done, 9, "\\t", line);
+    emit_append_byte_escape(chunk, out, byte, done, 10, "\\n", line);
+    emit_append_byte_escape(chunk, out, byte, done, 13, "\\r", line);
+    emit_append_byte_escape(chunk, out, byte, done, 92, "\\\\", line);
+    emit_append_byte_escape(chunk, out, byte, done, 39, "\\'", line);
+
+    lget(chunk, done, line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    lget(chunk, byte, line);
+    emit_i32_const(chunk, 32, line);
+    chunk.emit_op(Op::I32_GE_S, line);
+    chunk.emit_op(Op::I32_AND, line);
+    lget(chunk, byte, line);
+    emit_i32_const(chunk, 127, line);
+    chunk.emit_op(Op::I32_LT_S, line);
+    chunk.emit_op(Op::I32_AND, line);
+    chunk.emit_if(line);
+    lget(chunk, out, line);
+    lget(chunk, byte, line);
+    chunk.emit_call(from_code_point, 1, line);
+    concat(chunk, line);
+    lset(chunk, out, line);
+    emit_i32_const(chunk, 1, line);
+    lset(chunk, done, line);
+    chunk.emit_end(line);
+
+    lget(chunk, done, line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_if(line);
+    lget(chunk, out, line);
+    str_const(chunk, "\\x", line);
+    concat(chunk, line);
+    emit_hex_digit(chunk, byte, true, line);
+    concat(chunk, line);
+    emit_hex_digit(chunk, byte, false, line);
+    concat(chunk, line);
+    lset(chunk, out, line);
+    chunk.emit_end(line);
+
+    bump(chunk, i, line);
+    loop_end(chunk, lp, line);
+    lget(chunk, out, line);
+    str_const(chunk, "'", line);
+    concat(chunk, line);
+}
+
 /// `out = prefix + join(", ", repr(value[0..n])) + suffix`, stored in `out`.
 #[allow(clippy::too_many_arguments)]
 fn emit_join(
@@ -679,6 +898,13 @@ fn emit_join(
     suffix: &str,
     line: u32,
 ) {
+    let elem = chunk.alloc_scratch(1);
+    let float_items = chunk.alloc_scratch(1);
+    lget(chunk, value, line);
+    struct_get(chunk, &ClassSlot::internal(FLOAT_ITEMS_TAG), line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+    lset(chunk, float_items, line);
+
     str_const(chunk, prefix, line);
     lset(chunk, out, line);
     emit_i32_zero(chunk, i, line);
@@ -689,7 +915,15 @@ fn emit_join(
     lget(chunk, value, line);
     lget(chunk, i, line);
     chunk.emit_op(Op::ARRAY_GET, line);
+    lset(chunk, elem, line);
+    lget(chunk, float_items, line);
+    chunk.emit_if_value(line);
+    lget(chunk, elem, line);
+    float_repr_from_stack(chunk, line);
+    chunk.emit_else(line);
+    lget(chunk, elem, line);
     recurse(chunk, self_idx, line);
+    chunk.emit_end(line);
     concat(chunk, line);
     lset(chunk, out, line);
     bump(chunk, i, line);

@@ -142,7 +142,10 @@ pub(super) fn pipe_end() -> Statement {
     class(
         "__PyPipeEnd",
         vec![
-            init(vec![], vec![set_this("_items", call_global("list", vec![]))]),
+            init(
+                vec![],
+                vec![set_this("_items", call_global("list", vec![]))],
+            ),
             method(
                 "send",
                 vec![param("value", None)],

@@ -139,7 +139,14 @@ pub fn emit_getlocale(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
 fn push_locale_env(chunks: &mut [Chunk], current: usize, line: u32) {
     let env = chunks[current].alloc_scratch(2);
     let found = env + 1;
-    call_import(chunks, current, "wasi:cli/environment", "get-environment", 0, line);
+    call_import(
+        chunks,
+        current,
+        "wasi:cli/environment",
+        "get-environment",
+        0,
+        line,
+    );
     lset(&mut chunks[current], env, line);
     chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     lset(&mut chunks[current], found, line);

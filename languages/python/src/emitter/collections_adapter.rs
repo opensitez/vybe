@@ -5,7 +5,7 @@ use vybe_compiler::primitives::class_slots::{
 use vybe_compiler::primitives::instructions::{core_wasm, host};
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
-use vybe_runtime::opcode::heaptype::{HT_STRUCT, HeapType};
+use vybe_runtime::opcode::heaptype::{HT_EXTERN, HT_STRUCT, HeapType};
 
 use vybe_compiler::primitives::{collections, dict, ops, sets, strings, tuples};
 
@@ -88,6 +88,18 @@ fn emit_is_map(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
     chunks[current].emit_call(eq, 2, line);
 }
 
+/// `isinstance(x, dict)` needs the same robust Map check used by the collection
+/// adapters. `instanceof Map` is not stable once Map values cross function
+/// boundaries in the current runtime.
+pub fn emit_py_is_dict(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    if argc != 1 {
+        return;
+    }
+    let v = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, v, line);
+    emit_is_map(chunks, current, v, line);
+}
+
 /// Python `list(x)` / `sorted(x)` — materialize an iterable as an array the way
 /// CPython iterates it. A dict iterates its **KEYS** (`list({'b':2,'a':1})` is
 /// `['b','a']`), but a Map spreads as `[key, value]` entry pairs, so the Map
@@ -159,24 +171,54 @@ fn emit_generator_control_packet(chunks: &mut [Chunk], current: usize, op: &str,
 
     core_wasm::dup(&mut chunks[current], line);
     chunks[current].emit_bool_const(true, line);
-    let marker_key = class_slots::resolve_interned(&mut chunks[current], &ClassSlot::internal("__vybe_generator_control"), &PlainNames);
-    class_slots::emit_class_set(&mut chunks[current], ObjSource::Stack, &marker_key, ValueSource::Stack, line);
+    let marker_key = class_slots::resolve_interned(
+        &mut chunks[current],
+        &ClassSlot::internal("__vybe_generator_control"),
+        &PlainNames,
+    );
+    class_slots::emit_class_set(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &marker_key,
+        ValueSource::Stack,
+        line,
+    );
 
     core_wasm::dup(&mut chunks[current], line);
     chunks[current].emit_string_const(op, line);
-    let op_key = class_slots::resolve_interned(&mut chunks[current], &ClassSlot::internal("op"), &PlainNames);
-    class_slots::emit_class_set(&mut chunks[current], ObjSource::Stack, &op_key, ValueSource::Stack, line);
+    let op_key = class_slots::resolve_interned(
+        &mut chunks[current],
+        &ClassSlot::internal("op"),
+        &PlainNames,
+    );
+    class_slots::emit_class_set(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &op_key,
+        ValueSource::Stack,
+        line,
+    );
 
     core_wasm::dup(&mut chunks[current], line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
-    let value_key = class_slots::resolve_interned(&mut chunks[current], &ClassSlot::internal("value"), &PlainNames);
-    class_slots::emit_class_set(&mut chunks[current], ObjSource::Stack, &value_key, ValueSource::Stack, line);
+    let value_key = class_slots::resolve_interned(
+        &mut chunks[current],
+        &ClassSlot::internal("value"),
+        &PlainNames,
+    );
+    class_slots::emit_class_set(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &value_key,
+        ValueSource::Stack,
+        line,
+    );
 }
 
 fn emit_generator_exception(chunks: &mut [Chunk], current: usize, exc_name: &str, line: u32) {
     class_slots::emit_class_alloc(&mut chunks[current], line);
     core_wasm::dup(&mut chunks[current], line);
-    chunks[current].emit_string_const("", line);
+    chunks[current].emit_i32_const(0, line);
     vybe_compiler::primitives::errors::emit_exception_new_finalize(
         &mut chunks[current],
         exc_name,
@@ -625,9 +667,19 @@ pub fn emit_move_to_end(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
     let base = stash_args(chunks, current, argc, line);
     let d = base;
     let key = base + 1;
-    let keys_k = class_slots::resolve_interned(&mut chunks[current], &ClassSlot::internal("__keys"), &PlainNames);
+    let keys_k = class_slots::resolve_interned(
+        &mut chunks[current],
+        &ClassSlot::internal("__keys"),
+        &PlainNames,
+    );
     chunks[current].emit_op_u16(Op::LOCAL_GET, d, line);
-    class_slots::emit_class_get(&mut chunks[current], ObjSource::Stack, &keys_k, Dest::Stack, line);
+    class_slots::emit_class_get(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &keys_k,
+        Dest::Stack,
+        line,
+    );
     let keys = chunks[current].alloc_scratch(1);
     chunks[current].emit_op_u16(Op::LOCAL_SET, keys, line);
     // remove the key from its current position
@@ -714,9 +766,19 @@ pub fn emit_popitem(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     call_import(chunks, current, "ecma:object", "delete", 2, line);
     chunks[current].emit_op(Op::DROP, line);
     // trim __keys when present
-    let keys_k = class_slots::resolve_interned(&mut chunks[current], &ClassSlot::internal("__keys"), &PlainNames);
+    let keys_k = class_slots::resolve_interned(
+        &mut chunks[current],
+        &ClassSlot::internal("__keys"),
+        &PlainNames,
+    );
     chunks[current].emit_op_u16(Op::LOCAL_GET, d, line);
-    class_slots::emit_class_get(&mut chunks[current], ObjSource::Stack, &keys_k, Dest::Stack, line);
+    class_slots::emit_class_get(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &keys_k,
+        Dest::Stack,
+        line,
+    );
     let kk = chunks[current].alloc_scratch(1);
     chunks[current].emit_op_u16(Op::LOCAL_SET, kk, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, kk, line);
@@ -739,17 +801,248 @@ pub fn emit_popitem(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
 /// an empty dict; otherwise the single iterable arg on TOS is counted. (The
 /// keyword form `Counter(a=3, …)` needs the AST and is handled by the Python
 /// `dict`-style compiler intercept.)
-pub fn emit_counter_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+fn build_counter_repr_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
+    const NAME: &str = "__py_counter_repr_method";
+    if let Some(idx) = chunks.iter().position(|c| c.name == NAME) {
+        return idx;
+    }
+    let repr_idx = crate::emitter::repr_adapter::ensure_py_repr_chunk(chunks, line);
+    let mut helper = Chunk::new(NAME);
+    helper.arity = 1;
+    helper.local_count = helper.local_count.max(1);
+    let keys = helper.alloc_scratch(1);
+    let out = helper.alloc_scratch(1);
+    let i = helper.alloc_scratch(1);
+    let n = helper.alloc_scratch(1);
+    let key = helper.alloc_scratch(1);
+    let value = helper.alloc_scratch(1);
+    let best_i = helper.alloc_scratch(1);
+    let best_key = helper.alloc_scratch(1);
+    let best_v = helper.alloc_scratch(1);
+    let cur_v = helper.alloc_scratch(1);
+    let printed = helper.alloc_scratch(1);
+    let concat = helper.add_import("wasm:js-string", "concat");
+    let array_from = helper.add_import("ecma:array", "from");
+    let splice = helper.add_import("ecma:array", "splice");
+    let to_f64 = helper.add_import("wasm:js-number", "toF64");
+    let keys_k = class_slots::resolve_interned(
+        &mut helper,
+        &ClassSlot::internal("__keys"),
+        &PlainNames,
+    );
+
+    helper.emit_op_u16(Op::LOCAL_GET, 0, line);
+    class_slots::emit_class_get(&mut helper, ObjSource::Stack, &keys_k, Dest::Stack, line);
+    helper.emit_op_u16(Op::LOCAL_SET, keys, line);
+    helper.emit_op_u16(Op::LOCAL_GET, keys, line);
+    helper.emit_op(Op::REF_IS_NULL, line);
+    helper.emit_if(line);
+    helper.emit_array_new_fixed(0, 0, line);
+    helper.emit_op_u16(Op::LOCAL_SET, keys, line);
+    helper.emit_end(line);
+    helper.emit_op_u16(Op::LOCAL_GET, keys, line);
+    helper.emit_call(array_from, 1, line);
+    helper.emit_op_u16(Op::LOCAL_SET, keys, line);
+    helper.emit_string_const("Counter({", line);
+    helper.emit_op_u16(Op::LOCAL_SET, out, line);
+    helper.emit_i32_const(0, line);
+    helper.emit_op_u16(Op::LOCAL_SET, printed, line);
+
+    let block = helper.emit_block(line);
+    let (lp, _) = helper.emit_loop_s(line);
+    helper.emit_op_u16(Op::LOCAL_GET, keys, line);
+    helper.emit_op(Op::ARRAY_LENGTH, line);
+    helper.emit_op_u16(Op::LOCAL_SET, n, line);
+    helper.emit_op_u16(Op::LOCAL_GET, n, line);
+    helper.emit_i32_const(0, line);
+    helper.emit_op(Op::I32_LE_S, line);
+    helper.emit_br_if(1, line);
+
+    helper.emit_op_u16(Op::LOCAL_GET, keys, line);
+    helper.emit_i32_const(0, line);
+    helper.emit_op(Op::ARRAY_GET, line);
+    helper.emit_op_u16(Op::LOCAL_SET, best_key, line);
+    helper.emit_i32_const(0, line);
+    helper.emit_op_u16(Op::LOCAL_SET, best_i, line);
+    helper.emit_op_u16(Op::LOCAL_GET, 0, line);
+    helper.emit_op_u16(Op::LOCAL_GET, best_key, line);
+    helper.emit_op(Op::ARRAY_GET, line);
+    helper.emit_op_u16(Op::LOCAL_SET, value, line);
+    helper.emit_op_u16(Op::LOCAL_GET, value, line);
+    helper.emit_call(to_f64, 1, line);
+    helper.emit_op_u16(Op::LOCAL_SET, best_v, line);
+
+    helper.emit_i32_const(1, line);
+    helper.emit_op_u16(Op::LOCAL_SET, i, line);
+    let inner = helper.emit_block(line);
+    let (inner_lp, _) = helper.emit_loop_s(line);
+    helper.emit_op_u16(Op::LOCAL_GET, i, line);
+    helper.emit_op_u16(Op::LOCAL_GET, n, line);
+    helper.emit_op(Op::I32_GE_S, line);
+    helper.emit_br_if(1, line);
+    helper.emit_op_u16(Op::LOCAL_GET, keys, line);
+    helper.emit_op_u16(Op::LOCAL_GET, i, line);
+    helper.emit_op(Op::ARRAY_GET, line);
+    helper.emit_op_u16(Op::LOCAL_SET, key, line);
+    helper.emit_op_u16(Op::LOCAL_GET, 0, line);
+    helper.emit_op_u16(Op::LOCAL_GET, key, line);
+    helper.emit_op(Op::ARRAY_GET, line);
+    helper.emit_call(to_f64, 1, line);
+    helper.emit_op_u16(Op::LOCAL_SET, cur_v, line);
+    helper.emit_op_u16(Op::LOCAL_GET, cur_v, line);
+    helper.emit_op_u16(Op::LOCAL_GET, best_v, line);
+    helper.emit_op(Op::F64_GT, line);
+    helper.emit_if(line);
+    helper.emit_op_u16(Op::LOCAL_GET, i, line);
+    helper.emit_op_u16(Op::LOCAL_SET, best_i, line);
+    helper.emit_op_u16(Op::LOCAL_GET, key, line);
+    helper.emit_op_u16(Op::LOCAL_SET, best_key, line);
+    helper.emit_op_u16(Op::LOCAL_GET, cur_v, line);
+    helper.emit_op_u16(Op::LOCAL_SET, best_v, line);
+    helper.emit_end(line);
+    helper.emit_op_u16(Op::LOCAL_GET, i, line);
+    helper.emit_i32_const(1, line);
+    helper.emit_op(Op::I32_ADD, line);
+    helper.emit_op_u16(Op::LOCAL_SET, i, line);
+    helper.emit_br(0, line);
+    helper.emit_end(line);
+    helper.patch_loop(inner_lp);
+    helper.emit_end(line);
+    helper.patch_block(inner);
+
+    helper.emit_op_u16(Op::LOCAL_GET, 0, line);
+    helper.emit_op_u16(Op::LOCAL_GET, best_key, line);
+    helper.emit_op(Op::ARRAY_GET, line);
+    helper.emit_op_u16(Op::LOCAL_SET, value, line);
+
+    helper.emit_op_u16(Op::LOCAL_GET, printed, line);
+    helper.emit_i32_const(0, line);
+    helper.emit_op(Op::I32_GT_S, line);
+    helper.emit_if(line);
+    helper.emit_op_u16(Op::LOCAL_GET, out, line);
+    helper.emit_string_const(", ", line);
+    helper.emit_call(concat, 2, line);
+    helper.emit_op_u16(Op::LOCAL_SET, out, line);
+    helper.emit_end(line);
+
+    helper.emit_op_u16(Op::LOCAL_GET, out, line);
+    helper.emit_op_u16(Op::REF_FUNC, repr_idx as u16, line);
+    helper.emit(0u8, line);
+    helper.emit_op_u16(Op::LOCAL_GET, best_key, line);
+    vybe_compiler::primitives::callable::emit_direct_invoke_chunk(&mut helper, 1, line);
+    helper.emit_call(concat, 2, line);
+    helper.emit_string_const(": ", line);
+    helper.emit_call(concat, 2, line);
+    helper.emit_op_u16(Op::REF_FUNC, repr_idx as u16, line);
+    helper.emit(0u8, line);
+    helper.emit_op_u16(Op::LOCAL_GET, value, line);
+    vybe_compiler::primitives::callable::emit_direct_invoke_chunk(&mut helper, 1, line);
+    helper.emit_call(concat, 2, line);
+    helper.emit_op_u16(Op::LOCAL_SET, out, line);
+
+    helper.emit_op_u16(Op::LOCAL_GET, printed, line);
+    helper.emit_i32_const(1, line);
+    helper.emit_op(Op::I32_ADD, line);
+    helper.emit_op_u16(Op::LOCAL_SET, printed, line);
+    helper.emit_op_u16(Op::LOCAL_GET, keys, line);
+    helper.emit_op_u16(Op::LOCAL_GET, best_i, line);
+    helper.emit_i32_const(1, line);
+    helper.emit_call(splice, 3, line);
+    helper.emit_op(Op::DROP, line);
+    helper.emit_br(0, line);
+    helper.emit_end(line);
+    helper.patch_loop(lp);
+    helper.emit_end(line);
+    helper.patch_block(block);
+
+    helper.emit_op_u16(Op::LOCAL_GET, out, line);
+    helper.emit_string_const("})", line);
+    helper.emit_call(concat, 2, line);
+    helper.emit_op(Op::RETURN, line);
+    chunks.push(helper);
+    chunks.len() - 1
+}
+
+fn set_counter_method_slot(
+    chunk: &mut Chunk,
+    object_slot: u16,
+    helper_idx: usize,
+    slot: ClassSlot,
+    line: u32,
+) {
+    chunk.emit_op_u16(Op::REF_FUNC, helper_idx as u16, line);
+    chunk.emit(0u8, line);
+    let resolved = class_slots::resolve(&slot, &PlainNames);
+    class_slots::emit_class_set(chunk, ObjSource::Local(object_slot), &resolved, ValueSource::Stack, line);
+}
+
+fn stamp_counter_object(chunks: &mut Vec<Chunk>, current: usize, object_slot: u16, line: u32) {
+    let helper = build_counter_repr_helper(chunks, line);
+    set_counter_method_slot(
+        &mut chunks[current],
+        object_slot,
+        helper,
+        ClassSlot::Slot(ProtocolSlot::ToString),
+        line,
+    );
+    set_counter_method_slot(
+        &mut chunks[current],
+        object_slot,
+        helper,
+        ClassSlot::Slot(ProtocolSlot::Repr),
+        line,
+    );
+    set_counter_method_slot(
+        &mut chunks[current],
+        object_slot,
+        helper,
+        ClassSlot::internal("__str__"),
+        line,
+    );
+    set_counter_method_slot(
+        &mut chunks[current],
+        object_slot,
+        helper,
+        ClassSlot::internal("__repr__"),
+        line,
+    );
+}
+
+pub fn emit_counter_new(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
     if argc == 0 {
         dict::emit_new(chunks, current, line);
+        let out = chunks[current].alloc_scratch(1);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, out, line);
+        stamp_counter_object(chunks, current, out, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
         return;
     }
-    // iterable on TOS → stash, make dict, count into it
-    let it = chunks[current].alloc_scratch(1);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, it, line);
+    let base = stash_args(chunks, current, argc, line);
+    let out = chunks[current].alloc_scratch(1);
     dict::emit_new(chunks, current, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, it, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, out, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, base, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, base, line);
     emit_counter_count(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, out, line);
+    chunks[current].emit_end(line);
+
+    if argc >= 2 {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, base + 1, line);
+        chunks[current].emit_op(Op::REF_IS_NULL, line);
+        chunks[current].emit_op(Op::I32_EQZ, line);
+        chunks[current].emit_if(line);
+        emit_counter_copy_entries(chunks, current, out, base + 1, line);
+        chunks[current].emit_end(line);
+    }
+
+    stamp_counter_object(chunks, current, out, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
 }
 
 /// Count the items of the iterable on TOS into the dict beneath it (Counter
@@ -760,11 +1053,23 @@ pub fn emit_counter_count(chunks: &mut [Chunk], current: usize, line: u32) {
     let base = stash_args(chunks, current, 2, line); // dict=base, iterable=base+1
     let d = base;
     let it = base + 1;
-    let keys_k = class_slots::resolve_interned(&mut chunks[current], &ClassSlot::internal("__keys"), &PlainNames);
+    let keys_k = class_slots::resolve_interned(
+        &mut chunks[current],
+        &ClassSlot::internal("__keys"),
+        &PlainNames,
+    );
 
-    // arr = spread(iterable)
+    // arr = spread(iterable), with Python string iteration as characters.
+    chunks[current].emit_op_u16(Op::LOCAL_GET, it, line);
+    host::emit(&mut chunks[current], "wasm:js-string", "test", 1, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, it, line);
+    call_import(chunks, current, "ecma:array", "from", 1, line);
+    chunks[current].emit_else(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, it, line);
     collections::emit_spread_iterable(chunks, current, line);
+    chunks[current].emit_end(line);
     let arr = chunks[current].alloc_scratch(1);
     chunks[current].emit_op_u16(Op::LOCAL_SET, arr, line);
     // n = len(arr) (i32); i = 0
@@ -803,7 +1108,13 @@ pub fn emit_counter_count(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op(Op::REF_IS_NULL, line);
     chunks[current].emit_if(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, d, line);
-    class_slots::emit_class_get(&mut chunks[current], ObjSource::Stack, &keys_k, Dest::Stack, line);
+    class_slots::emit_class_get(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &keys_k,
+        Dest::Stack,
+        line,
+    );
     chunks[current].emit_op_u16(Op::LOCAL_GET, item, line);
     collections::emit_push(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
@@ -833,6 +1144,793 @@ pub fn emit_counter_count(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].patch_block(block);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, d, line);
+}
+
+fn emit_js_number(chunks: &mut [Chunk], current: usize, value: f64, line: u32) {
+    chunks[current].emit_f64_const(value, line);
+    call_import(chunks, current, "wasm:js-number", "fromF64", 1, line);
+}
+
+fn emit_counter_get_from_locals(
+    chunks: &mut [Chunk],
+    current: usize,
+    dict_slot: u16,
+    key_slot: u16,
+    line: u32,
+) {
+    chunks[current].emit_op_u16(Op::LOCAL_GET, dict_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, key_slot, line);
+    dict::emit_get(chunks, current, line);
+    let value = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, value, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_if_value(line);
+    emit_js_number(chunks, current, 0.0, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
+    chunks[current].emit_end(line);
+}
+
+fn emit_counter_set_from_locals(
+    chunks: &mut [Chunk],
+    current: usize,
+    dict_slot: u16,
+    key_slot: u16,
+    value_slot: u16,
+    line: u32,
+) {
+    let keys_k = class_slots::resolve_interned(
+        &mut chunks[current],
+        &ClassSlot::internal("__keys"),
+        &PlainNames,
+    );
+    chunks[current].emit_op_u16(Op::LOCAL_GET, dict_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, key_slot, line);
+    dict::emit_get(chunks, current, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, dict_slot, line);
+    class_slots::emit_class_get(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &keys_k,
+        Dest::Stack,
+        line,
+    );
+    chunks[current].emit_op_u16(Op::LOCAL_GET, key_slot, line);
+    collections::emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_end(line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, dict_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, key_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
+    collections::emit_set(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+}
+
+fn emit_entries_loop_setup(
+    chunks: &mut [Chunk],
+    current: usize,
+    source_slot: u16,
+    line: u32,
+) -> (u16, u16, u16) {
+    let entries = chunks[current].alloc_scratch(1);
+    let n = chunks[current].alloc_scratch(1);
+    let i = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, source_slot, line);
+    call_import(chunks, current, "ecma:object", "entries", 1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, entries, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, entries, line);
+    chunks[current].emit_op(Op::ARRAY_LENGTH, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, n, line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
+    (entries, n, i)
+}
+
+fn emit_pair_part(chunks: &mut [Chunk], current: usize, pair_slot: u16, index: i32, line: u32) {
+    chunks[current].emit_op_u16(Op::LOCAL_GET, pair_slot, line);
+    chunks[current].emit_i32_const(index, line);
+    chunks[current].emit_op(Op::ARRAY_GET, line);
+}
+
+fn emit_counter_copy_entries(
+    chunks: &mut [Chunk],
+    current: usize,
+    target_slot: u16,
+    source_slot: u16,
+    line: u32,
+) {
+    let (entries, n, i) = emit_entries_loop_setup(chunks, current, source_slot, line);
+    let pair = chunks[current].alloc_scratch(1);
+    let key = chunks[current].alloc_scratch(1);
+    let val = chunks[current].alloc_scratch(1);
+    let block = chunks[current].emit_block(line);
+    let (lp, _) = chunks[current].emit_loop_s(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, n, line);
+    chunks[current].emit_op(Op::I32_GE_S, line);
+    chunks[current].emit_br_if(1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, entries, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    chunks[current].emit_op(Op::ARRAY_GET, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, pair, line);
+    emit_pair_part(chunks, current, pair, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, key, line);
+    emit_pair_part(chunks, current, pair, 1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, val, line);
+    emit_counter_set_from_locals(chunks, current, target_slot, key, val, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(lp);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(block);
+}
+
+pub fn emit_counter_get(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    if argc != 2 {
+        chunks[current].emit_ref_null(HT_EXTERN, line);
+        return;
+    }
+    let base = stash_args(chunks, current, argc, line);
+    emit_counter_get_from_locals(chunks, current, base, base + 1, line);
+}
+
+pub fn emit_counter_iadd(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    if argc != 3 {
+        chunks[current].emit_ref_null(HT_EXTERN, line);
+        return;
+    }
+    let base = stash_args(chunks, current, argc, line);
+    let cur = chunks[current].alloc_scratch(1);
+    let next = chunks[current].alloc_scratch(1);
+    emit_counter_get_from_locals(chunks, current, base, base + 1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, cur, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, cur, line);
+    call_import(chunks, current, "wasm:js-number", "toF64", 1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, base + 2, line);
+    call_import(chunks, current, "wasm:js-number", "toF64", 1, line);
+    chunks[current].emit_op(Op::F64_ADD, line);
+    call_import(chunks, current, "wasm:js-number", "fromF64", 1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, next, line);
+    emit_counter_set_from_locals(chunks, current, base, base + 1, next, line);
+    chunks[current].emit_ref_null(HT_EXTERN, line);
+}
+
+pub fn emit_counter_len(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    if argc != 1 {
+        chunks[current].emit_i32_const(0, line);
+        return;
+    }
+    let base = stash_args(chunks, current, argc, line);
+    let (entries, _, _) = emit_entries_loop_setup(chunks, current, base, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, entries, line);
+    chunks[current].emit_op(Op::ARRAY_LENGTH, line);
+}
+
+pub fn emit_counter_dict(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    if argc != 1 {
+        chunks[current].emit_ref_null(HT_EXTERN, line);
+        return;
+    }
+    let base = stash_args(chunks, current, argc, line);
+    let out = chunks[current].alloc_scratch(1);
+    dict::emit_new(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, out, line);
+    emit_counter_copy_keys_to_plain(chunks, current, out, base, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
+}
+
+pub fn emit_counter_items(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    if argc != 1 {
+        chunks[current].emit_ref_null(HT_EXTERN, line);
+        return;
+    }
+    let base = stash_args(chunks, current, argc, line);
+    let keys_k = class_slots::resolve_interned(
+        &mut chunks[current],
+        &ClassSlot::internal("__keys"),
+        &PlainNames,
+    );
+    let out = chunks[current].alloc_scratch(1);
+    let keys = chunks[current].alloc_scratch(1);
+    let n = chunks[current].alloc_scratch(1);
+    let i = chunks[current].alloc_scratch(1);
+    let key = chunks[current].alloc_scratch(1);
+    let value = chunks[current].alloc_scratch(1);
+
+    chunks[current].emit_array_new_fixed(0, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, out, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, base, line);
+    class_slots::emit_class_get(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &keys_k,
+        Dest::Stack,
+        line,
+    );
+    chunks[current].emit_op_u16(Op::LOCAL_SET, keys, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, keys, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_array_new_fixed(0, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, keys, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, keys, line);
+    chunks[current].emit_op(Op::ARRAY_LENGTH, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, n, line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
+
+    let block = chunks[current].emit_block(line);
+    let (lp, _) = chunks[current].emit_loop_s(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, n, line);
+    chunks[current].emit_op(Op::I32_GE_S, line);
+    chunks[current].emit_br_if(1, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, keys, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    chunks[current].emit_op(Op::ARRAY_GET, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, key, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, base, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, key, line);
+    chunks[current].emit_op(Op::ARRAY_GET, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, value, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, key, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
+    tuples::emit_tuple(chunks, current, 2, line);
+    collections::emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(lp);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(block);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
+}
+
+fn emit_counter_copy_keys_to_plain(
+    chunks: &mut [Chunk],
+    current: usize,
+    target_slot: u16,
+    source_slot: u16,
+    line: u32,
+) {
+    let keys_k = class_slots::resolve_interned(
+        &mut chunks[current],
+        &ClassSlot::internal("__keys"),
+        &PlainNames,
+    );
+    let keys = chunks[current].alloc_scratch(1);
+    let n = chunks[current].alloc_scratch(1);
+    let i = chunks[current].alloc_scratch(1);
+    let key = chunks[current].alloc_scratch(1);
+    let value = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, source_slot, line);
+    class_slots::emit_class_get(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &keys_k,
+        Dest::Stack,
+        line,
+    );
+    chunks[current].emit_op_u16(Op::LOCAL_SET, keys, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, keys, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_array_new_fixed(0, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, keys, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, keys, line);
+    chunks[current].emit_op(Op::ARRAY_LENGTH, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, n, line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
+
+    let block = chunks[current].emit_block(line);
+    let (lp, _) = chunks[current].emit_loop_s(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, n, line);
+    chunks[current].emit_op(Op::I32_GE_S, line);
+    chunks[current].emit_br_if(1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, keys, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    chunks[current].emit_op(Op::ARRAY_GET, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, key, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, source_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, key, line);
+    chunks[current].emit_op(Op::ARRAY_GET, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, value, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, target_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, key, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
+    collections::emit_set(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(lp);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(block);
+}
+
+pub fn emit_counter_repr(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
+    if argc != 1 {
+        chunks[current].emit_string_const("Counter({})", line);
+        return;
+    }
+    let base = stash_args(chunks, current, argc, line);
+    let helper = build_counter_repr_helper(chunks, line);
+    chunks[current].emit_op_u16(Op::REF_FUNC, helper as u16, line);
+    chunks[current].emit(0u8, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, base, line);
+    vybe_compiler::primitives::callable::emit_direct_invoke_chunk(&mut chunks[current], 1, line);
+}
+
+pub fn emit_counter_total(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    if argc != 1 {
+        emit_js_number(chunks, current, 0.0, line);
+        return;
+    }
+    let base = stash_args(chunks, current, argc, line);
+    let (entries, n, i) = emit_entries_loop_setup(chunks, current, base, line);
+    let pair = chunks[current].alloc_scratch(1);
+    let total = chunks[current].alloc_scratch(1);
+    chunks[current].emit_f64_const(0.0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, total, line);
+    let block = chunks[current].emit_block(line);
+    let (lp, _) = chunks[current].emit_loop_s(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, n, line);
+    chunks[current].emit_op(Op::I32_GE_S, line);
+    chunks[current].emit_br_if(1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, entries, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    chunks[current].emit_op(Op::ARRAY_GET, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, pair, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, total, line);
+    emit_pair_part(chunks, current, pair, 1, line);
+    call_import(chunks, current, "wasm:js-number", "toF64", 1, line);
+    chunks[current].emit_op(Op::F64_ADD, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, total, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(lp);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(block);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, total, line);
+    call_import(chunks, current, "wasm:js-number", "fromF64", 1, line);
+}
+
+pub fn emit_counter_elements(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    if argc != 1 {
+        call_import(chunks, current, "ecma:array", "new", 0, line);
+        return;
+    }
+    let base = stash_args(chunks, current, argc, line);
+    let out = chunks[current].alloc_scratch(1);
+    call_import(chunks, current, "ecma:array", "new", 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, out, line);
+    let (entries, n, i) = emit_entries_loop_setup(chunks, current, base, line);
+    let pair = chunks[current].alloc_scratch(1);
+    let key = chunks[current].alloc_scratch(1);
+    let count = chunks[current].alloc_scratch(1);
+    let j = chunks[current].alloc_scratch(1);
+    let outer = chunks[current].emit_block(line);
+    let (outer_lp, _) = chunks[current].emit_loop_s(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, n, line);
+    chunks[current].emit_op(Op::I32_GE_S, line);
+    chunks[current].emit_br_if(1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, entries, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    chunks[current].emit_op(Op::ARRAY_GET, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, pair, line);
+    emit_pair_part(chunks, current, pair, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, key, line);
+    emit_pair_part(chunks, current, pair, 1, line);
+    call_import(chunks, current, "wasm:js-number", "toF64", 1, line);
+    chunks[current].emit_op(Op::I32_TRUNC_SAT_F64_S, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, count, line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, j, line);
+    let inner = chunks[current].emit_block(line);
+    let (inner_lp, _) = chunks[current].emit_loop_s(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, j, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, count, line);
+    chunks[current].emit_op(Op::I32_GE_S, line);
+    chunks[current].emit_br_if(1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, key, line);
+    collections::emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, j, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, j, line);
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(inner_lp);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(inner);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(outer_lp);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(outer);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
+}
+
+pub fn emit_counter_merge(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
+    if argc != 3 {
+        dict::emit_new(chunks, current, line);
+        return;
+    }
+    let base = stash_args(chunks, current, argc, line);
+    let out = chunks[current].alloc_scratch(1);
+    dict::emit_new(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, out, line);
+    emit_counter_copy_entries(chunks, current, out, base, line);
+
+    let (entries, n, i) = emit_entries_loop_setup(chunks, current, base + 1, line);
+    let pair = chunks[current].alloc_scratch(1);
+    let key = chunks[current].alloc_scratch(1);
+    let cur = chunks[current].alloc_scratch(1);
+    let next = chunks[current].alloc_scratch(1);
+    let block = chunks[current].emit_block(line);
+    let (lp, _) = chunks[current].emit_loop_s(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, n, line);
+    chunks[current].emit_op(Op::I32_GE_S, line);
+    chunks[current].emit_br_if(1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, entries, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    chunks[current].emit_op(Op::ARRAY_GET, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, pair, line);
+    emit_pair_part(chunks, current, pair, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, key, line);
+    emit_counter_get_from_locals(chunks, current, out, key, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, cur, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, cur, line);
+    call_import(chunks, current, "wasm:js-number", "toF64", 1, line);
+    emit_pair_part(chunks, current, pair, 1, line);
+    call_import(chunks, current, "wasm:js-number", "toF64", 1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, base + 2, line);
+    call_import(chunks, current, "wasm:js-number", "toF64", 1, line);
+    chunks[current].emit_op(Op::F64_MUL, line);
+    chunks[current].emit_op(Op::F64_ADD, line);
+    call_import(chunks, current, "wasm:js-number", "fromF64", 1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, next, line);
+    emit_counter_set_from_locals(chunks, current, out, key, next, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(lp);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(block);
+    stamp_counter_object(chunks, current, out, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
+}
+
+pub fn emit_counter_most_common(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    if argc < 1 || argc > 2 {
+        call_import(chunks, current, "ecma:array", "new", 0, line);
+        return;
+    }
+    let base = stash_args(chunks, current, argc, line);
+    let keys_k = class_slots::resolve_interned(
+        &mut chunks[current],
+        &ClassSlot::internal("__keys"),
+        &PlainNames,
+    );
+    let keys = chunks[current].alloc_scratch(1);
+    let out = chunks[current].alloc_scratch(1);
+    let limit = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, base, line);
+    class_slots::emit_class_get(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &keys_k,
+        Dest::Stack,
+        line,
+    );
+    chunks[current].emit_op_u16(Op::LOCAL_SET, keys, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, keys, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_array_new_fixed(0, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, keys, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, keys, line);
+    call_import(chunks, current, "ecma:array", "from", 1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, keys, line);
+    call_import(chunks, current, "ecma:array", "new", 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, out, line);
+    if argc == 2 {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, base + 1, line);
+        call_import(chunks, current, "wasm:js-number", "toF64", 1, line);
+        chunks[current].emit_op(Op::I32_TRUNC_SAT_F64_S, line);
+    } else {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, keys, line);
+        chunks[current].emit_op(Op::ARRAY_LENGTH, line);
+    }
+    chunks[current].emit_op_u16(Op::LOCAL_SET, limit, line);
+    let i = chunks[current].alloc_scratch(1);
+    let n = chunks[current].alloc_scratch(1);
+    let key = chunks[current].alloc_scratch(1);
+    let best_key = chunks[current].alloc_scratch(1);
+    let best_i = chunks[current].alloc_scratch(1);
+    let best_v = chunks[current].alloc_scratch(1);
+    let cur_v = chunks[current].alloc_scratch(1);
+    let value = chunks[current].alloc_scratch(1);
+    let outer = chunks[current].emit_block(line);
+    let (outer_lp, _) = chunks[current].emit_loop_s(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
+    chunks[current].emit_op(Op::ARRAY_LENGTH, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, limit, line);
+    chunks[current].emit_op(Op::I32_GE_S, line);
+    chunks[current].emit_br_if(1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, keys, line);
+    chunks[current].emit_op(Op::ARRAY_LENGTH, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, n, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, n, line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op(Op::I32_LE_S, line);
+    chunks[current].emit_br_if(1, line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, best_i, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, keys, line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op(Op::ARRAY_GET, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, best_key, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, base, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, best_key, line);
+    chunks[current].emit_op(Op::ARRAY_GET, line);
+    call_import(chunks, current, "wasm:js-number", "toF64", 1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, best_v, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
+    let inner = chunks[current].emit_block(line);
+    let (inner_lp, _) = chunks[current].emit_loop_s(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, n, line);
+    chunks[current].emit_op(Op::I32_GE_S, line);
+    chunks[current].emit_br_if(1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, keys, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    chunks[current].emit_op(Op::ARRAY_GET, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, key, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, base, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, key, line);
+    chunks[current].emit_op(Op::ARRAY_GET, line);
+    call_import(chunks, current, "wasm:js-number", "toF64", 1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, cur_v, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, cur_v, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, best_v, line);
+    chunks[current].emit_op(Op::F64_GT, line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, best_i, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, key, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, best_key, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, cur_v, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, best_v, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(inner_lp);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(inner);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, best_key, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, base, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, best_key, line);
+    chunks[current].emit_op(Op::ARRAY_GET, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, value, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
+    tuples::emit_tuple(chunks, current, 2, line);
+    collections::emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, keys, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, best_i, line);
+    chunks[current].emit_i32_const(1, line);
+    call_import(chunks, current, "ecma:array", "splice", 3, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(outer_lp);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(outer);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
+}
+
+pub fn emit_counter_op(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
+    if argc != 3 {
+        dict::emit_new(chunks, current, line);
+        return;
+    }
+    let base = stash_args(chunks, current, argc, line);
+    let left = base;
+    let right = base + 1;
+    let op = base + 2;
+    let out = chunks[current].alloc_scratch(1);
+    dict::emit_new(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, out, line);
+
+    emit_counter_op_entries(chunks, current, out, left, right, op, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, op, line);
+    chunks[current].emit_string_const("+", line);
+    call_import(chunks, current, "wasm:js-string", "equals", 2, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, op, line);
+    chunks[current].emit_string_const("|", line);
+    call_import(chunks, current, "wasm:js-string", "equals", 2, line);
+    chunks[current].emit_op(Op::I32_OR, line);
+    chunks[current].emit_if(line);
+    emit_counter_op_entries(chunks, current, out, right, left, op, line);
+    chunks[current].emit_end(line);
+
+    stamp_counter_object(chunks, current, out, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
+}
+
+fn emit_counter_op_entries(
+    chunks: &mut [Chunk],
+    current: usize,
+    out: u16,
+    primary: u16,
+    other: u16,
+    op_slot: u16,
+    line: u32,
+) {
+    let keys_k = class_slots::resolve_interned(
+        &mut chunks[current],
+        &ClassSlot::internal("__keys"),
+        &PlainNames,
+    );
+    let keys = chunks[current].alloc_scratch(1);
+    let n = chunks[current].alloc_scratch(1);
+    let i = chunks[current].alloc_scratch(1);
+    let key = chunks[current].alloc_scratch(1);
+    let left_count = chunks[current].alloc_scratch(1);
+    let right_count = chunks[current].alloc_scratch(1);
+    let next = chunks[current].alloc_scratch(1);
+    let next_value = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, primary, line);
+    class_slots::emit_class_get(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &keys_k,
+        Dest::Stack,
+        line,
+    );
+    chunks[current].emit_op_u16(Op::LOCAL_SET, keys, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, keys, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_array_new_fixed(0, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, keys, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, keys, line);
+    chunks[current].emit_op(Op::ARRAY_LENGTH, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, n, line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
+    let block = chunks[current].emit_block(line);
+    let (lp, _) = chunks[current].emit_loop_s(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, n, line);
+    chunks[current].emit_op(Op::I32_GE_S, line);
+    chunks[current].emit_br_if(1, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, keys, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    chunks[current].emit_op(Op::ARRAY_GET, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, key, line);
+
+    emit_counter_get_from_locals(chunks, current, primary, key, line);
+    call_import(chunks, current, "wasm:js-number", "toF64", 1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, left_count, line);
+    emit_counter_get_from_locals(chunks, current, other, key, line);
+    call_import(chunks, current, "wasm:js-number", "toF64", 1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, right_count, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, op_slot, line);
+    chunks[current].emit_string_const("-", line);
+    call_import(chunks, current, "wasm:js-string", "equals", 2, line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, left_count, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, right_count, line);
+    chunks[current].emit_op(Op::F64_SUB, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, op_slot, line);
+    chunks[current].emit_string_const("&", line);
+    call_import(chunks, current, "wasm:js-string", "equals", 2, line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, left_count, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, right_count, line);
+    chunks[current].emit_op(Op::F64_MIN, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, op_slot, line);
+    chunks[current].emit_string_const("|", line);
+    call_import(chunks, current, "wasm:js-string", "equals", 2, line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, left_count, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, right_count, line);
+    chunks[current].emit_op(Op::F64_MAX, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, left_count, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, right_count, line);
+    chunks[current].emit_op(Op::F64_ADD, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, next, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, next, line);
+    chunks[current].emit_f64_const(0.0, line);
+    chunks[current].emit_op(Op::F64_GT, line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, next, line);
+    call_import(chunks, current, "wasm:js-number", "fromF64", 1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, next_value, line);
+    emit_counter_set_from_locals(chunks, current, out, key, next_value, line);
+    chunks[current].emit_end(line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(lp);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(block);
+}
+
+pub fn emit_counter_fromkeys(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    for _ in 0..argc {
+        chunks[current].emit_op(Op::DROP, line);
+    }
+    emit_throw_python_exception(
+        &mut chunks[current],
+        "NotImplementedError",
+        "Counter.fromkeys() is undefined",
+        line,
+    );
 }
 
 pub fn emit_get(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
@@ -865,11 +1963,25 @@ pub fn emit_gen_send(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) 
     let base = stash_args(chunks, current, argc, line);
     let recv = base;
     let value_arg = base + 1;
-    let started_key = class_slots::resolve_interned(&mut chunks[current], &ClassSlot::internal("__vybe_gen_started"), &PlainNames);
-    let closed_key = class_slots::resolve_interned(&mut chunks[current], &ClassSlot::internal("__py_gen_closed"), &PlainNames);
+    let started_key = class_slots::resolve_interned(
+        &mut chunks[current],
+        &ClassSlot::internal("__vybe_gen_started"),
+        &PlainNames,
+    );
+    let closed_key = class_slots::resolve_interned(
+        &mut chunks[current],
+        &ClassSlot::internal("__py_gen_closed"),
+        &PlainNames,
+    );
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
-    class_slots::emit_class_get(&mut chunks[current], ObjSource::Stack, &closed_key, Dest::Stack, line);
+    class_slots::emit_class_get(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &closed_key,
+        Dest::Stack,
+        line,
+    );
     ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
     class_slots::emit_class_alloc(&mut chunks[current], line);
@@ -885,7 +1997,13 @@ pub fn emit_gen_send(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) 
 
     if argc >= 2 {
         chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
-        class_slots::emit_class_get(&mut chunks[current], ObjSource::Stack, &started_key, Dest::Stack, line);
+        class_slots::emit_class_get(
+            &mut chunks[current],
+            ObjSource::Stack,
+            &started_key,
+            Dest::Stack,
+            line,
+        );
         ops::emit_dyn_to_bool(&mut chunks[current], line);
         chunks[current].emit_op(Op::I32_EQZ, line);
         chunks[current].emit_op_u16(Op::LOCAL_GET, value_arg, line);
@@ -919,7 +2037,13 @@ pub fn emit_gen_send(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) 
     chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
     chunks[current].emit_bool_const(true, line);
-    class_slots::emit_class_set(&mut chunks[current], ObjSource::Stack, &started_key, ValueSource::Stack, line);
+    class_slots::emit_class_set(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &started_key,
+        ValueSource::Stack,
+        line,
+    );
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
     call_import(chunks, current, "ecma:value", "isGeneratorDone", 1, line);
@@ -935,8 +2059,18 @@ pub fn emit_gen_send(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) 
     );
     chunks[current].emit_dup(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
-    let value_key = class_slots::resolve_interned(&mut chunks[current], &ClassSlot::internal("value"), &PlainNames);
-    class_slots::emit_class_set(&mut chunks[current], ObjSource::Stack, &value_key, ValueSource::Stack, line);
+    let value_key = class_slots::resolve_interned(
+        &mut chunks[current],
+        &ClassSlot::internal("value"),
+        &PlainNames,
+    );
+    class_slots::emit_class_set(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &value_key,
+        ValueSource::Stack,
+        line,
+    );
     vybe_compiler::primitives::errors::emit_throw(&mut chunks[current], line);
     chunks[current].emit_else(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
@@ -958,9 +2092,19 @@ pub fn emit_gen_throw(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
     }
     chunks[current].emit_op_u16(Op::LOCAL_SET, exc_slot, line);
 
-    let started_key = class_slots::resolve_interned(&mut chunks[current], &ClassSlot::internal("__vybe_gen_started"), &PlainNames);
+    let started_key = class_slots::resolve_interned(
+        &mut chunks[current],
+        &ClassSlot::internal("__vybe_gen_started"),
+        &PlainNames,
+    );
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
-    class_slots::emit_class_get(&mut chunks[current], ObjSource::Stack, &started_key, Dest::Stack, line);
+    class_slots::emit_class_get(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &started_key,
+        Dest::Stack,
+        line,
+    );
     ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if_value(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
@@ -980,7 +2124,11 @@ pub fn emit_gen_close(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
     let base = stash_args(chunks, current, argc, line);
     let recv = base;
 
-    let closed_key = class_slots::resolve_interned(&mut chunks[current], &ClassSlot::internal("__py_gen_closed"), &PlainNames);
+    let closed_key = class_slots::resolve_interned(
+        &mut chunks[current],
+        &ClassSlot::internal("__py_gen_closed"),
+        &PlainNames,
+    );
 
     let done_block = chunks[current].emit_block(line);
     vybe_compiler::primitives::errors::emit_try_start(&mut chunks[current], line);
@@ -1000,7 +2148,13 @@ pub fn emit_gen_close(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
     chunks[current].emit_bool_const(true, line);
-    class_slots::emit_class_set(&mut chunks[current], ObjSource::Stack, &closed_key, ValueSource::Stack, line);
+    class_slots::emit_class_set(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &closed_key,
+        ValueSource::Stack,
+        line,
+    );
     chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
@@ -1019,8 +2173,16 @@ pub fn emit_pynext(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     chunks[current].emit_if_value(line);
 
     // generator: GEN_NEXT → [value, has_more]
-    let started_key = class_slots::resolve_interned(&mut chunks[current], &ClassSlot::internal("__vybe_gen_started"), &PlainNames);
-    let closed_key = class_slots::resolve_interned(&mut chunks[current], &ClassSlot::internal("__py_gen_closed"), &PlainNames);
+    let started_key = class_slots::resolve_interned(
+        &mut chunks[current],
+        &ClassSlot::internal("__vybe_gen_started"),
+        &PlainNames,
+    );
+    let closed_key = class_slots::resolve_interned(
+        &mut chunks[current],
+        &ClassSlot::internal("__py_gen_closed"),
+        &PlainNames,
+    );
     let has_more = chunks[current].local_count;
     chunks[current].alloc_scratch(1);
     let value = chunks[current].local_count;
@@ -1034,7 +2196,13 @@ pub fn emit_pynext(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     // hands both cases to the exhausted path below — default or StopIteration,
     // whichever the call asked for.
     chunks[current].emit_op_u16(Op::LOCAL_GET, it, line);
-    class_slots::emit_class_get(&mut chunks[current], ObjSource::Stack, &closed_key, Dest::Stack, line);
+    class_slots::emit_class_get(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &closed_key,
+        Dest::Stack,
+        line,
+    );
     ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, it, line);
     call_import(chunks, current, "ecma:value", "isGeneratorDone", 1, line);
@@ -1050,7 +2218,13 @@ pub fn emit_pynext(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     vybe_compiler::primitives::generators::emit_next(&mut chunks[current], line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, it, line);
     chunks[current].emit_bool_const(true, line);
-    class_slots::emit_class_set(&mut chunks[current], ObjSource::Stack, &started_key, ValueSource::Stack, line);
+    class_slots::emit_class_set(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &started_key,
+        ValueSource::Stack,
+        line,
+    );
     chunks[current].emit_op_u16(Op::LOCAL_SET, has_more, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, value, line);
     chunks[current].emit_end(line);
@@ -1074,8 +2248,18 @@ pub fn emit_pynext(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         );
         chunks[current].emit_dup(line);
         chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
-        let value_key = class_slots::resolve_interned(&mut chunks[current], &ClassSlot::internal("value"), &PlainNames);
-        class_slots::emit_class_set(&mut chunks[current], ObjSource::Stack, &value_key, ValueSource::Stack, line);
+        let value_key = class_slots::resolve_interned(
+            &mut chunks[current],
+            &ClassSlot::internal("value"),
+            &PlainNames,
+        );
+        class_slots::emit_class_set(
+            &mut chunks[current],
+            ObjSource::Stack,
+            &value_key,
+            ValueSource::Stack,
+            line,
+        );
         vybe_compiler::primitives::errors::emit_throw(&mut chunks[current], line);
         chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line); // unreachable (throw diverges)
     }
@@ -1083,9 +2267,19 @@ pub fn emit_pynext(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
 
     chunks[current].emit_else(line);
     let next_fn = chunks[current].alloc_scratch(1);
-    let next_key = class_slots::resolve_interned(&mut chunks[current], &ClassSlot::internal("next"), &PlainNames);
+    let next_key = class_slots::resolve_interned(
+        &mut chunks[current],
+        &ClassSlot::internal("next"),
+        &PlainNames,
+    );
     chunks[current].emit_op_u16(Op::LOCAL_GET, it, line);
-    class_slots::emit_class_get(&mut chunks[current], ObjSource::Stack, &next_key, Dest::Stack, line);
+    class_slots::emit_class_get(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &next_key,
+        Dest::Stack,
+        line,
+    );
     chunks[current].emit_op_u16(Op::LOCAL_SET, next_fn, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, next_fn, line);
@@ -1093,8 +2287,9 @@ pub fn emit_pynext(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     chunks[current].emit_op(Op::I32_EQZ, line);
     chunks[current].emit_if_value(line);
 
-    chunks[current].emit_op_u16(Op::LOCAL_GET, it, line);
-    vybe_compiler::primitives::globals::emit_write(&mut chunks[current], "__js_this", line);
+    // `it.next()` — the iterator is argument 0, which is where a python
+    // callable's receiver lives (ECMA-262 §10.2.1). One channel: the argument
+    // IS the receiver, so there is no ambient global to bind alongside it.
     chunks[current].emit_op_u16(Op::LOCAL_GET, next_fn, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, it, line);
     vybe_compiler::primitives::callable::emit_direct_invoke_chunk(&mut chunks[current], 1, line);
@@ -1176,6 +2371,74 @@ pub fn emit_from_end(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) 
 /// Python `x in y` membership. Stack: `[container, needle]` → `[bool]`.
 /// string → substring test; array → element test; else (dict/object) → own key.
 /// Set literals are lowered to `.has()` upstream and never reach here.
+/// `__py_container_kind(o)` → an INTEGER kind code:
+/// 0 not a container, 1 str, 2 list, 3 tuple, 4 set, 5 dict.
+///
+/// ⛔ A CODE, not a name. String `==` is lowered by the walker through
+/// `__py_value_eq`, and a declared class is never walked — every
+/// `kind == "dict"` answered False and `pprint` formatted dicts as lists.
+/// Numeric equality needs no rewrite.
+///
+/// ⛔ This exists because `isinstance(o, list)` CANNOT WORK inside a declared
+/// class. A bare `list` is an `emit =` profile row — a call target, not a
+/// value — so reading it as an argument yields undefined and every test
+/// silently answers False. A declaration is never walked, so nothing rewrites
+/// it either. `pprint` and `xml.etree` discriminate five container types, so
+/// they needed one probe that is an ordinary call.
+pub fn emit_container_kind(chunks: &mut [Chunk], current: usize, line: u32) {
+    let obj = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, obj, line);
+
+    // STRING first: a string is iterable and array-like probes would claim it.
+    chunks[current].emit_op_u16(Op::LOCAL_GET, obj, line);
+    {
+        let idx = chunks[current].add_import("wasm:js-string", "test");
+        chunks[current].emit_call(idx, 1, line);
+    }
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_else(line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, obj, line);
+    call_import(chunks, current, "ecma:array", "isArray", 1, line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    {
+        // A tuple is a TAGGED array, so the tag decides between the two.
+        chunks[current].emit_op_u16(Op::LOCAL_GET, obj, line);
+        tuples::emit_is_tuple(chunks, current, line);
+        chunks[current].emit_if_value(line);
+        chunks[current].emit_i32_const(3, line);
+        chunks[current].emit_else(line);
+        chunks[current].emit_i32_const(2, line);
+        chunks[current].emit_end(line);
+    }
+    chunks[current].emit_else(line);
+
+    // A Set carries `add` on its prototype; a Map-backed dict does not.
+    chunks[current].emit_op_u16(Op::LOCAL_GET, obj, line);
+    chunks[current].emit_string_const("add", line);
+    call_import(chunks, current, "ecma:object", "hasIn", 2, line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_i32_const(4, line);
+    chunks[current].emit_else(line);
+
+    // Anything else that is an object is a dict for these callers; a number,
+    // bool or null is not a container at all.
+    chunks[current].emit_op_u16(Op::LOCAL_GET, obj, line);
+    chunks[current].emit_ref_type_op(Op::REF_TEST, HeapType::Abstract(HT_STRUCT), line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_i32_const(5, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_end(line);
+
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+}
+
 pub fn emit_contains(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
     let test_str = chunk.add_import("wasm:js-string", "test");
@@ -1223,7 +2486,8 @@ pub fn emit_contains(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_else(line);
 
     // object → user `__contains__(self, item)` if present, else own-key test
-    let contains_key = class_slots::resolve_interned(chunk, &ClassSlot::internal("__contains__"), &PlainNames);
+    let contains_key =
+        class_slots::resolve_interned(chunk, &ClassSlot::internal("__contains__"), &PlainNames);
     let contains_method = chunk.alloc_scratch(1);
     chunk.emit_op_u16(Op::LOCAL_GET, container, line);
     class_slots::emit_class_get(chunk, ObjSource::Stack, &contains_key, Dest::Stack, line);
@@ -1312,8 +2576,18 @@ pub fn emit_attr_read(chunks: &mut [Chunk], current: usize, line: u32) {
         chunks[current].emit_op_u16(Op::LOCAL_GET, obj, line);
         chunks[current].emit_string_const("__type", line);
         call_import(chunks, current, "ecma:reflect", "get", 2, line);
-        let owner_name_key = class_slots::resolve_interned(&mut chunks[current], &ClassSlot::internal("__name__"), &PlainNames);
-        class_slots::emit_class_set(&mut chunks[current], ObjSource::Stack, &owner_name_key, ValueSource::Stack, line);
+        let owner_name_key = class_slots::resolve_interned(
+            &mut chunks[current],
+            &ClassSlot::internal("__name__"),
+            &PlainNames,
+        );
+        class_slots::emit_class_set(
+            &mut chunks[current],
+            ObjSource::Stack,
+            &owner_name_key,
+            ValueSource::Stack,
+            line,
+        );
         chunks[current].emit_op_u16(Op::LOCAL_SET, owner, line);
         chunks[current].emit_op_u16(Op::LOCAL_GET, getter, line);
         chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
@@ -1745,7 +3019,11 @@ pub fn emit_index(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
 pub fn emit_clear(chunks: &mut [Chunk], current: usize, line: u32) {
     let base = stash_args(chunks, current, 1, line);
     let recv = base;
-    let keys_key = class_slots::resolve_interned(&mut chunks[current], &ClassSlot::internal("__keys"), &PlainNames);
+    let keys_key = class_slots::resolve_interned(
+        &mut chunks[current],
+        &ClassSlot::internal("__keys"),
+        &PlainNames,
+    );
 
     // Map-backed dict → shared `ecma:map.clear`.
     emit_is_map(chunks, current, recv, line);
@@ -1756,7 +3034,13 @@ pub fn emit_clear(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_else(line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
-    class_slots::emit_class_get(&mut chunks[current], ObjSource::Stack, &keys_key, Dest::Stack, line);
+    class_slots::emit_class_get(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &keys_key,
+        Dest::Stack,
+        line,
+    );
     chunks[current].emit_op(Op::REF_IS_NULL, line);
     chunks[current].emit_if(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
@@ -1793,6 +3077,13 @@ pub fn emit_sort_by_key(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
     chunks[current].emit_op_u16(Op::LOCAL_GET, base, line); // array
     chunks[current].emit_op_u16(Op::LOCAL_GET, base + 1, line); // key_fn
     collections::emit_sort_by_key_in_place(chunks, current, line);
+}
+
+pub fn emit_sort_with_cmp(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    if argc != 2 {
+        return;
+    }
+    collections::emit_sort_with_comparator(chunks, current, line);
 }
 
 pub fn emit_reversed(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
@@ -2045,10 +3336,30 @@ pub fn emit_py_minmax(chunks: &mut [Chunk], current: usize, argc: u8, is_max: bo
         class_slots::emit_class_alloc(&mut chunks[current], line);
         chunks[current].emit_dup(line);
         chunks[current].emit_string_const("ValueError", line);
-        let name_key = class_slots::resolve_interned(&mut chunks[current], &ClassSlot::internal("__name__"), &PlainNames);
-        class_slots::emit_class_set(&mut chunks[current], ObjSource::Stack, &name_key, ValueSource::Stack, line);
-        let class_key = class_slots::resolve_interned(&mut chunks[current], &ClassSlot::internal("__class__"), &PlainNames);
-        class_slots::emit_class_set(&mut chunks[current], ObjSource::Stack, &class_key, ValueSource::Stack, line);
+        let name_key = class_slots::resolve_interned(
+            &mut chunks[current],
+            &ClassSlot::internal("__name__"),
+            &PlainNames,
+        );
+        class_slots::emit_class_set(
+            &mut chunks[current],
+            ObjSource::Stack,
+            &name_key,
+            ValueSource::Stack,
+            line,
+        );
+        let class_key = class_slots::resolve_interned(
+            &mut chunks[current],
+            &ClassSlot::internal("__class__"),
+            &PlainNames,
+        );
+        class_slots::emit_class_set(
+            &mut chunks[current],
+            ObjSource::Stack,
+            &class_key,
+            ValueSource::Stack,
+            line,
+        );
         vybe_compiler::primitives::errors::emit_throw(&mut chunks[current], line);
         chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     }
@@ -2194,19 +3505,42 @@ fn emit_preserve_frozenset_result(chunks: &mut [Chunk], current: usize, recv: u1
     chunks[current].emit_op_u16(Op::LOCAL_SET, out, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
-    let frozen_key = class_slots::resolve_interned(&mut chunks[current], &ClassSlot::internal("__frozenset"), &PlainNames);
-    class_slots::emit_class_get(&mut chunks[current], ObjSource::Stack, &frozen_key, Dest::Stack, line);
+    let frozen_key = class_slots::resolve_interned(
+        &mut chunks[current],
+        &ClassSlot::internal("__frozenset"),
+        &PlainNames,
+    );
+    class_slots::emit_class_get(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &frozen_key,
+        Dest::Stack,
+        line,
+    );
     ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
     chunks[current].emit_string_const("Set", line);
-    let type_key = class_slots::resolve_interned(&mut chunks[current], &ClassSlot::TypeIdentity, &PlainNames);
-    class_slots::emit_class_set(&mut chunks[current], ObjSource::Stack, &type_key, ValueSource::Stack, line);
+    let type_key =
+        class_slots::resolve_interned(&mut chunks[current], &ClassSlot::TypeIdentity, &PlainNames);
+    class_slots::emit_class_set(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &type_key,
+        ValueSource::Stack,
+        line,
+    );
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
     core_wasm::bool_const(&mut chunks[current], line, true);
-    class_slots::emit_class_set(&mut chunks[current], ObjSource::Stack, &frozen_key, ValueSource::Stack, line);
+    class_slots::emit_class_set(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &frozen_key,
+        ValueSource::Stack,
+        line,
+    );
 
     chunks[current].emit_end(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
@@ -2357,7 +3691,11 @@ pub fn emit_discard(chunks: &mut [Chunk], current: usize, line: u32) {
 pub fn emit_copy(chunks: &mut [Chunk], current: usize, line: u32) {
     let base = stash_args(chunks, current, 1, line);
     let recv = base;
-    let keys_key = class_slots::resolve_interned(&mut chunks[current], &ClassSlot::internal("__keys"), &PlainNames);
+    let keys_key = class_slots::resolve_interned(
+        &mut chunks[current],
+        &ClassSlot::internal("__keys"),
+        &PlainNames,
+    );
 
     // Map-backed dict → new Map from its entries (shallow copy).
     emit_is_map(chunks, current, recv, line);
@@ -2368,7 +3706,13 @@ pub fn emit_copy(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_else(line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
-    class_slots::emit_class_get(&mut chunks[current], ObjSource::Stack, &keys_key, Dest::Stack, line);
+    class_slots::emit_class_get(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &keys_key,
+        Dest::Stack,
+        line,
+    );
     chunks[current].emit_op(Op::REF_IS_NULL, line);
     chunks[current].emit_if(line);
 
@@ -2405,7 +3749,11 @@ pub fn emit_update(chunks: &mut [Chunk], current: usize, line: u32) {
     let base = stash_args(chunks, current, 2, line);
     let recv = base;
     let src = base + 1;
-    let keys_key = class_slots::resolve_interned(&mut chunks[current], &ClassSlot::internal("__keys"), &PlainNames);
+    let keys_key = class_slots::resolve_interned(
+        &mut chunks[current],
+        &ClassSlot::internal("__keys"),
+        &PlainNames,
+    );
 
     // A hashlib/hmac digest object also has `.update(data)` — feed the host
     // digest instead of merging keys. Detected by `__algo`, which only
@@ -2423,7 +3771,13 @@ pub fn emit_update(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_else(line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
-    class_slots::emit_class_get(&mut chunks[current], ObjSource::Stack, &keys_key, Dest::Stack, line);
+    class_slots::emit_class_get(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &keys_key,
+        Dest::Stack,
+        line,
+    );
     chunks[current].emit_op(Op::REF_IS_NULL, line);
     chunks[current].emit_if(line);
 
@@ -2615,22 +3969,46 @@ pub fn emit_length(chunks: &mut [Chunk], current: usize, line: u32) {
     // object) — no `__keys` array, so literal and built dicts count the same.
     let base = stash_args(chunks, current, 1, line);
     let recv = base;
-    let size_key = class_slots::resolve_interned(&mut chunks[current], &ClassSlot::internal("size"), &PlainNames);
+    let size_key = class_slots::resolve_interned(
+        &mut chunks[current],
+        &ClassSlot::internal("size"),
+        &PlainNames,
+    );
 
     // User-defined length → call the shared Len slot first. Python class
     // normalization publishes `__len__` under this slot; the dunder fallback is
     // only for older/ambient objects that were not normalized through classes.
-    let len_key = class_slots::resolve_interned(&mut chunks[current], &ClassSlot::internal(protocol_slot_key(ProtocolSlot::Len).as_str()), &PlainNames);
-    let dunder_len_key = class_slots::resolve_interned(&mut chunks[current], &ClassSlot::internal("__len__"), &PlainNames);
+    let len_key = class_slots::resolve_interned(
+        &mut chunks[current],
+        &ClassSlot::internal(protocol_slot_key(ProtocolSlot::Len).as_str()),
+        &PlainNames,
+    );
+    let dunder_len_key = class_slots::resolve_interned(
+        &mut chunks[current],
+        &ClassSlot::internal("__len__"),
+        &PlainNames,
+    );
     let len_method = chunks[current].alloc_scratch(1);
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
-    class_slots::emit_class_get(&mut chunks[current], ObjSource::Stack, &len_key, Dest::Stack, line);
+    class_slots::emit_class_get(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &len_key,
+        Dest::Stack,
+        line,
+    );
     chunks[current].emit_op_u16(Op::LOCAL_SET, len_method, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, len_method, line);
     chunks[current].emit_op(Op::REF_IS_NULL, line);
     chunks[current].emit_if(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
-    class_slots::emit_class_get(&mut chunks[current], ObjSource::Stack, &dunder_len_key, Dest::Stack, line);
+    class_slots::emit_class_get(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &dunder_len_key,
+        Dest::Stack,
+        line,
+    );
     chunks[current].emit_op_u16(Op::LOCAL_SET, len_method, line);
     chunks[current].emit_end(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, len_method, line);
@@ -2686,7 +4064,13 @@ pub fn emit_length(chunks: &mut [Chunk], current: usize, line: u32) {
 
     // has `.size` (Set/Map) → use it, else Object.keys(recv).length
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
-    class_slots::emit_class_get(&mut chunks[current], ObjSource::Stack, &size_key, Dest::Stack, line);
+    class_slots::emit_class_get(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &size_key,
+        Dest::Stack,
+        line,
+    );
     core_wasm::dup(&mut chunks[current], line);
     chunks[current].emit_op(Op::REF_IS_NULL, line);
     chunks[current].emit_if_value(line);

@@ -47,19 +47,13 @@ pub(super) fn suppress() -> Statement {
     class(
         "__Suppress",
         vec![
-            init(
-                vec![rest_param("exc")],
-                vec![set_this("exc", ident("exc"))],
-            ),
+            init(vec![rest_param("exc")], vec![set_this("exc", ident("exc"))]),
             method("__enter__", vec![], vec![ret(null())]),
             method(
                 "__exit__",
                 vec![param("exc_type", Some(null())), rest_param("a")],
                 vec![
-                    if_stmt(
-                        is_none(ident("exc_type")),
-                        vec![ret(bool_lit(false))],
-                    ),
+                    if_stmt(is_none(ident("exc_type")), vec![ret(bool_lit(false))]),
                     for_in(
                         "__e",
                         this_field("exc"),
@@ -81,7 +75,10 @@ pub(super) fn gen_cm() -> Statement {
     class(
         "__GenCM",
         vec![
-            init(vec![param("gen", None)], vec![set_this("gen", ident("gen"))]),
+            init(
+                vec![param("gen", None)],
+                vec![set_this("gen", ident("gen"))],
+            ),
             method(
                 "__enter__",
                 vec![],
@@ -94,6 +91,38 @@ pub(super) fn gen_cm() -> Statement {
                     try_except(
                         vec![expr_stmt(call_global("next", vec![this_field("gen")]))],
                         "StopIteration",
+                        vec![],
+                    ),
+                    ret(bool_lit(false)),
+                ],
+            ),
+        ],
+    )
+}
+
+/// The object `@asynccontextmanager` produces around an async generator. The
+/// shared async-with lowering asks for `__aenter__` / `__aexit__`; the generator
+/// protocol itself is still the normal Python generator adapter.
+pub(super) fn async_gen_cm() -> Statement {
+    class(
+        "__AsyncGenCM",
+        vec![
+            init(
+                vec![param("gen", None)],
+                vec![set_this("gen", ident("gen"))],
+            ),
+            method(
+                "__aenter__",
+                vec![],
+                vec![ret(call(member(this_field("gen"), "__anext__"), vec![]))],
+            ),
+            method(
+                "__aexit__",
+                any_args(),
+                vec![
+                    try_except(
+                        vec![expr_stmt(call(member(this_field("gen"), "__anext__"), vec![]))],
+                        "StopAsyncIteration",
                         vec![],
                     ),
                     ret(bool_lit(false)),
@@ -163,6 +192,21 @@ pub(super) fn module_functions() -> Vec<Statement> {
                     ))],
                 ),
                 ret(ident("__cm_helper")),
+            ],
+        ),
+        function(
+            "asynccontextmanager",
+            vec![param("func", None)],
+            vec![
+                function(
+                    "__async_cm_helper",
+                    any_args(),
+                    vec![ret(new(
+                        "__AsyncGenCM",
+                        vec![call_spread(ident("func"), ident("a"))],
+                    ))],
+                ),
+                ret(ident("__async_cm_helper")),
             ],
         ),
     ]

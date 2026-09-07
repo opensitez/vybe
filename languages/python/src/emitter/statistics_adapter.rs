@@ -9,6 +9,9 @@
 //! `mean([42])` is `42`, `mean([1,2,3,4])` is `2.5`, `pvariance([1,2,3])` is
 //! `0.6666666666666666` — no float-repr wrapping needed.
 
+use vybe_compiler::primitives::class_slots::{
+    self, ClassSlot, ObjSource, PlainNames, ValueSource,
+};
 use vybe_compiler::primitives::instructions::core_wasm;
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
@@ -33,9 +36,37 @@ fn stash_data(chunk: &mut Chunk, line: u32) -> u16 {
     slot
 }
 
+fn stash_args(chunk: &mut Chunk, argc: u8, line: u32) -> u16 {
+    let base = chunk.alloc_scratch(argc as u16);
+    for offset in (0..argc as u16).rev() {
+        chunk.emit_op_u16(Op::LOCAL_SET, base + offset, line);
+    }
+    base
+}
+
+fn emit_statistics_error(chunks: &mut [Chunk], current: usize, message: &str, line: u32) {
+    chunks[current].emit_string_const(message, line);
+    crate::emitter::runtime_adapter::emit_py_raise(
+        chunks,
+        current,
+        1,
+        "statistics.StatisticsError",
+        line,
+    );
+}
+
+fn emit_empty_data_guard(chunks: &mut [Chunk], current: usize, data: u16, line: u32) {
+    emit_len(chunks, current, data, line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_if(line);
+    emit_statistics_error(chunks, current, "no data points", line);
+    chunks[current].emit_end(line);
+}
+
 /// `statistics.mean(data)` / `fmean(data)`. Stack: `[data]` → `[num]`.
 pub fn emit_mean(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     let data = stash_data(&mut chunks[current], line);
+    emit_empty_data_guard(chunks, current, data, line);
     emit_sum(&mut chunks[current], data, line);
     emit_len(chunks, current, data, line);
     chunks[current].emit_op(Op::F64_DIV, line);
@@ -53,6 +84,12 @@ fn emit_at(chunk: &mut Chunk, arr: u16, idx: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, arr, line);
     chunk.emit_op_u16(Op::LOCAL_GET, idx, line);
     chunk.emit_op(Op::ARRAY_GET, line);
+}
+
+fn emit_slot_as_f64(chunk: &mut Chunk, slot: u16, line: u32) {
+    chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
+    let to_f64 = chunk.add_import("wasm:js-number", "toF64");
+    chunk.emit_call(to_f64, 1, line);
 }
 
 /// `statistics.median(data)` — the middle of the sorted data, or the mean of
@@ -268,6 +305,11 @@ pub fn emit_mode(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
 
     emit_len(chunks, current, data, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, n, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, n, line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_if(line);
+    emit_statistics_error(chunks, current, "no mode for empty data", line);
+    chunks[current].emit_end(line);
     core_wasm::i32_const(&mut chunks[current], line, 0);
     chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
     core_wasm::i32_const(&mut chunks[current], line, 0);
@@ -403,6 +445,12 @@ pub fn emit_quantiles(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
         core_wasm::i32_const(chunk0, line, 4);
         chunk0.emit_op_u16(Op::LOCAL_SET, nq, line);
     }
+    chunk0.emit_op_u16(Op::LOCAL_GET, nq, line);
+    core_wasm::i32_const(chunk0, line, 1);
+    chunk0.emit_op(Op::I32_LT_S, line);
+    chunk0.emit_if(line);
+    emit_statistics_error(chunks, current, "n must be at least 1", line);
+    chunks[current].emit_end(line);
     let data = stash_data(&mut chunks[current], line);
     let s = chunks[current].alloc_scratch(1);
     let ld = chunks[current].alloc_scratch(1);
@@ -503,8 +551,18 @@ pub fn emit_quantiles(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
 /// `statistics.median_grouped(data, interval=1)` — the median of continuous
 /// data, interpolated within the interval the midpoint falls in:
 /// `L + interval * (n/2 - cf) / f`. Stack: `[data]` → `[num]`.
-pub fn emit_median_grouped(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
-    let data = stash_data(&mut chunks[current], line);
+pub fn emit_median_grouped(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let base = stash_args(&mut chunks[current], argc, line);
+    let data = base;
+    let interval = chunks[current].alloc_scratch(1);
+    if argc >= 2 {
+        let chunk = &mut chunks[current];
+        emit_slot_as_f64(chunk, base + 1, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, interval, line);
+    } else {
+        core_wasm::f64_const(&mut chunks[current], line, 1.0);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, interval, line);
+    }
     let s = chunks[current].alloc_scratch(1);
     let n = chunks[current].alloc_scratch(1);
     let x = chunks[current].alloc_scratch(1);
@@ -572,18 +630,25 @@ pub fn emit_median_grouped(chunks: &mut [Chunk], current: usize, _argc: u8, line
     chunk.emit_op_u16(Op::LOCAL_SET, i, line);
     vybe_compiler::primitives::loops::emit_loop_end(chunks, current, state, line);
 
-    // (x - 0.5) + (n/2 - cf) / f      [interval = 1]
+    // (x - interval/2) + interval * (n/2 - cf) / f
     let chunk = &mut chunks[current];
-    chunk.emit_op_u16(Op::LOCAL_GET, x, line);
-    core_wasm::f64_const(chunk, line, 0.5);
+    emit_slot_as_f64(chunk, x, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, interval, line);
+    core_wasm::f64_const(chunk, line, 2.0);
+    chunk.emit_op(Op::F64_DIV, line);
     chunk.emit_op(Op::F64_SUB, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, interval, line);
     chunk.emit_op_u16(Op::LOCAL_GET, n, line);
+    chunk.emit_op(Op::F64_CONVERT_I32_U, line);
     core_wasm::f64_const(chunk, line, 2.0);
     chunk.emit_op(Op::F64_DIV, line);
     chunk.emit_op_u16(Op::LOCAL_GET, cf, line);
+    chunk.emit_op(Op::F64_CONVERT_I32_U, line);
     chunk.emit_op(Op::F64_SUB, line);
     chunk.emit_op_u16(Op::LOCAL_GET, f, line);
+    chunk.emit_op(Op::F64_CONVERT_I32_U, line);
     chunk.emit_op(Op::F64_DIV, line);
+    chunk.emit_op(Op::F64_MUL, line);
     chunk.emit_op(Op::F64_ADD, line);
 }
 
@@ -670,4 +735,179 @@ pub fn emit_geometric_mean(chunks: &mut [Chunk], current: usize, _argc: u8, line
     chunks[current].emit_op(Op::F64_DIV, line);
     let exp = chunks[current].add_import("ecma:math", "exp");
     chunks[current].emit_call(exp, 1, line);
+}
+
+fn emit_pair_moments(
+    chunks: &mut [Chunk],
+    current: usize,
+    line: u32,
+) -> (u16, u16, u16, u16, u16, u16) {
+    let base = stash_args(&mut chunks[current], 2, line);
+    let xs = base;
+    let ys = base + 1;
+    let n = chunks[current].alloc_scratch(1);
+    let mean_x = chunks[current].alloc_scratch(1);
+    let mean_y = chunks[current].alloc_scratch(1);
+    let sxx = chunks[current].alloc_scratch(1);
+    let syy = chunks[current].alloc_scratch(1);
+    let sxy = chunks[current].alloc_scratch(1);
+    let i = chunks[current].alloc_scratch(1);
+
+    emit_len(chunks, current, xs, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, n, line);
+    emit_sum(&mut chunks[current], xs, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, n, line);
+    chunks[current].emit_op(Op::F64_DIV, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, mean_x, line);
+    emit_sum(&mut chunks[current], ys, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, n, line);
+    chunks[current].emit_op(Op::F64_DIV, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, mean_y, line);
+
+    for slot in [sxx, syy, sxy] {
+        core_wasm::f64_const(&mut chunks[current], line, 0.0);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, slot, line);
+    }
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
+
+    let dx = chunks[current].alloc_scratch(1);
+    let dy = chunks[current].alloc_scratch(1);
+    let state = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
+    {
+        let chunk = &mut chunks[current];
+        chunk.emit_op_u16(Op::LOCAL_GET, i, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, n, line);
+        chunk.emit_op(Op::I32_LT_S, line);
+    }
+    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
+
+    {
+        let chunk = &mut chunks[current];
+        chunk.emit_op_u16(Op::LOCAL_GET, xs, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, i, line);
+        chunk.emit_op(Op::ARRAY_GET, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, mean_x, line);
+        chunk.emit_op(Op::F64_SUB, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, dx, line);
+
+        chunk.emit_op_u16(Op::LOCAL_GET, ys, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, i, line);
+        chunk.emit_op(Op::ARRAY_GET, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, mean_y, line);
+        chunk.emit_op(Op::F64_SUB, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, dy, line);
+
+        chunk.emit_op_u16(Op::LOCAL_GET, sxx, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, dx, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, dx, line);
+        chunk.emit_op(Op::F64_MUL, line);
+        chunk.emit_op(Op::F64_ADD, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, sxx, line);
+
+        chunk.emit_op_u16(Op::LOCAL_GET, syy, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, dy, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, dy, line);
+        chunk.emit_op(Op::F64_MUL, line);
+        chunk.emit_op(Op::F64_ADD, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, syy, line);
+
+        chunk.emit_op_u16(Op::LOCAL_GET, sxy, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, dx, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, dy, line);
+        chunk.emit_op(Op::F64_MUL, line);
+        chunk.emit_op(Op::F64_ADD, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, sxy, line);
+
+        chunk.emit_op_u16(Op::LOCAL_GET, i, line);
+        core_wasm::i32_const(chunk, line, 1);
+        chunk.emit_op(Op::I32_ADD, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, i, line);
+    }
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, state, line);
+
+    (n, mean_x, mean_y, sxx, syy, sxy)
+}
+
+pub fn emit_covariance(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    let (n, _, _, _, _, sxy) = emit_pair_moments(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, sxy, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, n, line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    chunks[current].emit_op(Op::I32_SUB, line);
+    chunks[current].emit_op(Op::F64_DIV, line);
+}
+
+pub fn emit_correlation(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    let (_, _, _, sxx, syy, sxy) = emit_pair_moments(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, sxy, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, sxx, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, syy, line);
+    chunks[current].emit_op(Op::F64_MUL, line);
+    chunks[current].emit_op(Op::F64_SQRT, line);
+    chunks[current].emit_op(Op::F64_DIV, line);
+}
+
+pub fn emit_linear_regression(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    let (_, mean_x, mean_y, sxx, _, sxy) = emit_pair_moments(chunks, current, line);
+    let slope = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, sxy, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, sxx, line);
+    chunks[current].emit_op(Op::F64_DIV, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, slope, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, slope, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, mean_y, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, slope, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, mean_x, line);
+    chunks[current].emit_op(Op::F64_MUL, line);
+    chunks[current].emit_op(Op::F64_SUB, line);
+    vybe_compiler::primitives::tuples::emit_tuple(chunks, current, 2, line);
+}
+
+pub fn emit_normal_dist(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let base = stash_args(&mut chunks[current], argc, line);
+    let mu = chunks[current].alloc_scratch(1);
+    let sigma = chunks[current].alloc_scratch(1);
+
+    if argc >= 1 {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, base, line);
+    } else {
+        core_wasm::f64_const(&mut chunks[current], line, 0.0);
+    }
+    chunks[current].emit_op_u16(Op::LOCAL_SET, mu, line);
+
+    if argc >= 2 {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, base + 1, line);
+    } else {
+        core_wasm::f64_const(&mut chunks[current], line, 1.0);
+    }
+    chunks[current].emit_op_u16(Op::LOCAL_SET, sigma, line);
+
+    class_slots::emit_class_alloc(&mut chunks[current], line);
+    chunks[current].emit_dup(line);
+    chunks[current].emit_string_const("NormalDist", line);
+    let type_slot = class_slots::resolve(&ClassSlot::TypeIdentity, &PlainNames);
+    class_slots::emit_class_set(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &type_slot,
+        ValueSource::Stack,
+        line,
+    );
+    for (field, slot) in [("mean", mu), ("stdev", sigma)] {
+        chunks[current].emit_dup(line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
+        let key = class_slots::resolve_interned(
+            &mut chunks[current],
+            &ClassSlot::internal(field),
+            &PlainNames,
+        );
+        class_slots::emit_class_set(
+            &mut chunks[current],
+            ObjSource::Stack,
+            &key,
+            ValueSource::Stack,
+            line,
+        );
+    }
 }

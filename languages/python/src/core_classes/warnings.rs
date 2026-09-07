@@ -9,7 +9,7 @@
 //! `except Warning` catching a `DeprecationWarning` is exactly this declaration.
 
 use super::builders::*;
-use vybe_ast::{BinOp, Statement};
+use vybe_ast::Statement;
 
 /// `Warning` and its ten standard subclasses, in declaration order — a class
 /// must follow the one it extends so the ancestor's MRO is resolved when the
@@ -70,10 +70,7 @@ pub(super) fn catch_warnings() -> Statement {
                     if_stmt(
                         this_field("record"),
                         vec![
-                            assign(
-                                ident("__vybe_warn_log"),
-                                this_field("entries"),
-                            ),
+                            assign(ident("__vybe_warn_log"), this_field("entries")),
                             ret(this_field("entries")),
                         ],
                     ),
@@ -99,20 +96,22 @@ pub(super) fn catch_warnings() -> Statement {
 pub(super) fn module_functions() -> Vec<Statement> {
     vec![
         assign_global("__vybe_warn_log", Expression::null()),
+        assign_global("__py_warnings_onceregistry", dict_of(vec![])),
         function(
             "warn",
-            vec![param("message", None), param("category", Some(Expression::null()))],
+            vec![
+                param("message", None),
+                param("category", Some(Expression::null())),
+                param("stacklevel", Some(Expression::int(1))),
+                param("source", Some(Expression::null())),
+            ],
             vec![if_stmt(
-                binary(
-                    BinOp::NotEq,
-                    ident("__vybe_warn_log"),
-                    Expression::null(),
-                ),
+                is_not_none(ident("__vybe_warn_log")),
                 vec![
                     assign(
                         ident("__cat"),
                         ternary(
-                            binary(BinOp::Eq, ident("category"), Expression::null()),
+                            is_none(ident("category")),
                             ident("UserWarning"),
                             ident("category"),
                         ),
@@ -127,12 +126,52 @@ pub(super) fn module_functions() -> Vec<Statement> {
                 ],
             )],
         ),
+        function(
+            "warn_explicit",
+            vec![
+                param("message", None),
+                param("category", Some(Expression::null())),
+                param("filename", Some(str_lit(""))),
+                param("lineno", Some(Expression::int(0))),
+            ],
+            vec![expr_stmt(call_global(
+                "warn",
+                vec![ident("message"), ident("category")],
+            ))],
+        ),
+        function(
+            "showwarning",
+            vec![
+                param("message", None),
+                param("category", Some(Expression::null())),
+                param("filename", Some(str_lit(""))),
+                param("lineno", Some(Expression::int(0))),
+                param("file", Some(Expression::null())),
+                param("line", Some(Expression::null())),
+            ],
+            vec![if_stmt(
+                is_not_none(ident("file")),
+                vec![expr_stmt(call(
+                    member(ident("file"), "write"),
+                    vec![add(call_global("str", vec![ident("message")]), str_lit("\n"))],
+                ))],
+            )],
+        ),
         // The filter surface is inert here, exactly as it was in the prelude:
         // nothing in the corpus asserts on filter STATE, only that the calls
         // exist and that `catch_warnings(record=True)` collects.
-        function("filterwarnings", vec![param("a", Some(Expression::null()))], vec![]),
-        function("simplefilter", vec![param("a", Some(Expression::null()))], vec![]),
+        function(
+            "filterwarnings",
+            vec![param("a", Some(Expression::null()))],
+            vec![],
+        ),
+        function(
+            "simplefilter",
+            vec![param("a", Some(Expression::null()))],
+            vec![],
+        ),
         function("resetwarnings", vec![], vec![]),
+        function("_filters_mutated", vec![], vec![]),
         function(
             "catch_warnings",
             vec![param("record", Some(bool_lit(false)))],

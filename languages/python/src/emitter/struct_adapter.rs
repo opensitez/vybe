@@ -3,9 +3,7 @@
 //! Python owns the format grammar and tuple result shape. Shared byte/endian
 //! mechanics come from `vybe_compiler::primitives::packing`.
 
-use vybe_compiler::primitives::class_slots::{
-    self, ClassSlot, ObjSource, PlainNames, ValueSource,
-};
+use vybe_compiler::primitives::class_slots::{self, ClassSlot, ObjSource, PlainNames, ValueSource};
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
 
@@ -545,5 +543,9 @@ pub fn emit_struct_new(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: 
     struct_set(&mut chunks[current], &ClassSlot::internal("size"), line);
     chunks[current].emit_dup(line);
     chunks[current].emit_f64_const(4.0, line);
-    struct_set(&mut chunks[current], &ClassSlot::internal("alignment"), line);
+    struct_set(
+        &mut chunks[current],
+        &ClassSlot::internal("alignment"),
+        line,
+    );
 }

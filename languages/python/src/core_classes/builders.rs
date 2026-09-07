@@ -48,30 +48,18 @@ pub(super) fn add(left: Expression, right: Expression) -> Expression {
 }
 
 /// `self.<name>` as a READ.
-///
-/// ⛔⛔ NOT `ExprKind::Member`. Python's walker desugars every attribute read
-/// into `__py_obj_get__(obj, "name")` and every attribute write into an
-/// `Index` on the instance — the parallel attribute system recorded in
-/// `project_python_attributes_bypass_shared_classes`. A declared class whose
-/// fields are written as `Member` lands them in the GC struct's named fields,
-/// where python's own read path cannot see them: construction succeeds and
-/// EVERY subsequent `a.x` throws. Measured on this module, 11/20 → 1/20.
-///
-/// So the builders speak the shapes the walker produces. When `classes.rs`
-/// learns per-instance storage and python attribute reads become ordinary
-/// `Member` nodes, these two helpers are the only places that change.
 pub(super) fn this_field(name: &str) -> Expression {
-    read_attr(ident("self"), name)
+    member(ident("self"), name)
 }
 
-/// `<object>.<name>` as a READ — python's desugared form.
+/// `<object>.<name>` as a READ.
 pub(super) fn read_attr(object: Expression, name: &str) -> Expression {
-    call(ident("__py_obj_get__"), vec![object, str_lit(name)])
+    member(object, name)
 }
 
-/// `self.<name>` as an ASSIGNMENT TARGET — the instance-dict subscript.
+/// `self.<name>` as an ASSIGNMENT TARGET.
 pub(super) fn this_slot(name: &str) -> Expression {
-    index(ident("self"), str_lit(name))
+    member(ident("self"), name)
 }
 
 /// `<object>.<name>` — a read on someone else's object, same desugaring.
@@ -97,7 +85,12 @@ pub(super) fn call_spread(callee: Expression, arg: Expression) -> Expression {
     Expression::with_span(
         ExprKind::Call {
             callee: Box::new(callee),
-            args: vec![Argument { value: arg, name: None, by_ref: false, spread: true }],
+            args: vec![Argument {
+                value: arg,
+                name: None,
+                by_ref: false,
+                spread: true,
+            }],
             optional: false,
         },
         span(),
@@ -109,7 +102,12 @@ pub(super) fn new_spread(class_name: &str, arg: Expression) -> Expression {
     Expression::with_span(
         ExprKind::New {
             class: Box::new(ident(class_name)),
-            args: vec![Argument { value: arg, name: None, by_ref: false, spread: true }],
+            args: vec![Argument {
+                value: arg,
+                name: None,
+                by_ref: false,
+                spread: true,
+            }],
         },
         span(),
     )
@@ -151,7 +149,11 @@ pub(super) fn slice_from(object: Expression, start: Expression) -> Expression {
     index(
         object,
         Expression::with_span(
-            ExprKind::Slice { lower: Some(Box::new(start)), upper: None, step: None },
+            ExprKind::Slice {
+                lower: Some(Box::new(start)),
+                upper: None,
+                step: None,
+            },
             span(),
         ),
     )
@@ -197,7 +199,10 @@ pub(super) fn ternary(cond: Expression, then: Expression, else_: Expression) -> 
 /// `not <expr>`
 pub(super) fn unary_not(expr: Expression) -> Expression {
     Expression::with_span(
-        ExprKind::Unary { op: vybe_ast::UnaryOp::Not, expr: Box::new(expr) },
+        ExprKind::Unary {
+            op: vybe_ast::UnaryOp::Not,
+            expr: Box::new(expr),
+        },
         span(),
     )
 }
@@ -205,9 +210,28 @@ pub(super) fn unary_not(expr: Expression) -> Expression {
 /// `raise StopIteration()` — how an iterator declares exhaustion.
 /// `raise <Name>(args…)` — the exception classes are not in
 /// `py_defined_classes`, so this is a CALL, never a `New`.
+/// `raise <DeclaredClass>(args)` — a CONSTRUCTION, not a call.
+///
+/// ⛔ [`raise_call`] emits `call_global`, which is right for the
+/// `__py_exc_*` FACTORY functions but wrong for a class declared here: the
+/// thrown value never became an instance of it, so `except graphlib.CycleError`
+/// did not match and the exception escaped.
+pub(super) fn raise_new(class_name: &str, args: Vec<Expression>) -> Statement {
+    Statement::with_span(
+        StmtKind::Throw {
+            expr: Some(new(class_name, args)),
+            cause: None,
+        },
+        span(),
+    )
+}
+
 pub(super) fn raise_call(name: &str, args: Vec<Expression>) -> Statement {
     Statement::with_span(
-        StmtKind::Throw { expr: Some(call_global(name, args)), cause: None },
+        StmtKind::Throw {
+            expr: Some(call_global(name, args)),
+            cause: None,
+        },
         span(),
     )
 }
@@ -290,12 +314,18 @@ pub(super) fn param(name: &str, default: Option<Expression>) -> Param {
 
 /// `*args`.
 pub(super) fn rest_param(name: &str) -> Param {
-    Param { is_rest: true, ..param(name, None) }
+    Param {
+        is_rest: true,
+        ..param(name, None)
+    }
 }
 
 /// `**kwargs`.
 pub(super) fn kwargs_param(name: &str) -> Param {
-    Param { is_kwargs: true, ..param(name, None) }
+    Param {
+        is_kwargs: true,
+        ..param(name, None)
+    }
 }
 
 /// The `(*a, **k)` tail every stub in these modules takes.
@@ -399,6 +429,19 @@ pub(super) fn list_of(items: Vec<Expression>) -> Expression {
     )
 }
 
+pub(super) fn dict_of(items: Vec<(Expression, Expression)>) -> Expression {
+    Expression::with_span(ExprKind::Map(items), span())
+}
+
+pub(super) fn dict_str(items: Vec<(&str, Expression)>) -> Expression {
+    dict_of(
+        items
+            .into_iter()
+            .map(|(key, value)| (str_lit(key), value))
+            .collect(),
+    )
+}
+
 /// A CLASS-level constant — `ssl.TLSVersion.TLSv1_2`. `is_static` is what puts
 /// it on the class rather than the instance.
 pub(super) fn static_field(name: &str, init: Expression) -> ClassMember {
@@ -406,7 +449,10 @@ pub(super) fn static_field(name: &str, init: Expression) -> ClassMember {
         name: name.to_string(),
         type_hint: None,
         init: Some(init),
-        modifiers: Modifiers { is_static: true, ..Modifiers::default() },
+        modifiers: Modifiers {
+            is_static: true,
+            ..Modifiers::default()
+        },
         with_events: false,
         array_bounds: None,
         storage: None,
@@ -456,6 +502,25 @@ pub(super) fn getter(name: &str, body: Vec<Statement>) -> ClassMember {
         type_hint: None,
         getter: Some(body),
         setter: None::<PropertySetter>,
+        is_auto: false,
+        modifiers: Modifiers::default(),
+    }
+}
+
+pub(super) fn property(
+    name: &str,
+    getter: Vec<Statement>,
+    value_param: Param,
+    setter: Vec<Statement>,
+) -> ClassMember {
+    ClassMember::Property {
+        name: name.to_string(),
+        type_hint: None,
+        getter: Some(getter),
+        setter: Some(PropertySetter {
+            param: value_param,
+            body: setter,
+        }),
         is_auto: false,
         modifiers: Modifiers::default(),
     }

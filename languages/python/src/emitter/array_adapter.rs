@@ -10,7 +10,7 @@
 //! No new host fns.
 
 use vybe_compiler::primitives::class_slots::{
-    self, ClassSlot, ObjSource, PlainNames, ValueSource,
+    self, ClassSlot, Dest, ObjSource, PlainNames, ValueSource,
 };
 use vybe_compiler::primitives::instructions::core_wasm;
 use vybe_runtime::Chunk;
@@ -36,6 +36,11 @@ const ITEMSIZES: &[(&str, i32)] = &[
 fn struct_set(chunk: &mut Chunk, key: &ClassSlot, line: u32) {
     let slot = class_slots::resolve(key, &PlainNames);
     class_slots::emit_class_set(chunk, ObjSource::Stack, &slot, ValueSource::Stack, line);
+}
+
+fn struct_get(chunk: &mut Chunk, key: &ClassSlot, line: u32) {
+    let slot = class_slots::resolve(key, &PlainNames);
+    class_slots::emit_class_get(chunk, ObjSource::Stack, &slot, Dest::Stack, line);
 }
 
 /// The typecode's item size, resolved from the code held in `tc`. The typecode
@@ -156,4 +161,79 @@ pub fn emit_frombytes(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32
     vybe_compiler::primitives::loops::emit_loop_end(chunks, current, state, line);
 
     chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+}
+
+/// `memoryview(array.array(...)).cast("B")` — expose the array's element bytes
+/// in little-endian order, matching the host architecture used by CPython on
+/// the test platform.
+pub fn emit_memoryview_cast_bytes(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    let source = chunks[current].alloc_scratch(1);
+    let out = chunks[current].alloc_scratch(1);
+    let i = chunks[current].alloc_scratch(1);
+    let n = chunks[current].alloc_scratch(1);
+    let j = chunks[current].alloc_scratch(1);
+    let itemsize = chunks[current].alloc_scratch(1);
+    let value = chunks[current].alloc_scratch(1);
+
+    chunks[current].emit_op_u16(Op::LOCAL_SET, source, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, source, line);
+    struct_get(&mut chunks[current], &ClassSlot::internal("itemsize"), line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, itemsize, line);
+
+    vybe_compiler::primitives::collections::emit_array_new(chunks, current, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, out, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, source, line);
+    vybe_compiler::primitives::collections::emit_len(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, n, line);
+
+    let outer = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, n, line);
+    chunks[current].emit_op(Op::I32_LT_S, line);
+    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, source, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    vybe_compiler::primitives::collections::emit_get(chunks, current, line);
+    let to_i32 = chunks[current].add_import("wasm:js-number", "toI32");
+    chunks[current].emit_call(to_i32, 1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, value, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, j, line);
+
+    let inner = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, j, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, itemsize, line);
+    chunks[current].emit_op(Op::I32_LT_S, line);
+    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, j, line);
+    core_wasm::i32_const(&mut chunks[current], line, 8);
+    chunks[current].emit_op(Op::I32_MUL, line);
+    chunks[current].emit_op(Op::I32_SHR_U, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0xff);
+    chunks[current].emit_op(Op::I32_AND, line);
+    vybe_compiler::primitives::collections::emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, j, line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, j, line);
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, inner, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, outer, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
+    let new_uint8 = chunks[current].add_import("ecma:uint8array", "new");
+    chunks[current].emit_call(new_uint8, 1, line);
 }

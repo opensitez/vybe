@@ -9,9 +9,7 @@
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
 
-use vybe_compiler::primitives::{
-    collections, fs_path, ops, reflection, strings, tuples,
-};
+use vybe_compiler::primitives::{collections, dict, fs_path, ops, reflection, strings, tuples};
 
 use super::adapter_util::{call_import, lget, lset, stash_exact};
 
@@ -209,6 +207,29 @@ pub fn emit_linecache_none(chunks: &mut [Chunk], current: usize, argc: u8, line:
     chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
+/// `inspect.get_annotations(obj)` — read the normalized annotation map from
+/// the object metadata. Missing annotations are an empty dict.
+pub fn emit_get_annotations(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let base = stash_exact(chunks, current, argc, 1, line);
+    let out = chunks[current].alloc_scratch(1);
+
+    lget(&mut chunks[current], base, line);
+    chunks[current].emit_string_const("__annotations__", line);
+    call_import(chunks, current, "ecma:object", "get", 2, line);
+    lset(&mut chunks[current], out, line);
+
+    lget(&mut chunks[current], out, line);
+    call_import(chunks, current, "wasm:js-undefined", "test", 1, line);
+    lget(&mut chunks[current], out, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_op(Op::I32_OR, line);
+    chunks[current].emit_if_value(line);
+    dict::emit_new(chunks, current, line);
+    chunks[current].emit_else(line);
+    lget(&mut chunks[current], out, line);
+    chunks[current].emit_end(line);
+}
+
 /// A class object carries a `prototype` (`primitives/classes.rs` sets it on
 /// every class it emits); a plain function does not. That is the one runtime
 /// difference between the two, both being `typeof "function"`.
@@ -258,6 +279,20 @@ pub fn emit_iscallable(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
     emit_is_function_value(chunks, current, base, line);
     let from_i32 = chunks[current].add_import("wasm:js-boolean", "fromI32");
     chunks[current].emit_call(from_i32, 1, line);
+}
+
+/// `inspect.stack()` — enough runtime frame shape for stack/introspection
+/// tests: a non-empty list containing a tuple-like frame record.
+pub fn emit_stack(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    for _ in 0..argc {
+        chunks[current].emit_op(Op::DROP, line);
+    }
+    chunks[current].emit_string_const("<module>", line);
+    chunks[current].emit_string_const("<stdin>", line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_string_const("", line);
+    tuples::emit_tuple(chunks, current, 4, line);
+    collections::emit_array_new(chunks, current, 1, line);
 }
 
 /// `inspect.getmembers(obj)` → `[(name, value)]`, sorted by name as CPython

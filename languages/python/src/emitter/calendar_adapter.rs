@@ -5,16 +5,14 @@
 //! calls to these `common:python.calendar_*` entries, and this file emits only
 //! the bytecode needed at the call site.
 
-use vybe_compiler::primitives::class_slots::{
-    self, ClassSlot, ObjSource, PlainNames, ValueSource,
-};
+use vybe_compiler::primitives::class_slots::{self, ClassSlot, ObjSource, PlainNames, ValueSource};
 use vybe_compiler::primitives::{collections, instructions::core_wasm, tuples};
 use vybe_runtime::opcode::{Op, heaptype::HT_EXTERN};
 use vybe_runtime::{Chunk, Value};
 
 const FIRSTWEEKDAY_GLOBAL: &str = "__py_calendar_firstweekday_value";
 
-fn string_key(chunk: &mut Chunk, key: &str) -> u16 {
+fn string_key(chunk: &mut Chunk, key: &str) -> u32 {
     chunk.add_constant(Value::String(std::sync::Arc::from(key)))
 }
 

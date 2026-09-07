@@ -7,6 +7,7 @@ name = "python"
 extensions = ["py", "pyw"]
 
 [compiler]
+has_function_prototype_bind = true
 # PEP 484: an annotation is DESCRIPTIVE, never coercive. `x: int = 3.7` keeps
 # 3.7 and `def f(x: int)` called with 3.7 receives 3.7 — verified against
 # python3. This was inheriting the platform default of `true`, so annotated
@@ -26,6 +27,9 @@ coerces_value_to_type_hint = false
 set_bitwise_operators = true
 # `gen.send(v)` / `gen.throw(e)` / `gen.close()`.
 generator_send_throw_close = true
+# Python `*args` expands a runtime sequence at call sites. This is needed for
+# normalized call factories such as `functools.partial`.
+supports_spread_arguments = true
 # `a[i:j] = v` and `del a[i:j]` splice the sequence.
 slice_assignment_splices = true
 # Python `__call__` — an object is callable, so a call site probes the Call slot.
@@ -98,13 +102,19 @@ __pyadd__       = { emit = "common:python.pyadd",            min_args = 2, max_a
 "str.maketrans" = { emit = "common:python.str_maketrans", min_args = 1, max_args = 3 }
 # `list(x)`/`sorted(x)` iterate a dict's KEYS, not its entry pairs.
 __py_iter_array__ = { emit = "common:python.iter_array",     min_args = 1, max_args = 1 }
+__py_custom_iter_array = { emit = "common:python.iter_array", min_args = 1, max_args = 1 }
+__py_is_dict      = { emit = "common:python.is_dict",        min_args = 1, max_args = 1 }
+__py_islice_consume = { emit = "common:python.it_islice_consume", min_args = 2, max_args = 4 }
+__py_count_float = { emit = "common:python.it_count_float", min_args = 0, max_args = 2 }
 __py_gen_send     = { emit = "common:python.gen_send",       min_args = 2, max_args = 2 }
 __py_gen_throw    = { emit = "common:python.gen_throw",      min_args = 2, max_args = 2 }
 __py_gen_close    = { emit = "common:python.gen_close",      min_args = 1, max_args = 1 }
 __py_getitem      = { emit = "common:python.getitem",        min_args = 2, max_args = 2, slot = "get_item" }
+__py_op_setitem   = { emit = "common:python.op_setitem",     min_args = 3, max_args = 3 }
 # `o.attr` read — distinct from `d[k]`: a miss consults the GetAttr role and
 # then raises AttributeError, where a subscript miss raises KeyError.
 __py_attr_read    = { emit = "common:python.attr_read",      min_args = 2, max_args = 2 }
+__py_reflect_apply = { emit = "common:reflection.apply",     min_args = 3, max_args = 3 }
 __py_attr_write   = { emit = "common:python.attr_write",     min_args = 3, max_args = 3 }
 __py_attr_raw_write = { emit = "common:python.attr_raw_write", min_args = 3, max_args = 3 }
 __py_attr_delete  = { emit = "common:python.attr_delete",    min_args = 2, max_args = 2 }
@@ -113,6 +123,7 @@ Exception         = { emit = "common:python.exc.Exception",         min_args = 0
 ArithmeticError   = { emit = "common:python.exc.ArithmeticError",   min_args = 0, max_args = 16 }
 AssertionError    = { emit = "common:python.exc.AssertionError",    min_args = 0, max_args = 16 }
 AttributeError    = { emit = "common:python.exc.AttributeError",    min_args = 0, max_args = 16 }
+EOFError          = { emit = "common:python.exc.EOFError",          min_args = 0, max_args = 16 }
 ExceptionGroup    = { emit = "common:python.exc.ExceptionGroup",    min_args = 0, max_args = 16 }
 FileNotFoundError = { emit = "common:python.exc.FileNotFoundError", min_args = 0, max_args = 16 }
 GeneratorExit     = { emit = "common:python.exc.GeneratorExit",     min_args = 0, max_args = 16 }
@@ -141,6 +152,7 @@ __py_exc_Exception         = { emit = "common:python.exc.Exception",         min
 __py_exc_ArithmeticError   = { emit = "common:python.exc.ArithmeticError",   min_args = 0, max_args = 16 }
 __py_exc_AssertionError    = { emit = "common:python.exc.AssertionError",    min_args = 0, max_args = 16 }
 __py_exc_AttributeError    = { emit = "common:python.exc.AttributeError",    min_args = 0, max_args = 16 }
+__py_exc_EOFError          = { emit = "common:python.exc.EOFError",          min_args = 0, max_args = 16 }
 __py_exc_ExceptionGroup    = { emit = "common:python.exc.ExceptionGroup",    min_args = 0, max_args = 16 }
 __py_exc_FileNotFoundError = { emit = "common:python.exc.FileNotFoundError", min_args = 0, max_args = 16 }
 __py_exc_FrozenInstanceError = { emit = "common:python.exc.FrozenInstanceError", min_args = 0, max_args = 16 }
@@ -162,6 +174,7 @@ __py_exc_SyntaxError       = { emit = "common:python.exc.SyntaxError",       min
 __py_exc_SystemExit        = { emit = "common:python.exc.SystemExit",        min_args = 0, max_args = 16 }
 __py_exc_TypeError         = { emit = "common:python.exc.TypeError",         min_args = 0, max_args = 16 }
 __py_exc_UnicodeError      = { emit = "common:python.exc.UnicodeError",      min_args = 0, max_args = 16 }
+__py_exc_UnicodeDecodeError = { emit = "common:python.exc.UnicodeDecodeError", min_args = 0, max_args = 16 }
 __py_exc_ValueError        = { emit = "common:python.exc.ValueError",        min_args = 0, max_args = 16 }
 __py_exc_ZeroDivisionError = { emit = "common:python.exc.ZeroDivisionError", min_args = 0, max_args = 16 }
 __py_raise_AttributeError    = { emit = "common:python.raise.AttributeError",    min_args = 0, max_args = 1 }
@@ -190,10 +203,12 @@ __py_raise_SyntaxError       = { emit = "common:python.raise.SyntaxError",      
 __py_raise_SystemExit        = { emit = "common:python.raise.SystemExit",        min_args = 0, max_args = 1 }
 __py_raise_TypeError         = { emit = "common:python.raise.TypeError",         min_args = 0, max_args = 1 }
 __py_raise_UnicodeError      = { emit = "common:python.raise.UnicodeError",      min_args = 0, max_args = 1 }
+__py_raise_UnicodeDecodeError = { emit = "common:python.raise.UnicodeDecodeError", min_args = 0, max_args = 1 }
 __py_raise_ValueError        = { emit = "common:python.raise.ValueError",        min_args = 0, max_args = 1 }
 __py_raise_ZeroDivisionError = { emit = "common:python.raise.ZeroDivisionError", min_args = 0, max_args = 1 }
 __py_exception_instance      = { emit = "common:python.exception_instance",      min_args = 2, max_args = 2 }
 __py_exception_message       = { emit = "common:python.exception_message",       min_args = 1, max_args = 1 }
+__py_notimplemented          = { emit = "common:python.notimplemented",          min_args = 0, max_args = 0 }
 # Raw filesystem primitives for the `os` prelude (wasi first, node for gaps).
 __os_readdir__  = { emit = "common:filesystem.read_dir_entries", min_args = 1, max_args = 1 }
 
@@ -214,15 +229,33 @@ __py_fs_rmdir       = { emit = "common:filesystem.rmdir",           min_args = 1
 __py_fs_unlink      = { emit = "common:filesystem.unlink",          min_args = 1, max_args = 1 }
 __py_fs_rename      = { emit = "common:filesystem.rename",          min_args = 2, max_args = 2 }
 __py_fs_list_dir    = { emit = "common:filesystem.list_dir",        min_args = 1, max_args = 1 }
+__py_str_splitlines = { emit = "common:python.str_splitlines",      min_args = 1, max_args = 2 }
+__py_str_startswith = { emit = "common:python.str_startswith",      min_args = 2, max_args = 4 }
+__py_str_endswith   = { emit = "common:python.str_endswith",        min_args = 2, max_args = 4 }
+__py_str_strip      = { emit = "common:str_trim_chars",             min_args = 1, max_args = 2 }
 __os_stat_raw__ = { emit = "common:filesystem.stat", min_args = 1, max_args = 1 }
 __os_isdir__    = { emit = "common:filesystem.is_dir", min_args = 1, max_args = 1 }
 __os_cpus__     = { emit = "host:node:os:cpus",                   min_args = 0, max_args = 0 }
+__py_cookie_parse     = { emit = "common:http_cookie.parse",     min_args = 1, max_args = 1 }
+__py_cookie_serialize = { emit = "common:http_cookie.serialize", min_args = 2, max_args = 3 }
+__py_xml_element = { emit = "common:python.xml_element", min_args = 1, max_args = 2 }
+__py_xml_subelement = { emit = "common:python.xml_subelement", min_args = 2, max_args = 3 }
+__py_xml_find    = { emit = "common:python.xml_find",    min_args = 2, max_args = 2 }
+__py_xml_findall = { emit = "common:python.xml_findall", min_args = 2, max_args = 2 }
+__py_xml_iter    = { emit = "common:python.xml_iter",    min_args = 1, max_args = 2 }
+__py_xml_get     = { emit = "common:python.xml_get",     min_args = 2, max_args = 3 }
+__py_difflib_ratio = { emit = "common:python.difflib_ratio", min_args = 2, max_args = 2 }
 __pyneg__       = { emit = "common:python.pyneg",            min_args = 1, max_args = 1 }
 __pylt__        = { emit = "common:python.pylt",             min_args = 2, max_args = 2 }
 __pygt__        = { emit = "common:python.pygt",             min_args = 2, max_args = 2 }
 __pyle__        = { emit = "common:python.pyle",             min_args = 2, max_args = 2 }
 __pyge__        = { emit = "common:python.pyge",             min_args = 2, max_args = 2 }
 __pymul__       = { emit = "common:python.pymul",            min_args = 2, max_args = 2 }
+__pymatmul__    = { emit = "common:python.pymatmul",         min_args = 2, max_args = 2 }
+__pybitand__    = { emit = "common:python.pybitand",         min_args = 2, max_args = 2 }
+__pybitor__     = { emit = "common:python.pybitor",          min_args = 2, max_args = 2 }
+__pybitxor__    = { emit = "common:python.pybitxor",         min_args = 2, max_args = 2 }
+__pyinvert__    = { emit = "common:python.pyinvert",         min_args = 1, max_args = 1 }
 __pysub__       = { emit = "common:python.pysub",            min_args = 2, max_args = 2 }
 __pytruediv__   = { emit = "common:python.pytruediv",        min_args = 2, max_args = 2 }
 __pyfloordiv__  = { emit = "common:python.pyfloordiv",       min_args = 2, max_args = 2 }
@@ -237,7 +270,7 @@ __py_obj_delete__      = { emit = "host:ecma:object:delete",     min_args = 2, m
 __py_map_from_entries__ = { emit = "host:ecma:map:fromEntries",  min_args = 1, max_args = 1 }
 # `eval`/`exec` → universal compiler-as-a-service. The walker injects the
 # language ("python") + mode; trailing args are globals/locals namespace dicts.
-__vybe_eval     = { emit = "host:vybe:eval:eval",            min_args = 3, max_args = 5 }
+__vybe_eval     = { emit = "host:vybe:eval:eval",            min_args = 2, max_args = 3 }
 # From-end offset normalization for subscripts (`a[-1]` → `a[len-1]`), applied
 # by the walker's `python_index_operand`. Safe for dict keys (only wraps
 # negative numbers on sequences).
@@ -245,10 +278,12 @@ __py_from_end__ = { emit = "common:python.from_end",         min_args = 2, max_a
 # Python float display (`4.0`, not `4`). Applied by the walker only to values
 # statically known to be floats — see `expr_is_python_float`.
 __py_float_repr__ = { emit = "common:python.float_repr",     min_args = 1, max_args = 1 }
+__py_bytes_eq    = { emit = "common:python.bytes_eq",        min_args = 2, max_args = 2 }
 # Polymorphic membership (`x in y`): string substring / array element / dict key.
 # Set literals are normalized to `.has()` upstream; this covers the rest and
 # routes around the buggy shared `BinOp::In` array-classification for objects.
 __py_contains__ = { emit = "common:python.contains",         min_args = 2, max_args = 2 }
+__py_container_kind = { emit = "common:python.container_kind", min_args = 1, max_args = 1 }
 # `a is b` / `a is not b` — object identity (reference eq for objects, value
 # identity for interned primitives), NOT value equality.
 __py_is__       = { emit = "common:python.is_identity",       min_args = 2, max_args = 2 }
@@ -257,9 +292,37 @@ __py_is_not__   = { emit = "common:python.is_not_identity",   min_args = 2, max_
 # array of octets. The VM indexes/iterates it natively; display is detected at
 # runtime via arraybuffer.isView. `.encode()` and `bytes(...)` route here too.
 __py_bytes_new__ = { emit = "host:ecma:uint8array:new",       min_args = 1, max_args = 1 }
+__vybe_str_encode = { emit = "common:python.encode",          min_args = 1, max_args = 1 }
+__py_bytearray_new__ = { emit = "host:ecma:uint8array:new",   min_args = 1, max_args = 1 }
 # bytes.hex() → lowercase hex string; bytes.fromhex(s) → bytes.
 __py_bytes_hex__    = { emit = "host:ecma:uint8array:toHex",   min_args = 1, max_args = 1 }
 __py_bytes_fromhex__ = { emit = "host:ecma:uint8array:fromHex", min_args = 1, max_args = 1 }
+__py_bytes_contains_byte__ = { emit = "host:ecma:uint8array:includes", min_args = 2, max_args = 2 }
+__py_bytes_decode = { emit = "common:python.bytes_decode", min_args = 1, max_args = 3 }
+__py_bytes_concat = { emit = "common:python.bytes_concat", min_args = 2, max_args = 2 }
+__py_bytes_split = { emit = "common:python.bytes_split", min_args = 1, max_args = 3 }
+__py_bytes_rsplit = { emit = "common:python.bytes_rsplit", min_args = 1, max_args = 3 }
+__py_bytes_splitlines = { emit = "common:python.bytes_splitlines", min_args = 1, max_args = 2 }
+__py_bytes_partition = { emit = "common:python.bytes_partition", min_args = 2, max_args = 2 }
+__py_bytes_rpartition = { emit = "common:python.bytes_rpartition", min_args = 2, max_args = 2 }
+__py_bytes_removeprefix = { emit = "common:python.bytes_removeprefix", min_args = 2, max_args = 2 }
+__py_bytes_removesuffix = { emit = "common:python.bytes_removesuffix", min_args = 2, max_args = 2 }
+__py_bytes_expandtabs = { emit = "common:python.bytes_expandtabs", min_args = 1, max_args = 2 }
+__py_bytes_count = { emit = "common:python.bytes_count", min_args = 2, max_args = 4 }
+__py_bytes_maketrans = { emit = "common:python.bytes_maketrans", min_args = 2, max_args = 2 }
+__py_bytes_translate = { emit = "common:python.bytes_translate", min_args = 2, max_args = 2 }
+__py_bytearray_append = { emit = "common:python.bytearray_append", min_args = 2, max_args = 2 }
+__py_bytearray_extend = { emit = "common:python.bytearray_extend", min_args = 2, max_args = 2 }
+__py_bytearray_copy = { emit = "common:python.bytearray_copy", min_args = 1, max_args = 1 }
+__py_bytearray_clear = { emit = "common:python.bytearray_clear", min_args = 1, max_args = 1 }
+__py_bytearray_reverse = { emit = "common:python.bytearray_reverse", min_args = 1, max_args = 1 }
+__py_bytearray_insert = { emit = "common:python.bytearray_insert", min_args = 3, max_args = 3 }
+__py_bytearray_remove = { emit = "common:python.bytearray_remove", min_args = 2, max_args = 2 }
+__py_bytearray_pop_value = { emit = "common:python.bytearray_pop_value", min_args = 1, max_args = 2 }
+__py_bytearray_pop_pair = { emit = "common:python.bytearray_pop_pair", min_args = 1, max_args = 2 }
+__py_bytearray_pop_array = { emit = "common:python.bytearray_pop_array", min_args = 1, max_args = 2 }
+__py_bytearray_slice_assign = { emit = "common:python.bytearray_slice_assign", min_args = 4, max_args = 4 }
+__py_list_extend = { emit = "common:python.extend", min_args = 2, max_args = 2 }
 __py_int_bit_length__ = { emit = "common:python.int_bit_length", min_args = 1, max_args = 1 }
 __py_int_bit_count__  = { emit = "common:python.int_bit_count",  min_args = 1, max_args = 1 }
 __py_int_to_bytes__   = { emit = "common:python.int_to_bytes",   min_args = 3, max_args = 3 }
@@ -336,6 +399,7 @@ bytes           = { emit = "common:python.bytes",     min_args = 0, max_args = 3
 # `bytes` is a front-end quirk, not a second representation.
 bytearray       = { emit = "common:python.bytes",     min_args = 0, max_args = 3 }
 memoryview      = { emit = "common:python.memoryview", min_args = 0, max_args = 1 }
+__py_memoryview_cast_bytes = { emit = "common:python.memoryview_cast_bytes", min_args = 1, max_args = 1 }
 
 # ── Collections ──────────────────────────────────────────────────────────────
 
@@ -363,6 +427,7 @@ __py_frozenset  = { emit = "common:python.frozenset",       min_args = 0, max_ar
 __py_frozenset_key = { emit = "common:python.frozenset_key", min_args = 1, max_args = 1 }
 # `sorted(x, key=f)` → sort the (spread) array by key_fn via the shared primitive.
 __py_sort_by_key = { emit = "common:python.sort_by_key",    min_args = 2, max_args = 2 }
+__py_sort_with_cmp = { emit = "common:python.sort_with_cmp", min_args = 2, max_args = 2 }
 __py_min        = { emit = "common:python.min",             min_args = 1, max_args = 2 }
 __py_max        = { emit = "common:python.max",             min_args = 1, max_args = 2 }
 __py_sum        = { emit = "common:python.sum",             min_args = 1, max_args = 2 }
@@ -371,17 +436,34 @@ __py_iter_sentinel = { emit = "common:python.iter_sentinel", min_args = 2, max_a
 __py_zip_strict = { emit = "common:python.zip_strict",      min_args = 2, max_args = 255 }
 __py_zip_spread = { emit = "common:python.zip_spread",      min_args = 1, max_args = 1 }
 __py_dict_from_pairs = { emit = "common:python.dict_from_pairs", min_args = 1, max_args = 1 }
+__py_slice_new = { emit = "common:python.slice_new", min_args = 3, max_args = 3 }
+__py_getslice_obj = { emit = "common:python.getslice_obj", min_args = 2, max_args = 2 }
+__py_dict_ior = { emit = "common:python.dict_ior", min_args = 2, max_args = 2 }
+__py_dict_or = { emit = "common:python.dict_or", min_args = 2, max_args = 2 }
+__py_dict_update = { emit = "common:python.dict_update", min_args = 3, max_args = 3 }
+__py_list_iadd = { emit = "common:python.list_iadd", min_args = 2, max_args = 2 }
 __py_str_isdigit = { emit = "common:str_is_digit", slot = "is_digit", min_args = 1, max_args = 1 }
 __py_str_isalpha = { emit = "common:str_is_alpha", slot = "is_alpha", min_args = 1, max_args = 1 }
 __py_str_isalnum = { emit = "common:str_is_alnum", slot = "is_alnum", min_args = 1, max_args = 1 }
 __py_str_isspace = { emit = "common:str_is_space", slot = "is_space", min_args = 1, max_args = 1 }
+__py_str_isascii = { emit = "common:python.str_isascii", min_args = 1, max_args = 1 }
+__py_str_isidentifier = { emit = "common:python.str_isidentifier", min_args = 1, max_args = 1 }
 # `re.*` over ecma:regexp (walker rewrites re.search/…→__re_*; m.group(i)→m[i]).
-__re_search     = { emit = "common:python.re_search",       min_args = 2, max_args = 2 }
-__re_match      = { emit = "common:python.re_match",         min_args = 2, max_args = 2 }
-__re_findall    = { emit = "common:python.re_findall",       min_args = 2, max_args = 2 }
-__re_sub        = { emit = "common:python.re_sub",           min_args = 3, max_args = 3 }
-__re_split      = { emit = "common:python.re_split",         min_args = 2, max_args = 2 }
+__re_search     = { emit = "common:python.re_search",       min_args = 2, max_args = 4 }
+__re_match      = { emit = "common:python.re_match",         min_args = 2, max_args = 4 }
+__re_search_pos = { emit = "common:python.re_search_pos",    min_args = 4, max_args = 4 }
+__re_fullmatch  = { emit = "common:python.re_fullmatch",     min_args = 2, max_args = 4 }
+__re_finditer   = { emit = "common:python.re_finditer",      min_args = 2, max_args = 3 }
+__re_findall    = { emit = "common:python.re_findall",       min_args = 2, max_args = 3 }
+__re_sub        = { emit = "common:python.re_sub",           min_args = 3, max_args = 5 }
+__re_subn       = { emit = "common:python.re_subn",          min_args = 3, max_args = 5 }
+__re_split      = { emit = "common:python.re_split",         min_args = 2, max_args = 3 }
 __re_escape     = { emit = "common:python.re_escape",        min_args = 1, max_args = 1 }
+__re_scanner    = { emit = "common:python.re_scanner",       min_args = 1, max_args = 1 }
+__re_groups     = { emit = "common:python.re_groups",        min_args = 1, max_args = 1 }
+__re_start      = { emit = "common:python.re_start",         min_args = 1, max_args = 1 }
+__re_end        = { emit = "common:python.re_end",           min_args = 1, max_args = 1 }
+__re_lastindex  = { emit = "common:python.re_lastindex",     min_args = 1, max_args = 1 }
 # `re.compile(pat)` → a real RegExp; ecma:regexp.new is idempotent on a RegExp,
 # so __re_search/findall/sub/split accept a compiled pattern OR a string.
 __re_compile    = { emit = "host:ecma:regexp:new",           min_args = 1, max_args = 2 }
@@ -473,6 +555,64 @@ isinf           = { emit = "common:python.math_isinf",      min_args = 1, max_ar
 "math.dist"     = { emit = "common:python.math_dist",      min_args = 2, max_args = 2 }
 "math.modf"     = { emit = "common:python.math_modf",      min_args = 1, max_args = 1 }
 "math.frexp"    = { emit = "common:python.math_frexp",     min_args = 1, max_args = 1 }
+"math.erf"      = { emit = "common:math.erf64",            min_args = 1, max_args = 1 }
+"math.erfc"     = { emit = "common:math.erfc64",           min_args = 1, max_args = 1 }
+"math.gamma"    = { emit = "common:math.gamma64",          min_args = 1, max_args = 1 }
+"math.lgamma"   = { emit = "common:math.lgamma64",         min_args = 1, max_args = 1 }
+
+__py_math_sqrt      = { emit = "opcode:f64_sqrt",               min_args = 1, max_args = 1 }
+__py_math_floor     = { emit = "opcode:f64_floor",              min_args = 1, max_args = 1 }
+__py_math_ceil      = { emit = "opcode:f64_ceil",               min_args = 1, max_args = 1 }
+__py_math_trunc     = { emit = "opcode:f64_trunc",              min_args = 1, max_args = 1 }
+__py_math_fabs      = { emit = "opcode:f64_abs",                min_args = 1, max_args = 1 }
+__py_math_pow       = { emit = "opcode:pow",                    min_args = 2, max_args = 2 }
+__py_math_sin       = { emit = "host:ecma:math:sin",            min_args = 1, max_args = 1 }
+__py_math_cos       = { emit = "host:ecma:math:cos",            min_args = 1, max_args = 1 }
+__py_math_tan       = { emit = "host:ecma:math:tan",            min_args = 1, max_args = 1 }
+__py_math_asin      = { emit = "host:ecma:math:asin",           min_args = 1, max_args = 1 }
+__py_math_acos      = { emit = "host:ecma:math:acos",           min_args = 1, max_args = 1 }
+__py_math_atan      = { emit = "host:ecma:math:atan",           min_args = 1, max_args = 1 }
+__py_math_atan2     = { emit = "host:ecma:math:atan2",          min_args = 2, max_args = 2 }
+__py_math_sinh      = { emit = "host:ecma:math:sinh",           min_args = 1, max_args = 1 }
+__py_math_cosh      = { emit = "host:ecma:math:cosh",           min_args = 1, max_args = 1 }
+__py_math_tanh      = { emit = "host:ecma:math:tanh",           min_args = 1, max_args = 1 }
+__py_math_asinh     = { emit = "host:ecma:math:asinh",          min_args = 1, max_args = 1 }
+__py_math_acosh     = { emit = "host:ecma:math:acosh",          min_args = 1, max_args = 1 }
+__py_math_atanh     = { emit = "host:ecma:math:atanh",          min_args = 1, max_args = 1 }
+__py_math_cbrt      = { emit = "host:ecma:math:cbrt",           min_args = 1, max_args = 1 }
+__py_math_expm1     = { emit = "host:ecma:math:expm1",          min_args = 1, max_args = 1 }
+__py_math_log1p     = { emit = "host:ecma:math:log1p",          min_args = 1, max_args = 1 }
+__py_math_log       = { emit = "host:ecma:math:log",            min_args = 1, max_args = 2 }
+__py_math_log2      = { emit = "host:ecma:math:log2",           min_args = 1, max_args = 1 }
+__py_math_log10     = { emit = "host:ecma:math:log10",          min_args = 1, max_args = 1 }
+__py_math_exp       = { emit = "host:ecma:math:exp",            min_args = 1, max_args = 1 }
+__py_math_isnan     = { emit = "host:ecma:number:isNaN",        min_args = 1, max_args = 1 }
+__py_math_isfinite  = { emit = "host:ecma:number:isFinite",     min_args = 1, max_args = 1 }
+__py_math_hypot     = { emit = "host:ecma:math:hypot",          min_args = 1, max_args = 255 }
+__py_math_isinf     = { emit = "common:python.math_isinf",      min_args = 1, max_args = 1 }
+__py_math_remainder = { emit = "common:python.math_remainder",  min_args = 2, max_args = 2 }
+__py_math_isclose   = { emit = "common:python.math_isclose",    min_args = 2, max_args = 4 }
+__py_math_fsum      = { emit = "common:python.math_fsum",       min_args = 1, max_args = 1 }
+__py_math_factorial = { emit = "common:python.math_factorial",  min_args = 1, max_args = 1 }
+__py_math_gcd       = { emit = "common:python.math_gcd",        min_args = 2, max_args = 2 }
+__py_math_lcm       = { emit = "common:python.math_lcm",        min_args = 2, max_args = 2 }
+__py_math_comb      = { emit = "common:python.math_comb",       min_args = 2, max_args = 2 }
+__py_math_perm      = { emit = "common:python.math_perm",       min_args = 2, max_args = 2 }
+__py_math_prod      = { emit = "common:python.math_prod",       min_args = 1, max_args = 2 }
+__py_math_degrees   = { emit = "common:python.math_degrees",    min_args = 1, max_args = 1 }
+__py_math_radians   = { emit = "common:python.math_radians",    min_args = 1, max_args = 1 }
+__py_math_copysign  = { emit = "common:python.math_copysign",   min_args = 2, max_args = 2 }
+__py_math_fmod      = { emit = "common:python.math_fmod",       min_args = 2, max_args = 2 }
+__py_math_ldexp     = { emit = "common:python.math_ldexp",      min_args = 2, max_args = 2 }
+__py_math_dist      = { emit = "common:python.math_dist",       min_args = 2, max_args = 2 }
+__py_math_modf      = { emit = "common:python.math_modf",       min_args = 1, max_args = 1 }
+__py_math_frexp     = { emit = "common:python.math_frexp",      min_args = 1, max_args = 1 }
+__py_math_erf       = { emit = "common:math.erf64",             min_args = 1, max_args = 1 }
+__py_math_erfc      = { emit = "common:math.erfc64",            min_args = 1, max_args = 1 }
+__py_math_gamma     = { emit = "common:math.gamma64",           min_args = 1, max_args = 1 }
+__py_math_lgamma    = { emit = "common:math.lgamma64",          min_args = 1, max_args = 1 }
+__py_math_nextafter = { emit = "common:math.next_after64",      min_args = 2, max_args = 2 }
+__py_math_ulp       = { emit = "common:math.ulp64",             min_args = 1, max_args = 1 }
 
 # ── Time module ──────────────────────────────────────────────────────────────
 # struct_time is a named tuple (indexable + tm_* fields) built via the shared
@@ -596,14 +736,22 @@ __py_tz_offset_str        = { emit = "common:python.tz_offset_str",     min_args
 # `list(...)`/`next(...)`/iteration all accept.
 
 "itertools.chain"      = { emit = "common:python.it_chain",      min_args = 0, max_args = 8 }
+"itertools.product"    = { emit = "common:python.it_product",    min_args = 0, max_args = 8 }
+"itertools.combinations" = { emit = "common:python.it_combinations", min_args = 2, max_args = 2 }
+"itertools.combinations_with_replacement" = { emit = "common:python.it_combinations_with_replacement", min_args = 2, max_args = 2 }
+"itertools.permutations" = { emit = "common:python.it_permutations", min_args = 1, max_args = 2 }
 "itertools.repeat"     = { emit = "common:python.it_repeat",     min_args = 1, max_args = 2 }
 "itertools.count"      = { emit = "common:python.it_count",      min_args = 0, max_args = 2 }
 "itertools.cycle"      = { emit = "common:python.it_cycle",      min_args = 1, max_args = 1 }
 "itertools.islice"     = { emit = "common:python.it_islice",     min_args = 2, max_args = 4 }
-"itertools.accumulate" = { emit = "common:python.it_accumulate", min_args = 1, max_args = 2 }
+"itertools.accumulate" = { emit = "common:python.it_accumulate", min_args = 1, max_args = 3 }
 "itertools.pairwise"   = { emit = "common:python.it_pairwise",   min_args = 1, max_args = 1 }
 "itertools.batched"    = { emit = "common:python.it_batched",    min_args = 2, max_args = 2 }
 "itertools.tee"        = { emit = "common:python.it_tee",        min_args = 1, max_args = 2 }
+"__py_it_chain_from_iterable" = { emit = "common:python.it_chain_from_iterable", min_args = 1, max_args = 1 }
+"itertools.compress"   = { emit = "common:python.it_compress",   min_args = 2, max_args = 2 }
+"itertools.starmap"    = { emit = "common:python.it_starmap",    min_args = 2, max_args = 2 }
+"itertools.groupby"    = { emit = "common:python.it_groupby",    min_args = 1, max_args = 2 }
 
 # `operator.*` are the operators themselves — they reuse the very emits the
 # `__py*__` lowerings already route to, so there is nothing new to write.
@@ -638,9 +786,6 @@ __py_tz_offset_str        = { emit = "common:python.tz_offset_str",     min_args
 # `operator.contains(a, b)` is `b in a` — same argument order as the lowering.
 "operator.contains" = { emit = "common:python.contains",    min_args = 2, max_args = 2 }
 
-"struct.pack"     = { emit = "common:python.struct_pack",     min_args = 1, max_args = 255 }
-"struct.unpack"   = { emit = "common:python.struct_unpack",   min_args = 2, max_args = 2 }
-"struct.calcsize" = { emit = "common:python.struct_calcsize", min_args = 1, max_args = 1 }
 "struct.unpack_from" = { emit = "common:python.struct_unpack_from", min_args = 2, max_args = 3 }
 "struct.pack_into"   = { emit = "common:python.struct_pack_into",   min_args = 4, max_args = 255 }
 "struct.iter_unpack" = { emit = "common:python.struct_iter_unpack", min_args = 2, max_args = 2 }
@@ -653,7 +798,7 @@ __py_tz_offset_str        = { emit = "common:python.tz_offset_str",     min_args
 "itertools.filterfalse" = { emit = "common:python.it_filterfalse", min_args = 2, max_args = 2 }
 "itertools.takewhile"   = { emit = "common:python.it_takewhile",   min_args = 2, max_args = 2 }
 "itertools.dropwhile"   = { emit = "common:python.it_dropwhile",   min_args = 2, max_args = 2 }
-"itertools.zip_longest"  = { emit = "common:python.it_zip_longest", min_args = 2, max_args = 2 }
+"itertools.zip_longest"  = { emit = "common:python.it_zip_longest", min_args = 2, max_args = 3 }
 
 # ── Array module ─────────────────────────────────────────────────────────────
 # An `array.array` IS an array carrying `typecode`/`itemsize` — indexing, len,
@@ -706,17 +851,56 @@ __py_tz_offset_str        = { emit = "common:python.tz_offset_str",     min_args
 "statistics.pstdev"         = { emit = "common:python.stat_pstdev",      min_args = 1, max_args = 2 }
 "statistics.harmonic_mean"  = { emit = "common:python.stat_harmonic_mean",  min_args = 1, max_args = 2 }
 "statistics.geometric_mean" = { emit = "common:python.stat_geometric_mean", min_args = 1, max_args = 1 }
+"statistics.covariance"     = { emit = "common:python.stat_covariance",  min_args = 2, max_args = 2 }
+"statistics.correlation"    = { emit = "common:python.stat_correlation", min_args = 2, max_args = 2 }
+"statistics.linear_regression" = { emit = "common:python.stat_linear_regression", min_args = 2, max_args = 2 }
+"statistics.NormalDist"     = { emit = "common:python.stat_normal_dist", min_args = 0, max_args = 2 }
+"statistics.StatisticsError" = { emit = "common:python.exc.statistics.StatisticsError", min_args = 0, max_args = 16 }
 
 # ── Random module ────────────────────────────────────────────────────────────
 
 "random.random"    = { emit = "common:python.random",       min_args = 0, max_args = 0 }
-"random.randint"   = { emit = "common:python.randint",      min_args = 2, max_args = 2 }
+"random.randint"   = { emit = "common:python.random_randint", min_args = 2, max_args = 2 }
 "random.choice"    = { emit = "common:python.random_choice",          min_args = 1, max_args = 1 }
 "random.shuffle"   = { emit = "common:python.random_shuffle",         min_args = 1, max_args = 1 }
-"random.uniform"   = { emit = "host:ecma:math:randUniform", min_args = 2, max_args = 2 }
+"random.uniform"   = { emit = "common:python.random_uniform", min_args = 2, max_args = 2 }
 "random.seed"      = { emit = "common:python.seed",         min_args = 0, max_args = 1 }
-"random.randrange" = { emit = "host:ecma:math:randint",     min_args = 1, max_args = 3 }
+"random.randrange" = { emit = "common:python.random_randrange", min_args = 1, max_args = 3 }
 "random.sample"    = { emit = "common:python.random_sample",          min_args = 2, max_args = 2 }
+"random.choices"   = { emit = "common:python.random_choices",   min_args = 1, max_args = 4 }
+"random.expovariate" = { emit = "common:python.random_expovariate", min_args = 1, max_args = 1 }
+"random.gauss"     = { emit = "common:python.random_gauss",     min_args = 2, max_args = 2 }
+"random.normalvariate" = { emit = "common:python.random_normalvariate", min_args = 2, max_args = 2 }
+"random.lognormvariate" = { emit = "common:python.random_lognormvariate", min_args = 2, max_args = 2 }
+"random.triangular" = { emit = "common:python.random_triangular", min_args = 2, max_args = 3 }
+"random.paretovariate" = { emit = "common:python.random_paretovariate", min_args = 1, max_args = 1 }
+"random.weibullvariate" = { emit = "common:python.random_weibullvariate", min_args = 2, max_args = 2 }
+"random.vonmisesvariate" = { emit = "common:python.random_vonmisesvariate", min_args = 2, max_args = 2 }
+"random.gammavariate" = { emit = "common:python.random_gammavariate", min_args = 2, max_args = 2 }
+"random.betavariate" = { emit = "common:python.random_betavariate", min_args = 2, max_args = 2 }
+"random.getrandbits" = { emit = "common:python.random_getrandbits", min_args = 1, max_args = 1 }
+"random.randbytes" = { emit = "common:python.random_randbytes", min_args = 1, max_args = 1 }
+"random.getstate" = { emit = "common:python.random_getstate", min_args = 0, max_args = 0 }
+"random.setstate" = { emit = "common:python.random_setstate", min_args = 1, max_args = 1 }
+__py_random_r = { emit = "common:python.random_r", min_args = 0, max_args = 0 }
+__py_random_uniform = { emit = "common:python.random_uniform", min_args = 2, max_args = 2 }
+__py_random_expovariate = { emit = "common:python.random_expovariate", min_args = 1, max_args = 1 }
+__py_random_gauss = { emit = "common:python.random_gauss", min_args = 2, max_args = 2 }
+__py_random_normalvariate = { emit = "common:python.random_normalvariate", min_args = 2, max_args = 2 }
+__py_random_lognormvariate = { emit = "common:python.random_lognormvariate", min_args = 2, max_args = 2 }
+__py_random_triangular = { emit = "common:python.random_triangular", min_args = 2, max_args = 3 }
+__py_random_paretovariate = { emit = "common:python.random_paretovariate", min_args = 1, max_args = 1 }
+__py_random_weibullvariate = { emit = "common:python.random_weibullvariate", min_args = 2, max_args = 2 }
+__py_random_vonmisesvariate = { emit = "common:python.random_vonmisesvariate", min_args = 2, max_args = 2 }
+__py_random_gammavariate = { emit = "common:python.random_gammavariate", min_args = 2, max_args = 2 }
+__py_random_betavariate = { emit = "common:python.random_betavariate", min_args = 2, max_args = 2 }
+__py_random_getrandbits = { emit = "common:python.random_getrandbits", min_args = 1, max_args = 1 }
+__py_random_randbytes = { emit = "common:python.random_randbytes", min_args = 1, max_args = 1 }
+__py_random_randint = { emit = "common:python.random_randint", min_args = 2, max_args = 2 }
+__py_random_randrange = { emit = "common:python.random_randrange", min_args = 3, max_args = 3 }
+__py_random_choices = { emit = "common:python.random_choices", min_args = 4, max_args = 4 }
+__py_random_getstate = { emit = "common:python.random_getstate", min_args = 0, max_args = 0 }
+__py_random_setstate = { emit = "common:python.random_setstate", min_args = 1, max_args = 1 }
 
 # ── Type checking ────────────────────────────────────────────────────────────
 
@@ -834,15 +1018,35 @@ __py_thread_join_common  = { emit = "common:python.thread_join",       min_args 
 urljoin         = { emit = "common:python.url_join",           min_args = 2, max_args = 3 }
 urlsplit        = { emit = "common:python.url_split",          min_args = 1, max_args = 3 }
 urlparse        = { emit = "common:python.url_split",          min_args = 1, max_args = 3 }
+urldefrag       = { emit = "common:python.url_defrag",         min_args = 1, max_args = 1 }
+defrag          = { emit = "common:python.url_defrag",         min_args = 1, max_args = 1 }
 urlunsplit      = { emit = "common:python.url_unsplit",        min_args = 1, max_args = 1 }
 urlunparse      = { emit = "common:python.url_unsplit",        min_args = 1, max_args = 1 }
 urlencode       = { emit = "common:python.url_encode",         min_args = 1, max_args = 4 }
 parse_qs        = { emit = "common:python.url_parse_qs",       min_args = 1, max_args = 4 }
 parse_qsl       = { emit = "common:python.url_parse_qsl",      min_args = 1, max_args = 4 }
 quote           = { emit = "common:python.url_quote",          min_args = 1, max_args = 4 }
+quote_from_bytes = { emit = "common:python.url_quote_from_bytes", min_args = 1, max_args = 2 }
 quote_plus      = { emit = "common:python.url_quote_plus",     min_args = 1, max_args = 4 }
 unquote         = { emit = "common:python.url_unquote",        min_args = 1, max_args = 3 }
+unquote_to_bytes = { emit = "common:python.url_unquote_to_bytes", min_args = 1, max_args = 2 }
 unquote_plus    = { emit = "common:python.url_unquote_plus",   min_args = 1, max_args = 3 }
+"urllib.parse.urljoin"      = { emit = "common:python.url_join",         min_args = 2, max_args = 3 }
+"urllib.parse.urlsplit"     = { emit = "common:python.url_split",        min_args = 1, max_args = 3 }
+"urllib.parse.urlparse"     = { emit = "common:python.url_split",        min_args = 1, max_args = 3 }
+"urllib.parse.urldefrag"    = { emit = "common:python.url_defrag",       min_args = 1, max_args = 1 }
+"urllib.parse.defrag"       = { emit = "common:python.url_defrag",       min_args = 1, max_args = 1 }
+"urllib.parse.urlunsplit"   = { emit = "common:python.url_unsplit",      min_args = 1, max_args = 1 }
+"urllib.parse.urlunparse"   = { emit = "common:python.url_unsplit",      min_args = 1, max_args = 1 }
+"urllib.parse.urlencode"    = { emit = "common:python.url_encode",       min_args = 1, max_args = 4 }
+"urllib.parse.parse_qs"     = { emit = "common:python.url_parse_qs",     min_args = 1, max_args = 4 }
+"urllib.parse.parse_qsl"    = { emit = "common:python.url_parse_qsl",    min_args = 1, max_args = 4 }
+"urllib.parse.quote"        = { emit = "common:python.url_quote",        min_args = 1, max_args = 4 }
+"urllib.parse.quote_from_bytes" = { emit = "common:python.url_quote_from_bytes", min_args = 1, max_args = 2 }
+"urllib.parse.quote_plus"   = { emit = "common:python.url_quote_plus",   min_args = 1, max_args = 4 }
+"urllib.parse.unquote"      = { emit = "common:python.url_unquote",      min_args = 1, max_args = 3 }
+"urllib.parse.unquote_to_bytes" = { emit = "common:python.url_unquote_to_bytes", min_args = 1, max_args = 2 }
+"urllib.parse.unquote_plus" = { emit = "common:python.url_unquote_plus", min_args = 1, max_args = 3 }
 # `configparser` parses INI through the shared `config` primitive, the way
 # `csv` above goes through `common:csv.*`. The second argument is key CASE:
 # CPython's `optionxform` lowercases option names by default (measured —
@@ -867,6 +1071,7 @@ format          = { emit = "common:sprintf.format",           min_args = 1, max_
 # ── OS / File I/O ────────────────────────────────────────────────────────────
 
 open            = { emit = "common:python.file_open",        min_args = 1, max_args = 3 }
+__py_file_close = { emit = "common:python.file_close",       min_args = 1, max_args = 1 }
 
 # `wasi:filesystem` (the flat shim) has no cwd — the process working directory
 # is a process concept, not a filesystem one, so it comes from node:process.
@@ -877,8 +1082,21 @@ open            = { emit = "common:python.file_open",        min_args = 1, max_a
 "collections.defaultdict" = { emit = "common:python.defaultdict_new", min_args = 0, max_args = 2 }
 "collections.deque"       = { emit = "host:ecma:array:from",          min_args = 0, max_args = 2 }
 "collections.OrderedDict" = { emit = "host:ecma:object:create",       min_args = 0, max_args = 1 }
-"os.getcwd"         = { emit = "host:wasi:cli/environment:initial-cwd", min_args = 0, max_args = 0 }
-"os.getpid"         = { emit = "host:node:process:pid",               min_args = 0, max_args = 0 }
+__py_counter_new         = { emit = "common:python.counter_new",         min_args = 0, max_args = 2 }
+__py_counter_get         = { emit = "common:python.counter_get",         min_args = 2, max_args = 2 }
+__py_counter_iadd        = { emit = "common:python.counter_iadd",        min_args = 3, max_args = 3 }
+__py_counter_len         = { emit = "common:python.counter_len",         min_args = 1, max_args = 1 }
+__py_counter_dict        = { emit = "common:python.counter_dict",        min_args = 1, max_args = 1 }
+__py_counter_repr        = { emit = "common:python.counter_repr",        min_args = 1, max_args = 1 }
+__py_counter_items       = { emit = "common:python.counter_items",       min_args = 1, max_args = 1 }
+__py_counter_elements    = { emit = "common:python.counter_elements",    min_args = 1, max_args = 1 }
+__py_counter_total       = { emit = "common:python.counter_total",       min_args = 1, max_args = 1 }
+__py_counter_merge       = { emit = "common:python.counter_merge",       min_args = 3, max_args = 3 }
+__py_counter_most_common = { emit = "common:python.counter_most_common", min_args = 1, max_args = 2 }
+__py_counter_op          = { emit = "common:python.counter_op",          min_args = 3, max_args = 3 }
+__py_counter_fromkeys    = { emit = "common:python.counter_fromkeys",    min_args = 1, max_args = 2 }
+"os.getcwd"         = { emit = "common:python.os_getcwd",             min_args = 0, max_args = 0 }
+"os.getpid"         = { emit = "common:python.os_getpid",             min_args = 0, max_args = 0 }
 # shutil — the wasi shim already does the heavy lifting: `mkdir` is
 # create_dir_all, `remove` is remove_dir_all for directories, `copy` is a file
 # copy. Only copytree/which need real logic.
@@ -895,6 +1113,15 @@ open            = { emit = "common:python.file_open",        min_args = 1, max_a
 "os.path.samefile"            = { emit = "common:python.ospath_samefile", min_args = 2, max_args = 2 }
 "tempfile.gettempdir"        = { emit = "common:python.tmp_gettempdir", min_args = 0, max_args = 0 }
 "tempfile.mkdtemp"           = { emit = "common:python.tmp_mkdtemp",    min_args = 0, max_args = 3 }
+__py_temp_path              = { emit = "common:python.tmp_path",       min_args = 0, max_args = 3 }
+__py_file_read              = { emit = "common:python.file_read",      min_args = 1, max_args = 2 }
+__py_file_write             = { emit = "common:python.file_write",     min_args = 2, max_args = 2 }
+__py_file_readline          = { emit = "common:python.file_readline",  min_args = 1, max_args = 2 }
+__py_file_writelines        = { emit = "common:python.file_writelines", min_args = 2, max_args = 2 }
+__py_file_seek              = { emit = "common:python.file_seek",      min_args = 2, max_args = 3 }
+__py_file_tell              = { emit = "common:python.file_tell",      min_args = 1, max_args = 1 }
+__py_file_readlines         = { emit = "common:python.file_readlines", min_args = 1, max_args = 1 }
+__py_bytes_from_list        = { emit = "common:python.bytes_from_list", min_args = 1, max_args = 1 }
 "tempfile.NamedTemporaryFile" = { emit = "common:python.tmp_named",     min_args = 0, max_args = 6 }
 "tempfile.TemporaryFile"     = { emit = "common:python.tmp_named",      min_args = 0, max_args = 6 }
 "os.stat"           = { emit = "common:python.os_stat",               min_args = 1, max_args = 1 }
@@ -944,7 +1171,14 @@ open            = { emit = "common:python.file_open",        min_args = 1, max_a
 "os.path.relpath"     = { emit = "common:python.ospath_relpath",      min_args = 2, max_args = 2 }
 "os.path.commonprefix" = { emit = "common:python.ospath_commonprefix", min_args = 1, max_args = 1 }
 "os.path.commonpath"  = { emit = "common:python.ospath_commonpath",   min_args = 1, max_args = 1 }
-"os.environ"        = { emit = "host:wasi:cli:environment",            min_args = 0, max_args = 0 }
+"os.environ"        = { emit = "common:python.os_environ",             min_args = 0, max_args = 0 }
+"os.getenv"         = { emit = "common:python.os_getenv",              min_args = 1, max_args = 2 }
+"os.putenv"         = { emit = "common:python.os_setenv",              min_args = 2, max_args = 2 }
+"os.unsetenv"       = { emit = "common:python.os_unsetenv",            min_args = 1, max_args = 1 }
+__py_os_environ     = { emit = "common:python.os_environ",             min_args = 0, max_args = 0 }
+__py_os_getenv      = { emit = "common:python.os_getenv",              min_args = 1, max_args = 2 }
+__py_os_setenv      = { emit = "common:python.os_setenv",              min_args = 2, max_args = 2 }
+__py_os_unsetenv    = { emit = "common:python.os_unsetenv",            min_args = 1, max_args = 1 }
 
 # ── sys module ───────────────────────────────────────────────────────────────
 
@@ -975,6 +1209,37 @@ open            = { emit = "common:python.file_open",        min_args = 1, max_a
 # fixed positional form so the adapter gets Python semantics (encoder hook +
 # `", "` / `": "` separators) that bare `ecma:json.stringify` can't provide.
 "__py_json_dumps" = { emit = "common:python.json_dumps",      min_args = 6, max_args = 6 }
+__py_json_loads   = { emit = "host:ecma:json:parse",          min_args = 1, max_args = 1 }
+__py_value_deepcopy = { emit = "common:python.value_deepcopy", min_args = 1, max_args = 1 }
+
+# ── pickle / marshal / copy modules ─────────────────────────────────────────
+
+"pickle.dumps" = { emit = "common:python.pickle_dumps",       min_args = 1, max_args = 2 }
+"pickle.loads" = { emit = "common:python.pickle_loads",       min_args = 1, max_args = 1 }
+"pickle.dump"  = { emit = "common:python.pickle_dump",        min_args = 2, max_args = 3 }
+"pickle.load"  = { emit = "common:python.pickle_load",        min_args = 1, max_args = 1 }
+"marshal.dumps" = { emit = "common:python.marshal_dumps",     min_args = 1, max_args = 2 }
+"marshal.loads" = { emit = "common:python.marshal_loads",     min_args = 1, max_args = 1 }
+"marshal.dump"  = { emit = "common:python.marshal_dump",      min_args = 2, max_args = 2 }
+"marshal.load"  = { emit = "common:python.marshal_load",      min_args = 1, max_args = 1 }
+"copy.copy"     = { emit = "common:python.copy_copy",         min_args = 1, max_args = 1 }
+"copy.deepcopy" = { emit = "common:python.copy_deepcopy",     min_args = 1, max_args = 2 }
+__py_pickle_dumps = { emit = "common:python.pickle_dumps",    min_args = 1, max_args = 2 }
+__py_pickle_loads = { emit = "common:python.pickle_loads",    min_args = 1, max_args = 1 }
+__py_pickle_dump  = { emit = "common:python.pickle_dump",     min_args = 2, max_args = 3 }
+__py_pickle_load  = { emit = "common:python.pickle_load",     min_args = 1, max_args = 1 }
+__py_pickle_reduce = { emit = "common:python.pickle_reduce",  min_args = 1, max_args = 16 }
+__py_marshal_dumps = { emit = "common:python.marshal_dumps",  min_args = 1, max_args = 2 }
+__py_marshal_loads = { emit = "common:python.marshal_loads",  min_args = 1, max_args = 1 }
+__py_marshal_dump  = { emit = "common:python.marshal_dump",   min_args = 2, max_args = 2 }
+__py_marshal_load  = { emit = "common:python.marshal_load",   min_args = 1, max_args = 1 }
+__py_copy_copy     = { emit = "common:python.copy_copy",      min_args = 1, max_args = 1 }
+__py_copy_deepcopy = { emit = "common:python.copy_deepcopy",  min_args = 1, max_args = 2 }
+__py_copy_deepcopy_fields = { emit = "common:python.copy_deepcopy_fields", min_args = 3, max_args = 3 }
+__py_copy_stamp_fields = { emit = "common:python.copy_stamp_fields", min_args = 2, max_args = 2 }
+__py_copyreg_pickle = { emit = "common:python.noop_none",     min_args = 2, max_args = 3 }
+__py_pickletools_dis = { emit = "common:python.noop_none",    min_args = 1, max_args = 99 }
+__PyPickler = { emit = "common:python.pickle_pickler",        min_args = 0, max_args = 2 }
 
 # ── base64 / binascii modules ────────────────────────────────────────────────
 
@@ -1012,22 +1277,39 @@ open            = { emit = "common:python.file_open",        min_args = 1, max_a
 "zlib.compress"     = { emit = "common:python.zlib_compress",    min_args = 1, max_args = 3 }
 "zlib.decompress"   = { emit = "common:python.zlib_decompress",  min_args = 1, max_args = 3 }
 "zlib.adler32"      = { emit = "common:python.zlib_adler32",     min_args = 1, max_args = 2 }
+"zlib.compressobj"  = { emit = "common:python.zlib_compressobj_new", min_args = 0, max_args = 9 }
+"zlib.decompressobj" = { emit = "common:python.zlib_decompressobj_new", min_args = 0, max_args = 3 }
+"zlib.__compressobj_compress" = { emit = "common:python.zlib_compressobj_compress", min_args = 2, max_args = 2 }
+"zlib.__compressobj_flush" = { emit = "common:python.zlib_compressobj_flush", min_args = 1, max_args = 2 }
+"zlib.__compressobj_copy" = { emit = "common:python.zlib_compressobj_copy", min_args = 1, max_args = 1 }
+"zlib.__decompressobj_decompress" = { emit = "common:python.zlib_decompressobj_decompress", min_args = 2, max_args = 3 }
+"zlib.__decompressobj_flush" = { emit = "common:python.zlib_decompressobj_flush", min_args = 1, max_args = 2 }
+"zlib.__decompressobj_copy" = { emit = "common:python.zlib_decompressobj_copy", min_args = 1, max_args = 1 }
 "gzip.compress"     = { emit = "common:python.gzip_compress",    min_args = 1, max_args = 3 }
 "gzip.decompress"   = { emit = "common:python.gzip_decompress",  min_args = 1, max_args = 2 }
+"gzip.open"         = { emit = "common:python.gzip_file_new",    min_args = 0, max_args = 4 }
+"gzip.GzipFile"     = { emit = "common:python.gzip_file_new",    min_args = 0, max_args = 5 }
+"gzip.__file"       = { emit = "common:python.gzip_file_new",    min_args = 0, max_args = 2 }
+"gzip.__file_read"  = { emit = "common:python.gzip_file_read",   min_args = 1, max_args = 2 }
+"gzip.__file_writable" = { emit = "common:python.gzip_file_writable", min_args = 1, max_args = 1 }
+"gzip.__file_isatty" = { emit = "common:python.gzip_file_isatty", min_args = 1, max_args = 1 }
+"bz2.compress"      = { emit = "common:python.bz2_compress",      min_args = 1, max_args = 2 }
+"bz2.decompress"    = { emit = "common:python.bz2_decompress",    min_args = 1, max_args = 1 }
+"bz2.BZ2Decompressor" = { emit = "common:python.zlib_decompressobj_new", min_args = 0, max_args = 0 }
+"lzma.compress"     = { emit = "common:python.lzma_compress",     min_args = 1, max_args = 6 }
+"lzma.decompress"   = { emit = "common:python.lzma_decompress",   min_args = 1, max_args = 4 }
+"lzma.LZMAFile"     = { emit = "common:python.gzip_file_new",     min_args = 0, max_args = 5 }
 
 # ── glob / linecache / inspect ──────────────────────────────────────────────
 "glob.glob"            = { emit = "common:python.glob_glob",           min_args = 1, max_args = 4 }
 "glob.iglob"           = { emit = "common:python.glob_glob",           min_args = 1, max_args = 4 }
 "glob.escape"          = { emit = "common:python.glob_escape",         min_args = 1, max_args = 1 }
-"linecache.getline"    = { emit = "common:python.linecache_getline",   min_args = 2, max_args = 4 }
-"linecache.getlines"   = { emit = "common:python.linecache_getlines",  min_args = 1, max_args = 2 }
-"linecache.clearcache"  = { emit = "common:python.linecache_none",     min_args = 0, max_args = 0 }
-"linecache.checkcache"  = { emit = "common:python.linecache_none",     min_args = 0, max_args = 1 }
-"linecache.updatecache" = { emit = "common:python.linecache_getlines", min_args = 1, max_args = 3 }
 "inspect.isclass"      = { emit = "common:python.inspect_isclass",     min_args = 1, max_args = 1 }
 "inspect.isfunction"   = { emit = "common:python.inspect_isfunction",  min_args = 1, max_args = 1 }
 "inspect.isroutine"    = { emit = "common:python.inspect_iscallable",  min_args = 1, max_args = 1 }
 "inspect.getmembers"   = { emit = "common:python.inspect_getmembers",  min_args = 1, max_args = 2 }
+"inspect.get_annotations" = { emit = "common:python.inspect_get_annotations", min_args = 1, max_args = 3 }
+"inspect.stack"        = { emit = "common:python.inspect_stack",       min_args = 0, max_args = 1 }
 
 # ── Partly-implemented surface ──────────────────────────────────────────────
 # These names EXIST in CPython and Vybe cannot yet honour what they do, so
@@ -1069,7 +1351,6 @@ open            = { emit = "common:python.file_open",        min_args = 1, max_a
 "shelve.open"               = { emit = "common:python.surface.shelve.open",               min_args = 0, max_args = 4 }
 "tarfile.open"              = { emit = "common:python.surface.tarfile.open",              min_args = 0, max_args = 5 }
 "doctest.testmod"           = { emit = "common:python.surface.doctest.testmod",           min_args = 0, max_args = 6 }
-"gettext.gettext"           = { emit = "common:python.surface.gettext.gettext",           min_args = 0, max_args = 1 }
 
 # ── enum ────────────────────────────────────────────────────────────────────
 # `auto()` never reaches runtime: it is resolved against the members declared
@@ -1129,6 +1410,8 @@ open            = { emit = "common:python.file_open",        min_args = 1, max_a
 
 # ── uuid / secrets — both randomness, both on `web:crypto` ──────────────────
 "uuid.uuid4"               = { emit = "common:python.uuid4",                    min_args = 0, max_args = 0 }
+"uuid.uuid3"               = { emit = "common:python.uuid3",                    min_args = 2, max_args = 2 }
+"uuid.uuid5"               = { emit = "common:python.uuid5",                    min_args = 2, max_args = 2 }
 "uuid.UUID"                = { emit = "common:python.uuid_new",                 min_args = 1, max_args = 2 }
 "secrets.token_bytes"      = { emit = "common:python.secrets_token_bytes",      min_args = 0, max_args = 1 }
 "secrets.token_hex"        = { emit = "common:python.secrets_token_hex",        min_args = 0, max_args = 1 }
@@ -1271,6 +1554,8 @@ isalnum         = { emit = "common:str_is_alnum", slot = "is_alnum", min_args = 
 isspace         = { emit = "common:str_is_space", slot = "is_space", min_args = 0, max_args = 0 }
 isupper         = { emit = "common:str_is_upper", slot = "is_upper", min_args = 0, max_args = 0 }
 islower         = { emit = "common:str_is_lower", slot = "is_lower", min_args = 0, max_args = 0 }
+isascii         = { emit = "common:python.str_isascii", min_args = 0, max_args = 0 }
+isidentifier    = { emit = "common:python.str_isidentifier", min_args = 0, max_args = 0 }
 format_map      = { emit = "common:python.format_map",              min_args = 1, max_args = 1 }
 
 # List instance methods
@@ -1375,8 +1660,8 @@ __len__         = { emit = "str_length",                       min_args = 0, max
 __debug__ = true
 # `__name__` moved OUT of this table. A namespace constant resolves the NAME
 # but creates no member, so `globals()` had to seed it back by hand — two homes
-# for one fact. It is now a real module binding (`MODULE_DUNDER_PRELUDE` in the
-# walker), which is what CPython has.
+# for one fact. It is now a real module binding seeded by the core-class adapter,
+# which is what CPython has.
 "math.pi"       = 3.141592653589793
 "math.e"        = 2.718281828459045
 "math.tau"      = 6.283185307179586
@@ -1415,6 +1700,24 @@ __debug__ = true
 "socket.SHUT_RD"      = 0
 "socket.SHUT_WR"      = 1
 "socket.SHUT_RDWR"    = 2
+"http.client.CONTINUE" = 100
+"http.client.SWITCHING_PROTOCOLS" = 101
+"http.client.OK" = 200
+"http.client.CREATED" = 201
+"http.client.NO_CONTENT" = 204
+"http.client.MOVED_PERMANENTLY" = 301
+"http.client.FOUND" = 302
+"http.client.BAD_REQUEST" = 400
+"http.client.UNAUTHORIZED" = 401
+"http.client.FORBIDDEN" = 403
+"http.client.NOT_FOUND" = 404
+"http.client.METHOD_NOT_ALLOWED" = 405
+"http.client.TOO_MANY_REQUESTS" = 429
+"http.client.INTERNAL_SERVER_ERROR" = 500
+"http.client._CS_REQ_SENT" = 2
+"pickle.HIGHEST_PROTOCOL" = 5
+"pickle.DEFAULT_PROTOCOL" = 4
+"marshal.version" = 4
 
 # errno (POSIX) — the values CPython reports on the corpus ground-truth
 # runtime (/opt/homebrew/bin/python3.14). errno numbers are a platform ABI,
@@ -1564,6 +1867,29 @@ __debug__ = true
 "signal.SIG_DFL"      = 0
 "signal.SIG_IGN"      = 1
 
+# token/tokenize constants (CPython 3.x stable values used by token.py)
+"token.ENDMARKER"             = 0
+"token.NAME"                  = 1
+"token.NUMBER"                = 2
+"token.STRING"                = 3
+"token.NEWLINE"               = 4
+"token.INDENT"                = 5
+"token.DEDENT"                = 6
+"token.OP"                    = 54
+"token.ENCODING"              = 63
+"token.NL"                    = 62
+"tokenize.ENDMARKER"          = 0
+"tokenize.NAME"               = 1
+"tokenize.NUMBER"             = 2
+"tokenize.STRING"             = 3
+"tokenize.NEWLINE"            = 4
+"tokenize.INDENT"             = 5
+"tokenize.DEDENT"             = 6
+"tokenize.OP"                 = 54
+"tokenize.ENCODING"           = 63
+"tokenize.NL"                 = 62
+"tokenize.COMMENT"            = 61
+
 # zlib constants (RFC 1950/1951 + zlib.h). The compressor behind them is
 # flate2/miniz via `node:zlib`, which implements the same format, so the
 # version string reports the zlib API level that backend is compatible with.
@@ -1589,6 +1915,19 @@ __debug__ = true
 "zlib.Z_TREES"                  = 6
 "zlib.ZLIB_VERSION"         = "1.2.11"
 "zlib.ZLIB_RUNTIME_VERSION" = "1.2.11"
+"gzip.FHCRC"                = 2
+"gzip.FEXTRA"               = 4
+"gzip.FNAME"                = 8
+"gzip.FCOMMENT"             = 16
+"lzma.CHECK_NONE"           = 0
+"lzma.CHECK_CRC32"          = 1
+"lzma.CHECK_CRC64"          = 4
+"lzma.FORMAT_AUTO"          = 0
+"lzma.FORMAT_XZ"            = 1
+"lzma.FORMAT_ALONE"         = 2
+"lzma.FORMAT_RAW"           = 3
+"lzma.FILTER_LZMA2"         = 33
+"lzma.PRESET_EXTREME"       = 2147483648
 
 # ────────────────────────────────────────────────────────────────────────────
 # ESM DEFAULTS — Python namespace objects → host modules, ECMA-262 §16.2 shape
@@ -1618,6 +1957,11 @@ path = "python.array"
 
 [[esm_default]]
 kind = "tree-mount"
+prefix = "asyncio"
+path = "python.asyncio"
+
+[[esm_default]]
+kind = "tree-mount"
 prefix = "base64"
 path = "python.base64"
 
@@ -1643,6 +1987,16 @@ path = "python.calendar"
 
 [[esm_default]]
 kind = "tree-mount"
+prefix = "copy"
+path = "python.copy"
+
+[[esm_default]]
+kind = "tree-mount"
+prefix = "copyreg"
+path = "python.copyreg"
+
+[[esm_default]]
+kind = "tree-mount"
 prefix = "cmath"
 path = "python.cmath"
 
@@ -1663,8 +2017,23 @@ path = "python.collections"
 
 [[esm_default]]
 kind = "tree-mount"
+prefix = "concurrent"
+path = "python.concurrent"
+
+[[esm_default]]
+kind = "tree-mount"
 prefix = "colorsys"
 path = "python.colorsys"
+
+[[esm_default]]
+kind = "tree-mount"
+prefix = "configparser"
+path = "python.configparser"
+
+[[esm_default]]
+kind = "tree-mount"
+prefix = "contextvars"
+path = "python.contextvars"
 
 [[esm_default]]
 kind = "tree-mount"
@@ -1673,8 +2042,23 @@ path = "python.ctypes"
 
 [[esm_default]]
 kind = "tree-mount"
+prefix = "csv"
+path = "python.csv"
+
+[[esm_default]]
+kind = "tree-mount"
+prefix = "dataclasses"
+path = "python.dataclasses"
+
+[[esm_default]]
+kind = "tree-mount"
 prefix = "datetime"
 path = "python.datetime"
+
+[[esm_default]]
+kind = "tree-mount"
+prefix = "decimal"
+path = "python.decimal"
 
 [[esm_default]]
 kind = "tree-mount"
@@ -1693,13 +2077,38 @@ path = "python.enum"
 
 [[esm_default]]
 kind = "tree-mount"
+prefix = "email"
+path = "python.email"
+
+[[esm_default]]
+kind = "tree-mount"
+prefix = "encodings"
+path = "python.encodings"
+
+[[esm_default]]
+kind = "tree-mount"
 prefix = "errno"
 path = "python.errno"
 
 [[esm_default]]
 kind = "tree-mount"
+prefix = "fnmatch"
+path = "python.fnmatch"
+
+[[esm_default]]
+kind = "tree-mount"
+prefix = "fractions"
+path = "python.fractions"
+
+[[esm_default]]
+kind = "tree-mount"
 prefix = "functools"
 path = "python.functools"
+
+[[esm_default]]
+kind = "tree-mount"
+prefix = "bz2"
+path = "python.bz2"
 
 [[esm_default]]
 kind = "tree-mount"
@@ -1718,8 +2127,18 @@ path = "python.glob"
 
 [[esm_default]]
 kind = "tree-mount"
+prefix = "graphlib"
+path = "python.graphlib"
+
+[[esm_default]]
+kind = "tree-mount"
 prefix = "gzip"
 path = "python.gzip"
+
+[[esm_default]]
+kind = "tree-mount"
+prefix = "lzma"
+path = "python.lzma"
 
 [[esm_default]]
 kind = "tree-mount"
@@ -1738,6 +2157,21 @@ path = "python.hmac"
 
 [[esm_default]]
 kind = "tree-mount"
+prefix = "html"
+path = "python.html"
+
+[[esm_default]]
+kind = "tree-mount"
+prefix = "http"
+path = "python.http"
+
+[[esm_default]]
+kind = "tree-mount"
+prefix = "importlib"
+path = "python.importlib"
+
+[[esm_default]]
+kind = "tree-mount"
 prefix = "inspect"
 path = "python.inspect"
 
@@ -1745,6 +2179,16 @@ path = "python.inspect"
 kind = "tree-mount"
 prefix = "ipaddress"
 path = "python.ipaddress"
+
+[[esm_default]]
+kind = "tree-mount"
+prefix = "io"
+path = "python.io"
+
+[[esm_default]]
+kind = "tree-mount"
+prefix = "filecmp"
+path = "python.filecmp"
 
 [[esm_default]]
 kind = "tree-mount"
@@ -1778,8 +2222,18 @@ path = "python.math"
 
 [[esm_default]]
 kind = "tree-mount"
+prefix = "marshal"
+path = "python.marshal"
+
+[[esm_default]]
+kind = "tree-mount"
 prefix = "mmap"
 path = "python.mmap"
+
+[[esm_default]]
+kind = "tree-mount"
+prefix = "multiprocessing"
+path = "python.multiprocessing"
 
 [[esm_default]]
 kind = "tree-mount"
@@ -1798,6 +2252,26 @@ path = "python.operator"
 
 [[esm_default]]
 kind = "tree-mount"
+prefix = "pathlib"
+path = "python.pathlib"
+
+[[esm_default]]
+kind = "tree-mount"
+prefix = "pickle"
+path = "python.pickle"
+
+[[esm_default]]
+kind = "tree-mount"
+prefix = "pickletools"
+path = "python.pickletools"
+
+[[esm_default]]
+kind = "tree-mount"
+prefix = "urllib"
+path = "python.urllib"
+
+[[esm_default]]
+kind = "tree-mount"
 prefix = "os"
 path = "python.os"
 
@@ -1813,8 +2287,23 @@ path = "python.profile"
 
 [[esm_default]]
 kind = "tree-mount"
+prefix = "pprint"
+path = "python.pprint"
+
+[[esm_default]]
+kind = "tree-mount"
+prefix = "pkgutil"
+path = "python.pkgutil"
+
+[[esm_default]]
+kind = "tree-mount"
 prefix = "quopri"
 path = "python.quopri"
+
+[[esm_default]]
+kind = "tree-mount"
+prefix = "queue"
+path = "python.queue"
 
 [[esm_default]]
 kind = "tree-mount"
@@ -1825,6 +2314,16 @@ path = "python.random"
 kind = "tree-mount"
 prefix = "re"
 path = "python.re"
+
+[[esm_default]]
+kind = "tree-mount"
+prefix = "reprlib"
+path = "python.reprlib"
+
+[[esm_default]]
+kind = "tree-mount"
+prefix = "runpy"
+path = "python.runpy"
 
 [[esm_default]]
 kind = "tree-mount"
@@ -1843,6 +2342,11 @@ path = "python.shutil"
 
 [[esm_default]]
 kind = "tree-mount"
+prefix = "site"
+path = "python.site"
+
+[[esm_default]]
+kind = "tree-mount"
 prefix = "signal"
 path = "python.signal"
 
@@ -1850,6 +2354,11 @@ path = "python.signal"
 kind = "tree-mount"
 prefix = "socket"
 path = "python.socket"
+
+[[esm_default]]
+kind = "tree-mount"
+prefix = "subprocess"
+path = "python.subprocess"
 
 [[esm_default]]
 kind = "tree-mount"
@@ -1868,6 +2377,11 @@ path = "python.sys"
 
 [[esm_default]]
 kind = "tree-mount"
+prefix = "sysconfig"
+path = "python.sysconfig"
+
+[[esm_default]]
+kind = "tree-mount"
 prefix = "tarfile"
 path = "python.tarfile"
 
@@ -1880,6 +2394,36 @@ path = "python.tempfile"
 kind = "tree-mount"
 prefix = "time"
 path = "python.time"
+
+[[esm_default]]
+kind = "tree-mount"
+prefix = "timeit"
+path = "python.timeit"
+
+[[esm_default]]
+kind = "tree-mount"
+prefix = "threading"
+path = "python.threading"
+
+[[esm_default]]
+kind = "tree-mount"
+prefix = "traceback"
+path = "python.traceback"
+
+[[esm_default]]
+kind = "tree-mount"
+prefix = "tomllib"
+path = "python.tomllib"
+
+[[esm_default]]
+kind = "tree-mount"
+prefix = "token"
+path = "python.token"
+
+[[esm_default]]
+kind = "tree-mount"
+prefix = "tokenize"
+path = "python.tokenize"
 
 [[esm_default]]
 kind = "tree-mount"
@@ -1908,13 +2452,28 @@ path = "python.venv"
 
 [[esm_default]]
 kind = "tree-mount"
+prefix = "warnings"
+path = "python.warnings"
+
+[[esm_default]]
+kind = "tree-mount"
 prefix = "weakref"
 path = "python.weakref"
 
 [[esm_default]]
 kind = "tree-mount"
+prefix = "xml"
+path = "python.xml"
+
+[[esm_default]]
+kind = "tree-mount"
 prefix = "zipfile"
 path = "python.zipfile"
+
+[[esm_default]]
+kind = "tree-mount"
+prefix = "zipimport"
+path = "python.zipimport"
 
 [[esm_default]]
 kind = "tree-mount"

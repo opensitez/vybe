@@ -8,6 +8,7 @@
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
 
+use vybe_compiler::primitives::class_slots::{self, ClassSlot, ObjSource, PlainNames, ValueSource};
 use vybe_compiler::primitives::{collections, ops, tuples};
 
 const DEG_PER_RAD: f64 = 57.295_779_513_082_32; // 180 / π
@@ -403,6 +404,20 @@ pub fn emit_modf(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, xi, line);
     box_f64(chunks, current, line);
     tuples::emit_tuple(chunks, current, 2, line);
+    chunks[current].emit_dup(line);
+    chunks[current].emit_bool_const(true, line);
+    let slot = class_slots::resolve_interned(
+        &mut chunks[current],
+        &ClassSlot::internal("__py_float_items"),
+        &PlainNames,
+    );
+    class_slots::emit_class_set(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &slot,
+        ValueSource::Stack,
+        line,
+    );
 }
 
 /// `math.frexp(x)` → (m, e) with x = m*2**e, 0.5 ≤ |m| < 1, e an int.

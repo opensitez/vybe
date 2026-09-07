@@ -35,8 +35,8 @@
 use std::collections::BTreeMap;
 use std::sync::Once;
 
-use vybe_runtime::Value;
 use vybe_compiler::primitives::namespaces::{self, CtorSpec, NamespaceNode, Subtree};
+use vybe_runtime::Value;
 use vybe_runtime::profile::{BuiltinEmit, ConstantValue, parse_profile};
 
 /// Insert `leaf` at a dotted path (`["path", "join"]` under root `os`),
@@ -80,6 +80,13 @@ fn register_from_profile() {
     // map rather than claiming roots of their own.
     roots.insert("collections".to_string(), collections_subtree());
     roots.insert("calendar".to_string(), calendar_subtree());
+    roots.insert("doctest".to_string(), doctest_subtree());
+    roots.insert("dis".to_string(), dis_subtree());
+    roots.insert("email".to_string(), email_subtree());
+    roots.insert("pydoc".to_string(), pydoc_subtree());
+    roots.insert("symtable".to_string(), symtable_subtree());
+    roots.insert("token".to_string(), token_subtree(false));
+    roots.insert("tokenize".to_string(), token_subtree(true));
     for (module, tree) in core_class_subtrees() {
         roots.entry(module).or_default().extend(tree);
     }
@@ -123,16 +130,11 @@ fn register_from_profile() {
     // `mount_host_exports` mounts LOWERCASED as `ecma.math.<name>` — so an
     // `Alias` leaf reaches them with no per-name profile row. namespaceplan.md
     // §"Source-name ≠ canonical-name": `python.json.dumps =
-    // Alias(ecma.json.stringify)` is exactly this shape. These five are the
-    // only `FLOAT_MATH_FNS` members with no profile entry.
-    for name in ["hypot", "gamma", "lgamma", "erf", "erfc"] {
+    // Alias(ecma.json.stringify)` is exactly this shape. `erf`/`gamma` family
+    // have real `common:math.*64` profile leaves, so they are derived above.
+    for name in ["hypot"] {
         // `Path` is a dotted string.
-        let target = match name {
-            // tgamma/lgamma live in the libc platform tree, not ecma.
-            "gamma" => "libc.math.tgamma".to_string(),
-            "lgamma" => "libc.math.lgamma".to_string(),
-            _ => format!("ecma.math.{name}"),
-        };
+        let target = format!("ecma.math.{name}");
         let root = roots.entry("math".to_string()).or_default();
         insert_path(root, &[name], NamespaceNode::Alias(target));
     }
@@ -258,6 +260,321 @@ fn calendar_subtree() -> Subtree {
             Some("python.calendar_html_formatmonth"),
         ),
     );
+    root
+}
+
+fn simple_python_type(name: &str, ctor_emit: &str, methods: &[(&str, &str)]) -> NamespaceNode {
+    NamespaceNode::Type {
+        ctor: Some(CtorSpec {
+            ancestry: vec![name.to_string()],
+            ..Default::default()
+        }),
+        ctor_call: Some(Box::new(NamespaceNode::CommonEmit(ctor_emit.to_string()))),
+        statics: Subtree::new(),
+        methods: methods
+            .iter()
+            .map(|(method, emit)| {
+                (
+                    (*method).to_string(),
+                    NamespaceNode::CommonEmit((*emit).to_string()),
+                )
+            })
+            .collect(),
+        member_returns: BTreeMap::new(),
+    }
+}
+
+fn doctest_subtree() -> Subtree {
+    let mut root = Subtree::new();
+    for (name, value) in [
+        ("DONT_ACCEPT_TRUE_FOR_1", 1 << 0),
+        ("DONT_ACCEPT_BLANKLINE", 1 << 1),
+        ("NORMALIZE_WHITESPACE", 1 << 2),
+        ("ELLIPSIS", 1 << 3),
+        ("SKIP", 1 << 4),
+        ("IGNORE_EXCEPTION_DETAIL", 1 << 5),
+        ("REPORT_UDIFF", 1 << 6),
+        ("REPORT_CDIFF", 1 << 7),
+        ("REPORT_NDIFF", 1 << 8),
+    ] {
+        root.insert(name.to_string(), NamespaceNode::Const(Value::I32(value)));
+    }
+    root.insert(
+        "DocTestParser".to_string(),
+        simple_python_type(
+            "DocTestParser",
+            "python.doctest_parser_new",
+            &[
+                ("get_examples", "python.doctest_parser_get_examples"),
+                ("get_doctest", "python.doctest_parser_get_doctest"),
+            ],
+        ),
+    );
+    root.insert(
+        "DocTestFinder".to_string(),
+        simple_python_type(
+            "DocTestFinder",
+            "python.doctest_finder_new",
+            &[("find", "python.doctest_finder_find")],
+        ),
+    );
+    root.insert(
+        "DocTestRunner".to_string(),
+        simple_python_type(
+            "DocTestRunner",
+            "python.doctest_runner_new",
+            &[
+                ("run", "python.doctest_runner_run"),
+                ("summarize", "python.doctest_runner_summarize"),
+            ],
+        ),
+    );
+    root.insert(
+        "OutputChecker".to_string(),
+        simple_python_type(
+            "OutputChecker",
+            "python.doctest_output_checker_new",
+            &[
+                ("check_output", "python.doctest_output_checker_check_output"),
+                (
+                    "output_difference",
+                    "python.doctest_output_checker_output_difference",
+                ),
+            ],
+        ),
+    );
+    root.insert(
+        "Example".to_string(),
+        NamespaceNode::CommonEmit("python.doctest_example".to_string()),
+    );
+    root.insert(
+        "register_optionflag".to_string(),
+        NamespaceNode::CommonEmit("python.doctest_register_optionflag".to_string()),
+    );
+    root.insert(
+        "script_from_examples".to_string(),
+        NamespaceNode::CommonEmit("python.doctest_script_from_examples".to_string()),
+    );
+    root.insert(
+        "testmod".to_string(),
+        NamespaceNode::CommonEmit("python.doctest_testmod".to_string()),
+    );
+    root
+}
+
+fn pydoc_subtree() -> Subtree {
+    let mut root = Subtree::new();
+    for name in ["Helper", "TextDoc", "HTMLDoc"] {
+        root.insert(
+            name.to_string(),
+            simple_python_type(
+                name,
+                &format!("python.pydoc_{name}_new"),
+                &[("document", "python.pydoc_document"), ("render_doc", "python.pydoc_render_doc")],
+            ),
+        );
+    }
+    for (name, emit) in [
+        ("stripid", "python.pydoc_stripid"),
+        ("splitdoc", "python.pydoc_splitdoc"),
+        ("classname", "python.pydoc_classname"),
+        ("describe", "python.pydoc_describe"),
+        ("locate", "python.pydoc_locate"),
+        ("resolve", "python.pydoc_resolve"),
+        ("render_doc", "python.pydoc_render_doc"),
+        ("allmethods", "python.pydoc_allmethods"),
+    ] {
+        root.insert(name.to_string(), NamespaceNode::CommonEmit(emit.to_string()));
+    }
+    root
+}
+
+fn dis_subtree() -> Subtree {
+    let mut root = Subtree::new();
+    for (name, emit) in [
+        ("Bytecode", "python.dis_bytecode"),
+        ("code_info", "python.dis_code_info"),
+        ("dis", "python.dis_dis"),
+        ("disassemble", "python.dis_disassemble"),
+        ("show_code", "python.dis_show_code"),
+        ("get_instructions", "python.dis_get_instructions"),
+        ("findlabels", "python.dis_findlabels"),
+        ("findlinestarts", "python.dis_findlinestarts"),
+        ("stack_effect", "python.dis_stack_effect"),
+    ] {
+        root.insert(name.to_string(), NamespaceNode::CommonEmit(emit.to_string()));
+    }
+    root.insert(
+        "Instruction".to_string(),
+        NamespaceNode::Type {
+            ctor: None,
+            ctor_call: None,
+            statics: Subtree::new(),
+            methods: Subtree::new(),
+            member_returns: BTreeMap::new(),
+        },
+    );
+    root.insert(
+        "opmap".to_string(),
+        NamespaceNode::CommonEmit("python.dis_opmap".to_string()),
+    );
+    root.insert(
+        "opname".to_string(),
+        NamespaceNode::CommonEmit("python.dis_opname".to_string()),
+    );
+    root.insert(
+        "cmp_op".to_string(),
+        NamespaceNode::Const(Value::String(std::sync::Arc::from(
+            "< <= == != > >=",
+        ))),
+    );
+    root.insert(
+        "hasconst".to_string(),
+        NamespaceNode::CommonEmit("python.dis_hasconst".to_string()),
+    );
+    root.insert(
+        "hasname".to_string(),
+        NamespaceNode::CommonEmit("python.dis_hasname".to_string()),
+    );
+    root.insert(
+        "haslocal".to_string(),
+        NamespaceNode::CommonEmit("python.dis_haslocal".to_string()),
+    );
+    root
+}
+
+fn symtable_subtree() -> Subtree {
+    let mut root = Subtree::new();
+    root.insert(
+        "symtable".to_string(),
+        NamespaceNode::CommonEmit("python.symtable_symtable".to_string()),
+    );
+    for name in ["Symbol", "SymbolTable", "Function", "Class"] {
+        root.insert(
+            name.to_string(),
+            NamespaceNode::Type {
+                ctor: None,
+                ctor_call: None,
+                statics: Subtree::new(),
+                methods: Subtree::new(),
+                member_returns: BTreeMap::new(),
+            },
+        );
+    }
+    for (name, value) in [
+        ("TYPE_MODULE", "module"),
+        ("TYPE_FUNCTION", "function"),
+        ("TYPE_CLASS", "class"),
+    ] {
+        root.insert(
+            name.to_string(),
+            NamespaceNode::Const(Value::String(std::sync::Arc::from(value))),
+        );
+    }
+    root
+}
+
+fn token_subtree(include_tokenize_only: bool) -> Subtree {
+    let mut root = Subtree::new();
+    for (name, value) in [
+        ("ENDMARKER", 0),
+        ("NAME", 1),
+        ("NUMBER", 2),
+        ("STRING", 3),
+        ("NEWLINE", 4),
+        ("INDENT", 5),
+        ("DEDENT", 6),
+        ("OP", 54),
+        ("COMMENT", 61),
+        ("NL", 62),
+        ("ENCODING", 63),
+    ] {
+        if include_tokenize_only || name != "COMMENT" {
+            root.insert(name.to_string(), NamespaceNode::Const(Value::I32(value)));
+        }
+    }
+    if include_tokenize_only {
+        for name in ["TokenInfo", "TokenError"] {
+            root.insert(
+                name.to_string(),
+                NamespaceNode::Type {
+                    ctor: None,
+                    ctor_call: None,
+                    statics: Subtree::new(),
+                    methods: Subtree::new(),
+                    member_returns: BTreeMap::new(),
+                },
+            );
+        }
+    }
+    root
+}
+
+fn email_subtree() -> Subtree {
+    let mut root = Subtree::new();
+    root.insert(
+        "message_from_string".to_string(),
+        NamespaceNode::CommonEmit("python.email_message_from_string".to_string()),
+    );
+    root.insert(
+        "message_from_bytes".to_string(),
+        NamespaceNode::CommonEmit("python.email_message_from_bytes".to_string()),
+    );
+
+    let mut message = Subtree::new();
+    message.insert(
+        "EmailMessage".to_string(),
+        simple_python_type(
+            "EmailMessage",
+            "python.email_message_new",
+            &[
+                ("set_content", "python.email_message_set_content"),
+                ("add_header", "python.email_message_add_header"),
+                ("replace_header", "python.email_message_replace_header"),
+                ("get_all", "python.email_message_get_all"),
+                ("get_content_type", "python.email_message_get_content_type"),
+                ("get_content", "python.email_message_get_content"),
+                ("get_payload", "python.email_message_get_payload"),
+                ("is_multipart", "python.email_message_is_multipart"),
+                ("iter_parts", "python.email_message_iter_parts"),
+                ("walk", "python.email_message_walk"),
+                ("as_string", "python.email_message_as_string"),
+                ("as_bytes", "python.email_message_as_bytes"),
+                ("add_alternative", "python.email_message_add_alternative"),
+                ("add_attachment", "python.email_message_add_attachment"),
+            ],
+        ),
+    );
+    root.insert("message".to_string(), NamespaceNode::Namespace(message));
+
+    let mut header = Subtree::new();
+    header.insert(
+        "decode_header".to_string(),
+        NamespaceNode::CommonEmit("python.email_decode_header".to_string()),
+    );
+    header.insert(
+        "make_header".to_string(),
+        NamespaceNode::CommonEmit("python.email_make_header".to_string()),
+    );
+    root.insert("header".to_string(), NamespaceNode::Namespace(header));
+
+    let mut utils = Subtree::new();
+    for (name, emit) in [
+        ("parseaddr", "python.email_parseaddr"),
+        ("formataddr", "python.email_formataddr"),
+        ("formatdate", "python.email_formatdate"),
+        ("parsedate_to_datetime", "python.email_parsedate_to_datetime"),
+    ] {
+        utils.insert(name.to_string(), NamespaceNode::CommonEmit(emit.to_string()));
+    }
+    root.insert("utils".to_string(), NamespaceNode::Namespace(utils));
+
+    let mut policy = Subtree::new();
+    policy.insert(
+        "default".to_string(),
+        NamespaceNode::Const(Value::String(std::sync::Arc::from("default"))),
+    );
+    root.insert("policy".to_string(), NamespaceNode::Namespace(policy));
     root
 }
 

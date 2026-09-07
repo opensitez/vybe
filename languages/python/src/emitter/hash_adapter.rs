@@ -123,10 +123,18 @@ fn stamp_attrs(chunks: &mut [Chunk], current: usize, slot: u16, name: &str, algo
     struct_set_key(&mut chunks[current], &ClassSlot::internal("name"), line);
     lget(&mut chunks[current], slot, line);
     chunks[current].emit_i32_const(digest_size, line);
-    struct_set_key(&mut chunks[current], &ClassSlot::internal("digest_size"), line);
+    struct_set_key(
+        &mut chunks[current],
+        &ClassSlot::internal("digest_size"),
+        line,
+    );
     lget(&mut chunks[current], slot, line);
     chunks[current].emit_i32_const(block_size, line);
-    struct_set_key(&mut chunks[current], &ClassSlot::internal("block_size"), line);
+    struct_set_key(
+        &mut chunks[current],
+        &ClassSlot::internal("block_size"),
+        line,
+    );
 }
 
 /// Throw `ValueError: unsupported hash type <algo>`.

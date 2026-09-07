@@ -7,9 +7,13 @@
 use vybe_compiler::primitives::class_slots::{
     self, ClassSlot, Dest, ObjSource, PlainNames, ValueSource,
 };
-use vybe_compiler::primitives::{collections, reflection, sets, target::Target};
+use vybe_compiler::primitives::{
+    collections, globals, loops, reflection, sets, strings, target::Target,
+};
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
+
+const NOT_IMPLEMENTED_GLOBAL: &str = "__py_NotImplemented_singleton";
 
 /// Python builtin exception constructor. It deliberately keeps the common
 /// exception finalizer as the single source of catch/type stamps, then adds
@@ -47,8 +51,18 @@ pub fn emit_py_exception(
     chunks[current].emit_op_u16(Op::LOCAL_SET, args_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, args_slot, line);
     chunks[current].emit_bool_const(true, line);
-    let tuple_key = class_slots::resolve_interned(&mut chunks[current], &ClassSlot::internal("__tuple"), &PlainNames);
-    class_slots::emit_class_set(&mut chunks[current], ObjSource::Stack, &tuple_key, ValueSource::Stack, line);
+    let tuple_key = class_slots::resolve_interned(
+        &mut chunks[current],
+        &ClassSlot::internal("__tuple"),
+        &PlainNames,
+    );
+    class_slots::emit_class_set(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &tuple_key,
+        ValueSource::Stack,
+        line,
+    );
 
     let set_prop = |chunk: &mut Chunk, obj_slot: u16, key: &str, value_slot: u16, line: u32| {
         chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
@@ -65,8 +79,18 @@ pub fn emit_py_exception(
         } else {
             chunks[current].emit_string_const("", line);
         }
-        let message_key = class_slots::resolve_interned(&mut chunks[current], &ClassSlot::internal("message"), &PlainNames);
-        class_slots::emit_class_set(&mut chunks[current], ObjSource::Stack, &message_key, ValueSource::Stack, line);
+        let message_key = class_slots::resolve_interned(
+            &mut chunks[current],
+            &ClassSlot::internal("message"),
+            &PlainNames,
+        );
+        class_slots::emit_class_set(
+            &mut chunks[current],
+            ObjSource::Stack,
+            &message_key,
+            ValueSource::Stack,
+            line,
+        );
 
         chunks[current].emit_op_u16(Op::LOCAL_GET, obj_slot, line);
         if argc > 1 {
@@ -74,13 +98,33 @@ pub fn emit_py_exception(
         } else {
             collections::emit_array_new(chunks, current, 0, line);
         }
-        let exceptions_key = class_slots::resolve_interned(&mut chunks[current], &ClassSlot::internal("exceptions"), &PlainNames);
-        class_slots::emit_class_set(&mut chunks[current], ObjSource::Stack, &exceptions_key, ValueSource::Stack, line);
+        let exceptions_key = class_slots::resolve_interned(
+            &mut chunks[current],
+            &ClassSlot::internal("exceptions"),
+            &PlainNames,
+        );
+        class_slots::emit_class_set(
+            &mut chunks[current],
+            ObjSource::Stack,
+            &exceptions_key,
+            ValueSource::Stack,
+            line,
+        );
     }
     chunks[current].emit_op_u16(Op::LOCAL_GET, obj_slot, line);
     chunks[current].emit_string_const("", line);
-    let stack_key = class_slots::resolve_interned(&mut chunks[current], &ClassSlot::internal("stack"), &PlainNames);
-    class_slots::emit_class_set(&mut chunks[current], ObjSource::Stack, &stack_key, ValueSource::Stack, line);
+    let stack_key = class_slots::resolve_interned(
+        &mut chunks[current],
+        &ClassSlot::internal("stack"),
+        &PlainNames,
+    );
+    class_slots::emit_class_set(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &stack_key,
+        ValueSource::Stack,
+        line,
+    );
     if exc_name == "StopIteration" || exc_name == "SystemExit" {
         chunks[current].emit_op_u16(Op::LOCAL_GET, obj_slot, line);
         if argc > 0 {
@@ -93,8 +137,18 @@ pub fn emit_py_exception(
         } else {
             "value"
         };
-        let key = class_slots::resolve_interned(&mut chunks[current], &ClassSlot::internal(key_name), &PlainNames);
-        class_slots::emit_class_set(&mut chunks[current], ObjSource::Stack, &key, ValueSource::Stack, line);
+        let key = class_slots::resolve_interned(
+            &mut chunks[current],
+            &ClassSlot::internal(key_name),
+            &PlainNames,
+        );
+        class_slots::emit_class_set(
+            &mut chunks[current],
+            ObjSource::Stack,
+            &key,
+            ValueSource::Stack,
+            line,
+        );
     }
     chunks[current].emit_op_u16(Op::LOCAL_GET, obj_slot, line);
 }
@@ -106,6 +160,17 @@ pub fn emit_py_int(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     for i in (0..n as u16).rev() {
         chunk.emit_op_u16(Op::LOCAL_SET, base + i, line);
     }
+
+    let bool_branch = (argc < 2).then(|| {
+        let test_bool = chunk.add_import("wasm:js-boolean", "test");
+        let cast_bool = chunk.add_import("wasm:js-boolean", "cast");
+        chunk.emit_op_u16(Op::LOCAL_GET, base, line);
+        chunk.emit_call(test_bool, 1, line);
+        chunk.emit_if_value(line);
+        chunk.emit_op_u16(Op::LOCAL_GET, base, line);
+        chunk.emit_call(cast_bool, 1, line);
+        chunk.emit_else(line);
+    });
 
     // ⛔ `__int__` FIRST — `ProtocolSlot::Int`, which python's `protocol.rs`
     // has always mapped (`"__int__" => ("int", Some(Int))`) and which nothing
@@ -166,6 +231,9 @@ pub fn emit_py_int(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, parsed, line);
     if dunder.is_some() {
         chunk.emit_end(line); // close the `__int__` if/else
+    }
+    if bool_branch.is_some() {
+        chunk.emit_end(line); // close the bool-specialization if/else
     }
 }
 
@@ -229,7 +297,11 @@ fn build_value_eq_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     c.emit_op(Op::I32_AND, line);
     c.emit_if(line);
     {
-        let cs_slot_1 = class_slots::resolve_interned(&mut c, &ClassSlot::Internal(("size").to_string()), &PlainNames);
+        let cs_slot_1 = class_slots::resolve_interned(
+            &mut c,
+            &ClassSlot::Internal(("size").to_string()),
+            &PlainNames,
+        );
         let cs_slot = class_slots::resolve(&ClassSlot::Internal(("size").to_string()), &PlainNames);
         c.emit_op_u16(Op::LOCAL_GET, a, line);
         class_slots::emit_class_get(&mut c, ObjSource::Stack, &cs_slot_1, Dest::Stack, line);
@@ -489,6 +561,13 @@ pub fn emit_pyadd(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, a_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, b_slot, line);
     chunk.emit_call(concat, 2, line);
+    // `(1,) + (2,)` concatenated to a PLAIN LIST — `ecma:array.concat` builds
+    // an untagged array, so the tuple identity was lost and `(1, 2)` printed
+    // as `[1, 2]`. `emit_propagate_tag` is exactly this: keep the tag when the
+    // source (`a`) was a tagged tuple and the result is still an array.
+    chunk.emit_op_u16(Op::LOCAL_GET, a_slot, line);
+    vybe_compiler::primitives::tuples::emit_propagate_tag(chunks, current, line);
+    let chunk = &mut chunks[current];
     chunk.emit_else(line);
     emit_datetime_binop_or(
         chunk,
@@ -756,7 +835,8 @@ fn emit_set_relational(chunk: &mut Chunk, a_slot: u16, b_slot: u16, dunder: &str
     } // i32 bool
     if strict {
         // AND size(a) != size(b)
-        let size_key = class_slots::resolve_interned(chunk, &ClassSlot::internal("size"), &PlainNames);
+        let size_key =
+            class_slots::resolve_interned(chunk, &ClassSlot::internal("size"), &PlainNames);
         chunk.emit_op_u16(Op::LOCAL_GET, a_slot, line);
         class_slots::emit_class_get(chunk, ObjSource::Stack, &size_key, Dest::Stack, line);
         chunk.emit_op_u16(Op::LOCAL_GET, b_slot, line);
@@ -797,7 +877,8 @@ fn emit_unary_dunder_or(
 ) {
     let typeof_fn = chunk.add_import("ecma:value", "typeof");
     let key_name = protocol_key_for(dunder);
-    let key = class_slots::resolve_interned(chunk, &ClassSlot::internal(key_name.as_str()), &PlainNames);
+    let key =
+        class_slots::resolve_interned(chunk, &ClassSlot::internal(key_name.as_str()), &PlainNames);
     let method = chunk.alloc_scratch(1);
     chunk.emit_op_u16(Op::LOCAL_GET, a_slot, line);
     chunk.emit_call(typeof_fn, 1, line);
@@ -837,8 +918,10 @@ fn emit_object_binop_or(
     line: u32,
 ) {
     let typeof_fn = chunk.add_import("ecma:value", "typeof");
+    let reflected = reflected_dunder(dunder);
     let key_name = protocol_key_for(dunder);
-    let key = class_slots::resolve_interned(chunk, &ClassSlot::internal(key_name.as_str()), &PlainNames);
+    let key =
+        class_slots::resolve_interned(chunk, &ClassSlot::internal(key_name.as_str()), &PlainNames);
     let method = chunk.alloc_scratch(1);
     // Only real objects (typeof == "object") can carry the dunder; STRUCT_GET on
     // a primitive traps, so gate the lookup behind the type check.
@@ -859,13 +942,122 @@ fn emit_object_binop_or(
     chunk.emit_op_u16(Op::LOCAL_GET, a_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, b_slot, line);
     vybe_compiler::primitives::callable::emit_direct_invoke_chunk(chunk, 2, line);
+    if let Some(rdunder) = reflected {
+        let result = chunk.alloc_scratch(1);
+        chunk.emit_op_u16(Op::LOCAL_SET, result, line);
+        emit_is_notimplemented_slot(chunk, result, line);
+        chunk.emit_if_value(line);
+        emit_right_object_binop_or(chunk, a_slot, b_slot, rdunder, fallback, line);
+        chunk.emit_else(line);
+        chunk.emit_op_u16(Op::LOCAL_GET, result, line);
+        chunk.emit_end(line);
+    }
+    chunk.emit_else(line);
+    if let Some(rdunder) = reflected {
+        emit_right_object_binop_or(chunk, a_slot, b_slot, rdunder, fallback, line);
+    } else {
+        chunk.emit_op_u16(Op::LOCAL_GET, a_slot, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, b_slot, line);
+        fallback(chunk, line);
+    }
+    chunk.emit_end(line);
+    chunk.emit_else(line);
+    if let Some(rdunder) = reflected {
+        emit_right_object_binop_or(chunk, a_slot, b_slot, rdunder, fallback, line);
+    } else {
+        chunk.emit_op_u16(Op::LOCAL_GET, a_slot, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, b_slot, line);
+        fallback(chunk, line);
+    }
+    chunk.emit_end(line);
+}
+
+fn emit_slot_is_null_or_undefined(chunk: &mut Chunk, slot: u16, line: u32) {
+    chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
+    let is_undefined = chunk.add_import("wasm:js-undefined", "test");
+    chunk.emit_call(is_undefined, 1, line);
+    chunk.emit_op(Op::I32_OR, line);
+}
+
+fn emit_is_notimplemented_slot(chunk: &mut Chunk, slot: u16, line: u32) {
+    let typeof_fn = chunk.add_import("ecma:value", "typeof");
+
+    chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
+    chunk.emit_call(typeof_fn, 1, line);
+    chunk.emit_string_const("object", line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    chunk.emit_op(Op::I32_AND, line);
+    chunk.emit_if_value(line);
+    let key = class_slots::resolve_interned(
+        chunk,
+        &ClassSlot::internal("__py_notimplemented"),
+        &PlainNames,
+    );
+    class_slots::emit_class_has(chunk, ObjSource::Local(slot), &key, Dest::Stack, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_else(line);
+    chunk.emit_i32_const(0, line);
+    chunk.emit_end(line);
+}
+
+fn reflected_dunder(dunder: &str) -> Option<&'static str> {
+    match dunder {
+        "__add__" => Some("__radd__"),
+        "__sub__" => Some("__rsub__"),
+        "__mul__" => Some("__rmul__"),
+        "__truediv__" => Some("__rtruediv__"),
+        "__floordiv__" => Some("__rfloordiv__"),
+        "__mod__" => Some("__rmod__"),
+        "__pow__" => Some("__rpow__"),
+        "__matmul__" => Some("__rmatmul__"),
+        "__and__" => Some("__rand__"),
+        "__or__" => Some("__ror__"),
+        "__xor__" => Some("__rxor__"),
+        _ => None,
+    }
+}
+
+fn emit_right_object_binop_or(
+    chunk: &mut Chunk,
+    a_slot: u16,
+    b_slot: u16,
+    dunder: &str,
+    fallback: fn(&mut Chunk, u32),
+    line: u32,
+) {
+    let typeof_fn = chunk.add_import("ecma:value", "typeof");
+    let key_name = protocol_key_for(dunder);
+    let key =
+        class_slots::resolve_interned(chunk, &ClassSlot::internal(key_name.as_str()), &PlainNames);
+    let method = chunk.alloc_scratch(1);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, b_slot, line);
+    chunk.emit_call(typeof_fn, 1, line);
+    chunk.emit_string_const("object", line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    chunk.emit_if_value(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, b_slot, line);
+    class_slots::emit_class_get(chunk, ObjSource::Stack, &key, Dest::Stack, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, method, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, method, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_if_value(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, method, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, b_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, a_slot, line);
+    vybe_compiler::primitives::callable::emit_direct_invoke_chunk(chunk, 2, line);
     chunk.emit_else(line);
     chunk.emit_op_u16(Op::LOCAL_GET, a_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, b_slot, line);
     fallback(chunk, line);
     chunk.emit_end(line);
     chunk.emit_else(line);
-    // primitive: fallback directly
     chunk.emit_op_u16(Op::LOCAL_GET, a_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, b_slot, line);
     fallback(chunk, line);
@@ -1158,11 +1350,490 @@ pub fn emit_bytes_decode(chunks: &mut [Chunk], current: usize, argc: u8, line: u
     for i in (0..n as u16).rev() {
         chunk.emit_op_u16(Op::LOCAL_SET, base + i, line);
     }
-    let dec_new = chunk.add_import("web:encoding", "decoderNew");
-    let dec = chunk.add_import("web:encoding", "decode");
-    chunk.emit_call(dec_new, 0, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, base, line); // receiver = arg0 (bytes)
-    chunk.emit_call(dec, 2, line);
+    emit_bytes_decode_slot(chunks, current, base, line);
+}
+
+fn stash_runtime_args(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) -> u16 {
+    let base = chunks[current].alloc_scratch(argc as u16);
+    for i in (0..argc as u16).rev() {
+        chunks[current].emit_op_u16(Op::LOCAL_SET, base + i, line);
+    }
+    base
+}
+
+fn emit_bytes_decode_slot(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
+    chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
+    emit_bytes_decode_stack(chunks, current, line);
+}
+
+fn emit_bytes_decode_stack(chunks: &mut [Chunk], current: usize, line: u32) {
+    let bytes = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, bytes, line);
+    let is_view = chunks[current].add_import("ecma:arraybuffer", "isView");
+    let dec_new = chunks[current].add_import("web:encoding", "decoderNew");
+    let dec = chunks[current].add_import("web:encoding", "decode");
+    let to_u8 = chunks[current].add_import("ecma:uint8array", "newFromIterable");
+    chunks[current].emit_op_u16(Op::LOCAL_GET, bytes, line);
+    chunks[current].emit_call(is_view, 1, line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_call(dec_new, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, bytes, line);
+    chunks[current].emit_call(dec, 2, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_call(dec_new, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, bytes, line);
+    chunks[current].emit_call(to_u8, 1, line);
+    chunks[current].emit_call(dec, 2, line);
+    chunks[current].emit_end(line);
+}
+
+fn emit_bytes_encode_stack(chunks: &mut [Chunk], current: usize, line: u32) {
+    let value = chunks[current].alloc_scratch(1);
+    let enc = chunks[current].alloc_scratch(1);
+    let enc_new = chunks[current].add_import("web:encoding", "encoderNew");
+    let encode = chunks[current].add_import("web:encoding", "encode");
+    chunks[current].emit_op_u16(Op::LOCAL_SET, value, line);
+    chunks[current].emit_call(enc_new, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, enc, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, enc, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
+    chunks[current].emit_call(encode, 2, line);
+}
+
+fn emit_strings_to_bytes_array(chunks: &mut [Chunk], current: usize, strings_slot: u16, line: u32) {
+    let result = chunks[current].alloc_scratch(1);
+    let i = chunks[current].alloc_scratch(1);
+    let item = chunks[current].alloc_scratch(1);
+    collections::emit_array_new(chunks, current, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, result, line);
+    let state = loops::emit_for_in_start(chunks, current, strings_slot, i, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, item, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, result, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, item, line);
+    emit_bytes_encode_stack(chunks, current, line);
+    collections::emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    loops::emit_for_in_end(chunks, current, i, state, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, result, line);
+}
+
+fn emit_array_from_slot(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
+    let array_from = chunks[current].add_import("ecma:array", "from");
+    chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
+    chunks[current].emit_call(array_from, 1, line);
+}
+
+pub fn emit_bytes_split(chunks: &mut [Chunk], current: usize, argc: u8, reverse: bool, line: u32) {
+    let base = stash_runtime_args(chunks, current, argc.max(1), line);
+    let out = chunks[current].alloc_scratch(1);
+    emit_bytes_decode_slot(chunks, current, base, line);
+    if argc >= 2 {
+        emit_bytes_decode_slot(chunks, current, base + 1, line);
+    }
+    if argc >= 3 {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, base + 2, line);
+    }
+    if reverse {
+        crate::emitter::string_adapter::emit_rsplit(chunks, current, argc, line);
+    } else {
+        crate::emitter::string_adapter::emit_split(chunks, current, argc, line);
+    }
+    chunks[current].emit_op_u16(Op::LOCAL_SET, out, line);
+    emit_strings_to_bytes_array(chunks, current, out, line);
+}
+
+pub fn emit_bytes_splitlines(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let base = stash_runtime_args(chunks, current, argc.max(1), line);
+    let out = chunks[current].alloc_scratch(1);
+    emit_bytes_decode_slot(chunks, current, base, line);
+    if argc >= 2 {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, base + 1, line);
+    }
+    crate::emitter::string_adapter::emit_splitlines(chunks, current, argc, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, out, line);
+    emit_strings_to_bytes_array(chunks, current, out, line);
+}
+
+pub fn emit_bytes_prefix_suffix(
+    chunks: &mut [Chunk],
+    current: usize,
+    argc: u8,
+    prefix: bool,
+    line: u32,
+) {
+    let base = stash_runtime_args(chunks, current, argc.max(2), line);
+    emit_bytes_decode_slot(chunks, current, base, line);
+    emit_bytes_decode_slot(chunks, current, base + 1, line);
+    if prefix {
+        crate::emitter::string_adapter::emit_removeprefix(chunks, current, 2, line);
+    } else {
+        crate::emitter::string_adapter::emit_removesuffix(chunks, current, 2, line);
+    }
+    emit_bytes_encode_stack(chunks, current, line);
+}
+
+pub fn emit_bytes_expandtabs(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let base = stash_runtime_args(chunks, current, argc.max(1), line);
+    emit_bytes_decode_slot(chunks, current, base, line);
+    if argc >= 2 {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, base + 1, line);
+    }
+    crate::emitter::string_adapter::emit_expandtabs(chunks, current, argc, line);
+    emit_bytes_encode_stack(chunks, current, line);
+}
+
+pub fn emit_bytes_count(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let base = stash_runtime_args(chunks, current, argc.max(2), line);
+    emit_bytes_decode_slot(chunks, current, base, line);
+    emit_bytes_decode_slot(chunks, current, base + 1, line);
+    if argc >= 3 {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, base + 2, line);
+    }
+    if argc >= 4 {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, base + 3, line);
+    }
+    crate::emitter::string_adapter::emit_count(chunks, current, argc, line);
+}
+
+pub fn emit_bytes_maketrans(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let base = stash_runtime_args(chunks, current, argc.max(2), line);
+    emit_bytes_decode_slot(chunks, current, base, line);
+    emit_bytes_decode_slot(chunks, current, base + 1, line);
+    crate::emitter::string_adapter::emit_maketrans(chunks, current, 2, line);
+}
+
+pub fn emit_bytes_translate(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let base = stash_runtime_args(chunks, current, argc.max(2), line);
+    emit_bytes_decode_slot(chunks, current, base, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, base + 1, line);
+    crate::emitter::string_adapter::emit_translate(chunks, current, 2, line);
+    emit_bytes_encode_stack(chunks, current, line);
+}
+
+pub fn emit_bytes_partition(
+    chunks: &mut [Chunk],
+    current: usize,
+    argc: u8,
+    reverse: bool,
+    line: u32,
+) {
+    let base = stash_runtime_args(chunks, current, argc.max(2), line);
+    let s = chunks[current].alloc_scratch(1);
+    let sep = chunks[current].alloc_scratch(1);
+    let idx = chunks[current].alloc_scratch(1);
+    emit_bytes_decode_slot(chunks, current, base, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, s, line);
+    emit_bytes_decode_slot(chunks, current, base + 1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, sep, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, s, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, sep, line);
+    if reverse {
+        strings::emit_last_index_of(&mut chunks[current], line);
+    } else {
+        strings::emit_index_of(&mut chunks[current], line);
+    }
+    let num = chunks[current].add_import("wasm:js-number", "toF64");
+    chunks[current].emit_call(num, 1, line);
+    chunks[current].emit_op(Op::I32_TRUNC_SAT_F64_S, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, idx, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, idx, line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op(Op::I32_LT_S, line);
+    chunks[current].emit_if(line);
+    if reverse {
+        chunks[current].emit_string_const("", line);
+        emit_bytes_encode_stack(chunks, current, line);
+        chunks[current].emit_string_const("", line);
+        emit_bytes_encode_stack(chunks, current, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, s, line);
+        emit_bytes_encode_stack(chunks, current, line);
+    } else {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, s, line);
+        emit_bytes_encode_stack(chunks, current, line);
+        chunks[current].emit_string_const("", line);
+        emit_bytes_encode_stack(chunks, current, line);
+        chunks[current].emit_string_const("", line);
+        emit_bytes_encode_stack(chunks, current, line);
+    }
+    vybe_compiler::primitives::tuples::emit_tuple(chunks, current, 3, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, s, line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, idx, line);
+    strings::emit_substring(&mut chunks[current], line);
+    emit_bytes_encode_stack(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, sep, line);
+    emit_bytes_encode_stack(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, s, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, idx, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, sep, line);
+    strings::emit_length(&mut chunks[current], line);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    chunks[current].emit_i32_const(0x7FFF_FFFF, line);
+    strings::emit_substring(&mut chunks[current], line);
+    emit_bytes_encode_stack(chunks, current, line);
+    vybe_compiler::primitives::tuples::emit_tuple(chunks, current, 3, line);
+    chunks[current].emit_end(line);
+}
+
+fn emit_uint8_from_stack(chunks: &mut [Chunk], current: usize, line: u32) {
+    let uint8_from = chunks[current].add_import("ecma:uint8array", "from");
+    chunks[current].emit_call(uint8_from, 1, line);
+}
+
+pub fn emit_bytes_concat(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let base = stash_runtime_args(chunks, current, argc.max(2), line);
+    for offset in 2..argc as u16 {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, base + offset, line);
+        chunks[current].emit_op(Op::DROP, line);
+    }
+    emit_array_from_slot(chunks, current, base, line);
+    emit_array_from_slot(chunks, current, base + 1, line);
+    let concat = chunks[current].add_import("ecma:array", "concat");
+    chunks[current].emit_call(concat, 2, line);
+    emit_uint8_from_stack(chunks, current, line);
+}
+
+pub fn emit_bytes_eq(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let base = stash_runtime_args(chunks, current, argc.max(2), line);
+    for offset in 2..argc as u16 {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, base + offset, line);
+        chunks[current].emit_op(Op::DROP, line);
+    }
+    let len = chunks[current].add_import("ecma:uint8array", "length");
+    let to_hex = chunks[current].add_import("ecma:uint8array", "toHex");
+    let str_eq = chunks[current].add_import("wasm:js-string", "equals");
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, base, line);
+    chunks[current].emit_call(len, 1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, base + 1, line);
+    chunks[current].emit_call(len, 1, line);
+    chunks[current].emit_op(Op::I32_EQ, line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, base, line);
+    chunks[current].emit_call(to_hex, 1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, base + 1, line);
+    chunks[current].emit_call(to_hex, 1, line);
+    chunks[current].emit_call(str_eq, 2, line);
+    vybe_compiler::primitives::ops::emit_i32_to_bool(&mut chunks[current], line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_bool_const(false, line);
+    chunks[current].emit_end(line);
+}
+
+pub fn emit_bytearray_append(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let base = stash_runtime_args(chunks, current, argc.max(2), line);
+    let arr = chunks[current].alloc_scratch(1);
+    emit_array_from_slot(chunks, current, base, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, arr, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, arr, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, base + 1, line);
+    let push = chunks[current].add_import("ecma:array", "push");
+    chunks[current].emit_call(push, 2, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, arr, line);
+    emit_uint8_from_stack(chunks, current, line);
+}
+
+pub fn emit_bytearray_extend(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let base = stash_runtime_args(chunks, current, argc.max(2), line);
+    emit_array_from_slot(chunks, current, base, line);
+    emit_array_from_slot(chunks, current, base + 1, line);
+    let concat = chunks[current].add_import("ecma:array", "concat");
+    chunks[current].emit_call(concat, 2, line);
+    emit_uint8_from_stack(chunks, current, line);
+}
+
+pub fn emit_bytearray_copy(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let base = stash_runtime_args(chunks, current, argc.max(1), line);
+    for offset in 1..argc as u16 {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, base + offset, line);
+        chunks[current].emit_op(Op::DROP, line);
+    }
+    chunks[current].emit_op_u16(Op::LOCAL_GET, base, line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, base, line);
+    let len = chunks[current].add_import("ecma:uint8array", "length");
+    chunks[current].emit_call(len, 1, line);
+    let slice = chunks[current].add_import("ecma:uint8array", "slice");
+    chunks[current].emit_call(slice, 3, line);
+}
+
+pub fn emit_bytearray_clear(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    if argc > 0 {
+        let _ = stash_runtime_args(chunks, current, argc, line);
+    }
+    chunks[current].emit_array_new_fixed(0, 0, line);
+    emit_uint8_from_stack(chunks, current, line);
+}
+
+pub fn emit_bytearray_reverse(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let base = stash_runtime_args(chunks, current, argc.max(1), line);
+    emit_array_from_slot(chunks, current, base, line);
+    let reverse = chunks[current].add_import("ecma:array", "reverse");
+    chunks[current].emit_call(reverse, 1, line);
+    emit_uint8_from_stack(chunks, current, line);
+}
+
+pub fn emit_bytearray_insert(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let base = stash_runtime_args(chunks, current, argc.max(3), line);
+    let arr = chunks[current].alloc_scratch(1);
+    emit_array_from_slot(chunks, current, base, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, arr, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, arr, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, base + 1, line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, base + 2, line);
+    let splice = chunks[current].add_import("ecma:array", "splice");
+    chunks[current].emit_call(splice, 4, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, arr, line);
+    emit_uint8_from_stack(chunks, current, line);
+}
+
+pub fn emit_bytearray_remove(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let base = stash_runtime_args(chunks, current, argc.max(2), line);
+    let arr = chunks[current].alloc_scratch(1);
+    let index = chunks[current].alloc_scratch(1);
+    emit_array_from_slot(chunks, current, base, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, arr, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, arr, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, base + 1, line);
+    let index_of = chunks[current].add_import("ecma:array", "indexOf");
+    chunks[current].emit_call(index_of, 2, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, index, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, arr, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, index, line);
+    chunks[current].emit_i32_const(1, line);
+    let splice = chunks[current].add_import("ecma:array", "splice");
+    chunks[current].emit_call(splice, 3, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, arr, line);
+    emit_uint8_from_stack(chunks, current, line);
+}
+
+pub fn emit_bytearray_pop_value(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let base = stash_runtime_args(chunks, current, argc.max(1), line);
+    emit_array_from_slot(chunks, current, base, line);
+    let pop = chunks[current].add_import("ecma:array", "pop");
+    chunks[current].emit_call(pop, 1, line);
+}
+
+fn emit_bytearray_pop_slots(
+    chunks: &mut [Chunk],
+    current: usize,
+    base: u16,
+    argc: u8,
+    arr: u16,
+    idx: u16,
+    value: u16,
+    bytes: u16,
+    line: u32,
+) {
+    let len_slot = chunks[current].alloc_scratch(1);
+    let to_i32 = chunks[current].add_import("wasm:js-number", "toI32");
+
+    emit_array_from_slot(chunks, current, base, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, arr, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, arr, line);
+    collections::emit_len(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, len_slot, line);
+
+    if argc >= 2 {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, base + 1, line);
+        chunks[current].emit_call(to_i32, 1, line);
+    } else {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, len_slot, line);
+        chunks[current].emit_i32_const(1, line);
+        chunks[current].emit_op(Op::I32_SUB, line);
+    }
+    chunks[current].emit_op_u16(Op::LOCAL_SET, idx, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, idx, line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op(Op::I32_LT_S, line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, idx, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, len_slot, line);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, idx, line);
+    chunks[current].emit_end(line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, len_slot, line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op(Op::I32_EQ, line);
+    chunks[current].emit_if(line);
+    emit_throw_python_exception(&mut chunks[current], "IndexError", "pop from empty bytearray", line);
+    chunks[current].emit_end(line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, idx, line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op(Op::I32_LT_S, line);
+    chunks[current].emit_if(line);
+    emit_throw_python_exception(&mut chunks[current], "IndexError", "pop index out of range", line);
+    chunks[current].emit_end(line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, idx, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, len_slot, line);
+    chunks[current].emit_op(Op::I32_GE_S, line);
+    chunks[current].emit_if(line);
+    emit_throw_python_exception(&mut chunks[current], "IndexError", "pop index out of range", line);
+    chunks[current].emit_end(line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, arr, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, idx, line);
+    collections::emit_get(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, value, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, arr, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, idx, line);
+    chunks[current].emit_i32_const(1, line);
+    let splice = chunks[current].add_import("ecma:array", "splice");
+    chunks[current].emit_call(splice, 3, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, arr, line);
+    emit_uint8_from_stack(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, bytes, line);
+}
+
+pub fn emit_bytearray_pop_pair(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let base = stash_runtime_args(chunks, current, argc.max(1), line);
+    let arr = chunks[current].alloc_scratch(1);
+    let idx = chunks[current].alloc_scratch(1);
+    let value = chunks[current].alloc_scratch(1);
+    let bytes = chunks[current].alloc_scratch(1);
+    emit_bytearray_pop_slots(chunks, current, base, argc, arr, idx, value, bytes, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, bytes, line);
+    chunks[current].emit_array_new_fixed(0, 2, line);
+}
+
+pub fn emit_bytearray_pop_array(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let base = stash_runtime_args(chunks, current, argc.max(1), line);
+    let arr = chunks[current].alloc_scratch(1);
+    let idx = chunks[current].alloc_scratch(1);
+    let value = chunks[current].alloc_scratch(1);
+    let bytes = chunks[current].alloc_scratch(1);
+    emit_bytearray_pop_slots(chunks, current, base, argc, arr, idx, value, bytes, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, bytes, line);
+}
+
+pub fn emit_bytearray_slice_assign(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let base = stash_runtime_args(chunks, current, argc.max(4), line);
+    let arr = chunks[current].alloc_scratch(1);
+    emit_array_from_slot(chunks, current, base, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, arr, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, arr, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, base + 1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, base + 2, line);
+    emit_array_from_slot(chunks, current, base + 3, line);
+    vybe_compiler::primitives::slices::emit_splice_assign(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, arr, line);
+    emit_uint8_from_stack(chunks, current, line);
 }
 
 /// Python `*` operator: array repeat, string repeat, or numeric multiply.
@@ -1181,9 +1852,76 @@ fn emit_array_repeat_slots(chunk: &mut Chunk, seq_slot: u16, count_slot: u16, li
     chunk.emit_call(flat, 2, line);
 }
 
+/// `bytes`/`bytearray` repeat via direct `Uint8Array` allocation/copy.
+///
+/// Generic array fill/flat works for tiny buffers, but it becomes painfully
+/// slow for `bytes(range(256)) * 4000`. TypedArray.set copies the source block
+/// directly and keeps the representation as bytes throughout.
+fn emit_bytes_repeat_slots(chunk: &mut Chunk, seq_slot: u16, count_slot: u16, line: u32) {
+    let len_fn = chunk.add_import("ecma:uint8array", "length");
+    let new_fn = chunk.add_import("ecma:uint8array", "new");
+    let set_fn = chunk.add_import("ecma:uint8array", "set");
+    let to_i32 = chunk.add_import("wasm:js-number", "toI32");
+    let src_len = chunk.alloc_scratch(1);
+    let out = chunk.alloc_scratch(1);
+    let i = chunk.alloc_scratch(1);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, count_slot, line);
+    chunk.emit_call(to_i32, 1, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, count_slot, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, seq_slot, line);
+    chunk.emit_call(len_fn, 1, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, src_len, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, src_len, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, count_slot, line);
+    chunk.emit_i32_const(0, line);
+    chunk.emit_op(Op::I32_GT_S, line);
+    chunk.emit_if_value(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, count_slot, line);
+    chunk.emit_else(line);
+    chunk.emit_i32_const(0, line);
+    chunk.emit_end(line);
+    chunk.emit_op(Op::I32_MUL, line);
+    chunk.emit_call(new_fn, 1, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, out, line);
+
+    chunk.emit_i32_const(0, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, i, line);
+    let block_patch = chunk.emit_block(line);
+    let (loop_patch, _) = chunk.emit_loop_s(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, i, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, count_slot, line);
+    chunk.emit_op(Op::I32_LT_S, line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_br_if(1, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, out, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, seq_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, i, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, src_len, line);
+    chunk.emit_op(Op::I32_MUL, line);
+    chunk.emit_call(set_fn, 3, line);
+    chunk.emit_op(Op::DROP, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, i, line);
+    chunk.emit_i32_const(1, line);
+    chunk.emit_op(Op::I32_ADD, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, i, line);
+    chunk.emit_br(0, line);
+    chunk.emit_end(line);
+    chunk.patch_loop(loop_patch);
+    chunk.emit_end(line);
+    chunk.patch_block(block_patch);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, out, line);
+}
+
 pub fn emit_pymul(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
     let is_array = chunk.add_import("ecma:array", "isArray");
+    let is_view = chunk.add_import("ecma:arraybuffer", "isView");
     let str_repeat = chunk.add_import("ecma:string", "repeat");
     let test_str = chunk.add_import("wasm:js-string", "test");
     let b_slot = chunk.alloc_scratch(1);
@@ -1200,6 +1938,13 @@ pub fn emit_pymul(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_call(is_array, 1, line);
     chunk.emit_if_value(line);
     emit_array_repeat_slots(chunk, a_slot, b_slot, line);
+    chunk.emit_else(line);
+
+    // ArrayBuffer.isView(a): bytes/bytearray repeat (`b'x' * 2`)
+    chunk.emit_op_u16(Op::LOCAL_GET, a_slot, line);
+    chunk.emit_call(is_view, 1, line);
+    chunk.emit_if_value(line);
+    emit_bytes_repeat_slots(chunk, a_slot, b_slot, line);
     chunk.emit_else(line);
 
     // string(a): a.repeat(b)
@@ -1227,6 +1972,13 @@ pub fn emit_pymul(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_array_repeat_slots(chunk, b_slot, a_slot, line);
     chunk.emit_else(line);
 
+    // reversed — ArrayBuffer.isView(b): bytes repeat (`2 * b'x'`)
+    chunk.emit_op_u16(Op::LOCAL_GET, b_slot, line);
+    chunk.emit_call(is_view, 1, line);
+    chunk.emit_if_value(line);
+    emit_bytes_repeat_slots(chunk, b_slot, a_slot, line);
+    chunk.emit_else(line);
+
     // `timedelta * n`, else user `__mul__` on an object, else numeric multiply
     emit_datetime_binop_or(
         chunk,
@@ -1237,15 +1989,151 @@ pub fn emit_pymul(chunks: &mut [Chunk], current: usize, line: u32) {
         emit_f64_mul,
         line,
     );
+    chunk.emit_end(line); // isView(b)
     chunk.emit_end(line); // isArray(b)
     chunk.emit_end(line); // string(b)
     chunk.emit_end(line); // string(a)
+    chunk.emit_end(line); // isView(a)
     chunk.emit_end(line); // isArray(a)
 }
 
 /// Numeric `*` fallback (`[a, b] → [a*b]`), for `emit_object_binop_or`.
 fn emit_f64_mul(chunk: &mut Chunk, line: u32) {
     chunk.emit_op(Op::F64_MUL, line);
+}
+
+fn emit_i32_bitand(chunk: &mut Chunk, line: u32) {
+    let to_i32 = chunk.add_import("wasm:js-number", "toI32");
+    let b = chunk.alloc_scratch(1);
+    let a = chunk.alloc_scratch(1);
+    chunk.emit_call(to_i32, 1, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, b, line);
+    chunk.emit_call(to_i32, 1, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, a, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, a, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, b, line);
+    chunk.emit_op(Op::I32_AND, line);
+}
+
+fn emit_i32_bitor(chunk: &mut Chunk, line: u32) {
+    let to_i32 = chunk.add_import("wasm:js-number", "toI32");
+    let b = chunk.alloc_scratch(1);
+    let a = chunk.alloc_scratch(1);
+    chunk.emit_call(to_i32, 1, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, b, line);
+    chunk.emit_call(to_i32, 1, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, a, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, a, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, b, line);
+    chunk.emit_op(Op::I32_OR, line);
+}
+
+fn emit_i32_bitxor(chunk: &mut Chunk, line: u32) {
+    let to_i32 = chunk.add_import("wasm:js-number", "toI32");
+    let b = chunk.alloc_scratch(1);
+    let a = chunk.alloc_scratch(1);
+    chunk.emit_call(to_i32, 1, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, b, line);
+    chunk.emit_call(to_i32, 1, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, a, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, a, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, b, line);
+    chunk.emit_op(Op::I32_XOR, line);
+}
+
+pub fn emit_pymatmul(chunks: &mut [Chunk], current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    let b_slot = chunk.alloc_scratch(1);
+    let a_slot = chunk.alloc_scratch(1);
+    chunk.emit_op_u16(Op::LOCAL_SET, b_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, a_slot, line);
+    emit_object_binop_or(chunk, a_slot, b_slot, "__matmul__", emit_unsupported_matmul, line);
+}
+
+pub fn emit_py_notimplemented(chunks: &mut [Chunk], current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    let cached = chunk.alloc_scratch(1);
+
+    globals::emit_read(chunk, NOT_IMPLEMENTED_GLOBAL, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, cached, line);
+    emit_slot_is_null_or_undefined(chunk, cached, line);
+    chunk.emit_if_value(line);
+    class_slots::emit_class_alloc(chunk, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, cached, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, cached, line);
+    chunk.emit_string_const("NotImplementedType", line);
+    let type_key = class_slots::resolve(&ClassSlot::TypeIdentity, &PlainNames);
+    class_slots::emit_class_set(chunk, ObjSource::Stack, &type_key, ValueSource::Stack, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, cached, line);
+    chunk.emit_bool_const(true, line);
+    let sentinel_key = class_slots::resolve(
+        &ClassSlot::Internal("__py_notimplemented".to_string()),
+        &PlainNames,
+    );
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &sentinel_key,
+        ValueSource::Stack,
+        line,
+    );
+
+    chunk.emit_op_u16(Op::LOCAL_GET, cached, line);
+    globals::emit_write(chunk, NOT_IMPLEMENTED_GLOBAL, line);
+    chunk.emit_end(line);
+
+    globals::emit_read(chunk, NOT_IMPLEMENTED_GLOBAL, line);
+}
+
+pub fn emit_pybitand(chunks: &mut [Chunk], current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    let b_slot = chunk.alloc_scratch(1);
+    let a_slot = chunk.alloc_scratch(1);
+    chunk.emit_op_u16(Op::LOCAL_SET, b_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, a_slot, line);
+    emit_object_binop_or(chunk, a_slot, b_slot, "__and__", emit_i32_bitand, line);
+}
+
+pub fn emit_pybitor(chunks: &mut [Chunk], current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    let b_slot = chunk.alloc_scratch(1);
+    let a_slot = chunk.alloc_scratch(1);
+    chunk.emit_op_u16(Op::LOCAL_SET, b_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, a_slot, line);
+    emit_object_binop_or(chunk, a_slot, b_slot, "__or__", emit_i32_bitor, line);
+}
+
+pub fn emit_pybitxor(chunks: &mut [Chunk], current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    let b_slot = chunk.alloc_scratch(1);
+    let a_slot = chunk.alloc_scratch(1);
+    chunk.emit_op_u16(Op::LOCAL_SET, b_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, a_slot, line);
+    emit_object_binop_or(chunk, a_slot, b_slot, "__xor__", emit_i32_bitxor, line);
+}
+
+pub fn emit_pyinvert(chunks: &mut [Chunk], current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    let a_slot = chunk.alloc_scratch(1);
+    chunk.emit_op_u16(Op::LOCAL_SET, a_slot, line);
+    emit_unary_dunder_or(
+        chunk,
+        a_slot,
+        "__invert__",
+        vybe_compiler::primitives::expressions::emit_i32_not,
+        line,
+    );
+}
+
+fn emit_unsupported_matmul(chunk: &mut Chunk, line: u32) {
+    emit_throw_python_exception(
+        chunk,
+        "TypeError",
+        "unsupported operand type(s) for @",
+        line,
+    );
 }
 
 // ── Remaining binary-operator dunders ───────────────────────────────────────
@@ -1415,7 +2303,8 @@ pub fn emit_py_type(chunks: &mut [Chunk], current: usize, line: u32) {
         chunk.emit_op_u16(Op::LOCAL_GET, v, line);
         chunk.emit_string_const("__exception_type", line);
         reflection::emit_get_property_in_chunk(chunk, line);
-        let cs_slot = class_slots::resolve(&ClassSlot::Internal(("__name__").to_string()), &PlainNames);
+        let cs_slot =
+            class_slots::resolve(&ClassSlot::Internal(("__name__").to_string()), &PlainNames);
         class_slots::emit_class_set(chunk, ObjSource::Stack, &cs_slot, ValueSource::Stack, line);
         chunk.emit_else(line);
 
@@ -1432,7 +2321,8 @@ pub fn emit_py_type(chunks: &mut [Chunk], current: usize, line: u32) {
         chunk.emit_op_u16(Op::LOCAL_GET, v, line);
         chunk.emit_string_const("__type", line);
         reflection::emit_get_property_in_chunk(chunk, line);
-        let cs_slot = class_slots::resolve(&ClassSlot::Internal(("__name__").to_string()), &PlainNames);
+        let cs_slot =
+            class_slots::resolve(&ClassSlot::Internal(("__name__").to_string()), &PlainNames);
         class_slots::emit_class_set(chunk, ObjSource::Stack, &cs_slot, ValueSource::Stack, line);
         chunk.emit_else(line);
 
@@ -1578,6 +2468,10 @@ pub fn emit_py_type_name(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
     let v = chunk.alloc_scratch(1);
     let cast_bool = chunk.add_import("wasm:js-boolean", "cast");
+    let test_bool = chunk.add_import("wasm:js-boolean", "test");
+    let test_number = chunk.add_import("wasm:js-number", "test");
+    let test_string = chunk.add_import("wasm:js-string", "test");
+    let is_integer = chunk.add_import("ecma:number", "isInteger");
     chunk.emit_op_u16(Op::LOCAL_SET, v, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, v, line);
@@ -1585,6 +2479,16 @@ pub fn emit_py_type_name(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op(Op::I32_EQZ, line);
     chunk.emit_if_value(line);
     {
+        chunk.emit_op_u16(Op::LOCAL_GET, v, line);
+        let tag = chunk.add_import("ecma:object", "toStringTag");
+        chunk.emit_call(tag, 1, line);
+        chunk.emit_string_const("[object Uint8Array]", line);
+        let str_eq = chunk.add_import("wasm:js-string", "equals");
+        chunk.emit_call(str_eq, 2, line);
+        chunk.emit_if(line);
+        chunk.emit_string_const("bytes", line);
+        chunk.emit_else(line);
+
         chunk.emit_op_u16(Op::LOCAL_GET, v, line);
         let is_generator = chunk.add_import("ecma:value", "isGenerator");
         chunk.emit_call(is_generator, 1, line);
@@ -1636,7 +2540,35 @@ pub fn emit_py_type_name(chunks: &mut [Chunk], current: usize, line: u32) {
         chunk.emit_else(line);
 
         chunk.emit_op_u16(Op::LOCAL_GET, v, line);
+        chunk.emit_call(test_bool, 1, line);
+        chunk.emit_if_value(line);
+        chunk.emit_string_const("bool", line);
+        chunk.emit_else(line);
+
+        chunk.emit_op_u16(Op::LOCAL_GET, v, line);
+        chunk.emit_call(test_string, 1, line);
+        chunk.emit_if_value(line);
+        chunk.emit_string_const("str", line);
+        chunk.emit_else(line);
+
+        chunk.emit_op_u16(Op::LOCAL_GET, v, line);
+        chunk.emit_call(test_number, 1, line);
+        chunk.emit_if_value(line);
+        chunk.emit_op_u16(Op::LOCAL_GET, v, line);
+        chunk.emit_call(is_integer, 1, line);
+        chunk.emit_if_value(line);
+        chunk.emit_string_const("int", line);
+        chunk.emit_else(line);
+        chunk.emit_string_const("float", line);
+        chunk.emit_end(line);
+        chunk.emit_else(line);
+
+        chunk.emit_op_u16(Op::LOCAL_GET, v, line);
         reflection::emit_typeof_in_chunk(chunk, line);
+        chunk.emit_end(line);
+        chunk.emit_end(line);
+        chunk.emit_end(line);
+        chunk.emit_end(line);
         chunk.emit_end(line);
         chunk.emit_end(line);
         chunk.emit_end(line);
@@ -1692,12 +2624,10 @@ pub fn emit_setattr(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
-/// Python `delattr(obj, name)` returns `None`; deletion is the shared object
-/// reflection operation.
+/// Python `delattr(obj, name)` returns `None`; deletion follows the same
+/// descriptor-aware attribute path as `del obj.attr`.
 pub fn emit_delattr(chunks: &mut [Chunk], current: usize, line: u32) {
-    reflection::emit_object_op(chunks, current, reflection::ObjectOp::Delete, 2, line);
-    chunks[current].emit_op(Op::DROP, line);
-    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+    crate::emitter::collections_adapter::emit_attr_delete(chunks, current, line);
 }
 
 /// Push `1` when the value in `slot` is a Set (`typeof == "object"` and its
@@ -1705,7 +2635,11 @@ pub fn emit_delattr(chunks: &mut [Chunk], current: usize, line: u32) {
 /// `0`. Guarded by the typeof check because `STRUCT_GET` traps on primitives.
 fn emit_is_set(chunk: &mut Chunk, slot: u16, line: u32) {
     let typeof_fn = chunk.add_import("ecma:value", "typeof");
-    let cs_slot_2 = class_slots::resolve_interned(chunk, &ClassSlot::Internal(("__type").to_string()), &PlainNames);
+    let cs_slot_2 = class_slots::resolve_interned(
+        chunk,
+        &ClassSlot::Internal(("__type").to_string()),
+        &PlainNames,
+    );
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
     chunk.emit_call(typeof_fn, 1, line);
     chunk.emit_string_const("object", line);
@@ -1732,7 +2666,8 @@ fn emit_hash_guarded(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_is_set(chunk, slot, line); // i32: 1 if set/frozenset
     chunk.emit_if_value(line);
     {
-        let frozen_key = class_slots::resolve_interned(chunk, &ClassSlot::internal("__frozenset"), &PlainNames);
+        let frozen_key =
+            class_slots::resolve_interned(chunk, &ClassSlot::internal("__frozenset"), &PlainNames);
         chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
         class_slots::emit_class_get(chunk, ObjSource::Stack, &frozen_key, Dest::Stack, line);
         vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
@@ -1783,6 +2718,33 @@ fn emit_id_guarded(chunks: &mut [Chunk], current: usize, line: u32) {
     let id_key = class_slots::resolve_interned(chunk, &ClassSlot::internal("__py_id"), &PlainNames);
     chunk.emit_op_u16(Op::LOCAL_SET, slot, line);
 
+    // `None` — JS `typeof null === "object"`, so without this it fell into
+    // the object-caching branch below, tried to stamp a `__py_id` field onto
+    // a null reference (a no-op: nothing to stamp), and drew a FRESH random
+    // number on every call. `id(None) == id(None)` measured False.
+    chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_if_value(line);
+    chunk.emit_f64_const(1.0, line);
+    chunk.emit_else(line);
+
+    // A NUMBER — the shared `__vybe_id` fallback (`String(v).length`) collides
+    // for every value that stringifies to the same digit count: `id(1)` and
+    // `id(2)` were BOTH `1`. Any injective encoding of the number itself
+    // satisfies python's contract (same value -> same id, `!=` for distinct
+    // ones); the value shifted off the low range keeps it clear of the `None`
+    // sentinel and small structurally-assigned ids.
+    let test_num = chunk.add_import("wasm:js-number", "test");
+    let to_f64 = chunk.add_import("wasm:js-number", "toF64");
+    chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
+    chunk.emit_call(test_num, 1, line);
+    chunk.emit_if_value(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
+    chunk.emit_call(to_f64, 1, line);
+    chunk.emit_f64_const(1000.0, line);
+    chunk.emit_op(Op::F64_MUL, line);
+    chunk.emit_else(line);
+
     let typeof_fn = chunk.add_import("ecma:value", "typeof");
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
     chunk.emit_call(typeof_fn, 1, line);
@@ -1815,7 +2777,9 @@ fn emit_id_guarded(chunks: &mut [Chunk], current: usize, line: u32) {
         1,
         line,
     );
-    chunks[current].emit_end(line);
+    chunks[current].emit_end(line); // typeof == "object"
+    chunks[current].emit_end(line); // is number
+    chunks[current].emit_end(line); // is null
 }
 
 /// `a - b`. Python overloads `-` on sets to mean set difference (`{1,2,3} -
@@ -2099,8 +3063,18 @@ pub fn emit_range(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let stamp = |chunks: &mut [Chunk], key: &str, push: &dyn Fn(&mut Chunk)| {
         chunks[current].emit_dup(line);
         push(&mut chunks[current]);
-        let k = class_slots::resolve_interned(&mut chunks[current], &ClassSlot::internal(key), &PlainNames);
-        class_slots::emit_class_set(&mut chunks[current], ObjSource::Stack, &k, ValueSource::Stack, line);
+        let k = class_slots::resolve_interned(
+            &mut chunks[current],
+            &ClassSlot::internal(key),
+            &PlainNames,
+        );
+        class_slots::emit_class_set(
+            &mut chunks[current],
+            ObjSource::Stack,
+            &k,
+            ValueSource::Stack,
+            line,
+        );
     };
     match start {
         Some(slot) => stamp(chunks, "__py_range_start", &move |c: &mut Chunk| {
@@ -2288,17 +3262,35 @@ pub fn emit_helper(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, l
     // handed, and an omitted argument arrives as `Undefined` (ECMA-262
     // §10.2.1.1), so `bytearray()` came out as the nine bytes
     // `u n d e f i n e d` and every `.append` after it operated on those.
+    // `__py_bytes_from_list([ints])` — a real byte buffer from an array of
+    // byte VALUES.
+    //
+    // ⛔ A declared class cannot use `bytes(list)`: `bytes` routes to the
+    // `__vybe_to_bytes` runtime helper, which stringifies an array, and the
+    // array-aware path only exists in the WALKER rewrite a declaration never
+    // gets — `struct.pack("i", 7)` came back as the ASCII of `"7,0,0,0"`.
+    if name == "python.bytes_from_list" {
+        let idx = chunks[current].add_import("ecma:uint8array", "from");
+        chunks[current].emit_call(idx, 1, line);
+        return true;
+    }
     if argc == 0 && matches!(name, "python.bytes" | "python.encode") {
         chunks[current].emit_array_new_fixed(0, 0, line);
         let idx = chunks[current].add_import("ecma:uint8array", "from");
         chunks[current].emit_call(idx, 1, line);
         return true;
     }
+    if name == "python.encode" || (name == "python.bytes" && argc >= 2) {
+        let base = stash_runtime_args(chunks, current, argc.max(1), line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, base, line);
+        emit_bytes_encode_stack(chunks, current, line);
+        return true;
+    }
     let global = match name {
         "python.hex" => "__vybe_pyhex",
         "python.oct" => "__vybe_pyoct",
         "python.bin" => "__vybe_pybin",
-        "python.bytes" | "python.encode" => "__vybe_to_bytes",
+        "python.bytes" => "__vybe_to_bytes",
         "python.map" => "__vybe_pymap",
         "python.filter" => "__vybe_pyfilter",
         "python.any" => "__vybe_pyany",

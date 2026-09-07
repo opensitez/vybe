@@ -10,10 +10,8 @@
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
 
+use vybe_compiler::primitives::class_slots::{self};
 use vybe_compiler::primitives::{collections, ops, strings};
-use vybe_compiler::primitives::class_slots::{
-    self,
-};
 
 fn call_import(
     chunks: &mut [Chunk],
@@ -844,6 +842,24 @@ pub fn emit_istitle(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) 
 
     chunks[current].emit_op(Op::I32_AND, line);
     ops::emit_i32_to_bool(&mut chunks[current], line);
+}
+
+fn emit_regex_predicate(chunks: &mut [Chunk], current: usize, pattern: &str, line: u32) {
+    let s = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, s, line);
+    chunks[current].emit_string_const(pattern, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, s, line);
+    call_import(chunks, current, "ecma:regexp", "test", 2, line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    ops::emit_i32_to_bool(&mut chunks[current], line);
+}
+
+pub fn emit_isascii(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    emit_regex_predicate(chunks, current, r"^[\x00-\x7F]*$", line);
+}
+
+pub fn emit_isidentifier(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    emit_regex_predicate(chunks, current, r"^[A-Za-z_][A-Za-z0-9_]*$", line);
 }
 
 /// Push the title-cased form of the string in `src`.

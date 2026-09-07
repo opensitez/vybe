@@ -13,8 +13,8 @@
 //! * `NewType(name, tp)` → a CALLABLE identity, so `UserId(3)` is `3`.
 //! * `get_type_hints(x)` → `x.__annotations__`, or an empty dict.
 
-use vybe_runtime::opcode::Op;
 use vybe_runtime::Chunk;
+use vybe_runtime::opcode::Op;
 
 use vybe_compiler::primitives::dict;
 
