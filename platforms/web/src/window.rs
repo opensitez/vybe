@@ -18,7 +18,7 @@
 //! `open` comes from the namespace. Everything after it is standard.
 
 use vybe_runtime::vm::{HostFnDecl, ResourceBinding, ResourceMemberKind};
-use vybe_runtime::{FuncSig, HostContext, VM, ValType, Value};
+use vybe_runtime::{FuncSig, Param, HostContext, VM, ValType, Value};
 
 use crate::engine::{WindowId, WindowOp, WindowValue, window};
 
@@ -50,7 +50,7 @@ fn win_fn(
         HostFnDecl::new("web:window", name, call)
             .with_sig(FuncSig {
                 name: kebab.to_string(),
-                params,
+                params: Param::unnamed_list(params),
                 results,
             })
             .method_on(WINDOW),
@@ -113,7 +113,7 @@ pub fn register(vm: &mut VM) {
             name: "open".to_string(),
             // `url` is param 0 and deliberately unread — declared because the
             // CALLER passes it and the spec has it, not because this reads it.
-            params: vec![ValType::String, ValType::String, ValType::String],
+            params: Param::unnamed_list(vec![ValType::String, ValType::String, ValType::String]),
             results: vec![ValType::Own(WINDOW.to_string())],
         })
         .resource_member(ResourceBinding {
@@ -310,7 +310,7 @@ pub fn register(vm: &mut VM) {
         )
         .with_sig(FuncSig {
             name: "alert".to_string(),
-            params: vec![ValType::String],
+            params: Param::unnamed_list(vec![ValType::String]),
             results: vec![],
         })
         .resource_member(ResourceBinding {
@@ -332,7 +332,7 @@ pub fn register(vm: &mut VM) {
         )
         .with_sig(FuncSig {
             name: "confirm".to_string(),
-            params: vec![ValType::String],
+            params: Param::unnamed_list(vec![ValType::String]),
             results: vec![ValType::Bool],
         })
         .resource_member(ResourceBinding {

@@ -25,7 +25,7 @@ use std::sync::{Arc, Mutex};
 use vybe_runtime::event_loop::monotonic_now_ms;
 use vybe_runtime::scheduler::DeferredSource;
 use vybe_runtime::vm::HostFnDecl;
-use vybe_runtime::{FuncSig, HostContext, VM, ValType, Value};
+use vybe_runtime::{FuncSig, Param, HostContext, VM, ValType, Value};
 
 use crate::engine::{ScheduleOp, ScheduleValue, schedule};
 
@@ -66,7 +66,7 @@ fn clamp_timeout(delay: Option<f64>) -> f64 {
 fn timer_sig(name: &str, params: Vec<ValType>, results: Vec<ValType>) -> FuncSig {
     FuncSig {
         name: name.to_string(),
-        params,
+        params: Param::unnamed_list(params),
         results,
     }
 }

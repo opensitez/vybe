@@ -39,7 +39,7 @@ use std::sync::{Arc, Mutex};
 
 use vybe_runtime::value::Object;
 use vybe_runtime::vm::{HostFnDecl, ResourceBinding, ResourceMemberKind};
-use vybe_runtime::{FuncSig, HostContext, VM, ValType, Value};
+use vybe_runtime::{FuncSig, Param, HostContext, VM, ValType, Value};
 
 use crate::engine::{DOCUMENT, DocumentId, DomOp, DomValue, NodeId, apply};
 
@@ -530,10 +530,8 @@ fn as_number(v: DomValue) -> Value {
 /// The DOM's own resource types, in Component Model terms.
 ///
 /// A node is a RESOURCE: the host owns the tree, the guest holds a handle. That
-/// is what `component_model.rs` describes ("a GUI control is a resource: the
-/// host manages the actual widget, the guest holds a handle"), and it is what
-/// makes `append-child` a method on `node` instead of a free function that
-/// happens to take a node-shaped `Value` first.
+/// is what makes `append-child` a method on `node` instead of a free function
+/// that happens to take a node-shaped `Value` first.
 ///
 /// Every DOM operation BORROWS its handles — `appendChild` neither consumes its
 /// parent nor its child — which is why `borrows_self` is true and the params
@@ -550,7 +548,7 @@ const DOCUMENT_RES: &str = "document";
 fn node_method(name: &str, params: Vec<ValType>, results: Vec<ValType>) -> FuncSig {
     FuncSig {
         name: name.to_string(),
-        params,
+        params: Param::unnamed_list(params),
         results,
     }
 }

@@ -14,14 +14,14 @@ use sha2::{Digest, Sha256, Sha384, Sha512};
 use std::sync::{Arc, Mutex};
 use vybe_runtime::value::{Object, ObjectKind};
 use vybe_runtime::vm::HostFnDecl;
-use vybe_runtime::{FuncSig, HostContext, VM, ValType, Value};
+use vybe_runtime::{FuncSig, Param, HostContext, VM, ValType, Value};
 
 /// Declare a `web:crypto` function. No resource: `crypto` is a namespace, not a
 /// handle — `randomUUID` has nothing to be a method ON.
 fn crypto_sig(name: &str, params: Vec<ValType>, results: Vec<ValType>) -> FuncSig {
     FuncSig {
         name: name.to_string(),
-        params,
+        params: Param::unnamed_list(params),
         results,
     }
 }

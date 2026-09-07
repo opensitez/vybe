@@ -23,7 +23,7 @@ use std::sync::{Arc, Mutex};
 use vybe_runtime::event_loop::monotonic_now_ms;
 use vybe_runtime::scheduler::DeferredSource;
 use vybe_runtime::vm::HostFnDecl;
-use vybe_runtime::{FuncSig, HostContext, VM, ValType, Value};
+use vybe_runtime::{FuncSig, Param, HostContext, VM, ValType, Value};
 
 /// Declare a `web:animation` function. No resource: a frame CALLBACK is a
 /// runtime value and a frame id is a plain integer, so there is no handle here
@@ -32,7 +32,7 @@ use vybe_runtime::{FuncSig, HostContext, VM, ValType, Value};
 fn anim_sig(name: &str, params: Vec<ValType>, results: Vec<ValType>) -> FuncSig {
     FuncSig {
         name: name.to_string(),
-        params,
+        params: Param::unnamed_list(params),
         results,
     }
 }

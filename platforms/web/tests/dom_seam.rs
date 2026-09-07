@@ -5,7 +5,9 @@
 //! test is the surface's contract with the engine — the part a browser
 //! backend would have to satisfy too.
 
-use vybe_platform_web::engine::{DOCUMENT, DomOp, DomValue, apply, new_document};
+use vybe_platform_web::engine::{
+    DOCUMENT, DomOp, DomValue, WindowOp, WindowValue, apply, new_document, window,
+};
 
 fn node(v: DomValue) -> u64 {
     match v {
@@ -328,11 +330,21 @@ fn a_dialog_is_closed_until_shown_and_closed_again_after() {
     assert!(!is_open(doc, dlg), "close() must clear the open attribute");
 }
 
+/// The UA stylesheet's own distinction: `dialog:modal` is `position: fixed`,
+/// a non-modal dialog is not. If both looked the same, `showModal` would be
+/// `show` under another name.
+///
+/// ⛔ Asked as a COMPUTED value, not an inline one. This used to read
+/// `GetStyleProperty` — `element.style.position` — which was only ever
+/// answered because `show_dialog` wrote an inline `position: fixed`. That
+/// write was removed so an author's own `position` could beat the UA sheet,
+/// which is correct, and left this test asserting the old mechanism.
+///
+/// Measured in Chrome: on a `showModal()`ed dialog, `.style.position` is `""`
+/// and `getAttribute("style")` is `null`, while `getComputedStyle(...).position`
+/// is `fixed`. So `""` was the right answer to the wrong question.
 #[test]
 fn only_a_modal_dialog_is_positioned_against_the_viewport() {
-    // The UA stylesheet's own distinction: `dialog:modal` is `position:
-    // fixed`, a non-modal dialog stays in flow. If both looked the same,
-    // `showModal` would be `show` under another name.
     let doc = setup();
     let plain = create(doc, "dialog", "");
     let modal = create(doc, "dialog", "");
@@ -362,13 +374,22 @@ fn only_a_modal_dialog_is_positioned_against_the_viewport() {
     );
 
     assert_eq!(
-        text(apply(doc, DomOp::GetStyleProperty(modal, "position".into()))),
-        "fixed"
+        text(apply(doc, DomOp::ComputedStyleProperty(modal, "position".into()))),
+        "fixed",
+        "the UA sheet's `dialog:modal` rule reaches the computed value"
     );
     assert_ne!(
-        text(apply(doc, DomOp::GetStyleProperty(plain, "position".into()))),
+        text(apply(doc, DomOp::ComputedStyleProperty(plain, "position".into()))),
         "fixed",
-        "a non-modal dialog stays in flow"
+        "a non-modal dialog is not positioned against the viewport"
+    );
+    // And the modal carries no inline style of its own — Chrome answers
+    // `null` for `getAttribute("style")` here, and so must we, or an author's
+    // `position` could never win.
+    assert_eq!(
+        text(apply(doc, DomOp::GetStyleProperty(modal, "position".into()))),
+        "",
+        "the UA sheet does the work, not an inline write"
     );
 }
 
@@ -1411,4 +1432,50 @@ fn a_subtree_built_while_detached_can_still_be_cleared_once_appended() {
         "nor must anything inside it"
     );
     assert_eq!(nodes_matching(doc, ".second-pass").len(), 2, "the rebuild is what is there now");
+}
+
+/// Closing a browsing context DISCARDS its document — HTML §7.4.
+///
+/// The handle stays valid and keeps reporting `closed`, but it names no open
+/// document, so asking it about a node it used to hold answers nothing. Both
+/// engines have to agree, and they did not: webcore dropped the document while
+/// widgets only set a flag, leaving a whole DOM alive for the life of the
+/// process. Nothing here could see that, because `window.closed` was right on
+/// both sides — the divergence only shows when the DISCARDED document is asked
+/// a question.
+#[test]
+fn closing_a_context_discards_its_document() {
+    install();
+    let WindowValue::Window(w) = window(WindowOp::Open {
+        target: "discard-probe".into(),
+        features: String::new(),
+    }) else {
+        panic!("window.open must answer a window");
+    };
+
+    // ⛔ Ask for the document rather than reusing the window handle. webcore
+    // makes them the same value and widgets does not, so assuming it is an
+    // engine assumption a seam test must never make.
+    let WindowValue::Document(doc) = window(WindowOp::Document(w)) else {
+        panic!("window.document must answer a document");
+    };
+
+    let node = create(doc, "p", "");
+    apply(doc, DomOp::AppendChild { parent: DOCUMENT, child: node });
+    assert_eq!(
+        text(apply(doc, DomOp::LocalName(node))),
+        "p",
+        "the fixture must be in the document before it is discarded"
+    );
+
+    window(WindowOp::Close(w));
+
+    assert!(
+        matches!(window(WindowOp::Closed(w)), WindowValue::Bool(true)),
+        "the handle stays live and reports closed"
+    );
+    assert!(
+        !matches!(apply(doc, DomOp::LocalName(node)), DomValue::Text(t) if t == "p"),
+        "a discarded document must not still answer for its nodes"
+    );
 }
