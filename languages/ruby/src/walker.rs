@@ -2345,6 +2345,7 @@ a = [1].freeze; begin; a.delete_at(0); rescue FrozenError; puts 'err'; end"#, r#
     let source = normalize_ruby_map_round_blocks(&source);
     let source = source.replace("i+1 != j", "i + 1 != j");
     let source = normalize_ruby_const_reads(&source);
+    let _line_index = vybe_ast::line_index::LineIndex::install(source.as_str());
     let pairs = RubyParser::parse(Rule::program, source.as_str())
         .map_err(|e| format!("Parse error: {}", e))?;
 
@@ -2376,7 +2377,27 @@ a = [1].freeze; begin; a.delete_at(0); rescue FrozenError; puts 'err'; end"#, r#
         language: Lang::Ruby,
         body,
         imports,
-        directives: Default::default(),
+        directives: vybe_ast::Directives {
+            // A ruby method CALL passes the receiver as a leading argument: the
+            // callable is the raw function off the class struct and carries no
+            // receiver of its own, unlike prototype dispatch (JS/Dart) or
+            // bind-on-access (Python, which burns the receiver in when the
+            // method is READ).
+            method_receiver: Some(vybe_ast::MethodReceiver::CallSite),
+            // Every callable declares a leading receiver parameter, not only
+            // methods — ECMA-262 §10.2.1 `[[Call]](thisArgument,
+            // argumentsList)`. `method_receiver` above says WHERE a method's
+            // receiver comes from; this says it is a real parameter on every
+            // function type. A plain `f()` passes `undefined` (§10.2.1.1).
+            receiver_binding: Some(vybe_ast::ReceiverBinding::UniversalParameter),
+            // ⛔ `@a` IS AN OWN PROPERTY. `instance_variables` enumerates the
+            // object, so the host key walk has to see the field — indexed
+            // storage hides it and the method answers `[]`. Stated as a
+            // language FACT so `seam3_indexable` withholds the optimization
+            // from a property that must stay observable.
+            instance_fields_are_own_properties: Some(true),
+            ..Default::default()
+        },
     })
 }
 
@@ -6105,6 +6126,7 @@ fn walk_raw_command_builtin(__w: &mut RubyWalker, raw: &str) -> Result<Option<St
     if tail.is_empty() || tail.starts_with('=') {
         return Ok(None);
     }
+    let _line_index = vybe_ast::line_index::LineIndex::install(tail);
     let mut parsed = RubyParser::parse(Rule::call_args, tail)
         .map_err(|e| format!("Parse error in command args: {}", e))?;
     let args_pair = parsed
@@ -8266,6 +8288,7 @@ fn ruby_enumerator_generator_expr(__w: &mut RubyWalker, source: &str) -> Option<
             let inner = &value[1..value.len() - 1];
             let mut elements = Vec::new();
             for item in inner.split(',') {
+                let _line_index = vybe_ast::line_index::LineIndex::install(item.trim());
                 let mut parsed = RubyParser::parse(Rule::expression, item.trim()).ok()?;
                 let expr_pair = parsed.next()?;
                 elements.push(ArrayElement {
@@ -8277,6 +8300,7 @@ fn ruby_enumerator_generator_expr(__w: &mut RubyWalker, source: &str) -> Option<
             }
             Expression::new(ExprKind::Array(elements))
         } else {
+            let _line_index = vybe_ast::line_index::LineIndex::install(value);
             let mut parsed = RubyParser::parse(Rule::expression, value).ok()?;
             let expr_pair = parsed.next()?;
             walk_expression(__w, expr_pair).ok()?
@@ -8838,6 +8862,7 @@ fn walk_lambda(__w: &mut RubyWalker, pair: Pair<Rule>) -> Result<ExprKind, Strin
     if let (Some(open), Some(close)) = (source.find('{'), source.rfind('}')) {
         let inner = source[open + 1..close].trim();
         if !inner.is_empty() && !inner.contains(';') && !inner.contains('\n') {
+            let _line_index = vybe_ast::line_index::LineIndex::install(inner);
             if let Ok(mut parsed) = RubyParser::parse(Rule::expression, inner) {
                 if let Some(expr_pair) = parsed.next() {
                     body = vec![Statement::new(StmtKind::Return(Some(walk_expression(__w, 
@@ -9072,14 +9097,20 @@ fn walk_expr_list_single(__w: &mut RubyWalker, pair: Pair<Rule>) -> Result<Expre
 
 fn to_span(pair: &Pair<Rule>) -> Span {
     let s = pair.as_span();
-    let (sl, sc) = s.start_pos().line_col();
-    let (el, ec) = s.end_pos().line_col();
-    Span {
-        start_line: sl as u32,
-        start_col: sc as u32,
-        end_line: el as u32,
-        end_col: ec as u32,
-    }
+    // ⛔ NOT `Position::line_col` — it counts newlines from the START OF THE
+    // INPUT, twice per node, which makes the walk quadratic in program size.
+    // See `vybe_ast::line_index`. The fallback is the old behaviour, for a
+    // parse that reached here without installing an index.
+    vybe_ast::line_index::span_1based(s.start(), s.end()).unwrap_or_else(|| {
+        let (sl, sc) = s.start_pos().line_col();
+        let (el, ec) = s.end_pos().line_col();
+        Span {
+            start_line: sl as u32,
+            start_col: sc as u32,
+            end_line: el as u32,
+            end_col: ec as u32,
+        }
+    })
 }
 
 fn negate(expr: Expression) -> Expression {

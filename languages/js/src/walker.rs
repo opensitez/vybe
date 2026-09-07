@@ -26,6 +26,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
     // generated names no matter what compiled before it on this thread.
     let mut __w_owned = JsWalker::default();
     let __w = &mut __w_owned;
+    let _line_index = vybe_ast::line_index::LineIndex::install(source);
     let pairs =
         JsParser::parse(Rule::program, source).map_err(|e| format!("Parse error: {}", e))?;
     let mut body = Vec::new();
@@ -117,38 +118,18 @@ pub fn parse(source: &str) -> Result<Module, String> {
         // only for methods. `o.m(1)` and `const f = o.m; f()` reach the same
         // dynamic `call_ref`, so a receiver that only METHODS carried would be
         // a receiver the call site could not count; uniform arity is what makes
-        // it expressible as a parameter at all. (Was `Ambient`, a mutable
-        // module global with a hand-rolled save/restore around every call —
-        // not a WASM concept, and M5 is its removal.)
+        // it expressible as a parameter at all.
         directives: vybe_ast::Directives {
-            // ✅ FLIPPED, AND LANDED. The comment that stood here said "STILL
-            // `Ambient`" long after this line said otherwise, which is the
-            // decoy failure mode: a stale comment reads as current design and
-            // gets built on. Corrected 2026-08-30.
+            // The receiver is an argument, which is what core wasm models.
             //
-            // Measured on the current tree: an emitted js module contains
-            // **ZERO** `__js_this` references — the ambient global, a mutable
-            // module global with a hand-rolled save/restore around every call
-            // and not a WASM concept, is gone from js output. Corpus: 713 js
-            // failures against a 737 pre-flip baseline, 2 regressed / 26 fixed
-            // over 10557 tests, with dart 0 regressed over 6344.
-            //
-            // The host-function callee question that blocked the flip is
-            // settled: a host callee reads its receiver at argument 0 and is
-            // told which kind of call it is via `HostContext::receiver_argc()`
-            // — but ⛔ THAT NUMBER DESCRIBES THE MODULE AND THE DISPATCHER,
-            // NOT THE ARGUMENT LIST. Where an emitter forgets to push the
-            // implicit receiver it still reads 1 and `user_args` eats a real
-            // argument. Fix the emitter, then trust the number.
-            //
-            // ⛔ js is the ONLY language on `UniversalParameter`. The other
-            // fourteen are `Ambient`, so the ambient machinery stays; each flip
-            // is its own change with its own gate.
+            // ⛔ A host callee reads its receiver at argument 0, and whether it
+            // HAS one is a property of that callee's own type
+            // (`HostFnDecl::takes_receiver`), never of the call. Omitting the
+            // push yields a SHIFTED argument list, not an arity error.
             receiver_binding: Some(vybe_ast::ReceiverBinding::UniversalParameter),
             // A method call takes its receiver from PROTOTYPE dispatch: the
-            // callable rides `__js_this` plus a bound-receiver marker, rather
-            // than the call site passing it (php) or the READ binding it in
-            // (python). Stated here so shared code reads a property of this
+            // callable rides a bound-receiver marker, rather than the call site
+            // passing it (php) or the READ binding it in (python). Stated here so shared code reads a property of this
             // UNIT instead of the profile string `class_method_dispatch`.
             method_receiver: Some(vybe_ast::MethodReceiver::Prototype),
             // ECMA-262 §15.7: a class body's methods and accessors are
@@ -1649,6 +1630,7 @@ class AsyncDisposableStack {
 /// injection passes — the snippet goes through the main module's passes
 /// after splicing).
 fn parse_runtime_class_snippet(__w: &mut JsWalker, src: &str) -> Vec<Statement> {
+    let _line_index = vybe_ast::line_index::LineIndex::install(src);
     let Ok(pairs) = JsParser::parse(Rule::program, src) else {
         return Vec::new();
     };
@@ -5544,14 +5526,21 @@ fn walk_object_property(__w: &mut JsWalker, pair: Pair<Rule>) -> Result<ObjectPr
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
 fn to_span(pair: &Pair<Rule>) -> Span {
-    let start = pair.as_span().start_pos().line_col();
-    let end = pair.as_span().end_pos().line_col();
-    Span {
-        start_line: start.0 as u32 - 1,
-        start_col: start.1 as u32 - 1,
-        end_line: end.0 as u32 - 1,
-        end_col: end.1 as u32 - 1,
-    }
+    let s = pair.as_span();
+    // ⛔ NOT `Position::line_col` — it counts newlines from the START OF THE
+    // INPUT, twice per node, which makes the walk quadratic in program size.
+    // See `vybe_ast::line_index`. The fallback is the old behaviour, for a
+    // parse that reached here without installing an index.
+    vybe_ast::line_index::span_0based(s.start(), s.end()).unwrap_or_else(|| {
+        let start = s.start_pos().line_col();
+        let end = s.end_pos().line_col();
+        Span {
+            start_line: start.0 as u32 - 1,
+            start_col: start.1 as u32 - 1,
+            end_line: end.0 as u32 - 1,
+            end_col: end.1 as u32 - 1,
+        }
+    })
 }
 
 fn first_meaningful(pair: Pair<Rule>) -> Result<Pair<Rule>, String> {

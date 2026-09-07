@@ -72,8 +72,6 @@ unresolved_reference_throws = true
 # JS is dynamically typed: an inferred type hint drives dispatch only and must
 # never coerce the stored value (a boolean stays a boolean, not i32 0/1).
 coerces_value_to_type_hint = false
-# ECMA-262 §9.1.2: `this` is bound ambiently from the call context (`__js_this`),
-# not passed as an explicit first positional parameter.
 # ECMA-262 §10.2.1.1: a missing argument is `undefined`, distinct from an
 # explicitly-passed `null`, so `f(null)` is one argument and `f()` is none.
 missing_arg_is_undefined = true

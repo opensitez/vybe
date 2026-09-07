@@ -22,6 +22,16 @@ use vybe_compiler::primitives::pointers::{self, CARRAY_BASE_KEY, CARRAY_IDX_KEY,
 use vybe_platform_libc::emitter::{
     math_adapter, stdio_adapter, string_adapter, uchar_adapter, wchar_adapter,
 };
+
+/// Source position of `pair`, 1-based, as pest reports it.
+///
+/// ⛔ NOT `Position::line_col` — it counts newlines from the START OF THE
+/// INPUT, so asking per node makes the walk quadratic in program size. See
+/// `vybe_ast::line_index`, which every parse entry point installs.
+fn to_span(pair: &Pair<Rule>) -> Span {
+    let s = pair.as_span();
+    vybe_ast::line_index::span_1based(s.start(), s.end()).unwrap_or_default()
+}
 use vybe_platform_libc::emitter::{
     posix_adapter, regex_adapter, sdl as sdl_adapter, thread_adapter, time_adapter,
 };
@@ -51,6 +61,7 @@ fn shared_global_addresses(names: &[String]) -> Vec<ArrayElement> {
 
 pub fn parse(source: &str) -> Result<Module, String> {
     let (preprocessed, pp_macros) = preprocess_c_source(source);
+    let _line_index = vybe_ast::line_index::LineIndex::install(&preprocessed);
     let mut pairs =
         CParser::parse(Rule::program, &preprocessed).map_err(|e| format!("C parse error: {e}"))?;
     let program = pairs.next().ok_or("empty parse")?;
@@ -169,6 +180,11 @@ pub fn parse(source: &str) -> Result<Module, String> {
         imports,
         directives: vybe_ast::Directives {
             app_shell,
+            // Every callable declares a leading receiver parameter, not only
+            // methods — ECMA-262 §10.2.1 `[[Call]](thisArgument,
+            // argumentsList)`. C has no methods, so every call passes the
+            // undefined receiver (§10.2.1.1); the uniform arity is the point.
+            receiver_binding: Some(vybe_ast::ReceiverBinding::UniversalParameter),
             ..Default::default()
         },
     })
@@ -2461,6 +2477,7 @@ impl Walker {
             return expr(ExprKind::Lit(Literal::Float(f)));
         }
         // Try re-parsing the value as a C expression.
+        let _line_index = vybe_ast::line_index::LineIndex::install(text);
         if let Ok(mut p) = CParser::parse(Rule::assignment_expression, text) {
             if let Some(e) = p.next() {
                 return self.walk_assignment(e);
@@ -5436,6 +5453,7 @@ impl Walker {
                 }
                 return ty.clone();
             }
+            let _line_index = vybe_ast::line_index::LineIndex::install(expr_src);
             if let Ok(mut pairs) = CParser::parse(Rule::assignment_expression, expr_src) {
                 if let Some(pair) = pairs.next() {
                     let expr = self.walk_assignment(pair);
@@ -5977,7 +5995,26 @@ impl Walker {
         lower_c_gotos(out)
     }
 
+    /// Stamp every statement this pair produced with its source position.
+    ///
+    /// ⛔ THE ONE PLACE A C STATEMENT GETS A SPAN. Statements are built by
+    /// `vybe_platform_libc`'s `stmt`, which the platform's own synthesis shares
+    /// and which therefore cannot take a position. A statement that already
+    /// carries one — anything a RECURSIVE walk produced — keeps it, because its
+    /// own pair is narrower than this one. `to_span` is 1-based, so line 0 only
+    /// ever means "never set".
     fn walk_statement(&mut self, pair: Pair<Rule>, out: &mut Vec<Statement>) {
+        let span = to_span(&pair);
+        let base = out.len();
+        self.walk_statement_inner(pair, out);
+        for st in out[base..].iter_mut() {
+            if st.span.start_line == 0 && st.span.end_line == 0 {
+                st.span = span;
+            }
+        }
+    }
+
+    fn walk_statement_inner(&mut self, pair: Pair<Rule>, out: &mut Vec<Statement>) {
         let Some(inner) = pair.into_inner().next() else {
             return;
         };
@@ -16736,6 +16773,7 @@ impl Walker {
         let substituted = expand_macro_text(params, body, &args, &self.object_macros);
         let trimmed = substituted.trim();
         // Parse the substituted body as a C expression.
+        let _line_index = vybe_ast::line_index::LineIndex::install(trimmed);
         if let Ok(mut pairs) = CParser::parse(Rule::assignment_expression, trimmed) {
             if let Some(pair) = pairs.next() {
                 return self.walk_assignment(pair);
@@ -16770,6 +16808,7 @@ impl Walker {
                     body.push(';');
                 }
                 let wrapped = format!("{{ {} }}", body);
+                let _line_index = vybe_ast::line_index::LineIndex::install(&wrapped);
                 let Ok(mut pairs) = CParser::parse(Rule::compound_statement, &wrapped) else {
                     return None;
                 };
@@ -16790,6 +16829,7 @@ impl Walker {
             body.push(';');
         }
         let wrapped = format!("{{ {} }}", body);
+        let _line_index = vybe_ast::line_index::LineIndex::install(&wrapped);
         let Ok(mut pairs) = CParser::parse(Rule::compound_statement, &wrapped) else {
             return None;
         };

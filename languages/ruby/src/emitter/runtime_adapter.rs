@@ -34,7 +34,7 @@ fn call_import(
 }
 
 fn call_ref(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
-    vybe_compiler::primitives::callable::emit_direct_invoke_chunk(&mut chunks[current], argc, line);
+    vybe_compiler::primitives::callable::emit_stacked_invoke(chunks, current, argc, line);
 }
 
 fn emit_store_args(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) -> Vec<u16> {

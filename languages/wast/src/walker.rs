@@ -59,6 +59,10 @@ struct WastWalker {
     /// be written positionally (`struct.get_s 0 0`, `gc/struct.wast`), and the
     /// name is what every per-type map here is keyed by.
     type_index_name: Vec<String>,
+    /// Param/result counts of the types an INLINE signature defines, in the
+    /// order they extend the type index space — which is AFTER every explicit
+    /// `(type …)`. See `collect_implicit_func_types`.
+    implicit_func_types: Vec<(usize, usize)>,
     type_func_params: HashMap<String, usize>,
     /// Call Tags proposal: `(func … (call_tag $t+))` — func name → the tags
     /// its funcref handles. Collected while walking func fields and emitted as
@@ -111,6 +115,16 @@ struct WastWalker {
     /// Per module class: exported memory name → script slot, so a later
     /// module's `(memory (import "M" "mem"))` can find what it is aliasing.
     module_memory_exports: HashMap<String, HashMap<String, usize>>,
+    /// This module's tableidx space mapped onto the script's, one entry per
+    /// declared table; an import's entry points at the table it aliases. The
+    /// table twin of [`memory_slots`], and needed for the same reason.
+    table_slots: Vec<usize>,
+    /// One entry per `(table …)` FIELD, in order: the script slot it owns and
+    /// whether it merely aliases an imported table.
+    table_field_info: Vec<(usize, bool)>,
+    /// Per module class: exported table name → script slot, so a later
+    /// module's `(table (import "M" "tab"))` can find what it is aliasing.
+    module_table_exports: HashMap<String, HashMap<String, usize>>,
     table_index_base: usize,
     memory_index_base: usize,
     /// Data segments share ONE list across the whole script (the compiler
@@ -135,6 +149,20 @@ struct WastWalker {
     needs_trap_contains: bool,
     func_index_name: Vec<String>,
     module_exports: HashMap<String, HashMap<String, String>>,
+    /// class → export name → (OWNING class, method), for exports that name an
+    /// IMPORTED function. Re-exporting an import publishes the exporter's
+    /// function, which lives in the exporter's class — `module_exports` can
+    /// only name a method of this one. See where it is populated.
+    export_func_alias: HashMap<String, HashMap<String, (String, String)>>,
+    /// Per module class: export name → the EXTERNAL TYPE it publishes.
+    ///
+    /// `assert_unlinkable` asks whether a module can be instantiated against
+    /// what is already registered, which is a question about types, not just
+    /// names. Without this the assertion had nothing to consult and 202 of
+    /// them discharged unchecked.
+    module_export_types: HashMap<String, HashMap<String, ExternType>>,
+    /// Per function NAME: its param and result value types.
+    func_name_sigs: HashMap<String, (Vec<String>, Vec<String>)>,
     export_global_map: HashMap<String, String>,
     module_global_exports: HashMap<String, HashMap<String, String>>,
     /// An imported global's local binding name → the EXPORTING module's
@@ -142,6 +170,10 @@ struct WastWalker {
     /// the name is what makes an imported mutable global one shared cell
     /// rather than a copy.
     global_import_alias: HashMap<String, String>,
+    /// A global `$id` → the binding it names in THIS module: its own cell, or
+    /// the exporter's when the global is imported. `global.get $g` carries the
+    /// bare id and has to reach the qualified binding through this.
+    global_binding_of_id: HashMap<String, String>,
     global_index_name: Vec<String>,
     /// THIS function's local index space, in order: params first, then locals.
     /// A WAT local may be addressed by INDEX whatever it is called, so
@@ -1278,11 +1310,20 @@ fn emit_folded_br_on_null(__w: &mut WastWalker,
         }
         BrDest::Frame(entry) => {
             if is_non_null {
-                // Carry the ref into the target's topmost result, then branch.
-                if let Some(rt) = entry.result_temps.last() {
+                // `br_on_non_null $l` on `[t*] -> [t* (ref ht)]` carries `t*`
+                // AND the ref: the values below the ref fill the target's lower
+                // results, the ref its topmost one.
+                let n = entry.result_temps.len();
+                if n > 0 {
+                    carry_stack_into_temps(
+                        &entry.result_temps[..n - 1],
+                        stack,
+                        false,
+                        &mut then_body,
+                    );
                     then_body.push(Statement::new(StmtKind::Expr(Expression::new(
                         ExprKind::Assign {
-                            target: Box::new(Expression::ident(rt)),
+                            target: Box::new(Expression::ident(&entry.result_temps[n - 1])),
                             value: Box::new(Expression::ident(&tmp)),
                         },
                     ))));
@@ -2100,7 +2141,10 @@ fn emit_folded_stmtwise(__w: &mut WastWalker,
                     Some(op) => {
                         push_folded_operand(__w, op, labels, statements, stack)?;
                     }
-                    None => immediate_args.push(walk_instr_arg_for(__w, child, labels, &head)?),
+                    None => {
+                        let a = walk_instr_arg_for(__w, child, labels, &head, &immediate_args)?;
+                        immediate_args.push(a);
+                    }
                 }
             }
             Rule::instr => {
@@ -2291,7 +2335,7 @@ fn emit_folded_stmtwise(__w: &mut WastWalker,
             let (argc, expected_results) = peek_typeuse_shape(__w, &inner);
             let tableidx = peek_call_indirect_table(&inner)
                 .map(|t| resolve_table_index(__w, &t) as usize)
-                .unwrap_or_else(|| __w.table_index_base);
+                .unwrap_or_else(|| default_table_slot(__w));
             let n = (argc + 1).min(stack.len());
             let operands: Vec<Expression> = stack.split_off(stack.len() - n);
             // The DECLARED functype rides along as a fourth immediate. The
@@ -2792,6 +2836,7 @@ const SPECTEST_MODULE: &str = r#"
 /// Walk `SPECTEST_MODULE` into `body` ahead of the script's own commands, so
 /// its module class exists and is registered before anything can import it.
 fn prepend_spectest_module(__w: &mut WastWalker, body: &mut Vec<Statement>) -> Result<(), String> {
+    let _line_index = vybe_ast::line_index::LineIndex::install(SPECTEST_MODULE);
     let pairs = WastParser::parse(Rule::program, SPECTEST_MODULE)
         .map_err(|e| format!("internal: the spectest module does not parse: {e}"))?;
     for top in pairs {
@@ -2811,6 +2856,7 @@ fn prepend_spectest_module(__w: &mut WastWalker, body: &mut Vec<Statement>) -> R
 }
 
 pub fn parse(source: &str) -> Result<Module, String> {
+    let _line_index = vybe_ast::line_index::LineIndex::install(source);
     let pairs =
         WastParser::parse(Rule::program, source).map_err(|e| format!("Parse error: {}", e))?;
 
@@ -2890,6 +2936,36 @@ pub fn parse(source: &str) -> Result<Module, String> {
 
 // ── Script commands ───────────────────────────────────────────────────────────
 
+/// Walk a module written as text INSIDE a script — the `binary` and `quote`
+/// forms — on the script's own walker.
+///
+/// ⛔ NOT `parse(&text)`. `parse` owns a fresh `WastWalker`, and a wast SCRIPT
+/// accumulates across its own modules: the module sequence that names each
+/// class and each unnamed global, the index bases, `module_exports`,
+/// `registered_module_class`. A second walker restarts all of it, so the
+/// module's class collided with the outer script's first one and its exports
+/// were published to a table that was dropped on return — a following
+/// `(invoke "f")` found nothing to call.
+fn walk_embedded_module_text(
+    __w: &mut WastWalker,
+    text: &str,
+    body: &mut Vec<Statement>,
+) -> Result<(), String> {
+    let pairs = WastParser::parse(Rule::program, text)
+        .map_err(|e| format!("Parse error in embedded module: {}", e))?;
+    for top in pairs {
+        if top.as_rule() != Rule::program {
+            continue;
+        }
+        for cmd in top.into_inner() {
+            if cmd.as_rule() != Rule::EOI {
+                walk_script_cmd(__w, cmd, body)?;
+            }
+        }
+    }
+    Ok(())
+}
+
 fn walk_script_cmd(__w: &mut WastWalker, pair: Pair<Rule>, body: &mut Vec<Statement>) -> Result<(), String> {
     match pair.as_rule() {
         Rule::script_cmd => {
@@ -2915,32 +2991,30 @@ fn walk_script_cmd(__w: &mut WastWalker, pair: Pair<Rule>, body: &mut Vec<Statem
                 .filter(|c| c.as_rule() == Rule::string)
                 .map(|s| unquote(s.as_str()))
                 .collect();
-            body.extend(parse(&text)?.body);
-            Ok(())
+            walk_embedded_module_text(__w, &text, body)
         }
         // `(module binary "…")` embeds a module as raw BYTES.
         //
-        // This used to be `Ok(())` — accepted and skipped. A top-level binary
-        // module in a spec fixture is an assertion in its own right: it is
-        // stated to be WELL-FORMED, and the file is testing that an
-        // implementation accepts it. Skipping it means the one thing the
-        // fixture asserts goes unchecked, and it also hides the opposite
-        // failure — an over-strict decoder rejecting a module the spec says is
-        // fine, which is exactly the risk a new validation pass introduces.
+        // A top-level binary module is a module, not just an assertion about
+        // bytes: it INSTANTIATES, and a later `(invoke "f")` calls into its
+        // exports. It is rendered back to text and walked by the same path a
+        // `(module …)` takes, so the class, the export tables, the globals and
+        // the segments are built once, by the code that already knows how.
         //
-        // So: decode it, and report a failure to decode. Not yet
-        // INSTANTIATED — its exports are not reachable by a later `invoke`,
-        // which needs the decoded chunks spliced into the script and is a
-        // separate piece of work. Decoding is the half that can be checked
-        // honestly today, and it is strictly more than nothing.
+        // Decoding is checked first and separately: the fixture states these
+        // bytes are well-formed, and an over-strict decoder rejecting a module
+        // the spec says is fine has to report as a decode failure, not as a
+        // rendering gap.
         Rule::module_binary_cmd => {
             let bytes = binary_module_bytes(&pair);
-            match vybe_platform_wasm::read_wasm(&bytes) {
-                Ok(_) => Ok(()),
-                Err(e) => Err(format!(
+            if let Err(e) = vybe_platform_wasm::read_wasm(&bytes) {
+                return Err(format!(
                     "(module binary …) failed to decode, but the fixture declares it well-formed: {e}"
-                )),
+                ));
             }
+            let text = vybe_platform_wasm::wat_from_binary(&bytes)
+                .map_err(|e| format!("(module binary …) cannot be rendered as text: {e}"))?;
+            walk_embedded_module_text(__w, &text, body)
         }
         Rule::assert_return => {
             body.push(walk_assert_return(__w, pair)?);
@@ -2978,7 +3052,7 @@ fn walk_script_cmd(__w: &mut WastWalker, pair: Pair<Rule>, body: &mut Vec<Statem
         // are joined, not by looking at one. Still unenforced, and still
         // counted as such — 200 assertions.
         Rule::assert_unlinkable => {
-            body.push(Statement::with_span(StmtKind::Empty, to_span(&pair)));
+            body.push(walk_assert_unlinkable(__w, pair)?);
             Ok(())
         }
         // Exhaustion/suspension are RUNTIME trap assertions with an
@@ -5064,6 +5138,10 @@ fn walk_module(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Vec<Statement>,
     let mut members: Vec<ClassMember> = Vec::new();
     let mut pre_stmts: Vec<Statement> = Vec::new(); // before class (globals)
     let mut post_stmts: Vec<Statement> = Vec::new(); // after class (start, exports, imports)
+    // Data segments run after EVERY element segment, per the spec's
+    // instantiation order, so they are kept apart from `post_stmts` — source
+    // order must not interleave the two.
+    let mut data_stmts: Vec<Statement> = Vec::new();
 
     let mut index_arities = Vec::new();
     let mut name_arities = HashMap::new();
@@ -5171,12 +5249,15 @@ fn walk_module(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Vec<Statement>,
         .collect();
     let mut defined_names: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut export_map: HashMap<String, String> = HashMap::new();
+    // Function name → (param types, result types), for the export-type table.
+    let mut func_name_sigs: HashMap<String, (Vec<String>, Vec<String>)> = HashMap::new();
     let mut defined_func_count = 0usize;
     for child in pair.clone().into_inner() {
         if child.as_rule() == Rule::module_field {
             if let Some(inner) = child.into_inner().next() {
                 if inner.as_rule() == Rule::func_field {
-                    let (name, params_count, results_count) = scan_func_signature(inner.clone());
+                    let (name, params_count, results_count, ptys, rtys) =
+                        scan_func_signature_typed(inner.clone());
                     index_arities.push(params_count);
                     index_results.push(results_count);
                     if let Some(n) = &name {
@@ -5209,6 +5290,13 @@ fn walk_module(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Vec<Statement>,
                         .clone()
                         .unwrap_or_else(|| format!("__wasm_func_{}", index_names.len()));
                     index_names.push(declared.clone());
+                    // Key the signature by the name the function is DECLARED
+                    // under — `export_func_map` points at that, not at the
+                    // `$id`. Keying by the id alone missed every unnamed
+                    // `(func (export "f") …)`, which is most of the suite, so
+                    // the export-type table came out empty and every
+                    // `assert_unlinkable` discharged exactly as before.
+                    func_name_sigs.insert(declared.clone(), (ptys.clone(), rtys.clone()));
                     defined_func_count += 1;
                     if method.is_some() {
                         // An unnamed exported func is reached by its export name
@@ -5749,6 +5837,14 @@ fn walk_module(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Vec<Statement>,
         })
         .collect();
     __w.type_func_parent = func_parents;
+    // §6.6.4: a `typeuse` written inline — `(func (result i32) …)` — DEFINES a
+    // type when the module has no matching one, and it extends the SAME index
+    // space, after every explicit `(type …)`. A module with no `(type …)` at
+    // all still has types, so `(type 0)` in it names the first inline
+    // signature; resolving only the explicit list answered 0 params 0 results,
+    // and `call_indirect` then reported a type mismatch against a correct
+    // table entry.
+    __w.implicit_func_types = collect_implicit_func_types(__w, &pair);
     // Each DEFINED function's own signature, collected here because `pair` is
     // consumed before the directives are emitted. Resolving a `(type $t)`
     // reference needs `type_func_sigs` above, so this must come after it.
@@ -5790,6 +5886,40 @@ fn walk_module(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Vec<Statement>,
             ))
         })
         .collect();
+    // ⛔ A FUNCTION MAY STATE ITS SIGNATURE BY REFERENCE. `(func $c (type $t) …)`
+    // carries no inline `param`/`result`, and the pre-scan counts exactly those
+    // children — so a function written that way reported ZERO params and ZERO
+    // results, and every caller took one value from a `(result f64 i32)` callee.
+    // The type table those references resolve through exists only here, which is
+    // why the counts are corrected at this point rather than at the scan.
+    //
+    // Only entries still reading (0, 0) are rewritten: a function that wrote its
+    // signature inline already holds the right counts, and a name the pre-scan
+    // never registered is left alone rather than guessed at.
+    for (name, (params, results), _) in &defined_func_sigs {
+        if params.is_empty() && results.is_empty() {
+            continue;
+        }
+        if !__w.func_name_results.contains_key(name) {
+            continue;
+        }
+        let stale = __w.func_name_arities.get(name).copied().unwrap_or(0) == 0
+            && __w.func_name_results.get(name).copied().unwrap_or(0) == 0;
+        if !stale {
+            continue;
+        }
+        __w.func_name_arities.insert(name.clone(), params.len());
+        __w.func_name_results.insert(name.clone(), results.len());
+        func_name_sigs.insert(name.clone(), (params.clone(), results.clone()));
+        if let Some(i) = __w.func_index_name.iter().position(|n| n == name) {
+            if let Some(slot) = __w.func_index_arities.get_mut(i) {
+                *slot = params.len();
+            }
+            if let Some(slot) = __w.func_index_results.get_mut(i) {
+                *slot = results.len();
+            }
+        }
+    }
     __w.array_elem_type = array_elem_types;
     // Per-MODULE counter; `elem_index_base` carries the script-wide offset it
     // is added to, so the two together number segments the way the compiler
@@ -5819,25 +5949,149 @@ fn walk_module(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Vec<Statement>,
 
     // 3a. Pre-scan tables so named tables (`$t1`) resolve to their declaration
     //     index for `elem` population and `call_indirect $t` dispatch.
+    //
+    // ⚠ A tableidx is MODULE-RELATIVE and a table is not always NEW — the same
+    // rule `memory_slots` exists for, and for the same reason: an IMPORTED
+    // table occupies an index here while BEING the exporter's table, which a
+    // per-module base cannot express. Counting fields and adding a base gave
+    // an imported table a FRESH slot, so `(elem (i32.const 7) $f)` written
+    // through an import populated a table nobody else could see and the
+    // exporter's own `call_indirect` still found null — `multi-memory/linking0`.
     let mut table_names: HashMap<String, usize> = HashMap::new();
-    let mut table_idx = 0usize;
+    let mut table_slots: Vec<usize> = Vec::new();
+    let mut table_field_info: Vec<(usize, bool)> = Vec::new();
+    let mut table_exports: HashMap<String, usize> = HashMap::new();
+    let mut defined_tables = 0usize;
     let table_base = __w.table_index_base;
     for child in pair.clone().into_inner() {
-        if child.as_rule() == Rule::module_field {
-            if let Some(inner) = child.into_inner().next() {
-                if inner.as_rule() == Rule::table_field {
-                    if let Some(id) = inner.into_inner().find(|c| c.as_rule() == Rule::id) {
-                        table_names.insert(id.as_str()[1..].to_string(), table_base + table_idx);
-                    }
-                    table_idx += 1;
+        if child.as_rule() != Rule::module_field {
+            continue;
+        }
+        let Some(inner) = child.into_inner().next() else {
+            continue;
+        };
+        let inner_rule = inner.as_rule();
+        // `(table …)`, or an `(import … (table …))` whose descriptor is one.
+        let (decl, import_pair) = match inner_rule {
+            Rule::table_field => {
+                let imp = inner
+                    .clone()
+                    .into_inner()
+                    .find(|c| c.as_rule() == Rule::import_inline);
+                (Some(inner.clone()), imp)
+            }
+            Rule::import_field => {
+                let desc = inner
+                    .clone()
+                    .into_inner()
+                    .find(|c| c.as_rule() == Rule::import_desc)
+                    .filter(|d| {
+                        d.as_str()
+                            .trim_start_matches('(')
+                            .trim_start()
+                            .starts_with("table")
+                    });
+                match desc {
+                    Some(d) => (Some(d), Some(inner.clone())),
+                    None => (None, None),
                 }
+            }
+            _ => (None, None),
+        };
+        let Some(decl) = decl else { continue };
+        let aliased = import_pair.and_then(|imp| {
+            let strings: Vec<String> = imp
+                .into_inner()
+                .filter(|c| c.as_rule() == Rule::string)
+                .map(|s| unquote(s.as_str()))
+                .take(2)
+                .collect();
+            let (m, n) = (strings.first()?, strings.get(1)?);
+            let class = __w.registered_module_class.get(m)?;
+            __w.module_table_exports.get(class)?.get(n).copied()
+        });
+        // An import with nothing to alias in the STANDALONE spelling declares
+        // nothing today, exactly as on the memory side — giving it a slot would
+        // put an entry in the space with no table behind it and shift every
+        // later module. The inline `(table $t (import …) …)` spelling does
+        // declare a table, so it takes a real slot.
+        let is_standalone = matches!(inner_rule, Rule::import_field);
+        let slot = match aliased {
+            Some(s) => s,
+            None if is_standalone => continue,
+            None => {
+                let s = table_base + defined_tables;
+                defined_tables += 1;
+                s
+            }
+        };
+        if let Some(id) = decl.clone().into_inner().find(|c| c.as_rule() == Rule::id) {
+            table_names.insert(id.as_str()[1..].to_string(), slot);
+        }
+        for e in decl
+            .clone()
+            .into_inner()
+            .filter(|c| c.as_rule() == Rule::export_inline)
+        {
+            if let Some(s) = e.into_inner().find(|c| c.as_rule() == Rule::string) {
+                table_exports.insert(unquote(s.as_str()), slot);
+            }
+        }
+        table_slots.push(slot);
+        // `walk_table_field` is driven by a counter over `table_field`s only,
+        // so it needs its own parallel record: the slot each one owns and
+        // whether it ALIASES (in which case it must declare nothing).
+        if matches!(inner_rule, Rule::table_field) {
+            table_field_info.push((slot, aliased.is_some()));
+        }
+    }
+    // `(export "name" (table $t))` names an already-declared table.
+    for child in pair.clone().into_inner() {
+        if child.as_rule() != Rule::module_field {
+            continue;
+        }
+        let Some(inner) = child.into_inner().next() else {
+            continue;
+        };
+        if inner.as_rule() != Rule::export_field {
+            continue;
+        }
+        let name = inner
+            .clone()
+            .into_inner()
+            .find(|c| c.as_rule() == Rule::string)
+            .map(|s| unquote(s.as_str()));
+        let target = inner
+            .clone()
+            .into_inner()
+            .find(|c| c.as_rule() == Rule::export_desc)
+            .filter(|d| {
+                d.as_str()
+                    .trim_start_matches('(')
+                    .trim_start()
+                    .starts_with("table")
+            })
+            .and_then(|d| d.into_inner().find(|c| c.as_rule() == Rule::index));
+        if let (Some(name), Some(idx)) = (name, target) {
+            let t = idx.as_str().trim();
+            let slot = match t.strip_prefix('$') {
+                Some(id) => table_names.get(id).copied(),
+                None => t.parse::<usize>().ok().and_then(|n| table_slots.get(n).copied()),
+            };
+            if let Some(slot) = slot {
+                table_exports.insert(name, slot);
             }
         }
     }
     __w.table_name_index = table_names;
+    __w.table_slots = table_slots;
+    __w.table_field_info = table_field_info;
+    __w.module_table_exports
+        .insert(prescan_class_name.clone(), table_exports);
     // Advance the base only after this module is fully walked (deferred to the
     // end of this function); record the count here.
-    let module_table_count = table_idx;
+    // ⚠ DEFINED tables only — an aliased import allocates nothing.
+    let module_table_count = defined_tables;
 
     // 3a'. Pre-scan memories.
     //
@@ -6023,6 +6277,20 @@ fn walk_module(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Vec<Statement>,
     for child in pair.clone().into_inner() {
         if child.as_rule() == Rule::module_field {
             if let Some(inner) = child.into_inner().next() {
+                // ⛔ `(memory (data …))` IS A DATA SEGMENT AND TAKES AN INDEX.
+                // Counting only `data_field`s made `data_index_base` drift by
+                // one per inline segment, so every later module's
+                // `memory.init n` named the wrong bytes. `bulk-memory/bulk`
+                // hid it: the segment it wrongly reached held the SAME four
+                // bytes as the one it meant, so the read came out right.
+                if inner.as_rule() == Rule::memory_field
+                    && inner
+                        .clone()
+                        .into_inner()
+                        .any(|c| c.as_rule() == Rule::inline_memory_data)
+                {
+                    data_idx += 1;
+                }
                 if inner.as_rule() == Rule::data_field {
                     if let Some(id) = inner.into_inner().find(|c| c.as_rule() == Rule::id) {
                         data_names.insert(id.as_str()[1..].to_string(), data_base + data_idx);
@@ -6038,6 +6306,13 @@ fn walk_module(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Vec<Statement>,
     // 3a''. Pre-scan globals so a `global.get N` / `global.set N` by numeric
     //       index resolves to the right binding (each global's `$id`, or a
     //       synthetic `__wasm_global_<i>` when unnamed).
+    // ⛔ PER-MODULE STATE. The alias map is keyed by the BARE `$id`, and each
+    // wast module has its own name scope — so a module importing `$g` left an
+    // entry that every LATER module's own `$g` then resolved through, reading
+    // the first module's cell instead of its own. Rebuilt per module, like the
+    // index list below it.
+    __w.global_import_alias.clear();
+    __w.global_binding_of_id.clear();
     let mut global_names: Vec<String> = Vec::new();
     let mut global_export_map: HashMap<String, String> = HashMap::new();
     // ⚠ TWO COUNTERS, ON PURPOSE.
@@ -6060,15 +6335,6 @@ fn walk_module(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Vec<Statement>,
                     let idx = defined_ordinal;
                     defined_ordinal += 1;
                     let binding = global_binding_name(__w, &inner, idx);
-                    // Inline exports: `(global $a (export "a") i32 …)`.
-                    for e in inner
-                        .clone()
-                        .into_inner()
-                        .filter(|c| c.as_rule() == Rule::export_inline)
-                        .filter_map(|c| c.into_inner().find(|p| p.as_rule() == Rule::string))
-                    {
-                        global_export_map.insert(unquote(e.as_str()), binding.clone());
-                    }
                     // `(global $g (import "m" "e") …)` is a second NAME for the
                     // exporting module's global, not a new cell. Resolve it to
                     // the exporter's binding and record the alias, so both the
@@ -6092,15 +6358,31 @@ fn walk_module(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Vec<Statement>,
                                     .and_then(|ex| ex.get(&e).cloned())
                             })
                         });
-                    match imported {
+                    // The cell this field names: the exporter's when it is
+                    // imported, its own otherwise. Everything that refers to
+                    // the global — the index space, the export table, a
+                    // `global.get $id` — has to answer with the SAME one.
+                    let cell = match &imported {
                         Some(exporter_binding) => {
                             __w.global_import_alias
                                 .insert(binding.clone(), exporter_binding.clone());
-                            // The index form must reach the same cell.
-                            global_names.push(exporter_binding);
+                            exporter_binding.clone()
                         }
-                        None => global_names.push(binding),
+                        None => binding.clone(),
+                    };
+                    if let Some(id) = global_field_id(&inner) {
+                        __w.global_binding_of_id.insert(id, cell.clone());
                     }
+                    // Inline exports: `(global $a (export "a") i32 …)`.
+                    for e in inner
+                        .clone()
+                        .into_inner()
+                        .filter(|c| c.as_rule() == Rule::export_inline)
+                        .filter_map(|c| c.into_inner().find(|p| p.as_rule() == Rule::string))
+                    {
+                        global_export_map.insert(unquote(e.as_str()), cell.clone());
+                    }
+                    global_names.push(cell);
                 } else if inner.as_rule() == Rule::import_field {
                     // ⚠ THE STANDALONE SPELLING COUNTS TOO.
                     //
@@ -6140,14 +6422,18 @@ fn walk_module(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Vec<Statement>,
                                 .and_then(|ex| ex.get(&e).cloned())
                         })
                     });
-                    match imported {
+                    let cell = match &imported {
                         Some(exporter_binding) => {
                             __w.global_import_alias
                                 .insert(binding.clone(), exporter_binding.clone());
-                            global_names.push(exporter_binding);
+                            exporter_binding.clone()
                         }
-                        None => global_names.push(binding),
+                        None => binding.clone(),
+                    };
+                    if let Some(id) = global_field_id(&desc) {
+                        __w.global_binding_of_id.insert(id, cell.clone());
                     }
+                    global_names.push(cell);
                 }
             }
         }
@@ -6170,7 +6456,15 @@ fn walk_module(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Vec<Statement>,
                                 if let Some(idx) =
                                     c.into_inner().find(|p| p.as_rule() == Rule::index)
                                 {
-                                    target = resolve_func_index_name(&idx, &global_names);
+                                    // `(global $g)` resolves to a bare `$id`;
+                                    // `(global 0)` already reads a binding out
+                                    // of the index space.
+                                    target = resolve_func_index_name(&idx, &global_names).map(|t| {
+                                        __w.global_binding_of_id
+                                            .get(&t)
+                                            .cloned()
+                                            .unwrap_or(t)
+                                    });
                                 }
                             }
                             _ => {}
@@ -6189,6 +6483,32 @@ fn walk_module(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Vec<Statement>,
         __w.module_global_exports
             .insert(prescan_class_name.clone(), global_export_map)
     };
+
+    // Publish this module's EXPORT TYPES. `assert_unlinkable` asks whether a
+    // module can be instantiated against what is registered, which is a
+    // question about types; without this table it had nothing to consult.
+    {
+        let mut types: HashMap<String, ExternType> = HashMap::new();
+        for (export_name, func_name) in __w.export_func_map.clone() {
+            if let Some((params, results)) = func_name_sigs.get(&func_name) {
+                types.insert(
+                    export_name,
+                    ExternType::Func { params: params.clone(), results: results.clone() },
+                );
+            }
+        }
+        for (export_name, ty) in __w.export_global_map.clone() {
+            let mutable = ty.contains("mut");
+            let bare = ty
+                .trim_start_matches('(')
+                .trim_start_matches("mut")
+                .trim_matches(|c: char| c == '(' || c == ')' || c.is_whitespace())
+                .to_string();
+            types.insert(export_name, ExternType::Global { ty: bare, mutable });
+        }
+        __w.module_export_types
+            .insert(prescan_class_name.clone(), types);
+    }
 
     // 3b. Pre-scan exception tags so a `catch $e` in any function body knows
     //     the tag's payload arity regardless of source order. Reset first —
@@ -6410,12 +6730,29 @@ fn walk_module(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Vec<Statement>,
         __w.module_exports
             .insert(prescan_class_name.clone(), module_exports)
     };
+    // ⛔ AN EXPORT MAY NAME AN IMPORTED FUNCTION. `(export "Mm.load" (func
+    // $loadM))` where `$loadM` is imported re-exports the EXPORTER's function,
+    // and that function is a method of the exporter's class — this module has
+    // no such method, so an `(invoke $Nm "Mm.load")` resolved to nothing.
+    // `import_alias` already holds the owner; it is built just above.
+    {
+        let mut aliased: HashMap<String, (String, String)> = HashMap::new();
+        for (export_name, method) in __w.export_func_map.clone() {
+            if let Some(owner) = __w.import_alias.get(&method) {
+                aliased.insert(export_name, owner.clone());
+            }
+        }
+        __w.export_func_alias
+            .insert(prescan_class_name.clone(), aliased);
+    }
     __w.module_class_name = prescan_class_name;
 
     let mut global_decl_idx = 0usize;
     // Table population (inline `(elem …)` abbreviation, init expression) targets
     // the SCRIPT's table index space, so it starts at this module's base — not 0.
-    let mut table_decl_idx = __w.table_index_base;
+    // Counts `table_field`s, so it indexes `table_field_info` — which carries
+    // the script slot each one owns and whether it aliases an import.
+    let mut table_decl_idx = 0usize;
     let mut memory_decl_idx = 0usize;
     // Imported functions occupy the leading function indices (prescan step 1),
     // so a defined function's index starts after them.
@@ -6530,10 +6867,31 @@ fn walk_module(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Vec<Statement>,
                     // data tables (the VM allocates pages and writes active data
                     // at instantiation, before `_start`).
                     Rule::memory_field if !is_definition => {
-                        pre_stmts.extend(walk_memory_field(__w, inner, memory_decl_idx)?);
+                        // ⛔ THE INLINE `(memory (data …))` SEGMENT IS A DATA
+                        // SEGMENT AND MUST BE SEQUENCED WITH THE OTHERS. The
+                        // dataidx space follows EMISSION order, so leaving this
+                        // one in `pre_stmts` while standalone `(data …)` fields
+                        // moved to `data_stmts` renumbered every segment after
+                        // it — `bulk-memory/bulk.wast`'s `memory.init 0` then
+                        // named a different module's bytes.
+                        for s in walk_memory_field(__w, inner, memory_decl_idx)? {
+                            if matches!(s.kind, StmtKind::DataSegment { .. }) {
+                                data_stmts.push(s);
+                            } else {
+                                pre_stmts.push(s);
+                            }
+                        }
                         memory_decl_idx += 1;
                     }
-                    Rule::data_field if !is_definition => pre_stmts.push(walk_data_field(__w, inner)?),
+                    // ⛔ ELEM SEGMENTS FIRST, THEN DATA. The spec's
+                    // instantiation order is every element segment, then every
+                    // data segment — not source order, and not interleaved. A
+                    // data segment now emits `memory.init`, so it has to be
+                    // sequenced against the `table.set`s the elem segments
+                    // emit: `multi-memory/linking0` instantiates a module whose
+                    // data segment TRAPS, and the spec still requires its elem
+                    // segment to have populated the table first.
+                    Rule::data_field if !is_definition => data_stmts.push(walk_data_field(__w, inner)?),
                     Rule::table_field if !is_definition => {
                         let (decl, population) = walk_table_field(__w, inner, table_decl_idx)?;
                         pre_stmts.push(decl);
@@ -6706,6 +7064,7 @@ fn walk_module(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Vec<Statement>,
             .collect::<Vec<_>>()
     });
     result.extend(post_stmts);
+    result.extend(data_stmts);
 
     // `(start $f)` runs at instantiation: invoke it as a static method of the
     // module class (functions are static methods). This is INDEPENDENT of the
@@ -6954,10 +7313,156 @@ fn walk_func_field(__w: &mut WastWalker, pair: Pair<Rule>, func_index: usize) ->
 /// parameter count. Parameters are wrapped in `typeuse`, and imported funcs are
 /// further wrapped in `import_desc`, so a flat scan of direct children misses
 /// them — the call-site arity would then be 0 and stack operands never consumed.
-fn scan_func_signature(pair: Pair<Rule>) -> (Option<String>, usize, usize) {
+/// Name, param count, result count — and the param/result TYPES.
+///
+/// The counts alone cannot decide import compatibility: `(func (param i32))`
+/// and `(func (param f32))` have the same arity and are NOT interchangeable.
+/// The external type of one export — the shape `assert_unlinkable` compares.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ExternType {
+    Func { params: Vec<String>, results: Vec<String> },
+    Global { ty: String, mutable: bool },
+    Memory { min: u64, max: Option<u64>, is64: bool },
+    Table { elem: String, min: u64, max: Option<u64> },
+    Tag { params: Vec<String> },
+}
+
+/// `(assert_unlinkable (module …) "msg")` — instantiating the module against
+/// what is already registered must FAIL at link time.
+///
+/// ⛔ THIS USED TO DISCHARGE WITHOUT LOOKING — 202 assertions that asserted
+/// nothing, in files the suite then counted as passing.
+///
+/// The check runs in the direction it can prove: an import that resolves to a
+/// registered export of a MATCHING type is one the linker would accept, and if
+/// every import is like that the module links and the assertion has failed.
+/// Anything this pass cannot decide — an unregistered module, an export kind
+/// whose type is not tracked (memory, table, tag) — leaves the assertion
+/// discharged, so a gap here can never invent a failure.
+fn walk_assert_unlinkable(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Statement, String> {
+    let span = to_span(&pair);
+    let discharged = Statement::with_span(StmtKind::Empty, span);
+
+    // The module sits under `module_or_binary`, not directly under the
+    // assertion — searching one level too shallow found nothing, so the check
+    // discharged every time and was as vacuous as the `Empty` it replaced.
+    let Some(module) = pair
+        .clone()
+        .into_inner()
+        .find(|c| c.as_rule() == Rule::module_or_binary)
+        .and_then(|mb| {
+            if mb.as_rule() == Rule::module {
+                Some(mb)
+            } else {
+                mb.into_inner().find(|c| c.as_rule() == Rule::module)
+            }
+        })
+        .or_else(|| {
+            pair.clone()
+                .into_inner()
+                .find(|c| c.as_rule() == Rule::module)
+        })
+    else {
+        return Ok(discharged);
+    };
+
+    let mut saw_import = false;
+    for field in module.into_inner() {
+        let inner = match field.as_rule() {
+            Rule::module_field => match field.into_inner().next() {
+                Some(i) => i,
+                None => continue,
+            },
+            _ => field,
+        };
+        if inner.as_rule() != Rule::import_field {
+            continue;
+        }
+        saw_import = true;
+        let strings: Vec<String> = inner
+            .clone()
+            .into_inner()
+            .filter(|c| c.as_rule() == Rule::string)
+            .map(|c| unquote(c.as_str()))
+            .take(2)
+            .collect();
+        let (Some(m), Some(n)) = (strings.first(), strings.get(1)) else {
+            return Ok(discharged);
+        };
+        // An unregistered module cannot satisfy anything: unlinkable, proven.
+        let Some(class) = __w.registered_module_class.get(m).cloned() else {
+            return Ok(discharged);
+        };
+        let Some(exports) = __w.module_export_types.get(&class) else {
+            return Ok(discharged);
+        };
+        // A name the module does not export: unlinkable, proven.
+        let Some(actual) = exports.get(n).cloned() else {
+            return Ok(discharged);
+        };
+        let Some(desc) = inner
+            .into_inner()
+            .find(|c| c.as_rule() == Rule::import_desc)
+        else {
+            return Ok(discharged);
+        };
+        let text = desc.as_str().trim_start_matches('(').trim_start();
+        match &actual {
+            ExternType::Func { params, results } if text.starts_with("func") => {
+                let (_, _, _, want_p, want_r) = scan_func_signature_typed(desc);
+                if &want_p != params || &want_r != results {
+                    return Ok(discharged); // a real type mismatch: unlinkable
+                }
+            }
+            ExternType::Global { ty, mutable } if text.starts_with("global") => {
+                let want_mut = text.contains("mut");
+                let want_ty: String = text
+                    .trim_start_matches("global")
+                    .trim()
+                    .trim_start_matches('(')
+                    .trim_start_matches("mut")
+                    .trim_matches(|c: char| c == '(' || c == ')' || c.is_whitespace())
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or_default()
+                    .to_string();
+                if want_mut != *mutable || &want_ty != ty {
+                    return Ok(discharged);
+                }
+            }
+            // Kind disagreement is a mismatch the linker rejects.
+            ExternType::Func { .. } | ExternType::Global { .. } => return Ok(discharged),
+            // Memory/table/tag types are not tracked here, so this import is
+            // undecidable and the assertion stays discharged.
+            _ => return Ok(discharged),
+        }
+    }
+
+    if !saw_import {
+        return Ok(discharged);
+    }
+    // Every import resolved to a registered export of a matching type, so the
+    // module links — which is exactly what the assertion says must not happen.
+    Ok(Statement::with_span(
+        StmtKind::Throw {
+            expr: Some(Expression::string(
+                "assert_unlinkable failed: every import resolves to a matching export, \
+                 so the module links",
+            )),
+            cause: None,
+        },
+        span,
+    ))
+}
+
+fn scan_func_signature_typed(
+    pair: Pair<Rule>,
+) -> (Option<String>, usize, usize, Vec<String>, Vec<String>) {
     let mut name: Option<String> = None;
     let mut count = 0usize;
     let mut results = 0usize;
+    let mut param_types: Vec<String> = Vec::new();
+    let mut result_types: Vec<String> = Vec::new();
     for child in pair.into_inner() {
         match child.as_rule() {
             Rule::id => {
@@ -6974,7 +7479,10 @@ fn scan_func_signature(pair: Pair<Rule>) -> (Option<String>, usize, usize) {
                         Rule::id => has_id = true,
                         // Types are wrapped in `any_val_type` (which may hold a
                         // plain `val_type` or a `(ref …)` form).
-                        Rule::any_val_type | Rule::val_type => types += 1,
+                        Rule::any_val_type | Rule::val_type => {
+                            types += 1;
+                            param_types.push(p.as_str().split_whitespace().collect::<Vec<_>>().join(" "));
+                        }
                         _ => {}
                     }
                 }
@@ -6982,23 +7490,33 @@ fn scan_func_signature(pair: Pair<Rule>) -> (Option<String>, usize, usize) {
             }
             Rule::result => {
                 // `(result t1 t2 …)` yields one value per type.
-                results += child
-                    .into_inner()
-                    .filter(|v| matches!(v.as_rule(), Rule::any_val_type | Rule::val_type))
-                    .count();
+                for v in child.into_inner() {
+                    if matches!(v.as_rule(), Rule::any_val_type | Rule::val_type) {
+                        results += 1;
+                        result_types.push(v.as_str().split_whitespace().collect::<Vec<_>>().join(" "));
+                    }
+                }
             }
             Rule::typeuse | Rule::import_desc => {
-                let (n, c, r) = scan_func_signature(child);
+                let (n, c, r, mut ps, mut rs) = scan_func_signature_typed(child);
                 if name.is_none() {
                     name = n;
                 }
                 count += c;
                 results += r;
+                param_types.append(&mut ps);
+                result_types.append(&mut rs);
             }
             _ => {}
         }
     }
-    (name, count, results)
+    (name, count, results, param_types, result_types)
+}
+
+/// The counting form, kept for the many call sites that only need arities.
+fn scan_func_signature(pair: Pair<Rule>) -> (Option<String>, usize, usize) {
+    let (n, c, r, _, _) = scan_func_signature_typed(pair);
+    (n, c, r)
 }
 
 fn walk_typeuse_params(pair: Pair<Rule>) -> Result<Vec<Param>, String> {
@@ -7197,7 +7715,8 @@ fn walk_plain_instr_as_expr(__w: &mut WastWalker,
     let name = peel_mem_selector(__w, &name, &mut raw_args, labels)?;
     let mut args: Vec<Expression> = Vec::new();
     for raw in raw_args {
-        args.push(walk_instr_arg_for(__w, raw, labels, &name)?);
+        let a = walk_instr_arg_for(__w, raw, labels, &name, &args)?;
+        args.push(a);
     }
     map_instr_to_ast(__w, name, args, span)
 }
@@ -7498,7 +8017,10 @@ fn walk_folded_core(__w: &mut WastWalker,
             Rule::instr_name => {} // already consumed
             Rule::id => {}         // label — ignore in expression context
             Rule::block_type => {} // result type annotation
-            Rule::instr_arg => args.push(walk_instr_arg_for(__w, child, labels, &name)?),
+            Rule::instr_arg => {
+                let a = walk_instr_arg_for(__w, child, labels, &name, &args)?;
+                args.push(a);
+            }
             Rule::instr => args.push(walk_instr_as_expr(__w, child, labels)?),
             Rule::then_block => {
                 has_then = true;
@@ -7732,7 +8254,22 @@ fn mem_op_immediate_count(name: &str) -> usize {
         | "f64.load" | "i32.load8_s" | "i32.load8_u" | "i32.load16_s" | "i32.load16_u"
         | "i64.load8_s" | "i64.load8_u" | "i64.load16_s" | "i64.load16_u" | "i64.load32_s"
         | "i64.load32_u" | "i32.store" | "i64.store" | "f32.store" | "f64.store" | "i32.store8"
-        | "i32.store16" | "i64.store8" | "i64.store16" | "i64.store32" => 1,
+        | "i32.store16" | "i64.store8" | "i64.store16" | "i64.store32"
+        // ⛔ A v128 ACCESS IS A MEMORY ACCESS. These were missing, so no
+        // `@@mem` selector was ever produced for them and every one of them
+        // read the emitter's fallback memory instead of the module's own: a
+        // second module's `(v128.load (i32.const 0))` returned the FIRST
+        // module's bytes while an `i32.load` beside it was right. The compiler
+        // has carried the selector for them all along — `SimdMemArg` puts a
+        // non-default memidx in the marker-tagged memarg.
+        | "v128.load" | "v128.store"
+        | "v128.load8x8_s" | "v128.load8x8_u" | "v128.load16x4_s" | "v128.load16x4_u"
+        | "v128.load32x2_s" | "v128.load32x2_u"
+        | "v128.load8_splat" | "v128.load16_splat" | "v128.load32_splat" | "v128.load64_splat"
+        | "v128.load32_zero" | "v128.load64_zero"
+        | "v128.load8_lane" | "v128.load16_lane" | "v128.load32_lane" | "v128.load64_lane"
+        | "v128.store8_lane" | "v128.store16_lane" | "v128.store32_lane"
+        | "v128.store64_lane" => 1,
         _ => 0,
     }
 }
@@ -7805,7 +8342,24 @@ fn resolve_wat_dataidx(__w: &mut WastWalker, e: &Expression) -> i64 {
 /// segment; not peeling at all sent every `memory.init $mem2 $d` to memory 0,
 /// which is `multi-memory/memory-multi.wast`.
 fn mem_op_trailing_index_count(name: &str) -> usize {
-    if name == "memory.init" { 1 } else { 0 }
+    match name {
+        "memory.init" => 1,
+        // A lane access ends with a MANDATORY laneidx, so a single bare index
+        // is that lane, not a memidx: `v128.load8_lane 1` addresses lane 1 of
+        // the default memory.
+        "v128.load8_lane" | "v128.load16_lane" | "v128.load32_lane" | "v128.load64_lane"
+        | "v128.store8_lane" | "v128.store16_lane" | "v128.store32_lane"
+        | "v128.store64_lane" => 1,
+        _ => 0,
+    }
+}
+
+/// True when a raw `instr_arg` is an `offset=`/`align=` memarg.
+fn is_memarg_arg(raw: &Pair<Rule>) -> bool {
+    matches!(
+        raw.clone().into_inner().next().map(|x| x.as_rule()),
+        Some(Rule::mem_arg)
+    )
 }
 
 /// True when a raw `instr_arg` is a BARE index immediate (`integer`/`id`) — i.e.
@@ -7843,7 +8397,15 @@ fn peel_mem_selector(__w: &mut WastWalker,
             .iter()
             .take_while(|r| is_bare_index_arg(r))
             .count();
-        if bare < n + trailing {
+        // A memarg SEPARATES the two indices on a lane access, so counting
+        // adjacent bare indices alone under-reads it: `v128.load8_lane 1
+        // offset=0 2` has one bare index in front, and it is still a memidx.
+        let memarg_splits = bare >= n
+            && raw_args
+                .get(bare)
+                .map(is_memarg_arg)
+                .unwrap_or(false);
+        if bare < n + trailing && !memarg_splits {
             return Ok(name.to_string());
         }
     }
@@ -7853,7 +8415,16 @@ fn peel_mem_selector(__w: &mut WastWalker,
         let e = walk_instr_arg_pair(__w, r, labels)?;
         indices.push(resolve_wat_memidx(__w, &e));
     }
-    if indices.iter().all(|&i| i == 0) {
+    // ⛔ THE DEFAULT MEMORY IS NOT ALWAYS SCRIPT SLOT 0. An op with no `@@mem`
+    // suffix targets THIS MODULE's memidx 0, and a module whose memidx 0 is an
+    // IMPORTED memory has its own first memory somewhere else in the script's
+    // space. Dropping the suffix on script slot 0 sent every access to a
+    // sibling module's memory instead: `(import "test" "z" (memory 0))`
+    // followed by `(memory $m (import "spectest" "memory") 1 2)` resolved `$m`
+    // to slot 0 correctly and then erased it, so the load landed on the
+    // zero-page `z` and trapped.
+    let default = default_memory_slot(__w);
+    if indices.iter().all(|&i| i == default) {
         // Only the default memory (or none) named — the bare immediates were
         // still consumed above (they are selectors, not operands).
         return Ok(name.to_string());
@@ -7885,14 +8456,14 @@ fn table_op_shape(name: &str) -> Option<(usize, usize)> {
 }
 
 /// Resolve a written tableidx immediate — `$t3` (named) or `2` (numeric) — into
-/// the SCRIPT's table index space. A numeric index is module-relative and shifts
-/// by `TABLE_INDEX_BASE`; a named table was registered pre-shifted.
+/// the SCRIPT's table index space. A numeric index is MODULE-RELATIVE and maps
+/// through `table_slots`, so an imported table names the exporter's slot rather
+/// than this module's n-th; a named table was registered pre-mapped.
 fn resolve_wat_tableidx(__w: &mut WastWalker, e: &Expression) -> i64 {
-    let base = __w.table_index_base as i64;
     match &e.kind {
-        ExprKind::Lit(Literal::Int(n)) => base + *n,
+        ExprKind::Lit(Literal::Int(n)) => table_slot(__w, *n as usize) as i64,
         ExprKind::Ident(nm) => resolve_table_index(__w, nm),
-        _ => base,
+        _ => default_table_slot(__w) as i64,
     }
 }
 
@@ -8158,7 +8729,7 @@ fn map_instr_to_ast(__w: &mut WastWalker, name: String, args: Vec<Expression>, s
                 .collect();
             // An OMITTED selector means THIS module's table 0 — which, in a
             // multi-module script, is program table <base>.
-            let default_idx = __w.table_index_base as i64;
+            let default_idx = default_table_slot(__w) as i64;
             idx.resize(max_imm, Expression::int(default_idx));
             idx.append(&mut a);
             return Ok(make_call(&name.replace('.', "_"), idx, span));
@@ -8173,7 +8744,7 @@ fn map_instr_to_ast(__w: &mut WastWalker, name: String, args: Vec<Expression>, s
             let n_idx = a.len().saturating_sub(3); // 3 stack operands
             // The DEFAULT table is this module's table 0 = program table <base>;
             // an explicit tableidx resolves through the same script-wide space.
-            let base = Expression::int(__w.table_index_base as i64);
+            let base = Expression::int(default_table_slot(__w) as i64);
             let (elem, table) = match n_idx {
                 0 => (Expression::int(__w.elem_index_base as i64), base),
                 1 => {
@@ -8295,9 +8866,10 @@ fn map_instr_to_ast(__w: &mut WastWalker, name: String, args: Vec<Expression>, s
             let is_global = name == "global.get";
             let idx = args.into_iter().next().unwrap_or(Expression::int(0));
             Ok(match &idx.kind {
-                // An imported global is a second NAME for the exporter's cell.
-                ExprKind::Ident(n) if is_global && __w.global_import_alias.contains_key(n) => {
-                    let target = __w.global_import_alias[n].clone();
+                // A global `$id` names a per-module binding — and, when the
+                // global is imported, the EXPORTER's cell.
+                ExprKind::Ident(n) if is_global && __w.global_binding_of_id.contains_key(n) => {
+                    let target = __w.global_binding_of_id[n].clone();
                     Expression::with_span(ExprKind::Ident(target), span)
                 }
                 ExprKind::Ident(n) => Expression::with_span(ExprKind::Ident(n.clone()), span),
@@ -8317,8 +8889,8 @@ fn map_instr_to_ast(__w: &mut WastWalker, name: String, args: Vec<Expression>, s
             let target = match &target_raw.kind {
                 // Writing an imported mutable global writes the exporter's
                 // cell — the spec shares one cell, it does not copy.
-                ExprKind::Ident(n) if is_global && __w.global_import_alias.contains_key(n) => {
-                    let t = __w.global_import_alias[n].clone();
+                ExprKind::Ident(n) if is_global && __w.global_binding_of_id.contains_key(n) => {
+                    let t = __w.global_binding_of_id[n].clone();
                     Expression::with_span(ExprKind::Ident(t), span)
                 }
                 ExprKind::Ident(n) => Expression::with_span(ExprKind::Ident(n.clone()), span),
@@ -8582,6 +9154,17 @@ fn map_instr_to_ast(__w: &mut WastWalker, name: String, args: Vec<Expression>, s
             let field = match args.into_iter().next() {
                 Some(e) => match &e.kind {
                     ExprKind::Ident(n) => n.clone(),
+                    // ⚠ A NUMERIC funcidx NAMES A FUNCTION TOO. Returning the
+                    // integer unchanged put the raw INDEX where a funcref
+                    // belongs, so `(global funcref (ref.func 0))` held `0` and
+                    // a `call_indirect` through it reported "not callable".
+                    // `func_index_name` is the same answer the call path uses.
+                    ExprKind::Lit(Literal::Int(i)) if *i >= 0 => {
+                        match __w.func_index_name.get(*i as usize).cloned() {
+                            Some(n) => n,
+                            None => return Ok(e),
+                        }
+                    }
                     _ => return Ok(e),
                 },
                 None => return Ok(Expression::null()),
@@ -9003,8 +9586,22 @@ fn walk_instr_arg_pair(__w: &mut WastWalker, pair: Pair<Rule>, labels: &mut Labe
 /// ties-to-even sends it back down to `0x1.000000p-50`. Reading it straight to
 /// f32 sees the bit that decides it; widening the result back to f64 is exact,
 /// so the demote that follows is a no-op.
-fn instr_float_is_f32(name: &str) -> bool {
-    name == "f32.const"
+fn instr_float_is_f32(name: &str, lane_shape: Option<&str>) -> bool {
+    match name {
+        "f32.const" => true,
+        // A `v128.const` stores its lanes at the width its SHAPE names.
+        "v128.const" => lane_shape == Some("f32x4"),
+        _ => false,
+    }
+}
+
+/// The lane shape a `v128.const`'s immediates are stored at, read off the
+/// `val_lane_type` immediate that always precedes them.
+fn v128_lane_shape(prior: &[Expression]) -> Option<&str> {
+    match &prior.first()?.kind {
+        ExprKind::Lit(Literal::Str(s)) => Some(s.as_str()),
+        _ => None,
+    }
 }
 
 /// Convert one raw `instr_arg`, reading a float immediate at the width its
@@ -9014,12 +9611,30 @@ fn walk_instr_arg_for(
     raw: Pair<Rule>,
     labels: &mut LabelStack,
     name: &str,
+    prior: &[Expression],
 ) -> Result<Expression, String> {
-    if instr_float_is_f32(name)
+    // ⛔ A FLOAT CONSTANT MAY BE SPELLED AS AN INTEGER.
+    //
+    // `(f64.const +0x2000000000000100000000001)` has no `.` and no `p`, so it
+    // lexes as an INTEGER — and the integer path parses it as an `i64`, which
+    // that value is ~2^97 too large for. The digits that decide the rounding
+    // were gone before the float conversion ever ran. Both spellings go to the
+    // float parser, at the width the instruction stores.
+    let lane_shape = if name == "v128.const" {
+        v128_lane_shape(prior)
+    } else {
+        None
+    };
+    let stores_float = matches!(name, "f32.const" | "f64.const")
+        || lane_shape.is_some_and(|s| s.starts_with('f'));
+    if stores_float
         && let Some(inner) = raw.clone().into_inner().next()
-        && inner.as_rule() == Rule::float
+        && matches!(inner.as_rule(), Rule::float | Rule::integer)
     {
-        return Ok(parse_float_at(inner.as_str(), true));
+        return Ok(parse_float_at(
+            inner.as_str(),
+            instr_float_is_f32(name, lane_shape),
+        ));
     }
     walk_instr_arg_pair(__w, raw, labels)
 }
@@ -9095,20 +9710,29 @@ fn walk_export_field(pair: Pair<Rule>) -> Result<Expression, String> {
     ))
 }
 
-/// The binding name a global lowers to: its `$id`, or a synthetic
-/// `__wasm_global_<module>_<idx>` when unnamed, so `global.get <idx>` can
-/// resolve to it and two modules' unnamed globals stay distinct — they share
-/// one top-level binding space, and `__wasm_global_0` from a second module used
-/// to shadow the first's, making `(get $m1 "g")` read $m2's value.
+/// The binding name a global lowers to. Globals share ONE top-level binding
+/// space across every module in a wast script, while each module has its own
+/// `$id` scope — so the module sequence is part of every binding, named or
+/// not. `$glob` in two modules is two cells; without the qualifier the second
+/// declaration rebound the first and `(get $m1 "glob")` read $m2's value.
+///
+/// The `id_` infix keeps the two spellings apart: a global legitimately named
+/// `$0` would otherwise collide with the unnamed global at index 0.
 fn global_binding_name(__w: &mut WastWalker, pair: &Pair<Rule>, idx: usize) -> String {
+    let m = __w.current_module_seq;
+    pair.clone()
+        .into_inner()
+        .find(|c| c.as_rule() == Rule::id)
+        .map(|c| format!("__wasm_global_{m}_id_{}", &c.as_str()[1..]))
+        .unwrap_or_else(|| format!("__wasm_global_{m}_{idx}"))
+}
+
+/// The `$id` a global field writes, without the `$`.
+fn global_field_id(pair: &Pair<Rule>) -> Option<String> {
     pair.clone()
         .into_inner()
         .find(|c| c.as_rule() == Rule::id)
         .map(|c| c.as_str()[1..].to_string())
-        .unwrap_or_else(|| {
-            let m = __w.current_module_seq;
-            format!("__wasm_global_{m}_{idx}")
-        })
 }
 
 fn walk_global_field(__w: &mut WastWalker, pair: Pair<Rule>, idx: usize) -> Result<(String, Expression), String> {
@@ -9787,11 +10411,22 @@ fn walk_tag_field(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Statement, S
 /// inline `(table t (elem $f …))` abbreviation, its active-segment population
 /// (goes AFTER the class — it references the funcs as static methods, so it must
 /// run once the class exists, exactly like a standalone `(elem …)` field).
-fn walk_table_field(__w: &mut WastWalker, 
+fn walk_table_field(__w: &mut WastWalker,
     pair: Pair<Rule>,
-    table_idx: usize,
+    field_ordinal: usize,
 ) -> Result<(Statement, Vec<Statement>), String> {
     let span = to_span(&pair);
+    // An IMPORTED table that resolved to an exporter's table declares NOTHING:
+    // it IS that table, and its written limits are a link-time constraint, not
+    // a size. Declaring one anyway gave the two modules separate tables.
+    let (table_idx, aliases) = __w
+        .table_field_info
+        .get(field_ordinal)
+        .copied()
+        .unwrap_or((__w.table_index_base + field_ordinal, false));
+    if aliases {
+        return Ok((Statement::with_span(StmtKind::Empty, span), Vec::new()));
+    }
     let mut min_size: u64 = 0;
     let mut max_size: Option<u64> = None;
     let mut has_table_type = false;
@@ -10105,12 +10740,70 @@ fn first_ident_or_index(pair: &Pair<Rule>) -> Option<String> {
 /// An explicit `(table $t)` target resolves through `resolve_table_index`.
 /// `None` in `funcs` is a NULL element expression: it occupies its slot without
 /// storing anything.
+/// Fold an active segment's offset CONSTANT EXPRESSION to its value.
+///
+/// The offset is an expression, not a literal: extended-const admits
+/// `i32.add`/`i32.sub`/`i32.mul` over constants, so `(offset (i32.add
+/// (i32.const 1) (i32.const 2)))` names slot 3. Reading the first integer in
+/// the expression answers 1 and populates the wrong slot, leaving the intended
+/// one null — `call_indirect` then traps "uninitialized element".
+///
+/// `None` for any shape this cannot fold, so the caller keeps its own answer.
+fn fold_const_offset(p: &Pair<Rule>) -> Option<i64> {
+    fn instr_node<'i>(p: &Pair<'i, Rule>) -> Option<Pair<'i, Rule>> {
+        if matches!(p.as_rule(), Rule::plain_instr | Rule::folded_instr) {
+            return Some(p.clone());
+        }
+        p.clone().into_inner().find_map(|c| instr_node(&c))
+    }
+    fn eval(p: &Pair<Rule>) -> Option<i64> {
+        let name = instr_head_name(p)?;
+        match name.as_str() {
+            "i32.const" | "i64.const" => find_first_integer(p),
+            "i32.add" | "i64.add" | "i32.sub" | "i64.sub" | "i32.mul" | "i64.mul" => {
+                let operands: Vec<Pair<Rule>> = p
+                    .clone()
+                    .into_inner()
+                    // `folded_instr = "(" ~ instr_name ~ instr_arg* ~ instr* ~ ")"`
+                    // and `instr_arg` itself admits a `folded_instr`, so a
+                    // folded operand arrives WRAPPED in `instr_arg`.
+                    .filter(|c| {
+                        matches!(
+                            c.as_rule(),
+                            Rule::plain_instr | Rule::folded_instr | Rule::instr | Rule::instr_arg
+                        )
+                    })
+                    .collect();
+                if operands.len() != 2 {
+                    return None;
+                }
+                let a = instr_node(&operands[0]).as_ref().and_then(eval)?;
+                let b = instr_node(&operands[1]).as_ref().and_then(eval)?;
+                Some(if name.ends_with(".add") {
+                    a.wrapping_add(b)
+                } else if name.ends_with(".sub") {
+                    a.wrapping_sub(b)
+                } else {
+                    a.wrapping_mul(b)
+                })
+            }
+            _ => None,
+        }
+    }
+    instr_node(p).as_ref().and_then(eval)
+}
+
 fn walk_elem_field(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Statement, String> {
     let span = to_span(&pair);
     let mut offset: i64 = 0;
-    // Default target is THIS module's table 0 — program table <base> in a
-    // multi-module script.
-    let mut table_index: i64 = __w.table_index_base as i64;
+    // The offset when it cannot be folded to a literal. A constant expression
+    // may read an IMPORTED global, whose value exists only at instantiation, so
+    // no walk-time fold can answer it — the slot index is then computed at run
+    // time, exactly as an active DATA segment's offset already is.
+    let mut offset_expr: Option<Expression> = None;
+    // Default target is THIS module's table 0 — which is the EXPORTER's table
+    // when table 0 is imported, so it comes from `table_slots`, not a base.
+    let mut table_index: i64 = default_table_slot(__w) as i64;
     let mut funcs: Vec<Option<String>> = Vec::new();
     // Index-aligned with `funcs`: the walked element EXPRESSION for any item
     // that is not a plain `ref.func`/`ref.null`. Both lists advance together so
@@ -10129,7 +10822,37 @@ fn walk_elem_field(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Statement, 
                     // declarative — no table population
                     is_declare = true;
                 } else {
-                    offset = find_first_integer(&child).unwrap_or(0);
+                    let folded = fold_const_offset(&child);
+                    offset = folded
+                        .or_else(|| find_first_integer(&child))
+                        .unwrap_or(0);
+                    // Only a `global.get` genuinely defeats the fold — its
+                    // value exists at instantiation, not at walk time. Every
+                    // other unfoldable shape keeps the literal path, so this
+                    // cannot put a `table_set` at an index the old code never
+                    // computed.
+                    if folded.is_none() && child.as_str().contains("global.get") {
+                        let mut labels = LabelStack::new();
+                        for sub in child.clone().into_inner() {
+                            match sub.as_rule() {
+                                Rule::instr => {
+                                    offset_expr =
+                                        Some(walk_instr_as_expr(__w, sub, &mut labels)?);
+                                    break;
+                                }
+                                Rule::folded_instr => {
+                                    offset_expr = Some(walk_folded_instr_as_expr(
+                                        __w,
+                                        sub,
+                                        span,
+                                        &mut labels,
+                                    )?);
+                                    break;
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
                     // `(table $t)(offset …)` targets a NAMED table; resolve it
                     // to its declaration index (default table 0 otherwise).
                     if let Some(tname) = child
@@ -10195,8 +10918,18 @@ fn walk_elem_field(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Statement, 
     };
     if !is_active {
         if is_declare {
-            // Declarative: only permits `ref.func`, no runtime payload.
-            return Ok(Statement::with_span(StmtKind::Block(Vec::new()), span));
+            // Declarative: no runtime payload, but it still OCCUPIES its slot in
+            // the element index space and is dropped from the start. Registering
+            // it empty is what makes a later `table.init $e` report an
+            // out-of-bounds SOURCE rather than "missing element segment".
+            return Ok(Statement::with_span(
+                StmtKind::Expr(make_call(
+                    "__wast_register_passive_elem",
+                    vec![Expression::int(seg_index as i64)],
+                    span,
+                )),
+                span,
+            ));
         }
         // Passive: register the element list under this segment index so a later
         // `table.init $e` / `array.new_elem $e` copies real funcrefs from it.
@@ -10251,25 +10984,85 @@ fn walk_elem_field(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Statement, 
     }
     let class = __w.module_class_name.clone();
     let mut stmts = Vec::new();
+    // An ACTIVE segment is implicitly DROPPED once instantiation has applied it,
+    // so it still occupies its element index and reads as empty. Without the
+    // registration a later `table.init $e` reported "missing element segment"
+    // instead of the out-of-bounds source trap the spec asks for.
+    stmts.push(Statement::new(StmtKind::Expr(make_call(
+        "__wast_register_passive_elem",
+        vec![Expression::int(seg_index as i64)],
+        span,
+    ))));
+    // ⛔ AN ACTIVE SEGMENT APPLIES WHOLE OR NOT AT ALL. Its bounds check is
+    // `offset + len > size` and it runs BEFORE the first write: a segment that
+    // is only partly out of bounds must leave every slot it covers untouched.
+    // Letting the writes themselves raise it wrote the in-bounds prefix first,
+    // so `(elem (i32.const 8) $f $f $f $f $f)` on a table of 10 left slots 8
+    // and 9 populated and the following `call 8` answered instead of trapping
+    // "uninitialized element".
+    //
+    // Reading the LAST slot the segment would write asks exactly that
+    // question: `offset + len - 1` is in bounds iff `offset + len <= size`.
+    // An EMPTY segment is still checked, at `offset - 1` — `(table 0 funcref)
+    // (elem (i32.const 1))` traps — and at offset 0 with no items the
+    // condition cannot fail, so no probe is emitted.
+    let probe_slot: Option<Expression> = if funcs.is_empty() {
+        match &offset_expr {
+            Some(e) => Some(Expression::new(ExprKind::Binary {
+                op: BinOp::Sub,
+                left: Box::new(e.clone()),
+                right: Box::new(Expression::int(1)),
+            })),
+            None if offset > 0 => Some(Expression::int(offset - 1)),
+            None => None,
+        }
+    } else {
+        let last = funcs.len() as i64 - 1;
+        Some(match &offset_expr {
+            Some(e) if last == 0 => e.clone(),
+            Some(e) => Expression::new(ExprKind::Binary {
+                op: BinOp::Add,
+                left: Box::new(e.clone()),
+                right: Box::new(Expression::int(last)),
+            }),
+            None => Expression::int(offset + last),
+        })
+    };
+    if let Some(slot) = probe_slot {
+        stmts.push(Statement::new(StmtKind::Expr(make_call(
+            "table_get",
+            vec![Expression::int(table_index), slot],
+            span,
+        ))));
+    }
     for (i, f) in funcs.iter().enumerate() {
-        // A null element leaves its slot at the table's default — the slot is
-        // still consumed, which is why the index comes from `enumerate` and not
-        // from a counter that only advances on real funcrefs.
+        // The slot index comes from `enumerate`: every item consumes one,
+        // including a null.
         let funcref = match f {
             Some(f) => elem_item_funcref(__w, f, &class),
             // A general element expression fills the slot with its value.
             None => match item_exprs.get(i).cloned().flatten() {
                 Some(e) => e,
-                None => continue,
+                // A NULL ITEM WRITES NULL. Instantiation APPLIES an active
+                // segment's element expressions, and the target slot may
+                // already hold a value — when the table is IMPORTED, the
+                // exporter's own writes are in it — so skipping the write
+                // leaves the old value where the spec requires a null.
+                None => Expression::null(),
             },
+        };
+        let slot = match &offset_expr {
+            Some(e) if i == 0 => e.clone(),
+            Some(e) => Expression::new(ExprKind::Binary {
+                op: BinOp::Add,
+                left: Box::new(e.clone()),
+                right: Box::new(Expression::int(i as i64)),
+            }),
+            None => Expression::int(offset + i as i64),
         };
         let call = make_call(
             "table_set",
-            vec![
-                Expression::int(table_index),
-                Expression::int(offset + i as i64),
-                funcref,
-            ],
+            vec![Expression::int(table_index), slot, funcref],
             span,
         );
         stmts.push(Statement::new(StmtKind::Expr(call)));
@@ -10451,6 +11244,48 @@ fn func_field_signature(__w: &WastWalker, func_field: &Pair<Rule>) -> (Vec<Strin
 /// Returned as `(params, results)`, each in declaration order. A single
 /// `(param i32 i64)` declares two parameters, so the val types are flattened
 /// rather than counted per clause.
+/// The types the module's INLINE signatures define, in index order.
+///
+/// An inline `typeuse` (one carrying `param`/`result` and no `(type …)` index)
+/// defines a type only when no matching one exists — so identical signatures
+/// share a row, and one matching an explicit `(type …)` adds nothing. The
+/// result extends the type index space after the explicit types.
+fn collect_implicit_func_types(__w: &WastWalker, module: &Pair<Rule>) -> Vec<(usize, usize)> {
+    fn key(ps: &[String], rs: &[String]) -> String {
+        format!("{}|{}", ps.join(","), rs.join(","))
+    }
+    // Every explicit func type already occupies a row, so an inline signature
+    // matching one of them defines nothing.
+    let mut seen: std::collections::HashSet<String> = __w
+        .type_func_sigs
+        .values()
+        .map(|(ps, rs)| key(ps, rs))
+        .collect();
+    let mut out: Vec<(usize, usize)> = Vec::new();
+    fn walk(
+        p: &Pair<Rule>,
+        seen: &mut std::collections::HashSet<String>,
+        out: &mut Vec<(usize, usize)>,
+        key: &dyn Fn(&[String], &[String]) -> String,
+    ) {
+        if p.as_rule() == Rule::typeuse {
+            let has_index = p.clone().into_inner().any(|c| c.as_rule() == Rule::index);
+            let (ps, rs) = func_type_signature(p);
+            if !has_index && !(ps.is_empty() && rs.is_empty()) {
+                let k = key(&ps, &rs);
+                if seen.insert(k) {
+                    out.push((ps.len(), rs.len()));
+                }
+            }
+        }
+        for c in p.clone().into_inner() {
+            walk(&c, seen, out, key);
+        }
+    }
+    walk(module, &mut seen, &mut out, &key);
+    out
+}
+
 fn func_type_signature(composite_inner: &Pair<Rule>) -> (Vec<String>, Vec<String>) {
     let mut params: Vec<String> = Vec::new();
     let mut results: Vec<String> = Vec::new();
@@ -10548,13 +11383,34 @@ fn struct_field_names(composite_inner: &Pair<Rule>) -> Vec<String> {
 /// Resolve a table reference (`$t1` name or a numeric index) to its table index.
 fn resolve_table_index(__w: &mut WastWalker, name: &str) -> i64 {
     // Named tables were registered ALREADY shifted into the script's index
-    // space; a numeric index is module-relative and shifts here. A name that is
-    // neither is the module's default table — also base-relative.
-    let base = __w.table_index_base as i64;
-    __w.table_name_index.get(name).copied()
+    // space. A numeric index is MODULE-RELATIVE and `table_slots` is what it is
+    // relative TO — an imported table's entry points at the exporter's slot, so
+    // adding a base instead would name this module's own n-th table. A name
+    // that is neither is the module's default table.
+    __w.table_name_index
+        .get(name)
+        .copied()
         .map(|i| i as i64)
-        .or_else(|| name.parse::<i64>().ok().map(|n| base + n))
-        .unwrap_or(base)
+        .or_else(|| {
+            name.parse::<usize>()
+                .ok()
+                .map(|n| table_slot(__w, n) as i64)
+        })
+        .unwrap_or_else(|| default_table_slot(__w) as i64)
+}
+
+/// The script slot this module's tableidx `n` names.
+fn table_slot(__w: &WastWalker, n: usize) -> usize {
+    __w.table_slots
+        .get(n)
+        .copied()
+        .unwrap_or(__w.table_index_base + n)
+}
+
+/// The script slot this module's tableidx 0 names — its own first table, which
+/// is the exporter's when table 0 is imported.
+fn default_table_slot(__w: &WastWalker) -> usize {
+    table_slot(__w, 0)
 }
 
 fn walk_data_field(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Statement, String> {
@@ -10732,11 +11588,29 @@ fn walk_invoke_cmd(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Statement, 
     }
     // Resolve the exported name to the module class's static method so the call
     // actually reaches the function (exports are `Class.method`).
+    // A re-exported import answers from the OWNER's class, so it is consulted
+    // before this module's own method table.
     let resolved = match &module_id {
-        Some(m) => __w.module_exports.get(m).and_then(|e| e.get(&func_name).cloned())
-            .map(|method| (m.clone(), method)),
-        None => __w.export_func_map.get(&func_name).cloned()
-            .map(|method| (__w.module_class_name.clone(), method)),
+        Some(m) => __w
+            .export_func_alias
+            .get(m)
+            .and_then(|e| e.get(&func_name).cloned())
+            .or_else(|| {
+                __w.module_exports
+                    .get(m)
+                    .and_then(|e| e.get(&func_name).cloned())
+                    .map(|method| (m.clone(), method))
+            }),
+        None => __w
+            .export_func_alias
+            .get(&__w.module_class_name)
+            .and_then(|e| e.get(&func_name).cloned())
+            .or_else(|| {
+                __w.export_func_map
+                    .get(&func_name)
+                    .cloned()
+                    .map(|method| (__w.module_class_name.clone(), method))
+            }),
     };
     let callee = match resolved {
         Some((class, method)) => Expression::with_span(
@@ -11198,6 +12072,204 @@ fn immutable_global_reason(module: &Pair<Rule>) -> Option<String> {
 /// module declares an `i64` memory — the width is a property of the MEMORY,
 /// not of the instruction, and applying the 32-bit bound there would reject
 /// valid memory64 modules.
+/// Each element ITEM is a constant expression yielding EXACTLY ONE value whose
+/// type matches the segment's declared element type. `(item (ref.null func)
+/// (ref.null func))` yields two; `(ref.null extern)` in a `funcref` segment and
+/// `(i32.const 0)` in any reference segment yield the wrong type.
+///
+/// Only a provably wrong pairing is reported: a numeric value can never be a
+/// reference, and the `func` and `extern` hierarchies are disjoint. Anything
+/// whose type this cannot name — `global.get`, the GC heap types — is left to
+/// the rules that can.
+fn elem_item_type_reason(module: &Pair<Rule>) -> Option<String> {
+    /// The head mnemonic of an instruction, however deeply the pair wraps it.
+    fn head_name(p: &Pair<Rule>) -> Option<String> {
+        if p.as_rule() == Rule::instr_name {
+            let n = p.as_str();
+            return Some(n.split_once("@@").map(|(b, _)| b).unwrap_or(n).to_string());
+        }
+        p.clone().into_inner().find_map(|c| head_name(&c))
+    }
+    /// `func` and `extern` name disjoint reference hierarchies; `num` is any
+    /// numeric value. `None` means "not named here".
+    fn family(text: &str) -> Option<&'static str> {
+        if text.contains("extern") {
+            Some("extern")
+        } else if text.contains("func") {
+            Some("func")
+        } else {
+            None
+        }
+    }
+    fn scan(p: &Pair<Rule>) -> Option<String> {
+        if p.as_rule() == Rule::elem_field {
+            // A segment with no explicit reference type holds `funcref`.
+            let declared = p
+                .clone()
+                .into_inner()
+                .find(|c| c.as_rule() == Rule::ref_val_type)
+                .and_then(|c| family(c.as_str()))
+                .unwrap_or("func");
+            for item in p
+                .clone()
+                .into_inner()
+                .filter(|c| c.as_rule() == Rule::elem_item)
+            {
+                let instrs: Vec<Pair<Rule>> = item
+                    .clone()
+                    .into_inner()
+                    .filter(|c| matches!(c.as_rule(), Rule::instr | Rule::folded_instr))
+                    .collect();
+                if instrs.len() != 1 {
+                    return Some("type mismatch".to_string());
+                }
+                let Some(head) = head_name(&instrs[0]) else {
+                    continue;
+                };
+                let actual = if head.starts_with("ref.") {
+                    family(instrs[0].as_str())
+                } else if matches!(
+                    head.split('.').next(),
+                    Some("i32") | Some("i64") | Some("f32") | Some("f64") | Some("v128")
+                ) {
+                    Some("num")
+                } else {
+                    None
+                };
+                if let Some(a) = actual {
+                    if a != declared {
+                        return Some("type mismatch".to_string());
+                    }
+                }
+            }
+        }
+        for c in p.clone().into_inner() {
+            if let Some(r) = scan(&c) {
+                return Some(r);
+            }
+        }
+        None
+    }
+    scan(module)
+}
+
+/// An ACTIVE data or element segment's offset is a constant expression yielding
+/// EXACTLY ONE value, of the target memory's or table's index type. `(offset)`
+/// yields none and `(offset (i32.const 0) (i32.const 0))` yields two;
+/// `(i64.const 0)` and `(ref.null func)` yield the wrong type. All are
+/// ill-typed, not undecodable.
+///
+/// A module declaring an `i64` memory or table takes its offset as an `i64`, so
+/// the TYPE half is skipped there — the width belongs to the memory or table,
+/// not to the segment. The ARITY half holds either way.
+fn segment_offset_type_reason(module: &Pair<Rule>) -> Option<String> {
+    fn any_i64_addr(p: &Pair<Rule>) -> bool {
+        if matches!(p.as_rule(), Rule::mem_type | Rule::table_type) {
+            return p.as_str().split_whitespace().next() == Some("i64");
+        }
+        p.clone().into_inner().any(|c| any_i64_addr(&c))
+    }
+    /// The head mnemonic of an instruction, however deeply the pair wraps it.
+    fn head_name(p: &Pair<Rule>) -> Option<String> {
+        if p.as_rule() == Rule::instr_name {
+            let n = p.as_str();
+            return Some(n.split_once("@@").map(|(b, _)| b).unwrap_or(n).to_string());
+        }
+        p.clone().into_inner().find_map(|c| head_name(&c))
+    }
+    let wide = any_i64_addr(module);
+    fn scan(p: &Pair<Rule>, wide: bool) -> Option<String> {
+        // `declare` names no offset, and a reftype in element position is the
+        // segment's ELEMENT TYPE rather than an abbreviated offset.
+        let is_offset_mode = match p.as_rule() {
+            Rule::data_mode => true,
+            Rule::elem_mode => {
+                p.as_str().trim() != "declare" && !elem_mode_is_reference_type(p)
+            }
+            _ => false,
+        };
+        if is_offset_mode {
+            // Constness is judged FIRST: an offset built from a non-const
+            // instruction is reported by `constant expression required`
+            // whatever its arity, so this rule stands aside for it.
+            if first_non_const_instr(p).is_some() {
+                return None;
+            }
+            let offset: Vec<Pair<Rule>> = p
+                .clone()
+                .into_inner()
+                .filter(|c| matches!(c.as_rule(), Rule::instr | Rule::folded_instr))
+                .collect();
+            if offset.len() != 1 {
+                return Some("type mismatch".to_string());
+            }
+            if !wide {
+                if let Some(n) = head_name(&offset[0]) {
+                    let prefix = n.split_once('.').map(|(a, _)| a).unwrap_or(n.as_str());
+                    if matches!(prefix, "i64" | "f32" | "f64" | "v128" | "ref") {
+                        return Some("type mismatch".to_string());
+                    }
+                }
+            }
+        }
+        for c in p.clone().into_inner() {
+            if let Some(r) = scan(&c, wide) {
+                return Some(r);
+            }
+        }
+        None
+    }
+    scan(module, wide)
+}
+
+/// `align=N` must not exceed the access's NATURAL alignment — the width the
+/// instruction reads or writes. `i32.load8_s align=2` claims 2-byte alignment
+/// for a 1-byte access, which the spec rejects.
+///
+/// This is a VALIDITY rule, not a malformity: the text lexes and parses fine.
+/// The power-of-two check on the same operand is the malformed half and lives
+/// in `quoted_module_is_malformed`.
+///
+/// A memarg carries BOTH halves in one text run (`offset=N align=M`), so the
+/// align is found by scanning tokens rather than by prefixing the whole run,
+/// and it takes any wat integer spelling — hex and underscores included — so
+/// it is read with the same parser as `offset=`.
+fn memarg_alignment_reason(module: &Pair<Rule>) -> Option<String> {
+    fn scan(p: &Pair<Rule>) -> Option<String> {
+        if matches!(p.as_rule(), Rule::plain_instr | Rule::folded_instr) {
+            let mut name: Option<String> = None;
+            let mut align: Option<u128> = None;
+            for c in p.clone().into_inner() {
+                match c.as_rule() {
+                    Rule::instr_name if name.is_none() => name = Some(c.as_str().to_string()),
+                    Rule::mem_arg | Rule::instr_arg => {
+                        for tok in c.as_str().split_whitespace() {
+                            if let Some(d) = tok.strip_prefix("align=") {
+                                align = align.or_else(|| parse_wat_u128(d));
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            if let (Some(n), Some(a)) = (name.as_deref(), align) {
+                if let Some(natural) = natural_align_bytes(n) {
+                    if a > natural as u128 {
+                        return Some("alignment must not be larger than natural".to_string());
+                    }
+                }
+            }
+        }
+        for c in p.clone().into_inner() {
+            if let Some(r) = scan(&c) {
+                return Some(r);
+            }
+        }
+        None
+    }
+    scan(module)
+}
+
 fn memarg_offset_range_reason(module: &Pair<Rule>) -> Option<String> {
     fn any_i64_memory(p: &Pair<Rule>) -> bool {
         if p.as_rule() == Rule::mem_type {
@@ -11727,6 +12799,169 @@ fn undeclared_func_ref_reason(module: &Pair<Rule>) -> Option<String> {
         .map(|_| "undeclared function reference".to_string())
 }
 
+/// An active element segment's type must be a SUBTYPE of its target table's.
+///
+/// `(table 1 (ref func) …)` declares a NON-NULL element type, so an
+/// `(elem (i32.const 0) funcref …)` — `funcref` being `(ref null func)` — is a
+/// type mismatch: a nullable reference does not inhabit a non-null slot.
+/// `elem.wast` asserts this in both the text and binary spellings.
+///
+/// Only the nullability half is decided here. A heap-type mismatch needs the
+/// type section's subtype graph, which this walk does not build; answering
+/// "no mismatch" for those leaves them to the paths that do.
+fn elem_table_type_mismatch(module: &Pair<Rule>) -> Option<String> {
+    fn is_nullable(t: &str) -> bool {
+        let t = t.trim();
+        if let Some(rest) = t.strip_prefix('(') {
+            return rest.trim_start().starts_with("ref")
+                && rest
+                    .trim_start()
+                    .strip_prefix("ref")
+                    .map(|r| r.trim_start().starts_with("null"))
+                    .unwrap_or(false);
+        }
+        // Every `*ref` shorthand is the nullable spelling.
+        t.ends_with("ref")
+    }
+    fn is_non_null(t: &str) -> bool {
+        let t = t.trim();
+        t.starts_with('(') && !is_nullable(t)
+    }
+
+    // Table element types in declaration order — which IS the index space,
+    // since the text format requires imports to precede definitions.
+    let mut table_types: Vec<String> = Vec::new();
+    let mut elems: Vec<(usize, String)> = Vec::new();
+    // A module's children are `module_field` WRAPPERS, so the fields are one
+    // level down; accept both shapes rather than depend on which.
+    let fields = module.clone().into_inner().flat_map(|c| {
+        if c.as_rule() == Rule::module_field {
+            c.into_inner().collect::<Vec<_>>()
+        } else {
+            vec![c]
+        }
+    });
+    for field in fields {
+        match field.as_rule() {
+            Rule::table_field => {
+                let t = field
+                    .clone()
+                    .into_inner()
+                    .find_map(|c| match c.as_rule() {
+                        Rule::table_type => c
+                            .into_inner()
+                            .find(|g| g.as_rule() == Rule::ref_val_type)
+                            .map(|g| g.as_str().to_string()),
+                        Rule::ref_val_type => Some(c.as_str().to_string()),
+                        _ => None,
+                    })
+                    .unwrap_or_default();
+                table_types.push(t);
+            }
+            Rule::elem_field => {
+                let mut target = 0usize;
+                let mut declared: Option<String> = None;
+                let mut active = false;
+                let mut offset_kind: Option<String> = None;
+                // `(elem (ref.null func))` is an ACTIVE segment whose offset is
+                // that folded instruction — the abbreviated form. Which parse
+                // node holds it varies, so the shape is read from the field's
+                // own TEXT: after `elem` and an optional id, a leading
+                // `(ref.…)` / `(f32.…)` / `(f64.…)` is an offset expression of
+                // the wrong type. An `i32`/`i64` offset, a reftype (`funcref
+                // …`), `declare` and a bare funcidx list all fail this test.
+                {
+                    let mut rest = field.as_str().trim();
+                    rest = rest.trim_start_matches('(').trim_start();
+                    rest = rest.strip_prefix("elem").unwrap_or(rest).trim_start();
+                    if rest.starts_with('$') {
+                        rest = rest.split_once(char::is_whitespace).map_or("", |(_, r)| r).trim_start();
+                    }
+                    if rest.starts_with("(ref.")
+                        || rest.starts_with("(f32.")
+                        || rest.starts_with("(f64.")
+                    {
+                        return Some("type mismatch".to_string());
+                    }
+                }
+                for c in field.clone().into_inner() {
+                    match c.as_rule() {
+                        Rule::elem_mode => {
+                            let text = c.as_str().trim();
+                            active = !text.starts_with("declare");
+                            // The offset's leading instruction decides its type.
+                            // Read it from the TEXT, not from an `instr_name`
+                            // node: `ref.null` reaches here without one.
+                            let lead = text
+                                .trim_start_matches('(')
+                                .trim_start()
+                                .trim_start_matches("offset")
+                                .trim_start()
+                                .trim_start_matches('(')
+                                .trim_start();
+                            if lead.starts_with("ref.")
+                                || lead.starts_with("f32.")
+                                || lead.starts_with("f64.")
+                            {
+                                offset_kind = Some("type mismatch".to_string());
+                            }
+                            if let Some(idx) = c
+                                .clone()
+                                .into_inner()
+                                .find(|g| g.as_rule() == Rule::index)
+                                .and_then(|g| g.as_str().trim().parse::<usize>().ok())
+                            {
+                                target = idx;
+                            }
+                        }
+                        Rule::ref_val_type if declared.is_none() => {
+                            declared = Some(c.as_str().to_string())
+                        }
+                        _ => {}
+                    }
+                }
+                // An active segment's OFFSET is an `i32` constant expression
+                // (`i64` for a 64-bit table). A reference or float offset is a
+                // type mismatch — `(elem (ref.null func))`, `(elem (f32.const 0))`.
+                if active && let Some(bad) = offset_kind {
+                    return Some(bad);
+                }
+                if active {
+                    // A segment with no explicit reference type holds
+                    // `funcref`, and that implicit type is checked against the
+                    // table exactly like a written one.
+                    elems.push((target, declared.unwrap_or_else(|| "funcref".to_string())));
+                }
+            }
+            _ => {}
+        }
+    }
+    // `func` and `extern` name disjoint reference hierarchies, so a segment of
+    // one can never initialize a table of the other. Anything neither names —
+    // the GC heap types — is left to the rules that can decide it.
+    fn family(t: &str) -> Option<&'static str> {
+        if t.contains("extern") {
+            Some("extern")
+        } else if t.contains("func") {
+            Some("func")
+        } else {
+            None
+        }
+    }
+    for (target, declared) in elems {
+        let table = table_types.get(target)?;
+        if let (Some(a), Some(b)) = (family(table), family(&declared)) {
+            if a != b {
+                return Some("type mismatch".to_string());
+            }
+        }
+        if is_non_null(table) && is_nullable(&declared) {
+            return Some("type mismatch".to_string());
+        }
+    }
+    None
+}
+
 fn module_name_resolution_reason(module: &Pair<Rule>) -> Option<String> {
     let mut c = ModuleCensus::default();
     build_census(module, &mut c);
@@ -12125,6 +13360,35 @@ fn name_resolution_walk(
     None
 }
 
+/// The natural alignment of a memory access, in BYTES — the width it touches.
+/// `None` for anything that carries no memarg, so nothing is judged by
+/// accident.
+fn natural_align_bytes(name: &str) -> Option<u32> {
+    // The v128 forms are named EXACTLY and match first: an extending load
+    // touches the full 8 bytes it widens from, so `v128.load8x8_s` is 8 — but
+    // it also ends in `8_s`, which the integer suffix rule reads as 1. A width
+    // that is too SMALL rejects a legal alignment, so the exact names win and
+    // an unknown name yields `None` rather than a guess.
+    let w = match name {
+        "v128.load8_splat" | "v128.load8_lane" | "v128.store8_lane" => 1,
+        "v128.load16_splat" | "v128.load16_lane" | "v128.store16_lane" => 2,
+        "v128.load32_splat" | "v128.load32_zero" | "v128.load32_lane" | "v128.store32_lane" => 4,
+        "v128.load64_splat" | "v128.load64_zero" | "v128.load64_lane" | "v128.store64_lane" => 8,
+        "v128.load8x8_s" | "v128.load8x8_u" | "v128.load16x4_s" | "v128.load16x4_u"
+        | "v128.load32x2_s" | "v128.load32x2_u" => 8,
+        "v128.load" | "v128.store" => 16,
+        // The plain loads and stores name their width in the suffix, and take
+        // it from the value type when there is none.
+        n if n.ends_with("8_s") || n.ends_with("8_u") || n.ends_with(".store8") => 1,
+        n if n.ends_with("16_s") || n.ends_with("16_u") || n.ends_with(".store16") => 2,
+        n if n.ends_with("32_s") || n.ends_with("32_u") || n.ends_with(".store32") => 4,
+        "i32.load" | "i32.store" | "f32.load" | "f32.store" => 4,
+        "i64.load" | "i64.store" | "f64.load" | "f64.store" => 8,
+        _ => return None,
+    };
+    Some(w)
+}
+
 fn module_invalid_walk(
     pair: Pair<Rule>,
     export_names: &mut std::collections::HashSet<String>,
@@ -12137,6 +13401,13 @@ fn module_invalid_walk(
             return Some(r);
         }
     }
+    // `align=N` must not exceed the access's NATURAL alignment — the width the
+    // instruction reads or writes. `i32.load8_s align=2` claims 2-byte
+    // alignment for a 1-byte access, which the spec rejects.
+    //
+    // This is a VALIDITY rule, not a malformity: the text lexes and parses
+    // fine. The power-of-two check on the same operand is the malformed half
+    // and lives in `quoted_module_is_malformed`.
     // A module's export names must be pairwise distinct — over ALL of
     // funcs/tables/memories/globals/tags, which is why one set covers the
     // inline and the standalone spellings together.
@@ -12155,6 +13426,9 @@ fn module_invalid_walk(
     // Name resolution is a WHOLE-MODULE question — it needs the census — so it
     // runs once when the walk reaches the module, not per pair.
     if pair.as_rule() == Rule::module {
+        if let Some(r) = elem_table_type_mismatch(&pair) {
+            return Some(r);
+        }
         if let Some(r) = module_name_resolution_reason(&pair) {
             return Some(r);
         }
@@ -12177,6 +13451,18 @@ fn module_invalid_walk(
             return Some(r);
         }
         if let Some(r) = tag_result_type_reason(&pair) {
+            return Some(r);
+        }
+        if let Some(r) = segment_offset_type_reason(&pair) {
+            return Some(r);
+        }
+        if let Some(r) = elem_item_type_reason(&pair) {
+            return Some(r);
+        }
+        // Alignment is judged BEFORE the offset: a memarg whose halves are
+        // both out of range is reported by its alignment, which is the half
+        // the spec names first.
+        if let Some(r) = memarg_alignment_reason(&pair) {
             return Some(r);
         }
         if let Some(r) = memarg_offset_range_reason(&pair) {
@@ -14315,6 +15601,24 @@ fn quoted_module_is_malformed(pairs: pest::iterators::Pairs<Rule>) -> bool {
     for p in pairs.clone() {
         collect_type_shapes(p, &mut func_type_shapes);
     }
+    // A numeric `(type N)` past the end of the type index space cannot be
+    // RESOLVED, and text-format name resolution happens while reading — so in a
+    // quoted module that is malformed, where the same shape in a decoded module
+    // is merely invalid. The census is the one `unknown_type_index_reason`
+    // builds; it already counts the implicit types inline signatures define.
+    fn find_module<'i>(p: &Pair<'i, Rule>) -> Option<Pair<'i, Rule>> {
+        if p.as_rule() == Rule::module {
+            return Some(p.clone());
+        }
+        p.clone().into_inner().find_map(|c| find_module(&c))
+    }
+    for p in pairs.clone() {
+        if let Some(m) = find_module(&p) {
+            if unknown_type_index_reason(&m).is_some() {
+                return true;
+            }
+        }
+    }
     let walk = |pair: Pair<Rule>| -> bool {
         fn walk_inner(
             pair: Pair<Rule>,
@@ -14331,6 +15635,78 @@ fn quoted_module_is_malformed(pairs: pest::iterators::Pairs<Rule>) -> bool {
             .any(|s| !name_string_is_utf8(s.as_str()))
         {
             return true;
+        }
+        // A func's own clauses are ordered: `param`s before `result`s, both
+        // before `local`s, and all of them before the body. Out of place they
+        // still PARSE — the generic folded form is `"(" ~ instr_name ~ …`, so
+        // `(local i32)` after an instruction reads as a call to `local` — but
+        // none of the three is an instruction name, so the text is malformed.
+        if matches!(pair.as_rule(), Rule::plain_instr | Rule::folded_instr) {
+            if let Some(head) = pair
+                .clone()
+                .into_inner()
+                .find(|c| c.as_rule() == Rule::instr_name)
+            {
+                if matches!(head.as_str().trim(), "param" | "result" | "local" | "type") {
+                    return true;
+                }
+            }
+        }
+        if pair.as_rule() == Rule::func_field {
+            // Params and locals share ONE index space, so a name may appear
+            // only once across both.
+            let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+            fn local_ids(p: &Pair<Rule>, seen: &mut std::collections::HashSet<String>) -> bool {
+                if matches!(p.as_rule(), Rule::param | Rule::local) {
+                    if let Some(id) = p.clone().into_inner().find(|c| c.as_rule() == Rule::id) {
+                        if !seen.insert(id.as_str().trim_start_matches('$').to_string()) {
+                            return true;
+                        }
+                    }
+                }
+                for c in p.clone().into_inner() {
+                    if local_ids(&c, seen) {
+                        return true;
+                    }
+                }
+                false
+            }
+            if local_ids(&pair, &mut seen) {
+                return true;
+            }
+            // A func giving BOTH `(type $t)` and an inline signature must
+            // repeat `$t`'s shape exactly; a partial or differing one is the
+            // spec's "inline function type".
+            if let Some(tu) = pair.clone().into_inner().find(|c| c.as_rule() == Rule::typeuse) {
+                let named = tu
+                    .clone()
+                    .into_inner()
+                    .find(|c| c.as_rule() == Rule::index)
+                    .map(|c| c.as_str().trim_start_matches('$').to_string());
+                let types_of = |rule: Rule| -> Vec<String> {
+                    tu.clone()
+                        .into_inner()
+                        .filter(|c| c.as_rule() == rule)
+                        .flat_map(|c| {
+                            c.into_inner()
+                                .filter(|v| v.as_rule() == Rule::any_val_type)
+                                .map(|v| v.as_str().split_whitespace().collect::<Vec<_>>().join(" "))
+                                .collect::<Vec<_>>()
+                        })
+                        .collect()
+                };
+                let inline_params = types_of(Rule::param);
+                let inline_results = types_of(Rule::result);
+                if let Some(n) = named {
+                    if !(inline_params.is_empty() && inline_results.is_empty()) {
+                        if let Some((dp, dr)) = shapes.get(&n) {
+                            if *dp != inline_params || *dr != inline_results {
+                                return true;
+                            }
+                        }
+                    }
+                }
+            }
         }
         if pair.as_rule() == Rule::plain_instr || pair.as_rule() == Rule::folded_instr {
             let mut name: Option<String> = None;
@@ -14380,6 +15756,25 @@ fn quoted_module_is_malformed(pairs: pest::iterators::Pairs<Rule>) -> bool {
             }
             if let Some(n) = name.as_deref() {
                 if unknown_instruction_name(n) {
+                    return true;
+                }
+                // ⛔ A FOLDED `if` THAT CARRIES AN `instr_name` IS MALFORMED.
+                // The dedicated `folded_instr` arm spells `if` as a LITERAL, so
+                // it produces no `instr_name` child; only the generic arm
+                // (`"(" ~ instr_name ~ instr_arg* ~ instr* ~ ")"`) does. A node
+                // reaching here therefore failed the arm that encodes the
+                // spec's shape — `'(' 'if' label blocktype foldedinstr*
+                // '(' 'then' … ')'` — and the generic arm accepted it anyway by
+                // taking `(then)`/`(else)` as ordinary folded instructions.
+                //
+                // That is exactly `(if i32.const 0 (then) (else))`: a PLAIN
+                // instruction where the abbreviation admits only folded ones.
+                //
+                // Checked over the TREE rather than by tightening the grammar:
+                // the rule change parses the same language but hands the walker
+                // a shape it skips, silently dropping the condition of every
+                // WELL-FORMED folded `if` in the suite.
+                if pair.as_rule() == Rule::folded_instr && n == "if" {
                     return true;
                 }
                 if let Some(lit) = first_int.as_deref() {
@@ -15098,6 +16493,45 @@ fn quoted_text_has_label_mismatch(src: &str) -> bool {
             _ => {}
         }
     }
+    // ⛔ A BRANCH LABEL MUST NAME A BLOCK. In the text format name resolution
+    // happens at PARSE time, so `br_table $l0` where only `$l` is written is
+    // MALFORMED, not invalid — and `$l0` is one token, which is the whole point
+    // of `token.wast`'s pair (`$l 0` is a label and an index; `$l0` is neither).
+    //
+    // Declared-ANYWHERE, not in-scope: this is a superset of the real rule, so
+    // it can only fire on a name the source never binds. Narrowing it to real
+    // scoping would need the folded/plain block structure, and a name that is
+    // bound somewhere is already accepted by every well-formed file.
+    let declared: std::collections::HashSet<&str> = toks
+        .iter()
+        .enumerate()
+        .filter_map(|(n, t)| {
+            let Tok::Word(w) = t else { return None };
+            if !matches!(w.as_str(), "block" | "loop" | "if" | "try_table") {
+                return None;
+            }
+            match toks.get(n + 1) {
+                Some(Tok::Word(x)) if x.starts_with('$') => Some(x.as_str()),
+                _ => None,
+            }
+        })
+        .collect();
+    for (n, t) in toks.iter().enumerate() {
+        let Tok::Word(w) = t else { continue };
+        if !matches!(w.as_str(), "br" | "br_if" | "br_table") {
+            continue;
+        }
+        // Every `$`-prefixed operand that follows, up to the next non-word.
+        for next in toks[n + 1..].iter() {
+            let Tok::Word(x) = next else { break };
+            if !x.starts_with('$') {
+                continue;
+            }
+            if !declared.contains(x.as_str()) {
+                return true;
+            }
+        }
+    }
     false
 }
 
@@ -15111,6 +16545,10 @@ fn quoted_text_has_bad_token(src: &str) -> bool {
         // Strings are not token runs; skip them whole, honouring `\"`.
         if c == '"' {
             i += 1;
+            // ⛔ A STRING MUST CLOSE. Running to end-of-source without the
+            // closing quote is malformed ("unclosed string"); this scan used to
+            // just stop, so `(@x ")` looked like a well-formed annotation.
+            let mut closed = false;
             while i < chars.len() {
                 if chars[i] == '\\' {
                     i += 2;
@@ -15118,9 +16556,21 @@ fn quoted_text_has_bad_token(src: &str) -> bool {
                 }
                 if chars[i] == '"' {
                     i += 1;
+                    closed = true;
                     break;
                 }
                 i += 1;
+            }
+            if !closed {
+                return true;
+            }
+            // ⛔ TOKENS MUST BE SEPARATED. A closing quote followed straight by
+            // an idchar — or by another string — runs two tokens together:
+            // `$"l"0` is a quoted id and a `0`, and `"a""b"` is two strings,
+            // both with nothing between them. The spec rejects each as an
+            // unknown operator rather than reading it as either.
+            if chars.get(i).copied().is_some_and(|n| is_idchar(n) || n == '"') {
+                return true;
             }
             continue;
         }
@@ -15138,6 +16588,29 @@ fn quoted_text_has_bad_token(src: &str) -> bool {
             i += 2;
             continue;
         }
+        // `(@` opens an annotation, and its id is a NON-EMPTY idchar run —
+        // `(@)` and `(@ …)` name nothing. The grammar's `annotation` rule is
+        // `"(@" ~ annot_item* ~ ")"`, which accepts an empty id happily.
+        if c == '(' && chars.get(i + 1) == Some(&'@') {
+            match chars.get(i + 2) {
+                Some(&n) if is_idchar(n) => {}
+                _ => return true,
+            }
+        }
+        // ⛔ THE SOURCE CHARACTER SET IS ASCII, MINUS THE CONTROL CODES. Tab,
+        // newline and carriage return are the only control characters allowed;
+        // everything else — and every non-ASCII character — must be written as
+        // an escape inside a string literal.
+        //
+        // Reached only OUTSIDE strings and comments, which the arms above skip
+        // whole. An ANNOTATION is not skipped here, which is the point: the
+        // grammar treats `(@…)` as a comment, so without this nothing ever
+        // looked inside one. `annotations.wast` asserts it 43 times — `(@a \00)`
+        // through `(@a \7f)` for "illegal character", and
+        // `(@a Heiße Würstchen)` for the non-ASCII half.
+        if (c.is_control() && c != '\t' && c != '\n' && c != '\r') || !c.is_ascii() {
+            return true;
+        }
         if !is_idchar(c) {
             i += 1;
             continue;
@@ -15147,6 +16620,14 @@ fn quoted_text_has_bad_token(src: &str) -> bool {
             i += 1;
         }
         let token: String = chars[start..i].iter().collect();
+
+        // ⛔ AND THE OTHER WAY ROUND. A keyword running straight into a string
+        // is the same missing separator as `$"l"0`: `(data"a")` is `data` and
+        // `"a"` with nothing between them. The one legal adjacency is the
+        // quoted identifier `$"name"`, whose token run is exactly `$`.
+        if chars.get(i) == Some(&'"') && token != "$" {
+            return true;
+        }
 
         // A lone `$` names nothing. WASM 3.0's QUOTED identifier is `$"name"`
         // with no space between the two — `$ "a"` is an empty id followed by a
@@ -15242,8 +16723,24 @@ fn walk_assert_invalid(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Stateme
         let text = child.as_str();
         let head: Vec<&str> = text.split_whitespace().take(4).collect();
         if head.iter().any(|t| *t == "binary") {
-            // A binary module's validity is a property of its BYTES; the text
-            // walk here cannot see them. Left unexamined on purpose.
+            // A binary module's validity is a property of its BYTES, and the
+            // reader already checks a structural subset of them on its way in
+            // — section order, limits, data/element segment index ranges. So
+            // decode, and take a rejection as the reason.
+            //
+            // ⛔ THIS USED TO `break` AND REPORT "not examined". The checks
+            // existed and simply were never reached from here, which is how
+            // `data.wast`'s "unknown memory 1" — a rule `validate_data_sections`
+            // has always implemented — sat red.
+            examined = true;
+            // Only a VALIDATION rejection discharges `assert_invalid`; a module
+            // that fails to decode is malformed, which is a different assertion.
+            match vybe_platform_wasm::read_wasm_classified(&binary_module_bytes(&child)) {
+                Err(e) if e.phase == vybe_platform_wasm::Phase::Invalid => {
+                    reason = Some(e.message)
+                }
+                Err(_) | Ok(_) => {}
+            }
             break;
         }
         if head.iter().any(|t| *t == "quote") {
@@ -15269,6 +16766,7 @@ fn walk_assert_invalid(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Stateme
                 wrapped = format!("(module {source})");
                 &wrapped
             };
+            let _line_index = vybe_ast::line_index::LineIndex::install(text);
             if let Ok(pairs) = WastParser::parse(Rule::program, text) {
                 examined = true;
                 reason = module_invalid_reason(pairs);
@@ -15350,12 +16848,21 @@ fn walk_assert_malformed(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<State
         }
         // The module text is the concatenation of every string literal in the
         // `quote` form — the spec splits long fixtures across several.
-        let mut source = String::new();
+        //
+        // Concatenated as BYTES: the source must be valid UTF-8, and
+        // `unquote`'s lossy decode would have already replaced an invalid
+        // sequence with U+FFFD, making that unaskable.
+        let mut bytes: Vec<u8> = Vec::new();
         for s in child.into_inner() {
             if s.as_rule() == Rule::string {
-                source.push_str(&unquote(s.as_str()));
+                bytes.extend(unquote_to_bytes(s.as_str()));
             }
         }
+        let Ok(source) = String::from_utf8(bytes) else {
+            // Not UTF-8 — malformed, and the assertion is discharged here
+            // because nothing downstream could parse it anyway.
+            return Ok(Statement::with_span(StmtKind::Empty, span));
+        };
         quoted = Some(source);
         break;
     }
@@ -15372,9 +16879,24 @@ fn walk_assert_malformed(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<State
         // `.wasm`. Decoding is a STATIC property of the fixture, so it is
         // settled here at walk time exactly as the `quote` path settles
         // parsing below.
-        return Ok(match vybe_platform_wasm::read_wasm(&bytes) {
-            // Rejected, as the spec requires: discharged.
-            Err(_) => Statement::with_span(StmtKind::Empty, span),
+        // ⛔ THE PHASE IS THE ASSERTION. `assert_malformed` says the bytes do
+        // not DECODE; a module that decodes and then fails VALIDATION is
+        // `assert_invalid`'s subject, not this one. Accepting any error let an
+        // out-of-range start index — a well-formed, invalid module — discharge
+        // a malformity assertion.
+        use vybe_platform_wasm::Phase;
+        return Ok(match vybe_platform_wasm::read_wasm_classified(&bytes) {
+            // Rejected in the DECODE phase, as the spec requires: discharged.
+            Err(e) if e.phase == Phase::Malformed => Statement::with_span(StmtKind::Empty, span),
+            Err(e) => Statement::with_span(
+                StmtKind::Throw {
+                    expr: Some(Expression::string(&format!(
+                        "assert_malformed failed: the binary module DECODED and was rejected                          by validation instead: {e}"
+                    ))),
+                    cause: None,
+                },
+                span,
+            ),
             // It decoded. That is the assertion failing, and it must say so.
             Ok(_) => Statement::with_span(
                 StmtKind::Throw {
@@ -15404,6 +16926,7 @@ fn walk_assert_malformed(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<State
     if quoted_text_has_bad_token(&source) || quoted_text_has_label_mismatch(&source) {
         return Ok(Statement::with_span(StmtKind::Empty, span));
     }
+    let _line_index = vybe_ast::line_index::LineIndex::install(&source);
     let parsed = match WastParser::parse(Rule::program, &source) {
         // Rejected by the grammar, as the spec requires: discharged.
         Err(_) => return Ok(Statement::with_span(StmtKind::Empty, span)),
@@ -15737,8 +17260,18 @@ fn walk_assert_trap(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Statement,
     let span = to_span(&pair);
     let mut action_expr: Option<Expression> = None;
     let mut expected_msg: Option<String> = None;
+    // `(assert_trap (module …) "msg")` — the INSTANTIATION-trap form. What is
+    // asserted is that instantiating the module traps, so the module's own
+    // statements ARE the action and go in the try body.
+    //
+    // ⛔ THIS USED TO FALL THROUGH TO `Empty` — no `action`, so the function
+    // returned a no-op and 54 assertions across 8 files never ran. A module
+    // that plainly cannot trap satisfied an assertion that it must, and
+    // `multi-memory/data1.wast` and `start.wast` were PASSING on that.
+    let mut module_stmts: Vec<Statement> = Vec::new();
     for child in pair.into_inner() {
         match child.as_rule() {
+            Rule::module => module_stmts = walk_module(__w, child)?,
             Rule::action => action_expr = Some(walk_action(__w, child)?),
             // The expected trap text. This used to be parsed and DROPPED,
             // which made every `assert_trap` assert only that SOMETHING went
@@ -15750,24 +17283,23 @@ fn walk_assert_trap(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Statement,
             _ => {}
         }
     }
-    let Some(action) = action_expr else {
-        return Ok(Statement::with_span(StmtKind::Empty, span));
-    };
     // Language-level lowering, same principle as assert_return: run the
     // action inside a try; COMPLETING normally is the failure, so the body
     // throws a marker after the action, and the catch re-raises exactly
     // that marker (a genuine trap lands in the catch and passes).
     let marker = "assert_trap failed: expected a trap";
-    let body = vec![
-        Statement::with_span(StmtKind::Expr(action), span),
-        Statement::with_span(
-            StmtKind::Throw {
-                expr: Some(Expression::string(marker)),
-                cause: None,
-            },
-            span,
-        ),
-    ];
+    let mut body = match action_expr {
+        Some(action) => vec![Statement::with_span(StmtKind::Expr(action), span)],
+        None if !module_stmts.is_empty() => module_stmts,
+        None => return Ok(Statement::with_span(StmtKind::Empty, span)),
+    };
+    body.push(Statement::with_span(
+        StmtKind::Throw {
+            expr: Some(Expression::string(marker)),
+            cause: None,
+        },
+        span,
+    ));
     // The whole check is ONE call to the helper `parse` prepends. Inlining it
     // here instead cost scratch locals per assertion and overflowed
     // `alloc_scratch`'s u16 on the big generated fixtures — see
@@ -15916,13 +17448,25 @@ fn walk_const_expr(pair: Pair<Rule>) -> Result<Expression, String> {
     let children: Vec<Pair<Rule>> = pair.into_inner().collect();
     if let Some(lane) = children.iter().find(|c| c.as_rule() == Rule::val_lane_type) {
         let mut args = vec![Expression::string(lane.as_str())];
+        // An `f32x4` lane is rounded ONCE, to single precision. Reading it as
+        // an f64 and letting the encoder narrow rounds twice, and the suite
+        // pins the difference: `+0x1.00000500000000001p-50` is `+0x1.000006p-50`
+        // at f32, but rounding to f64 first lands on the tie and comes back
+        // `+0x1.000004p-50`.
+        let lane_is_f32 = lane.as_str().starts_with("f32");
+        let lane_is_float = lane.as_str().starts_with('f');
         // Lanes may be floats as well as integers (`f32x4 1.5 nan:canonical …`).
         // Walk the children IN ORDER so lane positions are preserved — the two
         // rules cannot be collected separately and concatenated.
         for c in &children {
             match c.as_rule() {
+                // A float lane may be SPELLED as an integer; it is still a
+                // float, and the integer path cannot hold it.
+                Rule::integer if lane_is_float => {
+                    args.push(parse_float_at(c.as_str(), lane_is_f32))
+                }
                 Rule::integer => args.push(parse_integer(c.as_str())),
-                Rule::float => args.push(parse_float(c.as_str())),
+                Rule::float => args.push(parse_float_at(c.as_str(), lane_is_f32)),
                 _ => {}
             }
         }
@@ -16488,9 +18032,19 @@ fn binary_module_bytes(pair: &Pair<Rule>) -> Vec<u8> {
 /// non-ASCII byte; a lone invalid byte becomes U+FFFD rather than failing the
 /// parse, matching how the rest of this front end treats malformed text.
 fn unquote(s: &str) -> String {
+    String::from_utf8_lossy(&unquote_to_bytes(s)).into_owned()
+}
+
+/// The BYTES a quoted literal denotes, before any UTF-8 decision.
+///
+/// `unquote` ends in `from_utf8_lossy`, which turns an invalid sequence into
+/// U+FFFD — so by the time a caller sees the `String`, "this text is not valid
+/// UTF-8" is unrecoverable. `assert_malformed` asserts exactly that about
+/// `"(@a \80)"`, so it needs the bytes.
+fn unquote_to_bytes(s: &str) -> Vec<u8> {
     let s = s.trim();
     if !(s.len() >= 2 && s.starts_with('"') && s.ends_with('"')) {
-        return s.to_string();
+        return s.as_bytes().to_vec();
     }
     let inner = &s[1..s.len() - 1];
     let bytes = inner.as_bytes();
@@ -16572,18 +18126,25 @@ fn unquote(s: &str) -> String {
             }
         }
     }
-    String::from_utf8_lossy(&out).into_owned()
+    out
 }
 
 fn to_span(pair: &Pair<Rule>) -> Span {
-    let start = pair.as_span().start_pos().line_col();
-    let end = pair.as_span().end_pos().line_col();
-    Span {
-        start_line: start.0 as u32,
-        start_col: start.1 as u32,
-        end_line: end.0 as u32,
-        end_col: end.1 as u32,
-    }
+    let s = pair.as_span();
+    // ⛔ NOT `Position::line_col` — it counts newlines from the START OF THE
+    // INPUT, twice per node, which makes the walk quadratic in program size.
+    // See `vybe_ast::line_index`. The fallback is the old behaviour, for a
+    // parse that reached here without installing an index.
+    vybe_ast::line_index::span_1based(s.start(), s.end()).unwrap_or_else(|| {
+        let start = s.start_pos().line_col();
+        let end = s.end_pos().line_col();
+        Span {
+            start_line: start.0 as u32,
+            start_col: start.1 as u32,
+            end_line: end.0 as u32,
+            end_col: end.1 as u32,
+        }
+    })
 }
 
 /// Peek the plain-instruction keyword of an `instr`/`plain_instr` pair without
@@ -16765,7 +18326,19 @@ fn peek_typeuse_shape(__w: &WastWalker, pair: &Pair<Rule>) -> (usize, usize) {
         // reports `expected 0→1` for a 2→1 signature, which reads as a bad
         // table entry rather than a failed lookup.
         let key = match n.parse::<usize>() {
-            Ok(i) => __w.type_index_name.get(i).cloned().unwrap_or(n),
+            Ok(i) => match __w.type_index_name.get(i).cloned() {
+                Some(k) => k,
+                // Past the explicit types the index names an INLINE
+                // signature's type, which carries no name to look up.
+                None => {
+                    if let Some(&(ps, rs)) =
+                        __w.implicit_func_types.get(i - __w.type_index_name.len())
+                    {
+                        return (ps, rs);
+                    }
+                    n
+                }
+            },
             Err(_) => qualify_type_name(__w, &n),
         };
         return (
@@ -17161,7 +18734,7 @@ fn fold_instructions_seeded(__w: &mut WastWalker,
                     // dispatches through a NAMED table (default table 0).
                     let tableidx = peek_call_indirect_table(&pairs[i])
                         .map(|t| resolve_table_index(__w, &t) as usize)
-                        .unwrap_or_else(|| __w.table_index_base);
+                        .unwrap_or_else(|| default_table_slot(__w));
                     let n = (argc + 1).min(stack.len());
                     let operands: Vec<Expression> = stack.split_off(stack.len() - n);
                     // ⛔ THE DECLARED FUNCTYPE RIDES ALONG HERE TOO. The folded
@@ -17545,7 +19118,8 @@ fn fold_instructions_seeded(__w: &mut WastWalker,
                 // Parse inline arguments
                 let mut args = Vec::new();
                 for raw in immediates {
-                    args.push(walk_instr_arg_for(__w, raw, labels, &name)?);
+                    let a = walk_instr_arg_for(__w, raw, labels, &name, &args)?;
+                    args.push(a);
                 }
 
                 // Determine stack arity

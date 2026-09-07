@@ -16,7 +16,7 @@
 //!      if handler is null: → fall back to ARRAY_GET
 //!      trap = handler.get
 //!      if trap is not function: → ARRAY_GET on the underlying target
-//!      bind __js_this = handler; result = handler.get(target, key, obj)
+//!      result = handler.get(target, key, obj), with handler as the receiver
 //!
 //! 3. **Member / Index assign** — `emit_proxy_set_dispatch`. Same shape
 //!    with the `set` trap and (target, key, value, obj) args.
