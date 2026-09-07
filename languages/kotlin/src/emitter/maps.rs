@@ -67,11 +67,15 @@ fn truthy(chunks: &mut [Chunk], current: usize, line: u32) {
 }
 
 fn call_fn(chunks: &mut [Chunk], current: usize, fn_slot: u16, args: &[u16], line: u32) {
-    get(chunks, current, fn_slot, line);
+    // A user lambda is a plain callback: §10.2.1.1 binds `undefined` as its
+    // receiver, and under `ReceiverAbi::Parameter` that receiver is argument 0
+    // of the chunk. `push_callback_from_slot` places it where the module ABI
+    // says one exists and widens the argument count to match.
+    let recv = callable::push_callback_from_slot(chunks, current, fn_slot, line);
     for &a in args {
         get(chunks, current, a, line);
     }
-    callable::emit_direct_invoke(chunks, current, args.len() as u8, line);
+    callable::emit_direct_invoke(chunks, current, args.len() as u8 + recv, line);
 }
 
 fn set_object_prop_from_local(

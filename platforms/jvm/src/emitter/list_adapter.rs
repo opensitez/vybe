@@ -74,7 +74,31 @@ fn get_object_prop(chunks: &mut [Chunk], current: usize, object: u16, key: &str,
     host::emit(&mut chunks[current], "ecma:object", "get", 2, line);
 }
 
-pub fn emit_atomic_new(chunks: &mut [Chunk], current: usize, line: u32) {
+/// What a zero-argument atomic constructor stores — JLS 17.9 gives each class
+/// its own: `new AtomicInteger()` is 0, `new AtomicBoolean()` is false,
+/// `new AtomicReference()` is null.
+#[derive(Clone, Copy)]
+pub enum AtomicDefault {
+    Zero,
+    False,
+    Null,
+}
+
+pub fn emit_atomic_new(
+    chunks: &mut [Chunk],
+    current: usize,
+    argc: u8,
+    default: AtomicDefault,
+    line: u32,
+) {
+    if argc == 0 {
+        match default {
+            AtomicDefault::Zero => chunks[current].emit_f64_const(0.0, line),
+            AtomicDefault::False => chunks[current].emit_bool_const(false, line),
+            AtomicDefault::Null => chunks[current]
+                .emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line),
+        }
+    }
     let value = chunks[current].alloc_scratch(1);
     set(&mut chunks[current], value, line);
     vybe_compiler::primitives::class_slots::emit_class_alloc(&mut chunks[current], line);
@@ -167,6 +191,71 @@ pub fn emit_atomic_add_and_get(chunks: &mut [Chunk], current: usize, line: u32) 
     set(&mut chunks[current], next, line);
     set_object_prop_from_local(chunks, current, cell, "value", next, line);
     get(&mut chunks[current], next, line);
+}
+
+/// `getAndAdd(delta)` — the counterpart of `addAndGet`, answering the value the
+/// cell held before the addition.
+pub fn emit_atomic_get_and_add(chunks: &mut [Chunk], current: usize, line: u32) {
+    let delta = chunks[current].alloc_scratch(1);
+    let cell = chunks[current].alloc_scratch(1);
+    let old = chunks[current].alloc_scratch(1);
+    let next = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], delta, line);
+    set(&mut chunks[current], cell, line);
+    get_object_prop(chunks, current, cell, "value", line);
+    set(&mut chunks[current], old, line);
+    get(&mut chunks[current], old, line);
+    get(&mut chunks[current], delta, line);
+    ops::emit_dyn_add(&mut chunks[current], line);
+    set(&mut chunks[current], next, line);
+    set_object_prop_from_local(chunks, current, cell, "value", next, line);
+    get(&mut chunks[current], old, line);
+}
+
+/// `updateAndGet(fn)` / `getAndUpdate(fn)` — the cell's value becomes `fn(v)`.
+/// `accumulateAndGet(x, fn)` is the same step with `fn(v, x)`.
+///
+/// The function is a PLAIN CALLBACK, so §10.2.1.1 binds `undefined` as its
+/// receiver: `push_callback_from_slot` places it wherever the module ABI says a
+/// callable takes one.
+pub fn emit_atomic_apply(
+    chunks: &mut [Chunk],
+    current: usize,
+    binary: bool,
+    return_old: bool,
+    line: u32,
+) {
+    let f = chunks[current].alloc_scratch(1);
+    let operand = chunks[current].alloc_scratch(1);
+    let cell = chunks[current].alloc_scratch(1);
+    let old = chunks[current].alloc_scratch(1);
+    let next = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], f, line);
+    if binary {
+        set(&mut chunks[current], operand, line);
+    }
+    set(&mut chunks[current], cell, line);
+    get_object_prop(chunks, current, cell, "value", line);
+    set(&mut chunks[current], old, line);
+
+    let recv = vybe_compiler::primitives::callable::push_callback_from_slot(chunks, current, f, line);
+    get(&mut chunks[current], old, line);
+    if binary {
+        get(&mut chunks[current], operand, line);
+    }
+    let args = if binary { 2 } else { 1 };
+    vybe_compiler::primitives::callable::emit_direct_invoke_chunk(
+        &mut chunks[current],
+        args + recv,
+        line,
+    );
+    set(&mut chunks[current], next, line);
+    set_object_prop_from_local(chunks, current, cell, "value", next, line);
+    get(
+        &mut chunks[current],
+        if return_old { old } else { next },
+        line,
+    );
 }
 
 fn get_iterator_list(chunks: &mut [Chunk], current: usize, iterator: u16, line: u32) {
@@ -1839,7 +1928,7 @@ pub fn emit_java_thread_start_with(chunks: &mut Vec<Chunk>, current: usize, line
     // Slot 0 arrives as the thread object's TABLE INDEX (the wasi-threads
     // record's user_arg is an i32; objects cross via funcref table 0).
     worker.emit_op_u16(Op::LOCAL_GET, 0, line);
-    worker.emit_op_u16(Op::TABLE_GET, 0, line);
+    worker.emit_op_idx(Op::TABLE_GET, 0u32, line);
     worker.emit_op_u16(Op::LOCAL_SET, 0, line);
     worker.emit_op_u16(Op::LOCAL_GET, 0, line);
     vybe_compiler::primitives::globals::emit_write(&mut worker, "__j_current_thread", line);
@@ -1860,7 +1949,7 @@ pub fn emit_java_thread_start_with(chunks: &mut Vec<Chunk>, current: usize, line
     // [thread_obj] → table 0 (index = user_arg), then the wasi spawn.
     get(&mut chunks[current], thread, line);
     chunks[current].emit_i32_const(1, line);
-    chunks[current].emit_op_u16(Op::TABLE_GROW, 0, line); // table 0 (u16 index)
+    chunks[current].emit_op_idx(Op::TABLE_GROW, 0u32, line); // table 0
     chunks[current].emit_op_u16(Op::REF_FUNC, worker_idx as u16, line);
     chunks[current].emit(0, line);
     vybe_compiler::primitives::threading::emit_thread_spawn(chunks, current, line);

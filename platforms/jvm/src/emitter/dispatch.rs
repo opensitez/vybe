@@ -94,7 +94,13 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             list_adapter::emit_blocking_queue_drain_to(chunks, current, argc, line);
         }
         "jvm.java.atomic_new" => {
-            list_adapter::emit_atomic_new(chunks, current, line);
+            list_adapter::emit_atomic_new(chunks, current, argc, list_adapter::AtomicDefault::Zero, line);
+        }
+        "jvm.java.atomic_new_bool" => {
+            list_adapter::emit_atomic_new(chunks, current, argc, list_adapter::AtomicDefault::False, line);
+        }
+        "jvm.java.atomic_new_ref" => {
+            list_adapter::emit_atomic_new(chunks, current, argc, list_adapter::AtomicDefault::Null, line);
         }
         "jvm.java.atomic_get" => {
             list_adapter::emit_atomic_get(chunks, current, line);
@@ -119,6 +125,21 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "jvm.java.atomic_add_and_get" => {
             list_adapter::emit_atomic_add_and_get(chunks, current, line);
+        }
+        "jvm.java.atomic_get_and_add" => {
+            list_adapter::emit_atomic_get_and_add(chunks, current, line);
+        }
+        "jvm.java.atomic_decrement_and_get" => {
+            list_adapter::emit_atomic_delta(chunks, current, -1.0, false, line);
+        }
+        "jvm.java.atomic_update_and_get" => {
+            list_adapter::emit_atomic_apply(chunks, current, false, false, line);
+        }
+        "jvm.java.atomic_get_and_update" => {
+            list_adapter::emit_atomic_apply(chunks, current, false, true, line);
+        }
+        "jvm.java.atomic_accumulate_and_get" => {
+            list_adapter::emit_atomic_apply(chunks, current, true, false, line);
         }
         "jvm.java.concurrent_for_each_key" => {
             list_adapter::emit_concurrent_for_each(chunks, current, 0, line);

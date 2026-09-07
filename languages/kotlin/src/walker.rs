@@ -7,6 +7,21 @@ use super::{KotlinParser, Rule};
 use crate::emitter::tostring::SET_MARKER;
 use vybe_compiler::primitives::class_slots;
 
+/// Source position of `pair`, 1-based, as pest reports it.
+///
+/// ⛔ NOT `Position::line_col` — it counts newlines from the START OF THE
+/// INPUT, so asking per node makes the walk quadratic in program size. See
+/// `vybe_ast::line_index`, which every parse entry point installs.
+///
+/// ⛔ Statements built by LOWERING have no source position and keep the
+/// default span: an `it`-scope IIFE, a delegate accessor, an interface stub are
+/// not text the user wrote, and pointing a diagnostic at the construct that
+/// produced them would be a lie.
+fn to_span(pair: &Pair<Rule>) -> Span {
+    let s = pair.as_span();
+    vybe_ast::line_index::span_1based(s.start(), s.end()).unwrap_or_default()
+}
+
 #[derive(Clone, Default)]
 struct KotlinReflectionMethodMeta {
     decorators: Vec<Expression>,
@@ -851,6 +866,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
     // by the next program compiled on this thread.
     let mut __w_owned = KtWalker::default();
     let __w = &mut __w_owned;
+    let _line_index = vybe_ast::line_index::LineIndex::install(source);
     let mut pairs = KotlinParser::parse(Rule::program, source)
         .map_err(|e| format!("Kotlin parse error: {}", e))?;
 
@@ -1071,6 +1087,14 @@ fn language_directives() -> Directives {
         }),
         // Kotlin states no `callable_case`, so `CaseMatch::Exact` — the
         // default — applies: `Instant` and `instant` are two names.
+        //
+        // A kotlin method is the raw function off the class; the CALL supplies
+        // the receiver as a leading argument.
+        method_receiver: Some(vybe_ast::MethodReceiver::CallSite),
+        // Every callable declares a leading receiver parameter, not only
+        // methods — ECMA-262 §10.2.1 `[[Call]](thisArgument, argumentsList)`.
+        // A plain `f()` passes `undefined` (§10.2.1.1).
+        receiver_binding: Some(vybe_ast::ReceiverBinding::UniversalParameter),
         ..Default::default()
     }
 }
@@ -1276,25 +1300,6 @@ fn kt_thread_runtime_fns() -> Vec<Statement> {
             ]),
         ),
         kt_var("__kt_current_thread", id("__kt_main_thread")),
-        kt_fn(
-            "__kt_atomic_new",
-            vec!["value"],
-            vec![kt_ret(kt_obj(vec![("__value", id("value"))]))],
-        ),
-        kt_fn("__kt_atomic_get", vec!["a"], vec![kt_ret(fld("a", "__value"))]),
-        kt_fn(
-            "__kt_atomic_set",
-            vec!["a", "value"],
-            vec![kt_assign(fld("a", "__value"), id("value")), kt_ret(null())],
-        ),
-        kt_fn(
-            "__kt_atomic_inc",
-            vec!["a"],
-            vec![
-                kt_assign(fld("a", "__value"), kt_binary(BinOp::Add, fld("a", "__value"), int_lit(1))),
-                kt_ret(fld("a", "__value")),
-            ],
-        ),
         kt_fn(
             "__kt_latch_new",
             vec!["count"],
@@ -8334,19 +8339,6 @@ fn normalize_kotlin_operator_expr(__w: &mut KtWalker,
                 && let Some(leaf) = kotlin_expr_type_leaf(__w, object, locals, operators)
             {
                 let helper = match (leaf.as_str(), field.as_str(), args.len()) {
-                    (
-                        "AtomicInteger" | "AtomicLong" | "AtomicBoolean" | "AtomicReference",
-                        "get",
-                        0,
-                    ) => Some("__kt_atomic_get"),
-                    (
-                        "AtomicInteger" | "AtomicLong" | "AtomicBoolean" | "AtomicReference",
-                        "set",
-                        1,
-                    ) => Some("__kt_atomic_set"),
-                    ("AtomicInteger" | "AtomicLong", "incrementAndGet", 0) => {
-                        Some("__kt_atomic_inc")
-                    }
                     ("CountDownLatch", "countDown", 0) => Some("__kt_latch_count_down"),
                     ("CountDownLatch", "getCount", 0) => Some("__kt_latch_get_count"),
                     ("CountDownLatch", "await", 0) => Some("__kt_latch_await"),
@@ -8368,7 +8360,6 @@ fn normalize_kotlin_operator_expr(__w: &mut KtWalker,
             }
             if let ExprKind::Member { object, field, .. } = &callee.kind {
                 let helper = match (field.as_str(), args.len()) {
-                    ("incrementAndGet", 0) => Some("__kt_atomic_inc"),
                     ("countDown", 0) => Some("__kt_latch_count_down"),
                     ("getCount", 0) => Some("__kt_latch_get_count"),
                     ("await", 0) => Some("__kt_latch_await"),
@@ -10055,6 +10046,12 @@ fn normalize_kotlin_operator_expr(__w: &mut KtWalker,
                         return;
                     }
                 }
+                if let Some(restored) =
+                    kotlin_tree_member_restore(__w, name, args, locals, operators)
+                {
+                    *expr = restored;
+                    return;
+                }
                 if name == "__kt_to_set" && args.len() == 1 {
                     return;
                 }
@@ -10585,17 +10582,6 @@ fn normalize_kotlin_operator_expr(__w: &mut KtWalker,
                 match leaf {
                     "UncaughtExceptionHandler" if args.len() == 1 => {
                         *expr = args[0].value.clone();
-                        return;
-                    }
-                    "AtomicInteger" | "AtomicLong" | "AtomicBoolean" | "AtomicReference" => {
-                        kotlin_mark_threads_needed(__w);
-                        let default = match leaf {
-                            "AtomicBoolean" => Expression::bool(false),
-                            "AtomicReference" => Expression::null(),
-                            _ => Expression::int(0),
-                        };
-                        let value = args.first().map(|arg| arg.value.clone()).unwrap_or(default);
-                        *expr = kt_call("__kt_atomic_new", vec![value]);
                         return;
                     }
                     "CountDownLatch" => {
@@ -12751,6 +12737,44 @@ fn kotlin_type_is_double_like(ty: &str) -> bool {
 /// carries — so declaring a fold there is the ONLY edit needed to change it.
 /// Kotlin states no `callable_case` today, so `CaseMatch::Exact` applies and
 /// a miss is a miss.
+/// Restore a member call the walk-time collection rewrites took by SPELLING.
+///
+/// Those rewrites run before any receiver type is known, so `BigInteger.add`
+/// compiled as a list push and answered a Boolean. Here the receiver's declared
+/// type IS known: a member the platform tree declares on that type belongs to
+/// that type. Same rule that lets a user-declared member win, applied to the
+/// other place members are declared.
+fn kotlin_tree_member_restore(
+    __w: &mut KtWalker,
+    name: &str,
+    args: &[Argument],
+    locals: &KotlinLocalTypes,
+    operators: &KotlinOperatorTable,
+) -> Option<Expression> {
+    const SPELLINGS: &[(&str, &str)] = &[("__kt_add", "add"), ("__coll_push", "add")];
+    let (_, member) = SPELLINGS.iter().find(|(helper, _)| *helper == name)?;
+    let receiver = args.first()?;
+    let ty = kotlin_expr_type(__w, &receiver.value, locals, operators)?;
+    if !ty.starts_with("java.") {
+        return None;
+    }
+    vybe_compiler::primitives::namespaces::lookup_type_instance_member(
+        &["jvm".to_string(), "kotlin".to_string()],
+        &ty,
+        member,
+        kotlin_tree_fold(),
+    )?;
+    Some(Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::new(ExprKind::Member {
+            object: Box::new(receiver.value.clone()),
+            field: (*member).to_string(),
+            null_safe: false,
+        })),
+        args: args[1..].to_vec(),
+        optional: false,
+    }))
+}
+
 fn kotlin_tree_fold() -> vybe_compiler::primitives::namespaces::Fold {
     language_directives().callable_fold()
 }
@@ -12873,11 +12897,6 @@ fn kotlin_expr_type(__w: &mut KtWalker,
                     __w.kotlin_function_return_shapes.get(name).cloned()
             {
                 return Some(shape);
-            }
-            if let ExprKind::Ident(name) = &callee.kind
-                && name == "__kt_atomic_new"
-            {
-                return Some("AtomicInteger".to_string());
             }
             if let ExprKind::Ident(name) = &callee.kind
                 && name == "__kt_latch_new"
@@ -14446,6 +14465,7 @@ fn walk_import(pair: Pair<Rule>) -> Option<Import> {
 }
 
 fn walk_statement(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
+    let __span = to_span(&pair);
     let mut label_name = None;
 
     let inner_pair = if pair.as_rule() == Rule::statement {
@@ -14462,7 +14482,7 @@ fn walk_statement(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
     };
 
     let stmt = match inner_pair.as_rule() {
-        Rule::import_decl => Some(Statement::new(StmtKind::Empty)),
+        Rule::import_decl => Some(Statement::with_span(StmtKind::Empty, __span)),
         Rule::typealias_decl => walk_typealias(__w, inner_pair),
         Rule::interface_decl => walk_interface_decl(__w, inner_pair),
         Rule::enum_decl => walk_enum_decl(__w, inner_pair),
@@ -14490,7 +14510,7 @@ fn walk_statement(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
                 .into_inner()
                 .find(|p| p.as_rule() == Rule::expr)
                 .map(|__x| walk_expr(__w, __x));
-            Some(Statement::new(StmtKind::Throw { expr, cause: None }))
+            Some(Statement::with_span(StmtKind::Throw { expr, cause: None }, __span))
         }
         Rule::for_stmt => walk_for_stmt(__w, inner_pair),
         Rule::while_stmt => walk_while_stmt(__w, inner_pair),
@@ -14502,7 +14522,7 @@ fn walk_statement(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
                     ret_expr = Some(walk_expr(__w, rsub));
                 }
             }
-            Some(Statement::new(StmtKind::Return(ret_expr)))
+            Some(Statement::with_span(StmtKind::Return(ret_expr), __span))
         }
         Rule::break_stmt => {
             let mut lbl = None;
@@ -14512,7 +14532,7 @@ fn walk_statement(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
                 }
             }
             let target = lbl.map(BreakTarget::Label).unwrap_or(BreakTarget::Implicit);
-            Some(Statement::new(StmtKind::Break(target)))
+            Some(Statement::with_span(StmtKind::Break(target), __span))
         }
         Rule::continue_stmt => {
             let mut lbl = None;
@@ -14524,7 +14544,7 @@ fn walk_statement(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
             let target = lbl
                 .map(ContinueTarget::Label)
                 .unwrap_or(ContinueTarget::Implicit);
-            Some(Statement::new(StmtKind::Continue(target)))
+            Some(Statement::with_span(StmtKind::Continue(target), __span))
         }
         Rule::expr_stmt => {
             let expr_pair = inner_pair.into_inner().next()?;
@@ -14534,20 +14554,20 @@ fn walk_statement(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
                     return Some(kotlin_error_throw_stmt(args));
                 }
             }
-            Some(repeat_to_for_in(&expr).unwrap_or_else(|| Statement::new(StmtKind::Expr(expr))))
+            Some(repeat_to_for_in(&expr).unwrap_or_else(|| Statement::with_span(StmtKind::Expr(expr), __span)))
         }
         Rule::expr => {
             let expr = walk_expr(__w, inner_pair);
-            Some(Statement::new(StmtKind::Expr(expr)))
+            Some(Statement::with_span(StmtKind::Expr(expr), __span))
         }
         _ => None,
     };
 
     match (stmt, label_name) {
-        (Some(s), Some(lbl)) => Some(Statement::new(StmtKind::Labeled {
+        (Some(s), Some(lbl)) => Some(Statement::with_span(StmtKind::Labeled {
             label: lbl,
             body: Box::new(s),
-        })),
+        }, __span)),
         (other, _) => other,
     }
 }
@@ -14597,6 +14617,7 @@ fn repeat_to_for_in(expr: &Expression) -> Option<Statement> {
 }
 
 fn walk_interface_decl(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
+    let __span = to_span(&pair);
     let mut name = String::new();
     let mut parents = Vec::new();
     let mut members = Vec::new();
@@ -14691,7 +14712,7 @@ fn walk_interface_decl(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement
     // `ClassKind` exists for. As a `StmtKind::InterfaceDecl` it never entered
     // `normalized_classes`, so `class W(d: I) : I by d` could not find `I`'s
     // members to promote and delegation resolved to nothing.
-    Some(Statement::new(StmtKind::ClassDecl {
+    Some(Statement::with_span(StmtKind::ClassDecl {
         name,
         parents: Vec::new(),
         // A Kotlin interface's supertypes are other interfaces, never a
@@ -14704,10 +14725,11 @@ fn walk_interface_decl(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement
             ..Default::default()
         },
         decorators,
-    }))
+    }, __span))
 }
 
 fn walk_enum_decl(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
+    let __span = to_span(&pair);
     let mut name = String::new();
     let mut members = Vec::new();
     let mut body_members = Vec::new();
@@ -14791,7 +14813,7 @@ fn walk_enum_decl(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
                             array_bounds: None,
                             storage: None,
                         });
-                        ctor_body.push(Statement::new(StmtKind::Expr(Expression::new(
+                        ctor_body.push(Statement::with_span(StmtKind::Expr(Expression::new(
                             ExprKind::Assign {
                                 target: Box::new(Expression::new(ExprKind::Member {
                                     object: Box::new(Expression::new(ExprKind::This)),
@@ -14800,7 +14822,7 @@ fn walk_enum_decl(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
                                 })),
                                 value: Box::new(Expression::ident(&pname)),
                             },
-                        ))));
+                        )), __span));
                     }
                 }
                 if !ctor_params.is_empty() {
@@ -14959,7 +14981,7 @@ fn walk_enum_decl(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
                             is_nullable: false,
                         },
                     );
-                    attach.push(Statement::new(StmtKind::Expr(Expression::new(
+                    attach.push(Statement::with_span(StmtKind::Expr(Expression::new(
                         ExprKind::Assign {
                             target: Box::new(Expression::new(ExprKind::Member {
                                 object: Box::new(Expression::new(ExprKind::Member {
@@ -14977,7 +14999,7 @@ fn walk_enum_decl(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
                                 is_async: false,
                             })),
                         },
-                    ))));
+                    )), __span));
                 }
             }
         }
@@ -14996,17 +15018,18 @@ fn walk_enum_decl(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
         }
     }
 
-    Some(Statement::new(StmtKind::ClassDecl {
+    Some(Statement::with_span(StmtKind::ClassDecl {
         name,
         parents: vec![],
         interfaces: vec![],
         members: body_members,
         modifiers: ClassModifiers::default(),
         decorators,
-    }))
+    }, __span))
 }
 
 fn walk_destructuring_decl(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
+    let __span = to_span(&pair);
     let mut is_readonly = false;
     let mut names = Vec::new();
     let mut init = None;
@@ -15036,7 +15059,7 @@ fn walk_destructuring_decl(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<State
             VarDeclKind::Var
         };
 
-        let mut stmts = vec![Statement::new(StmtKind::VarDecl {
+        let mut stmts = vec![Statement::with_span(StmtKind::VarDecl {
             declarations: vec![VarDeclarator {
                 pattern: BindingPattern::Ident(tmp_name.clone()),
                 type_hint: None,
@@ -15045,7 +15068,7 @@ fn walk_destructuring_decl(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<State
                 with_events: false,
             }],
             kind: decl_kind.clone(),
-        })];
+        }, __span)];
 
         for (idx, name) in names.into_iter().enumerate() {
             let read_expr = Expression::new(ExprKind::Index {
@@ -15053,7 +15076,7 @@ fn walk_destructuring_decl(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<State
                 index: Box::new(Expression::int(idx as i64)),
                 null_safe: false,
             });
-            stmts.push(Statement::new(StmtKind::VarDecl {
+            stmts.push(Statement::with_span(StmtKind::VarDecl {
                 declarations: vec![VarDeclarator {
                     pattern: BindingPattern::Ident(name),
                     type_hint: None,
@@ -15062,16 +15085,16 @@ fn walk_destructuring_decl(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<State
                     with_events: false,
                 }],
                 kind: decl_kind.clone(),
-            }));
+            }, __span));
         }
 
-        Some(Statement::new(StmtKind::Block(stmts)))
+        Some(Statement::with_span(StmtKind::Block(stmts), __span))
     } else {
         let elems = names
             .into_iter()
             .map(|n| ArrayPatternElem::Pattern(BindingPattern::Ident(n), None))
             .collect();
-        Some(Statement::new(StmtKind::VarDecl {
+        Some(Statement::with_span(StmtKind::VarDecl {
             declarations: vec![VarDeclarator {
                 pattern: BindingPattern::Array(elems),
                 type_hint: None,
@@ -15084,11 +15107,12 @@ fn walk_destructuring_decl(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<State
             } else {
                 VarDeclKind::Var
             },
-        }))
+        }, __span))
     }
 }
 
 fn walk_try_stmt(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
+    let __span = to_span(&pair);
     let mut body = Vec::new();
     let mut catches = Vec::new();
     let mut finally = None;
@@ -15140,12 +15164,12 @@ fn walk_try_stmt(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
         }
     }
 
-    Some(Statement::new(StmtKind::Try {
+    Some(Statement::with_span(StmtKind::Try {
         body,
         catches,
         else_body: None,
         finally,
-    }))
+    }, __span))
 }
 
 fn kotlin_block_statements_as_expr(mut stmts: Vec<Statement>) -> Expression {
@@ -15209,6 +15233,7 @@ fn walk_function_decl_inner(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Stat
 }
 
 fn walk_function_decl_body(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
+    let __span = to_span(&pair);
     let mut name = String::new();
     let mut receiver_type: Option<String> = None;
     let mut params = Vec::new();
@@ -15270,15 +15295,10 @@ fn walk_function_decl_body(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<State
                 param_decorators = parsed_decorators;
             }
             Rule::function_body_expr => {
-                // `find`, not `next`: the `=` may sit at end-of-line with the
-                // body on the next line, and the eaten NEWLINEs precede the
-                // expr in the pair stream.
-                if let Some(expr_pair) = inner
-                    .into_inner()
-                    .find(|p| matches!(p.as_rule(), Rule::expr))
-                {
-                    let expr = walk_expr(__w, expr_pair);
-                    body.push(Statement::new(StmtKind::Return(Some(expr))));
+                // The `=` may sit at end-of-line with the body on the next
+                // line, so the eaten NEWLINEs precede the body in the stream.
+                if let Some(expr) = kotlin_walk_body_expr(__w, inner) {
+                    body.push(Statement::with_span(StmtKind::Return(Some(expr)), __span));
                 }
             }
             Rule::block => {
@@ -15340,7 +15360,7 @@ fn walk_function_decl_body(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<State
         };
     }
 
-    Some(Statement::new(StmtKind::FunctionDecl {
+    Some(Statement::with_span(StmtKind::FunctionDecl {
         name,
         params,
         return_type,
@@ -15358,7 +15378,7 @@ fn walk_function_decl_body(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<State
         is_async: false,
         is_generator: false,
         is_sub: false,
-    }))
+    }, __span))
 }
 
 fn walk_parameter_list(__w: &mut KtWalker, pair: Pair<Rule>) -> Vec<Param> {
@@ -15422,6 +15442,7 @@ fn walk_parameter_list_with_decorators(__w: &mut KtWalker, pair: Pair<Rule>) -> 
 }
 
 fn walk_var_decl(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
+    let __span = to_span(&pair);
     let decl_src = pair.as_str().to_string();
     if pair
         .clone()
@@ -15552,7 +15573,7 @@ fn walk_var_decl(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
         __w.kotlin_local_lazy_pending.push(name.clone());
     }
 
-    Some(Statement::new(StmtKind::VarDecl {
+    Some(Statement::with_span(StmtKind::VarDecl {
         declarations: vec![VarDeclarator {
             pattern: BindingPattern::Ident(name),
             // Checked, not Descriptive: kotlin never coerces at the store,
@@ -15569,7 +15590,7 @@ fn walk_var_decl(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
         } else {
             VarDeclKind::Var
         },
-    }))
+    }, __span))
 }
 
 fn kt_expr_is_lazy_call(expr: &Expression) -> bool {
@@ -15860,6 +15881,7 @@ fn kotlin_static_field_alias(__w: &mut KtWalker, object: &Expression, field: &st
 /// lowers to a function of the receiver, exactly as an extension function does.
 /// The read site (`x.name`) is rewritten to `name(x)`.
 fn walk_extension_property(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
+    let __span = to_span(&pair);
     let inners: Vec<_> = pair.into_inner().collect();
     let receiver = inners
         .iter()
@@ -15893,15 +15915,12 @@ fn walk_extension_property(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<State
                             }
                         }
                         Rule::function_body_expr => {
-                            if let Some(e) = part
-                                .into_inner()
-                                .find(|p| matches!(p.as_rule(), Rule::expr))
-                            {
+                            if let Some(e) = kotlin_walk_body_expr(__w, part) {
                                 if is_get {
                                     body =
-                                        vec![Statement::new(StmtKind::Return(Some(walk_expr(__w, e))))];
+                                        vec![Statement::with_span(StmtKind::Return(Some(e)), __span)];
                                 } else {
-                                    set_body = vec![Statement::new(StmtKind::Expr(walk_expr(__w, e)))];
+                                    set_body = vec![Statement::with_span(StmtKind::Expr(e), __span)];
                                 }
                             }
                         }
@@ -15917,7 +15936,7 @@ fn walk_extension_property(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<State
                 }
             }
             Rule::expr if body.is_empty() => {
-                body = vec![Statement::new(StmtKind::Return(Some(walk_expr(__w, p.clone()))))];
+                body = vec![Statement::with_span(StmtKind::Return(Some(walk_expr(__w, p.clone()))), __span)];
             }
             _ => {}
         }
@@ -15947,7 +15966,7 @@ fn walk_extension_property(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<State
         value_param.type_hint = None;
         {
             __w.pending_top_level_fns
-                .push(Statement::new(StmtKind::FunctionDecl {
+                .push(Statement::with_span(StmtKind::FunctionDecl {
                     name: format!("{name}__ext_set"),
                     params: vec![this_param(&receiver), value_param],
                     return_type: None,
@@ -15961,7 +15980,7 @@ fn walk_extension_property(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<State
                     is_async: false,
                     is_generator: false,
                     is_sub: false,
-                }));
+                }, __span));
         };
     }
 
@@ -15977,7 +15996,7 @@ fn walk_extension_property(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<State
         }
     }
 
-    Some(Statement::new(StmtKind::FunctionDecl {
+    Some(Statement::with_span(StmtKind::FunctionDecl {
         name,
         params: vec![Param {
             name: "this".to_string(),
@@ -16000,7 +16019,7 @@ fn walk_extension_property(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<State
         is_async: false,
         is_generator: false,
         is_sub: false,
-    }))
+    }, __span))
 }
 
 /// `val x by lazy { … }` — the delegate is DECLARED as a memoizing getter
@@ -17128,6 +17147,7 @@ fn kotlin_builtin_collection_interfaces(body: &[Statement]) -> Vec<Statement> {
 }
 
 fn walk_class_property(__w: &mut KtWalker, pair: Pair<Rule>) -> Vec<ClassMember> {
+    let __span = to_span(&pair);
     let inners: Vec<_> = pair.into_inner().collect();
     // `var x = 1` + `private set` declares an ORDINARY stored property whose
     // setter is restricted — the accessor has no body, so there is nothing to
@@ -17189,11 +17209,8 @@ fn walk_class_property(__w: &mut KtWalker, pair: Pair<Rule>) -> Vec<ClassMember>
                         // statements, and the value of the accessor IS its
                         // result.
                         Rule::function_body_expr => {
-                            if let Some(e) = part
-                                .into_inner()
-                                .find(|p| matches!(p.as_rule(), Rule::expr))
-                            {
-                                body = vec![Statement::new(StmtKind::Return(Some(walk_expr(__w, e))))];
+                            if let Some(e) = kotlin_walk_body_expr(__w, part) {
+                                body = vec![Statement::with_span(StmtKind::Return(Some(e)), __span)];
                             }
                         }
                         Rule::block => body = walk_block_statements(__w, part),
@@ -17544,16 +17561,22 @@ fn append_kotlin_delegate_members(__w: &mut KtWalker,
 fn walk_delegate_expr(__w: &mut KtWalker, pair: Pair<Rule>) -> Expression {
     let source = pair.as_str();
     let expr_source = source.split_once('{').map(|(head, _)| head).unwrap_or(source).trim();
-    if !expr_source.is_empty()
-        && let Ok(mut parsed) = KotlinParser::parse(Rule::expr, expr_source)
-        && let Some(expr_pair) = parsed.next()
-    {
-        return walk_expr(__w, expr_pair);
+    // ⛔ The fragment's index is scoped to the fragment's OWN walk. Installed
+    // for the whole function it would still be in place on the fall-through
+    // below, numbering the ORIGINAL pair against this expression's text.
+    if !expr_source.is_empty() {
+        let _line_index = vybe_ast::line_index::LineIndex::install(expr_source);
+        if let Ok(mut parsed) = KotlinParser::parse(Rule::expr, expr_source)
+            && let Some(expr_pair) = parsed.next()
+        {
+            return walk_expr(__w, expr_pair);
+        }
     }
     walk_expr(__w, pair)
 }
 
 fn walk_class_decl(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
+    let __span = to_span(&pair);
     let mut name = String::new();
     let mut is_interface = false;
     let mut is_abstract = false;
@@ -17878,7 +17901,7 @@ fn walk_class_decl(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
                                         .insert(pname.clone(), pname.clone());
                                     pname.clone()
                                 };
-                                ctor_body.push(Statement::new(StmtKind::Expr(Expression::new(
+                                ctor_body.push(Statement::with_span(StmtKind::Expr(Expression::new(
                                     ExprKind::Assign {
                                         target: Box::new(Expression::new(ExprKind::Member {
                                             object: Box::new(Expression::new(ExprKind::This)),
@@ -17887,9 +17910,9 @@ fn walk_class_decl(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
                                         })),
                                         value: Box::new(Expression::ident(&pname)),
                                     },
-                                ))));
+                                )), __span));
                                 let prop_idx = (primary_prop_names.len() - 1) as i64;
-                                ctor_body.push(Statement::new(StmtKind::Expr(Expression::new(
+                                ctor_body.push(Statement::with_span(StmtKind::Expr(Expression::new(
                                     ExprKind::Assign {
                                         target: Box::new(Expression::new(ExprKind::Index {
                                             object: Box::new(Expression::new(ExprKind::This)),
@@ -17898,7 +17921,7 @@ fn walk_class_decl(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
                                         })),
                                         value: Box::new(Expression::ident(&pname)),
                                     },
-                                ))));
+                                )), __span));
                             }
                         }
                     }
@@ -18215,7 +18238,7 @@ fn walk_class_decl(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
                                                             field_name
                                                         };
                                                         if let Some(value) = property_init {
-                                                            init_stmts.push(Statement::new(
+                                                            init_stmts.push(Statement::with_span(
                                                                 StmtKind::Expr(Expression::new(
                                                                     ExprKind::Assign {
                                                                         target: Box::new(
@@ -18230,7 +18253,7 @@ fn walk_class_decl(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
                                                                         value: Box::new(value),
                                                                     },
                                                                 )),
-                                                            ));
+                                                            __span));
                                                         }
                                                     }
                                                 }
@@ -18478,14 +18501,14 @@ fn walk_class_decl(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
         let capture_assigns: Vec<Statement> = captures
             .iter()
             .map(|cap| {
-                Statement::new(StmtKind::Expr(Expression::new(ExprKind::Assign {
+                Statement::with_span(StmtKind::Expr(Expression::new(ExprKind::Assign {
                     target: Box::new(Expression::new(ExprKind::Member {
                         object: Box::new(Expression::new(ExprKind::This)),
                         field: cap.clone(),
                         null_safe: false,
                     })),
                     value: Box::new(Expression::ident(cap)),
-                })))
+                })), __span)
             })
             .collect();
         if !members
@@ -18558,14 +18581,14 @@ fn walk_class_decl(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
                 params.insert(0, outer_param.clone());
                 body.insert(
                     0,
-                    Statement::new(StmtKind::Expr(Expression::new(ExprKind::Assign {
+                    Statement::with_span(StmtKind::Expr(Expression::new(ExprKind::Assign {
                         target: Box::new(Expression::new(ExprKind::Member {
                             object: Box::new(Expression::new(ExprKind::This)),
                             field: "__kt_outer".to_string(),
                             null_safe: false,
                         })),
                         value: Box::new(Expression::ident("__kt_outer")),
-                    }))),
+                    })), __span),
                 );
             }
         }
@@ -18648,7 +18671,7 @@ fn walk_class_decl(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
             storage: None,
         });
         if from_ctor_param {
-            init_stmts.push(Statement::new(StmtKind::Expr(Expression::new(
+            init_stmts.push(Statement::with_span(StmtKind::Expr(Expression::new(
                 ExprKind::Assign {
                     target: Box::new(Expression::new(ExprKind::Member {
                         object: Box::new(Expression::new(ExprKind::This)),
@@ -18657,7 +18680,7 @@ fn walk_class_decl(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
                     })),
                     value: Box::new(Expression::ident(field)),
                 },
-            ))));
+            )), __span));
         }
     }
 
@@ -18816,7 +18839,7 @@ fn walk_class_decl(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
                 && let Some(bargs) = base_args
                 && let Some(first) = bargs.first()
             {
-                body.push(Statement::new(StmtKind::Expr(Expression::new(
+                body.push(Statement::with_span(StmtKind::Expr(Expression::new(
                     ExprKind::Assign {
                         target: Box::new(Expression::new(ExprKind::Member {
                             object: Box::new(Expression::new(ExprKind::This)),
@@ -18825,7 +18848,7 @@ fn walk_class_decl(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
                         })),
                         value: Box::new(first.clone()),
                     },
-                ))));
+                )), __span));
             }
         }
     }
@@ -18901,7 +18924,7 @@ fn walk_class_decl(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
         };
     }
 
-    Some(Statement::new(StmtKind::ClassDecl {
+    Some(Statement::with_span(StmtKind::ClassDecl {
         name,
         parents,
         interfaces,
@@ -18942,7 +18965,7 @@ fn walk_class_decl(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
             ..Default::default()
         },
         decorators,
-    }))
+    }, __span))
 }
 
 /// The members of a `class_body` that belongs to an OBJECT — a named `object`,
@@ -18956,6 +18979,7 @@ fn walk_class_decl(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
 /// `statics` — a named object and a companion are SINGLETONS, so their storage
 /// is static; an anonymous object is an ordinary instance.
 fn walk_object_body_members(__w: &mut KtWalker, class_body: Pair<Rule>, statics: bool) -> Vec<ClassMember> {
+    let __span = to_span(&class_body);
     let mut members = Vec::new();
     let mut init_stmts = Vec::new();
     for member_pair in class_body.into_inner() {
@@ -19059,7 +19083,7 @@ fn walk_object_body_members(__w: &mut KtWalker, class_body: Pair<Rule>, statics:
     }
     if !init_stmts.is_empty() {
         if statics {
-            members.push(ClassMember::Method(Box::new(Statement::new(
+            members.push(ClassMember::Method(Box::new(Statement::with_span(
                 StmtKind::FunctionDecl {
                     name: "__static_init__".to_string(),
                     params: Vec::new(),
@@ -19075,7 +19099,7 @@ fn walk_object_body_members(__w: &mut KtWalker, class_body: Pair<Rule>, statics:
                     is_generator: false,
                     is_sub: false,
                 },
-            ))));
+            __span))));
         } else {
             members.push(ClassMember::Constructor {
                 name: None,
@@ -19091,6 +19115,7 @@ fn walk_object_body_members(__w: &mut KtWalker, class_body: Pair<Rule>, statics:
 }
 
 fn walk_object_decl(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
+    let __span = to_span(&pair);
     let mut name = "Companion".to_string();
     let mut parents = Vec::new();
     let mut interfaces = Vec::new();
@@ -19370,14 +19395,14 @@ fn walk_object_decl(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
         members.extend(instance_methods);
     }
 
-    Some(Statement::new(StmtKind::ClassDecl {
+    Some(Statement::with_span(StmtKind::ClassDecl {
         name,
         parents,
         interfaces,
         members,
         modifiers: ClassModifiers::default(),
         decorators: vec![],
-    }))
+    }, __span))
 }
 
 fn walk_block_statements(__w: &mut KtWalker, pair: Pair<Rule>) -> Vec<Statement> {
@@ -19400,6 +19425,7 @@ fn walk_block_statements(__w: &mut KtWalker, pair: Pair<Rule>) -> Vec<Statement>
 }
 
 fn walk_if_stmt(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
+    let __span = to_span(&pair);
     let mut cond = Expression::null();
     let mut then_body = Vec::new();
     let mut else_body = None;
@@ -19434,12 +19460,12 @@ fn walk_if_stmt(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
         }
     }
 
-    Some(Statement::new(StmtKind::If {
+    Some(Statement::with_span(StmtKind::If {
         cond,
         then_body,
         elifs: vec![],
         else_body,
-    }))
+    }, __span))
 }
 
 /// Whether this `when` condition is a PREDICATE rather than a value to compare
@@ -20075,6 +20101,7 @@ fn not_expr(expr: Expression) -> Expression {
 }
 
 fn walk_when_stmt(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
+    let __span = to_span(&pair);
     let mut disc = None;
     let mut entries = Vec::new();
 
@@ -20183,14 +20210,15 @@ fn walk_when_stmt(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
     } else {
         subject
     };
-    Some(Statement::new(StmtKind::Switch {
+    Some(Statement::with_span(StmtKind::Switch {
         expr: discriminator,
         cases,
         default,
-    }))
+    }, __span))
 }
 
 fn walk_for_stmt(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
+    let __span = to_span(&pair);
     let mut var_id = String::new();
     let mut destruct_names = Vec::new();
     let mut iter_expr = Expression::null();
@@ -20226,7 +20254,7 @@ fn walk_for_stmt(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
                 index: Box::new(Expression::int(idx as i64)),
                 null_safe: false,
             });
-            prepended_stmts.push(Statement::new(StmtKind::VarDecl {
+            prepended_stmts.push(Statement::with_span(StmtKind::VarDecl {
                 declarations: vec![VarDeclarator {
                     pattern: BindingPattern::Ident(name),
                     type_hint: None,
@@ -20235,7 +20263,7 @@ fn walk_for_stmt(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
                     with_events: false,
                 }],
                 kind: VarDeclKind::Const,
-            }));
+            }, __span));
         }
         prepended_stmts.extend(body);
         body = prepended_stmts;
@@ -20260,7 +20288,7 @@ fn walk_for_stmt(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
         iter_expr
     };
 
-    Some(Statement::new(StmtKind::ForIn {
+    Some(Statement::with_span(StmtKind::ForIn {
         var: var_id,
         key: None,
         iter: final_iter,
@@ -20268,10 +20296,11 @@ fn walk_for_stmt(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
         of: true,
         else_body: None,
         is_async: false,
-    }))
+    }, __span))
 }
 
 fn walk_while_stmt(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
+    let __span = to_span(&pair);
     let mut cond = Expression::null();
     let mut body = Vec::new();
 
@@ -20288,14 +20317,15 @@ fn walk_while_stmt(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
         }
     }
 
-    Some(Statement::new(StmtKind::While {
+    Some(Statement::with_span(StmtKind::While {
         cond,
         body,
         else_body: None,
-    }))
+    }, __span))
 }
 
 fn walk_do_while_stmt(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
+    let __span = to_span(&pair);
     let mut cond = Expression::null();
     let mut body = Vec::new();
 
@@ -20312,14 +20342,15 @@ fn walk_do_while_stmt(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement>
         }
     }
 
-    Some(Statement::new(StmtKind::DoWhile {
+    Some(Statement::with_span(StmtKind::DoWhile {
         body,
         cond,
         until: false,
-    }))
+    }, __span))
 }
 
 fn walk_lambda(__w: &mut KtWalker, pair: Pair<Rule>) -> Expression {
+    let __span = to_span(&pair);
     let mut params = Vec::new();
     let mut body = Vec::new();
     let mut prefix_stmts = Vec::new();
@@ -20364,7 +20395,7 @@ fn walk_lambda(__w: &mut KtWalker, pair: Pair<Rule>) -> Expression {
                                 is_nullable: false,
                             });
                             for (idx, dname) in destruct_names.into_iter().enumerate() {
-                                prefix_stmts.push(Statement::new(StmtKind::VarDecl {
+                                prefix_stmts.push(Statement::with_span(StmtKind::VarDecl {
                                     declarations: vec![VarDeclarator {
                                         pattern: BindingPattern::Ident(dname),
                                         type_hint: None,
@@ -20377,7 +20408,7 @@ fn walk_lambda(__w: &mut KtWalker, pair: Pair<Rule>) -> Expression {
                                         with_events: false,
                                     }],
                                     kind: VarDeclKind::Const,
-                                }));
+                                }, __span));
                             }
                         } else if !name.is_empty() {
                             params.push(Param {
@@ -20564,6 +20595,32 @@ fn kotlin_error_throw_stmt(args: &[Argument]) -> Statement {
     })
 }
 
+/// The expression of a `= expr` function or accessor body.
+///
+/// `throw` is an expression in Kotlin, so a single-expression body may be one;
+/// it lowers to the same throwing helper the elvis escape uses, since the model
+/// has no throw EXPRESSION of its own.
+fn kotlin_walk_body_expr(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Expression> {
+    for part in pair.into_inner() {
+        match part.as_rule() {
+            Rule::expr => return Some(walk_expr(__w, part)),
+            Rule::throw_stmt => {
+                let payload = part
+                    .into_inner()
+                    .find(|p| matches!(p.as_rule(), Rule::expr))
+                    .map(|p| walk_expr(__w, p));
+                return Some(Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::ident("__kt_throw")),
+                    args: payload.into_iter().map(Argument::positional).collect(),
+                    optional: false,
+                }));
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 fn kotlin_error_throw_expr(args: &[Argument]) -> Expression {
     Expression::new(ExprKind::Call {
         callee: Box::new(Expression::new(ExprKind::Lambda {
@@ -20578,6 +20635,7 @@ fn kotlin_error_throw_expr(args: &[Argument]) -> Expression {
 }
 
 fn walk_expr(__w: &mut KtWalker, pair: Pair<Rule>) -> Expression {
+    let __span = to_span(&pair);
     let rule = pair.as_rule();
     match rule {
         Rule::expr | Rule::assignment => {
@@ -24144,12 +24202,9 @@ fn walk_expr(__w: &mut KtWalker, pair: Pair<Rule>) -> Expression {
                             Rule::receiver_prefix => has_receiver = true,
                             Rule::parameter_list => params = walk_parameter_list(__w, part),
                             Rule::function_body_expr => {
-                                if let Some(e) = part
-                                    .into_inner()
-                                    .find(|p| matches!(p.as_rule(), Rule::expr))
-                                {
+                                if let Some(e) = kotlin_walk_body_expr(__w, part) {
                                     body =
-                                        vec![Statement::new(StmtKind::Return(Some(walk_expr(__w, e))))];
+                                        vec![Statement::with_span(StmtKind::Return(Some(e)), __span)];
                                 }
                             }
                             Rule::block => body = walk_block_statements(__w, part),
@@ -24275,7 +24330,7 @@ fn walk_expr(__w: &mut KtWalker, pair: Pair<Rule>) -> Expression {
                                     } = m
                                     {
                                         if let Some(value) = field_init.take() {
-                                            inits.push(Statement::new(StmtKind::Expr(
+                                            inits.push(Statement::with_span(StmtKind::Expr(
                                                 Expression::new(ExprKind::Assign {
                                                     target: Box::new(Expression::new(
                                                         ExprKind::Member {
@@ -24288,7 +24343,7 @@ fn walk_expr(__w: &mut KtWalker, pair: Pair<Rule>) -> Expression {
                                                     )),
                                                     value: Box::new(value),
                                                 }),
-                                            )));
+                                            ), __span));
                                         }
                                     }
                                 }
@@ -24418,7 +24473,7 @@ fn walk_expr(__w: &mut KtWalker, pair: Pair<Rule>) -> Expression {
                                             // value here (`in 90..100 ->
                                             // if (…) "A" else "A+"`).
                                             kind @ StmtKind::If { .. } => {
-                                                kotlin_if_stmt_to_ternary(Statement::new(kind))
+                                                kotlin_if_stmt_to_ternary(Statement::with_span(kind, __span))
                                             }
                                             StmtKind::Switch {
                                                 expr,
@@ -24839,6 +24894,7 @@ fn collect_string_parts(__w: &mut KtWalker, pair: Pair<Rule>, parts: &mut Vec<Ex
                 if raw.starts_with("${") && raw.ends_with('}') {
                     let inner_str = raw[2..raw.len() - 1].trim();
                     let unescaped = inner_str.replace("\\\"", "\"");
+                    let _line_index = vybe_ast::line_index::LineIndex::install(&unescaped);
                     if let Ok(mut pairs) = KotlinParser::parse(Rule::expr, &unescaped) {
                         if let Some(epair) = pairs.next() {
                             let walked = walk_expr(__w, epair);

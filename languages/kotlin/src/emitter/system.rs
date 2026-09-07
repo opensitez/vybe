@@ -20,7 +20,9 @@ pub fn emit_measure_time(chunks: &mut [Chunk], current: usize, argc: u8, nanos: 
         chunks[current].emit_i32_const(0, line);
         return;
     }
-    callable::emit_direct_invoke(chunks, current, 0, line);
+    // The block is a plain callback already on the stack; the stacked invoke
+    // inserts its `undefined` receiver where the module ABI declares one.
+    callable::emit_stacked_invoke(chunks, current, 0, line);
     chunks[current].emit_op(Op::DROP, line);
     if nanos {
         chunks[current].emit_i32_const(1_000_000, line);

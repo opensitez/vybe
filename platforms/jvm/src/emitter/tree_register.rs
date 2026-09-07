@@ -27,7 +27,7 @@ use std::collections::BTreeMap;
 use std::sync::Once;
 
 use vybe_runtime::Value;
-use vybe_runtime::namespaces::{self, NamespaceNode, Subtree};
+use vybe_compiler::primitives::namespaces::{self, NamespaceNode, Subtree};
 
 /// Insert `node` at the dotted `path` under `root`, creating interior
 /// namespaces as needed. Keys are lowercase-canonical.
@@ -327,6 +327,13 @@ fn java_type_ctor_target(qualified: &str) -> Option<NamespaceNode> {
         "java.util.IdentityHashMap" => "jvm.java.identity_hash_map_new",
         "java.util.LinkedHashMap" => "jvm.java.linked_hash_map_new",
         "java.math.BigInteger" => "jvm.java.bigint_new",
+        // Each atomic carries its own zero-argument default, so the ctor emit
+        // differs per type: `new AtomicInteger()` is 0, `new AtomicBoolean()`
+        // is false, `new AtomicReference()` is null (JLS 17.9).
+        "java.util.concurrent.atomic.AtomicInteger"
+        | "java.util.concurrent.atomic.AtomicLong" => "jvm.java.atomic_new",
+        "java.util.concurrent.atomic.AtomicBoolean" => "jvm.java.atomic_new_bool",
+        "java.util.concurrent.atomic.AtomicReference" => "jvm.java.atomic_new_ref",
         "java.util.BitSet" => "jvm.java.bitset_new",
         "java.util.UUID" => "jvm.java.uuid_new",
         "java.util.Random" | "java.util.SplittableRandom" => "jvm.java.random_new",
@@ -2486,6 +2493,56 @@ fn insert_java_util_executors(root: &mut Subtree) {
 
 /// `java.util.StringJoiner` — instance surface; the ctor rides the
 /// JAVA_TYPES row like every other class.
+/// `java.util.concurrent.atomic` — one instance surface for every frontend.
+///
+/// The four classes share it: `AtomicBoolean` and `AtomicReference` reject the
+/// arithmetic members at the Java type level, which the tree does not model, so
+/// they are declared once and a source that calls `incrementAndGet` on a
+/// boolean is a source Java itself would have rejected.
+fn insert_java_util_atomic(root: &mut Subtree) {
+    const MEMBERS: &[(&str, &str, u8, u8)] = &[
+        ("get", "jvm.java.atomic_get", 0, 0),
+        ("getPlain", "jvm.java.atomic_get", 0, 0),
+        ("getAcquire", "jvm.java.atomic_get", 0, 0),
+        ("intValue", "jvm.java.atomic_get", 0, 0),
+        ("longValue", "jvm.java.atomic_get", 0, 0),
+        ("set", "jvm.java.atomic_set", 1, 1),
+        // `lazySet` differs from `set` only in memory ordering, which a
+        // single-threaded runtime cannot observe.
+        ("lazySet", "jvm.java.atomic_set", 1, 1),
+        ("setPlain", "jvm.java.atomic_set", 1, 1),
+        ("setRelease", "jvm.java.atomic_set", 1, 1),
+        ("getAndSet", "jvm.java.atomic_get_and_set", 1, 1),
+        ("compareAndSet", "jvm.java.atomic_compare_and_set", 2, 2),
+        ("weakCompareAndSet", "jvm.java.atomic_compare_and_set", 2, 2),
+        ("incrementAndGet", "jvm.java.atomic_increment_and_get", 0, 0),
+        ("decrementAndGet", "jvm.java.atomic_decrement_and_get", 0, 0),
+        ("getAndIncrement", "jvm.java.atomic_get_and_increment", 0, 0),
+        ("getAndDecrement", "jvm.java.atomic_get_and_decrement", 0, 0),
+        ("addAndGet", "jvm.java.atomic_add_and_get", 1, 1),
+        ("getAndAdd", "jvm.java.atomic_get_and_add", 1, 1),
+        ("updateAndGet", "jvm.java.atomic_update_and_get", 1, 1),
+        ("getAndUpdate", "jvm.java.atomic_get_and_update", 1, 1),
+        ("accumulateAndGet", "jvm.java.atomic_accumulate_and_get", 2, 2),
+    ];
+    for ty in [
+        "util.concurrent.atomic.AtomicInteger",
+        "util.concurrent.atomic.AtomicLong",
+        "util.concurrent.atomic.AtomicBoolean",
+        "util.concurrent.atomic.AtomicReference",
+    ] {
+        let mut methods = Subtree::new();
+        for (member, emit, min_args, max_args) in MEMBERS {
+            methods.insert(
+                (*member).to_string(),
+                common_method(emit, *min_args, *max_args),
+            );
+        }
+        ensure_type_node(root, ty);
+        merge_type_methods(root, ty, methods);
+    }
+}
+
 fn insert_java_util_stringjoiner(root: &mut Subtree) {
     ensure_type_node(root, "util.StringJoiner");
     let mut methods = Subtree::new();
@@ -4369,6 +4426,35 @@ pub const JAVA_TYPES: &[JavaType] = &[
         &["Semaphore", "Serializable", "Object"],
         None,
     ),
+    // The atomics. The adapters (`jvm.java.atomic_*`) predate these rows and
+    // were reachable only through a language profile's `common:` entries, so
+    // each JVM frontend re-declared the surface for itself — Kotlin synthesized
+    // its own `__kt_atomic_*` functions and stopped at three of the members.
+    // A row plus `insert_java_util_atomic` makes the tree the one declaration.
+    t(
+        "AtomicInteger",
+        "util.concurrent.atomic",
+        &["AtomicInteger", "Number", "Serializable", "Object"],
+        None,
+    ),
+    t(
+        "AtomicLong",
+        "util.concurrent.atomic",
+        &["AtomicLong", "Number", "Serializable", "Object"],
+        None,
+    ),
+    t(
+        "AtomicBoolean",
+        "util.concurrent.atomic",
+        &["AtomicBoolean", "Serializable", "Object"],
+        None,
+    ),
+    t(
+        "AtomicReference",
+        "util.concurrent.atomic",
+        &["AtomicReference", "Serializable", "Object"],
+        None,
+    ),
     // The one Throwable the profile constructs as a plain map rather than
     // through `ecma:error`. A user class that EXTENDS a built-in exception
     // already gets its chain stamped by the walker; this is the direct
@@ -4491,6 +4577,7 @@ pub fn register_namespace_tree() {
         insert_java_util_collection_statics(&mut root);
         insert_java_util_enum_set(&mut root);
         insert_java_util_stringjoiner(&mut root);
+        insert_java_util_atomic(&mut root);
         insert_java_util_executors(&mut root);
         insert_java_util_spliterator(&mut root);
         insert_java_util_function(&mut root);
@@ -4542,30 +4629,30 @@ mod tests {
         super::register_namespace_tree();
         let scopes = vec!["jvm".to_string()];
         assert!(
-            vybe_runtime::namespaces::lookup_type_ctor_target(&scopes, "java.util.ArrayList")
+            vybe_compiler::primitives::namespaces::lookup_type_ctor_target(&scopes, "java.util.ArrayList")
                 .is_some()
         );
         assert!(
-            vybe_runtime::namespaces::lookup_type_ctor_target(&scopes, "java.util.HashMap")
+            vybe_compiler::primitives::namespaces::lookup_type_ctor_target(&scopes, "java.util.HashMap")
                 .is_some()
         );
         assert!(
-            vybe_runtime::namespaces::lookup_type_ctor_target(&scopes, "java.util.UUID").is_some()
+            vybe_compiler::primitives::namespaces::lookup_type_ctor_target(&scopes, "java.util.UUID").is_some()
         );
         assert!(
-            vybe_runtime::namespaces::lookup_type_ctor_target(&scopes, "java.lang.Object")
+            vybe_compiler::primitives::namespaces::lookup_type_ctor_target(&scopes, "java.lang.Object")
                 .is_some()
         );
         assert!(
-            vybe_runtime::namespaces::lookup_type_ctor_target(&scopes, "java.lang.StringBuffer")
+            vybe_compiler::primitives::namespaces::lookup_type_ctor_target(&scopes, "java.lang.StringBuffer")
                 .is_some()
         );
         assert!(
-            vybe_runtime::namespaces::lookup_type_ctor_target(&scopes, "java.util.Random")
+            vybe_compiler::primitives::namespaces::lookup_type_ctor_target(&scopes, "java.util.Random")
                 .is_some()
         );
         assert!(
-            vybe_runtime::namespaces::lookup_type_ctor_target(
+            vybe_compiler::primitives::namespaces::lookup_type_ctor_target(
                 &scopes,
                 "java.util.SplittableRandom"
             )
@@ -4578,7 +4665,7 @@ mod tests {
         super::register_namespace_tree();
         let scopes = vec!["jvm".to_string()];
         assert!(
-            vybe_runtime::namespaces::lookup_type_static_member(
+            vybe_compiler::primitives::namespaces::lookup_type_static_member(
                 &scopes,
                 "java.lang.System",
                 "getProperty"
@@ -4586,15 +4673,15 @@ mod tests {
             .is_some()
         );
         assert_eq!(
-            vybe_runtime::namespaces::lookup_type_member_return(&scopes, "URI", "resolve"),
+            vybe_compiler::primitives::namespaces::lookup_type_member_return(&scopes, "URI", "resolve"),
             Some("java.net.URI".to_string())
         );
         assert_eq!(
-            vybe_runtime::namespaces::lookup_type_member_return(&scopes, "java.net.URI", "toURL"),
+            vybe_compiler::primitives::namespaces::lookup_type_member_return(&scopes, "java.net.URI", "toURL"),
             Some("java.net.URL".to_string())
         );
         assert_eq!(
-            vybe_runtime::namespaces::lookup_type_member_return(&scopes, "URL", "toURI"),
+            vybe_compiler::primitives::namespaces::lookup_type_member_return(&scopes, "URL", "toURI"),
             Some("java.net.URI".to_string())
         );
     }
@@ -4604,11 +4691,11 @@ mod tests {
         super::register_namespace_tree();
         let scopes = vec!["jvm".to_string()];
         assert!(
-            vybe_runtime::namespaces::lookup_type_ctor_target(&scopes, "java.lang.StringBuilder")
+            vybe_compiler::primitives::namespaces::lookup_type_ctor_target(&scopes, "java.lang.StringBuilder")
                 .is_some()
         );
         assert!(
-            vybe_runtime::namespaces::lookup_type_instance_target(
+            vybe_compiler::primitives::namespaces::lookup_type_instance_target(
                 &scopes,
                 "java.lang.StringBuilder",
                 "append",
@@ -4617,7 +4704,7 @@ mod tests {
             .is_some()
         );
         assert_eq!(
-            vybe_runtime::namespaces::lookup_type_member_return(
+            vybe_compiler::primitives::namespaces::lookup_type_member_return(
                 &scopes,
                 "java.lang.StringBuilder",
                 "append",
@@ -4631,11 +4718,11 @@ mod tests {
         super::register_namespace_tree();
         let scopes = vec!["jvm".to_string()];
         assert!(
-            vybe_runtime::namespaces::lookup_type_ctor_target(&scopes, "java.util.StringTokenizer")
+            vybe_compiler::primitives::namespaces::lookup_type_ctor_target(&scopes, "java.util.StringTokenizer")
                 .is_some()
         );
         assert!(
-            vybe_runtime::namespaces::lookup_type_instance_target(
+            vybe_compiler::primitives::namespaces::lookup_type_instance_target(
                 &scopes,
                 "java.util.StringTokenizer",
                 "hasMoreTokens",
@@ -4644,7 +4731,7 @@ mod tests {
             .is_some()
         );
         assert_eq!(
-            vybe_runtime::namespaces::lookup_type_member_return(
+            vybe_compiler::primitives::namespaces::lookup_type_member_return(
                 &scopes,
                 "java.util.StringTokenizer",
                 "nextToken",
@@ -4658,26 +4745,26 @@ mod tests {
         super::register_namespace_tree();
         let scopes = vec!["jvm".to_string()];
         assert!(matches!(
-            vybe_runtime::namespaces::lookup_type_ctor_target(&scopes, "java.util.UUID"),
-            Some(vybe_runtime::component_model::ConstructorTarget::Common(op))
+            vybe_compiler::primitives::namespaces::lookup_type_ctor_target(&scopes, "java.util.UUID"),
+            Some(vybe_compiler::component_classes::ConstructorTarget::Common(op))
                 if op == "jvm.java.uuid_new"
         ));
         assert!(matches!(
-            vybe_runtime::namespaces::lookup_type_static_member(
+            vybe_compiler::primitives::namespaces::lookup_type_static_member(
                 &scopes,
                 "java.util.UUID",
                 "fromString"
             ),
-            Some(vybe_runtime::namespaces::NamespaceNode::CommonEmit(op))
+            Some(vybe_compiler::primitives::namespaces::NamespaceNode::CommonEmit(op))
                 if op == "jvm.java.uuid_from_string"
         ));
         assert!(matches!(
-            vybe_runtime::namespaces::lookup_type_instance_member(
+            vybe_compiler::primitives::namespaces::lookup_type_instance_member(
                 &scopes,
                 "java.util.UUID",
                 "version"
             ),
-            Some(vybe_runtime::namespaces::NamespaceNode::CommonEmit(op))
+            Some(vybe_compiler::primitives::namespaces::NamespaceNode::CommonEmit(op))
                 if op == "jvm.java.uuid_version"
         ));
     }
@@ -4687,21 +4774,21 @@ mod tests {
         super::register_namespace_tree();
         let scopes = vec!["jvm".to_string()];
         assert!(matches!(
-            vybe_runtime::namespaces::lookup_type_static_member(
+            vybe_compiler::primitives::namespaces::lookup_type_static_member(
                 &scopes,
                 "java.util.Objects",
                 "equals"
             ),
-            Some(vybe_runtime::namespaces::NamespaceNode::CommonEmit(op))
+            Some(vybe_compiler::primitives::namespaces::NamespaceNode::CommonEmit(op))
                 if op == "object.equals"
         ));
         assert!(matches!(
-            vybe_runtime::namespaces::lookup_type_static_member(
+            vybe_compiler::primitives::namespaces::lookup_type_static_member(
                 &scopes,
                 "java.util.Objects",
                 "toString"
             ),
-            Some(vybe_runtime::namespaces::NamespaceNode::CommonEmit(op))
+            Some(vybe_compiler::primitives::namespaces::NamespaceNode::CommonEmit(op))
                 if op == "object.to_string_or"
         ));
     }
@@ -4711,21 +4798,21 @@ mod tests {
         super::register_namespace_tree();
         let scopes = vec!["jvm".to_string()];
         assert!(matches!(
-            vybe_runtime::namespaces::lookup_type_static_member(
+            vybe_compiler::primitives::namespaces::lookup_type_static_member(
                 &scopes,
                 "java.lang.Character",
                 "isDigit"
             ),
-            Some(vybe_runtime::namespaces::NamespaceNode::CommonEmit(op))
+            Some(vybe_compiler::primitives::namespaces::NamespaceNode::CommonEmit(op))
                 if op == "jvm.java.char_is_digit"
         ));
         assert!(matches!(
-            vybe_runtime::namespaces::lookup_type_static_member(
+            vybe_compiler::primitives::namespaces::lookup_type_static_member(
                 &scopes,
                 "java.lang.Character",
                 "toUpperCase"
             ),
-            Some(vybe_runtime::namespaces::NamespaceNode::CommonEmit(op))
+            Some(vybe_compiler::primitives::namespaces::NamespaceNode::CommonEmit(op))
                 if op == "jvm.java.char_to_upper"
         ));
     }
@@ -4735,21 +4822,21 @@ mod tests {
         super::register_namespace_tree();
         let scopes = vec!["jvm".to_string()];
         assert!(matches!(
-            vybe_runtime::namespaces::lookup_type_static_member(
+            vybe_compiler::primitives::namespaces::lookup_type_static_member(
                 &scopes,
                 "java.lang.Integer",
                 "parseInt"
             ),
-            Some(vybe_runtime::namespaces::NamespaceNode::CommonEmit(op))
+            Some(vybe_compiler::primitives::namespaces::NamespaceNode::CommonEmit(op))
                 if op == "jvm.java.parse_int"
         ));
         assert!(matches!(
-            vybe_runtime::namespaces::lookup_type_static_member(
+            vybe_compiler::primitives::namespaces::lookup_type_static_member(
                 &scopes,
                 "java.lang.Integer",
                 "bitCount"
             ),
-            Some(vybe_runtime::namespaces::NamespaceNode::CommonEmit(op))
+            Some(vybe_compiler::primitives::namespaces::NamespaceNode::CommonEmit(op))
                 if op == "jvm.java.int_bit_count"
         ));
     }
@@ -4759,21 +4846,21 @@ mod tests {
         super::register_namespace_tree();
         let scopes = vec!["jvm".to_string()];
         assert!(matches!(
-            vybe_runtime::namespaces::lookup_type_static_member(
+            vybe_compiler::primitives::namespaces::lookup_type_static_member(
                 &scopes,
                 "java.util.Arrays",
                 "sort"
             ),
-            Some(vybe_runtime::namespaces::NamespaceNode::CommonEmit(op))
+            Some(vybe_compiler::primitives::namespaces::NamespaceNode::CommonEmit(op))
                 if op == "jvm.java.arrays_sort"
         ));
         assert!(matches!(
-            vybe_runtime::namespaces::lookup_type_static_member(
+            vybe_compiler::primitives::namespaces::lookup_type_static_member(
                 &scopes,
                 "java.util.Arrays",
                 "asList"
             ),
-            Some(vybe_runtime::namespaces::NamespaceNode::CommonEmit(op))
+            Some(vybe_compiler::primitives::namespaces::NamespaceNode::CommonEmit(op))
                 if op == "jvm.java.arrays_as_list"
         ));
     }
@@ -4783,17 +4870,17 @@ mod tests {
         super::register_namespace_tree();
         let scopes = vec!["jvm".to_string()];
         assert!(matches!(
-            vybe_runtime::namespaces::lookup_type_ctor_target(&scopes, "java.util.BitSet"),
-            Some(vybe_runtime::component_model::ConstructorTarget::Common(op))
+            vybe_compiler::primitives::namespaces::lookup_type_ctor_target(&scopes, "java.util.BitSet"),
+            Some(vybe_compiler::component_classes::ConstructorTarget::Common(op))
                 if op == "jvm.java.bitset_new"
         ));
         assert!(matches!(
-            vybe_runtime::namespaces::lookup_type_static_member(
+            vybe_compiler::primitives::namespaces::lookup_type_static_member(
                 &scopes,
                 "java.util.BitSet",
                 "valueOf"
             ),
-            Some(vybe_runtime::namespaces::NamespaceNode::CommonEmit(op))
+            Some(vybe_compiler::primitives::namespaces::NamespaceNode::CommonEmit(op))
                 if op == "jvm.java.bitset_value_of"
         ));
     }
@@ -4811,36 +4898,36 @@ mod tests {
         super::register_namespace_tree();
         let scopes = vec!["jvm".to_string()];
         assert!(matches!(
-            vybe_runtime::namespaces::lookup_type_static_member(
+            vybe_compiler::primitives::namespaces::lookup_type_static_member(
                 &scopes,
                 "java.util.EnumSet",
                 "allOf"
             ),
             Some(node) if matches!(
-                vybe_runtime::namespaces::select_overload(&node, 1),
-                Some(vybe_runtime::namespaces::NamespaceNode::CommonEmit(op))
+                vybe_compiler::primitives::namespaces::select_overload(&node, 1),
+                Some(vybe_compiler::primitives::namespaces::NamespaceNode::CommonEmit(op))
                     if op == "jvm.java.enum_set_all_of"
             )
         ));
         assert!(matches!(
-            vybe_runtime::namespaces::lookup_type_instance_target(
+            vybe_compiler::primitives::namespaces::lookup_type_instance_target(
                 &scopes,
                 "java.util.EnumSet",
                 "contains",
                 1,
             ),
-            Some(vybe_runtime::component_model::InstanceMethodTarget::Common { emit, .. })
+            Some(vybe_compiler::component_classes::InstanceMethodTarget::Common { emit, .. })
                 if emit == "jvm.java.enum_set_contains"
         ));
         assert_eq!(
-            vybe_runtime::namespaces::lookup_type_member_return(&scopes, "EnumSet", "of")
+            vybe_compiler::primitives::namespaces::lookup_type_member_return(&scopes, "EnumSet", "of")
                 .as_deref(),
             Some("java.util.EnumSet"),
         );
         // `java.lang.Enum`'s metadata hook, which is what makes a leaf handed
         // only `X.class` — a NAME — able to reach the constants.
         assert!(
-            vybe_runtime::namespaces::lookup_type_static_member(
+            vybe_compiler::primitives::namespaces::lookup_type_static_member(
                 &scopes,
                 "java.lang.Enum",
                 "__vybe_declare"

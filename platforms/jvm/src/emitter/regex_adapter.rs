@@ -28,7 +28,7 @@ const RANGE_KEY: &str = "range";
 const GROUP_VALUES_KEY: &str = "groupValues";
 const DESTRUCTURED_KEY: &str = "destructured";
 
-fn key(chunk: &mut Chunk, name: &str) -> u16 {
+fn key(chunk: &mut Chunk, name: &str) -> u32 {
     chunk.add_constant(Value::String(Arc::from(name)))
 }
 
@@ -94,7 +94,10 @@ fn emit_clone_matcher_from_slot(chunks: &mut [Chunk], current: usize, matcher: u
     field_set_from_stack(&mut chunks[current], copy, GROUP_VALUES_KEY, line);
     field_get(&mut chunks[current], matcher, MATCH_KEY, line);
     chunks[current].emit_f64_const(1.0, line);
-    host::emit(&mut chunks[current], "ecma:array", "slice", 2, line);
+    // §23.1.3.27 `end` = undefined means `len` — passed explicitly so this
+    // import has ONE arity; a WASM import cannot have an optional argument.
+    vybe_compiler::primitives::expressions::emit_undefined(&mut chunks[current], line);
+    host::emit(&mut chunks[current], "ecma:array", "slice", 3, line);
     field_set_from_stack(&mut chunks[current], copy, DESTRUCTURED_KEY, line);
     emit_match_range_object_from_slot(chunks, current, matcher, line);
     field_set_from_stack(&mut chunks[current], copy, RANGE_KEY, line);
@@ -295,7 +298,10 @@ pub fn emit_matcher_find(chunks: &mut [Chunk], current: usize, line: u32) {
     field_set_from_stack(chunk, matcher, GROUP_VALUES_KEY, line);
     field_get(chunk, matcher, MATCH_KEY, line);
     chunk.emit_f64_const(1.0, line);
-    host::emit(chunk, "ecma:array", "slice", 2, line);
+    // §23.1.3.27 `end` = undefined means `len` — passed explicitly so this
+    // import has ONE arity; a WASM import cannot have an optional argument.
+    vybe_compiler::primitives::expressions::emit_undefined(chunk, line);
+    host::emit(chunk, "ecma:array", "slice", 3, line);
     field_set_from_stack(chunk, matcher, DESTRUCTURED_KEY, line);
     vybe_compiler::primitives::class_slots::emit_class_alloc(chunk, line);
     let range = chunk.alloc_scratch(1);

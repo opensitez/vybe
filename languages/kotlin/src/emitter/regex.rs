@@ -59,7 +59,7 @@ const LITERAL: i32 = 16;
 const DOTALL: i32 = 32;
 const COMMENTS: i32 = 4;
 
-fn key(chunk: &mut Chunk, name: &str) -> u16 {
+fn key(chunk: &mut Chunk, name: &str) -> u32 {
     chunk.add_constant(Value::String(Arc::from(name)))
 }
 
@@ -1387,9 +1387,13 @@ fn emit_replace_with_transform(
     host::emit(&mut chunks[current], "ecma:string", "slice", 3, line);
     ops::emit_dyn_add(&mut chunks[current], line);
 
-    get(&mut chunks[current], transform, line);
+    // The transform is a plain callback: its receiver (§10.2.1.1 `undefined`)
+    // is argument 0 under `ReceiverAbi::Parameter`, placed before the match.
+    let recv = vybe_compiler::primitives::callable::push_callback_from_slot(
+        chunks, current, transform, line,
+    );
     get(&mut chunks[current], result, line);
-    vybe_compiler::primitives::callable::emit_direct_invoke(chunks, current, 1, line);
+    vybe_compiler::primitives::callable::emit_direct_invoke(chunks, current, 1 + recv, line);
     ops::emit_dyn_add(&mut chunks[current], line);
     set(&mut chunks[current], out, line);
 

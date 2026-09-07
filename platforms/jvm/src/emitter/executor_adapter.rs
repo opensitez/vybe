@@ -79,7 +79,7 @@ fn task_worker_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     let record = 0u16;
     let value = 1u16;
     worker.emit_op_u16(Op::LOCAL_GET, record, line);
-    worker.emit_op_u16(Op::TABLE_GET, 0, line);
+    worker.emit_op_idx(Op::TABLE_GET, 0u32, line);
     worker.emit_op_u16(Op::LOCAL_SET, record, line);
     worker.emit_op_u16(Op::LOCAL_GET, record, line);
     globals::emit_write(&mut worker, "__j_current_thread", line);
@@ -156,7 +156,7 @@ pub fn emit_submit(chunks: &mut Vec<Chunk>, current: usize, returns_future: bool
     let worker_idx = task_worker_chunk(chunks, line);
     get(&mut chunks[current], record, line);
     core_wasm::i32_const(&mut chunks[current], line, 1);
-    chunks[current].emit_op_u16(Op::TABLE_GROW, 0, line);
+    chunks[current].emit_op_idx(Op::TABLE_GROW, 0u32, line);
     chunks[current].emit_op_u16(Op::REF_FUNC, worker_idx as u16, line);
     chunks[current].emit(0, line);
     threading::emit_thread_spawn(chunks, current, line);

@@ -23,11 +23,10 @@ uses_common_resolver = true
 dynamic_add = true
 # `dynamic_member_access` is deliberately NOT set. Kotlin declares its classes,
 # so a member read resolves against the class model the way Java, Dart and C#
-# do. On the dynamic path `this.n` compiled to the JS member sequence, whose
-# `set_js_this_from_stack` is a no-op for a profile without
-# `ambient_this_binding` — so the receiver it pushed was never consumed and
-# stayed on the stack. `"x=" + this.n` then concatenated the RECEIVER with the
-# field (`[object C]A`), and any arithmetic use trapped in `toF64`.
+# do. On the dynamic path `this.n` compiles to the JS member sequence, which
+# leaves the receiver it pushes unconsumed: `"x=" + this.n` concatenates the
+# RECEIVER with the field (`[object C]A`), and any arithmetic use traps in
+# `toF64`.
 supports_spread_arguments = true
 # Kotlin `Long` IS ecma BigInt — declared below as `[builtin_types] bigint =
 # ["long"]`, which the shared emitter derives EVERYTHING from: the capability

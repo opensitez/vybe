@@ -228,7 +228,10 @@ pub fn emit_stream_support_stream(chunks: &mut [Chunk], current: usize, argc: u8
     set(&mut chunks[current], spl, line);
     field_get(&mut chunks[current], spl, ARR, line);
     field_get(&mut chunks[current], spl, POS, line);
-    host::emit(&mut chunks[current], "ecma:array", "slice", 2, line);
+    // §23.1.3.27 `end` = undefined means `len` — passed explicitly so this
+    // import has ONE arity; a WASM import cannot have an optional argument.
+    vybe_compiler::primitives::expressions::emit_undefined(&mut chunks[current], line);
+    host::emit(&mut chunks[current], "ecma:array", "slice", 3, line);
     let out = chunks[current].alloc_scratch(1);
     set(&mut chunks[current], out, line);
     get(&mut chunks[current], out, line);

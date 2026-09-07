@@ -172,7 +172,9 @@ function_decl = {
 }
 // The `=` may sit at end-of-line with the body expression on the NEXT line
 // (idiomatic for long single-expression functions) — eat terminators after it.
-function_body_expr = { "=" ~ eat_terminators ~ expr }
+// `throw` IS an expression in Kotlin (its type is Nothing), so a
+// single-expression body may be exactly one.
+function_body_expr = { "=" ~ eat_terminators ~ (throw_stmt | expr) }
 
 parameter_list = { "(" ~ eat_terminators ~ (parameter ~ (eat_terminators ~ "," ~ eat_terminators ~ parameter)* ~ eat_terminators ~ ","?)? ~ eat_terminators ~ ")" }
 parameter = { annotation* ~ vararg_kw? ~ identifier ~ ":" ~ type_ref ~ ("=" ~ expr)? }
@@ -426,7 +428,10 @@ super_expr = { super_kw ~ ("<" ~ type_ref ~ ">")? ~ ("@" ~ identifier)? }
 object_expr = { object_kw ~ (":" ~ inheritance_list)? ~ class_body }
 
 // If expression / statement
-if_expr = { if_kw ~ "(" ~ expr ~ ")" ~ (block | statement) ~ (else_kw ~ (if_expr | block | statement))? }
+// A NEWLINE may precede `else`: the branch ends the line and the chain
+// continues on the next one. `eat_terminators` is silent and backtracks when no
+// `else` follows, so a bare `if` statement still ends at its own line.
+if_expr = { if_kw ~ "(" ~ expr ~ ")" ~ (block | statement) ~ (eat_terminators ~ else_kw ~ (if_expr | block | statement))? }
 
 // When expression / statement
 when_expr = { when_kw ~ ("(" ~ expr ~ ")")? ~ "{" ~ eat_terminators ~ (when_entry ~ eat_terminators)* ~ "}" }

@@ -304,7 +304,11 @@ pub fn parse(source: &str) -> Result<Module, String> {
     __w.java_declared_methods.clear();
 
     let mut pairs =
-        JavaParser::parse(Rule::program, source).map_err(|e| format!("Java parse error: {}", e))?;
+        {
+            let _line_index = vybe_ast::line_index::LineIndex::install(source);
+            JavaParser::parse(Rule::program, source)
+                .map_err(|e| format!("Java parse error: {}", e))?
+        };
     let program = pairs.next().ok_or("empty parse")?;
     java_prescan_declared_methods(__w, program.clone());
 
@@ -421,6 +425,14 @@ pub fn parse(source: &str) -> Result<Module, String> {
             // for the module — the shared compiler gives the shadowing
             // declaration a declaring-class-keyed slot.
             field_shadowing: Some(FieldShadowing::Hide),
+            // A java method is the raw function off the class; the CALL
+            // supplies the receiver as a leading argument, unlike prototype
+            // dispatch (JS/Dart) or bind-on-access (Python).
+            method_receiver: Some(vybe_ast::MethodReceiver::CallSite),
+            // Every callable declares a leading receiver parameter, not only
+            // methods — ECMA-262 §10.2.1 `[[Call]](thisArgument,
+            // argumentsList)`. A plain `f()` passes `undefined` (§10.2.1.1).
+            receiver_binding: Some(vybe_ast::ReceiverBinding::UniversalParameter),
             ..Default::default()
         },
     })
@@ -911,12 +923,21 @@ fn java_expr_references_any_name(expr: &Expression, names: &HashSet<String>) -> 
 // ════════════════════════════════════════════════════════════════════════════
 
 fn to_span(pair: &Pair<Rule>) -> Span {
-    let (line, col) = pair.line_col();
+    // ⛔ NOT `Pair::line_col` — it counts newlines from the START OF THE INPUT
+    // for every node, which makes the walk quadratic in program size. See
+    // `vybe_ast::line_index`. Java reports the START position for both ends;
+    // the fallback is the old behaviour, for a parse that reached here without
+    // installing an index.
+    let start = pair.as_span().start();
+    let (line, col) = vybe_ast::line_index::line_col(start).unwrap_or_else(|| {
+        let (l, c) = pair.line_col();
+        (l as u32, c as u32)
+    });
     Span {
-        start_line: line as u32,
-        start_col: col as u32,
-        end_line: line as u32,
-        end_col: col as u32,
+        start_line: line,
+        start_col: col,
+        end_line: line,
+        end_col: col,
     }
 }
 
