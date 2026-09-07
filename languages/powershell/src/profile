@@ -92,12 +92,17 @@ negative_index_wraps = true
 "__vybe_uint128_wrap" = { emit = "common:dotnet.uint128_wrap", min_args = 1, max_args = 1 }
 "__vybe_int128_shl"   = { emit = "common:dotnet.int128_shl",   min_args = 2, max_args = 2 }
 "__vybe_int128_shr"   = { emit = "common:dotnet.int128_shr",   min_args = 2, max_args = 2 }
+"__ps_uint32_shr"     = { emit = "common:dotnet.uint32_ushr",  min_args = 2, max_args = 2 }
 
 "write-output" = { emit = "print", min_args = 0, max_args = 255 }
 "write-host" = { emit = "print", min_args = 0, max_args = 255 }
 
 echo = { emit = "print", min_args = 0, max_args = 255 }
-"get-date" = { emit = "common:dotnet.datetime_now", min_args = 0, max_args = 0 }
+# ⛔`Get-Date` IS NOT A ZERO-ARGUMENT BUILTIN. It used to be bound here as
+# `common:dotnet.datetime_now` with `max_args = 0`, so `-Date`, `-Format`,
+# `-UFormat`, `-Year`/`-Month`/`-Day` and `-DisplayHint` were all dropped and
+# every call answered the current time. It is a SELECTOR over `System.DateTime`,
+# which is a registered tree type — see the `get-date` arm in the walker.
 exit = { emit = "common:control_flow.exit", min_args = 0, max_args = 1 }
 # `[System.Array]::Sort($arr)` after the walker attaches the `CompareTo`
 # comparator. In place, like .NET's.
@@ -112,6 +117,7 @@ __ps_char_is_alnum  = { emit = "common:str_is_alnum",     min_args = 1, max_args
 __ps_char_is_space  = { emit = "common:str_is_space",     min_args = 1, max_args = 1 }
 __ps_char_to_upper  = { emit = "common:strings.to_upper", min_args = 1, max_args = 1 }
 __ps_char_to_lower  = { emit = "common:strings.to_lower", min_args = 1, max_args = 1 }
+__ps_str_contains   = { emit = "common:str_contains",     min_args = 2, max_args = 2 }
 # `[int]$x` — see `emit_to_int`: banker's rounding, a numeric parse, or a code
 # point, decided by the runtime value.
 __ps_to_int = { emit = "common:powershell.to_int", min_args = 1, max_args = 1 }
@@ -122,6 +128,7 @@ __ps_to_int = { emit = "common:powershell.to_int", min_args = 1, max_args = 1 }
 __ps_member_dyn = { emit = "common:powershell.member_dyn", min_args = 2, max_args = 2 }
 __ps_index_set  = { emit = "common:powershell.index_set",  min_args = 3, max_args = 3 }
 __ps_index_get  = { emit = "common:powershell.index_get",  min_args = 2, max_args = 2 }
+__ps_is_null    = { emit = "common:object.is_null",        min_args = 1, max_args = 1 }
 __ps_out_null   = { emit = "common:powershell.out_null",   min_args = 1, max_args = 1 }
 # A pipeline whose stream holds ONE item is that item — see `emit_unwrap_single`.
 __ps_unwrap_single = { emit = "common:powershell.unwrap_single", min_args = 1, max_args = 1 }
@@ -135,11 +142,36 @@ __ps_divide     = { emit = "common:powershell.divide",    min_args = 2, max_args
 # NOT work: `compile_binop` consults that table in its `Add` arm and not in its
 # `Mul` arm, so the row is declared and never read (measured).
 __ps_multiply   = { emit = "common:powershell.multiply",  min_args = 2, max_args = 2 }
+# `-eq` / `-ne` — see `emit_case_folding_eq`. The `c`-prefixed spellings keep
+# the shared exact comparison and never reach these.
+# `-ceq` / `-cne` are the case-SENSITIVE spellings and keep the exact,
+# type-coercing comparison the slots below fold.
+__ps_ceq        = { emit = "host:ecma:value:abstractEq",  min_args = 2, max_args = 2 }
+__ps_cne        = { emit = "host:ecma:value:abstractNe",  min_args = 2, max_args = 2 }
+# The folding forms. ⛔BOUND AS BUILTINS RATHER THAN AS
+# `[builtin_slots.string] eq`: that slot is consulted ahead of EVERY equality
+# path, so filling it took `BigInteger`, `DateTime`, `DateTimeOffset` and
+# `TimeSpan` off the arm that knows how to compare them — 21 tests, measured.
+# The walker reaches these only where one operand is a string LITERAL, which is
+# where nothing richer can apply.
+__ps_eq         = { emit = "common:powershell.eq",        min_args = 2, max_args = 2 }
+__ps_ne         = { emit = "common:powershell.ne",        min_args = 2, max_args = 2 }
 # `$obj.PSObject` — see `emit_psobject`. Two arguments: the target, and a fresh
 # `List[string]` for `TypeNames` that the walker builds the ordinary way.
 __ps_psobject   = { emit = "common:powershell.psobject",  min_args = 2, max_args = 2 }
 # `$obj.PSObject.Properties.Add($d)` — see `emit_prop_add`.
 __ps_prop_add   = { emit = "common:powershell.prop_add",  min_args = 2, max_args = 2 }
+# `Format-List` / `Format-Table` / `Format-Wide` — see `emit_format`.
+__ps_fmt_list   = { emit = "common:powershell.format_list",  min_args = 1, max_args = 1 }
+__ps_fmt_table  = { emit = "common:powershell.format_table", min_args = 1, max_args = 1 }
+__ps_fmt_table_no_headers = { emit = "common:powershell.format_table_no_headers", min_args = 1, max_args = 1 }
+__ps_fmt_wide   = { emit = "common:powershell.format_wide",  min_args = 1, max_args = 1 }
+# `Compare-Object` — see `emit_compare_object`. Seven arguments: the two
+# collections, then `-IncludeEqual`, `-ExcludeDifferent`, `-CaseSensitive`,
+# `-Property` (an array or null) and `-PassThru`.
+__ps_compare_object = { emit = "common:powershell.compare_object", min_args = 7, max_args = 7 }
+# `$obj.PSObject.Properties` — see `emit_psobject_properties`.
+__ps_properties = { emit = "common:powershell.properties", min_args = 1, max_args = 2 }
 # `New-Object byte[] 4` — a sized array of the element type's zero value.
 __ps_repeat     = { emit = "common:collections.repeat_value", min_args = 2, max_args = 2 }
 # `$env:X = 5` stores the STRING "5" — the environment is string→string.
@@ -181,12 +213,39 @@ __ps_slice     = { emit = "common:collections.slice", min_args = 3, max_args = 3
 # `Measure-Object`. The cmdlet answers an OBJECT of statistics, so the walker
 # builds the object literal and reaches each statistic through one of these.
 # Synthesized by the walker, never written by a user.
-__ps_count     = { emit = "common:collections.length", min_args = 1, max_args = 1 }
+__ps_count     = { emit = "common:powershell.count", min_args = 1, max_args = 1 }
+
+# `.ForEach('Name')` — one spelling that may be a property or a method, and the
+# receiver's KIND is what settles which. See `intrinsic_collection_overload`.
+__ps_typeof    = { emit = "host:ecma:value:typeof",  min_args = 1, max_args = 1 }
+
+# `Test-Json` asks whether text parses; the shared parser answers null when it
+# does not, so the cmdlet is that question and not a second parser.
+__ps_from_json = { emit = "common:powershell.from_json", min_args = 1, max_args = 2 }
+
+# `Select-String`. The pattern carries its own `/pat/flags` spelling — see the
+# note at the call site.
+__ps_str_match = { emit = "host:ecma:string:match", min_args = 2, max_args = 2 }
+# ⛔`ecma:string:match` DECLARES TWO PARAMETERS. Flags cannot ride beside the
+# pattern and are not read out of a `/pat/flags` spelling either, so the
+# case-insensitive and all-matches forms need a real RegExp.
+__ps_regex     = { emit = "host:ecma:regexp:new",    min_args = 1, max_args = 2 }
+# `$x.GetType().Name` decides at run time whether the receiver is a class
+# instance; an array is an `object` to `typeof` and must not be one.
+__ps_is_array  = { emit = "host:ecma:array:isArray", min_args = 1, max_args = 1 }
+
+# `Get-Unique` drops ADJACENT duplicates — PowerShell documents it as operating
+# on a sorted list, so `1,2,1` keeps all three. No shared primitive says
+# "adjacent", which is why this one has an emitter.
+__ps_unique_adjacent = { emit = "common:powershell.unique_adjacent", min_args = 3, max_args = 3 }
+
+
 
 # `ConvertFrom-Csv`. `csv.parse_document` is the SHARED CSV grammar — a newline
 # inside a quoted field is content, so the document cannot be pre-split into
 # lines. Naming the columns is this language's job and stays in the walker.
 __ps_csv_rows     = { emit = "common:csv.parse_document",       min_args = 3, max_args = 3 }
+__ps_csv_format_row = { emit = "common:csv.format_row",         min_args = 3, max_args = 3 }
 __ps_from_entries = { emit = "host:ecma:object:fromEntries",    min_args = 1, max_args = 1 }
 __ps_sum       = { emit = "common:collections.sum",    min_args = 1, max_args = 1 }
 __ps_max       = { emit = "common:collections.max",    min_args = 1, max_args = 1 }
@@ -196,6 +255,12 @@ __ps_min       = { emit = "common:collections.min",    min_args = 1, max_args = 
 # outright; reached as a plain command there is nothing to emit.
 "out-null"     = { emit = "noop", min_args = 0, max_args = 255 }
 "write-progress" = { emit = "noop", min_args = 0, max_args = 255 }
+# `Set-StrictMode` selects a RUNTIME enforcement level; the engine here has one
+# level — the default — so the cmdlet is accepted and changes nothing. A script
+# that turns strict mode OFF then observes default behaviour is correct; one
+# that asks a version to THROW on an uninitialised variable reaches its real
+# assertion and fails honestly rather than dying on an unknown cmdlet.
+"set-strictmode" = { emit = "noop", min_args = 0, max_args = 255 }
 
 # VALUE METHODS — instance methods called on values
 # PowerShell is case-insensitive, but keep canonical and lowercase
@@ -223,20 +288,19 @@ __ps_min       = { emit = "common:collections.min",    min_args = 1, max_args = 
 # The slot is a FALLBACK, not an override: a declared member is resolved before
 # `[value_methods]` is consulted (see the `CompareTo` note below), which is what
 # makes a type carrying its own `Count` reach its own value again.
-Count    = { emit = "common:collections.length", min_args = 0, max_args = 0, slot = "len" }
-count    = { emit = "common:collections.length", min_args = 0, max_args = 0, slot = "len" }
+Count    = { emit = "common:powershell.count", min_args = 0, max_args = 0, slot = "len" }
+count    = { emit = "common:powershell.count", min_args = 0, max_args = 0, slot = "len" }
 Length   = { emit = "common:collections.length", min_args = 0, max_args = 0, slot = "len" }
 length   = { emit = "common:collections.length", min_args = 0, max_args = 0, slot = "len" }
 
 ToString = { emit = "common:dotnet.tostring_runtime", min_args = 0, max_args = 1 }
 tostring = { emit = "common:dotnet.tostring_runtime", min_args = 0, max_args = 1 }
 
-# `$x.GetType()` is .NET's, and `dotnet.get_type` already answers it for C# and
-# VB: a descriptor carrying `Name`, read off the value's own class name, its
-# `__type`, or `typeof` in that order. The corpus asks for `.Name` 53 times
-# against four for every other Type member.
-GetType = { emit = "common:dotnet.get_type", min_args = 0, max_args = 0 }
-gettype = { emit = "common:dotnet.get_type", min_args = 0, max_args = 0 }
+# `$x.GetType()` — see `emit_get_type`: the class model's `ref_typeof` for a
+# user-class instance, the dotnet `get_type` for every .NET value. Either one
+# alone answers only half the corpus.
+GetType = { emit = "common:powershell.get_type", min_args = 0, max_args = 0 }
+gettype = { emit = "common:powershell.get_type", min_args = 0, max_args = 0 }
 
 # `@{ … }.ContainsKey(k)` / `.Add(k, v)` — the HASHTABLE spellings.
 #
@@ -345,6 +409,11 @@ values        = { emit = "host:ecma:object:values",    min_args = 0, max_args = 
 # name answered `True` where `ContainsKey` reached undefined.
 __ps_ht_haskey   = { emit = "host:ecma:object:has",    min_args = 1, max_args = 1 }
 __ps_ht_delkey   = { emit = "host:ecma:object:delete", min_args = 1, max_args = 1 }
+# `.Remove(x)` / `.Clear()` on a receiver the walker KNOWS is a bare object;
+# the public rows below serve untyped collections.
+__ps_ht_remove   = { emit = "host:ecma:object:delete",   min_args = 1, max_args = 1 }
+__ps_ht_clear    = { emit = "common:collections.clear_keyed", min_args = 0, max_args = 0 }
+
 __ps_ht_add      = { emit = "host:ecma:object:set",    min_args = 2, max_args = 2 }
 __ps_ht_keys     = { emit = "host:ecma:object:keys",   min_args = 0, max_args = 0 }
 __ps_ht_values   = { emit = "host:ecma:object:values", min_args = 0, max_args = 0 }
@@ -368,7 +437,15 @@ Add           = { emit = "common:powershell.collection_add", min_args = 1, max_a
 # `$obj.psobject.TypeNames` is untyped by then. `Add` sitting here and Lists
 # still working is the precedent.
 Insert        = { emit = "common:collections.insert",  min_args = 2, max_args = 2 }
-Clear         = { emit = "common:collections.clear",   min_args = 0, max_args = 0 }
+# `Remove` / `Clear` for a receiver with NO runtime type — a string
+# (`'abc'.Remove(1)` is a prefix) or a plain array. Both emitters test the
+# receiver's shape at run time. A .NET collection never reaches these rows:
+# `tree_collection_declares` routes any name a tree collection declares to
+# runtime `__type` dispatch instead (calls.rs), which is what lets an untyped
+# `List` find its own `Add`. A bare `@{…}` has no `__type` either and is
+# renamed to `__ps_ht_*` by the walker before this table is consulted.
+Remove        = { emit = "common:powershell.collection_remove", min_args = 1, max_args = 1 }
+Clear         = { emit = "common:powershell.collection_clear",  min_args = 0, max_args = 0 }
 # `collections.slice` wants [array, start, end]; a 0-arg `Clone` pushed only the
 # receiver, so the host call read two garbage operands and answered an EMPTY
 # array. `collections.clone` IS that emitter with `0`/`i32::MAX` supplied.
@@ -406,6 +483,13 @@ concat        = { emit = "common:collections.concat",  min_args = 1, max_args = 
 # PowerShell's .ForEach() yields the results, so it maps rather than iterates.
 ForEach   = "__array_map"
 Where     = "__array_filter"
+# `.Where(…, 'Until')` / `'SkipUntil'` cut the source at the first match, so the
+# desugar needs the POSITION rather than the matches. ⛔THE KEY IS THE NAME THE
+# SHARED HOF ARM MATCHES: it normalizes a handful of `__array_*` markers to a
+# JS-style name and otherwise falls back to the SPELLING at the call site, and
+# `findIndex` is the spelling that arm answers. PowerShell declares no member of
+# this name, so nothing of the language's own is shadowed.
+findIndex = "__array_findIndex"
 
 # ────────────────────────────────────────────────────────────────────────────
 # builtinslotplan.md — built-in type spellings and slot bindings
@@ -431,10 +515,12 @@ map    = ["hashtable", "dictionary"]
 # back to the same .NET emitter, so no formatting is lost.
 to_string = "common:powershell.to_display"
 
+
 # `-contains` / `-in` on an array are membership over VALUES; the shared
 # collections primitive is the same one Pascal and Python bind here.
 [builtin_slots.array]
 contains = "common:collections.contains"
+eq = "common:tuple.value_eq"
 # `[builtin_slots.array] add` is the target for EVERY `+`, not just the array
 # case — binding `collections.concat` here once made `10 + 5` evaluate to `5`.
 # So it takes a target that DISPATCHES at runtime, the same shape PHP uses:
@@ -485,6 +571,10 @@ type_scopes = ["dotnet"]
 kind = "tree-mount"
 prefix = "System"
 path = "dotnet.System"
+
+[[esm_default]]
+kind = "tree-ambient"
+path = "dotnet.Cmdlets"
 
 [[esm_default]]
 kind = "tree-ambient"

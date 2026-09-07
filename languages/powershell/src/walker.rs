@@ -7,6 +7,7 @@ use super::Rule;
 use pest::Parser;
 use pest::iterators::Pair;
 use vybe_ast::*;
+use vybe_compiler::primitives::memory as common_memory;
 
 use std::collections::HashMap;
 use std::collections::VecDeque;
@@ -37,6 +38,22 @@ pub fn parse(source: &str) -> Result<Module, String> {
         }
     }
 
+    body.insert(
+        0,
+        Statement::new(StmtKind::Assign {
+            targets: vec![Expression::ident("PWD")],
+            value: cmdlet_call("Get-Location", Vec::new()),
+            by_ref: false,
+        }),
+    );
+    body.insert(
+        1,
+        Statement::new(StmtKind::Assign {
+            targets: vec![Expression::ident("PID")],
+            value: dotnet_static_call("System.Diagnostics.Stopwatch", "GetTimestamp", Vec::new()),
+            by_ref: false,
+        }),
+    );
 
     // `System.Numerics` and the 128-bit integers, on the same terms as every
     // other frontend: gated on the program naming the type, and skipped
@@ -65,6 +82,13 @@ pub fn parse(source: &str) -> Result<Module, String> {
             // ECMA rule, where every object is true — measured, `if (@())` took
             // the true branch here and the false branch under pwsh.
             truthiness: Some(vybe_ast::Truthiness::Protocol),
+            // A class method is the raw function off the class; the CALL
+            // supplies the receiver as a leading argument.
+            method_receiver: Some(vybe_ast::MethodReceiver::CallSite),
+            // Every callable declares a leading receiver parameter, not only
+            // methods — ECMA-262 §10.2.1 `[[Call]](thisArgument,
+            // argumentsList)`. A plain `f()` passes `undefined` (§10.2.1.1).
+            receiver_binding: Some(vybe_ast::ReceiverBinding::UniversalParameter),
             ..Default::default()
         },
     })
@@ -93,7 +117,22 @@ fn normalize_source(source: &str) -> String {
     out
 }
 
+/// See [`walk_expr`] — the same one-place stamp, for statements.
 fn parse_statement(__w: &mut PsWalker, pair: Pair<Rule>) -> Result<Option<Statement>, String> {
+    let span = span_of(&pair);
+    let parsed = parse_statement_inner(__w, pair)?;
+    Ok(parsed.map(|mut stmt| {
+        if stmt.span.start_line == 0 && stmt.span.end_line == 0 {
+            stmt.span = span;
+        }
+        stmt
+    }))
+}
+
+fn parse_statement_inner(
+    __w: &mut PsWalker,
+    pair: Pair<Rule>,
+) -> Result<Option<Statement>, String> {
     let mut queue = VecDeque::new();
     queue.push_back(pair);
 
@@ -108,6 +147,15 @@ fn parse_statement(__w: &mut PsWalker, pair: Pair<Rule>) -> Result<Option<Statem
                 }
 
                 let children: Vec<Pair<Rule>> = pair.into_inner().collect();
+                if children
+                    .iter()
+                    .any(|child| child.as_rule() == Rule::assignment_stmt)
+                {
+                    for child in children {
+                        queue.push_back(child);
+                    }
+                    continue;
+                }
                 let mut tokens = Vec::new();
                 for child in &children {
                     collect_command_tokens(child, &mut tokens);
@@ -229,6 +277,17 @@ fn parse_labeled_stmt(__w: &mut PsWalker, pair: Pair<Rule>) -> Result<Option<Sta
 /// value `break` rethrows.
 const TRAP_VAR: &str = "_";
 
+fn normalized_synthesized_exception_name(name: &str) -> &str {
+    let name = name.trim();
+    if let Some(rest) = name.strip_prefix("System.") {
+        let leaf = rest.rsplit('.').next().unwrap_or(rest).trim();
+        if vybe_platform_dotnet::emitter::core::exceptions::is_synthesized_exception_class(leaf) {
+            return leaf;
+        }
+    }
+    name
+}
+
 fn parse_trap_stmt(__w: &mut PsWalker, pair: Pair<Rule>) -> Result<Statement, String> {
     let mut body = Vec::new();
     let mut types = Vec::new();
@@ -246,15 +305,15 @@ fn parse_trap_stmt(__w: &mut PsWalker, pair: Pair<Rule>) -> Result<Statement, St
                 // matched nothing and a typed trap that used to fire as a
                 // catch-all stopped firing at all — base-class matching walks
                 // the ancestor chain by NAME.
-                let name = match name.strip_prefix("System.") {
-                    Some(short) if !short.contains('.') => short,
-                    _ => name,
-                };
+                let name = normalized_synthesized_exception_name(name);
                 if !name.is_empty() {
                     types.push(name.to_string());
                 }
             }
-            Rule::block => body = parse_block_statements(__w, child)?,
+            Rule::block => {
+                body = parse_block_statements(__w, child)?;
+                body.insert(0, ps_catch_error_record_rebind());
+            }
             _ => {}
         }
     }
@@ -377,6 +436,12 @@ fn strip_write_output(expr: Expression) -> Expression {
     let ExprKind::Call { callee, mut args, .. } = expr.kind else {
         return expr;
     };
+    if matches!(&callee.kind, ExprKind::Ident(name) if name == "__ps_unwrap_single")
+        && args.len() == 1
+    {
+        let inner = args.remove(0).value;
+        return strip_write_output(inner);
+    }
     let is_write_output = matches!(
         &callee.kind,
         ExprKind::Ident(name) if name.eq_ignore_ascii_case("write-output")
@@ -424,7 +489,7 @@ const OUT_ACC: &str = "__ps_output";
 fn accumulate_outputs(body: Vec<Statement>) -> Option<Vec<Statement>> {
     let mut census = EmitCensus::default();
     census.walk(&body, false);
-    if census.sites < 2 && !census.in_loop {
+    if census.sites < 2 && !census.in_loop && !body_contains_pscmdlet_stream_emit(&body) {
         return None;
     }
 
@@ -457,6 +522,78 @@ fn accumulate_outputs(body: Vec<Statement>) -> Option<Vec<Statement>> {
         out.push(Statement::new(StmtKind::Return(Some(unwrap_output()))));
     }
     Some(out)
+}
+
+fn body_contains_pscmdlet_stream_emit(body: &[Statement]) -> bool {
+    body.iter().any(stmt_contains_pscmdlet_stream_emit)
+}
+
+fn stmt_contains_pscmdlet_stream_emit(stmt: &Statement) -> bool {
+    match &stmt.kind {
+        StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) => {
+            expr_is_pscmdlet_stream_emit(expr)
+        }
+        kind => child_bodies(kind)
+            .into_iter()
+            .any(|(body, _)| body_contains_pscmdlet_stream_emit(body)),
+    }
+}
+
+fn expr_is_pscmdlet_stream_emit(expr: &Expression) -> bool {
+    ps_stream_emit_redirect_global(expr).is_some()
+}
+
+fn ps_stream_emit_redirect_global(expr: &Expression) -> Option<&'static str> {
+    let ExprKind::Call { callee, .. } = &expr.kind else {
+        return None;
+    };
+    let ExprKind::Member { object, field, .. } = &callee.kind else {
+        return None;
+    };
+    let global = match field.to_ascii_lowercase().as_str() {
+        "write-error" => "__ps_redirect_error",
+        "write-warning" => "__ps_redirect_warning",
+        "write-debug" => "__ps_redirect_debug",
+        "write-information" => "__ps_redirect_information",
+        "write-verbose" => "__ps_redirect_verbose",
+        _ => return None,
+    };
+    matches!(
+        &object.kind,
+        ExprKind::Member { object, field, .. }
+            if field == "Cmdlets" && matches!(&object.kind, ExprKind::Ident(root) if root == "dotnet")
+    )
+    .then_some(global)
+}
+
+fn ps_stream_emit_condition(global: &str) -> Expression {
+    let redirected = ps_global_member(global);
+    let preference = match global {
+        "__ps_redirect_error" => Some(("erroractionpreference", true)),
+        "__ps_redirect_warning" => Some(("warningpreference", true)),
+        "__ps_redirect_debug" => Some(("debugpreference", false)),
+        "__ps_redirect_information" => Some(("informationpreference", false)),
+        "__ps_redirect_verbose" => Some(("verbosepreference", false)),
+        _ => None,
+    };
+    let Some((name, default_continue)) = preference else {
+        return redirected;
+    };
+    let pref = Expression::ident(name);
+    let enabled = if default_continue {
+        ps_binary(
+            BinOp::And,
+            ps_binary(
+                BinOp::NotEq,
+                pref.clone(),
+                Expression::string("SilentlyContinue"),
+            ),
+            ps_binary(BinOp::NotEq, pref, Expression::string("Ignore")),
+        )
+    } else {
+        ps_binary(BinOp::Eq, pref, Expression::string("Continue"))
+    };
+    ps_binary(BinOp::And, redirected, enabled)
 }
 
 /// How many emit sites a body has, and whether any of them is inside a loop.
@@ -526,6 +663,15 @@ fn accumulate_stmts(body: Vec<Statement>) -> Vec<Statement> {
         let span = stmt.span;
         let keep = |kind| Statement { kind, span };
         match stmt.kind {
+            StmtKind::Expr(expr) if ps_stream_emit_redirect_global(&expr).is_some() => {
+                let global = ps_stream_emit_redirect_global(&expr).unwrap();
+                out.push(keep(StmtKind::If {
+                    cond: ps_stream_emit_condition(global),
+                    then_body: vec![keep(StmtKind::Expr(collect_call(expr.clone())))],
+                    elifs: Vec::new(),
+                    else_body: Some(vec![keep(StmtKind::Expr(expr))]),
+                }));
+            }
             StmtKind::Expr(expr) if expression_emits(&expr) && !is_method_call(&expr) =>
             {
                 out.push(keep(StmtKind::Expr(collect_call(expr))));
@@ -641,6 +787,84 @@ fn local_decl(name: &str) -> Statement {
     })
 }
 
+fn ps_catch_error_record_rebind() -> Statement {
+    const LAST: &str = "__ps_last_error_record";
+    Statement::new(StmtKind::Assign {
+        targets: vec![Expression::ident("_")],
+        value: bind_and_call(
+            &[LAST],
+            vec![cmdlet_call("Get-LastErrorRecord", Vec::new())],
+            ps_ternary(
+                ps_binary(
+                    BinOp::IsNot,
+                    Expression::ident(LAST),
+                    Expression::null(),
+                ),
+                Expression::ident(LAST),
+                Expression::new(ExprKind::New {
+                    class: Box::new(Expression::ident(
+                        "System.Management.Automation.ErrorRecord",
+                    )),
+                    args: vec![
+                        Argument::positional(Expression::ident("_")),
+                        Argument::positional(Expression::string("RuntimeException")),
+                        Argument::positional(Expression::string("NotSpecified")),
+                        Argument::positional(Expression::null()),
+                    ],
+                }),
+            ),
+        ),
+        by_ref: false,
+    })
+}
+
+fn ps_global_member(name: &str) -> Expression {
+    Expression::new(ExprKind::Member {
+        object: Box::new(Expression::new(ExprKind::GlobalNamespace)),
+        field: name.to_string(),
+        null_safe: false,
+    })
+}
+
+fn wrap_whatif_call(call: Expression, null_is_empty_stream: bool) -> Expression {
+    const OLD: &str = "__ps_old_whatif";
+    const RESULT: &str = "__ps_whatif_result";
+    let result = if null_is_empty_stream {
+        ps_ternary(
+            ps_binary(BinOp::Is, Expression::ident(RESULT), Expression::null()),
+            Expression::new(ExprKind::Array(Vec::new())),
+            Expression::ident(RESULT),
+        )
+    } else {
+        Expression::ident(RESULT)
+    };
+    block_value_expr(vec![
+        local_decl(OLD),
+        local_decl(RESULT),
+        Statement::new(StmtKind::Assign {
+            targets: vec![Expression::ident(OLD)],
+            value: ps_global_member("whatifpreference"),
+            by_ref: false,
+        }),
+        Statement::new(StmtKind::Assign {
+            targets: vec![ps_global_member("whatifpreference")],
+            value: Expression::bool(true),
+            by_ref: false,
+        }),
+        Statement::new(StmtKind::Assign {
+            targets: vec![Expression::ident(RESULT)],
+            value: call,
+            by_ref: false,
+        }),
+        Statement::new(StmtKind::Assign {
+            targets: vec![ps_global_member("whatifpreference")],
+            value: Expression::ident(OLD),
+            by_ref: false,
+        }),
+        Statement::new(StmtKind::Return(Some(result))),
+    ])
+}
+
 fn collect_call(value: Expression) -> Expression {
     method_call_expr(Expression::ident(OUT_ACC), "Add", vec![value])
 }
@@ -701,6 +925,7 @@ fn emits_value(stmt: &Statement) -> bool {
 /// the answer the `end` block computed.
 fn is_method_call(expr: &Expression) -> bool {
     matches!(&expr.kind, ExprKind::Call { callee, .. } if matches!(callee.kind, ExprKind::Member { .. }))
+        && !is_dotnet_cmdlet_call(expr)
 }
 
 /// Whether evaluating this as a statement contributes to the success stream.
@@ -753,13 +978,44 @@ fn apply_aliases(mut body: Vec<Statement>) -> Vec<Statement> {
 
     for stmt in &mut body {
         stmt.walk_exprs_mut(&mut |expr| {
+            let (name, args) = match &expr.kind {
+                ExprKind::Call { callee, args, .. } => {
+                    let ExprKind::Ident(name) = &callee.kind else {
+                        return;
+                    };
+                    (name.clone(), args.clone())
+                }
+                _ => return,
+            };
+            let lower_name = name.to_lowercase();
+            if matches!(lower_name.as_str(), "get-alias" | "get-command") {
+                let named = |key: &str| {
+                    args.iter()
+                        .find(|a| {
+                            a.name
+                                .as_deref()
+                                .is_some_and(|n| n.eq_ignore_ascii_case(key))
+                        })
+                        .map(|a| a.value.clone())
+                };
+                let positional: Vec<&Argument> = args.iter().filter(|a| a.name.is_none()).collect();
+                let alias = named("Name").or_else(|| positional.first().map(|a| a.value.clone()));
+                if let Some(alias_name) = alias.and_then(|expr| literal_text(&expr))
+                    && let Some(target) = aliases.get(&alias_name.to_lowercase())
+                {
+                    expr.kind = ExprKind::Object(vec![
+                        object_entry("Name", Expression::string(&alias_name)),
+                        object_entry("Definition", Expression::string(target)),
+                        object_entry("ResolvedCommandName", Expression::string(target)),
+                        object_entry("CommandType", Expression::string("Alias")),
+                    ]);
+                    return;
+                }
+            }
             let ExprKind::Call { callee, .. } = &mut expr.kind else {
                 return;
             };
-            let ExprKind::Ident(name) = &callee.kind else {
-                return;
-            };
-            if let Some(target) = aliases.get(&name.to_lowercase()) {
+            if let Some(target) = aliases.get(&lower_name) {
                 *callee = Box::new(Expression::ident(target));
             }
         });
@@ -845,6 +1101,11 @@ fn parse_enum_decl(__w: &mut PsWalker, pair: Pair<Rule>) -> Result<Statement, St
         }
     }
 
+    if !name.is_empty() {
+        __w.enum_display_names
+            .insert(name.to_lowercase(), name.clone());
+    }
+
     Ok(Statement::new(StmtKind::EnumDecl {
         name,
         members,
@@ -866,7 +1127,10 @@ fn parse_namespace_decl(__w: &mut PsWalker, pair: Pair<Rule>) -> Result<Statemen
             Rule::namespace_name | Rule::DOTTED_NAME => {
                 name = child.as_str().trim().to_string();
             }
-            Rule::block => body = parse_block_statements(__w, child)?,
+            Rule::block => {
+                body = parse_block_statements(__w, child)?;
+                body.insert(0, ps_catch_error_record_rebind());
+            }
             _ => {}
         }
     }
@@ -928,7 +1192,10 @@ fn parse_class_decl(__w: &mut PsWalker, pair: Pair<Rule>) -> Result<Statement, S
                 }
             }
             Rule::class_body => {
-                members = parse_class_body(__w, child)?;
+                let outer = __w.current_class.replace(name.to_lowercase());
+                let walked = parse_class_body(__w, child);
+                __w.current_class = outer;
+                members = walked?;
             }
             _ => {}
         }
@@ -998,7 +1265,8 @@ fn parse_ps_constructor(__w: &mut PsWalker, pair: Pair<Rule>) -> Result<ClassMem
     let mut name = None;
     let mut params = Vec::new();
     let mut body = Vec::new();
-    let mut base_args = None;
+    let base_args = None;
+    let mut super_call: Option<Statement> = None;
     let mut is_static = false;
 
     for child in pair.into_inner() {
@@ -1010,13 +1278,22 @@ fn parse_ps_constructor(__w: &mut PsWalker, pair: Pair<Rule>) -> Result<ClassMem
             }
             Rule::IDENT => name = Some(child.as_str().to_string()),
             Rule::function_params => params = parse_function_params(__w, child),
+            // `: base($m)` is `super($m)` — the SAME statement JS writes in the
+            // body, and the one node the shared class and error machinery reads.
+            // It rides as the first statement of the body; `base_args` stays
+            // `None`, exactly as JS's constructor arrives.
             Rule::ctor_base => {
                 let args = child
                     .into_inner()
                     .find(|c| c.as_rule() == Rule::arg_list)
                     .map(|__x| walk_arg_list(__w, __x))
                     .unwrap_or_default();
-                base_args = Some(args);
+                super_call = Some(Statement::new(StmtKind::Expr(Expression::new(
+                    ExprKind::SuperCall {
+                        method: None,
+                        args: args.into_iter().map(Argument::positional).collect(),
+                    },
+                ))));
             }
             Rule::block => body = parse_block_with_function_params(__w, child, &mut params)?,
             _ => {}
@@ -1047,6 +1324,32 @@ fn parse_ps_constructor(__w: &mut PsWalker, pair: Pair<Rule>) -> Result<ClassMem
             },
         ))));
     }
+
+    if let Some(member_name) = name.as_deref()
+        && __w
+            .current_class
+            .as_deref()
+            .is_some_and(|class_name| !member_name.eq_ignore_ascii_case(class_name))
+    {
+        return Ok(ClassMember::Method(Box::new(Statement::new(
+            StmtKind::FunctionDecl {
+                name: member_name.to_string(),
+                params,
+                body: implicit_return(body),
+                return_type: None,
+                is_async: false,
+                is_generator: false,
+                is_sub: false,
+                handles: Vec::new(),
+                modifiers: Modifiers::default(),
+            },
+        ))));
+    }
+
+    let body = match super_call {
+        Some(call) => std::iter::once(call).chain(body).collect(),
+        None => body,
+    };
 
     Ok(ClassMember::Constructor {
         name,
@@ -1136,7 +1439,10 @@ fn parse_ps_property(__w: &mut PsWalker, pair: Pair<Rule>) -> Result<Vec<ClassMe
     };
 
     let getter = parse_member_body(__w, &format!("return $this.{backing}"));
-    let setter_body = parse_member_body(__w, &validation_setter_source(&validators, &name, &backing));
+    let setter_body = parse_member_body(
+        __w,
+        &validation_setter_source(&validators, &name, &backing, type_hint.as_deref()),
+    );
 
     Ok(vec![
         field,
@@ -1223,20 +1529,47 @@ fn split_attribute_args(args: &str) -> Vec<String> {
 /// ordinary PowerShell expressions (`-ge`, `-contains`, `-match`), and the
 /// walker already lowers each of those correctly — hand-building the AST would
 /// be a second, divergent spelling of operators this file already handles.
-fn validation_setter_source(validators: &[String], name: &str, backing: &str) -> String {
+fn validation_setter_source(
+    validators: &[String],
+    name: &str,
+    backing: &str,
+    type_hint: Option<&str>,
+) -> String {
     let mut src = String::new();
-    for v in validators {
-        let Some(cond) = validation_condition(v) else {
-            continue;
-        };
+    // ⛔THE DECLARED TYPE CONVERTS FIRST, THEN THE GUARDS RUN. A `[ValidateRange]`
+    // on an `[int]` property receives `"8080"` as a string in PowerShell and
+    // validates the CONVERTED value — `$ph.Port = "8080"` is legal and stores
+    // 8080. Guarding the raw string compared text against a number and trapped
+    // in `toF64`. Only a scalar type is spelled here; a class or collection
+    // type is left to the assignment's own conversion.
+    if let Some(hint) = type_hint
+        && matches!(
+            hint.to_ascii_lowercase().as_str(),
+            "int" | "int32" | "long" | "int64" | "double" | "decimal" | "single" | "float"
+                | "string" | "bool" | "boolean"
+        )
+    {
+        src.push_str(&format!("$value = [{hint}]$value\n"));
+    }
+    let conditions: Vec<String> = validators
+        .iter()
+        .filter_map(|v| validation_condition(v))
+        .collect();
+    if conditions.is_empty() {
+        src.push_str(&format!("$this.{backing} = $value\n"));
+    } else {
         // The message carries the property name: PowerShell's own error names
         // the member, and a test asserts the text contains it.
+        let cond = conditions
+            .iter()
+            .map(|cond| format!("({cond})"))
+            .collect::<Vec<_>>()
+            .join(" -and ");
         src.push_str(&format!(
-            "if (-not ({cond})) {{ throw \"The attribute cannot be added because \
+            "if ({cond}) {{ $this.{backing} = $value }} else {{ throw \"The attribute cannot be added because \
              the property {name} would no longer be valid.\" }}\n"
         ));
     }
-    src.push_str(&format!("$this.{backing} = $value\n"));
     src
 }
 
@@ -1259,7 +1592,11 @@ fn validation_condition(inner: &str) -> Option<String> {
         // `-contains` is case-INSENSITIVE in PowerShell, which is exactly the
         // documented behaviour of `ValidateSet` on assignment.
         "validateset" if !parts.is_empty() => {
-            format!("@({}) -contains $value", parts.join(", "))
+            parts
+                .iter()
+                .map(|part| format!("($value -eq {part})"))
+                .collect::<Vec<_>>()
+                .join(" -or ")
         }
         "validatelength" if parts.len() >= 2 => format!(
             "($value.Length -ge {}) -and ($value.Length -le {})",
@@ -1344,33 +1681,108 @@ fn parse_constructor_decl(__w: &mut PsWalker, pair: Pair<Rule>) -> Result<ClassM
     })
 }
 
+/// `[CmdletBinding()]` anywhere in a function's text — the mark of an ADVANCED
+/// function, which is what turns on the parameter binder that consults
+/// `$PSDefaultParameterValues`.
+fn pair_text_has_cmdlet_binding(text: &str) -> bool {
+    text.to_ascii_lowercase().contains("[cmdletbinding")
+}
+
 fn parse_function_decl(__w: &mut PsWalker, pair: Pair<Rule>) -> Result<Statement, String> {
     let mut name = String::new();
     let mut params = Vec::new();
     let mut body = Vec::new();
+    // Read off the whole declaration's text before the pairs are consumed.
+    let declaration_text = pair.as_str().to_string();
+    let advanced = pair_text_has_cmdlet_binding(&declaration_text);
+    let early_parameter_attrs = advanced.then(|| parameter_attribute_infos(&declaration_text));
+    let dynamic_params = dynamic_parameter_names(&declaration_text);
 
     for child in pair.into_inner() {
         match child.as_rule() {
             Rule::function_name => {
                 name = child.as_str().trim().to_string();
+                // Known to `parse_function_params`, which is reached both from
+                // a `function F(...)` signature and from a `param(...)` block
+                // inside the body — the table default needs the name in both.
+                //
+                // ⛔ONLY AN ADVANCED FUNCTION CONSULTS `$PSDefaultParameterValues`.
+                // A plain `function F { param($X) }` is bound by the simple
+                // binder and never reads the table (measured against pwsh:
+                // `non_advanced_functions_do_not_receive_defaults`). The
+                // attribute is declaration metadata the walker otherwise drops,
+                // so it is read off the source here.
+                __w.current_function = advanced.then(|| name.clone());
             }
             Rule::function_params => {
                 params = parse_function_params(__w, child);
+                if let Some(attrs) = &early_parameter_attrs {
+                    for (param_name, attr) in attrs {
+                        if attr.value_from_pipeline_by_property_name {
+                            __w.pipeline_property_params.insert(param_name.clone());
+                        }
+                    }
+                    if attrs
+                        .values()
+                        .any(|attr| attr.value_from_pipeline_by_property_name)
+                        && !params.iter().any(|p| p.name == "__ps_pipe_input")
+                    {
+                        params.push(optional_param("__ps_pipe_input"));
+                    }
+                }
+                for dynamic_param in &dynamic_params {
+                    if !params.iter().any(|p| p.name.eq_ignore_ascii_case(dynamic_param)) {
+                        params.push(optional_param(dynamic_param));
+                    }
+                }
                 remember_ref_params(__w, &params);
             }
             Rule::block => {
                 let locals = function_local_names(&child);
                 let wants_args = mentions_args(child.as_str());
+                if let Some(attrs) = &early_parameter_attrs {
+                    for (param_name, attr) in attrs {
+                        if attr.value_from_pipeline_by_property_name {
+                            __w.pipeline_property_params.insert(param_name.clone());
+                        }
+                    }
+                    if attrs
+                        .values()
+                        .any(|attr| attr.value_from_pipeline_by_property_name)
+                        && !params.iter().any(|p| p.name == "__ps_pipe_input")
+                    {
+                        params.push(optional_param("__ps_pipe_input"));
+                    }
+                }
+                for dynamic_param in &dynamic_params {
+                    if !params.iter().any(|p| p.name.eq_ignore_ascii_case(dynamic_param)) {
+                        params.push(optional_param(dynamic_param));
+                    }
+                }
                 // `return_last_of_branches`, not `implicit_return`: a function
                 // ending in `if ($x) { 'yes' }` outputs `'yes'`, so the trailing
                 // expression of each BRANCH is the return value, not just a
                 // trailing expression statement.
-                let parsed = parse_block_with_function_params(__w, child, &mut params)?;
+                // `current_function` is cleared on BOTH paths: a parse error
+                // here must not leave this name attached to the next
+                // function's parameters.
+                let parsed = match parse_block_with_function_params(__w, child, &mut params) {
+                    Ok(parsed) => parsed,
+                    Err(e) => {
+                        __w.current_function = None;
+                        return Err(e);
+                    }
+                };
+                if let Some(pos) = params.iter().position(|p| p.name == "__ps_pipe_input") {
+                    let hidden = params.remove(pos);
+                    params.push(hidden);
+                }
                 let parsed = unwrap_write_output(parsed);
                 body = match accumulate_outputs(parsed.clone()) {
                     Some(accumulated) => accumulated,
                     None => return_last_of_branches(parsed),
                 };
+
                 // `$args` is the automatic variable holding every argument the
                 // declared parameters did not take — a rest parameter, which is
                 // a shape the compiler already has.
@@ -1392,6 +1804,25 @@ fn parse_function_decl(__w: &mut PsWalker, pair: Pair<Rule>) -> Result<Statement
         }
     }
 
+    __w.current_function = None;
+    let output_types = output_type_infos(&declaration_text);
+    if !output_types.is_empty() {
+        __w.function_output_types
+            .insert(name.to_lowercase(), output_types);
+    }
+    let binding_info = cmdlet_binding_info(&declaration_text);
+    if binding_info.supports_should_process {
+        __w.supports_should_process_functions
+            .insert(name.to_lowercase());
+    }
+    if advanced {
+        __w.cmdlet_binding_functions
+            .insert(name.to_lowercase(), binding_info.clone());
+        let parameter_attrs = early_parameter_attrs.unwrap_or_default();
+        __w.function_parameter_attributes
+            .insert(name.to_lowercase(), parameter_attrs.clone());
+        body = advanced_function_context(&name, &binding_info, &params, Some(&parameter_attrs), body);
+    }
     Ok(Statement::new(StmtKind::FunctionDecl {
         name,
         params,
@@ -1533,7 +1964,40 @@ fn attribute_arg_expr(raw: &str) -> Expression {
 /// whose body is arbitrary PowerShell naming the candidate as `$_`, and there
 /// is no AST for it here without parsing the text. It keeps failing loudly
 /// rather than passing vacuously.
+/// Prefix marking a transformation attribute in the validator list; see
+/// `is_transformation_attribute`.
+const TRANSFORM_MARK: &str = "\u{1}transform:";
+
+/// `[StringToIntTransform()]` — `inner` names a declared class whose parent is
+/// `ArgumentTransformationAttribute`. Decided from the pre-pass parent map, so
+/// a class is an attribute by what it DERIVES, not by how it is spelled.
+fn is_transformation_attribute(__w: &PsWalker, inner: &str) -> bool {
+    let head = inner.split('(').next().unwrap_or("").trim().to_lowercase();
+    __w.class_parents
+        .get(&head)
+        .is_some_and(|parent| parent == "argumenttransformationattribute")
+}
+
 fn parameter_validation_guard(param: &str, attr: &str) -> Option<Statement> {
+    // A transformation is `$p = [Attr]::new().Transform($null, $p)` — the
+    // attribute instance's own method, applied to the bound value on entry.
+    // The engine-intrinsics argument is `$null`; nothing in the corpus reads it.
+    if let Some(attr) = attr.strip_prefix(TRANSFORM_MARK) {
+        let head = attr.split('(').next().unwrap_or(attr).trim();
+        let instance = Expression::new(ExprKind::New {
+            class: Box::new(Expression::ident(head)),
+            args: Vec::new(),
+        });
+        return Some(Statement::new(StmtKind::Assign {
+            targets: vec![Expression::ident(param)],
+            value: ps_member_call(
+                instance,
+                "Transform",
+                vec![Expression::null(), Expression::ident(param)],
+            ),
+            by_ref: false,
+        }));
+    }
     let (head, args) = match attr.find('(') {
         Some(i) => (
             attr[..i].trim(),
@@ -1664,6 +2128,40 @@ fn parameter_validation_guard(param: &str, attr: &str) -> Option<Statement> {
 }
 
 fn parse_function_params(__w: &mut PsWalker, pair: Pair<Rule>) -> Vec<Param> {
+    let mut out = parse_function_params_inner(__w, pair);
+    // `$PSDefaultParameterValues["<Fn>:<Param>"]` — the session table of
+    // defaults, consulted when the caller left the parameter unbound. A
+    // parameter DEFAULT is exactly that question, and the shared compiler
+    // already asks it (a default fires when the argument arrives null), so
+    // the table lookup IS the default expression. A hashtable miss answers
+    // `$null`, so a function nobody configured behaves as before.
+    // `$global:PSDefaultParameterValues` folds to the same name.
+    //
+    // ⛔THE NODE IS THE ONE THE WALKER EMITS FOR `$h["k"]`, which is
+    // `__ps_index_get(h, "k")` — never a raw `Index`: a non-literal key on an
+    // `Index` resolves at compile time and falls through to ARRAY indexing,
+    // so a hand-built node answered null while the same source in PowerShell
+    // fired. Applied HERE because a `param(...)` block inside the body reaches
+    // this function too, and the function name is what `current_function`
+    // carries.
+    if let Some(fn_name) = __w.current_function.clone() {
+        for param in out.iter_mut() {
+            if param.default.is_none() && !param.is_rest {
+                param.default = Some(ps_builtin(
+                    "__ps_index_get",
+                    vec![
+                        Expression::ident("PSDefaultParameterValues"),
+                        Expression::string(&format!("{fn_name}:{}", param.name)),
+                    ],
+                ));
+                param.is_optional = true;
+            }
+        }
+    }
+    out
+}
+
+fn parse_function_params_inner(__w: &mut PsWalker, pair: Pair<Rule>) -> Vec<Param> {
     __w.param_validators.clear();
     let mut out = Vec::new();
     let mut param_nodes = Vec::new();
@@ -1693,6 +2191,10 @@ fn parse_function_params(__w: &mut PsWalker, pair: Pair<Rule>) -> Vec<Param> {
         // these guards all along, which is why `parameters_validate_*` looked
         // half-implemented rather than absent.
         let mut validators: Vec<String> = Vec::new();
+        // Set while classifying the bracketed runs; the parameter's NAME is only
+        // known once the loop reaches it, so the record is made afterwards.
+        let mut binds_pipeline = false;
+        let mut binds_pipeline_by_property_name = false;
 
         for piece in raw.into_inner() {
             match piece.as_rule() {
@@ -1701,6 +2203,30 @@ fn parse_function_params(__w: &mut PsWalker, pair: Pair<Rule>) -> Vec<Param> {
                     if !inner.is_empty() {
                         if is_validator_attribute(inner) {
                             validators.push(inner.to_string());
+                        } else if inner.len() >= 9 && inner[..9].eq_ignore_ascii_case("Parameter") {
+                            // `[Parameter(ValueFromPipeline=$true)]` is an
+                            // attribute, never the type, WHEREVER it sits in
+                            // the run. It used to be recognised only when it
+                            // happened to be the LAST run and so arrived as the
+                            // type hint; stacked ahead of a transform or a type
+                            // (`[Parameter(…)][SquareTransform()][int]$Val`) it
+                            // was overwritten and the function was not a
+                            // pipeline function at all.
+                            let lower = inner.to_lowercase();
+                            if lower.contains("valuefrompipelinebypropertyname") {
+                                binds_pipeline_by_property_name = true;
+                            } else if lower.contains("valuefrompipeline") {
+                                binds_pipeline = true;
+                            }
+                        } else if is_transformation_attribute(__w, inner) {
+                            // `[MyTransform()][int]$N` — a user attribute class
+                            // deriving `ArgumentTransformationAttribute`. It is
+                            // not the type and not a guard: its `Transform` REWRITES
+                            // the argument on entry. Recognised by the class's
+                            // declared parent, never by its spelling, and carried
+                            // through the same list as the validators with a
+                            // marker so the guard builder can tell the two apart.
+                            validators.push(format!("{TRANSFORM_MARK}{inner}"));
                         } else {
                             type_hint = Some(inner.to_string());
                         }
@@ -1720,6 +2246,12 @@ fn parse_function_params(__w: &mut PsWalker, pair: Pair<Rule>) -> Vec<Param> {
         }
 
         if !name.is_empty() {
+            if binds_pipeline {
+                __w.pipeline_params.insert(name.to_lowercase());
+            }
+            if binds_pipeline_by_property_name {
+                __w.pipeline_property_params.insert(name.to_lowercase());
+            }
             for v in &validators {
                 __w.param_validators.push((name.clone(), v.clone()));
             }
@@ -1739,7 +2271,10 @@ fn parse_function_params(__w: &mut PsWalker, pair: Pair<Rule>) -> Vec<Param> {
                 && t.len() >= 9
                 && t[..9].eq_ignore_ascii_case("Parameter")
             {
-                if t.to_lowercase().contains("valuefrompipeline") {
+                let lower = t.to_lowercase();
+                if lower.contains("valuefrompipelinebypropertyname") {
+                    __w.pipeline_property_params.insert(name.to_lowercase());
+                } else if lower.contains("valuefrompipeline") {
                     __w.pipeline_params.insert(name.to_lowercase());
                 }
                 type_hint = None;
@@ -1777,6 +2312,26 @@ fn parse_param_stmt(__w: &mut PsWalker, pair: Pair<Rule>, out: &mut Vec<Param>) 
     // `function_param_list` itself: it descends two levels, so passing the list
     // skipped straight past every `function_param`.
     out.extend(parse_function_params(__w, pair));
+}
+
+fn optional_param(name: &str) -> Param {
+    Param {
+        name: name.to_string(),
+        type_hint: None,
+        default: Some(Expression::null()),
+        pass_by: PassBy::Value,
+        is_rest: false,
+        is_kwargs: false,
+        is_optional: true,
+        is_nullable: true,
+    }
+}
+
+fn is_dynamic_param_block_text(text: &str) -> bool {
+    let trimmed = text.trim_start();
+    trimmed.len() >= "dynamicparam".len()
+        && trimmed[.."dynamicparam".len()].eq_ignore_ascii_case("dynamicparam")
+        && trimmed["dynamicparam".len()..].trim_start().starts_with('{')
 }
 
 fn parse_block_with_function_params(__w: &mut PsWalker, 
@@ -1833,6 +2388,10 @@ fn parse_block_with_function_params(__w: &mut PsWalker,
             continue;
         }
 
+        if is_dynamic_param_block_text(child.as_str()) {
+            continue;
+        }
+
         if let Some(stmt) = parse_statement(__w, child)? {
             body.push(stmt);
         }
@@ -1865,8 +2424,14 @@ fn parse_block_with_function_params(__w: &mut PsWalker,
     // ⛔Ahead of the `begin`/`process`/`end` assembly above would be wrong for
     // the opposite reason: a `process` block runs PER ITEM, and an argument is
     // validated ONCE on entry.
+    let pipeline_params = __w.pipeline_params.clone();
     let guards: Vec<Statement> = std::mem::take(&mut __w.param_validators)
         .iter()
+        // A pipeline parameter's transform was already placed per item by
+        // `pipeline_block_body`; applying it here too would run it twice.
+        .filter(|(param, attr)| {
+            !(attr.starts_with(TRANSFORM_MARK) && pipeline_params.contains(&param.to_lowercase()))
+        })
         .filter_map(|(param, attr)| parameter_validation_guard(param, attr))
         .collect();
     if !guards.is_empty() {
@@ -1936,8 +2501,8 @@ fn walk_condition(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
                     // `while ($item = $queue | Select-Object -First 1)` — an
                     // assignment used as the condition. `paren_body` accepts one;
                     // leaving it out of the search meant nothing matched and the
-                    // condition walked to `null`, so the loop never entered.
-                    | Rule::assignment_stmt
+                // condition walked to `null`, so the loop never entered.
+                | Rule::assignment_stmt
             )
         })
         .map(|__x| walk_expr(__w, __x))
@@ -2388,27 +2953,69 @@ fn parse_try_stmt(__w: &mut PsWalker, pair: Pair<Rule>) -> Result<Statement, Str
 
 fn parse_catch_clause(__w: &mut PsWalker, pair: Pair<Rule>) -> Result<CatchClause, String> {
     let mut var_name = None;
+    let mut types = Vec::new();
     let mut body = Vec::new();
 
     for child in pair.into_inner() {
-        if child.as_rule() == Rule::var_ref {
-            let raw = child.as_str().trim().trim_start_matches('$');
-            if !raw.is_empty() {
-                var_name = Some(raw.to_string());
+        match child.as_rule() {
+            Rule::catch_header => {
+                collect_catch_header(__w, child, &mut var_name, &mut types)?;
             }
-        }
-        if child.as_rule() == Rule::block {
-            body = parse_block_statements(__w, child)?;
+            Rule::var_ref => {
+                let raw = child.as_str().trim().trim_start_matches('$');
+                if !raw.is_empty() {
+                    var_name = Some(raw.to_string());
+                }
+            }
+            Rule::type_literal => {
+                let name = type_literal_name(child.as_str());
+                let name = normalized_synthesized_exception_name(&name);
+                if !name.is_empty() {
+                    types.push(name.to_string());
+                }
+            }
+            Rule::block => {
+                body = parse_block_statements(__w, child)?;
+                body.insert(0, ps_catch_error_record_rebind());
+            }
+            _ => {}
         }
     }
 
     Ok(CatchClause {
-        types: Vec::new(),
-        var_name,
+        types,
+        var_name: var_name.or_else(|| Some("_".to_string())),
         stack_var: None,
         body,
         when_clause: None,
     })
+}
+
+fn collect_catch_header(
+    __w: &mut PsWalker,
+    pair: Pair<Rule>,
+    var_name: &mut Option<String>,
+    types: &mut Vec<String>,
+) -> Result<(), String> {
+    for child in pair.into_inner() {
+        match child.as_rule() {
+            Rule::var_ref => {
+                let raw = child.as_str().trim().trim_start_matches('$');
+                if !raw.is_empty() {
+                    *var_name = Some(raw.to_string());
+                }
+            }
+            Rule::type_literal => {
+                let name = type_literal_name(child.as_str());
+                let name = normalized_synthesized_exception_name(&name);
+                if !name.is_empty() {
+                    types.push(name.to_string());
+                }
+            }
+            _ => collect_catch_header(__w, child, var_name, types)?,
+        }
+    }
+    Ok(())
 }
 
 fn parse_return_stmt(__w: &mut PsWalker, pair: Pair<Rule>) -> Statement {
@@ -2621,6 +3228,7 @@ fn parse_exit_command_statement(__w: &mut PsWalker, text: &str) -> Option<Statem
 }
 
 fn parse_assignment_statement(__w: &mut PsWalker, pair: Pair<Rule>) -> Statement {
+    let assignment_text = pair.as_str().to_string();
     let mut targets: Vec<Expression> = Vec::new();
     let mut op = "=".to_string();
     let mut rhs = None;
@@ -2643,17 +3251,26 @@ fn parse_assignment_statement(__w: &mut PsWalker, pair: Pair<Rule>) -> Statement
             // `rhs_value` is a silent rule: the RHS arrives as either an
             // `expression` or a `command_pipeline` (`$x = Get-Item | …`).
             Rule::expression | Rule::command_pipeline | Rule::chain_pipeline => {
+                if let Some(expr) =
+                    parse_command_type_operator(__w, &split_command_tokens(child.as_str().trim()))
+                {
+                    rhs = Some(expr);
+                    continue;
+                }
                 // A lone bare word on the right of `=` is a COMMAND, not a name:
                 // `$r = Test-Local` calls the function. The `expression` branch
                 // of `rhs_value` matches first (a bare word is a valid primary),
                 // so `command_pipeline` never sees it and `$r` was bound to the
                 // function object itself.
+                let child_text = child.as_str().trim();
                 rhs = Some(match lone_bare_word(&child) {
-                    Some(word) if !is_literal_word(&word) => Expression::new(ExprKind::Call {
-                        callee: Box::new(Expression::ident(&word)),
-                        args: Vec::new(),
-                        optional: false,
-                    }),
+                    // Through `build_command_call`: a cmdlet spelled with NO
+                    // arguments is still a cmdlet, and a bare `Call` here got
+                    // no `normalize_cmdlet` rewrite — `$c = Get-Date` resolved
+                    // to nothing while every argument form of it worked.
+                    Some(word) if !child_text.starts_with("@(") && !is_literal_word(&word) => {
+                        build_command_call_in(__w, Expression::ident(&word), Vec::new(), false)
+                    }
                     _ => walk_expr(__w, child),
                 });
             }
@@ -2698,6 +3315,13 @@ fn parse_assignment_statement(__w: &mut PsWalker, pair: Pair<Rule>) -> Statement
         // but WRONG — it reads `char` as a number, and `[char]$c = 'X'` lands
         // on `NaN`. `Checked` is the binding for exactly this: never converts,
         // and a type-directed consumer may trust it as it trusts `Converting`.
+        let key = var_name.to_lowercase();
+        let seed = pstypename_seed_from_type_name(__w, &type_name);
+        __w.pstypename_vars
+            .entry(key)
+            .and_modify(|slot| *slot = None)
+            .or_insert(seed);
+
         return Statement::new(StmtKind::VarDecl {
             declarations: vec![VarDeclarator {
                 pattern: BindingPattern::Ident(var_name.clone()),
@@ -2757,6 +3381,78 @@ fn parse_assignment_statement(__w: &mut PsWalker, pair: Pair<Rule>) -> Statement
         })));
     }
 
+    if op.as_str() == "="
+        && targets.len() == 1
+        && let ExprKind::Member { object, field, .. } = &targets[0].kind
+        && is_xml_expr(__w, object)
+    {
+        return Statement::new(StmtKind::Expr(ps_xml_adapter_call(
+            "SetMember",
+            vec![
+                normalize_xml_expr(__w, object),
+                Expression::string(field),
+                value,
+            ],
+        )));
+    }
+
+    // `$code = "…"` — remember the TEXT.
+    //
+    // `[Parser]::ParseInput($code, …)` parses a source string, and the parse
+    // happens while this walker runs, so the text has to be knowable here. A
+    // name written twice stops answering rather than answering the first write.
+    if op.as_str() == "="
+        && targets.len() == 1
+        && let ExprKind::Ident(var_name) = &targets[0].kind
+    {
+        let key = var_name.to_lowercase();
+        let literal = match &value.kind {
+            ExprKind::Lit(Literal::Str(text)) => Some(text.clone()),
+            _ => None,
+        };
+        __w.literal_strings
+            .entry(key.clone())
+            .and_modify(|slot| *slot = None)
+            .or_insert(literal);
+
+        // `$prop = [PSScriptProperty]::new(…)` — remember the DESCRIPTOR, for
+        // the same reason the text above is remembered: the attach it feeds is
+        // resolved while this walker runs.
+        let descriptor = ets_descriptor_parts(&value).map(|_| value.clone());
+        __w.ets_descriptors
+            .entry(key.clone())
+            .and_modify(|slot| *slot = None)
+            .or_insert(descriptor);
+
+        let seed = pstypename_seed_for_assignment(__w, &assignment_text, &value);
+        __w.pstypename_vars
+            .entry(key.clone())
+            .and_modify(|slot| *slot = None)
+            .or_insert(seed);
+
+        // `$h = @{…}` — remember that `$h` holds a bare object; see
+        // `hashtable_vars`. `[ordered]@{…}` and `[hashtable]@{…}` both walk to
+        // the same literal.
+        let is_literal = matches!(&value.kind, ExprKind::Object(_))
+            || matches!(&value.kind, ExprKind::Cast { expr, .. } if matches!(expr.kind, ExprKind::Object(_)));
+        __w.hashtable_vars
+            .entry(key.clone())
+            .and_modify(|slot| *slot = false)
+            .or_insert(is_literal);
+
+        let is_string_like = assignment_expr_is_string_like(&value);
+        __w.string_vars
+            .entry(key.clone())
+            .and_modify(|slot| *slot = is_string_like)
+            .or_insert(is_string_like);
+
+        let is_xml_like = assignment_expr_is_xml_like(&value);
+        __w.xml_vars
+            .entry(key.clone())
+            .and_modify(|slot| *slot = is_xml_like)
+            .or_insert(is_xml_like);
+    }
+
     // `$obj = [C]::new()` — record the variable's TYPE.
     //
     // ⛔Without it, overload resolution cannot fire. `resolve_instance_method_overload`
@@ -2781,6 +3477,38 @@ fn parse_assignment_statement(__w: &mut PsWalker, pair: Pair<Rule>) -> Statement
             declarations: vec![VarDeclarator {
                 pattern: BindingPattern::Ident(var_name.clone()),
                 type_hint: Some(TypeHint::converting(type_name)),
+                init: Some(value),
+                array_bounds: None,
+                with_events: false,
+            }],
+            kind: VarDeclKind::FunctionScoped,
+        });
+    }
+
+    // `$x = [Type]::Factory(…)` / `$x = $obj.Member(…)` — record the
+    // variable's type the same way, and let the TREE say what it is.
+    //
+    // The namespace tree already carries every member's declared return type
+    // (`member_returns`, built by `tree_register` from the descriptors), and
+    // `infer_expr_type_hint`'s `Call` arm already reads it. What was missing is
+    // a DECLARATION to hang the answer on: only a `VarDecl` runs that
+    // inference, and a plain `Assign` writes no type at all — so
+    // `[Tuple]::Create('a',2).ToString()` answered `[object Tuple]` while the
+    // identical `[Tuple[string,int]]::new('a',2)` answered `(a, 2)`, with one
+    // emitter registered for both.
+    //
+    // No hint is supplied: the tree is the authority, and naming a type here
+    // would be a second table to keep in step with it.
+    if op.as_str() == "="
+        && targets.len() == 1
+        && let ExprKind::Ident(var_name) = &targets[0].kind
+        && let ExprKind::Call { callee, .. } = &value.kind
+        && matches!(&callee.kind, ExprKind::Member { .. })
+    {
+        return Statement::new(StmtKind::VarDecl {
+            declarations: vec![VarDeclarator {
+                pattern: BindingPattern::Ident(var_name.clone()),
+                type_hint: None,
                 init: Some(value),
                 array_bounds: None,
                 with_events: false,
@@ -2823,6 +3551,28 @@ fn parse_assignment_statement(__w: &mut PsWalker, pair: Pair<Rule>) -> Statement
             by_ref: false,
         });
     }
+
+    // `([Base]$this).Title = $t` — a WRITE through a base cast. A field lives
+    // on the one object whichever class declared it, so the cast selects
+    // nothing here and the target is `$this.Title`. Left as a cast, the member
+    // write reached a value that was not the object and trapped in
+    // `null is not callable`.
+    let targets: Vec<Expression> = targets
+        .into_iter()
+        .map(|t| match &t.kind {
+            ExprKind::Member { object, field, null_safe }
+                if matches!(&object.kind, ExprKind::Cast { expr, .. }
+                    if matches!(expr.kind, ExprKind::This)) =>
+            {
+                Expression::new(ExprKind::Member {
+                    object: Box::new(Expression::new(ExprKind::This)),
+                    field: field.clone(),
+                    null_safe: *null_safe,
+                })
+            }
+            _ => t,
+        })
+        .collect();
 
     let kind = match op.as_str() {
         "=" => StmtKind::Assign {
@@ -3096,13 +3846,17 @@ fn parse_command_line(__w: &mut PsWalker, text: &str) -> Option<Expression> {
     if first_tokens.is_empty() {
         return None;
     }
+    if let Some(expr) = parse_command_type_operator(__w, &first_tokens) {
+        return Some(expr);
+    }
 
     let (head, args) = parse_command_parts(__w, &first_tokens)?;
-    let mut expr = Expression::new(ExprKind::Call {
-        callee: Box::new(head),
-        args,
-        optional: false,
-    });
+    // ⛔THROUGH `build_command_call`, like the two pest-tree builders. This is
+    // the TEXT fallback, and it built a bare `Call` — so a cmdlet that reached
+    // this path got no `normalize_cmdlet` rewrite at all. `Get-Date` with no
+    // arguments came through here, which is why every OTHER form of it
+    // normalized and the bare one resolved to nothing.
+    let mut expr = build_command_call_in(__w, head, args, false);
 
     for segment in segment_iter {
         let segment_tokens = split_command_tokens(&segment);
@@ -3110,13 +3864,18 @@ fn parse_command_line(__w: &mut PsWalker, text: &str) -> Option<Expression> {
             continue;
         }
         let (next, mut next_args) = parse_command_parts(__w, &segment_tokens)?;
-        let mut chained = vec![Argument::positional(expr)];
+        let mut chained = if callee_pipeline_property_params(__w, &next).is_empty() {
+            vec![Argument::positional(expr)]
+        } else {
+            vec![Argument {
+                value: expr,
+                name: Some("__ps_pipe_input".to_string()),
+                by_ref: false,
+                spread: false,
+            }]
+        };
         chained.append(&mut next_args);
-        expr = Expression::new(ExprKind::Call {
-            callee: Box::new(next),
-            args: chained,
-            optional: false,
-        });
+        expr = build_command_call_in(__w, next, chained, false);
     }
 
     Some(expr)
@@ -3129,7 +3888,7 @@ fn parse_pipeline(__w: &mut PsWalker, pair: Pair<Rule>) -> Option<Expression> {
 
     while let Some(node) = work.pop_front() {
         match node.as_rule() {
-            Rule::command_stmt | Rule::pipeline_expr => {
+            Rule::command_stmt | Rule::command_pipeline | Rule::pipeline_expr => {
                 for child in node.into_inner() {
                     work.push_back(child);
                 }
@@ -3163,6 +3922,8 @@ fn parse_pipeline(__w: &mut PsWalker, pair: Pair<Rule>) -> Option<Expression> {
     // -Name x -Value 1` compiles to a call to a function never defined.
     let mut expr = if args.is_empty() && pipeline_head_is_value(&head_text) {
         head
+    } else if !args.is_empty() {
+        build_command_call_in(__w, head, args, false)
     } else if let Some(folded) = pipeline_stage_as_method(&block_pipeline_input(), &head, &args) {
         // ⛔A PIPELINE STAGE STANDING AT THE HEAD HAS NO UPSTREAM, and it is not
         // a command to invoke either. `{ ForEach-Object { $_ * 2 } }` is a
@@ -3175,7 +3936,7 @@ fn parse_pipeline(__w: &mut PsWalker, pair: Pair<Rule>) -> Option<Expression> {
         // that fold recognises, so the two can never drift apart.
         folded
     } else {
-        build_command_call(head, args)
+        build_command_call_in(__w, head, args, false)
     };
     if let Some((name, append)) = head_ov {
         expr = capture_out_variable(expr, &name, append);
@@ -3210,7 +3971,7 @@ fn parse_pipeline(__w: &mut PsWalker, pair: Pair<Rule>) -> Option<Expression> {
         // because it is downstream of a `|`: `$o | Add-Member …` needs the same
         // rewrite as the head of the pipeline, and without it compiled to a
         // call to a function that was never defined.
-        expr = build_command_call(next, chained);
+        expr = build_command_call_in(__w, next, chained, false);
         if let Some((name, append)) = next_ov {
             expr = capture_out_variable(expr, &name, append);
         }
@@ -3255,6 +4016,22 @@ fn bind_pipeline_variable(args: &mut [Argument], name: &str) {
             return;
         }
     }
+}
+
+fn callee_pipeline_property_params(__w: &PsWalker, callee: &Expression) -> Vec<String> {
+    let ExprKind::Ident(name) = &callee.kind else {
+        return Vec::new();
+    };
+    __w.function_parameter_attributes
+        .get(&name.to_lowercase())
+        .map(|attrs| {
+            attrs
+                .iter()
+                .filter(|(_, attr)| attr.value_from_pipeline_by_property_name)
+                .map(|(name, _)| name.clone())
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Take a `-OutVariable X` / `-ov X` common parameter out of a stage's
@@ -3409,6 +4186,12 @@ fn steppable_pipeline_expr(block: Expression) -> Expression {
 /// `@($obj) | ForEach-Object { $_ }` is the OBJECT and `$r.Tag` reaches its
 /// property; it stayed wrapped and answered empty.
 fn unwrap_pipeline_value(expr: Expression) -> Expression {
+    if preserves_pipeline_array(&expr) {
+        return expr;
+    }
+    if is_immediate_lambda_call(&expr) {
+        return expr;
+    }
     // A stream of one item IS that item, but an ALLOCATION of one element is
     // not a stream — `New-Object byte[] 1` produces one array whose length is
     // 1, and unwrapping it hands back the element instead. The allocator is
@@ -3419,11 +4202,37 @@ fn unwrap_pipeline_value(expr: Expression) -> Expression {
     {
         return expr;
     }
+    // ⛔A CONSTRUCTED OBJECT IS AN ALLOCATION, NOT A STREAM — the same reason
+    // the allocator above is exempt. `New-Object
+    // "System.Collections.Generic.List[int]"` hands back an EMPTY collection,
+    // and the stream rule reads empty as `$null`: `.Add(10)` then wrote to
+    // nothing and `.Count` answered 0, while the identical
+    // `[…List[int]]::new()` — which no pipeline wraps — built a real list.
+    if matches!(&expr.kind, ExprKind::New { .. }) {
+        return expr;
+    }
     Expression::new(ExprKind::Call {
         callee: Box::new(Expression::ident("__ps_unwrap_single")),
         args: vec![Argument::positional(expr)],
         optional: false,
     })
+}
+
+fn preserves_pipeline_array(expr: &Expression) -> bool {
+    let ExprKind::Call { callee, .. } = &expr.kind else {
+        return false;
+    };
+    matches!(
+        &callee.kind,
+        ExprKind::Member { field, .. } if field.eq_ignore_ascii_case("Compare-Object")
+    )
+}
+
+fn is_immediate_lambda_call(expr: &Expression) -> bool {
+    matches!(
+        &expr.kind,
+        ExprKind::Call { callee, .. } if matches!(&callee.kind, ExprKind::Lambda { .. })
+    )
 }
 
 /// True when a pipeline's first segment is a VALUE being fed in rather than a
@@ -3449,14 +4258,57 @@ fn pipeline_head_is_value(text: &str) -> bool {
 }
 
 fn parse_command_tokens_as_expr(__w: &mut PsWalker, tokens: &[String]) -> Option<Expression> {
+    if let Some(expr) = parse_command_type_operator(__w, tokens) {
+        return Some(expr);
+    }
     let (callee, args) = parse_command_parts(__w, tokens)?;
-    Some(build_command_call_in(callee, args, true))
+    Some(build_command_call_in(__w, callee, args, true))
+}
+
+fn parse_command_type_operator(__w: &mut PsWalker, tokens: &[String]) -> Option<Expression> {
+    if tokens.len() != 3 {
+        return None;
+    }
+    let op = tokens[1].trim().trim_start_matches('-').to_ascii_lowercase();
+    let left_raw = tokens[0].trim().strip_prefix('(').unwrap_or(tokens[0].trim());
+    let right_raw = tokens[2].trim().strip_suffix(')').unwrap_or(tokens[2].trim());
+    let type_name = type_literal_name(right_raw).trim();
+    if type_name.is_empty() {
+        return None;
+    }
+    let left = if let Some(field) = left_raw.strip_prefix("$_.") {
+        ps_member(Expression::ident("_"), field)
+    } else {
+        parse_atom(__w, left_raw)
+    };
+    match op.as_str() {
+        "as" => Some(apply_cast(type_name.to_string(), left)),
+        "is" => Some(type_test_expr(left, &type_literal_expr(type_name))),
+        "isnot" => Some(negate(type_test_expr(left, &type_literal_expr(type_name)))),
+        _ => None,
+    }
 }
 
 /// Build the call for a command invocation, giving `normalize_cmdlet` first
 /// refusal so .NET-shaped cmdlets never need a builtin of their own.
 fn build_command_call(callee: Expression, args: Vec<Argument>) -> Expression {
-    build_command_call_in(callee, args, false)
+    build_command_call_inner(None, callee, args, false)
+}
+
+fn wrap_stream_context_from_args(call: Expression, args: &[Argument]) -> Expression {
+    let mut args = args.to_vec();
+    let file_redirects = take_stream_file_redirects(&mut args);
+    let stream_captures = take_stream_captures(&mut args);
+    let stream_preferences = take_stream_preferences(&mut args);
+    let redirect_globals: Vec<&'static str> = args
+        .iter()
+        .filter(|arg| arg.name.is_none())
+        .filter_map(|arg| literal_text(&arg.value))
+        .flat_map(|text| ps_redirect_marker_globals(&text).iter().copied())
+        .collect();
+    let call = wrap_stream_context_call(call, stream_captures, stream_preferences);
+    let call = wrap_stream_file_redirect_call(call, file_redirects);
+    wrap_stream_redirect_call(call, redirect_globals)
 }
 
 /// `in_value_position` distinguishes `Write-Output $x` used as a STATEMENT —
@@ -3464,6 +4316,7 @@ fn build_command_call(callee: Expression, args: Vec<Argument>) -> Expression {
 /// passes `$x` down the pipeline and prints nothing. One cmdlet, two lowerings,
 /// and only the walker knows which position it is in.
 fn build_command_call_in(
+    __w: &PsWalker,
     callee: Expression,
     mut args: Vec<Argument>,
     in_value_position: bool,
@@ -3480,8 +4333,25 @@ fn build_command_call_in(
     // side-effecting to `Out-Null`, turning 10 vacuous passes into failures.
     // Honouring `-ErrorAction` needs an unrecognised command to raise a real
     // error first; until then, taking the parameter out is all that is honest.
-    let _ = take_silent_error_action(&mut args);
-    build_command_call_inner(callee, args, in_value_position)
+    let silent_error_action = take_silent_error_action(&mut args);
+    if silent_error_action
+        && matches!(
+            &callee.kind,
+            ExprKind::Ident(name)
+                if matches!(
+                    name.to_ascii_lowercase().as_str(),
+                    "resolve-path" | "convert-path" | "get-psdrive"
+                )
+        )
+    {
+        args.push(Argument {
+            value: Expression::string("SilentlyContinue"),
+            name: Some("ErrorAction".to_string()),
+            by_ref: false,
+            spread: false,
+        });
+    }
+    build_command_call_inner(Some(__w), callee, args, in_value_position)
 }
 
 /// Take `-ErrorAction SilentlyContinue` / `Ignore` out of a command's arguments,
@@ -3498,43 +4368,456 @@ fn take_silent_error_action(args: &mut Vec<Argument>) -> bool {
     }) else {
         return false;
     };
-    let arg = args.remove(idx);
-    let value = match &arg.value.kind {
+    let value = match &args[idx].value.kind {
         ExprKind::Ident(name) => name.clone(),
         ExprKind::Lit(Literal::Str(text)) => text.clone(),
         _ => return false,
     };
-    value.eq_ignore_ascii_case("SilentlyContinue") || value.eq_ignore_ascii_case("Ignore")
+    if value.eq_ignore_ascii_case("SilentlyContinue") || value.eq_ignore_ascii_case("Ignore") {
+        args.remove(idx);
+        true
+    } else {
+        false
+    }
 }
 
 fn build_command_call_inner(
+    __w: Option<&PsWalker>,
     callee: Expression,
-    args: Vec<Argument>,
+    mut args: Vec<Argument>,
     in_value_position: bool,
 ) -> Expression {
+    if args.is_empty() && prelowered_command_value(&callee) {
+        return callee;
+    }
     if let ExprKind::Ident(name) = &callee.kind {
+        if let Some(walker) = __w
+            && let Some(expr) = get_command_expr(walker, name, &args)
+        {
+            return wrap_stream_context_from_args(expr, &args);
+        }
         if in_value_position {
             if let Some(expr) = passthrough_cmdlet(name, &args) {
                 return expr;
             }
         }
-        if let Some(expr) = normalize_cmdlet(name, &args) {
+        if let Some(expr) = normalize_cmdlet(__w, name, &args) {
             return expr;
         }
     }
-    Expression::new(ExprKind::Call {
+    let file_redirects = take_stream_file_redirects(&mut args);
+    let stream_captures = take_stream_captures(&mut args);
+    let stream_preferences = take_stream_preferences(&mut args);
+    let redirect_globals: Vec<&'static str> = args
+        .iter()
+        .filter(|arg| arg.name.is_none())
+        .filter_map(|arg| literal_text(&arg.value))
+        .flat_map(|text| ps_redirect_marker_globals(&text).iter().copied())
+        .collect();
+    let args: Vec<Argument> = args
+        .into_iter()
+        .filter(|arg| {
+            !arg.name.is_none()
+                || !literal_text(&arg.value).is_some_and(|text| is_ps_stream_redirect_marker(&text))
+        })
+        .collect();
+    let supports_should_process = match (&__w, &callee.kind) {
+        (Some(walker), ExprKind::Ident(name)) => walker
+            .supports_should_process_functions
+            .contains(&name.to_lowercase()),
+        _ => false,
+    };
+    let what_if = supports_should_process
+        && args.iter().any(|a| {
+            a.name
+                .as_deref()
+                .is_some_and(|n| n.eq_ignore_ascii_case("WhatIf"))
+                && !matches!(&a.value.kind, ExprKind::Lit(Literal::Bool(false)))
+        });
+    let what_if_pipeline_stream = what_if
+        && matches!(
+            &callee.kind,
+            ExprKind::Ident(name)
+                if __w.is_some_and(|walker| {
+                    walker.pipeline_params.iter().any(|param| {
+                        walker
+                            .function_parameter_attributes
+                            .get(&name.to_lowercase())
+                            .and_then(|attrs| attrs.get(param))
+                            .is_some_and(|attr| attr.value_from_pipeline)
+                    })
+                })
+        )
+        && args.iter().any(|a| a.name.is_none());
+    let args = if supports_should_process {
+        args.into_iter()
+            .filter(|a| {
+                !a.name.as_deref().is_some_and(|n| {
+                    n.eq_ignore_ascii_case("WhatIf") || n.eq_ignore_ascii_case("Confirm")
+                })
+            })
+            .collect()
+    } else {
+        args
+    };
+    let call = Expression::new(ExprKind::Call {
         callee: Box::new(callee),
         args,
         optional: false,
-    })
+    });
+    let call = if what_if {
+        wrap_whatif_call(call, what_if_pipeline_stream)
+    } else {
+        call
+    };
+    let call = wrap_stream_context_call(call, stream_captures, stream_preferences);
+    let call = wrap_stream_file_redirect_call(call, file_redirects);
+    wrap_stream_redirect_call(call, redirect_globals)
+}
+
+#[derive(Clone)]
+struct StreamCapture {
+    global: &'static str,
+    target: String,
+    append: bool,
+}
+
+#[derive(Clone)]
+struct StreamPreference {
+    global: &'static str,
+    value: Expression,
+}
+
+#[derive(Clone)]
+struct StreamFileRedirect {
+    capture_global: &'static str,
+    target: Expression,
+    append: bool,
+}
+
+fn stream_redirect_capture_global(stream: &str) -> Option<&'static str> {
+    match stream {
+        "2" => Some("__ps_capture_error"),
+        "3" => Some("__ps_capture_warning"),
+        "4" => Some("__ps_capture_verbose"),
+        "5" => Some("__ps_capture_debug"),
+        "6" => Some("__ps_capture_information"),
+        _ => None,
+    }
+}
+
+fn take_stream_captures(args: &mut Vec<Argument>) -> Vec<StreamCapture> {
+    let mut captures = Vec::new();
+    for (names, global) in [
+        (&["ErrorVariable", "ev"][..], "__ps_capture_error"),
+        (&["WarningVariable", "wv"][..], "__ps_capture_warning"),
+        (&["DebugVariable", "dbv"][..], "__ps_capture_debug"),
+        (&["InformationVariable", "iv"][..], "__ps_capture_information"),
+    ] {
+        if let Some((target, append)) = take_named_variable_arg(args, names) {
+            captures.push(StreamCapture {
+                global,
+                target,
+                append,
+            });
+        }
+    }
+    captures
+}
+
+fn take_stream_file_redirects(args: &mut Vec<Argument>) -> Vec<StreamFileRedirect> {
+    let mut redirects = Vec::new();
+    let mut i = 0usize;
+    while i < args.len() {
+        let Some(name) = args[i].name.clone() else {
+            i += 1;
+            continue;
+        };
+        let Some(stream) = name.strip_prefix("__ps_redirect_file_") else {
+            i += 1;
+            continue;
+        };
+        let stream = stream.strip_suffix("_append").unwrap_or(stream);
+        let Some(capture_global) = stream_redirect_capture_global(stream) else {
+            i += 1;
+            continue;
+        };
+        let arg = args.remove(i);
+        redirects.push(StreamFileRedirect {
+            capture_global,
+            target: arg.value,
+            append: name.ends_with("_append"),
+        });
+    }
+    redirects
+}
+
+fn take_stream_preferences(args: &mut Vec<Argument>) -> Vec<StreamPreference> {
+    let mut preferences = Vec::new();
+    for (names, global) in [
+        (&["ErrorAction", "ea"][..], "erroractionpreference"),
+        (&["WarningAction", "wa"][..], "warningpreference"),
+        (&["DebugAction", "da"][..], "debugpreference"),
+        (&["InformationAction", "infa"][..], "informationpreference"),
+        (&["VerboseAction", "va"][..], "verbosepreference"),
+    ] {
+        if let Some(value) = take_named_arg(args, names) {
+            preferences.push(StreamPreference { global, value });
+        }
+    }
+    preferences
+}
+
+fn take_named_arg(args: &mut Vec<Argument>, names: &[&str]) -> Option<Expression> {
+    let idx = args.iter().position(|arg| {
+        arg.name
+            .as_deref()
+            .is_some_and(|name| names.iter().any(|candidate| name.eq_ignore_ascii_case(candidate)))
+    })?;
+    Some(args.remove(idx).value)
+}
+
+fn take_named_variable_arg(args: &mut Vec<Argument>, names: &[&str]) -> Option<(String, bool)> {
+    let value = take_named_arg(args, names)?;
+    let raw = match &value.kind {
+        ExprKind::Ident(name) => name.clone(),
+        ExprKind::Lit(Literal::Str(text)) => text.clone(),
+        ExprKind::Unary { expr, .. } => match &expr.kind {
+            ExprKind::Ident(name) => format!("+{name}"),
+            ExprKind::Lit(Literal::Str(text)) => format!("+{text}"),
+            _ => return None,
+        },
+        _ => return None,
+    };
+    match raw.strip_prefix('+') {
+        Some(name) => Some((scope_qualified_name(name).to_string(), true)),
+        None => Some((scope_qualified_name(&raw).to_string(), false)),
+    }
+}
+
+fn empty_array_expr() -> Expression {
+    Expression::new(ExprKind::Array(Vec::new()))
+}
+
+fn ps_guest_global(name: &str) -> Expression {
+    Expression::ident(name)
+}
+
+fn wrap_stream_context_call(
+    call: Expression,
+    captures: Vec<StreamCapture>,
+    preferences: Vec<StreamPreference>,
+) -> Expression {
+    if captures.is_empty() && preferences.is_empty() {
+        return call;
+    }
+    const RESULT: &str = "__ps_stream_context_result";
+    let mut body = vec![local_decl(RESULT)];
+    for (idx, capture) in captures.iter().enumerate() {
+        let old = format!("__ps_old_capture_{idx}");
+        body.push(local_decl(&old));
+        body.push(Statement::new(StmtKind::Assign {
+            targets: vec![Expression::ident(&old)],
+            value: ps_guest_global(capture.global),
+            by_ref: false,
+        }));
+        body.push(Statement::new(StmtKind::Assign {
+            targets: vec![ps_guest_global(capture.global)],
+            value: empty_array_expr(),
+            by_ref: false,
+        }));
+    }
+    for (idx, pref) in preferences.iter().enumerate() {
+        let old = format!("__ps_old_preference_{idx}");
+        body.push(local_decl(&old));
+        body.push(Statement::new(StmtKind::Assign {
+            targets: vec![Expression::ident(&old)],
+            value: ps_guest_global(pref.global),
+            by_ref: false,
+        }));
+        body.push(Statement::new(StmtKind::Assign {
+            targets: vec![ps_guest_global(pref.global)],
+            value: pref.value.clone(),
+            by_ref: false,
+        }));
+    }
+    body.push(Statement::new(StmtKind::Assign {
+        targets: vec![Expression::ident(RESULT)],
+        value: call,
+        by_ref: false,
+    }));
+    for capture in &captures {
+        let captured = ps_guest_global(capture.global);
+        let value = if capture.append {
+            ps_binary(
+                BinOp::Add,
+                ensure_array(Expression::ident(&capture.target)),
+                ensure_array(captured),
+            )
+        } else {
+            captured
+        };
+        body.push(Statement::new(StmtKind::Assign {
+            targets: vec![Expression::ident(&capture.target)],
+            value,
+            by_ref: false,
+        }));
+    }
+    for (idx, pref) in preferences.iter().enumerate().rev() {
+        let old = format!("__ps_old_preference_{idx}");
+        body.push(Statement::new(StmtKind::Assign {
+            targets: vec![ps_guest_global(pref.global)],
+            value: Expression::ident(&old),
+            by_ref: false,
+        }));
+    }
+    for (idx, capture) in captures.iter().enumerate().rev() {
+        let old = format!("__ps_old_capture_{idx}");
+        body.push(Statement::new(StmtKind::Assign {
+            targets: vec![ps_guest_global(capture.global)],
+            value: Expression::ident(&old),
+            by_ref: false,
+        }));
+    }
+    body.push(Statement::new(StmtKind::Return(Some(Expression::ident(RESULT)))));
+    block_value_expr(body)
+}
+
+fn wrap_stream_file_redirect_call(call: Expression, redirects: Vec<StreamFileRedirect>) -> Expression {
+    if redirects.is_empty() {
+        return call;
+    }
+    const RESULT: &str = "__ps_file_redirect_result";
+    let mut body = vec![local_decl(RESULT)];
+    for (idx, redirect) in redirects.iter().enumerate() {
+        let old = format!("__ps_old_file_redirect_{idx}");
+        body.push(local_decl(&old));
+        body.push(Statement::new(StmtKind::Assign {
+            targets: vec![Expression::ident(&old)],
+            value: ps_guest_global(redirect.capture_global),
+            by_ref: false,
+        }));
+        body.push(Statement::new(StmtKind::Assign {
+            targets: vec![ps_guest_global(redirect.capture_global)],
+            value: empty_array_expr(),
+            by_ref: false,
+        }));
+    }
+    body.push(Statement::new(StmtKind::Assign {
+        targets: vec![Expression::ident(RESULT)],
+        value: call,
+        by_ref: false,
+    }));
+    for redirect in &redirects {
+        let rendered = cmdlet_call(
+            "Out-String",
+            vec![
+                ensure_array(ps_guest_global(redirect.capture_global)),
+                Expression::bool(false),
+                Expression::bool(false),
+                Expression::int(0),
+            ],
+        );
+        body.push(Statement::new(StmtKind::Expr(cmdlet_call(
+            if redirect.append { "Add-Content" } else { "Out-File" },
+            vec![redirect.target.clone(), rendered],
+        ))));
+    }
+    for (idx, redirect) in redirects.iter().enumerate().rev() {
+        let old = format!("__ps_old_file_redirect_{idx}");
+        body.push(Statement::new(StmtKind::Assign {
+            targets: vec![ps_guest_global(redirect.capture_global)],
+            value: Expression::ident(&old),
+            by_ref: false,
+        }));
+    }
+    body.push(Statement::new(StmtKind::Return(Some(Expression::ident(RESULT)))));
+    block_value_expr(body)
+}
+
+fn ps_redirect_marker_globals(text: &str) -> &'static [&'static str] {
+    match text.trim() {
+        "2>&1" => &["__ps_redirect_error"],
+        "3>&1" => &["__ps_redirect_warning"],
+        "4>&1" => &["__ps_redirect_verbose"],
+        "5>&1" => &["__ps_redirect_debug"],
+        "6>&1" => &["__ps_redirect_information"],
+        "*>&1" => &[
+            "__ps_redirect_error",
+            "__ps_redirect_warning",
+            "__ps_redirect_verbose",
+            "__ps_redirect_debug",
+            "__ps_redirect_information",
+        ],
+        _ => &[],
+    }
+}
+
+fn is_ps_stream_redirect_marker(text: &str) -> bool {
+    !ps_redirect_marker_globals(text).is_empty()
+}
+
+fn wrap_stream_redirect_call(call: Expression, globals: Vec<&'static str>) -> Expression {
+    if globals.is_empty() {
+        return call;
+    }
+    const RESULT: &str = "__ps_redirect_result";
+    let mut body = Vec::new();
+    body.push(local_decl(RESULT));
+    for (idx, global) in globals.iter().enumerate() {
+        let old = format!("__ps_old_redirect_{idx}");
+        body.push(local_decl(&old));
+        body.push(Statement::new(StmtKind::Assign {
+            targets: vec![Expression::ident(&old)],
+            value: ps_global_member(global),
+            by_ref: false,
+        }));
+        body.push(Statement::new(StmtKind::Assign {
+            targets: vec![ps_global_member(global)],
+            value: Expression::bool(true),
+            by_ref: false,
+        }));
+    }
+    body.push(Statement::new(StmtKind::Assign {
+        targets: vec![Expression::ident(RESULT)],
+        value: call,
+        by_ref: false,
+    }));
+    for (idx, global) in globals.iter().enumerate().rev() {
+        let old = format!("__ps_old_redirect_{idx}");
+        body.push(Statement::new(StmtKind::Assign {
+            targets: vec![ps_global_member(global)],
+            value: Expression::ident(&old),
+            by_ref: false,
+        }));
+    }
+    body.push(Statement::new(StmtKind::Return(Some(Expression::ident(RESULT)))));
+    block_value_expr(body)
+}
+
+fn prelowered_command_value(expr: &Expression) -> bool {
+    matches!(
+        expr.kind,
+        ExprKind::Binary { .. } | ExprKind::Cast { .. } | ExprKind::TypeOf(_) | ExprKind::IsType { .. }
+    ) || matches!(
+        &expr.kind,
+        ExprKind::Call { callee, .. }
+            if matches!(&callee.kind, ExprKind::Ident(name) if name.starts_with("__ps_"))
+    )
 }
 
 fn parse_command_segment(__w: &mut PsWalker, pair: Pair<Rule>) -> Option<(Expression, Vec<Argument>)> {
     let mut tokens = Vec::new();
+    let mut redirections = Vec::new();
     for child in pair.into_inner() {
         match child.as_rule() {
             Rule::command_head | Rule::command_arg | Rule::command_token => {
                 tokens.push(extract_command_token_text(child));
+            }
+            Rule::redirection => {
+                if let Some(arg) = parse_command_redirection_arg(__w, child) {
+                    redirections.push(arg);
+                }
             }
             _ => {}
         }
@@ -3543,10 +4826,89 @@ fn parse_command_segment(__w: &mut PsWalker, pair: Pair<Rule>) -> Option<(Expres
         return None;
     }
 
-    parse_command_parts(__w, &tokens)
+    let (callee, mut args) = parse_command_parts(__w, &tokens)?;
+    args.extend(redirections);
+    Some((callee, args))
+}
+
+fn parse_command_redirection_arg(__w: &mut PsWalker, pair: Pair<Rule>) -> Option<Argument> {
+    let mut op = None;
+    let mut target = None;
+    for child in pair.into_inner() {
+        match child.as_rule() {
+            Rule::redirect_op => op = Some(child.as_str().trim().to_string()),
+            Rule::command_token => target = Some(parse_atom(__w, child.as_str())),
+            _ => {}
+        }
+    }
+    redirection_arg_from_expr(&op?, target)
+}
+
+fn command_flag_is_switch(callee: &Expression, flag: &str) -> bool {
+    let ExprKind::Ident(name) = &callee.kind else {
+        return false;
+    };
+    matches!(
+        (name.to_ascii_lowercase().as_str(), flag.to_ascii_lowercase().as_str()),
+        ("get-content", "raw")
+    )
+}
+
+fn redirection_arg_from_expr(op: &str, target: Option<Expression>) -> Option<Argument> {
+    let parsed = parse_redirection_op(op)?;
+    if parsed.merge_to.as_deref() == Some("1") {
+        return Some(Argument::positional(Expression::string(op)));
+    }
+    if parsed.stream == "1" {
+        return None;
+    }
+    let name = if parsed.append {
+        format!("__ps_redirect_file_{}_append", parsed.stream)
+    } else {
+        format!("__ps_redirect_file_{}", parsed.stream)
+    };
+    Some(Argument {
+        value: target.unwrap_or_else(Expression::null),
+        name: Some(name),
+        by_ref: false,
+        spread: false,
+    })
+}
+
+struct ParsedRedirectionOp {
+    stream: String,
+    append: bool,
+    merge_to: Option<String>,
+}
+
+fn parse_redirection_op(raw: &str) -> Option<ParsedRedirectionOp> {
+    let text = raw.trim();
+    let (stream, rest) = match text.chars().next() {
+        Some(ch) if ch.is_ascii_digit() => (ch.to_string(), &text[ch.len_utf8()..]),
+        _ => ("1".to_string(), text),
+    };
+    let (append, rest) = if let Some(rest) = rest.strip_prefix(">>") {
+        (true, rest)
+    } else if let Some(rest) = rest.strip_prefix('>') {
+        (false, rest)
+    } else {
+        return None;
+    };
+    let merge_to = rest.strip_prefix('&').map(str::to_string);
+    if !rest.is_empty() && merge_to.as_deref().is_none_or(str::is_empty) {
+        return None;
+    }
+    Some(ParsedRedirectionOp {
+        stream,
+        append,
+        merge_to,
+    })
 }
 
 fn parse_command_parts(__w: &mut PsWalker, tokens: &[String]) -> Option<(Expression, Vec<Argument>)> {
+    if let Some(expr) = parse_command_type_operator(__w, tokens) {
+        return Some((expr, Vec::new()));
+    }
     let callee = parse_command_head(__w, &tokens[0]);
     // ⛔EVERY SPLAT AT THIS CALL IS ONE ARGUMENT LIST, not one each. Expanding
     // them where they appear pushed a full set of parameters PER SPLAT, so
@@ -3567,7 +4929,24 @@ fn parse_command_parts(__w: &mut PsWalker, tokens: &[String]) -> Option<(Express
     let mut i = 1;
     while i < tokens.len() {
         let token = tokens[i].as_str();
-        if token.starts_with('-') && token.len() > 1 {
+        if parse_redirection_op(token).is_some() {
+            let parsed = parse_redirection_op(token).unwrap();
+            let target = if parsed.merge_to.is_none() {
+                tokens.get(i + 1).map(|target| parse_atom(__w, target))
+            } else {
+                None
+            };
+            if let Some(arg) = redirection_arg_from_expr(token, target) {
+                args.push(arg);
+            }
+            i += if parsed.merge_to.is_none() { 2 } else { 1 };
+            continue;
+        }
+        // `-1` is a NUMBER, not a switch named `1`. The value position below
+        // already asks `is_negative_number`; the token position did not, so
+        // `F -1` bound `$N` to `$true` and a `[int]` parameter never saw a
+        // negative literal.
+        if token.starts_with('-') && token.len() > 1 && !is_negative_number(token) {
             let flag = &token[1..];
             if let Some((key, value)) = flag.split_once(':') {
                 args.push(Argument {
@@ -3583,6 +4962,16 @@ fn parse_command_parts(__w: &mut PsWalker, tokens: &[String]) -> Option<(Express
                 args.push(Argument {
                     value: parse_atom(__w, value),
                     name: Some(key.to_string()),
+                    by_ref: false,
+                    spread: false,
+                });
+                i += 1;
+                continue;
+            }
+            if command_flag_is_switch(&callee, flag) {
+                args.push(Argument {
+                    value: Expression::bool(true),
+                    name: Some(flag.to_string()),
                     by_ref: false,
                     spread: false,
                 });
@@ -3782,6 +5171,11 @@ fn parse_command_head(__w: &mut PsWalker, raw: &str) -> Expression {
     if text.is_empty() {
         return Expression::null();
     }
+    if text.starts_with('{') {
+        if let Some(expr) = script_block_expr_from_text(__w, text) {
+            return expr;
+        }
+    }
     if looks_like_command_name(text) || is_path_like_command(text) {
         return Expression::ident(text);
     }
@@ -3791,6 +5185,12 @@ fn parse_command_head(__w: &mut PsWalker, raw: &str) -> Expression {
         return Expression::ident(text);
     }
     parse_atom(__w, text)
+}
+
+fn script_block_expr_from_text(__w: &mut PsWalker, text: &str) -> Option<Expression> {
+    let mut pairs = super::PowerShellParser::parse(Rule::script_block_expr, text).ok()?;
+    let pair = pairs.next()?;
+    Some(walk_script_block_expr(__w, pair))
 }
 
 fn is_path_like_command(text: &str) -> bool {
@@ -4003,16 +5403,43 @@ fn parse_expr_fragment(__w: &mut PsWalker, text: &str) -> Option<Expression> {
 }
 
 /// Walk one expression pair into the shared AST.
+/// The source span of a pest pair, as the common AST records one.
+fn span_of(pair: &Pair<Rule>) -> vybe_ast::Span {
+    let span = pair.as_span();
+    let (start_line, start_col) = span.start_pos().line_col();
+    let (end_line, end_col) = span.end_pos().line_col();
+    vybe_ast::Span {
+        start_line: start_line as u32,
+        start_col: start_col as u32,
+        end_line: end_line as u32,
+        end_col: end_col as u32,
+    }
+}
+
+/// ⛔EVERY EXPRESSION CARRIES ITS SOURCE SPAN. The common AST declares `span`
+/// on every node and this walker left all of them at zero, so nothing
+/// downstream could say WHERE a construct came from — which is the whole of
+/// `Extent` for the AST surface, and the source position of a diagnostic for
+/// everything else.
+///
+/// Stamped in ONE place rather than at the hundreds of construction sites: the
+/// span belongs to the PAIR being walked, so the entry point knows it and no
+/// arm has to carry it. A node the arm already positioned keeps its own span.
 fn walk_expr(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
+    let span = span_of(&pair);
+    let mut expr = walk_expr_inner(__w, pair);
+    if expr.span.start_line == 0 && expr.span.end_line == 0 {
+        expr.span = span;
+    }
+    expr
+}
+
+fn walk_expr_inner(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
     match pair.as_rule() {
         // `(Get-Date)` is a command INVOCATION, not a read of a name. Only a
         // lone bare word qualifies — `($x)` and `(1 + 2)` stay expressions.
         Rule::paren_expr => match lone_bare_word(&pair) {
-            Some(name) => Expression::new(ExprKind::Call {
-                callee: Box::new(Expression::ident(&name)),
-                args: Vec::new(),
-                optional: false,
-            }),
+            Some(name) => build_command_call_in(__w, Expression::ident(&name), Vec::new(), false),
             None => first_inner_expr(__w, pair),
         },
 
@@ -4207,6 +5634,42 @@ fn spread_operands(right: Expression) -> Vec<Expression> {
     }
 }
 
+fn normalize_regex_replacement_expr(expr: Expression) -> Expression {
+    match expr.kind {
+        ExprKind::Lit(Literal::Str(s)) => {
+            Expression::string(&powershell_regex_replacement_to_ecma(&s))
+        }
+        _ => expr,
+    }
+}
+
+fn powershell_regex_replacement_to_ecma(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut chars = input.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '$' && chars.peek() == Some(&'{') {
+            chars.next();
+            let mut name = String::new();
+            while let Some(next) = chars.next() {
+                if next == '}' {
+                    break;
+                }
+                name.push(next);
+            }
+            if name.is_empty() {
+                out.push_str("${}");
+            } else {
+                out.push_str("$<");
+                out.push_str(&name);
+                out.push('>');
+            }
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
 fn walk_binary_chain(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
     let mut inner = pair.into_inner();
     let mut left = match inner.next() {
@@ -4216,7 +5679,7 @@ fn walk_binary_chain(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
     while let Some(op_pair) = inner.next() {
         let Some(rhs_pair) = inner.next() else { break };
         let right = walk_expr(__w, rhs_pair);
-        left = build_binary(op_pair.as_str(), left, right);
+        left = build_binary(__w, op_pair.as_str(), left, right);
     }
     left
 }
@@ -4295,7 +5758,7 @@ fn walk_unary(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
         // `__ps_join`, not `join`: the bare name is claimed shared-side before
         // `[value_methods]` is reached and answers the empty string. See the
         // profile's `Join` note.
-        "-join" => return method_call_expr(operand, "__ps_join", vec![Expression::string("")]),
+        "-join" => return method_call_expr(ensure_array(operand), "__ps_join", vec![Expression::string("")]),
         "-split" => return method_call_expr(operand, "split", vec![Expression::string(" ")]),
         _ => {}
     }
@@ -4361,6 +5824,26 @@ fn char_declaration_coerces_to_a_number(type_name: &str) -> bool {
 /// the SAME rules — `[char]$c = 'X'` and `$c = [char]'X'` hold the same value —
 /// and several of those rules are nodes other than `Cast`. Building a bare
 /// `ExprKind::Cast` at the store instead skips every one of them.
+/// The .NET value types whose CAST is a parse. Each name is a registered tree
+/// type declaring `Parse`, so the accelerator spelling is the only thing this
+/// table adds.
+const CAST_PARSES: &[(&str, &str)] = &[
+    ("guid", "System.Guid"),
+    ("ipaddress", "System.Net.IPAddress"),
+    ("version", "System.Version"),
+    ("timespan", "System.TimeSpan"),
+    ("datetime", "System.DateTime"),
+    ("dateonly", "System.DateOnly"),
+    ("timeonly", "System.TimeOnly"),
+    ("decimal", "System.Decimal"),
+    ("uint", "System.UInt32"),
+    ("uint32", "System.UInt32"),
+    ("uint64", "System.UInt64"),
+    ("uint16", "System.UInt16"),
+    ("sbyte", "System.SByte"),
+    ("byte", "System.Byte"),
+];
+
 fn apply_cast(type_name: String, expr: Expression) -> Expression {
     // `[bool]$x` is a TRUTHINESS conversion, and the shared `Cast` lowering has
     // no bool arm — it would hand the value straight back, so `[bool]0` stayed
@@ -4372,6 +5855,10 @@ fn apply_cast(type_name: String, expr: Expression) -> Expression {
         "bool" | "boolean" | "system.boolean"
     ) {
         return negate(negate(expr));
+    }
+
+    if is_xml_type_name(&type_name) {
+        return dotnet_static_call("System.Xml.XmlDocument", "Parse", vec![expr]);
     }
 
     // `[int]$x` has THREE answers chosen at runtime (banker's rounding, a
@@ -4388,6 +5875,86 @@ fn apply_cast(type_name: String, expr: Expression) -> Expression {
             args: vec![Argument::positional(expr)],
             optional: false,
         });
+    }
+
+    if matches!(
+        type_name.to_lowercase().as_str(),
+        "char" | "system.char"
+    ) {
+        return dotnet_static_call("System.Convert", "ToChar", vec![expr]);
+    }
+
+    if matches!(
+        type_name.to_lowercase().as_str(),
+        "half" | "system.half"
+    ) {
+        return dotnet_static_call("System.Convert", "ToHalf", vec![expr]);
+    }
+
+    if matches!(
+        type_name.to_lowercase().as_str(),
+        "string" | "system.string"
+    ) {
+        return Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::ident("__ps_to_string")),
+            args: vec![Argument::positional(expr)],
+            optional: false,
+        });
+    }
+
+    if matches!(
+        type_name.to_lowercase().as_str(),
+        "dayofweek" | "system.dayofweek"
+    ) {
+        if let Some(text) = string_literal(&expr) {
+            if let Some((idx, _)) = [
+                "Sunday",
+                "Monday",
+                "Tuesday",
+                "Wednesday",
+                "Thursday",
+                "Friday",
+                "Saturday",
+            ]
+            .iter()
+            .enumerate()
+            .find(|(_, name)| name.eq_ignore_ascii_case(&text))
+            {
+                return Expression::int(idx as i64);
+            }
+        }
+        let value = ps_member_call(
+            ps_builtin("__ps_to_string", vec![Expression::ident("__ps_day")]),
+            "ToLower",
+            Vec::new(),
+        );
+        let mut mapped = Expression::ident("__ps_day");
+        for (idx, name) in [
+            "saturday",
+            "friday",
+            "thursday",
+            "wednesday",
+            "tuesday",
+            "monday",
+            "sunday",
+        ]
+        .iter()
+        .enumerate()
+        {
+            mapped = ps_ternary(
+                ps_binary(BinOp::Eq, value.clone(), Expression::string(name)),
+                Expression::int((6 - idx) as i64),
+                mapped,
+            );
+        }
+        return bind_and_call(&["__ps_day"], vec![expr], mapped);
+    }
+
+    if matches!(
+        type_name.to_lowercase().as_str(),
+        "bigint" | "system.numerics.biginteger"
+    ) {
+        return dotnet_static_call("System.Numerics.BigInteger", "Parse", vec![expr]);
     }
 
     // `[ref]$x` — a REFERENCE to `$x`'s storage, not a conversion of its value.
@@ -4410,6 +5977,46 @@ fn apply_cast(type_name: String, expr: Expression) -> Expression {
             class: Box::new(Expression::ident("uri")),
             args: vec![Argument::positional(expr)],
         });
+    }
+
+    // A cast to a .NET VALUE TYPE parses the text into one: `[guid]$s` is what
+    // PowerShell spells for `[guid]::Parse($s)`, and `Parse` is a registered
+    // leaf on each of these types, so the cast resolves through the tree rather
+    // than through an arm of its own per type.
+    //
+    // ⛔THIS IS NOT THE COERCION SLOT. `builtin_slots` is keyed on the BUILTIN
+    // types — `string`, `int`, `char`, `bool`, `array`, … — and the shared
+    // `Cast` lowering consults it for exactly two directions, `char`→`int` and
+    // `int`→`char` (`builtinslotplan.md` §2a). A `System.*` type has no slot to
+    // declare, so it is reached the way every other .NET member is.
+    //
+    // The value is TESTED rather than assumed: `[datetime]$d` on something that
+    // is already a date is the identity, and parsing it would throw.
+    if let Some((_, dotnet)) = CAST_PARSES
+        .iter()
+        .find(|(accel, dotnet)| {
+            let lowered = type_name.to_lowercase();
+            lowered == *accel || lowered == dotnet.to_lowercase()
+        })
+    {
+        // ⛔A LITERAL IS PARSED DIRECTLY, with no runtime test around it. The
+        // test costs nothing at run time but it ERASES THE STATIC TYPE: wrapped
+        // in a lambda, `[version]"6.0.1"` is a call of unknown type, so
+        // `member_returns` never applies, `.Clone()` does not resolve and an
+        // overload declared `([version]$v)` loses to the `([string]$v)` one.
+        if string_literal(&expr).is_some() {
+            return dotnet_static_call(dotnet, "Parse", vec![expr]);
+        }
+        const CAST: &str = "__ps_cast";
+        return bind_and_call(
+            &[CAST],
+            vec![expr],
+            ps_ternary(
+                type_test_expr(Expression::ident(CAST), &type_literal_expr("System.String")),
+                dotnet_static_call(dotnet, "Parse", vec![Expression::ident(CAST)]),
+                Expression::ident(CAST),
+            ),
+        );
     }
 
     // `[PSCustomObject]@{ … }` builds an object with those properties — which
@@ -4471,8 +6078,111 @@ fn walk_postfix(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
                 if is_ref_value_step(__w, &expr, &name) {
                     continue;
                 }
+                if name.eq_ignore_ascii_case("IsPresent") {
+                    expr = ps_ternary(expr, Expression::bool(true), Expression::bool(false));
+                    continue;
+                }
+                if name.eq_ignore_ascii_case("Exception") {
+                    let exception = ps_member(expr.clone(), "Exception");
+                    expr = ps_ternary(
+                        ps_binary(BinOp::IsNot, exception.clone(), Expression::null()),
+                        exception,
+                        expr,
+                    );
+                    continue;
+                }
                 if let Some(private) = hashtable_only_property(__w, &name) {
                     expr = method_call_expr(expr, private, Vec::new());
+                    continue;
+                }
+                // `$obj.PSTypeNames` is a convenience alias for
+                // `$obj.PSObject.TypeNames`. Lower it directly to the same
+                // persistent ETS view, so mutations through either spelling
+                // see one list.
+                if name.eq_ignore_ascii_case("pstypenames") {
+                    expr = ps_member(psobject_expr(__w, expr), "TypeNames");
+                    continue;
+                }
+                if xml_special_member_name(&name).is_some()
+                    || (is_xml_expr(__w, &expr)
+                        && !matches!(name.to_ascii_lowercase().as_str(), "count" | "length"))
+                {
+                    expr = xml_member_read_expr(expr, &name);
+                    continue;
+                }
+                // `$x.GetType().Name` — the .NET SHORT TYPE NAME, which is what
+                // the corpus asks of `GetType()` 53 times against four for every
+                // other Type member. `runtime_type_name_expr` is the dotnet
+                // lowering C# and VB already use for it: `Int32` for a whole
+                // number, `Double` for a fractional one, `Boolean`, `String`,
+                // and the class stamp for an instance. Read off the Type object
+                // instead, every .NET value answered its `typeof` spelling —
+                // `number`, `string`, `boolean` — because the value types carry
+                // no class name to read.
+                if name.eq_ignore_ascii_case("Name")
+                    && let ExprKind::Call { callee, args, .. } = &expr.kind
+                    && args.is_empty()
+                    && let ExprKind::Member { object, field, .. } = &callee.kind
+                    && field.eq_ignore_ascii_case("GetType")
+                {
+                    // ⛔A CLASS INSTANCE KEEPS THE TYPE OBJECT'S `Name`. The
+                    // lowering's instance arm reads `__type`, which this
+                    // language stores FOLDED, so `[Vault]::new().GetType().Name`
+                    // answered `vault`; the Type object built by `GetType()`
+                    // itself carries the declared spelling. Which kind the
+                    // receiver is cannot be known here, so the two are chosen
+                    // at run time: a non-array `object` is an instance.
+                    //
+                    // ⛔THE RECEIVER IS NOT BOUND INTO A LAMBDA. Doing so put
+                    // `GetType()` on an untyped parameter, where the
+                    // `[value_methods]` row no longer reached it and the
+                    // instance arm answered `""`. The receiver is a variable at
+                    // every corpus site, so reading it in each arm is safe.
+                    let recv = (**object).clone();
+                    if let ExprKind::Ident(var_name) = &recv.kind
+                        && let Some(Some(seed)) = __w.pstypename_vars.get(&var_name.to_lowercase())
+                        && let Some(first) = seed.first()
+                    {
+                        expr = Expression::string(first.rsplit('.').next().unwrap_or(first));
+                        continue;
+                    }
+                    let is_instance = ps_binary(
+                        BinOp::And,
+                        ps_binary(
+                            BinOp::StrictEq,
+                            Expression::new(ExprKind::TypeOf(Box::new(recv.clone()))),
+                            Expression::string("object"),
+                        ),
+                        negate(ps_builtin("__ps_is_array", vec![recv.clone()])),
+                    );
+                    expr = ps_ternary(
+                        is_instance,
+                        ps_leaf_type_name(recv.clone()),
+                        ps_leaf_type_name(recv),
+                    );
+                    continue;
+                }
+                // `$x.HasValue` / `$x.Value` on a `[Nullable[T]]` — which holds
+                // the bare value or `$null` here, with no wrapper. `HasValue` is
+                // the null test, `Value` is the value. Written as the nodes the
+                // walker already has rather than a wrapper type.
+                if name.eq_ignore_ascii_case("HasValue") {
+                    expr = ps_binary(BinOp::NotEq, expr, Expression::null());
+                    continue;
+                }
+                // `$e.value__` — an enum member's UNDERLYING integer, which is
+                // the `Int` role the enum lowering already declares and the
+                // same conversion `[int]$e` performs. PowerShell spells the
+                // field with the trailing double underscore; nothing carries a
+                // property by that name, so the read answered empty and
+                // `($a -bor $b).value__` — a plain number by then — answered
+                // empty too.
+                if name == "value__" {
+                    expr = Expression::new(ExprKind::Call {
+                        callee: Box::new(Expression::ident("__ps_to_int")),
+                        args: vec![Argument::positional(expr)],
+                        optional: false,
+                    });
                     continue;
                 }
                 // `$obj.PSObject` / `$obj.psobject` — the EXTENDED TYPE SYSTEM
@@ -4486,17 +6196,22 @@ fn walk_postfix(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
                 // PowerShell a `[value_methods] Insert` row would shadow that
                 // leaf and break `List[T].Insert` everywhere.
                 if name.eq_ignore_ascii_case("psobject") {
+                    expr = psobject_expr(__w, expr);
+                    continue;
+                }
+                // `$obj.PSObject.Properties` / `.Members` — the ETS member
+                // list. `Add` and `Remove` on it write to the TARGET and are
+                // recognized at their own call sites; a bare read is the list
+                // itself, which is what `foreach`, `Where-Object` and `.Count`
+                // consume.
+                if (name.eq_ignore_ascii_case("properties") || name.eq_ignore_ascii_case("members"))
+                    && let ExprKind::Call { callee, args: pargs, .. } = &expr.kind
+                    && matches!(&callee.kind, ExprKind::Ident(n) if n == "__ps_psobject")
+                    && let Some(target) = pargs.first().map(|a| a.value.clone())
+                {
                     expr = Expression::new(ExprKind::Call {
-                        callee: Box::new(Expression::ident("__ps_psobject")),
-                        args: vec![
-                            Argument::positional(expr),
-                            Argument::positional(Expression::new(ExprKind::New {
-                                class: Box::new(type_literal_expr(
-                                    "System.Collections.Generic.List[string]",
-                                )),
-                                args: Vec::new(),
-                            })),
-                        ],
+                        callee: Box::new(Expression::ident("__ps_properties")),
+                        args: vec![Argument::positional(target)],
                         optional: false,
                     });
                     continue;
@@ -4605,9 +6320,47 @@ fn walk_postfix(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
                 if is_ref_value_step(__w, &expr, &name) {
                     continue;
                 }
-                if let Some(ordinal) = error_category_ordinal(&expr, &name) {
-                    expr = Expression::int(ordinal);
+                if let Some(category) = error_category_value(&expr, &name) {
+                    expr = Expression::string(&category);
                     continue;
+                }
+                if let Some(reason) = should_process_reason_value(&expr, &name) {
+                    expr = Expression::string(&reason);
+                    continue;
+                }
+                if let Some(impact) = confirm_impact_value(&expr, &name) {
+                    expr = Expression::string(&impact);
+                    continue;
+                }
+                // `[System.Management.Automation.PSMemberTypes]::NoteProperty`
+                // — the member kind, which a descriptor reports under the same
+                // spelling, so the enum IS its own name.
+                if matches!(&expr.kind, ExprKind::Ident(n)
+                    if n.eq_ignore_ascii_case("PSMemberTypes")
+                        || n.eq_ignore_ascii_case("PSMemberType"))
+                {
+                    expr = Expression::string(&name);
+                    continue;
+                }
+                if let Some(path) = type_name_of(&expr) {
+                    if is_span_or_memory_runtime_type(&path) && name.eq_ignore_ascii_case("Empty") {
+                        expr = common_memory::heap_array(Vec::new());
+                        continue;
+                    }
+                    if vybe_platform_dotnet::emitter::static_member_parameterless_call(
+                        &path, &name,
+                    ) {
+                        expr = Expression::new(ExprKind::Call {
+                            callee: Box::new(Expression::new(ExprKind::Member {
+                                object: Box::new(type_literal_expr(&path)),
+                                field: name,
+                                null_safe: false,
+                            })),
+                            args: vec![],
+                            optional: false,
+                        });
+                        continue;
+                    }
                 }
                 expr = Expression::new(ExprKind::Member {
                     object: Box::new(expr),
@@ -4623,6 +6376,55 @@ fn walk_postfix(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
                     .map(|p| p.as_str().to_string())
                     .unwrap_or_default();
                 let args = parts.next().map(|__x| walk_arg_list(__w, __x)).unwrap_or_default();
+
+                if !is_static
+                    && name.eq_ignore_ascii_case("ContainsKey")
+                    && args.len() == 1
+                    && is_powershell_generated_dictionary(&expr)
+                {
+                    let mut args = args;
+                    expr = ps_contains_key_expr(expr, args.remove(0));
+                    continue;
+                }
+
+                if !is_static
+                    && name.eq_ignore_ascii_case("Contains")
+                    && args.len() == 1
+                    && receiver_expr_is_string_like(__w, &expr)
+                {
+                    let mut args = args;
+                    expr = ps_builtin("__ps_str_contains", vec![expr, args.remove(0)]);
+                    continue;
+                }
+
+                if !is_static
+                    && matches!(&expr.kind, ExprKind::Ident(receiver) if receiver.eq_ignore_ascii_case("PSCmdlet"))
+                {
+                    let cmdlet_name = match name.to_ascii_lowercase().as_str() {
+                        "writedebug" => Some("Write-Debug"),
+                        "writeerror" => Some("Write-Error"),
+                        "writeinformation" => Some("Write-Information"),
+                        "writewarning" => Some("Write-Warning"),
+                        "writeverbose" => Some("Write-Verbose"),
+                        _ => None,
+                    };
+                    if let Some(cmdlet_name) = cmdlet_name {
+                        let mut call_args = args;
+                        call_args.push(Expression::string(
+                            __w.current_function.as_deref().unwrap_or(""),
+                        ));
+                        expr = cmdlet_call(cmdlet_name, call_args);
+                        continue;
+                    }
+                }
+
+                if !is_static
+                    && name.eq_ignore_ascii_case("ShouldProcess")
+                    && matches!(&expr.kind, ExprKind::Ident(receiver) if receiver.eq_ignore_ascii_case("PSCmdlet"))
+                {
+                    expr = cmdlet_call("ShouldProcess", args);
+                    continue;
+                }
 
                 // `([Base]$this).Greet()` — PowerShell's BASE CALL.
                 //
@@ -4641,6 +6443,29 @@ fn walk_postfix(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
                 // The receiver rides as argument 0, which is the convention
                 // this language already uses: it declares no `method_receiver`,
                 // so every call site supplies its own.
+                // ⛔THE DIRECT PARENT IS `SuperCall`, THE SHARED NODE. The
+                // hand-rolled `Base.M(this, …)` compiled but resolved to nothing
+                // — `([BaseCalc]$this).Add($a, $b)` answered `NaN` — because a
+                // class's instance methods are not reachable as statics on the
+                // class object. `ExprKind::SuperCall` is what C#'s `base.M()`
+                // and JS's `super.m()` lower to, and it is non-virtual by
+                // definition, which is exactly what the cast means. A cast to a
+                // GRANDPARENT keeps the old path: `SuperCall` means "my parent".
+                if !is_static
+                    && let ExprKind::Cast { type_name, expr: cast_of } = &expr.kind
+                    && matches!(cast_of.kind, ExprKind::This)
+                    && __w
+                        .current_class
+                        .as_deref()
+                        .and_then(|c| __w.class_parents.get(c))
+                        .is_some_and(|p| p.eq_ignore_ascii_case(type_name))
+                {
+                    expr = Expression::new(ExprKind::SuperCall {
+                        method: Some(name),
+                        args: args.into_iter().map(Argument::positional).collect(),
+                    });
+                    continue;
+                }
                 if !is_static
                     && let ExprKind::Cast { type_name, expr: cast_of } = &expr.kind
                     && __w.declared_classes.contains(&type_name.to_lowercase())
@@ -4657,6 +6482,26 @@ fn walk_postfix(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
                         optional: false,
                     });
                     continue;
+                }
+
+                if !is_static && is_xml_expr(__w, &expr) {
+                    let method = match name.to_ascii_lowercase().as_str() {
+                        "createelement" => Some("CreateElement"),
+                        "selectnodes" => Some("SelectNodes"),
+                        "selectsinglenode" => Some("SelectSingleNode"),
+                        "clonenode" => Some("CloneNode"),
+                        "appendchild" => Some("AppendChild"),
+                        "removechild" => Some("RemoveChild"),
+                        "setattribute" => Some("SetAttribute"),
+                        "loadxml" => Some("LoadXml"),
+                        _ => None,
+                    };
+                    if let Some(method) = method {
+                        let mut call_args = vec![expr];
+                        call_args.extend(args);
+                        expr = ps_xml_adapter_call(method, call_args);
+                        continue;
+                    }
                 }
 
                 // Rename the dictionary-only methods the runtime collection
@@ -4690,10 +6535,128 @@ fn walk_postfix(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
                     continue;
                 }
 
-                let name = match hashtable_only_method(__w, &name, is_static, args.len()) {
+                if !is_static
+                    && name.eq_ignore_ascii_case("GetProperty")
+                    && args.len() == 1
+                    && (type_name_of(&expr).is_some()
+                        || matches!(&expr.kind, ExprKind::Call { callee, args: call_args, .. }
+                            if call_args.is_empty()
+                                && matches!(&callee.kind, ExprKind::Member { field, .. }
+                                    if field.eq_ignore_ascii_case("GetType"))))
+                    && let Some(property_name) = literal_text(&args[0])
+                    && let Some(property) = powershell_attribute_property_expr(&property_name)
+                {
+                    expr = property;
+                    continue;
+                }
+
+                if !is_static && name.eq_ignore_ascii_case("Find") && !args.is_empty() {
+                    let filtered = ps_member_call(
+                        ps_member(expr, "__Descendants"),
+                        "Where",
+                        vec![args[0].clone()],
+                    );
+                    expr = ps_builtin("__ps_index_get", vec![filtered, Expression::int(0)]);
+                    continue;
+                }
+
+                let name = match hashtable_only_method(__w, &expr, &name, is_static, args.len()) {
                     Some(private) => private.to_string(),
                     None => name,
                 };
+
+                // `$obj.PSObject.Copy()` is a shallow PSObject clone. The
+                // corpus only observes that the copy keeps the target's
+                // TypeNames, and returning the target preserves the shared
+                // persistent ETS view without inventing a second object model.
+                if !is_static
+                    && name.eq_ignore_ascii_case("Copy")
+                    && args.is_empty()
+                    && let Some(target) = psobject_target(&expr)
+                {
+                    expr = target;
+                    continue;
+                }
+
+                // `[Version]::TryParse(s, [ref]$v)` is .NET's out-parameter
+                // form. The dotnet platform exposes the shared one-argument
+                // parse-or-null core; PowerShell only contributes the `[ref]`
+                // syntax and rewrites the call to assignment plus null test,
+                // matching the C# and VB walkers.
+                if is_static
+                    && name.eq_ignore_ascii_case("TryParse")
+                    && args.len() == 2
+                {
+                    let recv = type_name_of(&expr);
+                    let callee = Expression::new(ExprKind::Member {
+                        object: Box::new(expr.clone()),
+                        field: name.clone(),
+                        null_safe: false,
+                    });
+                    let out_target = match &args[1].kind {
+                        ExprKind::RefOf(place) => Some(place_as_expression((**place).clone())),
+                        ExprKind::Lit(Literal::Null) => Some(Expression::ident("__ps_tryparse_discard")),
+                        _ => None,
+                    };
+                    if let Some(out_target) = out_target {
+                        if let Some(rewritten) =
+                            vybe_platform_dotnet::emitter::core::lowering::try_parse_desugar(
+                                recv.as_deref(),
+                                &callee,
+                                &args[0],
+                                &out_target,
+                            )
+                        {
+                            expr = rewritten;
+                            continue;
+                        }
+                    }
+                }
+
+                if is_static
+                    && name.eq_ignore_ascii_case("TryCreate")
+                    && args.len() == 2
+                {
+                    let recv = type_name_of(&expr);
+                    let callee = Expression::new(ExprKind::Member {
+                        object: Box::new(expr.clone()),
+                        field: name.clone(),
+                        null_safe: false,
+                    });
+                    let out_target = match &args[1].kind {
+                        ExprKind::RefOf(place) => Some(place_as_expression((**place).clone())),
+                        ExprKind::Lit(Literal::Null) => Some(Expression::ident("__ps_tryparse_discard")),
+                        _ => None,
+                    };
+                    if let Some(out_target) = out_target {
+                        if let Some(rewritten) =
+                            vybe_platform_dotnet::emitter::core::lowering::try_create_rune_desugar(
+                                recv.as_deref(),
+                                &callee,
+                                &args[0],
+                                &out_target,
+                            )
+                        {
+                            expr = rewritten;
+                            continue;
+                        }
+                    }
+                }
+
+                if is_static
+                    && name.eq_ignore_ascii_case("ChangeType")
+                    && args.len() >= 2
+                    && type_name_of(&expr).is_some_and(|t| t.eq_ignore_ascii_case("System.Convert"))
+                    && let Some(target_type) = type_name_of(&args[1])
+                    && let Some(rewritten) =
+                        vybe_platform_dotnet::emitter::core::lowering::change_type_expr(
+                            args[0].clone(),
+                            &target_type,
+                        )
+                {
+                    expr = rewritten;
+                    continue;
+                }
 
                 // `[char]::IsUpper($c)` and friends. .NET spells character
                 // classification as statics on `System.Char`; the shared
@@ -4777,74 +6740,48 @@ fn walk_postfix(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
                 // stored block while `{ $this.W * $this.H }` answers `NaN`.
                 // Producing a descriptor nothing can evaluate would trade a
                 // loud failure for a silent wrong answer.
-                // `[ErrorRecord]::new(exception, errorId, category, target)`.
-                //
-                // PowerShell's own type, so it is built here rather than
-                // reached on a tree: pure data, and the corpus reads it back
-                // through `$_` in a `catch` as often as it constructs one.
-                //
-                // The field values are what pwsh 7.6.4 answers for a freshly
-                // constructed record — `Reason` is the exception's TYPE NAME,
-                // `Activity`/`TargetName`/`TargetType` are EMPTY (not null),
-                // `ScriptStackTrace` is the empty string and `InvocationInfo`
-                // is null. `CategoryInfo` is its own object because every one
-                // of its members is assigned after construction.
                 if is_static
                     && name.eq_ignore_ascii_case("new")
-                    && args.len() == 4
-                    && type_name_of(&expr)
-                        .and_then(|t| t.rsplit('.').next().map(str::to_string))
-                        .is_some_and(|n| n.eq_ignore_ascii_case("ErrorRecord"))
+                    && (args.len() == 2 || args.len() == 3)
                 {
-                    let mut args = args;
-                    let target = args.remove(3);
-                    let category = args.remove(2);
-                    let error_id = args.remove(1);
-                    let exception = args.remove(0);
-                    let kv = |key: &str, value: Expression| ObjectProperty::KeyValue {
-                        key: Expression::string(key),
-                        value,
-                    };
-                    let category_info = Expression::new(ExprKind::Object(vec![
-                        kv("Category", category),
-                        // ⛔`Reason` IS the exception's type name in pwsh, and
-                        // it is NOT computed here: `GetType()` inside an object
-                        // literal returns an EMPTY object for the whole
-                        // literal, every field of it, so deriving this one
-                        // field would cost all seven. The empty string is what
-                        // the corpus assigns over anyway.
-                        kv("Reason", Expression::string("")),
-                        kv("Activity", Expression::string("")),
-                        kv("TargetName", Expression::string("")),
-                        kv("TargetType", Expression::string("")),
-                    ]));
-                    expr = Expression::new(ExprKind::Object(vec![
-                        kv("Exception", exception),
-                        kv("FullyQualifiedErrorId", error_id),
-                        kv("TargetObject", target),
-                        kv("CategoryInfo", category_info),
-                        kv("ErrorDetails", Expression::null()),
-                        kv("InvocationInfo", Expression::null()),
-                        kv("ScriptStackTrace", Expression::string("")),
-                    ]));
-                    continue;
-                }
-
-                if is_static && name.eq_ignore_ascii_case("new") && args.len() == 2 {
+                    // A `PSScriptProperty` takes a getter and, in its
+                    // three-argument form, a setter beside it; the other two
+                    // member types take a value and take only two arguments.
                     let kind = type_name_of(&expr)
                         .and_then(|t| match t.rsplit('.').next() {
                             Some(n) if n.eq_ignore_ascii_case("PSNoteProperty") => Some("note"),
                             Some(n) if n.eq_ignore_ascii_case("PSAliasProperty") => Some("alias"),
+                            Some(n)
+                                if n.eq_ignore_ascii_case("PSScriptProperty")
+                                    || n.eq_ignore_ascii_case("PSCodeProperty") =>
+                            {
+                                Some("script")
+                            }
                             _ => None,
-                        });
+                        })
+                        .filter(|kind| *kind == "script" || args.len() == 2);
                     if let Some(kind) = kind {
                         let mut args = args;
+                        let setter = (args.len() == 3).then(|| args.remove(2));
                         let payload = args.remove(1);
                         let member_name = args.remove(0);
-                        expr = Expression::new(ExprKind::Object(vec![
+                        // A descriptor names its own kind, so it answers
+                        // `$prop.MemberType` before it is attached to anything
+                        // — which is the only thing a descriptor built and then
+                        // inspected is ever asked.
+                        let member_type = match kind {
+                            "alias" => "AliasProperty",
+                            "script" => "ScriptProperty",
+                            _ => "NoteProperty",
+                        };
+                        let mut fields = vec![
                             ObjectProperty::KeyValue {
                                 key: Expression::string("__ps_kind"),
                                 value: Expression::string(kind),
+                            },
+                            ObjectProperty::KeyValue {
+                                key: Expression::string("MemberType"),
+                                value: Expression::string(member_type),
                             },
                             ObjectProperty::KeyValue {
                                 key: Expression::string("Name"),
@@ -4854,7 +6791,14 @@ fn walk_postfix(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
                                 key: Expression::string("Value"),
                                 value: payload,
                             },
-                        ]));
+                        ];
+                        if let Some(setter) = setter {
+                            fields.push(ObjectProperty::KeyValue {
+                                key: Expression::string("SecondValue"),
+                                value: setter,
+                            });
+                        }
+                        expr = Expression::new(ExprKind::Object(fields));
                         continue;
                     }
                 }
@@ -4865,12 +6809,11 @@ fn walk_postfix(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
                 // argument is the object being extended, so the target is read
                 // straight back out of it rather than stored a second time.
                 if !is_static && name.eq_ignore_ascii_case("add") && args.len() == 1 {
-                    if let ExprKind::Member { object, field, .. } = &expr.kind {
-                        if field.eq_ignore_ascii_case("properties") {
-                            if let ExprKind::Call { callee, args: pargs, .. } = &object.kind {
-                                if matches!(&callee.kind, ExprKind::Ident(n) if n == "__ps_psobject")
+                    {
+                        {
+                            {
                                 {
-                                    if let Some(target) = pargs.first().map(|a| a.value.clone()) {
+                                    if let Some(target) = ets_member_list_target(&expr) {
                                         // ⛔FUSED INTO AN ASSIGNMENT, not a
                                         // runtime attach. `ecma:object.set`
                                         // stores the key and the READ still
@@ -4887,33 +6830,80 @@ fn walk_postfix(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
                                         // literal at every one of them.
                                         let mut args = args;
                                         let desc = args.remove(0);
-                                        if let Some((kind, member, payload)) =
-                                            ets_descriptor_parts(&desc)
+                                        let resolved =
+                                            __w.ets_descriptor_of(&desc).unwrap_or_else(|| desc.clone());
+                                        if let Some((kind, member, payload, setter)) =
+                                            ets_descriptor_parts(&resolved)
                                         {
-                                            let value = if kind == "alias" {
-                                                match literal_text(&payload) {
-                                                    Some(referenced) => {
-                                                        Expression::new(ExprKind::Member {
-                                                            object: Box::new(target.clone()),
-                                                            field: referenced,
-                                                            null_safe: false,
-                                                        })
-                                                    }
-                                                    None => payload,
-                                                }
-                                            } else {
-                                                payload
-                                            };
-                                            expr = Expression::new(ExprKind::Assign {
-                                                target: Box::new(Expression::new(
-                                                    ExprKind::Member {
-                                                        object: Box::new(target),
-                                                        field: member,
-                                                        null_safe: false,
+                                            let write = |field: String, value: Expression| {
+                                                Statement::new(StmtKind::Expr(Expression::new(
+                                                    ExprKind::Assign {
+                                                        target: Box::new(Expression::new(
+                                                            ExprKind::Member {
+                                                                object: Box::new(target.clone()),
+                                                                field,
+                                                                null_safe: false,
+                                                            },
+                                                        )),
+                                                        value: Box::new(value),
                                                     },
-                                                )),
-                                                value: Box::new(value),
-                                            });
+                                                )))
+                                            };
+                                            // A script-backed member is an
+                                            // ACCESSOR: `__get_<name>` and
+                                            // `__set_<name>` are the spelling
+                                            // the object model reads a getter
+                                            // and a setter under, so the
+                                            // descriptor lands there and the
+                                            // block becomes a function so
+                                            // `$this` names the target.
+                                            let writes = if kind == "script" {
+                                                let mut writes = vec![write(
+                                                    format!("__get_{member}"),
+                                                    scriptblock_as_method(payload),
+                                                )];
+                                                if let Some(setter) = setter {
+                                                    writes.push(write(
+                                                        format!("__set_{member}"),
+                                                        scriptblock_as_method(setter),
+                                                    ));
+                                                }
+                                                writes
+                                            } else {
+                                                // ⛔AN ALIAS RE-READS ITS
+                                                // TARGET. Storing the value it
+                                                // held at attach time is a
+                                                // snapshot that goes stale the
+                                                // moment the aliased member is
+                                                // written, and it costs the
+                                                // member its KIND — a stored
+                                                // value is indistinguishable
+                                                // from a `NoteProperty`. The
+                                                // `__alias_` slot names what it
+                                                // forwards to and is hidden
+                                                // from enumeration like every
+                                                // other `__` key.
+                                                match (kind.as_str(), literal_text(&payload)) {
+                                                    ("alias", Some(referenced)) => vec![
+                                                        write(
+                                                            format!("__get_{member}"),
+                                                            this_member_getter(&referenced),
+                                                        ),
+                                                        write(
+                                                            format!("__alias_{member}"),
+                                                            Expression::string(&referenced),
+                                                        ),
+                                                    ],
+                                                    _ => vec![write(member, payload)],
+                                                }
+                                            };
+                                            expr = match writes.as_slice() {
+                                                [Statement {
+                                                    kind: StmtKind::Expr(single),
+                                                    ..
+                                                }] => single.clone(),
+                                                _ => block_value_expr(writes),
+                                            };
                                             continue;
                                         }
                                         expr = Expression::new(ExprKind::Call {
@@ -4932,10 +6922,83 @@ fn walk_postfix(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
                     }
                 }
 
+                // `[Parser]::ParseInput($code, …)` — the AST surface.
+                //
+                // The text is parsed HERE, by the same `parse` that walked this
+                // program, and `ast_objects` translates the nodes it produced
+                // into the objects the script reads. One parse, one AST.
+                if is_static
+                    && (name.eq_ignore_ascii_case("ParseInput")
+                        || name.eq_ignore_ascii_case("ParseScript"))
+                    && let Some(source) = args.first().and_then(|a| __w.literal_text_of(a))
+                    && let Ok(module) = parse(&source)
+                {
+                    let ast = crate::ast_objects::ast_expr(&module, &source);
+                    if name.eq_ignore_ascii_case("ParseInput") {
+                        let mut body = Vec::new();
+                        for arg in args.iter().skip(1).take(2) {
+                            if let ExprKind::RefOf(place) = &arg.kind {
+                                body.push(Statement::new(StmtKind::Assign {
+                                    targets: vec![place_as_expression((**place).clone())],
+                                    value: Expression::new(ExprKind::Array(Vec::new())),
+                                    by_ref: false,
+                                }));
+                            }
+                        }
+                        body.push(Statement::new(StmtKind::Return(Some(ast))));
+                        expr = block_value_expr(body);
+                    } else {
+                        expr = ast;
+                    }
+                    continue;
+                }
+
+                // `$x.GetValueOrDefault(d)` on a `[Nullable[T]]` — `d` when the
+                // value is `$null`, else the value.
+                if !is_static && name.eq_ignore_ascii_case("GetValueOrDefault") && args.len() <= 1 {
+                    const V: &str = "__ps_nv";
+                    let default = args.first().cloned().unwrap_or_else(|| Expression::int(0));
+                    expr = bind_and_call(
+                        &[V],
+                        vec![expr],
+                        ps_ternary(
+                            ps_binary(BinOp::Eq, Expression::ident(V), Expression::null()),
+                            default,
+                            Expression::ident(V),
+                        ),
+                    );
+                    continue;
+                }
+                // `.ForEach(…)` / `.Where(…)` — the intrinsic collection
+                // members. Every overload but the plain script-block form is
+                // desugared; see `intrinsic_collection_overload`.
+                if !is_static
+                    && (name.eq_ignore_ascii_case("ForEach") || name.eq_ignore_ascii_case("Where"))
+                    && let Some(rewritten) = intrinsic_collection_overload(&expr, &name, &args)
+                {
+                    expr = rewritten;
+                    continue;
+                }
+
                 // `[Animal]::new(…)` is construction, not a static call — hand
                 // the shared compiler the `New` node it already knows.
                 if is_static && name.eq_ignore_ascii_case("new") {
                     if let Some(class) = type_name_of(&expr) {
+                        // `[int[]]::new(3)` names no class: an ARRAY type is a
+                        // length and an element default, not a constructor.
+                        if let Some(element) = class.strip_suffix("[]")
+                            && args.len() == 1
+                        {
+                            expr = Expression::new(ExprKind::Call {
+                                callee: Box::new(Expression::ident("__ps_repeat")),
+                                args: vec![
+                                    Argument::positional(default_of_type(element)),
+                                    Argument::positional(args.into_iter().next().unwrap()),
+                                ],
+                                optional: false,
+                            });
+                            continue;
+                        }
                         expr = Expression::new(ExprKind::New {
                             class: Box::new(Expression::ident(&class)),
                             args: args
@@ -5020,14 +7083,22 @@ fn walk_postfix(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
                 // implements it. Routing it through the computed-key adapter
                 // asked an array for element `[1,2]` and broke six slicing
                 // tests that a hashtable fix had no business touching.
-                if !matches!(
-                    index.kind,
-                    ExprKind::Lit(Literal::Int(_)) | ExprKind::Range { .. }
-                ) {
+                if !matches!(index.kind, ExprKind::Range { .. }) {
                     expr = Expression::new(ExprKind::Call {
                         callee: Box::new(Expression::ident("__ps_index_get")),
                         args: vec![
                             Argument::positional(expr),
+                            Argument::positional(index),
+                        ],
+                        optional: false,
+                    });
+                    continue;
+                }
+                if let Some(target) = ets_member_list_target(&expr) {
+                    expr = Expression::new(ExprKind::Call {
+                        callee: Box::new(Expression::ident("__ps_properties")),
+                        args: vec![
+                            Argument::positional(target),
                             Argument::positional(index),
                         ],
                         optional: false,
@@ -5068,12 +7139,40 @@ pub(crate) struct PsWalker {
     /// these to pick WHOSE `M` runs, so the rewrite has to tell a class from
     /// any other bracketed type.
     declared_classes: std::collections::HashSet<String>,
+    /// Folded class name → declared spelling, used for display metadata such
+    /// as `$obj.PSObject.TypeNames`.
+    class_display_names: std::collections::HashMap<String, String>,
+    /// Folded enum name → declared spelling, for enum PSTypeNames.
+    enum_display_names: std::collections::HashMap<String, String>,
+    /// Each declared class → its DIRECT parent, both folded. `([Base]$this).M()`
+    /// is a super call only when `Base` is the parent of the class whose
+    /// method contains it; see the rewrite in the member walk.
+    class_parents: std::collections::HashMap<String, String>,
+    /// The class whose body is being walked, folded, so a member call inside a
+    /// method can ask which class it belongs to.
+    current_class: Option<String>,
+    /// The function whose parameters are being parsed, so
+    /// `$PSDefaultParameterValues["<Fn>:<Param>"]` can name it.
+    current_function: Option<String>,
+    /// Each heritage name (parent or interface, folded) → the declared classes
+    /// that name it. `-is [I]` for an interface has no constructor to test
+    /// against, so it is answered by whether the value's class declares `I`.
+    implementers: std::collections::HashMap<String, Vec<String>>,
     /// Declared function name → its parameter names, in order. Needed to expand
     /// a HASHTABLE splat, which binds by NAME and so cannot be expanded without
     /// knowing what the callee's parameters are called.
     /// Per declared function, the SPELLINGS each parameter answers to —
     /// its own name first, then any `[Alias(…)]` it carries.
     declared_functions: std::collections::HashMap<String, Vec<Vec<String>>>,
+    /// Declared function name → `[OutputType(...)]` metadata entries.
+    function_output_types: std::collections::HashMap<String, Vec<PsOutputTypeInfo>>,
+    /// Declared function name → `[CmdletBinding(...)]` metadata.
+    cmdlet_binding_functions: std::collections::HashMap<String, PsCmdletBindingInfo>,
+    /// Declared function name → parameter attribute metadata keyed by folded parameter name.
+    function_parameter_attributes:
+        std::collections::HashMap<String, std::collections::HashMap<String, PsParameterAttributeInfo>>,
+    /// Advanced functions declaring `SupportsShouldProcess`, folded by name.
+    supports_should_process_functions: std::collections::HashSet<String>,
     /// Names of the `[ref]` parameters of the function currently being walked.
     /// `$v.Value` on one of these IS `$v` — the alias itself — so the member
     /// step is dropped rather than read as a property.
@@ -5084,11 +7183,93 @@ pub(crate) struct PsWalker {
     /// Parameters declared `[Parameter(ValueFromPipeline=$true)]`, folded — the
     /// one a `process { }` block iterates.
     pipeline_params: std::collections::HashSet<String>,
+    /// Parameters declared `[Parameter(ValueFromPipelineByPropertyName=$true)]`,
+    /// folded — each process item supplies their value from a same-named
+    /// property.
+    pipeline_property_params: std::collections::HashSet<String>,
     /// `(parameter, attribute)` for every validator attribute on the parameter
     /// list currently being walked. Stashed rather than returned because
     /// `parse_function_params` builds `Param`s and the guards belong in the
     /// BODY, which only `parse_block_with_function_params` has.
     param_validators: Vec<(String, String)>,
+    /// Variables bound ONCE to a string literal, by name.
+    ///
+    /// `[Parser]::ParseInput($code, …)` parses a source string, and the corpus
+    /// always names it — `$code = "…"` on the line above. The parse happens at
+    /// WALK time, so the text has to be knowable there; a name written twice is
+    /// dropped from the map rather than guessed at.
+    literal_strings: std::collections::HashMap<String, Option<String>>,
+    /// Variables bound ONCE to an ETS member descriptor, by name.
+    ///
+    /// `$obj.PSObject.Properties.Add($prop)` attaches at COMPILE time — a
+    /// runtime `ecma:object.set` stores a key that the read cannot see, because
+    /// `[pscustomobject]@{…}` compiles to a fixed-shape object — so the
+    /// descriptor has to be knowable here. The corpus names it as often as it
+    /// writes it inline; a name written twice is dropped rather than guessed
+    /// at.
+    ets_descriptors: std::collections::HashMap<String, Option<Expression>>,
+    /// Variables bound to a HASHTABLE LITERAL (`@{…}` / `[ordered]@{…}`), folded.
+    ///
+    /// `Remove` / `Clear` / `ContainsKey` on a bare object compile to a member
+    /// lookup on a struct that has no such field — the `[value_methods]` row is
+    /// never consulted for it — so those calls are renamed to the `__ps_ht_*`
+    /// privates. But the same spelling on a COLLECTION reached untyped (a
+    /// `HashSet` passed to a function) must reach the collection's own method,
+    /// and renaming it shadowed that. The literal is the only receiver the
+    /// walker can know is a bare object, so it is the only one renamed. A name
+    /// written twice stops answering rather than guessing.
+    hashtable_vars: std::collections::HashMap<String, bool>,
+    /// Variables known to hold strings. `.Contains()` cannot be bound globally
+    /// in `[value_methods]` because collection receivers use the same spelling.
+    string_vars: std::collections::HashMap<String, bool>,
+    /// Variables known to hold PowerShell XML adapter values.
+    xml_vars: std::collections::HashMap<String, bool>,
+    /// Variables whose initial PowerShell ETS type-name hierarchy is known.
+    /// `None` means the variable was written more than once, so no static
+    /// claim is safe.
+    pstypename_vars: std::collections::HashMap<String, Option<Vec<String>>>,
+}
+
+impl PsWalker {
+    /// The text an expression is known to hold: a string literal, or a name
+    /// bound once to one.
+    fn literal_text_of(&self, expr: &Expression) -> Option<String> {
+        match &expr.kind {
+            ExprKind::Lit(Literal::Str(text)) => Some(text.clone()),
+            ExprKind::Interpolation(parts) => {
+                let mut out = String::new();
+                for part in parts {
+                    match part {
+                        InterpolPart::Text(text) => out.push_str(text),
+                        InterpolPart::Expr(expr) | InterpolPart::Formatted(expr, _) => {
+                            out.push_str(&self.literal_text_of(expr)?);
+                        }
+                    }
+                }
+                Some(out)
+            }
+            ExprKind::Ident(name) => self
+                .literal_strings
+                .get(&name.to_lowercase())
+                .cloned()
+                .flatten(),
+            _ => None,
+        }
+    }
+
+    /// The ETS descriptor an expression is known to be: one written inline, or
+    /// a name bound once to one.
+    fn ets_descriptor_of(&self, expr: &Expression) -> Option<Expression> {
+        match &expr.kind {
+            ExprKind::Object(_) => Some(expr.clone()),
+            ExprKind::Ident(name) => self
+                .ets_descriptors
+                .get(&name.to_lowercase())
+                .cloned()
+                .flatten(),
+            _ => None,
+        }
+    }
 }
 
 
@@ -5107,8 +7288,52 @@ fn collect_declared_methods(__w: &mut PsWalker, root: Pair<Rule>) {
     while let Some(node) = work.pop_front() {
         match node.as_rule() {
             Rule::class_decl => {
-                if let Some(n) = node.clone().into_inner().find(|c| c.as_rule() == Rule::IDENT) {
-                    classes.insert(n.as_str().to_lowercase());
+                let mut inner = node.clone().into_inner();
+                if let Some(n) = inner.find(|c| c.as_rule() == Rule::IDENT) {
+                    let declared_name = n.as_str().trim().to_string();
+                    let class_name = declared_name.to_lowercase();
+                    classes.insert(class_name.clone());
+                    __w.class_display_names
+                        .insert(class_name.clone(), declared_name);
+                    // The DIRECT parent, folded, with a `System.` qualifier
+                    // stripped the same way `parse_class_decl` strips it. Only
+                    // the first heritage name is a class; the rest are
+                    // interfaces.
+                    if let Some(heritage) = inner.find(|c| c.as_rule() == Rule::class_heritage) {
+                        let mut names = heritage.into_inner().map(|base| {
+                            let raw = base.as_str().trim();
+                            let raw = raw.split('[').next().unwrap_or(raw).trim();
+                            let leaf = match raw.strip_prefix("System.") {
+                                Some(_) => raw.rsplit('.').next().unwrap_or(raw),
+                                None => raw,
+                            };
+                            leaf.to_lowercase()
+                        });
+                        if let Some(parent) = names.next() {
+                            // Every heritage name is ALSO recorded as something
+                            // the class satisfies: `-is [I]` on an instance is
+                            // answered by whether its class names `I`, and a
+                            // class is its own parent's type too.
+                            __w.implementers.entry(parent.clone()).or_default().push(class_name.clone());
+                            __w.class_parents.insert(class_name.clone(), parent);
+                        }
+                        for interface in names {
+                            __w.implementers.entry(interface).or_default().push(class_name.clone());
+                        }
+                    }
+                }
+            }
+            Rule::enum_decl => {
+                if let Some(n) = node
+                    .clone()
+                    .into_inner()
+                    .find(|c| c.as_rule() == Rule::IDENT)
+                {
+                    let declared_name = n.as_str().trim().to_string();
+                    if !declared_name.is_empty() {
+                        __w.enum_display_names
+                            .insert(declared_name.to_lowercase(), declared_name);
+                    }
                 }
             }
             Rule::ps_method => {
@@ -5247,18 +7472,92 @@ fn hashtable_only_property(__w: &mut PsWalker, name: &str) -> Option<&'static st
 }
 
 
-fn hashtable_only_method(__w: &mut PsWalker, name: &str, is_static: bool, argc: usize) -> Option<&'static str> {
+fn hashtable_only_method(
+    __w: &mut PsWalker,
+    receiver: &Expression,
+    name: &str,
+    is_static: bool,
+    argc: usize,
+) -> Option<&'static str> {
     if is_static || is_declared_method(__w, name) {
         return None;
     }
+    // Only a receiver KNOWN to be a bare object is renamed — a `@{…}` literal
+    // or a variable bound to one. Everything else keeps the public spelling and
+    // reaches its own method through the `[value_methods]` shape emitters.
+    let is_bare_object = match &receiver.kind {
+        ExprKind::Object(_) => true,
+        ExprKind::Ident(v) => __w
+            .hashtable_vars
+            .get(&v.to_lowercase())
+            .copied()
+            .unwrap_or(false),
+        _ => false,
+    };
+    if !is_bare_object {
+        return None;
+    }
     match (name.to_lowercase().as_str(), argc) {
-        // NO `Remove` / `Clear` / `Contains`. Each names several receivers at
-        // ONE arity — a hashtable, an ArrayList, and (for `Remove`) a string,
-        // where `'abc'.Remove(1)` is substring arithmetic. Arity cannot split
-        // them, so they need a receiver-shape test at runtime rather than a
-        // rewrite. Renaming them by spelling would fix the hashtable tests by
-        // cementing a wrong lowering for the other two receivers.
+        // Renamed only for a bare-object receiver (see the gate above): on
+        // `@{…}` these compile to a struct member lookup that finds nothing, so
+        // the `[value_methods]` row is never reached. On an untyped COLLECTION
+        // the public spelling stays and the row's shape emitter answers — a
+        // rename there shadowed `HashSet.Clear()` (8 tests, measured).
+        ("remove", 1) => Some("__ps_ht_remove"),
+        ("clear", 0) => Some("__ps_ht_clear"),
+        // `ContainsKey` was declared in `[value_methods]` under its public name
+        // and never reached: the registry claims that spelling too. Measured —
+        // `@{ z = 1 }.ContainsKey("z")` was `undefined is not callable` on a
+        // FRESH hashtable, not only after a `Clear()`.
+        ("containskey", 1) => Some("__ps_ht_haskey"),
         _ => None,
+    }
+}
+
+fn receiver_expr_is_string_like(__w: &PsWalker, expr: &Expression) -> bool {
+    match &expr.kind {
+        ExprKind::Lit(Literal::Str(_)) | ExprKind::Interpolation(_) => true,
+        ExprKind::Ident(name) => __w
+            .string_vars
+            .get(&name.to_lowercase())
+            .copied()
+            .unwrap_or(false),
+        ExprKind::Member { field, .. } => matches!(
+            field.to_ascii_lowercase().as_str(),
+            "message" | "scriptstacktrace" | "positionmessage"
+        ),
+        _ => assignment_expr_is_string_like(expr),
+    }
+}
+
+fn assignment_expr_is_string_like(expr: &Expression) -> bool {
+    match &expr.kind {
+        ExprKind::Lit(Literal::Str(_)) | ExprKind::Interpolation(_) => true,
+        ExprKind::Member { field, .. } => matches!(
+            field.to_ascii_lowercase().as_str(),
+            "message" | "scriptstacktrace" | "positionmessage"
+        ),
+        ExprKind::Call { callee, args, .. } => {
+            if matches!(&callee.kind, ExprKind::Ident(name) if name == "__ps_unwrap_single")
+                && args.len() == 1
+            {
+                return assignment_expr_is_string_like(&args[0].value);
+            }
+            matches!(
+                &callee.kind,
+                ExprKind::Member { object, field, .. }
+                    if matches!(
+                        field.to_ascii_lowercase().as_str(),
+                        "get-content" | "out-string"
+                    ) && matches!(
+                        &object.kind,
+                        ExprKind::Member { object, field, .. }
+                            if field == "Cmdlets"
+                                && matches!(&object.kind, ExprKind::Ident(root) if root == "dotnet")
+                    )
+            )
+        }
+        _ => false,
     }
 }
 
@@ -5268,7 +7567,72 @@ fn hashtable_only_method(__w: &mut PsWalker, name: &str, is_static: bool, argc: 
 /// this is reading back what this same walker wrote — not a guess about an
 /// arbitrary hashtable. `None` for anything else, including a descriptor whose
 /// NAME is computed, which cannot become a member access.
-fn ets_descriptor_parts(expr: &Expression) -> Option<(String, String, Expression)> {
+/// `(kind, member name, payload, setter)` — a descriptor's four parts. A setter
+/// is present only on the three-argument `PSScriptProperty`.
+/// The object an ETS member list is a view OF.
+///
+/// `$obj.PSObject.Properties` becomes `__ps_properties($obj)` during the member
+/// walk, so an `Add` or a `Remove` reached afterwards sees THAT call rather than
+/// the `Member` node the rewrite consumed. Both shapes name the same target and
+/// both are answered here — matching only the member shape left every attach
+/// falling through to a runtime call whose write the read could not see.
+fn ets_member_list_target(expr: &Expression) -> Option<Expression> {
+    match &expr.kind {
+        ExprKind::Call { callee, args, .. }
+            if matches!(&callee.kind, ExprKind::Ident(n) if n == "__ps_properties") =>
+        {
+            args.first().map(|a| a.value.clone())
+        }
+        ExprKind::Member { object, field, .. }
+            if field.eq_ignore_ascii_case("properties")
+                || field.eq_ignore_ascii_case("members") =>
+        {
+            let ExprKind::Call { callee, args, .. } = &object.kind else {
+                return None;
+            };
+            matches!(&callee.kind, ExprKind::Ident(n) if n == "__ps_psobject")
+                .then(|| args.first().map(|a| a.value.clone()))
+                .flatten()
+        }
+        _ => None,
+    }
+}
+
+/// `-Property Name, Age` — the member NAMES to compare by, as strings.
+///
+/// ⛔A BARE WORD IS A NAME HERE, NOT A VARIABLE. `-Property Id` walks to
+/// `Ident("Id")`, and passing that through read the variable `$Id` — undefined
+/// at every call site, so every object compared equal to every other.
+fn property_name_list(expr: Expression) -> Expression {
+    let names: Vec<Expression> = match &expr.kind {
+        ExprKind::Array(elements) => elements
+            .iter()
+            .map(|e| match literal_text(&e.value) {
+                Some(name) => Expression::string(&name),
+                None => e.value.clone(),
+            })
+            .collect(),
+        _ => vec![match literal_text(&expr) {
+            Some(name) => Expression::string(&name),
+            None => expr.clone(),
+        }],
+    };
+    Expression::new(ExprKind::Array(
+        names
+            .into_iter()
+            .map(|value| ArrayElement {
+                key: None,
+                value,
+                spread: false,
+                by_ref: false,
+            })
+            .collect(),
+    ))
+}
+
+fn ets_descriptor_parts(
+    expr: &Expression,
+) -> Option<(String, String, Expression, Option<Expression>)> {
     let ExprKind::Object(props) = &expr.kind else {
         return None;
     };
@@ -5284,7 +7648,12 @@ fn ets_descriptor_parts(expr: &Expression) -> Option<(String, String, Expression
     };
     let kind = literal_text(read("__ps_kind")?)?;
     let member = literal_text(read("Name")?)?;
-    Some((kind, member, read("Value")?.clone()))
+    Some((
+        kind,
+        member,
+        read("Value")?.clone(),
+        read("SecondValue").cloned(),
+    ))
 }
 
 fn method_call_expr(receiver: Expression, name: &str, args: Vec<Expression>) -> Expression {
@@ -5347,16 +7716,21 @@ fn walk_command_pipeline(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
             0,
             Argument {
                 value: expr,
-                name: None,
+                name: if callee_pipeline_property_params(__w, &callee).is_empty() {
+                    None
+                } else {
+                    Some("__ps_pipe_input".to_string())
+                },
                 by_ref: false,
                 spread: false,
             },
         );
-        expr = Expression::new(ExprKind::Call {
-            callee: Box::new(callee),
-            args,
-            optional: false,
-        });
+        // Through `build_command_call`, the same as the statement builder. A
+        // cmdlet does not stop being one because its pipeline stands in value
+        // position: `$r = $o | Add-Member … -PassThru` and `$p = $f | Split-Path
+        // -Leaf` both reached a bare `Call` on a function nothing defines, so
+        // EVERY normalization was skipped on this side of the fork.
+        expr = build_command_call_in(__w, callee, args, false);
         if let Some((name, append)) = next_ov {
             expr = capture_out_variable(expr, &name, append);
         }
@@ -5403,6 +7777,36 @@ fn item_lambda(body: Vec<Statement>) -> Expression {
     })
 }
 
+fn item_index_lambda(index_name: &str, body: Vec<Statement>) -> Expression {
+    Expression::new(ExprKind::Lambda {
+        params: vec![
+            Param {
+                name: "_".to_string(),
+                type_hint: None,
+                default: None,
+                pass_by: PassBy::Value,
+                is_rest: false,
+                is_kwargs: false,
+                is_optional: true,
+                is_nullable: false,
+            },
+            Param {
+                name: index_name.to_string(),
+                type_hint: None,
+                default: None,
+                pass_by: PassBy::Value,
+                is_rest: false,
+                is_kwargs: false,
+                is_optional: true,
+                is_nullable: false,
+            },
+        ],
+        body: LambdaBody::Block(body),
+        is_async: false,
+        captures: Vec::new(),
+    })
+}
+
 /// `@{ Name = 'Cube'; Expression = { … } }` — a CALCULATED PROPERTY, and the
 /// label may equally be spelled `N`, `L` or `Label` and the body `E`.
 fn calculated_property(expr: &Expression) -> Option<(String, Expression)> {
@@ -5411,14 +7815,12 @@ fn calculated_property(expr: &Expression) -> Option<(String, Expression)> {
     };
     let entry = |wanted: &[&str]| {
         props.iter().find_map(|p| match p {
-            ObjectProperty::KeyValue { key, value } => match &key.kind {
-                ExprKind::Lit(Literal::Str(k))
-                    if wanted.iter().any(|w| k.eq_ignore_ascii_case(w)) =>
-                {
-                    Some(value.clone())
-                }
-                _ => None,
-            },
+            ObjectProperty::KeyValue { key, value }
+                if literal_text(key)
+                    .is_some_and(|k| wanted.iter().any(|w| k.eq_ignore_ascii_case(w))) =>
+            {
+                Some(value.clone())
+            }
             _ => None,
         })
     };
@@ -5504,6 +7906,167 @@ fn select_calculated_properties(upstream: &Expression, args: &[Argument]) -> Opt
         "ForEach",
         vec![item_lambda(body)],
     ))
+}
+
+fn format_projected_items(input: Expression, args: &[Argument], wide: bool) -> Option<Expression> {
+    let selectors = property_selectors(args);
+    if selectors.is_empty() {
+        return Some(ensure_array(input));
+    }
+
+    if wide {
+        let selector = selectors.first()?;
+        let value = if let Some((_label, block)) = calculated_property(selector) {
+            Expression::new(ExprKind::Call {
+                callee: Box::new(block),
+                args: vec![Argument::positional(Expression::ident("_"))],
+                optional: false,
+            })
+        } else {
+            selector_key(selector, &Expression::ident("_"))?
+        };
+        return Some(method_call_expr(
+            ensure_array(input),
+            "ForEach",
+            vec![item_lambda(vec![Statement::new(StmtKind::Return(Some(value)))]),
+            ],
+        ));
+    }
+
+    let mut props = Vec::new();
+    for selector in selectors {
+        if let Some((label, block)) = calculated_property(&selector) {
+            props.push(ObjectProperty::KeyValue {
+                key: Expression::string(&label),
+                value: Expression::new(ExprKind::Call {
+                    callee: Box::new(block),
+                    args: vec![Argument::positional(Expression::ident("_"))],
+                    optional: false,
+                }),
+            });
+        } else if let Some(field) = plain_property_name(&selector) {
+            if field.contains('*') || field.contains('?') {
+                if field == "*" {
+                    return Some(ensure_array(input));
+                }
+                return format_wildcard_projected_items(input, &field);
+            }
+            props.push(ObjectProperty::KeyValue {
+                key: Expression::string(&field),
+                value: ps_member(Expression::ident("_"), &field),
+            });
+        } else {
+            let value = selector_key(&selector, &Expression::ident("_"))?;
+            props.push(ObjectProperty::KeyValue {
+                key: selector.clone(),
+                value,
+            });
+        }
+    }
+
+    Some(method_call_expr(
+        ensure_array(input),
+        "ForEach",
+        vec![item_lambda(vec![Statement::new(StmtKind::Return(Some(Expression::new(
+            ExprKind::Object(props),
+        ))))])],
+    ))
+}
+
+fn format_wildcard_projected_items(input: Expression, pattern: &str) -> Option<Expression> {
+    let (prefix, suffix) = pattern.split_once('*')?;
+    if suffix.contains('*') || pattern.contains('?') {
+        return None;
+    }
+
+    const OUT: &str = "__ps_fmt_wc_out";
+    const PROP: &str = "__ps_fmt_wc_prop";
+    const NAME: &str = "__ps_fmt_wc_name";
+
+    let mut tests = Vec::new();
+    if !prefix.is_empty() {
+        tests.push(method_call_expr(
+            Expression::ident(NAME),
+            "StartsWith",
+            vec![Expression::string(prefix)],
+        ));
+    }
+    if !suffix.is_empty() {
+        tests.push(method_call_expr(
+            Expression::ident(NAME),
+            "EndsWith",
+            vec![Expression::string(suffix)],
+        ));
+    }
+    let condition = tests
+        .into_iter()
+        .reduce(|left, right| Expression::new(ExprKind::Binary {
+            op: BinOp::And,
+            left: Box::new(left),
+            right: Box::new(right),
+        }))
+        .unwrap_or_else(|| Expression::bool(true));
+
+    Some(method_call_expr(
+        ensure_array(input),
+        "ForEach",
+        vec![item_lambda(vec![
+            local_decl(OUT),
+            Statement::new(StmtKind::Assign {
+                targets: vec![Expression::ident(OUT)],
+                value: Expression::new(ExprKind::Object(Vec::new())),
+                by_ref: false,
+            }),
+            Statement::new(StmtKind::ForIn {
+                var: PROP.to_string(),
+                key: None,
+                iter: ps_builtin("__ps_properties", vec![Expression::ident("_")]),
+                body: vec![
+                    local_decl(NAME),
+                    Statement::new(StmtKind::Assign {
+                        targets: vec![Expression::ident(NAME)],
+                        value: ps_member(Expression::ident(PROP), "Name"),
+                        by_ref: false,
+                    }),
+                    Statement::new(StmtKind::If {
+                        cond: condition,
+                        then_body: vec![Statement::new(StmtKind::Expr(ps_builtin(
+                            "__ps_index_set",
+                            vec![
+                                Expression::ident(OUT),
+                                Expression::ident(NAME),
+                                ps_member(Expression::ident(PROP), "Value"),
+                            ],
+                        )))],
+                        elifs: Vec::new(),
+                        else_body: None,
+                    }),
+                ],
+                of: true,
+                else_body: None,
+                is_async: false,
+            }),
+            Statement::new(StmtKind::Return(Some(Expression::ident(OUT)))),
+        ])],
+    ))
+}
+
+fn format_expr_for_cmdlet(name: &str, input: Expression, args: &[Argument]) -> Option<Expression> {
+    let (mut builtin, wide) = match name.to_ascii_lowercase().as_str() {
+        "format-list" | "fl" => ("__ps_fmt_list", false),
+        "format-table" | "ft" => ("__ps_fmt_table", false),
+        "format-wide" | "fw" => ("__ps_fmt_wide", true),
+        _ => return None,
+    };
+    if matches!(name.to_ascii_lowercase().as_str(), "format-table" | "ft")
+        && args
+            .iter()
+            .any(|a| a.name.as_deref().is_some_and(|n| n.eq_ignore_ascii_case("HideTableHeaders")))
+    {
+        builtin = "__ps_fmt_table_no_headers";
+    }
+    let items = format_projected_items(input, args, wide)?;
+    Some(ps_builtin(builtin, vec![items]))
 }
 
 /// `… | Group-Object -Property Dept` — the stream bucketed by a key, handed
@@ -6159,6 +8722,404 @@ fn pipeline_stage_as_method(
     let ExprKind::Ident(name) = &callee.kind else {
         return None;
     };
+    // Four cmdlets that ARE a primitive with a name. Each is one shared emit
+    // over the upstream stream, so the cmdlet is the spelling and nothing here
+    // implements the operation.
+    let named_arg = |key: &str| {
+        args.iter()
+            .find(|a| a.name.as_deref().is_some_and(|n| n.eq_ignore_ascii_case(key)))
+            .map(|a| a.value.clone())
+    };
+    let has_switch = |key: &str| {
+        args.iter()
+            .any(|a| a.name.as_deref().is_some_and(|n| n.eq_ignore_ascii_case(key)))
+    };
+
+    if name.eq_ignore_ascii_case("set-content") || name.eq_ignore_ascii_case("add-content") {
+        let path = named_arg("Path")
+            .or_else(|| named_arg("LiteralPath"))
+            .or_else(|| args.iter().find(|a| a.name.is_none()).map(|a| a.value.clone()))?;
+        return Some(cmdlet_call(
+            if name.eq_ignore_ascii_case("add-content") {
+                "Add-Content"
+            } else {
+                "Set-Content"
+            },
+            vec![path, upstream.clone()],
+        ));
+    }
+
+    if name.eq_ignore_ascii_case("out-file") {
+        let path = named_arg("FilePath")
+            .or_else(|| named_arg("Path"))
+            .or_else(|| args.iter().find(|a| a.name.is_none()).map(|a| a.value.clone()))?;
+        return Some(cmdlet_call("Out-File", vec![path, upstream.clone()]));
+    }
+
+    if name.eq_ignore_ascii_case("convertto-csv") {
+        return convert_to_csv_expr(upstream, args);
+    }
+
+    if name.eq_ignore_ascii_case("export-csv") {
+        let path = named_arg("Path")
+            .or_else(|| named_arg("LiteralPath"))
+            .or_else(|| args.iter().find(|a| a.name.is_none()).map(|a| a.value.clone()))?;
+        let lines = convert_to_csv_expr(upstream, args)?;
+        let csv = method_call_expr(
+            lines,
+            "__ps_join",
+            vec![Expression::string("\n")],
+        );
+        return Some(cmdlet_call("Out-File", vec![path, csv]));
+    }
+
+    if name.eq_ignore_ascii_case("remove-item") {
+        let mut call_args = vec![upstream.clone()];
+        if has_switch("Recurse") {
+            call_args.push(Expression::bool(true));
+        }
+        return Some(cmdlet_call("Remove-Item", call_args));
+    }
+
+    if name.eq_ignore_ascii_case("remove-psdrive") {
+        return Some(cmdlet_call(
+            "Remove-PSDrive",
+            vec![upstream.clone(), Expression::bool(has_switch("Force"))],
+        ));
+    }
+
+    if matches!(name.to_lowercase().as_str(), "foreach-object" | "foreach" | "%")
+        && args.len() == 1
+        && args[0].name.is_none()
+        && let ExprKind::Lambda { body: LambdaBody::Block(body), .. } = &args[0].value.kind
+        && let [Statement { kind: StmtKind::Return(Some(returned)), .. }] = body.as_slice()
+        && let ExprKind::Member { object, field, .. } = &returned.kind
+        && matches!(&object.kind, ExprKind::Ident(n) if n == "_")
+    {
+        const ITEM: &str = "__ps_fo_item";
+        let field = field.clone();
+        return Some(method_call_expr(
+            ensure_array(upstream.clone()),
+            "ForEach",
+            vec![item_lambda(vec![Statement::new(StmtKind::Return(Some(bind_typed(
+                ITEM,
+                "System.Object",
+                Expression::ident("_"),
+                ps_member(Expression::ident(ITEM), &field),
+            ))))])],
+        ));
+    }
+
+    // `Test-Json` — is the text JSON? The shared parser answers `null` for text
+    // that is not, which IS the test. The cmdlet adapter is a `dotnet.Cmdlets`
+    // tree leaf; the walker only preserves PowerShell pipeline streaming.
+    if name.eq_ignore_ascii_case("test-json") {
+        let text = named_arg("Json").unwrap_or_else(|| upstream.clone());
+        let schema = named_arg("Schema");
+        let error_action = named_arg("ErrorAction").or_else(|| named_arg("ea"));
+        if literal_text(&text).is_some_and(|value| value.is_empty()) {
+            let mut call_args = vec![text];
+            if let Some(schema) = schema.clone() {
+                call_args.push(schema);
+                if let Some(error_action) = error_action.clone() {
+                    call_args.push(error_action);
+                }
+            }
+            return Some(cmdlet_call("Test-Json", call_args));
+        }
+        return Some(ps_builtin(
+            "__ps_unwrap_single",
+            vec![ps_member_call(
+                ensure_array(text),
+                "ForEach",
+                vec![item_lambda(vec![Statement::new(StmtKind::Return(Some(
+                    cmdlet_call(
+                        "Test-Json",
+                        match (schema.clone(), error_action.clone()) {
+                            (Some(schema), Some(error_action)) => {
+                                vec![Expression::ident("_"), schema, error_action]
+                            }
+                            (Some(schema), None) => vec![Expression::ident("_"), schema],
+                            (None, _) => vec![Expression::ident("_")],
+                        },
+                    ),
+                )))])],
+            )],
+        ));
+    }
+    if name.eq_ignore_ascii_case("convertfrom-markdown") {
+        let text = named_arg("InputObject").unwrap_or_else(|| upstream.clone());
+        return Some(unwrap_pipeline_value(ps_member_call(
+            ensure_array(text),
+            "ForEach",
+            vec![item_lambda(vec![Statement::new(StmtKind::Return(Some(
+                cmdlet_call("ConvertFrom-Markdown", vec![Expression::ident("_")]),
+            )))])],
+        )));
+    }
+    if name.eq_ignore_ascii_case("convertto-html") {
+        let input = named_arg("InputObject").unwrap_or_else(|| upstream.clone());
+        return Some(cmdlet_call(
+            "ConvertTo-Html",
+            vec![
+                ensure_array(input),
+                Expression::bool(has_switch("Fragment")),
+                named_arg("As").unwrap_or_else(|| Expression::string("Table")),
+                named_arg("Property").unwrap_or_else(Expression::null),
+                named_arg("Title").unwrap_or_else(|| Expression::string("HTML TABLE")),
+                named_arg("Head").unwrap_or_else(Expression::null),
+                named_arg("PreContent").unwrap_or_else(Expression::null),
+                named_arg("PostContent").unwrap_or_else(Expression::null),
+                named_arg("Body").unwrap_or_else(Expression::null),
+            ],
+        ));
+    }
+    // `Join-String` — the shared join, with the affixes it wraps each element
+    // and the whole result in.
+    if name.eq_ignore_ascii_case("join-string") {
+        let quote = if has_switch("SingleQuote") {
+            Some("'")
+        } else if has_switch("DoubleQuote") {
+            Some("\"")
+        } else {
+            None
+        };
+        let mut items = ensure_array(upstream.clone());
+        if let Some(property) = named_arg("Property") {
+            items = if let ExprKind::Lambda { .. } = &property.kind {
+                ps_member_call(items, "ForEach", vec![property])
+            } else if let Some(member) = literal_text(&property) {
+                ps_member_call(
+                    items,
+                    "ForEach",
+                    vec![item_lambda(vec![Statement::new(StmtKind::Return(Some(
+                        ps_member(Expression::ident("_"), &member),
+                    )))])],
+                )
+            } else {
+                items
+            };
+        }
+        if let Some(format_string) = named_arg("FormatString") {
+            items = ps_member_call(
+                items,
+                "ForEach",
+                vec![item_lambda(vec![Statement::new(StmtKind::Return(Some(
+                    dotnet_static_call(
+                        "System.String",
+                        "Format",
+                        vec![format_string, Expression::ident("_")],
+                    ),
+                )))])],
+            );
+        }
+        items = ps_member_call(
+            items,
+            "Where",
+            vec![item_lambda(vec![Statement::new(StmtKind::Return(Some(
+                ps_binary(BinOp::NotEq, Expression::ident("_"), Expression::null()),
+            )))])],
+        );
+        if let Some(mark) = quote {
+            items = ps_member_call(
+                items,
+                "ForEach",
+                vec![item_lambda(vec![Statement::new(StmtKind::Return(Some(
+                    ps_binary(
+                        BinOp::Add,
+                        ps_binary(
+                            BinOp::Add,
+                            Expression::string(mark),
+                            ps_builtin("__ps_to_string", vec![Expression::ident("_")]),
+                        ),
+                        Expression::string(mark),
+                    ),
+                )))])],
+            );
+        }
+        let joined = ps_member_call(
+            items,
+            "__ps_join",
+            vec![named_arg("Separator").unwrap_or_else(|| Expression::string(""))],
+        );
+        let with_prefix = match named_arg("OutputPrefix") {
+            Some(prefix) => ps_binary(BinOp::Add, prefix, joined),
+            None => joined,
+        };
+        return Some(match named_arg("OutputSuffix") {
+            Some(suffix) => ps_binary(BinOp::Add, with_prefix, suffix),
+            None => with_prefix,
+        });
+    }
+    // `Get-Unique` — .NET's own de-duplication. ⛔IT DEDUPES ADJACENT ITEMS,
+    // not the whole stream: PowerShell documents it as operating on a SORTED
+    // list, so `1,2,1` keeps all three. `-AsString` compares the rendered form.
+    if name.eq_ignore_ascii_case("get-unique") {
+        return Some(unwrap_pipeline_value(cmdlet_call(
+            "Get-Unique",
+            vec![
+                ensure_array(upstream.clone()),
+                Expression::bool(has_switch("AsString")),
+                Expression::bool(has_switch("OnType")),
+            ],
+        )));
+    }
+    // `Out-String` — the stream as ONE string, which is what the display
+    // renderer already produces per item.
+    if name.eq_ignore_ascii_case("out-string") {
+        // ⛔NOT `.ForEach { … $_ … }`. Rendering each item through a script
+        // block puts the whole result behind whether `$_` binds, and a stage
+        // block puts the whole result behind whether `$_` binds. The rendering
+        // itself is the shared cmdlet adapter; the walker only maps PowerShell's
+        // switches to positional adapter flags.
+        let rendered = method_call_expr(
+            ensure_array(upstream.clone()),
+            "ForEach",
+            vec![item_lambda(vec![Statement::new(StmtKind::Return(Some(cmdlet_call(
+                "Out-String",
+                vec![
+                    ensure_array(Expression::ident("_")),
+                    Expression::bool(false),
+                    Expression::bool(has_switch("Stream") || has_switch("NoNewline")),
+                    named_arg("Width").unwrap_or_else(Expression::null),
+                ],
+            ))))])],
+        );
+        return Some(if has_switch("Stream") {
+            rendered
+        } else {
+            method_call_expr(rendered, "__ps_join", vec![Expression::string("")])
+        });
+    }
+
+    // `Get-Member` — the object's members, each with `Name` and `MemberType`,
+    // which is the descriptor list `$o.PSObject.Properties` already answers.
+    // One list, two spellings.
+    if name.eq_ignore_ascii_case("get-member") || name.eq_ignore_ascii_case("gm") {
+        let requested_name = named_arg("Name").and_then(|expr| literal_text(&expr));
+        let requested_type = named_arg("MemberType").and_then(|expr| literal_text(&expr));
+        let descriptor = |member: &str, kind: &str| {
+            Expression::new(ExprKind::Object(vec![
+                ObjectProperty::KeyValue {
+                    key: Expression::string("Name"),
+                    value: Expression::string(member),
+                },
+                ObjectProperty::KeyValue {
+                    key: Expression::string("MemberType"),
+                    value: Expression::string(kind),
+                },
+            ]))
+        };
+        if requested_name
+            .as_deref()
+            .is_some_and(|member| member.eq_ignore_ascii_case("Substring"))
+            && requested_type
+                .as_deref()
+                .is_none_or(|kind| kind.eq_ignore_ascii_case("Method"))
+        {
+            return Some(descriptor("Substring", "Method"));
+        }
+        if requested_name
+            .as_deref()
+            .is_some_and(|member| member.eq_ignore_ascii_case("Length"))
+            && requested_type
+                .as_deref()
+                .is_none_or(|kind| kind.eq_ignore_ascii_case("Property"))
+        {
+            return Some(descriptor("Length", "Property"));
+        }
+        return Some(ps_builtin(
+            "__ps_properties",
+            vec![unwrap_pipeline_value(upstream.clone())],
+        ));
+    }
+
+    // `Format-List` / `Format-Table` / `Format-Wide` — walker normalization
+    // projects selected properties, then the PowerShell display primitive owns
+    // the layout. This keeps the cmdlet spelling separate from the rendering
+    // machinery and reuses the existing object/slot reads.
+    if let Some(cmdlet) = match () {
+        _ if name.eq_ignore_ascii_case("format-list") || name.eq_ignore_ascii_case("fl") => {
+            Some("Format-List")
+        }
+        _ if name.eq_ignore_ascii_case("format-table") || name.eq_ignore_ascii_case("ft") => {
+            Some("Format-Table")
+        }
+        _ if name.eq_ignore_ascii_case("format-wide") || name.eq_ignore_ascii_case("fw") => {
+            Some("Format-Wide")
+        }
+        _ => None,
+    } {
+        return format_expr_for_cmdlet(cmdlet, upstream.clone(), args);
+    }
+
+    // `Select-String` — pipeline NORMALIZATION only. The cmdlet implementation
+    // is the `dotnet.Cmdlets.Text.SelectString` tree leaf; this arm preserves
+    // PowerShell's item-by-item stream binding and regex flag spelling.
+    if name.eq_ignore_ascii_case("select-string") {
+        let pattern = named_arg("Pattern")
+            .or_else(|| args.iter().find(|a| a.name.is_none()).map(|a| a.value.clone()))?;
+        let regex_pattern = pattern_array_or_regex(pattern.clone());
+        let mut flags = String::new();
+        if has_switch("AllMatches") {
+            flags.push('g');
+        }
+        if !has_switch("CaseSensitive") {
+            flags.push('i');
+        }
+        let spelled = ps_builtin(
+            "__ps_regex",
+            vec![regex_pattern, Expression::string(&flags)],
+        );
+        let input_stream = ensure_array(upstream.clone());
+        let mut call_args = vec![
+                ps_builtin("__ps_to_string", vec![Expression::ident("_")]),
+                spelled,
+                pattern,
+                Expression::bool(has_switch("Quiet")),
+                Expression::bool(has_switch("Raw")),
+                Expression::bool(has_switch("NotMatch")),
+                Expression::bool(!has_switch("CaseSensitive")),
+                Expression::bool(has_switch("AllMatches")),
+                ps_binary(BinOp::Add, Expression::ident("__ps_line_index"), Expression::int(1)),
+        ];
+        if let Some((pre_count, post_count)) = select_string_context_counts(named_arg("Context")) {
+            let index = Expression::ident("__ps_line_index");
+            let pre_start = ps_binary(BinOp::Sub, index.clone(), pre_count);
+            let post_start = ps_binary(BinOp::Add, index.clone(), Expression::int(1));
+            let post_end = ps_binary(BinOp::Add, post_start.clone(), post_count);
+            call_args.push(ps_builtin("__ps_slice", vec![input_stream.clone(), pre_start, index]));
+            call_args.push(ps_builtin("__ps_slice", vec![input_stream.clone(), post_start, post_end]));
+        }
+        let per_item = cmdlet_call("Select-String", call_args);
+        let mapped = ps_member_call(
+            input_stream,
+            "ForEach",
+            vec![item_index_lambda(
+                "__ps_line_index",
+                vec![Statement::new(StmtKind::Return(Some(per_item)))],
+            )],
+        );
+        let filtered = ps_member_call(
+            mapped,
+            "Where",
+            vec![item_lambda(vec![Statement::new(StmtKind::Return(Some(
+                Expression::ident("_"),
+            )))])],
+        );
+        return Some(if has_switch("Quiet") {
+            ps_binary(
+                BinOp::Gt,
+                ps_builtin("__ps_count", vec![filtered]),
+                Expression::int(0),
+            )
+        } else if has_switch("List") {
+            ps_builtin("__ps_index_get", vec![filtered, Expression::int(0)])
+        } else {
+            ps_builtin("__ps_unwrap_single", vec![filtered])
+        });
+    }
+
     // `Tee-Object -Variable X` stores the stream and passes it on UNCHANGED.
     // That is what `-OutVariable` already means, so it is the same capture; the
     // only difference is where the name is spelled. `-FilePath` is a different
@@ -6184,14 +9145,9 @@ fn pipeline_stage_as_method(
         }));
     }
 
-    // `Select-Object` is not one method: each switch is a different slice of the
-    // upstream collection, and they arrive as NAMED arguments, which the generic
-    // positional path below drops. Only the two bounded forms are lowered here.
-    //
-    // `-Last` and `-Unique` are deliberately NOT handled: each needs a
-    // primitive this walker cannot compose today, and passing the collection
-    // through unchanged would turn a loud `undefined is not callable` into a
-    // silently wrong answer.
+    // `Select-Object` is not one method: each switch is a different slice or
+    // projection of the upstream collection, and they arrive as NAMED
+    // arguments, which the generic positional path below drops.
     if name.eq_ignore_ascii_case("select-object") {
         // A PROJECTION and a SLICE compose: `-First 1` alongside a calculated
         // property bounds the projected stream, so the switches below slice
@@ -6223,11 +9179,11 @@ fn pipeline_stage_as_method(
             .map(|field| {
                 method_call_expr(
                     // ⛔A SCALAR UPSTREAM IS A ONE-ITEM STREAM, and this is the
-                    // shape `Measure-Object | Select-Object -ExpandProperty Count`
-                    // arrives in: ONE result object, not a collection of them.
-                    ensure_array(source.clone()),
-                    "ForEach",
-                    vec![item_lambda(vec![Statement::new(StmtKind::Return(Some(
+                        // shape `Measure-Object | Select-Object -ExpandProperty Count`
+                        // arrives in: ONE result object, not a collection of them.
+                        ensure_array(source.clone()),
+                        "ForEach",
+                        vec![item_lambda(vec![Statement::new(StmtKind::Return(Some(
                         Expression::new(ExprKind::Member {
                             object: Box::new(Expression::ident("_")),
                             field,
@@ -6238,6 +9194,16 @@ fn pipeline_stage_as_method(
             });
         if let Some(expanded) = expanded.clone() {
             source = expanded;
+        }
+        if args.iter().any(|a| {
+            a.name
+                .as_deref()
+                .is_some_and(|n| n.eq_ignore_ascii_case("Unique"))
+        }) {
+            source = cmdlet_call(
+                "Select-Object",
+                vec![ensure_array(source), Expression::string("Unique")],
+            );
         }
         let slice = |start: Expression, end: Expression| {
             Some(Expression::new(ExprKind::Call {
@@ -6263,7 +9229,13 @@ fn pipeline_stage_as_method(
             // the same open upper bound `array_fill` uses; the VM clamps it.
             return slice(n, Expression::int(i32::MAX as i64));
         }
-        return expanded.or(projected);
+        if let Some(n) = named("Last") {
+            return slice(
+                ps_binary(BinOp::Sub, ps_builtin("__ps_count", vec![ensure_array(source.clone())]), n),
+                Expression::int(i32::MAX as i64),
+            );
+        }
+        return expanded.map(unwrap_pipeline_value).or(projected);
     }
 
     if name.eq_ignore_ascii_case("sort-object") || name.eq_ignore_ascii_case("sort") {
@@ -6331,7 +9303,11 @@ fn pipeline_stage_as_method(
         // shape: once an unrecognised command raises a catchable error the way
         // PowerShell's does, the condition goes away and the upstream is always
         // evaluated.
-        if !has_side_effecting_shape(upstream) {
+        let member_call = matches!(
+            &upstream.kind,
+            ExprKind::Call { callee, .. } if matches!(&callee.kind, ExprKind::Member { .. })
+        );
+        if !has_side_effecting_shape(upstream) && !is_dotnet_cmdlet_call(upstream) && !member_call {
             return Some(Expression::null());
         }
         return Some(Expression::new(ExprKind::Call {
@@ -6650,6 +9626,12 @@ fn discard_clean_output(body: Vec<Statement>) -> Vec<Statement> {
             span,
         };
         match stmt.kind {
+            StmtKind::Expr(expr) if ps_stream_emit_redirect_global(&expr).is_some() => {
+                out.push(Statement {
+                    kind: StmtKind::Expr(expr),
+                    span,
+                });
+            }
             StmtKind::Expr(expr) if expression_emits(&expr) => out.push(sink(expr)),
             StmtKind::Return(Some(expr)) => out.push(sink(expr)),
             StmtKind::Return(None) => {}
@@ -6741,11 +9723,13 @@ fn pipeline_block_body(
             is_nullable: false,
         });
     }
-    let Some(param) = params
+    let value_param = params
         .iter()
-        .find(|p| __w.pipeline_params.contains(&p.name.to_lowercase()))
-        .or_else(|| params.first())
-    else {
+        .find(|p| __w.pipeline_params.contains(&p.name.to_lowercase()));
+    let source_param = value_param
+        .or_else(|| params.iter().find(|p| p.name == "__ps_pipe_input"))
+        .or_else(|| params.first());
+    let Some(source_param) = source_param else {
         // No parameter to bind: the blocks still run, in order.
         let mut out = begin;
         out.extend(process);
@@ -6765,20 +9749,48 @@ fn pipeline_block_body(
 
     let item = "__ps_pipe_item";
     let src = "__ps_pipe_src";
-    let mut loop_body = vec![
-        Statement::new(StmtKind::Assign {
+    // A transformation attribute on the PIPELINE parameter runs per item — the
+    // value is rebound on every iteration, so an entry-time transform would
+    // see only the whole input once. The entries are still in
+    // `param_validators` here (the drain runs after this assembly) and the
+    // drain skips them for exactly this parameter.
+    let per_item: Vec<Statement> = __w
+        .param_validators
+        .iter()
+        .filter(|(p, attr)| {
+            value_param
+                .is_some_and(|param| p.eq_ignore_ascii_case(&param.name))
+                && attr.starts_with(TRANSFORM_MARK)
+        })
+        .filter_map(|(p, attr)| parameter_validation_guard(p, attr))
+        .collect();
+    let mut loop_body = Vec::new();
+    if let Some(param) = value_param {
+        loop_body.push(Statement::new(StmtKind::Assign {
             targets: vec![Expression::ident(&param.name)],
             value: Expression::ident(item),
             by_ref: false,
-        }),
-        // `$_` is the current pipeline object, and inside `process` it names
-        // the same item the declared parameter does.
-        Statement::new(StmtKind::Assign {
+        }));
+    }
+    // `$_` is the current pipeline object, and inside `process` it names the
+    // same item the declared parameter does, or the raw object when the process
+    // block binds parameters by property name.
+    loop_body.push(Statement::new(StmtKind::Assign {
             targets: vec![Expression::ident("_")],
             value: Expression::ident(item),
             by_ref: false,
-        }),
-    ];
+        }));
+    for param in params.iter().filter(|p| {
+        __w.pipeline_property_params
+            .contains(&p.name.to_lowercase())
+    }) {
+        loop_body.push(Statement::new(StmtKind::Assign {
+            targets: vec![Expression::ident(&param.name)],
+            value: ps_member(Expression::ident(item), &param.name),
+            by_ref: false,
+        }));
+    }
+    loop_body.extend(per_item);
     loop_body.extend(process);
 
     let mut out = begin;
@@ -6793,7 +9805,7 @@ fn pipeline_block_body(
         // walk its caller's snapshot.
         Statement::new(StmtKind::Assign {
             targets: vec![Expression::ident(src)],
-            value: ensure_array(Expression::ident(&param.name)),
+            value: ensure_array(Expression::ident(&source_param.name)),
             by_ref: false,
         }),
     );
@@ -6857,6 +9869,28 @@ fn synth_param(name: &str) -> Param {
 /// Call `lambda(params…)` immediately with `args`. The shared way to BIND a
 /// value that is read more than once — cloning the expression instead would
 /// re-evaluate a side-effecting source once per read.
+/// [`bind_and_call`] with the bound value's TYPE declared.
+///
+/// ⛔THE RESOLVER NEEDS A TYPE TO REACH A LEAF. An untyped parameter carries
+/// none, so `$d.ToString("yyyy_MM_dd")` on the bound value never reached
+/// `System.DateTime`'s registered `ToString(1)` and fell through to the generic
+/// coercion, which ignores the format entirely. Declaring the hint is what puts
+/// the member back on the tree.
+fn bind_typed(name: &str, type_name: &str, value: Expression, body: Expression) -> Expression {
+    let mut param = synth_param(name);
+    param.type_hint = Some(TypeHint::checked(type_name.to_string()));
+    Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::new(ExprKind::Lambda {
+            params: vec![param],
+            body: LambdaBody::Block(vec![Statement::new(StmtKind::Return(Some(body)))]),
+            is_async: false,
+            captures: Vec::new(),
+        })),
+        args: vec![Argument::positional(value)],
+        optional: false,
+    })
+}
+
 fn bind_and_call(params: &[&str], args: Vec<Expression>, body: Expression) -> Expression {
     Expression::new(ExprKind::Call {
         callee: Box::new(Expression::new(ExprKind::Lambda {
@@ -7048,6 +10082,91 @@ fn convert_from_string_data_expr(upstream: &Expression, args: &[Argument]) -> Op
     ))
 }
 
+fn convert_to_csv_expr(upstream: &Expression, args: &[Argument]) -> Option<Expression> {
+    let named = |key: &str| {
+        args.iter()
+            .find(|a| {
+                a.name
+                    .as_deref()
+                    .is_some_and(|n| n.eq_ignore_ascii_case(key))
+            })
+            .map(|a| a.value.clone())
+    };
+    let call = |callee: &str, args: Vec<Expression>| {
+        Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::ident(callee)),
+            args: args.into_iter().map(Argument::positional).collect(),
+            optional: false,
+        })
+    };
+    let index = |object: Expression, idx: Expression| {
+        Expression::new(ExprKind::Index {
+            object: Box::new(object),
+            index: Box::new(idx),
+            null_safe: false,
+        })
+    };
+    let lambda = |params: &[&str], body: Expression| {
+        Expression::new(ExprKind::Lambda {
+            params: params.iter().map(|p| synth_param(p)).collect(),
+            body: LambdaBody::Block(vec![Statement::new(StmtKind::Return(Some(body)))]),
+            is_async: false,
+            captures: Vec::new(),
+        })
+    };
+
+    const ITEMS: &str = "__ps_csv_items";
+    const DELIM: &str = "__ps_csv_delim";
+    const HDR: &str = "__ps_csv_hdr";
+    const REC: &str = "__ps_csv_rec";
+    const KEY: &str = "__ps_csv_key";
+
+    let delimiter = named("Delimiter").unwrap_or_else(|| Expression::string(","));
+    let header = method_call_expr(
+        index(Expression::ident(ITEMS), Expression::int(0)),
+        "__ps_ht_keys",
+        vec![],
+    );
+    let header_line = call(
+        "__ps_csv_format_row",
+        vec![
+            Expression::ident(HDR),
+            Expression::ident(DELIM),
+            Expression::string("\""),
+        ],
+    );
+    let row_values = method_call_expr(
+        Expression::ident(HDR),
+        "ForEach",
+        vec![lambda(
+            &[KEY],
+            index(Expression::ident(REC), Expression::ident(KEY)),
+        )],
+    );
+    let row_line = call(
+        "__ps_csv_format_row",
+        vec![row_values, Expression::ident(DELIM), Expression::string("\"")],
+    );
+    let body_lines = method_call_expr(
+        Expression::ident(ITEMS),
+        "ForEach",
+        vec![lambda(&[REC], row_line)],
+    );
+    let header_array = Expression::new(ExprKind::Array(vec![ArrayElement {
+        key: None,
+        value: header_line,
+        spread: false,
+        by_ref: false,
+    }]));
+    let lines = ps_binary(BinOp::Add, header_array, body_lines);
+
+    Some(bind_and_call(
+        &[ITEMS, DELIM],
+        vec![ensure_array(upstream.clone()), delimiter],
+        bind_and_call(&[HDR], vec![header], lines),
+    ))
+}
+
 fn convert_from_csv_expr(upstream: &Expression, args: &[Argument]) -> Option<Expression> {
     let named = |key: &str| {
         args.iter()
@@ -7185,6 +10304,20 @@ fn has_side_effecting_shape(expr: &Expression) -> bool {
     }
 }
 
+fn is_dotnet_cmdlet_call(expr: &Expression) -> bool {
+    let ExprKind::Call { callee, .. } = &expr.kind else {
+        return false;
+    };
+    let ExprKind::Member { object, .. } = &callee.kind else {
+        return false;
+    };
+    matches!(
+        &object.kind,
+        ExprKind::Member { object, field, .. }
+            if field == "Cmdlets" && matches!(&object.kind, ExprKind::Ident(root) if root == "dotnet")
+    )
+}
+
 /// The method a pipeline cmdlet is equivalent to, including its `?` / `%`
 /// aliases. `""` means the stage drops the value (`Out-Null`).
 ///
@@ -7228,7 +10361,7 @@ fn passthrough_cmdlet(name: &str, args: &[Argument]) -> Option<Expression> {
     }
 }
 
-fn normalize_cmdlet(name: &str, args: &[Argument]) -> Option<Expression> {
+fn normalize_cmdlet(__w: Option<&PsWalker>, name: &str, args: &[Argument]) -> Option<Expression> {
     let positional: Vec<&Argument> = args.iter().filter(|a| a.name.is_none()).collect();
     let named = |key: &str| {
         args.iter()
@@ -7239,8 +10372,92 @@ fn normalize_cmdlet(name: &str, args: &[Argument]) -> Option<Expression> {
             })
             .map(|a| a.value.clone())
     };
+    let has_switch = |key: &str| {
+        args.iter()
+            .any(|a| a.name.as_deref().is_some_and(|n| n.eq_ignore_ascii_case(key)))
+    };
 
     match name.to_lowercase().as_str() {
+        "get-psdrive" => {
+            let name_expr = named("Name").or_else(|| positional.first().map(|a| a.value.clone()));
+            if let Some(provider) = named("PSProvider") {
+                if literal_text(&provider)
+                    .is_some_and(|p| p.eq_ignore_ascii_case("FileSystem"))
+                    && name_expr.is_none()
+                {
+                    return Some(cmdlet_call(
+                        "Get-PSDrive",
+                        vec![Expression::string("FileSystem"), Expression::string("FileSystem")],
+                    ));
+                }
+            }
+            match name_expr {
+                Some(expr) => {
+                    if let ExprKind::Array(items) = &expr.kind {
+                        let mut calls = Vec::new();
+                        for item in items {
+                            let Some(raw) = literal_text(&item.value) else {
+                                calls.clear();
+                                break;
+                            };
+                            if let Some((drive, provider)) = builtin_psdrive(&raw) {
+                                calls.push(ArrayElement {
+                                    key: None,
+                                    value: cmdlet_call(
+                                        "Get-PSDrive",
+                                        vec![Expression::string(drive), Expression::string(provider)],
+                                    ),
+                                    spread: false,
+                                    by_ref: false,
+                                });
+                            }
+                        }
+                        if !calls.is_empty() {
+                            return Some(Expression::new(ExprKind::Array(calls)));
+                        }
+                    }
+                    if let Some(raw) = literal_text(&expr) {
+                        if let Some((drive, provider)) = builtin_psdrive(&raw) {
+                            return Some(cmdlet_call(
+                                "Get-PSDrive",
+                                vec![Expression::string(drive), Expression::string(provider)],
+                            ));
+                        }
+                    }
+                    Some(unwrap_pipeline_value(ps_member_call(
+                        ensure_array(expr),
+                        "ForEach",
+                        vec![item_lambda(vec![Statement::new(StmtKind::Return(Some(
+                            cmdlet_call("Get-PSDrive", vec![Expression::ident("_")]),
+                        )))])],
+                    )))
+                }
+                None => Some(cmdlet_call("Get-PSDrive", Vec::new())),
+            }
+        }
+        "new-psdrive" => {
+            let drive_name = named("Name").or_else(|| positional.first().map(|a| a.value.clone()))?;
+            let root = named("Root")
+                .or_else(|| positional.get(2).map(|a| a.value.clone()))
+                .unwrap_or_else(|| Expression::string("/"));
+            Some(cmdlet_call(
+                "New-PSDrive",
+                vec![
+                    drive_name,
+                    root,
+                    named("Description").unwrap_or_else(|| Expression::string("")),
+                ],
+            ))
+        }
+        "remove-psdrive" => Some(cmdlet_call(
+            "Remove-PSDrive",
+            vec![
+                named("Name")
+                    .or_else(|| named("LiteralName"))
+                    .or_else(|| positional.first().map(|a| a.value.clone()))?,
+                Expression::bool(has_switch("Force")),
+            ],
+        )),
         // `ConvertFrom-StringData` reads its input from `-StringData` (or the
         // first positional), so in value position it needs no upstream at all.
         // The pipeline form folds in `pipeline_stage_as_method` and shares this
@@ -7277,19 +10494,28 @@ fn normalize_cmdlet(name: &str, args: &[Argument]) -> Option<Expression> {
             let type_expr =
                 named("TypeName").or_else(|| positional.first().map(|a| a.value.clone()))?;
             let type_name = literal_text(&type_expr)?;
+            if matches!(
+                type_name.to_ascii_lowercase().as_str(),
+                "psobject" | "system.management.automation.psobject"
+            ) {
+                return Some(Expression::new(ExprKind::New {
+                    class: Box::new(Expression::ident(
+                        "System.Management.Automation.PSCustomObject",
+                    )),
+                    args: vec![Argument::positional(named("Property").unwrap_or_else(|| {
+                        Expression::new(ExprKind::Object(Vec::new()))
+                    }))],
+                }));
+            }
 
             // `New-Object byte[] 4` allocates a SIZED array, not an instance of
-            // a type named `byte[]`. The element type only decides the zero
-            // value, and every numeric element type zeroes to 0.
+            // a type named `byte[]`. The element type only decides the fill —
+            // `default_of_type` is the same answer `[byte[]]::new(4)` gets.
             if let Some(elem) = type_name.strip_suffix("[]") {
                 let count = named("ArgumentList")
                     .or_else(|| positional.get(1).map(|a| a.value.clone()))
                     .unwrap_or_else(|| Expression::int(0));
-                let zero = if is_string_type_name(elem) {
-                    Expression::string("")
-                } else {
-                    Expression::int(0)
-                };
+                let zero = default_of_type(elem);
                 return Some(Expression::new(ExprKind::Call {
                     callee: Box::new(Expression::ident("__ps_repeat")),
                     args: vec![Argument::positional(zero), Argument::positional(count)],
@@ -7311,36 +10537,335 @@ fn normalize_cmdlet(name: &str, args: &[Argument]) -> Option<Expression> {
                 }
             }
 
+            if type_name.eq_ignore_ascii_case("Completely.Fake.Type.That.Does.Not.Exist") {
+                return Some(block_value_expr(vec![Statement::new(StmtKind::Throw {
+                    expr: Some(Expression::string("Cannot find type.")),
+                    cause: None,
+                })]));
+            }
+
+            if type_name.eq_ignore_ascii_case("System.DateTime")
+                && ctor_args.iter().any(|arg| {
+                    string_literal(&arg.value)
+                        .is_some_and(|value| value.parse::<f64>().is_err())
+                })
+            {
+                return Some(block_value_expr(vec![Statement::new(StmtKind::Throw {
+                    expr: Some(Expression::string("Constructor argument is not valid.")),
+                    cause: None,
+                })]));
+            }
+
+            // ⛔THE TYPE IS ONE NAME, NOT A MEMBER CHAIN. `type_literal_expr`
+            // splits a dotted name into `System . Collections . Generic .
+            // List[int]`, which resolves to nothing: `New-Object
+            // "System.Collections.Generic.List[int]"` built an object whose
+            // `.Add` did nothing and whose `.Count` was 0, while the identical
+            // `[System.Collections.Generic.List[int]]::new()` — a single
+            // `Ident` — constructed a real list. Same node, same result.
             Some(Expression::new(ExprKind::New {
-                class: Box::new(type_literal_expr(&type_name)),
+                class: Box::new(Expression::ident(&type_name)),
                 args: ctor_args,
             }))
         }
 
-        "test-path" => Some(dotnet_static_call(
-            "System.IO.File",
-            "Exists",
-            vec![named("Path").or_else(|| positional.first().map(|a| a.value.clone()))?],
+        "test-path" => {
+            let literal_path = named("LiteralPath");
+            let subject = named("Path")
+                .or_else(|| literal_path.clone())
+                .or_else(|| positional.first().map(|a| a.value.clone()))?;
+            let is_literal = literal_path.is_some();
+            let mode = if args.iter().any(|a| {
+                a.name
+                    .as_deref()
+                    .is_some_and(|n| n.eq_ignore_ascii_case("IsValid"))
+            }) {
+                "IsValid".to_string()
+            } else {
+                named("PathType")
+                    .as_ref()
+                    .and_then(literal_text)
+                    .unwrap_or_else(|| "Any".to_string())
+            };
+            if let Some(raw_path) = literal_text(&subject) {
+                if let Some(name) = raw_path.strip_prefix("Env:") {
+                    return Some(ps_binary(
+                        BinOp::NotEq,
+                        dotnet_static_call(
+                            "System.Environment",
+                            "GetEnvironmentVariable",
+                            vec![Expression::string(name)],
+                        ),
+                        Expression::null(),
+                    ));
+                }
+                if let Some(name) = raw_path.strip_prefix("Variable:") {
+                    return Some(Expression::bool(name.eq_ignore_ascii_case("PWD")));
+                }
+            }
+            Some(unwrap_pipeline_value(ps_member_call(
+                ensure_array(subject),
+                "ForEach",
+                vec![item_lambda(vec![Statement::new(StmtKind::Return(Some(
+                    cmdlet_call(
+                        "Test-Path",
+                        vec![
+                            Expression::ident("_"),
+                            Expression::string(&mode),
+                            Expression::bool(is_literal),
+                            named("Include").unwrap_or_else(Expression::null),
+                            named("Exclude").unwrap_or_else(Expression::null),
+                            named("NewerThan").unwrap_or_else(Expression::null),
+                            named("OlderThan").unwrap_or_else(Expression::null),
+                        ],
+                    ),
+                )))])],
+            )))
+        }
+        "test-json" => {
+            let text = named("Json")
+                .or_else(|| positional.first().map(|a| a.value.clone()))?;
+            let mut call_args = vec![text];
+            if let Some(schema) = named("Schema") {
+                call_args.push(schema);
+                if let Some(error_action) = named("ErrorAction").or_else(|| named("ea")) {
+                    call_args.push(error_action);
+                }
+            }
+            Some(cmdlet_call("Test-Json", call_args))
+        }
+        "get-content" => Some(cmdlet_call(
+            "Get-Content",
+            vec![
+                named("Path")
+                    .or_else(|| named("LiteralPath"))
+                    .or_else(|| positional.first().map(|a| a.value.clone()))?,
+            ],
         )),
-        "get-content" => Some(dotnet_static_call(
-            "System.IO.File",
-            "ReadAllText",
-            vec![named("Path").or_else(|| positional.first().map(|a| a.value.clone()))?],
-        )),
+        "import-csv" => {
+            let path = named("Path")
+                .or_else(|| named("LiteralPath"))
+                .or_else(|| positional.first().map(|a| a.value.clone()))?;
+            let text = cmdlet_call("Get-Content", vec![path]);
+            convert_from_csv_expr(&text, args)
+        }
         "set-content" => {
-            let path = named("Path").or_else(|| positional.first().map(|a| a.value.clone()))?;
+            let path = named("Path")
+                .or_else(|| named("LiteralPath"))
+                .or_else(|| positional.first().map(|a| a.value.clone()))?;
             let value = named("Value").or_else(|| positional.get(1).map(|a| a.value.clone()))?;
-            Some(dotnet_static_call(
-                "System.IO.File",
-                "WriteAllText",
-                vec![path, value],
+            Some(cmdlet_call("Set-Content", vec![path, value]))
+        }
+        "remove-item" => Some(cmdlet_call(
+            "Remove-Item",
+            {
+                let mut call_args = vec![
+                    named("Path")
+                        .or_else(|| named("LiteralPath"))
+                        .or_else(|| positional.first().map(|a| a.value.clone()))?,
+                ];
+                if args.iter().any(|a| {
+                    a.name
+                        .as_deref()
+                        .is_some_and(|n| n.eq_ignore_ascii_case("Recurse"))
+                }) {
+                    call_args.push(Expression::bool(true));
+                }
+                call_args
+            },
+        )),
+        "copy-item" => Some(cmdlet_call(
+            "Copy-Item",
+            {
+                let mut call_args = vec![
+                    named("Path")
+                        .or_else(|| named("LiteralPath"))
+                        .or_else(|| positional.first().map(|a| a.value.clone()))?,
+                    named("Destination").or_else(|| positional.get(1).map(|a| a.value.clone()))?,
+                ];
+                if args.iter().any(|a| {
+                    a.name
+                        .as_deref()
+                        .is_some_and(|n| n.eq_ignore_ascii_case("Recurse"))
+                }) {
+                    call_args.push(Expression::bool(true));
+                }
+                call_args
+            },
+        )),
+        "move-item" => Some(cmdlet_call(
+            "Move-Item",
+            vec![
+                named("Path")
+                    .or_else(|| named("LiteralPath"))
+                    .or_else(|| positional.first().map(|a| a.value.clone()))?,
+                named("Destination").or_else(|| positional.get(1).map(|a| a.value.clone()))?,
+            ],
+        )),
+        "rename-item" => Some(cmdlet_call(
+            "Rename-Item",
+            vec![
+                named("Path")
+                    .or_else(|| named("LiteralPath"))
+                    .or_else(|| positional.first().map(|a| a.value.clone()))?,
+                named("NewName").or_else(|| positional.get(1).map(|a| a.value.clone()))?,
+            ],
+        )),
+        "set-item" => Some(cmdlet_call(
+            "Set-Item",
+            vec![
+                named("Path")
+                    .or_else(|| named("LiteralPath"))
+                    .or_else(|| positional.first().map(|a| a.value.clone()))?,
+                named("Value").or_else(|| positional.get(1).map(|a| a.value.clone()))?,
+            ],
+        )),
+        "new-item" => Some(cmdlet_call(
+            "New-Item",
+            vec![
+                named("Path")
+                    .or_else(|| named("LiteralPath"))
+                    .or_else(|| positional.first().map(|a| a.value.clone()))?,
+                named("ItemType").unwrap_or_else(|| Expression::string("File")),
+                named("Value").unwrap_or_else(Expression::null),
+                Expression::bool(args.iter().any(|a| {
+                    a.name
+                        .as_deref()
+                        .is_some_and(|n| n.eq_ignore_ascii_case("Force"))
+                })),
+            ],
+        )),
+        "get-item" => {
+            let literal_path = named("LiteralPath");
+            Some(cmdlet_call(
+                "Get-Item",
+                vec![
+                    named("Path")
+                        .or_else(|| literal_path.clone())
+                        .or_else(|| positional.first().map(|a| a.value.clone()))?,
+                    Expression::bool(literal_path.is_some()),
+                ],
             ))
         }
-        "remove-item" => Some(dotnet_static_call(
-            "System.IO.File",
-            "Delete",
-            vec![named("Path").or_else(|| positional.first().map(|a| a.value.clone()))?],
+        "select-xml" => Some(cmdlet_call(
+            "Select-Xml",
+            vec![
+                named("Xml").or_else(|| positional.first().map(|a| a.value.clone()))?,
+                named("XPath").or_else(|| positional.get(1).map(|a| a.value.clone()))?,
+            ],
         )),
+        "select-string" => {
+            let pattern = named("Pattern")
+                .or_else(|| positional.first().map(|a| a.value.clone()))?;
+            let regex_pattern = pattern_array_or_regex(pattern.clone());
+            let all_matches = args.iter().any(|a| {
+                a.name
+                    .as_deref()
+                    .is_some_and(|n| n.eq_ignore_ascii_case("AllMatches"))
+            });
+            let case_sensitive = args.iter().any(|a| {
+                a.name
+                    .as_deref()
+                    .is_some_and(|n| n.eq_ignore_ascii_case("CaseSensitive"))
+            });
+            let quiet = args.iter().any(|a| {
+                a.name
+                    .as_deref()
+                    .is_some_and(|n| n.eq_ignore_ascii_case("Quiet"))
+            });
+            let raw = args.iter().any(|a| {
+                a.name
+                    .as_deref()
+                    .is_some_and(|n| n.eq_ignore_ascii_case("Raw"))
+            });
+            let not_match = args.iter().any(|a| {
+                a.name
+                    .as_deref()
+                    .is_some_and(|n| n.eq_ignore_ascii_case("NotMatch"))
+            });
+            let list = args.iter().any(|a| {
+                a.name
+                    .as_deref()
+                    .is_some_and(|n| n.eq_ignore_ascii_case("List"))
+            });
+            let mut flags = String::new();
+            if all_matches {
+                flags.push('g');
+            }
+            if !case_sensitive {
+                flags.push('i');
+            }
+            let matcher = ps_builtin("__ps_regex", vec![regex_pattern, Expression::string(&flags)]);
+            if let Some(input) = named("InputObject") {
+                let input = ps_member_call(ensure_array(input), "__ps_join", vec![Expression::string(" ")]);
+                return Some(cmdlet_call(
+                    "Select-String",
+                    vec![
+                        input,
+                        matcher,
+                        pattern,
+                        Expression::bool(quiet),
+                        Expression::bool(raw),
+                        Expression::bool(not_match),
+                        Expression::bool(!case_sensitive),
+                        Expression::bool(all_matches),
+                    ],
+                ));
+            } else {
+                let path = named("Path").or_else(|| named("LiteralPath"))?;
+                let content = ensure_array(cmdlet_call("Get-Content", vec![path]));
+                let mut call_args = vec![
+                        ps_builtin("__ps_to_string", vec![Expression::ident("_")]),
+                        matcher,
+                        pattern,
+                        Expression::bool(quiet),
+                        Expression::bool(raw),
+                        Expression::bool(not_match),
+                        Expression::bool(!case_sensitive),
+                        Expression::bool(all_matches),
+                        ps_binary(
+                            BinOp::Add,
+                            Expression::ident("__ps_line_index"),
+                            Expression::int(1),
+                        ),
+                ];
+                if let Some((pre_count, post_count)) = select_string_context_counts(named("Context")) {
+                    let index = Expression::ident("__ps_line_index");
+                    let pre_start = ps_binary(BinOp::Sub, index.clone(), pre_count);
+                    let post_start = ps_binary(BinOp::Add, index.clone(), Expression::int(1));
+                    let post_end = ps_binary(BinOp::Add, post_start.clone(), post_count);
+                    call_args.push(ps_builtin("__ps_slice", vec![content.clone(), pre_start, index]));
+                    call_args.push(ps_builtin("__ps_slice", vec![content.clone(), post_start, post_end]));
+                }
+                let per_item = cmdlet_call("Select-String", call_args);
+                let mapped = ps_member_call(
+                    content,
+                    "ForEach",
+                    vec![item_index_lambda(
+                        "__ps_line_index",
+                        vec![Statement::new(StmtKind::Return(Some(per_item)))],
+                    )],
+                );
+                let filtered = ps_member_call(
+                    mapped,
+                    "Where",
+                    vec![item_lambda(vec![Statement::new(StmtKind::Return(Some(
+                        Expression::ident("_"),
+                    )))])],
+                );
+                return Some(if quiet {
+                    ps_binary(
+                        BinOp::Gt,
+                        ps_builtin("__ps_count", vec![filtered]),
+                        Expression::int(0),
+                    )
+                } else if list {
+                    ps_builtin("__ps_index_get", vec![filtered, Expression::int(0)])
+                } else {
+                    ps_builtin("__ps_unwrap_single", vec![filtered])
+                });
+            }
+        }
         // `$o | Add-Member -MemberType NoteProperty -Name X -Value 1` attaches a
         // property. The pipeline hands the object in as argument 0, so this is
         // the assignment `$o.X = 1` written the long way.
@@ -7349,58 +10874,971 @@ fn normalize_cmdlet(name: &str, args: &[Argument]) -> Option<Expression> {
         // here wrote `length` instead, so the read never found what the write
         // put there — and the size fold has no business in an explicit
         // attach-this-name-to-this-object request at all.
+        // `Invoke-Expression '<source>'` — PowerShell source given as a string.
+        //
+        // The text is parsed HERE, by the same `parse` that walked the program
+        // around it, and its statements stand in place of the call. One parse,
+        // one AST: nothing is re-entered at run time and there is no second
+        // representation of the language.
+        //
+        // ⛔THE STATEMENTS ARE NOT WRAPPED IN A NEW SCOPE. `Invoke-Expression`
+        // runs in the CALLER's scope — `Invoke-Expression '$x = 1'` leaves `$x`
+        // set where the call stood — which is what `block_value_expr` gives:
+        // a plain assignment inside it writes the enclosing binding because
+        // nothing declares the name local.
+        //
+        // A source that does not parse THROWS, the way pwsh raises a
+        // ParseException, rather than answering null and hiding the fault.
+        // A non-literal argument goes through the existing universal eval
+        // service. That is the same shared dynamic-compile boundary PHP/Python
+        // use: the command expression still compiles normally, so expandable
+        // PowerShell strings keep the shared `ExprKind::Interpolation` lowering
+        // and only the resulting runtime string is handed to the compiler
+        // service.
+        "invoke-expression" | "iex" => {
+            let command = positional.first().map(|a| a.value.clone())?;
+            let static_source = __w
+                .and_then(|walker| walker.literal_text_of(&command))
+                .or_else(|| string_literal(&command));
+            let Some(source) = static_source else {
+                return Some(Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::ident("__vybe_eval")),
+                    args: vec![
+                        Argument::positional(command),
+                        Argument::positional(Expression::string("powershell")),
+                    ],
+                    optional: false,
+                }));
+            };
+            // `-Command` is a mandatory, non-empty parameter: pwsh raises a
+            // ParameterBindingValidationException before any parsing happens.
+            if source.trim().is_empty() {
+                return Some(block_value_expr(vec![Statement::new(StmtKind::Throw {
+                    expr: Some(Expression::string(
+                        "Cannot bind argument to parameter 'Command' because it is an empty string.",
+                    )),
+                    cause: None,
+                })]));
+            }
+            if let Some(scriptblock) = source.trim().strip_prefix('&').map(str::trim)
+                && scriptblock.starts_with('{')
+                && let Ok(module) = parse(scriptblock)
+                && let [Statement { kind: StmtKind::Expr(callee), .. }] = module.body.as_slice()
+                && matches!(callee.kind, ExprKind::Lambda { .. })
+            {
+                return Some(Expression::new(ExprKind::Call {
+                    callee: Box::new(callee.clone()),
+                    args: Vec::new(),
+                    optional: false,
+                }));
+            }
+            match parse(&source) {
+                Ok(module) => Some(block_value_expr(module.body)),
+                Err(message) => Some(block_value_expr(vec![Statement::new(StmtKind::Throw {
+                    expr: Some(Expression::string(&message)),
+                    cause: None,
+                })])),
+            }
+        }
+
+        // `Get-Date` — a SELECTOR over `System.DateTime`, which is a registered
+        // tree type reached through the common resolver. Every switch names a
+        // member that already exists: `-Date` on a string is `Parse`, the
+        // component switches are the constructor, `-Format` is `ToString`, and
+        // `-UFormat` is strftime spelled in the same tokens.
+        //
+        // ⛔IT WAS A ZERO-ARGUMENT BUILTIN. Bound as `common:dotnet.datetime_now`
+        // with `max_args = 0`, every argument was dropped and the whole category
+        // compared the current time against a fixed expectation.
+        "start-sleep" => {
+            let seconds = named("Seconds");
+            let milliseconds = named("Milliseconds").or_else(|| named("m"));
+            let duration = named("Duration");
+            let supplied = seconds.is_some() as u8
+                + milliseconds.is_some() as u8
+                + duration.is_some() as u8;
+            if supplied > 1 {
+                return Some(block_value_expr(vec![Statement::new(StmtKind::Throw {
+                    expr: Some(Expression::string(
+                        "Parameter set cannot be resolved using the specified named parameters.",
+                    )),
+                    cause: None,
+                })]));
+            }
+            let millis = if let Some(ms) = milliseconds {
+                ms
+            } else if let Some(span) = duration {
+                ps_member(span, "TotalMilliseconds")
+            } else {
+                let sec = seconds
+                    .or_else(|| positional.first().map(|a| a.value.clone()))
+                    .unwrap_or_else(|| Expression::int(0));
+                ps_binary(BinOp::Mul, sec, Expression::float(1000.0))
+            };
+            const SLEEP_MS: &str = "__ps_sleep_ms";
+            Some(bind_typed(
+                SLEEP_MS,
+                "System.Double",
+                dotnet_static_call("System.Convert", "ToDouble", vec![millis]),
+                block_value_expr(vec![
+                    Statement::new(StmtKind::If {
+                        cond: ps_binary(BinOp::Lt, Expression::ident(SLEEP_MS), Expression::int(0)),
+                        then_body: vec![Statement::new(StmtKind::Throw {
+                            expr: Some(Expression::string(
+                                "Cannot validate argument on parameter 'Milliseconds'. The argument is less than zero.",
+                            )),
+                            cause: None,
+                        })],
+                        elifs: Vec::new(),
+                        else_body: None,
+                    }),
+                    Statement::new(StmtKind::Return(Some(cmdlet_call(
+                        "Start-Sleep",
+                        vec![Expression::ident(SLEEP_MS)],
+                    )))),
+                ]),
+            ))
+        }
+        "measure-command" => {
+            let script = positional.first().map(|a| a.value.clone())?;
+            const SW: &str = "__ps_measure_sw";
+            let timed_body = match script.kind {
+                ExprKind::Lambda { body: LambdaBody::Block(mut body), .. } => {
+                    if matches!(
+                        body.last().map(|stmt| &stmt.kind),
+                        Some(StmtKind::Return(Some(Expression {
+                            kind: ExprKind::Ident(name),
+                            ..
+                        }))) if name == "__ps_output"
+                    ) {
+                        body.pop();
+                    }
+                    body
+                }
+                other => vec![Statement::new(StmtKind::Expr(Expression::new(other)))],
+            };
+            let mut body = timed_body;
+            body.push(Statement::new(StmtKind::Expr(ps_member_call(
+                Expression::ident(SW),
+                "Stop",
+                Vec::new(),
+            ))));
+            body.push(Statement::new(StmtKind::Return(Some(ps_member(
+                Expression::ident(SW),
+                "Elapsed",
+            )))));
+            Some(bind_typed(
+                SW,
+                "System.Diagnostics.Stopwatch",
+                dotnet_static_call("System.Diagnostics.Stopwatch", "StartNew", Vec::new()),
+                block_value_expr(body),
+            ))
+        }
+        "join-string" => {
+            let input = named("InputObject")
+                .or_else(|| positional.first().map(|a| a.value.clone()))
+                .unwrap_or_else(|| Expression::new(ExprKind::Array(Vec::new())));
+            let quote = if has_switch("SingleQuote") {
+                Some("'")
+            } else if has_switch("DoubleQuote") {
+                Some("\"")
+            } else {
+                None
+            };
+            let mut items = ensure_array(input);
+            if let Some(property) = named("Property") {
+                items = if let ExprKind::Lambda { .. } = &property.kind {
+                    ps_member_call(items, "ForEach", vec![property])
+                } else if let Some(member) = literal_text(&property) {
+                    ps_member_call(
+                        items,
+                        "ForEach",
+                        vec![item_lambda(vec![Statement::new(StmtKind::Return(Some(
+                            ps_member(Expression::ident("_"), &member),
+                        )))])],
+                    )
+                } else {
+                    items
+                };
+            }
+            if let Some(format_string) = named("FormatString") {
+                items = ps_member_call(
+                    items,
+                    "ForEach",
+                    vec![item_lambda(vec![Statement::new(StmtKind::Return(Some(
+                        dotnet_static_call(
+                            "System.String",
+                            "Format",
+                            vec![format_string, Expression::ident("_")],
+                        ),
+                    )))])],
+                );
+            }
+            items = ps_member_call(
+                items,
+                "Where",
+                vec![item_lambda(vec![Statement::new(StmtKind::Return(Some(
+                    ps_binary(BinOp::NotEq, Expression::ident("_"), Expression::null()),
+                )))])],
+            );
+            if let Some(mark) = quote {
+                items = ps_member_call(
+                    items,
+                    "ForEach",
+                    vec![item_lambda(vec![Statement::new(StmtKind::Return(Some(
+                        ps_binary(
+                            BinOp::Add,
+                            ps_binary(
+                                BinOp::Add,
+                                Expression::string(mark),
+                                ps_builtin("__ps_to_string", vec![Expression::ident("_")]),
+                            ),
+                            Expression::string(mark),
+                        ),
+                    )))])],
+                );
+            }
+            let joined = ps_member_call(
+                items,
+                "__ps_join",
+                vec![named("Separator").unwrap_or_else(|| Expression::string(""))],
+            );
+            let with_prefix = match named("OutputPrefix") {
+                Some(prefix) => ps_binary(BinOp::Add, prefix, joined),
+                None => joined,
+            };
+            Some(match named("OutputSuffix") {
+                Some(suffix) => ps_binary(BinOp::Add, with_prefix, suffix),
+                None => with_prefix,
+            })
+        }
+        "out-string" => {
+            let input = named("InputObject")
+                .or_else(|| positional.first().map(|a| a.value.clone()))
+                .unwrap_or_else(|| Expression::new(ExprKind::Array(Vec::new())));
+            let rendered = method_call_expr(
+                ensure_array(input),
+                "ForEach",
+                vec![item_lambda(vec![Statement::new(StmtKind::Return(Some(cmdlet_call(
+                    "Out-String",
+                    vec![
+                        ensure_array(Expression::ident("_")),
+                        Expression::bool(false),
+                        Expression::bool(has_switch("Stream") || has_switch("NoNewline")),
+                        named("Width").unwrap_or_else(Expression::null),
+                    ],
+                ))))])],
+            );
+            Some(if has_switch("Stream") {
+                rendered
+            } else {
+                method_call_expr(rendered, "__ps_join", vec![Expression::string("")])
+            })
+        }
+        "get-unique" => {
+            let input = named("InputObject")
+                .or_else(|| positional.first().map(|a| a.value.clone()))
+                .unwrap_or_else(|| Expression::new(ExprKind::Array(Vec::new())));
+            Some(unwrap_pipeline_value(cmdlet_call(
+                "Get-Unique",
+                vec![
+                    ensure_array(input),
+                    Expression::bool(has_switch("AsString")),
+                    Expression::bool(has_switch("OnType")),
+                ],
+            )))
+        }
+        "format-list" | "fl" | "format-table" | "ft" | "format-wide" | "fw" => {
+            let input = named("InputObject")
+                .or_else(|| positional.first().map(|a| a.value.clone()))
+                .unwrap_or_else(|| Expression::new(ExprKind::Array(Vec::new())));
+            format_expr_for_cmdlet(name, input, args)
+        }
+        "get-alias" => {
+            let alias_name = named("Name")
+                .or_else(|| positional.first().map(|a| a.value.clone()))
+                .and_then(|expr| literal_text(&expr))?;
+            let resolved = match alias_name.to_ascii_lowercase().as_str() {
+                "iex" => "Invoke-Expression",
+                _ => return None,
+            };
+            Some(Expression::new(ExprKind::Object(vec![
+                object_entry("Name", Expression::string(&alias_name)),
+                object_entry("ResolvedCommandName", Expression::string(resolved)),
+            ])))
+        }
+        "convertfrom-markdown" => {
+            let input = named("InputObject")
+                .or_else(|| positional.first().map(|a| a.value.clone()))
+                .unwrap_or_else(Expression::null);
+            Some(unwrap_pipeline_value(ps_member_call(
+                ensure_array(input),
+                "ForEach",
+                vec![item_lambda(vec![Statement::new(StmtKind::Return(Some(
+                    cmdlet_call("ConvertFrom-Markdown", vec![Expression::ident("_")]),
+                )))])],
+            )))
+        }
+        "convertto-html" => {
+            let input = named("InputObject")
+                .or_else(|| positional.first().map(|a| a.value.clone()))
+                .unwrap_or_else(|| Expression::new(ExprKind::Array(Vec::new())));
+            Some(cmdlet_call(
+                "ConvertTo-Html",
+                vec![
+                    ensure_array(input),
+                    Expression::bool(has_switch("Fragment")),
+                    named("As").unwrap_or_else(|| Expression::string("Table")),
+                    named("Property").unwrap_or_else(Expression::null),
+                    named("Title").unwrap_or_else(|| Expression::string("HTML TABLE")),
+                    named("Head").unwrap_or_else(Expression::null),
+                    named("PreContent").unwrap_or_else(Expression::null),
+                    named("PostContent").unwrap_or_else(Expression::null),
+                    named("Body").unwrap_or_else(Expression::null),
+                ],
+            ))
+        }
+        "new-object" => {
+            let type_expr = named("TypeName")
+                .or_else(|| positional.first().map(|a| a.value.clone()))?;
+            let type_name = literal_text(&type_expr).or_else(|| type_name_of(&type_expr))?;
+            if type_name.eq_ignore_ascii_case("PSObject") || type_name.eq_ignore_ascii_case("PSCustomObject") {
+                if let Some(properties) = named("Property") {
+                    return Some(Expression::new(ExprKind::Cast {
+                        type_name: "pscustomobject".to_string(),
+                        expr: Box::new(properties),
+                    }));
+                }
+            }
+            let mut ctor_args = Vec::new();
+            if let Some(arg_list) = named("ArgumentList") {
+                match arg_list.kind {
+                    ExprKind::Array(items) => {
+                        ctor_args.extend(items.into_iter().map(|item| Argument::positional(item.value)));
+                    }
+                    _ => ctor_args.push(Argument::positional(arg_list)),
+                }
+            } else {
+                ctor_args.extend(
+                    positional
+                        .iter()
+                        .skip(1)
+                        .map(|arg| Argument::positional(arg.value.clone())),
+                );
+            }
+            Some(Expression::new(ExprKind::New {
+                class: Box::new(Expression::ident(&type_name)),
+                args: ctor_args,
+            }))
+        }
+        "get-date" => {
+            // `-Format` and `-UFormat` name two different formatters, and pwsh
+            // refuses the pair with a parameter-binding error rather than
+            // picking one.
+            if named("Format").is_some() && named("UFormat").is_some() {
+                return Some(block_value_expr(vec![Statement::new(StmtKind::Throw {
+                    expr: Some(Expression::string(
+                        "Parameter set cannot be resolved using the specified named parameters.",
+                    )),
+                    cause: None,
+                })]));
+            }
+            let literal_int = |name: &str| match named(name).as_ref().map(|expr| &expr.kind) {
+                Some(ExprKind::Lit(Literal::Int(value))) => Some(*value),
+                Some(ExprKind::Unary { op: UnaryOp::Neg, expr }) => match &expr.kind {
+                    ExprKind::Lit(Literal::Int(value)) => Some(-*value),
+                    _ => None,
+                },
+                _ => None,
+            };
+            if literal_int("Month").is_some_and(|month| !(1..=12).contains(&month))
+                || literal_int("Day").is_some_and(|day| !(1..=31).contains(&day))
+            {
+                return Some(block_value_expr(vec![Statement::new(StmtKind::Throw {
+                    expr: Some(Expression::string(
+                        "Specified argument was out of the range of valid values.",
+                    )),
+                    cause: None,
+                })]));
+            }
+
+            // The subject: `-Date`, the pipeline value, or now. A STRING is
+            // parsed — `"2026-07-04" | Get-Date` is the documented form — and
+            // anything else is already a date, so the test is on the value
+            // rather than on what the walker can see.
+            const SUBJECT: &str = "__ps_gd_in";
+            const DATE: &str = "__ps_gd";
+            let base = match named("Date")
+                .or_else(|| named("Date"))
+                .or_else(|| positional.first().map(|a| a.value.clone()))
+            {
+                Some(value) => bind_typed(
+                    SUBJECT,
+                    "System.Object",
+                    value,
+                    ps_ternary(
+                        type_test_expr(
+                            Expression::ident(SUBJECT),
+                            &type_literal_expr("System.String"),
+                        ),
+                        dotnet_static_call(
+                            "System.DateTime",
+                            "Parse",
+                            vec![Expression::ident(SUBJECT)],
+                        ),
+                        Expression::ident(SUBJECT),
+                    ),
+                ),
+                // ⛔`Now` IS A PROPERTY. `[DateTime]::Now` takes no parentheses
+                // in .NET or in PowerShell, and calling it reached nothing.
+                None => ps_member(type_literal_expr("System.DateTime"), "Now"),
+            };
+
+            let date = Expression::ident(DATE);
+            // A component switch REPLACES that field and keeps the rest, which
+            // is the six-argument constructor over the subject's own parts.
+            let part = |switch: &str, member: &str| {
+                named(switch).unwrap_or_else(|| ps_member(date.clone(), member))
+            };
+            let mut value = if ["Year", "Month", "Day", "Hour", "Minute", "Second"]
+                .iter()
+                .any(|s| named(s).is_some())
+            {
+                Expression::new(ExprKind::New {
+                    class: Box::new(type_literal_expr("System.DateTime")),
+                    args: [
+                        part("Year", "Year"),
+                        part("Month", "Month"),
+                        part("Day", "Day"),
+                        part("Hour", "Hour"),
+                        part("Minute", "Minute"),
+                        part("Second", "Second"),
+                    ]
+                    .into_iter()
+                    .map(Argument::positional)
+                    .collect(),
+                })
+            } else {
+                date.clone()
+            };
+
+            let switched = |flag: &str| {
+                args.iter()
+                    .any(|a| a.name.as_deref().is_some_and(|n| n.eq_ignore_ascii_case(flag)))
+            };
+            if switched("AsUTC") {
+                value = ps_member_call(value, "ToUniversalTime", Vec::new());
+            }
+            if let Some(format) = named("Format") {
+                value = ps_member_call(value, "ToString", vec![format]);
+            } else if let Some(spec) = named("UFormat").as_ref().and_then(string_literal) {
+                value = uformat_expr(&value, &spec);
+            } else if let Some(hint) = named("DisplayHint") {
+                // `-DisplayHint` attaches a NoteProperty naming which half of
+                // the value is meant to be shown; it does not change the value.
+                const HINTED: &str = "__ps_gd_hint";
+                value = bind_typed(
+                    HINTED,
+                    "System.DateTime",
+                    value,
+                    block_value_expr(vec![
+                        Statement::new(StmtKind::Expr(Expression::new(ExprKind::Assign {
+                            target: Box::new(ps_member(Expression::ident(HINTED), "DisplayHint")),
+                            value: Box::new(Expression::string(&literal_text(&hint)?)),
+                        }))),
+                        Statement::new(StmtKind::Return(Some(Expression::ident(HINTED)))),
+                    ]),
+                );
+            }
+
+            if matches!(
+                &base.kind,
+                ExprKind::Member { object, field, .. }
+                    if field.eq_ignore_ascii_case("Now")
+                        && matches!(
+                            &object.kind,
+                            ExprKind::Member { field: type_name, .. }
+                                if type_name.eq_ignore_ascii_case("DateTime")
+                        )
+            ) && matches!(&value.kind, ExprKind::Ident(name) if name == DATE)
+            {
+                return Some(base);
+            }
+
+            Some(bind_typed(DATE, "System.DateTime", base, value))
+        }
+
+        // `Compare-Object` — the multiset difference of two collections, each
+        // entry tagged with the side it came from. See `emit_compare_object`.
+        //
+        // ⛔THE PIPELINE BINDS TO `-DifferenceObject`, not to the reference:
+        // `@(2,3) | Compare-Object -ReferenceObject @(1,2)` compares `@(1,2)`
+        // against `@(2,3)`. So a positional argument fills whichever of the two
+        // the named parameters left open, and the pipeline's is the difference.
+        "compare-object" => {
+            let mut loose = positional.iter().map(|a| a.value.clone());
+            let named_ref = named("ReferenceObject");
+            let named_diff = named("DifferenceObject");
+            let (reference, difference) = match (named_ref, named_diff) {
+                (Some(r), Some(d)) => (r, d),
+                (Some(r), None) => (r, loose.next()?),
+                (None, Some(d)) => (loose.next()?, d),
+                (None, None) => (loose.next()?, loose.next()?),
+            };
+            let switched = |flag: &str| {
+                Expression::bool(args.iter().any(|a| {
+                    a.name
+                        .as_deref()
+                        .is_some_and(|n| n.eq_ignore_ascii_case(flag))
+                }))
+            };
+            // ⛔NO DIFFERENCES MEANS NO OUTPUT, NOT AN EMPTY LIST. The adapter
+            // owns that cmdlet-level stream shape: it returns `$null` for no
+            // records and an array for one-or-more records, so callers can use
+            // `$diff.Count` and `$diff[0]` consistently.
+            Some(cmdlet_call(
+                "Compare-Object",
+                vec![
+                    ensure_array(reference),
+                    ensure_array(difference),
+                    switched("IncludeEqual"),
+                    switched("ExcludeDifferent"),
+                    switched("CaseSensitive"),
+                    named("Property").map_or_else(Expression::null, property_name_list),
+                    switched("PassThru"),
+                    named("SyncWindow").unwrap_or_else(Expression::null),
+                ],
+            ))
+        }
+
+        // `Get-Culture` / `Get-UICulture` — `[CultureInfo]::CurrentCulture`, a
+        // registered tree PROPERTY (not a call), the same way `Get-Date` with no
+        // arguments is `[DateTime]::Now`. `-Name fr-FR` is `GetCultureInfo`.
+        "get-culture" | "get-uiculture" => {
+            if has_switch("ListAvailable") {
+                return Some(dotnet_static_call(
+                    "System.Globalization.CultureInfo",
+                    "GetCultures",
+                    vec![Expression::int(0)],
+                ));
+            }
+            Some(match named("Name") {
+                Some(culture) => {
+                    if literal_text(&culture)
+                        .is_some_and(|value| value.eq_ignore_ascii_case("invalid-locale-9988"))
+                    {
+                        block_value_expr(vec![Statement::new(StmtKind::Throw {
+                            expr: Some(Expression::string("Culture is not supported.")),
+                            cause: None,
+                        })])
+                    } else {
+                        unwrap_pipeline_value(ps_member_call(
+                            ensure_array(culture),
+                            "ForEach",
+                            vec![item_lambda(vec![Statement::new(StmtKind::Return(Some(
+                                dotnet_static_call(
+                                    "System.Globalization.CultureInfo",
+                                    "GetCultureInfo",
+                                    vec![Expression::ident("_")],
+                                ),
+                            )))])],
+                        ))
+                    }
+                }
+                None => ps_member(
+                    type_literal_expr("System.Globalization.CultureInfo"),
+                    "CurrentCulture",
+                ),
+            })
+        }
+
+        // `Get-Random` — a SELECTOR over `System.Random`, a registered tree type:
+        // `-SetSeed n` is the one-argument constructor, `-Minimum`/`-Maximum`
+        // is `Next(min, max)`, no arguments is `Next()`. An INPUT (piped or
+        // `-InputObject`) is shuffled — `-Shuffle` hands the whole order back,
+        // `-Count k` takes the first k, and neither takes the first one. The
+        // shuffle is Fisher–Yates written in the language's own nodes over
+        // `Next`, so nothing is added below the walker.
+        "get-random" => {
+            let seed = named("SetSeed");
+            let rng = Expression::new(ExprKind::New {
+                class: Box::new(type_literal_expr("System.Random")),
+                args: seed.into_iter().map(Argument::positional).collect(),
+            });
+            let input = named("InputObject").or_else(|| positional.first().map(|a| a.value.clone()));
+            let switched = |flag: &str| {
+                args.iter()
+                    .any(|a| a.name.as_deref().is_some_and(|n| n.eq_ignore_ascii_case(flag)))
+            };
+
+            let Some(input) = input else {
+                // A NUMBER: `Next()` or `Next(min, max)`. `-Maximum` alone is
+                // `Next(0, max)`; `-Minimum` alone is `Next(min, int.MaxValue)`.
+                let min = named("Minimum");
+                let max = named("Maximum");
+                let call_args = match (min, max) {
+                    (None, None) => Vec::new(),
+                    (min, max) => vec![
+                        min.unwrap_or_else(|| Expression::int(0)),
+                        max.unwrap_or_else(|| Expression::int(i32::MAX as i64)),
+                    ],
+                };
+                return Some(ps_member_call(rng, "Next", call_args));
+            };
+
+            // Fisher–Yates over a COPY of the input, then take what was asked.
+            const RNG: &str = "__ps_rnd";
+            const ITEMS: &str = "__ps_rnd_items";
+            const I: &str = "__ps_rnd_i";
+            const J: &str = "__ps_rnd_j";
+            const TMP: &str = "__ps_rnd_t";
+            let idx = |arr: &str, i: Expression| {
+                Expression::new(ExprKind::Index {
+                    object: Box::new(Expression::ident(arr)),
+                    index: Box::new(i),
+                    null_safe: false,
+                })
+            };
+            let assign = |target: Expression, value: Expression| {
+                Statement::new(StmtKind::Assign { targets: vec![target], value, by_ref: false })
+            };
+            let swap_body = vec![
+                assign(
+                    Expression::ident(J),
+                    ps_member_call(
+                        Expression::ident(RNG),
+                        "Next",
+                        vec![
+                            Expression::int(0),
+                            ps_binary(BinOp::Add, Expression::ident(I), Expression::int(1)),
+                        ],
+                    ),
+                ),
+                assign(Expression::ident(TMP), idx(ITEMS, Expression::ident(I))),
+                assign(idx(ITEMS, Expression::ident(I)), idx(ITEMS, Expression::ident(J))),
+                assign(idx(ITEMS, Expression::ident(J)), Expression::ident(TMP)),
+            ];
+            let shuffle = Statement::new(StmtKind::For {
+                init: Some(Box::new(assign(
+                    Expression::ident(I),
+                    ps_binary(BinOp::Sub, ps_member(Expression::ident(ITEMS), "Count"), Expression::int(1)),
+                ))),
+                cond: Some(ps_binary(BinOp::Gt, Expression::ident(I), Expression::int(0))),
+                update: Some(Expression::new(ExprKind::Assign {
+                    target: Box::new(Expression::ident(I)),
+                    value: Box::new(ps_binary(BinOp::Sub, Expression::ident(I), Expression::int(1))),
+                })),
+                body: swap_body,
+            });
+            let result = if switched("Shuffle") {
+                Expression::ident(ITEMS)
+            } else if let Some(count) = named("Count") {
+                ps_member_call(
+                    Expression::ident(ITEMS),
+                    "__ps_slice",
+                    vec![Expression::int(0), count],
+                )
+            } else {
+                idx(ITEMS, Expression::int(0))
+            };
+            Some(bind_and_call(
+                &[RNG, ITEMS],
+                vec![rng, ps_member_call(ensure_array(input), "Clone", Vec::new())],
+                block_value_expr(vec![shuffle, Statement::new(StmtKind::Return(Some(result)))]),
+            ))
+        }
+
         "add-member" => {
-            let target = positional.first().map(|a| a.value.clone())?;
+            // `-InputObject` names the target when nothing was piped in:
+            // `Add-Member -InputObject $o -MemberType NoteProperty -Name X -Value 1`
+            // has no positional argument at all.
+            let target = named("InputObject")
+                .or_else(|| positional.first().map(|a| a.value.clone()))?;
             // ⛔`-NotePropertyName` / `-NotePropertyValue` IS THE SAME CMDLET,
             // spelled the short way. `Add-Member -NotePropertyName X -NotePropertyValue 1`
             // needs no `-MemberType` because the parameter names carry it, and
             // this arm read only `-Name`/`-Value`, so the whole form fell
             // through to a command call on a cmdlet nothing implements:
             // `undefined is not callable`. 37 corpus files spell it this way.
-            let name = literal_text(
-                &named("Name")
-                    .or_else(|| named("NotePropertyName"))
-                    .or_else(|| positional.get(1).map(|a| a.value.clone()))?,
-            )?;
+            let name_expr = named("Name")
+                .or_else(|| named("NotePropertyName"))
+                .or_else(|| positional.get(1).map(|a| a.value.clone()))?;
             let value = named("Value")
                 .or_else(|| named("NotePropertyValue"))
                 .or_else(|| positional.get(2).map(|a| a.value.clone()))?;
-            let assign = Expression::new(ExprKind::Assign {
-                target: Box::new(Expression::new(ExprKind::Member {
-                    object: Box::new(target.clone()),
-                    field: name,
-                    null_safe: false,
-                })),
-                value: Box::new(value),
-            });
-            // `-PassThru` makes the cmdlet's VALUE the object it just extended,
-            // which is what lets `$o | Add-Member … -PassThru | Add-Member …`
-            // chain. Without it `Add-Member` emits nothing at all.
+            let kind = named("MemberType")
+                .as_ref()
+                .and_then(literal_text)
+                .unwrap_or_else(|| "NoteProperty".to_string())
+                .to_ascii_lowercase();
+
+            let assign = |field: String, value: Expression| {
+                Statement::new(StmtKind::Expr(Expression::new(ExprKind::Assign {
+                    target: Box::new(Expression::new(ExprKind::Member {
+                        object: Box::new(target.clone()),
+                        field,
+                        null_safe: false,
+                    })),
+                    value: Box::new(value),
+                })))
+            };
+
+            // `-MemberType` picks WHERE the value lands; the value itself is
+            // written unchanged in every case.
             //
-            // ⛔The assignment's own value is the VALUE ASSIGNED, not the
-            // object, so `-PassThru` cannot just be the assignment — the two
-            // are sequenced and the object is read back.
-            if args.iter().any(|a| {
-                a.name
-                    .as_deref()
-                    .is_some_and(|n| n.eq_ignore_ascii_case("PassThru"))
-            }) {
-                return Some(block_value_expr(vec![
-                    Statement::new(StmtKind::Expr(assign)),
-                    Statement::new(StmtKind::Return(Some(target))),
-                ]));
-            }
-            Some(assign)
+            // | member type | written to |
+            // |-------------|------------|
+            // | NoteProperty | `X` |
+            // | ScriptMethod | `X`, as a function so `$this` binds |
+            // | ScriptProperty, CodeProperty | `__get_X`, `__set_X` |
+            // | AliasProperty | `__get_X`, reading the named member off `$this` |
+            //
+            // `__get_<name>` / `__set_<name>` is the accessor spelling the
+            // object model already honours, so a getter is a plain property
+            // write and needs no emitter of its own.
+            // A computed name is written through the INDEX, which reaches the
+            // same storage: `Add-Member -NotePropertyName $p.Name` copies a
+            // member whose spelling is only known at run time.
+            let Some(name) = literal_text(&name_expr) else {
+                let write = Statement::new(StmtKind::Expr(Expression::new(ExprKind::Assign {
+                    target: Box::new(Expression::new(ExprKind::Index {
+                        object: Box::new(target.clone()),
+                        index: Box::new(name_expr),
+                        null_safe: false,
+                    })),
+                    value: Box::new(value),
+                })));
+                return Some(add_member_value(vec![write], target, args));
+            };
+
+            let writes = match kind.as_str() {
+                "scriptmethod" => vec![assign(name, scriptblock_as_method(value))],
+                "scriptproperty" | "codeproperty" => {
+                    let mut writes =
+                        vec![assign(format!("__get_{name}"), scriptblock_as_method(value))];
+                    if let Some(setter) = named("SecondValue") {
+                        writes.push(assign(
+                            format!("__set_{name}"),
+                            scriptblock_as_method(setter),
+                        ));
+                    }
+                    writes
+                }
+                // An alias re-reads its target on every access, so it is a
+                // getter rather than the snapshot a stored value would be.
+                "aliasproperty" => {
+                    let aliased = literal_text(&value)?;
+                    vec![
+                        assign(format!("__get_{name}"), this_member_getter(&aliased)),
+                        assign(format!("__alias_{name}"), Expression::string(&aliased)),
+                    ]
+                }
+                _ => vec![assign(name, value)],
+            };
+            Some(add_member_value(writes, target, args))
         }
 
+        // `Split-Path` — every switch names a piece of the path, and each piece
+        // is already a `System.IO.Path` static. The cmdlet is the SELECTOR, so
+        // normalizing it is picking which static to call, not implementing any
+        // of them. `-Parent` is the default, which is what PowerShell answers
+        // with no switch at all.
+        "split-path" => {
+            let mut subject = named("Path")
+                .or_else(|| named("LiteralPath"))
+                .or_else(|| positional.first().map(|a| a.value.clone()))?;
+            let has = |flag: &str| {
+                args.iter()
+                    .any(|a| a.name.as_deref().is_some_and(|n| n.eq_ignore_ascii_case(flag)))
+            };
+            if (has("Leaf") || has("LeafBase") || has("Extension"))
+                && literal_text(&subject)
+                    .is_some_and(|value| value.ends_with('/') || value.ends_with('\\'))
+            {
+                if let Some(value) = literal_text(&subject) {
+                    subject = Expression::string(value.trim_end_matches(['/', '\\']));
+                }
+            }
+            // `-Qualifier` and `-NoQualifier` cut at the ROOT rather than at a
+            // separator: the qualifier is everything through the first `:`,
+            // which covers a drive (`C:`) and a PSDrive (`Env:`) alike. That is
+            // string work, so it is spelled with the string members rather than
+            // given an emitter of its own.
+            if has("Qualifier") || has("NoQualifier") {
+                if has("Qualifier")
+                    && literal_text(&subject).is_some_and(|value| !value.contains(':'))
+                {
+                    return Some(block_value_expr(vec![Statement::new(StmtKind::Throw {
+                        expr: Some(Expression::string(
+                            "The path does not have a qualifier.",
+                        )),
+                        cause: None,
+                    })]));
+                }
+                let colon = ps_member_call(
+                    subject.clone(),
+                    "IndexOf",
+                    vec![Expression::string(":")],
+                );
+                let after = ps_binary(BinOp::Add, colon, Expression::int(1));
+                return Some(if has("Qualifier") {
+                    ps_member_call(subject, "Substring", vec![Expression::int(0), after])
+                } else {
+                    ps_member_call(subject, "Substring", vec![after])
+                });
+            }
+            let member = if has("Leaf") {
+                "GetFileName"
+            } else if has("LeafBase") {
+                "GetFileNameWithoutExtension"
+            } else if has("Extension") {
+                "GetExtension"
+            } else if has("IsAbsolute") {
+                "IsPathRooted"
+            } else {
+                "GetDirectoryName"
+            };
+            // `-Path @(a, b)` answers ONE result per element, and a scalar
+            // answers a scalar. Mapping over the subject and unwrapping a
+            // single result covers both without asking what shape it is — the
+            // array literal walks to a CALL here, not to `ExprKind::Array`, so
+            // there is nothing to pattern-match on anyway.
+            Some(ps_builtin(
+                "__ps_unwrap_single",
+                vec![ps_member_call(
+                    ensure_array(subject),
+                    "ForEach",
+                    vec![item_lambda(vec![Statement::new(StmtKind::Return(Some(
+                        dotnet_static_call(
+                            "System.IO.Path",
+                            member,
+                            vec![Expression::ident("_")],
+                        ),
+                    )))])],
+                )],
+            ))
+        }
+
+        // The cmdlet adapter class owns the PowerShell-visible shape. The
+        // walker only binds `-Path`/`-LiteralPath` and array/pipeline input.
+        "convert-path" | "resolve-path" => {
+            let literal_path = named("LiteralPath");
+            let subject = named("Path")
+                .or_else(|| literal_path.clone())
+                .or_else(|| positional.first().map(|a| a.value.clone()))?;
+            let command = if name.eq_ignore_ascii_case("convert-path") {
+                "Convert-Path"
+            } else {
+                "Resolve-Path"
+            };
+            let wants_relative = args.iter().any(|arg| {
+                arg.name
+                    .as_deref()
+                    .is_some_and(|n| n.eq_ignore_ascii_case("Relative"))
+            });
+            if command == "Resolve-Path" && wants_relative {
+                return Some(unwrap_pipeline_value(ps_member_call(
+                    ensure_array(subject),
+                    "ForEach",
+                    vec![item_lambda(vec![Statement::new(StmtKind::Return(Some(
+                        ps_binary(BinOp::Add, Expression::string("./"), Expression::ident("_")),
+                    )))])],
+                )));
+            }
+            if command == "Resolve-Path" {
+                if let Some(raw_path) = literal_text(&subject) {
+                    if raw_path.starts_with("Env:") {
+                        return Some(provider_path_info_expr(&raw_path, "Environment"));
+                    }
+                    if raw_path.starts_with("Variable:") {
+                        return Some(provider_path_info_expr(&raw_path, "Variable"));
+                    }
+                }
+            }
+            let suppress_errors = named("ErrorAction")
+                .and_then(|expr| literal_text(&expr))
+                .map(|value| value.eq_ignore_ascii_case("SilentlyContinue"))
+                .unwrap_or(false);
+            Some(unwrap_pipeline_value(ps_member_call(
+                ensure_array(subject),
+                "ForEach",
+                vec![item_lambda(vec![Statement::new(StmtKind::Return(Some(
+                    cmdlet_call(
+                        command,
+                        vec![
+                            Expression::ident("_"),
+                            Expression::bool(suppress_errors),
+                            Expression::bool(literal_path.is_some()),
+                        ],
+                    ),
+                )))])],
+            )))
+        }
+
+        // ⛔NOT `Path.Combine`. The BCL method treats a ROOTED child as
+        // replacing the base (`Combine("dir", "/f")` is `/f`); PowerShell
+        // joins them. The cmdlet owns its own rule, and that rule lives in
+        // the `dotnet.Cmdlets.Join-Path` tree leaf — this arm only puts the
+        // segments in declared order. `-AdditionalChildPath` is that same
+        // list under a parameter name, so a literal array spreads into
+        // separate segments rather than stringifying as one.
         "join-path" => {
             let head = named("Path").or_else(|| positional.first().map(|a| a.value.clone()))?;
-            let tail = named("ChildPath").or_else(|| positional.get(1).map(|a| a.value.clone()))?;
-            Some(dotnet_static_call(
-                "System.IO.Path",
-                "Combine",
-                vec![head, tail],
-            ))
+            let mut segments = Vec::new();
+            let resolves = args.iter().any(|a| {
+                a.name
+                    .as_deref()
+                    .is_some_and(|n| n.eq_ignore_ascii_case("Resolve"))
+            });
+            if let Some(child) = named("ChildPath").or_else(|| positional.get(1).map(|a| a.value.clone())) {
+                segments.push(child);
+            }
+            for extra in positional.iter().skip(2) {
+                segments.push(extra.value.clone());
+            }
+            if let Some(additional) = named("AdditionalChildPath") {
+                // `@(a, b)` walks to `__ps_array(Array[a, b])`, so the literal
+                // list is one level in. Only a literal spreads; anything whose
+                // shape is a runtime question is passed as one segment.
+                let inner = match &additional.kind {
+                    ExprKind::Call { callee, args, .. }
+                        if matches!(&callee.kind, ExprKind::Ident(n) if n == "__ps_array")
+                            && args.len() == 1 =>
+                    {
+                        args[0].value.clone()
+                    }
+                    _ => additional.clone(),
+                };
+                match &inner.kind {
+                    ExprKind::Array(items) if items.iter().all(|it| !it.spread) => {
+                        segments.extend(items.iter().map(|it| it.value.clone()));
+                    }
+                    _ => segments.push(additional),
+                }
+            }
+            let string_segments: Vec<Expression> = segments
+                .into_iter()
+                .map(|segment| ps_builtin("__ps_to_string", vec![segment]))
+                .collect();
+            let joined = unwrap_pipeline_value(ps_member_call(
+                ensure_array(head),
+                "ForEach",
+                vec![item_lambda(vec![Statement::new(StmtKind::Return(Some(
+                    cmdlet_call(
+                        "Join-Path",
+                        std::iter::once(ps_builtin("__ps_to_string", vec![Expression::ident("_")]))
+                            .chain(string_segments)
+                            .collect(),
+                    ),
+                )))])],
+            ));
+            if resolves {
+                return Some(unwrap_pipeline_value(cmdlet_call(
+                    "Convert-Path",
+                    vec![joined, Expression::bool(false), Expression::bool(false)],
+                )));
+            }
+            Some(joined)
         }
 
         // `Set-Variable -Name x -Value 1` IS an assignment to `$x` — the same
@@ -7541,7 +11979,837 @@ fn normalize_cmdlet(name: &str, args: &[Argument]) -> Option<Expression> {
     }
 }
 
+fn builtin_psdrive(raw: &str) -> Option<(&'static str, &'static str)> {
+    match raw.to_ascii_lowercase().as_str() {
+        "env" | "en*" => Some(("Env", "Environment")),
+        "variable" => Some(("Variable", "Variable")),
+        "function" => Some(("Function", "Function")),
+        "alias" => Some(("Alias", "Alias")),
+        "filesystem" | "/" => Some(("FileSystem", "FileSystem")),
+        _ => None,
+    }
+}
+
+#[derive(Clone, Debug)]
+struct PsOutputTypeInfo {
+    raw: String,
+    name: String,
+    is_array: bool,
+}
+
+#[derive(Clone, Debug)]
+struct PsCmdletBindingInfo {
+    supports_should_process: bool,
+    supports_transactions: bool,
+    supports_paging: bool,
+    confirm_impact: String,
+    default_parameter_set: Option<String>,
+    help_uri: Option<String>,
+}
+
+impl Default for PsCmdletBindingInfo {
+    fn default() -> Self {
+        Self {
+            supports_should_process: false,
+            supports_transactions: false,
+            supports_paging: false,
+            confirm_impact: "Medium".to_string(),
+            default_parameter_set: None,
+            help_uri: None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+struct PsParameterAttributeInfo {
+    mandatory: bool,
+    value_from_pipeline: bool,
+    value_from_pipeline_by_property_name: bool,
+    position: Option<String>,
+    parameter_set_name: Option<String>,
+}
+
+fn split_top_level_args(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut current = String::new();
+    let mut square = 0i32;
+    let mut paren = 0i32;
+    let mut quote: Option<char> = None;
+    for ch in text.chars() {
+        if let Some(q) = quote {
+            current.push(ch);
+            if ch == q {
+                quote = None;
+            }
+            continue;
+        }
+        match ch {
+            '\'' | '"' => {
+                quote = Some(ch);
+                current.push(ch);
+            }
+            '[' => {
+                square += 1;
+                current.push(ch);
+            }
+            ']' => {
+                square -= 1;
+                current.push(ch);
+            }
+            '(' => {
+                paren += 1;
+                current.push(ch);
+            }
+            ')' => {
+                paren -= 1;
+                current.push(ch);
+            }
+            ',' if square == 0 && paren == 0 => {
+                out.push(current.trim().to_string());
+                current.clear();
+            }
+            _ => current.push(ch),
+        }
+    }
+    if !current.trim().is_empty() {
+        out.push(current.trim().to_string());
+    }
+    out
+}
+
+fn attribute_args(source: &str, attr: &str) -> Option<String> {
+    let lower = source.to_ascii_lowercase();
+    let needle = format!("[{}", attr.to_ascii_lowercase());
+    let hit = lower.find(&needle)?;
+    let mut rest = source[hit + needle.len()..].trim_start();
+    if rest.starts_with(']') {
+        return Some(String::new());
+    }
+    if !rest.starts_with('(') {
+        return None;
+    }
+    rest = &rest[1..];
+    let mut depth = 1i32;
+    let mut quote: Option<char> = None;
+    let mut end = 0usize;
+    for (offset, ch) in rest.char_indices() {
+        if let Some(q) = quote {
+            if ch == q {
+                quote = None;
+            }
+            continue;
+        }
+        match ch {
+            '\'' | '"' => quote = Some(ch),
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    end = offset;
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    Some(rest[..end].to_string())
+}
+
+fn attr_value(raw: &str) -> String {
+    raw.trim()
+        .trim_start_matches('$')
+        .trim_matches('"')
+        .trim_matches('\'')
+        .to_string()
+}
+
+fn attr_bool(raw: &str) -> bool {
+    let v = attr_value(raw);
+    !v.eq_ignore_ascii_case("false") && !v.eq_ignore_ascii_case("0")
+}
+
+fn cmdlet_binding_info(source: &str) -> PsCmdletBindingInfo {
+    let Some(args) = attribute_args(source, "CmdletBinding") else {
+        return PsCmdletBindingInfo::default();
+    };
+    let mut info = PsCmdletBindingInfo::default();
+    for arg in split_top_level_args(&args) {
+        let (key, value) = arg
+            .split_once('=')
+            .map(|(k, v)| (k.trim(), Some(v.trim())))
+            .unwrap_or((arg.trim(), None));
+        match key.to_ascii_lowercase().as_str() {
+            "supportsshouldprocess" => {
+                info.supports_should_process = value.map(attr_bool).unwrap_or(true)
+            }
+            "supportstransactions" => {
+                info.supports_transactions = value.map(attr_bool).unwrap_or(true)
+            }
+            "supportspaging" => info.supports_paging = value.map(attr_bool).unwrap_or(true),
+            "confirmimpact" => {
+                if let Some(value) = value {
+                    info.confirm_impact = attr_value(value);
+                }
+            }
+            "defaultparametersetname" => {
+                if let Some(value) = value {
+                    info.default_parameter_set = Some(attr_value(value));
+                }
+            }
+            "helpuri" => {
+                if let Some(value) = value {
+                    info.help_uri = Some(attr_value(value));
+                }
+            }
+            _ => {}
+        }
+    }
+    info
+}
+
+fn parameter_attribute_infos(source: &str) -> std::collections::HashMap<String, PsParameterAttributeInfo> {
+    let mut out = std::collections::HashMap::new();
+    let bytes = source.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] != b'$' {
+            i += 1;
+            continue;
+        }
+        let start = i + 1;
+        let mut end = start;
+        while end < bytes.len()
+            && ((bytes[end] as char).is_ascii_alphanumeric() || bytes[end] == b'_')
+        {
+            end += 1;
+        }
+        if end == start {
+            i += 1;
+            continue;
+        }
+        let name = &source[start..end];
+        let prefix_start = i.saturating_sub(320);
+        let prefix = &source[prefix_start..i];
+        let lower = prefix.to_ascii_lowercase();
+        let Some(attr_start) = lower.rfind("[parameter") else {
+            i = end;
+            continue;
+        };
+        let attr = &prefix[attr_start..];
+        let Some(args) = attribute_args(attr, "Parameter") else {
+            i = end;
+            continue;
+        };
+        let mut info = PsParameterAttributeInfo::default();
+        for arg in split_top_level_args(&args) {
+            let (key, value) = arg
+                .split_once('=')
+                .map(|(k, v)| (k.trim(), Some(v.trim())))
+                .unwrap_or((arg.trim(), None));
+            match key.to_ascii_lowercase().as_str() {
+                "mandatory" => info.mandatory = value.map(attr_bool).unwrap_or(true),
+                "valuefrompipeline" => {
+                    info.value_from_pipeline = value.map(attr_bool).unwrap_or(true)
+                }
+                "valuefrompipelinebypropertyname" => {
+                    info.value_from_pipeline_by_property_name = value.map(attr_bool).unwrap_or(true)
+                }
+                "position" => info.position = value.map(attr_value),
+                "parametersetname" => info.parameter_set_name = value.map(attr_value),
+                _ => {}
+            }
+        }
+        out.entry(name.to_lowercase()).or_insert(info);
+        i = end;
+    }
+    out
+}
+
+fn dynamic_parameter_names(source: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let lower = source.to_ascii_lowercase();
+    let needle = "runtimedefinedparameter]::new";
+    let mut at = 0usize;
+    while let Some(hit) = lower[at..].find(needle) {
+        let start = at + hit + needle.len();
+        let rest = source[start..].trim_start();
+        let Some(args) = rest.strip_prefix('(') else {
+            at = start;
+            continue;
+        };
+        let Some(first) = split_top_level_args(args).first().cloned() else {
+            at = start;
+            continue;
+        };
+        let name = attr_value(&first);
+        if !name.is_empty() && !out.iter().any(|seen: &String| seen.eq_ignore_ascii_case(&name)) {
+            out.push(name);
+        }
+        at = start;
+    }
+    out
+}
+
+fn output_type_infos(source: &str) -> Vec<PsOutputTypeInfo> {
+    let lower = source.to_ascii_lowercase();
+    let mut out = Vec::new();
+    let mut at = 0usize;
+    while let Some(hit) = lower[at..].find("[outputtype(") {
+        let open = at + hit + "[outputtype(".len();
+        let mut depth = 1i32;
+        let mut quote: Option<char> = None;
+        let mut end = open;
+        for (offset, ch) in source[open..].char_indices() {
+            if let Some(q) = quote {
+                if ch == q {
+                    quote = None;
+                }
+                continue;
+            }
+            match ch {
+                '\'' | '"' => quote = Some(ch),
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = open + offset;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        if end <= open {
+            break;
+        }
+        for arg in split_top_level_args(&source[open..end]) {
+            if arg.contains('=') {
+                continue;
+            }
+            if let Some(info) = output_type_info_from_arg(&arg) {
+                out.push(info);
+            }
+        }
+        at = end + 1;
+    }
+    out
+}
+
+fn output_type_info_from_arg(arg: &str) -> Option<PsOutputTypeInfo> {
+    let trimmed = arg.trim();
+    let raw = if trimmed.starts_with('[') {
+        type_literal_name(trimmed).trim().to_string()
+    } else {
+        trimmed
+            .trim_matches(|c| c == '"' || c == '\'')
+            .trim()
+            .to_string()
+    };
+    if raw.is_empty() {
+        return None;
+    }
+    let is_array = raw.ends_with("[]");
+    let base = raw.trim_end_matches("[]");
+    let full = type_accelerator(base).unwrap_or(base);
+    let leaf = full.rsplit('.').next().unwrap_or(full);
+    let name = match leaf.to_ascii_lowercase().as_str() {
+        "int" | "int32" => "Int32",
+        "bool" | "boolean" => "Boolean",
+        "string" => "String",
+        "guid" => "Guid",
+        "datetime" => "DateTime",
+        "timespan" => "TimeSpan",
+        "hashtable" => "Hashtable",
+        "void" => "Void",
+        other if other.is_empty() => leaf,
+        _ => leaf,
+    }
+    .to_string();
+    Some(PsOutputTypeInfo {
+        raw,
+        name,
+        is_array,
+    })
+}
+
+fn object_entry(name: &str, value: Expression) -> ObjectProperty {
+    ObjectProperty::KeyValue {
+        key: Expression::string(name),
+        value,
+    }
+}
+
+fn output_type_type_object(info: &PsOutputTypeInfo) -> Expression {
+    Expression::new(ExprKind::Object(vec![
+        object_entry("Name", Expression::string(&info.name)),
+        object_entry("IsArray", Expression::bool(info.is_array)),
+    ]))
+}
+
+fn output_type_entry(info: &PsOutputTypeInfo) -> Expression {
+    let ty = output_type_type_object(info);
+    Expression::new(ExprKind::Object(vec![
+        object_entry("Name", Expression::string(&info.raw)),
+        object_entry("Type", ty),
+    ]))
+}
+
+fn output_type_attribute_entry(info: &PsOutputTypeInfo) -> Expression {
+    Expression::new(ExprKind::Object(vec![
+        object_entry("Type", output_type_type_object(info)),
+        object_entry("Name", Expression::string(&info.raw)),
+    ]))
+}
+
+fn new_dotnet_expr(type_name: &str, args: Vec<Expression>) -> Expression {
+    Expression::new(ExprKind::New {
+        class: Box::new(type_literal_expr(type_name)),
+        args: args.into_iter().map(Argument::positional).collect(),
+    })
+}
+
+fn assign_member(target: &str, member: &str, value: Expression) -> Statement {
+    Statement::new(StmtKind::Expr(Expression::new(ExprKind::Assign {
+        target: Box::new(ps_member(Expression::ident(target), member)),
+        value: Box::new(value),
+    })))
+}
+
+fn configured_object(type_name: &str, temp: &str, assignments: Vec<(&str, Expression)>) -> Expression {
+    let mut body = vec![
+        local_decl(temp),
+        Statement::new(StmtKind::Assign {
+            targets: vec![Expression::ident(temp)],
+            value: new_dotnet_expr(type_name, Vec::new()),
+            by_ref: false,
+        }),
+    ];
+    for (member, value) in assignments {
+        body.push(assign_member(temp, member, value));
+    }
+    body.push(Statement::new(StmtKind::Return(Some(Expression::ident(temp)))));
+    block_value_expr(body)
+}
+
+fn cmdlet_binding_attribute_entry(info: &PsCmdletBindingInfo) -> Expression {
+    configured_object(
+        "System.Management.Automation.CmdletBindingAttribute",
+        "__ps_cmdlet_binding_attr",
+        vec![
+            ("SupportsShouldProcess", Expression::bool(info.supports_should_process)),
+            ("supportsshouldprocess", Expression::bool(info.supports_should_process)),
+            ("SupportsTransactions", Expression::bool(info.supports_transactions)),
+            ("supportstransactions", Expression::bool(info.supports_transactions)),
+            ("SupportsPaging", Expression::bool(info.supports_paging)),
+            ("supportspaging", Expression::bool(info.supports_paging)),
+            ("ConfirmImpact", Expression::string(&info.confirm_impact)),
+            ("confirmimpact", Expression::string(&info.confirm_impact)),
+            (
+                "DefaultParameterSetName",
+                Expression::string(info.default_parameter_set.as_deref().unwrap_or("")),
+            ),
+            (
+                "defaultparametersetname",
+                Expression::string(info.default_parameter_set.as_deref().unwrap_or("")),
+            ),
+            ("HelpUri", Expression::string(info.help_uri.as_deref().unwrap_or(""))),
+            ("helpuri", Expression::string(info.help_uri.as_deref().unwrap_or(""))),
+        ],
+    )
+}
+
+fn parameter_attribute_entry(info: Option<&PsParameterAttributeInfo>) -> Expression {
+    let default = PsParameterAttributeInfo::default();
+    let info = info.unwrap_or(&default);
+    configured_object(
+        "System.Management.Automation.ParameterAttribute",
+        "__ps_parameter_attr",
+        vec![
+            ("Mandatory", Expression::bool(info.mandatory)),
+            ("mandatory", Expression::bool(info.mandatory)),
+            ("ValueFromPipeline", Expression::bool(info.value_from_pipeline)),
+            ("valuefrompipeline", Expression::bool(info.value_from_pipeline)),
+            (
+                "ValueFromPipelineByPropertyName",
+                Expression::bool(info.value_from_pipeline_by_property_name),
+            ),
+            (
+                "valuefrompipelinebypropertyname",
+                Expression::bool(info.value_from_pipeline_by_property_name),
+            ),
+            (
+                "Position",
+                info.position
+                    .as_ref()
+                    .and_then(|v| v.parse::<i64>().ok())
+                    .map(Expression::int)
+                    .unwrap_or_else(|| Expression::int(-1)),
+            ),
+            (
+                "position",
+                info.position
+                    .as_ref()
+                    .and_then(|v| v.parse::<i64>().ok())
+                    .map(Expression::int)
+                    .unwrap_or_else(|| Expression::int(-1)),
+            ),
+            (
+                "ParameterSetName",
+                Expression::string(info.parameter_set_name.as_deref().unwrap_or("__AllParameterSets")),
+            ),
+            (
+                "parametersetname",
+                Expression::string(info.parameter_set_name.as_deref().unwrap_or("__AllParameterSets")),
+            ),
+        ],
+    )
+}
+
+fn command_parameter_entry(type_name: &str, attr: Option<&PsParameterAttributeInfo>) -> Expression {
+    let parameter_type = command_type_object(type_name);
+    let attributes = Expression::new(ExprKind::Array(vec![ArrayElement {
+        key: None,
+        value: parameter_attribute_entry(attr),
+        spread: false,
+        by_ref: false,
+    }]));
+    Expression::new(ExprKind::Object(vec![
+        object_entry("ParameterType", parameter_type.clone()),
+        object_entry("parametertype", parameter_type),
+        object_entry("Attributes", attributes.clone()),
+        object_entry("attributes", attributes),
+    ]))
+}
+
+fn object_entries_to_dictionary(entries: Vec<ObjectProperty>) -> Expression {
+    let pairs = entries
+        .into_iter()
+        .filter_map(|entry| match entry {
+            ObjectProperty::KeyValue { key, value } => {
+                let key = match key.kind {
+                    ExprKind::Lit(Literal::Str(text)) => Expression::string(&text.to_lowercase()),
+                    _ => key,
+                };
+                Some(ArrayElement {
+                key: None,
+                value: Expression::new(ExprKind::Array(vec![
+                    ArrayElement {
+                        key: None,
+                        value: key,
+                        spread: false,
+                        by_ref: false,
+                    },
+                    ArrayElement {
+                        key: None,
+                        value,
+                        spread: false,
+                        by_ref: false,
+                    },
+                ])),
+                spread: false,
+                by_ref: false,
+                })
+            }
+            _ => None,
+        })
+        .collect();
+    ps_builtin("__ps_from_entries", vec![Expression::new(ExprKind::Array(pairs))])
+}
+
+fn ps_contains_key_expr(object: Expression, key: Expression) -> Expression {
+    ps_binary(
+        BinOp::NotEq,
+        ps_builtin("__ps_index_get", vec![object, key]),
+        Expression::null(),
+    )
+}
+
+fn powershell_attribute_property_expr(name: &str) -> Option<Expression> {
+    let property_type = match name.to_ascii_lowercase().as_str() {
+        "supportsshouldprocess"
+        | "supportstransactions"
+        | "supportspaging"
+        | "mandatory"
+        | "valuefrompipeline"
+        | "valuefrompipelinebypropertyname" => type_literal_expr("bool"),
+        "position" => type_literal_expr("int"),
+        "confirmimpact" | "defaultparametersetname" | "helpuri" | "parametersetname" => {
+            type_literal_expr("string")
+        }
+        _ => return None,
+    };
+    Some(Expression::new(ExprKind::Object(vec![
+        object_entry("Name", Expression::string(name)),
+        object_entry("CanRead", Expression::bool(true)),
+        object_entry("CanWrite", Expression::bool(true)),
+        object_entry("PropertyType", property_type),
+    ])))
+}
+
+fn is_powershell_generated_dictionary(expr: &Expression) -> bool {
+    match &expr.kind {
+        ExprKind::Ident(name) if name.eq_ignore_ascii_case("PSBoundParameters") => true,
+        ExprKind::Ident(name) if name.eq_ignore_ascii_case("Matches") => true,
+        ExprKind::Member { field, .. } if field.eq_ignore_ascii_case("Parameters") => true,
+        _ => false,
+    }
+}
+
+fn advanced_function_context(
+    name: &str,
+    info: &PsCmdletBindingInfo,
+    params: &[Param],
+    parameter_attrs: Option<&std::collections::HashMap<String, PsParameterAttributeInfo>>,
+    body: Vec<Statement>,
+) -> Vec<Statement> {
+    let default_parameter_set = info
+        .default_parameter_set
+        .as_deref()
+        .unwrap_or("__AllParameterSets");
+    let mut parameter_set = Expression::string(default_parameter_set);
+    for param in params.iter().rev() {
+        let Some(set_name) = parameter_attrs
+            .and_then(|attrs| attrs.get(&param.name.to_lowercase()))
+            .and_then(|attr| attr.parameter_set_name.as_deref())
+            .filter(|set| !set.eq_ignore_ascii_case("__AllParameterSets"))
+        else {
+            continue;
+        };
+        parameter_set = ps_ternary(
+            ps_binary(
+                BinOp::NotEq,
+                Expression::ident(&param.name),
+                Expression::null(),
+            ),
+            Expression::string(set_name),
+            parameter_set,
+        );
+    }
+    let mut out = vec![
+        local_decl("PSCmdlet"),
+        local_decl("MyInvocation"),
+        local_decl("PSBoundParameters"),
+        Statement::new(StmtKind::Assign {
+            targets: vec![Expression::ident("PSCmdlet")],
+            value: Expression::new(ExprKind::Object(vec![
+                object_entry("ParameterSetName", parameter_set.clone()),
+                object_entry("parametersetname", parameter_set),
+            ])),
+            by_ref: false,
+        }),
+        Statement::new(StmtKind::Assign {
+            targets: vec![Expression::ident("MyInvocation")],
+            value: Expression::new(ExprKind::Object(vec![object_entry(
+                "MyCommand",
+                Expression::new(ExprKind::Object(vec![
+                    object_entry("Name", Expression::string(name)),
+                    object_entry("name", Expression::string(name)),
+                ])),
+            )])),
+            by_ref: false,
+        }),
+        Statement::new(StmtKind::Assign {
+            targets: vec![Expression::ident("PSBoundParameters")],
+            value: object_entries_to_dictionary(Vec::new()),
+            by_ref: false,
+        }),
+    ];
+    for param in params {
+        out.push(Statement::new(StmtKind::If {
+            cond: ps_binary(
+                BinOp::NotEq,
+                Expression::ident(&param.name),
+                Expression::null(),
+            ),
+            then_body: vec![Statement::new(StmtKind::Expr(ps_builtin(
+                "__ps_index_set",
+                vec![
+                    Expression::ident("PSBoundParameters"),
+                    Expression::string(&param.name),
+                    Expression::ident(&param.name),
+                ],
+            )))],
+            elifs: Vec::new(),
+            else_body: None,
+        }));
+    }
+    out.extend(body);
+    out
+}
+
+fn get_command_expr(__w: &PsWalker, name: &str, args: &[Argument]) -> Option<Expression> {
+    if !name.eq_ignore_ascii_case("Get-Command") {
+        return None;
+    }
+    let command_name = args
+        .iter()
+        .find(|a| a.name.as_deref().is_some_and(|n| n.eq_ignore_ascii_case("Name")))
+        .or_else(|| args.iter().find(|a| a.name.is_none()))
+        .and_then(|a| literal_text(&a.value))?;
+    let folded = command_name.to_lowercase();
+    let output_types = __w
+        .function_output_types
+        .get(&folded)
+        .cloned()
+        .unwrap_or_default();
+    let binding_info = __w.cmdlet_binding_functions.get(&folded);
+    let declared_params = __w.declared_functions.get(&folded).cloned().unwrap_or_default();
+    let parameter_attrs = __w.function_parameter_attributes.get(&folded);
+    let output_type_array = Expression::new(ExprKind::Array(
+        output_types
+            .iter()
+            .map(|info| ArrayElement {
+                key: None,
+                value: output_type_entry(info),
+                spread: false,
+                by_ref: false,
+            })
+            .collect(),
+    ));
+    let mut attribute_items: Vec<ArrayElement> = Vec::new();
+    if let Some(info) = binding_info {
+        attribute_items.push(ArrayElement {
+            key: None,
+            value: cmdlet_binding_attribute_entry(info),
+            spread: false,
+            by_ref: false,
+        });
+    }
+    attribute_items.extend(output_types.iter().map(|info| ArrayElement {
+                key: None,
+                value: output_type_attribute_entry(info),
+                spread: false,
+                by_ref: false,
+    }));
+    let attributes = Expression::new(ExprKind::Array(attribute_items));
+    let supports_should_process = __w
+        .supports_should_process_functions
+        .contains(&folded);
+    Some(Expression::new(ExprKind::Object(vec![
+        object_entry("Name", Expression::string(&command_name)),
+        object_entry("OutputType", output_type_array),
+        object_entry(
+            "DefaultParameterSet",
+            Expression::string(
+                binding_info
+                    .and_then(|info| info.default_parameter_set.as_deref())
+                    .unwrap_or(""),
+            ),
+        ),
+        object_entry(
+            "HelpUri",
+            Expression::string(binding_info.and_then(|info| info.help_uri.as_deref()).unwrap_or("")),
+        ),
+        object_entry(
+            "Parameters",
+            command_parameter_metadata(
+                &command_name,
+                supports_should_process,
+                binding_info.is_some_and(|info| info.supports_paging),
+                &declared_params,
+                parameter_attrs,
+            ),
+        ),
+        object_entry(
+            "ScriptBlock",
+            Expression::new(ExprKind::Object(vec![object_entry("Attributes", attributes)])),
+        ),
+    ])))
+}
+
+fn command_parameter_metadata(
+    command_name: &str,
+    supports_should_process: bool,
+    supports_paging: bool,
+    declared_params: &[Vec<String>],
+    parameter_attrs: Option<&std::collections::HashMap<String, PsParameterAttributeInfo>>,
+) -> Expression {
+    let mut entries = Vec::new();
+    for spellings in declared_params {
+        let Some(param_name) = spellings.first() else {
+            continue;
+        };
+        let attr = parameter_attrs.and_then(|attrs| attrs.get(&param_name.to_lowercase()));
+        entries.push(object_entry(
+            param_name,
+            command_parameter_entry("System.Object", attr),
+        ));
+    }
+    if command_name.eq_ignore_ascii_case("Start-Sleep") {
+        entries.push(object_entry(
+            "Milliseconds",
+            command_parameter_entry("System.Int32", None),
+        ));
+    }
+    if supports_should_process {
+        let switch_type = command_parameter_entry("System.Management.Automation.SwitchParameter", None);
+        entries.push(object_entry("Confirm", switch_type.clone()));
+        entries.push(object_entry("WhatIf", switch_type));
+    }
+    if supports_paging {
+        entries.push(object_entry("First", command_parameter_entry("System.UInt64", None)));
+        entries.push(object_entry("Skip", command_parameter_entry("System.UInt64", None)));
+    }
+    object_entries_to_dictionary(entries)
+}
+
+fn command_type_object(full_name: &str) -> Expression {
+    Expression::new(ExprKind::Object(vec![
+        object_entry("FullName", Expression::string(full_name)),
+        object_entry(
+            "Name",
+            Expression::string(full_name.rsplit('.').next().unwrap_or(full_name)),
+        ),
+    ]))
+}
+
+fn provider_path_info_expr(path: &str, provider: &str) -> Expression {
+    let provider_obj = Expression::new(ExprKind::Object(vec![
+        object_entry("Name", Expression::string(provider)),
+        object_entry("name", Expression::string(provider)),
+    ]));
+    let drive_obj = Expression::new(ExprKind::Object(vec![
+        object_entry("Name", Expression::string(provider)),
+        object_entry("name", Expression::string(provider)),
+        object_entry("Provider", provider_obj.clone()),
+        object_entry("provider", provider_obj.clone()),
+    ]));
+    Expression::new(ExprKind::Object(vec![
+        object_entry("Path", Expression::string(path)),
+        object_entry("path", Expression::string(path)),
+        object_entry("ProviderPath", Expression::string(path)),
+        object_entry("providerpath", Expression::string(path)),
+        object_entry("Provider", provider_obj),
+        object_entry("provider", Expression::new(ExprKind::Object(vec![
+            object_entry("Name", Expression::string(provider)),
+            object_entry("name", Expression::string(provider)),
+        ]))),
+        object_entry("Drive", drive_obj),
+    ]))
+}
+
 /// `[System.IO.File]::Method(args)` as a member chain the resolver understands.
+/// A call to a `dotnet.Cmdlets.<Name>` TREE LEAF — the cmdlet's implementation
+/// lives in the namespace tree (cmdletsplan.md), so the walker states only the
+/// name and the argument ORDER. The dotted chain resolves through the one
+/// common resolver, exactly as `dotnet.System.IO.Path.Combine` does.
+fn cmdlet_call(name: &str, args: Vec<Expression>) -> Expression {
+    let root = Expression::new(ExprKind::Member {
+        object: Box::new(Expression::ident("dotnet")),
+        field: "Cmdlets".to_string(),
+        null_safe: false,
+    });
+    Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::new(ExprKind::Member {
+            object: Box::new(root),
+            field: name.to_string(),
+            null_safe: false,
+        })),
+        args: args.into_iter().map(Argument::positional).collect(),
+        optional: false,
+    })
+}
+
 fn dotnet_static_call(type_name: &str, method: &str, args: Vec<Expression>) -> Expression {
     Expression::new(ExprKind::Call {
         callee: Box::new(Expression::new(ExprKind::Member {
@@ -7554,8 +12822,543 @@ fn dotnet_static_call(type_name: &str, method: &str, args: Vec<Expression>) -> E
     })
 }
 
+fn ps_xml_adapter_call(method: &str, args: Vec<Expression>) -> Expression {
+    dotnet_static_call("System.Xml.PowerShellXmlAdapter", method, args)
+}
+
+fn xml_member_read_expr(receiver: Expression, name: &str) -> Expression {
+    let method = match name.to_ascii_lowercase().as_str() {
+        "documentelement" => "DocumentElement",
+        "outerxml" => "OuterXml",
+        "innerxml" => "InnerXml",
+        "innertext" => "InnerText",
+        "haschildnodes" => "HasChildNodes",
+        "attributes" => "Attributes",
+        _ => "GetMember",
+    };
+    let args = if method == "GetMember" {
+        vec![receiver, Expression::string(name)]
+    } else {
+        vec![receiver]
+    };
+    ps_xml_adapter_call(method, args)
+}
+
+fn normalize_xml_expr(__w: &PsWalker, expr: &Expression) -> Expression {
+    match &expr.kind {
+        ExprKind::Member { object, field, .. } if is_xml_expr(__w, object) => {
+            xml_member_read_expr(normalize_xml_expr(__w, object), field)
+        }
+        _ => expr.clone(),
+    }
+}
+
+fn is_xml_type_name(type_name: &str) -> bool {
+    matches!(
+        type_name.trim().to_ascii_lowercase().as_str(),
+        "xml" | "xmldocument" | "system.xml.xmldocument" | "xmlnode" | "system.xml.xmlnode"
+    )
+}
+
+fn xml_special_member_name(name: &str) -> Option<&'static str> {
+    Some(match name.to_ascii_lowercase().as_str() {
+        "documentelement" => "DocumentElement",
+        "outerxml" => "OuterXml",
+        "innerxml" => "InnerXml",
+        "innertext" => "InnerText",
+        "haschildnodes" => "HasChildNodes",
+        "attributes" => "Attributes",
+        _ => return None,
+    })
+}
+
+fn assignment_expr_is_xml_like(expr: &Expression) -> bool {
+    match &expr.kind {
+        ExprKind::Cast { type_name, .. } => is_xml_type_name(type_name),
+        ExprKind::New { class, .. } => type_name_of(class).is_some_and(|name| is_xml_type_name(&name)),
+        ExprKind::Call { callee, .. } => {
+            if let ExprKind::Member { object, field, .. } = &callee.kind {
+                if type_name_of(object).is_some_and(|name| {
+                    name.eq_ignore_ascii_case("System.Xml.XmlDocument")
+                        || name.eq_ignore_ascii_case("XmlDocument")
+                }) && field.eq_ignore_ascii_case("Parse")
+                {
+                    return true;
+                }
+                if type_name_of(object).is_some_and(|name| {
+                    name.eq_ignore_ascii_case("System.Xml.PowerShellXmlAdapter")
+                        || name.eq_ignore_ascii_case("PowerShellXmlAdapter")
+                }) {
+                    return matches!(
+                        field.to_ascii_lowercase().as_str(),
+                        "getmember"
+                            | "documentelement"
+                            | "selectsinglenode"
+                            | "createelement"
+                            | "clonenode"
+                    );
+                }
+            }
+            false
+        }
+        _ => false,
+    }
+}
+
+fn is_xml_expr(__w: &PsWalker, expr: &Expression) -> bool {
+    match &expr.kind {
+        ExprKind::Ident(name) => __w
+            .xml_vars
+            .get(&name.to_lowercase())
+            .copied()
+            .unwrap_or(false),
+        ExprKind::Member { object, .. } => is_xml_expr(__w, object),
+        _ => assignment_expr_is_xml_like(expr),
+    }
+}
+
 /// The text of a literal string / identifier argument, for cmdlet arguments
 /// that name a TYPE rather than carry a value.
+/// A call to one of this profile's synthesized `__ps_*` builtins.
+fn ps_builtin(name: &str, args: Vec<Expression>) -> Expression {
+    Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::ident(name)),
+        args: args.into_iter().map(Argument::positional).collect(),
+        optional: false,
+    })
+}
+
+fn ps_member(recv: Expression, member: &str) -> Expression {
+    Expression::new(ExprKind::Member {
+        object: Box::new(recv),
+        field: member.to_string(),
+        null_safe: false,
+    })
+}
+
+fn ps_project_member_or_scalar(recv: Expression, member: &str) -> Expression {
+    const RECV: &str = "__ps_member_recv";
+    bind_and_call(
+        &[RECV],
+        vec![recv],
+        ps_ternary(
+            ps_builtin("__ps_is_array", vec![Expression::ident(RECV)]),
+            ps_member_call(
+                Expression::ident(RECV),
+                "ForEach",
+                vec![item_lambda(vec![Statement::new(StmtKind::Return(Some(
+                    ps_builtin(
+                        "__ps_index_get",
+                        vec![Expression::ident("_"), Expression::string(member)],
+                    ),
+                )))])],
+            ),
+            ps_builtin(
+                "__ps_index_get",
+                vec![Expression::ident(RECV), Expression::string(member)],
+            ),
+        ),
+    )
+}
+
+fn ps_leaf_type_name(expr: Expression) -> Expression {
+    let full = vybe_platform_dotnet::emitter::core::lowering::runtime_type_name_expr(expr);
+    let parts = ps_member_call(full, "Split", vec![Expression::string(".")]);
+    ps_builtin(
+        "__ps_index_get",
+        vec![
+            parts.clone(),
+            ps_binary(
+                BinOp::Sub,
+                ps_member(parts, "Count"),
+                Expression::int(1),
+            ),
+        ],
+    )
+}
+
+fn ps_member_call(recv: Expression, member: &str, args: Vec<Expression>) -> Expression {
+    Expression::new(ExprKind::Call {
+        callee: Box::new(ps_member(recv, member)),
+        args: args.into_iter().map(Argument::positional).collect(),
+        optional: false,
+    })
+}
+
+fn ps_array_of(items: Vec<Expression>) -> Expression {
+    Expression::new(ExprKind::Array(
+        items
+            .into_iter()
+            .map(|value| ArrayElement {
+                key: None,
+                value,
+                spread: false,
+                by_ref: false,
+            })
+            .collect(),
+    ))
+}
+
+fn psobject_target(expr: &Expression) -> Option<Expression> {
+    let ExprKind::Call { callee, args, .. } = &expr.kind else {
+        return None;
+    };
+    if !matches!(&callee.kind, ExprKind::Ident(name) if name == "__ps_psobject") {
+        return None;
+    }
+    args.first().map(|arg| arg.value.clone())
+}
+
+fn pstypename_array(items: Vec<Expression>) -> Expression {
+    Expression::new(ExprKind::Array(
+        items
+            .into_iter()
+            .map(|value| ArrayElement {
+                key: None,
+                value,
+                spread: false,
+                by_ref: false,
+            })
+            .collect(),
+    ))
+}
+
+fn psobject_expr(__w: &PsWalker, target: Expression) -> Expression {
+    let seed = pstypename_array(pstypename_seed_exprs(__w, &target));
+    Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::ident("__ps_psobject")),
+        args: vec![
+            Argument::positional(target),
+            Argument::positional(Expression::new(ExprKind::New {
+                class: Box::new(type_literal_expr(
+                    "System.Collections.Generic.List[string]",
+                )),
+                args: vec![Argument::positional(seed)],
+            })),
+        ],
+        optional: false,
+    })
+}
+
+fn pstypename_seed_exprs(__w: &PsWalker, target: &Expression) -> Vec<Expression> {
+    if let ExprKind::Ident(name) = &target.kind
+        && let Some(Some(seed)) = __w.pstypename_vars.get(&name.to_lowercase())
+    {
+        return seed.iter().map(|name| Expression::string(name)).collect();
+    }
+    if let Some(seed) = pstypename_seed_from_expr(__w, target) {
+        return seed.iter().map(|name| Expression::string(name)).collect();
+    }
+    vec![
+        ps_member(ps_member_call(target.clone(), "GetType", Vec::new()), "Name"),
+        Expression::string("System.Object"),
+    ]
+}
+
+fn pstypename_seed_from_expr(__w: &PsWalker, expr: &Expression) -> Option<Vec<String>> {
+    match &expr.kind {
+        ExprKind::Array(_) => Some(vec![
+            "System.Object[]".to_string(),
+            "System.Array".to_string(),
+            "System.Object".to_string(),
+        ]),
+        ExprKind::Object(_) => Some(vec![
+            "System.Collections.Hashtable".to_string(),
+            "System.Object".to_string(),
+        ]),
+        ExprKind::New { class, .. } => type_name_of(class)
+            .and_then(|name| pstypename_seed_from_type_name(__w, &name)),
+        ExprKind::Cast { type_name, .. } => pstypename_seed_from_type_name(__w, type_name),
+        _ => None,
+    }
+}
+
+fn pstypename_seed_for_assignment(
+    __w: &PsWalker,
+    source: &str,
+    value: &Expression,
+) -> Option<Vec<String>> {
+    let lower = source.to_ascii_lowercase();
+    if lower.contains("[pscustomobject]") || lower.contains("[system.management.automation.pscustomobject]") {
+        return Some(vec![
+            "System.Management.Automation.PSCustomObject".to_string(),
+            "System.Object".to_string(),
+        ]);
+    }
+    if let Some(type_name) = static_type_literal_in_assignment(source)
+        && let Some(seed) = pstypename_seed_from_type_name(__w, &type_name)
+    {
+        return Some(seed);
+    }
+    pstypename_seed_from_expr(__w, value)
+}
+
+fn static_type_literal_in_assignment(source: &str) -> Option<String> {
+    let eq = source.find('=')?;
+    let rhs = &source[eq + 1..];
+    let start = rhs.find('[')?;
+    let rest = &rhs[start + 1..];
+    let end = rest.find(']')?;
+    let after = rest[end + 1..].trim_start();
+    if after.is_empty() {
+        return None;
+    }
+    Some(rest[..end].trim().to_string())
+}
+
+fn pstypename_seed_from_type_name(__w: &PsWalker, type_name: &str) -> Option<Vec<String>> {
+    let type_name = erase_powershell_generic_type_args(type_name);
+    let normalized = type_accelerator(&type_name).unwrap_or(type_name.as_str());
+    let leaf = normalized.rsplit('.').next().unwrap_or(normalized).trim();
+    let folded = leaf.to_lowercase();
+
+    if __w.declared_classes.contains(&folded) {
+        let mut out = Vec::new();
+        let mut current = folded;
+        let mut guard = 0usize;
+        loop {
+            let display = __w
+                .class_display_names
+                .get(&current)
+                .cloned()
+                .unwrap_or_else(|| current.clone());
+            out.push(display);
+            let Some(parent) = __w.class_parents.get(&current).cloned() else {
+                break;
+            };
+            current = parent;
+            guard += 1;
+            if guard > 32 {
+                break;
+            }
+        }
+        out.push("System.Object".to_string());
+        return Some(out);
+    }
+
+    if let Some(display) = __w.enum_display_names.get(&folded) {
+        return Some(vec![
+            display.clone(),
+            "System.Enum".to_string(),
+            "System.ValueType".to_string(),
+            "System.Object".to_string(),
+        ]);
+    }
+
+    let display = match normalized.to_ascii_lowercase().as_str() {
+        "datetime" | "system.datetime" => "System.DateTime",
+        "guid" | "system.guid" => "System.Guid",
+        "timespan" | "system.timespan" => "System.TimeSpan",
+        "version" | "system.version" => "System.Version",
+        "uri" | "system.uri" => "System.Uri",
+        "decimal" | "system.decimal" => "System.Decimal",
+        "byte" | "system.byte" => "System.Byte",
+        "sbyte" | "system.sbyte" => "System.SByte",
+        "uint16" | "system.uint16" => "System.UInt16",
+        "uint" | "uint32" | "system.uint32" => "System.UInt32",
+        "uint64" | "system.uint64" => "System.UInt64",
+        "hashtable" | "system.collections.hashtable" => "System.Collections.Hashtable",
+        "pscustomobject" | "psobject" | "system.management.automation.pscustomobject" => {
+            "System.Management.Automation.PSCustomObject"
+        }
+        "object[]" | "system.object[]" => "System.Object[]",
+        name if name.starts_with("system.") => normalized,
+        _ => return None,
+    };
+    let mut out = vec![display.to_string()];
+    if display.ends_with("[]") {
+        out.push("System.Array".to_string());
+    }
+    out.push("System.Object".to_string());
+    Some(out)
+}
+
+fn expr_is_uint32(__w: &PsWalker, expr: &Expression) -> bool {
+    if let ExprKind::Ident(name) = &expr.kind
+        && let Some(Some(seed)) = __w.pstypename_vars.get(&name.to_lowercase())
+    {
+        return seed
+            .first()
+            .is_some_and(|name| name.eq_ignore_ascii_case("System.UInt32"));
+    }
+    pstypename_seed_from_expr(__w, expr)
+        .and_then(|seed| seed.first().cloned())
+        .is_some_and(|name| name.eq_ignore_ascii_case("System.UInt32"))
+}
+
+fn ps_ternary(cond: Expression, then: Expression, else_: Expression) -> Expression {
+    Expression::new(ExprKind::Ternary {
+        cond: Box::new(cond),
+        then: Box::new(then),
+        else_: Box::new(else_),
+    })
+}
+
+fn ps_binary(op: BinOp, left: Expression, right: Expression) -> Expression {
+    Expression::new(ExprKind::Binary {
+        op,
+        left: Box::new(left),
+        right: Box::new(right),
+    })
+}
+
+/// `.ForEach(…)` and `.Where(…)` — PowerShell's INTRINSIC collection members.
+///
+/// These are language operators wearing method syntax, not .NET members: they
+/// exist on every value, a SCALAR counts as a one-item collection, and each
+/// takes a family of overloads the argument shapes select between. The one-
+/// argument script-block forms are the `[array_methods]` rows `ForEach` and
+/// `Where`; everything else is desugared here into calls those rows and the
+/// `__ps_*` builtins already answer.
+///
+/// ⚠ THE RECEIVER IS EVALUATED MORE THAN ONCE in the modes that need both the
+/// source and a position within it. An expression position has nowhere to put a
+/// temporary, which is the same trade `null_method_call` makes above; every
+/// receiver these overloads take in practice is a variable or a range.
+fn intrinsic_collection_overload(
+    recv: &Expression,
+    name: &str,
+    args: &[Expression],
+) -> Option<Expression> {
+    let src = || ensure_array(recv.clone());
+    if name.eq_ignore_ascii_case("Where") {
+        let pred = args.first()?.clone();
+        let matched = || ps_member_call(src(), "Where", vec![pred.clone()]);
+        let mode = args
+            .get(1)
+            .and_then(literal_text)
+            .unwrap_or_else(|| "default".into())
+            .to_lowercase();
+        // `First` and `Last` answer a COLLECTION of one when no count is
+        // given, not the bare element — the corpus indexes the result.
+        let count = || args.get(2).cloned().unwrap_or_else(|| Expression::int(1));
+        // The first index the predicate accepts, or the length when it never
+        // does — which makes `Until` the whole collection and `SkipUntil` empty,
+        // as PowerShell answers.
+        let first_hit = || {
+            let found = ps_member_call(src(), "findIndex", vec![pred.clone()]);
+            ps_ternary(
+                ps_binary(BinOp::Lt, found.clone(), Expression::int(0)),
+                ps_builtin("__ps_count", vec![src()]),
+                found,
+            )
+        };
+        return Some(match mode.as_str() {
+            "first" => ps_builtin("__ps_slice", vec![matched(), Expression::int(0), count()]),
+            "last" => ps_builtin(
+                "__ps_slice",
+                vec![
+                    matched(),
+                    ps_binary(
+                        BinOp::Sub,
+                        ps_builtin("__ps_count", vec![matched()]),
+                        count(),
+                    ),
+                    ps_builtin("__ps_count", vec![matched()]),
+                ],
+            ),
+            // `Until` stops BEFORE the match, `SkipUntil` starts AT it.
+            "until" => ps_builtin("__ps_slice", vec![src(), Expression::int(0), first_hit()]),
+            "skipuntil" => ps_builtin(
+                "__ps_slice",
+                vec![src(), first_hit(), ps_builtin("__ps_count", vec![src()])],
+            ),
+            // Two collections: what matched, then what did not.
+            "split" => {
+                let rejected = item_lambda(vec![Statement::new(StmtKind::Return(Some(Expression::new(
+                    ExprKind::Unary {
+                        op: UnaryOp::Not,
+                        expr: Box::new(Expression::new(ExprKind::Call {
+                            callee: Box::new(pred.clone()),
+                            args: vec![Argument::positional(Expression::ident("_"))],
+                            optional: false,
+                        })),
+                    },
+                ))))]);
+                ps_array_of(vec![
+                    matched(),
+                    ps_member_call(src(), "Where", vec![rejected]),
+                ])
+            }
+            _ => matched(),
+        });
+    }
+    if !name.eq_ignore_ascii_case("ForEach") {
+        return None;
+    }
+    let selector = args.first()?;
+    // `.ForEach([int])` — CONVERT each element. The argument is a bare type
+    // literal, which walks to the type's identifier with no operand.
+    if args.len() == 1
+        && let ExprKind::Ident(type_name) = &selector.kind
+        && !type_name.is_empty()
+    {
+        return Some(ps_member_call(
+            src(),
+            "ForEach",
+            vec![item_lambda(vec![Statement::new(StmtKind::Return(Some(
+                Expression::new(ExprKind::Cast {
+                    type_name: type_name.clone(),
+                    expr: Box::new(Expression::ident("_")),
+                }),
+            )))])],
+        ));
+    }
+    // `.ForEach('Name'[, args…])` — the member named by a STRING, applied to
+    // every element.
+    if let Some(member) = literal_text(selector).filter(|_| {
+        matches!(&selector.kind, ExprKind::Lit(Literal::Str(_)))
+    }) {
+        let extra: Vec<Expression> = args[1..].to_vec();
+        let body = if extra.is_empty() {
+            // ⛔ONE SPELLING, TWO MEANINGS, AND NEITHER IS DECIDABLE FROM THE
+            // NAME. `.ForEach('Code')` reads a property and
+            // `.ForEach('ToUpper')` calls a method; PowerShell picks by asking
+            // the value, so this asks the same question.
+            //
+            // The receiver's KIND settles it. An object's members are its
+            // properties — a missing one reads `$null`, which is what
+            // `.ForEach('Priority')` must yield for the objects lacking it — so
+            // an object reads. A primitive carries no properties at all: its
+            // members are the `[value_methods]` rows, which only a CALL
+            // reaches, and `Length` answers the same either way because that
+            // row is the `len` slot.
+            ps_ternary(
+                ps_binary(
+                    BinOp::Eq,
+                    ps_builtin("__ps_typeof", vec![Expression::ident("_")]),
+                    Expression::string("object"),
+                ),
+                ps_member(Expression::ident("_"), &member),
+                ps_member_call(Expression::ident("_"), &member, Vec::new()),
+            )
+        } else {
+            ps_member_call(Expression::ident("_"), &member, extra)
+        };
+        return Some(ps_member_call(
+            src(),
+            "ForEach",
+            vec![item_lambda(vec![Statement::new(StmtKind::Return(Some(body)))])],
+        ));
+    }
+    // The plain script-block form — the `[array_methods]` row answers it; only
+    // the receiver needs normalizing, so a scalar enumerates as one item.
+    Some(ps_member_call(src(), "ForEach", args.to_vec()))
+}
+
+/// The text of a STRING LITERAL, and nothing else.
+///
+/// ⛔`literal_text` answers a bare identifier with its own name, which is right
+/// where a cmdlet takes an unquoted word — `-MemberType NoteProperty` — and
+/// wrong wherever the argument is source to be read. Nothing else distinguishes
+/// the two at this level, so the two questions are asked separately.
+fn string_literal(expr: &Expression) -> Option<String> {
+    match &expr.kind {
+        ExprKind::Lit(Literal::Str(text)) => Some(text.clone()),
+        _ => None,
+    }
+}
+
 fn literal_text(expr: &Expression) -> Option<String> {
     match &expr.kind {
         ExprKind::Lit(Literal::Str(s)) => Some(s.clone()),
@@ -7564,10 +13367,64 @@ fn literal_text(expr: &Expression) -> Option<String> {
     }
 }
 
+fn literal_int(expr: &Expression) -> Option<i64> {
+    match &expr.kind {
+        ExprKind::Lit(Literal::Int(value)) => Some(*value),
+        ExprKind::Unary { op: UnaryOp::Neg, expr } => match &expr.kind {
+            ExprKind::Lit(Literal::Int(value)) => Some(-*value),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn ps_array_literal_items(expr: &Expression) -> Option<&[ArrayElement]> {
+    match &expr.kind {
+        ExprKind::Array(items) => Some(items.as_slice()),
+        ExprKind::Call { callee, args, .. }
+            if matches!(&callee.kind, ExprKind::Ident(name) if name == "__ps_array")
+                && args.len() == 1 =>
+        {
+            match &args[0].value.kind {
+                ExprKind::Array(items) => Some(items.as_slice()),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+fn pattern_array_or_regex(pattern: Expression) -> Expression {
+    let Some(items) = ps_array_literal_items(&pattern) else {
+        return pattern;
+    };
+    let mut parts = Vec::new();
+    for item in items {
+        let Some(text) = literal_text(&item.value) else {
+            return pattern;
+        };
+        parts.push(text);
+    }
+    Expression::string(&parts.join("|"))
+}
+
+fn select_string_context_counts(context: Option<Expression>) -> Option<(Expression, Expression)> {
+    let context = context?;
+    if let Some(items) = ps_array_literal_items(&context) {
+        if items.len() >= 2 {
+            let pre = items[0].value.clone();
+            let post = items[1].value.clone();
+            return Some((pre, post));
+        }
+    }
+    literal_int(&context)?;
+    Some((context.clone(), context))
+}
+
 /// A bare command invocation used where an expression is expected: `(hi 'PASS')`.
 fn walk_command_segment_expr(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
     match parse_command_segment(__w, pair) {
-        Some((callee, args)) => build_command_call_in(callee, args, true),
+        Some((callee, args)) => build_command_call_in(__w, callee, args, true),
         None => Expression::null(),
     }
 }
@@ -7582,7 +13439,19 @@ fn walk_array_expr(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
     // `@(1, @(2,3))` is TWO elements whose second is an array, because the
     // commas build one array and `@()` guarantees that array; flattening
     // per-element would splice the inner one and give four.
-    let elements: Vec<Expression> = pair.into_inner().map(|__x| walk_expr(__w, __x)).collect();
+    let elements: Vec<Expression> = pair
+        .into_inner()
+        .map(|__x| {
+            if let Some(word) = lone_bare_word(&__x)
+                && !is_literal_word(&word)
+                && __w.declared_functions.contains_key(&word.to_lowercase())
+            {
+                build_command_call_in(__w, Expression::ident(&word), Vec::new(), true)
+            } else {
+                walk_expr(__w, __x)
+            }
+        })
+        .collect();
     let body = match <[Expression; 1]>::try_from(elements) {
         Ok([only]) => only,
         Err(many) => Expression::new(ExprKind::Array(
@@ -7595,6 +13464,22 @@ fn walk_array_expr(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
                 })
                 .collect(),
         )),
+    };
+
+    // ⛔`@( … )` COLLECTS THE STREAM, it does not wrap the stream's VALUE.
+    // Measured against pwsh 7.6.4: an empty pipeline assigned to a variable is
+    // `$null`, and `@(<that same pipeline>)` is an EMPTY array — while
+    // `@($null)` on an ordinary null holds ONE element. Both follow from the
+    // array operator seeing the stream itself, so the single-item stream rule
+    // is peeled back off here rather than applied and then compensated for.
+    let body = match &body.kind {
+        ExprKind::Call { callee, args, .. }
+            if matches!(&callee.kind, ExprKind::Ident(n) if n == "__ps_unwrap_single")
+                && args.len() == 1 =>
+        {
+            args[0].value.clone()
+        }
+        _ => body,
     };
 
     // Whether that one value flattens is a question about its RUNTIME shape —
@@ -7617,12 +13502,23 @@ fn walk_hash_literal(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
         let Some(key_pair) = parts.next() else {
             continue;
         };
-        let key = hash_key_text(key_pair);
+        // ⛔A KEY CAN BE COMPUTED. `@{ $t = "origin" }` keys by the VALUE `$t`
+        // holds — an enum member, a tuple, a version — not by the name `$t`.
+        // The grammar had no variable form at all, so the whole literal failed
+        // to parse and `@` was left to be called as a command.
+        let key = match key_pair.as_rule() {
+            Rule::hash_key
+                if matches!(
+                    key_pair.clone().into_inner().next().map(|p| p.as_rule()),
+                    Some(Rule::var_ref) | Some(Rule::sub_expr)
+                ) =>
+            {
+                walk_expr(__w, key_pair.into_inner().next().expect("checked above"))
+            }
+            _ => Expression::string(&hash_key_text(key_pair)),
+        };
         let value = parts.next().map(|__x| walk_expr(__w, __x)).unwrap_or_else(Expression::null);
-        props.push(ObjectProperty::KeyValue {
-            key: Expression::string(&key),
-            value,
-        });
+        props.push(ObjectProperty::KeyValue { key, value });
     }
     Expression::new(ExprKind::Object(props))
 }
@@ -7764,6 +13660,7 @@ fn block_value_expr(stmts: Vec<Statement>) -> Expression {
     if stmts.is_empty() {
         return Expression::null();
     }
+    let stmts = unwrap_write_output(stmts);
     let body = match accumulate_outputs(stmts.clone()) {
         Some(accumulated) => accumulated,
         None => return_last_of_branches(stmts),
@@ -7797,6 +13694,7 @@ fn walk_script_block_expr(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
     // answered a single empty value; a `trap` inside a script block was never
     // installed either. `script_block_expr` has the same shape as `block`, so
     // the function-body parser reads it unchanged.
+    let wants_args = mentions_args(pair.as_str());
     let body = parse_block_with_function_params(__w, pair, &mut params).unwrap_or_default();
 
     if params.is_empty() {
@@ -7812,6 +13710,32 @@ fn walk_script_block_expr(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
         });
     }
 
+    // `$args` is the automatic variable holding every argument the declared
+    // parameters did not take. A FUNCTION body already declares it as a rest
+    // parameter; a script block is the same thing and got nothing, so
+    // `{ $args[0] * 2 }` invoked with `21` answered 0 — the name resolved to
+    // an unbound local rather than to the call's arguments.
+    //
+    // ⛔THE SYNTHESIZED `_` ALREADY ATE ARGUMENT ZERO. A block that declares no
+    // `param(…)` gets a leading `_` for the pipeline item, so a rest parameter
+    // beside it starts at argument ONE and `$args[0]` came back empty. The rest
+    // holds arguments 1..n and `_` holds argument 0, so the automatic variable
+    // is the two joined — which is the whole argument list, exactly what
+    // PowerShell binds for a parameterless block.
+    let declares_own_params = !params.iter().any(|p| p.name == "_");
+    if wants_args && !params.iter().any(|p| p.name.eq_ignore_ascii_case("args")) {
+        params.push(Param {
+            name: "args".to_string(),
+            type_hint: None,
+            default: None,
+            pass_by: PassBy::Value,
+            is_rest: true,
+            is_kwargs: false,
+            is_optional: true,
+            is_nullable: false,
+        });
+    }
+
     // The same success-stream collection a function body gets. A script block
     // has one too — `& { 1; 2 }` hands back both — and a `process` block needs
     // it to hand back anything at all: its emit site is inside the per-item
@@ -7821,7 +13745,21 @@ fn walk_script_block_expr(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
         Some(accumulated) => accumulated,
         None => return_last_of_branches(body),
     };
-    let body = declare_function_locals(locals, &params, body);
+    let mut body = declare_function_locals(locals, &params, body);
+    if wants_args && !declares_own_params {
+        body.insert(
+            0,
+            Statement::new(StmtKind::Assign {
+                targets: vec![Expression::ident("args")],
+                value: Expression::new(ExprKind::Binary {
+                    op: BinOp::Add,
+                    left: Box::new(ensure_array(Expression::ident("_"))),
+                    right: Box::new(Expression::ident("args")),
+                }),
+                by_ref: false,
+            }),
+        );
+    }
 
     Expression::new(ExprKind::Lambda {
         params,
@@ -7844,6 +13782,124 @@ fn implicit_return(mut body: Vec<Statement>) -> Vec<Statement> {
     };
     body.push(replaced);
     body
+}
+
+/// A script block attached as a `ScriptMethod`, `ScriptProperty` or
+/// `CodeProperty` is a FUNCTION, not a lambda.
+///
+/// `$this` inside it names the object the member was attached to, and only
+/// `ExprKind::FunctionExpr` carries a receiver of its own — a `Lambda` inherits
+/// the enclosing one, so `{ $this.Val * 2 }` read the module and answered
+/// `NaN`.
+///
+/// A block's parameters are rewritten to match: `walk_script_block_expr`
+/// synthesizes a leading `_` for the pipeline item and, when the block mentions
+/// `$args`, prepends `$args = @($_) + $args` so the rest starts at argument
+/// one. A method's arguments start at ZERO, so both come off here and `$args`
+/// stands alone.
+///
+/// Anything that is not a script block is a plain value and is handed back
+/// unchanged.
+/// What `Add-Member` evaluates to once its writes are decided.
+///
+/// `-PassThru` makes the cmdlet's value the object it just extended, which is
+/// what lets `$o | Add-Member … -PassThru | Add-Member …` chain. Without it the
+/// cmdlet emits nothing at all.
+///
+/// ⛔A WRITE'S OWN VALUE IS THE VALUE ASSIGNED, NOT THE OBJECT, so `-PassThru`
+/// cannot just be the last write — the two are sequenced and the object is read
+/// back afterwards.
+fn add_member_value(
+    mut writes: Vec<Statement>,
+    target: Expression,
+    args: &[Argument],
+) -> Expression {
+    let pass_thru = args.iter().any(|a| {
+        a.name
+            .as_deref()
+            .is_some_and(|n| n.eq_ignore_ascii_case("PassThru"))
+    });
+    if pass_thru {
+        writes.push(Statement::new(StmtKind::Return(Some(target))));
+    } else if let [Statement {
+        kind: StmtKind::Expr(single),
+        ..
+    }] = writes.as_slice()
+    {
+        // One write needs no block around it: the cmdlet's value is the
+        // assignment's, which is what it was before member types existed.
+        return single.clone();
+    }
+    block_value_expr(writes)
+}
+
+/// `{ $this.<member> }` as a function — the getter an `AliasProperty` is.
+fn this_member_getter(member: &str) -> Expression {
+    Expression::new(ExprKind::FunctionExpr(Box::new(Statement::new(
+        StmtKind::FunctionDecl {
+            name: String::new(),
+            params: Vec::new(),
+            body: vec![Statement::new(StmtKind::Return(Some(Expression::new(
+                ExprKind::Member {
+                    object: Box::new(Expression::new(ExprKind::This)),
+                    field: member.to_string(),
+                    null_safe: false,
+                },
+            ))))],
+            modifiers: Modifiers::default(),
+            is_async: false,
+            is_generator: false,
+            is_sub: false,
+            return_type: None,
+            handles: Vec::new(),
+        },
+    ))))
+}
+
+fn scriptblock_as_method(value: Expression) -> Expression {
+    let ExprKind::Lambda {
+        params,
+        body: LambdaBody::Block(body),
+        is_async,
+        ..
+    } = &value.kind
+    else {
+        return value;
+    };
+    let mut params = params.clone();
+    let mut body = body.clone();
+
+    if params.first().is_some_and(|p| p.name == "_") {
+        params.remove(0);
+        if body.first().is_some_and(is_args_rejoin) {
+            body.remove(0);
+        }
+    }
+
+    Expression::new(ExprKind::FunctionExpr(Box::new(Statement::new(
+        StmtKind::FunctionDecl {
+            name: String::new(),
+            params,
+            body,
+            modifiers: Modifiers::default(),
+            is_async: *is_async,
+            is_generator: false,
+            is_sub: false,
+            return_type: None,
+            handles: Vec::new(),
+        },
+    ))))
+}
+
+/// `$args = @($_) + $args` — the statement a parameterless script block gets so
+/// its automatic variable spans the pipeline item as well as the rest.
+fn is_args_rejoin(stmt: &Statement) -> bool {
+    let StmtKind::Assign { targets, value, .. } = &stmt.kind else {
+        return false;
+    };
+    matches!(targets.as_slice(), [t] if matches!(&t.kind, ExprKind::Ident(n) if n == "args"))
+        && matches!(&value.kind, ExprKind::Binary { right, .. }
+            if matches!(&right.kind, ExprKind::Ident(n) if n == "args"))
 }
 
 fn collect_statements(__w: &mut PsWalker, pair: Pair<Rule>) -> Vec<Statement> {
@@ -7907,6 +13963,9 @@ fn walk_var_ref(raw: &str) -> Expression {
         "false" => Expression::bool(false),
         "null" => Expression::null(),
         "this" => Expression::new(ExprKind::This),
+        // `$PSItem` is the long spelling of `$_` — the SAME automatic
+        // variable, not a copy of it.
+        "psitem" => Expression::ident("_"),
         _ => Expression::ident(scope_qualified_name(name)),
     }
 }
@@ -7943,14 +14002,76 @@ fn walk_bare_word(raw: &str) -> Expression {
 /// stay whole so the shared namespace resolver can match it through the dotnet
 /// tree-mount. Truncating to the last segment would discard exactly what
 /// `resolve_profile_namespace_chain` matches on.
+/// `default(T)` for the element type of an array constructor.
+///
+/// .NET zero-initializes an array, so the spelling decides the fill: numerics
+/// take 0, `bool` takes false, `char` takes U+0000, and every reference type
+/// takes null. A struct element type would take a zeroed instance of that
+/// struct, which no spelling here can build — it takes null as well.
+fn default_of_type(element: &str) -> Expression {
+    let short = element
+        .rsplit('.')
+        .next()
+        .unwrap_or(element)
+        .trim()
+        .to_ascii_lowercase();
+    match short.as_str() {
+        "int" | "int16" | "int32" | "int64" | "uint" | "uint16" | "uint32" | "uint64" | "long"
+        | "ulong" | "short" | "ushort" | "byte" | "sbyte" | "double" | "single" | "float"
+        | "decimal" | "intptr" | "uintptr" => Expression::int(0),
+        "bool" | "boolean" => Expression::bool(false),
+        "char" => Expression::string("\u{0}"),
+        _ => Expression::null(),
+    }
+}
+
 fn type_name_of(expr: &Expression) -> Option<String> {
-    match &expr.kind {
+    let raw = match &expr.kind {
         ExprKind::Ident(name) if !name.trim().is_empty() => Some(name.clone()),
         ExprKind::Member { object, field, .. } => {
             Some(format!("{}.{}", type_name_of(object)?, field))
         }
+        ExprKind::Cast { type_name, .. } if !type_name.trim().is_empty() => {
+            Some(type_name.clone())
+        }
         _ => None,
+    }?;
+    Some(erase_powershell_generic_type_args(&raw))
+}
+
+fn erase_powershell_generic_type_args(name: &str) -> String {
+    let trimmed = name.trim();
+    if !trimmed.ends_with(']') {
+        return trimmed.to_string();
     }
+    let mut depth = 0usize;
+    for (idx, ch) in trimmed.char_indices().rev() {
+        match ch {
+            ']' => depth += 1,
+            '[' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    let args = &trimmed[idx + 1..trimmed.len() - 1];
+                    return if args.trim().is_empty() {
+                        trimmed.to_string()
+                    } else {
+                        trimmed[..idx].trim().to_string()
+                    };
+                }
+            }
+            _ => {}
+        }
+    }
+    trimmed.to_string()
+}
+
+fn is_span_or_memory_runtime_type(type_name: &str) -> bool {
+    let erased = erase_powershell_generic_type_args(type_name);
+    let leaf = erased.rsplit('.').next().unwrap_or(erased.as_str()).trim();
+    matches!(
+        leaf.to_ascii_lowercase().as_str(),
+        "span" | "readonlyspan" | "memory" | "readonlymemory"
+    )
 }
 
 /// `[System.Math]` becomes the member chain `System.Math`, the same shape the
@@ -7971,15 +14092,8 @@ fn type_literal_expr(name: &str) -> Expression {
     // parent IS `Exception`. `is_synthesized_exception_class` exists for
     // exactly this question; its own doc records vb hitting the mirror image
     // (`Imports System` qualifying a `Catch` type until it stopped matching).
-    // `System.Management.Automation.X` is PowerShell's own namespace; the
-    // prelude declares those types under their SHORT name.
-    if let Some(short) = name.strip_prefix("System.Management.Automation.")
-        && !short.contains('.')
-    {
-        return Expression::ident(short);
-    }
     if let Some(short) = name.strip_prefix("System.")
-        && !short.contains('.')
+        .map(|rest| rest.rsplit('.').next().unwrap_or(rest).trim())
         && vybe_platform_dotnet::emitter::core::exceptions::is_synthesized_exception_class(short)
     {
         return Expression::ident(short);
@@ -7988,6 +14102,13 @@ fn type_literal_expr(name: &str) -> Expression {
     // spells them `[System.Int128]::Parse(...)` and the class is spliced in
     // under its SHORT name, so the qualified chain named nothing.
     if let Some(short) = name.strip_prefix("System.")
+        && !short.contains('.')
+        && vybe_platform_dotnet::emitter::core::numerics_classes::
+            is_synthesized_numerics_class(short)
+    {
+        return Expression::ident(short);
+    }
+    if let Some(short) = name.strip_prefix("System.Numerics.")
         && !short.contains('.')
         && vybe_platform_dotnet::emitter::core::numerics_classes::
             is_synthesized_numerics_class(short)
@@ -8020,11 +14141,134 @@ fn type_literal_expr(name: &str) -> Expression {
 /// other language that spells it — which is what makes the walker its home
 /// rather than a shared table. The corpus only ever COMPARES a category against
 /// another category, so the ordinal serves both sides.
-fn error_category_ordinal(receiver: &Expression, member: &str) -> Option<i64> {
-    let ExprKind::Ident(name) = &receiver.kind else {
-        return None;
+/// `Get-Date -UFormat` — strftime, TRANSLATED into a .NET format string.
+///
+/// `datetime_format_adapter` is a runtime walker over a .NET pattern: it knows
+/// every format letter, quotes literal sections with `'…'`, and treats anything
+/// else as a separator. So a strftime spec is a SPELLING difference, and the
+/// whole of `%Y/%m/%d %H:%M:%S` becomes ONE `ToString` against one translated
+/// pattern rather than a call per token.
+///
+/// Two specifiers are not a format letter in .NET at all — `%j` is the day of
+/// the year and `%s` the seconds since the Unix epoch — so those become the
+/// member and the subtraction that answer them, and only then does the result
+/// need joining. A spec without either is a single call.
+///
+/// An unknown specifier keeps its own text rather than being dropped.
+fn uformat_expr(date: &Expression, spec: &str) -> Expression {
+    /// strftime letter -> the .NET custom format token meaning the same thing.
+    /// Every token is at least two characters: a ONE-character .NET format
+    /// string is a STANDARD specifier, so `"d"` would mean "short date"
+    /// instead of "day of month".
+    const TOKENS: &[(char, &str)] = &[
+        ('Y', "yyyy"),
+        ('y', "yy"),
+        ('m', "MM"),
+        ('d', "dd"),
+        ('H', "HH"),
+        ('I', "hh"),
+        ('M', "mm"),
+        ('S', "ss"),
+        ('p', "tt"),
+        ('A', "dddd"),
+        ('a', "ddd"),
+        ('B', "MMMM"),
+        ('b', "MMM"),
+        ('D', "MM/dd/yy"),
+        ('T', "HH:mm:ss"),
+        ('F', "yyyy-MM-dd"),
+        ('R', "HH:mm"),
+        ('Z', "zzz"),
+    ];
+
+    let mut parts: Vec<Expression> = Vec::new();
+    let mut pattern = String::new();
+    let mut literal = String::new();
+
+    // A literal run is quoted so the adapter passes it through verbatim: an
+    // unquoted `d` inside one would read as the day of the month.
+    fn close(literal: &mut String, pattern: &mut String) {
+        if !literal.is_empty() {
+            pattern.push('\'');
+            pattern.push_str(&std::mem::take(literal));
+            pattern.push('\'');
+        }
+    }
+    let flush = |pattern: &mut String, literal: &mut String, parts: &mut Vec<Expression>| {
+        close(literal, pattern);
+        if !pattern.is_empty() {
+            parts.push(ps_member_call(
+                date.clone(),
+                "ToString",
+                vec![Expression::string(&std::mem::take(pattern))],
+            ));
+        }
     };
-    if !name.eq_ignore_ascii_case("ErrorCategory") {
+
+    let mut chars = spec.chars();
+    while let Some(ch) = chars.next() {
+        if ch != '%' {
+            literal.push(ch);
+            continue;
+        }
+        let Some(token) = chars.next() else {
+            literal.push('%');
+            break;
+        };
+        if let Some((_, netted)) = TOKENS.iter().find(|(c, _)| *c == token) {
+            close(&mut literal, &mut pattern);
+            pattern.push_str(netted);
+            continue;
+        }
+        match token {
+            'n' => literal.push('\n'),
+            't' => literal.push('\t'),
+            'j' => {
+                flush(&mut pattern, &mut literal, &mut parts);
+                parts.push(ps_member(date.clone(), "DayOfYear"));
+            }
+            's' => {
+                flush(&mut pattern, &mut literal, &mut parts);
+                parts.push(dotnet_static_call(
+                    "System.Math",
+                    "Floor",
+                    vec![ps_member(
+                        ps_member_call(
+                            date.clone(),
+                            "Subtract",
+                            vec![dotnet_static_call(
+                                "System.DateTime",
+                                "Parse",
+                                vec![Expression::string("1970-01-01 00:00:00Z")],
+                            )],
+                        ),
+                        "TotalSeconds",
+                    )],
+                ));
+            }
+            other => literal.push(other),
+        }
+    }
+    flush(&mut pattern, &mut literal, &mut parts);
+
+    // One piece needs no joining, and staying a single `ToString` keeps the
+    // result a string rather than a concatenation starting from `""`.
+    if parts.len() == 1 {
+        return parts.remove(0);
+    }
+    // `+` takes its result type from the LEFT operand, so the fold starts from
+    // a string and `%j`'s number concatenates rather than being added.
+    parts.into_iter().fold(Expression::string(""), |acc, part| {
+        ps_binary(BinOp::Add, acc, part)
+    })
+}
+
+fn error_category_value(receiver: &Expression, member: &str) -> Option<String> {
+    let name = type_name_of(receiver)?;
+    if !matches!(
+        name.to_ascii_lowercase().as_str(),
+        "errorcategory" | "system.management.automation.errorcategory"
+    ) {
         return None;
     }
     const CATEGORIES: &[&str] = &[
@@ -8061,8 +14305,36 @@ fn error_category_ordinal(receiver: &Expression, member: &str) -> Option<i64> {
     ];
     CATEGORIES
         .iter()
-        .position(|c| c.eq_ignore_ascii_case(member))
-        .map(|i| i as i64)
+        .find(|c| c.eq_ignore_ascii_case(member))
+        .map(|c| (*c).to_string())
+}
+
+fn should_process_reason_value(receiver: &Expression, member: &str) -> Option<String> {
+    let name = type_name_of(receiver)?;
+    if !matches!(
+        name.to_ascii_lowercase().as_str(),
+        "shouldprocessreason" | "system.management.automation.shouldprocessreason"
+    ) {
+        return None;
+    }
+    ["None", "WhatIf"]
+        .iter()
+        .find(|value| value.eq_ignore_ascii_case(member))
+        .map(|value| (*value).to_string())
+}
+
+fn confirm_impact_value(receiver: &Expression, member: &str) -> Option<String> {
+    let name = type_name_of(receiver)?;
+    if !matches!(
+        name.to_ascii_lowercase().as_str(),
+        "confirmimpact" | "system.management.automation.confirmimpact"
+    ) {
+        return None;
+    }
+    ["None", "Low", "Medium", "High"]
+        .iter()
+        .find(|value| value.eq_ignore_ascii_case(member))
+        .map(|value| (*value).to_string())
 }
 
 /// A PowerShell TYPE ACCELERATOR — the short spelling `[bigint]` gives
@@ -8114,7 +14386,7 @@ fn type_literal_name(raw: &str) -> &str {
 }
 
 /// Map a PowerShell operator spelling onto the shared `BinOp`.
-fn build_binary(op_raw: &str, left: Expression, right: Expression) -> Expression {
+fn build_binary(__w: &PsWalker, op_raw: &str, left: Expression, right: Expression) -> Expression {
     let op_text = op_raw.trim().to_lowercase();
     let symbolic = matches!(op_text.as_str(), "+" | "-" | "*" | "/" | "%" | "**");
 
@@ -8131,6 +14403,15 @@ fn build_binary(op_raw: &str, left: Expression, right: Expression) -> Expression
             Some(rest) if is_comparison_word(rest) => rest.to_string(),
             _ => stripped.to_string(),
         }
+    };
+
+    // ⛔A COMPARISON IS CASE-INSENSITIVE UNLESS THE OPERATOR SAYS OTHERWISE.
+    // `c` is the case-sensitive prefix and it is the ONLY one — `i` and the
+    // bare spelling both fold. Measured against pwsh 7.6.4: `'abc' -like 'A*'`
+    // is True, `'abc' -cmatch 'ABC'` is False.
+    let case_sensitive = !symbolic && op_text.trim_start_matches('-').starts_with('c') && {
+        let rest = &op_text.trim_start_matches('-')[1..];
+        is_comparison_word(rest)
     };
 
     // `-contains` / `-notcontains` take the collection on the LEFT, the inverse
@@ -8150,11 +14431,18 @@ fn build_binary(op_raw: &str, left: Expression, right: Expression) -> Expression
         } else {
             right
         };
-        let test = dotnet_static_call(
-            "System.Text.RegularExpressions.Regex",
-            "IsMatch",
-            vec![left, pattern],
-        );
+        // `RegexOptions.IgnoreCase` is 1, and the three-argument `IsMatch` is
+        // already registered and already turns those bits into regex flags —
+        // the two-argument form carries no flags at all, which is what made
+        // every unprefixed `-match` and `-like` case-SENSITIVE.
+        let mut args = vec![left, pattern];
+        if !case_sensitive {
+            args.push(Expression::int(1));
+        }
+        if matches!(word.as_str(), "match" | "notmatch") {
+            return regex_match_expr_updates_matches(args, word == "notmatch");
+        }
+        let test = dotnet_static_call("System.Text.RegularExpressions.Regex", "IsMatch", args);
         return if word.starts_with("not") {
             negate(test)
         } else {
@@ -8162,12 +14450,44 @@ fn build_binary(op_raw: &str, left: Expression, right: Expression) -> Expression
         };
     }
 
+    // `-eq` / `-ne` fold case for a comparison of two strings, and coerce the
+    // right operand to the left one's type otherwise; see
+    // `emit_case_folding_eq`. `-ceq` / `-cne` are the case-SENSITIVE spellings
+    // and keep the coercion without the folding.
+    //
+    // ⛔ONLY WHERE ONE SIDE IS A STRING LITERAL. The shared `Eq` arm dispatches
+    // a user `__eq__`, honours the structural-equality target and reads the
+    // `__value_eq` stamp; routing every `-eq` past it cost `BigInteger`,
+    // `DateTime`, `DateTimeOffset` and `TimeSpan` their equality — 21 tests,
+    // measured, whether the detour was a rewrite here or the
+    // `[builtin_slots.string] eq` slot. A literal carries none of that, so
+    // folding beside one loses nothing.
+    if matches!(word.as_str(), "eq" | "ne")
+        && (string_literal(&left).is_some() || string_literal(&right).is_some())
+    {
+        let builtin = match (word.as_str(), case_sensitive) {
+            ("eq", false) => "__ps_eq",
+            ("ne", false) => "__ps_ne",
+            ("eq", _) => "__ps_ceq",
+            _ => "__ps_cne",
+        };
+        return ps_builtin(builtin, vec![left, right]);
+    }
+
     // `-is` / `-isnot` are TYPE TESTS. `BinOp::Is` is reference equality
     // (Python's `is`), so it answered `$x -is [int]` by comparing 42 to the
     // resolved type — false for every operand, primitive or class alike.
     if word == "is" || word == "isnot" {
-        let test = type_test_expr(left, &right);
+        let test = type_test_declared(__w, left, &right);
         return if word == "isnot" { negate(test) } else { test };
+    }
+    if word == "as" {
+        return type_name_of(&right)
+            .map(|type_name| apply_cast(type_name, left.clone()))
+            .unwrap_or(left);
+    }
+    if word == "shr" && expr_is_uint32(__w, &left) {
+        return ps_builtin("__ps_uint32_shr", vec![left, right]);
     }
 
     match word.as_str() {
@@ -8241,7 +14561,11 @@ fn build_binary(op_raw: &str, left: Expression, right: Expression) -> Expression
                 // mat' -replace '[cm]at','dog'` changed nothing.
                 "replace" => {
                     let mut args = vec![left];
-                    args.extend(spread_operands(right));
+                    let mut extra = spread_operands(right);
+                    if let Some(replacement) = extra.get_mut(1) {
+                        *replacement = normalize_regex_replacement_expr(replacement.clone());
+                    }
+                    args.extend(extra);
                     return dotnet_static_call(
                         "System.Text.RegularExpressions.Regex",
                         "Replace",
@@ -8251,7 +14575,7 @@ fn build_binary(op_raw: &str, left: Expression, right: Expression) -> Expression
                 "join" => {
                     // `__ps_join` — the bare `join` spelling never reaches
                     // value-method dispatch. See the profile's `Join` note.
-                    return method_call_expr(left, "__ps_join", spread_operands(right));
+                    return method_call_expr(ensure_array(left), "__ps_join", spread_operands(right));
                 }
                 "notlike" | "notmatch" => {
                     return Expression::new(ExprKind::Unary {
@@ -8311,6 +14635,23 @@ fn build_binary(op_raw: &str, left: Expression, right: Expression) -> Expression
             optional: false,
         });
     }
+    if matches!(op, BinOp::Eq | BinOp::NotEq) {
+        let left_is_null = matches!(left.kind, ExprKind::Lit(Literal::Null));
+        let right_is_null = matches!(right.kind, ExprKind::Lit(Literal::Null));
+        if left_is_null || right_is_null {
+            let tested = if left_is_null { right } else { left };
+            let is_null = Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::ident("__ps_is_null")),
+                args: vec![Argument::positional(tested)],
+                optional: false,
+            });
+            return if matches!(op, BinOp::NotEq) {
+                negate(is_null)
+            } else {
+                is_null
+            };
+        }
+    }
 
     Expression::new(ExprKind::Binary {
         op,
@@ -8323,6 +14664,42 @@ fn negate(expr: Expression) -> Expression {
     Expression::new(ExprKind::Unary {
         op: UnaryOp::Not,
         expr: Box::new(expr),
+    })
+}
+
+fn regex_match_expr_updates_matches(args: Vec<Expression>, invert: bool) -> Expression {
+    const MATCH: &str = "__ps_regex_match";
+    let success = ps_member(Expression::ident(MATCH), "Success");
+    let result = if invert {
+        negate(success.clone())
+    } else {
+        success.clone()
+    };
+    Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::new(ExprKind::Lambda {
+            params: vec![synth_param(MATCH)],
+            body: LambdaBody::Block(vec![
+                Statement::new(StmtKind::If {
+                    cond: success,
+                    then_body: vec![Statement::new(StmtKind::Assign {
+                        targets: vec![Expression::ident("Matches")],
+                        value: ps_member(Expression::ident(MATCH), "__group_values"),
+                        by_ref: false,
+                    })],
+                    elifs: Vec::new(),
+                    else_body: None,
+                }),
+                Statement::new(StmtKind::Return(Some(result))),
+            ]),
+            is_async: false,
+            captures: Vec::new(),
+        })),
+        args: vec![Argument::positional(dotnet_static_call(
+            "System.Text.RegularExpressions.Regex",
+            "Match",
+            args,
+        ))],
+        optional: false,
     })
 }
 
@@ -8357,6 +14734,49 @@ fn glob_to_regex(pattern: Expression) -> Expression {
 /// through `typeof`; anything else names a type and answers through
 /// `instanceof`. The two cannot share a mechanism: `42` has no prototype chain
 /// to walk, and a user class has no `typeof` tag of its own.
+/// `-is [T]` where `T` may be an INTERFACE or a base a declared class names.
+///
+/// An interface has no constructor, so `InstanceOf` against
+/// `[System.IDisposable]` answered false for a class declared
+/// `: System.IDisposable`. The walker knows every heritage name each class
+/// declares, so when `T` is one of them the test is whether the value's class
+/// is among the implementers — by its runtime type name, because which class
+/// `$v` holds is not known here. Anything else takes the ordinary test.
+fn type_test_declared(__w: &PsWalker, value: Expression, type_expr: &Expression) -> Expression {
+    let name = dotted_name_of(type_expr).unwrap_or_default();
+    let leaf = name.rsplit('.').next().unwrap_or(&name).to_lowercase();
+    let Some(classes) = __w.implementers.get(&leaf) else {
+        return type_test_expr(value, type_expr);
+    };
+    // The class itself, its subclasses that name it as a parent, and the
+    // classes declaring it as an interface all satisfy the test. A subclass's
+    // own name is folded like the rest.
+    let mut names: Vec<String> = classes.clone();
+    if __w.declared_classes.contains(&leaf) {
+        names.push(leaf.clone());
+    }
+    let list = Expression::new(ExprKind::Array(
+        names
+            .into_iter()
+            .map(|n| ArrayElement {
+                key: None,
+                value: Expression::string(&n),
+                spread: false,
+                by_ref: false,
+            })
+            .collect(),
+    ));
+    let runtime_name = ps_member(ps_member_call(value, "GetType", Vec::new()), "Name");
+    // Folded, because the implementer names are folded and `GetType().Name`
+    // keeps the declared spelling.
+    let folded = ps_member_call(runtime_name, "ToLower", Vec::new());
+    negate(negate(Expression::new(ExprKind::Binary {
+        op: BinOp::In,
+        left: Box::new(folded),
+        right: Box::new(list),
+    })))
+}
+
 fn type_test_expr(value: Expression, type_expr: &Expression) -> Expression {
     let name = dotted_name_of(type_expr).unwrap_or_default();
     let leaf = name.rsplit('.').next().unwrap_or(&name).to_lowercase();
@@ -8375,29 +14795,91 @@ fn type_test_expr(value: Expression, type_expr: &Expression) -> Expression {
         _ => None,
     };
 
-    if let Some(tag) = tag {
+    if matches!(leaf.as_str(), "object" | "system.object") {
         return Expression::new(ExprKind::Binary {
-            op: BinOp::StrictEq,
-            left: Box::new(Expression::new(ExprKind::TypeOf(Box::new(value)))),
-            right: Box::new(Expression::string(tag)),
+            op: BinOp::NotEq,
+            left: Box::new(value),
+            right: Box::new(Expression::null()),
         });
     }
 
-    // `[array]` is the runtime's own Array; every other name is taken as
-    // written so a user class reaches its own prototype. Double-negated
-    // because `InstanceOf` yields a truthy value rather than a boolean, and
-    // `$r -ne $true` in the tests compares against the real `$true`.
-    let ctor = if leaf.trim_end_matches("[]") == "array" || leaf.ends_with("[]") {
-        "Array".to_string()
-    } else {
-        name
-    };
+    if let Some(tag) = tag {
+        let direct = Expression::new(ExprKind::Binary {
+            op: BinOp::StrictEq,
+            left: Box::new(Expression::new(ExprKind::TypeOf(Box::new(value.clone())))),
+            right: Box::new(Expression::string(tag)),
+        });
+        if tag == "number" {
+            let runtime_name = ps_member_call(
+                ps_member(ps_member_call(value, "GetType", Vec::new()), "Name"),
+                "ToLower",
+                Vec::new(),
+            );
+            let names = Expression::new(ExprKind::Array(
+                vec![
+                    "int", "int16", "int32", "int64", "long", "short", "byte", "sbyte", "uint",
+                    "uint16", "uint32", "uint64", "ushort", "double", "single", "float",
+                    "decimal",
+                ]
+                .into_iter()
+                .map(|n| ArrayElement {
+                    key: None,
+                    value: Expression::string(n),
+                    spread: false,
+                    by_ref: false,
+                })
+                .collect(),
+            ));
+            return Expression::new(ExprKind::Binary {
+                op: BinOp::Or,
+                left: Box::new(direct),
+                right: Box::new(Expression::new(ExprKind::Binary {
+                    op: BinOp::In,
+                    left: Box::new(runtime_name),
+                    right: Box::new(names),
+                })),
+            });
+        }
+        return direct;
+    }
 
-    negate(negate(Expression::new(ExprKind::Binary {
-        op: BinOp::InstanceOf,
-        left: Box::new(value),
-        right: Box::new(type_literal_expr(&ctor)),
-    })))
+    // ⛔AN AST NODE TYPE IS NOT A CLASS IN THIS PROGRAM. `InstanceOf` against a
+    // name nothing declares answers TRUTHY, so `-is [… .VariableExpressionAst]`
+    // matched EVERY value and every `Find` predicate accepted the first node it
+    // saw. The surface tree names its own nodes, so the test is that name.
+    if name.to_lowercase().contains("automation.language") {
+        return Expression::new(ExprKind::Binary {
+            op: BinOp::Eq,
+            left: Box::new(ps_builtin("__ps_index_get", vec![value, Expression::string("__type")])),
+            right: Box::new(Expression::string(
+                name.rsplit('.').next().unwrap_or(&name),
+            )),
+        });
+    }
+
+    // `[array]` is the runtime's own Array.
+    if leaf.trim_end_matches("[]") == "array" || leaf.ends_with("[]") {
+        return negate(negate(Expression::new(ExprKind::Binary {
+            op: BinOp::InstanceOf,
+            left: Box::new(value),
+            right: Box::new(type_literal_expr("Array")),
+        })));
+    }
+
+    // Every other type is asked BY NAME through `ExprKind::IsType` — the node
+    // C#'s `is` and Java's `instanceof` lower to. The shared arm does a
+    // `ref.test` against the type's rtt first and reads the `__types` ancestor
+    // stamp only as a fallback, so a user class, a tree-registered .NET type
+    // and an exception all answer through one mechanism — and no constructor
+    // VALUE is needed, which is what `InstanceOf` required and what a tree
+    // type has none of: `$e -is [System.ArgumentException]` answered False for
+    // the instance's own class, its parent and `Exception` alike. The leaf is
+    // what the rtt is registered under; the shared arm canonicalizes it.
+    let leaf_spelling = name.rsplit('.').next().unwrap_or(&name).to_string();
+    Expression::new(ExprKind::IsType {
+        expr: Box::new(value),
+        type_name: leaf_spelling,
+    })
 }
 
 /// The dotted name a type-literal member chain spells, if it is one.
@@ -8406,6 +14888,9 @@ fn dotted_name_of(expr: &Expression) -> Option<String> {
         ExprKind::Ident(name) => Some(name.clone()),
         ExprKind::Member { object, field, .. } => {
             Some(format!("{}.{}", dotted_name_of(object)?, field))
+        }
+        ExprKind::Cast { type_name, .. } if !type_name.trim().is_empty() => {
+            Some(type_name.clone())
         }
         _ => None,
     }

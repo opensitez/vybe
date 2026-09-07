@@ -114,7 +114,11 @@ class_decl = { kw_class ~ IDENT ~ class_heritage? ~ class_body }
 // `enum Color { Red; Green = 2 }`. Members are separated by newlines, `;` or
 // `,` interchangeably, and a value is optional — an unvalued member takes the
 // previous one plus one, which the walker fills in.
-enum_decl   = { kw_enum ~ IDENT ~ eat_separators ~ "{" ~ eat_separators ~ (enum_member ~ eat_separators ~ (("," | ";") ~ eat_separators)?)* ~ "}" }
+enum_decl   = { kw_enum ~ IDENT ~ enum_base? ~ eat_separators ~ "{" ~ eat_separators ~ (enum_member ~ eat_separators ~ (("," | ";") ~ eat_separators)?)* ~ "}" }
+// `enum Flags : int { … }` — the UNDERLYING TYPE. Every PowerShell enum is
+// backed by an integer here, so the annotation is accepted and carries no
+// further meaning; without the rule the whole declaration failed to parse.
+enum_base   = { ws* ~ ":" ~ ws* ~ IDENT }
 enum_member = { IDENT ~ (ws* ~ "=" ~ ws* ~ ternary_expr)? }
 // A base or interface may be GENERIC —
 // `class C : System.Collections.Generic.IComparer[string]`. `DOTTED_NAME`
@@ -202,7 +206,11 @@ increment_stmt = { lvalue ~ ws* ~ increment_op }
 // `assignment_stmt` and was parsed as a COMMAND — `[S]::N = 7` walked to a CALL
 // of `S.N` with argument `7`, which is why a static constructor could not
 // populate its own static field.
-lvalue = { (type_literal ~ static_member ~ (member_get | index_get)*) | (type_literal? ~ var_ref ~ (member_get | index_get)*) }
+// A parenthesized receiver is assignable too: `([Base]$this).Title = $t` and
+// `($o).Name = v` both write a member of the parenthesized value. Without the
+// alternative the line failed to match as an assignment and fell through to
+// the command path, where `=` was just another argument.
+lvalue = { (type_literal ~ static_member ~ (member_get | index_get)*) | (type_literal? ~ var_ref ~ (member_get | index_get)*) | (paren_expr ~ (member_get | index_get)+) }
 assignment_op = { "??=" | "||=" | "&&=" | "<<=" | ">>=" | "**=" | "+=" | "-=" | "*=" | "/=" | "%=" | "&=" | "|=" | "^=" | "=" }
 increment_op = { "++" | "--" }
 
@@ -213,7 +221,8 @@ do_while_until = { kw_until ~ condition_expr }
 
 try_stmt = { kw_try ~ block ~ (eat_separators ~ catch_clause)* ~ (eat_separators ~ finally_clause)? }
 catch_clause = { kw_catch ~ catch_header? ~ block }
-catch_header = { "(" ~ ws* ~ var_ref ~ ws* ~ ")" | type_literal }
+catch_header = { "(" ~ ws* ~ var_ref ~ ws* ~ ")" | catch_type_list }
+catch_type_list = { type_literal ~ (ws* ~ "," ~ ws* ~ type_literal)* }
 finally_clause = { kw_finally ~ block }
 
 return_stmt = { kw_return ~ rhs_value? }
@@ -338,10 +347,13 @@ ternary_expr = { coalesce ~ (ws* ~ "?" ~ !"?" ~ ws* ~ ternary_expr ~ ws* ~ ":" ~
 coalesce    = { logical_or ~ (ws* ~ coalesce_op ~ ws* ~ logical_or)* }
 coalesce_op = @{ "??" }
 
-logical_or  = { logical_and ~ (ws* ~ or_op ~ ws* ~ logical_and)* }
+// A binary operator at the END of a line continues the expression on the next
+// — `$a -or\n $b` is one condition. Only the RIGHT side admits a newline: a
+// newline before the operator ends the statement, as in PowerShell.
+logical_or  = { logical_and ~ (ws* ~ or_op ~ eat_ws_nl ~ logical_and)* }
 or_op       = @{ "-" ~ (^"or" | ^"xor") ~ !ident_char }
 
-logical_and = { comparison ~ (ws* ~ and_op ~ ws* ~ comparison)* }
+logical_and = { comparison ~ (ws* ~ and_op ~ eat_ws_nl ~ comparison)* }
 and_op      = @{ "-" ~ ^"and" ~ !ident_char }
 
 // `-replace` / `-split` / `-join` take a comma-separated ARGUMENT LIST on the
@@ -373,7 +385,7 @@ cmp_word    = _{
   | ^"contains"
   | ^"like" | ^"match" | ^"isnot"
   | ^"band" | ^"bor" | ^"bxor" | ^"shl" | ^"shr"
-  | ^"eq" | ^"ne" | ^"ge" | ^"gt" | ^"le" | ^"lt" | ^"is" | ^"in"
+  | ^"eq" | ^"ne" | ^"ge" | ^"gt" | ^"le" | ^"lt" | ^"is" | ^"as" | ^"in"
 }
 
 range_expr  = { additive ~ (ws* ~ ".." ~ ws* ~ additive)? }
@@ -476,7 +488,10 @@ piped_ahead  = _{ (!(")" | "|" | NEWLINE | ";") ~ ANY)* ~ "|" ~ !"|" }
 array_element = _{ (ternary_expr ~ &(eat_separators ~ ("," | ")"))) | command_pipeline }
 hash_literal = { "@{" ~ eat_separators ~ (hash_entry ~ eat_separators ~ (("," | ";")? ~ eat_separators ~ hash_entry ~ eat_separators)*)? ~ ")"? ~ "}" }
 hash_entry   = { hash_key ~ ws* ~ "=" ~ ws* ~ ternary_expr }
-hash_key     = { quoted_string | single_quoted_string | number | bare_word }
+// A key may be a VARIABLE — `@{ $k = "v" }` keys by that variable's VALUE, not
+// by the name `$k`. Listed ahead of `bare_word` so the `$` is not swallowed as
+// part of a word.
+hash_key     = { var_ref | sub_expr | quoted_string | single_quoted_string | number | bare_word }
 script_block_expr = { "{" ~ eat_separators ~ (statement ~ eat_separators)* ~ "}" }
 
 number = @{

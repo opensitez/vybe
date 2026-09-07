@@ -76,6 +76,19 @@ pub fn emit_ensure_array(chunks: &mut [Chunk], current: usize, argc: u8, line: u
         // when it produced something better — an array, or a drained enumerator.
         chunk.emit_op_u16(Op::LOCAL_GET, base + i, line);
         chunk.emit_op_u16(Op::LOCAL_SET, orig, line);
+        // ⛔`$null` IS ONE ELEMENT, and it is asked NOTHING first. Measured
+        // against pwsh 7.6.4: `@($null).Count` is 1 and `$null | ForEach-Object`
+        // runs once. Every probe below — `getMethodForCall`, `isArray`,
+        // `typeof` — dereferences its operand, so a null reaching them trapped
+        // with `null structure reference` rather than being appended.
+        chunk.emit_op_u16(Op::LOCAL_GET, orig, line);
+        chunk.emit_op(Op::REF_IS_NULL, line);
+        chunk.emit_if(line);
+        chunk.emit_op_u16(Op::LOCAL_GET, acc, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, orig, line);
+        chunk.emit_call(push, 2, line);
+        chunk.emit_op(Op::DROP, line);
+        chunk.emit_else(line);
         // An ENUMERABLE is asked for its enumeration first.
         //
         // `class Col : IEnumerable { [IEnumerator] GetEnumerator() { … } }`
@@ -349,6 +362,9 @@ pub fn emit_ensure_array(chunks: &mut [Chunk], current: usize, argc: u8, line: u
         chunk.emit_call(concat, 2, line);
         chunk.emit_op_u16(Op::LOCAL_SET, acc, line);
 
+        chunk.emit_end(line);
+
+        // Closes the null guard opened at the top of the loop body.
         chunk.emit_end(line);
     }
 
@@ -649,6 +665,27 @@ pub fn emit_add(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_SET, b_slot, line);
     chunk.emit_op_u16(Op::LOCAL_SET, a_slot, line);
 
+    // `$null` on the left is the IDENTITY, whatever the right operand is.
+    // Measured against pwsh 7.6.4: `$null + 1` is `1`, `$null + 'x'` is `x`,
+    // `$null + @(1,2)` is the two-element array and `$null + $null` is `$null`
+    // — never a number. Falling through to `F64_ADD` answered `0`, `NaN` and
+    // `0`, and an UNASSIGNED variable made it worse: it reads as `$null` in
+    // PowerShell but arrives here as `undefined`, whose `as_f64` is `NaN`, so
+    // the accumulator idiom `$sum += $n` produced `NaN` from its first item.
+    let nullish = |chunk: &mut Chunk, slot: u16| {
+        chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
+        chunk.emit_op(Op::REF_IS_NULL, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
+        let idx = chunk.add_import("wasm:js-undefined", "test");
+        chunk.emit_call(idx, 1, line);
+        chunk.emit_op(Op::I32_OR, line);
+    };
+
+    nullish(chunk, a_slot);
+    chunk.emit_if_value(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, b_slot, line);
+    chunk.emit_else(line);
+
     // `isArray` answers with a boxed boolean; the branch needs an i32.
     chunk.emit_op_u16(Op::LOCAL_GET, a_slot, line);
     chunk.emit_call(is_array, 1, line);
@@ -673,8 +710,17 @@ pub fn emit_add(chunks: &mut [Chunk], current: usize, line: u32) {
 
     // `emit_dyn_add` concatenates whenever either operand is a string, and the
     // left one is — so here it is exactly right, coercions included.
+    //
+    // ⛔EXCEPT FOR A NULL RIGHT OPERAND, which it renders as `0`: `'x' + $null`
+    // answered `x0` where pwsh answers `x`. PowerShell appends nothing, so the
+    // empty string is substituted before the concatenation sees it.
     chunk.emit_op_u16(Op::LOCAL_GET, a_slot, line);
+    nullish(chunk, b_slot);
+    chunk.emit_if_value(line);
+    chunk.emit_string_const("", line);
+    chunk.emit_else(line);
     chunk.emit_op_u16(Op::LOCAL_GET, b_slot, line);
+    chunk.emit_end(line);
     vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
 
     chunk.emit_else(line);
@@ -685,6 +731,7 @@ pub fn emit_add(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, b_slot, line);
     chunk.emit_op(Op::F64_ADD, line);
 
+    chunk.emit_end(line);
     chunk.emit_end(line);
     chunk.emit_end(line);
 }
@@ -874,6 +921,81 @@ pub fn emit_member_dyn(chunks: &mut [Chunk], current: usize, line: u32) {
     vybe_compiler::primitives::dict::emit_get_dynamic(chunks, current, line);
 }
 
+/// PowerShell `.Count`: null is 0, arrays are their item count, non-empty maps
+/// are their map size, and ordinary scalars are one. This is intentionally not
+/// shared `collections.length`, whose object fallback is key-count and is right
+/// for other languages' `len`/`size` questions but wrong for PowerShell scalar
+/// pipeline records.
+pub fn emit_count(chunks: &mut [Chunk], current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    let value = chunk.alloc_scratch(2);
+    let is_array = chunk.add_import("ecma:array", "isArray");
+    let cast_bool = chunk.add_import("wasm:js-boolean", "cast");
+    let arr_len = chunk.add_import("ecma:array", "length");
+    let map_size = chunk.add_import("ecma:map", "size");
+    let to_number = chunk.add_import("ecma:number", "Number");
+    let is_undefined = chunk.add_import("wasm:js-undefined", "test");
+    let type_of = chunk.add_import("ecma:value", "typeof");
+
+    chunk.emit_op_u16(Op::LOCAL_SET, value, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, value, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_if_value(line);
+    chunk.emit_f64_const(0.0, line);
+    chunk.emit_else(line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, value, line);
+    chunk.emit_call(is_array, 1, line);
+    chunk.emit_call(cast_bool, 1, line);
+    chunk.emit_if_value(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, value, line);
+    chunk.emit_call(arr_len, 1, line);
+    chunk.emit_call(to_number, 1, line);
+    chunk.emit_else(line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, value, line);
+    chunk.emit_call(type_of, 1, line);
+    chunk.emit_string_const("object", line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if_value(line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, value, line);
+    chunk.emit_string_const("count", line);
+    chunk.emit_op(Op::ARRAY_GET, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, value + 1, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, value + 1, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, value + 1, line);
+    chunk.emit_call(is_undefined, 1, line);
+    chunk.emit_op(Op::I32_OR, line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_if_value(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, value + 1, line);
+    chunk.emit_else(line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, value, line);
+    chunk.emit_call(map_size, 1, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, value + 1, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, value + 1, line);
+    chunk.emit_i32_const(0, line);
+    chunk.emit_op(Op::I32_NE, line);
+    chunk.emit_if_value(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, value + 1, line);
+    chunk.emit_call(to_number, 1, line);
+    chunk.emit_else(line);
+    chunk.emit_f64_const(1.0, line);
+    chunk.emit_end(line);
+
+    chunk.emit_end(line);
+    chunk.emit_else(line);
+    chunk.emit_f64_const(1.0, line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
+}
+
 /// `$h[$k] = $v` / `$obj.$prop = $v` — a computed WRITE, dispatched on the
 /// receiver's runtime type.
 ///
@@ -929,11 +1051,15 @@ pub fn emit_index_set(chunks: &mut [Chunk], current: usize, line: u32) {
 /// Stack: `[obj, key]` → `[value]`.
 pub fn emit_index_get(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
-    let key = chunk.alloc_scratch(2);
+    let key = chunk.alloc_scratch(4);
     let obj = key + 1;
+    let raw = key + 2;
+    let fallback = key + 3;
     let is_array = chunk.add_import("ecma:array", "isArray");
     let cast_bool = chunk.add_import("wasm:js-boolean", "cast");
     let array_get = chunk.add_import("ecma:array", "get");
+    let object_get = chunk.add_import("ecma:object", "get");
+    let is_undefined = chunk.add_import("wasm:js-undefined", "test");
 
     chunk.emit_op_u16(Op::LOCAL_SET, key, line);
     chunk.emit_op_u16(Op::LOCAL_SET, obj, line);
@@ -945,14 +1071,56 @@ pub fn emit_index_get(chunks: &mut [Chunk], current: usize, line: u32) {
 
     chunk.emit_op_u16(Op::LOCAL_GET, obj, line);
     chunk.emit_op_u16(Op::LOCAL_GET, key, line);
+    chunk.emit_call(object_get, 2, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, raw, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, raw, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, raw, line);
+    chunk.emit_call(is_undefined, 1, line);
+    chunk.emit_op(Op::I32_OR, line);
+    chunk.emit_if(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, obj, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, key, line);
     chunk.emit_call(array_get, 2, line);
+    chunk.emit_else(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, raw, line);
+    chunk.emit_end(line);
 
     chunk.emit_else(line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, obj, line);
     chunk.emit_op_u16(Op::LOCAL_GET, key, line);
-    vybe_compiler::primitives::strings::emit_to_lower(chunk, line);
+    vybe_compiler::primitives::collections::emit_get(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, raw, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, raw, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, obj, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, key, line);
+    vybe_compiler::primitives::strings::emit_to_lower(&mut chunks[current], line);
     vybe_compiler::primitives::dict::emit_get_dynamic(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, fallback, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, fallback, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, fallback, line);
+    chunks[current].emit_call(is_undefined, 1, line);
+    chunks[current].emit_op(Op::I32_OR, line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, key, line);
+    chunks[current].emit_i32_const(0, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, obj, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, fallback, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, fallback, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, raw, line);
+    chunks[current].emit_end(line);
 
     chunks[current].emit_end(line);
 }
@@ -1036,7 +1204,13 @@ pub fn emit_divide(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_SET, b, line);
     chunk.emit_op_u16(Op::LOCAL_SET, a, line);
 
+    let test_num = chunk.add_import("wasm:js-number", "test");
+    let to_f64 = chunk.add_import("wasm:js-number", "toF64");
     chunk.emit_op_u16(Op::LOCAL_GET, b, line);
+    chunk.emit_call(test_num, 1, line);
+    chunk.emit_if(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, b, line);
+    chunk.emit_call(to_f64, 1, line);
     chunk.emit_f64_const(0.0, line);
     chunk.emit_op(Op::F64_EQ, line);
     chunk.emit_if(line);
@@ -1060,6 +1234,7 @@ pub fn emit_divide(chunks: &mut [Chunk], current: usize, line: u32) {
     );
     vybe_compiler::primitives::errors::emit_throw(chunk, line);
 
+    chunk.emit_end(line);
     chunk.emit_end(line);
 
     // ⛔NOT a bare `F64_DIV`. `/` still has to reach a USER operator method —
@@ -1090,15 +1265,34 @@ pub fn emit_divide(chunks: &mut [Chunk], current: usize, line: u32) {
 /// problem.
 ///
 /// An array already IS its own enumeration here, so it is handed straight
-/// back; everything else keeps `ecma:object:entries`.
+/// back.
+///
+/// ⛔A HASHTABLE ENUMERATES `DictionaryEntry`, NOT PAIRS. `ecma:object:entries`
+/// answers `[key, value]` ARRAYS, and `$e.Key` on an array is nothing — so
+/// `$h.GetEnumerator() | … $_.Key` read empty for every entry. .NET's
+/// `IDictionaryEnumerator` yields an entry carrying `Key` and `Value`, and the
+/// corpus reads exactly those two names, so each pair is rebuilt as that
+/// object.
 ///
 /// Stack: `[receiver]` → `[enumerable]`.
 pub fn emit_get_enumerator(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
     let recv = chunk.alloc_scratch(1);
+    let pairs = chunk.alloc_scratch(1);
+    let out = chunk.alloc_scratch(1);
+    let cursor = chunk.alloc_scratch(1);
+    let pair = chunk.alloc_scratch(1);
+    let entry = chunk.alloc_scratch(1);
+    let member = chunk.alloc_scratch(1);
     let is_array = chunk.add_import("ecma:array", "isArray");
     let cast_bool = chunk.add_import("wasm:js-boolean", "cast");
     let entries = chunk.add_import("ecma:object", "entries");
+    let arr_len = chunk.add_import("ecma:array", "length");
+    let arr_get = chunk.add_import("ecma:array", "get");
+    let arr_push = chunk.add_import("ecma:array", "push");
+    let obj_set = chunk.add_import("ecma:object", "set");
+    let arr_new = chunk.add_import("ecma:array", "new");
+    let obj_new = chunk.add_import("ecma:object", "new");
 
     chunk.emit_op_u16(Op::LOCAL_SET, recv, line);
 
@@ -1113,6 +1307,69 @@ pub fn emit_get_enumerator(chunks: &mut [Chunk], current: usize, line: u32) {
 
     chunk.emit_op_u16(Op::LOCAL_GET, recv, line);
     chunk.emit_call(entries, 1, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, pairs, line);
+    chunk.emit_call(arr_new, 0, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, out, line);
+    chunk.emit_i32_const(0, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, cursor, line);
+
+    chunk.emit_block(line);
+    chunk.emit_loop_s(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, cursor, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, pairs, line);
+    chunk.emit_call(arr_len, 1, line);
+    chunk.emit_op(Op::I32_GE_S, line);
+    chunk.emit_br_if(1, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, pairs, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, cursor, line);
+    chunk.emit_call(arr_get, 2, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, pair, line);
+
+    // ⛔THE ENTRY IS A CLASS SLOT OBJECT, NOT A PROPERTY BAG. A member read
+    // compiled for a loop or script-block binding goes through the slot path,
+    // and a key written with `ecma:object:set` is not there — `$_.Key` read
+    // EMPTY inside a block while the identical `$a[0].Key` answered. This is
+    // the shape `[pscustomobject]@{…}` already builds, which is why `$_.Code`
+    // resolves on one of those.
+    use vybe_compiler::primitives::class_slots::{
+        ClassSlot, ObjSource, PlainNames, ValueSource, emit_class_alloc, emit_class_set, resolve,
+    };
+    emit_class_alloc(chunk, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, entry, line);
+    // ⛔THE KEY IS STORED FOLDED. PowerShell is case-insensitive, so the
+    // compiler's own member resolution canonicalizes a field to lowercase
+    // before it reads it; a slot written with the .NET spelling `Key` is not
+    // the one `$_.Key` looks for, and the read answered EMPTY inside a loop or
+    // script block while resolving outside one. `PlainNames` does not fold, so
+    // the fold is applied here.
+    for (index, field) in [(0, "key"), (1, "value")] {
+        chunk.emit_op_u16(Op::LOCAL_GET, pair, line);
+        chunk.emit_i32_const(index, line);
+        chunk.emit_call(arr_get, 2, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, member, line);
+        emit_class_set(
+            chunk,
+            ObjSource::Local(entry),
+            &resolve(&ClassSlot::instance(field), &PlainNames),
+            ValueSource::Local(member),
+            line,
+        );
+    }
+    chunk.emit_op_u16(Op::LOCAL_GET, out, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, entry, line);
+    chunk.emit_call(arr_push, 2, line);
+    chunk.emit_op(Op::DROP, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, cursor, line);
+    chunk.emit_i32_const(1, line);
+    chunk.emit_op(Op::I32_ADD, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, cursor, line);
+    chunk.emit_br(0, line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, out, line);
 
     chunk.emit_end(line);
 }
@@ -1152,10 +1409,942 @@ pub fn emit_unwrap_single(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_i32_const(0, line);
     chunk.emit_call(get, 2, line);
     chunk.emit_else(line);
+    // An EMPTY stream is `$null`, not an empty list. Measured against pwsh
+    // 7.6.4: `$x = @(1,2) | Where-Object { $false }` leaves `$x` at `$null`,
+    // while the literal `@()` — which never reaches this rule — stays an empty
+    // array. Answering the empty array here made every "did this produce
+    // nothing" test compare a list against `$null` and fail.
     chunk.emit_op_u16(Op::LOCAL_GET, value, line);
+    chunk.emit_call(length, 1, line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_if_value(line);
+    chunk.emit_ref_null(0x6e, line);
+    chunk.emit_else(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, value, line);
+    chunk.emit_end(line);
     chunk.emit_end(line);
 
     chunk.emit_else(line);
     chunk.emit_op_u16(Op::LOCAL_GET, value, line);
     chunk.emit_end(line);
+}
+
+/// `Get-Unique` — drop each item equal to the one before it.
+///
+/// ⛔ADJACENT, NOT DISTINCT. PowerShell documents `Get-Unique` as operating on a
+/// SORTED list, so `1,2,1` keeps all three items and a set would silently
+/// answer two. `-AsString` compares the rendered form instead of the value,
+/// which is how `"1"` and `1` collapse.
+///
+/// Stack: `[items, as_string]` → `[array]`.
+pub fn emit_unique_adjacent(chunks: &mut [Chunk], current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    let on_type = chunk.alloc_scratch(7);
+    let as_string = on_type + 1;
+    let items = on_type + 2;
+    let out = on_type + 3;
+    let cursor = on_type + 4;
+    let current_key = on_type + 5;
+    let last_key = on_type + 6;
+
+    let arr_new = chunk.add_import("ecma:array", "new");
+    let arr_len = chunk.add_import("ecma:array", "length");
+    let arr_get = chunk.add_import("ecma:array", "get");
+    let arr_push = chunk.add_import("ecma:array", "push");
+    let value_typeof = chunk.add_import("ecma:value", "typeof");
+
+    chunk.emit_op_u16(Op::LOCAL_SET, on_type, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, as_string, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, items, line);
+    chunk.emit_call(arr_new, 0, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, out, line);
+    chunk.emit_i32_const(0, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, cursor, line);
+
+    chunk.emit_block(line);
+    chunk.emit_loop_s(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, cursor, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, items, line);
+    chunk.emit_call(arr_len, 1, line);
+    chunk.emit_op(Op::I32_GE_S, line);
+    chunk.emit_br_if(1, line);
+
+    // key = on_type ? typeof(item) : as_string ? String(item) : item
+    chunk.emit_op_u16(Op::LOCAL_GET, on_type, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if_value(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, items, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, cursor, line);
+    chunk.emit_call(arr_get, 2, line);
+    chunk.emit_call(value_typeof, 1, line);
+    chunk.emit_else(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, as_string, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if_value(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, items, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, cursor, line);
+    chunk.emit_call(arr_get, 2, line);
+    let _ = chunk;
+    super::display::emit_to_unique_key(chunks, current, line);
+    let chunk = &mut chunks[current];
+    chunk.emit_else(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, items, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, cursor, line);
+    chunk.emit_call(arr_get, 2, line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
+    chunk.emit_op_u16(Op::LOCAL_SET, current_key, line);
+
+    // The first item has no predecessor, so it always survives.
+    chunk.emit_op_u16(Op::LOCAL_GET, cursor, line);
+    chunk.emit_i32_const(0, line);
+    chunk.emit_op(Op::I32_EQ, line);
+    chunk.emit_if_value(line);
+    chunk.emit_bool_const(true, line);
+    chunk.emit_else(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, current_key, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, last_key, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_not(chunk, line);
+    chunk.emit_end(line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, out, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, items, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, cursor, line);
+    chunk.emit_call(arr_get, 2, line);
+    chunk.emit_call(arr_push, 2, line);
+    chunk.emit_op(Op::DROP, line);
+    chunk.emit_end(line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, current_key, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, last_key, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, cursor, line);
+    chunk.emit_i32_const(1, line);
+    chunk.emit_op(Op::I32_ADD, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, cursor, line);
+    chunk.emit_br(0, line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, out, line);
+}
+
+/// `$obj.PSObject.Properties` / `.Members` — the object's ETS members, each one
+/// a descriptor carrying `Name`, `Value` and `MemberType`.
+///
+/// The object model already answers the hard half: `Object.keys` folds an
+/// accessor back to its bare name (`__get_c` is listed as `c`) and hides every
+/// `__`-prefixed key, so the private `__ps_psobject` view and the raw accessor
+/// slots never reach this list.
+///
+/// ⚠ THAT FILTER IS SHARED AND NOT DECLARED HERE. `platforms/ecma/src/object.rs`
+/// drops `__`-prefixed own keys unconditionally, for every language — which is
+/// an ECMA violation on the JS side (`Object.keys({__foo:1})` must list
+/// `__foo`). If that is ever corrected, this list starts leaking
+/// `__ps_psobject` and the raw `__get_`/`__set_` slots, and the filter has to
+/// move HERE at the same time. What is left is naming each member's KIND,
+/// which the accessor slots themselves record — a name with a `__get_` beside
+/// it is a `ScriptProperty`, a name holding a function is a `ScriptMethod`, and
+/// anything else is a `NoteProperty`.
+///
+/// ⛔A DESCRIPTOR IS A SNAPSHOT. `Add` and `Remove` write to the TARGET, not to
+/// this list, and are recognized at their call sites for that reason.
+///
+/// Stack: `[target]` -> `[descriptors]`.
+pub fn emit_psobject_properties(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let chunk = &mut chunks[current];
+    let target = chunk.alloc_scratch(10);
+    let keys = target + 1;
+    let out = target + 2;
+    let cursor = target + 3;
+    let key = target + 4;
+    let getter = target + 5;
+    let setter = target + 6;
+    let desc = target + 7;
+    let wanted = target + 8;
+    let aliased = target + 9;
+
+    let arr_new = chunk.add_import("ecma:array", "new");
+    let arr_len = chunk.add_import("ecma:array", "length");
+    let arr_get = chunk.add_import("ecma:array", "get");
+    let arr_push = chunk.add_import("ecma:array", "push");
+    let obj_keys = chunk.add_import("ecma:object", "keys");
+    let obj_get = chunk.add_import("ecma:object", "get");
+    let obj_set = chunk.add_import("ecma:object", "set");
+    let type_of = chunk.add_import("ecma:value", "typeof");
+    let lower = chunk.add_import("ecma:string", "toLowerCase");
+
+    // `$obj.PSObject.Properties["Name"]` asks for ONE member. Storage folds a
+    // member's spelling, so the name asked for is folded to match it.
+    if argc == 2 {
+        chunk.emit_call(lower, 1, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, wanted, line);
+    }
+    chunk.emit_op_u16(Op::LOCAL_SET, target, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, target, line);
+    chunk.emit_call(obj_keys, 1, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, keys, line);
+    chunk.emit_call(arr_new, 0, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, out, line);
+    chunk.emit_i32_const(0, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, cursor, line);
+
+    chunk.emit_block(line);
+    chunk.emit_loop_s(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, cursor, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, keys, line);
+    chunk.emit_call(arr_len, 1, line);
+    chunk.emit_op(Op::I32_GE_S, line);
+    chunk.emit_br_if(1, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, keys, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, cursor, line);
+    chunk.emit_call(arr_get, 2, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, key, line);
+
+    // The accessor slots beside the name, read RAW: `object.get` on `__get_X`
+    // hands back the function, where a read of `X` would run it.
+    chunk.emit_op_u16(Op::LOCAL_GET, target, line);
+    chunk.emit_string_const("__get_", line);
+    chunk.emit_op_u16(Op::LOCAL_GET, key, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
+    chunk.emit_call(obj_get, 2, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, getter, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, target, line);
+    chunk.emit_string_const("__set_", line);
+    chunk.emit_op_u16(Op::LOCAL_GET, key, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
+    chunk.emit_call(obj_get, 2, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, setter, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, target, line);
+    chunk.emit_string_const("__alias_", line);
+    chunk.emit_op_u16(Op::LOCAL_GET, key, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
+    chunk.emit_call(obj_get, 2, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, aliased, line);
+
+    vybe_compiler::primitives::dict::emit_new(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, desc, line);
+
+    // ⛔FOLDED SPELLINGS. PowerShell is case-insensitive, so a member read is
+    // folded to lower case before it reaches storage; a field written here as
+    // `Name` is stored under that spelling and `$p.Name` looks for `name` and
+    // finds nothing. The descriptor is read far more often than it is printed.
+    let field = |chunk: &mut Chunk, name: &str| {
+        chunk.emit_op_u16(Op::LOCAL_GET, desc, line);
+        chunk.emit_string_const(name, line);
+    };
+
+    let chunk = &mut chunks[current];
+
+    field(chunk, "name");
+    chunk.emit_op_u16(Op::LOCAL_GET, key, line);
+    chunk.emit_call(obj_set, 3, line);
+    chunk.emit_op(Op::DROP, line);
+
+    // Reading the NAME runs a getter, which is what a descriptor's `Value` is.
+    field(chunk, "value");
+    chunk.emit_op_u16(Op::LOCAL_GET, target, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, key, line);
+    chunk.emit_call(obj_get, 2, line);
+    chunk.emit_call(obj_set, 3, line);
+    chunk.emit_op(Op::DROP, line);
+
+    // An alias forwards through a getter like a `ScriptProperty` does, so the
+    // `__alias_` slot is what tells the two apart and is asked first.
+    field(chunk, "membertype");
+    chunk.emit_op_u16(Op::LOCAL_GET, aliased, line);
+    chunk.emit_call(type_of, 1, line);
+    chunk.emit_string_const("string", line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if_value(line);
+    chunk.emit_string_const("AliasProperty", line);
+    chunk.emit_else(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, getter, line);
+    chunk.emit_call(type_of, 1, line);
+    chunk.emit_string_const("function", line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if_value(line);
+    chunk.emit_string_const("ScriptProperty", line);
+    chunk.emit_else(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, target, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, key, line);
+    chunk.emit_call(obj_get, 2, line);
+    chunk.emit_call(type_of, 1, line);
+    chunk.emit_string_const("function", line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if_value(line);
+    chunk.emit_string_const("ScriptMethod", line);
+    chunk.emit_else(line);
+    chunk.emit_string_const("NoteProperty", line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
+    chunk.emit_call(obj_set, 3, line);
+    chunk.emit_op(Op::DROP, line);
+
+    // A plain value reads and writes; a script member does whichever half it
+    // was given a block for.
+    field(chunk, "isgettable");
+    chunk.emit_op_u16(Op::LOCAL_GET, setter, line);
+    chunk.emit_call(type_of, 1, line);
+    chunk.emit_string_const("function", line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if_value(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, getter, line);
+    chunk.emit_call(type_of, 1, line);
+    chunk.emit_string_const("function", line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    chunk.emit_else(line);
+    chunk.emit_bool_const(true, line);
+    chunk.emit_end(line);
+    chunk.emit_call(obj_set, 3, line);
+    chunk.emit_op(Op::DROP, line);
+
+    field(chunk, "issettable");
+    chunk.emit_op_u16(Op::LOCAL_GET, getter, line);
+    chunk.emit_call(type_of, 1, line);
+    chunk.emit_string_const("function", line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if_value(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, setter, line);
+    chunk.emit_call(type_of, 1, line);
+    chunk.emit_string_const("function", line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    chunk.emit_else(line);
+    chunk.emit_bool_const(true, line);
+    chunk.emit_end(line);
+    chunk.emit_call(obj_set, 3, line);
+    chunk.emit_op(Op::DROP, line);
+
+    field(chunk, "getterscript");
+    chunk.emit_op_u16(Op::LOCAL_GET, getter, line);
+    chunk.emit_call(obj_set, 3, line);
+    chunk.emit_op(Op::DROP, line);
+
+    field(chunk, "setterscript");
+    chunk.emit_op_u16(Op::LOCAL_GET, setter, line);
+    chunk.emit_call(obj_set, 3, line);
+    chunk.emit_op(Op::DROP, line);
+
+    if argc == 2 {
+        chunk.emit_op_u16(Op::LOCAL_GET, key, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, wanted, line);
+        vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+        vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+        chunk.emit_if(line);
+    }
+    chunk.emit_op_u16(Op::LOCAL_GET, out, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, desc, line);
+    chunk.emit_call(arr_push, 2, line);
+    chunk.emit_op(Op::DROP, line);
+    if argc == 2 {
+        chunk.emit_end(line);
+    }
+
+    chunk.emit_op_u16(Op::LOCAL_GET, cursor, line);
+    chunk.emit_i32_const(1, line);
+    chunk.emit_op(Op::I32_ADD, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, cursor, line);
+    chunk.emit_br(0, line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
+
+    // One member was asked for: that member, or null when the object carries no
+    // such member — never a one-element list.
+    if argc == 2 {
+        chunk.emit_op_u16(Op::LOCAL_GET, out, line);
+        chunk.emit_call(arr_len, 1, line);
+        chunk.emit_i32_const(0, line);
+        chunk.emit_op(Op::I32_GT_S, line);
+        chunk.emit_if_value(line);
+        chunk.emit_op_u16(Op::LOCAL_GET, out, line);
+        chunk.emit_i32_const(0, line);
+        chunk.emit_call(arr_get, 2, line);
+        chunk.emit_else(line);
+        chunk.emit_ref_null(0x6e, line);
+        chunk.emit_end(line);
+        return;
+    }
+
+    chunk.emit_op_u16(Op::LOCAL_GET, out, line);
+}
+
+/// `-eq` / `-ne` — PowerShell's comparison, which folds case.
+///
+/// ⛔A COMPARISON IS CASE-INSENSITIVE UNLESS THE OPERATOR SAYS OTHERWISE.
+/// Measured against pwsh 7.6.4: `'abc' -eq 'ABC'` is True and `-ceq` is the
+/// case-sensitive spelling. The shared `emit_dyn_eq` compares exactly, so every
+/// unprefixed string comparison in the language answered False for operands
+/// PowerShell calls equal.
+///
+/// Only a comparison of TWO STRINGS folds. Everything else — numbers, objects,
+/// `$null`, a string against a number — keeps the shared equality, which is
+/// what makes `2 -eq 2.0` True and keeps the numeric coercion intact.
+///
+/// Stack: `[a, b]` → `[bool]`.
+pub fn emit_case_folding_eq(chunks: &mut [Chunk], current: usize, negated: bool, line: u32) {
+    let chunk = &mut chunks[current];
+    let b_slot = chunk.alloc_scratch(2);
+    let a_slot = b_slot + 1;
+
+    let is_string = chunk.add_import("wasm:js-string", "test");
+    let lower = chunk.add_import("ecma:string", "toLowerCase");
+
+    chunk.emit_op_u16(Op::LOCAL_SET, b_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, a_slot, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, a_slot, line);
+    chunk.emit_call(is_string, 1, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, b_slot, line);
+    chunk.emit_call(is_string, 1, line);
+    chunk.emit_op(Op::I32_AND, line);
+    chunk.emit_if_value(line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, a_slot, line);
+    chunk.emit_call(lower, 1, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, b_slot, line);
+    chunk.emit_call(lower, 1, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+
+    chunk.emit_else(line);
+
+    // ⛔NOT `emit_dyn_eq`. PowerShell coerces the right operand to the LEFT
+    // one's type, so `2 -eq '2'` is True — the same left-operand rule `+` has.
+    // The exact comparison answered False, and `Get-Date -UFormat %j` compared
+    // against `"130"` was one of six tests that lost that coercion.
+    chunk.emit_op_u16(Op::LOCAL_GET, a_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, b_slot, line);
+    let abstract_eq = chunk.add_import("ecma:value", "abstractEq");
+    chunk.emit_call(abstract_eq, 2, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+
+    chunk.emit_end(line);
+
+    if negated {
+        chunk.emit_op(Op::I32_EQZ, line);
+    }
+
+    // A real boolean, not the i32 the comparison leaves: under
+    // `materialize_bool_results` an i32 `1` does not compare equal to the
+    // language's `$true`, and it renders as `1` rather than `True`.
+    chunk.emit_if_value(line);
+    chunk.emit_bool_const(true, line);
+    chunk.emit_else(line);
+    chunk.emit_bool_const(false, line);
+    chunk.emit_end(line);
+}
+
+/// `Compare-Object -ReferenceObject $a -DifferenceObject $b` — a MULTISET
+/// difference, tagged with which side each item came from.
+///
+/// PowerShell compares by VALUE, not by identity, and counts duplicates: two
+/// `"dup"` on the left against one on the right leaves one `<=`. So each item is
+/// reduced to a comparison KEY — its display text, or its `-Property` values
+/// joined — and matching consumes a slot on each side rather than testing
+/// membership.
+///
+/// Case folds unless `-CaseSensitive`, the same rule every other PowerShell
+/// comparison follows.
+///
+/// Stack: `[ref, diff, include_equal, exclude_different, case_sensitive,
+/// properties, pass_thru]` → `[entries]`.
+pub fn emit_compare_object(chunks: &mut [Chunk], current: usize, line: u32) {
+    let pass_thru = chunks[current].alloc_scratch(16);
+    let props = pass_thru + 1;
+    let case_sensitive = pass_thru + 2;
+    let exclude_different = pass_thru + 3;
+    let include_equal = pass_thru + 4;
+    let diff = pass_thru + 5;
+    let reference = pass_thru + 6;
+    let ref_keys = pass_thru + 7;
+    let diff_keys = pass_thru + 8;
+    let ref_used = pass_thru + 9;
+    let diff_used = pass_thru + 10;
+    let out = pass_thru + 11;
+    let i = pass_thru + 12;
+    let j = pass_thru + 13;
+    let key = pass_thru + 14;
+    let matched = pass_thru + 15;
+
+    let arr_new = chunks[current].add_import("ecma:array", "new");
+    let arr_len = chunks[current].add_import("ecma:array", "length");
+    let arr_get = chunks[current].add_import("ecma:array", "get");
+    let arr_set = chunks[current].add_import("ecma:array", "set");
+    let arr_push = chunks[current].add_import("ecma:array", "push");
+    let obj_get = chunks[current].add_import("ecma:object", "get");
+    let obj_set = chunks[current].add_import("ecma:object", "set");
+    let lower = chunks[current].add_import("ecma:string", "toLowerCase");
+
+    for slot in [
+        pass_thru,
+        props,
+        case_sensitive,
+        exclude_different,
+        include_equal,
+        diff,
+        reference,
+    ] {
+        chunks[current].emit_op_u16(Op::LOCAL_SET, slot, line);
+    }
+
+    // One item's comparison key, left on the stack.
+    let emit_key = |chunks: &mut [Chunk], current: usize, item: u16| {
+        let p = chunks[current].alloc_scratch(2);
+        let acc = p + 1;
+        // `-Property Name, Age` compares those members rather than the whole
+        // object; a NUL between them keeps `("a","bc")` and `("ab","c")` apart.
+        chunks[current].emit_op_u16(Op::LOCAL_GET, props, line);
+        chunks[current].emit_op(Op::REF_IS_NULL, line);
+        chunks[current].emit_if_value(line);
+
+        chunks[current].emit_op_u16(Op::LOCAL_GET, item, line);
+        super::display::emit_to_display(chunks, current, line);
+
+        chunks[current].emit_else(line);
+
+        chunks[current].emit_string_const("", line);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, acc, line);
+        chunks[current].emit_i32_const(0, line);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, p, line);
+        chunks[current].emit_block(line);
+        chunks[current].emit_loop_s(line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, p, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, props, line);
+        chunks[current].emit_call(arr_len, 1, line);
+        chunks[current].emit_op(Op::I32_GE_S, line);
+        chunks[current].emit_br_if(1, line);
+
+        chunks[current].emit_op_u16(Op::LOCAL_GET, acc, line);
+        chunks[current].emit_string_const("\u{0}", line);
+        vybe_compiler::primitives::ops::emit_dyn_add(&mut chunks[current], line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, item, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, props, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, p, line);
+        chunks[current].emit_call(arr_get, 2, line);
+        // ⛔THE MEMBER NAME IS FOLDED IN STORAGE. `-Property Org` reads the key
+        // `org`, so asking for `Org` missed and every object produced the same
+        // empty composite key — which made every pair compare EQUAL.
+        chunks[current].emit_call(lower, 1, line);
+        chunks[current].emit_call(obj_get, 2, line);
+        super::display::emit_to_display(chunks, current, line);
+        vybe_compiler::primitives::ops::emit_dyn_add(&mut chunks[current], line);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, acc, line);
+
+        chunks[current].emit_op_u16(Op::LOCAL_GET, p, line);
+        chunks[current].emit_i32_const(1, line);
+        chunks[current].emit_op(Op::I32_ADD, line);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, p, line);
+        chunks[current].emit_br(0, line);
+        chunks[current].emit_end(line);
+        chunks[current].emit_end(line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, acc, line);
+
+        chunks[current].emit_end(line);
+
+        // The fold, unless the caller asked for an exact comparison.
+        chunks[current].emit_op_u16(Op::LOCAL_SET, acc, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, case_sensitive, line);
+        vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+        chunks[current].emit_if_value(line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, acc, line);
+        chunks[current].emit_else(line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, acc, line);
+        chunks[current].emit_call(lower, 1, line);
+        chunks[current].emit_end(line);
+    };
+
+    // `keys(source) -> [key…]`, and a parallel `used` array of falses.
+    let mut build = |chunks: &mut [Chunk], current: usize, source: u16, keys: u16, used: u16| {
+        chunks[current].emit_call(arr_new, 0, line);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, keys, line);
+        chunks[current].emit_call(arr_new, 0, line);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, used, line);
+        chunks[current].emit_i32_const(0, line);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
+        chunks[current].emit_block(line);
+        chunks[current].emit_loop_s(line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, source, line);
+        chunks[current].emit_call(arr_len, 1, line);
+        chunks[current].emit_op(Op::I32_GE_S, line);
+        chunks[current].emit_br_if(1, line);
+
+        chunks[current].emit_op_u16(Op::LOCAL_GET, source, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+        chunks[current].emit_call(arr_get, 2, line);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, key, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, keys, line);
+        emit_key(chunks, current, key);
+        chunks[current].emit_call(arr_push, 2, line);
+        chunks[current].emit_op(Op::DROP, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, used, line);
+        chunks[current].emit_bool_const(false, line);
+        chunks[current].emit_call(arr_push, 2, line);
+        chunks[current].emit_op(Op::DROP, line);
+
+        chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+        chunks[current].emit_i32_const(1, line);
+        chunks[current].emit_op(Op::I32_ADD, line);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
+        chunks[current].emit_br(0, line);
+        chunks[current].emit_end(line);
+        chunks[current].emit_end(line);
+    };
+    build(chunks, current, reference, ref_keys, ref_used);
+    build(chunks, current, diff, diff_keys, diff_used);
+
+    chunks[current].emit_call(arr_new, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, out, line);
+
+    // One output entry. `-PassThru` hands back the ORIGINAL object with the
+    // indicator attached, which is what lets the caller keep its own members.
+    let emit_entry = |chunks: &mut [Chunk], current: usize, item: u16, indicator: &str| {
+        let entry = chunks[current].alloc_scratch(1);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, pass_thru, line);
+        vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+        chunks[current].emit_if_value(line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, item, line);
+        chunks[current].emit_else(line);
+        vybe_compiler::primitives::dict::emit_new(chunks, current, line);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, entry, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, entry, line);
+        // ⛔FOLDED KEYS. A member read is folded before it reaches storage, so
+        // `InputObject` written here is not what `$_.InputObject` looks for.
+        chunks[current].emit_string_const("inputobject", line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, item, line);
+        chunks[current].emit_call(obj_set, 3, line);
+        chunks[current].emit_op(Op::DROP, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, entry, line);
+        chunks[current].emit_end(line);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, entry, line);
+
+        // `-Property Id` puts the COMPARED members on the output record —
+        // that is what the caller reads them back off. Without them the record
+        // carried only `InputObject`, so `$diff.UserId` answered empty.
+        let q = chunks[current].alloc_scratch(1);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, props, line);
+        chunks[current].emit_op(Op::REF_IS_NULL, line);
+        chunks[current].emit_op(Op::I32_EQZ, line);
+        chunks[current].emit_if(line);
+        chunks[current].emit_i32_const(0, line);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, q, line);
+        chunks[current].emit_block(line);
+        chunks[current].emit_loop_s(line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, q, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, props, line);
+        chunks[current].emit_call(arr_len, 1, line);
+        chunks[current].emit_op(Op::I32_GE_S, line);
+        chunks[current].emit_br_if(1, line);
+
+        chunks[current].emit_op_u16(Op::LOCAL_GET, entry, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, props, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, q, line);
+        chunks[current].emit_call(arr_get, 2, line);
+        chunks[current].emit_call(lower, 1, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, item, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, props, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, q, line);
+        chunks[current].emit_call(arr_get, 2, line);
+        chunks[current].emit_call(lower, 1, line);
+        chunks[current].emit_call(obj_get, 2, line);
+        chunks[current].emit_call(obj_set, 3, line);
+        chunks[current].emit_op(Op::DROP, line);
+
+        chunks[current].emit_op_u16(Op::LOCAL_GET, q, line);
+        chunks[current].emit_i32_const(1, line);
+        chunks[current].emit_op(Op::I32_ADD, line);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, q, line);
+        chunks[current].emit_br(0, line);
+        chunks[current].emit_end(line);
+        chunks[current].emit_end(line);
+        chunks[current].emit_end(line);
+
+        chunks[current].emit_op_u16(Op::LOCAL_GET, entry, line);
+        chunks[current].emit_string_const("sideindicator", line);
+        chunks[current].emit_string_const(indicator, line);
+        chunks[current].emit_call(obj_set, 3, line);
+        chunks[current].emit_op(Op::DROP, line);
+
+        chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, entry, line);
+        chunks[current].emit_call(arr_push, 2, line);
+        chunks[current].emit_op(Op::DROP, line);
+    };
+
+    // Pass one: pair each difference item with an unconsumed reference item.
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, j, line);
+    chunks[current].emit_block(line);
+    chunks[current].emit_loop_s(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, j, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, diff, line);
+    chunks[current].emit_call(arr_len, 1, line);
+    chunks[current].emit_op(Op::I32_GE_S, line);
+    chunks[current].emit_br_if(1, line);
+
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, matched, line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
+    chunks[current].emit_block(line);
+    chunks[current].emit_loop_s(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, reference, line);
+    chunks[current].emit_call(arr_len, 1, line);
+    chunks[current].emit_op(Op::I32_GE_S, line);
+    chunks[current].emit_br_if(1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, matched, line);
+    chunks[current].emit_br_if(1, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, ref_used, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    chunks[current].emit_call(arr_get, 2, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, ref_keys, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    chunks[current].emit_call(arr_get, 2, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, diff_keys, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, j, line);
+    chunks[current].emit_call(arr_get, 2, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_op(Op::I32_AND, line);
+    chunks[current].emit_if(line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, ref_used, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    chunks[current].emit_bool_const(true, line);
+    // `array.set` pushes a value even though its signature declares no result
+    // — `arrays.rs` drops after it for the same reason.
+    chunks[current].emit_call(arr_set, 3, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, diff_used, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, j, line);
+    chunks[current].emit_bool_const(true, line);
+    // `array.set` pushes a value even though its signature declares no result
+    // — `arrays.rs` drops after it for the same reason.
+    chunks[current].emit_call(arr_set, 3, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, matched, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, include_equal, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, diff, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, j, line);
+    chunks[current].emit_call(arr_get, 2, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, key, line);
+    emit_entry(chunks, current, key, "==");
+    chunks[current].emit_end(line);
+
+    chunks[current].emit_end(line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, j, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, j, line);
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+
+    // Pass two: whatever each side did not pair off. `-ExcludeDifferent` keeps
+    // only the matches, so both loops are gated on it.
+    let mut unmatched =
+        |chunks: &mut [Chunk], current: usize, source: u16, used: u16, indicator: &str| {
+            chunks[current].emit_op_u16(Op::LOCAL_GET, exclude_different, line);
+            vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+            chunks[current].emit_op(Op::I32_EQZ, line);
+            chunks[current].emit_if(line);
+            chunks[current].emit_i32_const(0, line);
+            chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
+            chunks[current].emit_block(line);
+            chunks[current].emit_loop_s(line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, source, line);
+            chunks[current].emit_call(arr_len, 1, line);
+            chunks[current].emit_op(Op::I32_GE_S, line);
+            chunks[current].emit_br_if(1, line);
+
+            chunks[current].emit_op_u16(Op::LOCAL_GET, used, line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+            chunks[current].emit_call(arr_get, 2, line);
+            vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+            chunks[current].emit_op(Op::I32_EQZ, line);
+            chunks[current].emit_if(line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, source, line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+            chunks[current].emit_call(arr_get, 2, line);
+            chunks[current].emit_op_u16(Op::LOCAL_SET, key, line);
+            emit_entry(chunks, current, key, indicator);
+            chunks[current].emit_end(line);
+
+            chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+            chunks[current].emit_i32_const(1, line);
+            chunks[current].emit_op(Op::I32_ADD, line);
+            chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
+            chunks[current].emit_br(0, line);
+            chunks[current].emit_end(line);
+            chunks[current].emit_end(line);
+            chunks[current].emit_end(line);
+        };
+    unmatched(chunks, current, diff, diff_used, "=>");
+    unmatched(chunks, current, reference, ref_used, "<=");
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
+}
+
+/// `$x.GetType()` — the value's type, whichever model the value came from.
+///
+/// Two emitters each answer half. `ref_typeof` is the class model's own: a
+/// user-class instance answers its class as a Type with `.Name`. The dotnet
+/// `get_type` answers the .NET VALUE types — a string is `String`, an int is
+/// `Int32` — and is `undefined is not callable` on a class instance. Bound to
+/// either one alone, half the corpus lost `GetType()`: measured, the dotnet
+/// binding trapped on every `[C]::new().GetType()`, and the class binding
+/// answered `""` for `"str".GetType().Name`.
+///
+/// A class instance is the only value `typeof` calls `object` here that is not
+/// also a .NET collection, so that is the fork.
+///
+/// Stack: `[value]` → `[type]`.
+pub fn emit_get_type(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
+    let value = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, value, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
+    vybe_platform_dotnet::emitter::dispatch::dispatch("dotnet.get_type", chunks, current, 1, line);
+}
+
+fn emit_ps_type_object_from_name(chunk: &mut Chunk, full_name: u16, line: u32) {
+    let split = chunk.add_import("ecma:string", "split");
+    let at = chunk.add_import("ecma:array", "at");
+    let obj = chunk.alloc_scratch(1);
+    let short = chunk.alloc_scratch(1);
+
+    vybe_compiler::primitives::class_slots::emit_class_alloc(chunk, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, obj, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, full_name, line);
+    chunk.emit_string_const(".", line);
+    chunk.emit_call(split, 2, line);
+    chunk.emit_i32_const(-1, line);
+    chunk.emit_call(at, 2, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, short, line);
+
+    set_ps_type_object_slot(chunk, obj, "Name", short, line);
+    set_ps_type_object_slot(chunk, obj, "name", short, line);
+    set_ps_type_object_slot(chunk, obj, "FullName", full_name, line);
+    set_ps_type_object_slot(chunk, obj, "fullname", full_name, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, obj, line);
+}
+
+fn set_ps_type_object_slot(chunk: &mut Chunk, obj: u16, key: &str, value: u16, line: u32) {
+    vybe_compiler::primitives::class_slots::emit_class_set(
+        chunk,
+        vybe_compiler::primitives::class_slots::ObjSource::Local(obj),
+        &vybe_compiler::primitives::class_slots::resolve(
+            &vybe_compiler::primitives::class_slots::ClassSlot::internal(key),
+            &vybe_compiler::primitives::class_slots::PlainNames,
+        ),
+        vybe_compiler::primitives::class_slots::ValueSource::Local(value),
+        line,
+    );
+}
+
+/// `.Remove(…)` on an UNTYPED receiver — three receivers share the spelling at
+/// one arity, and only the value at run time can tell them apart:
+///
+/// | receiver | `Remove(x)` |
+/// |---|---|
+/// | hashtable (`@{…}`) | delete the KEY |
+/// | array / ArrayList | remove the first element equal to `x` |
+/// | string | `'abc'.Remove(1)` is the text BEFORE index 1 |
+///
+/// The same fallback rule as `emit_collection_add`: a receiver whose type is
+/// known at compile time — a `List[T]`, a `Hashtable` built by `::new()` —
+/// resolves through the tree first and never reaches this row, so the tree's
+/// leaves are not shadowed. A spelling-only rewrite was rejected here before
+/// for exactly the reason this tests the shape instead.
+///
+/// Stack: `[recv, arg]` → `[result]`.
+pub fn emit_collection_remove(chunks: &mut [Chunk], current: usize, line: u32) {
+    let arg = chunks[current].alloc_scratch(2);
+    let recv = arg + 1;
+    let is_array = chunks[current].add_import("ecma:array", "isArray");
+    let cast_bool = chunks[current].add_import("wasm:js-boolean", "cast");
+    let is_string = chunks[current].add_import("wasm:js-string", "test");
+    let obj_delete = chunks[current].add_import("ecma:object", "delete");
+
+    chunks[current].emit_op_u16(Op::LOCAL_SET, arg, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, recv, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
+    chunks[current].emit_call(is_array, 1, line);
+    chunks[current].emit_call(cast_bool, 1, line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, arg, line);
+    vybe_compiler::primitives::collections::emit_remove_value(chunks, current, line);
+    chunks[current].emit_else(line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
+    chunks[current].emit_call(is_string, 1, line);
+    chunks[current].emit_if_value(line);
+    // `substring(0, index)` — the text before the cut.
+    chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, arg, line);
+    vybe_compiler::primitives::strings::emit_substring(&mut chunks[current], line);
+    chunks[current].emit_else(line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, arg, line);
+    chunks[current].emit_call(obj_delete, 2, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+}
+
+/// `.Clear()` on an UNTYPED receiver — the public `[value_methods]` row, reached
+/// by a collection passed through a parameter, a field or a pipeline (a typed
+/// receiver resolves through the tree first; a bare `@{…}` is renamed to
+/// `__ps_ht_clear` by the walker and never gets here).
+///
+/// A `List`, `Stack`, `Queue` or `ArrayList` is array-kind at run time, so it
+/// is emptied in place; anything else is a keyed collection whose own keys are
+/// removed. `collections.clear_keyed` already answers null for an array and
+/// would leave it FULL, which is what cleared nothing on a `HashSet`.
+///
+/// Stack: `[recv]` → `[null]`.
+pub fn emit_collection_clear(chunks: &mut [Chunk], current: usize, line: u32) {
+    let recv = chunks[current].alloc_scratch(1);
+    let is_array = chunks[current].add_import("ecma:array", "isArray");
+    let cast_bool = chunks[current].add_import("wasm:js-boolean", "cast");
+
+    chunks[current].emit_op_u16(Op::LOCAL_SET, recv, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
+    chunks[current].emit_call(is_array, 1, line);
+    chunks[current].emit_call(cast_bool, 1, line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
+    vybe_compiler::primitives::collections::emit_clear(chunks, current, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
+    vybe_compiler::primitives::collections::emit_clear_keyed(chunks, current, line);
+    chunks[current].emit_end(line);
 }
