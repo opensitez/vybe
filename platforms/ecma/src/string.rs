@@ -23,7 +23,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use unicode_normalization::UnicodeNormalization;
 use vybe_runtime::value::{Object, ObjectKind};
 use vybe_runtime::vm::HostFnDecl;
-use vybe_runtime::{FuncSig, HostContext, VM, ValType, Value};
+use vybe_runtime::{FuncSig, Param, HostContext, VM, ValType, Value};
 
 static STRING_PROTOTYPE: OnceLock<Arc<Mutex<Object>>> = OnceLock::new();
 
@@ -219,7 +219,7 @@ fn string_fn(
 ) {
     vm.register_host(HostFnDecl::new("ecma:string", name, call).with_sig(FuncSig {
         name: name.to_string(),
-        params,
+        params: Param::unnamed_list(params),
         results,
     }));
 }
@@ -239,7 +239,7 @@ fn string_fn_free(
         HostFnDecl::new("ecma:string", name, call)
             .with_sig(FuncSig {
                 name: name.to_string(),
-                params,
+                params: Param::unnamed_list(params),
                 results,
             })
             .without_receiver(),

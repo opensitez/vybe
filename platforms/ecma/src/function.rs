@@ -601,13 +601,11 @@ pub fn invoke_with_explicit_this(
                 // channel is all this has to do.
                 ctx.invoke_with_receiver(target, this_arg, args)
             } else if host_function_uses_explicit_receiver(target) {
-                // ⛔ AMBIENT: PLACE THE RECEIVER, DO NOT REBIND THE CHANNEL.
-                // `invoke_with_receiver` also sets `__js_this` around the call,
-                // and rebinding that global disturbs an ENCLOSING method's own
-                // receiver — the plan records the same defect turning a PHP
-                // `$this->n++` into NaN. The original here prepended and left
-                // the channel alone; that is what component-class method bodies
-                // depend on.
+                // ⛔ PLACE THE RECEIVER, DO NOT REBIND THE CHANNEL.
+                // `invoke_with_receiver` brackets the call with its own
+                // receiver binding, and rebinding disturbs an ENCLOSING
+                // method's own receiver. Prepending and leaving the channel
+                // alone is what component-class method bodies depend on.
                 let mut invoke_args = Vec::with_capacity(args.len() + 1);
                 invoke_args.push(this_arg);
                 invoke_args.extend_from_slice(args);

@@ -14,7 +14,7 @@
 use std::sync::{Arc, Mutex, OnceLock};
 use vybe_runtime::value::{Object, ObjectKind, Value};
 use vybe_runtime::vm::HostFnDecl;
-use vybe_runtime::{FuncSig, HostContext, VM, ValType};
+use vybe_runtime::{FuncSig, Param, HostContext, VM, ValType};
 
 static SET_ITERATOR_IDX: OnceLock<usize> = OnceLock::new();
 static SET_PROTOTYPE: OnceLock<Arc<Mutex<Object>>> = OnceLock::new();
@@ -181,7 +181,7 @@ fn set_fn(
 ) {
     vm.register_host(HostFnDecl::new("ecma:set", name, call).with_sig(FuncSig {
         name: name.to_string(),
-        params,
+        params: Param::unnamed_list(params),
         results,
     }));
 }

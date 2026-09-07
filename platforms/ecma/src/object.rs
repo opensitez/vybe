@@ -18,7 +18,7 @@ use crate::function::invoke_with_explicit_this;
 use std::sync::{Arc, Mutex, OnceLock};
 use vybe_runtime::value::{Object, ObjectKind, Value};
 use vybe_runtime::vm::HostFnDecl;
-use vybe_runtime::{FuncSig, HostContext, VM, ValType};
+use vybe_runtime::{FuncSig, Param, HostContext, VM, ValType};
 
 /// Declare an `ecma:object` function — same closure, plus the signature.
 ///
@@ -34,7 +34,7 @@ fn object_fn(
 ) {
     vm.register_host(HostFnDecl::new("ecma:object", name, call).with_sig(FuncSig {
         name: name.to_string(),
-        params,
+        params: Param::unnamed_list(params),
         results,
     }));
 }
@@ -1867,10 +1867,9 @@ fn register_access(vm: &mut VM) {
                 if let Some(setter_val) = setter {
                     if let Value::Object(setter_obj) = &setter_val {
                         // ECMA-262 §10.1.5 step 6.b: the setter is
-                        // called with `this = receiver`. We can't
-                        // bind `__js_this` from a host fn (no VM
-                        // mutation), but we can match the arg count
-                        // to the setter's declared arity:
+                        // called with `this = receiver`. A host fn cannot
+                        // mutate the VM, but it can match the arg count to
+                        // the setter's declared arity:
                         //   - arity 1 (defineProperty `set(val)`):
                         //     pass `[val]`.
                         //   - arity 2 (class `set name(val)` compiled

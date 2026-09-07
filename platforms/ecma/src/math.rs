@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use vybe_runtime::vm::HostFnDecl;
-use vybe_runtime::{FuncSig, HostContext, VM, ValType, Value};
+use vybe_runtime::{FuncSig, Param, HostContext, VM, ValType, Value};
 
 /// Declare an `ecma:math` function — same closure, plus the signature.
 ///
@@ -19,7 +19,7 @@ fn math_fn(
 ) {
     vm.register_host(HostFnDecl::new("ecma:math", name, call).with_sig(FuncSig {
         name: name.to_string(),
-        params,
+        params: Param::unnamed_list(params),
         results,
     }));
 }

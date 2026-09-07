@@ -22,7 +22,7 @@ use std::collections::{BTreeSet, HashSet};
 use std::sync::{Arc, Mutex, OnceLock};
 use vybe_runtime::value::{Object, ObjectKind, TypedElemKind, Value};
 use vybe_runtime::vm::HostFnDecl;
-use vybe_runtime::{FuncSig, HostContext, VM, ValType};
+use vybe_runtime::{FuncSig, Param, HostContext, VM, ValType};
 
 fn invoke_callback(ctx: &mut HostContext, callback: &Value, args: &[Value]) -> Value {
     if let Some(v) = crate::function::invoke_bound_callback_if_needed(ctx, callback, args) {
@@ -567,7 +567,7 @@ fn array_fn(
 ) {
     vm.register_host(HostFnDecl::new("ecma:array", name, call).with_sig(FuncSig {
         name: name.to_string(),
-        params,
+        params: Param::unnamed_list(params),
         results,
     }));
 }
@@ -946,7 +946,7 @@ fn register_constructors(vm: &mut VM) {
         )
         .with_sig(FuncSig {
             name: "newWithLength".to_string(),
-            params: vec![index()],
+            params: Param::unnamed_list(vec![index()]),
             results: vec![arr()],
         }),
     );

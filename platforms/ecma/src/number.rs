@@ -17,7 +17,7 @@
 use std::sync::{Arc, Mutex, OnceLock};
 use vybe_runtime::value::Object;
 use vybe_runtime::vm::HostFnDecl;
-use vybe_runtime::{FuncSig, HostContext, VM, ValType, Value};
+use vybe_runtime::{FuncSig, Param, HostContext, VM, ValType, Value};
 
 /// Declare an `ecma:number` function — same closure, plus the signature.
 fn number_fn(
@@ -29,7 +29,7 @@ fn number_fn(
 ) {
     vm.register_host(HostFnDecl::new("ecma:number", name, call).with_sig(FuncSig {
         name: name.to_string(),
-        params,
+        params: Param::unnamed_list(params),
         results,
     }));
 }
@@ -49,7 +49,7 @@ fn number_fn_free(
         HostFnDecl::new("ecma:number", name, call)
             .with_sig(FuncSig {
                 name: name.to_string(),
-                params,
+                params: Param::unnamed_list(params),
                 results,
             })
             .without_receiver(),
