@@ -52,7 +52,7 @@ pub const EXCEPTION_TYPES: &[(&str, &str)] = &[
 /// This is the same `__types` chain `emit_stamp_exception_ancestors` writes at
 /// construction — declared here so the type is IDENTIFIABLE before anything is
 /// constructed, which is what a user class naming it as a base needs.
-fn ancestry(spelling: &str, canonical: &str) -> Vec<String> {
+pub fn ancestry(spelling: &str, canonical: &str) -> Vec<String> {
     let mut chain = vec![spelling.to_string()];
     for name in [canonical, "Exception"] {
         if !chain.iter().any(|held| held == name) {
@@ -63,6 +63,24 @@ fn ancestry(spelling: &str, canonical: &str) -> Vec<String> {
 }
 
 /// `common:pascal.exc_<Spelling>` — the dispatch key for one exception type.
+/// Whether `name` is a class the tree provides — a root a user class derives
+/// from directly, with no user-written body behind `inherited`.
+pub fn is_tree_root_class(name: &str) -> bool {
+    let name = name.trim();
+    name.eq_ignore_ascii_case("TObject")
+        || name.eq_ignore_ascii_case("TInterfacedObject")
+        || EXCEPTION_TYPES.iter().any(|(spelling, _)| spelling.eq_ignore_ascii_case(name))
+}
+
+/// The root classes' supertype chains, leaf first.
+pub fn object_ancestry(spelling: &str) -> Vec<String> {
+    if spelling.eq_ignore_ascii_case("TInterfacedObject") {
+        vec!["TInterfacedObject".to_string(), "TObject".to_string()]
+    } else {
+        vec!["TObject".to_string()]
+    }
+}
+
 pub fn emit_key(spelling: &str) -> String {
     format!("pascal.exc_{}", spelling.to_lowercase())
 }
@@ -91,6 +109,26 @@ pub fn register_namespace_tree() {
                     ..Default::default()
                 }),
                 ctor_call: Some(Box::new(NamespaceNode::CommonEmit(emit_key(spelling)))),
+                statics: Subtree::new(),
+                methods: std::collections::BTreeMap::new(),
+                member_returns: std::collections::BTreeMap::new(),
+            },
+        );
+    }
+    // The class roots. `TObject` is the parent every class declares or
+    // implies; `TInterfacedObject` is the reference-counted one. Both are
+    // plain allocations — the class model stamps identity and ancestry.
+    for spelling in ["TObject", "TInterfacedObject"] {
+        classes.insert(
+            spelling.to_lowercase(),
+            NamespaceNode::Type {
+                ctor: Some(CtorSpec {
+                    ancestry: object_ancestry(spelling),
+                    ..Default::default()
+                }),
+                ctor_call: Some(Box::new(NamespaceNode::CommonEmit(format!(
+                    "pascal.object_new.{spelling}"
+                )))),
                 statics: Subtree::new(),
                 methods: std::collections::BTreeMap::new(),
                 member_returns: std::collections::BTreeMap::new(),

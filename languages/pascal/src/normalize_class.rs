@@ -800,7 +800,13 @@ pub fn normalize_class(
                 if special_kind == Some(SpecialMethodKind::Destructor) {
                     let mut stmt = (**stmt).clone();
                     if let StmtKind::FunctionDecl { body, .. } = &mut stmt.kind {
-                        normalize_destructor_inherited_calls(body, !parents.is_empty());
+                        // A root class on the tree (`TObject`, `TInterfacedObject`,
+                        // the `E*` family) has no destructor body to run, so a
+                        // class right under one has nothing to inherit.
+                        let has_destructor_parent = parents
+                            .iter()
+                            .any(|parent| !crate::exceptions::is_tree_root_class(parent));
+                        normalize_destructor_inherited_calls(body, has_destructor_parent);
                     }
                     if let Some(d) = from_method_stmt(
                         span.clone(),

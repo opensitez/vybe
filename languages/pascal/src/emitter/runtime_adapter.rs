@@ -1,11 +1,8 @@
 //! Pascal runtime-surface helpers routed via `common:pascal.*`.
 
-use vybe_compiler::primitives::{collections, expressions, instructions::host, ops, sets};
+use vybe_compiler::primitives::{collections, expressions, fs_path, instructions::host, ops, sets};
 use vybe_runtime::Chunk;
 use vybe_runtime::Op;
-use vybe_compiler::primitives::class_slots::{
-    self,
-};
 
 pub fn emit_helper(
     name: &str,
@@ -83,6 +80,28 @@ pub fn emit_helper(
 
     if name == "pascal.file_eof" {
         emit_pascal_file_eof(chunks, current, line);
+        return true;
+    }
+
+    if name == "pascal.file_age" || name == "pascal.file_get_attr" {
+        emit_pascal_file_exists_int(chunks, current, line);
+        return true;
+    }
+
+    if name == "pascal.file_set_attr" {
+        chunks[current].emit_op(Op::DROP, line);
+        chunks[current].emit_op(Op::DROP, line);
+        chunks[current].emit_i32_const(0, line);
+        return true;
+    }
+
+    if name == "pascal.file_write_bytes" {
+        fs_path::emit_write_file_bytes(&mut chunks[current], line);
+        return true;
+    }
+
+    if name == "pascal.fill_char" {
+        emit_pascal_fill_char(chunks, current, argc, line);
         return true;
     }
 
@@ -878,25 +897,34 @@ pub fn emit_ansi_case(chunks: &mut [Chunk], current: usize, upper: bool, line: u
 /// The empty case must stay empty: `ExtractFileExt('README')` is `''`, not
 /// `'.'`, which is why this is a branch and not a concatenation.
 pub fn emit_extract_file_ext(chunks: &mut [Chunk], current: usize, line: u32) {
-    let chunk = &mut chunks[current];
+    vybe_compiler::primitives::paths::emit_extension(&mut chunks[current], line);
+}
 
-    let ext = chunk.alloc_scratch(1);
+fn emit_pascal_file_exists_int(chunks: &mut [Chunk], current: usize, line: u32) {
+    fs_path::emit_exists(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_i32_const(-1, line);
+    chunks[current].emit_end(line);
+}
 
-    vybe_compiler::primitives::paths::emit_extension(chunk, line);
-    chunk.emit_op_u16(Op::LOCAL_SET, ext, line);
-
-    chunk.emit_op_u16(Op::LOCAL_GET, ext, line);
-    chunk.emit_string_const("", line);
-    vybe_compiler::primitives::ops::emit_dyn_ne(chunk, line);
-    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
-    chunk.emit_if(line);
-    chunk.emit_string_const(".", line);
-    chunk.emit_op_u16(Op::LOCAL_GET, ext, line);
-    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
-    chunk.emit_op_u16(Op::LOCAL_SET, ext, line);
-    chunk.emit_end(line);
-
-    chunk.emit_op_u16(Op::LOCAL_GET, ext, line);
+fn emit_pascal_fill_char(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    if argc < 3 {
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+        return;
+    }
+    let value = chunks[current].alloc_scratch(1);
+    let count = chunks[current].alloc_scratch(1);
+    let target = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, value, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, count, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, target, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, target, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, count, line);
+    collections::emit_fill(chunks, current, line);
 }
 
 /// `SameStr(a, b)` — case-SENSITIVE equality.
@@ -1225,6 +1253,224 @@ pub fn emit_dict_enumerate(chunks: &mut [Chunk], current: usize, which: &str, li
     chunks[current].emit_call(f, 1, line);
 }
 
+fn pascal_slot(chunk: &mut Chunk) -> u16 {
+    chunk.alloc_scratch(1)
+}
+
+fn pascal_get_field_to_slot(
+    chunk: &mut Chunk,
+    obj_slot: u16,
+    key: &str,
+    out_slot: u16,
+    line: u32,
+) {
+    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+    chunk.emit_string_const(key, line);
+    host::emit(chunk, "ecma:object", "get", 2, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, out_slot, line);
+}
+
+fn pascal_set_field_from_slot(
+    chunk: &mut Chunk,
+    obj_slot: u16,
+    key: &str,
+    value_slot: u16,
+    line: u32,
+) {
+    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+    chunk.emit_string_const(key, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
+    host::emit(chunk, "ecma:object", "set", 3, line);
+    chunk.emit_op(Op::DROP, line);
+}
+
+fn pascal_set_field_i32(chunk: &mut Chunk, obj_slot: u16, key: &str, value: i32, line: u32) {
+    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+    chunk.emit_string_const(key, line);
+    chunk.emit_i32_const(value, line);
+    host::emit(chunk, "ecma:object", "set", 3, line);
+    chunk.emit_op(Op::DROP, line);
+}
+
+fn pascal_set_field_bool(chunk: &mut Chunk, obj_slot: u16, key: &str, value: bool, line: u32) {
+    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+    chunk.emit_string_const(key, line);
+    chunk.emit_bool_const(value, line);
+    host::emit(chunk, "ecma:object", "set", 3, line);
+    chunk.emit_op(Op::DROP, line);
+}
+
+fn pascal_set_field_string(chunk: &mut Chunk, obj_slot: u16, key: &str, value: &str, line: u32) {
+    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+    chunk.emit_string_const(key, line);
+    chunk.emit_string_const(value, line);
+    host::emit(chunk, "ecma:object", "set", 3, line);
+    chunk.emit_op(Op::DROP, line);
+}
+
+fn pascal_new_object_slot(chunk: &mut Chunk, line: u32) -> u16 {
+    let out = pascal_slot(chunk);
+    host::emit(chunk, "ecma:object", "new", 0, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, out, line);
+    out
+}
+
+fn pascal_build_process_options(
+    chunks: &mut [Chunk],
+    current: usize,
+    proc_slot: u16,
+    line: u32,
+) -> u16 {
+    let opts = pascal_new_object_slot(&mut chunks[current], line);
+    pascal_set_field_string(&mut chunks[current], opts, "encoding", "utf8", line);
+
+    let cwd = pascal_slot(&mut chunks[current]);
+    pascal_get_field_to_slot(&mut chunks[current], proc_slot, "CurrentDirectory", cwd, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, cwd, line);
+    chunks[current].emit_string_const("", line);
+    ops::emit_dyn_eq(&mut chunks[current], line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_if(line);
+    pascal_set_field_from_slot(&mut chunks[current], opts, "cwd", cwd, line);
+    chunks[current].emit_end(line);
+
+    let input_stream = pascal_slot(&mut chunks[current]);
+    pascal_get_field_to_slot(&mut chunks[current], proc_slot, "Input", input_stream, line);
+    let input_data = pascal_slot(&mut chunks[current]);
+    pascal_get_field_to_slot(&mut chunks[current], input_stream, "__data", input_data, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, input_data, line);
+    chunks[current].emit_string_const("", line);
+    ops::emit_dyn_eq(&mut chunks[current], line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_if(line);
+    pascal_set_field_from_slot(&mut chunks[current], opts, "input", input_data, line);
+    chunks[current].emit_end(line);
+
+    opts
+}
+
+fn pascal_process_spawn_sync(
+    chunks: &mut [Chunk],
+    current: usize,
+    cmd_slot: u16,
+    args_slot: u16,
+    opts_slot: u16,
+    line: u32,
+) -> u16 {
+    chunks[current].emit_op_u16(Op::LOCAL_GET, cmd_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, args_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, opts_slot, line);
+    let raw_idx = chunks[current].add_import("node:child_process", "spawnSync");
+    chunks[current].emit_call(raw_idx, 3, line);
+    let raw = pascal_slot(&mut chunks[current]);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, raw, line);
+    raw
+}
+
+fn pascal_process_throw_if_error(
+    chunks: &mut [Chunk],
+    current: usize,
+    raw_slot: u16,
+    line: u32,
+) {
+    let err = pascal_slot(&mut chunks[current]);
+    pascal_get_field_to_slot(&mut chunks[current], raw_slot, "error", err, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, err, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_string_const("Process execution failed", line);
+    emit_exception_new(chunks, current, "Exception", 1, line);
+    vybe_compiler::primitives::errors::emit_throw(&mut chunks[current], line);
+    chunks[current].emit_end(line);
+}
+
+pub fn emit_process_execute(chunks: &mut [Chunk], current: usize, line: u32) {
+    let proc_slot = pascal_slot(&mut chunks[current]);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, proc_slot, line);
+
+    let cmd = pascal_slot(&mut chunks[current]);
+    pascal_get_field_to_slot(&mut chunks[current], proc_slot, "Executable", cmd, line);
+    let args = pascal_slot(&mut chunks[current]);
+    pascal_get_field_to_slot(&mut chunks[current], proc_slot, "Parameters", args, line);
+    let opts = pascal_build_process_options(chunks, current, proc_slot, line);
+    let raw = pascal_process_spawn_sync(chunks, current, cmd, args, opts, line);
+    pascal_process_throw_if_error(chunks, current, raw, line);
+
+    for (from, to) in [("status", "ExitCode"), ("pid", "Handle")] {
+        let tmp = pascal_slot(&mut chunks[current]);
+        pascal_get_field_to_slot(&mut chunks[current], raw, from, tmp, line);
+        pascal_set_field_from_slot(&mut chunks[current], proc_slot, to, tmp, line);
+    }
+
+    let stdout = pascal_slot(&mut chunks[current]);
+    pascal_get_field_to_slot(&mut chunks[current], raw, "stdout", stdout, line);
+    let stderr = pascal_slot(&mut chunks[current]);
+    pascal_get_field_to_slot(&mut chunks[current], raw, "stderr", stderr, line);
+    let out_data = pascal_slot(&mut chunks[current]);
+    let process_options = pascal_slot(&mut chunks[current]);
+    pascal_get_field_to_slot(&mut chunks[current], proc_slot, "Options", process_options, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, process_options, line);
+    chunks[current].emit_string_const("poStderrToOutPut", line);
+    collections::emit_contains(chunks, current, line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, stdout, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, stderr, line);
+    vybe_compiler::primitives::strings::emit_concat(&mut chunks[current], 2, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, out_data, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, stdout, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, out_data, line);
+    chunks[current].emit_end(line);
+    let output_stream = pascal_slot(&mut chunks[current]);
+    pascal_get_field_to_slot(&mut chunks[current], proc_slot, "Output", output_stream, line);
+    let stderr_stream = pascal_slot(&mut chunks[current]);
+    pascal_get_field_to_slot(&mut chunks[current], proc_slot, "Stderr", stderr_stream, line);
+    pascal_set_field_from_slot(&mut chunks[current], output_stream, "__data", out_data, line);
+    pascal_set_field_i32(&mut chunks[current], output_stream, "__pos", 0, line);
+    pascal_set_field_from_slot(&mut chunks[current], stderr_stream, "__data", stderr, line);
+    pascal_set_field_i32(&mut chunks[current], stderr_stream, "__pos", 0, line);
+    pascal_set_field_bool(&mut chunks[current], proc_slot, "Running", false, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, proc_slot, line);
+}
+
+pub fn emit_execute_process(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let mut args = Vec::new();
+    for _ in 0..argc {
+        let s = pascal_slot(&mut chunks[current]);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, s, line);
+        args.push(s);
+    }
+    args.reverse();
+    let Some(cmd) = args.first().copied() else {
+        chunks[current].emit_i32_const(1, line);
+        return;
+    };
+    let argv = if let Some(argv) = args.get(1).copied() {
+        argv
+    } else {
+        collections::emit_array_new(chunks, current, 0, line);
+        let slot = pascal_slot(&mut chunks[current]);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, slot, line);
+        slot
+    };
+    let opts = pascal_new_object_slot(&mut chunks[current], line);
+    pascal_set_field_string(&mut chunks[current], opts, "encoding", "utf8", line);
+    let raw = pascal_process_spawn_sync(chunks, current, cmd, argv, opts, line);
+    let err = pascal_slot(&mut chunks[current]);
+    pascal_get_field_to_slot(&mut chunks[current], raw, "error", err, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, err, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_else(line);
+    let status = pascal_slot(&mut chunks[current]);
+    pascal_get_field_to_slot(&mut chunks[current], raw, "status", status, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, status, line);
+    chunks[current].emit_end(line);
+}
+
 // ── Exceptions — the SHARED exception model ──────────────────────────────
 //
 // Pascal used to synthesize `Exception` and ten `E*` subclasses as Pascal
@@ -1256,24 +1502,155 @@ pub fn emit_dict_enumerate(chunks: &mut [Chunk], current: usize, which: &str, li
 ///
 /// `canonical` is the shared name this Pascal spelling maps to; `spelling` is
 /// what the source called it and what `name` keeps.
-pub fn emit_exception_new(chunks: &mut [Chunk], current: usize, spelling: &str, line: u32) {
-    let msg = chunks[current].alloc_scratch(1);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, msg, line);
+/// `E<Kind>.Create(msg[, helpCtx])` — the instance comes from the shared
+/// exception machinery; this adds Pascal's `HelpContext` and stamps the
+/// class ancestry under both the Pascal spelling and the canonical name, so
+/// `on E: EDivByZero` and a cross-language `ZeroDivisionError` catch both match.
+/// `<Exc>.Create(args…)` with `argc` arguments on the stack: a fresh object
+/// of the exception's reserved WASM type (its ancestry the supertype chain),
+/// built by the shared exception machinery. Leaves the instance on the stack.
+pub fn emit_exception_new(chunks: &mut [Chunk], current: usize, spelling: &str, argc: u8, line: u32) {
+    emit_exception_ctor(chunks, current, spelling, argc, None, line);
+}
 
-    // The shape `emit_exception_new_finalize` expects: [obj, obj, msg].
-    class_slots::emit_class_alloc(&mut chunks[current], line);
-    chunks[current].emit_dup(line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, msg, line);
-    vybe_compiler::primitives::errors::emit_exception_new_finalize(
-        &mut chunks[current],
-        spelling,
-        line,
-    );
-    vybe_compiler::primitives::errors::emit_stamp_exception_ancestors(
-        &mut chunks[current],
-        spelling,
-        line,
-    );
+/// The `#into` form: the receiver a derived constructor allocated is on top
+/// of the stack above the arguments; it is initialised as `<Exc>`.
+pub fn emit_exception_new_into(chunks: &mut [Chunk], current: usize, spelling: &str, argc: u8, line: u32) {
+    let receiver = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, receiver, line);
+    emit_exception_ctor(chunks, current, spelling, argc, Some(receiver), line);
+}
+
+fn emit_exception_ctor(
+    chunks: &mut [Chunk],
+    current: usize,
+    spelling: &str,
+    argc: u8,
+    receiver: Option<u16>,
+    line: u32,
+) {
+    let chunk = &mut chunks[current];
+    let msg = chunk.alloc_scratch(1);
+    let help = chunk.alloc_scratch(1);
+    match argc {
+        0 => {
+            chunk.emit_string_const("", line);
+            chunk.emit_op_u16(Op::LOCAL_SET, msg, line);
+            chunk.emit_f64_const(0.0, line);
+            chunk.emit_op_u16(Op::LOCAL_SET, help, line);
+        }
+        1 => {
+            chunk.emit_op_u16(Op::LOCAL_SET, msg, line);
+            chunk.emit_f64_const(0.0, line);
+            chunk.emit_op_u16(Op::LOCAL_SET, help, line);
+        }
+        _ => {
+            for _ in 2..argc {
+                chunk.emit_op(Op::DROP, line);
+            }
+            chunk.emit_op_u16(Op::LOCAL_SET, help, line);
+            chunk.emit_op_u16(Op::LOCAL_SET, msg, line);
+        }
+    }
+
+    match receiver {
+        None => {
+            let canonical = crate::exceptions::EXCEPTION_TYPES
+                .iter()
+                .find(|(s, _)| s.eq_ignore_ascii_case(spelling))
+                .map(|(_, canonical)| *canonical)
+                .unwrap_or("Exception");
+            let ancestry = crate::exceptions::ancestry(spelling, canonical);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, msg, line);
+            vybe_compiler::primitives::errors::emit_exception_new_typed(
+                chunks,
+                current,
+                spelling,
+                &ancestry,
+                vybe_compiler::primitives::class_slots::ValueSource::Stack,
+                line,
+            );
+        }
+        Some(receiver) => {
+            let chunk = &mut chunks[current];
+            chunk.emit_op_u16(Op::LOCAL_GET, receiver, line);
+            chunk.emit_dup(line);
+            chunk.emit_op_u16(Op::LOCAL_GET, msg, line);
+            vybe_compiler::primitives::errors::emit_exception_new_finalize(chunk, spelling, line);
+        }
+    }
+    let chunk = &mut chunks[current];
+    let obj = chunk.alloc_scratch(1);
+    chunk.emit_op_u16(Op::LOCAL_SET, obj, line);
+    vybe_compiler::primitives::reflection::emit_stamp_type(chunk, obj, spelling, line);
+    vybe_compiler::primitives::reflection::emit_stamp_type_name(chunk, obj, spelling, line);
+
+    for key in ["HelpContext", "helpcontext"] {
+        chunk.emit_op_u16(Op::LOCAL_GET, obj, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, help, line);
+        let slot = vybe_compiler::primitives::class_slots::resolve(
+            &vybe_compiler::primitives::class_slots::ClassSlot::internal(key),
+            &vybe_compiler::primitives::class_slots::PlainNames,
+        );
+        vybe_compiler::primitives::class_slots::emit_class_set(
+            chunk,
+            vybe_compiler::primitives::class_slots::ObjSource::Stack,
+            &slot,
+            vybe_compiler::primitives::class_slots::ValueSource::Stack,
+            line,
+        );
+    }
+    chunk.emit_op_u16(Op::LOCAL_GET, obj, line);
+}
+
+/// `TObject.Create` / `TInterfacedObject.Create`: an object of the class's
+/// reserved WASM type. Constructor arguments are the language's `Create`
+/// overloads on the root, which carry nothing.
+pub fn emit_tobject_new(chunks: &mut [Chunk], current: usize, spelling: &str, argc: u8, line: u32) {
+    for _ in 0..argc {
+        chunks[current].emit_op(Op::DROP, line);
+    }
+    let ancestry: Vec<String> = crate::exceptions::object_ancestry(spelling);
+    let typeidx = vybe_compiler::primitives::classes::reserve_platform_type(chunks, &ancestry);
+    chunks[current].emit_struct_new(typeidx, 0, line);
+}
+
+pub fn emit_safe_idiv(chunks: &mut [Chunk], current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    let b = chunk.alloc_scratch(1);
+    let a = chunk.alloc_scratch(1);
+    chunk.emit_op_u16(Op::LOCAL_SET, b, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, a, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, b, line);
+    chunk.emit_f64_const(0.0, line);
+    chunk.emit_op(Op::F64_EQ, line);
+    chunk.emit_if(line);
+    chunk.emit_string_const("DivideByZero", line);
+    emit_exception_new(chunks, current, "EDivByZero", 1, line);
+    let chunk = &mut chunks[current];
+    vybe_compiler::primitives::errors::emit_throw(chunk, line);
+    chunk.emit_end(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, a, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, b, line);
+    chunk.emit_op(Op::F64_DIV, line);
+    vybe_compiler::primitives::math::emit_trunc(chunk, line);
+}
+
+fn state_global(name: &str) -> String {
+    format!("__pascal_{}", name.to_ascii_lowercase())
+}
+
+/// Read of `ExceptObject` / `ExceptAddr` / `AssertErrorProc`.
+pub fn emit_state_get(chunks: &mut [Chunk], current: usize, name: &str, line: u32) {
+    vybe_compiler::primitives::globals::emit_read(&mut chunks[current], &state_global(name), line);
+}
+
+/// Write of the same; a statement-position call, so a null result is left
+/// for the statement to drop.
+pub fn emit_state_set(chunks: &mut [Chunk], current: usize, name: &str, line: u32) {
+    let chunk = &mut chunks[current];
+    vybe_compiler::primitives::globals::emit_write(chunk, &state_global(name), line);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 // ── Variants ────────────────────────────────────────────────────────────────
@@ -1535,7 +1912,7 @@ pub fn emit_var_as_type(chunks: &mut [Chunk], current: usize, line: u32) {
     ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
     chunks[current].emit_string_const("Could not convert variant to the required type", line);
-    emit_exception_new(chunks, current, "EVariantError", line);
+    emit_exception_new(chunks, current, "EVariantError", 1, line);
     vybe_compiler::primitives::errors::emit_throw(&mut chunks[current], line);
     chunks[current].emit_end(line);
 

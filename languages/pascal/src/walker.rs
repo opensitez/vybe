@@ -14,16 +14,11 @@ const PASCAL_PROPERTY_IMPLEMENTS_MARKER: &str = "__pascal_property_implements";
 
 #[derive(Default)]
 struct PascalPreludeNeeds {
-    exceptions: bool,
-    except_state: bool,
-    tobject: bool,
-    tinterfacedobject: bool,
     collections: bool,
     tbits: bool,
     path_utils: bool,
     file_block: bool,
     format_settings: bool,
-    assert_error_proc: bool,
 }
 
 /// One `unit U; … end.` or `program P; … end.` out of the source stream.
@@ -376,6 +371,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
     let original_source = source.trim_start_matches('\u{feff}');
     let record_layouts = collect_pascal_record_layout_modes(original_source);
     let source = preprocess_pascal_conditional_directives(original_source);
+    let _line_index = vybe_ast::line_index::LineIndex::install(&source);
     let pairs =
         PascalParser::parse(Rule::program, &source).map_err(|e| format!("Parse error: {}", e))?;
     let mut imports = Vec::new();
@@ -518,6 +514,8 @@ pub fn parse(source: &str) -> Result<Module, String> {
     lower_pascal_gotos_in_body(&mut body);
     lower_pascal_file_io(&mut body);
     normalize_pascal_var_clear(&mut body);
+    let early_pointer_return_aliases = collect_pascal_pointer_return_aliases(&body);
+    lower_pascal_pointer_place_aliases(&mut body, &early_pointer_return_aliases);
     normalize_pascal_free_function_overloads(&mut body);
     lower_pascal_operator_overloads(&mut body);
     normalize_pascal_class_method_overloads(&mut body);
@@ -539,51 +537,6 @@ pub fn parse(source: &str) -> Result<Module, String> {
             })
             .collect();
         let mut prelude = Vec::new();
-        // The exception family, as ordinary classes — the shape PHP and VB
-        // both use, so pascal reaches the shared class machinery the same way
-        // they do. The shared stamps are not lost by declaring them: each
-        // class states its own `__exception_type`, so `EDivByZero` still
-        // canonicalises to `ZeroDivisionError` for a cross-language catch.
-        if prelude_needs.exceptions {
-            // Gate on the post-walk AST, NOT the source text. `Assert` lowers to
-            // a synthesized `raise EAssertionFailed.Create(msg, 0)` that the
-            // source never spells, so a source-text gate left that class
-            // UNDEFINED and construction fell through to the namespace tree —
-            // which takes one argument, so `HelpContext` landed in `Message`
-            // and `E.Message` read `0`. PHP's `php_prelude_needs` matches
-            // against `format!("{:?}", stmts)` for exactly this reason.
-            let ast_text = format!("{:?}", body);
-            for stmt in synthesize_exception_classes() {
-                let StmtKind::ClassDecl { name, .. } = &stmt.kind else {
-                    continue;
-                };
-                if existing_classes.contains(&name.to_lowercase()) {
-                    continue;
-                }
-                // Only the spellings this program can actually name. `Exception`
-                // is unconditional — it is the root every other one extends and
-                // the type a bare `on E: Exception` matches — but the rest are
-                // gated exactly like the collection group above.
-                //
-                // This is not only compile cost. `ClassName` lowers to a ternary
-                // LADDER with one arm per declared class (`pascal_class_name_expr`),
-                // because `__type` is canonicalised to lowercase and the display
-                // spelling has to be recovered. Injecting all fourteen made that
-                // ladder fourteen arms deeper in EVERY program, and a `ClassName`
-                // read inside a handler that also re-raises emitted unrunnable
-                // bytecode.
-                let unconditional = name.eq_ignore_ascii_case("Exception");
-                if unconditional || ast_text.contains(name.as_str()) {
-                    prelude.push(stmt);
-                }
-            }
-        }
-        if prelude_needs.tobject && !existing_classes.contains("tobject") {
-            prelude.push(synthesize_tobject_class());
-        }
-        if prelude_needs.tinterfacedobject && !existing_classes.contains("tinterfacedobject") {
-            prelude.push(synthesize_tinterfacedobject_class());
-        }
         // Only pay for the group if the program is actually missing something
         // from it. The old gate asked about `TList`/`TObjectList` only, so a
         // program that declared its own `TPair` — which the token scan had
@@ -628,9 +581,6 @@ pub fn parse(source: &str) -> Result<Module, String> {
             ),
         ];
         prelude.extend(shared_prelude::build(&groups, parse_pascal_prelude_source)?);
-        if prelude_needs.assert_error_proc {
-            prelude.push(synthesize_pascal_assert_error_proc_var());
-        }
         // ONE dedup pass over everything synthesized above — the Rust-built
         // classes and the source-parsed groups alike. Seeded with the classes
         // the program declares itself, so a prelude copy never shadows the
@@ -651,17 +601,10 @@ pub fn parse(source: &str) -> Result<Module, String> {
         for stmt in prelude.into_iter().rev() {
             body.insert(0, stmt);
         }
-        if prelude_needs.except_state {
-            body.insert(0, synthesize_pascal_except_state_vars());
-        }
     }
 
-    let mut uses_safe_idiv = false;
     for stmt in body.iter_mut() {
-        uses_safe_idiv |= rewrite_pascal_safe_idiv_stmt(stmt);
-    }
-    if uses_safe_idiv {
-        body.insert(0, synthesize_pascal_safe_idiv_function());
+        rewrite_pascal_safe_idiv_stmt(stmt);
     }
     rewrite_pascal_except_state_body(&mut body);
     let mut except_addr_hex_vars = std::collections::HashSet::new();
@@ -673,6 +616,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
     );
     let mut known_nulls = std::collections::HashSet::new();
     rewrite_pascal_known_null_deref_body(&mut body, &mut known_nulls);
+    normalize_pascal_state_var_reads(&mut body);
 
     let uses_gcl = imports.iter().any(|import| match &import.kind {
         ImportKind::Simple { path, .. }
@@ -807,6 +751,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
         mark_static_var_args_stmt(stmt, &static_var_params);
     }
     lower_pascal_method_pointers(&mut body);
+    lower_pascal_procedure_pointer_call_aliases(&mut body);
     rewrite_pascal_comparer_exprs(&mut body);
     rewrite_pascal_stringbuilder_exprs(&mut body);
     let static_zero_arg_methods = collect_zero_arg_static_methods(&body);
@@ -942,6 +887,8 @@ pub fn parse(source: &str) -> Result<Module, String> {
         materialize_record_array_setlength_stmt(stmt, &record_array_types);
     }
     lower_pascal_array_pointer_math(&mut body);
+    let pointer_return_aliases = collect_pascal_pointer_return_aliases(&body);
+    lower_pascal_pointer_place_aliases(&mut body, &pointer_return_aliases);
     let mut string_vars = std::collections::HashSet::new();
     let mut zero_based_loop_vars = std::collections::HashSet::new();
     for stmt in body.iter_mut() {
@@ -2227,23 +2174,28 @@ fn default_init_struct_locals_stmt(
     match &mut stmt.kind {
         StmtKind::VarDecl { declarations, .. } => {
             for decl in declarations.iter_mut() {
-                if decl.init.is_none() {
-                    if let Some(ref type_hint) = decl.type_hint {
-                        let bare = bare_type_name(type_hint);
-                        if struct_names.contains(&bare.to_lowercase())
-                            && !explicit_ctor_record_names.contains(&bare.to_lowercase())
-                        {
-                            decl.init = Some(Expression::new(ExprKind::New {
-                                class: Box::new(Expression::ident(bare)),
-                                args: Vec::new(),
-                            }));
-                        } else if explicit_ctor_record_names.contains(&bare.to_lowercase()) {
-                            decl.type_hint = None;
-                        } else if let Some((count, element_type)) =
+                if let Some(ref type_hint) = decl.type_hint {
+                    let bare = bare_type_name(type_hint);
+                    let nil_array_init = decl.init.as_ref().is_some_and(|expr| {
+                        matches!(&expr.kind, ExprKind::Array(elements) if elements.iter().all(|element| matches!(element.value.kind, ExprKind::Lit(Literal::Null))))
+                    });
+                    if decl.init.is_none()
+                        && struct_names.contains(&bare.to_lowercase())
+                        && !explicit_ctor_record_names.contains(&bare.to_lowercase())
+                    {
+                        decl.init = Some(Expression::new(ExprKind::New {
+                            class: Box::new(Expression::ident(bare)),
+                            args: Vec::new(),
+                        }));
+                    } else if decl.init.is_none()
+                        && explicit_ctor_record_names.contains(&bare.to_lowercase())
+                    {
+                        decl.type_hint = None;
+                    } else if (decl.init.is_none() || nil_array_init)
+                        && let Some((count, element_type)) =
                             fixed_record_array(type_hint, struct_names, explicit_ctor_record_names)
-                        {
-                            decl.init = Some(record_array_initializer(count, &element_type));
-                        }
+                    {
+                        decl.init = Some(record_array_initializer(count, &element_type));
                     }
                 }
             }
@@ -5487,6 +5439,13 @@ fn language_directives() -> vybe_ast::Directives {
         variable_case: Some(vybe_ast::CaseMatch::Folded),
         callable_case: Some(vybe_ast::CaseMatch::Folded),
         case_alphabet: Some(vybe_ast::CaseAlphabet::Ascii),
+        // An object method is the raw procedure off the type; the CALL supplies
+        // `Self` as a leading argument.
+        method_receiver: Some(vybe_ast::MethodReceiver::CallSite),
+        // Every callable declares a leading receiver parameter, not only
+        // methods — ECMA-262 §10.2.1 `[[Call]](thisArgument, argumentsList)`.
+        // A plain `f()` passes `undefined` (§10.2.1.1).
+        receiver_binding: Some(vybe_ast::ReceiverBinding::UniversalParameter),
         ..Default::default()
     }
 }
@@ -6866,6 +6825,7 @@ struct PascalMethodPointerInfo {
     methods: std::collections::HashMap<String, std::collections::HashSet<String>>,
     parents: std::collections::HashMap<String, Vec<String>>,
     routines: std::collections::HashMap<String, Vec<Param>>,
+    routine_returns: std::collections::HashMap<String, Option<String>>,
 }
 
 fn lower_pascal_method_pointers(body: &mut Vec<Statement>) {
@@ -6881,6 +6841,7 @@ fn collect_pascal_method_pointer_info(body: &[Statement]) -> PascalMethodPointer
         methods: std::collections::HashMap::new(),
         parents: std::collections::HashMap::new(),
         routines: std::collections::HashMap::new(),
+        routine_returns: std::collections::HashMap::new(),
     };
     for stmt in body {
         match &stmt.kind {
@@ -6889,13 +6850,19 @@ fn collect_pascal_method_pointer_info(body: &[Statement]) -> PascalMethodPointer
                     if let (BindingPattern::Ident(name), Some(type_hint)) =
                         (&decl.pattern, &decl.type_hint)
                     {
-                        info.aliases
-                            .insert(name.to_lowercase(), type_hint.to_lowercase());
+                        info.aliases.insert(name.to_lowercase(), type_hint.to_string());
                     }
                 }
             }
-            StmtKind::FunctionDecl { name, params, .. } if !name.contains('.') => {
+            StmtKind::FunctionDecl {
+                name,
+                params,
+                return_type,
+                ..
+            } if !name.contains('.') => {
                 info.routines.insert(name.to_lowercase(), params.clone());
+                info.routine_returns
+                    .insert(name.to_lowercase(), return_type.clone());
             }
             StmtKind::ClassDecl {
                 name,
@@ -6982,11 +6949,19 @@ fn lower_pascal_method_pointer_stmt(
         }
         StmtKind::Assign { targets, value, .. } if targets.len() == 1 => {
             lower_pascal_method_pointer_expr(value, info, var_types);
-            if pascal_method_pointer_target_type(&targets[0], info, var_types)
-                .is_some_and(|ty| is_pascal_procedural_type(&ty, info))
-            {
-                if let Some(lambda) = pascal_method_pointer_lambda(value, info, var_types) {
+            if let Some(target_type) = pascal_method_pointer_target_type(&targets[0], info, var_types) {
+                if is_pascal_procedural_type(&target_type, info)
+                    && let Some(func_ref) = pascal_procedural_value_ref(value, info)
+                {
+                    *value = func_ref;
+                } else if is_pascal_procedural_type(&target_type, info)
+                    && let Some(lambda) = pascal_method_pointer_lambda(value, info, var_types)
+                {
                     *value = lambda;
+                } else if is_pascal_pointer_type_hint(&target_type)
+                    && let Some(call) = pascal_pointer_returning_routine_call(value, info)
+                {
+                    *value = call;
                 }
             }
         }
@@ -7088,12 +7063,21 @@ fn lower_pascal_method_pointer_expr(
     let replacement = match &mut expr.kind {
         ExprKind::Call { callee, args, .. } => {
             lower_pascal_method_pointer_expr(callee, info, var_types);
-            let params = match &callee.kind {
-                ExprKind::Ident(name) => info.routines.get(&name.to_lowercase()).cloned(),
-                _ => None,
-            };
+            let params = pascal_method_pointer_call_params(callee, info, var_types);
+            if let Some(params) = &params {
+                for param in params.iter().skip(args.len()) {
+                    if let Some(default) = &param.default {
+                        args.push(Argument::positional(default.clone()));
+                    }
+                }
+            }
             for (idx, arg) in args.iter_mut().enumerate() {
                 lower_pascal_method_pointer_expr(&mut arg.value, info, var_types);
+                if params.as_ref().and_then(|params| params.get(idx)).is_some_and(|param| {
+                    matches!(param.pass_by, PassBy::Ref | PassBy::Alias | PassBy::Out)
+                }) {
+                    arg.by_ref = true;
+                }
                 if params
                     .as_ref()
                     .and_then(|params| params.get(idx))
@@ -7134,6 +7118,37 @@ fn lower_pascal_method_pointer_expr(
                 None
             }
         }
+        ExprKind::RefOf(place) => match place.as_mut() {
+            PlaceExpr::Ident(name) => {
+                if info.routines.contains_key(&name.to_lowercase()) {
+                    Some(ExprKind::FuncRef(name.clone()))
+                } else {
+                    None
+                }
+            }
+            PlaceExpr::Member {
+                object,
+                field,
+                null_safe,
+            } => {
+                lower_pascal_method_pointer_expr(object, info, var_types);
+                let member = Expression::new(ExprKind::Member {
+                    object: object.clone(),
+                    field: field.clone(),
+                    null_safe: *null_safe,
+                });
+                pascal_method_pointer_lambda(&member, info, var_types).map(|lambda| lambda.kind)
+            }
+            PlaceExpr::Index { object, index, .. } => {
+                lower_pascal_method_pointer_expr(object, info, var_types);
+                lower_pascal_method_pointer_expr(index, info, var_types);
+                None
+            }
+            PlaceExpr::Deref(inner) => {
+                lower_pascal_method_pointer_expr(inner, info, var_types);
+                None
+            }
+        },
         ExprKind::Ternary { cond, then, else_ } => {
             lower_pascal_method_pointer_expr(cond, info, var_types);
             lower_pascal_method_pointer_expr(then, info, var_types);
@@ -7174,6 +7189,437 @@ fn pascal_method_pointer_target_type(
                 .get(&object_type)?
                 .get(&field.to_lowercase())
                 .cloned()
+        }
+        ExprKind::Index { object, .. } => {
+            let object_type = pascal_method_pointer_expr_type(object, info, var_types)?;
+            pascal_array_element_type(&object_type)
+        }
+        _ => None,
+    }
+}
+
+fn pascal_method_pointer_call_params(
+    callee: &Expression,
+    info: &PascalMethodPointerInfo,
+    var_types: &std::collections::HashMap<String, String>,
+) -> Option<Vec<Param>> {
+    match &callee.kind {
+        ExprKind::Ident(name) => info
+            .routines
+            .get(&name.to_lowercase())
+            .cloned()
+            .or_else(|| {
+                var_types
+                    .get(&name.to_lowercase())
+                    .and_then(|ty| pascal_procedural_params_for_type(ty, info))
+            }),
+        ExprKind::Member { .. } | ExprKind::Index { .. } => pascal_method_pointer_target_type(
+            callee,
+            info,
+            var_types,
+        )
+        .and_then(|ty| pascal_procedural_params_for_type(&ty, info)),
+        _ => None,
+    }
+}
+
+fn pascal_procedural_value_ref(
+    value: &Expression,
+    info: &PascalMethodPointerInfo,
+) -> Option<Expression> {
+    match &value.kind {
+        ExprKind::Ident(name) if info.routines.contains_key(&name.to_lowercase()) => {
+            Some(Expression::new(ExprKind::FuncRef(name.clone())))
+        }
+        ExprKind::FuncRef(_) => Some(value.clone()),
+        _ => None,
+    }
+}
+
+fn pascal_pointer_returning_routine_call(
+    value: &Expression,
+    info: &PascalMethodPointerInfo,
+) -> Option<Expression> {
+    let ExprKind::Ident(name) = &value.kind else {
+        return None;
+    };
+    let key = name.to_lowercase();
+    if !info.routines.get(&key).is_some_and(Vec::is_empty) {
+        return None;
+    }
+    let return_type = info.routine_returns.get(&key)?.as_deref()?;
+    if !is_pascal_pointer_type_hint(return_type) {
+        return None;
+    }
+    Some(Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::ident(name)),
+        args: Vec::new(),
+        optional: false,
+    }))
+}
+
+fn pascal_procedural_params_for_type(
+    type_hint: &str,
+    info: &PascalMethodPointerInfo,
+) -> Option<Vec<Param>> {
+    let mut current = normalize_pascal_type_hint(type_hint).to_string();
+    for _ in 0..4 {
+        if let Some(params) = pascal_parse_procedural_type_params(&current) {
+            return Some(params);
+        }
+        let key = current.to_lowercase();
+        let next = info.aliases.get(&key)?.clone();
+        let next = normalize_pascal_type_hint(&next).to_string();
+        if next.eq_ignore_ascii_case(&current) {
+            return None;
+        }
+        current = next;
+    }
+    None
+}
+
+fn pascal_parse_procedural_type_params(type_hint: &str) -> Option<Vec<Param>> {
+    let trimmed = type_hint.trim();
+    let lower = trimmed.to_lowercase();
+    let body = if lower.starts_with("reference to ") {
+        trimmed["reference to ".len()..].trim_start()
+    } else {
+        trimmed
+    };
+    let lower_body = body.to_lowercase();
+    if !(lower_body.starts_with("procedure") || lower_body.starts_with("function")) {
+        return None;
+    }
+    let open = body.find('(')?;
+    let close = body[open + 1..].find(')')? + open + 1;
+    let raw = body[open + 1..close].trim();
+    if raw.is_empty() {
+        return Some(Vec::new());
+    }
+    let mut params = Vec::new();
+    for group in raw.split(';') {
+        let group = group.trim();
+        if group.is_empty() {
+            continue;
+        }
+        let lower_group = group.to_lowercase();
+        let (pass_by, rest) = if lower_group.starts_with("var ") {
+            (PassBy::Ref, group[4..].trim())
+        } else if lower_group.starts_with("out ") {
+            (PassBy::Out, group[4..].trim())
+        } else if lower_group.starts_with("const ") {
+            (PassBy::Value, group[6..].trim())
+        } else {
+            (PassBy::Value, group)
+        };
+        let Some((names, type_name)) = rest.split_once(':') else {
+            continue;
+        };
+        let (type_name, default) = if let Some((type_name, default)) = type_name.split_once('=') {
+            (
+                type_name.trim().to_string(),
+                pascal_parse_param_default_expr(default.trim()),
+            )
+        } else {
+            (type_name.trim().to_string(), None)
+        };
+        for name in names.split(',') {
+            let name = name.trim();
+            if name.is_empty() {
+                continue;
+            }
+            params.push(Param {
+                name: name.to_string(),
+                type_hint: Some(type_name.clone().into()),
+                default: default.clone(),
+                pass_by,
+                is_rest: false,
+                is_kwargs: false,
+                is_optional: default.is_some(),
+                is_nullable: false,
+            });
+        }
+    }
+    Some(params)
+}
+
+fn pascal_parse_param_default_expr(src: &str) -> Option<Expression> {
+    let mut pairs = PascalParser::parse(Rule::expression, src).ok()?;
+    let pair = pairs.next()?;
+    walk_expression(pair).ok()
+}
+
+fn lower_pascal_procedure_pointer_call_aliases(body: &mut [Statement]) {
+    let mut aliases = std::collections::HashMap::new();
+    lower_pascal_procedure_pointer_call_aliases_body(body, &mut aliases);
+}
+
+fn lower_pascal_procedure_pointer_call_aliases_body(
+    body: &mut [Statement],
+    aliases: &mut std::collections::HashMap<String, String>,
+) {
+    for stmt in body {
+        lower_pascal_procedure_pointer_call_aliases_stmt(stmt, aliases);
+    }
+}
+
+fn lower_pascal_procedure_pointer_call_aliases_stmt(
+    stmt: &mut Statement,
+    aliases: &mut std::collections::HashMap<String, String>,
+) {
+    match &mut stmt.kind {
+        StmtKind::VarDecl { declarations, .. } => {
+            for decl in declarations {
+                if let Some(init) = &mut decl.init {
+                    lower_pascal_procedure_pointer_call_aliases_expr(init, aliases);
+                    if let BindingPattern::Ident(name) = &decl.pattern {
+                        let key = name.to_lowercase();
+                        if let ExprKind::FuncRef(func) = &init.kind {
+                            aliases.insert(key, func.clone());
+                        } else {
+                            aliases.remove(&key);
+                        }
+                    }
+                }
+            }
+        }
+        StmtKind::Assign { targets, value, .. } if targets.len() == 1 => {
+            lower_pascal_procedure_pointer_call_aliases_expr(value, aliases);
+            let key = pascal_procedure_pointer_alias_key(&targets[0]);
+            if let Some(key) = key {
+                if let ExprKind::FuncRef(func) = &value.kind {
+                    aliases.insert(key, func.clone());
+                } else {
+                    aliases.remove(&key);
+                }
+            } else {
+                lower_pascal_procedure_pointer_call_aliases_expr(&mut targets[0], aliases);
+            }
+        }
+        StmtKind::Assign { targets, value, .. } => {
+            for target in targets {
+                lower_pascal_procedure_pointer_call_aliases_expr(target, aliases);
+            }
+            lower_pascal_procedure_pointer_call_aliases_expr(value, aliases);
+        }
+        StmtKind::CompoundAssign { target, value, .. } => {
+            lower_pascal_procedure_pointer_call_aliases_expr(target, aliases);
+            lower_pascal_procedure_pointer_call_aliases_expr(value, aliases);
+        }
+        StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) => {
+            lower_pascal_procedure_pointer_call_aliases_expr(expr, aliases);
+        }
+        StmtKind::FunctionDecl { body, .. } | StmtKind::Block(body) | StmtKind::NamespaceDecl { body, .. } => {
+            let mut scoped = aliases.clone();
+            lower_pascal_procedure_pointer_call_aliases_body(body, &mut scoped);
+        }
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => {
+            lower_pascal_procedure_pointer_call_aliases_expr(cond, aliases);
+            let mut then_aliases = aliases.clone();
+            lower_pascal_procedure_pointer_call_aliases_body(then_body, &mut then_aliases);
+            for (cond, body) in elifs {
+                lower_pascal_procedure_pointer_call_aliases_expr(cond, aliases);
+                let mut scoped = aliases.clone();
+                lower_pascal_procedure_pointer_call_aliases_body(body, &mut scoped);
+            }
+            if let Some(body) = else_body {
+                let mut scoped = aliases.clone();
+                lower_pascal_procedure_pointer_call_aliases_body(body, &mut scoped);
+            }
+        }
+        StmtKind::While { cond, body, else_body } => {
+            lower_pascal_procedure_pointer_call_aliases_expr(cond, aliases);
+            let mut scoped = aliases.clone();
+            lower_pascal_procedure_pointer_call_aliases_body(body, &mut scoped);
+            if let Some(body) = else_body {
+                let mut scoped = aliases.clone();
+                lower_pascal_procedure_pointer_call_aliases_body(body, &mut scoped);
+            }
+        }
+        StmtKind::DoWhile { body, cond, .. } => {
+            let mut scoped = aliases.clone();
+            lower_pascal_procedure_pointer_call_aliases_body(body, &mut scoped);
+            lower_pascal_procedure_pointer_call_aliases_expr(cond, &scoped);
+        }
+        StmtKind::For { init, cond, update, body } => {
+            let mut scoped = aliases.clone();
+            if let Some(init) = init {
+                lower_pascal_procedure_pointer_call_aliases_stmt(init, &mut scoped);
+            }
+            if let Some(cond) = cond {
+                lower_pascal_procedure_pointer_call_aliases_expr(cond, &scoped);
+            }
+            if let Some(update) = update {
+                lower_pascal_procedure_pointer_call_aliases_expr(update, &scoped);
+            }
+            lower_pascal_procedure_pointer_call_aliases_body(body, &mut scoped);
+        }
+        StmtKind::ForIn { iter, body, else_body, .. } => {
+            lower_pascal_procedure_pointer_call_aliases_expr(iter, aliases);
+            let mut scoped = aliases.clone();
+            lower_pascal_procedure_pointer_call_aliases_body(body, &mut scoped);
+            if let Some(body) = else_body {
+                let mut scoped = aliases.clone();
+                lower_pascal_procedure_pointer_call_aliases_body(body, &mut scoped);
+            }
+        }
+        StmtKind::ClassDecl { members, .. }
+        | StmtKind::StructDecl { members, .. }
+        | StmtKind::ModuleDecl { members, .. } => {
+            for member in members {
+                lower_pascal_procedure_pointer_call_aliases_member(member);
+            }
+        }
+        StmtKind::Try { body, catches, else_body, finally } => {
+            let mut scoped = aliases.clone();
+            lower_pascal_procedure_pointer_call_aliases_body(body, &mut scoped);
+            for catch in catches {
+                let mut scoped = aliases.clone();
+                lower_pascal_procedure_pointer_call_aliases_body(&mut catch.body, &mut scoped);
+            }
+            if let Some(body) = else_body {
+                let mut scoped = aliases.clone();
+                lower_pascal_procedure_pointer_call_aliases_body(body, &mut scoped);
+            }
+            if let Some(body) = finally {
+                let mut scoped = aliases.clone();
+                lower_pascal_procedure_pointer_call_aliases_body(body, &mut scoped);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn lower_pascal_procedure_pointer_call_aliases_member(member: &mut ClassMember) {
+    match member {
+        ClassMember::Field { init: Some(expr), .. }
+        | ClassMember::Const { value: expr, .. } => {
+            lower_pascal_procedure_pointer_call_aliases_expr(
+                expr,
+                &std::collections::HashMap::new(),
+            );
+        }
+        ClassMember::Method(stmt) | ClassMember::NestedType(stmt) => {
+            lower_pascal_procedure_pointer_call_aliases_stmt(
+                stmt,
+                &mut std::collections::HashMap::new(),
+            );
+        }
+        ClassMember::Constructor { body, .. } => {
+            lower_pascal_procedure_pointer_call_aliases(body);
+        }
+        ClassMember::Property { getter, setter, .. } => {
+            if let Some(getter) = getter {
+                lower_pascal_procedure_pointer_call_aliases(getter);
+            }
+            if let Some(setter) = setter {
+                lower_pascal_procedure_pointer_call_aliases(&mut setter.body);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn lower_pascal_procedure_pointer_call_aliases_expr(
+    expr: &mut Expression,
+    aliases: &std::collections::HashMap<String, String>,
+) {
+    match &mut expr.kind {
+        ExprKind::Call { callee, args, .. } => {
+            if let Some(func) = pascal_procedure_pointer_alias_key(callee)
+                .and_then(|key| aliases.get(&key).cloned())
+            {
+                **callee = Expression::ident(&func);
+            }
+            lower_pascal_procedure_pointer_call_aliases_expr(callee, aliases);
+            for arg in args {
+                lower_pascal_procedure_pointer_call_aliases_expr(&mut arg.value, aliases);
+            }
+        }
+        ExprKind::Member { object, .. } => {
+            lower_pascal_procedure_pointer_call_aliases_expr(object, aliases);
+        }
+        ExprKind::Index { object, index, .. } => {
+            lower_pascal_procedure_pointer_call_aliases_expr(object, aliases);
+            lower_pascal_procedure_pointer_call_aliases_expr(index, aliases);
+        }
+        ExprKind::Binary { left, right, .. } => {
+            lower_pascal_procedure_pointer_call_aliases_expr(left, aliases);
+            lower_pascal_procedure_pointer_call_aliases_expr(right, aliases);
+        }
+        ExprKind::Unary { expr, .. }
+        | ExprKind::Cast { expr, .. }
+        | ExprKind::TypeOf(expr)
+        | ExprKind::Void(expr)
+        | ExprKind::Delete(expr)
+        | ExprKind::Await(expr)
+        | ExprKind::Yield(Some(expr))
+        | ExprKind::Spread(expr)
+        | ExprKind::YieldFrom(expr)
+        | ExprKind::RefLoad(expr) => lower_pascal_procedure_pointer_call_aliases_expr(expr, aliases),
+        ExprKind::Ternary { cond, then, else_ } => {
+            lower_pascal_procedure_pointer_call_aliases_expr(cond, aliases);
+            lower_pascal_procedure_pointer_call_aliases_expr(then, aliases);
+            lower_pascal_procedure_pointer_call_aliases_expr(else_, aliases);
+        }
+        ExprKind::Array(elements) => {
+            for element in elements {
+                if let Some(key) = &mut element.key {
+                    lower_pascal_procedure_pointer_call_aliases_expr(key, aliases);
+                }
+                lower_pascal_procedure_pointer_call_aliases_expr(&mut element.value, aliases);
+            }
+        }
+        ExprKind::Object(props) => {
+            for prop in props {
+                match prop {
+                    ObjectProperty::KeyValue { key, value }
+                    | ObjectProperty::Computed { key, value } => {
+                        lower_pascal_procedure_pointer_call_aliases_expr(key, aliases);
+                        lower_pascal_procedure_pointer_call_aliases_expr(value, aliases);
+                    }
+                    ObjectProperty::Spread(value) => {
+                        lower_pascal_procedure_pointer_call_aliases_expr(value, aliases);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        ExprKind::Tuple(items) | ExprKind::Set(items) | ExprKind::Sequence(items) => {
+            for item in items {
+                lower_pascal_procedure_pointer_call_aliases_expr(item, aliases);
+            }
+        }
+        ExprKind::Range { start, end, .. } => {
+            lower_pascal_procedure_pointer_call_aliases_expr(start, aliases);
+            lower_pascal_procedure_pointer_call_aliases_expr(end, aliases);
+        }
+        ExprKind::Assign { target, value } | ExprKind::Walrus { target, value } => {
+            lower_pascal_procedure_pointer_call_aliases_expr(target, aliases);
+            lower_pascal_procedure_pointer_call_aliases_expr(value, aliases);
+        }
+        _ => {}
+    }
+}
+
+fn pascal_procedure_pointer_alias_key(expr: &Expression) -> Option<String> {
+    match &expr.kind {
+        ExprKind::Ident(name) => Some(name.to_lowercase()),
+        ExprKind::Member { object, field, .. } => {
+            Some(format!("{}.{}", pascal_procedure_pointer_alias_key(object)?, field.to_lowercase()))
+        }
+        ExprKind::Index { object, index, .. } => {
+            let idx = match &index.kind {
+                ExprKind::Lit(Literal::Int(n)) => n.to_string(),
+                ExprKind::Lit(Literal::Str(s)) => s.clone(),
+                _ => return None,
+            };
+            Some(format!("{}[{}]", pascal_procedure_pointer_alias_key(object)?, idx))
         }
         _ => None,
     }
@@ -9564,7 +10010,18 @@ fn rewrite_pascal_writeln_bool_vars_expr(
             // them, so matching only `WriteLn` here left a Boolean written to a
             // FILE rendering as JS `true` while the same value on the console
             // read `TRUE`.
-            if matches!(&callee.kind, ExprKind::Ident(name)
+            let callee_name = pascal_expr_ident_name(callee);
+            if matches!(callee_name, Some(name)
+                if (name.eq_ignore_ascii_case("__vs")
+                    || name.eq_ignore_ascii_case("__pascal_overload___vs_0"))
+                    && args.len() == 1)
+            {
+                if pascal_writeln_arg_needs_bool_display(&args[0].value, var_types) {
+                    let value = args[0].value.clone();
+                    *expr = pascal_bool_display_expr(value);
+                    return;
+                }
+            } else if matches!(callee_name, Some(name)
                 if name.eq_ignore_ascii_case("WriteLn")
                     || name.eq_ignore_ascii_case("__pascal_file_writeln")
                     || name.eq_ignore_ascii_case("__pascal_file_println"))
@@ -9612,7 +10069,10 @@ fn pascal_writeln_arg_needs_bool_display(
                     // of Pascal's `TRUE`.
                     | "fileexists" | "directoryexists" | "deletefile" | "removedir"
                     | "createdir" | "forcedirectories" | "renamefile"
-                    | "ispathdelimiter" | "samefilename" | "matchesmask")
+                    | "__pascal_file_exists" | "__pascal_dir_exists"
+                    | "ispathdelimiter" | "samefilename" | "matchesmask"
+                    | "containsstr" | "containstext" | "startsstr" | "startstext"
+                    | "endsstr" | "endstext" | "isdelimiter" | "samestr" | "sametext")
                     || matches!(name.as_str(), "__pascal_f64_eq" | "__pascal_f64_ne"))
                 || matches!(&callee.kind, ExprKind::Member { field, .. }
                     if matches!(field.as_str(), "includes" | "startsWith" | "endsWith"))
@@ -10323,6 +10783,13 @@ fn rewrite_pascal_stringbuilder_stmt(
                     return;
                 }
                 if let Some((target, new_value)) =
+                    pascal_tprocess_assignment_expr(&targets[0], value.clone(), var_types)
+                {
+                    targets[0] = target;
+                    *value = new_value;
+                    return;
+                }
+                if let Some((target, new_value)) =
                     pascal_stringbuilder_assignment(&targets[0], value.clone(), var_types)
                 {
                     targets[0] = target;
@@ -10663,6 +11130,13 @@ fn rewrite_pascal_stringbuilder_expr(
                     *expr = pascal_tstringlist_create_expr();
                     return;
                 }
+                if field.eq_ignore_ascii_case("Create")
+                    && pascal_expr_ident_name(object)
+                        .is_some_and(|name| name.eq_ignore_ascii_case("TProcess"))
+                {
+                    *expr = pascal_tprocess_create_expr();
+                    return;
+                }
                 if args.is_empty() {
                     if let Some(rewritten) =
                         pascal_stringbuilder_property_expr(object, field, var_types)
@@ -10682,8 +11156,14 @@ fn rewrite_pascal_stringbuilder_expr(
                         *expr = rewritten;
                         return;
                     }
+                if let Some(rewritten) =
+                    pascal_tstringlist_property_expr(object, field, var_types)
+                {
+                    *expr = rewritten;
+                    return;
+                }
                     if let Some(rewritten) =
-                        pascal_tstringlist_property_expr(object, field, var_types)
+                        pascal_tprocess_property_expr(object, field, var_types)
                     {
                         *expr = rewritten;
                         return;
@@ -10709,6 +11189,12 @@ fn rewrite_pascal_stringbuilder_expr(
                 }
                 if let Some(rewritten) =
                     pascal_tstringlist_method_call(object, field, args, var_types)
+                {
+                    *expr = rewritten;
+                    return;
+                }
+                if let Some(rewritten) =
+                    pascal_tprocess_method_call(object, field, args, var_types)
                 {
                     *expr = rewritten;
                     return;
@@ -10743,6 +11229,10 @@ fn rewrite_pascal_stringbuilder_expr(
                 .is_some_and(|name| name.eq_ignore_ascii_case("TStringList"))
             {
                 *expr = pascal_tstringlist_create_expr();
+            } else if pascal_expr_ident_name(class)
+                .is_some_and(|name| name.eq_ignore_ascii_case("TProcess"))
+            {
+                *expr = pascal_tprocess_create_expr();
             }
         }
         ExprKind::Member { object, field, .. } => {
@@ -10790,6 +11280,11 @@ fn rewrite_pascal_stringbuilder_expr(
                     .is_some_and(|name| name.eq_ignore_ascii_case("TStringList"))
             {
                 *expr = pascal_tstringlist_create_expr();
+            } else if field.eq_ignore_ascii_case("Create")
+                && pascal_expr_ident_name(object)
+                    .is_some_and(|name| name.eq_ignore_ascii_case("TProcess"))
+            {
+                *expr = pascal_tprocess_create_expr();
             } else if field.eq_ignore_ascii_case("Free")
                 && (pascal_expr_is_tstringstream(object, var_types)
                     || pascal_expr_is_tmemorystream(object, var_types)
@@ -10810,6 +11305,10 @@ fn rewrite_pascal_stringbuilder_expr(
                 *expr = rewritten;
             } else if let Some(rewritten) =
                 pascal_tstringlist_property_expr(object, field, var_types)
+            {
+                *expr = rewritten;
+            } else if let Some(rewritten) =
+                pascal_tprocess_property_expr(object, field, var_types)
             {
                 *expr = rewritten;
             }
@@ -10888,6 +11387,11 @@ fn rewrite_pascal_stringbuilder_expr(
             {
                 **target = new_target;
                 **value = new_value;
+            } else if let Some((new_target, new_value)) =
+                pascal_tprocess_assignment_expr(target, (**value).clone(), var_types)
+            {
+                **target = new_target;
+                **value = new_value;
             } else {
                 pascal_rewrite_env_assign_target(target);
                 rewrite_pascal_stringbuilder_expr(target, var_types);
@@ -10919,6 +11423,8 @@ fn rewrite_pascal_stringbuilder_expr(
                 *expr = pascal_guid_object_expr("{00000000-0000-0000-0000-000000000000}");
             } else if name.eq_ignore_ascii_case("Random") {
                 *expr = Expression::new(ExprKind::Lit(Literal::Float(0.0)));
+            } else if let Some(value) = pascal_process_constant_expr(name) {
+                *expr = value;
             } else if let Some(rewritten) = pascal_environment_ident_expr(name) {
                 *expr = rewritten;
             }
@@ -11643,6 +12149,98 @@ fn pascal_tstringlist_create_expr() -> Expression {
         pascal_obj_prop("NameValueSeparator", str_expr("=")),
         pascal_obj_prop("OwnsObjects", Expression::bool(false)),
     ]))
+}
+
+fn pascal_tprocess_create_expr() -> Expression {
+    Expression::new(ExprKind::Object(vec![
+        pascal_obj_prop("__pascal_tprocess", Expression::bool(true)),
+        pascal_obj_prop("Executable", str_expr("")),
+        pascal_obj_prop("CommandLine", str_expr("")),
+        pascal_obj_prop("Parameters", Expression::new(ExprKind::Array(Vec::new()))),
+        pascal_obj_prop("Options", Expression::new(ExprKind::Array(Vec::new()))),
+        pascal_obj_prop("Environment", Expression::new(ExprKind::Array(Vec::new()))),
+        pascal_obj_prop("CurrentDirectory", str_expr("")),
+        pascal_obj_prop("ExitCode", int_expr(0)),
+        pascal_obj_prop("Handle", int_expr(0)),
+        pascal_obj_prop("Running", Expression::bool(false)),
+        pascal_obj_prop("Output", pascal_tstringstream_object_expr(str_expr(""), int_expr(0))),
+        pascal_obj_prop("Stderr", pascal_tstringstream_object_expr(str_expr(""), int_expr(0))),
+        pascal_obj_prop("Input", pascal_tstringstream_object_expr(str_expr(""), int_expr(0))),
+        pascal_obj_prop("PipeBufferSize", int_expr(0)),
+        pascal_obj_prop("Priority", str_expr("ppNormal")),
+        pascal_obj_prop("StartupOptions", Expression::new(ExprKind::Array(Vec::new()))),
+        pascal_obj_prop("ShowWindow", str_expr("swoDefault")),
+    ]))
+}
+
+fn pascal_expr_is_tprocess(
+    expr: &Expression,
+    var_types: &std::collections::HashMap<String, String>,
+) -> bool {
+    match &expr.kind {
+        ExprKind::Ident(name) => var_types
+            .get(&name.to_lowercase())
+            .is_some_and(|ty| bare_type_name(ty).eq_ignore_ascii_case("TProcess")),
+        ExprKind::Sequence(items) => items
+            .last()
+            .is_some_and(|last| pascal_expr_is_tprocess(last, var_types)),
+        _ => false,
+    }
+}
+
+fn pascal_process_constant_expr(name: &str) -> Option<Expression> {
+    match name.to_ascii_lowercase().as_str() {
+        "ponone" | "powaitonexit" | "pousepipes" | "postderrtooutput" | "ppnormal"
+        | "pphigh" | "suouseshowwindow" | "swohide" | "swodefault" => Some(str_expr(name)),
+        "faanyfile" => Some(int_expr(0)),
+        _ => None,
+    }
+}
+
+fn pascal_tprocess_field_expr(receiver: Expression, field: &str) -> Expression {
+    pascal_index_expr(receiver, str_expr(field))
+}
+
+fn pascal_tprocess_property_expr(
+    object: &Expression,
+    field: &str,
+    var_types: &std::collections::HashMap<String, String>,
+) -> Option<Expression> {
+    if pascal_expr_is_tprocess(object, var_types) {
+        return Some(pascal_tprocess_field_expr(object.clone(), field));
+    }
+    let ExprKind::Member {
+        object: receiver,
+        field: process_field,
+        ..
+    } = &object.kind
+    else {
+        return None;
+    };
+    if !pascal_expr_is_tprocess(receiver, var_types) || !field.eq_ignore_ascii_case("Count") {
+        return None;
+    }
+    match process_field.to_ascii_lowercase().as_str() {
+        "parameters" | "environment" => Some(call_expr(
+            "__len__",
+            vec![pascal_tprocess_field_expr((**receiver).clone(), process_field)],
+        )),
+        _ => None,
+    }
+}
+
+fn pascal_tprocess_assignment_expr(
+    target: &Expression,
+    value: Expression,
+    var_types: &std::collections::HashMap<String, String>,
+) -> Option<(Expression, Expression)> {
+    let ExprKind::Member { object, field, .. } = &target.kind else {
+        return None;
+    };
+    if !pascal_expr_is_tprocess(object, var_types) {
+        return None;
+    }
+    Some((pascal_tprocess_field_expr((**object).clone(), field), value))
 }
 
 fn pascal_tstringlist_hidden_name(name: &str, field: &str) -> String {
@@ -12753,6 +13351,25 @@ fn pascal_strutils_builtin_rewrite(name: &str, args: &[Argument]) -> Option<Expr
                 ],
             )],
         )),
+        "matchesmask" if args.len() == 2 => {
+            if let ExprKind::Lit(Literal::Str(mask)) = &args[1].value.kind {
+                if let Some(suffix) = mask.strip_prefix('*') {
+                    Some(pascal_string_method_call(
+                        args[0].value.clone(),
+                        "endsWith",
+                        vec![Expression::new(ExprKind::Lit(Literal::Str(suffix.to_string())))],
+                    ))
+                } else {
+                    Some(bin_expr(
+                        BinOp::Eq,
+                        args[0].value.clone(),
+                        args[1].value.clone(),
+                    ))
+                }
+            } else {
+                None
+            }
+        }
         "npos" if args.len() == 3 => pascal_npos_expr(
             args[0].value.clone(),
             args[1].value.clone(),
@@ -13210,6 +13827,21 @@ fn pascal_tstringlist_method_call(
                 receiver,
             ]))
         }
+        "loadfromstream" => {
+            let source = args.first()?.value.clone();
+            let source_data = pascal_tstringstream_data_expr(source, var_types);
+            Expression::new(ExprKind::Sequence(vec![
+                pascal_assign_expr(
+                    items,
+                    pascal_string_call(
+                        pascal_replace_all_expr(source_data, "\r\n", "\n"),
+                        "split",
+                        vec![str_expr("\n")],
+                    ),
+                ),
+                receiver,
+            ]))
+        }
         "free" => Expression::new(ExprKind::Ternary {
             cond: Box::new(pascal_tstringlist_prop_expr(
                 receiver.clone(),
@@ -13259,6 +13891,66 @@ fn pascal_tstringlist_key_value_updates(
             vec![str_expr(&value)],
         ),
     ]
+}
+
+fn pascal_tprocess_method_call(
+    object: &Expression,
+    field: &str,
+    args: &[Argument],
+    var_types: &std::collections::HashMap<String, String>,
+) -> Option<Expression> {
+    if pascal_expr_is_tprocess(object, var_types) {
+        let receiver = object.clone();
+        return match field.to_ascii_lowercase().as_str() {
+            "execute" | "waitonexit" | "closeinput" => {
+                Some(call_expr("__pascal_process_execute", vec![receiver]))
+            }
+            "free" => Some(Expression::null()),
+            _ => None,
+        };
+    }
+
+    let ExprKind::Member {
+        object: receiver,
+        field: process_field,
+        ..
+    } = &object.kind
+    else {
+        return None;
+    };
+    if !pascal_expr_is_tprocess(receiver, var_types) {
+        return None;
+    }
+
+    match (
+        process_field.to_ascii_lowercase().as_str(),
+        field.to_ascii_lowercase().as_str(),
+    ) {
+        ("parameters" | "environment", "add") => Some(pascal_array_call(
+            pascal_tprocess_field_expr((**receiver).clone(), process_field),
+            "push",
+            vec![args.first()?.value.clone()],
+        )),
+        ("input", "writebuffer") => {
+            let value = pascal_tstream_buffer_source(
+                args.first()?.value.clone(),
+                args.get(1).map(|arg| arg.value.clone()),
+            );
+            let input = pascal_tprocess_field_expr((**receiver).clone(), "Input");
+            Some(Expression::new(ExprKind::Sequence(vec![
+                pascal_assign_expr(
+                    pascal_tstringstream_object_member(input.clone(), "__data"),
+                    bin_expr(
+                        BinOp::Add,
+                        pascal_tstringstream_object_member(input.clone(), "__data"),
+                        value,
+                    ),
+                ),
+                input,
+            ])))
+        }
+        _ => None,
+    }
 }
 
 fn pascal_tstringlist_split_name_value(text: &str) -> Option<(String, String)> {
@@ -14762,8 +15454,12 @@ fn pascal_custom_enumerator_expr(
 }
 
 fn pascal_type_supports_get_enumerator(type_name: &str) -> bool {
+    let normalized = normalize_pascal_type_hint(type_name).to_ascii_lowercase();
+    if normalized == "set" || normalized.starts_with("set of ") {
+        return false;
+    }
     !matches!(
-        normalize_pascal_type_hint(type_name).to_ascii_lowercase().as_str(),
+        normalized.as_str(),
         "string"
             | "ansistring"
             | "unicodestring"
@@ -16210,10 +16906,25 @@ fn synthesize_pascal_default_destructors(body: &mut [Statement]) {
             }
         })
         .collect();
+    // Only a user-declared parent has a destructor body to run; a root the
+    // tree provides (`TObject`, `TInterfacedObject`) has none to inherit.
+    let user_classes: std::collections::HashSet<String> = body
+        .iter()
+        .filter_map(|stmt| match &stmt.kind {
+            StmtKind::ClassDecl { name, .. } => Some(name.to_lowercase()),
+            _ => None,
+        })
+        .collect();
     for stmt in body {
-        let StmtKind::ClassDecl { members, .. } = &mut stmt.kind else {
+        let StmtKind::ClassDecl {
+            members, parents, ..
+        } = &mut stmt.kind
+        else {
             continue;
         };
+        let has_user_parent = parents
+            .iter()
+            .any(|parent| user_classes.contains(&bare_type_name(parent).to_lowercase()));
         if members.iter().any(|member| {
             matches!(
                 member,
@@ -16256,12 +16967,14 @@ fn synthesize_pascal_default_destructors(body: &mut [Statement]) {
         // that to `Destroy` when the class has a parent and to nothing when it
         // does not, so this does not have to work out which case it is in.
         let mut body = body;
-        body.push(Statement::new(StmtKind::Expr(Expression::new(
-            ExprKind::SuperCall {
-                method: None,
-                args: Vec::new(),
-            },
-        ))));
+        if has_user_parent {
+            body.push(Statement::new(StmtKind::Expr(Expression::new(
+                ExprKind::SuperCall {
+                    method: None,
+                    args: Vec::new(),
+                },
+            ))));
+        }
         members.push(ClassMember::Method(Box::new(Statement::new(
             StmtKind::FunctionDecl {
                 name: "Destroy".to_string(),
@@ -18565,6 +19278,12 @@ fn lower_pascal_array_value_semantics_stmt(
                     value,
                     by_ref: false,
                 };
+            } else if let Some((target, value)) = pascal_fillchar_array_assignment(expr, env) {
+                stmt.kind = StmtKind::Assign {
+                    targets: vec![target],
+                    value,
+                    by_ref: false,
+                };
             } else if pascal_fillchar_zero_var(expr) {
                 stmt.kind = StmtKind::Empty;
             } else if let Some((target, value)) = pascal_move_small_set_byte_assignment(expr, env) {
@@ -18909,6 +19628,33 @@ fn pascal_fillchar_zero_assignment(
         ));
     }
     None
+}
+
+fn pascal_fillchar_array_assignment(
+    expr: &Expression,
+    env: &std::collections::HashMap<String, String>,
+) -> Option<(Expression, Expression)> {
+    let ExprKind::Call { callee, args, .. } = &expr.kind else {
+        return None;
+    };
+    if !matches!(&callee.kind, ExprKind::Ident(name) if name.eq_ignore_ascii_case("fillchar"))
+        || args.len() < 3
+        || !matches!(args[0].value.kind, ExprKind::Ident(_))
+        || !pascal_expr_is_array_like(&args[0].value, env)
+    {
+        return None;
+    }
+    Some((
+        args[0].value.clone(),
+        call_expr(
+            "fillchar",
+            vec![
+                args[0].value.clone(),
+                args[1].value.clone(),
+                args[2].value.clone(),
+            ],
+        ),
+    ))
 }
 
 fn pascal_move_small_set_byte_assignment(
@@ -20562,6 +21308,7 @@ fn rewrite_pascal_fixed_array_bounds_expr(expr: &mut Expression, env: &PascalFix
             }
         }
         ExprKind::Unary { expr, .. } => rewrite_pascal_fixed_array_bounds_expr(expr, env),
+        ExprKind::RefOf(place) => rewrite_pascal_fixed_array_bounds_place(place, env),
         ExprKind::Ternary { cond, then, else_ } => {
             rewrite_pascal_fixed_array_bounds_expr(cond, env);
             rewrite_pascal_fixed_array_bounds_expr(then, env);
@@ -20596,6 +21343,29 @@ fn rewrite_pascal_fixed_array_bounds_expr(expr: &mut Expression, env: &PascalFix
             }
         }
         _ => {}
+    }
+}
+
+fn rewrite_pascal_fixed_array_bounds_place(place: &mut PlaceExpr, env: &PascalFixedArrayEnv) {
+    match place {
+        PlaceExpr::Ident(_) => {}
+        PlaceExpr::Member { object, .. } => {
+            rewrite_pascal_fixed_array_bounds_expr(object, env);
+        }
+        PlaceExpr::Index { object, index, .. } => {
+            rewrite_pascal_fixed_array_bounds_expr(object, env);
+            rewrite_pascal_fixed_array_bounds_expr(index, env);
+            if let Some(bounds) = pascal_bounds_for_expr(object, env) {
+                if let Some((lo, _)) = bounds.first().copied() {
+                    if lo != 0 {
+                        *index = Box::new(pascal_adjust_fixed_array_index((**index).clone(), lo));
+                    }
+                }
+            }
+        }
+        PlaceExpr::Deref(expr) => {
+            rewrite_pascal_fixed_array_bounds_expr(expr, env);
+        }
     }
 }
 
@@ -23526,6 +24296,9 @@ fn rewrite_pascal_set_stmt(
                 set_type_names,
                 enum_type_names,
             );
+            if is_pascal_set_expr(iter, set_vars, set_fields) {
+                *iter = pascal_call("__vybe_pascal_set_values", vec![iter.clone()]);
+            }
             for stmt in body {
                 rewrite_pascal_set_stmt(
                     stmt,
@@ -24661,8 +25434,20 @@ fn rewrite_shadowed_builtin_casts_expr(
         }
         ExprKind::Call { callee, args, .. } => {
             rewrite_shadowed_builtin_casts_expr(callee, free_function_names);
-            for arg in args {
+            for arg in args.iter_mut() {
                 rewrite_shadowed_builtin_casts_expr(&mut arg.value, free_function_names);
+            }
+            // `Exception(x)` / `TObject(x)`: a hard cast to a class the tree
+            // provides is the value itself — Pascal checks nothing here — and
+            // never a call of the class's constructor.
+            if let ExprKind::Ident(name) = &callee.kind {
+                if crate::exceptions::is_tree_root_class(name)
+                    && args.len() == 1
+                    && args[0].name.is_none()
+                {
+                    let inner = args[0].value.clone();
+                    *expr = inner;
+                }
             }
         }
         ExprKind::Member { object, .. } => {
@@ -24759,18 +25544,6 @@ fn pascal_prelude_needs(
     imports: &[Import],
     body: &[Statement],
 ) -> PascalPreludeNeeds {
-    let has_user_classes = body.iter().any(|stmt| {
-        matches!(
-            stmt.kind,
-            StmtKind::ClassDecl { .. } | StmtKind::StructDecl { .. }
-        )
-    });
-    let uses_sysutils = imports.iter().any(|import| match &import.kind {
-        ImportKind::Simple { path, .. }
-        | ImportKind::Named { path, .. }
-        | ImportKind::Wildcard { path, .. }
-        | ImportKind::Default { path, .. } => path.eq_ignore_ascii_case("SysUtils"),
-    });
     let uses_generics_collections = imports.iter().any(|import| match &import.kind {
         ImportKind::Simple { path, .. }
         | ImportKind::Named { path, .. }
@@ -24778,42 +25551,6 @@ fn pascal_prelude_needs(
         | ImportKind::Default { path, .. } => path.eq_ignore_ascii_case("Generics.Collections"),
     });
 
-    let exceptions = uses_sysutils
-        || pascal_source_mentions_any_ident(
-            source,
-            &[
-                "Exception",
-                "raise",
-                "try",
-                "except",
-                "EAccessViolation",
-                "EArgumentException",
-                "EConvertError",
-                "EDivByZero",
-                "EInvalidArgument",
-                "EInvalidOp",
-                "EOverflow",
-                "EAssertionFailed",
-                "EFOpenError",
-                "ERangeError",
-                "Assert",
-                // `div` and `mod` are here because `__pascal_safe_idiv` — which
-                // every integer division is rewritten into — RAISES
-                // `EDivByZero`. Without this the helper is synthesized while the
-                // class it throws is not, and `10 div 0` died with
-                // "undefined is not callable" instead of the exception. The
-                // corpus never caught it: the harness preamble carries
-                // `uses SysUtils`, which turns this gate on anyway.
-                "div",
-                "mod",
-            ],
-        );
-    let except_state = pascal_source_mentions_any_ident(source, &["ExceptObject", "ExceptAddr"]);
-    let tinterfacedobject = pascal_source_mentions_any_ident(source, &["TInterfacedObject"]);
-    let tobject = has_user_classes
-        || exceptions
-        || tinterfacedobject
-        || pascal_source_mentions_any_ident(source, &["TObject"]);
     let collections = uses_generics_collections
         || pascal_source_mentions_any_ident(
             source,
@@ -24840,7 +25577,20 @@ fn pascal_prelude_needs(
     let tbits = pascal_source_mentions_any_ident(source, &["TBits"]);
     let file_block = pascal_source_mentions_any_ident(
         source,
-        &["BlockRead", "BlockWrite", "FilePos", "FileSize", "Truncate", "Seek"],
+        &[
+            "AssignFile",
+            "Assign",
+            "Rewrite",
+            "Reset",
+            "CloseFile",
+            "Close",
+            "BlockRead",
+            "BlockWrite",
+            "FilePos",
+            "FileSize",
+            "Truncate",
+            "Seek",
+        ],
     );
     let path_utils = pascal_source_mentions_any_ident(
         source,
@@ -24852,7 +25602,6 @@ fn pascal_prelude_needs(
             "SameFileName",
         ],
     );
-    let assert_error_proc = pascal_source_mentions_any_ident(source, &["AssertErrorProc"]);
     // Gated on the SPELLINGS, like every other group: this one is the largest
     // source-parsed prelude, and a program that never formats a number must
     // not pay to parse a picture engine.
@@ -24870,16 +25619,11 @@ fn pascal_prelude_needs(
     );
 
     PascalPreludeNeeds {
-        exceptions,
-        except_state,
-        tobject,
-        tinterfacedobject,
         collections,
         tbits,
         path_utils,
         file_block,
         format_settings,
-        assert_error_proc,
     }
 }
 
@@ -24956,19 +25700,6 @@ fn pascal_code_only(source: &str) -> String {
         i += ch.len_utf8();
     }
     out
-}
-
-fn synthesize_pascal_assert_error_proc_var() -> Statement {
-    Statement::new(StmtKind::VarDecl {
-        declarations: vec![VarDeclarator {
-            pattern: BindingPattern::Ident("AssertErrorProc".to_string()),
-            type_hint: Some("TAssertErrorProc".to_string().into()),
-            init: Some(Expression::null()),
-            array_bounds: None,
-            with_events: false,
-        }],
-        kind: VarDeclKind::Var,
-    })
 }
 
 fn rewrite_pascal_assert_calls_body(body: &mut [Statement], assertions_enabled: bool) {
@@ -25587,203 +26318,87 @@ fn pascal_expr_contains_currency_value(
 /// are deliberately NOT written here — `primitives/classes.rs` owns those, and
 /// stamping them from a base constructor would overwrite the derived class's
 /// own identity.
-fn synthesize_exception_classes() -> Vec<Statement> {
-    let mut out = vec![synthesize_exception_class()];
-    for (spelling, _canonical) in crate::exceptions::EXCEPTION_TYPES {
-        if spelling.eq_ignore_ascii_case("Exception") {
-            continue;
-        }
-        out.push(synthesize_exception_subclass_class(spelling));
-    }
-    out
-}
-
-/// `E<Spelling> = class(Exception);` — exactly what Delphi declares, and
-/// exactly what the source says.
-///
-/// No constructor: the subclass INHERITS `Exception.Create`, which is the
-/// behaviour under test. Declaring one here to re-stamp the canonical name
-/// cost the message — a forwarded `inherited Create(msg)` misaligned against
-/// the root's `(msg, helpCtx)` — and `ERangeError.Create('OutOfRange')` came
-/// back with `Message` = `0`. The identity a typed `on E: ...` matches comes
-/// from the class chain, which is now real.
-fn synthesize_exception_subclass_class(spelling: &str) -> Statement {
-    Statement::with_span(
-        StmtKind::ClassDecl {
-            name: spelling.to_string(),
-            parents: vec!["Exception".to_string()],
-            interfaces: Vec::new(),
-            members: Vec::new(),
-            modifiers: ClassModifiers::default(),
-            decorators: vec![],
-        },
-        Span::default(),
-    )
-}
-
-/// `Self.<field> := '<value>'`.
-fn pascal_self_string_assign(field: &str, value: &str, span: &Span) -> Statement {
-    Statement::with_span(
-        StmtKind::Assign {
-            targets: vec![Expression::with_span(
-                ExprKind::Member {
-                    object: Box::new(Expression::with_span(ExprKind::This, span.clone())),
-                    field: field.to_string(),
-                    null_safe: false,
-                },
-                span.clone(),
-            )],
-            value: Expression::with_span(
-                ExprKind::Lit(Literal::Str(value.to_string())),
-                span.clone(),
-            ),
-            by_ref: false,
-        },
-        span.clone(),
-    )
-}
-
-fn synthesize_exception_class() -> Statement {
-    // class Exception { Message: String; constructor Create(msg: String); }
-    // The Create body assigns `Self.Message := msg` so `e.Message`
-    // returns the constructor argument inside catch handlers.
-    let span = Span::default();
-    let msg_param = Param {
-        name: "msg".into(),
-        type_hint: Some("String".into()),
-        default: None,
-        pass_by: PassBy::Value,
-        is_rest: false,
-        is_kwargs: false,
-        is_optional: false,
-        is_nullable: false,
-    };
-    let help_ctx_param = Param {
-        name: "helpCtx".into(),
-        type_hint: Some("Integer".into()),
-        default: Some(Expression::with_span(
-            ExprKind::Lit(Literal::Int(0)),
-            span.clone(),
-        )),
-        pass_by: PassBy::Value,
-        is_rest: false,
-        is_kwargs: false,
-        is_optional: true,
-        is_nullable: false,
-    };
-    // Self.Message := msg
-    let assign_msg = Statement::with_span(
-        StmtKind::Assign {
-            targets: vec![Expression::with_span(
-                ExprKind::Member {
-                    object: Box::new(Expression::with_span(ExprKind::This, span.clone())),
-                    field: "Message".into(),
-                    null_safe: false,
-                },
-                span.clone(),
-            )],
-            value: Expression::with_span(ExprKind::Ident("msg".into()), span.clone()),
-            by_ref: false,
-        },
-        span.clone(),
-    );
-    let assign_help_ctx = Statement::with_span(
-        StmtKind::Assign {
-            targets: vec![Expression::with_span(
-                ExprKind::Member {
-                    object: Box::new(Expression::with_span(ExprKind::This, span.clone())),
-                    field: "HelpContext".into(),
-                    null_safe: false,
-                },
-                span.clone(),
-            )],
-            value: Expression::with_span(ExprKind::Ident("helpCtx".into()), span.clone()),
-            by_ref: false,
-        },
-        span.clone(),
-    );
-    Statement::with_span(
-        StmtKind::ClassDecl {
-            name: "Exception".into(),
-            parents: Vec::new(),
-            interfaces: Vec::new(),
-            members: vec![
-                ClassMember::Field {
-                    name: "Message".into(),
-                    type_hint: Some("String".into()),
-                    init: None,
-                    modifiers: Modifiers::default(),
-                    with_events: false,
-                    array_bounds: None,
-                    storage: None,
-                },
-                ClassMember::Field {
-                    name: "HelpContext".into(),
-                    type_hint: Some("Integer".into()),
-                    init: Some(Expression::with_span(
-                        ExprKind::Lit(Literal::Int(0)),
-                        span.clone(),
-                    )),
-                    modifiers: Modifiers::default(),
-                    with_events: false,
-                    array_bounds: None,
-                    storage: None,
-                },
-                ClassMember::Constructor {
-                    name: None,
-                    params: vec![msg_param, help_ctx_param],
-                    // `__kind` marks the object an EXCEPTION for the shared
-                    // reflection surface; `__exception_type` is the canonical
-                    // name a cross-language catch matches. Both are what
-                    // `primitives/errors.rs` writes for a directly-constructed
-                    // exception — stated here so a class that INHERITS this
-                    // constructor is the same object.
-                    body: vec![
-                        assign_msg,
-                        assign_help_ctx,
-                        pascal_self_string_assign("__kind", "Exception", &span),
-                        pascal_self_string_assign("__exception_type", "Exception", &span),
-                    ],
-                    base_args: None,
-                    initializer_target: vybe_ast::ConstructorInitializerTarget::Base,
-                    visibility: Visibility::Public,
-                },
-            ],
-            modifiers: ClassModifiers::default(),
-            decorators: vec![],
-        },
-        span,
-    )
-}
-
-fn synthesize_pascal_except_state_vars() -> Statement {
-    Statement::new(StmtKind::VarDecl {
-        declarations: vec![
-            VarDeclarator {
-                pattern: BindingPattern::Ident("ExceptObject".to_string()),
-                type_hint: Some("TObject".to_string().into()),
-                init: Some(Expression::null()),
-                array_bounds: None,
-                with_events: false,
-            },
-            VarDeclarator {
-                pattern: BindingPattern::Ident("ExceptAddr".to_string()),
-                type_hint: Some("Pointer".to_string().into()),
-                init: Some(Expression::null()),
-                array_bounds: None,
-                with_events: false,
-            },
-        ],
-        kind: VarDeclKind::Dim,
-    })
-}
-
 fn pascal_assign_ident(name: &str, value: Expression) -> Statement {
+    if let Some(setter) = pascal_state_var_setter(name) {
+        return Statement::new(StmtKind::Expr(pascal_call(setter, vec![value])));
+    }
     Statement::new(StmtKind::Assign {
         targets: vec![Expression::ident(name)],
         value,
         by_ref: false,
     })
+}
+
+/// `ExceptObject` / `ExceptAddr` / `AssertErrorProc` are runtime state held in
+/// module globals behind builtin getters and setters; the walker spells the
+/// access, the emitter owns the storage.
+const PASCAL_STATE_VARS: [(&str, &str, &str); 3] = [
+    ("exceptobject", "__pascal_get_exceptobject", "__pascal_set_exceptobject"),
+    ("exceptaddr", "__pascal_get_exceptaddr", "__pascal_set_exceptaddr"),
+    ("asserterrorproc", "__pascal_get_asserterrorproc", "__pascal_set_asserterrorproc"),
+];
+
+fn pascal_state_var_getter(name: &str) -> Option<&'static str> {
+    PASCAL_STATE_VARS
+        .iter()
+        .find(|(var, _, _)| var.eq_ignore_ascii_case(name))
+        .map(|(_, getter, _)| *getter)
+}
+
+fn pascal_state_var_setter(name: &str) -> Option<&'static str> {
+    PASCAL_STATE_VARS
+        .iter()
+        .find(|(var, _, _)| var.eq_ignore_ascii_case(name))
+        .map(|(_, _, setter)| *setter)
+}
+
+/// An assignment whose target is a state variable becomes the setter call.
+fn pascal_state_var_assign_to_setter(kind: StmtKind) -> StmtKind {
+    match kind {
+        StmtKind::Assign {
+            targets,
+            value,
+            by_ref,
+        } => {
+            if let [Expression {
+                kind: ExprKind::Ident(name),
+                ..
+            }] = targets.as_slice()
+            {
+                if let Some(setter) = pascal_state_var_setter(name) {
+                    return StmtKind::Expr(pascal_call(setter, vec![value]));
+                }
+            }
+            StmtKind::Assign {
+                targets,
+                value,
+                by_ref,
+            }
+        }
+        StmtKind::Block(stmts) => StmtKind::Block(
+            stmts
+                .into_iter()
+                .map(|stmt| {
+                    let span = stmt.span.clone();
+                    Statement::with_span(pascal_state_var_assign_to_setter(stmt.kind), span)
+                })
+                .collect(),
+        ),
+        other => other,
+    }
+}
+
+/// Every remaining read of a state variable becomes its getter call.
+fn normalize_pascal_state_var_reads(body: &mut [Statement]) {
+    for stmt in body.iter_mut() {
+        stmt.walk_exprs_mut(&mut |expr| {
+            if let ExprKind::Ident(name) = &expr.kind {
+                if let Some(getter) = pascal_state_var_getter(name) {
+                    *expr = pascal_call(getter, Vec::new());
+                }
+            }
+        });
+    }
 }
 
 fn rewrite_pascal_except_state_body(body: &mut [Statement]) {
@@ -26099,99 +26714,6 @@ fn pascal_except_addr_hex_expr(expr: &Expression) -> Option<Expression> {
     Some(Expression::string(&format!("{:0width$}", 1, width = width)))
 }
 
-fn synthesize_pascal_safe_idiv_function() -> Statement {
-    let span = Span::default();
-    let a_param = Param {
-        name: "__a".into(),
-        type_hint: Some("Integer".into()),
-        default: None,
-        pass_by: PassBy::Value,
-        is_rest: false,
-        is_kwargs: false,
-        is_optional: false,
-        is_nullable: false,
-    };
-    let b_param = Param {
-        name: "__b".into(),
-        type_hint: Some("Integer".into()),
-        default: None,
-        pass_by: PassBy::Value,
-        is_rest: false,
-        is_kwargs: false,
-        is_optional: false,
-        is_nullable: false,
-    };
-    let zero_check = Expression::new(ExprKind::Binary {
-        op: BinOp::Eq,
-        left: Box::new(Expression::ident("__b")),
-        right: Box::new(Expression::new(ExprKind::Lit(Literal::Int(0)))),
-    });
-    let throw_div_zero = Statement::new(StmtKind::Throw {
-        expr: Some(Expression::new(ExprKind::New {
-            class: Box::new(Expression::ident("EDivByZero")),
-            args: vec![Argument::positional(Expression::string("DivideByZero"))],
-        })),
-        cause: None,
-    });
-    let result = Expression::new(ExprKind::Binary {
-        op: BinOp::IDiv,
-        left: Box::new(Expression::ident("__a")),
-        right: Box::new(Expression::ident("__b")),
-    });
-    Statement::with_span(
-        StmtKind::FunctionDecl {
-            name: "__pascal_safe_idiv".into(),
-            params: vec![a_param, b_param],
-            return_type: Some("Integer".into()),
-            body: vec![
-                Statement::new(StmtKind::If {
-                    cond: zero_check,
-                    then_body: vec![throw_div_zero],
-                    elifs: Vec::new(),
-                    else_body: None,
-                }),
-                Statement::new(StmtKind::Return(Some(result))),
-            ],
-            modifiers: Modifiers::default(),
-            handles: Vec::new(),
-            is_async: false,
-            is_generator: false,
-            is_sub: false,
-        },
-        span,
-    )
-}
-
-fn synthesize_tobject_class() -> Statement {
-    Statement::with_span(
-        StmtKind::ClassDecl {
-            name: "TObject".into(),
-            parents: Vec::new(),
-            interfaces: Vec::new(),
-            members: Vec::new(),
-            modifiers: ClassModifiers::default(),
-            decorators: vec![],
-        },
-        Span::default(),
-    )
-}
-
-fn synthesize_tinterfacedobject_class() -> Statement {
-    Statement::with_span(
-        StmtKind::ClassDecl {
-            name: "TInterfacedObject".into(),
-            parents: vec!["TObject".into()],
-            interfaces: Vec::new(),
-            members: Vec::new(),
-            modifiers: ClassModifiers::default(),
-            decorators: vec![],
-        },
-        Span::default(),
-    )
-}
-
-/// The collection group's source. A `const` rather than a local so it can be
-/// the CACHE KEY — `primitives::prelude` keys parsed statements by content.
 const PASCAL_COLLECTIONS_PRELUDE: &str = r#"
 program __PascalCollectionsPrelude;
 type
@@ -26269,6 +26791,7 @@ begin end.
 /// One function for every group: the collection and TBits groups had this body
 /// written out twice, identical but for the words in the error message.
 fn parse_pascal_prelude_source(src: &str) -> Result<Vec<Statement>, String> {
+    let _line_index = vybe_ast::line_index::LineIndex::install(src);
     let pairs = PascalParser::parse(Rule::program, src)
         .map_err(|e| format!("Pascal prelude parse error: {}", e))?;
     let mut body = Vec::new();
@@ -26335,11 +26858,90 @@ begin end.
 ///     builtin — `__pascal_fs_preopens` without `()` evaluates to undefined.
 const PASCAL_FILEBLOCK_PRELUDE: &str = r#"
 program __PascalFileBlockPrelude;
-function __PascalFsOpen(const path: String; create: Integer): Variant;
-var pre: Variant;
+var __PascalFileHandles: array of Integer;
+var __PascalFilePaths: array of String;
+var __PascalFilePositions: array of Integer;
+var __PascalFileRecSizes: array of Integer;
+var __PascalRawPaths: array of String;
+var __PascalRawPositions: array of Integer;
+var __PascalRawValues: array of Variant;
+function __PascalFileIndex(handle: Integer): Integer;
+var i: Integer; n: Integer;
 begin
-  pre := __pascal_fs_preopens();
-  Result := __pascal_fs_open_at(pre[0][0], 0, path, create, 0);
+  n := Length(__PascalFileHandles);
+  for i := 0 to n - 1 do
+    if __PascalFileHandles[i] = handle then
+    begin
+      Result := i;
+      exit;
+    end;
+  SetLength(__PascalFileHandles, n + 1);
+  SetLength(__PascalFilePaths, n + 1);
+  SetLength(__PascalFilePositions, n + 1);
+  SetLength(__PascalFileRecSizes, n + 1);
+  __PascalFileHandles[n] := handle;
+  __PascalFilePaths[n] := '';
+  __PascalFilePositions[n] := 0;
+  __PascalFileRecSizes[n] := 1;
+  Result := n;
+end;
+procedure __PascalRememberFile(handle: Integer; const path: String);
+var i: Integer;
+begin
+  i := __PascalFileIndex(handle);
+  __PascalFilePaths[i] := path;
+end;
+function __PascalPathOf(handle: Integer): String;
+begin
+  Result := __PascalFilePaths[__PascalFileIndex(handle)];
+end;
+procedure __PascalSetFilePos(handle: Integer; pos: Integer);
+begin
+  __PascalFilePositions[__PascalFileIndex(handle)] := pos;
+end;
+function __PascalGetFilePos(handle: Integer): Integer;
+begin
+  Result := __PascalFilePositions[__PascalFileIndex(handle)];
+end;
+procedure __PascalSetFileRecSize(handle: Integer; recSize: Integer);
+begin
+  __PascalFileRecSizes[__PascalFileIndex(handle)] := recSize;
+end;
+function __PascalGetFileRecSize(handle: Integer): Integer;
+begin
+  Result := __PascalFileRecSizes[__PascalFileIndex(handle)];
+end;
+procedure __PascalRememberRawValue(const path: String; pos: Integer; const value: Variant);
+var i: Integer; n: Integer;
+begin
+  n := Length(__PascalRawPaths);
+  for i := 0 to n - 1 do
+    if (__PascalRawPaths[i] = path) and (__PascalRawPositions[i] = pos) then
+    begin
+      __PascalRawValues[i] := value;
+      exit;
+    end;
+  SetLength(__PascalRawPaths, n + 1);
+  SetLength(__PascalRawPositions, n + 1);
+  SetLength(__PascalRawValues, n + 1);
+  __PascalRawPaths[n] := path;
+  __PascalRawPositions[n] := pos;
+  __PascalRawValues[n] := value;
+end;
+function __PascalRawValueAt(const path: String; pos: Integer): Variant;
+var i: Integer;
+begin
+  for i := 0 to Length(__PascalRawPaths) - 1 do
+    if (__PascalRawPaths[i] = path) and (__PascalRawPositions[i] = pos) then
+    begin
+      Result := __PascalRawValues[i];
+      exit;
+    end;
+  Result := 0;
+end;
+function __PascalFsOpen(const path: String; create: Integer): Variant;
+begin
+  Result := path;
 end;
 function __PascalSliceBytes(const src: Variant; start: Integer; count: Integer): Variant;
 var i: Integer; r: array of Byte;
@@ -26348,28 +26950,109 @@ begin
   for i := 0 to count - 1 do r[i] := src[start + i];
   Result := r;
 end;
-function __PascalBlockWrite(const path: String; pos: Integer; const src: Variant; start: Integer; count: Integer): Integer;
+function __PascalNewBytes(count: Integer): Variant;
+var r: array of Byte;
 begin
-  __pascal_fs_write(__PascalFsOpen(path, 1), __PascalSliceBytes(src, start, count), pos);
+  SetLength(r, count);
+  Result := r;
+end;
+function __PascalBlockByteAt(const src: Variant; start: Integer; i: Integer): Integer;
+var v: Variant;
+begin
+  if VarIsStr(src) then
+  begin
+    if Length(src) > start + i - 1 then
+      Result := Ord(src[start + i])
+    else
+      Result := 0;
+    exit;
+  end;
+  if VarIsArray(src) then
+    v := src[start + i]
+  else if i = 0 then
+    v := src
+  else
+    v := 0;
+  if v = nil then
+  begin
+    Result := 0;
+    exit;
+  end;
+  if VarIsStr(v) then
+    Result := Ord(v)
+  else
+    Result := v;
+end;
+function __PascalBlockWrite(const path: String; pos: Integer; recSize: Integer; const src: Variant; start: Integer; count: Integer): Integer;
+var bytes: Variant; i: Integer; total: Integer; bytePos: Integer; byteCount: Integer;
+begin
+  bytes := __pascal_file_read_bytes(path);
+  if bytes = nil then bytes := __PascalNewBytes(0);
+  bytePos := pos * recSize;
+  byteCount := count * recSize;
+  total := bytePos + byteCount;
+  if Length(bytes) < total then SetLength(bytes, total);
+  if (not VarIsArray(src)) and (not VarIsStr(src)) then
+    __PascalRememberRawValue(path, pos, src);
+  for i := 0 to byteCount - 1 do bytes[bytePos + i] := __PascalBlockByteAt(src, start, i);
+  __pascal_file_write_bytes(path, bytes);
   Result := count;
 end;
-function __PascalBlockRead(const path: String; pos: Integer; dst: Variant; start: Integer; count: Integer): Integer;
-var r: Variant; b: Variant; i: Integer;
+function __PascalBlockWriteByte(const path: String; pos: Integer; recSize: Integer; value: Integer): Integer;
+var bytes: Variant; i: Integer; bytePos: Integer;
 begin
-  r := __pascal_fs_read(__PascalFsOpen(path, 0), count, pos);
-  b := r[0];
-  for i := 0 to Length(b) - 1 do dst[start + i] := b[i];
-  Result := Length(b);
+  bytes := __pascal_file_read_bytes(path);
+  if bytes = nil then bytes := __PascalNewBytes(0);
+  bytePos := pos * recSize;
+  if Length(bytes) < bytePos + recSize then SetLength(bytes, bytePos + recSize);
+  bytes[bytePos] := value;
+  for i := 1 to recSize - 1 do bytes[bytePos + i] := 0;
+  __pascal_file_write_bytes(path, bytes);
+  Result := 1;
+end;
+function __PascalBlockRead(const path: String; pos: Integer; recSize: Integer; dst: Variant; start: Integer; count: Integer): Integer;
+var b: Variant; i: Integer; n: Integer; bytePos: Integer; byteCount: Integer;
+begin
+  b := __pascal_file_read_bytes(path);
+  if b = nil then b := __PascalNewBytes(0);
+  bytePos := pos * recSize;
+  byteCount := count * recSize;
+  n := Length(b) - bytePos;
+  if n < 0 then n := 0;
+  if n > byteCount then n := byteCount;
+  if VarIsArray(dst) or VarIsStr(dst) then
+    for i := 0 to n - 1 do dst[start + i] := b[bytePos + i];
+  Result := n div recSize;
+end;
+function __PascalBlockPeekByte(const path: String; pos: Integer; recSize: Integer): Integer;
+var b: Variant; bytePos: Integer;
+begin
+  b := __pascal_file_read_bytes(path);
+  if b = nil then b := __PascalNewBytes(0);
+  bytePos := pos * recSize;
+  if Length(b) > bytePos then Result := b[bytePos] else Result := 0;
+end;
+function __PascalBlockReadValue(const path: String; pos: Integer): Variant;
+begin
+  Result := __PascalRawValueAt(path, pos);
 end;
 function __PascalFileSizeBytes(const path: String): Integer;
-var st: Variant;
+var b: Variant;
 begin
-  st := __pascal_fs_stat(__PascalFsOpen(path, 0));
-  Result := st['size'];
+  b := __pascal_file_read_bytes(path);
+  if b = nil then Result := 0 else Result := Length(b);
 end;
-procedure __PascalFileTruncate(const path: String; pos: Integer);
+function __PascalFileSizeRecords(const path: String; recSize: Integer): Integer;
 begin
-  __pascal_fs_setsize(__PascalFsOpen(path, 1), pos);
+  Result := __PascalFileSizeBytes(path) div recSize;
+end;
+procedure __PascalFileTruncate(const path: String; pos: Integer; recSize: Integer);
+var b: Variant;
+begin
+  b := __pascal_file_read_bytes(path);
+  if b = nil then b := __PascalNewBytes(0);
+  SetLength(b, pos * recSize);
+  __pascal_file_write_bytes(path, b);
 end;
 begin end.
 "#;
@@ -27278,6 +27961,701 @@ fn lower_pascal_array_pointer_math(body: &mut [Statement]) {
     lower_pascal_array_pointer_math_body(body, &mut pointer_vars, &mut array_pointer_vars);
 }
 
+fn collect_pascal_pointer_return_aliases(
+    body: &[Statement],
+) -> std::collections::HashMap<String, PlaceExpr> {
+    let mut out = std::collections::HashMap::new();
+    for stmt in body {
+        collect_pascal_pointer_return_aliases_stmt(stmt, &mut out);
+    }
+    out
+}
+
+fn collect_pascal_pointer_return_aliases_stmt(
+    stmt: &Statement,
+    out: &mut std::collections::HashMap<String, PlaceExpr>,
+) {
+    match &stmt.kind {
+        StmtKind::FunctionDecl {
+            name,
+            params,
+            return_type,
+            body,
+            ..
+        } if params.is_empty()
+            && return_type
+                .as_deref()
+                .is_some_and(is_pascal_pointer_type_hint) =>
+        {
+            if let Some(place) = pascal_pointer_return_alias_from_body(body) {
+                out.insert(name.to_lowercase(), place);
+            }
+        }
+        StmtKind::FunctionDecl { body, .. }
+        | StmtKind::Block(body)
+        | StmtKind::NamespaceDecl { body, .. } => {
+            for stmt in body {
+                collect_pascal_pointer_return_aliases_stmt(stmt, out);
+            }
+        }
+        StmtKind::ClassDecl { members, .. }
+        | StmtKind::StructDecl { members, .. }
+        | StmtKind::ModuleDecl { members, .. } => {
+            for member in members {
+                collect_pascal_pointer_return_aliases_member(member, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_pascal_pointer_return_aliases_member(
+    member: &ClassMember,
+    out: &mut std::collections::HashMap<String, PlaceExpr>,
+) {
+    match member {
+        ClassMember::Method(stmt) | ClassMember::NestedType(stmt) => {
+            collect_pascal_pointer_return_aliases_stmt(stmt, out);
+        }
+        ClassMember::Constructor { body, .. } => {
+            for stmt in body {
+                collect_pascal_pointer_return_aliases_stmt(stmt, out);
+            }
+        }
+        ClassMember::Property { getter, setter, .. } => {
+            if let Some(getter) = getter {
+                for stmt in getter {
+                    collect_pascal_pointer_return_aliases_stmt(stmt, out);
+                }
+            }
+            if let Some(setter) = setter {
+                for stmt in &setter.body {
+                    collect_pascal_pointer_return_aliases_stmt(stmt, out);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn pascal_pointer_return_alias_from_body(body: &[Statement]) -> Option<PlaceExpr> {
+    let mut locals = std::collections::HashSet::new();
+    for stmt in body {
+        if let StmtKind::VarDecl { declarations, .. } = &stmt.kind {
+            for decl in declarations {
+                if let BindingPattern::Ident(name) = &decl.pattern {
+                    locals.insert(name.to_lowercase());
+                }
+            }
+        }
+    }
+    let mut result_alias = None;
+    for stmt in body {
+        match &stmt.kind {
+            StmtKind::Return(Some(expr)) => {
+                let alias = pascal_pointer_place_alias_from_value(
+                    expr,
+                    &std::collections::HashMap::new(),
+                    &std::collections::HashMap::new(),
+                )
+                .or_else(|| result_alias.clone());
+                return alias.filter(|place| {
+                    pascal_place_root_name(place)
+                        .is_some_and(|root| !locals.contains(&root.to_lowercase()))
+                });
+            }
+            StmtKind::Assign { targets, value, .. } if targets.len() == 1 => {
+                if matches!(&targets[0].kind, ExprKind::Ident(name) if name.eq_ignore_ascii_case("Result")) {
+                    result_alias = pascal_pointer_place_alias_from_value(
+                        value,
+                        &std::collections::HashMap::new(),
+                        &std::collections::HashMap::new(),
+                    )
+                    .filter(|place| {
+                        pascal_place_root_name(place)
+                            .is_some_and(|root| !locals.contains(&root.to_lowercase()))
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+    result_alias
+}
+
+fn pascal_place_root_name(place: &PlaceExpr) -> Option<&str> {
+    match place {
+        PlaceExpr::Ident(name) => Some(name),
+        PlaceExpr::Member { object, .. } | PlaceExpr::Index { object, .. } => {
+            pascal_expr_root_name(object)
+        }
+        PlaceExpr::Deref(expr) => pascal_expr_root_name(expr),
+    }
+}
+
+fn pascal_expr_root_name(expr: &Expression) -> Option<&str> {
+    match &expr.kind {
+        ExprKind::Ident(name) => Some(name),
+        ExprKind::Member { object, .. } | ExprKind::Index { object, .. } => {
+            pascal_expr_root_name(object)
+        }
+        ExprKind::RefLoad(inner) | ExprKind::Cast { expr: inner, .. } => pascal_expr_root_name(inner),
+        _ => None,
+    }
+}
+
+fn lower_pascal_pointer_place_aliases(
+    body: &mut [Statement],
+    pointer_return_aliases: &std::collections::HashMap<String, PlaceExpr>,
+) {
+    let mut pointer_vars = std::collections::HashSet::new();
+    let mut aliases = std::collections::HashMap::new();
+    lower_pascal_pointer_place_aliases_body(
+        body,
+        &mut pointer_vars,
+        &mut aliases,
+        pointer_return_aliases,
+    );
+}
+
+fn lower_pascal_pointer_place_aliases_body(
+    body: &mut [Statement],
+    pointer_vars: &mut std::collections::HashSet<String>,
+    aliases: &mut std::collections::HashMap<String, PlaceExpr>,
+    pointer_return_aliases: &std::collections::HashMap<String, PlaceExpr>,
+) {
+    for stmt in body {
+        lower_pascal_pointer_place_aliases_stmt(
+            stmt,
+            pointer_vars,
+            aliases,
+            pointer_return_aliases,
+        );
+    }
+}
+
+fn lower_pascal_pointer_place_aliases_stmt(
+    stmt: &mut Statement,
+    pointer_vars: &mut std::collections::HashSet<String>,
+    aliases: &mut std::collections::HashMap<String, PlaceExpr>,
+    pointer_return_aliases: &std::collections::HashMap<String, PlaceExpr>,
+) {
+    match &mut stmt.kind {
+        StmtKind::VarDecl { declarations, .. } => {
+            for decl in declarations {
+                let pointer_key = match (&decl.pattern, decl.type_hint.as_deref()) {
+                    (BindingPattern::Ident(name), Some(type_hint))
+                        if is_pascal_pointer_type_hint(type_hint) =>
+                    {
+                        let key = name.to_lowercase();
+                        pointer_vars.insert(key.clone());
+                        Some(key)
+                    }
+                    _ => None,
+                };
+                if let Some(init) = &mut decl.init {
+                    lower_pascal_pointer_place_aliases_expr(init, aliases);
+                    if let Some(key) = pointer_key {
+                        if let Some(place) =
+                            pascal_pointer_place_alias_from_value(init, aliases, pointer_return_aliases)
+                        {
+                            aliases.insert(key, place);
+                        } else {
+                            aliases.remove(&key);
+                        }
+                    }
+                }
+            }
+        }
+        StmtKind::Assign { targets, value, .. } if targets.len() == 1 => {
+            lower_pascal_pointer_place_aliases_expr(value, aliases);
+            if let ExprKind::Ident(name) = &targets[0].kind {
+                let key = name.to_lowercase();
+                if pointer_vars.contains(&key) {
+                    if let Some(place) =
+                        pascal_pointer_place_alias_from_value(value, aliases, pointer_return_aliases)
+                    {
+                        if let Some(static_place) =
+                            pascal_pointer_static_return_alias_value(value, pointer_return_aliases)
+                        {
+                            *value = Expression::new(ExprKind::RefOf(Box::new(static_place)));
+                        }
+                        aliases.insert(key, place);
+                    } else {
+                        aliases.remove(&key);
+                    }
+                    return;
+                }
+            }
+            lower_pascal_pointer_place_aliases_expr(&mut targets[0], aliases);
+        }
+        StmtKind::Assign { targets, value, .. } => {
+            for target in targets {
+                lower_pascal_pointer_place_aliases_expr(target, aliases);
+            }
+            lower_pascal_pointer_place_aliases_expr(value, aliases);
+        }
+        StmtKind::CompoundAssign { target, value, .. } => {
+            lower_pascal_pointer_place_aliases_expr(target, aliases);
+            lower_pascal_pointer_place_aliases_expr(value, aliases);
+        }
+        StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) => {
+            lower_pascal_pointer_place_aliases_expr(expr, aliases);
+        }
+        StmtKind::FunctionDecl { params, body, .. } => {
+            let mut scoped_pointer_vars = std::collections::HashSet::new();
+            let mut scoped_aliases = std::collections::HashMap::new();
+            for param in params {
+                if param
+                    .type_hint
+                    .as_deref()
+                    .is_some_and(is_pascal_pointer_type_hint)
+                {
+                    scoped_pointer_vars.insert(param.name.to_lowercase());
+                }
+            }
+            lower_pascal_pointer_place_aliases_body(
+                body,
+                &mut scoped_pointer_vars,
+                &mut scoped_aliases,
+                pointer_return_aliases,
+            );
+        }
+        StmtKind::Block(body) | StmtKind::NamespaceDecl { body, .. } => {
+            let mut scoped_pointer_vars = pointer_vars.clone();
+            let mut scoped_aliases = aliases.clone();
+            lower_pascal_pointer_place_aliases_body(
+                body,
+                &mut scoped_pointer_vars,
+                &mut scoped_aliases,
+                pointer_return_aliases,
+            );
+        }
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => {
+            lower_pascal_pointer_place_aliases_expr(cond, aliases);
+            let mut then_pointer_vars = pointer_vars.clone();
+            let mut then_aliases = aliases.clone();
+            lower_pascal_pointer_place_aliases_body(
+                then_body,
+                &mut then_pointer_vars,
+                &mut then_aliases,
+                pointer_return_aliases,
+            );
+            for (cond, body) in elifs {
+                lower_pascal_pointer_place_aliases_expr(cond, aliases);
+                let mut scoped_pointer_vars = pointer_vars.clone();
+                let mut scoped_aliases = aliases.clone();
+                lower_pascal_pointer_place_aliases_body(
+                    body,
+                    &mut scoped_pointer_vars,
+                    &mut scoped_aliases,
+                    pointer_return_aliases,
+                );
+            }
+            if let Some(body) = else_body {
+                let mut scoped_pointer_vars = pointer_vars.clone();
+                let mut scoped_aliases = aliases.clone();
+                lower_pascal_pointer_place_aliases_body(
+                    body,
+                    &mut scoped_pointer_vars,
+                    &mut scoped_aliases,
+                    pointer_return_aliases,
+                );
+            }
+        }
+        StmtKind::While { cond, body, .. } | StmtKind::DoWhile { cond, body, .. } => {
+            lower_pascal_pointer_place_aliases_expr(cond, aliases);
+            let mut scoped_pointer_vars = pointer_vars.clone();
+            let mut scoped_aliases = aliases.clone();
+            lower_pascal_pointer_place_aliases_body(
+                body,
+                &mut scoped_pointer_vars,
+                &mut scoped_aliases,
+                pointer_return_aliases,
+            );
+        }
+        StmtKind::For {
+            init,
+            cond,
+            update,
+            body,
+        } => {
+            let mut scoped_pointer_vars = pointer_vars.clone();
+            let mut scoped_aliases = aliases.clone();
+            if let Some(init) = init {
+                lower_pascal_pointer_place_aliases_stmt(
+                    init,
+                    &mut scoped_pointer_vars,
+                    &mut scoped_aliases,
+                    pointer_return_aliases,
+                );
+            }
+            if let Some(cond) = cond {
+                lower_pascal_pointer_place_aliases_expr(cond, &scoped_aliases);
+            }
+            if let Some(update) = update {
+                lower_pascal_pointer_place_aliases_expr(update, &scoped_aliases);
+            }
+            lower_pascal_pointer_place_aliases_body(
+                body,
+                &mut scoped_pointer_vars,
+                &mut scoped_aliases,
+                pointer_return_aliases,
+            );
+        }
+        StmtKind::ForIn { iter, body, .. } => {
+            lower_pascal_pointer_place_aliases_expr(iter, aliases);
+            let mut scoped_pointer_vars = pointer_vars.clone();
+            let mut scoped_aliases = aliases.clone();
+            lower_pascal_pointer_place_aliases_body(
+                body,
+                &mut scoped_pointer_vars,
+                &mut scoped_aliases,
+                pointer_return_aliases,
+            );
+        }
+        StmtKind::ClassDecl { members, .. }
+        | StmtKind::StructDecl { members, .. }
+        | StmtKind::ModuleDecl { members, .. } => {
+            for member in members {
+                lower_pascal_pointer_place_aliases_member(member, pointer_return_aliases);
+            }
+        }
+        StmtKind::Try {
+            body,
+            catches,
+            else_body,
+            finally,
+        } => {
+            let mut scoped_pointer_vars = pointer_vars.clone();
+            let mut scoped_aliases = aliases.clone();
+            lower_pascal_pointer_place_aliases_body(
+                body,
+                &mut scoped_pointer_vars,
+                &mut scoped_aliases,
+                pointer_return_aliases,
+            );
+            for catch in catches {
+                let mut catch_pointer_vars = pointer_vars.clone();
+                let mut catch_aliases = aliases.clone();
+                lower_pascal_pointer_place_aliases_body(
+                    &mut catch.body,
+                    &mut catch_pointer_vars,
+                    &mut catch_aliases,
+                    pointer_return_aliases,
+                );
+            }
+            if let Some(body) = else_body {
+                let mut else_pointer_vars = pointer_vars.clone();
+                let mut else_aliases = aliases.clone();
+                lower_pascal_pointer_place_aliases_body(
+                    body,
+                    &mut else_pointer_vars,
+                    &mut else_aliases,
+                    pointer_return_aliases,
+                );
+            }
+            if let Some(body) = finally {
+                let mut finally_pointer_vars = pointer_vars.clone();
+                let mut finally_aliases = aliases.clone();
+                lower_pascal_pointer_place_aliases_body(
+                    body,
+                    &mut finally_pointer_vars,
+                    &mut finally_aliases,
+                    pointer_return_aliases,
+                );
+            }
+        }
+        _ => {}
+    }
+}
+
+fn lower_pascal_pointer_place_aliases_member(
+    member: &mut ClassMember,
+    pointer_return_aliases: &std::collections::HashMap<String, PlaceExpr>,
+) {
+    let mut pointer_vars = std::collections::HashSet::new();
+    let mut aliases = std::collections::HashMap::new();
+    match member {
+        ClassMember::Method(stmt) | ClassMember::NestedType(stmt) => {
+            lower_pascal_pointer_place_aliases_stmt(
+                stmt,
+                &mut pointer_vars,
+                &mut aliases,
+                pointer_return_aliases,
+            );
+        }
+        ClassMember::Constructor { params, body, .. } => {
+            for param in params {
+                if param
+                    .type_hint
+                    .as_deref()
+                    .is_some_and(is_pascal_pointer_type_hint)
+                {
+                    pointer_vars.insert(param.name.to_lowercase());
+                }
+            }
+            lower_pascal_pointer_place_aliases_body(
+                body,
+                &mut pointer_vars,
+                &mut aliases,
+                pointer_return_aliases,
+            );
+        }
+        ClassMember::Property { getter, setter, .. } => {
+            if let Some(getter) = getter {
+                lower_pascal_pointer_place_aliases_body(
+                    getter,
+                    &mut pointer_vars.clone(),
+                    &mut aliases.clone(),
+                    pointer_return_aliases,
+                );
+            }
+            if let Some(setter) = setter {
+                lower_pascal_pointer_place_aliases_body(
+                    &mut setter.body,
+                    &mut pointer_vars,
+                    &mut aliases,
+                    pointer_return_aliases,
+                );
+            }
+        }
+        _ => {}
+    }
+}
+
+fn lower_pascal_pointer_place_aliases_expr(
+    expr: &mut Expression,
+    aliases: &std::collections::HashMap<String, PlaceExpr>,
+) {
+    match &mut expr.kind {
+        ExprKind::RefLoad(inner) => {
+            lower_pascal_pointer_place_aliases_expr(inner, aliases);
+        }
+        ExprKind::Binary { op, left, right } => {
+            lower_pascal_pointer_place_aliases_expr(left, aliases);
+            lower_pascal_pointer_place_aliases_expr(right, aliases);
+            if matches!(
+                op,
+                BinOp::Eq | BinOp::StrictEq | BinOp::NotEq | BinOp::StrictNotEq | BinOp::Sub
+            ) {
+                if let (Some(left_place), Some(right_place)) = (
+                    pascal_pointer_place_alias_for_expr(left, aliases),
+                    pascal_pointer_place_alias_for_expr(right, aliases),
+                ) {
+                    let same = pascal_place_expr_same_place(&left_place, &right_place);
+                    if *op == BinOp::Sub && same {
+                        *expr = Expression::int(0);
+                    } else if matches!(op, BinOp::Eq | BinOp::StrictEq | BinOp::NotEq | BinOp::StrictNotEq) {
+                        *expr = Expression::bool(matches!(op, BinOp::Eq | BinOp::StrictEq) == same);
+                    }
+                }
+            }
+        }
+        ExprKind::Call { callee, args, .. } => {
+            lower_pascal_pointer_place_aliases_expr(callee, aliases);
+            for arg in args {
+                lower_pascal_pointer_place_aliases_expr(&mut arg.value, aliases);
+            }
+        }
+        ExprKind::Member { object, .. } => {
+            lower_pascal_pointer_place_aliases_expr(object, aliases);
+        }
+        ExprKind::Index { object, index, .. } => {
+            lower_pascal_pointer_place_aliases_expr(object, aliases);
+            lower_pascal_pointer_place_aliases_expr(index, aliases);
+        }
+        ExprKind::Unary { expr, .. } => lower_pascal_pointer_place_aliases_expr(expr, aliases),
+        ExprKind::Cast { expr, .. } => lower_pascal_pointer_place_aliases_expr(expr, aliases),
+        ExprKind::Ternary { cond, then, else_ } => {
+            lower_pascal_pointer_place_aliases_expr(cond, aliases);
+            lower_pascal_pointer_place_aliases_expr(then, aliases);
+            lower_pascal_pointer_place_aliases_expr(else_, aliases);
+        }
+        ExprKind::Array(elements) => {
+            for element in elements {
+                if let Some(key) = &mut element.key {
+                    lower_pascal_pointer_place_aliases_expr(key, aliases);
+                }
+                lower_pascal_pointer_place_aliases_expr(&mut element.value, aliases);
+            }
+        }
+        ExprKind::Object(props) => {
+            for prop in props {
+                match prop {
+                    ObjectProperty::KeyValue { key, value }
+                    | ObjectProperty::Computed { key, value } => {
+                        lower_pascal_pointer_place_aliases_expr(key, aliases);
+                        lower_pascal_pointer_place_aliases_expr(value, aliases);
+                    }
+                    ObjectProperty::Spread(value) => {
+                        lower_pascal_pointer_place_aliases_expr(value, aliases);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        ExprKind::Tuple(items) | ExprKind::Set(items) | ExprKind::Sequence(items) => {
+            for item in items {
+                lower_pascal_pointer_place_aliases_expr(item, aliases);
+            }
+        }
+        ExprKind::Range { start, end, .. } => {
+            lower_pascal_pointer_place_aliases_expr(start, aliases);
+            lower_pascal_pointer_place_aliases_expr(end, aliases);
+        }
+        ExprKind::Assign { target, value } | ExprKind::Walrus { target, value } => {
+            lower_pascal_pointer_place_aliases_expr(target, aliases);
+            lower_pascal_pointer_place_aliases_expr(value, aliases);
+        }
+        ExprKind::RefOf(place) => lower_pascal_pointer_place_aliases_place(place, aliases),
+        _ => {}
+    }
+}
+
+fn lower_pascal_pointer_place_aliases_place(
+    place: &mut PlaceExpr,
+    aliases: &std::collections::HashMap<String, PlaceExpr>,
+) {
+    match place {
+        PlaceExpr::Ident(_) => {}
+        PlaceExpr::Member { object, .. } => lower_pascal_pointer_place_aliases_expr(object, aliases),
+        PlaceExpr::Index { object, index, .. } => {
+            lower_pascal_pointer_place_aliases_expr(object, aliases);
+            lower_pascal_pointer_place_aliases_expr(index, aliases);
+        }
+        PlaceExpr::Deref(expr) => lower_pascal_pointer_place_aliases_expr(expr, aliases),
+    }
+}
+
+fn pascal_pointer_place_alias_from_value(
+    value: &Expression,
+    aliases: &std::collections::HashMap<String, PlaceExpr>,
+    pointer_return_aliases: &std::collections::HashMap<String, PlaceExpr>,
+) -> Option<PlaceExpr> {
+    match &value.kind {
+        ExprKind::RefOf(place) => match place.as_ref() {
+            PlaceExpr::Index { .. } => None,
+            _ => Some((**place).clone()),
+        },
+        ExprKind::Unary {
+            op: UnaryOp::AddrOf,
+            expr,
+        } => PlaceExpr::from_expr(expr).and_then(|place| match place {
+            PlaceExpr::Index { .. } => None,
+            _ => Some(place),
+        }),
+        ExprKind::Cast { expr, type_name } if is_pascal_pointer_type_hint(type_name) => {
+            pascal_pointer_place_alias_from_value(expr, aliases, pointer_return_aliases)
+        }
+        ExprKind::Ident(name) => aliases
+            .get(&name.to_lowercase())
+            .cloned()
+            .or_else(|| pointer_return_aliases.get(&name.to_lowercase()).cloned()),
+        ExprKind::Call { callee, args, .. } if args.is_empty() => {
+            pascal_expr_ident_name(callee)
+                .and_then(|name| pointer_return_aliases.get(&name.to_lowercase()).cloned())
+        }
+        _ => None,
+    }
+}
+
+fn pascal_pointer_static_return_alias_value(
+    value: &Expression,
+    pointer_return_aliases: &std::collections::HashMap<String, PlaceExpr>,
+) -> Option<PlaceExpr> {
+    match &value.kind {
+        ExprKind::Ident(name) => pointer_return_aliases.get(&name.to_lowercase()).cloned(),
+        ExprKind::Call { callee, args, .. } if args.is_empty() => pascal_expr_ident_name(callee)
+            .and_then(|name| pointer_return_aliases.get(&name.to_lowercase()).cloned()),
+        ExprKind::Cast { expr, type_name } if is_pascal_pointer_type_hint(type_name) => {
+            pascal_pointer_static_return_alias_value(expr, pointer_return_aliases)
+        }
+        _ => None,
+    }
+}
+
+fn pascal_pointer_place_alias_for_expr(
+    expr: &Expression,
+    aliases: &std::collections::HashMap<String, PlaceExpr>,
+) -> Option<PlaceExpr> {
+    match &expr.kind {
+        ExprKind::Ident(name) => aliases.get(&name.to_lowercase()).cloned(),
+        ExprKind::Cast { expr, type_name } if is_pascal_pointer_type_hint(type_name) => {
+            pascal_pointer_place_alias_for_expr(expr, aliases)
+        }
+        _ => None,
+    }
+}
+
+fn pascal_expr_from_place(place: &PlaceExpr) -> Expression {
+    match place {
+        PlaceExpr::Ident(name) => Expression::new(ExprKind::Ident(name.clone())),
+        PlaceExpr::Member {
+            object,
+            field,
+            null_safe,
+        } => Expression::new(ExprKind::Member {
+            object: object.clone(),
+            field: field.clone(),
+            null_safe: *null_safe,
+        }),
+        PlaceExpr::Index {
+            object,
+            index,
+            null_safe,
+        } => Expression::new(ExprKind::Index {
+            object: object.clone(),
+            index: index.clone(),
+            null_safe: *null_safe,
+        }),
+        PlaceExpr::Deref(expr) => Expression::new(ExprKind::RefLoad(expr.clone())),
+    }
+}
+
+fn pascal_place_expr_same_place(left: &PlaceExpr, right: &PlaceExpr) -> bool {
+    match (left, right) {
+        (PlaceExpr::Ident(a), PlaceExpr::Ident(b)) => a.eq_ignore_ascii_case(b),
+        (
+            PlaceExpr::Member {
+                object: left_object,
+                field: left_field,
+                ..
+            },
+            PlaceExpr::Member {
+                object: right_object,
+                field: right_field,
+                ..
+            },
+        ) => {
+            left_field.eq_ignore_ascii_case(right_field)
+                && pascal_expr_same_place(left_object, right_object)
+        }
+        (
+            PlaceExpr::Index {
+                object: left_object,
+                index: left_index,
+                ..
+            },
+            PlaceExpr::Index {
+                object: right_object,
+                index: right_index,
+                ..
+            },
+        ) => {
+            pascal_expr_same_place(left_object, right_object)
+                && format!("{:?}", left_index.kind) == format!("{:?}", right_index.kind)
+        }
+        (PlaceExpr::Deref(left), PlaceExpr::Deref(right)) => pascal_expr_same_place(left, right),
+        _ => false,
+    }
+}
+
 fn rewrite_pascal_heap_allocation(
     body: &mut [Statement],
     struct_names: &std::collections::HashSet<String>,
@@ -28040,8 +29418,8 @@ fn lower_pascal_array_pointer_math_expr(
         ExprKind::Binary { op, left, right } => {
             lower_pascal_array_pointer_math_expr(left, array_pointer_vars);
             lower_pascal_array_pointer_math_expr(right, array_pointer_vars);
-            let left_is_ptr = matches!(&left.kind, ExprKind::Ident(name) if array_pointer_vars.contains(&name.to_lowercase()));
-            let right_is_ptr = matches!(&right.kind, ExprKind::Ident(name) if array_pointer_vars.contains(&name.to_lowercase()));
+            let left_is_ptr = is_pascal_common_array_pointer_expr(left, array_pointer_vars);
+            let right_is_ptr = is_pascal_common_array_pointer_expr(right, array_pointer_vars);
             match (*op, left_is_ptr, right_is_ptr) {
                 (BinOp::Add, true, _) => {
                     *expr = common_pointers::carray_advance((**left).clone(), (**right).clone());
@@ -28054,6 +29432,26 @@ fn lower_pascal_array_pointer_math_expr(
                 }
                 (BinOp::Sub, true, false) => {
                     *expr = common_pointers::carray_retreat((**left).clone(), (**right).clone());
+                }
+                (BinOp::Eq | BinOp::StrictEq, true, true) => {
+                    *expr = Expression::new(ExprKind::Binary {
+                        op: BinOp::Eq,
+                        left: Box::new(common_pointers::carray_diff(
+                            (**left).clone(),
+                            (**right).clone(),
+                        )),
+                        right: Box::new(Expression::int(0)),
+                    });
+                }
+                (BinOp::NotEq | BinOp::StrictNotEq, true, true) => {
+                    *expr = Expression::new(ExprKind::Binary {
+                        op: BinOp::NotEq,
+                        left: Box::new(common_pointers::carray_diff(
+                            (**left).clone(),
+                            (**right).clone(),
+                        )),
+                        right: Box::new(Expression::int(0)),
+                    });
                 }
                 _ => {}
             }
@@ -28094,8 +29492,18 @@ fn lower_pascal_array_pointer_math_expr(
                 lower_pascal_array_pointer_math_expr(item, array_pointer_vars);
             }
         }
-        ExprKind::Cast { expr, .. }
-        | ExprKind::TypeOf(expr)
+        ExprKind::Cast {
+            expr: inner,
+            type_name,
+        } => {
+            lower_pascal_array_pointer_math_expr(inner, array_pointer_vars);
+            if is_pascal_pointer_type_hint(type_name)
+                && is_pascal_common_array_pointer_expr(inner, array_pointer_vars)
+            {
+                *expr = (**inner).clone();
+            }
+        }
+        ExprKind::TypeOf(expr)
         | ExprKind::Void(expr)
         | ExprKind::Delete(expr)
         | ExprKind::Await(expr)
@@ -28117,20 +29525,28 @@ fn lower_pascal_array_pointer_math_expr(
 }
 
 fn pascal_array_pointer_from_addr(expr: &Expression) -> Option<Expression> {
-    let ExprKind::Unary {
-        op: UnaryOp::AddrOf,
-        expr,
-    } = &expr.kind
-    else {
-        return None;
-    };
-    let ExprKind::Index { object, index, .. } = &expr.kind else {
-        return None;
-    };
-    Some(common_pointers::make_carray_ptr(
-        (**object).clone(),
-        (**index).clone(),
-    ))
+    match &expr.kind {
+        ExprKind::Unary {
+            op: UnaryOp::AddrOf,
+            expr,
+        } => {
+            let ExprKind::Index { object, index, .. } = &expr.kind else {
+                return None;
+            };
+            Some(common_pointers::make_carray_ptr(
+                (**object).clone(),
+                (**index).clone(),
+            ))
+        }
+        ExprKind::RefOf(place) => match place.as_ref() {
+            PlaceExpr::Index { object, index, .. } => Some(common_pointers::make_carray_ptr(
+                (**object).clone(),
+                (**index).clone(),
+            )),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 fn is_pascal_common_array_pointer_expr(
@@ -28138,6 +29554,9 @@ fn is_pascal_common_array_pointer_expr(
     array_pointer_vars: &std::collections::HashSet<String>,
 ) -> bool {
     match &expr.kind {
+        ExprKind::Cast { expr, type_name } if is_pascal_pointer_type_hint(type_name) => {
+            is_pascal_common_array_pointer_expr(expr, array_pointer_vars)
+        }
         ExprKind::Ident(name) => array_pointer_vars.contains(&name.to_lowercase()),
         ExprKind::Object(props) => props.iter().any(|prop| {
             matches!(
@@ -29962,8 +31381,18 @@ fn rewrite_pascal_writeln_bool_class_calls_expr(
             for arg in args.iter_mut() {
                 rewrite_pascal_writeln_bool_class_calls_expr(&mut arg.value, bool_methods);
             }
-            if matches!(&callee.kind, ExprKind::Ident(name) if name.eq_ignore_ascii_case("WriteLn"))
+            let callee_name = pascal_expr_ident_name(callee);
+            if matches!(callee_name, Some(name) if name.eq_ignore_ascii_case("__vs"))
+                && args.len() == 1
             {
+                if pascal_expr_is_bool_class_call(&args[0].value, bool_methods)
+                    || pascal_expr_is_bool_operator_call(&args[0].value)
+                    || pascal_expr_is_typekind_comparison(&args[0].value)
+                    || pascal_expr_is_set_bool_call(&args[0].value)
+                {
+                    args[0].value = pascal_bool_display_expr(args[0].value.clone());
+                }
+            } else if matches!(callee_name, Some(name) if name.eq_ignore_ascii_case("WriteLn")) {
                 for arg in args {
                     if pascal_expr_is_bool_class_call(&arg.value, bool_methods)
                         || pascal_expr_is_bool_operator_call(&arg.value)
@@ -30458,8 +31887,27 @@ fn rewrite_pascal_writeln_bool_instance_members_expr(
                     env,
                 );
             }
-            if matches!(&callee.kind, ExprKind::Ident(name) if name.eq_ignore_ascii_case("WriteLn"))
+            let callee_name = pascal_expr_ident_name(callee);
+            if matches!(callee_name, Some(name) if name.eq_ignore_ascii_case("__vs"))
+                && args.len() == 1
             {
+                if pascal_expr_is_datetime_comparison(&args[0].value, env) {
+                    args[0].value = pascal_bool_display_expr(args[0].value.clone());
+                } else if pascal_expr_is_bool_instance_member(&args[0].value, bool_members, env)
+                    || pascal_expr_is_bool_array_index(&args[0].value, env)
+                    || pascal_expr_is_bool_operator_call(&args[0].value)
+                    || pascal_expr_is_bool_procedural_call(&args[0].value, env)
+                    || (pascal_expr_is_any_comparison(&args[0].value)
+                        && !pascal_expr_uses_generic_instance_receiver(
+                            &args[0].value,
+                            env,
+                            generic_type_names,
+                        ))
+                    || pascal_expr_is_set_bool_call(&args[0].value)
+                {
+                    args[0].value = pascal_bool_display_expr(args[0].value.clone());
+                }
+            } else if matches!(callee_name, Some(name) if name.eq_ignore_ascii_case("WriteLn")) {
                 for arg in args {
                     if pascal_expr_is_datetime_comparison(&arg.value, env) {
                         arg.value = pascal_bool_pascal_display_expr(arg.value.clone());
@@ -39944,6 +41392,10 @@ fn walk_inherited_statement(pair: Pair<Rule>) -> Result<StmtKind, String> {
 // ── Assign or call ─────────────────────────────────────────────────────────
 
 fn walk_assign_or_call(pair: Pair<Rule>) -> Result<StmtKind, String> {
+    walk_assign_or_call_inner(pair).map(pascal_state_var_assign_to_setter)
+}
+
+fn walk_assign_or_call_inner(pair: Pair<Rule>) -> Result<StmtKind, String> {
     let src = pair.as_str();
     let parts: Vec<Pair<Rule>> = pair.into_inner().collect();
 
@@ -40265,10 +41717,14 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
                     expr: Box::new(operand),
                 })
             } else if src.starts_with('@') {
-                Ok(ExprKind::Unary {
-                    op: UnaryOp::AddrOf,
-                    expr: Box::new(operand),
-                })
+                if let Some(place) = PlaceExpr::from_expr(&operand) {
+                    Ok(ExprKind::RefOf(Box::new(place)))
+                } else {
+                    Ok(ExprKind::Unary {
+                        op: UnaryOp::AddrOf,
+                        expr: Box::new(operand),
+                    })
+                }
             } else {
                 Ok(operand.kind)
             }
@@ -41676,14 +43132,21 @@ where
 // ════════════════════════════════════════════════════════════════════════════
 
 fn to_span(pair: &Pair<Rule>) -> Span {
-    let start = pair.as_span().start_pos().line_col();
-    let end = pair.as_span().end_pos().line_col();
-    Span {
-        start_line: start.0 as u32 - 1,
-        start_col: start.1 as u32 - 1,
-        end_line: end.0 as u32 - 1,
-        end_col: end.1 as u32 - 1,
-    }
+    let s = pair.as_span();
+    // ⛔ NOT `Position::line_col` — it counts newlines from the START OF THE
+    // INPUT, twice per node, which makes the walk quadratic in program size.
+    // See `vybe_ast::line_index`. The fallback is the old behaviour, for a
+    // parse that reached here without installing an index.
+    vybe_ast::line_index::span_0based(s.start(), s.end()).unwrap_or_else(|| {
+        let start = s.start_pos().line_col();
+        let end = s.end_pos().line_col();
+        Span {
+            start_line: start.0 as u32 - 1,
+            start_col: start.1 as u32 - 1,
+            end_line: end.0 as u32 - 1,
+            end_col: end.1 as u32 - 1,
+        }
+    })
 }
 
 fn type_ref_to_string(pair: &Pair<Rule>) -> String {
@@ -41749,6 +43212,10 @@ struct PascalFileInfo {
     /// `.write` both take an explicit offset. What the host has no business
     /// holding is the CURSOR, so it lives here, exactly like `path_var`.
     pos_var: Option<String>,
+    /// Companion holding the record width for untyped `file` block I/O.
+    /// Pascal exposes positions and transfer counts in records; the common
+    /// filesystem primitive moves bytes through component-model streams.
+    rec_size_var: Option<String>,
 }
 
 fn lower_pascal_file_io(body: &mut Vec<Statement>) {
@@ -41796,12 +43263,14 @@ fn lower_pascal_file_io_body(
                 }
                 let path_var = format!("__pascal_file_path_{}", handle);
                 let pos_var = is_untyped.then(|| format!("__pascal_file_pos_{}", handle));
+                let rec_size_var = is_untyped.then(|| format!("__pascal_file_recsize_{}", handle));
                 scope.insert(
                     name.to_lowercase(),
                     PascalFileInfo {
                         path_var: Some(path_var.clone()),
                         is_text,
                         pos_var: pos_var.clone(),
+                        rec_size_var: rec_size_var.clone(),
                     },
                 );
                 if let Some(pos_var) = pos_var {
@@ -41809,6 +43278,15 @@ fn lower_pascal_file_io_body(
                         pattern: BindingPattern::Ident(pos_var),
                         type_hint: Some("Integer".to_string().into()),
                         init: Some(Expression::int(0)),
+                        array_bounds: None,
+                        with_events: false,
+                    });
+                }
+                if let Some(rec_size_var) = rec_size_var {
+                    companions.push(VarDeclarator {
+                        pattern: BindingPattern::Ident(rec_size_var),
+                        type_hint: Some("Integer".to_string().into()),
+                        init: Some(Expression::int(1)),
                         array_bounds: None,
                         with_events: false,
                     });
@@ -41914,6 +43392,7 @@ fn lower_pascal_file_io_stmt(
                             // A file PARAMETER has no companions — the caller
                             // owns them.
                             pos_var: None,
+                            rec_size_var: None,
                         },
                     );
                 }
@@ -41984,6 +43463,32 @@ fn lower_pascal_file_io_stmt(
             let mut scoped_aliases = aliases.clone();
             lower_pascal_file_io_body(body, next_handle, &mut scoped, &mut scoped_aliases);
             lower_pascal_file_io_expr(cond, scope);
+            None
+        }
+        StmtKind::Try {
+            body,
+            catches,
+            else_body,
+            finally,
+        } => {
+            let mut try_scope = scope.clone();
+            let mut try_aliases = aliases.clone();
+            lower_pascal_file_io_body(body, next_handle, &mut try_scope, &mut try_aliases);
+            for catch in catches {
+                let mut catch_scope = scope.clone();
+                let mut catch_aliases = aliases.clone();
+                lower_pascal_file_io_body(&mut catch.body, next_handle, &mut catch_scope, &mut catch_aliases);
+            }
+            if let Some(body) = else_body {
+                let mut else_scope = scope.clone();
+                let mut else_aliases = aliases.clone();
+                lower_pascal_file_io_body(body, next_handle, &mut else_scope, &mut else_aliases);
+            }
+            if let Some(body) = finally {
+                let mut finally_scope = scope.clone();
+                let mut finally_aliases = aliases.clone();
+                lower_pascal_file_io_body(body, next_handle, &mut finally_scope, &mut finally_aliases);
+            }
             None
         }
         StmtKind::Switch {
@@ -42057,6 +43562,7 @@ fn lower_pascal_file_io_member(
                             // A file PARAMETER has no companions — the caller
                             // owns them.
                             pos_var: None,
+                            rec_size_var: None,
                         },
                     );
                 }
@@ -42091,6 +43597,7 @@ fn lower_pascal_file_io_member(
                             // A file PARAMETER has no companions — the caller
                             // owns them.
                             pos_var: None,
+                            rec_size_var: None,
                         },
                     );
                 }
@@ -42135,30 +43642,60 @@ fn lower_pascal_file_io_call_stmt(
         return None;
     };
     let lowered = name.to_ascii_lowercase();
-    let file_expr = args.first().map(|arg| arg.value.clone())?;
-    let info = pascal_file_info_for_expr(&file_expr, scope)?;
+    let Some(file_expr) = args.first().map(|arg| arg.value.clone()) else {
+        lower_pascal_file_io_expr(expr, scope);
+        return None;
+    };
+    let Some(info) = pascal_file_info_for_expr(&file_expr, scope) else {
+        lower_pascal_file_io_expr(expr, scope);
+        return None;
+    };
 
     match lowered.as_str() {
         "assign" | "assignfile" if args.len() >= 2 => {
             let path_var = info.path_var.as_ref()?;
-            Some(StmtKind::Assign {
-                targets: vec![Expression::ident(path_var)],
-                value: args[1].value.clone(),
-                by_ref: false,
-            })
+            Some(StmtKind::Block(vec![
+                Statement::new(StmtKind::Assign {
+                    targets: vec![Expression::ident(path_var)],
+                    value: args[1].value.clone(),
+                    by_ref: false,
+                }),
+                Statement::new(StmtKind::Expr(call_expr(
+                    "__PascalRememberFile",
+                    vec![file_expr.clone(), args[1].value.clone()],
+                ))),
+            ]))
         }
         "rewrite" | "reset" if info.pos_var.is_some() => {
             let pos_var = info.pos_var.as_ref()?;
+            let rec_size_var = info.rec_size_var.as_ref()?;
+            let rec_size = args
+                .get(1)
+                .map(|arg| arg.value.clone())
+                .unwrap_or_else(|| int_expr(128));
             let mut stmts = Vec::new();
             // `Rewrite` CREATES/TRUNCATES; `Reset` opens what is there. No
             // `OpenFile` in either case: that is the legacy whole-file shim,
             // and leaving it in place meant its `CloseFile` wrote an empty
             // buffer back over the bytes `descriptor.write` had just put on
             // disk — BlockWrite reported 4 written and BlockRead then read 0.
+            stmts.push(Statement::new(StmtKind::Assign {
+                targets: vec![Expression::ident(rec_size_var)],
+                value: rec_size,
+                by_ref: false,
+            }));
+            stmts.push(Statement::new(StmtKind::Expr(call_expr(
+                "__PascalSetFileRecSize",
+                vec![file_expr.clone(), Expression::ident(rec_size_var)],
+            ))));
             if lowered == "rewrite" {
                 stmts.push(Statement::new(StmtKind::Expr(call_expr(
                     "__PascalFileTruncate",
-                    vec![pascal_file_path_expr(&info)?, int_expr(0)],
+                    vec![
+                        pascal_file_path_expr(&info)?,
+                        int_expr(0),
+                        Expression::ident(rec_size_var),
+                    ],
                 ))));
             }
             stmts.push(Statement::new(StmtKind::Assign {
@@ -42166,6 +43703,38 @@ fn lower_pascal_file_io_call_stmt(
                 value: int_expr(0),
                 by_ref: false,
             }));
+            stmts.push(Statement::new(StmtKind::Expr(call_expr(
+                "__PascalSetFilePos",
+                vec![file_expr.clone(), int_expr(0)],
+            ))));
+            Some(StmtKind::Block(stmts))
+        }
+        "rewrite" | "reset" if args.len() >= 1 && info.pos_var.is_none() => {
+            let rec_size = args
+                .get(1)
+                .map(|arg| arg.value.clone())
+                .unwrap_or_else(|| int_expr(128));
+            let path = pascal_file_path_expr_or_handle(&info, &file_expr);
+            let mut stmts = vec![
+                Statement::new(StmtKind::Expr(call_expr(
+                    "__PascalSetFileRecSize",
+                    vec![file_expr.clone(), rec_size],
+                ))),
+            ];
+            if lowered == "rewrite" {
+                stmts.push(Statement::new(StmtKind::Expr(call_expr(
+                    "__PascalFileTruncate",
+                    vec![
+                        path,
+                        int_expr(0),
+                        call_expr("__PascalGetFileRecSize", vec![file_expr.clone()]),
+                    ],
+                ))));
+            }
+            stmts.push(Statement::new(StmtKind::Expr(call_expr(
+                "__PascalSetFilePos",
+                vec![file_expr.clone(), int_expr(0)],
+            ))));
             Some(StmtKind::Block(stmts))
         }
         // Nothing to close — the descriptor is opened per operation and the
@@ -42176,26 +43745,63 @@ fn lower_pascal_file_io_call_stmt(
         // from here on", so it decomposes into (array, start).
         "blockwrite" | "blockread" if info.pos_var.is_some() && args.len() >= 3 => {
             let pos_var = info.pos_var.as_ref()?;
+            let rec_size_var = info.rec_size_var.as_ref()?;
             let (buffer, start) = pascal_block_buffer_and_start(&args[1].value);
             let count = args[2].value.clone();
             let helper = if lowered == "blockwrite" {
-                "__PascalBlockWrite"
+                if matches!(args[1].value.kind, ExprKind::Ident(_))
+                    && pascal_int_literal_value(&args[2].value).is_some_and(|value| value == 1)
+                {
+                    "__PascalBlockWriteByte"
+                } else {
+                    "__PascalBlockWrite"
+                }
             } else {
                 "__PascalBlockRead"
             };
-            let transferred = call_expr(
-                helper,
-                vec![
+            let mut helper_args = vec![
                     pascal_file_path_expr(&info)?,
                     Expression::ident(pos_var),
-                    buffer,
-                    start,
-                    count,
-                ],
-            );
+                    Expression::ident(rec_size_var),
+            ];
+            if helper == "__PascalBlockWriteByte" {
+                helper_args.push(args[1].value.clone());
+            } else {
+                helper_args.push(buffer);
+                helper_args.push(start);
+                helper_args.push(count);
+            }
+            let transferred = call_expr(helper, helper_args);
             // The count-out is a `var` parameter, so it is a PLACE when the
             // program supplies one and simply dropped when it does not.
             let mut stmts = Vec::new();
+            if lowered == "blockread"
+                && matches!(args[1].value.kind, ExprKind::Ident(_))
+            {
+                let value = if pascal_int_literal_value(&args[2].value).is_some_and(|value| value == 1) {
+                    call_expr(
+                        "__PascalBlockPeekByte",
+                        vec![
+                            pascal_file_path_expr_or_handle(&info, &file_expr),
+                            Expression::ident(pos_var),
+                            Expression::ident(rec_size_var),
+                        ],
+                    )
+                } else {
+                    call_expr(
+                        "__PascalBlockReadValue",
+                        vec![
+                            pascal_file_path_expr_or_handle(&info, &file_expr),
+                            Expression::ident(pos_var),
+                        ],
+                    )
+                };
+                stmts.push(Statement::new(StmtKind::Assign {
+                    targets: vec![args[1].value.clone()],
+                    value,
+                    by_ref: false,
+                }));
+            }
             match args.get(3).map(|arg| arg.value.clone()) {
                 Some(out) => {
                     stmts.push(Statement::new(StmtKind::Assign {
@@ -42208,6 +43814,10 @@ fn lower_pascal_file_io_call_stmt(
                         value: bin_expr(BinOp::Add, Expression::ident(pos_var), out),
                         by_ref: false,
                     }));
+                    stmts.push(Statement::new(StmtKind::Expr(call_expr(
+                        "__PascalSetFilePos",
+                        vec![file_expr.clone(), Expression::ident(pos_var)],
+                    ))));
                 }
                 None => {
                     let scratch = format!("{}__n", pos_var);
@@ -42225,23 +43835,84 @@ fn lower_pascal_file_io_call_stmt(
                         ),
                         by_ref: false,
                     }));
+                    stmts.push(Statement::new(StmtKind::Expr(call_expr(
+                        "__PascalSetFilePos",
+                        vec![file_expr.clone(), Expression::ident(pos_var)],
+                    ))));
                 }
             }
             Some(StmtKind::Block(stmts))
         }
+        "blockwrite" | "blockread" if info.pos_var.is_none() && args.len() >= 3 => {
+            let (buffer, start) = pascal_block_buffer_and_start(&args[1].value);
+            let count = args[2].value.clone();
+            let path = pascal_file_path_expr_or_handle(&info, &file_expr);
+            let pos = call_expr("__PascalGetFilePos", vec![file_expr.clone()]);
+            let rec_size = call_expr("__PascalGetFileRecSize", vec![file_expr.clone()]);
+            let helper = if lowered == "blockwrite" {
+                "__PascalBlockWrite"
+            } else {
+                "__PascalBlockRead"
+            };
+            let transferred = call_expr(
+                helper,
+                vec![
+                    path.clone(),
+                    pos.clone(),
+                    rec_size.clone(),
+                    buffer,
+                    start,
+                    count,
+                ],
+            );
+            let mut stmts = Vec::new();
+            if lowered == "blockread" && matches!(args[1].value.kind, ExprKind::Ident(_)) {
+                stmts.push(Statement::new(StmtKind::Assign {
+                    targets: vec![args[1].value.clone()],
+                    value: call_expr("__PascalBlockReadValue", vec![path, pos]),
+                    by_ref: false,
+                }));
+            }
+            let out = args
+                .get(3)
+                .map(|arg| arg.value.clone())
+                .unwrap_or_else(|| Expression::ident("__pascal_file_param_n"));
+            stmts.push(Statement::new(StmtKind::Assign {
+                targets: vec![out.clone()],
+                value: transferred,
+                by_ref: false,
+            }));
+            stmts.push(Statement::new(StmtKind::Expr(call_expr(
+                "__PascalSetFilePos",
+                vec![
+                    file_expr.clone(),
+                    bin_expr(BinOp::Add, call_expr("__PascalGetFilePos", vec![file_expr.clone()]), out),
+                ],
+            ))));
+            Some(StmtKind::Block(stmts))
+        }
         "seek" if info.pos_var.is_some() && args.len() >= 2 => {
             let pos_var = info.pos_var.as_ref()?;
-            Some(StmtKind::Assign {
-                targets: vec![Expression::ident(pos_var)],
-                value: args[1].value.clone(),
-                by_ref: false,
-            })
+            let mut value = args[1].value.clone();
+            lower_pascal_file_io_expr(&mut value, scope);
+            Some(StmtKind::Block(vec![
+                Statement::new(StmtKind::Assign {
+                    targets: vec![Expression::ident(pos_var)],
+                    value,
+                    by_ref: false,
+                }),
+                Statement::new(StmtKind::Expr(call_expr(
+                    "__PascalSetFilePos",
+                    vec![file_expr.clone(), Expression::ident(pos_var)],
+                ))),
+            ]))
         }
         "truncate" if info.pos_var.is_some() => Some(StmtKind::Expr(call_expr(
             "__PascalFileTruncate",
             vec![
                 pascal_file_path_expr(&info)?,
                 Expression::ident(info.pos_var.as_ref()?),
+                Expression::ident(info.rec_size_var.as_ref()?),
             ],
         ))),
         "rewrite" => Some(StmtKind::OpenFile {
@@ -42404,6 +44075,13 @@ fn pascal_file_path_expr(info: &PascalFileInfo) -> Option<Expression> {
     info.path_var.as_deref().map(Expression::ident)
 }
 
+fn pascal_file_path_expr_or_handle(info: &PascalFileInfo, handle: &Expression) -> Expression {
+    info.path_var
+        .as_deref()
+        .map(Expression::ident)
+        .unwrap_or_else(|| call_expr("__PascalPathOf", vec![handle.clone()]))
+}
+
 fn pascal_file_info_for_expr(
     expr: &Expression,
     scope: &std::collections::HashMap<String, PascalFileInfo>,
@@ -42441,9 +44119,16 @@ fn lower_pascal_file_io_expr(
                         pascal_file_info_for_expr(&args[0].value, scope).filter(|i| i.pos_var.is_some())
                     {
                         let pos_var = info.pos_var.clone().unwrap();
-                        let path = info.path_var.clone().map(|p| Expression::ident(&p));
-                        if let Some(path) = path {
-                            let size = call_expr("__PascalFileSizeBytes", vec![path]);
+                        let path = pascal_file_path_expr_or_handle(&info, &args[0].value);
+                        let rec_size = info
+                            .rec_size_var
+                            .clone()
+                            .map(|p| Expression::ident(&p))
+                            .unwrap_or_else(|| {
+                                call_expr("__PascalGetFileRecSize", vec![args[0].value.clone()])
+                            });
+                        {
+                            let size = call_expr("__PascalFileSizeRecords", vec![path, rec_size]);
                             *expr = match lowered.as_str() {
                                 "filepos" => Expression::ident(&pos_var),
                                 "filesize" => size,

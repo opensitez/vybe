@@ -106,6 +106,7 @@ ShowMessage     = { emit = "host:web:window:alert",                    min_args 
 # namespace: verbs no WIT declares, unregistered since the flat shim retired,
 # so every one of them was an unresolved import.
 ExtractFileName = { emit = "common:path.file_name",        min_args = 1, max_args = 1 }
+ExtractFilePath = { emit = "common:path.directory",        min_args = 1, max_args = 1 }
 ExtractFileDir  = { emit = "common:path.directory",        min_args = 1, max_args = 1 }
 ChangeFileExt   = { emit = "common:path.change_extension", min_args = 2, max_args = 2 }
 ExtractFileExt  = { emit = "common:pascal.extract_file_ext",           min_args = 1, max_args = 1 }
@@ -149,6 +150,8 @@ readln        = { emit = "intrinsic:readline",         min_args = 0, max_args = 
 read          = { emit = "intrinsic:readline",         min_args = 0, max_args = 1 }
 eof           = { emit = "common:pascal.file_eof",          min_args = 1, max_args = 1 }
 fileexists    = { emit = "common:filesystem.exists", min_args = 1, max_args = 1 }
+fillchar      = { emit = "common:pascal.fill_char", min_args = 3, max_args = 3 }
+executeprocess = { emit = "common:pascal.process_execute_process", min_args = 2, max_args = 3 }
 
 # SysUtils file/directory routines. Every one of these binds to a
 # `wasi:filesystem` export that ALREADY exists — the same surface go, php and
@@ -164,6 +167,9 @@ createdir        = { emit = "common:filesystem.mkdir", min_args = 1, max_args = 
 # as its second argument, which is what makes these the same call.
 forcedirectories = { emit = "common:filesystem.mkdir_all", min_args = 1, max_args = 2 }
 renamefile       = { emit = "common:filesystem.rename", min_args = 2, max_args = 2 }
+fileage          = { emit = "common:pascal.file_age", min_args = 1, max_args = 1 }
+filegetattr      = { emit = "common:pascal.file_get_attr", min_args = 1, max_args = 1 }
+filesetattr      = { emit = "common:pascal.file_set_attr", min_args = 2, max_args = 2 }
 # NOT bound: `FileAge` wants the last-modified stamp, and `modified` is a
 # FIELD of what `wasi:filesystem:stat` returns, not an export of its own. A
 # profile emit names a function, so this one needs a lowering, not a binding —
@@ -172,7 +178,7 @@ expandfilename   = { emit = "common:path.full_path", min_args = 1, max_args = 1 
 # `wasi:cli/environment` exposes the working directory under BOTH proposal
 # spellings (`initial-cwd` in 0.2.x, `get-initial-cwd` in 0.3.x); this binds the
 # 0.2.x one the platform registers alongside the other.
-getcurrentdir    = { emit = "host:wasi:cli/environment:initial-cwd", min_args = 0, max_args = 0 }
+getcurrentdir    = { emit = "host:wasi:cli/environment:get-initial-cwd", min_args = 0, max_args = 0 }
 flush         = { emit = "noop",                            min_args = 1, max_args = 1 }
 # `common:filesystem.*` — the numbered-handle lowering in `fs_path.rs`, the same
 # one VB's `Open #1 For Output` reaches. It is `open-at` plus the positioned
@@ -205,8 +211,11 @@ __pascal_file_exists    = { emit = "common:filesystem.exists", min_args = 1, max
 __pascal_path_combine   = { emit = "common:path.combine", min_args = 2, max_args = 2 }
 __pascal_file_read_all  = { emit = "common:filesystem.read_file", min_args = 1, max_args = 1 }
 __pascal_file_write_all = { emit = "common:filesystem.write_file", min_args = 2, max_args = 2 }
+__pascal_file_read_bytes  = { emit = "common:filesystem.read_file_bytes", min_args = 1, max_args = 1 }
+__pascal_file_write_bytes = { emit = "common:pascal.file_write_bytes", min_args = 2, max_args = 2 }
 __pascal_dir_exists     = { emit = "common:filesystem.is_dir", min_args = 1, max_args = 1 }
 __pascal_dir_create     = { emit = "common:filesystem.mkdir", min_args = 1, max_args = 2 }
+__pascal_process_execute = { emit = "common:pascal.process_execute", min_args = 1, max_args = 1 }
 
 # ── Positional file I/O — the real WASI 0.2.8 descriptor interface ─────────
 #
@@ -261,6 +270,17 @@ __pascal_f64_ne    = { emit = "common:pascal.f64_ne",      min_args = 2, max_arg
 __pascal_currency_round = { emit = "common:pascal.currency_round", min_args = 1, max_args = 1 }
 __pascal_array_contains = { emit = "common:collections.contains", min_args = 2, max_args = 2 }
 __pascal_json_object_new = { emit = "common:pascal.json_object_new", min_args = 0, max_args = 0 }
+# `a div b` with the zero check at the call site; the walker routes every
+# integer division here.
+__pascal_safe_idiv = { emit = "common:pascal.safe_idiv", min_args = 2, max_args = 2 }
+# Program-visible runtime state (`System.pas` / `SysUtils.pas` variables): the
+# walker turns a read into the getter and an assignment into the setter.
+__pascal_get_exceptobject    = { emit = "common:pascal.get_exceptobject",    min_args = 0, max_args = 0 }
+__pascal_set_exceptobject    = { emit = "common:pascal.set_exceptobject",    min_args = 1, max_args = 1 }
+__pascal_get_exceptaddr      = { emit = "common:pascal.get_exceptaddr",      min_args = 0, max_args = 0 }
+__pascal_set_exceptaddr      = { emit = "common:pascal.set_exceptaddr",      min_args = 1, max_args = 1 }
+__pascal_get_asserterrorproc = { emit = "common:pascal.get_asserterrorproc", min_args = 0, max_args = 0 }
+__pascal_set_asserterrorproc = { emit = "common:pascal.set_asserterrorproc", min_args = 1, max_args = 1 }
 __pascal_json_array_new = { emit = "common:pascal.json_array_new", min_args = 0, max_args = 0 }
 __pascal_json_add_pair = { emit = "common:pascal.json_add_pair", min_args = 3, max_args = 3 }
 __pascal_json_array_add = { emit = "common:pascal.json_array_add", min_args = 2, max_args = 2 }
@@ -340,6 +360,7 @@ __vybe_pascal_set_difference = { emit = "common:sets.difference", min_args = 2, 
 __vybe_pascal_set_symmetric_difference = { emit = "common:sets.symmetric_difference", min_args = 2, max_args = 2 }
 __vybe_pascal_set_subset = { emit = "common:sets.is_subset_of", min_args = 2, max_args = 2 }
 __vybe_pascal_set_superset = { emit = "common:sets.is_superset_of", min_args = 2, max_args = 2 }
+__vybe_pascal_set_values = { emit = "common:pascal.set_values", min_args = 1, max_args = 1 }
 __pascal_int_xor = { emit = "common:pascal.int_xor",       min_args = 2, max_args = 2 }
 format        = { emit = "common:sprintf.format",          min_args = 1, max_args = 255 }
 stringreplace = { emit = "common:strings.replace",         min_args = 3, max_args = 4 }
