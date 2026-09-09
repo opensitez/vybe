@@ -9,10 +9,9 @@
 //! emits a direct call-by-name to it. This keeps the implementation in
 //! Rust bytecode (no JS polyfill) and in the proper emitter path.
 
-
 use vybe_compiler::primitives::instructions::core_wasm;
-use vybe_runtime::opcode::Op;
 use vybe_runtime::Chunk;
+use vybe_runtime::opcode::Op;
 
 const CHUNK_NAME: &str = "__libc_fmt_sprintf";
 

@@ -390,10 +390,7 @@ fn socket_helpers() -> Vec<Statement> {
                         ident("__c_udp_stream_h"),
                         vec![ident("fd")],
                     ))),
-                    var_decl_stmt(
-                        "ds",
-                        index_expr(ident("__c_sock_res"), ident("fd")),
-                    ),
+                    var_decl_stmt("ds", index_expr(ident("__c_sock_res"), ident("fd"))),
                     if_stmt(
                         bin(BinOp::NotEq, ident("ds"), null_lit()),
                         vec![
@@ -625,10 +622,7 @@ fn socket_helpers() -> Vec<Statement> {
                 ],
                 None,
             ),
-            var_decl_stmt(
-                "ds",
-                index_expr(ident("__c_sock_res"), ident("fd")),
-            ),
+            var_decl_stmt("ds", index_expr(ident("__c_sock_res"), ident("fd"))),
             if_stmt(
                 bin(BinOp::NotEq, ident("ds"), null_lit()),
                 vec![
@@ -1452,11 +1446,7 @@ fn addr_fill_helper() -> Statement {
             stmt(StmtKind::Expr(assign_expr(
                 member(ident("addr"), "sin_family"),
                 ternary(
-                    bin(
-                        BinOp::Eq,
-                        member(ident("rec"), "family"),
-                        str_lit("ipv6"),
-                    ),
+                    bin(BinOp::Eq, member(ident("rec"), "family"), str_lit("ipv6")),
                     int_lit(30),
                     int_lit(2),
                 ),
@@ -1491,11 +1481,7 @@ fn addr_fill_helper() -> Statement {
                         ),
                         bin(
                             BinOp::Add,
-                            bin(
-                                BinOp::Mul,
-                                index_expr(ident("o"), int_lit(2)),
-                                int_lit(256),
-                            ),
+                            bin(BinOp::Mul, index_expr(ident("o"), int_lit(2)), int_lit(256)),
                             index_expr(ident("o"), int_lit(3)),
                         ),
                     ),
@@ -1918,10 +1904,8 @@ pub fn header_structs(header: &str) -> Vec<HeaderStruct> {
             "sockaddr_un",
             &[("sun_family", "int"), ("sun_path", "char[108]")],
         )],
-        // SDL2 event structs (`sdlplan.md` Tier 1). SDL_Event is a UNION in
-        // real SDL; here it is a struct carrying every view Doom reads —
-        // `type`, `key.keysym.*`, `motion.*`, `button.*`, `wheel.*` — which is
-        // exactly the shape SDL_PollEvent fills from a `web:ui-events` event.
+        // SDL2 event/value structs (`sdlplan.md`). SDL_Event is a UNION in
+        // real SDL; here it is a struct carrying every view Doom reads.
         "SDL.h" | "SDL2/SDL.h" | "SDL_events.h" | "SDL2/SDL_events.h" => vec![
             (
                 "SDL_Rect",
@@ -1950,6 +1934,42 @@ pub fn header_structs(header: &str) -> Vec<HeaderStruct> {
             ),
             ("SDL_MouseWheelEvent", &[("x", "int"), ("y", "int")]),
             (
+                "SDL_WindowEvent",
+                &[
+                    ("type", "int"),
+                    ("windowID", "int"),
+                    ("event", "int"),
+                    ("data1", "int"),
+                    ("data2", "int"),
+                ],
+            ),
+            (
+                "SDL_Color",
+                &[("r", "int"), ("g", "int"), ("b", "int"), ("a", "int")],
+            ),
+            (
+                "SDL_RendererInfo",
+                &[
+                    ("flags", "int"),
+                    ("num_texture_formats", "int"),
+                    ("max_texture_width", "int"),
+                    ("max_texture_height", "int"),
+                ],
+            ),
+            (
+                "SDL_DisplayMode",
+                &[
+                    ("format", "int"),
+                    ("w", "int"),
+                    ("h", "int"),
+                    ("refresh_rate", "int"),
+                ],
+            ),
+            (
+                "SDL_version",
+                &[("major", "int"), ("minor", "int"), ("patch", "int")],
+            ),
+            (
                 "SDL_Event",
                 &[
                     ("type", "int"),
@@ -1957,6 +1977,7 @@ pub fn header_structs(header: &str) -> Vec<HeaderStruct> {
                     ("motion", "SDL_MouseMotionEvent"),
                     ("button", "SDL_MouseButtonEvent"),
                     ("wheel", "SDL_MouseWheelEvent"),
+                    ("window", "SDL_WindowEvent"),
                 ],
             ),
         ],

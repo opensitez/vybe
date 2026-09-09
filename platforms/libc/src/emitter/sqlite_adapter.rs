@@ -331,13 +331,7 @@ pub fn emit_errcode(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
 
 /// Route a `sqlite3_*` call. Accepts the bare C name and both mounted paths so
 /// a C `#include` and a Fortran `bind(c)` land on the same emitter.
-pub fn emit_sqlite(
-    name: &str,
-    chunks: &mut [Chunk],
-    current: usize,
-    argc: u8,
-    line: u32,
-) -> bool {
+pub fn emit_sqlite(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, line: u32) -> bool {
     let leaf = name.rsplit('.').next().unwrap_or(name);
     match leaf {
         "sqlite3_open" => emit_open(chunks, current, argc, line),
@@ -348,9 +342,7 @@ pub fn emit_sqlite(
         "sqlite3_finalize" => emit_finalize(chunks, current, argc, line),
         "sqlite3_reset" => emit_reset(chunks, current, argc, line),
         "sqlite3_errmsg" => emit_errmsg(chunks, current, argc, line),
-        "sqlite3_errcode" | "sqlite3_extended_errcode" => {
-            emit_errcode(chunks, current, argc, line)
-        }
+        "sqlite3_errcode" | "sqlite3_extended_errcode" => emit_errcode(chunks, current, argc, line),
         _ => return false,
     }
     true

@@ -98,7 +98,13 @@ fn emit_large_arg(
     lget(&mut chunks[current], x, line);
     horner(chunks, current, t, phase, line);
     chunks[current].emit_op(Op::F64_ADD, line);
-    call_math(chunks, current, if use_sin { "sin" } else { "cos" }, 1, line);
+    call_math(
+        chunks,
+        current,
+        if use_sin { "sin" } else { "cos" },
+        1,
+        line,
+    );
     chunks[current].emit_op(Op::F64_MUL, line);
 }
 
@@ -324,8 +330,7 @@ fn emit_recurrence(chunks: &mut [Chunk], current: usize, use_y: bool, line: u32)
     // unconditionally, with the condition evaluating correctly and being
     // ignored. Unbalanced blocks in an adapter corrupt the ENCLOSING
     // structure, and the symptom appears nowhere near the cause.
-    let loop_state =
-        vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
+    let loop_state = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
     lget(&mut chunks[current], k, line);
     lget(&mut chunks[current], n, line);
     chunks[current].emit_op(Op::F64_LT, line);
@@ -404,7 +409,13 @@ pub fn emit_erfcx(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op(Op::F64_MUL, line);
     chunks[current].emit_op(Op::F64_DIV, line);
     // 1 - t/2 + 3t^2/4 - 15t^3/8 + 105t^4/16
-    horner(chunks, current, t, &[6.562_5, -1.875, 0.75, -0.5, 1.0], line);
+    horner(
+        chunks,
+        current,
+        t,
+        &[6.562_5, -1.875, 0.75, -0.5, 1.0],
+        line,
+    );
     chunks[current].emit_op(Op::F64_MUL, line);
     chunks[current].emit_end(line);
 }

@@ -5,6 +5,21 @@ use vybe_ast::{ExprKind, Expression, Literal, ObjectProperty};
 
 use super::build::{expr, str_lit};
 
+fn kv(key: &str, value: Expression) -> ObjectProperty {
+    ObjectProperty::KeyValue {
+        key: str_lit(key),
+        value,
+    }
+}
+
+fn empty_array() -> Expression {
+    expr(ExprKind::Array(Vec::new()))
+}
+
+fn int(value: i64) -> Expression {
+    expr(ExprKind::Lit(Literal::Int(value)))
+}
+
 /// `SDL_CreateRGBSurface(flags, w, h, depth, rmask, gmask, bmask, amask)`
 /// → an offscreen surface the GUEST owns.
 ///
@@ -28,24 +43,79 @@ pub fn create_rgb_surface(
     depth: Expression,
     pitch: Expression,
 ) -> Expression {
-    let kv = |k: &str, v: Expression| ObjectProperty::KeyValue {
-        key: str_lit(k),
-        value: v,
-    };
-    let empty = || expr(ExprKind::Array(Vec::new()));
     expr(ExprKind::Object(vec![
         kv("w", w),
         kv("h", h),
         kv("depth", depth),
         kv("pitch", pitch),
-        kv("pixels", empty()),
+        kv("pixels", empty_array()),
         kv(
             "format",
             expr(ExprKind::Object(vec![
-                kv("palette", empty()),
-                kv("BytesPerPixel", expr(ExprKind::Lit(Literal::Int(1)))),
+                kv("palette", empty_array()),
+                kv("BytesPerPixel", int(1)),
             ])),
         ),
+    ]))
+}
+
+pub fn create_rgb_surface_from(
+    pixels: Expression,
+    w: Expression,
+    h: Expression,
+    depth: Expression,
+    pitch: Expression,
+) -> Expression {
+    expr(ExprKind::Object(vec![
+        kv("w", w),
+        kv("h", h),
+        kv("depth", depth),
+        kv("pitch", pitch),
+        kv("pixels", pixels),
+        kv(
+            "format",
+            expr(ExprKind::Object(vec![
+                kv("palette", empty_array()),
+                kv("BytesPerPixel", int(4)),
+            ])),
+        ),
+    ]))
+}
+
+pub fn create_renderer(window: Expression, flags: Expression) -> Expression {
+    expr(ExprKind::Object(vec![
+        kv("window", window),
+        kv("flags", flags),
+        kv("r", int(0)),
+        kv("g", int(0)),
+        kv("b", int(0)),
+        kv("a", int(255)),
+        kv("target", expr(ExprKind::Lit(Literal::Null))),
+    ]))
+}
+
+pub fn create_texture(
+    renderer: Expression,
+    format: Expression,
+    access: Expression,
+    w: Expression,
+    h: Expression,
+) -> Expression {
+    expr(ExprKind::Object(vec![
+        kv("renderer", renderer),
+        kv("format", format),
+        kv("access", access),
+        kv("w", w.clone()),
+        kv("h", h.clone()),
+        kv(
+            "pitch",
+            expr(ExprKind::Binary {
+                op: vybe_ast::BinOp::Mul,
+                left: Box::new(w),
+                right: Box::new(int(4)),
+            }),
+        ),
+        kv("pixels", empty_array()),
     ]))
 }
 
@@ -382,6 +452,7 @@ pub fn emit_sdl_create_window(chunks: &mut [Chunk], current: usize, _argc: u8, l
     let w = chunks[current].alloc_scratch(1);
     let h = chunks[current].alloc_scratch(1);
     let _flags = chunks[current].alloc_scratch(1);
+    let tmp = chunks[current].alloc_scratch(1);
 
     emit_set_local(chunks, current, _flags, line);
     emit_set_local(chunks, current, h, line);
@@ -405,6 +476,10 @@ pub fn emit_sdl_create_window(chunks: &mut [Chunk], current: usize, _argc: u8, l
 
     emit_set_attribute(chunks, current, canvas, "width", w, line);
     emit_set_attribute(chunks, current, canvas, "height", h, line);
+    emit_get_local(chunks, current, w, line);
+    emit_store_field(chunks, current, canvas, "width", tmp, line);
+    emit_get_local(chunks, current, h, line);
+    emit_store_field(chunks, current, canvas, "height", tmp, line);
 
     // document.body.appendChild(canvas) — the page now HAS content, which is
     // the same test the window runner starts on (`gui_document::with_live`).
@@ -1195,7 +1270,461 @@ pub fn emit_sdl_map_rgba(chunks: &mut [Chunk], current: usize, _argc: u8, line: 
     chunks[current].emit_op(Op::F64_CONVERT_I32_U, line);
 }
 
+fn emit_success_drop(chunks: &mut [Chunk], current: usize, argc: u8, value: i32, line: u32) {
+    emit_drop(chunks, current, argc, line);
+    chunks[current].emit_i32_const(value, line);
+}
+
+fn emit_string_drop(chunks: &mut [Chunk], current: usize, argc: u8, value: &str, line: u32) {
+    emit_drop(chunks, current, argc, line);
+    chunks[current].emit_string_const(value, line);
+}
+
+fn emit_null_drop(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    emit_drop(chunks, current, argc, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+}
+
+fn emit_identity_arg(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    if argc == 0 {
+        emit_zero_i32(chunks, current, line);
+    } else {
+        for _ in 1..argc {
+            chunks[current].emit_op(Op::DROP, line);
+        }
+    }
+}
+
+fn emit_sdl_max(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let idx = chunks[current].add_import("ecma:math", "max");
+    chunks[current].emit_call(idx, argc, line);
+}
+
+fn sdl_leaf(name: &str) -> &str {
+    name.rsplit('.').next().unwrap_or(name)
+}
+
+pub fn emit_sdl_quit_subsystem(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    emit_success_drop(chunks, current, argc, 0, line);
+}
+
+pub fn emit_sdl_get_error(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    emit_string_drop(chunks, current, argc, "", line);
+}
+
+pub fn emit_sdl_set_hint(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    emit_success_drop(chunks, current, argc, 1, line);
+}
+
+pub fn emit_sdl_free(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    emit_success_drop(chunks, current, argc, 0, line);
+}
+
+pub fn emit_sdl_get_app_state(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    emit_success_drop(chunks, current, argc, 1, line);
+}
+
+pub fn emit_sdl_get_num_video_displays(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    emit_success_drop(chunks, current, argc, 1, line);
+}
+
+pub fn emit_sdl_get_window_display_index(
+    chunks: &mut [Chunk],
+    current: usize,
+    argc: u8,
+    line: u32,
+) {
+    emit_success_drop(chunks, current, argc, 0, line);
+}
+
+pub fn emit_sdl_get_window_id(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    emit_success_drop(chunks, current, argc, 1, line);
+}
+
+pub fn emit_sdl_get_window_flags(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    emit_success_drop(chunks, current, argc, 0, line);
+}
+
+pub fn emit_sdl_set_window_title(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    emit_success_drop(chunks, current, argc, 0, line);
+}
+
+pub fn emit_sdl_set_window_fullscreen(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    emit_success_drop(chunks, current, argc, 0, line);
+}
+
+pub fn emit_sdl_set_window_icon(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    emit_success_drop(chunks, current, argc, 0, line);
+}
+
+pub fn emit_sdl_set_window_minimum_size(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    emit_success_drop(chunks, current, argc, 0, line);
+}
+
+pub fn emit_sdl_warp_mouse_in_window(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    emit_success_drop(chunks, current, argc, 0, line);
+}
+
+pub fn emit_sdl_set_relative_mouse_mode(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    emit_success_drop(chunks, current, argc, 0, line);
+}
+
+pub fn emit_sdl_text_input_noop(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    emit_success_drop(chunks, current, argc, 0, line);
+}
+
+pub fn emit_sdl_is_text_input_active(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    emit_success_drop(chunks, current, argc, 0, line);
+}
+
+pub fn emit_sdl_get_key_from_scancode(
+    _chunks: &mut [Chunk],
+    _current: usize,
+    _argc: u8,
+    _line: u32,
+) {
+    // Good enough for Doom's fallback paths: printable keys read `keysym.sym`;
+    // this preserves special-key identity rather than failing resolution.
+}
+
+pub fn emit_sdl_get_window_size(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    let window = chunks[current].alloc_scratch(1);
+    let wptr = chunks[current].alloc_scratch(1);
+    let hptr = chunks[current].alloc_scratch(1);
+    let tmp = chunks[current].alloc_scratch(1);
+
+    emit_set_local(chunks, current, hptr, line);
+    emit_set_local(chunks, current, wptr, line);
+    emit_set_local(chunks, current, window, line);
+    emit_deref_cell(chunks, current, window, line);
+
+    emit_get_local(chunks, current, window, line);
+    emit_stack_field(chunks, current, "width", line);
+    emit_store_field(chunks, current, wptr, "__value", tmp, line);
+    emit_get_local(chunks, current, window, line);
+    emit_stack_field(chunks, current, "height", line);
+    emit_store_field(chunks, current, hptr, "__value", tmp, line);
+    emit_zero_i32(chunks, current, line);
+}
+
+pub fn emit_sdl_set_window_size(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    let window = chunks[current].alloc_scratch(1);
+    let w = chunks[current].alloc_scratch(1);
+    let h = chunks[current].alloc_scratch(1);
+    let tmp = chunks[current].alloc_scratch(1);
+
+    emit_set_local(chunks, current, h, line);
+    emit_set_local(chunks, current, w, line);
+    emit_set_local(chunks, current, window, line);
+    emit_deref_cell(chunks, current, window, line);
+    emit_set_attribute(chunks, current, window, "width", w, line);
+    emit_set_attribute(chunks, current, window, "height", h, line);
+    emit_get_local(chunks, current, w, line);
+    emit_store_field(chunks, current, window, "width", tmp, line);
+    emit_get_local(chunks, current, h, line);
+    emit_store_field(chunks, current, window, "height", tmp, line);
+    emit_zero_i32(chunks, current, line);
+}
+
+pub fn emit_sdl_get_renderer_output_size(
+    chunks: &mut [Chunk],
+    current: usize,
+    _argc: u8,
+    line: u32,
+) {
+    let renderer = chunks[current].alloc_scratch(1);
+    let wptr = chunks[current].alloc_scratch(1);
+    let hptr = chunks[current].alloc_scratch(1);
+    let tmp = chunks[current].alloc_scratch(1);
+
+    emit_set_local(chunks, current, hptr, line);
+    emit_set_local(chunks, current, wptr, line);
+    emit_set_local(chunks, current, renderer, line);
+    emit_deref_cell(chunks, current, renderer, line);
+
+    emit_get_local(chunks, current, renderer, line);
+    emit_stack_field(chunks, current, "window", line);
+    emit_stack_field(chunks, current, "width", line);
+    emit_store_field(chunks, current, wptr, "__value", tmp, line);
+    emit_get_local(chunks, current, renderer, line);
+    emit_stack_field(chunks, current, "window", line);
+    emit_stack_field(chunks, current, "height", line);
+    emit_store_field(chunks, current, hptr, "__value", tmp, line);
+    emit_zero_i32(chunks, current, line);
+}
+
+pub fn emit_sdl_set_render_draw_color(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    let renderer = chunks[current].alloc_scratch(1);
+    let r = chunks[current].alloc_scratch(1);
+    let g = chunks[current].alloc_scratch(1);
+    let b = chunks[current].alloc_scratch(1);
+    let a = chunks[current].alloc_scratch(1);
+    let tmp = chunks[current].alloc_scratch(1);
+
+    emit_set_local(chunks, current, a, line);
+    emit_set_local(chunks, current, b, line);
+    emit_set_local(chunks, current, g, line);
+    emit_set_local(chunks, current, r, line);
+    emit_set_local(chunks, current, renderer, line);
+    emit_deref_cell(chunks, current, renderer, line);
+
+    for (field, slot) in [("r", r), ("g", g), ("b", b), ("a", a)] {
+        emit_get_local(chunks, current, slot, line);
+        emit_store_field(chunks, current, renderer, field, tmp, line);
+    }
+    emit_zero_i32(chunks, current, line);
+}
+
+pub fn emit_sdl_render_clear(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    let renderer = chunks[current].alloc_scratch(1);
+    let ctx = chunks[current].alloc_scratch(1);
+    emit_set_local(chunks, current, renderer, line);
+    emit_deref_cell(chunks, current, renderer, line);
+
+    emit_get_local(chunks, current, renderer, line);
+    emit_stack_field(chunks, current, "window", line);
+    chunks[current].emit_string_const("2d", line);
+    emit_canvas_call(chunks, current, "getContext", 2, line);
+    emit_set_local(chunks, current, ctx, line);
+
+    emit_get_local(chunks, current, ctx, line);
+    emit_load_f64_from_struct(chunks, current, renderer, "r", line);
+    emit_load_f64_from_struct(chunks, current, renderer, "g", line);
+    emit_load_f64_from_struct(chunks, current, renderer, "b", line);
+    emit_load_f64_from_struct(chunks, current, renderer, "a", line);
+    emit_canvas_call(chunks, current, "setFillStyle", 5, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    emit_get_local(chunks, current, ctx, line);
+    chunks[current].emit_f64_const(0.0, line);
+    chunks[current].emit_f64_const(0.0, line);
+    emit_get_local(chunks, current, renderer, line);
+    emit_stack_field(chunks, current, "window", line);
+    emit_stack_field(chunks, current, "width", line);
+    emit_get_local(chunks, current, renderer, line);
+    emit_stack_field(chunks, current, "window", line);
+    emit_stack_field(chunks, current, "height", line);
+    emit_canvas_call(chunks, current, "fillRect", 5, line);
+    chunks[current].emit_op(Op::DROP, line);
+    emit_zero_i32(chunks, current, line);
+}
+
+pub fn emit_sdl_render_copy(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    let renderer = chunks[current].alloc_scratch(1);
+    let texture = chunks[current].alloc_scratch(1);
+    let _srcrect = chunks[current].alloc_scratch(1);
+    let _dstrect = chunks[current].alloc_scratch(1);
+
+    emit_set_local(chunks, current, _dstrect, line);
+    emit_set_local(chunks, current, _srcrect, line);
+    emit_set_local(chunks, current, texture, line);
+    emit_set_local(chunks, current, renderer, line);
+    emit_deref_cell(chunks, current, renderer, line);
+    emit_deref_cell(chunks, current, texture, line);
+
+    emit_get_local(chunks, current, renderer, line);
+    emit_stack_field(chunks, current, "window", line);
+    emit_get_local(chunks, current, texture, line);
+    emit_stack_field(chunks, current, "pixels", line);
+    emit_load_f64_from_struct(chunks, current, texture, "w", line);
+    emit_load_f64_from_struct(chunks, current, texture, "h", line);
+    chunks[current].emit_f64_const(0.0, line);
+    chunks[current].emit_f64_const(0.0, line);
+    emit_load_f64_from_struct(chunks, current, texture, "w", line);
+    emit_load_f64_from_struct(chunks, current, texture, "h", line);
+    emit_canvas_call(chunks, current, "drawImage", 8, line);
+    chunks[current].emit_op(Op::DROP, line);
+    emit_zero_i32(chunks, current, line);
+}
+
+pub fn emit_sdl_render_present(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    emit_success_drop(chunks, current, argc, 0, line);
+}
+
+pub fn emit_sdl_set_render_target(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    let renderer = chunks[current].alloc_scratch(1);
+    let target = chunks[current].alloc_scratch(1);
+    let tmp = chunks[current].alloc_scratch(1);
+    emit_set_local(chunks, current, target, line);
+    emit_set_local(chunks, current, renderer, line);
+    emit_deref_cell(chunks, current, renderer, line);
+    emit_get_local(chunks, current, target, line);
+    emit_store_field(chunks, current, renderer, "target", tmp, line);
+    emit_zero_i32(chunks, current, line);
+}
+
+pub fn emit_sdl_texture_noop(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    emit_success_drop(chunks, current, argc, 0, line);
+}
+
+pub fn emit_sdl_lock_texture(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    let texture = chunks[current].alloc_scratch(1);
+    let _rect = chunks[current].alloc_scratch(1);
+    let pixels_ptr = chunks[current].alloc_scratch(1);
+    let pitch_ptr = chunks[current].alloc_scratch(1);
+    let tmp = chunks[current].alloc_scratch(1);
+
+    emit_set_local(chunks, current, pitch_ptr, line);
+    emit_set_local(chunks, current, pixels_ptr, line);
+    emit_set_local(chunks, current, _rect, line);
+    emit_set_local(chunks, current, texture, line);
+    emit_deref_cell(chunks, current, texture, line);
+
+    emit_get_local(chunks, current, texture, line);
+    emit_stack_field(chunks, current, "pixels", line);
+    emit_store_field(chunks, current, pixels_ptr, "__value", tmp, line);
+    emit_get_local(chunks, current, texture, line);
+    emit_stack_field(chunks, current, "pitch", line);
+    emit_store_field(chunks, current, pitch_ptr, "__value", tmp, line);
+    emit_zero_i32(chunks, current, line);
+}
+
+pub fn emit_sdl_get_renderer_info(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    let _renderer = chunks[current].alloc_scratch(1);
+    let info = chunks[current].alloc_scratch(1);
+    let tmp = chunks[current].alloc_scratch(1);
+
+    emit_set_local(chunks, current, info, line);
+    emit_set_local(chunks, current, _renderer, line);
+    emit_deref_cell(chunks, current, info, line);
+    for (field, value) in [
+        ("flags", 0),
+        ("num_texture_formats", 1),
+        ("max_texture_width", 4096),
+        ("max_texture_height", 4096),
+    ] {
+        chunks[current].emit_i32_const(value, line);
+        emit_store_field(chunks, current, info, field, tmp, line);
+    }
+    emit_zero_i32(chunks, current, line);
+}
+
+pub fn emit_sdl_get_display_bounds(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    let _display = chunks[current].alloc_scratch(1);
+    let rect = chunks[current].alloc_scratch(1);
+    let tmp = chunks[current].alloc_scratch(1);
+    emit_set_local(chunks, current, rect, line);
+    emit_set_local(chunks, current, _display, line);
+    emit_deref_cell(chunks, current, rect, line);
+    for (field, value) in [("x", 0), ("y", 0), ("w", 800), ("h", 600)] {
+        chunks[current].emit_i32_const(value, line);
+        emit_store_field(chunks, current, rect, field, tmp, line);
+    }
+    emit_zero_i32(chunks, current, line);
+}
+
+pub fn emit_sdl_get_current_display_mode(
+    chunks: &mut [Chunk],
+    current: usize,
+    _argc: u8,
+    line: u32,
+) {
+    let _display = chunks[current].alloc_scratch(1);
+    let mode = chunks[current].alloc_scratch(1);
+    let tmp = chunks[current].alloc_scratch(1);
+    emit_set_local(chunks, current, mode, line);
+    emit_set_local(chunks, current, _display, line);
+    emit_deref_cell(chunks, current, mode, line);
+    for (field, value) in [
+        ("format", 372645892),
+        ("w", 800),
+        ("h", 600),
+        ("refresh_rate", 60),
+    ] {
+        chunks[current].emit_i32_const(value, line);
+        emit_store_field(chunks, current, mode, field, tmp, line);
+    }
+    emit_zero_i32(chunks, current, line);
+}
+
+pub fn emit_sdl_get_version(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    let version = chunks[current].alloc_scratch(1);
+    let tmp = chunks[current].alloc_scratch(1);
+    emit_set_local(chunks, current, version, line);
+    emit_deref_cell(chunks, current, version, line);
+    for (field, value) in [("major", 2), ("minor", 28), ("patch", 0)] {
+        chunks[current].emit_i32_const(value, line);
+        emit_store_field(chunks, current, version, field, tmp, line);
+    }
+    emit_zero_i32(chunks, current, line);
+}
+
+pub fn emit_sdl_relative_mouse_state(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    emit_success_drop(chunks, current, argc, 0, line);
+}
+
 pub fn emit_sdl(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, line: u32) -> bool {
+    let leaf = sdl_leaf(name);
+    if matches!(
+        leaf,
+        "SDL_SwapLE16" | "SDL_SwapLE32" | "SDL_SwapBE16" | "SDL_SwapBE32"
+    ) {
+        emit_identity_arg(chunks, current, argc, line);
+        return true;
+    }
+    if leaf == "SDL_max" {
+        emit_sdl_max(chunks, current, argc, line);
+        return true;
+    }
+    if matches!(
+        leaf,
+        "Mix_GetError"
+            | "SDLNet_GetError"
+            | "SDL_GameControllerName"
+            | "SDL_JoystickName"
+            | "SDL_JoystickNameForIndex"
+            | "SDL_GameControllerMappingForGUID"
+    ) {
+        emit_string_drop(chunks, current, argc, "", line);
+        return true;
+    }
+    if matches!(
+        leaf,
+        "Mix_LoadMUS"
+            | "Mix_LoadMUS_RW"
+            | "SDL_JoystickOpen"
+            | "SDL_GameControllerOpen"
+            | "SDL_CreateThread"
+            | "SDLNet_UDP_Open"
+            | "SDLNet_AllocPacket"
+            | "SDL_GetPrefPath"
+    ) {
+        emit_null_drop(chunks, current, argc, line);
+        return true;
+    }
+    if leaf.starts_with("Mix_")
+        || leaf.starts_with("SDLNet_")
+        || leaf.starts_with("SDL_Joystick")
+        || leaf.starts_with("SDL_GameController")
+        || matches!(
+            leaf,
+            "SDL_NumJoysticks"
+                | "SDL_IsGameController"
+                | "SDL_JoystickEventState"
+                | "SDL_GameControllerEventState"
+                | "SDL_LockAudio"
+                | "SDL_UnlockAudio"
+                | "SDL_PauseAudio"
+                | "SDL_BuildAudioCVT"
+                | "SDL_ConvertAudio"
+                | "SDL_MixAudioFormat"
+                | "SDL_CreateMutex"
+                | "SDL_DestroyMutex"
+                | "SDL_LockMutex"
+                | "SDL_UnlockMutex"
+                | "SDL_CreateCond"
+                | "SDL_DestroyCond"
+                | "SDL_CondWait"
+                | "SDL_CondSignal"
+                | "SDL_WaitThread"
+                | "SDL_WaitEvent"
+                | "SDL_UpdateWindowSurfaceRects"
+                | "SDL_CreateTextureFromSurface"
+        )
+    {
+        emit_success_drop(chunks, current, argc, 0, line);
+        return true;
+    }
     match name {
         "sdl.SDL_Init" | "libc.sdl.SDL_Init" => {
             emit_sdl_init(chunks, current, argc, line);
@@ -1299,6 +1828,169 @@ pub fn emit_sdl(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, line
         }
         "sdl.SDL_ShowSimpleMessageBox" | "libc.sdl.SDL_ShowSimpleMessageBox" => {
             emit_sdl_show_simple_message_box(chunks, current, argc, line);
+            true
+        }
+        "sdl.SDL_QuitSubSystem" | "libc.sdl.SDL_QuitSubSystem" => {
+            emit_sdl_quit_subsystem(chunks, current, argc, line);
+            true
+        }
+        "sdl.SDL_GetError" | "libc.sdl.SDL_GetError" => {
+            emit_sdl_get_error(chunks, current, argc, line);
+            true
+        }
+        "sdl.SDL_SetHint"
+        | "libc.sdl.SDL_SetHint"
+        | "sdl.SDL_SetHintWithPriority"
+        | "libc.sdl.SDL_SetHintWithPriority" => {
+            emit_sdl_set_hint(chunks, current, argc, line);
+            true
+        }
+        "sdl.SDL_FreeSurface"
+        | "libc.sdl.SDL_FreeSurface"
+        | "sdl.SDL_DestroyRenderer"
+        | "libc.sdl.SDL_DestroyRenderer"
+        | "sdl.SDL_DestroyTexture"
+        | "libc.sdl.SDL_DestroyTexture" => {
+            emit_sdl_free(chunks, current, argc, line);
+            true
+        }
+        "sdl.SDL_GetAppState" | "libc.sdl.SDL_GetAppState" => {
+            emit_sdl_get_app_state(chunks, current, argc, line);
+            true
+        }
+        "sdl.SDL_GetNumVideoDisplays" | "libc.sdl.SDL_GetNumVideoDisplays" => {
+            emit_sdl_get_num_video_displays(chunks, current, argc, line);
+            true
+        }
+        "sdl.SDL_GetWindowDisplayIndex" | "libc.sdl.SDL_GetWindowDisplayIndex" => {
+            emit_sdl_get_window_display_index(chunks, current, argc, line);
+            true
+        }
+        "sdl.SDL_GetWindowID" | "libc.sdl.SDL_GetWindowID" => {
+            emit_sdl_get_window_id(chunks, current, argc, line);
+            true
+        }
+        "sdl.SDL_GetWindowFlags" | "libc.sdl.SDL_GetWindowFlags" => {
+            emit_sdl_get_window_flags(chunks, current, argc, line);
+            true
+        }
+        "sdl.SDL_GetWindowSize" | "libc.sdl.SDL_GetWindowSize" => {
+            emit_sdl_get_window_size(chunks, current, argc, line);
+            true
+        }
+        "sdl.SDL_SetWindowSize" | "libc.sdl.SDL_SetWindowSize" => {
+            emit_sdl_set_window_size(chunks, current, argc, line);
+            true
+        }
+        "sdl.SDL_SetWindowTitle" | "libc.sdl.SDL_SetWindowTitle" => {
+            emit_sdl_set_window_title(chunks, current, argc, line);
+            true
+        }
+        "sdl.SDL_SetWindowFullscreen" | "libc.sdl.SDL_SetWindowFullscreen" => {
+            emit_sdl_set_window_fullscreen(chunks, current, argc, line);
+            true
+        }
+        "sdl.SDL_SetWindowIcon" | "libc.sdl.SDL_SetWindowIcon" => {
+            emit_sdl_set_window_icon(chunks, current, argc, line);
+            true
+        }
+        "sdl.SDL_SetWindowMinimumSize" | "libc.sdl.SDL_SetWindowMinimumSize" => {
+            emit_sdl_set_window_minimum_size(chunks, current, argc, line);
+            true
+        }
+        "sdl.SDL_SetRelativeMouseMode" | "libc.sdl.SDL_SetRelativeMouseMode" => {
+            emit_sdl_set_relative_mouse_mode(chunks, current, argc, line);
+            true
+        }
+        "sdl.SDL_WarpMouseInWindow" | "libc.sdl.SDL_WarpMouseInWindow" => {
+            emit_sdl_warp_mouse_in_window(chunks, current, argc, line);
+            true
+        }
+        "sdl.SDL_GetRelativeMouseState" | "libc.sdl.SDL_GetRelativeMouseState" => {
+            emit_sdl_relative_mouse_state(chunks, current, argc, line);
+            true
+        }
+        "sdl.SDL_StartTextInput"
+        | "libc.sdl.SDL_StartTextInput"
+        | "sdl.SDL_StopTextInput"
+        | "libc.sdl.SDL_StopTextInput"
+        | "sdl.SDL_SetTextInputRect"
+        | "libc.sdl.SDL_SetTextInputRect" => {
+            emit_sdl_text_input_noop(chunks, current, argc, line);
+            true
+        }
+        "sdl.SDL_IsTextInputActive" | "libc.sdl.SDL_IsTextInputActive" => {
+            emit_sdl_is_text_input_active(chunks, current, argc, line);
+            true
+        }
+        "sdl.SDL_GetKeyFromScancode" | "libc.sdl.SDL_GetKeyFromScancode" => {
+            emit_sdl_get_key_from_scancode(chunks, current, argc, line);
+            true
+        }
+        "sdl.SDL_GetRendererOutputSize" | "libc.sdl.SDL_GetRendererOutputSize" => {
+            emit_sdl_get_renderer_output_size(chunks, current, argc, line);
+            true
+        }
+        "sdl.SDL_SetRenderDrawColor" | "libc.sdl.SDL_SetRenderDrawColor" => {
+            emit_sdl_set_render_draw_color(chunks, current, argc, line);
+            true
+        }
+        "sdl.SDL_RenderClear" | "libc.sdl.SDL_RenderClear" => {
+            emit_sdl_render_clear(chunks, current, argc, line);
+            true
+        }
+        "sdl.SDL_RenderCopy" | "libc.sdl.SDL_RenderCopy" => {
+            emit_sdl_render_copy(chunks, current, argc, line);
+            true
+        }
+        "sdl.SDL_RenderPresent" | "libc.sdl.SDL_RenderPresent" => {
+            emit_sdl_render_present(chunks, current, argc, line);
+            true
+        }
+        "sdl.SDL_SetRenderTarget" | "libc.sdl.SDL_SetRenderTarget" => {
+            emit_sdl_set_render_target(chunks, current, argc, line);
+            true
+        }
+        "sdl.SDL_RenderSetLogicalSize"
+        | "libc.sdl.SDL_RenderSetLogicalSize"
+        | "sdl.SDL_RenderSetIntegerScale"
+        | "libc.sdl.SDL_RenderSetIntegerScale"
+        | "sdl.SDL_UnlockTexture"
+        | "libc.sdl.SDL_UnlockTexture"
+        | "sdl.SDL_LockSurface"
+        | "libc.sdl.SDL_LockSurface"
+        | "sdl.SDL_UnlockSurface"
+        | "libc.sdl.SDL_UnlockSurface" => {
+            emit_sdl_texture_noop(chunks, current, argc, line);
+            true
+        }
+        "sdl.SDL_SetPaletteColors"
+        | "libc.sdl.SDL_SetPaletteColors"
+        | "sdl.SDL_LowerBlit"
+        | "libc.sdl.SDL_LowerBlit"
+        | "sdl.SDL_BlitSurface"
+        | "libc.sdl.SDL_BlitSurface" => {
+            emit_sdl_texture_noop(chunks, current, argc, line);
+            true
+        }
+        "sdl.SDL_LockTexture" | "libc.sdl.SDL_LockTexture" => {
+            emit_sdl_lock_texture(chunks, current, argc, line);
+            true
+        }
+        "sdl.SDL_GetRendererInfo" | "libc.sdl.SDL_GetRendererInfo" => {
+            emit_sdl_get_renderer_info(chunks, current, argc, line);
+            true
+        }
+        "sdl.SDL_GetDisplayBounds" | "libc.sdl.SDL_GetDisplayBounds" => {
+            emit_sdl_get_display_bounds(chunks, current, argc, line);
+            true
+        }
+        "sdl.SDL_GetCurrentDisplayMode" | "libc.sdl.SDL_GetCurrentDisplayMode" => {
+            emit_sdl_get_current_display_mode(chunks, current, argc, line);
+            true
+        }
+        "sdl.SDL_GetVersion" | "libc.sdl.SDL_GetVersion" => {
+            emit_sdl_get_version(chunks, current, argc, line);
             true
         }
         _ => false,
