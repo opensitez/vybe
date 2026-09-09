@@ -26,6 +26,7 @@ use crate::canvas_backend::{
     self, CanvasBackend, GradientDef, GradientKind as SeamGradientKind, Op2D, PathDef,
     PathOp2D, PatternDef, Query2D, Query2DValue, StringAttribute, TextMetrics2D,
 };
+use crate::engine::DocumentId;
 // The canvas WIDGET is not named here: `with_canvas_2d` lends the drawing
 // context directly, so this file never sees the element's rendering object.
 // `Canvas` — the drawing trait — arrives as `&mut dyn` through that closure.
@@ -42,6 +43,29 @@ struct DocumentBackend;
 
 fn color(r: u8, g: u8, b: u8, a: u8) -> Color {
     Color { r, g, b, a }
+}
+
+/// A canvas target below the WHATWG surface.
+struct Target<'a> {
+    document: Option<DocumentId>,
+    node: &'a str,
+}
+
+fn split_target(target: &str) -> Target<'_> {
+    if let Some(rest) = target.strip_prefix('d') {
+        if let Some((doc, node)) = rest.split_once(':') {
+            if let Ok(document) = doc.parse::<DocumentId>() {
+                return Target {
+                    document: Some(document),
+                    node,
+                };
+            }
+        }
+    }
+    Target {
+        document: None,
+        node: target,
+    }
 }
 
 /// The node a target names.
@@ -65,7 +89,13 @@ fn node_of(document: &dom::Document, target: &str) -> Option<NodeId> {
     document.element_by_control_name(target)
 }
 
-/// Borrow the 2D context `target` names, in the ambient document.
+fn document_of(target: &Target<'_>) -> DocumentId {
+    target
+        .document
+        .unwrap_or_else(crate::html::active_document)
+}
+
+/// Borrow the 2D context `target` names.
 ///
 /// A closure rather than a returned handle because the context borrows the
 /// element's bitmap and the shared font system for the duration of the call,
@@ -74,8 +104,9 @@ fn with_canvas<T>(
     target: &str,
     f: impl FnOnce(&mut dyn widgets::canvas::Canvas) -> T,
 ) -> Option<T> {
-    dom::with_document(crate::html::active_document(), |document| {
-        let node = node_of(document, target)?;
+    let target = split_target(target);
+    dom::with_document(document_of(&target), |document| {
+        let node = node_of(document, target.node)?;
         document.with_canvas_2d(node, f)
     })
     .flatten()

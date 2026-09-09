@@ -46,6 +46,20 @@ use crate::engine::{
     WebEngine, WindowOp, WindowValue,
 };
 
+trait WebcoreDocumentLayoutCompat {
+    fn flush_layout(&mut self);
+}
+
+impl WebcoreDocumentLayoutCompat for Document {
+    fn flush_layout(&mut self) {
+        let width = self.root.layout.last_containing_width;
+        if width <= 0.0 {
+            return;
+        }
+        webcore::LayoutEngine::new().layout(self, width);
+    }
+}
+
 /// The viewport a document is laid out against before anyone resizes it.
 /// `WindowOp::ResizeTo` is what changes it afterwards.
 ///

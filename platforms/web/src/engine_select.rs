@@ -34,8 +34,8 @@ impl Engine {
     /// Parse an engine name, case-insensitively. `None` for anything else.
     pub fn parse(name: &str) -> Option<Engine> {
         match name.trim().to_ascii_lowercase().as_str() {
-            "widgets" | "widgets" => Some(Engine::Widgets),
-            "webcore" | "webcore" => Some(Engine::WebCore),
+            "widgets" => Some(Engine::Widgets),
+            "webcore" => Some(Engine::WebCore),
             _ => None,
         }
     }
@@ -64,10 +64,9 @@ pub fn available() -> Vec<Engine> {
 
 /// The default when nothing asks for anything.
 ///
-/// `widgets`, because it is what every existing caller has been getting —
-/// .NET's designer, Flutter's realizer and SDL all reach the toolkit today, and
-/// a default that changed under them would be a swap nobody asked for.
-const DEFAULT: Engine = Engine::Widgets;
+/// `webcore`, because the web platform surface is the primary browser engine.
+/// `widgets` remains available as an explicit compatibility engine.
+const DEFAULT: Engine = Engine::WebCore;
 
 /// An explicit choice made in-process, which beats the environment.
 static CHOICE: RwLock<Option<Engine>> = RwLock::new(None);

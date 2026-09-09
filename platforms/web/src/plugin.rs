@@ -16,14 +16,10 @@ impl vybe_runtime::Plugin for Plugin {
         if let Some(vm) = fw.vm.as_deref_mut() {
             crate::register(vm);
         }
-        // The `web:canvas` painter. There is exactly one, so this is an `init`
-        // like any other registration — no phase to be careful about. It used to
-        // be re-asserted in `finalize` because `platforms/vybe` installed a
-        // second painter that resolved through `GuiState` and won on link order;
-        // that one is gone (`canvas_backend_impl.rs` deleted), and this install
-        // moved back to where it belongs.
-        #[cfg(feature = "gui")]
-        crate::canvas_backend_widgets::install();
+        // `crate::register` installs the selected browser engine and its
+        // matching canvas backend together. Re-installing a concrete backend
+        // here breaks `--engine webcore`: DOM operations go to webcore while
+        // canvas draws go to widgets.
     }
 
     fn finalize(&self, fw: &mut vybe_runtime::Framework<'_>) {

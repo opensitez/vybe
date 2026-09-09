@@ -19,6 +19,7 @@ use crate::canvas_backend::{
     self, CanvasBackend, GradientDef, GradientKind as SeamGradientKind, Op2D, PathDef,
     PathOp2D, PatternDef, Query2D, Query2DValue, StringAttribute, TextMetrics2D,
 };
+use crate::engine::DocumentId;
 use webcore::canvas::{
     Canvas as _, Color, ColorStop, CompositeOp, Direction, FillRule, Font, FontKerning,
     FontStretch, FontStyle, FontVariantCaps, FontWeight, Gradient as CanvasGradient, Image,
@@ -32,6 +33,29 @@ struct WebCoreBackend;
 
 fn color(r: u8, g: u8, b: u8, a: u8) -> Color {
     Color { r, g, b, a }
+}
+
+/// A canvas target below the WHATWG surface.
+struct Target<'a> {
+    document: Option<DocumentId>,
+    node: &'a str,
+}
+
+fn split_target(target: &str) -> Target<'_> {
+    if let Some(rest) = target.strip_prefix('d') {
+        if let Some((doc, node)) = rest.split_once(':') {
+            if let Ok(document) = doc.parse::<DocumentId>() {
+                return Target {
+                    document: Some(document),
+                    node,
+                };
+            }
+        }
+    }
+    Target {
+        document: None,
+        node: target,
+    }
 }
 
 /// The node a target names.
@@ -57,10 +81,17 @@ fn node_of(document: &Document, target: &str) -> Option<u32> {
         .or_else(|| document.query_selector(&format!("[name=\"{target}\"]")))
 }
 
-/// Borrow the 2D context `target` names, in the ambient document.
+fn document_of(target: &Target<'_>) -> DocumentId {
+    target
+        .document
+        .unwrap_or_else(crate::html::active_document)
+}
+
+/// Borrow the 2D context `target` names.
 fn with_canvas<T>(target: &str, f: impl FnOnce(&mut dyn webcore::canvas::Canvas) -> T) -> Option<T> {
-    crate::engine_webcore::with_document(crate::html::active_document(), |document| {
-        let node = node_of(document, target)?;
+    let target = split_target(target);
+    crate::engine_webcore::with_document(document_of(&target), |document| {
+        let node = node_of(document, target.node)?;
         document.with_canvas_2d(node, f)
     })
     .flatten()
@@ -71,8 +102,9 @@ impl CanvasBackend for WebCoreBackend {
     /// this allocates it if the element has never had one — an element from
     /// `createElement` has not been through the parser.
     fn ensure(&self, target: &str) {
-        crate::engine_webcore::with_document(crate::html::active_document(), |document| {
-            if let Some(node) = node_of(document, target) {
+        let target = split_target(target);
+        crate::engine_webcore::with_document(document_of(&target), |document| {
+            if let Some(node) = node_of(document, target.node) {
                 document.get_context_2d(node);
             }
         });

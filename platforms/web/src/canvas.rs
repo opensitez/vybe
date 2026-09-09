@@ -28,10 +28,9 @@ use crate::canvas_backend::{
 /// The surface a context handle draws on.
 ///
 /// A context is bound to the ELEMENT it came from — `canvas.getContext('2d')`
-/// in every browser — so the handle carries `__node` and the target is derived
-/// from it. The backend's target is a string because a backend is below the
-/// seam and may key its surfaces however it likes; what must be spec-shaped is
-/// the guest-facing API, and that is an element.
+/// in every browser — so the handle carries `__document` and `__node`, and the
+/// target is derived from both. A node id without its owner document is not a
+/// DOM identity; it is only an arena-local index.
 ///
 /// The bare-name form is a **migration path, not the API**. .NET
 /// `CreateGraphics` and Flutter's canvas bridge pass a control name today
@@ -42,8 +41,15 @@ fn target_of(arg: Option<&Value>) -> String {
     match arg {
         Some(Value::Object(obj)) => {
             let o = obj.lock().unwrap();
-            // An element-bound context: the node IS the identity.
+            // An element-bound context: document + node is the identity.
             if let Some(node) = o.properties.get("__node") {
+                if let Some(document) = o.properties.get("__document") {
+                    return format!(
+                        "d{}:n{}",
+                        document.as_f64() as u64,
+                        node.as_f64() as u64
+                    );
+                }
                 return format!("n{}", node.as_f64() as u64);
             }
             o.properties
@@ -62,6 +68,17 @@ fn node_of(arg: Option<&Value>) -> Option<u64> {
         Some(Value::Object(obj)) => {
             let o = obj.lock().unwrap();
             o.properties.get("__node").map(|v| v.as_f64() as u64)
+        }
+        _ => None,
+    }
+}
+
+/// Read an element handle's owner document, if the argument is one.
+fn document_of(arg: Option<&Value>) -> Option<u64> {
+    match arg {
+        Some(Value::Object(obj)) => {
+            let o = obj.lock().unwrap();
+            o.properties.get("__document").map(|v| v.as_f64() as u64)
         }
         _ => None,
     }
@@ -688,8 +705,12 @@ pub fn register(vm: &mut VM) {
                     return Value::Null;
                 }
             }
+            let document = document_of(args.first());
             let target = match node {
-                Some(id) => format!("n{id}"),
+                Some(id) => match document {
+                    Some(doc) => format!("d{doc}:n{id}"),
+                    None => format!("n{id}"),
+                },
                 None => args
                     .first()
                     .map(|v| format!("{}", v))
@@ -716,9 +737,12 @@ pub fn register(vm: &mut VM) {
             if let Some(id) = node {
                 o.properties.insert("canvas".into(), Value::F64(id as f64));
             }
+            if let Some(doc) = document {
+                o.properties.insert("__document".into(), Value::F64(doc as f64));
+            }
             match node {
-                // Element-bound: the node is the identity, and `target_of`
-                // derives the surface from it.
+                // Element-bound: document + node is the identity, and
+                // `target_of` derives the surface from it.
                 Some(id) => {
                     o.properties.insert("__node".into(), Value::F64(id as f64));
                 }
