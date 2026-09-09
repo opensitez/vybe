@@ -907,7 +907,12 @@ fn seed_preprocessor_header_macros(
 ) {
     let string_defs: &[(&str, &str)] = match header {
         "uchar.h" => &[("__STDC_UTF_16__", "1"), ("__STDC_UTF_32__", "1")],
-        "stdbool.h" => &[("true", "1"), ("false", "0"), ("bool", "_Bool")],
+        "stdbool.h" => &[
+            ("true", "1"),
+            ("false", "0"),
+            ("bool", "_Bool"),
+            ("__bool_true_false_are_defined", "1"),
+        ],
         "wchar.h" => &[("WEOF", "-1")],
         "SDL.h" | "SDL2/SDL.h" | "SDL_hints.h" | "SDL2/SDL_hints.h" | "SDL_stdinc.h"
         | "SDL2/SDL_stdinc.h" | "SDL_endian.h" | "SDL2/SDL_endian.h" | "SDL_mixer.h"
