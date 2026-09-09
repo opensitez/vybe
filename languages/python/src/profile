@@ -246,6 +246,7 @@ __py_xml_iter    = { emit = "common:python.xml_iter",    min_args = 1, max_args 
 __py_xml_get     = { emit = "common:python.xml_get",     min_args = 2, max_args = 3 }
 __py_difflib_ratio = { emit = "common:python.difflib_ratio", min_args = 2, max_args = 2 }
 __pyneg__       = { emit = "common:python.pyneg",            min_args = 1, max_args = 1 }
+__pypos__       = { emit = "common:python.pypos",            min_args = 1, max_args = 1 }
 __pylt__        = { emit = "common:python.pylt",             min_args = 2, max_args = 2 }
 __pygt__        = { emit = "common:python.pygt",             min_args = 2, max_args = 2 }
 __pyle__        = { emit = "common:python.pyle",             min_args = 2, max_args = 2 }
@@ -278,6 +279,8 @@ __py_from_end__ = { emit = "common:python.from_end",         min_args = 2, max_a
 # Python float display (`4.0`, not `4`). Applied by the walker only to values
 # statically known to be floats — see `expr_is_python_float`.
 __py_float_repr__ = { emit = "common:python.float_repr",     min_args = 1, max_args = 1 }
+__py_stamp_float_fields = { emit = "common:python.stamp_float_fields", min_args = 2, max_args = 2 }
+__py_float_field_str = { emit = "common:python.float_field_str", min_args = 2, max_args = 2 }
 __py_bytes_eq    = { emit = "common:python.bytes_eq",        min_args = 2, max_args = 2 }
 # Polymorphic membership (`x in y`): string substring / array element / dict key.
 # Set literals are normalized to `.has()` upstream; this covers the rest and
@@ -329,6 +332,8 @@ __py_int_to_bytes__   = { emit = "common:python.int_to_bytes",   min_args = 3, m
 __py_int_from_bytes__ = { emit = "common:python.int_from_bytes", min_args = 2, max_args = 2 }
 __py_num_is_integer__ = { emit = "host:ecma:number:isInteger",   min_args = 1, max_args = 1 }
 __py_float_as_integer_ratio__ = { emit = "common:python.float_as_integer_ratio", min_args = 1, max_args = 1 }
+__py_is_tuple = { emit = "common:python.is_tuple", min_args = 1, max_args = 1 }
+__py_is_array = { emit = "common:python.is_array", min_args = 1, max_args = 1 }
 
 # TEMP cross-check hooks
 __py_crypto_hash__ = { emit = "host:node:crypto:createHash",  min_args = 1, max_args = 1 }
@@ -416,7 +421,7 @@ __py_memoryview_cast_bytes = { emit = "common:python.memoryview_cast_bytes", min
 __glob_match    = { emit = "common:str_glob_match",        min_args = 2, max_args = 2 }
 len             = { emit = "common:python.length",         min_args = 1, max_args = 1, slot = "len" }
 range           = { emit = "common:python.range",         min_args = 1, max_args = 3 }
-list            = { emit = "host:ecma:array:from",          min_args = 0, max_args = 1 }
+list            = { emit = "common:python.iter_array",      min_args = 0, max_args = 1 }
 tuple           = { emit = "common:python.tuple_from_iter", min_args = 0, max_args = 1 }
 dict            = { emit = "host:ecma:object:create",       min_args = 0, max_args = 1 }
 set             = { emit = "common:python.make_set",        min_args = 0, max_args = 1 }
@@ -1061,6 +1066,7 @@ __py_csv_format_row = { emit = "common:csv.format_row",        min_args = 3, max
 # order. `replace` takes keyword arguments and is lowered in the walker instead.
 is_dataclass    = { emit = "common:python.is_dataclass",       min_args = 1, max_args = 1 }
 asdict          = { emit = "common:python.dataclass_asdict",   min_args = 1, max_args = 2 }
+__py_dataclass_asdict = { emit = "common:python.dataclass_asdict", min_args = 1, max_args = 1 }
 astuple         = { emit = "common:python.dataclass_astuple",  min_args = 1, max_args = 2 }
 fields          = { emit = "common:python.dataclass_fields",   min_args = 1, max_args = 1 }
 
@@ -1081,7 +1087,8 @@ __py_file_close = { emit = "common:python.file_close",       min_args = 1, max_a
 "collections.Counter"     = { emit = "common:python.counter_new",     min_args = 0, max_args = 1 }
 "collections.defaultdict" = { emit = "common:python.defaultdict_new", min_args = 0, max_args = 2 }
 "collections.deque"       = { emit = "host:ecma:array:from",          min_args = 0, max_args = 2 }
-"collections.OrderedDict" = { emit = "host:ecma:object:create",       min_args = 0, max_args = 1 }
+"collections.OrderedDict" = { emit = "common:python.ordereddict_new", min_args = 0, max_args = 1 }
+__py_ordereddict_new     = { emit = "common:python.ordereddict_new", min_args = 0, max_args = 1 }
 __py_counter_new         = { emit = "common:python.counter_new",         min_args = 0, max_args = 2 }
 __py_counter_get         = { emit = "common:python.counter_get",         min_args = 2, max_args = 2 }
 __py_counter_iadd        = { emit = "common:python.counter_iadd",        min_args = 3, max_args = 3 }

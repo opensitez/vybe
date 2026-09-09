@@ -110,7 +110,7 @@ sscanf              = { emit = "common:php.sscanf",          min_args = 2, max_a
 uniqid              = { emit = "common:php.uniqid",          min_args = 0, max_args = 2 }
 __php_dynamic_include = { emit = "host:vybe:php:dynamic_include", min_args = 2, max_args = 2 }
 # `eval($code)` → universal compiler-as-a-service; the walker injects the
-# language ("php") so this is just the host binding for `vybe:eval`.
+# source language and eval-mode attrs explicitly.
 __vybe_eval         = { emit = "host:vybe:eval:eval",       min_args = 2, max_args = 3 }
 readline            = { emit = "intrinsic:readline",     min_args = 0, max_args = 1 }
 error_log           = { emit = "host:wasi:cli:error",        min_args = 1, max_args = 4 }
@@ -224,6 +224,9 @@ nl2br               = { emit = "common:php.nl2br",           min_args = 1, max_a
 # `parse_url` is the SHARED parser (`url::ParseOptions::php()`), the same one
 # python `urlsplit` uses — the languages differ by a flag, not an impl.
 parse_url           = { emit = "common:php.parse_url",       min_args = 1, max_args = 2 }
+http_build_query    = { emit = "common:php.http_build_query", min_args = 1, max_args = 4 }
+parse_str           = { emit = "common:php.parse_str_result", min_args = 1, max_args = 2 }
+__vybe_parse_str_result = { emit = "common:php.parse_str_result", min_args = 1, max_args = 1 }
 urlencode           = { emit = "common:php.urlencode",       min_args = 1, max_args = 1 }
 rawurlencode        = { emit = "common:php.rawurlencode",    min_args = 1, max_args = 1 }
 urldecode           = { emit = "common:php.urldecode",       min_args = 1, max_args = 1 }
@@ -262,7 +265,7 @@ mb_language         = { emit = "common:php.mb_language",        min_args = 0, ma
 mb_regex_encoding   = { emit = "common:php.mb_regex_encoding",  min_args = 0, max_args = 1 }
 mb_substitute_character = { emit = "common:php.mb_substitute_character", min_args = 0, max_args = 1 }
 metaphone           = { emit = "common:php.metaphone",       min_args = 1, max_args = 2 }
-# version_compare defined by VERSION_PRELUDE (full pre-release-aware algorithm).
+version_compare     = { emit = "common:php.version_compare",     min_args = 2, max_args = 3 }
 abs                 = { emit = "common:php.abs",             min_args = 1, max_args = 1 }
 round               = { emit = "host:ecma:math:round",      min_args = 1, max_args = 1 }
 
@@ -318,6 +321,8 @@ preg_match_all      = { emit = "common:php.regex_match_all_pat_first", min_args 
 preg_replace        = { emit = "common:php.regex_replace_pat_first", min_args = 3, max_args = 4 }
 preg_replace_callback = { emit = "common:php.preg_replace_callback", min_args = 3, max_args = 5 }
 __php_clone_helper  = { emit = "common:php.clone_helper",        min_args = 1, max_args = 2 }
+__php_dynamic_method_call = { emit = "common:php.dynamic_method_call", min_args = 3, max_args = 3 }
+__php_method_exists = { emit = "common:php.method_exists", min_args = 2, max_args = 2 }
 preg_split          = { emit = "common:php.preg_split",          min_args = 2, max_args = 4 }
 preg_quote          = { emit = "common:php.preg_quote",          min_args = 1, max_args = 2 }
 
@@ -477,6 +482,8 @@ __php_offset__      = { emit = "common:php.offset",                min_args = 2,
 # `__php_copy_on_assign`). Wire it up once that is understood — the emitter it
 # points at is live and shared with the array builtins that mint keys.
 __php_key__         = { emit = "common:php.key",                   min_args = 1, max_args = 1 }
+__php_copy_on_assign = { emit = "common:php.copy_on_assign",       min_args = 1, max_args = 1 }
+__php_strict_eq     = { emit = "common:php.strict_eq",             min_args = 2, max_args = 2 }
 array_fill          = { emit = "common:php.array_fill",            min_args = 3, max_args = 3 }
 array_fill_keys     = { emit = "common:php.array_fill_keys",       min_args = 2, max_args = 2 }
 array_intersect_assoc = { emit = "common:php.array_intersect_assoc", min_args = 2, max_args = 2 }
@@ -714,15 +721,13 @@ stream_get_meta_data = { emit = "common:php.stream_get_meta_data", min_args = 1,
 
 # ── Environment / CLI ───────────────────────────────────────────────────────
 
-# `getenv`/`putenv` are PHP FUNCTIONS declared in the walker's env prelude, over
-# `__vybe_env_pairs` below. They are not mapped here: PHP's arity overload
-# (`getenv()` returns every variable), its `false` for a missing name, and
-# `putenv`'s process-local mutation are PHP semantics, and `wasi:cli/environment`
-# is read-only by spec. This line used to read `host:wasi:cli:getEnv` — a module
-# that has never existed, so every `getenv()` call died with `Unresolved import`.
-# extension_loaded/get_loaded_extensions/php_uname defined by VERSION_PRELUDE.
-phpversion          = { emit = "common:php.phpversion",       min_args = 0, max_args = 1 }
-phpinfo             = { emit = "common:php.phpinfo",         min_args = 0, max_args = 1 }
+getenv              = { emit = "common:php.getenv",              min_args = 0, max_args = 1 }
+putenv              = { emit = "common:php.putenv",              min_args = 1, max_args = 1 }
+extension_loaded    = { emit = "common:php.extension_loaded",     min_args = 1, max_args = 1 }
+get_loaded_extensions = { emit = "common:php.get_loaded_extensions", min_args = 0, max_args = 1 }
+php_uname           = { emit = "common:php.php_uname",            min_args = 0, max_args = 1 }
+phpversion          = { emit = "common:php.phpversion",           min_args = 0, max_args = 1 }
+phpinfo             = { emit = "common:php.phpinfo",              min_args = 0, max_args = 1 }
 
 # ── PHP error / INI runtime (no-ops for CLI / web compilation) ──────────────
 # These are runtime configuration calls that don't affect compiled-bytecode
@@ -732,9 +737,14 @@ __php_assert_active = { emit = "common:php.assert_active",        min_args = 0, 
 __php_assert_active_option = { emit = "common:php.assert_active_option", min_args = 0, max_args = 1 }
 __php_assert_callback = { emit = "common:php.assert_callback",    min_args = 0, max_args = 0 }
 __php_assert_callback_option = { emit = "common:php.assert_callback_option", min_args = 0, max_args = 1 }
-# ini_get/ini_set/ini_alter/ini_restore/ini_get_all/get_cfg_var are defined by
-# INI_FUNCTIONS_PRELUDE (stateful global store); no profile entry so the
-# prelude functions resolve.
+ini_get             = { emit = "common:php.ini_get",             min_args = 1, max_args = 1 }
+ini_set             = { emit = "common:php.ini_set",             min_args = 2, max_args = 2 }
+ini_alter           = { emit = "common:php.ini_set",             min_args = 2, max_args = 2 }
+ini_restore         = { emit = "common:php.ini_restore",         min_args = 1, max_args = 1 }
+ini_get_all         = { emit = "common:php.ini_get_all",         min_args = 0, max_args = 2 }
+get_cfg_var         = { emit = "common:php.get_cfg_var",         min_args = 1, max_args = 1 }
+get_include_path    = { emit = "common:php.get_include_path",    min_args = 0, max_args = 0 }
+set_include_path    = { emit = "common:php.set_include_path",    min_args = 1, max_args = 1 }
 set_error_handler   = { emit = "common:php.set_error_handler",   min_args = 1, max_args = 2 }
 restore_error_handler = { emit = "common:php.restore_error_handler", min_args = 0, max_args = 0 }
 set_exception_handler = { emit = "common:php.set_exception_handler", min_args = 1, max_args = 1 }
@@ -786,6 +796,17 @@ session_abort       = { emit = "common:php.session_abort",         min_args = 0,
 session_reset       = { emit = "common:php.session_reset",         min_args = 0, max_args = 0 }
 session_unset       = { emit = "common:php.session_unset",         min_args = 0, max_args = 0 }
 session_destroy     = { emit = "common:php.session_destroy",       min_args = 0, max_args = 0 }
+session_get_cookie_params = { emit = "common:php.session_get_cookie_params", min_args = 0, max_args = 0 }
+session_set_cookie_params = { emit = "common:php.session_set_cookie_params", min_args = 1, max_args = 5 }
+session_cache_limiter = { emit = "common:php.session_cache_limiter", min_args = 0, max_args = 1 }
+session_cache_expire = { emit = "common:php.session_cache_expire", min_args = 0, max_args = 1 }
+session_module_name = { emit = "common:php.session_module_name", min_args = 0, max_args = 1 }
+session_save_path   = { emit = "common:php.session_save_path",      min_args = 0, max_args = 1 }
+session_create_id   = { emit = "common:php.session_create_id",      min_args = 0, max_args = 1 }
+session_gc          = { emit = "common:php.session_gc",             min_args = 0, max_args = 1 }
+session_set_save_handler = { emit = "common:php.session_set_save_handler", min_args = 1, max_args = 9 }
+session_encode      = { emit = "common:php.session_encode",         min_args = 0, max_args = 0 }
+session_decode      = { emit = "common:php.session_decode",         min_args = 1, max_args = 1 }
 # Cookie serialization is the SHARED RFC 6265 primitive; only the value
 # encoding differs between these two, and that encoding is PHP's own.
 setcookie           = { emit = "common:php.setcookie",            min_args = 1, max_args = 3 }
@@ -804,10 +825,10 @@ headers_sent        = { emit = "host:node:http:headers_sent",      min_args = 0,
 # Nothing here parses anything. Before this, `vybex --serve` re-parsed the query
 # string, the cookie header and multipart bodies in Rust inside the server crate,
 # where only PHP under `--serve` could ever reach them.
-__vybe_superglobal_server  = { emit = "common:http_request.environ",        min_args = 0, max_args = 0 }
+__vybe_superglobal_server  = { emit = "common:php.superglobal_server",      min_args = 0, max_args = 0 }
 __vybe_superglobal_get     = { emit = "common:http_request.query_params",   min_args = 0, max_args = 0 }
 __vybe_superglobal_post    = { emit = "common:http_form.fields",           min_args = 0, max_args = 0 }
-__vybe_superglobal_files   = { emit = "common:http_form.files",            min_args = 0, max_args = 0 }
+__vybe_superglobal_files   = { emit = "common:php.superglobal_files",       min_args = 0, max_args = 0 }
 __vybe_superglobal_cookie  = { emit = "common:http_cookie.request_cookies", min_args = 0, max_args = 0 }
 __vybe_superglobal_request = { emit = "common:http_request.request_params", min_args = 0, max_args = 0 }
 # `$_ENV` is the ONE superglobal that is not the HTTP message: it is the process
@@ -815,7 +836,7 @@ __vybe_superglobal_request = { emit = "common:http_request.request_params", min_
 # `get-environment() -> list<tuple<string, string>>`, so the walker's
 # `__vybe_php_env()` turns the pair list into PHP's name-keyed array — the same
 # division of labour as `__vybe_php_files()`.
-__vybe_env_pairs           = { emit = "host:wasi:cli/environment:get-environment", min_args = 0, max_args = 0 }
+__vybe_php_env             = { emit = "common:php.superglobal_env",         min_args = 0, max_args = 0 }
 header_remove       = { emit = "host:node:http:remove_header",     min_args = 0, max_args = 1 }
 
 # ── Miscellaneous ───────────────────────────────────────────────────────────
@@ -1219,13 +1240,8 @@ len = "common:str_byte_length"
 # `==` / `!=`. PHP's loose equality coerces (`"1" == 1` is true) and is NOT the
 # platform's `ops::emit_dyn_eq`.
 #
-# This was a WALKER REWRITE to a `__php_loose_eq(...)` call plus a PHP-SOURCE
-# prelude function, pulled in by a substring scan of the AST text
-# (`needs.class_helpers`). The profile never declared the identifier, so the
-# call reached neither the prelude reliably nor the `emit_php_loose_eq` emitter
-# that already existed — and `$a == $b` on two equal strings answered a raw,
-# untyped `0`. Literals were unaffected because they constant-fold first, which
-# is why it survived.
+# This used to be a walker rewrite to a helper identifier. It now stays on the
+# shared operator path and resolves through this builtin slot to the PHP adapter.
 eq = "common:php.loose_eq"
 # `!=` / `<>` is its own target, not `eq` negated: the emitter materializes a
 # real Bool and `emit_dyn_not` would discard that, printing `0` for

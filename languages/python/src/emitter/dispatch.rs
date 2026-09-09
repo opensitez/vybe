@@ -519,6 +519,12 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
                 chunks, current, argc, line,
             )
         }
+        "python.is_tuple" => vybe_compiler::primitives::tuples::emit_is_tuple(
+            chunks, current, line,
+        ),
+        "python.is_array" => crate::emitter::runtime_adapter::emit_py_is_array(
+            chunks, current, line,
+        ),
         "python.enumerate" => {
             crate::emitter::collections_adapter::emit_enumerate(chunks, current, argc, line)
         }
@@ -859,6 +865,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "python.sort_with_cmp" => {
             crate::emitter::collections_adapter::emit_sort_with_cmp(chunks, current, argc, line)
+        }
+        "python.ordereddict_new" => {
+            crate::emitter::collections_adapter::emit_ordereddict_new(chunks, current, argc, line)
         }
         "python.it_reduce" => {
             crate::emitter::itertools_adapter::emit_reduce(chunks, current, argc, line)
@@ -1205,6 +1214,12 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "python.float_repr" => {
             crate::emitter::float_adapter::emit_float_repr(chunks, current, argc, line)
+        }
+        "python.stamp_float_fields" => {
+            crate::emitter::float_adapter::emit_stamp_float_fields(chunks, current, argc, line)
+        }
+        "python.float_field_str" => {
+            crate::emitter::float_adapter::emit_float_field_str(chunks, current, argc, line)
         }
         "python.gen_send" => {
             crate::emitter::collections_adapter::emit_gen_send(chunks, current, argc, line)
@@ -1711,6 +1726,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             crate::emitter::struct_adapter::emit_struct_new(chunks, current, argc, line)
         }
         "python.pyneg" => crate::emitter::runtime_adapter::emit_pyneg(chunks, current, line),
+        "python.pypos" => crate::emitter::runtime_adapter::emit_pypos(chunks, current, line),
         "python.pylt" => crate::emitter::runtime_adapter::emit_pylt(chunks, current, line),
         "python.pygt" => crate::emitter::runtime_adapter::emit_pygt(chunks, current, line),
         "python.pyle" => crate::emitter::runtime_adapter::emit_pyle(chunks, current, line),

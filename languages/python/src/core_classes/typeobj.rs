@@ -38,7 +38,14 @@ pub(super) fn type_obj() -> Statement {
                     str_lit("'>"),
                 ))],
             ),
-            method("__str__", vec![], vec![ret(this_field("_n"))]),
+            method(
+                "__str__",
+                vec![],
+                vec![ret(add(
+                    add(str_lit("<class '"), this_field("_n")),
+                    str_lit("'>"),
+                ))],
+            ),
         ],
     )
 }

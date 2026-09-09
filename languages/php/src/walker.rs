@@ -65,6 +65,190 @@ fn php_echo_stmt_kind(__php_w: &mut PhpWalker, exprs: Vec<Expression>) -> StmtKi
     StmtKind::Expr(php_echo_expr(exprs))
 }
 
+fn php_call_expr(name: &str, args: Vec<Expression>) -> Expression {
+    Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::ident(name)),
+        args: args.into_iter().map(Argument::positional).collect(),
+        optional: false,
+    })
+}
+
+#[derive(Clone)]
+enum PhpQueryNode {
+    Value(String),
+    Map(Vec<(String, PhpQueryNode)>),
+    List(Vec<PhpQueryNode>),
+}
+
+fn php_query_decode_component(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'+' => {
+                out.push(b' ');
+                i += 1;
+            }
+            b'%' if i + 2 < bytes.len() => {
+                let hi = (bytes[i + 1] as char).to_digit(16);
+                let lo = (bytes[i + 2] as char).to_digit(16);
+                if let (Some(hi), Some(lo)) = (hi, lo) {
+                    out.push(((hi << 4) | lo) as u8);
+                    i += 3;
+                } else {
+                    out.push(bytes[i]);
+                    i += 1;
+                }
+            }
+            b => {
+                out.push(b);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn php_query_key_parts(key: &str) -> Vec<String> {
+    let Some(open) = key.find('[') else {
+        return vec![key.to_string()];
+    };
+    let mut parts = vec![key[..open].to_string()];
+    let mut rest = &key[open..];
+    while let Some(after_open) = rest.strip_prefix('[') {
+        let Some(close) = after_open.find(']') else {
+            break;
+        };
+        parts.push(after_open[..close].to_string());
+        rest = &after_open[close + 1..];
+    }
+    parts
+}
+
+fn php_query_insert(node: &mut PhpQueryNode, parts: &[String], value: String) {
+    if parts.is_empty() {
+        *node = PhpQueryNode::Value(value);
+        return;
+    }
+    if parts[0].is_empty() {
+        if !matches!(node, PhpQueryNode::List(_)) {
+            *node = PhpQueryNode::List(Vec::new());
+        }
+        if let PhpQueryNode::List(items) = node {
+            if parts.len() == 1 {
+                items.push(PhpQueryNode::Value(value));
+            } else {
+                let mut child = PhpQueryNode::Map(Vec::new());
+                php_query_insert(&mut child, &parts[1..], value);
+                items.push(child);
+            }
+        }
+        return;
+    }
+    if !matches!(node, PhpQueryNode::Map(_)) {
+        *node = PhpQueryNode::Map(Vec::new());
+    }
+    if let PhpQueryNode::Map(entries) = node {
+        let key = parts[0].clone();
+        let pos = entries.iter().position(|(k, _)| k == &key);
+        let index = match pos {
+            Some(index) => index,
+            None => {
+                entries.push((key, PhpQueryNode::Map(Vec::new())));
+                entries.len() - 1
+            }
+        };
+        php_query_insert(&mut entries[index].1, &parts[1..], value);
+    }
+}
+
+fn php_query_key_expr(key: &str) -> Expression {
+    if !key.is_empty()
+        && key
+            .bytes()
+            .all(|b| b.is_ascii_digit())
+        && (key == "0" || !key.starts_with('0'))
+    {
+        if let Ok(value) = key.parse::<i64>() {
+            return Expression::int(value);
+        }
+    }
+    Expression::string(key)
+}
+
+fn php_query_node_expr(node: PhpQueryNode) -> Expression {
+    match node {
+        PhpQueryNode::Value(value) => Expression::string(&value),
+        PhpQueryNode::Map(entries) => Expression::new(ExprKind::Array(
+            entries
+                .into_iter()
+                .map(|(key, value)| ArrayElement {
+                    key: Some(php_query_key_expr(&key)),
+                    value: php_query_node_expr(value),
+                    spread: false,
+                    by_ref: false,
+                })
+                .collect(),
+        )),
+        PhpQueryNode::List(items) => Expression::new(ExprKind::Array(
+            items
+                .into_iter()
+                .map(|value| ArrayElement {
+                    key: None,
+                    value: php_query_node_expr(value),
+                    spread: false,
+                    by_ref: false,
+                })
+                .collect(),
+        )),
+    }
+}
+
+fn php_parse_str_literal_expr(query: &str) -> Expression {
+    let mut root = PhpQueryNode::Map(Vec::new());
+    for pair in query.split('&') {
+        if pair.is_empty() {
+            continue;
+        }
+        let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
+        let key = php_query_decode_component(key);
+        let value = php_query_decode_component(value);
+        let parts = php_query_key_parts(&key);
+        php_query_insert(&mut root, &parts, value);
+    }
+    php_query_node_expr(root)
+}
+
+fn php_parse_str_query_literal(__php_w: &mut PhpWalker, expr: &Expression) -> Option<String> {
+    match &expr.kind {
+        ExprKind::Lit(Literal::Str(s)) => Some(s.clone()),
+        ExprKind::Ident(name) => lookup_simple_string_var(__php_w, name),
+        _ => None,
+    }
+}
+
+fn php_parse_str_assignment(__php_w: &mut PhpWalker, expr: &Expression) -> Option<StmtKind> {
+    let ExprKind::Call { callee, args, .. } = &expr.kind else {
+        return None;
+    };
+    let ExprKind::Ident(name) = &callee.kind else {
+        return None;
+    };
+    if !name.eq_ignore_ascii_case("parse_str") || args.len() < 2 {
+        return None;
+    }
+    let target = args[1].value.clone();
+    let value = php_parse_str_query_literal(__php_w, &args[0].value)
+        .map(|query| php_parse_str_literal_expr(&query))
+        .unwrap_or_else(|| php_call_expr("__vybe_parse_str_result", vec![args[0].value.clone()]));
+    Some(StmtKind::Assign {
+        targets: vec![target],
+        value,
+        by_ref: false,
+    })
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SimpleFiberPhase {
     New,
@@ -3703,902 +3887,789 @@ fn collect_program_body(__php_w: &mut PhpWalker,
     Ok(())
 }
 
-/// The SPL/core exception hierarchy, defined as real PHP classes so they
-/// flow through the shared class emitter (PHP over JS): `new ParseError()`
-/// works, `get_class` returns the real name, and `catch (Error|Exception|
-/// Throwable)` resolves through the normal `__types` inheritance chain —
-/// no name-mangling `is_exception_type` shortcut.
-const EXCEPTION_PRELUDE: &str = r##"
-interface Throwable {}
-class Exception implements Throwable {
-    protected $message = "";
-    protected $code = 0;
-    protected $previous = null;
-    protected $cause = null;
-    public function __construct($message = "", $code = 0, $previous = null) {
-        $this->message = $message; $this->code = $code; $this->previous = $previous; $this->cause = $previous;
-    }
-    public function getMessage() { return $this->message; }
-    public function getCode() { return $this->code; }
-    public function getPrevious() { return $this->previous; }
-    public function getLine() { return 0; }
-    public function getFile() { return ""; }
-    public function getTrace() { return []; }
-    public function getTraceAsString() { return "#0 {main}"; }
-    public function __toString() { return $this->message; }
-}
-class Error implements Throwable {
-    protected $message = "";
-    protected $code = 0;
-    protected $previous = null;
-    protected $cause = null;
-    public function __construct($message = "", $code = 0, $previous = null) {
-        $this->message = $message; $this->code = $code; $this->previous = $previous; $this->cause = $previous;
-    }
-    public function getMessage() { return $this->message; }
-    public function getCode() { return $this->code; }
-    public function getPrevious() { return $this->previous; }
-    public function getLine() { return 0; }
-    public function getFile() { return ""; }
-    public function getTrace() { return []; }
-    public function getTraceAsString() { return "#0 {main}"; }
-    public function __toString() { return $this->message; }
-}
-class ErrorException extends Exception {}
-class TypeError extends Error {}
-class ValueError extends Error {}
-class ArithmeticError extends Error {}
-class DivisionByZeroError extends ArithmeticError {}
-class ArgumentCountError extends TypeError {}
-class CompileError extends Error {}
-class ParseError extends CompileError {}
-class AssertionError extends Error {}
-class UnhandledMatchError extends Error {}
-class FiberError extends Error {}
-class RuntimeException extends Exception {}
-class LogicException extends Exception {}
-class InvalidArgumentException extends LogicException {}
-class DomainException extends LogicException {}
-class LengthException extends LogicException {}
-class OutOfRangeException extends LogicException {}
-class BadFunctionCallException extends LogicException {}
-class BadMethodCallException extends BadFunctionCallException {}
-class OutOfBoundsException extends RuntimeException {}
-class RangeException extends RuntimeException {}
-class OverflowException extends RuntimeException {}
-class UnderflowException extends RuntimeException {}
-class UnexpectedValueException extends RuntimeException {}
-class JsonException extends Exception {}
-class __PHP_Incomplete_Class {}
-"##;
-
-/// PHP-source implementations of URL/query helpers that are pure compositions
-/// of already-working string builtins (Layer 3 lives in the target language).
-/// Assignments avoid the `if {…} else {…}` conditional-assignment form, which
-/// currently drops the value inside functions — a single ternary is used
-/// instead. See project_php_url_functions.
-const URL_FUNCTIONS_PRELUDE: &str = r##"
-// `parse_url` is no longer a PHP-source prelude: it is the SHARED parser,
-// `primitives::url::emit_parse(ParseOptions::php())`, reached through
-// `common:php.parse_url`. Python's `urlsplit` uses the same parser with
-// `lowercase_scheme: true` — the two languages differ by a flag, not by an
-// implementation. This definition also shadowed the emitter while it existed,
-// and its RFC 3986 regex is what the primitive now carries.
-function __vybe_hbq_pairs($data, $prefix, $np) {
-    $pairs = [];
-    foreach ($data as $k => $v) {
-        $key = ($prefix === '') ? (is_int($k) ? $np . $k : (string)$k) : ($prefix . '[' . $k . ']');
-        if (is_array($v)) {
-            foreach (__vybe_hbq_pairs($v, $key, $np) as $p) $pairs[] = $p;
+fn php_register_builtin_class_decl(__php_w: &mut PhpWalker, stmt: &Statement) {
+    let StmtKind::ClassDecl {
+        name,
+        parents,
+        interfaces,
+        members,
+        modifiers,
+        ..
+    } = &stmt.kind
+    else {
+        return;
+    };
+    let meta = extract_class_meta(__php_w, name, parents, interfaces, modifiers, members, false);
+    __php_w.class_registry.insert(name.clone(), meta);
+    __php_w.class_hook_properties.insert(name.clone(), Vec::new());
+    register_type_kind(
+        __php_w,
+        name,
+        if modifiers.kind == ClassKind::Interface {
+            "interface"
         } else {
-            $vv = is_bool($v) ? ($v ? '1' : '0') : $v;
-            $pairs[] = urlencode($key) . '=' . urlencode($vv);
-        }
-    }
-    return $pairs;
+            "class"
+        },
+    );
 }
-function http_build_query($data, $numeric_prefix = '', $arg_separator = '&', $encoding_type = 1) {
-    $sep = ($arg_separator === '' || $arg_separator === null) ? '&' : $arg_separator;
-    return implode($sep, __vybe_hbq_pairs($data, '', $numeric_prefix));
-}
-function parse_str($string, &$result) {
-    $result = [];
-    foreach (explode('&', $string) as $pair) {
-        if ($pair === '') continue;
-        $kv = explode('=', $pair, 2);
-        $key = urldecode($kv[0]);
-        $val = isset($kv[1]) ? urldecode($kv[1]) : '';
-        $open = strpos($key, '[');
-        if ($open === false) {
-            $result[$key] = $val;
-            continue;
-        }
-        $root = substr($key, 0, $open);
-        $rest = substr($key, $open);
-        if (!isset($result[$root]) || !is_array($result[$root])) $result[$root] = [];
-        if ($rest === '[]') {
-            $result[$root][] = $val;
-        } elseif (substr($rest, -2) === '[]') {
-            $inner = substr($rest, 1, strlen($rest) - 4);
-            $child = $result[$root];
-            if (!isset($child[$inner]) || !is_array($child[$inner])) $child[$inner] = [];
-            $items = $child[$inner];
-            $items[] = $val;
-            $child[$inner] = $items;
-            $result[$root] = $child;
-        } elseif (substr($rest, 0, 1) === '[' && substr($rest, -1) === ']') {
-            $inner = substr($rest, 1, strlen($rest) - 2);
-            $child = $result[$root];
-            $child[$inner] = $val;
-            $result[$root] = $child;
-        }
-    }
-}
-"##;
 
-/// PHP-source configuration functions (`ini_get`/`ini_set`/`ini_restore`/
-/// `ini_alter`/`ini_get_all`/`get_cfg_var`). Backed by two module-level global
-/// arrays: `$__vybe_ini_def` (immutable defaults) and `$__vybe_ini_cur` (live
-/// values). `array_merge([], ...)` clones the defaults into the live store —
-/// a plain `$cur = $def` would ALIAS in vybe (PHP arrays are JS Maps, a
-/// reference type), so a later `ini_set` would corrupt the defaults and break
-/// `ini_restore`. Assignments use the ternary form (see
-/// project_php_conditional_assign_bug).
-const INI_FUNCTIONS_PRELUDE: &str = r##"
-$__vybe_ini_def = [
-    'display_errors' => '1', 'precision' => '14', 'memory_limit' => '128M',
-    'post_max_size' => '8M', 'upload_max_filesize' => '2M', 'default_charset' => 'UTF-8',
-    'error_reporting' => '32767', 'max_execution_time' => '0', 'include_path' => '.:/usr/share/php',
-    'session.save_path' => '', 'opcache.enable' => '1',
-];
-$__vybe_ini_cur = array_merge([], $__vybe_ini_def);
-function ini_get($name) {
-    global $__vybe_ini_cur;
-    return array_key_exists($name, $__vybe_ini_cur) ? $__vybe_ini_cur[$name] : false;
-}
-function ini_set($name, $value) {
-    global $__vybe_ini_cur;
-    $old = array_key_exists($name, $__vybe_ini_cur) ? $__vybe_ini_cur[$name] : false;
-    $__vybe_ini_cur[$name] = (string)$value;
-    return $old;
-}
-function ini_alter($name, $value) {
-    return ini_set($name, $value);
-}
-function ini_restore($name) {
-    global $__vybe_ini_cur, $__vybe_ini_def;
-    if (array_key_exists($name, $__vybe_ini_def)) {
-        $__vybe_ini_cur[$name] = $__vybe_ini_def[$name];
+fn php_core_exception_declarations(__php_w: &mut PhpWalker) -> Vec<Statement> {
+    let stmts = crate::core_exceptions::declarations();
+    for stmt in &stmts {
+        php_register_builtin_class_decl(__php_w, stmt);
     }
+    stmts
 }
-function ini_get_all($extension = null, $details = true) {
-    global $__vybe_ini_cur, $__vybe_ini_def;
-    $out = [];
-    foreach ($__vybe_ini_cur as $k => $v) {
-        $out[$k] = ['global_value' => $__vybe_ini_def[$k], 'local_value' => $v, 'access' => 7];
-    }
-    return $out;
-}
-function get_cfg_var($name) {
-    if ($name === 'PHP_VERSION') return PHP_VERSION;
-    global $__vybe_ini_cur;
-    return array_key_exists($name, $__vybe_ini_cur) ? $__vybe_ini_cur[$name] : false;
-}
-"##;
 
-/// PHP-source `version_compare` + runtime-introspection stubs. `version_compare`
-/// is the full php_version_compare algorithm (canonicalize into digit/word
-/// tokens, compare numerically or by special pre-release rank dev<alpha<beta<
-/// RC<#<pl). Kept in PHP source (not the compiler intrinsic / dotnet emitter,
-/// which mis-ordered pre-release tags) so the semantics live in one readable
-/// place. `$c` is assigned via ternary, never if/else (project_php_conditional_assign_bug).
-const VERSION_PRELUDE: &str = r##"
-function __vybe_ver_canon($v) {
-    $v = str_replace(['-', '_', '+'], '.', $v);
-    $v = preg_replace('/([0-9])([a-zA-Z])/', '$1.$2', $v);
-    $v = preg_replace('/([a-zA-Z])([0-9])/', '$1.$2', $v);
-    $v = preg_replace('/\.+/', '.', $v);
-    $v = trim($v, '.');
-    return $v === '' ? [] : explode('.', $v);
-}
-function __vybe_ver_form($t) {
-    if (is_numeric($t)) return 4;
-    $t = strtolower($t);
-    return $t === 'dev' ? 0 : ($t === 'alpha' || $t === 'a' ? 1 : ($t === 'beta' || $t === 'b' ? 2 : ($t === 'rc' ? 3 : ($t === 'pl' || $t === 'p' ? 5 : -1))));
-}
-function __vybe_ver_cmp($v1, $v2) {
-    $a = __vybe_ver_canon($v1);
-    $b = __vybe_ver_canon($v2);
-    $la = count($a); $lb = count($b);
-    $n = $la < $lb ? $la : $lb;
-    for ($i = 0; $i < $n; $i++) {
-        $x = $a[$i]; $y = $b[$i];
-        $c = (is_numeric($x) && is_numeric($y)) ? ((int)$x <=> (int)$y) : (__vybe_ver_form($x) <=> __vybe_ver_form($y));
-        if ($c !== 0) return $c;
-    }
-    if ($la > $n) return is_numeric($a[$n]) ? 1 : (__vybe_ver_form($a[$n]) <=> 4);
-    if ($lb > $n) return is_numeric($b[$n]) ? -1 : (4 <=> __vybe_ver_form($b[$n]));
-    return 0;
-}
-function version_compare($v1, $v2, $operator = null) {
-    $c = __vybe_ver_cmp($v1, $v2);
-    if ($operator === null) return $c;
-    switch ($operator) {
-        case '<': case 'lt': return $c < 0;
-        case '<=': case 'le': return $c <= 0;
-        case '>': case 'gt': return $c > 0;
-        case '>=': case 'ge': return $c >= 0;
-        case '==': case '=': case 'eq': return $c === 0;
-        case '!=': case '<>': case 'ne': return $c !== 0;
-    }
-    return null;
-}
-function get_loaded_extensions($zend_extensions = false) {
-    return ['Core', 'standard', 'pcre', 'json', 'date', 'ctype', 'filter', 'hash', 'SPL',
-        'Reflection', 'mbstring', 'mysqlnd', 'mysqli', 'pdo_mysql', 'PDO', 'openssl', 'curl',
-        'dom', 'libxml', 'xml', 'SimpleXML', 'tokenizer', 'session', 'fileinfo', 'zlib', 'bcmath'];
-}
-function extension_loaded($name) {
-    return in_array(strtolower($name), array_map('strtolower', get_loaded_extensions()), true);
-}
-function php_uname($mode = 'a') {
-    $sys = 'Linux'; $node = 'localhost'; $rel = '6.0.0'; $ver = '#1'; $mach = 'x86_64';
-    return $mode === 's' ? $sys : ($mode === 'n' ? $node : ($mode === 'r' ? $rel : ($mode === 'v' ? $ver : ($mode === 'm' ? $mach : "$sys $node $rel $ver $mach"))));
-}
-"##;
-
-/// PHP arrays are VALUE types: `$b = $a` copies, so a later `$b[0]=…` must not
-/// touch `$a`. In vybe a PHP array is an ObjectKind::Map (a reference handle),
-/// so a plain assignment aliases — same problem Go solves for its value-type
-/// arrays with `__go_fixed_array_clone`. This helper is the PHP analogue: a
-/// DEEP clone of arrays (nested arrays copy too — verified against php 8.4),
-/// while objects/scalars pass straight through (PHP objects ARE references).
-/// The walker wraps aliasing RHS places (`Ident`/`Index`/`Member`) of `=`
-/// assignments in this call; `is_array` is the runtime type test.
-/// Bind PHP's superglobal NAMES to the shared request primitives.
-///
-/// The data is `wasi:http`'s, reached through `primitives/http_request_env`,
-/// `http_form` and `http_cookie` — the same primitives WSGI's `environ` and
-/// Rack's `env` will read; `$_ENV` is `wasi:cli/environment` directly. All PHP
-/// contributes is the spelling, which is why this is seven assignments and not
-/// a parser.
-///
-/// Statement order is load-bearing: [`php_superglobal_prelude`] picks
-/// statements out of this group by index, so a script that only mentions
-/// `$_GET` never drains the request body to build `$_POST`.
-const SUPERGLOBALS_PRELUDE: &str = r##"
-$_SERVER = __vybe_superglobal_server();
-$_GET = __vybe_superglobal_get();
-$_POST = __vybe_superglobal_post();
-$_FILES = __vybe_php_files();
-$_COOKIE = __vybe_superglobal_cookie();
-$_REQUEST = __vybe_superglobal_request();
-$_ENV = __vybe_php_env();
-function __vybe_php_files() {
-    $out = [];
-    foreach (__vybe_superglobal_files() as $field => $upload) {
-        $out[$field] = [
-            'name' => $upload['filename'],
-            'type' => $upload['type'],
-            'tmp_name' => '',
-            'size' => $upload['size'],
-            'error' => 0,
-        ];
-    }
-    return $out;
-}
-function __vybe_php_env() {
-    $out = [];
-    foreach (__vybe_env_pairs() as $pair) {
-        $out[$pair[0]] = $pair[1];
-    }
-    return $out;
-}
-$_SERVER['PHP_SELF'] = isset($_SERVER['SCRIPT_NAME']) ? $_SERVER['SCRIPT_NAME'] : '';
-"##;
-
-/// Index of the `$_FILES` statement in [`SUPERGLOBALS_PRELUDE`].
+const SUPERGLOBAL_SERVER: usize = 0;
+const SUPERGLOBAL_GET: usize = 1;
+const SUPERGLOBAL_POST: usize = 2;
 const SUPERGLOBAL_FILES: usize = 3;
-
-/// Index of the `$_ENV` statement in [`SUPERGLOBALS_PRELUDE`].
+const SUPERGLOBAL_COOKIE: usize = 4;
+const SUPERGLOBAL_REQUEST: usize = 5;
 const SUPERGLOBAL_ENV: usize = 6;
 
-/// Index of the `__vybe_php_files` declaration in [`SUPERGLOBALS_PRELUDE`].
-///
-/// `$_FILES` is the one superglobal whose SHAPE is PHP's rather than shared:
-/// the primitive reports an upload as `filename`/`type`/`size`/`content`, and
-/// `name`/`tmp_name`/`error` are PHP's spellings for it. Renaming in PHP source
-/// keeps that out of `primitives/http_form.rs`, where a `$_FILES` key would be
-/// one language's vocabulary in shared code.
-const SUPERGLOBAL_FILES_HELPER: usize = 7;
-
-/// Index of the `__vybe_php_env` declaration in [`SUPERGLOBALS_PRELUDE`].
-///
-/// WASI reports the environment as `list<tuple<string, string>>`; PHP wants it
-/// keyed by name. The reshape is four lines of PHP for the same reason
-/// `__vybe_php_files` is: `$_ENV` is a PHP spelling, and a spelling does not
-/// belong in a spec module.
-const SUPERGLOBAL_ENV_HELPER: usize = 8;
-
-/// Index of the `$_SERVER['PHP_SELF']` statement in [`SUPERGLOBALS_PRELUDE`].
-///
-/// `PHP_SELF` is PHP's name for `SCRIPT_NAME` (plus `PATH_INFO`, which this
-/// server folds into the same value). The transport used to set it, which put
-/// one language's vocabulary in `crates/vybex`; deriving it here keeps the CGI
-/// map language-neutral. Bound to the `$_SERVER` flag, and ordered AFTER the
-/// assignment it edits.
-const SUPERGLOBAL_PHP_SELF: usize = 9;
-
-/// Index of the `$_SERVER` statement in [`SUPERGLOBALS_PRELUDE`].
-const SUPERGLOBAL_SERVER: usize = 0;
-
-/// The superglobal bindings this script actually needs, in prelude order.
-///
-/// Off the request path these all yield empty maps rather than trapping (see
-/// `every_request_op_survives_with_no_request`), which is what real PHP does
-/// on the command line — `$_GET` is `[]`, not an error.
-fn php_superglobal_prelude(__php_w: &mut PhpWalker, names: &[bool; 7]) -> Vec<Statement> {
-    if !names.iter().any(|needed| *needed) {
-        return Vec::new();
-    }
-    let all = cached_php_prelude_group(__php_w, PhpPreludeGroup::Superglobals);
-    all.into_iter()
-        .enumerate()
-        .filter(|(index, _)| match *index {
-            SUPERGLOBAL_FILES_HELPER => names[SUPERGLOBAL_FILES],
-            SUPERGLOBAL_ENV_HELPER => names[SUPERGLOBAL_ENV],
-            SUPERGLOBAL_PHP_SELF => names[SUPERGLOBAL_SERVER],
-            other => names[other],
+fn php_superglobal_initializers(_php_w: &mut PhpWalker, names: &[bool; 7]) -> Vec<Statement> {
+    let bindings = [
+        (SUPERGLOBAL_SERVER, "", "__vybe_superglobal_server"),
+        (SUPERGLOBAL_GET, "", "__vybe_superglobal_get"),
+        (SUPERGLOBAL_POST, "", "__vybe_superglobal_post"),
+        (SUPERGLOBAL_FILES, "", "__vybe_superglobal_files"),
+        (SUPERGLOBAL_COOKIE, "", "__vybe_superglobal_cookie"),
+        (SUPERGLOBAL_REQUEST, "", "__vybe_superglobal_request"),
+        (SUPERGLOBAL_ENV, "", "__vybe_php_env"),
+    ];
+    bindings
+        .into_iter()
+        .filter(|(index, _, _)| names[*index])
+        .map(|(_, target, callee)| {
+            Statement::new(StmtKind::Assign {
+                targets: vec![Expression::ident(target)],
+                value: php_call_expr(callee, Vec::new()),
+                by_ref: false,
+            })
         })
-        .map(|(_, stmt)| stmt)
         .collect()
 }
 
-/// `getenv()` / `putenv()` over `wasi:cli/environment`.
-///
-/// The profile used to point `getenv` at `host:wasi:cli:getEnv` — a module that
-/// does not exist, so every call died with `Unresolved import`. The spec surface
-/// is `get-environment() -> list<tuple<string, string>>`, read-only; PHP's
-/// arity-overloaded lookup, its `false`-for-missing and `putenv`'s MUTATION are
-/// PHP's semantics, so they live here rather than as an extension to a WASI
-/// module.
-///
-/// `putenv` writes to an overlay consulted before the real environment, which is
-/// what PHP's own `putenv` is: process-local, gone when the process exits, and
-/// invisible to `$_ENV` (real PHP does not update `$_ENV` either).
-const ENV_FUNCTIONS_PRELUDE: &str = r##"
-$__vybe_env_overlay = [];
-function getenv($name = null) {
-    global $__vybe_env_overlay;
-    if ($name === null) {
-        $out = [];
-        foreach (__vybe_env_pairs() as $pair) {
-            $out[$pair[0]] = $pair[1];
-        }
-        foreach ($__vybe_env_overlay as $k => $v) {
-            $out[$k] = $v;
-        }
-        return $out;
-    }
-    if (array_key_exists($name, $__vybe_env_overlay)) {
-        return $__vybe_env_overlay[$name];
-    }
-    foreach (__vybe_env_pairs() as $pair) {
-        if ($pair[0] === $name) {
-            return $pair[1];
-        }
-    }
-    return false;
-}
-function putenv($assignment) {
-    global $__vybe_env_overlay;
-    $pos = strpos($assignment, '=');
-    if ($pos === false) {
-        unset($__vybe_env_overlay[$assignment]);
-        return true;
-    }
-    $__vybe_env_overlay[substr($assignment, 0, $pos)] = substr($assignment, $pos + 1);
-    return true;
-}
-"##;
-
-const SESSION_FUNCTIONS_PRELUDE: &str = r##"
-$__vybe_session_cookie_params = [
-    'lifetime' => 0,
-    'path' => '/',
-    'domain' => '',
-    'secure' => false,
-    'httponly' => false,
-    'samesite' => '',
-];
-$__vybe_session_cache_limiter = 'nocache';
-$__vybe_session_cache_expire = 180;
-$__vybe_session_save_path = '';
-
-function session_get_cookie_params() {
-    global $__vybe_session_cookie_params;
-    return $__vybe_session_cookie_params;
-}
-function session_set_cookie_params($lifetime_or_options, $path = '/', $domain = '', $secure = false, $httponly = false) {
-    global $__vybe_session_cookie_params;
-    if (is_array($lifetime_or_options)) {
-        foreach ($lifetime_or_options as $k => $v) {
-            $__vybe_session_cookie_params[$k] = $v;
-        }
-    } else {
-        $__vybe_session_cookie_params['lifetime'] = $lifetime_or_options;
-        $__vybe_session_cookie_params['path'] = $path;
-        $__vybe_session_cookie_params['domain'] = $domain;
-        $__vybe_session_cookie_params['secure'] = $secure;
-        $__vybe_session_cookie_params['httponly'] = $httponly;
-    }
-    return true;
-}
-function session_cache_limiter($value = null) {
-    global $__vybe_session_cache_limiter;
-    $old = $__vybe_session_cache_limiter;
-    if ($value !== null) $__vybe_session_cache_limiter = $value;
-    return $old;
-}
-function session_cache_expire($value = null) {
-    global $__vybe_session_cache_expire;
-    $old = $__vybe_session_cache_expire;
-    if ($value !== null) $__vybe_session_cache_expire = $value;
-    return $old;
-}
-function session_module_name($name = null) {
-    return 'files';
-}
-function session_save_path($path = null) {
-    global $__vybe_session_save_path;
-    $old = $__vybe_session_save_path;
-    if ($path !== null) $__vybe_session_save_path = $path;
-    return $path === null ? $__vybe_session_save_path : $old;
-}
-function session_create_id($prefix = '') {
-    return $prefix . '0123456789abcdef0123456789abcdef';
-}
-function session_gc($options = null) {
-    return 0;
-}
-function session_set_save_handler($open, $close = null, $read = null, $write = null, $destroy = null, $gc = null, $create_sid = null, $validate_sid = null, $update_timestamp = null) {
-    return true;
-}
-function session_encode() {
-    $out = '';
-    foreach ($_SESSION as $k => $v) {
-        if ($v === null) {
-            $blob = 'N;';
-        } else if (is_bool($v)) {
-            $blob = $v ? 'b:1;' : 'b:0;';
-        } else if (is_int($v)) {
-            $blob = 'i:' . $v . ';';
-        } else if (is_float($v)) {
-            $blob = 'd:' . $v . ';';
-        } else if (is_string($v)) {
-            $blob = 's:' . strlen($v) . ':"' . $v . '";';
-        } else {
-            $blob = serialize($v);
-        }
-        $out = $out . $k . '|' . $blob;
-    }
-    return $out;
-}
-function session_decode($data) {
-    $_SESSION = [];
-    $i = 0;
-    $n = strlen($data);
-    while ($i < $n) {
-        $p = strpos($data, '|', $i);
-        if ($p === false) return false;
-        $key = substr($data, $i, $p - $i);
-        $i = $p + 1;
-        $tag = substr($data, $i, 1);
-        if ($tag === 's') {
-            $q1 = strpos($data, '"', $i);
-            if ($q1 === false) return false;
-            $q2 = strpos($data, '";', $q1 + 1);
-            if ($q2 === false) return false;
-            $value = substr($data, $q1 + 1, $q2 - $q1 - 1);
-            $i = $q2 + 2;
-        } else if ($tag === 'i') {
-            $semi = strpos($data, ';', $i);
-            if ($semi === false) return false;
-            $value = substr($data, $i + 2, $semi - $i - 2) + 0;
-            $i = $semi + 1;
-        } else if ($tag === 'd') {
-            $semi = strpos($data, ';', $i);
-            if ($semi === false) return false;
-            $value = substr($data, $i + 2, $semi - $i - 2) + 0.0;
-            $i = $semi + 1;
-        } else if ($tag === 'b') {
-            $semi = strpos($data, ';', $i);
-            if ($semi === false) return false;
-            $value = substr($data, $i + 2, $semi - $i - 2) == '1';
-            $i = $semi + 1;
-        } else if ($tag === 'N') {
-            $semi = strpos($data, ';', $i);
-            if ($semi === false) return false;
-            $value = null;
-            $i = $semi + 1;
-        } else {
-            $semi = strpos($data, ';', $i);
-            if ($semi === false) return false;
-            $blob = substr($data, $i, $semi - $i + 1);
-            $value = unserialize($blob);
-            $i = $semi + 1;
-        }
-        $_SESSION[$key] = $value;
-    }
-    return true;
-}
-"##;
-
-const COPY_ON_ASSIGN_PRELUDE: &str = r##"
-function __php_copy_on_assign($v) {
-    // Scalars/null: not Map-backed, nothing to copy.
-    if (!is_array($v)) return $v;
-    // Closures are Map-backed and even report is_array/array_is_list true, but
-    // are reference-like — deep-cloning one shreds it. Leave callables shared.
-    if (is_callable($v)) return $v;
-    // Objects are Map-backed too but are reference types (stay shared). An
-    // Real objects carry their class stamp in "__type"; list arrays report the
-    // runtime tag "Array", and assoc arrays can be unstamped.
-    if (isset($v["__type"]) && $v["__type"] !== "Array") return $v;
-    $r = [];
-    foreach ($v as $k => $x) {
-        $r[$k] = (is_array($x) && !is_callable($x) && (!isset($x["__type"]) || $x["__type"] === "Array"))
-            ? __php_copy_on_assign($x) : $x;
-    }
-    return $r;
-}
-function __php_arrayish($v) {
-    return is_array($v) && (!isset($v["__type"]) || $v["__type"] === "Array");
-}
-function __php_same_string($a, $b) {
-    if (strlen($a) !== strlen($b)) return false;
-    return !($a < $b) && !($a > $b);
-}
-function __php_strict_eq($a, $b) {
-    if (__php_arrayish($a) || __php_arrayish($b)) {
-        if (!__php_arrayish($a) || !__php_arrayish($b)) return false;
-        if (count($a) !== count($b)) return false;
-        $ak = array_keys($a);
-        $bk = array_keys($b);
-        $i = 0;
-        while ($i < count($ak)) {
-            if ($ak[$i] !== $bk[$i]) return false;
-            $k = $ak[$i];
-            if (!array_key_exists($k, $b)) return false;
-            if (!__php_strict_eq($a[$k], $b[$k])) return false;
-            $i++;
-        }
-        return true;
-    }
-    if ($a === null || $b === null) return $a === null && $b === null;
-    if (is_bool($a) || is_bool($b)) return is_bool($a) && is_bool($b) && (bool)$a == (bool)$b;
-    if (is_int($a) || is_int($b)) return is_int($a) && is_int($b) && $a == $b;
-    if (is_float($a) || is_float($b)) return is_float($a) && is_float($b) && $a == $b;
-    if (is_string($a) || is_string($b)) return is_string($a) && is_string($b) && __php_same_string($a, $b);
-    return $a === $b;
-}
-function __php_array_loose_eq($a, $b) {
-    if (!__php_arrayish($a) || !__php_arrayish($b)) return false;
-    if (count($a) != count($b)) return false;
-    foreach ($a as $k => $v) {
-        if (!array_key_exists($k, $b)) return false;
-        if (!__php_loose_eq($v, $b[$k])) return false;
-    }
-    return true;
-}
-"##;
-
-/// PHP-source class-introspection helpers that read the *common* object
-/// metadata stamped by the shared class emitter (`__type`, `__types`) rather
-/// than any PHP-specific bookkeeping — so they stay correct for objects built
-/// through the common `emit_class` path. Assignments avoid the if/else
-/// conditional-assignment form (see project_php_conditional_assign_bug).
-const CLASS_HELPERS_PRELUDE: &str = r##"
-class stdClass {}
-function __php_numeric_like($v) {
-    if (is_int($v) || is_float($v)) return true;
-    if (!is_string($v)) return false;
-    $s = trim($v);
-    if ($s === '') return false;
-    if ((float)$s != 0.0) return true;
-    $has_digit = false;
-    $i = 0;
-    while ($i < strlen($s)) {
-        $ch = substr($s, $i, 1);
-        if ($ch === '0') $has_digit = true;
-        else if ($ch !== '+' && $ch !== '-' && $ch !== '.') return false;
-        $i++;
-    }
-    return $has_digit;
-}
-function __php_loose_eq($a, $b) {
-    if (is_object($a) || is_object($b)) {
-        if (!is_object($a) || !is_object($b)) return false;
-        if (!__php_same_string(get_class($a), get_class($b))) return false;
-        return true;
-    }
-    if (is_bool($a) || is_bool($b) || is_null($a) || is_null($b)) {
-        $ab = is_array($a) ? count($a) > 0 : (bool)$a;
-        $bb = is_array($b) ? count($b) > 0 : (bool)$b;
-        return ($ab && $bb) || (!$ab && !$bb);
-    }
-    if (__php_arrayish($a) || __php_arrayish($b)) return __php_array_loose_eq($a, $b);
-    $an = __php_numeric_like($a);
-    $bn = __php_numeric_like($b);
-    if ($an && $bn) return !((float)$a < (float)$b) && !((float)$a > (float)$b);
-    return __php_same_string((string)$a, (string)$b);
-}
-"##;
-
 #[derive(Default)]
-struct PhpPreludeNeeds {
+struct PhpBootstrapNeeds {
     exceptions: bool,
-    url: bool,
-    class_helpers: bool,
-    ini: bool,
-    version: bool,
-    copy_on_assign: bool,
-    env_functions: bool,
-    session_functions: bool,
-    /// One flag per superglobal, in `SUPERGLOBALS_PRELUDE` order:
+    /// One flag per superglobal, in the `php_superglobal_initializers` bind order:
     /// `$_SERVER`, `$_GET`, `$_POST`, `$_FILES`, `$_COOKIE`, `$_REQUEST`,
     /// `$_ENV`.
     superglobals: [bool; 7],
 }
 
-#[derive(Clone, Copy)]
-enum PhpPreludeGroup {
-    Exception,
-    Url,
-    Class,
-    Ini,
-    Version,
-    Copy,
-    Env,
-    Session,
-    Superglobals,
-}
-
-/// Parse a PHP prelude source into statements, cached once per process. The
-/// walker injects only the prelude groups referenced by the normalized AST; a
-/// simple `echo 1` should not compile the whole exception/URL/INI/version
-/// surface on every run.
-/// PHP's uncaught-exception report, as PHP source.
-///
-/// Matches the CLI's stdout form: a leading blank line, `Fatal error: Uncaught
-/// <Class>: <message> in <file>:<line>`, then the stack trace.
-///
-/// It does NOT exit: `wrap_module_in_error_boundary` re-throws afterwards so the
-/// run still ends in an error and the process exit code stays non-zero. An
-/// `exit(255)` here requested a CLEAN termination instead — exit 0 — which
-/// would have turned every uncaught-throw test into a false pass.
-/// `getFile()`/`getLine()` currently return empty in vybe, so those slots render
-/// blank — the shape is right and that gap is separately fixable.
-#[allow(dead_code)]
-const UNCAUGHT_HANDLER_PHP: &str = r##"
-echo "
-Fatal error: Uncaught " . get_class($__vybe_uncaught) . ": " . $__vybe_uncaught->getMessage() . " in " . $__vybe_uncaught->getFile() . ":" . $__vybe_uncaught->getLine() . "
-Stack trace:
-#0 {main}
-  thrown in " . $__vybe_uncaught->getFile() . " on line " . $__vybe_uncaught->getLine() . "
-";
-"##;
-
-
-fn cached_php_prelude_group(__php_w: &mut PhpWalker, group: PhpPreludeGroup) -> Vec<Statement> {
-    let src = match group {
-        PhpPreludeGroup::Superglobals => SUPERGLOBALS_PRELUDE,
-        PhpPreludeGroup::Exception => EXCEPTION_PRELUDE,
-        PhpPreludeGroup::Url => URL_FUNCTIONS_PRELUDE,
-        PhpPreludeGroup::Class => CLASS_HELPERS_PRELUDE,
-        PhpPreludeGroup::Ini => INI_FUNCTIONS_PRELUDE,
-        PhpPreludeGroup::Version => VERSION_PRELUDE,
-        PhpPreludeGroup::Copy => COPY_ON_ASSIGN_PRELUDE,
-        PhpPreludeGroup::Env => ENV_FUNCTIONS_PRELUDE,
-        PhpPreludeGroup::Session => SESSION_FUNCTIONS_PRELUDE,
-    };
-
-    // One shared, content-keyed cache instead of a `OnceLock` per group — the
-    // group tag picks the SOURCE, and the source is what identifies the entry.
-    // See `vybe_compiler::primitives::prelude`.
-    vybe_compiler::primitives::prelude::cached_infallible(src, |s| {
-        __php_w.line_starts = build_line_starts(s);
-        let prelude = parse_prelude(__php_w, s);
-        __php_w.line_starts.clear();
-        prelude
-    })
-}
-
-fn cached_php_prelude_for(__php_w: &mut PhpWalker, stmts: &[Statement]) -> Vec<Statement> {
-    let mut needs = php_prelude_needs(stmts);
-    if needs.session_functions {
-        needs.class_helpers = true;
-        needs.copy_on_assign = true;
-    }
-    if needs.url || needs.ini || needs.version || needs.copy_on_assign {
-        needs.class_helpers = true;
-    }
-    if needs.url || needs.ini || needs.version {
-        needs.copy_on_assign = true;
-    }
+fn cached_php_bootstrap_for(__php_w: &mut PhpWalker, stmts: &[Statement]) -> Vec<Statement> {
+    let needs = php_bootstrap_needs(stmts);
     // Superglobals bind FIRST: the rest of the prelude is function declarations,
     // but a `$_SERVER` read in the script body must already see the request.
-    let mut prelude = php_superglobal_prelude(__php_w, &needs.superglobals);
+    let mut prelude = php_superglobal_initializers(__php_w, &needs.superglobals);
     if needs.exceptions {
-        prelude.append(&mut cached_php_prelude_group(__php_w, PhpPreludeGroup::Exception));
-    }
-    if needs.url {
-        prelude.append(&mut cached_php_prelude_group(__php_w, PhpPreludeGroup::Url));
-    }
-    if needs.class_helpers {
-        prelude.append(&mut cached_php_prelude_group(__php_w, PhpPreludeGroup::Class));
-    }
-    if needs.ini {
-        prelude.append(&mut cached_php_prelude_group(__php_w, PhpPreludeGroup::Ini));
-    }
-    if needs.version {
-        prelude.append(&mut cached_php_prelude_group(__php_w, PhpPreludeGroup::Version));
-    }
-    if needs.copy_on_assign {
-        prelude.append(&mut cached_php_prelude_group(__php_w, PhpPreludeGroup::Copy));
-    }
-    if needs.env_functions {
-        prelude.append(&mut cached_php_prelude_group(__php_w, PhpPreludeGroup::Env));
-    }
-    if needs.session_functions {
-        prelude.append(&mut cached_php_prelude_group(__php_w, PhpPreludeGroup::Session));
+        prelude.append(&mut php_core_exception_declarations(__php_w));
     }
     prelude
 }
 
-/// The eight prelude groups are fixed text, so parsing them once per process is
-/// worth it — but the memo belongs in ONE deliberate place, and that place is
-/// `vybe_compiler::primitives::prelude::cached_infallible`, which
-/// `cached_php_prelude_group` above already calls. This had a second, private
-/// `static CACHE` underneath it doing the same job.
-///
-/// ⛔ A cache is a decision to persist a pure result. It is NOT a reason for the
-/// compiler's working state to be static, and treating it as one is what let 63
-/// statics accumulate in this file behind a "boot state must survive" argument.
-fn parse_prelude(__php_w: &mut PhpWalker, src: &str) -> Vec<Statement> {
-    parse_prelude_uncached(__php_w, src)
-}
-
-fn parse_prelude_uncached(__php_w: &mut PhpWalker, src: &str) -> Vec<Statement> {
-    let mut stmts = Vec::new();
-    let Ok(mut pairs) = PhpParser::parse(Rule::program_pure, src) else {
-        return stmts;
-    };
-    let Some(program) = pairs.next() else {
-        return stmts;
-    };
-    if !matches!(program.as_rule(), Rule::program_pure) {
-        return stmts;
+fn php_bootstrap_needs(stmts: &[Statement]) -> PhpBootstrapNeeds {
+    let mut needs = PhpBootstrapNeeds::default();
+    for stmt in stmts {
+        php_collect_bootstrap_needs_stmt(stmt, &mut needs);
     }
-    for pair in program.into_inner() {
-        if matches!(pair.as_rule(), Rule::EOI) {
-            continue;
-        }
-        let pair = if matches!(pair.as_rule(), Rule::pure_top_level_statement) {
-            match pair.into_inner().next() {
-                Some(inner) => inner,
-                None => continue,
-            }
-        } else {
-            pair
-        };
-        if let Ok(Some(stmt)) = walk_statement(__php_w, pair) {
-            stmts.push(stmt);
-        }
-    }
-    stmts
-}
-
-fn php_prelude_needs(stmts: &[Statement]) -> PhpPreludeNeeds {
-    let ast = format!("{:?}", stmts);
-    let mut needs = PhpPreludeNeeds::default();
-
-    needs.exceptions = [
-        "Throwable",
-        "Exception",
-        "Error",
-        "TypeError",
-        "ValueError",
-        "DivisionByZeroError",
-        "ArgumentCountError",
-        "ParseError",
-        "AssertionError",
-        "UnhandledMatchError",
-        "FiberError",
-        "RuntimeException",
-        "LogicException",
-        "JsonException",
-        "__PHP_Incomplete_Class",
-        "Try",
-        "Throw",
-    ]
-    .iter()
-    .any(|name| ast.contains(name));
-
-    // Bind only the superglobals this script names. `$_POST` costs a body read,
-    // so a page that only looks at `$_GET` must not pay for one.
-    for (slot, name) in [
-        "$_SERVER",
-        "$_GET",
-        "$_POST",
-        "$_FILES",
-        "$_COOKIE",
-        "$_REQUEST",
-        "$_ENV",
-    ]
-    .iter()
-    .enumerate()
-    {
-        needs.superglobals[slot] = ast.contains(name);
-    }
-    // `$_REQUEST` is `$_GET` + `$_POST` + `$_COOKIE` merged, but the MERGE lives
-    // in the primitive, so naming it does not drag the other three in here.
-
-    needs.env_functions = ["getenv", "putenv"].iter().any(|name| ast.contains(name));
-    needs.session_functions = [
-        "session_get_cookie_params",
-        "session_set_cookie_params",
-        "session_cache_limiter",
-        "session_cache_expire",
-        "session_module_name",
-        "session_save_path",
-        "session_create_id",
-        "session_gc",
-        "session_set_save_handler",
-        "session_encode",
-        "session_decode",
-    ]
-    .iter()
-    .any(|name| ast.contains(name));
-
-    needs.url = [
-        "parse_url",
-        "http_build_query",
-        "parse_str",
-        "__vybe_hbq_pairs",
-    ]
-    .iter()
-    .any(|name| ast.contains(name));
-
-    needs.class_helpers = ["stdClass", "__php_loose_eq"]
-        .iter()
-        .any(|name| ast.contains(name));
-
-    needs.ini = [
-        "ini_get",
-        "ini_set",
-        "ini_alter",
-        "ini_restore",
-        "ini_get_all",
-        "get_cfg_var",
-    ]
-    .iter()
-    .any(|name| ast.contains(name));
-
-    needs.version = [
-        "version_compare",
-        "__vybe_ver_canon",
-        "__vybe_ver_form",
-        "__vybe_ver_cmp",
-        "get_loaded_extensions",
-        "extension_loaded",
-        "php_uname",
-    ]
-    .iter()
-    .any(|name| ast.contains(name));
-
-    needs.copy_on_assign = ast.contains("__php_copy_on_assign") || ast.contains("__php_strict_eq");
     needs
+}
+
+fn php_mark_bootstrap_name(needs: &mut PhpBootstrapNeeds, name: &str) {
+    let name = name.trim_start_matches('\\');
+    let leaf = name
+        .rsplit(|ch| ch == '.' || ch == '\\')
+        .next()
+        .unwrap_or(name);
+    match name {
+        "$_SERVER" => needs.superglobals[SUPERGLOBAL_SERVER] = true,
+        "$_GET" => needs.superglobals[SUPERGLOBAL_GET] = true,
+        "$_POST" => needs.superglobals[SUPERGLOBAL_POST] = true,
+        "$_FILES" => needs.superglobals[SUPERGLOBAL_FILES] = true,
+        "$_COOKIE" => needs.superglobals[SUPERGLOBAL_COOKIE] = true,
+        "$_REQUEST" => needs.superglobals[SUPERGLOBAL_REQUEST] = true,
+        "$_ENV" => needs.superglobals[SUPERGLOBAL_ENV] = true,
+        _ => {}
+    }
+
+    match leaf {
+        "Throwable" | "Exception" | "Error" | "TypeError" | "ValueError"
+        | "DivisionByZeroError" | "ArgumentCountError" | "ParseError" | "AssertionError"
+        | "UnhandledMatchError" | "FiberError" | "RuntimeException" | "LogicException"
+        | "JsonException" | "__PHP_Incomplete_Class" => needs.exceptions = true,
+        _ => {}
+    }
+
+}
+
+fn php_collect_bootstrap_needs_stmts(stmts: &[Statement], needs: &mut PhpBootstrapNeeds) {
+    for stmt in stmts {
+        php_collect_bootstrap_needs_stmt(stmt, needs);
+    }
+}
+
+fn php_collect_bootstrap_needs_stmt(stmt: &Statement, needs: &mut PhpBootstrapNeeds) {
+    match &stmt.kind {
+        StmtKind::Expr(expr) => php_collect_bootstrap_needs_expr(expr, needs),
+        StmtKind::Block(body) | StmtKind::NamespaceDecl { body, .. } => {
+            php_collect_bootstrap_needs_stmts(body, needs);
+        }
+        StmtKind::Directive { .. }
+        | StmtKind::Break(_)
+        | StmtKind::Continue(_)
+        | StmtKind::Empty
+        | StmtKind::OnErrorResumeNext
+        | StmtKind::OnErrorGoTo(_)
+        | StmtKind::GoTo(_)
+        | StmtKind::Label(_)
+        | StmtKind::ScopeDecl { .. } => {}
+        StmtKind::VarDecl { declarations, .. } => {
+            for decl in declarations {
+                if let Some(init) = &decl.init {
+                    php_collect_bootstrap_needs_expr(init, needs);
+                }
+            }
+        }
+        StmtKind::FunctionDecl { params, body, .. } => {
+            for param in params {
+                if let Some(default) = &param.default {
+                    php_collect_bootstrap_needs_expr(default, needs);
+                }
+            }
+            php_collect_bootstrap_needs_stmts(body, needs);
+        }
+        StmtKind::ClassDecl {
+            name,
+            parents,
+            interfaces,
+            members,
+            decorators,
+            ..
+        } => {
+            php_mark_bootstrap_name(needs, name);
+            for parent in parents {
+                php_mark_bootstrap_name(needs, parent);
+            }
+            for interface in interfaces {
+                php_mark_bootstrap_name(needs, interface);
+            }
+            for decorator in decorators {
+                php_collect_bootstrap_needs_expr(decorator, needs);
+            }
+            for member in members {
+                php_collect_bootstrap_needs_class_member(member, needs);
+            }
+        }
+        StmtKind::InterfaceDecl {
+            name,
+            parents,
+            decorators,
+            ..
+        } => {
+            php_mark_bootstrap_name(needs, name);
+            for parent in parents {
+                php_mark_bootstrap_name(needs, parent);
+            }
+            for decorator in decorators {
+                php_collect_bootstrap_needs_expr(decorator, needs);
+            }
+        }
+        StmtKind::EnumDecl {
+            name,
+            members,
+            interfaces,
+            body_members,
+            decorators,
+            ..
+        } => {
+            php_mark_bootstrap_name(needs, name);
+            for interface in interfaces {
+                php_mark_bootstrap_name(needs, interface);
+            }
+            for member in members {
+                if let Some(value) = &member.value {
+                    php_collect_bootstrap_needs_expr(value, needs);
+                }
+            }
+            for member in body_members {
+                php_collect_bootstrap_needs_class_member(member, needs);
+            }
+            for decorator in decorators {
+                php_collect_bootstrap_needs_expr(decorator, needs);
+            }
+        }
+        StmtKind::StructDecl {
+            name,
+            interfaces,
+            members,
+            decorators,
+            ..
+        } => {
+            php_mark_bootstrap_name(needs, name);
+            for interface in interfaces {
+                php_mark_bootstrap_name(needs, interface);
+            }
+            for member in members {
+                php_collect_bootstrap_needs_class_member(member, needs);
+            }
+            for decorator in decorators {
+                php_collect_bootstrap_needs_expr(decorator, needs);
+            }
+        }
+        StmtKind::ModuleDecl { members, .. } => {
+            for member in members {
+                php_collect_bootstrap_needs_class_member(member, needs);
+            }
+        }
+        StmtKind::DelegateDecl { params, .. } => {
+            for param in params {
+                if let Some(default) = &param.default {
+                    php_collect_bootstrap_needs_expr(default, needs);
+                }
+            }
+        }
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => {
+            php_collect_bootstrap_needs_expr(cond, needs);
+            php_collect_bootstrap_needs_stmts(then_body, needs);
+            for (cond, body) in elifs {
+                php_collect_bootstrap_needs_expr(cond, needs);
+                php_collect_bootstrap_needs_stmts(body, needs);
+            }
+            if let Some(body) = else_body {
+                php_collect_bootstrap_needs_stmts(body, needs);
+            }
+        }
+        StmtKind::For {
+            init,
+            cond,
+            update,
+            body,
+        } => {
+            if let Some(init) = init {
+                php_collect_bootstrap_needs_stmt(init, needs);
+            }
+            if let Some(cond) = cond {
+                php_collect_bootstrap_needs_expr(cond, needs);
+            }
+            if let Some(update) = update {
+                php_collect_bootstrap_needs_expr(update, needs);
+            }
+            php_collect_bootstrap_needs_stmts(body, needs);
+        }
+        StmtKind::ForIn {
+            iter,
+            body,
+            else_body,
+            ..
+        } => {
+            php_collect_bootstrap_needs_expr(iter, needs);
+            php_collect_bootstrap_needs_stmts(body, needs);
+            if let Some(body) = else_body {
+                php_collect_bootstrap_needs_stmts(body, needs);
+            }
+        }
+        StmtKind::While {
+            cond,
+            body,
+            else_body,
+        } => {
+            php_collect_bootstrap_needs_expr(cond, needs);
+            php_collect_bootstrap_needs_stmts(body, needs);
+            if let Some(body) = else_body {
+                php_collect_bootstrap_needs_stmts(body, needs);
+            }
+        }
+        StmtKind::DoWhile { body, cond, .. } => {
+            php_collect_bootstrap_needs_stmts(body, needs);
+            php_collect_bootstrap_needs_expr(cond, needs);
+        }
+        StmtKind::Switch {
+            expr,
+            cases,
+            default,
+        } => {
+            php_collect_bootstrap_needs_expr(expr, needs);
+            for case in cases {
+                for cond in &case.conditions {
+                    match cond {
+                        CaseCondition::Value(expr) => php_collect_bootstrap_needs_expr(expr, needs),
+                        CaseCondition::Range { from, to } => {
+                            php_collect_bootstrap_needs_expr(from, needs);
+                            php_collect_bootstrap_needs_expr(to, needs);
+                        }
+                        CaseCondition::Comparison { expr, .. } => {
+                            php_collect_bootstrap_needs_expr(expr, needs);
+                        }
+                    }
+                }
+                php_collect_bootstrap_needs_stmts(&case.body, needs);
+            }
+            if let Some(body) = default {
+                php_collect_bootstrap_needs_stmts(body, needs);
+            }
+        }
+        StmtKind::Try {
+            body,
+            catches,
+            else_body,
+            finally,
+        } => {
+            needs.exceptions = true;
+            php_collect_bootstrap_needs_stmts(body, needs);
+            for catch in catches {
+                for ty in &catch.types {
+                    php_mark_bootstrap_name(needs, ty);
+                }
+                if let Some(when_clause) = &catch.when_clause {
+                    php_collect_bootstrap_needs_expr(when_clause, needs);
+                }
+                php_collect_bootstrap_needs_stmts(&catch.body, needs);
+            }
+            if let Some(body) = else_body {
+                php_collect_bootstrap_needs_stmts(body, needs);
+            }
+            if let Some(body) = finally {
+                php_collect_bootstrap_needs_stmts(body, needs);
+            }
+        }
+        StmtKind::With { items, body, .. } => {
+            for item in items {
+                php_collect_bootstrap_needs_expr(&item.expr, needs);
+            }
+            php_collect_bootstrap_needs_stmts(body, needs);
+        }
+        StmtKind::Using { resource, body, .. } => {
+            php_collect_bootstrap_needs_expr(resource, needs);
+            php_collect_bootstrap_needs_stmts(body, needs);
+        }
+        StmtKind::Lock { expr, body } => {
+            php_collect_bootstrap_needs_expr(expr, needs);
+            php_collect_bootstrap_needs_stmts(body, needs);
+        }
+        StmtKind::Return(expr) | StmtKind::CloseFile(expr) => {
+            if let Some(expr) = expr {
+                php_collect_bootstrap_needs_expr(expr, needs);
+            }
+        }
+        StmtKind::Throw { expr, cause } => {
+            needs.exceptions = true;
+            if let Some(expr) = expr {
+                php_collect_bootstrap_needs_expr(expr, needs);
+            }
+            if let Some(cause) = cause {
+                php_collect_bootstrap_needs_expr(cause, needs);
+            }
+        }
+        StmtKind::Assign { targets, value, .. } => {
+            for target in targets {
+                php_collect_bootstrap_needs_expr(target, needs);
+            }
+            php_collect_bootstrap_needs_expr(value, needs);
+        }
+        StmtKind::CompoundAssign { target, value, .. } => {
+            php_collect_bootstrap_needs_expr(target, needs);
+            php_collect_bootstrap_needs_expr(value, needs);
+        }
+        StmtKind::AddHandler {
+            control, handler, ..
+        } => {
+            php_collect_bootstrap_needs_expr(control, needs);
+            php_collect_bootstrap_needs_expr(handler, needs);
+        }
+        StmtKind::RemoveHandler {
+            control, handler, ..
+        } => {
+            php_collect_bootstrap_needs_expr(control, needs);
+            php_collect_bootstrap_needs_expr(handler, needs);
+        }
+        StmtKind::RaiseEvent { args, .. }
+        | StmtKind::PrintFile { items: args, .. }
+        | StmtKind::WriteFile { items: args, .. }
+        | StmtKind::Echo(args) => {
+            for arg in args {
+                php_collect_bootstrap_needs_expr(arg, needs);
+            }
+        }
+        StmtKind::OpenFile {
+            path, file_number, ..
+        }
+        | StmtKind::StartFile {
+            file_number,
+            key_value: path,
+            ..
+        } => {
+            php_collect_bootstrap_needs_expr(path, needs);
+            php_collect_bootstrap_needs_expr(file_number, needs);
+        }
+        StmtKind::InputFile {
+            file_number,
+            variables,
+        } => {
+            php_collect_bootstrap_needs_expr(file_number, needs);
+            for variable in variables {
+                php_collect_bootstrap_needs_expr(variable, needs);
+            }
+        }
+        StmtKind::LineInput {
+            file_number,
+            ..
+        } => php_collect_bootstrap_needs_expr(file_number, needs),
+        StmtKind::InputRecordFile {
+            file_number,
+            key_value,
+            ..
+        } => {
+            php_collect_bootstrap_needs_expr(file_number, needs);
+            if let Some(key_value) = key_value {
+                php_collect_bootstrap_needs_expr(key_value, needs);
+            }
+        }
+        StmtKind::RewriteRecordFile {
+            file_number, items, ..
+        } => {
+            php_collect_bootstrap_needs_expr(file_number, needs);
+            for item in items {
+                php_collect_bootstrap_needs_expr(item, needs);
+            }
+        }
+        StmtKind::FileDecl { path, .. } => php_collect_bootstrap_needs_expr(path, needs),
+        StmtKind::RecordTransfer {
+            file,
+            at,
+            record,
+            status,
+            ..
+        } => {
+            php_collect_bootstrap_needs_expr(file, needs);
+            match at {
+                RecordAddress::Next | RecordAddress::Current => {}
+                RecordAddress::Number(expr) | RecordAddress::Key { value: expr, .. } => {
+                    php_collect_bootstrap_needs_expr(expr, needs);
+                }
+            }
+            if let Some(record) = record {
+                php_collect_bootstrap_needs_expr(record, needs);
+            }
+            if let Some(status) = status {
+                php_collect_bootstrap_needs_expr(status, needs);
+            }
+        }
+        StmtKind::Export {
+            declaration,
+            names: _,
+            default,
+            ..
+        } => {
+            if let Some(declaration) = declaration {
+                php_collect_bootstrap_needs_stmt(declaration, needs);
+            }
+            if let Some(default) = default {
+                php_collect_bootstrap_needs_expr(default, needs);
+            }
+        }
+        StmtKind::Labeled { body, .. } => php_collect_bootstrap_needs_stmt(body, needs),
+        StmtKind::Exit { status } => {
+            if let Some(status) = status {
+                php_collect_bootstrap_needs_expr(status, needs);
+            }
+        }
+        StmtKind::Delete(exprs) => {
+            for expr in exprs {
+                php_collect_bootstrap_needs_expr(expr, needs);
+            }
+        }
+        StmtKind::Assert { test, msg } => {
+            php_collect_bootstrap_needs_expr(test, needs);
+            if let Some(msg) = msg {
+                php_collect_bootstrap_needs_expr(msg, needs);
+            }
+        }
+        StmtKind::Select { arms, default } => {
+            for arm in arms {
+                php_collect_bootstrap_needs_stmts(&arm.body, needs);
+            }
+            if let Some(default) = default {
+                php_collect_bootstrap_needs_stmts(default, needs);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn php_collect_bootstrap_needs_class_member(member: &ClassMember, needs: &mut PhpBootstrapNeeds) {
+    match member {
+        ClassMember::Field {
+            init, array_bounds, ..
+        } => {
+            if let Some(init) = init {
+                php_collect_bootstrap_needs_expr(init, needs);
+            }
+            if let Some(bounds) = array_bounds {
+                for bound in bounds {
+                    php_collect_bootstrap_needs_expr(bound, needs);
+                }
+            }
+        }
+        ClassMember::Method(stmt) | ClassMember::NestedType(stmt) => {
+            php_collect_bootstrap_needs_stmt(stmt, needs);
+        }
+        ClassMember::Constructor {
+            params,
+            body,
+            base_args,
+            ..
+        } => {
+            for param in params {
+                if let Some(default) = &param.default {
+                    php_collect_bootstrap_needs_expr(default, needs);
+                }
+            }
+            if let Some(base_args) = base_args {
+                for arg in base_args {
+                    php_collect_bootstrap_needs_expr(arg, needs);
+                }
+            }
+            php_collect_bootstrap_needs_stmts(body, needs);
+        }
+        ClassMember::Property { getter, setter, .. } => {
+            if let Some(getter) = getter {
+                php_collect_bootstrap_needs_stmts(getter, needs);
+            }
+            if let Some(setter) = setter {
+                php_collect_bootstrap_needs_stmts(&setter.body, needs);
+            }
+        }
+        ClassMember::Const { value, .. } => php_collect_bootstrap_needs_expr(value, needs),
+        ClassMember::Event { .. } | ClassMember::Augment(_) => {}
+    }
+}
+
+fn php_collect_bootstrap_needs_expr(expr: &Expression, needs: &mut PhpBootstrapNeeds) {
+    match &expr.kind {
+        ExprKind::Lit(_) | ExprKind::This | ExprKind::Super | ExprKind::GlobalNamespace => {}
+        ExprKind::Ident(name) | ExprKind::FuncRef(name) => php_mark_bootstrap_name(needs, name),
+        ExprKind::Binary { left, right, .. } => {
+            php_collect_bootstrap_needs_expr(left, needs);
+            php_collect_bootstrap_needs_expr(right, needs);
+        }
+        ExprKind::Unary { expr, .. }
+        | ExprKind::RefLoad(expr)
+        | ExprKind::TypeOf(expr)
+        | ExprKind::Spread(expr)
+        | ExprKind::Await(expr)
+        | ExprKind::YieldFrom(expr)
+        | ExprKind::Void(expr)
+        | ExprKind::Delete(expr) => php_collect_bootstrap_needs_expr(expr, needs),
+        ExprKind::Ternary { cond, then, else_ } => {
+            php_collect_bootstrap_needs_expr(cond, needs);
+            php_collect_bootstrap_needs_expr(then, needs);
+            php_collect_bootstrap_needs_expr(else_, needs);
+        }
+        ExprKind::Member { object, .. } => php_collect_bootstrap_needs_expr(object, needs),
+        ExprKind::Index { object, index, .. } => {
+            php_collect_bootstrap_needs_expr(object, needs);
+            php_collect_bootstrap_needs_expr(index, needs);
+        }
+        ExprKind::Call { callee, args, .. } | ExprKind::New { class: callee, args } => {
+            php_collect_bootstrap_needs_expr(callee, needs);
+            for arg in args {
+                php_collect_bootstrap_needs_expr(&arg.value, needs);
+            }
+        }
+        ExprKind::Assign { target, value } => {
+            php_collect_bootstrap_needs_expr(target, needs);
+            php_collect_bootstrap_needs_expr(value, needs);
+        }
+        ExprKind::Lambda { params, body, .. } => {
+            for param in params {
+                if let Some(default) = &param.default {
+                    php_collect_bootstrap_needs_expr(default, needs);
+                }
+            }
+            match body {
+                LambdaBody::Expr(expr) => php_collect_bootstrap_needs_expr(expr, needs),
+                LambdaBody::Block(stmts) => php_collect_bootstrap_needs_stmts(stmts, needs),
+            }
+        }
+        ExprKind::Array(elements) => {
+            for element in elements {
+                if let Some(key) = &element.key {
+                    php_collect_bootstrap_needs_expr(key, needs);
+                }
+                php_collect_bootstrap_needs_expr(&element.value, needs);
+            }
+        }
+        ExprKind::Tuple(items) | ExprKind::Set(items) | ExprKind::Sequence(items) => {
+            for item in items {
+                php_collect_bootstrap_needs_expr(item, needs);
+            }
+        }
+        ExprKind::NamedTuple { fields, .. } => {
+            for (_, value) in fields {
+                php_collect_bootstrap_needs_expr(value, needs);
+            }
+        }
+        ExprKind::Object(props) => {
+            for prop in props {
+                match prop {
+                    ObjectProperty::KeyValue { key, value }
+                    | ObjectProperty::Computed { key, value } => {
+                        php_collect_bootstrap_needs_expr(key, needs);
+                        php_collect_bootstrap_needs_expr(value, needs);
+                    }
+                    ObjectProperty::Spread(expr) => php_collect_bootstrap_needs_expr(expr, needs),
+                    ObjectProperty::Method { value, .. }
+                    | ObjectProperty::Accessor { value, .. } => {
+                        php_collect_bootstrap_needs_stmt(value, needs);
+                    }
+                    ObjectProperty::Shorthand(name) => php_mark_bootstrap_name(needs, name),
+                }
+            }
+        }
+        ExprKind::Map(entries) => {
+            for (key, value) in entries {
+                php_collect_bootstrap_needs_expr(key, needs);
+                php_collect_bootstrap_needs_expr(value, needs);
+            }
+        }
+        ExprKind::Zip { iterables, .. } => {
+            for iterable in iterables {
+                php_collect_bootstrap_needs_expr(iterable, needs);
+            }
+        }
+        ExprKind::ArrayMap { array, body, .. } => {
+            php_collect_bootstrap_needs_expr(array, needs);
+            php_collect_bootstrap_needs_expr(body, needs);
+        }
+        ExprKind::ArrayTransform { args, .. } => {
+            for arg in args {
+                php_collect_bootstrap_needs_expr(arg, needs);
+            }
+        }
+        ExprKind::Interpolation(parts) => {
+            for part in parts {
+                match part {
+                    InterpolPart::Text(_) => {}
+                    InterpolPart::Expr(expr) | InterpolPart::Formatted(expr, _) => {
+                        php_collect_bootstrap_needs_expr(expr, needs);
+                    }
+                }
+            }
+        }
+        ExprKind::IsType { expr, type_name } | ExprKind::Cast { expr, type_name } => {
+            php_mark_bootstrap_name(needs, type_name);
+            php_collect_bootstrap_needs_expr(expr, needs);
+        }
+        ExprKind::NullCoalesce { left, right } => {
+            php_collect_bootstrap_needs_expr(left, needs);
+            php_collect_bootstrap_needs_expr(right, needs);
+        }
+        ExprKind::Yield(expr) => {
+            if let Some(expr) = expr {
+                php_collect_bootstrap_needs_expr(expr, needs);
+            }
+        }
+        ExprKind::CallableRef {
+            target,
+            receiver,
+            adapter,
+            ..
+        } => {
+            php_collect_bootstrap_needs_expr(target, needs);
+            if let Some(receiver) = receiver {
+                php_collect_bootstrap_needs_expr(receiver, needs);
+            }
+            if let Some(CallableAdapter::Expr { body, params }) = adapter {
+                for param in params {
+                    if let Some(default) = &param.default {
+                        php_collect_bootstrap_needs_expr(default, needs);
+                    }
+                }
+                php_collect_bootstrap_needs_expr(body, needs);
+            }
+        }
+        ExprKind::SuperCall { args, .. } => {
+            for arg in args {
+                php_collect_bootstrap_needs_expr(&arg.value, needs);
+            }
+        }
+        ExprKind::Comprehension {
+            element,
+            generators,
+            ..
+        } => {
+            php_collect_bootstrap_needs_expr(element, needs);
+            for generator in generators {
+                php_collect_bootstrap_needs_expr(&generator.target, needs);
+                php_collect_bootstrap_needs_expr(&generator.iter, needs);
+                for condition in &generator.conditions {
+                    php_collect_bootstrap_needs_expr(condition, needs);
+                }
+            }
+        }
+        ExprKind::Slice { lower, upper, step } => {
+            for expr in [lower, upper, step].into_iter().flatten() {
+                php_collect_bootstrap_needs_expr(expr, needs);
+            }
+        }
+        ExprKind::Walrus { target, value }
+        | ExprKind::Proxy {
+            target,
+            handler: value,
+        }
+        | ExprKind::Range {
+            start: target,
+            end: value,
+            ..
+        } => {
+            php_collect_bootstrap_needs_expr(target, needs);
+            php_collect_bootstrap_needs_expr(value, needs);
+        }
+        ExprKind::Destructure(_) => {}
+        ExprKind::ClassExpr {
+            parent,
+            interfaces,
+            members,
+            ..
+        } => {
+            if let Some(parent) = parent {
+                php_collect_bootstrap_needs_expr(parent, needs);
+            }
+            for interface in interfaces {
+                php_mark_bootstrap_name(needs, interface);
+            }
+            for member in members {
+                php_collect_bootstrap_needs_class_member(member, needs);
+            }
+        }
+        ExprKind::FunctionExpr(stmt) => php_collect_bootstrap_needs_stmt(stmt, needs),
+        ExprKind::StaticAccess { class, member } => {
+            php_collect_bootstrap_needs_expr(class, needs);
+            php_collect_bootstrap_needs_expr(member, needs);
+        }
+        ExprKind::Match { subject, arms } => {
+            php_collect_bootstrap_needs_expr(subject, needs);
+            for arm in arms {
+                if let Some(conditions) = &arm.conditions {
+                    for cond in conditions {
+                        php_collect_bootstrap_needs_expr(cond, needs);
+                    }
+                }
+                php_collect_bootstrap_needs_expr(&arm.body, needs);
+            }
+        }
+        _ => {}
+    }
 }
 
 fn pre_register_php_function_signatures(__php_w: &mut PhpWalker, program: &Pair<Rule>) {
@@ -5425,7 +5496,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
     // Prepend only the PHP prelude groups referenced by the normalized AST.
     // Each group is still parsed once per process and cloned per call.
     let body = {
-        let mut prelude = cached_php_prelude_for(__php_w, &hoisted);
+        let mut prelude = cached_php_bootstrap_for(__php_w, &hoisted);
         prelude.append(&mut hoisted);
         prelude
     };
@@ -5564,25 +5635,29 @@ fn walk_statement_kind(__php_w: &mut PhpWalker, pair: Pair<Rule>, rule: Rule) ->
 
         Rule::expression_statement => {
             let expr = walk_expression(__php_w, pair.into_inner().next().unwrap())?;
-            // `exit;` / `die;` are the argument-less spelling of the same
-            // builtin `exit(…)` / `die(…)` bind to. php's grammar surfaces them
-            // as a bare identifier, so the LANGUAGE lowers them to the 0-arg
-            // call rather than leaving shared code to recognise the spellings
-            // — that recognition used to be a `profile.name == "php"` arm in
-            // `primitives/statements.rs`.
-            let expr = match &expr.kind {
-                ExprKind::Ident(name)
-                    if name.eq_ignore_ascii_case("exit") || name.eq_ignore_ascii_case("die") =>
-                {
-                    Expression::new(ExprKind::Call {
-                        callee: Box::new(expr.clone()),
-                        args: Vec::new(),
-                        optional: false,
-                    })
-                }
-                _ => expr,
-            };
-            StmtKind::Expr(php_drop_low_precedence_assignment_bool(expr))
+            if let Some(stmt) = php_parse_str_assignment(__php_w, &expr) {
+                stmt
+            } else {
+                // `exit;` / `die;` are the argument-less spelling of the same
+                // builtin `exit(…)` / `die(…)` bind to. php's grammar surfaces them
+                // as a bare identifier, so the LANGUAGE lowers them to the 0-arg
+                // call rather than leaving shared code to recognise the spellings
+                // — that recognition used to be a `profile.name == "php"` arm in
+                // `primitives/statements.rs`.
+                let expr = match &expr.kind {
+                    ExprKind::Ident(name)
+                        if name.eq_ignore_ascii_case("exit") || name.eq_ignore_ascii_case("die") =>
+                    {
+                        Expression::new(ExprKind::Call {
+                            callee: Box::new(expr.clone()),
+                            args: Vec::new(),
+                            optional: false,
+                        })
+                    }
+                    _ => expr,
+                };
+                StmtKind::Expr(php_drop_low_precedence_assignment_bool(expr))
+            }
         }
 
         Rule::const_statement => {
@@ -5985,6 +6060,80 @@ fn php_loop_condition(expr: Expression, body: &[Statement]) -> Expression {
         return php_array_length_positive_condition(expr);
     }
     php_truthy_condition(expr)
+}
+
+fn php_return_type_is_bool(return_type: Option<&str>) -> bool {
+    return_type
+        .map(|ty| {
+            ty.trim()
+                .trim_start_matches('?')
+                .trim_start_matches('\\')
+                .eq_ignore_ascii_case("bool")
+        })
+        .unwrap_or(false)
+}
+
+fn php_normalize_bool_returns_in_block(body: Vec<Statement>) -> Vec<Statement> {
+    body.into_iter()
+        .map(|stmt| php_normalize_bool_returns_in_stmt(stmt))
+        .collect()
+}
+
+fn php_normalize_bool_returns_in_stmt(stmt: Statement) -> Statement {
+    let span = stmt.span.clone();
+    let kind = match stmt.kind {
+        StmtKind::Return(Some(expr)) => {
+            let expr_span = expr.span.clone();
+            StmtKind::Return(Some(Expression::with_span(
+                ExprKind::Ternary {
+                    cond: Box::new(php_truthy_condition(expr)),
+                    then: Box::new(Expression::with_span(
+                        ExprKind::Lit(Literal::Bool(true)),
+                        expr_span.clone(),
+                    )),
+                    else_: Box::new(Expression::with_span(
+                        ExprKind::Lit(Literal::Bool(false)),
+                        expr_span.clone(),
+                    )),
+                },
+                expr_span,
+            )))
+        }
+        StmtKind::Block(body) => StmtKind::Block(php_normalize_bool_returns_in_block(body)),
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => StmtKind::If {
+            cond,
+            then_body: php_normalize_bool_returns_in_block(then_body),
+            elifs: elifs
+                .into_iter()
+                .map(|(cond, body)| (cond, php_normalize_bool_returns_in_block(body)))
+                .collect(),
+            else_body: else_body.map(php_normalize_bool_returns_in_block),
+        },
+        StmtKind::Try {
+            body,
+            catches,
+            else_body,
+            finally,
+        } => StmtKind::Try {
+            body: php_normalize_bool_returns_in_block(body),
+            catches: catches
+                .into_iter()
+                .map(|mut catch| {
+                    catch.body = php_normalize_bool_returns_in_block(catch.body);
+                    catch
+                })
+                .collect(),
+            else_body: else_body.map(php_normalize_bool_returns_in_block),
+            finally: finally.map(php_normalize_bool_returns_in_block),
+        },
+        _ => stmt.kind,
+    };
+    Statement::with_span(kind, span)
 }
 
 fn php_while_source_drains_simple_array_place(expr: &Expression, body_source: &str) -> bool {
@@ -7867,6 +8016,12 @@ fn walk_function_decl(__php_w: &mut PhpWalker, pair: Pair<Rule>) -> Result<StmtK
         }
     }
 
+    let body = if php_return_type_is_bool(return_type.as_deref()) {
+        php_normalize_bool_returns_in_block(body)
+    } else {
+        body
+    };
+
     Ok(StmtKind::FunctionDecl {
         name,
         params,
@@ -8960,8 +9115,10 @@ fn php_core_class_is_registered(__php_w: &mut PhpWalker, name: &str) -> bool {
 /// `is_subclass_of($c, $target)` — true iff `target` is a proper ancestor
 /// or an implemented interface of `c` (never `c` itself).
 fn class_is_subclass_of(__php_w: &mut PhpWalker, c: &str, target: &str) -> bool {
-    class_parent_chain(__php_w, c).iter().any(|p| p == target)
-        || class_all_interfaces(__php_w, c).iter().any(|i| i == target)
+    let c = php_resolve_class_name(__php_w, c);
+    let target = php_resolve_class_name(__php_w, target);
+    class_parent_chain(__php_w, &c).iter().any(|p| p == &target)
+        || class_all_interfaces(__php_w, &c).iter().any(|i| i == &target)
 }
 
 fn class_has_method(__php_w: &mut PhpWalker, c: &str, method: &str) -> bool {
@@ -10745,12 +10902,22 @@ fn walk_class_member(__php_w: &mut PhpWalker, pair: Pair<Rule>) -> Result<Vec<Cl
             if let Some(class_name) = current_class_name(__php_w) {
                 note_seen_class_method(__php_w, &class_name, &method_name);
             }
+            let method_body = if php_return_type_is_bool(return_type.as_deref()) {
+                php_normalize_bool_returns_in_block(method_body)
+            } else {
+                method_body
+            };
+            let method_scope_names = if modifiers.is_static {
+                Vec::new()
+            } else {
+                vec!["$this".to_string()]
+            };
             let stmt = Statement::new(StmtKind::FunctionDecl {
                 name: method_name,
                 params,
                 return_type,
                 body: if has_body {
-                    close_php_scope(method_body, &[])
+                    close_php_scope(method_body, &method_scope_names)
                 } else {
                     method_body
                 },
@@ -11215,25 +11382,9 @@ fn walk_expression(__php_w: &mut PhpWalker, mut pair: Pair<Rule>) -> Result<Expr
                             if php_object_class_from_expr(__php_w, &obj)
                                 .is_some_and(|class_name| class_has_method(__php_w, &class_name, "__isset"))
                             {
-                                return Ok(Expression::with_span(
-                                    ExprKind::Call {
-                                        callee: Box::new(Expression::with_span(
-                                            ExprKind::Member {
-                                                object: Box::new(obj),
-                                                field: "__isset".to_string(),
-                                                null_safe: false,
-                                            },
-                                            span.clone(),
-                                        )),
-                                        args: vec![Argument::positional(Expression::string(
-                                            &field,
-                                        ))],
-                                        optional: false,
-                                    },
-                                    span.clone(),
-                                ));
+                                return Ok(build_magic_isset_rewrite(__php_w, obj, field, &span, true));
                             }
-                            build_magic_isset_rewrite(__php_w, obj, field, &span)
+                            build_magic_isset_rewrite(__php_w, obj, field, &span, false)
                         }
                         _ => walked,
                     };
@@ -11639,13 +11790,8 @@ fn walk_left_assoc_binary(__php_w: &mut PhpWalker, pair: Pair<Rule>) -> Result<E
                 );
                 continue;
             }
-            // `==` / `!=` used to become a `__php_loose_eq(...)` CALL here,
-            // which took the operator off the shared path entirely — the same
-            // way `<`/`>`/`<=`/`>=` did. The identifier resolved to a PHP-SOURCE
-            // prelude gated by a substring scan of the AST text, not to the
-            // `emit_php_loose_eq` emitter, so `$a == $b` on two equal strings
-            // answered a raw untyped `0`. It now stays a `BinOp` and the shared
-            // emitter reads `[builtin_slots.string] eq` (builtinslotplan.md §3i).
+            // `==` / `!=` stays a `BinOp` so the shared emitter resolves PHP's
+            // loose-equality adapter through `[builtin_slots.string] eq`.
             left = Expression::with_span(
                 ExprKind::Binary {
                     op,
@@ -12307,7 +12453,13 @@ fn build_unset_rewrite(__php_w: &mut PhpWalker, target: Expression, span: &Span)
 /// The inner `$_t->__isset(name) ? true : null` normalises the user's
 /// `__isset` return value so the outer `isset(...)` host call (which
 /// tests not-null-not-undefined) reports "set" / "not set" correctly.
-fn build_magic_isset_rewrite(__php_w: &mut PhpWalker, obj: Expression, field: String, span: &Span) -> Expression {
+fn build_magic_isset_rewrite(
+    __php_w: &mut PhpWalker,
+    obj: Expression,
+    field: String,
+    span: &Span,
+    force_magic: bool,
+) -> Expression {
     let tmp = next_tmp_name(__php_w, "isset_recv");
     let tmp_ident = || Expression::with_span(ExprKind::Ident(tmp.clone()), span.clone());
     let save = Expression::with_span(
@@ -12325,11 +12477,22 @@ fn build_magic_isset_rewrite(__php_w: &mut PhpWalker, obj: Expression, field: St
         },
         span.clone(),
     );
+    let isset_member_for_check = Expression::with_span(
+        ExprKind::Member {
+            object: Box::new(tmp_ident()),
+            field: "__isset".to_string(),
+            null_safe: false,
+        },
+        span.clone(),
+    );
     let has_isset = Expression::with_span(
         ExprKind::Binary {
-            op: BinOp::In,
-            left: Box::new(Expression::string("__isset")),
-            right: Box::new(tmp_ident()),
+            op: BinOp::StrictEq,
+            left: Box::new(Expression::with_span(
+                ExprKind::TypeOf(Box::new(isset_member_for_check)),
+                span.clone(),
+            )),
+            right: Box::new(Expression::string("function")),
         },
         span.clone(),
     );
@@ -12350,20 +12513,24 @@ fn build_magic_isset_rewrite(__php_w: &mut PhpWalker, obj: Expression, field: St
     );
     let normalized = Expression::with_span(
         ExprKind::Ternary {
-            cond: Box::new(magic_isset_call),
+            cond: Box::new(php_truthy_condition(magic_isset_call)),
             then: Box::new(Expression::new(ExprKind::Lit(Literal::Bool(true)))),
             else_: Box::new(Expression::null()),
         },
         span.clone(),
     );
-    let ternary = Expression::with_span(
-        ExprKind::Ternary {
-            cond: Box::new(has_isset),
-            then: Box::new(normalized),
-            else_: Box::new(direct_member),
-        },
-        span.clone(),
-    );
+    let ternary = if force_magic {
+        normalized
+    } else {
+        Expression::with_span(
+            ExprKind::Ternary {
+                cond: Box::new(has_isset),
+                then: Box::new(normalized),
+                else_: Box::new(direct_member),
+            },
+            span.clone(),
+        )
+    };
     Expression::with_span(ExprKind::Sequence(vec![save, ternary]), span.clone())
 }
 
@@ -12784,6 +12951,59 @@ fn build_magic_call_rewrite(__php_w: &mut PhpWalker,
         span.clone(),
     );
     Expression::with_span(ExprKind::Sequence(vec![save, ternary]), span.clone())
+}
+
+fn php_dynamic_spread_method_call(
+    __php_w: &mut PhpWalker,
+    receiver: Expression,
+    method_key: Expression,
+    spread_value: Expression,
+    null_safe: bool,
+    span: &Span,
+) -> Expression {
+    let recv_tmp = next_tmp_name(__php_w, "dyn_spread_obj");
+    let key_tmp = next_tmp_name(__php_w, "dyn_spread_key");
+    let args_tmp = next_tmp_name(__php_w, "dyn_spread_args");
+    let recv_ident = || Expression::with_span(ExprKind::Ident(recv_tmp.clone()), span.clone());
+    let key_ident = || Expression::with_span(ExprKind::Ident(key_tmp.clone()), span.clone());
+    let args_ident = || Expression::with_span(ExprKind::Ident(args_tmp.clone()), span.clone());
+    let save_recv = Expression::with_span(
+        ExprKind::Assign {
+            target: Box::new(recv_ident()),
+            value: Box::new(receiver),
+        },
+        span.clone(),
+    );
+    let save_key = Expression::with_span(
+        ExprKind::Assign {
+            target: Box::new(key_ident()),
+            value: Box::new(method_key),
+        },
+        span.clone(),
+    );
+    let save_args = Expression::with_span(
+        ExprKind::Assign {
+            target: Box::new(args_ident()),
+            value: Box::new(spread_value),
+        },
+        span.clone(),
+    );
+    let dispatch = Expression::with_span(
+        ExprKind::Call {
+            callee: Box::new(Expression::ident("__php_dynamic_method_call")),
+            args: vec![
+                Argument::positional(recv_ident()),
+                Argument::positional(key_ident()),
+                Argument::positional(args_ident()),
+            ],
+            optional: null_safe,
+        },
+        span.clone(),
+    );
+    Expression::with_span(
+        ExprKind::Sequence(vec![save_recv, save_key, save_args, dispatch]),
+        span.clone(),
+    )
 }
 
 fn build_known_magic_call_rewrite(__php_w: &mut PhpWalker, 
@@ -14847,6 +15067,44 @@ fn apply_postfix(__php_w: &mut PhpWalker,
                 .unwrap();
             if matches!(name_inner.as_rule(), Rule::variable | Rule::expression) {
                 let method_key = walk_expression(__php_w, name_inner)?;
+                let args = arg_list_pair
+                    .map(|__p| walk_args(__php_w, __p))
+                    .transpose()?
+                    .unwrap_or_default();
+                if let Some(method_name) = php_literal_string(__php_w, &method_key) {
+                    let member = Expression::with_span(
+                        ExprKind::Member {
+                            object: Box::new(receiver.clone()),
+                            field: method_name.clone(),
+                            null_safe,
+                        },
+                        span.clone(),
+                    );
+                    if is_fcc {
+                        if let Some(expr) = php_invalid_first_class_callable_expr(__php_w, &member, span) {
+                            return Ok(expr);
+                        }
+                        return Ok(php_first_class_callable_lambda(member, null_safe, span));
+                    }
+                    return Ok(Expression::with_span(
+                        ExprKind::Call {
+                            callee: Box::new(member),
+                            args,
+                            optional: null_safe,
+                        },
+                        span.clone(),
+                    ));
+                }
+                if args.len() == 1 && args[0].spread {
+                    return Ok(php_dynamic_spread_method_call(
+                        __php_w,
+                        receiver.clone(),
+                        method_key.clone(),
+                        args[0].value.clone(),
+                        null_safe,
+                        span,
+                    ));
+                }
                 let member = Expression::with_span(
                     ExprKind::Index {
                         object: Box::new(receiver.clone()),
@@ -14861,10 +15119,6 @@ fn apply_postfix(__php_w: &mut PhpWalker,
                     }
                     return Ok(php_first_class_callable_lambda(member, null_safe, span));
                 }
-                let args = arg_list_pair
-                    .map(|__p| walk_args(__php_w, __p))
-                    .transpose()?
-                    .unwrap_or_default();
                 let recv_tmp = next_tmp_name(__php_w, "dyn_method_obj");
                 let key_tmp = next_tmp_name(__php_w, "dyn_method_key");
                 let fn_tmp = next_tmp_name(__php_w, "dyn_method_fn");
@@ -15119,6 +15373,14 @@ fn apply_postfix(__php_w: &mut PhpWalker,
                         span.clone(),
                     );
                     let expr = match default {
+                        Some(d) if name == "getCode" => Expression::with_span(
+                            ExprKind::Ternary {
+                                cond: Box::new(php_typeof_check(member.clone(), "number", &span)),
+                                then: Box::new(member),
+                                else_: Box::new(d),
+                            },
+                            span.clone(),
+                        ),
                         Some(d) => Expression::with_span(
                             ExprKind::NullCoalesce {
                                 left: Box::new(member),
@@ -16732,7 +16994,25 @@ fn apply_postfix(__php_w: &mut PhpWalker,
                 .into_inner()
                 .next()
                 .ok_or("property_access_op: missing name")?;
-            let mut name = name_pair.into_inner().next().unwrap().as_str().to_string();
+            let name_inner = name_pair.into_inner().next().unwrap();
+            let mut name = if matches!(name_inner.as_rule(), Rule::variable | Rule::expression) {
+                let key = walk_expression(__php_w, name_inner)?;
+                match php_literal_string(__php_w, &key) {
+                    Some(name) => name,
+                    None => {
+                        return Ok(Expression::with_span(
+                            ExprKind::Index {
+                                object: Box::new(receiver),
+                                index: Box::new(key),
+                                null_safe,
+                            },
+                            span.clone(),
+                        ));
+                    }
+                }
+            } else {
+                name_inner.as_str().to_string()
+            };
             if is_php_this_expr(&receiver) {
                 if let Some(backing) = current_property_hook_backing(__php_w, &name) {
                     name = backing;
@@ -17417,6 +17697,28 @@ fn apply_postfix(__php_w: &mut PhpWalker,
             // indistinguishable — the compiler emits a single canonical
             // host call regardless of surface syntax.
             let args = canonicalize_php_call_args(__php_w, &receiver, args);
+            if let ExprKind::Ident(name) = &receiver.kind {
+                if matches!(name.as_str(), "array_key_exists" | "key_exists") && args.len() >= 2 {
+                    return Ok(Expression::with_span(
+                        ExprKind::Call {
+                            callee: Box::new(Expression::with_span(
+                                ExprKind::Ident("isset".to_string()),
+                                receiver.span.clone(),
+                            )),
+                            args: vec![Argument::positional(Expression::with_span(
+                                ExprKind::Index {
+                                    object: Box::new(args[0].value.clone()),
+                                    index: Box::new(args[1].value.clone()),
+                                    null_safe: false,
+                                },
+                                span.clone(),
+                            ))],
+                            optional: false,
+                        },
+                        span.clone(),
+                    ));
+                }
+            }
             let (receiver, args) = mark_php_by_ref_args(__php_w, receiver, args);
             let mut resolved_simple_callable = false;
             let receiver = if from_variable {
@@ -17909,7 +18211,11 @@ fn apply_postfix(__php_w: &mut PhpWalker,
                     // object. This keeps the fix in the PHP frontend and
                     // avoids relying on method-style lambda binding in the
                     // shared runtime.
-                    if class_name.trim_start_matches('\\') == "Closure"
+                    if class_name
+                        .trim_start_matches('\\')
+                        .rsplit(['\\', '.'])
+                        .next()
+                        == Some("Closure")
                         && member_name == "bind"
                         && args.len() >= 2
                     {
@@ -17918,12 +18224,42 @@ fn apply_postfix(__php_w: &mut PhpWalker,
                                 .unwrap_or_else(|| args[0].value.clone()),
                             _ => args[0].value.clone(),
                         };
-                        if let ExprKind::Lambda {
-                            params,
-                            body,
-                            is_async,
-                            captures,
-                        } = &bind_target.kind
+                        let closure_parts = match &bind_target.kind {
+                            ExprKind::Lambda {
+                                params,
+                                body,
+                                is_async,
+                                captures,
+                            } => Some((
+                                params.clone(),
+                                body.clone(),
+                                *is_async,
+                                false,
+                                captures.clone(),
+                            )),
+                            ExprKind::FunctionExpr(stmt) => {
+                                if let StmtKind::FunctionDecl {
+                                    params,
+                                    body,
+                                    is_async,
+                                    is_generator,
+                                    ..
+                                } = &stmt.kind
+                                {
+                                    Some((
+                                        params.clone(),
+                                        LambdaBody::Block(body.clone()),
+                                        *is_async,
+                                        *is_generator,
+                                        Vec::new(),
+                                    ))
+                                } else {
+                                    None
+                                }
+                            }
+                            _ => None,
+                        };
+                        if let Some((params, body, is_async, is_generator, captures)) = closure_parts
                         {
                             let bound_obj_name = format!(
                                 "$__php_closure_bind_obj_{}_{}",
@@ -17936,34 +18272,76 @@ fn apply_postfix(__php_w: &mut PhpWalker,
                             {
                                 rebound_captures.push(bound_obj_name.clone());
                             }
-                            let save_obj = Expression::with_span(
-                                ExprKind::Assign {
-                                    target: Box::new(Expression::with_span(
-                                        ExprKind::Ident(bound_obj_name.clone()),
-                                        span.clone(),
-                                    )),
-                                    value: Box::new(args[1].value.clone()),
-                                },
-                                span.clone(),
-                            );
                             let bound_scope = args
                                 .get(2)
                                 .and_then(|arg| php_closure_bind_scope_name(&arg.value));
                             let __bind_prior = enter_closure_bind_scope(__php_w, bound_scope);
                             let rebound_body =
-                                bind_this_in_lambda_body(__php_w, body, &bound_obj_name);
+                                bind_this_in_lambda_body(__php_w, &body, &bound_obj_name);
                             leave_closure_bind_scope(__php_w, __bind_prior);
-                            let rebound_lambda = Expression::with_span(
-                                ExprKind::Lambda {
-                                    params: params.clone(),
-                                    body: rebound_body,
-                                    is_async: *is_async,
-                                    captures: rebound_captures,
-                                },
+                            let rebound_body = match rebound_body {
+                                LambdaBody::Block(stmts) => stmts,
+                                LambdaBody::Expr(expr) => vec![Statement::with_span(
+                                    StmtKind::Return(Some(*expr)),
+                                    span.clone(),
+                                )],
+                            };
+                            let rebound_closure = Expression::with_span(
+                                ExprKind::FunctionExpr(Box::new(Statement::with_span(
+                                    StmtKind::FunctionDecl {
+                                        name: String::new(),
+                                        params: params.clone(),
+                                        return_type: None,
+                                        body: reclose_php_scope(
+                                            rebound_body,
+                                            &[bound_obj_name.clone()],
+                                        ),
+                                        modifiers: Modifiers::default(),
+                                        handles: Vec::new(),
+                                        is_async,
+                                        is_generator,
+                                        is_sub: false,
+                                    },
+                                    span.clone(),
+                                ))),
+                                span.clone(),
+                            );
+                            let bind_param = Param {
+                                name: bound_obj_name.clone(),
+                                type_hint: None,
+                                default: None,
+                                pass_by: PassBy::Value,
+                                is_rest: false,
+                                is_kwargs: false,
+                                is_optional: false,
+                                is_nullable: false,
+                            };
+                            let bind_factory = Expression::with_span(
+                                ExprKind::FunctionExpr(Box::new(Statement::with_span(
+                                    StmtKind::FunctionDecl {
+                                        name: String::new(),
+                                        params: vec![bind_param],
+                                        return_type: None,
+                                        body: vec![Statement::with_span(
+                                            StmtKind::Return(Some(rebound_closure)),
+                                            span.clone(),
+                                        )],
+                                        modifiers: Modifiers::default(),
+                                        handles: Vec::new(),
+                                        is_async: false,
+                                        is_generator: false,
+                                        is_sub: false,
+                                    },
+                                    span.clone(),
+                                ))),
                                 span.clone(),
                             );
                             return Ok(Expression::with_span(
-                                ExprKind::Sequence(vec![save_obj, rebound_lambda]),
+                                ExprKind::Call {
+                                    callee: Box::new(bind_factory),
+                                    args: vec![Argument::positional(args[1].value.clone())],
+                                    optional: false,
+                                },
                                 span.clone(),
                             ));
                         }
@@ -17976,7 +18354,11 @@ fn apply_postfix(__php_w: &mut PhpWalker,
                     //   'name'              — bare function/builtin
                     //   [$obj, 'method']    — instance method
                     //   ['Class', 'method'] — static method
-                    if class_name.trim_start_matches('\\') == "Closure"
+                    if class_name
+                        .trim_start_matches('\\')
+                        .rsplit(['\\', '.'])
+                        .next()
+                        == Some("Closure")
                         && member_name == "fromCallable"
                         && args.len() == 1
                     {
@@ -18282,6 +18664,9 @@ fn apply_postfix(__php_w: &mut PhpWalker,
             }
             if let Some(kind) = lower_php_builtin_call(__php_w, &receiver, &args, &span) {
                 return Ok(Expression::with_span(kind, span.clone()));
+            }
+            if let Some(checked) = php_typed_function_call_rewrite(__php_w, &receiver, &args, &span) {
+                return Ok(checked);
             }
             // PHP `__invoke` magic method: when invoking a value held in a
             // variable (`$obj(args)`), PHP dispatches through `$obj->__invoke()`
@@ -18996,6 +19381,77 @@ fn php_function_is_registered(__php_w: &mut PhpWalker, name: &str) -> bool {
     reg.contains_key(name.trim_start_matches('\\'))
         || reg.contains_key(&normalized)
         || reg.contains_key(&php_mangle_function_name(&normalized))
+}
+
+fn php_registered_function_meta(__php_w: &mut PhpWalker, name: &str) -> Option<FuncMeta> {
+    let normalized = php_normalize_function_ref(name);
+    __php_w
+        .func_registry
+        .get(name.trim_start_matches('\\'))
+        .or_else(|| __php_w.func_registry.get(&normalized))
+        .or_else(|| __php_w.func_registry.get(&php_mangle_function_name(&normalized)))
+        .cloned()
+}
+
+fn php_arg_is_safe_for_type_guard(arg: &Argument) -> bool {
+    !arg.spread
+        && !arg.by_ref
+        && arg.name.is_none()
+        && matches!(
+            arg.value.kind,
+            ExprKind::Lit(_)
+                | ExprKind::Ident(_)
+                | ExprKind::Member { .. }
+                | ExprKind::Index { .. }
+        )
+}
+
+fn php_typed_function_call_rewrite(
+    __php_w: &mut PhpWalker,
+    receiver: &Expression,
+    args: &[Argument],
+    span: &Span,
+) -> Option<Expression> {
+    let ExprKind::Ident(name) = &receiver.kind else {
+        return None;
+    };
+    if !args.iter().all(php_arg_is_safe_for_type_guard) {
+        return None;
+    }
+    let meta = php_registered_function_meta(__php_w, name)?;
+    let mut steps = Vec::new();
+    for (idx, arg) in args.iter().enumerate() {
+        let Some(param) = meta.params.get(idx) else {
+            break;
+        };
+        let Some(type_hint) = param.type_hint.as_deref() else {
+            continue;
+        };
+        let check = php_type_check_expr(type_hint, arg.value.clone(), span)?;
+        steps.push(Expression::with_span(
+            ExprKind::Ternary {
+                cond: Box::new(check),
+                then: Box::new(Expression::null()),
+                else_: Box::new(Expression::with_span(
+                    php_throw_named_error_expr("TypeError", "Argument type mismatch", span),
+                    span.clone(),
+                )),
+            },
+            span.clone(),
+        ));
+    }
+    if steps.is_empty() {
+        return None;
+    }
+    steps.push(Expression::with_span(
+        ExprKind::Call {
+            callee: Box::new(receiver.clone()),
+            args: args.to_vec(),
+            optional: false,
+        },
+        span.clone(),
+    ));
+    Some(Expression::with_span(ExprKind::Sequence(steps), span.clone()))
 }
 
 fn php_namespace_function_is_registered(__php_w: &mut PhpWalker, name: &str) -> bool {
@@ -21785,6 +22241,8 @@ fn php_expr_is_boolean_result(expr: &Expression) -> bool {
                         | "__php_loose_eq"
                         | "isset"
                         | "empty"
+                        | "array_key_exists"
+                        | "key_exists"
                         | "in_array"
                         | "is_array"
                         | "is_bool"
@@ -22354,6 +22812,45 @@ fn close_php_scope(mut body: Vec<Statement>, also_open: &[String]) -> Vec<Statem
     body
 }
 
+fn reclose_php_scope(mut body: Vec<Statement>, also_open: &[String]) -> Vec<Statement> {
+    let mut names: Vec<String> = Vec::new();
+    while let Some(Statement {
+        kind:
+            StmtKind::ScopeDecl {
+                kind: ScopeDeclKind::Closed,
+                names: existing,
+            },
+        ..
+    }) = body.first()
+    {
+        for name in existing {
+            if !names.iter().any(|seen| seen == name) {
+                names.push(name.clone());
+            }
+        }
+        body.remove(0);
+    }
+    for name in PHP_SUPERGLOBAL_NAMES {
+        let name = (*name).to_string();
+        if !names.iter().any(|seen| seen == &name) {
+            names.push(name);
+        }
+    }
+    for name in also_open {
+        if !names.iter().any(|seen| seen == name) {
+            names.push(name.clone());
+        }
+    }
+    body.insert(
+        0,
+        Statement::new(StmtKind::ScopeDecl {
+            kind: ScopeDeclKind::Closed,
+            names,
+        }),
+    );
+    body
+}
+
 fn walk_closure(__php_w: &mut PhpWalker, pair: Pair<Rule>) -> Result<Expression, String> {
     let span = to_span(__php_w, &pair);
     let mut params: Vec<Param> = Vec::new();
@@ -22427,12 +22924,20 @@ fn walk_closure(__php_w: &mut PhpWalker, pair: Pair<Rule>) -> Result<Expression,
         ));
     }
     Ok(Expression::with_span(
-        ExprKind::Lambda {
-            params,
-            body: LambdaBody::Block(lowered),
-            is_async: false,
-            captures,
-        },
+        ExprKind::FunctionExpr(Box::new(Statement::with_span(
+            StmtKind::FunctionDecl {
+                name: String::new(),
+                params,
+                return_type: None,
+                body: lowered,
+                modifiers: Modifiers::default(),
+                handles: Vec::new(),
+                is_async: false,
+                is_generator: false,
+                is_sub: false,
+            },
+            span.clone(),
+        ))),
         span,
     ))
 }
@@ -24280,11 +24785,14 @@ fn bind_this_in_expr(__php_w: &mut PhpWalker, expr: &Expression, bound_obj_name:
             object,
             field,
             null_safe,
-        } => ExprKind::Member {
-            object: Box::new(bind_this_in_expr(__php_w, object, bound_obj_name)),
-            field: field.clone(),
-            null_safe: *null_safe,
-        },
+        } => {
+            let rewritten_object = bind_this_in_expr(__php_w, object, bound_obj_name);
+            ExprKind::Member {
+                object: Box::new(rewritten_object),
+                field: field.clone(),
+                null_safe: *null_safe,
+            }
+        }
         ExprKind::Index {
             object,
             index,
@@ -24473,20 +24981,7 @@ fn bind_this_in_expr(__php_w: &mut PhpWalker, expr: &Expression, bound_obj_name:
             } else {
                 bind_this_in_expr(__php_w, class, bound_obj_name)
             };
-            let member_expr = if let (Some(scope), ExprKind::Ident(member_name)) =
-                (bound_scope.as_deref(), &member.kind)
-            {
-                if class_field_visibility(__php_w, scope, member_name)
-                    .is_some_and(|(_, visibility)| visibility == Visibility::Private)
-                    && !member_name.starts_with('#')
-                {
-                    Expression::with_span(ExprKind::Ident(format!("#{member_name}")), member.span)
-                } else {
-                    bind_this_in_expr(__php_w, member, bound_obj_name)
-                }
-            } else {
-                bind_this_in_expr(__php_w, member, bound_obj_name)
-            };
+            let member_expr = bind_this_in_expr(__php_w, member, bound_obj_name);
             ExprKind::StaticAccess {
                 class: Box::new(class_expr),
                 member: Box::new(member_expr),
@@ -26180,7 +26675,7 @@ fn lower_php_builtin_call(__php_w: &mut PhpWalker, callee: &Expression, args: &[
                     array_elem(Expression::string("}")),
                 ])
             } else {
-                return None;
+                mk_call(Expression::ident("__php_method_exists"), vec![arg(0)?, arg(1)?])
             }
         }
         "str_getcsv" if !args.is_empty() => {
@@ -26898,6 +27393,29 @@ fn lower_php_builtin_call(__php_w: &mut PhpWalker, callee: &Expression, args: &[
                         ExprKind::Lit(Literal::Str("php".to_string())),
                         span.clone(),
                     ),
+                    Expression::with_span(
+                        ExprKind::Object(vec![
+                            ObjectProperty::KeyValue {
+                                key: Expression::string("source_context"),
+                                value: Expression::string("php_open_tag"),
+                            },
+                            ObjectProperty::KeyValue {
+                                key: Expression::string("preserve_existing_globals"),
+                                value: Expression::with_span(
+                                    ExprKind::Lit(Literal::Bool(true)),
+                                    span.clone(),
+                                ),
+                            },
+                            ObjectProperty::KeyValue {
+                                key: Expression::string("preserve_output_buffer_state"),
+                                value: Expression::with_span(
+                                    ExprKind::Lit(Literal::Bool(true)),
+                                    span.clone(),
+                                ),
+                            },
+                        ]),
+                        span.clone(),
+                    ),
                 ],
             )
         }
@@ -27388,6 +27906,16 @@ fn lower_php_builtin_call(__php_w: &mut PhpWalker, callee: &Expression, args: &[
             // The literal `[Class::class, 'method']` pair, same reason.
             if let ExprKind::Array(elements) = &args[0].value.kind {
                 if elements.len() == 2 {
+                    if let Some(method_name) = php_literal_string(__php_w, &elements[1].value) {
+                        if let Some(class_name) = php_object_class_from_expr(__php_w, &elements[0].value) {
+                            return Some(ExprKind::Lit(Literal::Bool(
+                                class_has_method(__php_w, &class_name, &method_name)
+                                    || seen_class_has_method(__php_w, &class_name, &method_name)
+                                    || (class_has_method(__php_w, &class_name, "__call")
+                                        && !class_has_method(__php_w, &class_name, &method_name)),
+                            )));
+                        }
+                    }
                     if let (Some(class_name), Some(method_name)) = (
                         php_literal_string(__php_w, &elements[0].value),
                         php_literal_string(__php_w, &elements[1].value),
@@ -28042,9 +28570,10 @@ fn lower_php_builtin_call(__php_w: &mut PhpWalker, callee: &Expression, args: &[
             if let (ExprKind::Lit(Literal::Str(c)), ExprKind::Lit(Literal::Str(target))) =
                 (&args[0].value.kind, &args[1].value.kind)
             {
-                if class_is_registered(__php_w, c) {
+                let resolved = php_resolve_class_name(__php_w, c);
+                if class_is_registered(__php_w, &resolved) {
                     return Some(ExprKind::Lit(Literal::Bool(class_is_subclass_of(__php_w, 
-                        c, target,
+                        &resolved, target,
                     ))));
                 }
             }
@@ -28105,6 +28634,16 @@ fn lower_php_builtin_call(__php_w: &mut PhpWalker, callee: &Expression, args: &[
                 }
             }
             if let Some(method_name) = php_literal_string(__php_w, &args[1].value) {
+                if let Some(c) = php_object_class_from_expr(__php_w, &args[0].value) {
+                    let c = php_resolve_class_name(__php_w, &c);
+                    if class_is_registered(__php_w, &c) {
+                        return Some(ExprKind::Lit(Literal::Bool(class_has_method(
+                            __php_w,
+                            &c,
+                            &method_name,
+                        ))));
+                    }
+                }
                 let member = Expression::with_span(
                     ExprKind::Member {
                         object: Box::new(arg(0)?),
@@ -29268,10 +29807,7 @@ fn lower_php_builtin_call(__php_w: &mut PhpWalker, callee: &Expression, args: &[
                 }
             }
             // Object (or runtime value): the parent is one link up the shared
-            // `__types` ancestry chain, read by
-            // `emitter/reflection_adapter::emit_php_get_parent_class`. It used
-            // to be `__vybe_parent_class`, a PHP-SOURCE function in this
-            // walker's class prelude that re-scanned the same chain by hand.
+            // `__types` ancestry chain, read by the reflection adapter.
             _ => mk_call(
                 Expression::with_span(
                     ExprKind::Ident("__php_get_parent_class".to_string()),

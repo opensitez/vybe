@@ -9,6 +9,7 @@
 // registration reaches the registry. Generated from Cargo.toml — see build.rs.
 include!(concat!(env!("OUT_DIR"), "/linked_plugins.rs"));
 pub mod emitter;
+pub(crate) mod core_exceptions;
 pub mod normalize_class;
 pub mod protocol;
 pub mod tree_register;

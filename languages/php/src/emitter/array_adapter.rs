@@ -1203,7 +1203,7 @@ pub fn emit_php_is_array(chunks: &mut [Chunk], current: usize, _argc: u8, line: 
 /// `start == 0` keeps the result on the fast sequential-array path so
 /// existing array consumers like `implode` keep their usual behavior.
 /// Non-zero starts use a map so PHP's numeric keys are preserved.
-pub fn emit_array_fill(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+pub fn emit_array_fill(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32) {
     let chunk = &mut chunks[current];
     let value_slot = alloc_local(chunk);
     let count_slot = alloc_local(chunk);
@@ -1271,6 +1271,7 @@ pub fn emit_array_fill(chunks: &mut [Chunk], current: usize, _argc: u8, line: u3
     lget(chunk, out_slot, line);
     lget(chunk, value_slot, line);
     let _ = chunk;
+    super::copy_adapter::emit_php_copy_on_assign(chunks, current, 1, line);
     call_import(chunks, current, "ecma:array", "push", 2, line);
     let chunk = &mut chunks[current];
     chunk.emit_op(Op::DROP, line);
@@ -1278,6 +1279,9 @@ pub fn emit_array_fill(chunks: &mut [Chunk], current: usize, _argc: u8, line: u3
     lget(chunk, out_slot, line);
     lget(chunk, key_slot, line);
     lget(chunk, value_slot, line);
+    let _ = chunk;
+    super::copy_adapter::emit_php_copy_on_assign(chunks, current, 1, line);
+    let chunk = &mut chunks[current];
     chunk.emit_op(Op::ARRAY_SET, line);
 
     chunk.emit_end(line);
@@ -1604,7 +1608,7 @@ pub fn emit_php_json_encode(chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
     // arrays (ObjectKind::Map) → plain Objects, recursively, so the host
     // ecma:json.stringify (which renders a bare Map as `{}` per ECMA) sees real
     // properties in native key order. Sequential arrays stay arrays. No CSV.
-    super::misc_adapter::emit_php_json_normalize(chunks, current, value_slot, line);
+    super::json_adapter::emit_php_json_normalize(chunks, current, value_slot, line);
     let chunk = &mut chunks[current];
     lset(chunk, render_slot, line);
 

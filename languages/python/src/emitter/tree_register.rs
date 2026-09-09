@@ -80,6 +80,7 @@ fn register_from_profile() {
     // map rather than claiming roots of their own.
     roots.insert("collections".to_string(), collections_subtree());
     roots.insert("calendar".to_string(), calendar_subtree());
+    roots.insert("dataclasses".to_string(), dataclasses_subtree());
     roots.insert("doctest".to_string(), doctest_subtree());
     roots.insert("dis".to_string(), dis_subtree());
     roots.insert("email".to_string(), email_subtree());
@@ -178,7 +179,7 @@ fn collections_subtree() -> Subtree {
     );
     root.insert(
         "OrderedDict".to_string(),
-        namespaces::host_fn("ecma:object", "create"),
+        NamespaceNode::CommonEmit("python.ordereddict_new".to_string()),
     );
     root.insert(
         "Counter".to_string(),
@@ -187,6 +188,41 @@ fn collections_subtree() -> Subtree {
     root.insert(
         "defaultdict".to_string(),
         NamespaceNode::CommonEmit("python.defaultdict_new".to_string()),
+    );
+    root
+}
+
+fn dataclasses_subtree() -> Subtree {
+    let mut root = Subtree::new();
+    for (name, emit) in [
+        ("is_dataclass", "python.is_dataclass"),
+        ("asdict", "python.dataclass_asdict"),
+        ("astuple", "python.dataclass_astuple"),
+        ("fields", "python.dataclass_fields"),
+    ] {
+        root.insert(name.to_string(), NamespaceNode::CommonEmit(emit.to_string()));
+    }
+    root.insert(
+        "MISSING".to_string(),
+        NamespaceNode::Const(Value::String(std::sync::Arc::from("MISSING"))),
+    );
+    root.insert(
+        "KW_ONLY".to_string(),
+        NamespaceNode::Const(Value::String(std::sync::Arc::from("KW_ONLY"))),
+    );
+    root.insert(
+        "InitVar".to_string(),
+        NamespaceNode::Type {
+            ctor: None,
+            ctor_call: None,
+            statics: Subtree::new(),
+            methods: Subtree::new(),
+            member_returns: BTreeMap::new(),
+        },
+    );
+    root.insert(
+        "FrozenInstanceError".to_string(),
+        NamespaceNode::CommonEmit("python.exc.FrozenInstanceError".to_string()),
     );
     root
 }

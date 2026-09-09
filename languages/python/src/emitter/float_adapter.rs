@@ -7,9 +7,48 @@
 //! — never a blanket cast of every number.
 
 use vybe_compiler::primitives::instructions::core_wasm;
+use vybe_compiler::primitives::class_slots::{
+    self, ClassSlot, Dest, ObjSource, PlainNames, ValueSource,
+};
 use vybe_compiler::primitives::ops;
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
+
+const FLOAT_FIELDS_KEY: &str = "__py_float_fields";
+
+fn lget(chunk: &mut Chunk, slot: u16, line: u32) {
+    chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
+}
+
+fn lset(chunk: &mut Chunk, slot: u16, line: u32) {
+    chunk.emit_op_u16(Op::LOCAL_SET, slot, line);
+}
+
+fn stash_exact(chunks: &mut [Chunk], current: usize, argc: u8, want: u16, line: u32) -> u16 {
+    let base = chunks[current].alloc_scratch(want.max(1));
+    for offset in (want..argc as u16).rev() {
+        let _ = offset;
+        chunks[current].emit_op(Op::DROP, line);
+    }
+    for offset in (0..want).rev() {
+        if offset < argc as u16 {
+            lset(&mut chunks[current], base + offset, line);
+        } else {
+            chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+            lset(&mut chunks[current], base + offset, line);
+        }
+    }
+    base
+}
+
+fn emit_slot_is_null_or_undefined(chunk: &mut Chunk, slot: u16, line: u32) {
+    chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
+    let is_undefined = chunk.add_import("wasm:js-undefined", "test");
+    chunk.emit_call(is_undefined, 1, line);
+    chunk.emit_op(Op::I32_OR, line);
+}
 
 /// Python float display. Stack: `[num]` → `[string]`.
 pub fn emit_float_repr(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
@@ -88,4 +127,68 @@ pub fn emit_float_repr(chunks: &mut [Chunk], current: usize, _argc: u8, line: u3
 
     chunk.emit_end(line);
     chunk.emit_end(line);
+}
+
+/// Stamp an object with the fields whose runtime values should use Python
+/// float display. Stack: `[obj, fields]` -> `[obj]`.
+pub fn emit_stamp_float_fields(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let base = stash_exact(chunks, current, argc, 2, line);
+    let obj = base;
+    let fields = base + 1;
+    lget(&mut chunks[current], obj, line);
+    lget(&mut chunks[current], fields, line);
+    let slot = class_slots::resolve(&ClassSlot::internal(FLOAT_FIELDS_KEY), &PlainNames);
+    class_slots::emit_class_set(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &slot,
+        ValueSource::Stack,
+        line,
+    );
+    lget(&mut chunks[current], obj, line);
+}
+
+/// Format `obj[field]`, consulting the object's float-field stamp. Stack:
+/// `[obj, field]` -> `[string]`.
+pub fn emit_float_field_str(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let base = stash_exact(chunks, current, argc, 2, line);
+    let obj = base;
+    let field = base + 1;
+    let value = chunks[current].alloc_scratch(1);
+    let fields = chunks[current].alloc_scratch(1);
+
+    lget(&mut chunks[current], obj, line);
+    lget(&mut chunks[current], field, line);
+    let get = chunks[current].add_import("ecma:object", "get");
+    chunks[current].emit_call(get, 2, line);
+    lset(&mut chunks[current], value, line);
+
+    let slot = class_slots::resolve(&ClassSlot::internal(FLOAT_FIELDS_KEY), &PlainNames);
+    class_slots::emit_class_get(
+        &mut chunks[current],
+        ObjSource::Local(obj),
+        &slot,
+        Dest::Local(fields),
+        line,
+    );
+    emit_slot_is_null_or_undefined(&mut chunks[current], fields, line);
+    chunks[current].emit_if(line);
+    lget(&mut chunks[current], value, line);
+    let to_str = chunks[current].add_import("ecma:string", "String");
+    chunks[current].emit_call(to_str, 1, line);
+    chunks[current].emit_else(line);
+    lget(&mut chunks[current], fields, line);
+    lget(&mut chunks[current], field, line);
+    let includes = chunks[current].add_import("ecma:array", "includes");
+    chunks[current].emit_call(includes, 2, line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if(line);
+    lget(&mut chunks[current], value, line);
+    emit_float_repr(chunks, current, 1, line);
+    chunks[current].emit_else(line);
+    lget(&mut chunks[current], value, line);
+    let to_str = chunks[current].add_import("ecma:string", "String");
+    chunks[current].emit_call(to_str, 1, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
 }

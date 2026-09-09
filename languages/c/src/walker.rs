@@ -516,7 +516,9 @@ fn preprocess_c_source(source: &str) -> (String, HashMap<String, String>) {
 
             if let Some(after) = directive.strip_prefix("ifdef") {
                 let parent_active = current_active;
-                let cond = parent_active && object_macros.contains_key(after.trim());
+                let name = after.trim();
+                let cond = parent_active
+                    && (object_macros.contains_key(name) || function_macros.contains_key(name));
                 cond_stack.push(PpCond {
                     parent_active,
                     taken: cond,
@@ -527,7 +529,9 @@ fn preprocess_c_source(source: &str) -> (String, HashMap<String, String>) {
 
             if let Some(after) = directive.strip_prefix("ifndef") {
                 let parent_active = current_active;
-                let cond = parent_active && !object_macros.contains_key(after.trim());
+                let name = after.trim();
+                let cond = parent_active
+                    && !(object_macros.contains_key(name) || function_macros.contains_key(name));
                 cond_stack.push(PpCond {
                     parent_active,
                     taken: cond,
@@ -538,7 +542,8 @@ fn preprocess_c_source(source: &str) -> (String, HashMap<String, String>) {
 
             if let Some(after) = directive.strip_prefix("if") {
                 let parent_active = current_active;
-                let cond = parent_active && eval_pp_expr(after.trim(), &object_macros);
+                let cond =
+                    parent_active && eval_pp_expr(after.trim(), &object_macros, &function_macros);
                 cond_stack.push(PpCond {
                     parent_active,
                     taken: cond,
@@ -552,7 +557,7 @@ fn preprocess_c_source(source: &str) -> (String, HashMap<String, String>) {
                     if !top.parent_active || top.taken {
                         top.active = false;
                     } else {
-                        let cond = eval_pp_expr(after.trim(), &object_macros);
+                        let cond = eval_pp_expr(after.trim(), &object_macros, &function_macros);
                         top.active = cond;
                         if cond {
                             top.taken = true;
@@ -580,7 +585,11 @@ fn preprocess_c_source(source: &str) -> (String, HashMap<String, String>) {
                     let header = after
                         .trim()
                         .trim_matches(|c| c == '<' || c == '>' || c == '"');
-                    seed_preprocessor_header_macros(header, &mut object_macros);
+                    seed_preprocessor_header_macros(
+                        header,
+                        &mut object_macros,
+                        &mut function_macros,
+                    );
                     out.push(raw_line.to_string());
                 }
                 continue;
@@ -891,10 +900,38 @@ fn parse_macro_call_args_text(line: &str, open_pos: usize) -> Option<(Vec<String
     None
 }
 
-fn seed_preprocessor_header_macros(header: &str, object_macros: &mut HashMap<String, String>) {
+fn seed_preprocessor_header_macros(
+    header: &str,
+    object_macros: &mut HashMap<String, String>,
+    function_macros: &mut HashMap<String, (Vec<String>, String)>,
+) {
     let string_defs: &[(&str, &str)] = match header {
         "uchar.h" => &[("__STDC_UTF_16__", "1"), ("__STDC_UTF_32__", "1")],
+        "stdbool.h" => &[("true", "1"), ("false", "0"), ("bool", "_Bool")],
         "wchar.h" => &[("WEOF", "-1")],
+        "SDL.h" | "SDL2/SDL.h" | "SDL_hints.h" | "SDL2/SDL_hints.h" | "SDL_stdinc.h"
+        | "SDL2/SDL_stdinc.h" | "SDL_endian.h" | "SDL2/SDL_endian.h" | "SDL_mixer.h"
+        | "SDL2/SDL_mixer.h" => &[
+            (
+                "SDL_HINT_RENDER_SCALE_QUALITY",
+                "\"SDL_RENDER_SCALE_QUALITY\"",
+            ),
+            (
+                "SDL_HINT_VIDEO_MINIMIZE_ON_FOCUS_LOSS",
+                "\"SDL_VIDEO_MINIMIZE_ON_FOCUS_LOSS\"",
+            ),
+            (
+                "SDL_HINT_WINDOWS_DISABLE_THREAD_NAMING",
+                "\"SDL_WINDOWS_DISABLE_THREAD_NAMING\"",
+            ),
+            ("SDL_HINT_NO_SIGNAL_HANDLERS", "\"SDL_NO_SIGNAL_HANDLERS\""),
+            ("SDL_free", "free"),
+            ("SDL_qsort", "qsort"),
+            ("SDL_LIL_ENDIAN", "1234"),
+            ("SDL_BIG_ENDIAN", "4321"),
+            ("SDL_BYTEORDER", "1234"),
+            ("SDL_MIX_MAXVOLUME", "128"),
+        ],
         "inttypes.h" => &[
             ("INTMAX_MIN", "-9223372036854775808"),
             ("INTMAX_MAX", "9223372036854775807"),
@@ -1007,17 +1044,39 @@ fn seed_preprocessor_header_macros(header: &str, object_macros: &mut HashMap<Str
             .entry((*name).to_string())
             .or_insert_with(|| (*value).to_string());
     }
+    if matches!(
+        header,
+        "SDL.h" | "SDL2/SDL.h" | "SDL_mixer.h" | "SDL2/SDL_mixer.h"
+    ) {
+        function_macros
+            .entry("SDL_MIXER_VERSION_ATLEAST".to_string())
+            .or_insert_with(|| {
+                (
+                    vec![
+                        "MAJOR".to_string(),
+                        "MINOR".to_string(),
+                        "PATCH".to_string(),
+                    ],
+                    "1".to_string(),
+                )
+            });
+    }
 }
 
-fn eval_pp_expr(expr_src: &str, object_macros: &HashMap<String, String>) -> bool {
-    let mut expr = expr_src.trim().to_string();
+fn eval_pp_expr(
+    expr_src: &str,
+    object_macros: &HashMap<String, String>,
+    function_macros: &HashMap<String, (Vec<String>, String)>,
+) -> bool {
+    let mut expr = expand_function_macros_in_line(expr_src.trim(), function_macros, object_macros);
 
     loop {
         if let Some(pos) = expr.find("defined(") {
             let rest = &expr[pos + 8..];
             if let Some(end) = rest.find(')') {
                 let name = rest[..end].trim();
-                let val = if object_macros.contains_key(name) {
+                let val = if object_macros.contains_key(name) || function_macros.contains_key(name)
+                {
                     "1"
                 } else {
                     "0"
@@ -1037,11 +1096,12 @@ fn eval_pp_expr(expr_src: &str, object_macros: &HashMap<String, String>) -> bool
                 .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
                 .collect();
             if !name.is_empty() {
-                let val = if object_macros.contains_key(&name) {
-                    "1"
-                } else {
-                    "0"
-                };
+                let val =
+                    if object_macros.contains_key(&name) || function_macros.contains_key(&name) {
+                        "1"
+                    } else {
+                        "0"
+                    };
                 let mut next = String::new();
                 next.push_str(&expr[..pos]);
                 next.push_str(val);
@@ -2001,7 +2061,8 @@ impl Walker {
             .unwrap_or(header)
             .trim_end_matches(".h");
         let handles: &[&str] = match base {
-            "SDL" | "SDL_video" | "SDL_render" | "SDL_surface" => &[
+            "SDL" | "SDL_video" | "SDL_render" | "SDL_surface" | "SDL_mixer" | "SDL_net"
+            | "SDL_gamecontroller" | "SDL_joystick" | "SDL_thread" => &[
                 "SDL_Window",
                 "SDL_Surface",
                 "SDL_Texture",
@@ -2011,6 +2072,14 @@ impl Walker {
                 "SDL_PixelFormat",
                 "SDL_Palette",
                 "SDL_RWops",
+                "SDL_Joystick",
+                "SDL_GameController",
+                "SDL_mutex",
+                "SDL_cond",
+                "SDL_Thread",
+                "Mix_Music",
+                "Mix_Chunk",
+                "UDPpacket",
             ],
             _ => &[],
         };
@@ -2199,7 +2268,25 @@ impl Walker {
             | "SDL_scancode.h"
             | "SDL2/SDL_scancode.h"
             | "SDL_mouse.h"
-            | "SDL2/SDL_mouse.h" => &[
+            | "SDL2/SDL_mouse.h"
+            | "SDL_video.h"
+            | "SDL2/SDL_video.h"
+            | "SDL_render.h"
+            | "SDL2/SDL_render.h"
+            | "SDL_hints.h"
+            | "SDL2/SDL_hints.h"
+            | "SDL_gamecontroller.h"
+            | "SDL2/SDL_gamecontroller.h"
+            | "SDL_joystick.h"
+            | "SDL2/SDL_joystick.h"
+            | "SDL_version.h"
+            | "SDL2/SDL_version.h"
+            | "SDL_stdinc.h"
+            | "SDL2/SDL_stdinc.h"
+            | "SDL_endian.h"
+            | "SDL2/SDL_endian.h"
+            | "SDL_mixer.h"
+            | "SDL2/SDL_mixer.h" => &[
                 // ── event types ──
                 ("SDL_QUIT", 0x100),
                 ("SDL_WINDOWEVENT", 0x200),
@@ -2215,21 +2302,83 @@ impl Walker {
                 ("SDL_INIT_AUDIO", 0x10),
                 ("SDL_INIT_VIDEO", 0x20),
                 ("SDL_INIT_JOYSTICK", 0x200),
+                ("SDL_INIT_GAMECONTROLLER", 0x2000),
                 ("SDL_INIT_EVERYTHING", 0xF231),
                 ("SDL_WINDOWPOS_UNDEFINED", 0x1FFF0000),
                 ("SDL_WINDOWPOS_CENTERED", 0x2FFF0000),
+                ("SDL_WINDOWPOS_CENTER", 0x2FFF0000),
+                ("SDL_WINDOW_SHOWN", 0x4),
+                ("SDL_WINDOW_RESIZABLE", 0x20),
+                ("SDL_WINDOW_FULLSCREEN", 0x1),
+                ("SDL_WINDOW_FULLSCREEN_DESKTOP", 0x1001),
+                ("SDL_WINDOW_BORDERLESS", 0x10),
+                ("SDL_WINDOW_ALLOW_HIGHDPI", 0x2000),
                 // ── window events ──
                 ("SDL_WINDOWEVENT_EXPOSED", 3),
+                ("SDL_WINDOWEVENT_MOVED", 4),
                 ("SDL_WINDOWEVENT_RESIZED", 5),
+                ("SDL_WINDOWEVENT_MINIMIZED", 7),
+                ("SDL_WINDOWEVENT_MAXIMIZED", 8),
+                ("SDL_WINDOWEVENT_RESTORED", 9),
                 ("SDL_WINDOWEVENT_FOCUS_GAINED", 12),
                 ("SDL_WINDOWEVENT_FOCUS_LOST", 13),
                 ("SDL_WINDOWEVENT_CLOSE", 14),
+                ("SDL_ACTIVEEVENT", 1),
+                ("SDL_APPACTIVE", 1),
                 // ── buttons / state ──
                 ("SDL_BUTTON_LEFT", 1),
                 ("SDL_BUTTON_MIDDLE", 2),
                 ("SDL_BUTTON_RIGHT", 3),
                 ("SDL_PRESSED", 1),
                 ("SDL_RELEASED", 0),
+                ("SDL_ENABLE", 1),
+                ("SDL_DISABLE", 0),
+                ("SDL_ALPHA_OPAQUE", 255),
+                ("SDL_LIL_ENDIAN", 1234),
+                ("SDL_BIG_ENDIAN", 4321),
+                ("SDL_BYTEORDER", 1234),
+                ("SDL_MIX_MAXVOLUME", 128),
+                // ── renderer / texture ──
+                ("SDL_PIXELFORMAT_ARGB8888", 372645892),
+                ("SDL_TEXTUREACCESS_STREAMING", 1),
+                ("SDL_TEXTUREACCESS_TARGET", 2),
+                ("SDL_RENDERER_SOFTWARE", 0x1),
+                ("SDL_RENDERER_PRESENTVSYNC", 0x4),
+                ("SDL_RENDERER_TARGETTEXTURE", 0x8),
+                // ── hints / peep events ──
+                ("SDL_HINT_OVERRIDE", 2),
+                ("SDL_FIRSTEVENT", 0),
+                ("SDL_LASTEVENT", 0xFFFF),
+                ("SDL_PEEKEVENT", 1),
+                // ── joystick / controller defaults ──
+                ("SDL_HAT_CENTERED", 0),
+                ("SDL_HAT_UP", 1),
+                ("SDL_HAT_RIGHT", 2),
+                ("SDL_HAT_DOWN", 4),
+                ("SDL_HAT_LEFT", 8),
+                ("SDL_CONTROLLER_AXIS_LEFTX", 0),
+                ("SDL_CONTROLLER_AXIS_LEFTY", 1),
+                ("SDL_CONTROLLER_AXIS_RIGHTX", 2),
+                ("SDL_CONTROLLER_AXIS_RIGHTY", 3),
+                ("SDL_CONTROLLER_AXIS_TRIGGERLEFT", 4),
+                ("SDL_CONTROLLER_AXIS_TRIGGERRIGHT", 5),
+                ("SDL_CONTROLLER_AXIS_MAX", 6),
+                ("SDL_CONTROLLER_BUTTON_A", 0),
+                ("SDL_CONTROLLER_BUTTON_B", 1),
+                ("SDL_CONTROLLER_BUTTON_X", 2),
+                ("SDL_CONTROLLER_BUTTON_Y", 3),
+                ("SDL_CONTROLLER_BUTTON_BACK", 4),
+                ("SDL_CONTROLLER_BUTTON_GUIDE", 5),
+                ("SDL_CONTROLLER_BUTTON_START", 6),
+                ("SDL_CONTROLLER_BUTTON_LEFTSTICK", 7),
+                ("SDL_CONTROLLER_BUTTON_RIGHTSTICK", 8),
+                ("SDL_CONTROLLER_BUTTON_LEFTSHOULDER", 9),
+                ("SDL_CONTROLLER_BUTTON_RIGHTSHOULDER", 10),
+                ("SDL_CONTROLLER_BUTTON_DPAD_UP", 11),
+                ("SDL_CONTROLLER_BUTTON_DPAD_DOWN", 12),
+                ("SDL_CONTROLLER_BUTTON_DPAD_LEFT", 13),
+                ("SDL_CONTROLLER_BUTTON_DPAD_RIGHT", 14),
+                ("SDL_CONTROLLER_BUTTON_MAX", 15),
                 // ── modifiers ──
                 ("KMOD_NONE", 0),
                 ("KMOD_LSHIFT", 0x1),
@@ -3569,10 +3718,7 @@ impl Walker {
                             self.carray_ptr_vars.insert(name.clone());
                         } else if !was_array_decl
                             && (should_wrap_pointer_init_as_carray(&init, &self.array_ptr_vars)
-                                || should_wrap_pointer_init_as_carray(
-                                    &init,
-                                    &self.char_array_vars,
-                                ))
+                                || should_wrap_pointer_init_as_carray(&init, &self.char_array_vars))
                         {
                             // int *p = arr → wrap as carray
                             self.carray_ptr_vars.insert(name.clone());
@@ -15951,6 +16097,46 @@ impl Walker {
                     // the only depth a paletted surface has.
                     let pitch = w.clone();
                     return sdl_adapter::create_rgb_surface(w, h, depth, pitch);
+                }
+                "SDL_CreateRGBSurfaceFrom" => {
+                    let mut it = args.into_iter();
+                    let pixels = it
+                        .next()
+                        .map(|a| a.value)
+                        .unwrap_or_else(|| expr(ExprKind::Array(Vec::new())));
+                    let w = it.next().map(|a| a.value).unwrap_or_else(|| int_lit(0));
+                    let h = it.next().map(|a| a.value).unwrap_or_else(|| int_lit(0));
+                    let depth = it.next().map(|a| a.value).unwrap_or_else(|| int_lit(32));
+                    let pitch = it.next().map(|a| a.value).unwrap_or_else(|| int_lit(0));
+                    return sdl_adapter::create_rgb_surface_from(pixels, w, h, depth, pitch);
+                }
+                "SDL_CreateRGBSurfaceWithFormatFrom" => {
+                    let mut it = args.into_iter();
+                    let pixels = it
+                        .next()
+                        .map(|a| a.value)
+                        .unwrap_or_else(|| expr(ExprKind::Array(Vec::new())));
+                    let w = it.next().map(|a| a.value).unwrap_or_else(|| int_lit(0));
+                    let h = it.next().map(|a| a.value).unwrap_or_else(|| int_lit(0));
+                    let _depth = it.next();
+                    let pitch = it.next().map(|a| a.value).unwrap_or_else(|| int_lit(0));
+                    return sdl_adapter::create_rgb_surface_from(pixels, w, h, int_lit(32), pitch);
+                }
+                "SDL_CreateRenderer" => {
+                    let mut it = args.into_iter();
+                    let window = it.next().map(|a| a.value).unwrap_or_else(null_lit);
+                    let _index = it.next();
+                    let flags = it.next().map(|a| a.value).unwrap_or_else(|| int_lit(0));
+                    return sdl_adapter::create_renderer(window, flags);
+                }
+                "SDL_CreateTexture" => {
+                    let mut it = args.into_iter();
+                    let renderer = it.next().map(|a| a.value).unwrap_or_else(null_lit);
+                    let format = it.next().map(|a| a.value).unwrap_or_else(|| int_lit(0));
+                    let access = it.next().map(|a| a.value).unwrap_or_else(|| int_lit(0));
+                    let w = it.next().map(|a| a.value).unwrap_or_else(|| int_lit(0));
+                    let h = it.next().map(|a| a.value).unwrap_or_else(|| int_lit(0));
+                    return sdl_adapter::create_texture(renderer, format, access, w, h);
                 }
                 "aligned_alloc" | "memalign" => {
                     let alignment = args

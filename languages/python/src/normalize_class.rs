@@ -26,19 +26,6 @@ use vybe_ast::{
     ClassMember, ClassModifiers, Modifiers, PropertySetter, ProtocolSlot, Span, StmtKind,
 };
 
-/// `<ClassName>.<field>` — the read an instance-side mirror of a class
-/// attribute initialises from, so the value object is shared rather than
-/// re-constructed per instance.
-fn class_attr_read(class_name: &str, field: &str) -> vybe_ast::Expression {
-    vybe_ast::Expression::new(vybe_ast::ExprKind::Member {
-        object: Box::new(vybe_ast::Expression::new(vybe_ast::ExprKind::Ident(
-            class_name.to_string(),
-        ))),
-        field: field.to_string(),
-        null_safe: false,
-    })
-}
-
 pub fn normalize_class(
     span: Span,
     name: &str,
@@ -86,17 +73,8 @@ pub fn normalize_class(
                     value_type: None,
                     storage: None,
                 };
-                // A Python class attribute is readable through instances
-                // (`a.kind` falls back to `type(a).kind`), so the class body's
-                // `kind = ...` is BOTH a static field and an instance one. The
-                // shared router owns the doubling; Python supplies only what is
-                // Python-specific — how to name the class attribute to read
-                // from.
                 if m.is_static {
-                    out.push_static_field_readable_on_instances(
-                        field,
-                        class_attr_read(name, fname),
-                    );
+                    out.push_field(true, field);
                 } else {
                     out.push_field(false, field);
                 }
@@ -242,6 +220,7 @@ pub fn normalize_class(
     }
 
     NormalClass {
+        parent: parents.first().cloned(),
         // Python multiple inheritance — walker currently puts all parents
         // in `parents`. The first becomes the principal superclass; any
         // remaining go into `interfaces` so `isinstance` can still check
@@ -431,6 +410,6 @@ mod tests {
             &ClassModifiers::default(),
         );
         assert_eq!(nc.static_fields.len(), 1);
-        assert!(nc.instance_fields.is_empty());
+        assert!(!nc.instance_fields.iter().any(|field| field.name == "COUNT"));
     }
 }

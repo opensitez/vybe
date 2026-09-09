@@ -103,7 +103,7 @@ pub fn emit_php_floatval(chunks: &mut [Chunk], current: usize, _argc: u8, line: 
 /// IEEE-754 encoding of `$v` (`$bytes` = 4 → float32, 8 → float64). Backs PHP
 /// `pack('f'|'d', …)`; PHP source can't reach DataView, so this adapter drives
 /// ecma:arraybuffer/dataview/uint8array plus a `setFloat32`/`setFloat64` method
-/// invoke. The PACK_PRELUDE reads the returned bytes with `chr($u[$j])`.
+/// invoke. The PHP packing adapter reads the returned bytes with `chr($u[$j])`.
 /// Stack in: `[v, bytes]`; out: `[Uint8Array]`.
 pub fn emit_pack_float_bytes(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     let chunk = &mut chunks[current];

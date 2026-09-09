@@ -17,22 +17,22 @@
 
 use vybe_runtime::{Chunk, Op};
 
-use vybe_compiler::primitives::class_slots::{self, ClassSlot, ObjSource, PlainNames, ValueSource};
 use vybe_compiler::primitives::{reflection, tuples};
 
 /// Marker the walker stamps on every `@dataclass`; `is_dataclass` tests for it
 /// and the rest walk it.
 const FIELDS_KEY: &str = "__dataclass_fields__";
+const DESCRIPTORS_KEY: &str = "__dataclass_field_descriptors__";
 
 /// Leave the field-name array for the value in `obj` in `out`, or null.
 ///
 /// Accepts BOTH a class and an instance, as CPython's `is_dataclass`/`fields`
 /// do: the array is a class attribute, so an instance reaches it through its
 /// `__class__` link while the class carries it directly.
-fn emit_field_list(chunk: &mut Chunk, obj: u16, out: u16, line: u32) {
+fn emit_field_list_key(chunk: &mut Chunk, obj: u16, out: u16, key: &str, line: u32) {
     // out = obj.__dataclass_fields__  (hit when `obj` IS the class)
     chunk.emit_op_u16(Op::LOCAL_GET, obj, line);
-    chunk.emit_string_const(FIELDS_KEY, line);
+    chunk.emit_string_const(key, line);
     reflection::emit_get_property_in_chunk(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_SET, out, line);
 
@@ -52,12 +52,16 @@ fn emit_field_list(chunk: &mut Chunk, obj: u16, out: u16, line: u32) {
         chunk.emit_op(Op::I32_EQZ, line);
         chunk.emit_if(line);
         chunk.emit_op_u16(Op::LOCAL_GET, cls, line);
-        chunk.emit_string_const(FIELDS_KEY, line);
+        chunk.emit_string_const(key, line);
         reflection::emit_get_property_in_chunk(chunk, line);
         chunk.emit_op_u16(Op::LOCAL_SET, out, line);
         chunk.emit_end(line);
     }
     chunk.emit_end(line);
+}
+
+fn emit_field_list(chunk: &mut Chunk, obj: u16, out: u16, line: u32) {
+    emit_field_list_key(chunk, obj, out, FIELDS_KEY, line);
 }
 
 /// `is_dataclass(x)` — true for a dataclass CLASS and for its instances.
@@ -107,7 +111,10 @@ fn emit_walk(chunks: &mut [Chunk], current: usize, argc: u8, shape: Shape, line:
     let n = chunk.alloc_scratch(1);
     let key = chunk.alloc_scratch(1);
     chunk.emit_op_u16(Op::LOCAL_SET, obj, line);
-    emit_field_list(chunk, obj, list, line);
+    match shape {
+        Shape::Descriptors => emit_field_list_key(chunk, obj, list, DESCRIPTORS_KEY, line),
+        Shape::Dict | Shape::Tuple => emit_field_list(chunk, obj, list, line),
+    }
 
     // A missing marker means "not a dataclass" — iterate zero times.
     chunk.emit_op_u16(Op::LOCAL_GET, list, line);
@@ -170,21 +177,10 @@ fn emit_walk(chunks: &mut [Chunk], current: usize, argc: u8, shape: Shape, line:
             chunk.emit_op(Op::DROP, line);
         }
         Shape::Descriptors => {
-            // `Field` stand-in: the one attribute `fields()` callers read is
-            // `.name` (plus `.default`, which the walker does not preserve).
+            // The walker stores descriptor objects carrying `.name`, `.type`,
+            // `.default` and `.metadata`; `fields()` returns those directly.
             chunk.emit_op_u16(Op::LOCAL_GET, acc, line);
-            class_slots::emit_class_alloc(chunk, line);
-            chunk.emit_dup(line);
             chunk.emit_op_u16(Op::LOCAL_GET, key, line);
-            let name_key =
-                class_slots::resolve_interned(chunk, &ClassSlot::internal("name"), &PlainNames);
-            class_slots::emit_class_set(
-                chunk,
-                ObjSource::Stack,
-                &name_key,
-                ValueSource::Stack,
-                line,
-            );
             let push = chunk.add_import("ecma:array", "push");
             chunk.emit_call(push, 2, line);
             chunk.emit_op(Op::DROP, line);

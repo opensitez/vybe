@@ -49,6 +49,12 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         // `Map` (assoc) or `Array` (sequential).
         "php.echo" => super::output_adapter::emit_php_echo(chunks, current, argc, line),
         "php.print_expr" => super::output_adapter::emit_php_print_expr(chunks, current, line),
+        "php.dynamic_method_call" => {
+            super::call_adapter::emit_php_dynamic_method_call(chunks, current, argc, line)
+        }
+        "php.method_exists" => {
+            super::call_adapter::emit_php_method_exists(chunks, current, argc, line)
+        }
         // The three-way primitive. `<`/`<=`/`>`/`>=` are its sign against 0,
         // so the four `php.compare_*` arms below are legacy shapes kept for any
         // direct caller; the operator path goes through this one.
@@ -174,6 +180,10 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "php.array_sum" => super::array_adapter::emit_php_array_sum(chunks, current, argc, line),
         "php.offset" => super::array_adapter::emit_php_offset(chunks, current, argc, line),
         "php.key" => super::array_adapter::emit_php_key(chunks, current, argc, line),
+        "php.copy_on_assign" => {
+            super::copy_adapter::emit_php_copy_on_assign(chunks, current, argc, line)
+        }
+        "php.strict_eq" => super::copy_adapter::emit_php_strict_eq(chunks, current, argc, line),
         "php.array_fill" => super::array_adapter::emit_array_fill(chunks, current, argc, line),
         "php.array_fill_keys" => {
             super::array_adapter::emit_array_fill_keys(chunks, current, argc, line)
@@ -758,6 +768,12 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "php.parse_url" => {
             crate::emitter::string_adapter::emit_parse_url(chunks, current, argc, line)
         }
+        "php.http_build_query" => {
+            crate::emitter::url_adapter::emit_php_http_build_query(chunks, current, argc, line)
+        }
+        "php.parse_str_result" => {
+            crate::emitter::url_adapter::emit_php_parse_str_result(chunks, current, argc, line)
+        }
         "php.mb_substr" => {
             crate::emitter::string_adapter::emit_mb_substr(chunks, current, argc, line)
         }
@@ -1086,7 +1102,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             crate::emitter::reflection_adapter::emit_refl_constant(chunks, current, argc, line)
         }
         "php.weak_ref_create" => {
-            crate::emitter::misc_adapter::emit_weak_ref_create(chunks, current, argc, line)
+            crate::emitter::weak_adapter::emit_weak_ref_create(chunks, current, argc, line)
         }
         "php.fiber_new" => {
             crate::emitter::fiber_adapter::emit_php_fiber_new(chunks, current, argc, line)
@@ -1253,26 +1269,71 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         // args are packed into a local array indexed by placeholder N.
         "php.isset_all" => emit_isset_all(&mut chunks[current], argc, line),
         "php.setcookie" => {
-            crate::emitter::misc_adapter::emit_php_setcookie(chunks, current, argc, line)
+            crate::emitter::http_adapter::emit_php_setcookie(chunks, current, argc, line)
         }
         "php.setrawcookie" => {
-            crate::emitter::misc_adapter::emit_php_setrawcookie(chunks, current, argc, line)
+            crate::emitter::http_adapter::emit_php_setrawcookie(chunks, current, argc, line)
         }
-        "php.header" => crate::emitter::misc_adapter::emit_php_header(chunks, current, argc, line),
+        "php.header" => crate::emitter::http_adapter::emit_php_header(chunks, current, argc, line),
         "php.sapi_name" => {
-            crate::emitter::misc_adapter::emit_php_sapi_name(chunks, current, argc, line)
+            crate::emitter::http_adapter::emit_php_sapi_name(chunks, current, argc, line)
         }
         "php.http_response_code" => {
-            crate::emitter::misc_adapter::emit_php_http_response_code(chunks, current, argc, line)
+            crate::emitter::http_adapter::emit_php_http_response_code(chunks, current, argc, line)
+        }
+        "php.version_compare" => {
+            crate::emitter::version_adapter::emit_php_version_compare(chunks, current, argc, line)
         }
         "php.extension_loaded" => {
-            crate::emitter::misc_adapter::emit_php_extension_loaded(chunks, current, argc, line)
+            crate::emitter::version_adapter::emit_php_extension_loaded(chunks, current, argc, line)
+        }
+        "php.get_loaded_extensions" => {
+            crate::emitter::version_adapter::emit_php_get_loaded_extensions(
+                chunks, current, argc, line,
+            )
+        }
+        "php.php_uname" => {
+            crate::emitter::version_adapter::emit_php_php_uname(chunks, current, argc, line)
         }
         "php.phpversion" => {
-            crate::emitter::misc_adapter::emit_php_phpversion(chunks, current, argc, line)
+            crate::emitter::version_adapter::emit_php_phpversion(chunks, current, argc, line)
         }
         "php.phpinfo" => {
-            crate::emitter::misc_adapter::emit_php_phpinfo(chunks, current, argc, line)
+            crate::emitter::version_adapter::emit_php_phpinfo(chunks, current, argc, line)
+        }
+        "php.ini_get" => crate::emitter::ini_adapter::emit_php_ini_get(chunks, current, argc, line),
+        "php.ini_set" => crate::emitter::ini_adapter::emit_php_ini_set(chunks, current, argc, line),
+        "php.ini_restore" => {
+            crate::emitter::ini_adapter::emit_php_ini_restore(chunks, current, argc, line)
+        }
+        "php.ini_get_all" => {
+            crate::emitter::ini_adapter::emit_php_ini_get_all(chunks, current, argc, line)
+        }
+        "php.get_cfg_var" => {
+            crate::emitter::ini_adapter::emit_php_get_cfg_var(chunks, current, argc, line)
+        }
+        "php.get_include_path" => {
+            crate::emitter::ini_adapter::emit_php_get_include_path(chunks, current, argc, line)
+        }
+        "php.set_include_path" => {
+            crate::emitter::ini_adapter::emit_php_set_include_path(chunks, current, argc, line)
+        }
+        "php.getenv" => crate::emitter::env_adapter::emit_php_getenv(chunks, current, argc, line),
+        "php.putenv" => crate::emitter::env_adapter::emit_php_putenv(chunks, current, argc, line),
+        "php.superglobal_server" => {
+            crate::emitter::superglobal_adapter::emit_php_superglobal_server(
+                chunks, current, argc, line,
+            )
+        }
+        "php.superglobal_files" => {
+            crate::emitter::superglobal_adapter::emit_php_superglobal_files(
+                chunks, current, argc, line,
+            )
+        }
+        "php.superglobal_env" => {
+            crate::emitter::superglobal_adapter::emit_php_superglobal_env(
+                chunks, current, argc, line,
+            )
         }
         "php.spl_autoload_register" => {
             crate::emitter::autoload_adapter::emit_spl_autoload_register(
@@ -1292,42 +1353,81 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "php.spl_autoload_call" => {
             crate::emitter::autoload_adapter::emit_spl_autoload_call(chunks, current, argc, line)
         }
-        "php.empty" => crate::emitter::misc_adapter::emit_php_empty(chunks, current, argc, line),
+        "php.empty" => crate::emitter::empty_adapter::emit_php_empty(chunks, current, argc, line),
         "php.session_start" => {
-            crate::emitter::misc_adapter::emit_php_session_start(chunks, current, argc, line)
+            crate::emitter::session_adapter::emit_php_session_start(chunks, current, argc, line)
         }
         "php.session_id" => {
-            crate::emitter::misc_adapter::emit_php_session_id(chunks, current, argc, line)
+            crate::emitter::session_adapter::emit_php_session_id(chunks, current, argc, line)
         }
         "php.session_name" => {
-            crate::emitter::misc_adapter::emit_php_session_name(chunks, current, argc, line)
+            crate::emitter::session_adapter::emit_php_session_name(chunks, current, argc, line)
         }
         "php.session_status" => {
-            crate::emitter::misc_adapter::emit_php_session_status(chunks, current, argc, line)
+            crate::emitter::session_adapter::emit_php_session_status(chunks, current, argc, line)
         }
-        "php.session_regenerate_id" => crate::emitter::misc_adapter::emit_php_session_regenerate_id(
+        "php.session_regenerate_id" => crate::emitter::session_adapter::emit_php_session_regenerate_id(
             chunks, current, argc, line,
         ),
-        "php.session_write_close" => crate::emitter::misc_adapter::emit_php_session_write_close(
+        "php.session_write_close" => crate::emitter::session_adapter::emit_php_session_write_close(
             chunks, current, argc, line,
         ),
         "php.session_abort" => {
-            crate::emitter::misc_adapter::emit_php_session_abort(chunks, current, argc, line)
+            crate::emitter::session_adapter::emit_php_session_abort(chunks, current, argc, line)
         }
         "php.session_reset" => {
-            crate::emitter::misc_adapter::emit_php_session_reset(chunks, current, argc, line)
+            crate::emitter::session_adapter::emit_php_session_reset(chunks, current, argc, line)
         }
         "php.session_unset" => {
-            crate::emitter::misc_adapter::emit_php_session_unset(chunks, current, argc, line)
+            crate::emitter::session_adapter::emit_php_session_unset(chunks, current, argc, line)
         }
         "php.session_destroy" => {
-            crate::emitter::misc_adapter::emit_php_session_destroy(chunks, current, argc, line)
+            crate::emitter::session_adapter::emit_php_session_destroy(chunks, current, argc, line)
+        }
+        "php.session_get_cookie_params" => {
+            crate::emitter::session_adapter::emit_php_session_get_cookie_params(
+                chunks, current, argc, line,
+            )
+        }
+        "php.session_set_cookie_params" => {
+            crate::emitter::session_adapter::emit_php_session_set_cookie_params(
+                chunks, current, argc, line,
+            )
+        }
+        "php.session_cache_limiter" => crate::emitter::session_adapter::emit_php_session_cache_limiter(
+            chunks, current, argc, line,
+        ),
+        "php.session_cache_expire" => crate::emitter::session_adapter::emit_php_session_cache_expire(
+            chunks, current, argc, line,
+        ),
+        "php.session_module_name" => crate::emitter::session_adapter::emit_php_session_module_name(
+            chunks, current, argc, line,
+        ),
+        "php.session_save_path" => crate::emitter::session_adapter::emit_php_session_save_path(
+            chunks, current, argc, line,
+        ),
+        "php.session_create_id" => crate::emitter::session_adapter::emit_php_session_create_id(
+            chunks, current, argc, line,
+        ),
+        "php.session_gc" => {
+            crate::emitter::session_adapter::emit_php_session_gc(chunks, current, argc, line)
+        }
+        "php.session_set_save_handler" => {
+            crate::emitter::session_adapter::emit_php_session_set_save_handler(
+                chunks, current, argc, line,
+            )
+        }
+        "php.session_encode" => {
+            crate::emitter::session_adapter::emit_php_session_encode(chunks, current, argc, line)
+        }
+        "php.session_decode" => {
+            crate::emitter::session_adapter::emit_php_session_decode(chunks, current, argc, line)
         }
         "php.serialize" => {
-            crate::emitter::misc_adapter::emit_php_serialize(chunks, current, argc, line)
+            crate::emitter::serialization_adapter::emit_php_serialize(chunks, current, argc, line)
         }
         "php.unserialize" => {
-            crate::emitter::misc_adapter::emit_php_unserialize(chunks, current, argc, line)
+            crate::emitter::serialization_adapter::emit_php_unserialize(chunks, current, argc, line)
         }
         "php.pdo_new" => crate::emitter::pdo_adapter::emit_php_pdo_new(chunks, current, argc, line),
         "php.pdo_query" => {

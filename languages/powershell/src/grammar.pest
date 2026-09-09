@@ -432,12 +432,12 @@ postfix     = { primary ~ postfix_op* }
 // be told from a ternary condition — and `var_ref` already accepts `${…}`.
 postfix_op  = _{ null_method_call | null_member_get | null_index_get | method_call | static_call | static_member | member_get | index_get }
 null_method_call = { "?." ~ member_name ~ "(" ~ eat_separators ~ arg_list? ~ eat_separators ~ ")" }
-null_member_get  = { "?." ~ (member_name | var_ref) }
+null_member_get  = { "?." ~ (member_name | quoted_string | single_quoted_string | var_ref) }
 null_index_get   = { "?[" ~ eat_separators ~ expression ~ eat_separators ~ "]" }
 method_call = { "." ~ member_name ~ "(" ~ eat_separators ~ arg_list? ~ eat_separators ~ ")" }
 static_call = { "::" ~ member_name ~ "(" ~ eat_separators ~ arg_list? ~ eat_separators ~ ")" }
 static_member = { "::" ~ member_name }
-member_get  = { "." ~ (member_name | var_ref) }
+member_get  = { "." ~ (member_name | quoted_string | single_quoted_string | var_ref) }
 index_get   = { "[" ~ eat_separators ~ expression ~ eat_separators ~ "]" }
 member_name = @{ (ASCII_ALPHANUMERIC | "_")+ }
 arg_list    = { ternary_expr ~ (eat_separators ~ "," ~ eat_separators ~ ternary_expr)* }

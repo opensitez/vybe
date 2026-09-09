@@ -487,6 +487,14 @@ fn emit_structural_or_identity(chunk: &mut Chunk, a: u16, b: u16, line: u32) {
     chunk.emit_end(line);
 }
 
+pub fn emit_py_is_array(chunks: &mut [Chunk], current: usize, line: u32) {
+    let c = &mut chunks[current];
+    let is_array = c.add_import("ecma:array", "isArray");
+    let cast_bool = c.add_import("wasm:js-boolean", "cast");
+    c.emit_call(is_array, 1, line);
+    c.emit_call(cast_bool, 1, line);
+}
+
 /// Python `print(...)` — inline emitter that writes to `wasi:cli/stdout`
 /// (like PHP `echo`), so `sep`/`end` and the missing trailing newline are
 /// all expressible (the line-oriented `wasi:logging/logging.log` sink cannot
@@ -575,7 +583,7 @@ pub fn emit_pyadd(chunks: &mut [Chunk], current: usize, line: u32) {
         b_slot,
         DtOp::Add,
         "__add__",
-        vybe_compiler::primitives::ops::emit_dyn_add,
+        emit_py_add_numeric,
         line,
     );
     chunk.emit_end(line);
@@ -605,6 +613,75 @@ fn emit_datetime_binop_or(
 
 use crate::emitter::datetime_adapter::DtOp;
 
+fn emit_any_slot_bigint(chunk: &mut Chunk, a_slot: u16, b_slot: u16, line: u32) {
+    let test_bigint = chunk.add_import("wasm:js-bigint", "test");
+    chunk.emit_op_u16(Op::LOCAL_GET, a_slot, line);
+    chunk.emit_call(test_bigint, 1, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, b_slot, line);
+    chunk.emit_call(test_bigint, 1, line);
+    chunk.emit_op(Op::I32_OR, line);
+}
+
+fn emit_slot_as_number_f64(chunk: &mut Chunk, slot: u16, line: u32) {
+    chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
+    let number = chunk.add_import("ecma:number", "Number");
+    chunk.emit_call(number, 1, line);
+    let to_f64 = chunk.add_import("wasm:js-number", "toF64");
+    chunk.emit_call(to_f64, 1, line);
+}
+
+fn emit_py_bigint_aware_numeric(
+    chunk: &mut Chunk,
+    bigint_op: &str,
+    fallback: fn(&mut Chunk, u32),
+    float_op: Op,
+    line: u32,
+) {
+    let b_slot = chunk.alloc_scratch(1);
+    let a_slot = chunk.alloc_scratch(1);
+    chunk.emit_op_u16(Op::LOCAL_SET, b_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, a_slot, line);
+
+    emit_any_slot_bigint(chunk, a_slot, b_slot, line);
+    chunk.emit_if_value(line);
+    emit_slot_is_bigint_or_integer_number(chunk, a_slot, line);
+    emit_slot_is_bigint_or_integer_number(chunk, b_slot, line);
+    chunk.emit_op(Op::I32_AND, line);
+    chunk.emit_if_value(line);
+    emit_slot_as_bigint(chunk, a_slot, line);
+    emit_slot_as_bigint(chunk, b_slot, line);
+    let op = chunk.add_import("ecma:bigint", bigint_op);
+    chunk.emit_call(op, 2, line);
+    chunk.emit_else(line);
+    emit_slot_as_number_f64(chunk, a_slot, line);
+    emit_slot_as_number_f64(chunk, b_slot, line);
+    chunk.emit_op(float_op, line);
+    chunk.emit_end(line);
+    chunk.emit_else(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, a_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, b_slot, line);
+    fallback(chunk, line);
+    chunk.emit_end(line);
+}
+
+fn emit_py_add_numeric(chunk: &mut Chunk, line: u32) {
+    emit_py_bigint_aware_numeric(
+        chunk,
+        "add",
+        vybe_compiler::primitives::ops::emit_dyn_add,
+        Op::F64_ADD,
+        line,
+    );
+}
+
+fn emit_py_sub_numeric(chunk: &mut Chunk, line: u32) {
+    emit_py_bigint_aware_numeric(chunk, "sub", emit_f64_sub, Op::F64_SUB, line);
+}
+
+fn emit_py_mul_numeric(chunk: &mut Chunk, line: u32) {
+    emit_py_bigint_aware_numeric(chunk, "mul", emit_f64_mul, Op::F64_MUL, line);
+}
+
 /// `-a` — a duration negates, an object may define `__neg__`, anything else
 /// negates numerically. Stack: `[a]` → `[result]`.
 pub fn emit_pyneg(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -624,6 +701,18 @@ pub fn emit_pyneg(chunks: &mut [Chunk], current: usize, line: u32) {
         line,
     );
     chunk.emit_end(line);
+}
+
+fn emit_identity(chunk: &mut Chunk, _line: u32) {
+    let _ = chunk;
+}
+
+/// `+a` — an object may define `__pos__`, anything else is returned unchanged.
+pub fn emit_pypos(chunks: &mut [Chunk], current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    let a_slot = chunk.alloc_scratch(1);
+    chunk.emit_op_u16(Op::LOCAL_SET, a_slot, line);
+    emit_unary_dunder_or(chunk, a_slot, "__pos__", emit_identity, line);
 }
 
 /// `<`, `>`, `<=`, `>=`. Datetime values order by the instant or duration
@@ -998,8 +1087,9 @@ fn emit_is_notimplemented_slot(chunk: &mut Chunk, slot: u16, line: u32) {
         &ClassSlot::internal("__py_notimplemented"),
         &PlainNames,
     );
-    class_slots::emit_class_has(chunk, ObjSource::Local(slot), &key, Dest::Stack, line);
-    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+    class_slots::emit_class_get(chunk, ObjSource::Local(slot), &key, Dest::Stack, line);
+    chunk.emit_bool_const(true, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
     chunk.emit_else(line);
     chunk.emit_i32_const(0, line);
     chunk.emit_end(line);
@@ -1986,7 +2076,7 @@ pub fn emit_pymul(chunks: &mut [Chunk], current: usize, line: u32) {
         b_slot,
         DtOp::Mul,
         "__mul__",
-        emit_f64_mul,
+        emit_py_mul_numeric,
         line,
     );
     chunk.emit_end(line); // isView(b)
@@ -2184,10 +2274,69 @@ fn emit_zero_division_guard(chunk: &mut Chunk, divisor_slot: u16, line: u32) {
 
 /// Numeric `**` fallback (Python-profile `BinOp::Pow`).
 fn emit_py_pow(chunk: &mut Chunk, line: u32) {
-    // Python is IEEE: `1 ** float('inf')` is `1.0`, not NaN. `emit_pow` is the
-    // ECMA host and answers NaN there, so the numeric fallback of `**` takes
-    // the IEEE primitive — the same contract `pow()` gets via `opcode:pow`.
-    vybe_compiler::primitives::math::emit_pow_ieee(chunk, line);
+    let b_slot = chunk.alloc_scratch(1);
+    let a_slot = chunk.alloc_scratch(1);
+    chunk.emit_op_u16(Op::LOCAL_SET, b_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, a_slot, line);
+
+    emit_slot_is_bigint_or_integer_number(chunk, a_slot, line);
+    emit_slot_is_bigint_or_integer_number(chunk, b_slot, line);
+    chunk.emit_op(Op::I32_AND, line);
+    emit_slot_number_ge_zero(chunk, b_slot, line);
+    chunk.emit_op(Op::I32_AND, line);
+    chunk.emit_if_value(line);
+    {
+        emit_slot_as_bigint(chunk, a_slot, line);
+        emit_slot_as_bigint(chunk, b_slot, line);
+        let pow = chunk.add_import("ecma:bigint", "pow");
+        chunk.emit_call(pow, 2, line);
+    }
+    chunk.emit_else(line);
+    {
+        emit_slot_as_number_f64(chunk, a_slot, line);
+        emit_slot_as_number_f64(chunk, b_slot, line);
+        // Python is IEEE for the non-integral path: `1 ** float('inf')` is
+        // `1.0`, not NaN. `emit_pow` is the ECMA host and answers NaN there.
+        vybe_compiler::primitives::math::emit_pow_ieee(chunk, line);
+    }
+    chunk.emit_end(line);
+}
+
+fn emit_slot_is_bigint_or_integer_number(chunk: &mut Chunk, slot: u16, line: u32) {
+    let test_bigint = chunk.add_import("wasm:js-bigint", "test");
+    chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
+    chunk.emit_call(test_bigint, 1, line);
+    chunk.emit_if_value(line);
+    chunk.emit_i32_const(1, line);
+    chunk.emit_else(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
+    let is_integer = chunk.add_import("ecma:number", "isInteger");
+    chunk.emit_call(is_integer, 1, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_end(line);
+}
+
+fn emit_slot_number_ge_zero(chunk: &mut Chunk, slot: u16, line: u32) {
+    chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
+    let number = chunk.add_import("ecma:number", "Number");
+    chunk.emit_call(number, 1, line);
+    let to_f64 = chunk.add_import("wasm:js-number", "toF64");
+    chunk.emit_call(to_f64, 1, line);
+    chunk.emit_f64_const(0.0, line);
+    chunk.emit_op(Op::F64_GE, line);
+}
+
+fn emit_slot_as_bigint(chunk: &mut Chunk, slot: u16, line: u32) {
+    let test_bigint = chunk.add_import("wasm:js-bigint", "test");
+    chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
+    chunk.emit_call(test_bigint, 1, line);
+    chunk.emit_if_value(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
+    chunk.emit_else(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
+    let ctor = chunk.add_import("ecma:bigint", "BigInt");
+    chunk.emit_call(ctor, 1, line);
+    chunk.emit_end(line);
 }
 
 /// `issubclass(sub, base)` — true when `base` is in `sub.__mro__` (the ancestor
@@ -2468,10 +2617,6 @@ pub fn emit_py_type_name(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
     let v = chunk.alloc_scratch(1);
     let cast_bool = chunk.add_import("wasm:js-boolean", "cast");
-    let test_bool = chunk.add_import("wasm:js-boolean", "test");
-    let test_number = chunk.add_import("wasm:js-number", "test");
-    let test_string = chunk.add_import("wasm:js-string", "test");
-    let is_integer = chunk.add_import("ecma:number", "isInteger");
     chunk.emit_op_u16(Op::LOCAL_SET, v, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, v, line);
@@ -2519,57 +2664,7 @@ pub fn emit_py_type_name(chunks: &mut [Chunk], current: usize, line: u32) {
         reflection::emit_get_property_in_chunk(chunk, line);
         chunk.emit_else(line);
 
-        chunk.emit_op_u16(Op::LOCAL_GET, v, line);
-        chunk.emit_string_const("__exception_type", line);
-        reflection::emit_has_own_in_chunk(chunk, line);
-        chunk.emit_call(cast_bool, 1, line);
-        chunk.emit_if_value(line);
-        chunk.emit_op_u16(Op::LOCAL_GET, v, line);
-        chunk.emit_string_const("__exception_type", line);
-        reflection::emit_get_property_in_chunk(chunk, line);
-        chunk.emit_else(line);
-
-        chunk.emit_op_u16(Op::LOCAL_GET, v, line);
-        chunk.emit_string_const("name", line);
-        reflection::emit_has_own_in_chunk(chunk, line);
-        chunk.emit_call(cast_bool, 1, line);
-        chunk.emit_if_value(line);
-        chunk.emit_op_u16(Op::LOCAL_GET, v, line);
-        chunk.emit_string_const("name", line);
-        reflection::emit_get_property_in_chunk(chunk, line);
-        chunk.emit_else(line);
-
-        chunk.emit_op_u16(Op::LOCAL_GET, v, line);
-        chunk.emit_call(test_bool, 1, line);
-        chunk.emit_if_value(line);
-        chunk.emit_string_const("bool", line);
-        chunk.emit_else(line);
-
-        chunk.emit_op_u16(Op::LOCAL_GET, v, line);
-        chunk.emit_call(test_string, 1, line);
-        chunk.emit_if_value(line);
-        chunk.emit_string_const("str", line);
-        chunk.emit_else(line);
-
-        chunk.emit_op_u16(Op::LOCAL_GET, v, line);
-        chunk.emit_call(test_number, 1, line);
-        chunk.emit_if_value(line);
-        chunk.emit_op_u16(Op::LOCAL_GET, v, line);
-        chunk.emit_call(is_integer, 1, line);
-        chunk.emit_if_value(line);
-        chunk.emit_string_const("int", line);
-        chunk.emit_else(line);
-        chunk.emit_string_const("float", line);
-        chunk.emit_end(line);
-        chunk.emit_else(line);
-
-        chunk.emit_op_u16(Op::LOCAL_GET, v, line);
-        reflection::emit_typeof_in_chunk(chunk, line);
-        chunk.emit_end(line);
-        chunk.emit_end(line);
-        chunk.emit_end(line);
-        chunk.emit_end(line);
-        chunk.emit_end(line);
+        emit_py_type_name_class_slot_or_plain_fallback(chunk, v, line);
         chunk.emit_end(line);
         chunk.emit_end(line);
         chunk.emit_end(line);
@@ -2579,6 +2674,89 @@ pub fn emit_py_type_name(chunks: &mut [Chunk], current: usize, line: u32) {
     {
         chunk.emit_string_const("NoneType", line);
     }
+    chunk.emit_end(line);
+}
+
+fn emit_py_type_name_class_slot_or_plain_fallback(chunk: &mut Chunk, v: u16, line: u32) {
+    chunk.emit_op_u16(Op::LOCAL_GET, v, line);
+    reflection::emit_typeof_in_chunk(chunk, line);
+    chunk.emit_string_const("object", line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    chunk.emit_if_value(line);
+    let type_key = class_slots::resolve_interned(chunk, &ClassSlot::TypeIdentity, &PlainNames);
+    chunk.emit_op_u16(Op::LOCAL_GET, v, line);
+    class_slots::emit_class_get(chunk, ObjSource::Stack, &type_key, Dest::Stack, line);
+    let type_slot = chunk.alloc_scratch(1);
+    chunk.emit_op_u16(Op::LOCAL_SET, type_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, type_slot, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if_value(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, type_slot, line);
+    chunk.emit_else(line);
+    emit_py_type_name_plain_fallback(chunk, v, line);
+    chunk.emit_end(line);
+    chunk.emit_else(line);
+    emit_py_type_name_plain_fallback(chunk, v, line);
+    chunk.emit_end(line);
+}
+
+fn emit_py_type_name_plain_fallback(chunk: &mut Chunk, v: u16, line: u32) {
+    let cast_bool = chunk.add_import("wasm:js-boolean", "cast");
+    let test_bool = chunk.add_import("wasm:js-boolean", "test");
+    let test_number = chunk.add_import("wasm:js-number", "test");
+    let test_string = chunk.add_import("wasm:js-string", "test");
+    let is_integer = chunk.add_import("ecma:number", "isInteger");
+
+    chunk.emit_op_u16(Op::LOCAL_GET, v, line);
+    chunk.emit_string_const("__exception_type", line);
+    reflection::emit_has_own_in_chunk(chunk, line);
+    chunk.emit_call(cast_bool, 1, line);
+    chunk.emit_if_value(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, v, line);
+    chunk.emit_string_const("__exception_type", line);
+    reflection::emit_get_property_in_chunk(chunk, line);
+    chunk.emit_else(line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, v, line);
+    chunk.emit_string_const("name", line);
+    reflection::emit_has_own_in_chunk(chunk, line);
+    chunk.emit_call(cast_bool, 1, line);
+    chunk.emit_if_value(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, v, line);
+    chunk.emit_string_const("name", line);
+    reflection::emit_get_property_in_chunk(chunk, line);
+    chunk.emit_else(line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, v, line);
+    chunk.emit_call(test_bool, 1, line);
+    chunk.emit_if_value(line);
+    chunk.emit_string_const("bool", line);
+    chunk.emit_else(line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, v, line);
+    chunk.emit_call(test_string, 1, line);
+    chunk.emit_if_value(line);
+    chunk.emit_string_const("str", line);
+    chunk.emit_else(line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, v, line);
+    chunk.emit_call(test_number, 1, line);
+    chunk.emit_if_value(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, v, line);
+    chunk.emit_call(is_integer, 1, line);
+    chunk.emit_if_value(line);
+    chunk.emit_string_const("int", line);
+    chunk.emit_else(line);
+    chunk.emit_string_const("float", line);
+    chunk.emit_end(line);
+    chunk.emit_else(line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, v, line);
+    reflection::emit_typeof_in_chunk(chunk, line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
     chunk.emit_end(line);
 }
 
@@ -2807,7 +2985,7 @@ pub fn emit_pysub(chunks: &mut [Chunk], current: usize, line: u32) {
     {
         chunk.emit_op_u16(Op::LOCAL_GET, a_slot, line);
         chunk.emit_op_u16(Op::LOCAL_GET, b_slot, line);
-        emit_arith_dunder(chunk, "__sub__", emit_f64_sub, line);
+        emit_arith_dunder(chunk, "__sub__", emit_py_sub_numeric, line);
     }
     chunk.emit_end(line);
 }

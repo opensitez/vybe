@@ -10,23 +10,99 @@
 //! `0.6666666666666666` — no float-repr wrapping needed.
 
 use vybe_compiler::primitives::class_slots::{
-    self, ClassSlot, ObjSource, PlainNames, ValueSource,
+    self, ClassSlot, Dest, ObjSource, PlainNames, ValueSource,
 };
+use vybe_compiler::primitives::functions::create_function_chunk;
 use vybe_compiler::primitives::instructions::core_wasm;
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
-
-/// `sum(data)`. Stack: `[data]` → `[num]`.
-fn emit_sum(chunk: &mut Chunk, data: u16, line: u32) {
-    chunk.emit_op_u16(Op::LOCAL_GET, data, line);
-    let sum = chunk.add_import("ecma:math", "sumPrecise");
-    chunk.emit_call(sum, 1, line);
-}
 
 /// `len(data)` as f64. Stack: `[]` → `[num]`.
 fn emit_len(chunks: &mut [Chunk], current: usize, data: u16, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, data, line);
     vybe_compiler::primitives::collections::emit_len(chunks, current, line);
+}
+
+fn protocol_key(dunder: &str) -> String {
+    match crate::protocol::canonical_method(dunder).1 {
+        Some(slot) => vybe_ast::protocol_slot_key(slot),
+        None => dunder.to_string(),
+    }
+}
+
+fn emit_slot_as_f64(chunk: &mut Chunk, slot: u16, line: u32) {
+    let typeof_fn = chunk.add_import("ecma:value", "typeof");
+    let to_f64 = chunk.add_import("wasm:js-number", "toF64");
+    let float_key = class_slots::resolve_interned(
+        chunk,
+        &ClassSlot::internal(protocol_key("__float__")),
+        &PlainNames,
+    );
+    let method = chunk.alloc_scratch(1);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
+    chunk.emit_call(typeof_fn, 1, line);
+    chunk.emit_string_const("object", line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    chunk.emit_if_value(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
+    class_slots::emit_class_get(chunk, ObjSource::Stack, &float_key, Dest::Stack, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, method, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, method, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_if_value(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, method, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
+    vybe_compiler::primitives::callable::emit_direct_invoke_chunk(chunk, 1, line);
+    chunk.emit_call(to_f64, 1, line);
+    chunk.emit_else(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
+    chunk.emit_call(to_f64, 1, line);
+    chunk.emit_end(line);
+    chunk.emit_else(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
+    chunk.emit_call(to_f64, 1, line);
+    chunk.emit_end(line);
+}
+
+/// `sum(data)`. Stack: `[]` → `[num]`.
+fn emit_sum(chunks: &mut [Chunk], current: usize, data: u16, line: u32) {
+    let acc = chunks[current].alloc_scratch(1);
+    let i = chunks[current].alloc_scratch(1);
+    let n = chunks[current].alloc_scratch(1);
+    let item = chunks[current].alloc_scratch(1);
+
+    core_wasm::f64_const(&mut chunks[current], line, 0.0);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, acc, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
+    emit_len(chunks, current, data, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, n, line);
+
+    let state = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
+    let chunk = &mut chunks[current];
+    chunk.emit_op_u16(Op::LOCAL_GET, i, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, n, line);
+    chunk.emit_op(Op::I32_LT_S, line);
+    vybe_compiler::primitives::loops::emit_loop_cond(std::slice::from_mut(chunk), 0, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, data, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, i, line);
+    chunk.emit_op(Op::ARRAY_GET, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, item, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, acc, line);
+    emit_slot_as_f64(chunk, item, line);
+    chunk.emit_op(Op::F64_ADD, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, acc, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, i, line);
+    core_wasm::i32_const(chunk, line, 1);
+    chunk.emit_op(Op::I32_ADD, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, i, line);
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, state, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, acc, line);
 }
 
 /// Stash the single list argument into a local. Stack: `[data]` → `[]`.
@@ -67,16 +143,38 @@ fn emit_empty_data_guard(chunks: &mut [Chunk], current: usize, data: u16, line: 
 pub fn emit_mean(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     let data = stash_data(&mut chunks[current], line);
     emit_empty_data_guard(chunks, current, data, line);
-    emit_sum(&mut chunks[current], data, line);
+    emit_sum(chunks, current, data, line);
     emit_len(chunks, current, data, line);
     chunks[current].emit_op(Op::F64_DIV, line);
 }
 
-/// The data sorted ascending, as a new list. Stack: `[]` → `[array]`.
-fn emit_sorted(chunk: &mut Chunk, data: u16, line: u32) {
+fn ensure_numeric_cmp_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
+    const NAME: &str = "__py_statistics_numeric_cmp";
+    if let Some(idx) = chunks.iter().position(|chunk| chunk.name == NAME) {
+        return idx;
+    }
+    let idx = chunks.len();
+    let mut c = create_function_chunk(NAME, 2);
+    c.alloc_scratch(2);
+    emit_slot_as_f64(&mut c, 0, line);
+    emit_slot_as_f64(&mut c, 1, line);
+    c.emit_op(Op::F64_SUB, line);
+    c.emit_op(Op::RETURN, line);
+    chunks.push(c);
+    idx
+}
+
+/// The data sorted numerically ascending, as a new list. Stack: `[]` → `[array]`.
+fn emit_sorted(chunks: &mut Vec<Chunk>, current: usize, data: u16, line: u32) {
+    let cmp = ensure_numeric_cmp_chunk(chunks, line);
+    let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::LOCAL_GET, data, line);
     let sorted = chunk.add_import("ecma:array", "toSorted");
     chunk.emit_call(sorted, 1, line);
+    chunk.emit_op_u16(Op::REF_FUNC, cmp as u16, line);
+    chunk.emit(0, line);
+    let _ = chunk;
+    vybe_compiler::primitives::collections::emit_sort_with_comparator(chunks, current, line);
 }
 
 /// `s[i]` where `i` is an f64-valued local. Stack: `[]` → `[value]`.
@@ -86,21 +184,15 @@ fn emit_at(chunk: &mut Chunk, arr: u16, idx: u16, line: u32) {
     chunk.emit_op(Op::ARRAY_GET, line);
 }
 
-fn emit_slot_as_f64(chunk: &mut Chunk, slot: u16, line: u32) {
-    chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
-    let to_f64 = chunk.add_import("wasm:js-number", "toF64");
-    chunk.emit_call(to_f64, 1, line);
-}
-
 /// `statistics.median(data)` — the middle of the sorted data, or the mean of
 /// the middle two when the count is even. Stack: `[data]` → `[num]`.
-pub fn emit_median(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+pub fn emit_median(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32) {
     let data = stash_data(&mut chunks[current], line);
     let s = chunks[current].alloc_scratch(1);
     let n = chunks[current].alloc_scratch(1);
     let mid = chunks[current].alloc_scratch(1);
 
-    emit_sorted(&mut chunks[current], data, line);
+    emit_sorted(chunks, current, data, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, s, line);
     emit_len(chunks, current, data, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, n, line);
@@ -133,13 +225,13 @@ pub fn emit_median(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
 
 /// `median_low` / `median_high` — for an even count Python takes the lower or
 /// upper of the two middle values rather than averaging them.
-fn emit_median_side(chunks: &mut [Chunk], current: usize, high: bool, line: u32) {
+fn emit_median_side(chunks: &mut Vec<Chunk>, current: usize, high: bool, line: u32) {
     let data = stash_data(&mut chunks[current], line);
     let s = chunks[current].alloc_scratch(1);
     let n = chunks[current].alloc_scratch(1);
     let idx = chunks[current].alloc_scratch(1);
 
-    emit_sorted(&mut chunks[current], data, line);
+    emit_sorted(chunks, current, data, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, s, line);
     emit_len(chunks, current, data, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, n, line);
@@ -157,11 +249,11 @@ fn emit_median_side(chunks: &mut [Chunk], current: usize, high: bool, line: u32)
     emit_at(chunk, s, idx, line);
 }
 
-pub fn emit_median_low(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+pub fn emit_median_low(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32) {
     emit_median_side(chunks, current, false, line);
 }
 
-pub fn emit_median_high(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+pub fn emit_median_high(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32) {
     emit_median_side(chunks, current, true, line);
 }
 
@@ -214,7 +306,7 @@ fn emit_sq_dev_sum(chunks: &mut [Chunk], current: usize, data: u16, mean: u16, l
 /// which is what separates `variance` from `pvariance`.
 fn emit_variance_inner(chunks: &mut [Chunk], current: usize, data: u16, sample: bool, line: u32) {
     let mean = chunks[current].alloc_scratch(1);
-    emit_sum(&mut chunks[current], data, line);
+    emit_sum(chunks, current, data, line);
     emit_len(chunks, current, data, line);
     chunks[current].emit_op(Op::F64_DIV, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, mean, line);
@@ -435,7 +527,7 @@ pub fn emit_multimode(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32
 
 /// `statistics.quantiles(data, n=4)` — CPython's default "exclusive" method:
 /// `n - 1` cut points interpolated over the sorted data. Stack: `[data]` → `[array]`.
-pub fn emit_quantiles(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+pub fn emit_quantiles(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
     let chunk0 = &mut chunks[current];
     // `n` defaults to 4 (quartiles).
     let nq = chunk0.alloc_scratch(1);
@@ -460,7 +552,7 @@ pub fn emit_quantiles(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
     let delta = chunks[current].alloc_scratch(1);
     let out = chunks[current].alloc_scratch(1);
 
-    emit_sorted(&mut chunks[current], data, line);
+    emit_sorted(chunks, current, data, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, s, line);
     emit_len(chunks, current, data, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, ld, line);
@@ -551,7 +643,7 @@ pub fn emit_quantiles(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
 /// `statistics.median_grouped(data, interval=1)` — the median of continuous
 /// data, interpolated within the interval the midpoint falls in:
 /// `L + interval * (n/2 - cf) / f`. Stack: `[data]` → `[num]`.
-pub fn emit_median_grouped(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+pub fn emit_median_grouped(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
     let base = stash_args(&mut chunks[current], argc, line);
     let data = base;
     let interval = chunks[current].alloc_scratch(1);
@@ -570,7 +662,7 @@ pub fn emit_median_grouped(chunks: &mut [Chunk], current: usize, argc: u8, line:
     let f = chunks[current].alloc_scratch(1);
     let i = chunks[current].alloc_scratch(1);
 
-    emit_sorted(&mut chunks[current], data, line);
+    emit_sorted(chunks, current, data, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, s, line);
     emit_len(chunks, current, data, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, n, line);
@@ -755,11 +847,11 @@ fn emit_pair_moments(
 
     emit_len(chunks, current, xs, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, n, line);
-    emit_sum(&mut chunks[current], xs, line);
+    emit_sum(chunks, current, xs, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, n, line);
     chunks[current].emit_op(Op::F64_DIV, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, mean_x, line);
-    emit_sum(&mut chunks[current], ys, line);
+    emit_sum(chunks, current, ys, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, n, line);
     chunks[current].emit_op(Op::F64_DIV, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, mean_y, line);

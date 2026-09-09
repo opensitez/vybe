@@ -2388,8 +2388,14 @@ const MODULE_CLASSES: &[(&str, &[&str])] = &[
     ("random", &["__py_SystemRandom"]),
     // No classes — these are module-level values/functions only.
     ("types", &[]),
+    // `dataclasses.fields()` materializes annotation objects in field
+    // descriptors, so dataclass users need the existing type-object class even
+    // if they never spell `__annotations__`.
+    ("dataclasses", &["__py_type_obj"]),
     // Not a module — the gate is the ANNOTATION machinery that builds it.
     ("__annotations__", &["__py_type_obj"]),
+    ("__mro__", &["__py_type_obj"]),
+    ("__bases__", &["__py_type_obj"]),
     // `typing.List[int]` and friends normalize to a GenericAlias carrying
     // runtime type objects.
     ("typing", &["__py_type_obj"]),

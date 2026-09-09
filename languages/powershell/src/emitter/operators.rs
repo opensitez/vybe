@@ -852,14 +852,47 @@ pub fn emit_to_char(chunks: &mut [Chunk], current: usize, line: u32) {
 /// Stack: `[value]` → `[number]`.
 pub fn emit_to_int(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
-    let value = chunk.alloc_scratch(2);
+    let value = chunk.alloc_scratch(3);
     let parsed = value + 1;
+    let int_slot = value + 2;
     let is_string = chunk.add_import("wasm:js-string", "test");
     let to_number = chunk.add_import("ecma:number", "Number");
     let is_nan = chunk.add_import("ecma:number", "isNaN");
     let char_code = chunk.add_import("wasm:js-string", "charCodeAt");
 
     chunk.emit_op_u16(Op::LOCAL_SET, value, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, value, line);
+    vybe_compiler::primitives::instructions::recipes::is_object(chunk, line);
+    chunk.emit_if_value(line);
+    vybe_compiler::primitives::class_slots::emit_class_get(
+        chunk,
+        vybe_compiler::primitives::class_slots::ObjSource::Local(value),
+        &vybe_compiler::primitives::class_slots::resolve(
+            &vybe_compiler::primitives::class_slots::ClassSlot::internal(
+                &vybe_ast::protocol_slot_key(vybe_ast::ProtocolSlot::Int),
+            ),
+            &vybe_compiler::primitives::class_slots::PlainNames,
+        ),
+        vybe_compiler::primitives::class_slots::Dest::Local(int_slot),
+        line,
+    );
+    chunk.emit_op_u16(Op::LOCAL_GET, int_slot, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_if_value(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, value, line);
+    chunk.emit_call(to_number, 1, line);
+    vybe_compiler::primitives::math::emit_round(
+        chunk,
+        vybe_ast::MidpointPolicy::HalfEven,
+        line,
+    );
+    chunk.emit_else(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, int_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, value, line);
+    vybe_compiler::primitives::callable::emit_direct_invoke_chunk(chunk, 1, line);
+    chunk.emit_end(line);
+    chunk.emit_else(line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, value, line);
     chunk.emit_call(is_string, 1, line);
@@ -895,6 +928,8 @@ pub fn emit_to_int(chunks: &mut [Chunk], current: usize, line: u32) {
         vybe_ast::MidpointPolicy::HalfEven,
         line,
     );
+
+    chunk.emit_end(line);
 
     chunk.emit_end(line);
 }
@@ -1094,6 +1129,9 @@ pub fn emit_index_get(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_SET, raw, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, raw, line);
     chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, raw, line);
+    chunks[current].emit_call(is_undefined, 1, line);
+    chunks[current].emit_op(Op::I32_OR, line);
     chunks[current].emit_if(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, obj, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, key, line);
@@ -1564,6 +1602,7 @@ pub fn emit_psobject_properties(chunks: &mut [Chunk], current: usize, argc: u8, 
     let desc = target + 7;
     let wanted = target + 8;
     let aliased = target + 9;
+    let explicit_keys = chunk.alloc_scratch(1);
 
     let arr_new = chunk.add_import("ecma:array", "new");
     let arr_len = chunk.add_import("ecma:array", "length");
@@ -1583,7 +1622,17 @@ pub fn emit_psobject_properties(chunks: &mut [Chunk], current: usize, argc: u8, 
     }
     chunk.emit_op_u16(Op::LOCAL_SET, target, line);
     chunk.emit_op_u16(Op::LOCAL_GET, target, line);
+    chunk.emit_string_const("__ps_key_order", line);
+    chunk.emit_call(obj_get, 2, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, explicit_keys, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, explicit_keys, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_if_value(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, target, line);
     chunk.emit_call(obj_keys, 1, line);
+    chunk.emit_else(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, explicit_keys, line);
+    chunk.emit_end(line);
     chunk.emit_op_u16(Op::LOCAL_SET, keys, line);
     chunk.emit_call(arr_new, 0, line);
     chunk.emit_op_u16(Op::LOCAL_SET, out, line);

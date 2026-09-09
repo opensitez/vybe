@@ -56,6 +56,46 @@ pub fn register_namespace_tree() {
                 _ => {}
             }
         }
+        for name in [
+            "ini_get",
+            "ini_set",
+            "ini_restore",
+            "ini_get_all",
+            "get_cfg_var",
+            "get_include_path",
+            "set_include_path",
+            "version_compare",
+            "extension_loaded",
+            "get_loaded_extensions",
+            "php_uname",
+            "phpversion",
+            "phpinfo",
+            "getenv",
+            "putenv",
+            "http_build_query",
+            "parse_str_result",
+            "copy_on_assign",
+            "strict_eq",
+            "dynamic_method_call",
+            "method_exists",
+            "superglobal_server",
+            "superglobal_files",
+            "superglobal_env",
+            "session_get_cookie_params",
+            "session_set_cookie_params",
+            "session_cache_limiter",
+            "session_cache_expire",
+            "session_module_name",
+            "session_save_path",
+            "session_create_id",
+            "session_gc",
+            "session_set_save_handler",
+            "session_encode",
+            "session_decode",
+        ] {
+            root.entry(name.to_string())
+                .or_insert(NamespaceNode::CommonEmit(format!("php.{name}")));
+        }
         namespaces::register_namespace_tree("php", NamespaceNode::Namespace(root));
     });
 }

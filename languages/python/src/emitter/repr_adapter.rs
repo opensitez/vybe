@@ -52,8 +52,9 @@ fn emit_is_notimplemented(chunk: &mut Chunk, slot: u16, line: u32) {
     chunk.emit_op(Op::I32_AND, line);
     chunk.emit_if_value(line);
     let marker = class_slots::resolve(&ClassSlot::internal("__py_notimplemented"), &PlainNames);
-    class_slots::emit_class_has(chunk, ObjSource::Local(slot), &marker, Dest::Stack, line);
-    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+    class_slots::emit_class_get(chunk, ObjSource::Local(slot), &marker, Dest::Stack, line);
+    chunk.emit_bool_const(true, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
     chunk.emit_else(line);
     chunk.emit_i32_const(0, line);
     chunk.emit_end(line);
@@ -236,6 +237,22 @@ fn build_py_repr_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut c, line);
     c.emit_if(line);
     str_const(&mut c, "[continuation]", line);
+    c.emit_op(Op::RETURN, line);
+    c.emit_end(line);
+
+    // ── bigint → Python int string form ─────────────────────────────────
+    lget(&mut c, value, line);
+    {
+        let idx = c.add_import("wasm:js-bigint", "test");
+        c.emit_call(idx, 1, line);
+    }
+    c.emit_if(line);
+    lget(&mut c, value, line);
+    c.emit_f64_const(10.0, line);
+    {
+        let idx = c.add_import("ecma:bigint", "toString");
+        c.emit_call(idx, 2, line);
+    }
     c.emit_op(Op::RETURN, line);
     c.emit_end(line);
 
@@ -579,6 +596,7 @@ fn build_py_repr_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
             let to_f64 = c.add_import("wasm:js-number", "toF64");
             let to_str = c.add_import("ecma:string", "String");
             let abs = c.add_import("ecma:math", "abs");
+            let object_is = c.add_import("ecma:object", "is");
 
             lget(&mut c, value, line);
             struct_get(&mut c, &ClassSlot::internal("real"), line);
@@ -605,6 +623,11 @@ fn build_py_repr_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
                 c.emit_call(to_f64, 1, line);
                 c.emit_f64_const(0.0, line);
                 c.emit_op(Op::F64_LT, line);
+                lget(&mut c, imag, line);
+                c.emit_f64_const(-0.0, line);
+                c.emit_call(object_is, 2, line);
+                vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut c, line);
+                c.emit_op(Op::I32_OR, line);
                 c.emit_if(line);
                 str_const(&mut c, "-", line);
                 lget(&mut c, imag_s, line);
@@ -624,6 +647,11 @@ fn build_py_repr_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
                 c.emit_call(to_f64, 1, line);
                 c.emit_f64_const(0.0, line);
                 c.emit_op(Op::F64_LT, line);
+                lget(&mut c, imag, line);
+                c.emit_f64_const(-0.0, line);
+                c.emit_call(object_is, 2, line);
+                vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut c, line);
+                c.emit_op(Op::I32_OR, line);
                 c.emit_if(line);
                 str_const(&mut c, "-", line);
                 c.emit_else(line);

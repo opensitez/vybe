@@ -709,7 +709,7 @@ pub fn emit_spl_count_method(chunks: &mut Vec<Chunk>, current: usize, argc: u8, 
     emit_spl_helper_call(chunks, current, argc, line, build_count_method);
 }
 
-pub fn emit_spl_fixedarray_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+pub fn emit_spl_fixedarray_new(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
     let chunk = &mut chunks[current];
     if argc == 0 {
         chunk.emit_array_new_fixed(0, 0, line);
@@ -1477,11 +1477,11 @@ fn finish_array_iterator_instance(
     let this_slot = chunk.alloc_scratch(1);
 
     if argc >= 1 {
-        let source_slot = chunk.alloc_scratch(1);
-        chunk.emit_op_u16(Op::LOCAL_SET, source_slot, line);
         for _ in 1..argc {
             chunk.emit_op(Op::DROP, line);
         }
+        let source_slot = chunk.alloc_scratch(1);
+        chunk.emit_op_u16(Op::LOCAL_SET, source_slot, line);
         chunk.emit_op_u16(Op::LOCAL_GET, source_slot, line);
         let values_i = chunk.add_import("ecma:object".to_string(), "values".to_string());
         chunk.emit_call(values_i, 1, line);
