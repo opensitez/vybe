@@ -769,7 +769,7 @@ pub fn emit_prompt_input(chunk: &mut Chunk, line: u32) {
 
 /// Global holding the buffer stack: an array of frames, innermost LAST.
 /// Absent (null) until the first `ob_start` — see [`emit_ob_stack`].
-const OB_STACK: &str = "__vybe_ob_stack";
+pub(crate) const OB_STACK: &str = "__vybe_ob_stack";
 
 /// Frame keys. Language-neutral: these are the fields of a buffer, not PHP's
 /// spelling of them.

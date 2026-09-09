@@ -60,6 +60,20 @@ fn dyn_get(chunk: &mut Chunk, obj_slot: u16, key: &str, line: u32) {
     chunk.emit_op(Op::ARRAY_GET, line);
 }
 
+fn class_internal_get(chunk: &mut Chunk, obj_slot: u16, key: &str, dest: u16, line: u32) {
+    let slot = crate::primitives::class_slots::resolve(
+        &crate::primitives::class_slots::ClassSlot::internal(key),
+        &crate::primitives::class_slots::PlainNames,
+    );
+    crate::primitives::class_slots::emit_class_get(
+        chunk,
+        crate::primitives::class_slots::ObjSource::Local(obj_slot),
+        &slot,
+        crate::primitives::class_slots::Dest::Local(dest),
+        line,
+    );
+}
+
 fn loop_start(chunk: &mut Chunk, line: u32) -> LoopState {
     let block_patch = chunk.emit_block(line);
     let (loop_patch, _) = chunk.emit_loop_s(line);
@@ -216,6 +230,7 @@ fn build_normalize_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     let key_slot = alloc_local(&mut h);
     let i_slot = alloc_local(&mut h);
     let n_slot = alloc_local(&mut h);
+    let role_slot = alloc_local(&mut h);
 
     // null → pass through.
     lget(&mut h, value_slot, line);
@@ -230,6 +245,87 @@ fn build_normalize_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     return_if_kind(&mut h, value_slot, "number", line);
     return_if_kind(&mut h, value_slot, "string", line);
     return_if_kind(&mut h, value_slot, "boolean", line);
+
+    // Class/value objects expose JSON scalar faces through common protocol
+    // slots. Enum constants carry Int; DateTime/Guid/TimeSpan-style adapters
+    // carry ToString. Read those roles before property enumeration so adapters
+    // do not leak their internal slots into JSON.
+    push_is_object(&mut h, value_slot, line);
+    h.emit_if(line);
+    {
+        class_internal_get(
+            &mut h,
+            value_slot,
+            vybe_ast::protocol_slot_key(vybe_ast::ProtocolSlot::Int).as_str(),
+            role_slot,
+            line,
+        );
+        lget(&mut h, role_slot, line);
+        h.emit_op(Op::REF_IS_NULL, line);
+        h.emit_op(Op::I32_EQZ, line);
+        h.emit_if_value(line);
+        lget(&mut h, role_slot, line);
+        lget(&mut h, value_slot, line);
+        call_ref(&mut h, 1, line);
+        h.emit_op(Op::RETURN, line);
+        h.emit_end(line);
+
+        class_internal_get(
+            &mut h,
+            value_slot,
+            vybe_ast::protocol_slot_key(vybe_ast::ProtocolSlot::ToString).as_str(),
+            role_slot,
+            line,
+        );
+        dyn_get(&mut h, value_slot, "__type", line);
+        lset(&mut h, keys_slot, line);
+        lget(&mut h, keys_slot, line);
+        h.emit_op(Op::REF_IS_NULL, line);
+        h.emit_op(Op::I32_EQZ, line);
+        h.emit_if(line);
+        lget(&mut h, keys_slot, line);
+        push_str(&mut h, "datetime", line);
+        crate::primitives::ops::emit_dyn_eq(&mut h, line);
+        crate::primitives::ops::emit_dyn_to_bool(&mut h, line);
+        lget(&mut h, keys_slot, line);
+        push_str(&mut h, "DateTime", line);
+        crate::primitives::ops::emit_dyn_eq(&mut h, line);
+        crate::primitives::ops::emit_dyn_to_bool(&mut h, line);
+        h.emit_op(Op::I32_OR, line);
+        lget(&mut h, keys_slot, line);
+        push_str(&mut h, "datetimeoffset", line);
+        crate::primitives::ops::emit_dyn_eq(&mut h, line);
+        crate::primitives::ops::emit_dyn_to_bool(&mut h, line);
+        h.emit_op(Op::I32_OR, line);
+        lget(&mut h, keys_slot, line);
+        push_str(&mut h, "DateTimeOffset", line);
+        crate::primitives::ops::emit_dyn_eq(&mut h, line);
+        crate::primitives::ops::emit_dyn_to_bool(&mut h, line);
+        h.emit_op(Op::I32_OR, line);
+        h.emit_if(line);
+        dyn_get(&mut h, value_slot, "__time", line);
+        lset(&mut h, role_slot, line);
+        lget(&mut h, role_slot, line);
+        add_call(&mut h, "ecma:date", "toISOString", 1, line);
+        h.emit_op(Op::RETURN, line);
+        h.emit_end(line);
+        h.emit_end(line);
+
+        lget(&mut h, keys_slot, line);
+        h.emit_op(Op::REF_IS_NULL, line);
+        h.emit_op(Op::I32_EQZ, line);
+        lget(&mut h, role_slot, line);
+        h.emit_op(Op::REF_IS_NULL, line);
+        h.emit_op(Op::I32_EQZ, line);
+        h.emit_op(Op::I32_AND, line);
+        h.emit_if_value(line);
+        lget(&mut h, role_slot, line);
+        lget(&mut h, value_slot, line);
+        call_ref(&mut h, 1, line);
+        h.emit_op(Op::RETURN, line);
+        h.emit_end(line);
+    }
+    h.emit_end(line);
 
     // Array → array of normalize(elem).
     lget(&mut h, value_slot, line);
@@ -312,9 +408,15 @@ fn build_normalize_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
 
     // Object / Map → fromEntries([k, normalize(v[k])]) in (optionally sorted)
     // key order.
+    dyn_get(&mut h, value_slot, "__ps_key_order", line);
+    lset(&mut h, keys_slot, line);
+    lget(&mut h, keys_slot, line);
+    h.emit_op(Op::REF_IS_NULL, line);
+    h.emit_if_value(line);
     lget(&mut h, value_slot, line);
     add_call(&mut h, "ecma:object", "keys", 1, line);
     lset(&mut h, keys_slot, line);
+    h.emit_end(line);
     // sort_keys
     lget(&mut h, sort_slot, line);
     crate::primitives::ops::emit_dyn_to_bool(&mut h, line);
@@ -343,7 +445,18 @@ fn build_normalize_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     ref_func(&mut h, helper_idx, line);
     lget(&mut h, value_slot, line);
     lget(&mut h, key_slot, line);
+    add_call(&mut h, "ecma:object", "hasOwn", 2, line);
+    crate::primitives::ops::emit_dyn_to_bool(&mut h, line);
+    h.emit_if_value(line);
+    lget(&mut h, value_slot, line);
+    lget(&mut h, key_slot, line);
     h.emit_op(Op::ARRAY_GET, line);
+    h.emit_else(line);
+    lget(&mut h, value_slot, line);
+    lget(&mut h, key_slot, line);
+    add_call(&mut h, "ecma:string", "toLowerCase", 1, line);
+    h.emit_op(Op::ARRAY_GET, line);
+    h.emit_end(line);
     lget(&mut h, default_slot, line);
     lget(&mut h, sort_slot, line);
     lget(&mut h, props_slot, line);

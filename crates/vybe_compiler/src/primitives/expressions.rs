@@ -6729,6 +6729,10 @@ impl Compiler {
                         });
                         return self.compile_expr(&constant);
                     }
+                    if self.enum_value_names.contains_key(&canon_type) {
+                        self.emit_enum_member_lookup(&canon_type, inner, true)?;
+                        return Ok(());
+                    }
 
                     // Narrowing a number to a `char` is the MIRROR coercion, and
                     // it reads the mirror slot: `[builtin_slots.int] char`. The

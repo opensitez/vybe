@@ -655,8 +655,21 @@ fn eval_value_is_copyable(_v: &Value) -> bool {
 }
 
 pub fn install_chunk_globals(vm: &mut VM, chunks: &[Chunk], base_chunk_index: usize) {
+    install_chunk_globals_with_policy(vm, chunks, base_chunk_index, false);
+}
+
+fn install_chunk_globals_with_policy(
+    vm: &mut VM,
+    chunks: &[Chunk],
+    base_chunk_index: usize,
+    preserve_existing_globals: bool,
+) {
     for (idx, chunk) in chunks.iter().enumerate() {
         if !should_publish_chunk_name(&chunk.name) {
+            continue;
+        }
+        let name = chunk.name.to_lowercase();
+        if preserve_existing_globals && vm.has_global(&name) {
             continue;
         }
 
@@ -669,7 +682,7 @@ pub fn install_chunk_globals(vm: &mut VM, chunks: &[Chunk], base_chunk_index: us
         let mut obj = Object::new();
         obj.kind = ObjectKind::Function(func);
         let val = Value::Object(vybe_runtime::heap::alloc(obj));
-        vm.set_global_owned(chunk.name.to_lowercase(), val);
+        vm.set_global_owned(name, val);
     }
 }
 
@@ -1063,8 +1076,15 @@ impl JsDynamicRuntime {
         ctx: &mut HostContext,
         bundle: &Bundle,
         completion_capture: Option<&'static str>,
+        preserve_existing_globals: bool,
+        preserve_output_buffer_state: bool,
     ) -> Value {
         let vm = unsafe { &mut *self.vm };
+        let ob_snapshot = if preserve_output_buffer_state {
+            Some(vm.global(crate::primitives::io::OB_STACK).cloned())
+        } else {
+            None
+        };
         let compiled = match bundle.compile_full_with_modules(&vm.modules) {
             Ok(compiled) => compiled,
             Err(e) => return throw_eval_error(ctx, "SyntaxError", &e),
@@ -1072,7 +1092,12 @@ impl JsDynamicRuntime {
 
         let base_chunk_index = vm.chunks.len();
         crate::host_imports::install(vm, &compiled.host_imports);
-        install_chunk_globals(vm, &compiled.chunks, base_chunk_index);
+        install_chunk_globals_with_policy(
+            vm,
+            &compiled.chunks,
+            base_chunk_index,
+            preserve_existing_globals,
+        );
 
         let child_active_imports = compiled
             .chunks
@@ -1081,7 +1106,10 @@ impl JsDynamicRuntime {
             .unwrap_or_default();
         let child_active_resolved_imports = match resolve_imports(vm, &child_active_imports) {
             Ok(resolved) => resolved,
-            Err(e) => return throw_eval_error(ctx, "EvalError", &e.to_string()),
+            Err(e) => {
+                restore_eval_output_buffer_state(vm, &ob_snapshot);
+                return throw_eval_error(ctx, "EvalError", &e.to_string());
+            }
         };
         let saved_active_imports =
             std::mem::replace(&mut self.active_imports, child_active_imports);
@@ -1106,14 +1134,19 @@ impl JsDynamicRuntime {
         // real type — `except ZeroDivisionError` around `eval('1/0')` could
         // never match, only a blanket `except Exception`.
         if let Some(exc) = vm.last_exception.take() {
+            restore_eval_output_buffer_state(vm, &ob_snapshot);
             ctx.throw_value(exc);
             return Value::Undefined;
         }
 
         let run_value = match result {
             Ok(value) => value,
-            Err(e) => return throw_eval_error(ctx, "SyntaxError", &e.to_string()),
+            Err(e) => {
+                restore_eval_output_buffer_state(vm, &ob_snapshot);
+                return throw_eval_error(ctx, "SyntaxError", &e.to_string());
+            }
         };
+        restore_eval_output_buffer_state(vm, &ob_snapshot);
 
         // Python's `eval` binds its expression value to a temp; read it back
         // and drop it so it does not linger as a caller global.
@@ -1406,18 +1439,11 @@ impl JsDynamicRuntime {
             );
         };
 
-        // Per-language eval quirks:
-        //  - PHP: the string is evaluated in `<?php` context (bare text is
-        //    literal output, not code); its top-level `return` is the result
-        //    — PHP never requests `completion_value` because it never needs
-        //    to (see below).
-        let eval_source = match language_name.as_str() {
-            "php" => {
-                if source.trim_start().starts_with("<?") {
-                    source.clone()
-                } else {
-                    format!("<?php {source}")
-                }
+        let attrs = args.get(2);
+        let source_context = attrs.and_then(|a| object_string_prop(a, "source_context"));
+        let eval_source = match source_context.as_deref() {
+            Some("php_open_tag") if !source.trim_start().starts_with("<?") => {
+                format!("<?php {source}")
             }
             _ => source.clone(),
         };
@@ -1447,6 +1473,12 @@ impl JsDynamicRuntime {
         let wants_value = args
             .get(2)
             .map(|a| object_bool_prop(a, "completion_value"))
+            .unwrap_or(false);
+        let preserve_existing_globals = attrs
+            .map(|a| object_bool_prop(a, "preserve_existing_globals"))
+            .unwrap_or(false);
+        let preserve_output_buffer_state = attrs
+            .map(|a| object_bool_prop(a, "preserve_output_buffer_state"))
             .unwrap_or(false);
 
         let mut bundle = bundle_from_source(eval_source, language, PathBuf::from("<eval>"));
@@ -1478,7 +1510,13 @@ impl JsDynamicRuntime {
             .and_then(|a| object_get_prop(a, "namespace"))
             .is_some_and(|v| matches!(v, Value::Object(_)));
         if !has_namespace_dict {
-            return self.eval_in_live_vm(ctx, &bundle, None);
+            return self.eval_in_live_vm(
+                ctx,
+                &bundle,
+                None,
+                preserve_existing_globals,
+                preserve_output_buffer_state,
+            );
         }
 
         let mut eval_vm = VM::new();
@@ -1808,6 +1846,25 @@ fn object_bool_prop(v: &Value, key: &str) -> bool {
         return matches!(found, Some(Value::Bool(true)));
     }
     false
+}
+
+fn object_string_prop(v: &Value, key: &str) -> Option<String> {
+    object_get_prop(v, key).and_then(|value| match value {
+        Value::String(s) => Some(s.to_string()),
+        _ => None,
+    })
+}
+
+fn restore_eval_output_buffer_state(vm: &mut VM, snapshot: &Option<Option<Value>>) {
+    let Some(snapshot) = snapshot else {
+        return;
+    };
+    match snapshot {
+        Some(value) => vm.set_global(crate::primitives::io::OB_STACK, value.clone()),
+        None => {
+            vm.remove_global(crate::primitives::io::OB_STACK);
+        }
+    }
 }
 
 /// Read a property off a `Value::Object` regardless of `Map`/`Ordinary` shape.

@@ -29,11 +29,16 @@ impl Compiler {
         &self,
         expr: &Expression,
     ) -> Option<String> {
-        let ExprKind::Lit(Literal::Str(type_name)) = &expr.kind else {
-            return None;
-        };
-        let short = type_name.rsplit('.').next().unwrap_or(type_name).trim();
-        self.resolve_known_enum_type(short)
+        match &expr.kind {
+            ExprKind::Lit(Literal::Str(type_name)) => {
+                let short = type_name.rsplit('.').next().unwrap_or(type_name).trim();
+                self.resolve_known_enum_type(short)
+            }
+            ExprKind::Ident(type_name) => self.resolve_known_enum_type(type_name),
+            ExprKind::Member { .. } => Self::member_access_path(expr)
+                .and_then(|path| self.resolve_known_enum_type(strip_generic_suffix(&path))),
+            _ => None,
+        }
     }
 
     pub(super) fn canonical_enum_type_from_expr(&self, expr: &Expression) -> Option<String> {
@@ -214,7 +219,7 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_SET, result_slot);
         self.emit_const(Value::I32(0));
         self.emit_u16(Op::LOCAL_SET, matched_slot);
-        for (_, name) in &entries {
+        for (value, name) in &entries {
             let probe = if ignore_case {
                 name.to_ascii_lowercase()
             } else {
@@ -236,6 +241,31 @@ impl Compiler {
             // The constant read itself — the same expression the source would
             // have written, so it resolves however that language's member reads
             // resolve.
+            let constant = Expression::new(ExprKind::Member {
+                object: Box::new(Expression::ident(enum_type)),
+                field: name.clone(),
+                null_safe: false,
+            });
+            self.compile_expr(&constant)?;
+            self.emit_u16(Op::LOCAL_SET, result_slot);
+            self.emit_const(Value::I32(1));
+            self.emit_u16(Op::LOCAL_SET, matched_slot);
+            self.chunk().emit_end(line);
+            self.chunk().emit_end(line);
+            let numeric_probe = value.to_string();
+            self.emit_u16(Op::LOCAL_GET, matched_slot);
+            self.emit(Op::I32_EQZ);
+            let line = self.line;
+            self.chunk().emit_if(line);
+            self.emit_u16(Op::LOCAL_GET, input_slot);
+            self.emit_const(Value::String(Arc::from(numeric_probe.as_str())));
+            {
+                let line = self.line;
+                crate::primitives::ops::emit_dyn_eq(self.chunk(), line);
+            };
+            let line = self.line;
+            crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
+            self.chunk().emit_if(line);
             let constant = Expression::new(ExprKind::Member {
                 object: Box::new(Expression::ident(enum_type)),
                 field: name.clone(),
@@ -629,7 +659,9 @@ impl Compiler {
         let mut static_enum_call = false;
         let (field, instance_object) = match &callee.kind {
             ExprKind::Member { object, field, .. } => {
-                if terminal_type_name(object)
+                if Self::member_access_path(object).is_some_and(|path| {
+                    path.eq_ignore_ascii_case("Enum") || path.eq_ignore_ascii_case("System.Enum")
+                }) || terminal_type_name(object)
                     .is_some_and(|type_name| type_name.eq_ignore_ascii_case("Enum"))
                 {
                     static_enum_call = true;

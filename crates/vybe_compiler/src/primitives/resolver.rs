@@ -284,12 +284,13 @@ impl Compiler {
         if rest.is_empty() {
             return self.resolve_namespace_name(head);
         }
+        let head_key = self.canon(head);
+        let mounted_tree_head = self.tree_mounts.contains_key(&head_key);
         // 1. A scope binding on the head means the whole chain is ordinary
         //    member access, never a namespace path.
-        if self.scope().resolve(head).is_some() {
+        if !mounted_tree_head && self.scope().resolve(head).is_some() {
             return None;
         }
-        let head_key = self.canon(head);
 
         // 2a. ESM namespace alias: `alias.field` → (module, field). Only a
         //     single member step — deeper chains under an alias are member
@@ -675,6 +676,8 @@ impl Compiler {
     pub(crate) fn resolve_profile_namespace_chain(&self, parts: &[String]) -> Option<Resolution> {
         let first = parts.first()?;
         let lower: Vec<String> = parts.iter().map(|s| self.canon(s)).collect();
+        let head_key = self.canon(first);
+        let mounted_tree_head = self.tree_mounts.contains_key(&head_key);
 
         let is_user_type = |name: &str| -> bool {
             self.defined_classes.contains(name)
@@ -684,7 +687,8 @@ impl Compiler {
                     .any(|c| c.eq_ignore_ascii_case(name))
         };
 
-        let head_is_local = !is_user_type(&lower[0])
+        let head_is_local = !mounted_tree_head
+            && !is_user_type(&lower[0])
             && (self.scopes.iter().any(|scope| {
                 scope
                     .locals

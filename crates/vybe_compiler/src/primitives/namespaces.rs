@@ -892,6 +892,53 @@ fn find_type_node(scope: &[String], class_name: &str, fold: Fold) -> Option<(Sub
     let leaf = wanted.rsplit('.').next().unwrap_or(&wanted).to_string();
     let guard = registry().read().unwrap();
 
+    for root in scope {
+        let mut direct: Vec<&str> = Vec::new();
+        let wanted_lc = wanted.to_ascii_lowercase();
+        let root_lc = root.to_ascii_lowercase();
+        if wanted_lc == root_lc || wanted_lc.starts_with(&format!("{root_lc}.")) {
+            direct.extend(wanted.split('.').filter(|s| !s.is_empty()));
+        } else {
+            direct.extend(root.split('.').filter(|s| !s.is_empty()));
+            direct.extend(wanted.split('.').filter(|s| !s.is_empty()));
+        }
+        if direct.is_empty() {
+            continue;
+        }
+        let Some(mut node) = fold_get(&guard.tree, direct[0], fold) else {
+            continue;
+        };
+        let mut ok = true;
+        for seg in &direct[1..] {
+            node = match node {
+                NamespaceNode::Namespace(children) => match fold_get(children, seg, fold) {
+                    Some(next) => next,
+                    None => {
+                        ok = false;
+                        break;
+                    }
+                },
+                NamespaceNode::Type { statics, .. } => match fold_get(statics, seg, fold) {
+                    Some(next) => next,
+                    None => {
+                        ok = false;
+                        break;
+                    }
+                },
+                _ => {
+                    ok = false;
+                    break;
+                }
+            };
+        }
+        if ok && let NamespaceNode::Type {
+            statics, methods, ..
+        } = node
+        {
+            return Some((statics.clone(), methods.clone()));
+        }
+    }
+
     fn walk(
         node: &NamespaceNode,
         leaf: &str,

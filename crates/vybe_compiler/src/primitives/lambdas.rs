@@ -650,8 +650,11 @@ impl Compiler {
         parts: &[String],
         args: &[&Expression],
     ) -> Result<bool, String> {
-        // This registers platform namespace trees as a side effect, then the
-        // arity-aware type lookup below can see overloaded static members.
+        // Register platform namespace trees before the arity-aware type lookup
+        // below. This used to rely on `resolve_profile_namespace_chain` as a
+        // side effect, but generated namespace globals such as `System` can
+        // make that resolver return before mounting tree-only adapter classes.
+        super::resolver::register_platform_trees();
         let namespace_resolution = self.resolve_profile_namespace_chain(parts);
 
         if parts.len() >= 2 {
