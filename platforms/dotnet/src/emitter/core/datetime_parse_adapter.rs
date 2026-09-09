@@ -996,14 +996,25 @@ pub fn emit_datetime_parse(chunks: &mut Vec<Chunk>, current: usize, argc: u8, li
             chunk.emit_op(Op::DROP, line);
         }
     }
-    let base = chunks[current].alloc_scratch(3);
+    let base = chunks[current].alloc_scratch(4);
     let text = base;
     let provider = base + 1;
     let pattern = base + 2;
+    let ms = base + 3;
     {
         let chunk = &mut chunks[current];
         chunk.emit_op_u16(Op::LOCAL_SET, provider, line);
         chunk.emit_op_u16(Op::LOCAL_SET, text, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, text, line);
+    }
+    emit_parse_millis(chunks, current, line);
+    {
+        let chunk = &mut chunks[current];
+        chunk.emit_op_u16(Op::LOCAL_SET, ms, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, ms, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, ms, line);
+        chunk.emit_op(Op::F64_NE, line);
+        chunk.emit_if(line);
         chunk.emit_op_u16(Op::LOCAL_GET, provider, line);
         class_slots::emit_class_get(
             chunk,
@@ -1046,7 +1057,13 @@ pub fn emit_datetime_parse(chunks: &mut Vec<Chunk>, current: usize, argc: u8, li
         chunk.emit_op_u16(Op::LOCAL_GET, pattern, line);
     }
     emit_call_parse(chunks, current, line);
-    chunks[current].emit_end(line);
+    {
+        let chunk = &mut chunks[current];
+        chunk.emit_end(line);
+        chunk.emit_else(line);
+        chunk.emit_op_u16(Op::LOCAL_GET, ms, line);
+        chunk.emit_end(line);
+    }
     datetime_adapter::emit_datetime_from_millis(chunks, current, line);
 }
 

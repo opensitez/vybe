@@ -424,6 +424,14 @@ fn register_bcl_constants() {
                 ("ToPositiveInfinity", 4),
             ],
         ),
+        (
+            &["System", "Threading", "Tasks", "TaskContinuationOptions"],
+            &[
+                ("None", 0),
+                ("OnlyOnRanToCompletion", 524288),
+                ("OnlyOnFaulted", 131072),
+            ],
+        ),
         // The four Unicode normalization forms. The values are NOT 0..3 —
         // .NET numbers them after the Win32 `NORM_FORM` constants, so `FormKC`
         // and `FormKD` skip to 5 and 6.
@@ -1424,6 +1432,7 @@ fn shared_emit_accessors(class_name: &str) -> Vec<(String, NamespaceNode)> {
             ("Result", ro("dotnet.task_result")),
             ("IsCompleted", ro("dotnet.task_is_completed")),
             ("IsCanceled", ro("dotnet.task_is_canceled")),
+            ("Exception", ro("dotnet.task_exception")),
             // `TaskStatus`, as the .NET spelling of the promise's own state.
             ("Status", ro("dotnet.task_status")),
             ("IsFaulted", ro("dotnet.task_is_faulted")),

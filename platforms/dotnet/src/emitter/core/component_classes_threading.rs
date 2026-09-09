@@ -58,6 +58,11 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
             "ContinueWith",
             1,
             MethodBody::Common("dotnet.task_continue_with".into()),
+        ))
+        .with_method(MethodDef::new(
+            "ContinueWith",
+            2,
+            MethodBody::Common("dotnet.task_continue_with".into()),
         ));
     // `Task.WhenAll` / `WhenAny` take variadic tasks; overload resolution is by
     // exact arity, so register each width plus the single `IEnumerable` form.
@@ -67,6 +72,11 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 "WhenAll",
                 n,
                 MethodBody::Common("dotnet.task_when_all".into()),
+            ))
+            .with_method(MethodDef::static_method(
+                "WaitAll",
+                n,
+                MethodBody::Common("dotnet.task_wait_all".into()),
             ))
             .with_method(MethodDef::static_method(
                 "WhenAny",
@@ -682,6 +692,16 @@ pub(super) fn globalization_exports() -> Vec<DotnetClassExport> {
                     1,
                     MethodBody::Common("dotnet.get_cultures".into()),
                 )),
+        ),
+        DotnetClassExport::new(
+            "dotnet.System.Globalization",
+            ClassType::new("NumberFormatInfo")
+                .with_constructor(
+                    ConstructorDef::new(0).with_common_backing("dotnet.number_format_info_new"),
+                )
+                .with_field("NumberDecimalSeparator")
+                .with_field("NumberGroupSeparator")
+                .with_field("CurrencySymbol"),
         ),
         DotnetClassExport::new(
             "dotnet.System.Globalization",

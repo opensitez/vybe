@@ -313,6 +313,20 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     MethodBody::Common("dotnet.regex_group_number_from_name".into()),
                 )),
         ),
+        DotnetClassExport::new(
+            "dotnet.System.Text.RegularExpressions",
+            ClassType::new("MatchCollection")
+                .with_method(MethodDef::new(
+                    "Count",
+                    0,
+                    MethodBody::Common("collections.length".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "Item",
+                    1,
+                    MethodBody::Common("dotnet.list_get_checked".into()),
+                )),
+        ),
         // ── System.Security.Cryptography ────────────────────────────────
         //
         // ⛔ TREE LEAVES, NOT SYNTHESIZED CLASSES: the corpus writes the fully
@@ -676,8 +690,18 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     MethodBody::Common("dotnet.encoding_get_bytes".into()),
                 ))
                 .with_method(MethodDef::new(
+                    "GetBytes",
+                    5,
+                    MethodBody::Common("dotnet.encoding_get_bytes".into()),
+                ))
+                .with_method(MethodDef::new(
                     "GetString",
                     1,
+                    MethodBody::Common("dotnet.encoding_get_string".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "GetString",
+                    3,
                     MethodBody::Common("dotnet.encoding_get_string".into()),
                 ))
                 .with_method(MethodDef::new(
@@ -687,13 +711,28 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 ))
                 .with_method(MethodDef::new(
                     "GetCharCount",
+                    1,
+                    MethodBody::Common("dotnet.encoding_get_char_count".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "GetCharCount",
                     3,
                     MethodBody::Common("dotnet.encoding_get_char_count".into()),
                 ))
                 .with_method(MethodDef::new(
                     "GetChars",
+                    1,
+                    MethodBody::Common("dotnet.encoding_get_chars".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "GetChars",
                     5,
                     MethodBody::Common("dotnet.encoding_get_chars".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "GetDecoder",
+                    0,
+                    MethodBody::Common("dotnet.encoding_get_decoder".into()),
                 ))
                 .with_method(MethodDef::new(
                     "GetPreamble",
@@ -731,6 +770,9 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 .with_constructor(
                     ConstructorDef::new(1).with_common_backing("dotnet.utf8encoding_new"),
                 )
+                .with_constructor(
+                    ConstructorDef::new(2).with_common_backing("dotnet.utf8encoding_new"),
+                )
                 .with_method(MethodDef::new(
                     "GetBytes",
                     1,
@@ -751,6 +793,14 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     0,
                     MethodBody::Common("dotnet.encoding_get_preamble".into()),
                 )),
+        ),
+        DotnetClassExport::new(
+            "dotnet.System.Text",
+            ClassType::new("Decoder").with_method(MethodDef::new(
+                "GetChars",
+                5,
+                MethodBody::Common("dotnet.decoder_get_chars".into()),
+            )),
         ),
     ]
 }

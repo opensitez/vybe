@@ -43,6 +43,11 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     2,
                     MethodBody::Common("dotnet.uri_make_relative".into()),
                 ))
+                .with_method(MethodDef::static_method(
+                    "Port",
+                    1,
+                    MethodBody::Common("dotnet.uri_port".into()),
+                ))
                 .with_method(MethodDef::new(
                     "ToString",
                     0,

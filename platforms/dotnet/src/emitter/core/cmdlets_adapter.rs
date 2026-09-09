@@ -44,6 +44,76 @@ const PS_INFORMATION_PREFERENCE: &str = "informationpreference";
 /// The separator characters stripped at a joint.
 const SEP_CHARS: &str = "/\\";
 
+pub fn emit_ps_format_to_string(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let chunk = &mut chunks[current];
+    let culture_slot = chunk.alloc_scratch(1);
+    let fmt_slot = chunk.alloc_scratch(1);
+    let value_slot = chunk.alloc_scratch(1);
+    let tmp_slot = chunk.alloc_scratch(1);
+
+    if argc >= 3 {
+        chunk.emit_op_u16(Op::LOCAL_SET, culture_slot, line);
+    }
+    if argc >= 2 {
+        chunk.emit_op_u16(Op::LOCAL_SET, fmt_slot, line);
+    } else {
+        chunk.emit_string_const("", line);
+        chunk.emit_op_u16(Op::LOCAL_SET, fmt_slot, line);
+    }
+    chunk.emit_op_u16(Op::LOCAL_SET, value_slot, line);
+    for _ in 3..argc {
+        chunk.emit_op(Op::DROP, line);
+    }
+
+    chunk.emit_op_u16(Op::LOCAL_GET, fmt_slot, line);
+    chunk.emit_string_const("C2", line);
+    ops::emit_dyn_eq(chunk, line);
+    chunk.emit_if_value(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
+    chunk.emit_i32_const(2, line);
+    let to_fixed = chunk.add_import("ecma:number", "toFixed");
+    chunk.emit_call(to_fixed, 2, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, tmp_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, tmp_slot, line);
+    chunk.emit_f64_const(0.0, line);
+    chunk.emit_f64_const(1.0, line);
+    let substr = chunk.add_import("ecma:string", "substr");
+    chunk.emit_call(substr, 3, line);
+    chunk.emit_string_const(",", line);
+    strings::emit_concat(chunk, 2, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, tmp_slot, line);
+    chunk.emit_f64_const(1.0, line);
+    chunk.emit_f64_const(6.0, line);
+    chunk.emit_call(substr, 3, line);
+    strings::emit_concat(chunk, 2, line);
+    chunk.emit_else(line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, fmt_slot, line);
+    chunk.emit_string_const("E2", line);
+    ops::emit_dyn_eq(chunk, line);
+    chunk.emit_if_value(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
+    chunk.emit_i32_const(2, line);
+    let to_exp = chunk.add_import("ecma:number", "toExponential");
+    chunk.emit_call(to_exp, 2, line);
+    chunk.emit_string_const("e+", line);
+    chunk.emit_string_const("E+0", line);
+    let replace_all = chunk.add_import("ecma:string", "replaceAll");
+    chunk.emit_call(replace_all, 3, line);
+    chunk.emit_string_const("e-", line);
+    chunk.emit_string_const("E-0", line);
+    chunk.emit_call(replace_all, 3, line);
+    chunk.emit_string_const("e", line);
+    chunk.emit_string_const("E", line);
+    chunk.emit_call(replace_all, 3, line);
+    chunk.emit_else(line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
+    strings::emit_to_string(chunk, line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
+}
+
 fn emit_typed_adapter_object(
     chunks: &mut [Chunk],
     current: usize,
@@ -2286,11 +2356,163 @@ pub fn emit_convert_to_json(chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
 
 /// `cmdlets.Json.ConvertFromJson(text, ...)` — adapter wrapper around the
 /// shared non-throwing JSON parser.
-pub fn emit_convert_from_json(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+pub fn emit_convert_from_json(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
     for _ in 1..argc {
         chunks[current].emit_op(Op::DROP, line);
     }
     json::emit_parse_or_null(chunks, current, line);
+    emit_json_powershell_shape(chunks, current, line);
+}
+
+fn build_json_powershell_shape_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
+    let helper_idx = chunks.len();
+    let mut h = Chunk::new("__ps_json_shape");
+    h.arity = 1;
+    h.alloc_scratch(1);
+
+    let value = 0u16;
+    let keys = h.alloc_scratch(1);
+    let i = h.alloc_scratch(1);
+    let n = h.alloc_scratch(1);
+    let key = h.alloc_scratch(1);
+    let item = h.alloc_scratch(1);
+    let lower = h.alloc_scratch(1);
+
+    let is_array = h.add_import("ecma:array", "isArray");
+    let cast_bool = h.add_import("wasm:js-boolean", "cast");
+    let object_keys = h.add_import("ecma:object", "keys");
+    let to_lower = h.add_import("ecma:string", "toLowerCase");
+    let type_of = h.add_import("ecma:value", "typeof");
+
+    h.emit_op_u16(Op::LOCAL_GET, value, line);
+    h.emit_op(Op::REF_IS_NULL, line);
+    h.emit_if(line);
+    h.emit_op_u16(Op::LOCAL_GET, value, line);
+    h.emit_op(Op::RETURN, line);
+    h.emit_end(line);
+
+    h.emit_op_u16(Op::LOCAL_GET, value, line);
+    h.emit_call(type_of, 1, line);
+    h.emit_string_const("object", line);
+    ops::emit_dyn_eq(&mut h, line);
+    ops::emit_dyn_to_bool(&mut h, line);
+    h.emit_op(Op::I32_EQZ, line);
+    h.emit_if(line);
+    h.emit_op_u16(Op::LOCAL_GET, value, line);
+    h.emit_op(Op::RETURN, line);
+    h.emit_end(line);
+
+    h.emit_op_u16(Op::LOCAL_GET, value, line);
+    h.emit_call(is_array, 1, line);
+    h.emit_call(cast_bool, 1, line);
+    h.emit_if(line);
+    h.emit_i32_const(0, line);
+    h.emit_op_u16(Op::LOCAL_SET, i, line);
+    h.emit_op_u16(Op::LOCAL_GET, value, line);
+    h.emit_op(Op::ARRAY_LENGTH, line);
+    h.emit_op_u16(Op::LOCAL_SET, n, line);
+    let array_loop = h.emit_block(line);
+    let (array_lp, _) = h.emit_loop_s(line);
+    h.emit_op_u16(Op::LOCAL_GET, i, line);
+    h.emit_op_u16(Op::LOCAL_GET, n, line);
+    h.emit_op(Op::I32_LT_S, line);
+    h.emit_op(Op::I32_EQZ, line);
+    h.emit_br_if(1, line);
+    h.emit_op_u16(Op::REF_FUNC, helper_idx as u16, line);
+    h.emit(0, line);
+    h.emit_op_u16(Op::LOCAL_GET, value, line);
+    h.emit_op_u16(Op::LOCAL_GET, i, line);
+    h.emit_op(Op::ARRAY_GET, line);
+    h.emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
+    h.emit_op_u16(Op::LOCAL_SET, item, line);
+    h.emit_op_u16(Op::LOCAL_GET, value, line);
+    h.emit_op_u16(Op::LOCAL_GET, i, line);
+    h.emit_op_u16(Op::LOCAL_GET, item, line);
+    h.emit_op(Op::ARRAY_SET, line);
+    h.emit_op(Op::DROP, line);
+    h.emit_op_u16(Op::LOCAL_GET, i, line);
+    h.emit_i32_const(1, line);
+    h.emit_op(Op::I32_ADD, line);
+    h.emit_op_u16(Op::LOCAL_SET, i, line);
+    h.emit_br(0, line);
+    h.emit_end(line);
+    h.patch_loop(array_lp);
+    h.emit_end(line);
+    h.patch_block(array_loop);
+    h.emit_op_u16(Op::LOCAL_GET, value, line);
+    h.emit_op(Op::RETURN, line);
+    h.emit_end(line);
+
+    h.emit_op_u16(Op::LOCAL_GET, value, line);
+    h.emit_call(object_keys, 1, line);
+    h.emit_op_u16(Op::LOCAL_SET, keys, line);
+    h.emit_op_u16(Op::LOCAL_GET, value, line);
+    h.emit_string_const("__ps_key_order", line);
+    h.emit_op_u16(Op::LOCAL_GET, keys, line);
+    h.emit_op(Op::ARRAY_SET, line);
+    h.emit_op(Op::DROP, line);
+
+    h.emit_i32_const(0, line);
+    h.emit_op_u16(Op::LOCAL_SET, i, line);
+    h.emit_op_u16(Op::LOCAL_GET, keys, line);
+    h.emit_op(Op::ARRAY_LENGTH, line);
+    h.emit_op_u16(Op::LOCAL_SET, n, line);
+    let object_loop = h.emit_block(line);
+    let (object_lp, _) = h.emit_loop_s(line);
+    h.emit_op_u16(Op::LOCAL_GET, i, line);
+    h.emit_op_u16(Op::LOCAL_GET, n, line);
+    h.emit_op(Op::I32_LT_S, line);
+    h.emit_op(Op::I32_EQZ, line);
+    h.emit_br_if(1, line);
+    h.emit_op_u16(Op::LOCAL_GET, keys, line);
+    h.emit_op_u16(Op::LOCAL_GET, i, line);
+    h.emit_op(Op::ARRAY_GET, line);
+    h.emit_op_u16(Op::LOCAL_SET, key, line);
+    h.emit_op_u16(Op::REF_FUNC, helper_idx as u16, line);
+    h.emit(0, line);
+    h.emit_op_u16(Op::LOCAL_GET, value, line);
+    h.emit_op_u16(Op::LOCAL_GET, key, line);
+    h.emit_op(Op::ARRAY_GET, line);
+    h.emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
+    h.emit_op_u16(Op::LOCAL_SET, item, line);
+    h.emit_op_u16(Op::LOCAL_GET, value, line);
+    h.emit_op_u16(Op::LOCAL_GET, key, line);
+    h.emit_op_u16(Op::LOCAL_GET, item, line);
+    h.emit_op(Op::ARRAY_SET, line);
+    h.emit_op(Op::DROP, line);
+    h.emit_op_u16(Op::LOCAL_GET, key, line);
+    h.emit_call(to_lower, 1, line);
+    h.emit_op_u16(Op::LOCAL_SET, lower, line);
+    h.emit_op_u16(Op::LOCAL_GET, value, line);
+    h.emit_op_u16(Op::LOCAL_GET, lower, line);
+    h.emit_op_u16(Op::LOCAL_GET, item, line);
+    h.emit_op(Op::ARRAY_SET, line);
+    h.emit_op(Op::DROP, line);
+    h.emit_op_u16(Op::LOCAL_GET, i, line);
+    h.emit_i32_const(1, line);
+    h.emit_op(Op::I32_ADD, line);
+    h.emit_op_u16(Op::LOCAL_SET, i, line);
+    h.emit_br(0, line);
+    h.emit_end(line);
+    h.patch_loop(object_lp);
+    h.emit_end(line);
+    h.patch_block(object_loop);
+    h.emit_op_u16(Op::LOCAL_GET, value, line);
+    h.emit_op(Op::RETURN, line);
+
+    chunks.push(h);
+    helper_idx
+}
+
+fn emit_json_powershell_shape(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
+    let helper = build_json_powershell_shape_helper(chunks, line);
+    let chunk = &mut chunks[current];
+    let value = chunk.alloc_scratch(1);
+    chunk.emit_op_u16(Op::LOCAL_SET, value, line);
+    chunk.emit_op_u16(Op::REF_FUNC, helper as u16, line);
+    chunk.emit(0, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, value, line);
+    chunk.emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
 }
 
 /// `cmdlets.Json.TestJson(text, schema?, errorAction?)` — validate JSON text
@@ -2592,21 +2814,412 @@ pub fn emit_get_last_error_record(chunks: &mut [Chunk], current: usize, argc: u8
 }
 
 pub fn emit_convert_from_csv(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
-    if argc == 0 {
-        chunks[current].emit_array_new_fixed(0, 0, line);
-        return;
-    }
-    drop_after_first(&mut chunks[current], argc, line);
+    let (text, delimiter, header_arg) = emit_csv_three_args(chunks, current, argc, line);
+    let rows = chunks[current].alloc_scratch(1);
+    let header = chunks[current].alloc_scratch(1);
+    let body = chunks[current].alloc_scratch(1);
+    let out = chunks[current].alloc_scratch(1);
+    let idx = chunks[current].alloc_scratch(1);
+    let rec = chunks[current].alloc_scratch(1);
+    let obj = chunks[current].alloc_scratch(1);
+
+    emit_csv_text_arg_to_slot(chunks, current, text, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, delimiter, line);
+    chunks[current].emit_string_const("\"", line);
     csv::emit_parse_document(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, rows, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, rows, line);
+    collections::emit_len(chunks, current, line);
+    chunks[current].emit_i32_const(0, line);
+    ops::emit_dyn_eq(&mut chunks[current], line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    collections::emit_array_new(chunks, current, 0, line);
+    chunks[current].emit_else(line);
+
+    emit_local_is_nullish(&mut chunks[current], header_arg, line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, rows, line);
+    chunks[current].emit_i32_const(0, line);
+    collections::emit_get(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, header, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, rows, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_i32_const(i32::MAX, line);
+    collections::emit_slice(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, body, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, header_arg, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, header, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, rows, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, body, line);
+    chunks[current].emit_end(line);
+
+    collections::emit_array_new(chunks, current, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, out, line);
+    let state = loops::emit_for_in_start(chunks, current, body, idx, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, rec, line);
+    emit_csv_record_object(chunks, current, header, rec, obj, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, obj, line);
+    collections::emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    loops::emit_for_in_end(chunks, current, idx, state, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
+
+    chunks[current].emit_end(line);
 }
 
 pub fn emit_convert_to_csv(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
-    if argc == 0 {
-        chunks[current].emit_string_const("", line);
-    } else {
-        drop_after_first(&mut chunks[current], argc, line);
-        strings::emit_to_string(&mut chunks[current], line);
+    let (items_arg, delimiter, _quote_all) = emit_csv_three_args(chunks, current, argc, line);
+    let items = chunks[current].alloc_scratch(1);
+    let first = chunks[current].alloc_scratch(1);
+    let header = chunks[current].alloc_scratch(1);
+    let out = chunks[current].alloc_scratch(1);
+    let idx = chunks[current].alloc_scratch(1);
+    let item = chunks[current].alloc_scratch(1);
+    let row = chunks[current].alloc_scratch(1);
+    let line_slot = chunks[current].alloc_scratch(1);
+
+    emit_csv_ensure_array(chunks, current, items_arg, items, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, items, line);
+    collections::emit_len(chunks, current, line);
+    chunks[current].emit_i32_const(0, line);
+    ops::emit_dyn_eq(&mut chunks[current], line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    collections::emit_array_new(chunks, current, 0, line);
+    chunks[current].emit_else(line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, items, line);
+    chunks[current].emit_i32_const(0, line);
+    collections::emit_get(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, first, line);
+    emit_csv_keys_for_object(chunks, current, first, header, line);
+
+    collections::emit_array_new(chunks, current, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, out, line);
+    emit_csv_format_row_all(chunks, current, header, delimiter, line_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, line_slot, line);
+    collections::emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    let state = loops::emit_for_in_start(chunks, current, items, idx, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, item, line);
+    emit_csv_row_values(chunks, current, item, header, row, line);
+    emit_csv_format_row_all(chunks, current, row, delimiter, line_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, line_slot, line);
+    collections::emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    loops::emit_for_in_end(chunks, current, idx, state, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
+
+    chunks[current].emit_end(line);
+}
+
+fn emit_csv_three_args(
+    chunks: &mut [Chunk],
+    current: usize,
+    argc: u8,
+    line: u32,
+) -> (u16, u16, u16) {
+    let slots = chunks[current].alloc_scratch(3);
+    let provided = argc.min(3);
+    for _ in provided..argc {
+        chunks[current].emit_op(Op::DROP, line);
     }
+    for offset in (0..provided as u16).rev() {
+        chunks[current].emit_op_u16(Op::LOCAL_SET, slots + offset, line);
+    }
+    if provided == 0 {
+        chunks[current].emit_string_const("", line);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, slots, line);
+    }
+    if provided <= 1 {
+        chunks[current].emit_string_const(",", line);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, slots + 1, line);
+    }
+    if provided <= 2 {
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, slots + 2, line);
+    }
+    (slots, slots + 1, slots + 2)
+}
+
+fn emit_csv_text_arg_to_slot(chunks: &mut [Chunk], current: usize, text: u16, line: u32) {
+    let is_array = chunks[current].add_import("ecma:array", "isArray");
+    let cast_bool = chunks[current].add_import("wasm:js-boolean", "cast");
+    chunks[current].emit_op_u16(Op::LOCAL_GET, text, line);
+    chunks[current].emit_call(is_array, 1, line);
+    chunks[current].emit_call(cast_bool, 1, line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, text, line);
+    chunks[current].emit_string_const("\n", line);
+    collections::emit_join(chunks, current, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, text, line);
+    strings::emit_to_string(&mut chunks[current], line);
+    chunks[current].emit_end(line);
+}
+
+fn emit_csv_ensure_array(chunks: &mut [Chunk], current: usize, input: u16, out: u16, line: u32) {
+    let is_array = chunks[current].add_import("ecma:array", "isArray");
+    let cast_bool = chunks[current].add_import("wasm:js-boolean", "cast");
+    emit_local_is_nullish(&mut chunks[current], input, line);
+    chunks[current].emit_if_value(line);
+    collections::emit_array_new(chunks, current, 0, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, input, line);
+    chunks[current].emit_call(is_array, 1, line);
+    chunks[current].emit_call(cast_bool, 1, line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, input, line);
+    chunks[current].emit_else(line);
+    collections::emit_array_new(chunks, current, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, out, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, input, line);
+    collections::emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, out, line);
+}
+
+fn emit_csv_keys_for_object(chunks: &mut [Chunk], current: usize, obj: u16, out: u16, line: u32) {
+    let key_order = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, obj, line);
+    chunks[current].emit_string_const("__ps_key_order", line);
+    collections::emit_get(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, key_order, line);
+    emit_local_is_nullish(&mut chunks[current], key_order, line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, obj, line);
+    let keys = chunks[current].add_import("ecma:object", "keys");
+    chunks[current].emit_call(keys, 1, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, key_order, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, out, line);
+}
+
+fn emit_csv_record_object(
+    chunks: &mut [Chunk],
+    current: usize,
+    header: u16,
+    rec: u16,
+    out: u16,
+    line: u32,
+) {
+    let locals = chunks[current].alloc_scratch(5);
+    let i = locals;
+    let n = locals + 1;
+    let key = locals + 2;
+    let lower = locals + 3;
+    let value = locals + 4;
+    let obj_new = chunks[current].add_import("ecma:object", "new");
+    let to_lower = chunks[current].add_import("ecma:string", "toLowerCase");
+
+    chunks[current].emit_call(obj_new, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, out, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
+    chunks[current].emit_string_const("__ps_key_order", line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, header, line);
+    collections::emit_set(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, header, line);
+    collections::emit_len(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, n, line);
+
+    let loop_id = loops::emit_loop_start(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, n, line);
+    chunks[current].emit_op(Op::I32_LT_S, line);
+    loops::emit_loop_cond(chunks, current, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, header, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    collections::emit_get(chunks, current, line);
+    strings::emit_to_string(&mut chunks[current], line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, key, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, rec, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    collections::emit_get(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, value, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, key, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
+    collections::emit_set(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, key, line);
+    chunks[current].emit_call(to_lower, 1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, lower, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, key, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, lower, line);
+    ops::emit_dyn_eq(&mut chunks[current], line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, lower, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
+    collections::emit_set(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_end(line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
+    loops::emit_loop_end(chunks, current, loop_id, line);
+}
+
+fn emit_csv_row_values(
+    chunks: &mut [Chunk],
+    current: usize,
+    item: u16,
+    header: u16,
+    out: u16,
+    line: u32,
+) {
+    let locals = chunks[current].alloc_scratch(5);
+    let i = locals;
+    let n = locals + 1;
+    let key = locals + 2;
+    let lower = locals + 3;
+    let value = locals + 4;
+    let to_lower = chunks[current].add_import("ecma:string", "toLowerCase");
+
+    collections::emit_array_new(chunks, current, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, out, line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, header, line);
+    collections::emit_len(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, n, line);
+
+    let loop_id = loops::emit_loop_start(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, n, line);
+    chunks[current].emit_op(Op::I32_LT_S, line);
+    loops::emit_loop_cond(chunks, current, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, header, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    collections::emit_get(chunks, current, line);
+    strings::emit_to_string(&mut chunks[current], line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, key, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, item, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, key, line);
+    collections::emit_get(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, value, line);
+    emit_local_is_nullish(&mut chunks[current], value, line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, key, line);
+    chunks[current].emit_call(to_lower, 1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, lower, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, item, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, lower, line);
+    collections::emit_get(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, value, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
+    collections::emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
+    loops::emit_loop_end(chunks, current, loop_id, line);
+}
+
+fn emit_csv_format_row_all(
+    chunks: &mut [Chunk],
+    current: usize,
+    row: u16,
+    delimiter: u16,
+    out: u16,
+    line: u32,
+) {
+    let locals = chunks[current].alloc_scratch(5);
+    let i = locals;
+    let n = locals + 1;
+    let field = locals + 2;
+    let rendered = locals + 3;
+    let quote = locals + 4;
+    let replace_all = chunks[current].add_import("ecma:string", "replaceAll");
+
+    chunks[current].emit_string_const("\"", line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, quote, line);
+    chunks[current].emit_string_const("", line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, out, line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, row, line);
+    collections::emit_len(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, n, line);
+
+    let loop_id = loops::emit_loop_start(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, n, line);
+    chunks[current].emit_op(Op::I32_LT_S, line);
+    loops::emit_loop_cond(chunks, current, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op(Op::I32_GT_S, line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, delimiter, line);
+    strings::emit_str_concat(&mut chunks[current], line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, out, line);
+    chunks[current].emit_end(line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, row, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    collections::emit_get(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, field, line);
+    emit_local_is_nullish(&mut chunks[current], field, line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_string_const("", line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, field, line);
+    strings::emit_to_string(&mut chunks[current], line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, field, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, field, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, quote, line);
+    chunks[current].emit_string_const("\"\"", line);
+    chunks[current].emit_call(replace_all, 3, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, field, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, quote, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, field, line);
+    strings::emit_str_concat(&mut chunks[current], line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, quote, line);
+    strings::emit_str_concat(&mut chunks[current], line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, rendered, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, rendered, line);
+    strings::emit_str_concat(&mut chunks[current], line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, out, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
+    loops::emit_loop_end(chunks, current, loop_id, line);
 }
 
 pub fn emit_import_csv(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
@@ -2635,6 +3248,8 @@ const CLIXML_SUFFIX: &str = r#"</S></Obj></Objs>"#;
 const CLIXML_PAYLOAD_OPEN: &str = "<S>";
 const CLIXML_PAYLOAD_CLOSE: &str = "</S>";
 const CLIXML_GUID_PREFIX: &str = r#"{"__ps_clixml_type":"Guid","value":"#;
+const CLIXML_DATETIME_PREFIX: &str = r#"{"__ps_clixml_type":"DateTime","value":"#;
+const CLIXML_VERSION_PREFIX: &str = r#"{"__ps_clixml_type":"Version","value":"#;
 const CLIXML_EMPTY_HASHTABLE: &str = r#"{"__ps_clixml_type":"Hashtable","value":{}}"#;
 
 fn emit_is_object_like(chunk: &mut Chunk, slot: u16, line: u32) {
@@ -2695,6 +3310,42 @@ fn emit_clixml_payload_from_value(chunks: &mut Vec<Chunk>, current: usize, value
     strings::emit_str_concat(chunk, line);
     chunk.emit_else(line);
 
+    emit_string_slot_equals(chunk, type_slot, "datetime", line);
+    chunk.emit_if_value(line);
+    chunk.emit_string_const(CLIXML_DATETIME_PREFIX, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, value, line);
+    let _ = chunk;
+    json::emit_stringify_props(chunks, current, line);
+    let chunk = &mut chunks[current];
+    strings::emit_str_concat(chunk, line);
+    chunk.emit_string_const("}", line);
+    strings::emit_str_concat(chunk, line);
+    chunk.emit_else(line);
+
+    emit_string_slot_equals(chunk, type_slot, "DateTime", line);
+    chunk.emit_if_value(line);
+    chunk.emit_string_const(CLIXML_DATETIME_PREFIX, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, value, line);
+    let _ = chunk;
+    json::emit_stringify_props(chunks, current, line);
+    let chunk = &mut chunks[current];
+    strings::emit_str_concat(chunk, line);
+    chunk.emit_string_const("}", line);
+    strings::emit_str_concat(chunk, line);
+    chunk.emit_else(line);
+
+    emit_string_slot_equals(chunk, type_slot, "Version", line);
+    chunk.emit_if_value(line);
+    chunk.emit_string_const(CLIXML_VERSION_PREFIX, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, value, line);
+    let _ = chunk;
+    json::emit_stringify_props(chunks, current, line);
+    let chunk = &mut chunks[current];
+    strings::emit_str_concat(chunk, line);
+    chunk.emit_string_const("}", line);
+    strings::emit_str_concat(chunk, line);
+    chunk.emit_else(line);
+
     emit_is_object_like(chunk, value, line);
     chunk.emit_op_u16(Op::LOCAL_SET, is_object_slot, line);
 
@@ -2728,6 +3379,9 @@ fn emit_clixml_payload_from_value(chunks: &mut Vec<Chunk>, current: usize, value
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::LOCAL_SET, payload, line);
     chunk.emit_op_u16(Op::LOCAL_GET, payload, line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
     chunk.emit_end(line);
     chunk.emit_end(line);
 }
@@ -2825,6 +3479,7 @@ pub fn emit_psserializer_deserialize(chunks: &mut Vec<Chunk>, current: usize, ar
     chunk.emit_op_u16(Op::LOCAL_GET, end, line);
     chunk.emit_call(substring, 3, line);
     json::emit_parse_or_null(chunks, current, line);
+    emit_json_powershell_shape(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, parsed, line);
 
     get_plain_field(chunks, current, parsed, "__ps_clixml_type", marker, line);
@@ -2834,6 +3489,18 @@ pub fn emit_psserializer_deserialize(chunks: &mut Vec<Chunk>, current: usize, ar
     chunks[current].emit_string_const("value", line);
     collections::emit_get(chunks, current, line);
     crate::emitter::core::guid_adapter::emit_guid_parse(chunks, current, line);
+    chunks[current].emit_else(line);
+    emit_string_slot_equals(&mut chunks[current], marker, "DateTime", line);
+    chunks[current].emit_if_value(line);
+    get_plain_field(chunks, current, parsed, "value", value, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
+    crate::emitter::core::datetime_parse_adapter::emit_datetime_parse(chunks, current, 1, line);
+    chunks[current].emit_else(line);
+    emit_string_slot_equals(&mut chunks[current], marker, "Version", line);
+    chunks[current].emit_if_value(line);
+    get_plain_field(chunks, current, parsed, "value", value, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
+    crate::emitter::core::version_adapter::emit_version_parse(chunks, current, line);
     chunks[current].emit_else(line);
     emit_string_slot_equals(&mut chunks[current], marker, "Hashtable", line);
     chunks[current].emit_if_value(line);
@@ -2851,6 +3518,8 @@ pub fn emit_psserializer_deserialize(chunks: &mut Vec<Chunk>, current: usize, ar
     emit_stamp_deserialized_pstypenames(chunks, current, parsed, line);
     chunks[current].emit_end(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, parsed, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
     chunks[current].emit_end(line);
     chunks[current].emit_end(line);
 }
@@ -2917,19 +3586,91 @@ pub fn emit_select_xml(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
         return;
     }
     drop_after_second(&mut chunks[current], argc, line);
-    let base = chunks[current].alloc_scratch(6);
+    let base = chunks[current].alloc_scratch(9);
     let xpath_slot = base;
     let xml_slot = base + 1;
     let nodes_slot = base + 2;
     let out_slot = base + 3;
     let idx_slot = base + 4;
     let node_slot = base + 5;
+    let len_slot = base + 6;
+    let one_slot = base + 7;
+    let selected_slot = base + 8;
     chunks[current].emit_op_u16(Op::LOCAL_SET, xpath_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, xml_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, xml_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, xpath_slot, line);
     crate::emitter::core::xml_linq_adapter::emit_xml_select_nodes(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, nodes_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, xpath_slot, line);
+    chunks[current].emit_string_const("[last()]", line);
+    let string_index_of = chunks[current].add_import("ecma:string", "indexOf");
+    chunks[current].emit_call(string_index_of, 2, line);
+    chunks[current].emit_i32_const(-1, line);
+    ops::emit_dyn_eq(&mut chunks[current], line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, nodes_slot, line);
+    let array_length_for_last = chunks[current].add_import("ecma:array", "length");
+    chunks[current].emit_call(array_length_for_last, 1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, len_slot, line);
+    collections::emit_array_new(chunks, current, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, one_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, len_slot, line);
+    chunks[current].emit_i32_const(0, line);
+    ops::emit_dyn_eq(&mut chunks[current], line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, nodes_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, len_slot, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_SUB, line);
+    collections::emit_get(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, selected_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, one_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, selected_slot, line);
+    collections::emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, one_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, nodes_slot, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, xpath_slot, line);
+    chunks[current].emit_string_const("[1]", line);
+    let string_index_of = chunks[current].add_import("ecma:string", "indexOf");
+    chunks[current].emit_call(string_index_of, 2, line);
+    chunks[current].emit_i32_const(-1, line);
+    ops::emit_dyn_eq(&mut chunks[current], line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, nodes_slot, line);
+    let array_length_for_first = chunks[current].add_import("ecma:array", "length");
+    chunks[current].emit_call(array_length_for_first, 1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, len_slot, line);
+    collections::emit_array_new(chunks, current, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, one_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, len_slot, line);
+    chunks[current].emit_i32_const(0, line);
+    ops::emit_dyn_eq(&mut chunks[current], line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, nodes_slot, line);
+    chunks[current].emit_f64_const(0.0, line);
+    collections::emit_get(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, selected_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, one_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, selected_slot, line);
+    collections::emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, one_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, nodes_slot, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
     collections::emit_array_new(chunks, current, 0, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, out_slot, line);
     let state = loops::emit_for_in_start(chunks, current, nodes_slot, idx_slot, line);

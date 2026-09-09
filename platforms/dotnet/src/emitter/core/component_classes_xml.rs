@@ -434,6 +434,11 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     MethodBody::Common("dotnet.xml_load_xml".into()),
                 ))
                 .with_method(MethodDef::static_method(
+                    "DocumentElement",
+                    1,
+                    MethodBody::Common("dotnet.xml_xdocument_root".into()),
+                ))
+                .with_method(MethodDef::static_method(
                     "OuterXml",
                     1,
                     MethodBody::Common("dotnet.xml_to_string".into()),

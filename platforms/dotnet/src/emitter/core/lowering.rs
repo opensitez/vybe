@@ -5,7 +5,10 @@
 //! prevents each .NET language frontend from inventing a slightly different
 //! TryParse/TryGetValue/ConcurrentCollection rewrite.
 
-use vybe_ast::{Argument, BinOp, ExprKind, Expression, Literal, PlaceExpr};
+use vybe_ast::{
+    Argument, BinOp, ExprKind, Expression, LambdaBody, Literal, Param, PassBy, PlaceExpr,
+    Statement, StmtKind,
+};
 
 use crate::emitter;
 
@@ -46,6 +49,34 @@ fn index_expr(object: Expression, index: Expression) -> Expression {
 
 fn null_lit() -> Expression {
     Expression::new(ExprKind::Lit(Literal::Null))
+}
+
+fn local_param(name: &str) -> Param {
+    Param {
+        name: name.to_string(),
+        type_hint: None,
+        default: None,
+        pass_by: PassBy::Value,
+        is_rest: false,
+        is_kwargs: false,
+        is_optional: false,
+        is_nullable: false,
+    }
+}
+
+fn statement_expr(stmts: Vec<Statement>, result: Expression) -> Expression {
+    let mut body = stmts;
+    body.push(Statement::new(StmtKind::Return(Some(result))));
+    Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::new(ExprKind::Lambda {
+            params: Vec::new(),
+            body: LambdaBody::Block(body),
+            is_async: false,
+            captures: Vec::new(),
+        })),
+        args: Vec::new(),
+        optional: false,
+    })
 }
 
 fn contains_key_expr(object: &Expression, key: &Expression) -> Expression {
@@ -340,11 +371,28 @@ pub fn try_parse_desugar(
     input: &Expression,
     out_target: &Expression,
 ) -> Option<Expression> {
+    let args = vec![
+        Argument::positional(input.clone()),
+        Argument::positional(out_target.clone()),
+    ];
+    try_parse_desugar_with_args(recv, callee, &args)
+}
+
+pub fn try_parse_desugar_with_args(
+    recv: Option<&str>,
+    callee: &Expression,
+    arguments: &[Argument],
+) -> Option<Expression> {
     let recv = recv?;
-    let core = call_expr(callee.clone(), vec![Argument::positional(input.clone())]);
+    if !matches!(arguments.len(), 2 | 4) {
+        return None;
+    }
+    let input = &arguments[0].value;
+    let out_target = &arguments[arguments.len() - 1].value;
+    let simple_core = || call_expr(callee.clone(), vec![Argument::positional(input.clone())]);
     let assign_core = Expression::new(ExprKind::Assign {
         target: Box::new(out_target.clone()),
-        value: Box::new(core.clone()),
+        value: Box::new(simple_core()),
     });
 
     if recv.eq_ignore_ascii_case("Guid")
@@ -396,23 +444,32 @@ pub fn try_parse_desugar(
             | "Double"
             | "Decimal"
     ) {
-        let success = Expression::new(ExprKind::Binary {
-            op: BinOp::NotEq,
-            left: Box::new(assign_core),
-            right: Box::new(null_lit()),
+        let assign_parse = Expression::new(ExprKind::Assign {
+            target: Box::new(out_target.clone()),
+            value: Box::new(call_expr(
+                callee.clone(),
+                arguments[..arguments.len() - 1]
+                    .iter()
+                    .map(|arg| Argument::positional(arg.value.clone()))
+                    .collect(),
+            )),
         });
-        let fallback = Expression::new(ExprKind::Binary {
-            op: BinOp::Eq,
-            left: Box::new(Expression::new(ExprKind::Assign {
-                target: Box::new(out_target.clone()),
-                value: Box::new(Expression::new(ExprKind::Lit(Literal::Int(0)))),
+        let assign_zero = Expression::new(ExprKind::Assign {
+            target: Box::new(out_target.clone()),
+            value: Box::new(Expression::new(ExprKind::Lit(Literal::Int(0)))),
+        });
+        return Some(Expression::new(ExprKind::Binary {
+            op: BinOp::Or,
+            left: Box::new(Expression::new(ExprKind::Binary {
+                op: BinOp::NotEq,
+                left: Box::new(assign_parse),
+                right: Box::new(null_lit()),
             })),
-            right: Box::new(null_lit()),
-        });
-        return Some(Expression::new(ExprKind::Ternary {
-            cond: Box::new(success),
-            then: Box::new(Expression::bool(true)),
-            else_: Box::new(fallback),
+            right: Box::new(Expression::new(ExprKind::Binary {
+                op: BinOp::Eq,
+                left: Box::new(assign_zero),
+                right: Box::new(null_lit()),
+            })),
         }));
     }
     None
@@ -504,6 +561,43 @@ pub fn try_from_base64_chars_desugar(
         }),
         Expression::new(ExprKind::Assign {
             target: Box::new(bytes_written_target.clone()),
+            value: Box::new(index_expr(pair.clone(), Expression::int(1))),
+        }),
+        index_expr(pair, Expression::int(0)),
+    ])))
+}
+
+/// `Convert.TryToBase64Chars(bytes, dest, charsWritten)` out-param
+/// normalization. The hidden two-arg core returns `[ok, charsWritten]`.
+pub fn try_to_base64_chars_desugar(
+    recv: Option<&str>,
+    source: &Expression,
+    dest: &Expression,
+    chars_written_target: &Expression,
+) -> Option<Expression> {
+    let recv = recv?;
+    if !(recv.eq_ignore_ascii_case("Convert") || recv.eq_ignore_ascii_case("System.Convert")) {
+        return None;
+    }
+
+    let pair = Expression::ident("__vybe_base64_try_pair");
+    let core = call_expr(
+        member_expr(
+            Expression::new(ExprKind::Ident(recv.to_string())),
+            "__TryToBase64CharsCore",
+        ),
+        vec![
+            Argument::positional(source.clone()),
+            Argument::positional(dest.clone()),
+        ],
+    );
+    Some(Expression::new(ExprKind::Sequence(vec![
+        Expression::new(ExprKind::Assign {
+            target: Box::new(pair.clone()),
+            value: Box::new(core),
+        }),
+        Expression::new(ExprKind::Assign {
+            target: Box::new(chars_written_target.clone()),
             value: Box::new(index_expr(pair.clone(), Expression::int(1))),
         }),
         index_expr(pair, Expression::int(0)),

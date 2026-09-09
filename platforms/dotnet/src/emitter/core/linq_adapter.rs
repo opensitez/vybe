@@ -2273,6 +2273,13 @@ fn emit_group_by_core(chunks: &mut [Chunk], current: usize, has_element_selector
     collections::emit_push(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
 
+    // IGrouping<TKey,TElement> is itself enumerable, so LINQ calls such as
+    // `group.Average(...)` must see the group's elements directly.
+    chunks[current].emit_op_u16(Op::LOCAL_GET, group_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
+    collections::emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+
     // group["Count"] = items.length
     chunks[current].emit_op_u16(Op::LOCAL_GET, group_slot, line);
     chunks[current].emit_string_const("Count", line);

@@ -805,14 +805,15 @@ pub fn emit_xml_ps_get_member(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_SET, obj_slot, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, obj_slot, line);
-    get_field(chunks, current, "nodeType", line);
-    chunks[current].emit_i32_const(9, line);
-    ops::emit_dyn_eq(&mut chunks[current], line);
-    ops::emit_dyn_to_bool(&mut chunks[current], line);
-    chunks[current].emit_if_value(line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, obj_slot, line);
     get_field(chunks, current, "documentElement", line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, item_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, item_slot, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, item_slot, line);
+    call_import(chunks, current, "wasm:js-undefined", "test", 1, line);
+    chunks[current].emit_op(Op::I32_OR, line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_if_value(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, item_slot, line);
     get_field(chunks, current, "nodeName", line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, name_slot, line);
@@ -908,7 +909,7 @@ pub fn emit_xml_ps_get_member(chunks: &mut [Chunk], current: usize, line: u32) {
 }
 
 pub fn emit_xml_ps_set_member(chunks: &mut [Chunk], current: usize, line: u32) {
-    let base = chunks[current].alloc_scratch(7);
+    let base = chunks[current].alloc_scratch(11);
     let value_slot = base;
     let name_slot = base + 1;
     let obj_slot = base + 2;
@@ -916,10 +917,32 @@ pub fn emit_xml_ps_set_member(chunks: &mut [Chunk], current: usize, line: u32) {
     let children_slot = base + 4;
     let idx_slot = base + 5;
     let item_slot = base + 6;
+    let child_nodes_slot = base + 7;
+    let first_child_slot = base + 8;
+    let len_slot = base + 9;
+    let text_node_slot = base + 10;
     chunks[current].emit_op_u16(Op::LOCAL_SET, value_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, name_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, obj_slot, line);
     normalize_slot_to_string(chunks, current, value_slot, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, name_slot, line);
+    chunks[current].emit_string_const("InnerText", line);
+    ops::emit_dyn_eq(&mut chunks[current], line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    emit_xml_replace_text(
+        chunks,
+        current,
+        obj_slot,
+        value_slot,
+        child_nodes_slot,
+        first_child_slot,
+        len_slot,
+        text_node_slot,
+        line,
+    );
+    chunks[current].emit_else(line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, obj_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, name_slot, line);
@@ -945,11 +968,66 @@ pub fn emit_xml_ps_set_member(chunks: &mut [Chunk], current: usize, line: u32) {
     ops::emit_dyn_eq(&mut chunks[current], line);
     ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if_value(line);
-    set_field(chunks, current, item_slot, "textContent", value_slot, line);
+    emit_xml_replace_text(
+        chunks,
+        current,
+        item_slot,
+        value_slot,
+        child_nodes_slot,
+        first_child_slot,
+        len_slot,
+        text_node_slot,
+        line,
+    );
     chunks[current].emit_end(line);
     loops::emit_for_in_end(chunks, current, idx_slot, state, line);
     chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
     chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+}
+
+fn emit_xml_replace_text(
+    chunks: &mut [Chunk],
+    current: usize,
+    node_slot: u16,
+    value_slot: u16,
+    child_nodes_slot: u16,
+    first_child_slot: u16,
+    len_slot: u16,
+    text_node_slot: u16,
+    line: u32,
+) {
+    set_field(chunks, current, node_slot, "textContent", value_slot, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, node_slot, line);
+    get_field(chunks, current, "childNodes", line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, child_nodes_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, child_nodes_slot, line);
+    call_import(chunks, current, "ecma:array", "length", 1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, len_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, len_slot, line);
+    chunks[current].emit_i32_const(0, line);
+    ops::emit_dyn_eq(&mut chunks[current], line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, child_nodes_slot, line);
+    chunks[current].emit_f64_const(0.0, line);
+    collections::emit_get(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, first_child_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, node_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, first_child_slot, line);
+    call_import(chunks, current, "web:dom-parser", "removeChild", 2, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_end(line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
+    call_import(chunks, current, "web:dom-parser", "createTextNode", 1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, text_node_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, node_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, text_node_slot, line);
+    call_import(chunks, current, "web:dom-parser", "appendChild", 2, line);
+    chunks[current].emit_op(Op::DROP, line);
 }
 
 pub fn emit_xml_inner_xml(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -1088,7 +1166,9 @@ pub fn emit_xml_select_single_node(chunks: &mut [Chunk], current: usize, line: u
     chunks[current].emit_string_const("[last()]", line);
     call_import(chunks, current, "ecma:string", "indexOf", 2, line);
     chunks[current].emit_i32_const(-1, line);
-    chunks[current].emit_op(Op::I32_NE, line);
+    ops::emit_dyn_eq(&mut chunks[current], line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
     chunks[current].emit_if_value(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, obj_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, selector_slot, line);
@@ -1333,20 +1413,16 @@ pub fn emit_xelement_set_element_value(chunks: &mut [Chunk], current: usize, lin
     call_import(chunks, current, "web:dom-parser", "appendChild", 2, line);
     chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_else(line);
-    collections::emit_array_new(chunks, current, 0, line);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, children_slot, line);
-    set_xml_children_fields(chunks, current, child_slot, children_slot, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, item_slot, line);
-    append_xelement_content(
+    normalize_slot_to_string(chunks, current, value_slot, line);
+    emit_xml_replace_text(
         chunks,
         current,
         child_slot,
-        item_slot,
+        value_slot,
+        children_slot,
         type_slot,
         kind_slot,
         attr_name_slot,
-        attr_value_slot,
         line,
     );
     chunks[current].emit_end(line);

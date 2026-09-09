@@ -400,6 +400,19 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 MethodBody::Common("dotnet.get_type".into()),
             ));
         }
+        if name.eq_ignore_ascii_case("AggregateException") {
+            class = class
+                .with_method(MethodDef::new(
+                    "Flatten",
+                    0,
+                    MethodBody::Common("dotnet.aggregate_flatten".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "Handle",
+                    1,
+                    MethodBody::Common("dotnet.aggregate_handle".into()),
+                ));
+        }
         let class = class.with_constructor(
             vybe_compiler::component_classes::ConstructorDef::new(1)
                 .with_common_backing(super::super::exceptions::exception_ctor_backing(name)),
@@ -1530,9 +1543,29 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     MethodBody::Common("dotnet.random_next_double".into()),
                 ))
                 .with_method(MethodDef::new(
+                    "NextSingle",
+                    0,
+                    MethodBody::Common("dotnet.random_next_double".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "NextInt64",
+                    2,
+                    MethodBody::Common("dotnet.random_next".into()),
+                ))
+                .with_method(MethodDef::new(
                     "NextBytes",
                     1,
                     MethodBody::Common("dotnet.random_next_bytes".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "Shuffle",
+                    1,
+                    MethodBody::Common("dotnet.random_shuffle".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Shared",
+                    0,
+                    MethodBody::Common("dotnet.random_new".into()),
                 )),
         ),
         DotnetClassExport::new(
@@ -2043,6 +2076,16 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     "ScaleB",
                     2,
                     MethodBody::Common("dotnet.system.math.scaleb".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "BitIncrement",
+                    1,
+                    MethodBody::Common("dotnet.system.math.bit_increment".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "BitDecrement",
+                    1,
+                    MethodBody::Common("dotnet.system.math.bit_decrement".into()),
                 )),
         ),
         DotnetClassExport::new(
@@ -2198,7 +2241,7 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 .with_method(MethodDef::static_method(
                     "ToSingle",
                     1,
-                    MethodBody::HostCall(HostTarget::new("ecma:number", "Number")),
+                    MethodBody::Common("dotnet.convert_to_single".into()),
                 ))
                 .with_method(MethodDef::static_method(
                     "ToHalf",
@@ -2285,6 +2328,21 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     MethodBody::Common("dotnet.convert_from_base64_string".into()),
                 ))
                 .with_method(MethodDef::static_method(
+                    "FromBase64CharArray",
+                    3,
+                    MethodBody::Common("dotnet.convert_from_base64_char_array".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "TryFromBase64Chars",
+                    3,
+                    MethodBody::Common("dotnet.convert_try_from_base64_chars".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "TryToBase64Chars",
+                    3,
+                    MethodBody::Common("dotnet.convert_try_to_base64_chars".into()),
+                ))
+                .with_method(MethodDef::static_method(
                     "ToHexString",
                     1,
                     MethodBody::Common("dotnet.convert_to_hex_string".into()),
@@ -2298,6 +2356,11 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     "__TryFromBase64CharsCore",
                     2,
                     MethodBody::Common("dotnet.convert_try_from_base64_chars".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "__TryToBase64CharsCore",
+                    2,
+                    MethodBody::Common("dotnet.convert_try_to_base64_chars".into()),
                 ))
                 .with_method(MethodDef::static_method(
                     "ToBase64CharArray",

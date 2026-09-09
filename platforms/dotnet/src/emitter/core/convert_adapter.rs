@@ -377,8 +377,9 @@ pub fn emit_convert_to_base64_string(chunks: &mut [Chunk], current: usize, argc:
             emit_buffer_to_base64(chunks, current, bytes_slot, None, None, line);
             chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
             chunks[current].emit_op_u16(Op::LOCAL_GET, options_slot, line);
-            chunks[current].emit_string_const("__dotnet_base64_insertlinebreaks", line);
+            chunks[current].emit_string_const("__dotnet_base64_none", line);
             vybe_compiler::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
+            chunks[current].emit_op(Op::I32_EQZ, line);
             chunks[current].emit_if_value(line);
             emit_insert_line_breaks(chunks, current, result_slot, line);
             chunks[current].emit_else(line);
@@ -397,6 +398,40 @@ pub fn emit_convert_from_base64_string(chunks: &mut [Chunk], current: usize, _ar
     let text_slot = reserve_slot(&mut chunks[current]);
     chunks[current].emit_op_u16(Op::LOCAL_SET, text_slot, line);
     emit_throw_if_null(chunks, current, text_slot, line);
+    emit_filter_dotnet_base64(chunks, current, text_slot, true, line);
+    vybe_compiler::primitives::base64::emit_decode_binary_string(chunks, current, line);
+    vybe_compiler::primitives::base64::emit_binary_string_to_byte_array(chunks, current, line);
+}
+
+pub fn emit_convert_from_base64_char_array(
+    chunks: &mut [Chunk],
+    current: usize,
+    _argc: u8,
+    line: u32,
+) {
+    let source_slot = reserve_slot(&mut chunks[current]);
+    let offset_slot = reserve_slot(&mut chunks[current]);
+    let length_slot = reserve_slot(&mut chunks[current]);
+    let end_slot = reserve_slot(&mut chunks[current]);
+    let slice_slot = reserve_slot(&mut chunks[current]);
+    let text_slot = reserve_slot(&mut chunks[current]);
+
+    chunks[current].emit_op_u16(Op::LOCAL_SET, length_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, offset_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, source_slot, line);
+    emit_throw_if_null(chunks, current, source_slot, line);
+    emit_throw_if_slice_out_of_range(chunks, current, source_slot, offset_slot, length_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, offset_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, length_slot, line);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, end_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, source_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, offset_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, end_slot, line);
+    vybe_compiler::primitives::collections::emit_slice(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, slice_slot, line);
+    emit_chars_to_string(chunks, current, slice_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, text_slot, line);
     emit_filter_dotnet_base64(chunks, current, text_slot, true, line);
     vybe_compiler::primitives::base64::emit_decode_binary_string(chunks, current, line);
     vybe_compiler::primitives::base64::emit_binary_string_to_byte_array(chunks, current, line);
@@ -610,6 +645,62 @@ pub fn emit_convert_to_base64_char_array(
     chunks[current].emit_op_u16(Op::LOCAL_GET, count_slot, line);
 }
 
+pub fn emit_convert_try_to_base64_chars(
+    chunks: &mut [Chunk],
+    current: usize,
+    _argc: u8,
+    line: u32,
+) {
+    let input_slot = reserve_slot(&mut chunks[current]);
+    let out_slot = reserve_slot(&mut chunks[current]);
+    let b64_slot = reserve_slot(&mut chunks[current]);
+    let count_slot = reserve_slot(&mut chunks[current]);
+    let dest_len_slot = reserve_slot(&mut chunks[current]);
+    let i_slot = reserve_slot(&mut chunks[current]);
+
+    chunks[current].emit_op_u16(Op::LOCAL_SET, out_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, input_slot, line);
+    emit_buffer_to_base64(chunks, current, input_slot, None, None, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, b64_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, b64_slot, line);
+    host::emit(&mut chunks[current], "wasm:js-string", "length", 1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, count_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, out_slot, line);
+    chunks[current].emit_op(Op::ARRAY_LENGTH, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, dest_len_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, count_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, dest_len_slot, line);
+    chunks[current].emit_op(Op::I32_GT_S, line);
+    chunks[current].emit_if(line);
+    emit_false_zero_pair(chunks, current, line);
+    chunks[current].emit_else(line);
+
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, i_slot, line);
+    let state = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, count_slot, line);
+    chunks[current].emit_op(Op::I32_LT_S, line);
+    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, out_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, b64_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i_slot, line);
+    host::emit(&mut chunks[current], "ecma:string", "charAt", 2, line);
+    vybe_compiler::primitives::collections::emit_set(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i_slot, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, i_slot, line);
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, state, line);
+
+    emit_bool_int_pair(chunks, current, true, count_slot, line);
+    chunks[current].emit_end(line);
+}
+
 /// `Convert.To<Integral>` — .NET's NARROWING conversions, which THROW
 /// `OverflowException` outside the target's range rather than wrapping or
 /// saturating.
@@ -663,6 +754,12 @@ pub fn emit_convert_to_string_base(chunks: &mut [Chunk], current: usize, line: u
     chunk.emit_op_u16(Op::LOCAL_GET, value, line);
     chunk.emit_op_u16(Op::LOCAL_GET, radix, line);
     host::emit(chunk, "ecma:number", "toString", 2, line);
+}
+
+pub fn emit_convert_to_single(chunks: &mut [Chunk], current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    let idx = chunk.add_import("ecma:math", "fround");
+    chunk.emit_call(idx, 1, line);
 }
 
 /// .NET also ROUNDS on the way in (banker's rounding, `Convert.ToInt32(2.5)`

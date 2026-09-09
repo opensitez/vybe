@@ -339,6 +339,44 @@ pub fn emit_scaleb(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op(Op::F64_MUL, line);
 }
 
+pub fn emit_bit_increment(chunks: &mut [Chunk], current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    let value = chunk.alloc_scratch(1);
+    set(chunk, value, line);
+    get(chunk, value, line);
+    chunk.emit_f64_const(0.0, line);
+    chunk.emit_op(Op::F64_EQ, line);
+    chunk.emit_if_value(line);
+    chunk.emit_f64_const(f64::from_bits(1), line);
+    chunk.emit_else(line);
+    get(chunk, value, line);
+    get(chunk, value, line);
+    chunk.emit_op(Op::F64_ABS, line);
+    chunk.emit_f64_const(f64::EPSILON, line);
+    chunk.emit_op(Op::F64_MUL, line);
+    chunk.emit_op(Op::F64_ADD, line);
+    chunk.emit_end(line);
+}
+
+pub fn emit_bit_decrement(chunks: &mut [Chunk], current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    let value = chunk.alloc_scratch(1);
+    set(chunk, value, line);
+    get(chunk, value, line);
+    chunk.emit_f64_const(0.0, line);
+    chunk.emit_op(Op::F64_EQ, line);
+    chunk.emit_if_value(line);
+    chunk.emit_f64_const(-f64::from_bits(1), line);
+    chunk.emit_else(line);
+    get(chunk, value, line);
+    get(chunk, value, line);
+    chunk.emit_op(Op::F64_ABS, line);
+    chunk.emit_f64_const(f64::EPSILON, line);
+    chunk.emit_op(Op::F64_MUL, line);
+    chunk.emit_op(Op::F64_SUB, line);
+    chunk.emit_end(line);
+}
+
 // ── System.Decimal's integer-bit surface ───────────────────────────────────
 //
 // A Decimal is an f64 in this tree, so it carries no stored scale of its own.

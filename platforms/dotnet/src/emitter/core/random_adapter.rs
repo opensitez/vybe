@@ -132,6 +132,20 @@ pub fn emit_random_next(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
             chunk.emit_op_u16(Op::LOCAL_SET, max_slot, line);
             chunk.emit_op_u16(Op::LOCAL_SET, min_slot, line);
             chunk.emit_op_u16(Op::LOCAL_SET, receiver_slot, line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, min_slot, line);
+            emit_to_f64(&mut chunks[current], line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, max_slot, line);
+            emit_to_f64(&mut chunks[current], line);
+            chunks[current].emit_op(Op::F64_GT, line);
+            chunks[current].emit_if(line);
+            crate::emitter::core::exceptions::emit_throw_typed(
+                chunks,
+                current,
+                "ArgumentOutOfRangeException",
+                "minValue cannot be greater than maxValue.",
+                line,
+            );
+            chunks[current].emit_end(line);
             emit_random_unit_from_receiver(chunks, current, receiver_slot, line);
             chunks[current].emit_op_u16(Op::LOCAL_GET, max_slot, line);
             emit_to_f64(&mut chunks[current], line);
@@ -204,4 +218,27 @@ pub fn emit_random_next_bytes(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_end(line);
 
     chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+}
+
+pub fn emit_random_shuffle(chunks: &mut [Chunk], current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    let array_slot = reserve_slot(chunk);
+    chunk.emit_op_u16(Op::LOCAL_SET, array_slot, line);
+    chunk.emit_op(Op::DROP, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, array_slot, line);
+    vybe_compiler::primitives::random::emit_shuffle(chunks, current, 1, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+}
+
+pub fn emit_powershell_random_choice(chunks: &mut [Chunk], current: usize, line: u32) {
+    vybe_compiler::primitives::random::emit_sample(chunks, current, 1, line);
+}
+
+pub fn emit_powershell_random_sample(chunks: &mut [Chunk], current: usize, line: u32) {
+    vybe_compiler::primitives::random::emit_sample_k(chunks, current, line);
+}
+
+pub fn emit_powershell_random_shuffle(chunks: &mut [Chunk], current: usize, line: u32) {
+    vybe_compiler::primitives::random::emit_shuffle(chunks, current, 1, line);
 }

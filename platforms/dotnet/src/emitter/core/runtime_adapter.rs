@@ -162,7 +162,7 @@ fn emit_cchar(chunk: &mut Chunk, line: u32) {
 ///   `__vybe_dotnet_numeric_format` helper (D/X/F/N/P/… specifiers); any other
 ///   receiver ignores the format and takes the plain dispatch (the numeric
 ///   renderer would otherwise yield "nan" for it).
-fn emit_tostring_runtime(chunk: &mut Chunk, argc: u8, line: u32) {
+pub fn emit_tostring_runtime(chunk: &mut Chunk, argc: u8, line: u32) {
     if argc < 2 {
         emit_tostring_dispatch(chunk, line);
         return;

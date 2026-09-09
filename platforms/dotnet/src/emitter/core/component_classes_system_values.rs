@@ -124,6 +124,16 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 | "double"
         ) {
             ty = ty
+                .with_method(MethodDef::new(
+                    "ToString",
+                    0,
+                    MethodBody::Common("dotnet.runtime_to_string".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "ToString",
+                    1,
+                    MethodBody::Common("dotnet.runtime_to_string".into()),
+                ))
                 .with_method(MethodDef::static_method(
                     "Parse",
                     2,
@@ -282,11 +292,13 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
             _ => None,
         };
         if let Some(emit) = try_parse_emit {
-            ty = ty.with_method(MethodDef::static_method(
-                "TryParse",
-                1,
-                MethodBody::Common(emit.into()),
-            ));
+            for arity in [1, 3] {
+                ty = ty.with_method(MethodDef::static_method(
+                    "TryParse",
+                    arity,
+                    MethodBody::Common(emit.into()),
+                ));
+            }
         }
         // ⛔ The float predicates belong on THIS registration, not a second
         // `ClassType::new("Double")` of their own. Two exports of one class

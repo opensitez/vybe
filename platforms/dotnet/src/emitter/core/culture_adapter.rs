@@ -136,7 +136,7 @@ fn set_known_culture_fields(
     requested: u16,
     line: u32,
 ) {
-    for (lower, name, parent, english, iso, currency, decimal, short_date, rtl) in [
+    for (lower, name, parent, english, iso, currency, decimal, group, short_date, rtl) in [
         (
             "ar-sa",
             "ar-SA",
@@ -145,6 +145,7 @@ fn set_known_culture_fields(
             "ar",
             "ر.س",
             ".",
+            ",",
             "M/d/yyyy",
             true,
         ),
@@ -155,6 +156,7 @@ fn set_known_culture_fields(
             "German (Germany)",
             "de",
             "€",
+            ",",
             ".",
             "dd.MM.yyyy",
             false,
@@ -167,6 +169,7 @@ fn set_known_culture_fields(
             "en",
             "£",
             ".",
+            ",",
             "dd/MM/yyyy",
             false,
         ),
@@ -178,6 +181,7 @@ fn set_known_culture_fields(
             "en",
             "$",
             ".",
+            ",",
             "M/d/yyyy",
             false,
         ),
@@ -189,6 +193,7 @@ fn set_known_culture_fields(
             "fr",
             "€",
             ",",
+            " ",
             "dd/MM/yyyy",
             false,
         ),
@@ -200,6 +205,7 @@ fn set_known_culture_fields(
             "ja",
             "¥",
             ".",
+            ",",
             "yyyy/MM/dd",
             false,
         ),
@@ -221,6 +227,7 @@ fn set_known_culture_fields(
         let nf = nested_slot(chunks, current, culture, "numberformat", line);
         set_string_both(chunks, current, nf, "CurrencySymbol", currency, line);
         set_string_both(chunks, current, nf, "NumberDecimalSeparator", decimal, line);
+        set_string_both(chunks, current, nf, "NumberGroupSeparator", group, line);
         let dtf = nested_slot(chunks, current, culture, "datetimeformat", line);
         set_string_both(chunks, current, dtf, "ShortDatePattern", short_date, line);
         let ti = nested_slot(chunks, current, culture, "textinfo", line);
@@ -249,6 +256,11 @@ fn emit_number_format(
     set_string_both(chunks, current, nf, "PositiveSign", "+", line);
     set_string_both(chunks, current, nf, "NegativeSign", "-", line);
     nf
+}
+
+pub fn emit_number_format_info_new(chunks: &mut [Chunk], current: usize, line: u32) {
+    let nf = emit_number_format(chunks, current, "$", ".", line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, nf, line);
 }
 
 fn emit_datetime_format(chunks: &mut [Chunk], current: usize, short_date: &str, line: u32) -> u16 {
@@ -282,6 +294,7 @@ fn emit_text_info(chunks: &mut [Chunk], current: usize, name: &str, line: u32) -
         name.eq_ignore_ascii_case("ar-SA"),
         line,
     );
+    set_string_both(chunks, current, ti, "ListSeparator", ",", line);
     ti
 }
 

@@ -104,9 +104,71 @@ pub fn emit_parse_int_with_style(chunks: &mut [Chunk], current: usize, argc: u8,
 /// `(r = int.TryParse(s)) != null` is the success bool. The desugar restores
 /// .NET's zero-on-failure out value with a `|| ((r = 0) == null)` fallback.
 /// Stack: `[s]` → `[i32 | null]`.
-pub fn emit_try_parse_int(chunks: &mut [Chunk], current: usize, line: u32) {
+pub fn emit_try_parse_int(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    if argc >= 3 {
+        let base = chunks[current].alloc_scratch(argc as u16);
+        for i in (0..argc).rev() {
+            chunks[current].emit_op_u16(Op::LOCAL_SET, base + i as u16, line);
+        }
+        let input = base;
+        let styles = base + 1;
+        let text = chunks[current].alloc_scratch(1);
+        let to_str = chunks[current].add_import("ecma:string", "String");
+        let trim = chunks[current].add_import("ecma:string", "trim");
+        let parse_int = chunks[current].add_import("ecma:number", "parseInt");
+        let number = chunks[current].add_import("ecma:number", "Number");
+        chunks[current].emit_op_u16(Op::LOCAL_GET, input, line);
+        chunks[current].emit_call(to_str, 1, line);
+        chunks[current].emit_call(trim, 1, line);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, text, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, text, line);
+        emit_blank_input_guard(&mut chunks[current], line);
+
+        let result = alloc_local(&mut chunks[current]);
+        emit_style_has_mask(&mut chunks[current], styles, 512, line);
+        chunks[current].emit_if(line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, text, line);
+        chunks[current].emit_i32_const(16, line);
+        chunks[current].emit_call(parse_int, 2, line);
+        chunks[current].emit_else(line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, text, line);
+        chunks[current].emit_call(number, 1, line);
+        chunks[current].emit_end(line);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, result, line);
+
+        chunks[current].emit_op_u16(Op::LOCAL_GET, result, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, result, line);
+        vybe_compiler::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
+        vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+        chunks[current].emit_if(line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, result, line);
+        chunks[current].emit_op(Op::F64_FLOOR, line);
+        chunks[current].emit_else(line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+        chunks[current].emit_end(line);
+        return;
+    }
+    let input = chunks[current].alloc_scratch(1);
     let number_idx = chunks[current].add_import("ecma:number", "Number");
+    let string_test = chunks[current].add_import("wasm:js-string", "test");
+    let trim = chunks[current].add_import("ecma:string", "trim");
     let chunk = &mut chunks[current];
+    chunk.emit_op_u16(Op::LOCAL_SET, input, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, input, line);
+    chunk.emit_call(string_test, 1, line);
+    chunk.emit_if_value(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, input, line);
+    chunk.emit_call(trim, 1, line);
+    chunk.emit_string_const("", line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_else(line);
+    chunk.emit_bool_const(false, line);
+    chunk.emit_end(line);
+    chunk.emit_if_value(line);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+    chunk.emit_else(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, input, line);
     chunk.emit_call(number_idx, 1, line);
     let result = alloc_local(chunk);
     chunk.emit_op_u16(Op::LOCAL_SET, result, line);
@@ -121,6 +183,7 @@ pub fn emit_try_parse_int(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op(Op::F64_FLOOR, line);
     chunk.emit_else(line);
     chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+    chunk.emit_end(line);
     chunk.emit_end(line);
 }
 
@@ -222,10 +285,178 @@ fn emit_blank_input_guard(chunk: &mut Chunk, line: u32) {
     chunk.emit_end(line);
 }
 
-pub fn emit_try_parse_double(chunks: &mut [Chunk], current: usize, line: u32) {
+fn emit_null_or_undefined_test(chunk: &mut Chunk, slot: u16, line: u32) {
+    chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
+    let undef = chunk.add_import("wasm:js-undefined", "test");
+    chunk.emit_call(undef, 1, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_op(Op::I32_OR, line);
+}
+
+fn emit_field_or_default(
+    chunk: &mut Chunk,
+    object: u16,
+    field: &str,
+    default_value: &str,
+    line: u32,
+) -> u16 {
+    let out = alloc_local(chunk);
+    class_slots::emit_class_get(
+        chunk,
+        class_slots::ObjSource::Local(object),
+        &field_slot(field),
+        class_slots::Dest::Local(out),
+        line,
+    );
+    emit_null_or_undefined_test(chunk, out, line);
+    chunk.emit_if(line);
+    chunk.emit_string_const(default_value, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, out, line);
+    chunk.emit_end(line);
+    out
+}
+
+fn emit_number_format_slot(chunk: &mut Chunk, provider: u16, line: u32) -> u16 {
+    let nf = alloc_local(chunk);
+    class_slots::emit_class_get(
+        chunk,
+        class_slots::ObjSource::Local(provider),
+        &field_slot("numberformat"),
+        class_slots::Dest::Local(nf),
+        line,
+    );
+    emit_null_or_undefined_test(chunk, nf, line);
+    chunk.emit_if(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, provider, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, nf, line);
+    chunk.emit_end(line);
+    nf
+}
+
+fn emit_style_has_mask(chunk: &mut Chunk, styles: u16, mask: i32, line: u32) {
+    chunk.emit_op_u16(Op::LOCAL_GET, styles, line);
+    host::emit(chunk, "wasm:js-number", "toI32", 1, line);
+    chunk.emit_i32_const(mask, line);
+    chunk.emit_op(Op::I32_AND, line);
+    chunk.emit_i32_const(0, line);
+    chunk.emit_op(Op::I32_NE, line);
+}
+
+fn emit_replace_from_slot(chunk: &mut Chunk, text: u16, needle: u16, replacement: &str, line: u32) {
+    chunk.emit_op_u16(Op::LOCAL_GET, text, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, needle, line);
+    chunk.emit_string_const(replacement, line);
+    vybe_compiler::primitives::strings::emit_replace(chunk, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, text, line);
+}
+
+fn emit_try_parse_double_text(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) -> u16 {
+    let base = chunks[current].alloc_scratch(argc as u16);
+    for i in (0..argc).rev() {
+        chunks[current].emit_op_u16(Op::LOCAL_SET, base + i as u16, line);
+    }
+    let input = base;
+    let text = chunks[current].alloc_scratch(1);
+    let to_str = chunks[current].add_import("ecma:string", "String");
+    let trim = chunks[current].add_import("ecma:string", "trim");
+    chunks[current].emit_op_u16(Op::LOCAL_GET, input, line);
+    chunks[current].emit_call(to_str, 1, line);
+    chunks[current].emit_call(trim, 1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, text, line);
+
+    if argc >= 3 {
+        let styles = base + 1;
+        let provider = base + 2;
+        let nf = emit_number_format_slot(&mut chunks[current], provider, line);
+        let decimal = emit_field_or_default(
+            &mut chunks[current],
+            nf,
+            "numberdecimalseparator",
+            ".",
+            line,
+        );
+        let group =
+            emit_field_or_default(&mut chunks[current], nf, "numbergroupseparator", ",", line);
+        let currency =
+            emit_field_or_default(&mut chunks[current], nf, "currencysymbol", "$", line);
+
+        emit_style_has_mask(&mut chunks[current], styles, 64, line);
+        chunks[current].emit_op(Op::I32_EQZ, line);
+        chunks[current].emit_if(line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, text, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, group, line);
+        vybe_compiler::primitives::strings::emit_index_of(&mut chunks[current], line);
+        chunks[current].emit_i32_const(0, line);
+        vybe_compiler::primitives::ops::emit_dyn_ge(&mut chunks[current], line);
+        vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+        chunks[current].emit_if(line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+        chunks[current].emit_op(Op::RETURN, line);
+        chunks[current].emit_end(line);
+        chunks[current].emit_end(line);
+
+        emit_replace_from_slot(&mut chunks[current], text, group, "", line);
+        emit_replace_from_slot(&mut chunks[current], text, currency, "", line);
+        emit_replace_from_slot(&mut chunks[current], text, decimal, ".", line);
+    }
+
+    let ends_with = chunks[current].add_import("ecma:string", "endsWith");
+    chunks[current].emit_op_u16(Op::LOCAL_GET, text, line);
+    chunks[current].emit_string_const("-", line);
+    chunks[current].emit_call(ends_with, 2, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_string_const("-", line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, text, line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, text, line);
+    vybe_compiler::primitives::strings::emit_length(&mut chunks[current], line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_SUB, line);
+    vybe_compiler::primitives::strings::emit_substring(&mut chunks[current], line);
+    host::emit(&mut chunks[current], "ecma:string", "concat", 2, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, text, line);
+    chunks[current].emit_end(line);
+
+    let starts_with = chunks[current].add_import("ecma:string", "startsWith");
+    let ends_with = chunks[current].add_import("ecma:string", "endsWith");
+    chunks[current].emit_op_u16(Op::LOCAL_GET, text, line);
+    chunks[current].emit_string_const("(", line);
+    chunks[current].emit_call(starts_with, 2, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, text, line);
+    chunks[current].emit_string_const(")", line);
+    chunks[current].emit_call(ends_with, 2, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_op(Op::I32_AND, line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_string_const("-", line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, text, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, text, line);
+    vybe_compiler::primitives::strings::emit_length(&mut chunks[current], line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_SUB, line);
+    vybe_compiler::primitives::strings::emit_substring(&mut chunks[current], line);
+    host::emit(&mut chunks[current], "ecma:string", "concat", 2, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, text, line);
+    chunks[current].emit_end(line);
+
+    text
+}
+
+pub fn emit_try_parse_double(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let input = chunks[current].alloc_scratch(1);
+    if argc >= 3 {
+        let text = emit_try_parse_double_text(chunks, current, argc, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, text, line);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, input, line);
+    } else {
+        chunks[current].emit_op_u16(Op::LOCAL_SET, input, line);
+    }
     let chunk = &mut chunks[current];
-    let input = alloc_local(chunk);
-    chunk.emit_op_u16(Op::LOCAL_SET, input, line);
     // ⛔ `Number(null)` and `Number("")` are BOTH 0 in ECMA, and .NET's
     // `TryParse` answers False for either. Without this guard
     // `Double.TryParse(Nothing, v)` reported success.
@@ -237,11 +468,9 @@ pub fn emit_try_parse_double(chunks: &mut [Chunk], current: usize, line: u32) {
     let result = alloc_local(chunk);
     chunk.emit_op_u16(Op::LOCAL_SET, result, line);
 
-    // ⛔ `"Infinity"` IS NOT A .NET NUMBER. `Number` parses the ECMA word and
-    // it survives the `result == result` test below, so `TryParse("Infinity")`
-    // reported True where .NET answers False — the invariant culture's
-    // `PositiveInfinitySymbol` is `∞`, not the word. An infinite result is
-    // therefore only a success when the input actually spelled the symbol.
+    // Accept the .NET infinity spellings modelled by this adapter. The ECMA
+    // word is used by the runtime surface and the Unicode symbol is accepted by
+    // the culture model.
     chunk.emit_op_u16(Op::LOCAL_GET, result, line);
     let is_finite = chunk.add_import("ecma:number", "isFinite");
     chunk.emit_call(is_finite, 1, line);
@@ -250,9 +479,11 @@ pub fn emit_try_parse_double(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_if(line);
     let to_str = chunk.add_import("ecma:string", "String");
     let trim = chunk.add_import("ecma:string", "trim");
+    let lower = chunk.add_import("ecma:string", "toLowerCase");
     chunk.emit_op_u16(Op::LOCAL_GET, input, line);
     chunk.emit_call(to_str, 1, line);
     chunk.emit_call(trim, 1, line);
+    chunk.emit_call(lower, 1, line);
     let symbol = alloc_local(chunk);
     chunk.emit_op_u16(Op::LOCAL_SET, symbol, line);
     let mut infinite_symbol = |chunk: &mut Chunk, text: &str| {
@@ -266,6 +497,12 @@ pub fn emit_try_parse_double(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op(Op::I32_OR, line);
     infinite_symbol(chunk, "-\u{221E}");
     chunk.emit_op(Op::I32_OR, line);
+    infinite_symbol(chunk, "infinity");
+    chunk.emit_op(Op::I32_OR, line);
+    infinite_symbol(chunk, "+infinity");
+    chunk.emit_op(Op::I32_OR, line);
+    infinite_symbol(chunk, "-infinity");
+    chunk.emit_op(Op::I32_OR, line);
     chunk.emit_op(Op::I32_EQZ, line);
     chunk.emit_if(line);
     chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
@@ -273,18 +510,18 @@ pub fn emit_try_parse_double(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_end(line);
     chunk.emit_end(line);
 
+    let ok = alloc_local(chunk);
     chunk.emit_op_u16(Op::LOCAL_GET, result, line);
     chunk.emit_op_u16(Op::LOCAL_GET, result, line);
     vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
     vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
-    chunk.emit_if_value(line);
-    chunk.emit_op_u16(Op::LOCAL_GET, result, line);
-    chunk.emit_else(line);
-    // ⛔ NaN is BOTH the failure signal and a legitimate answer. `"NaN"` is the
+    chunk.emit_op_u16(Op::LOCAL_SET, ok, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, ok, line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_if(line);
+    // NaN is both the failure signal and a legitimate answer. `"NaN"` is the
     // invariant culture's NaN symbol and .NET's `Double.TryParse` accepts it,
-    // returning True with a NaN out-param — the `result == result` test alone
-    // reported False and wrote nothing. `"Infinity"` needs no arm: `Number`
-    // parses it and it survives the test on its own.
+    // returning True with a NaN out-param.
     let lower = chunk.add_import("ecma:string", "toLowerCase");
     let to_str = chunk.add_import("ecma:string", "String");
     let trim = chunk.add_import("ecma:string", "trim");
@@ -295,12 +532,15 @@ pub fn emit_try_parse_double(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_string_const("nan", line);
     vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
     vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
-    chunk.emit_if_value(line);
+    chunk.emit_if(line);
     chunk.emit_f64_const(f64::NAN, line);
+    chunk.emit_op(Op::RETURN, line);
     chunk.emit_else(line);
     chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+    chunk.emit_op(Op::RETURN, line);
     chunk.emit_end(line);
     chunk.emit_end(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, result, line);
 }
 
 /// `bool.Parse(s)` — accepts `"true"` / `"false"` (case-insensitive),

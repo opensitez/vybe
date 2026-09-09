@@ -219,6 +219,19 @@ pub fn emit_array_get_checked(chunks: &mut [Chunk], current: usize, line: u32) {
     let arr_slot = index_slot + 1;
     chunk.emit_op_u16(Op::LOCAL_SET, index_slot, line);
     chunk.emit_op_u16(Op::LOCAL_SET, arr_slot, line);
+    let chunk = &mut chunks[current];
+    chunk.emit_op_u16(Op::LOCAL_GET, arr_slot, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_if(line);
+    emit_throw_dotnet_exception(
+        chunks,
+        current,
+        "NullReferenceException",
+        "Object reference not set to an instance of an object.",
+        line,
+    );
+    let chunk = &mut chunks[current];
+    chunk.emit_end(line);
     emit_index_bounds_check(
         chunks,
         current,

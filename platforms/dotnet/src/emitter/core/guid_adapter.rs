@@ -281,6 +281,73 @@ fn emit_wrap_guid_with_bytes_from_slots(
     chunks[current].emit_op_u16(Op::LOCAL_GET, obj_slot, line);
 }
 
+fn emit_guid_text_pair_to_byte(chunk: &mut Chunk, text_slot: u16, offset: i32, line: u32) {
+    let substr_idx = chunk.add_import("ecma:string", "substr");
+    let parse_int_idx = chunk.add_import("ecma:number", "parseInt");
+    chunk.emit_op_u16(Op::LOCAL_GET, text_slot, line);
+    push_const(chunk, Value::F64(offset as f64), line);
+    push_const(chunk, Value::F64(2.0), line);
+    chunk.emit_call(substr_idx, 3, line);
+    chunk.emit_i32_const(16, line);
+    chunk.emit_call(parse_int_idx, 2, line);
+}
+
+fn emit_guid_byte_hex(chunk: &mut Chunk, bytes_slot: u16, index: i32, line: u32) {
+    let to_string_idx = chunk.add_import("ecma:number", "toString");
+    let pad_start_idx = chunk.add_import("ecma:string", "padStart");
+    chunk.emit_op_u16(Op::LOCAL_GET, bytes_slot, line);
+    push_const(chunk, Value::F64(index as f64), line);
+    chunk.emit_op(Op::ARRAY_GET, line);
+    chunk.emit_i32_const(16, line);
+    chunk.emit_call(to_string_idx, 2, line);
+    chunk.emit_i32_const(2, line);
+    push_const(chunk, Value::String(Arc::from("0")), line);
+    chunk.emit_call(pad_start_idx, 3, line);
+}
+
+fn append_guid_byte_hex(chunk: &mut Chunk, text_slot: u16, bytes_slot: u16, index: i32, line: u32) {
+    let concat_idx = chunk.add_import("ecma:string", "concat");
+    chunk.emit_op_u16(Op::LOCAL_GET, text_slot, line);
+    emit_guid_byte_hex(chunk, bytes_slot, index, line);
+    chunk.emit_call(concat_idx, 2, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, text_slot, line);
+}
+
+fn append_guid_dash(chunk: &mut Chunk, text_slot: u16, line: u32) {
+    let concat_idx = chunk.add_import("ecma:string", "concat");
+    chunk.emit_op_u16(Op::LOCAL_GET, text_slot, line);
+    push_const(chunk, Value::String(Arc::from("-")), line);
+    chunk.emit_call(concat_idx, 2, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, text_slot, line);
+}
+
+fn emit_guid_text_from_bytes(chunks: &mut Vec<Chunk>, current: usize, bytes_slot: u16, line: u32) -> u16 {
+    let chunk = &mut chunks[current];
+    let text_slot = reserve_slot(chunk);
+    push_const(chunk, Value::String(Arc::from("")), line);
+    chunk.emit_op_u16(Op::LOCAL_SET, text_slot, line);
+    for index in [3, 2, 1, 0] {
+        append_guid_byte_hex(chunk, text_slot, bytes_slot, index, line);
+    }
+    append_guid_dash(chunk, text_slot, line);
+    for index in [5, 4] {
+        append_guid_byte_hex(chunk, text_slot, bytes_slot, index, line);
+    }
+    append_guid_dash(chunk, text_slot, line);
+    for index in [7, 6] {
+        append_guid_byte_hex(chunk, text_slot, bytes_slot, index, line);
+    }
+    append_guid_dash(chunk, text_slot, line);
+    for index in [8, 9] {
+        append_guid_byte_hex(chunk, text_slot, bytes_slot, index, line);
+    }
+    append_guid_dash(chunk, text_slot, line);
+    for index in [10, 11, 12, 13, 14, 15] {
+        append_guid_byte_hex(chunk, text_slot, bytes_slot, index, line);
+    }
+    text_slot
+}
+
 fn emit_validate_guid_text(
     chunks: &mut [Chunk],
     current: usize,
@@ -434,11 +501,8 @@ pub fn emit_guid_new(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u3
             );
             let chunk = &mut chunks[current];
             chunk.emit_end(line);
-            chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
-            push_const(chunk, Value::F64(0.0), line);
-            chunk.emit_op(Op::ARRAY_GET, line);
-            chunk.emit_call(to_str_idx, 1, line);
-            chunk.emit_op_u16(Op::LOCAL_SET, text_slot, line);
+            let _ = to_str_idx;
+            let text_slot = emit_guid_text_from_bytes(chunks, current, value_slot, line);
             emit_wrap_guid_with_bytes_from_slots(chunks, current, text_slot, value_slot, line);
             chunks[current].emit_else(line);
             chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
@@ -487,8 +551,10 @@ pub fn emit_guid_to_byte_array(chunks: &mut [Chunk], current: usize, line: u32) 
         Dest::Stack,
         line,
     );
-    for _ in 0..15 {
-        push_const(chunk, Value::F64(0.0), line);
+    let text_slot = reserve_slot(chunk);
+    chunk.emit_op_u16(Op::LOCAL_SET, text_slot, line);
+    for offset in [6, 4, 2, 0, 11, 9, 16, 14, 19, 21, 24, 26, 28, 30, 32, 34] {
+        emit_guid_text_pair_to_byte(chunk, text_slot, offset, line);
     }
     collections::emit_array_new(chunks, current, 16, line);
     chunks[current].emit_else(line);

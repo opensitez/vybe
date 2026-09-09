@@ -201,7 +201,7 @@ fn emit_finalize_uri(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
     struct_get(chunk, "port", line);
-    host::emit(chunk, "ecma:number", "parseInt", 1, line);
+    host::emit(chunk, "ecma:number", "Number", 1, line);
     struct_set_drop(chunk, "Port", line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
@@ -379,6 +379,12 @@ pub fn emit_uri_new(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32
 
 pub fn emit_uri_to_string(chunks: &mut [Chunk], current: usize, line: u32) {
     struct_get(&mut chunks[current], "href", line);
+}
+
+pub fn emit_uri_port(chunks: &mut [Chunk], current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    struct_get(chunk, "port", line);
+    host::emit(chunk, "ecma:number", "Number", 1, line);
 }
 
 /// `Uri.EscapeDataString` — RFC 3986 percent-encoding.

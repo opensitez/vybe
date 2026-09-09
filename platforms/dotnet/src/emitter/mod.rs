@@ -481,6 +481,14 @@ impl DotnetSurface {
                 });
             }
         }
+        if requested_short.eq_ignore_ascii_case("Uri")
+            && !want_setter
+            && property_name.eq_ignore_ascii_case("Port")
+        {
+            return Some(InstancePropertyTarget::Common {
+                emit: "dotnet.uri_port".to_string(),
+            });
+        }
         if matches!(
             requested_short.to_ascii_lowercase().as_str(),
             "list" | "arraylist"
@@ -547,6 +555,7 @@ impl DotnetSurface {
             }
             _ => return None,
         };
+        let interface_name = interface_name.to_lowercase();
 
         self.component_descriptor.exports.iter().find_map(|export| {
             let ComponentItemKind::Class(class) = &export.kind else {
@@ -2088,6 +2097,9 @@ pub fn static_method_return_type(class_name: &str, method_name: &str) -> Option<
     }
     if class.eq_ignore_ascii_case("XNode") && method_name.eq_ignore_ascii_case("DeepEquals") {
         return Some("Boolean");
+    }
+    if class.eq_ignore_ascii_case("Regex") && method_name.eq_ignore_ascii_case("Matches") {
+        return Some("MatchCollection");
     }
     if class.eq_ignore_ascii_case("XDocument")
         && matches!(method_name.to_ascii_lowercase().as_str(), "parse" | "load")

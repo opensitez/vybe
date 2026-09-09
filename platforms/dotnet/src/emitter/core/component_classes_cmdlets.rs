@@ -7,6 +7,73 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
     vec![
         DotnetClassExport::new(
             "dotnet.System.Management.Automation",
+            ClassType::new("PowerShellStringAdapter")
+                .with_method(MethodDef::static_method(
+                    "Trim",
+                    1,
+                    MethodBody::Common("strings.trim".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "TrimStart",
+                    1,
+                    MethodBody::Common("str_trim_start".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "TrimEnd",
+                    1,
+                    MethodBody::Common("str_trim_end".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Trim",
+                    2,
+                    MethodBody::Common("dotnet.string_trim_chars".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "TrimStart",
+                    2,
+                    MethodBody::Common("dotnet.string_trim_start_chars".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "TrimEnd",
+                    2,
+                    MethodBody::Common("dotnet.string_trim_end_chars".into()),
+                )),
+        ),
+        DotnetClassExport::new(
+            "dotnet.System.Management.Automation",
+            ClassType::new("PowerShellRandomAdapter")
+                .with_method(MethodDef::static_method(
+                    "Choice",
+                    1,
+                    MethodBody::Common("dotnet.ps_random_choice".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Sample",
+                    2,
+                    MethodBody::Common("dotnet.ps_random_sample".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Shuffle",
+                    1,
+                    MethodBody::Common("dotnet.ps_random_shuffle".into()),
+                )),
+        ),
+        DotnetClassExport::new(
+            "dotnet.System.Management.Automation",
+            ClassType::new("PowerShellFormatAdapter")
+                .with_method(MethodDef::static_method(
+                    "ToString",
+                    2,
+                    MethodBody::Common("dotnet.ps_format_to_string".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "ToString",
+                    3,
+                    MethodBody::Common("dotnet.ps_format_to_string".into()),
+                )),
+        ),
+        DotnetClassExport::new(
+            "dotnet.System.Management.Automation",
             ClassType::new("PSSerializer")
                 .with_parent("Object")
                 .with_method(MethodDef::static_method(

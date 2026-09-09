@@ -620,6 +620,7 @@ fn assign_member(local: &str, field_name: &str, value: Expression) -> Statement 
 // stays only until the VB walker stops splicing it.
 
 use vybe_compiler::primitives::class_slots::{self, Dest, ObjSource, ValueSource};
+use vybe_compiler::primitives::collections;
 use vybe_compiler::primitives::errors;
 use vybe_compiler::primitives::functions::create_function_chunk;
 use vybe_compiler::primitives::object::emit_bind_method;
@@ -865,6 +866,7 @@ fn emit_safehandle_instance(
     line: u32,
 ) {
     let chunk = &mut chunks[current];
+    let target_is_derived = target.is_some();
     // `target` is the receiver a derived constructor allocated (the `#into`
     // form): it keeps its own type and is initialised in place.
     let obj = match target {
@@ -918,15 +920,17 @@ fn emit_safehandle_instance(
         emit_safehandle_set_handle_as_invalid,
         line,
     );
-    bind_method(
-        chunks,
-        current,
-        obj,
-        "ReleaseHandle",
-        0,
-        emit_safehandle_release_handle,
-        line,
-    );
+    if !target_is_derived {
+        bind_method(
+            chunks,
+            current,
+            obj,
+            "ReleaseHandle",
+            0,
+            emit_safehandle_release_handle,
+            line,
+        );
+    }
     bind_method(
         chunks,
         current,
@@ -1106,8 +1110,9 @@ pub fn emit_safehandle_release_handle(chunks: &mut Vec<Chunk>, current: usize, l
 /// handle cannot be referenced.
 pub fn emit_safehandle_dangerous_add_ref(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     let chunk = &mut chunks[current];
+    let _success = reserve(chunk);
     let obj = reserve(chunk);
-    chunk.emit_op(Op::DROP, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, _success, line);
     chunk.emit_op_u16(Op::LOCAL_SET, obj, line);
     get_field(chunk, obj, "IsClosed", line);
     ops::emit_dyn_to_bool(chunk, line);
@@ -1122,7 +1127,10 @@ pub fn emit_safehandle_dangerous_add_ref(chunks: &mut Vec<Chunk>, current: usize
     let chunk = &mut chunks[current];
     errors::emit_throw(chunk, line);
     chunk.emit_end(line);
-    push_void(chunk, line);
+    let pack_base = chunks[current].alloc_scratch(2);
+    push_void(&mut chunks[current], line);
+    chunks[current].emit_bool_const(true, line);
+    collections::emit_pack_n(chunks, current, 2, pack_base, line);
 }
 
 pub fn emit_safehandle_dangerous_release(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
@@ -1140,6 +1148,15 @@ pub fn emit_safehandle_dispose(chunks: &mut Vec<Chunk>, current: usize, line: u3
     ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_op(Op::I32_EQZ, line);
     chunk.emit_if(line);
+    get_field(chunk, obj, "__owns_handle", line);
+    ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if(line);
+    get_field(chunk, obj, "ReleaseHandle", line);
+    chunk.emit_op_u16(Op::LOCAL_GET, obj, line);
+    vybe_compiler::primitives::callable::emit_direct_invoke(chunks, current, 1, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_end(line);
+    let chunk = &mut chunks[current];
     set_bool(chunk, obj, "IsClosed", true, line);
     chunk.emit_end(line);
     push_void(chunk, line);

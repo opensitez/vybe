@@ -60,6 +60,7 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 ("Sort", 0, "dotnet.array_sort"),
                 ("Reverse", 0, "collections.reverse"),
                 ("ToArray", 0, "collections.clone"),
+                ("AsReadOnly", 0, "collections.identity"),
                 ("Item", 1, "dotnet.list_get_checked"),
                 ("Insert", 2, "collections.insert"),
                 ("AddRange", 1, "dotnet.list_add_range"),
