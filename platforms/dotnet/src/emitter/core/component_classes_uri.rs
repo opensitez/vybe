@@ -66,6 +66,42 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
         ),
         DotnetClassExport::new(
             "dotnet.System",
+            ClassType::new("UriBuilder")
+                .with_constructor(
+                    ConstructorDef::new(0).with_common_backing("dotnet.uri_builder_new"),
+                )
+                .with_constructor(
+                    ConstructorDef::new(1).with_common_backing("dotnet.uri_builder_new"),
+                )
+                .with_field("Scheme")
+                .with_field("scheme")
+                .with_field("Host")
+                .with_field("host")
+                .with_field("Port")
+                .with_field("port")
+                .with_field("Path")
+                .with_field("path")
+                .with_field("Query")
+                .with_field("query")
+                .with_field("Fragment")
+                .with_field("fragment")
+                .with_field("UserName")
+                .with_field("username")
+                .with_field("Password")
+                .with_field("password")
+                .with_method(MethodDef::new(
+                    "Uri",
+                    0,
+                    MethodBody::Common("dotnet.uri_builder_uri".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "ToString",
+                    0,
+                    MethodBody::Common("dotnet.uri_builder_to_string".into()),
+                )),
+        ),
+        DotnetClassExport::new(
+            "dotnet.System",
             ClassType::new("UriKind")
                 .with_method(MethodDef::static_method(
                     "RelativeOrAbsolute",

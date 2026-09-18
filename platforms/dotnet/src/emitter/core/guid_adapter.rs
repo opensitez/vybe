@@ -321,7 +321,12 @@ fn append_guid_dash(chunk: &mut Chunk, text_slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_SET, text_slot, line);
 }
 
-fn emit_guid_text_from_bytes(chunks: &mut Vec<Chunk>, current: usize, bytes_slot: u16, line: u32) -> u16 {
+fn emit_guid_text_from_bytes(
+    chunks: &mut Vec<Chunk>,
+    current: usize,
+    bytes_slot: u16,
+    line: u32,
+) -> u16 {
     let chunk = &mut chunks[current];
     let text_slot = reserve_slot(chunk);
     push_const(chunk, Value::String(Arc::from("")), line);

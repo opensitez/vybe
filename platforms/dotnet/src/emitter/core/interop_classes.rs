@@ -161,6 +161,24 @@ pub(super) fn method(
     plain_or_virtual_method(name, params, body, is_sub, false)
 }
 
+fn destructor_method(name: &str, body: Vec<Statement>) -> ClassMember {
+    ClassMember::Method(Box::new(Statement::new(StmtKind::FunctionDecl {
+        name: name.into(),
+        params: Vec::new(),
+        return_type: None,
+        body,
+        modifiers: Modifiers {
+            protocol_slot: Some(vybe_ast::ProtocolSlot::Destructor),
+            is_destructor: true,
+            ..Modifiers::default()
+        },
+        handles: Vec::new(),
+        is_async: false,
+        is_generator: false,
+        is_sub: true,
+    })))
+}
+
 /// ⛔ VIRTUAL ONLY WHERE A DERIVED CLASS ACTUALLY OVERRIDES. Marking every
 /// synthesized method `Overridable` put its body in an accessor-shaped chunk
 /// where `Me` does not reach the bound receiver: `GCHandle.Free` read
@@ -412,7 +430,7 @@ fn safe_handle_class() -> Statement {
             method("DangerousRelease", Vec::new(), Vec::new(), true),
             method("Dispose", Vec::new(), dispose_body.clone(), true),
             method("Close", Vec::new(), dispose_body.clone(), true),
-            method("Finalize", Vec::new(), dispose_body, true),
+            destructor_method("Finalize", dispose_body),
             // ⛔ THE FINALISER IS WHY `SafeHandle` EXISTS. A handle nobody
             // disposed must still be released when the collector reaches it —
             // in .NET the finaliser runs `Dispose(false)`, which runs
@@ -698,7 +716,7 @@ fn bind_method(
     arity: u8,
     body: fn(&mut Vec<Chunk>, usize, u32),
     line: u32,
-) {
+) -> usize {
     let mut method = create_function_chunk(
         &format!("__dotnet_interop_{}", name.to_ascii_lowercase()),
         1 + arity,
@@ -716,6 +734,7 @@ fn bind_method(
     if folded != name {
         emit_bind_method(&mut chunks[current], obj, &folded, idx, line);
     }
+    idx
 }
 
 /// `GCHandle.Alloc(value[, handleType])` → a handle whose `Target` is the
@@ -967,13 +986,20 @@ fn emit_safehandle_instance(
         emit_safehandle_dispose,
         line,
     );
-    bind_method(
+    let finalize_idx = bind_method(
         chunks,
         current,
         obj,
         "Finalize",
         0,
         emit_safehandle_dispose,
+        line,
+    );
+    emit_bind_method(
+        &mut chunks[current],
+        obj,
+        &vybe_ast::protocol_slot_key(vybe_ast::ProtocolSlot::Destructor),
+        finalize_idx,
         line,
     );
     chunks[current].emit_op_u16(Op::LOCAL_GET, obj, line);

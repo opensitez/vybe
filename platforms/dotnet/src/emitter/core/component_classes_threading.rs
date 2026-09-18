@@ -90,6 +90,11 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 "WhenAnyCompleted",
                 n,
                 MethodBody::Common("dotnet.task_when_any_completed".into()),
+            ))
+            .with_method(MethodDef::static_method(
+                "WhenAnyAwaited",
+                n,
+                MethodBody::Common("dotnet.task_when_any_awaited".into()),
             ));
     }
     vec![
@@ -134,8 +139,18 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     MethodBody::Common("dotnet.tcs_set_canceled".into()),
                 ))
                 .with_method(MethodDef::new(
+                    "SetCanceled",
+                    1,
+                    MethodBody::Common("dotnet.tcs_set_canceled".into()),
+                ))
+                .with_method(MethodDef::new(
                     "TrySetCanceled",
                     0,
+                    MethodBody::Common("dotnet.tcs_try_set_canceled".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "TrySetCanceled",
+                    1,
                     MethodBody::Common("dotnet.tcs_try_set_canceled".into()),
                 )),
         ),
@@ -333,12 +348,40 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 )),
         ),
         DotnetClassExport::new(
+            "dotnet.System.Threading",
+            ClassType::new("SendOrPostCallback"),
+        ),
+        DotnetClassExport::new(
+            "dotnet.System.Threading",
+            ClassType::new("SynchronizationContext")
+                .with_constructor(ConstructorDef::new(0).with_common_backing("object.new"))
+                .with_method(MethodDef::static_method(
+                    "Current",
+                    0,
+                    MethodBody::Common("dotnet.synchronization_context_current".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "SetSynchronizationContext",
+                    1,
+                    MethodBody::Common("dotnet.synchronization_context_set".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "Post",
+                    2,
+                    MethodBody::Common("dotnet.synchronization_context_post".into()),
+                )),
+        ),
+        DotnetClassExport::new(
             "dotnet.System.Threading.Tasks",
-            ClassType::new("ValueTask").with_method(MethodDef::new(
-                "AsTask",
-                0,
-                MethodBody::Common("dotnet.value_task_as_task".into()),
-            )),
+            ClassType::new("ValueTask")
+                .with_constructor(
+                    ConstructorDef::new(1).with_common_backing("dotnet.value_task_new"),
+                )
+                .with_method(MethodDef::new(
+                    "AsTask",
+                    0,
+                    MethodBody::Common("dotnet.value_task_as_task".into()),
+                )),
         ),
         // `AutoResetEvent` / `ManualResetEvent`. Both arities of `WaitOne` are
         // declared because the dotnet INSTANCE lookup matches name AND exact
@@ -381,6 +424,16 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     "IsAlive",
                     0,
                     MethodBody::Common("dotnet.thread_is_alive".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "IsBackground",
+                    0,
+                    MethodBody::Common("dotnet.thread_is_background".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "__set_IsBackground",
+                    1,
+                    MethodBody::Common("dotnet.thread_set_is_background".into()),
                 ))
                 .with_method(MethodDef::static_method(
                     "CurrentThread",
@@ -480,6 +533,34 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     0,
                     MethodBody::Common("dotnet.threading_timer_dispose".into()),
                 )),
+        ),
+        DotnetClassExport::new(
+            "dotnet.System.Timers",
+            ClassType::new("Timer")
+                .with_constructor(
+                    ConstructorDef::new(1).with_common_backing("dotnet.timers_timer_new"),
+                )
+                .with_method(MethodDef::new(
+                    "Start",
+                    0,
+                    MethodBody::Common("dotnet.timers_timer_start".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "Stop",
+                    0,
+                    MethodBody::Common("dotnet.timers_timer_stop".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "Dispose",
+                    0,
+                    MethodBody::Common("dotnet.timers_timer_dispose".into()),
+                ))
+                .with_field("Interval")
+                .with_field("interval")
+                .with_field("AutoReset")
+                .with_field("autoreset")
+                .with_field("Enabled")
+                .with_field("enabled"),
         ),
         DotnetClassExport::new(
             "dotnet.System.Threading",

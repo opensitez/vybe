@@ -35,7 +35,7 @@ use vybe_compiler::primitives::class_slots::{self, Dest, ObjSource, ValueSource}
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
 
-use super::object_fields::field_slot;
+use super::object_fields::{field_slot, set_both_spellings};
 
 const TYPE_KEY: &str = "__type";
 const PROMISE_KEY: &str = "__tcs_promise";
@@ -200,6 +200,7 @@ pub fn emit_tcs_settle(
     current: usize,
     settle: Settle,
     try_variant: bool,
+    argc: u8,
     line: u32,
 ) {
     let (obj_slot, value_slot) = {
@@ -210,8 +211,12 @@ pub fn emit_tcs_settle(
 
     {
         if settle == Settle::Canceled {
-            // `SetCanceled()` carries no value — the rejection reason is the
-            // cancellation itself, minted here.
+            // `argc` includes the receiver for resolved instance methods. The
+            // optional token overload is therefore present only past arity 1;
+            // `SetCanceled()` itself must keep the receiver on the stack.
+            if argc > 1 {
+                chunks[current].emit_op(Op::DROP, line);
+            }
             chunks[current].emit_op_u16(Op::LOCAL_SET, obj_slot, line);
             crate::emitter::core::exceptions::emit_new_typed(
                 chunks,
@@ -277,6 +282,47 @@ pub fn emit_tcs_settle(
         // `resolve`/`reject` answer undefined — the settle is the point.
         chunk.emit_op(Op::DROP, line);
 
+        lget(chunk, obj_slot, line);
+        class_slots::emit_class_get(
+            chunk,
+            ObjSource::Stack,
+            &field_slot(PROMISE_KEY),
+            Dest::Stack,
+            line,
+        );
+        chunk.emit_string_const(
+            if settle == Settle::Result {
+                "fulfilled"
+            } else {
+                "rejected"
+            },
+            line,
+        );
+        class_slots::emit_class_set(
+            chunk,
+            ObjSource::Stack,
+            &field_slot("__state"),
+            ValueSource::Stack,
+            line,
+        );
+
+        lget(chunk, obj_slot, line);
+        class_slots::emit_class_get(
+            chunk,
+            ObjSource::Stack,
+            &field_slot(PROMISE_KEY),
+            Dest::Stack,
+            line,
+        );
+        lget(chunk, value_slot, line);
+        class_slots::emit_class_set(
+            chunk,
+            ObjSource::Stack,
+            &field_slot("__value"),
+            ValueSource::Stack,
+            line,
+        );
+
         // ⛔ THE SETTLED VALUE IS STAMPED, NOT ONLY RESOLVED. `t.Result` is
         // lowered by the shared compiler as "read the `Result` slot, and AWAIT
         // the task when that slot is undefined" — and awaiting a
@@ -292,14 +338,8 @@ pub fn emit_tcs_settle(
                 Dest::Stack,
                 line,
             );
-            lget(chunk, value_slot, line);
-            class_slots::emit_class_set(
-                chunk,
-                ObjSource::Stack,
-                &field_slot("Result"),
-                ValueSource::Stack,
-                line,
-            );
+            chunk.emit_op_u16(Op::LOCAL_SET, obj_slot, line);
+            set_both_spellings(chunk, obj_slot, value_slot, "Result", line);
         }
 
         // ⛔ CANCELLATION HAS TO BE CARRIED, NOT DERIVED. ECMA has ONE

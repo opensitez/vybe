@@ -489,6 +489,14 @@ impl DotnetSurface {
                 emit: "dotnet.uri_port".to_string(),
             });
         }
+        if requested_short.eq_ignore_ascii_case("UriBuilder")
+            && !want_setter
+            && property_name.eq_ignore_ascii_case("Uri")
+        {
+            return Some(InstancePropertyTarget::Common {
+                emit: "dotnet.uri_builder_uri".to_string(),
+            });
+        }
         if matches!(
             requested_short.to_ascii_lowercase().as_str(),
             "list" | "arraylist"
@@ -685,6 +693,14 @@ fn dotnet_instance_method_return_type(class_name: &str, method_name: &str) -> Op
         && method_name.eq_ignore_ascii_case("CreateSelfSigned")
     {
         return Some("X509Certificate2".into());
+    }
+    if class_head.eq_ignore_ascii_case("Aes")
+        && matches!(
+            method_name.to_ascii_lowercase().as_str(),
+            "createencryptor" | "createdecryptor"
+        )
+    {
+        return Some("AesTransform".into());
     }
     if (class_head.eq_ignore_ascii_case("Memory")
         || class_head.eq_ignore_ascii_case("ReadOnlyMemory"))
@@ -2251,8 +2267,25 @@ pub fn static_method_return_type(class_name: &str, method_name: &str) -> Option<
             _ => None,
         };
     }
-    if class.eq_ignore_ascii_case("Convert") && method_name.eq_ignore_ascii_case("ToDateTime") {
-        return Some("DateTime");
+    if class.eq_ignore_ascii_case("Convert") {
+        return match method_name.to_ascii_lowercase().as_str() {
+            "toboolean" => Some("Boolean"),
+            "tobyte" => Some("Byte"),
+            "tosbyte" => Some("SByte"),
+            "tochar" => Some("Char"),
+            "todatetime" => Some("DateTime"),
+            "todecimal" => Some("Decimal"),
+            "todouble" => Some("Double"),
+            "tosingle" | "tohalf" => Some("Single"),
+            "toint16" => Some("Int16"),
+            "touint16" => Some("UInt16"),
+            "toint32" | "toint" => Some("Int32"),
+            "touint32" => Some("UInt32"),
+            "toint64" => Some("Int64"),
+            "touint64" => Some("UInt64"),
+            "tostring" => Some("String"),
+            _ => None,
+        };
     }
     if class.eq_ignore_ascii_case("File") {
         return match method_name.to_ascii_lowercase().as_str() {
@@ -2363,6 +2396,25 @@ pub fn static_method_return_type(class_name: &str, method_name: &str) -> Option<
 
 pub fn static_property_type(class_name: &str, property_name: &str) -> Option<&'static str> {
     let class = class_name.rsplit('.').next().unwrap_or(class_name);
+    if class.eq_ignore_ascii_case("Environment") {
+        return match property_name.to_ascii_lowercase().as_str() {
+            "currentdirectory" | "newline" | "machinename" | "osversion" | "commandline"
+            | "userdomainname" | "username" | "version" | "systemdirectory" => Some("String"),
+            "currentmanagedthreadid"
+            | "exitcode"
+            | "processorcount"
+            | "tickcount"
+            | "systempagesize" => Some("Int32"),
+            "tickcount64" | "workingset" => Some("Int64"),
+            "hasshutdownstarted" | "is64bitoperatingsystem" | "is64bitprocess" => Some("Boolean"),
+            _ => None,
+        };
+    }
+    if class.eq_ignore_ascii_case("AppDomain")
+        && property_name.eq_ignore_ascii_case("CurrentDomain")
+    {
+        return Some("AppDomain");
+    }
     if class.eq_ignore_ascii_case("DateTime")
         && matches!(
             property_name.to_ascii_lowercase().as_str(),
@@ -2494,6 +2546,7 @@ pub fn declared_instance_property_types(
         ],
         // The same for `DateTime` itself.
         "datetime" => &[("Date", "DateTime"), ("TimeOfDay", "TimeSpan")],
+        "appdomain" => &[("BaseDirectory", "String"), ("FriendlyName", "String")],
         // `MemoryStream` accessors are computed in `tree_register`; their
         // declared types keep chains like `lazy.Value.Length.ToString()`
         // resolving through the same dotnet surface instead of falling back to
@@ -2512,6 +2565,7 @@ pub fn declared_instance_property_types(
         // even though `Task` declares both, because the receiver never said
         // what it was.
         "taskcompletionsource" => &[("Task", "Task")],
+        "uribuilder" => &[("Uri", "Uri")],
         // ⛔ THE RAISE SIDE WAS BUILT AND THE SUBSCRIBE SIDE HAD NO TYPE.
         //
         // `emit_observable_collection_changed` already reads a `CollectionChanged`
@@ -2531,6 +2585,7 @@ pub fn declared_instance_property_types(
             ("CollectionChanged", "NotifyCollectionChangedEventHandler"),
             ("PropertyChanged", "PropertyChangedEventHandler"),
         ],
+        "canceleventargs" => &[("Cancel", "Boolean")],
         _ => &[],
     }
 }

@@ -134,6 +134,11 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     1,
                     MethodBody::Common("dotnet.runtime_to_string".into()),
                 ))
+                .with_method(MethodDef::new(
+                    "ToString",
+                    2,
+                    MethodBody::Common("dotnet.runtime_to_string".into()),
+                ))
                 .with_method(MethodDef::static_method(
                     "Parse",
                     2,

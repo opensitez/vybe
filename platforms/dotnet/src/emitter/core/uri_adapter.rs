@@ -6,7 +6,7 @@ use vybe_compiler::primitives::object::emit_bind_method_with_slot;
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
 
-use super::object_fields::field_slot;
+use super::object_fields::{field_slot, set_both_spellings};
 
 fn push_str(chunk: &mut Chunk, value: &str, line: u32) {
     chunk.emit_string_const(value, line);
@@ -37,10 +37,52 @@ fn struct_set_drop(chunk: &mut Chunk, field: &str, line: u32) {
 }
 
 fn set_alias_from_field(chunk: &mut Chunk, obj_slot: u16, src: &str, dest: &str, line: u32) {
-    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+    let value_slot = reserve_slot(chunk);
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
     struct_get(chunk, src, line);
-    struct_set_drop(chunk, dest, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, value_slot, line);
+    set_both_spellings(chunk, obj_slot, value_slot, dest, line);
+}
+
+fn emit_uri_port_value_from_obj(chunk: &mut Chunk, obj_slot: u16, line: u32) {
+    let raw_port = reserve_slot(chunk);
+    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+    struct_get(chunk, "port", line);
+    host::emit(chunk, "ecma:number", "Number", 1, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, raw_port, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, raw_port, line);
+    chunk.emit_i32_const(0, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    chunk.emit_if_value(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+    struct_get(chunk, "protocol", line);
+    push_str(chunk, "https:", line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    chunk.emit_if_value(line);
+    chunk.emit_i32_const(443, line);
+    chunk.emit_else(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+    struct_get(chunk, "protocol", line);
+    push_str(chunk, "http:", line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    chunk.emit_if_value(line);
+    chunk.emit_i32_const(80, line);
+    chunk.emit_else(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, raw_port, line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
+    chunk.emit_else(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, raw_port, line);
+    chunk.emit_end(line);
+}
+
+fn struct_set_drop_both(chunk: &mut Chunk, field: &str, line: u32) {
+    let value_slot = reserve_slot(chunk);
+    let obj_slot = reserve_slot(chunk);
+    chunk.emit_op_u16(Op::LOCAL_SET, value_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, obj_slot, line);
+    set_both_spellings(chunk, obj_slot, value_slot, field, line);
 }
 
 fn bind_uri_methods(chunks: &mut Vec<Chunk>, current: usize, obj_slot: u16, line: u32) {
@@ -184,6 +226,7 @@ fn emit_finalize_uri(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     let obj_slot = reserve_slot(chunk);
     chunk.emit_op_u16(Op::LOCAL_SET, obj_slot, line);
 
+    set_alias_from_field(chunk, obj_slot, "host", "Authority", line);
     set_alias_from_field(chunk, obj_slot, "hostname", "Host", line);
     set_alias_from_field(chunk, obj_slot, "hostname", "host", line);
     set_alias_from_field(chunk, obj_slot, "pathname", "AbsolutePath", line);
@@ -196,13 +239,18 @@ fn emit_finalize_uri(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     push_str(chunk, ":", line);
     push_str(chunk, "", line);
     host::emit(chunk, "ecma:string", "replace", 3, line);
-    struct_set_drop(chunk, "Scheme", line);
+    struct_set_drop_both(chunk, "Scheme", line);
+    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+    struct_get(chunk, "protocol", line);
+    push_str(chunk, ":", line);
+    push_str(chunk, "", line);
+    host::emit(chunk, "ecma:string", "replace", 3, line);
+    struct_set_drop(chunk, "scheme", line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
-    struct_get(chunk, "port", line);
-    host::emit(chunk, "ecma:number", "Number", 1, line);
-    struct_set_drop(chunk, "Port", line);
+    emit_uri_port_value_from_obj(chunk, obj_slot, line);
+    struct_set_drop_both(chunk, "Port", line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
@@ -211,7 +259,7 @@ fn emit_finalize_uri(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
     vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     vybe_compiler::primitives::ops::emit_i32_to_bool(chunk, line);
-    struct_set_drop(chunk, "IsFile", line);
+    struct_set_drop_both(chunk, "IsFile", line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
@@ -224,7 +272,7 @@ fn emit_finalize_uri(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     chunk.emit_else(line);
     push_str(chunk, "Dns", line);
     chunk.emit_end(line);
-    struct_set_drop(chunk, "HostNameType", line);
+    struct_set_drop_both(chunk, "HostNameType", line);
 
     // The rest of `System.Uri`'s read surface, every member a pure function of
     // what WHATWG already parsed. Values checked against pwsh 7.6.4 on
@@ -234,21 +282,20 @@ fn emit_finalize_uri(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     set_alias_from_field(chunk, obj_slot, "href", "AbsoluteUri", line);
     set_alias_from_field(chunk, obj_slot, "href", "OriginalString", line);
     set_alias_from_field(chunk, obj_slot, "href", "__value", line);
-    set_alias_from_field(chunk, obj_slot, "host", "Authority", line);
 
     // `Uri` is what `GetType().Name` owes, whatever spelling reached the cast.
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
     push_str(chunk, "Uri", line);
-    struct_set_drop(chunk, "__type", line);
+    struct_set_drop_both(chunk, "__type", line);
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
     push_str(chunk, "Uri", line);
-    struct_set_drop(chunk, "name", line);
+    struct_set_drop_both(chunk, "name", line);
 
     // A parsed absolute URL is absolute by construction; the relative form
     // never reaches this finalizer.
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
     vybe_compiler::primitives::instructions::core_wasm::bool_const(chunk, line, true);
-    struct_set_drop(chunk, "IsAbsoluteUri", line);
+    struct_set_drop_both(chunk, "IsAbsoluteUri", line);
 
     // `UserInfo` is `user[:pass]`, and EMPTY when there is no user — not
     // `":"`, which a bare concatenation would give.
@@ -276,7 +323,7 @@ fn emit_finalize_uri(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     chunk.emit_end(line);
     vybe_compiler::primitives::strings::emit_concat(chunk, 2, line);
     chunk.emit_end(line);
-    struct_set_drop(chunk, "UserInfo", line);
+    struct_set_drop_both(chunk, "UserInfo", line);
 
     // `PathAndQuery` keeps the `?`, which is how `search` already spells it.
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
@@ -285,7 +332,7 @@ fn emit_finalize_uri(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
     struct_get(chunk, "search", line);
     vybe_compiler::primitives::strings::emit_concat(chunk, 2, line);
-    struct_set_drop(chunk, "PathAndQuery", line);
+    struct_set_drop_both(chunk, "PathAndQuery", line);
 
     // Loopback is the host, not the address family: .NET answers True for
     // `127.0.0.1`, `localhost` and `::1`.
@@ -296,7 +343,7 @@ fn emit_finalize_uri(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     host::emit(chunk, "ecma:regexp", "test", 2, line);
     vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     vybe_compiler::primitives::ops::emit_i32_to_bool(chunk, line);
-    struct_set_drop(chunk, "IsLoopback", line);
+    struct_set_drop_both(chunk, "IsLoopback", line);
 
     // `Segments` keeps each separator: `/a/b/c/` is `/`, `a/`, `b/`, `c/`, and
     // `/a/b` is `/`, `a/`, `b`. One global match expresses both — a run up to
@@ -312,43 +359,328 @@ fn emit_finalize_uri(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     // `match` with the global flag answers an array of the matched STRINGS,
     // which is the shape `Segments` is; `matchAll` answers match objects.
     host::emit(chunk, "ecma:regexp", "match", 2, line);
-    struct_set_drop(chunk, "Segments", line);
+    struct_set_drop_both(chunk, "Segments", line);
 
     bind_uri_methods(chunks, current, obj_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, obj_slot, line);
 }
 
-pub fn emit_uri_new(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
-    let url_idx = chunks[current].add_import("node:url", "URL");
+fn emit_relative_uri_from_slot(chunks: &mut Vec<Chunk>, current: usize, text_slot: u16, line: u32) {
     let chunk = &mut chunks[current];
+    class_slots::emit_class_alloc(chunk, line);
+    let uri_slot = reserve_slot(chunk);
+    chunk.emit_op_u16(Op::LOCAL_SET, uri_slot, line);
+
+    for field in ["href", "OriginalString", "__value", "PathAndQuery"] {
+        set_both_spellings(chunk, uri_slot, text_slot, field, line);
+    }
+
+    chunk.emit_op_u16(Op::LOCAL_GET, uri_slot, line);
+    push_str(chunk, "Uri", line);
+    struct_set_drop_both(chunk, "__type", line);
+    chunk.emit_op_u16(Op::LOCAL_GET, uri_slot, line);
+    push_str(chunk, "Uri", line);
+    struct_set_drop_both(chunk, "name", line);
+    chunk.emit_op_u16(Op::LOCAL_GET, uri_slot, line);
+    vybe_compiler::primitives::instructions::core_wasm::bool_const(chunk, line, false);
+    struct_set_drop_both(chunk, "IsAbsoluteUri", line);
+
+    bind_uri_tostring_only(chunks, current, uri_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, uri_slot, line);
+}
+
+fn set_builder_defaults(chunk: &mut Chunk, builder_slot: u16, line: u32) {
+    let value = reserve_slot(chunk);
+    for (field, text) in [
+        ("Scheme", "http"),
+        ("Host", "localhost"),
+        ("Path", "/"),
+        ("Query", ""),
+        ("Fragment", ""),
+        ("UserName", ""),
+        ("Password", ""),
+    ] {
+        push_str(chunk, text, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, value, line);
+        set_both_spellings(chunk, builder_slot, value, field, line);
+    }
+    chunk.emit_i32_const(-1, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, value, line);
+    set_both_spellings(chunk, builder_slot, value, "Port", line);
+    push_str(chunk, "UriBuilder", line);
+    chunk.emit_op_u16(Op::LOCAL_SET, value, line);
+    set_both_spellings(chunk, builder_slot, value, "__type", line);
+    set_both_spellings(chunk, builder_slot, value, "name", line);
+}
+
+fn copy_uri_field_to_builder(
+    chunk: &mut Chunk,
+    builder_slot: u16,
+    uri_slot: u16,
+    uri_field: &str,
+    builder_field: &str,
+    line: u32,
+) {
+    let value = reserve_slot(chunk);
+    chunk.emit_op_u16(Op::LOCAL_GET, uri_slot, line);
+    struct_get(chunk, uri_field, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, value, line);
+    set_both_spellings(chunk, builder_slot, value, builder_field, line);
+}
+
+fn emit_uri_builder_from_uri_slot(
+    chunks: &mut Vec<Chunk>,
+    current: usize,
+    uri_slot: u16,
+    line: u32,
+) {
+    let chunk = &mut chunks[current];
+    class_slots::emit_class_alloc(chunk, line);
+    let builder_slot = reserve_slot(chunk);
+    chunk.emit_op_u16(Op::LOCAL_SET, builder_slot, line);
+    set_builder_defaults(chunk, builder_slot, line);
+    copy_uri_field_to_builder(chunk, builder_slot, uri_slot, "Scheme", "Scheme", line);
+    copy_uri_field_to_builder(chunk, builder_slot, uri_slot, "Host", "Host", line);
+    copy_uri_field_to_builder(chunk, builder_slot, uri_slot, "Port", "Port", line);
+    copy_uri_field_to_builder(chunk, builder_slot, uri_slot, "AbsolutePath", "Path", line);
+    copy_uri_field_to_builder(chunk, builder_slot, uri_slot, "Query", "Query", line);
+    copy_uri_field_to_builder(chunk, builder_slot, uri_slot, "Fragment", "Fragment", line);
+    chunk.emit_op_u16(Op::LOCAL_GET, builder_slot, line);
+}
+
+fn emit_builder_field(chunk: &mut Chunk, builder_slot: u16, field: &str, line: u32) {
+    chunk.emit_op_u16(Op::LOCAL_GET, builder_slot, line);
+    struct_get(chunk, field, line);
+}
+
+fn emit_prefixed_part(
+    chunk: &mut Chunk,
+    value_slot: u16,
+    prefix: &str,
+    empty_value: &str,
+    line: u32,
+) {
+    chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
+    push_str(chunk, "", line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    chunk.emit_if_value(line);
+    push_str(chunk, empty_value, line);
+    chunk.emit_else(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
+    push_str(chunk, prefix, line);
+    host::emit(chunk, "ecma:string", "startsWith", 2, line);
+    chunk.emit_if_value(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
+    chunk.emit_else(line);
+    push_str(chunk, prefix, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
+    vybe_compiler::primitives::strings::emit_concat(chunk, 2, line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
+}
+
+fn emit_port_part(chunk: &mut Chunk, port_slot: u16, line: u32) {
+    chunk.emit_op_u16(Op::LOCAL_GET, port_slot, line);
+    chunk.emit_i32_const(0, line);
+    vybe_compiler::primitives::ops::emit_dyn_gt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if_value(line);
+    push_str(chunk, ":", line);
+    chunk.emit_op_u16(Op::LOCAL_GET, port_slot, line);
+    vybe_compiler::primitives::strings::emit_to_string(chunk, line);
+    vybe_compiler::primitives::strings::emit_concat(chunk, 2, line);
+    chunk.emit_else(line);
+    push_str(chunk, "", line);
+    chunk.emit_end(line);
+}
+
+fn emit_userinfo_part(chunk: &mut Chunk, username_slot: u16, password_slot: u16, line: u32) {
+    let password_part = reserve_slot(chunk);
+    chunk.emit_op_u16(Op::LOCAL_GET, username_slot, line);
+    push_str(chunk, "", line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    chunk.emit_if_value(line);
+    push_str(chunk, "", line);
+    chunk.emit_else(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, password_slot, line);
+    push_str(chunk, "", line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    chunk.emit_if_value(line);
+    push_str(chunk, "", line);
+    chunk.emit_else(line);
+    push_str(chunk, ":", line);
+    chunk.emit_op_u16(Op::LOCAL_GET, password_slot, line);
+    vybe_compiler::primitives::strings::emit_concat(chunk, 2, line);
+    chunk.emit_end(line);
+    chunk.emit_op_u16(Op::LOCAL_SET, password_part, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, username_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, password_part, line);
+    push_str(chunk, "@", line);
+    vybe_compiler::primitives::strings::emit_concat(chunk, 3, line);
+    chunk.emit_end(line);
+}
+
+fn append_field_part(chunk: &mut Chunk, href_slot: u16, part_slot: u16, line: u32) {
+    chunk.emit_op_u16(Op::LOCAL_GET, href_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, part_slot, line);
+    vybe_compiler::primitives::strings::emit_concat(chunk, 2, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, href_slot, line);
+}
+
+pub fn emit_uri_builder_to_string(chunks: &mut [Chunk], current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    let builder = reserve_slot(chunk);
+    let href = reserve_slot(chunk);
+    let part = reserve_slot(chunk);
+    let port = reserve_slot(chunk);
+    let username = reserve_slot(chunk);
+    let password = reserve_slot(chunk);
+    chunk.emit_op_u16(Op::LOCAL_SET, builder, line);
+
+    emit_builder_field(chunk, builder, "scheme", line);
+    push_str(chunk, "://", line);
+    vybe_compiler::primitives::strings::emit_concat(chunk, 2, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, href, line);
+
+    emit_builder_field(chunk, builder, "username", line);
+    chunk.emit_op_u16(Op::LOCAL_SET, username, line);
+    emit_builder_field(chunk, builder, "password", line);
+    chunk.emit_op_u16(Op::LOCAL_SET, password, line);
+    emit_userinfo_part(chunk, username, password, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, part, line);
+    append_field_part(chunk, href, part, line);
+
+    emit_builder_field(chunk, builder, "host", line);
+    chunk.emit_op_u16(Op::LOCAL_SET, part, line);
+    append_field_part(chunk, href, part, line);
+
+    emit_builder_field(chunk, builder, "port", line);
+    chunk.emit_op_u16(Op::LOCAL_SET, port, line);
+    emit_port_part(chunk, port, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, part, line);
+    append_field_part(chunk, href, part, line);
+
+    emit_builder_field(chunk, builder, "path", line);
+    chunk.emit_op_u16(Op::LOCAL_SET, part, line);
+    emit_prefixed_part(chunk, part, "/", "/", line);
+    chunk.emit_op_u16(Op::LOCAL_SET, part, line);
+    append_field_part(chunk, href, part, line);
+
+    emit_builder_field(chunk, builder, "query", line);
+    chunk.emit_op_u16(Op::LOCAL_SET, part, line);
+    emit_prefixed_part(chunk, part, "?", "", line);
+    chunk.emit_op_u16(Op::LOCAL_SET, part, line);
+    append_field_part(chunk, href, part, line);
+
+    emit_builder_field(chunk, builder, "fragment", line);
+    chunk.emit_op_u16(Op::LOCAL_SET, part, line);
+    emit_prefixed_part(chunk, part, "#", "", line);
+    chunk.emit_op_u16(Op::LOCAL_SET, part, line);
+    append_field_part(chunk, href, part, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, href, line);
+}
+
+pub fn emit_uri_builder_uri(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
+    emit_uri_builder_to_string(chunks, current, line);
+    emit_uri_new(chunks, current, 1, line);
+}
+
+pub fn emit_uri_builder_new(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
     match argc {
-        2 => {
-            let relative_slot = reserve_slot(chunk);
-            let base_slot = reserve_slot(chunk);
-            chunk.emit_op_u16(Op::LOCAL_SET, relative_slot, line);
-            chunk.emit_op_u16(Op::LOCAL_SET, base_slot, line);
-            chunk.emit_op_u16(Op::LOCAL_GET, relative_slot, line);
-            push_str(chunk, "Absolute", line);
-            vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
-            chunk.emit_op_u16(Op::LOCAL_GET, relative_slot, line);
-            push_str(chunk, "Relative", line);
-            vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
-            chunk.emit_op(Op::I32_OR, line);
-            chunk.emit_op_u16(Op::LOCAL_GET, relative_slot, line);
-            push_str(chunk, "RelativeOrAbsolute", line);
-            vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
-            chunk.emit_op(Op::I32_OR, line);
-            chunk.emit_if_value(line);
-            chunk.emit_op_u16(Op::LOCAL_GET, base_slot, line);
-            chunk.emit_call(url_idx, 1, line);
-            chunk.emit_else(line);
-            chunk.emit_op_u16(Op::LOCAL_GET, relative_slot, line);
-            chunk.emit_op_u16(Op::LOCAL_GET, base_slot, line);
-            struct_get(chunk, "href", line);
-            chunk.emit_call(url_idx, 2, line);
-            chunk.emit_end(line);
+        0 => {
+            let chunk = &mut chunks[current];
+            class_slots::emit_class_alloc(chunk, line);
+            let builder = reserve_slot(chunk);
+            chunk.emit_op_u16(Op::LOCAL_SET, builder, line);
+            set_builder_defaults(chunk, builder, line);
+            chunk.emit_op_u16(Op::LOCAL_GET, builder, line);
         }
         _ => {
+            let arg_slot;
+            {
+                let chunk = &mut chunks[current];
+                for _ in 1..argc {
+                    chunk.emit_op(Op::DROP, line);
+                }
+                arg_slot = reserve_slot(chunk);
+                chunk.emit_op_u16(Op::LOCAL_SET, arg_slot, line);
+                chunk.emit_op_u16(Op::LOCAL_GET, arg_slot, line);
+                struct_get(chunk, "__type", line);
+                push_str(chunk, "Uri", line);
+                vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+                chunk.emit_if_value(line);
+            }
+            emit_uri_builder_from_uri_slot(chunks, current, arg_slot, line);
+            {
+                let chunk = &mut chunks[current];
+                chunk.emit_else(line);
+                chunk.emit_op_u16(Op::LOCAL_GET, arg_slot, line);
+            }
+            emit_uri_new(chunks, current, 1, line);
+            let parsed_slot;
+            {
+                let chunk = &mut chunks[current];
+                parsed_slot = reserve_slot(chunk);
+                chunk.emit_op_u16(Op::LOCAL_SET, parsed_slot, line);
+            }
+            emit_uri_builder_from_uri_slot(chunks, current, parsed_slot, line);
+            chunks[current].emit_end(line);
+        }
+    }
+}
+
+pub fn emit_uri_new(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
+    let url_idx = chunks[current].add_import("node:url", "URL");
+    match argc {
+        2 => {
+            let relative_slot;
+            let base_slot;
+            {
+                let chunk = &mut chunks[current];
+                relative_slot = reserve_slot(chunk);
+                base_slot = reserve_slot(chunk);
+                chunk.emit_op_u16(Op::LOCAL_SET, relative_slot, line);
+                chunk.emit_op_u16(Op::LOCAL_SET, base_slot, line);
+                chunk.emit_op_u16(Op::LOCAL_GET, relative_slot, line);
+                push_str(chunk, "Absolute", line);
+                vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+                chunk.emit_op_u16(Op::LOCAL_GET, relative_slot, line);
+                push_str(chunk, "Relative", line);
+                vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+                chunk.emit_op(Op::I32_OR, line);
+                chunk.emit_op_u16(Op::LOCAL_GET, relative_slot, line);
+                push_str(chunk, "RelativeOrAbsolute", line);
+                vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+                chunk.emit_op(Op::I32_OR, line);
+                chunk.emit_if_value(line);
+                chunk.emit_op_u16(Op::LOCAL_GET, relative_slot, line);
+                push_str(chunk, "Relative", line);
+                vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+                chunk.emit_if_value(line);
+            }
+            emit_relative_uri_from_slot(chunks, current, base_slot, line);
+            {
+                let chunk = &mut chunks[current];
+                chunk.emit_else(line);
+                chunk.emit_op_u16(Op::LOCAL_GET, base_slot, line);
+                chunk.emit_call(url_idx, 1, line);
+            }
+            emit_finalize_uri(chunks, current, line);
+            {
+                let chunk = &mut chunks[current];
+                chunk.emit_end(line);
+                chunk.emit_else(line);
+                chunk.emit_op_u16(Op::LOCAL_GET, relative_slot, line);
+                chunk.emit_op_u16(Op::LOCAL_GET, base_slot, line);
+                struct_get(chunk, "href", line);
+                chunk.emit_call(url_idx, 2, line);
+            }
+            emit_finalize_uri(chunks, current, line);
+            chunks[current].emit_end(line);
+        }
+        _ => {
+            let chunk = &mut chunks[current];
             for _ in 1..argc {
                 chunk.emit_op(Op::DROP, line);
             }
@@ -372,9 +704,9 @@ pub fn emit_uri_new(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32
             chunk.emit_end(line);
             chunk.emit_op_u16(Op::LOCAL_GET, input_slot, line);
             chunk.emit_call(url_idx, 1, line);
+            emit_finalize_uri(chunks, current, line);
         }
     }
-    emit_finalize_uri(chunks, current, line);
 }
 
 pub fn emit_uri_to_string(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -383,8 +715,9 @@ pub fn emit_uri_to_string(chunks: &mut [Chunk], current: usize, line: u32) {
 
 pub fn emit_uri_port(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
-    struct_get(chunk, "port", line);
-    host::emit(chunk, "ecma:number", "Number", 1, line);
+    let obj_slot = reserve_slot(chunk);
+    chunk.emit_op_u16(Op::LOCAL_SET, obj_slot, line);
+    emit_uri_port_value_from_obj(chunk, obj_slot, line);
 }
 
 /// `Uri.EscapeDataString` — RFC 3986 percent-encoding.

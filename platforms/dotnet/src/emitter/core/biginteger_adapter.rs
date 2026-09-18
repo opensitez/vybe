@@ -866,6 +866,26 @@ pub fn emit_remainder(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     emit_binary_static(chunks, current, "rem", line);
 }
 
+pub fn emit_bitwise_and(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
+    emit_binary_static(chunks, current, "and", line);
+}
+
+pub fn emit_bitwise_or(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
+    emit_binary_static(chunks, current, "or", line);
+}
+
+pub fn emit_bitwise_xor(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
+    emit_binary_static(chunks, current, "xor", line);
+}
+
+pub fn emit_left_shift(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
+    emit_binary_static(chunks, current, "shl", line);
+}
+
+pub fn emit_right_shift(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
+    emit_binary_static(chunks, current, "shr", line);
+}
+
 pub fn emit_gcd(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     let base = stash_bigints(chunks, current, 2, line);
     let a = base;

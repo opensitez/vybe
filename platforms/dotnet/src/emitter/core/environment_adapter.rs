@@ -86,6 +86,55 @@ pub fn emit_environment_machine_name(chunks: &mut [Chunk], current: usize, line:
     chunk.emit_call(hostname, 0, line);
 }
 
+pub fn emit_appdomain_current_domain(chunks: &mut [Chunk], current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    let object_new = chunk.add_import("ecma:object", "new");
+    let domain_slot = reserve_slot(chunk);
+    let value_slot = reserve_slot(chunk);
+
+    chunk.emit_call(object_new, 0, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, domain_slot, line);
+
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Local(domain_slot),
+        &field_slot("__type"),
+        ValueSource::ConstStr("AppDomain".to_string()),
+        line,
+    );
+
+    emit_environment_system_directory(chunks, current, line);
+    let chunk = &mut chunks[current];
+    chunk.emit_op_u16(Op::LOCAL_SET, value_slot, line);
+    super::object_fields::set_both_spellings(chunk, domain_slot, value_slot, "BaseDirectory", line);
+
+    push_const(chunk, Value::String(Arc::from("vybex")), line);
+    chunk.emit_op_u16(Op::LOCAL_SET, value_slot, line);
+    super::object_fields::set_both_spellings(chunk, domain_slot, value_slot, "FriendlyName", line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, domain_slot, line);
+}
+
+pub fn emit_appdomain_field(
+    field: &str,
+    chunks: &mut [Chunk],
+    current: usize,
+    argc: u8,
+    line: u32,
+) {
+    let chunk = &mut chunks[current];
+    for _ in 1..argc {
+        chunk.emit_op(Op::DROP, line);
+    }
+    class_slots::emit_class_get(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(field),
+        Dest::Stack,
+        line,
+    );
+}
+
 pub fn emit_environment_new_line(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_const_str(chunks, current, "\n", line);
 }

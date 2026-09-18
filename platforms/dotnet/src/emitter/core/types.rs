@@ -581,6 +581,8 @@ const NAMESPACE_CONSTANTS: &[(&str, f64)] = &[
     // or an `AscW`.
     ("char.maxvalue", 65535.0),
     ("char.minvalue", 0.0),
+    ("system.char.maxvalue", 65535.0),
+    ("system.char.minvalue", 0.0),
     // ⛔ `Long`/`ULong` limits are deliberately ABSENT. Their maxima are not
     // representable in f64: `Int64.MaxValue` would come back as ...808 rather
     // than ...807. A missing constant is a loud failure; a silently-off-by-one

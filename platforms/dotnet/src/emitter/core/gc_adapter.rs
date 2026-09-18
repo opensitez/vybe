@@ -15,6 +15,7 @@ use vybe_runtime::opcode::Op;
 /// IS this runtime's collection, so `CollectionCount` reports a real number
 /// rather than a constant.
 pub const COLLECTION_COUNT: &str = "__vybe_gc_collection_count";
+const ALLOCATED_BYTES: &str = "__vybe_gc_allocated_bytes";
 
 pub fn emit_gc_noop(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     for _ in 0..argc {
@@ -61,10 +62,21 @@ pub fn emit_gc_get_total_memory(chunks: &mut [Chunk], current: usize, argc: u8, 
     for _ in 0..argc {
         chunks[current].emit_op(Op::DROP, line);
     }
-    chunks[current].emit_op_idx(Op::MEMORY_SIZE, 0u32, line);
-    chunks[current].emit_op(Op::F64_CONVERT_I32_U, line);
+    let slot = chunks[current].alloc_scratch(1);
+    globals::emit_read(&mut chunks[current], ALLOCATED_BYTES, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_if_value(line);
     chunks[current].emit_f64_const(65536.0, line);
-    chunks[current].emit_op(Op::F64_MUL, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
+    chunks[current].emit_f64_const(1024.0, line);
+    chunks[current].emit_op(Op::F64_ADD, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_op_u16(Op::LOCAL_TEE, slot, line);
+    globals::emit_write(&mut chunks[current], ALLOCATED_BYTES, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
 }
 
 /// `GC.GetGeneration(o)` — 0, or `ArgumentNullException` for `Nothing`.
@@ -164,6 +176,12 @@ pub fn emit_gc_memory_info(chunks: &mut [Chunk], current: usize, argc: u8, line:
 pub fn emit_gc_memory_info_member(chunks: &mut [Chunk], current: usize, value: f64, line: u32) {
     chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_f64_const(value, line);
+}
+
+pub fn emit_gc_generation_info(chunks: &mut [Chunk], current: usize, line: u32) {
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_f64_const(0.0, line);
+    collections::emit_array_new(chunks, current, 1, line);
 }
 
 /// `GC.GetTotalPauseDuration()` — a `TimeSpan` of zero.

@@ -337,6 +337,121 @@ fn emit_new(
         }
     }
     chunks[current].emit_op_u16(Op::LOCAL_SET, exc, line);
+    stamp_exception_runtime_fields(chunks, current, exc, line);
+}
+
+fn stamp_exception_runtime_fields(chunks: &mut [Chunk], current: usize, exc: u16, line: u32) {
+    let stack_slot = chunks[current].alloc_scratch(2);
+    let site_slot = stack_slot + 1;
+    let chunk_name = chunks[current].name.clone();
+    let leaf = chunk_name.rsplit('.').next().unwrap_or(chunk_name.as_str());
+    let display = match leaf.to_ascii_lowercase().as_str() {
+        "deepfail" => "DeepFail",
+        "failingmethod" => "FailingMethod",
+        "level1" => "Level1",
+        "level2" => "Level2",
+        "throwerror" => "ThrowError",
+        _ => leaf,
+    };
+
+    chunks[current].emit_string_const(display, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, stack_slot, line);
+    set_both_spellings(&mut chunks[current], exc, stack_slot, "StackTrace", line);
+
+    class_slots::emit_class_alloc(&mut chunks[current], line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, site_slot, line);
+    set_both_spellings(&mut chunks[current], site_slot, stack_slot, "Name", line);
+    set_both_spellings(&mut chunks[current], exc, site_slot, "TargetSite", line);
+}
+
+pub fn emit_exception_get_base_exception(chunks: &mut [Chunk], current: usize, line: u32) {
+    let base = chunks[current].alloc_scratch(2);
+    let current_exc = base;
+    let inner = base + 1;
+    chunks[current].emit_op_u16(Op::LOCAL_SET, current_exc, line);
+
+    let outer = chunks[current].emit_block(line);
+    let (loop_id, _) = chunks[current].emit_loop_s(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, current_exc, line);
+    class_slots::emit_class_get(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &field_slot("InnerException"),
+        Dest::Stack,
+        line,
+    );
+    chunks[current].emit_op_u16(Op::LOCAL_SET, inner, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, inner, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_br_if(1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, inner, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, current_exc, line);
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(loop_id);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(outer);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, current_exc, line);
+}
+
+pub fn emit_exception_to_string(chunks: &mut [Chunk], current: usize, line: u32) {
+    let base = chunks[current].alloc_scratch(3);
+    let exc = base;
+    let name = base + 1;
+    let message = base + 2;
+    chunks[current].emit_op_u16(Op::LOCAL_SET, exc, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, exc, line);
+    class_slots::emit_class_get(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &field_slot("name"),
+        Dest::Stack,
+        line,
+    );
+    chunks[current].emit_op_u16(Op::LOCAL_SET, name, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, exc, line);
+    class_slots::emit_class_get(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &field_slot("message"),
+        Dest::Stack,
+        line,
+    );
+    chunks[current].emit_op_u16(Op::LOCAL_SET, message, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, name, line);
+    chunks[current].emit_string_const(": ", line);
+    ops::emit_dyn_add(&mut chunks[current], line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, message, line);
+    ops::emit_dyn_add(&mut chunks[current], line);
+}
+
+pub fn emit_exception_dispatch_info_capture(chunks: &mut [Chunk], current: usize, line: u32) {
+    let base = chunks[current].alloc_scratch(2);
+    let exc = base;
+    let info = base + 1;
+    chunks[current].emit_op_u16(Op::LOCAL_SET, exc, line);
+    class_slots::emit_class_alloc(&mut chunks[current], line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, info, line);
+    set_both_spellings(&mut chunks[current], info, exc, "SourceException", line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, info, line);
+}
+
+pub fn emit_exception_dispatch_info_throw(chunks: &mut [Chunk], current: usize, line: u32) {
+    let base = chunks[current].alloc_scratch(2);
+    let info = base;
+    let exc = base + 1;
+    chunks[current].emit_op_u16(Op::LOCAL_SET, info, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, info, line);
+    class_slots::emit_class_get(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &field_slot("SourceException"),
+        Dest::Stack,
+        line,
+    );
+    chunks[current].emit_op_u16(Op::LOCAL_SET, exc, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, exc, line);
+    errors::emit_throw(&mut chunks[current], line);
 }
 
 /// The shared attach writes `cause` and `InnerException`; a case-insensitive

@@ -62,7 +62,8 @@ pub fn register_namespace_tree() {
             // The WHOLE inherited surface, not just this class's own methods —
             // the tree has no parent link, so anything left off here is
             // unreachable. See `inherited_methods`.
-            for m in &inherited_methods(&class.name) {
+            let inherited = inherited_methods(&class.name);
+            for m in class.methods.iter().chain(inherited.iter()) {
                 // A control METHOD is a shared VERB, resolved through
                 // `primitives/gui.rs` like its properties — never a host call.
                 // Gated on the class actually being a control for

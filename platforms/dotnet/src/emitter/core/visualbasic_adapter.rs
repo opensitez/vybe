@@ -59,6 +59,10 @@ fn emit_host_call(
     chunk.emit_call(idx, argc, line);
 }
 
+pub fn emit_vb_beep(chunks: &mut [Chunk], current: usize, line: u32) {
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+}
+
 fn ensure_global_map(chunks: &mut [Chunk], current: usize, name: &str, line: u32) -> u16 {
     let slot = {
         let chunk = &mut chunks[current];
@@ -485,8 +489,101 @@ pub fn emit_vb_to_string(chunks: &mut [Chunk], current: usize, argc: u8, line: u
     let result_slot = alloc_local(&mut chunks[current]);
     let chunk = &mut chunks[current];
     lset(chunk, value_slot, line);
+    lget(chunk, value_slot, line);
+    vybe_compiler::primitives::instructions::host::emit(chunk, "ecma:value", "typeof", 1, line);
+    chunk.emit_string_const("object", line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    lget(chunk, value_slot, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    vybe_compiler::primitives::ops::emit_dyn_not(chunk, line);
+    chunk.emit_op(Op::I32_AND, line);
+    chunk.emit_if_value(line);
+    class_slots::emit_class_get(
+        chunk,
+        ObjSource::Local(value_slot),
+        &field_slot("__type"),
+        Dest::Stack,
+        line,
+    );
+    chunk.emit_string_const("datetime", line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    chunk.emit_if_value(line);
+    super::datetime_adapter::emit_datetime_display(chunk, value_slot, true, line);
+    chunk.emit_else(line);
     super::console_adapter::emit_dotnet_stringify(chunk, value_slot, result_slot, line);
     lget(chunk, result_slot, line);
+    chunk.emit_end(line);
+    chunk.emit_else(line);
+    super::console_adapter::emit_dotnet_stringify(chunk, value_slot, result_slot, line);
+    lget(chunk, result_slot, line);
+    chunk.emit_end(line);
+}
+
+pub fn emit_vb_chrw(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    if argc != 1 {
+        emit_host_call(chunks, current, "ecma:string", "fromCharCode", argc, line);
+        return;
+    }
+
+    let code_slot = alloc_local(&mut chunks[current]);
+    let chunk = &mut chunks[current];
+    vybe_compiler::primitives::convert::emit_to_int(chunk, line);
+    chunk.emit_i32_const(0xFFFF, line);
+    chunk.emit_op(Op::I32_AND, line);
+    lset(chunk, code_slot, line);
+
+    lget(chunk, code_slot, line);
+    chunk.emit_i32_const(0xD800, line);
+    chunk.emit_op(Op::I32_GE_S, line);
+    lget(chunk, code_slot, line);
+    chunk.emit_i32_const(0xDFFF, line);
+    chunk.emit_op(Op::I32_LE_S, line);
+    chunk.emit_op(Op::I32_AND, line);
+    chunk.emit_if_value(line);
+
+    lget(chunk, code_slot, line);
+    chunk.emit_op(Op::F64_FROM_I32, line);
+
+    chunk.emit_else(line);
+
+    lget(chunk, code_slot, line);
+    let from_char_code = chunk.add_import("ecma:string", "fromCharCode");
+    chunk.emit_call(from_char_code, 1, line);
+
+    chunk.emit_end(line);
+}
+
+pub fn emit_vb_ascw(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    if argc != 1 {
+        emit_host_call(chunks, current, "ecma:number", "Number", argc, line);
+        return;
+    }
+
+    let value_slot = alloc_local(&mut chunks[current]);
+    let chunk = &mut chunks[current];
+    lset(chunk, value_slot, line);
+
+    lget(chunk, value_slot, line);
+    let is_str = chunk.add_import("wasm:js-string", "test");
+    chunk.emit_call(is_str, 1, line);
+    chunk.emit_if_value(line);
+
+    lget(chunk, value_slot, line);
+    chunk.emit_i32_const(0, line);
+    let char_code_at = chunk.add_import("ecma:string", "charCodeAt");
+    chunk.emit_call(char_code_at, 2, line);
+    chunk.emit_i32_const(0xFFFF, line);
+    chunk.emit_op(Op::I32_AND, line);
+    chunk.emit_op(Op::F64_FROM_I32, line);
+
+    chunk.emit_else(line);
+
+    lget(chunk, value_slot, line);
+    let number = chunk.add_import("ecma:number", "Number");
+    chunk.emit_call(number, 1, line);
+    chunk.emit_op(Op::F64_TRUNC, line);
+
+    chunk.emit_end(line);
 }
 
 pub fn emit_vb_str_dup(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {

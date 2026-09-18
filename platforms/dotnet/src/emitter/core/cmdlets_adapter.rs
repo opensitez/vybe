@@ -484,6 +484,54 @@ pub fn register_cmdlet_tree() {
         },
     );
 
+    let mut event_methods = Subtree::new();
+    event_methods.insert(
+        "RegisterObjectEvent".to_string(),
+        NamespaceNode::CommonEmit("dotnet.Cmdlets.Events.RegisterObjectEvent".to_string()),
+    );
+    event_methods.insert(
+        "RegisterEngineEvent".to_string(),
+        NamespaceNode::CommonEmit("dotnet.Cmdlets.Events.RegisterEngineEvent".to_string()),
+    );
+    event_methods.insert(
+        "UnregisterEvent".to_string(),
+        NamespaceNode::CommonEmit("dotnet.Cmdlets.Events.UnregisterEvent".to_string()),
+    );
+    event_methods.insert(
+        "NewEvent".to_string(),
+        NamespaceNode::CommonEmit("dotnet.Cmdlets.Events.NewEvent".to_string()),
+    );
+    event_methods.insert(
+        "GetEvent".to_string(),
+        NamespaceNode::CommonEmit("dotnet.Cmdlets.Events.GetEvent".to_string()),
+    );
+    event_methods.insert(
+        "WaitEvent".to_string(),
+        NamespaceNode::CommonEmit("dotnet.Cmdlets.Events.WaitEvent".to_string()),
+    );
+    event_methods.insert(
+        "ReceiveEvent".to_string(),
+        NamespaceNode::CommonEmit("dotnet.Cmdlets.Events.ReceiveEvent".to_string()),
+    );
+    event_methods.insert(
+        "RemoveEvent".to_string(),
+        NamespaceNode::CommonEmit("dotnet.Cmdlets.Events.RemoveEvent".to_string()),
+    );
+    event_methods.insert(
+        "GetEventSubscriber".to_string(),
+        NamespaceNode::CommonEmit("dotnet.Cmdlets.Events.GetEventSubscriber".to_string()),
+    );
+    cmdlets.insert(
+        "Events".to_string(),
+        NamespaceNode::Type {
+            ctor: None,
+            ctor_call: None,
+            statics: event_methods,
+            methods: Subtree::new(),
+            member_returns: Default::default(),
+        },
+    );
+
     let mut streams_methods = Subtree::new();
     streams_methods.insert(
         "WriteOutput".to_string(),
@@ -795,6 +843,35 @@ fn register_command_spellings(cmdlets: &mut Subtree) {
     alias(cmdlets, "Out-Null", "dotnet.Cmdlets.Utility.OutNull");
     alias(cmdlets, "Out-String", "dotnet.Cmdlets.Utility.OutString");
     alias(cmdlets, "Start-Sleep", "dotnet.Cmdlets.Utility.StartSleep");
+    alias(
+        cmdlets,
+        "Register-ObjectEvent",
+        "dotnet.Cmdlets.Events.RegisterObjectEvent",
+    );
+    alias(
+        cmdlets,
+        "Register-EngineEvent",
+        "dotnet.Cmdlets.Events.RegisterEngineEvent",
+    );
+    alias(
+        cmdlets,
+        "Unregister-Event",
+        "dotnet.Cmdlets.Events.UnregisterEvent",
+    );
+    alias(cmdlets, "New-Event", "dotnet.Cmdlets.Events.NewEvent");
+    alias(cmdlets, "Get-Event", "dotnet.Cmdlets.Events.GetEvent");
+    alias(cmdlets, "Wait-Event", "dotnet.Cmdlets.Events.WaitEvent");
+    alias(
+        cmdlets,
+        "Receive-Event",
+        "dotnet.Cmdlets.Events.ReceiveEvent",
+    );
+    alias(cmdlets, "Remove-Event", "dotnet.Cmdlets.Events.RemoveEvent");
+    alias(
+        cmdlets,
+        "Get-EventSubscriber",
+        "dotnet.Cmdlets.Events.GetEventSubscriber",
+    );
     alias(
         cmdlets,
         "Get-LastErrorRecord",
@@ -4965,6 +5042,102 @@ pub fn emit_write_output(chunks: &mut [Chunk], current: usize, argc: u8, line: u
 
 pub fn emit_write_host(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     io::emit_print(&mut chunks[current], argc, line);
+}
+
+pub fn emit_register_object_event(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let args = pop_arg_slots(chunks, current, argc, line);
+    let null = null_slot(&mut chunks[current], line);
+    let empty = empty_string_slot(&mut chunks[current], line);
+    let source = args.first().copied().unwrap_or(null);
+    let event_name = args.get(1).copied().unwrap_or(empty);
+    let action = args.get(2).copied().unwrap_or(null);
+    let source_id = args.get(3).copied().unwrap_or(event_name);
+    let message_data = args.get(4).copied().unwrap_or(null);
+    let out = chunks[current].alloc_scratch(1);
+    emit_typed_object(
+        chunks,
+        current,
+        out,
+        "System.Management.Automation.PSEventSubscriber",
+        "PSEventSubscriber",
+        line,
+    );
+    for key in ["Name", "name", "SourceIdentifier", "sourceidentifier"] {
+        set_local(&mut chunks[current], out, key, source_id, line);
+    }
+    for key in ["EventName", "eventname"] {
+        set_local(&mut chunks[current], out, key, event_name, line);
+    }
+    for key in ["SourceObject", "sourceobject"] {
+        set_local(&mut chunks[current], out, key, source, line);
+    }
+    for key in ["Action", "action"] {
+        set_local(&mut chunks[current], out, key, action, line);
+    }
+    for key in ["MessageData", "messagedata"] {
+        set_local(&mut chunks[current], out, key, message_data, line);
+    }
+    for key in ["SubscriptionId", "subscriptionid"] {
+        set_const_num(&mut chunks[current], out, key, 1.0, line);
+    }
+    chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
+}
+
+pub fn emit_register_engine_event(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    emit_register_object_event(chunks, current, argc, line);
+}
+
+pub fn emit_new_event(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let args = pop_arg_slots(chunks, current, argc, line);
+    let null = null_slot(&mut chunks[current], line);
+    let empty = empty_string_slot(&mut chunks[current], line);
+    let source_id = args.first().copied().unwrap_or(empty);
+    let sender = args.get(1).copied().unwrap_or(null);
+    let source_args = args.get(2).copied().unwrap_or(null);
+    let message_data = args.get(3).copied().unwrap_or(null);
+    let out = chunks[current].alloc_scratch(1);
+    emit_typed_object(
+        chunks,
+        current,
+        out,
+        "System.Management.Automation.PSEventArgs",
+        "PSEventArgs",
+        line,
+    );
+    for key in ["SourceIdentifier", "sourceidentifier"] {
+        set_local(&mut chunks[current], out, key, source_id, line);
+    }
+    for key in ["Sender", "sender"] {
+        set_local(&mut chunks[current], out, key, sender, line);
+    }
+    for key in ["SourceEventArgs", "sourceeventargs"] {
+        set_local(&mut chunks[current], out, key, source_args, line);
+    }
+    for key in ["MessageData", "messagedata"] {
+        set_local(&mut chunks[current], out, key, message_data, line);
+    }
+    for key in ["EventIdentifier", "eventidentifier"] {
+        set_const_num(&mut chunks[current], out, key, 1.0, line);
+    }
+    chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
+}
+
+pub fn emit_get_event(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    for _ in 0..argc {
+        chunks[current].emit_op(Op::DROP, line);
+    }
+    chunks[current].emit_array_new_fixed(0, 0, line);
+}
+
+pub fn emit_unregister_event(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    for _ in 0..argc {
+        chunks[current].emit_op(Op::DROP, line);
+    }
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+}
+
+pub fn emit_get_event_subscriber(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    emit_get_event(chunks, current, argc, line);
 }
 
 pub fn emit_join_string(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {

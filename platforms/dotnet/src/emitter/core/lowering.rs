@@ -404,6 +404,8 @@ pub fn try_parse_desugar_with_args(
         || recv.eq_ignore_ascii_case("Date")
         || recv.eq_ignore_ascii_case("DateTimeOffset")
         || recv.eq_ignore_ascii_case("System.DateTimeOffset")
+        || recv.eq_ignore_ascii_case("TimeSpan")
+        || recv.eq_ignore_ascii_case("System.TimeSpan")
         || recv.eq_ignore_ascii_case("BigInteger")
         || recv.eq_ignore_ascii_case("System.Numerics.BigInteger")
         || recv.eq_ignore_ascii_case("Int128")
@@ -805,6 +807,55 @@ pub fn try_take_desugar_with_default(
             right: Box::new(Expression::bool(false)),
         })),
     })
+}
+
+pub fn blocking_collection_take_from_any_desugar(
+    callee: &Expression,
+    collections: &Expression,
+    out_target: &Expression,
+    extra_args: &[Argument],
+) -> Expression {
+    blocking_collection_take_from_any_desugar_with_default(
+        callee,
+        collections,
+        out_target,
+        extra_args,
+        null_lit(),
+    )
+}
+
+pub fn blocking_collection_take_from_any_desugar_with_default(
+    callee: &Expression,
+    collections: &Expression,
+    out_target: &Expression,
+    extra_args: &[Argument],
+    default_value: Expression,
+) -> Expression {
+    let pair = Expression::ident("__vybe_blocking_collection_any_pair");
+    let index = index_expr(pair.clone(), Expression::int(0));
+    let value = index_expr(pair.clone(), Expression::int(1));
+    let mut args = vec![Argument::positional(collections.clone())];
+    args.extend(extra_args.iter().cloned());
+    let core = call_expr(callee.clone(), args);
+    Expression::new(ExprKind::Sequence(vec![
+        Expression::new(ExprKind::Assign {
+            target: Box::new(pair.clone()),
+            value: Box::new(core),
+        }),
+        Expression::new(ExprKind::Assign {
+            target: Box::new(out_target.clone()),
+            value: Box::new(Expression::new(ExprKind::Ternary {
+                cond: Box::new(Expression::new(ExprKind::Binary {
+                    op: BinOp::Eq,
+                    left: Box::new(index.clone()),
+                    right: Box::new(Expression::int(-1)),
+                })),
+                then: Box::new(default_value),
+                else_: Box::new(value),
+            })),
+        }),
+        index,
+    ]))
 }
 
 // ── System.Runtime.InteropServices: Marshal / IntPtr / GCHandle ─────────────

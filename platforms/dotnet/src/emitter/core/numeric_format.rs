@@ -95,7 +95,7 @@ pub fn build_dotnet_numeric_format(imports: &mut Chunk) -> Chunk {
     let space_str = c.add_constant(Value::String(Arc::from(" ")));
     let minus_str = c.add_constant(Value::String(Arc::from("-")));
     let percent_suffix = c.add_constant(Value::String(Arc::from("%")));
-    let dollar_str = c.add_constant(Value::String(Arc::from("$")));
+    let currency_str = c.add_constant(Value::String(Arc::from("¤")));
     let comma_str = c.add_constant(Value::String(Arc::from(",")));
     let dot_str = c.add_constant(Value::String(Arc::from(".")));
     let semi_str = c.add_constant(Value::String(Arc::from(";")));
@@ -229,7 +229,7 @@ pub fn build_dotnet_numeric_format(imports: &mut Chunk) -> Chunk {
     emit_const_index(&mut c, dot_str, 0);
     vybe_compiler::primitives::strings::emit_group_digits(std::slice::from_mut(&mut c), 0, 0);
     c.emit_op_u16(Op::LOCAL_SET, rendered, 0);
-    emit_const_index(&mut c, dollar_str, 0);
+    emit_const_index(&mut c, currency_str, 0);
     c.emit_op_u16(Op::LOCAL_GET, rendered, 0);
     emit_str_concat(imports, &mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, rendered, 0);

@@ -168,6 +168,14 @@ pub fn emit_tostring_runtime(chunk: &mut Chunk, argc: u8, line: u32) {
         return;
     }
 
+    // Stack: [receiver, format] or [receiver, format, provider]. The provider
+    // only affects culture-specific symbols; the numeric formatter currently
+    // renders invariant culture, so discard provider/extra args and keep the
+    // first format argument.
+    for _ in 2..argc {
+        chunk.emit_op(Op::DROP, line);
+    }
+
     // Stack: [receiver, format].
     let fmt = chunk.alloc_scratch(1);
     let recv = chunk.alloc_scratch(1);

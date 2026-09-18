@@ -53,6 +53,16 @@ fn emit_regex_pattern_arg(
     options_slot: Option<u16>,
     line: u32,
 ) {
+    emit_regex_pattern_arg_with_global(chunk, pattern_slot, options_slot, false, line);
+}
+
+fn emit_regex_pattern_arg_with_global(
+    chunk: &mut Chunk,
+    pattern_slot: u16,
+    options_slot: Option<u16>,
+    force_global: bool,
+    line: u32,
+) {
     let replace_all = chunk.add_import("ecma:string", "replaceAll");
     let pattern_norm_slot = reserve_slot(chunk);
 
@@ -65,7 +75,7 @@ fn emit_regex_pattern_arg(
     let concat = chunk.add_import("wasm:js-string", "concat");
     let flags_slot = reserve_slot(chunk);
 
-    chunk.emit_string_const("u", line);
+    chunk.emit_string_const(if force_global { "ug" } else { "u" }, line);
     chunk.emit_op_u16(Op::LOCAL_SET, flags_slot, line);
     if let Some(options_slot) = options_slot {
         for (bit, flag) in [(1, "i"), (2, "m"), (16, "s")] {
@@ -214,16 +224,29 @@ fn emit_dotnet_match_properties(chunk: &mut Chunk, result_slot: u16, obj_slot: u
     let object_get = chunk.add_import("ecma:object", "get");
     let length_idx = chunk.add_import("wasm:js-string", "length");
     let value_slot = reserve_slot(chunk);
+    let index_slot = reserve_slot(chunk);
 
-    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
-    core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, result_slot, line);
     chunk.emit_string_const("index", line);
     chunk.emit_call(object_get, 2, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, index_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+    core_wasm::dup(chunk, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, index_slot, line);
     class_slots::emit_class_set(
         chunk,
         ObjSource::Stack,
         &field_slot("Index"),
+        ValueSource::Stack,
+        line,
+    );
+    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+    core_wasm::dup(chunk, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, index_slot, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &field_slot("index"),
         ValueSource::Stack,
         line,
     );
@@ -730,7 +753,7 @@ pub fn emit_regex_static_is_match(chunks: &mut [Chunk], current: usize, argc: u8
 }
 
 pub fn emit_regex_static_replace(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
-    let replace_idx = chunks[current].add_import("ecma:regexp", "replaceAll");
+    let replace_idx = chunks[current].add_import("ecma:regexp", "replace");
     let chunk = &mut chunks[current];
     let options_slot = (argc >= 4).then(|| reserve_slot(chunk));
     let replacement_slot = reserve_slot(chunk);
@@ -748,7 +771,7 @@ pub fn emit_regex_static_replace(chunks: &mut [Chunk], current: usize, argc: u8,
     chunk.emit_op_u16(Op::LOCAL_SET, input_slot, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, input_slot, line);
-    emit_regex_pattern_arg(chunk, pattern_slot, options_slot, line);
+    emit_regex_pattern_arg_with_global(chunk, pattern_slot, options_slot, true, line);
     chunk.emit_op_u16(Op::LOCAL_GET, replacement_slot, line);
     chunk.emit_call(replace_idx, 3, line);
 }
@@ -792,13 +815,16 @@ pub fn emit_regex_unescape(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_call(replace_idx, 3, line);
 }
 
-pub fn emit_regex_replace(chunks: &mut [Chunk], current: usize, line: u32) {
-    let replace_idx = chunks[current].add_import("ecma:regexp", "replaceAll");
+pub fn emit_regex_replace(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let replace_idx = chunks[current].add_import("ecma:regexp", "replace");
     let chunk = &mut chunks[current];
     let replacement_slot = reserve_slot(chunk);
     let input_slot = reserve_slot(chunk);
     let self_slot = reserve_slot(chunk);
 
+    for _ in 3..argc {
+        chunk.emit_op(Op::DROP, line);
+    }
     chunk.emit_op_u16(Op::LOCAL_SET, replacement_slot, line);
     chunk.emit_op_u16(Op::LOCAL_SET, input_slot, line);
     chunk.emit_op_u16(Op::LOCAL_SET, self_slot, line);
@@ -812,6 +838,9 @@ pub fn emit_regex_replace(chunks: &mut [Chunk], current: usize, line: u32) {
         Dest::Stack,
         line,
     );
+    let pattern_slot = reserve_slot(chunk);
+    chunk.emit_op_u16(Op::LOCAL_SET, pattern_slot, line);
+    emit_regex_pattern_arg_with_global(chunk, pattern_slot, None, true, line);
     chunk.emit_op_u16(Op::LOCAL_GET, replacement_slot, line);
     chunk.emit_call(replace_idx, 3, line);
 }

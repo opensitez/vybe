@@ -59,6 +59,7 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 ("IndexOf", 1, "collections.index_of"),
                 ("Sort", 0, "dotnet.array_sort"),
                 ("Reverse", 0, "collections.reverse"),
+                ("Reverse", 2, "collections.reverse_range"),
                 ("ToArray", 0, "collections.clone"),
                 ("AsReadOnly", 0, "collections.identity"),
                 ("Item", 1, "dotnet.list_get_checked"),
@@ -69,8 +70,18 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 ("GetRange", 2, "collections.get_range"),
                 ("SetRange", 2, "collections.set_range"),
                 ("Exists", 1, "dotnet.array_exists"),
+                ("TrueForAll", 1, "dotnet.array_true_for_all"),
                 ("Find", 1, "dotnet.array_find"),
                 ("FindAll", 1, "dotnet.array_find_all"),
+                ("FindIndex", 1, "dotnet.array_find_index"),
+                ("FindIndex", 2, "dotnet.array_find_index"),
+                ("FindIndex", 3, "dotnet.array_find_index"),
+                ("FindLastIndex", 1, "dotnet.array_find_last_index"),
+                ("FindLastIndex", 2, "dotnet.array_find_last_index"),
+                ("FindLastIndex", 3, "dotnet.array_find_last_index"),
+                ("ForEach", 1, "dotnet.array_for_each"),
+                ("CopyTo", 2, "dotnet.collection_copy_to"),
+                ("CopyTo", 4, "dotnet.array_copy"),
                 ("BinarySearch", 1, "dotnet.array_binary_search"),
                 ("EnsureCapacity", 1, "dotnet.list_ensure_capacity"),
                 ("TrimExcess", 0, "dotnet.list_trim_excess"),
@@ -214,23 +225,21 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 .with_method(MethodDef::new(
                     "TryDequeue",
                     0,
-                    MethodBody::Common("collections.shift".into()),
+                    MethodBody::Common("dotnet.queue_dequeue_checked".into()),
                 ))
                 .with_method(MethodDef::new(
                     "TryPeek",
                     0,
-                    MethodBody::Common("dotnet.concurrent_peek_first".into()),
+                    MethodBody::Common("dotnet.queue_peek_checked".into()),
                 ))
                 .with_method(MethodDef::new(
                     "CopyTo",
                     2,
-                    MethodBody::Common("dotnet.stack_copy_to".into()),
+                    MethodBody::Common("dotnet.collection_copy_to".into()),
                 ))
-                // Every one of these has a `(IEnumerable<T>)` overload in .NET
-                // as well as the empty one, and `with_constructor` OVERWRITES,
-                // so both arities are ONE registration whose backing reads
-                // `argc`. Declared empty-only, the enumerable form silently
-                // built an EMPTY collection.
+                .with_constructor(
+                    ConstructorDef::new(0).with_common_backing("dotnet.list_new_from_iterable"),
+                )
                 .with_constructor(
                     ConstructorDef::new(1).with_common_backing("dotnet.list_new_from_iterable"),
                 )
@@ -242,12 +251,12 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 .with_method(MethodDef::new(
                     "Dequeue",
                     0,
-                    MethodBody::Common("collections.shift".into()),
+                    MethodBody::Common("dotnet.queue_dequeue_checked".into()),
                 ))
                 .with_method(MethodDef::new(
                     "Peek",
                     0,
-                    MethodBody::HostCall(HostTarget::new("ecma:array", "first")),
+                    MethodBody::Common("dotnet.queue_peek_checked".into()),
                 ))
                 .with_method(MethodDef::new(
                     "Count",
@@ -303,23 +312,21 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 .with_method(MethodDef::new(
                     "TryPop",
                     0,
-                    MethodBody::Common("collections.pop".into()),
+                    MethodBody::Common("dotnet.stack_pop_checked".into()),
                 ))
                 .with_method(MethodDef::new(
                     "TryPeek",
                     0,
-                    MethodBody::Common("dotnet.concurrent_peek_last".into()),
+                    MethodBody::Common("dotnet.stack_peek_checked".into()),
                 ))
                 .with_method(MethodDef::new(
                     "CopyTo",
                     2,
                     MethodBody::Common("dotnet.stack_copy_to".into()),
                 ))
-                // Every one of these has a `(IEnumerable<T>)` overload in .NET
-                // as well as the empty one, and `with_constructor` OVERWRITES,
-                // so both arities are ONE registration whose backing reads
-                // `argc`. Declared empty-only, the enumerable form silently
-                // built an EMPTY collection.
+                .with_constructor(
+                    ConstructorDef::new(0).with_common_backing("dotnet.list_new_from_iterable"),
+                )
                 .with_constructor(
                     ConstructorDef::new(1).with_common_backing("dotnet.list_new_from_iterable"),
                 )
@@ -336,12 +343,12 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 .with_method(MethodDef::new(
                     "Pop",
                     0,
-                    MethodBody::Common("collections.pop".into()),
+                    MethodBody::Common("dotnet.stack_pop_checked".into()),
                 ))
                 .with_method(MethodDef::new(
                     "Peek",
                     0,
-                    MethodBody::HostCall(HostTarget::new("ecma:array", "last")),
+                    MethodBody::Common("dotnet.stack_peek_checked".into()),
                 ))
                 .with_method(MethodDef::new(
                     "Count",
@@ -361,7 +368,7 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 .with_method(MethodDef::new(
                     "ToArray",
                     0,
-                    MethodBody::Common("collections.clone".into()),
+                    MethodBody::Common("dotnet.stack_to_array".into()),
                 ))
                 // A capacity is advisory over a JS array: `EnsureCapacity`
                 // answers the size asked for, `TrimExcess` does nothing. Both
@@ -726,6 +733,36 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     1,
                     MethodBody::Common("dotnet.blocking_collection_add".into()),
                 ))
+                .with_method(MethodDef::static_method(
+                    "AddToAny",
+                    2,
+                    MethodBody::Common("dotnet.blocking_collection_add_to_any".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "AddToAny",
+                    3,
+                    MethodBody::Common("dotnet.blocking_collection_add_to_any".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "__TakeFromAnyCore",
+                    1,
+                    MethodBody::Common("dotnet.blocking_collection_take_from_any_core".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "__TakeFromAnyCore",
+                    2,
+                    MethodBody::Common("dotnet.blocking_collection_take_from_any_core".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "__ConsumingEnumerator",
+                    1,
+                    MethodBody::Common("dotnet.blocking_collection_consuming_enumerator".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "__EnumeratorMoveNext",
+                    1,
+                    MethodBody::Common("dotnet.blocking_collection_enumerator_move_next".into()),
+                ))
                 .with_method(MethodDef::new(
                     "TryAdd",
                     1,
@@ -807,11 +844,9 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
         DotnetClassExport::new(
             "dotnet.System.Collections.Concurrent",
             ClassType::new("ConcurrentQueue")
-                // Every one of these has a `(IEnumerable<T>)` overload in .NET
-                // as well as the empty one, and `with_constructor` OVERWRITES,
-                // so both arities are ONE registration whose backing reads
-                // `argc`. Declared empty-only, the enumerable form silently
-                // built an EMPTY collection.
+                .with_constructor(
+                    ConstructorDef::new(0).with_common_backing("dotnet.list_new_from_iterable"),
+                )
                 .with_constructor(
                     ConstructorDef::new(1).with_common_backing("dotnet.list_new_from_iterable"),
                 )
@@ -888,11 +923,9 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
         DotnetClassExport::new(
             "dotnet.System.Collections.Concurrent",
             ClassType::new("ConcurrentStack")
-                // Every one of these has a `(IEnumerable<T>)` overload in .NET
-                // as well as the empty one, and `with_constructor` OVERWRITES,
-                // so both arities are ONE registration whose backing reads
-                // `argc`. Declared empty-only, the enumerable form silently
-                // built an EMPTY collection.
+                .with_constructor(
+                    ConstructorDef::new(0).with_common_backing("dotnet.list_new_from_iterable"),
+                )
                 .with_constructor(
                     ConstructorDef::new(1).with_common_backing("dotnet.list_new_from_iterable"),
                 )
@@ -1900,6 +1933,11 @@ fn collection_class_common(
     // here has to serve both arities by reading `argc`.
     let mut class = ClassType::new(name)
         .with_constructor(ConstructorDef::new(0).with_common_backing(ctor_common));
+    class = class.with_method(MethodDef::new(
+        "GetEnumerator",
+        0,
+        MethodBody::Common("collections.identity".into()),
+    ));
     if name == "ObservableCollection" {
         class = class.with_constructor(
             ConstructorDef::new(1).with_common_backing("dotnet.list_new_from_iterable"),

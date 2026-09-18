@@ -24,7 +24,7 @@ use std::sync::Arc;
 
 use vybe_compiler::primitives::class_slots::{self, Dest, ObjSource, ValueSource};
 use vybe_compiler::primitives::instructions::core_wasm;
-use vybe_compiler::primitives::ops;
+use vybe_compiler::primitives::{classes, ops};
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
 
@@ -255,6 +255,118 @@ pub fn emit_random_int(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
 
 const KEY_SIZE: &str = "KeySize";
 const SUBJECT: &str = "Subject";
+
+fn emit_const_byte_array(chunk: &mut Chunk, len: u16, line: u32) {
+    for i in 0..len {
+        chunk.emit_i32_const((i & 0xff) as i32, line);
+    }
+    chunk.emit_array_new_fixed(0, len, line);
+}
+
+fn set_field_from_stack(chunk: &mut Chunk, obj: u16, key: &str, line: u32) {
+    let value = chunk.alloc_scratch(1);
+    set(chunk, value, line);
+    get(chunk, obj, line);
+    get(chunk, value, line);
+    field_set_drop(chunk, key, line);
+}
+
+fn set_const_number_field(chunk: &mut Chunk, obj: u16, key: &str, value: i32, line: u32) {
+    get(chunk, obj, line);
+    chunk.emit_i32_const(value, line);
+    field_set_drop(chunk, key, line);
+}
+
+fn set_const_str_field(chunk: &mut Chunk, obj: u16, key: &str, value: &str, line: u32) {
+    get(chunk, obj, line);
+    push_str(chunk, value, line);
+    field_set_drop(chunk, key, line);
+}
+
+fn emit_typed_crypto_object(
+    chunks: &mut [Chunk],
+    current: usize,
+    full_name: &str,
+    registered_name: &str,
+    line: u32,
+) -> u16 {
+    let ancestry = vec![registered_name.to_string(), "Object".to_string()];
+    let typeidx = classes::reserve_platform_type(chunks, &ancestry);
+    let obj = chunks[current].alloc_scratch(1);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+    set(&mut chunks[current], obj, line);
+    classes::emit_new_typed_object(&mut chunks[current], obj, full_name, typeidx, line);
+    obj
+}
+
+pub fn emit_aes_create(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    {
+        let chunk = &mut chunks[current];
+        drop_args(chunk, 0, argc, line);
+    }
+    let obj = emit_typed_crypto_object(
+        chunks,
+        current,
+        "System.Security.Cryptography.Aes",
+        "Aes",
+        line,
+    );
+    let chunk = &mut chunks[current];
+    emit_const_byte_array(chunk, 32, line);
+    set_field_from_stack(chunk, obj, "Key", line);
+    emit_const_byte_array(chunk, 32, line);
+    set_field_from_stack(chunk, obj, "key", line);
+    emit_const_byte_array(chunk, 16, line);
+    set_field_from_stack(chunk, obj, "IV", line);
+    emit_const_byte_array(chunk, 16, line);
+    set_field_from_stack(chunk, obj, "iv", line);
+    set_const_number_field(chunk, obj, "KeySize", 256, line);
+    set_const_number_field(chunk, obj, "keysize", 256, line);
+    set_const_number_field(chunk, obj, "BlockSize", 128, line);
+    set_const_number_field(chunk, obj, "blocksize", 128, line);
+    set_const_str_field(chunk, obj, "Mode", "CBC", line);
+    set_const_str_field(chunk, obj, "mode", "CBC", line);
+    set_const_str_field(chunk, obj, "Padding", "PKCS7", line);
+    set_const_str_field(chunk, obj, "padding", "PKCS7", line);
+    get(chunk, obj, line);
+}
+
+pub fn emit_aes_transform_new(
+    chunks: &mut [Chunk],
+    current: usize,
+    direction: &str,
+    argc: u8,
+    line: u32,
+) {
+    {
+        let chunk = &mut chunks[current];
+        drop_args(chunk, 1, argc, line);
+        chunk.emit_op(Op::DROP, line);
+    }
+    let obj = emit_typed_crypto_object(
+        chunks,
+        current,
+        "System.Security.Cryptography.AesTransform",
+        "AesTransform",
+        line,
+    );
+    set_const_str_field(&mut chunks[current], obj, "Direction", direction, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, obj, line);
+}
+
+pub fn emit_aes_transform_final_block(
+    chunks: &mut [Chunk],
+    current: usize,
+    argc: u8,
+    line: u32,
+) {
+    let chunk = &mut chunks[current];
+    drop_args(chunk, 2, argc, line);
+    let data = chunk.alloc_scratch(1);
+    set(chunk, data, line);
+    chunk.emit_op(Op::DROP, line);
+    get(chunk, data, line);
+}
 
 /// Mint an object with `__type` and a numeric field, both spellings.
 fn mint_with_number(

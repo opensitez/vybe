@@ -24,3 +24,36 @@ pub fn emit_uint32_ushr(chunks: &mut [Chunk], current: usize, line: u32) {
     let number = chunk.add_import("ecma:number", "Number");
     chunk.emit_call(number, 1, line);
 }
+
+/// Reinterpret a 64-bit lane as unsigned. Stack: `[i64] -> [number]`.
+pub fn emit_uint64_as_unsigned(chunks: &mut [Chunk], current: usize, line: u32) {
+    chunks[current].emit_op(Op::F64_CONVERT_I64_U, line);
+}
+
+/// `UInt64` width-aware shift. Stack: `[value, count] -> [number]`.
+pub fn emit_uint64_shift(chunks: &mut [Chunk], current: usize, left: bool, line: u32) {
+    let chunk = &mut chunks[current];
+    let count = chunk.alloc_scratch(2);
+    let value = count + 1;
+    chunk.emit_op_u16(Op::LOCAL_SET, count, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, value, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, value, line);
+    let bigint_ctor = chunk.add_import("ecma:bigint", "BigInt");
+    chunk.emit_call(bigint_ctor, 1, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, count, line);
+    bigint::emit_wrapped_shift(
+        chunk,
+        64,
+        if left {
+            ShiftKind::Shl
+        } else {
+            ShiftKind::Ushr
+        },
+        line,
+    );
+    bigint::emit_as_uint_n(chunk, 64, line);
+
+    let number = chunk.add_import("ecma:number", "Number");
+    chunk.emit_call(number, 1, line);
+}

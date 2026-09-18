@@ -1154,7 +1154,12 @@ fn emit_field_padded(chunk: &mut Chunk, obj_slot: u16, field: &str, line: u32) {
 /// so the difference is visible at the call site instead of being a surprise.
 ///
 /// Stack: `[]` → `[str]`.
-fn emit_datetime_display(chunk: &mut Chunk, obj_slot: u16, elide_midnight: bool, line: u32) {
+pub(crate) fn emit_datetime_display(
+    chunk: &mut Chunk,
+    obj_slot: u16,
+    elide_midnight: bool,
+    line: u32,
+) {
     if elide_midnight {
         // VB's `CStr` prints only the half that carries information: a Date at
         // midnight is `5/19/2024`, and a value on `DateTime.MinValue`'s date —

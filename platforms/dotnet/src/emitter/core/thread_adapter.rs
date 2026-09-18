@@ -9,6 +9,7 @@
 
 use vybe_compiler::primitives::class_slots::{self, Dest, ObjSource, ValueSource};
 
+use vybe_compiler::primitives::classes;
 use vybe_compiler::primitives::collections;
 use vybe_compiler::primitives::instructions::core_wasm;
 use vybe_runtime::{Chunk, Value, opcode::Op};
@@ -30,6 +31,8 @@ const TOKEN_KEY: &str = "token";
 const REQUESTED_KEY: &str = "iscancellationrequested";
 const WAIT_TIMER_KEY: &str = "__dotnet_wait_timer";
 const TIMER_DUE_KEY: &str = "__dotnet_due";
+const VALUE_TASK_KEY: &str = "__dotnet_value_task";
+const SYNC_CONTEXT_GLOBAL: &str = "__dotnet_synchronization_context_current";
 /// The CancellationToken a task carries — `task.IsCanceled` asks it, and so
 /// does the VM's await. Shared with `memory_stream_adapter`, whose
 /// `CopyToAsync` stamps the same field. The spelling is the VM's task
@@ -120,6 +123,59 @@ fn emit_attach_task_members(chunks: &mut Vec<Chunk>, current: usize, line: u32) 
     chunks[current].emit_op_u16(Op::LOCAL_GET, task_slot, line);
 }
 
+fn emit_timers_timer_method_chunk(
+    chunks: &mut Vec<Chunk>,
+    name: &str,
+    enabled: bool,
+    line: u32,
+) -> usize {
+    let mut method = vybe_compiler::primitives::functions::create_function_chunk(name, 1);
+    method.emit_op_u16(Op::LOCAL_GET, 0, line);
+    let mut method_chunks = vec![method];
+    emit_timers_timer_set_enabled(&mut method_chunks, 0, enabled, line);
+    method_chunks[0].emit_op(Op::RETURN, line);
+    method_chunks[0].local_count = method_chunks[0].local_count.max(1);
+    chunks.push(method_chunks.remove(0));
+    chunks.len() - 1
+}
+
+fn emit_bind_timers_timer_method(
+    chunk: &mut Chunk,
+    obj_slot: u16,
+    method_name: &str,
+    method_chunk_idx: usize,
+    line: u32,
+) {
+    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+    chunk.emit_op_u16(Op::REF_FUNC, method_chunk_idx as u16, line);
+    chunk.emit(0, line);
+    core_wasm::dup(chunk, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+    struct_set_drop(chunk, "__vybe_method_receiver", line);
+    let key = class_slots::resolve(
+        &class_slots::ClassSlot::instance(method_name),
+        &class_slots::PlainNames,
+    );
+    class_slots::emit_class_set(chunk, ObjSource::Stack, &key, ValueSource::Stack, line);
+}
+
+fn emit_attach_timers_timer_members(chunks: &mut Vec<Chunk>, current: usize, obj_slot: u16, line: u32) {
+    let start = emit_timers_timer_method_chunk(chunks, "__dotnet_timers_timer_start_method", true, line);
+    let stop = emit_timers_timer_method_chunk(chunks, "__dotnet_timers_timer_stop_method", false, line);
+    let dispose =
+        emit_timers_timer_method_chunk(chunks, "__dotnet_timers_timer_dispose_method", false, line);
+    for (name, method) in [
+        ("Start", start),
+        ("start", start),
+        ("Stop", stop),
+        ("stop", stop),
+        ("Dispose", dispose),
+        ("dispose", dispose),
+    ] {
+        emit_bind_timers_timer_method(&mut chunks[current], obj_slot, name, method, line);
+    }
+}
+
 fn emit_new_aggregate_exception(
     chunks: &mut [Chunk],
     current: usize,
@@ -166,6 +222,53 @@ fn emit_new_aggregate_exception_from_single(
     emit_new_aggregate_exception(chunks, current, inner_slot, inner_exceptions_slot, line)
 }
 
+fn emit_aggregate_exception_from_reason(
+    chunks: &mut [Chunk],
+    current: usize,
+    reason_slot: u16,
+    line: u32,
+) -> u16 {
+    let base = chunks[current].alloc_scratch(4);
+    let aggregate_slot = base;
+    let inner_exceptions_slot = base + 1;
+    let first_inner_slot = base + 2;
+    let is_array_slot = base + 3;
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, reason_slot, line);
+    struct_get(&mut chunks[current], "InnerExceptions", line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, inner_exceptions_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, inner_exceptions_slot, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, reason_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, aggregate_slot, line);
+    chunks[current].emit_else(line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, reason_slot, line);
+    call_import(chunks, current, "ecma:array", "isArray", 1, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, is_array_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, is_array_slot, line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, reason_slot, line);
+    chunks[current].emit_i32_const(0, line);
+    collections::emit_get(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, first_inner_slot, line);
+    let built_slot =
+        emit_new_aggregate_exception(chunks, current, first_inner_slot, reason_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, built_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, aggregate_slot, line);
+    chunks[current].emit_else(line);
+    let built_slot = emit_new_aggregate_exception_from_single(chunks, current, reason_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, built_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, aggregate_slot, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+
+    aggregate_slot
+}
+
 fn emit_stamp_task_fields_from_state(
     chunks: &mut [Chunk],
     current: usize,
@@ -182,8 +285,7 @@ fn emit_stamp_task_fields_from_state(
     chunks[current].emit_op_u16(Op::LOCAL_GET, task_slot, line);
     struct_get(&mut chunks[current], "__value", line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, reason_slot, line);
-    let aggregate_slot =
-        emit_new_aggregate_exception_from_single(chunks, current, reason_slot, line);
+    let aggregate_slot = emit_aggregate_exception_from_reason(chunks, current, reason_slot, line);
     set_both_spellings(
         &mut chunks[current],
         task_slot,
@@ -204,6 +306,104 @@ fn emit_stamp_task_fields_from_state(
     set_both_spellings(&mut chunks[current], task_slot, reason_slot, "Result", line);
     chunks[current].emit_end(line);
     chunks[current].emit_end(line);
+}
+
+fn emit_set_task_string_field(
+    chunks: &mut [Chunk],
+    current: usize,
+    task_slot: u16,
+    key: &str,
+    value: &str,
+    line: u32,
+) {
+    let value_slot = chunks[current].alloc_scratch(1);
+    chunks[current].emit_string_const(value, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, value_slot, line);
+    set_both_spellings(&mut chunks[current], task_slot, value_slot, key, line);
+}
+
+fn emit_settled_task_fields_by_await(
+    chunks: &mut [Chunk],
+    current: usize,
+    task_slot: u16,
+    line: u32,
+) -> u16 {
+    let base = chunks[current].alloc_scratch(2);
+    let value_slot = base;
+    let view_slot = base + 1;
+    class_slots::emit_class_alloc(&mut chunks[current], line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, view_slot, line);
+    let after_wait = chunks[current].emit_block(line);
+
+    vybe_compiler::primitives::errors::emit_try_start(&mut chunks[current], line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, task_slot, line);
+    vybe_compiler::primitives::functions::emit_await(&mut chunks[current], line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, value_slot, line);
+    vybe_compiler::primitives::errors::emit_try_end(&mut chunks[current], line);
+
+    set_both_spellings(&mut chunks[current], task_slot, value_slot, "Result", line);
+    set_both_spellings(&mut chunks[current], task_slot, value_slot, "__value", line);
+    set_both_spellings(&mut chunks[current], view_slot, value_slot, "Result", line);
+    set_both_spellings(&mut chunks[current], view_slot, value_slot, "__value", line);
+    emit_set_task_string_field(chunks, current, task_slot, "__state", "fulfilled", line);
+    emit_set_task_string_field(
+        chunks,
+        current,
+        task_slot,
+        "Status",
+        "RanToCompletion",
+        line,
+    );
+    emit_set_task_string_field(chunks, current, view_slot, "__state", "fulfilled", line);
+    emit_set_task_string_field(
+        chunks,
+        current,
+        view_slot,
+        "Status",
+        "RanToCompletion",
+        line,
+    );
+    chunks[current].emit_br(1, line);
+
+    vybe_compiler::primitives::errors::emit_handler_block_end(&mut chunks[current], line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, value_slot, line);
+    set_both_spellings(&mut chunks[current], task_slot, value_slot, "__value", line);
+    set_both_spellings(&mut chunks[current], view_slot, value_slot, "__value", line);
+    let aggregate_slot = emit_aggregate_exception_from_reason(chunks, current, value_slot, line);
+    set_both_spellings(
+        &mut chunks[current],
+        task_slot,
+        aggregate_slot,
+        "Exception",
+        line,
+    );
+    set_both_spellings(
+        &mut chunks[current],
+        view_slot,
+        aggregate_slot,
+        "Exception",
+        line,
+    );
+    emit_set_task_string_field(chunks, current, task_slot, "__state", "rejected", line);
+    emit_set_task_string_field(chunks, current, task_slot, "Status", "Faulted", line);
+    emit_set_task_string_field(chunks, current, view_slot, "__state", "rejected", line);
+    emit_set_task_string_field(chunks, current, view_slot, "Status", "Faulted", line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(after_wait);
+    view_slot
+}
+
+fn emit_task_continuation_call(
+    chunks: &mut [Chunk],
+    current: usize,
+    fn_slot: u16,
+    task_view_slot: u16,
+    line: u32,
+) {
+    chunks[current].emit_op_u16(Op::LOCAL_GET, fn_slot, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, task_view_slot, line);
+    vybe_compiler::primitives::functions::emit_call(&mut chunks[current], 2, line);
 }
 
 fn emit_now_ms(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -230,6 +430,10 @@ pub fn emit_thread_current(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_SET, value_slot, line);
     set_both_spellings(chunk, obj_slot, value_slot, "IsAlive", line);
 
+    chunk.emit_bool_const(true, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, value_slot, line);
+    set_both_spellings(chunk, obj_slot, value_slot, "IsBackground", line);
+
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
 }
 
@@ -244,6 +448,21 @@ pub fn emit_thread_is_alive(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
     chunk.emit_op(Op::DROP, line);
     chunk.emit_bool_const(true, line);
+}
+
+pub fn emit_thread_is_background(chunks: &mut [Chunk], current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    struct_get(chunk, "IsBackground", line);
+}
+
+pub fn emit_thread_set_is_background(chunks: &mut [Chunk], current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    let obj_slot = chunk.alloc_scratch(2);
+    let value_slot = obj_slot + 1;
+    chunk.emit_op_u16(Op::LOCAL_SET, value_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, obj_slot, line);
+    set_both_spellings(chunk, obj_slot, value_slot, "IsBackground", line);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 pub fn emit_threadpool_queue_user_work_item(
@@ -513,6 +732,7 @@ pub fn emit_cancellation_token_can_be_canceled(chunks: &mut [Chunk], current: us
     chunks[current].emit_op_u16(Op::LOCAL_GET, token_slot, line);
     struct_get(&mut chunks[current], "CanBeCanceled", line);
     vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_i32_to_bool(&mut chunks[current], line);
     chunks[current].emit_end(line);
 }
 
@@ -909,17 +1129,172 @@ pub fn emit_threading_timer_dispose(chunks: &mut Vec<Chunk>, current: usize, lin
     chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
-/// `Task.Yield()` — a completed promise-shaped awaitable that still travels
-/// through the common await/JSPI path.
-pub fn emit_task_yield(chunks: &mut [Chunk], current: usize, line: u32) {
+pub fn emit_timers_timer_new(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
+    let interval = chunks[current].alloc_scratch(2);
+    let obj = interval + 1;
+    let ancestry = ["Timer".to_string(), "Object".to_string()];
+    let typeidx = classes::reserve_platform_type(chunks, &ancestry);
+    {
+        let chunk = &mut chunks[current];
+        for _ in 1..argc {
+            chunk.emit_op(Op::DROP, line);
+        }
+        if argc == 0 {
+            chunk.emit_i32_const(100, line);
+        }
+        chunk.emit_op_u16(Op::LOCAL_SET, interval, line);
+        classes::emit_new_typed_object(chunk, obj, "System.Timers.Timer", typeidx, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, obj, line);
+        for key in ["Interval", "interval"] {
+            chunk.emit_op_u16(Op::LOCAL_GET, obj, line);
+            chunk.emit_op_u16(Op::LOCAL_GET, interval, line);
+            struct_set_drop(chunk, key, line);
+        }
+        for key in ["AutoReset", "autoreset"] {
+            chunk.emit_op_u16(Op::LOCAL_GET, obj, line);
+            chunk.emit_bool_const(true, line);
+            struct_set_drop(chunk, key, line);
+        }
+        for key in ["Enabled", "enabled"] {
+            chunk.emit_op_u16(Op::LOCAL_GET, obj, line);
+            chunk.emit_bool_const(false, line);
+            struct_set_drop(chunk, key, line);
+        }
+    }
+    emit_attach_timers_timer_members(chunks, current, obj, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, obj, line);
+}
+
+fn emit_timers_timer_set_enabled(chunks: &mut Vec<Chunk>, current: usize, enabled: bool, line: u32) {
+    let obj = chunks[current].alloc_scratch(1);
+    let chunk = &mut chunks[current];
+    chunk.emit_op_u16(Op::LOCAL_SET, obj, line);
+    for key in ["Enabled", "enabled"] {
+        chunk.emit_op_u16(Op::LOCAL_GET, obj, line);
+        chunk.emit_bool_const(enabled, line);
+        struct_set_drop(chunk, key, line);
+    }
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+}
+
+pub fn emit_timers_timer_start(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
+    emit_timers_timer_set_enabled(chunks, current, true, line);
+}
+
+pub fn emit_timers_timer_stop(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
+    emit_timers_timer_set_enabled(chunks, current, false, line);
+}
+
+pub fn emit_timers_timer_dispose(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
+    emit_timers_timer_set_enabled(chunks, current, false, line);
+}
+
+fn emit_slot_is_nullish(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
+    chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
+    call_import(chunks, current, "wasm:js-undefined", "test", 1, line);
+    chunks[current].emit_op(Op::I32_OR, line);
+}
+
+fn emit_task_yield_resume_callback(chunks: &mut Vec<Chunk>, line: u32) -> usize {
+    let mut callback = vybe_compiler::primitives::functions::create_function_chunk(
+        "__dotnet_task_yield_resume",
+        1,
+    );
+    callback.local_count = 2;
+    callback.capture_base = 1;
+    callback.capture_count = 1;
+    callback.emit_op_u16(Op::LOCAL_GET, 1, line);
+    callback.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+    vybe_compiler::primitives::functions::emit_call(&mut callback, 1, line);
+    callback.emit_op(Op::RETURN, line);
+    chunks.push(callback);
+    chunks.len() - 1
+}
+
+/// `SynchronizationContext.Current`.
+pub fn emit_synchronization_context_current(chunks: &mut [Chunk], current: usize, line: u32) {
+    vybe_compiler::primitives::globals::emit_read(&mut chunks[current], SYNC_CONTEXT_GLOBAL, line);
+}
+
+/// `SynchronizationContext.SetSynchronizationContext(ctx)`.
+pub fn emit_synchronization_context_set(chunks: &mut [Chunk], current: usize, line: u32) {
+    vybe_compiler::primitives::globals::emit_write(&mut chunks[current], SYNC_CONTEXT_GLOBAL, line);
     chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+}
+
+/// Default `SynchronizationContext.Post(d, state)`.
+pub fn emit_synchronization_context_post(chunks: &mut [Chunk], current: usize, line: u32) {
+    vybe_compiler::primitives::delegates::emit_invoke(chunks, current, 2, line);
+}
+
+/// `Task.Yield()` — completed through the current SynchronizationContext when
+/// one is installed; otherwise it falls back to the common promise/await path.
+pub fn emit_task_yield(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
+    let base = chunks[current].alloc_scratch(4);
+    let context_slot = base;
+    let resolvers_slot = base + 1;
+    let promise_slot = base + 2;
+    let resolve_slot = base + 3;
+
+    vybe_compiler::primitives::globals::emit_read(&mut chunks[current], SYNC_CONTEXT_GLOBAL, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, context_slot, line);
+    emit_slot_is_nullish(chunks, current, context_slot, line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+    call_import(chunks, current, "ecma:promise", "resolve", 1, line);
+    chunks[current].emit_else(line);
+
+    call_import(chunks, current, "ecma:promise", "withResolvers", 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, resolvers_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, resolvers_slot, line);
+    struct_get(&mut chunks[current], "promise", line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, promise_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, resolvers_slot, line);
+    struct_get(&mut chunks[current], "resolve", line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, resolve_slot, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, context_slot, line);
+    struct_get(&mut chunks[current], "Post", line);
+    let receiver_extra = {
+        let abi = vybe_compiler::primitives::class_context::module_receiver_abi(chunks);
+        vybe_compiler::primitives::callable::emit_callback_receiver(&mut chunks[current], abi, line)
+    };
+    let callback_idx = emit_task_yield_resume_callback(chunks, line);
+    chunks[current].emit_op_u16(Op::REF_FUNC, callback_idx as u16, line);
+    chunks[current].emit(1, line);
+    vybe_compiler::primitives::functions::emit_closure_upvalue(
+        &mut chunks[current],
+        true,
+        resolve_slot,
+        line,
+    );
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+    vybe_compiler::primitives::functions::emit_call(&mut chunks[current], 2 + receiver_extra, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, promise_slot, line);
+    chunks[current].emit_end(line);
+}
+
+/// `ValueTask.AsTask()` — return the value captured by the constructor as a
+/// task. `Promise.resolve` preserves existing promises and wraps plain values.
+pub fn emit_value_task_as_task(chunks: &mut [Chunk], current: usize, line: u32) {
+    struct_get(&mut chunks[current], VALUE_TASK_KEY, line);
     call_import(chunks, current, "ecma:promise", "resolve", 1, line);
 }
 
-/// `ValueTask.AsTask()` — async values are already promise/task-shaped in the
-/// ECMA backend, so this is an identity adapter.
-pub fn emit_value_task_as_task(chunks: &mut [Chunk], current: usize, line: u32) {
-    let _ = (&mut chunks[current], line);
+/// `New ValueTask(Of T)(valueOrTask)` — store the wrapped value/task.
+pub fn emit_value_task_new(chunks: &mut [Chunk], current: usize, line: u32) {
+    let value_slot = chunks[current].alloc_scratch(2);
+    let obj_slot = value_slot + 1;
+    chunks[current].emit_op_u16(Op::LOCAL_SET, value_slot, line);
+    class_slots::emit_class_alloc(&mut chunks[current], line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, obj_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
+    struct_set_drop(&mut chunks[current], VALUE_TASK_KEY, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, obj_slot, line);
 }
 
 /// `task.IsCanceled`.
@@ -957,6 +1332,17 @@ pub fn emit_task_result(chunks: &mut [Chunk], current: usize, line: u32) {
     let task_slot = chunks[current].alloc_scratch(2);
     let reason_slot = task_slot + 1;
     chunks[current].emit_op_u16(Op::LOCAL_SET, task_slot, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, task_slot, line);
+    struct_get(&mut chunks[current], "__state", line);
+    chunks[current].emit_string_const("pending", line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, task_slot, line);
+    vybe_compiler::primitives::functions::emit_await(&mut chunks[current], line);
+    chunks[current].emit_else(line);
+
     chunks[current].emit_op_u16(Op::LOCAL_GET, task_slot, line);
     struct_get(&mut chunks[current], "__state", line);
     chunks[current].emit_string_const("rejected", line);
@@ -966,8 +1352,7 @@ pub fn emit_task_result(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, task_slot, line);
     struct_get(&mut chunks[current], "__value", line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, reason_slot, line);
-    let aggregate_slot =
-        emit_new_aggregate_exception_from_single(chunks, current, reason_slot, line);
+    let aggregate_slot = emit_aggregate_exception_from_reason(chunks, current, reason_slot, line);
     set_both_spellings(
         &mut chunks[current],
         task_slot,
@@ -980,6 +1365,7 @@ pub fn emit_task_result(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_else(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, task_slot, line);
     struct_get(&mut chunks[current], "__value", line);
+    chunks[current].emit_end(line);
     chunks[current].emit_end(line);
 }
 
@@ -1079,8 +1465,7 @@ pub fn emit_task_exception(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, task_slot, line);
     struct_get(&mut chunks[current], "__value", line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, reason_slot, line);
-    let aggregate_slot =
-        emit_new_aggregate_exception_from_single(chunks, current, reason_slot, line);
+    let aggregate_slot = emit_aggregate_exception_from_reason(chunks, current, reason_slot, line);
     set_both_spellings(
         &mut chunks[current],
         task_slot,
@@ -1114,7 +1499,7 @@ pub fn emit_task_wait(chunks: &mut [Chunk], current: usize, line: u32) {
     let caught_slot = chunks[current].alloc_scratch(2);
     let aggregate_slot = caught_slot + 1;
     chunks[current].emit_op_u16(Op::LOCAL_SET, caught_slot, line);
-    let built_slot = emit_new_aggregate_exception_from_single(chunks, current, caught_slot, line);
+    let built_slot = emit_aggregate_exception_from_reason(chunks, current, caught_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, built_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, aggregate_slot, line);
     set_both_spellings(
@@ -1339,8 +1724,9 @@ pub fn emit_aggregate_handle(chunks: &mut [Chunk], current: usize, line: u32) {
     collections::emit_get(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, item_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, predicate_slot, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, item_slot, line);
-    vybe_compiler::primitives::functions::emit_call(&mut chunks[current], 1, line);
+    vybe_compiler::primitives::functions::emit_call(&mut chunks[current], 2, line);
     vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_op(Op::I32_EQZ, line);
     chunks[current].emit_if(line);
@@ -1395,6 +1781,108 @@ pub fn emit_task_when_any_completed(chunks: &mut [Chunk], current: usize, argc: 
     chunks[current].emit_op_u16(Op::LOCAL_SET, tasks_slot, line);
     let winner_slot = emit_first_settled_task(chunks, current, tasks_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, winner_slot, line);
+}
+
+fn emit_when_any_preserve_callback(chunks: &mut Vec<Chunk>, line: u32) -> usize {
+    let mut callback =
+        vybe_compiler::primitives::functions::create_function_chunk("__dotnet_when_any_preserve", 1);
+    callback.capture_base = 1;
+    callback.capture_count = 2;
+    callback.local_count = 3;
+    callback.emit_op_u16(Op::LOCAL_GET, 1, line);
+    callback.emit_string_const("fulfilled", line);
+    callback.emit_op_u16(Op::LOCAL_GET, 2, line);
+    let preserve = callback.add_import("ecma:promise", "__preserve");
+    callback.emit_call(preserve, 3, line);
+    callback.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+    callback.emit_op(Op::RETURN, line);
+    chunks.push(callback);
+    chunks.len() - 1
+}
+
+/// `Await Task.WhenAny(...)` — waits for the first task to settle and yields
+/// the winning task object. The per-task callbacks settle an outer promise
+/// with the raw task object via `ecma:promise.__preserve`, avoiding ECMA's
+/// normal promise/thenable assimilation.
+pub fn emit_task_when_any_awaited(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
+    emit_pack_task_args(chunks, current, argc, line);
+    let base = chunks[current].alloc_scratch(6);
+    let tasks_slot = base;
+    let resolvers_slot = base + 1;
+    let promise_slot = base + 2;
+    let idx_slot = base + 3;
+    let len_slot = base + 4;
+    let task_slot = base + 5;
+
+    chunks[current].emit_op_u16(Op::LOCAL_SET, tasks_slot, line);
+    call_import(chunks, current, "ecma:promise", "withResolvers", 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, resolvers_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, resolvers_slot, line);
+    struct_get(&mut chunks[current], "promise", line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, promise_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, tasks_slot, line);
+    collections::emit_len(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, len_slot, line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, idx_slot, line);
+
+    let callback_idx = emit_when_any_preserve_callback(chunks, line);
+    let outer_block = chunks[current].emit_block(line);
+    let (loop_id, _) = chunks[current].emit_loop_s(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, len_slot, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_not(&mut chunks[current], line);
+    chunks[current].emit_br_if(1, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, tasks_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
+    collections::emit_get(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, task_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, task_slot, line);
+    chunks[current].emit_op_u16(Op::REF_FUNC, callback_idx as u16, line);
+    chunks[current].emit(2, line);
+    vybe_compiler::primitives::functions::emit_closure_upvalue(
+        &mut chunks[current],
+        true,
+        promise_slot,
+        line,
+    );
+    vybe_compiler::primitives::functions::emit_closure_upvalue(
+        &mut chunks[current],
+        true,
+        task_slot,
+        line,
+    );
+    chunks[current].emit_op_u16(Op::REF_FUNC, callback_idx as u16, line);
+    chunks[current].emit(2, line);
+    vybe_compiler::primitives::functions::emit_closure_upvalue(
+        &mut chunks[current],
+        true,
+        promise_slot,
+        line,
+    );
+    vybe_compiler::primitives::functions::emit_closure_upvalue(
+        &mut chunks[current],
+        true,
+        task_slot,
+        line,
+    );
+    call_import(chunks, current, "ecma:promise", "then", 3, line);
+    collections::emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
+    chunks[current].emit_i32_const(1, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(&mut chunks[current], line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, idx_slot, line);
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(loop_id);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(outer_block);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, promise_slot, line);
 }
 
 /// The first task in `tasks_slot` that is no longer pending, or the first task
@@ -1466,10 +1954,11 @@ fn emit_first_settled_task(
 /// task, so its `t.Result` reads the antecedent's value (unwrap/join). async
 /// runs eagerly, so no explicit wait is needed. Stack: [antecedent, fn] → [task].
 pub fn emit_task_continue_with(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
-    let base = chunks[current].alloc_scratch(3);
+    let base = chunks[current].alloc_scratch(4);
     let fn_slot = base;
     let ante_slot = base + 1;
     let opt_slot = base + 2;
+    let result_slot = base + 3;
     if argc > 1 {
         chunks[current].emit_op_u16(Op::LOCAL_SET, opt_slot, line);
     } else {
@@ -1479,21 +1968,20 @@ pub fn emit_task_continue_with(chunks: &mut [Chunk], current: usize, argc: u8, l
     chunks[current].emit_op_u16(Op::LOCAL_SET, fn_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, ante_slot, line);
     emit_stamp_task_fields_from_state(chunks, current, ante_slot, line);
+    let ante_view_slot = emit_settled_task_fields_by_await(chunks, current, ante_slot, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, opt_slot, line);
     chunks[current].emit_i32_const(131072, line);
     vybe_compiler::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
     vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if_value(line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, ante_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, ante_view_slot, line);
     struct_get(&mut chunks[current], "__state", line);
     chunks[current].emit_string_const("rejected", line);
     vybe_compiler::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
     vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if_value(line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, fn_slot, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, ante_slot, line);
-    vybe_compiler::primitives::functions::emit_call(&mut chunks[current], 1, line);
+    emit_task_continuation_call(chunks, current, fn_slot, ante_view_slot, line);
     call_import(chunks, current, "ecma:promise", "resolve", 1, line);
     chunks[current].emit_else(line);
     chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
@@ -1505,25 +1993,24 @@ pub fn emit_task_continue_with(chunks: &mut [Chunk], current: usize, argc: u8, l
     vybe_compiler::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
     vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if_value(line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, ante_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, ante_view_slot, line);
     struct_get(&mut chunks[current], "__state", line);
     chunks[current].emit_string_const("fulfilled", line);
     vybe_compiler::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
     vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if_value(line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, fn_slot, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, ante_slot, line);
-    vybe_compiler::primitives::functions::emit_call(&mut chunks[current], 1, line);
+    emit_task_continuation_call(chunks, current, fn_slot, ante_view_slot, line);
     call_import(chunks, current, "ecma:promise", "resolve", 1, line);
     chunks[current].emit_else(line);
     chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     call_import(chunks, current, "ecma:promise", "resolve", 1, line);
     chunks[current].emit_end(line);
     chunks[current].emit_else(line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, fn_slot, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, ante_slot, line);
-    vybe_compiler::primitives::functions::emit_call(&mut chunks[current], 1, line);
+    emit_task_continuation_call(chunks, current, fn_slot, ante_view_slot, line);
     call_import(chunks, current, "ecma:promise", "resolve", 1, line);
     chunks[current].emit_end(line);
     chunks[current].emit_end(line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
+    emit_stamp_task_fields_from_state(chunks, current, result_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
 }

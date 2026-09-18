@@ -1,4 +1,4 @@
-use vybe_compiler::primitives::class_slots;
+use vybe_compiler::primitives::class_slots::{self, Dest, ObjSource};
 use vybe_compiler::primitives::instructions::host;
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
@@ -760,6 +760,360 @@ pub fn emit_convert_to_single(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
     let idx = chunk.add_import("ecma:math", "fround");
     chunk.emit_call(idx, 1, line);
+}
+
+pub fn emit_convert_to_double_provider(chunks: &mut [Chunk], current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    let provider = reserve_slot(chunk);
+    let value = reserve_slot(chunk);
+    let separator = reserve_slot(chunk);
+    chunk.emit_op_u16(Op::LOCAL_SET, provider, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, value, line);
+
+    class_slots::emit_class_get(
+        chunk,
+        ObjSource::Local(provider),
+        &super::object_fields::field_slot("NumberFormat"),
+        Dest::Stack,
+        line,
+    );
+    class_slots::emit_class_get(
+        chunk,
+        ObjSource::Stack,
+        &super::object_fields::field_slot("NumberDecimalSeparator"),
+        Dest::Stack,
+        line,
+    );
+    chunk.emit_op_u16(Op::LOCAL_SET, separator, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, separator, line);
+    chunk.emit_string_const(",", line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, value, line);
+    host::emit(chunk, "ecma:value", "typeof", 1, line);
+    chunk.emit_string_const("string", line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    chunk.emit_op(Op::I32_AND, line);
+    chunk.emit_if(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, value, line);
+    chunk.emit_string_const(",", line);
+    chunk.emit_string_const(".", line);
+    vybe_compiler::primitives::strings::emit_replace(chunk, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, value, line);
+    chunk.emit_end(line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, value, line);
+    host::emit(chunk, "ecma:number", "Number", 1, line);
+}
+
+fn emit_type_name_eq(chunk: &mut Chunk, name_slot: u16, expected: &str, line: u32) {
+    chunk.emit_op_u16(Op::LOCAL_GET, name_slot, line);
+    chunk.emit_string_const(expected, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+}
+
+fn emit_type_name_matches(chunk: &mut Chunk, name_slot: u16, expected: &[&str], line: u32) {
+    let mut first = true;
+    for name in expected {
+        emit_type_name_eq(chunk, name_slot, name, line);
+        if first {
+            first = false;
+        } else {
+            chunk.emit_op(Op::I32_OR, line);
+        }
+    }
+}
+
+fn emit_type_field_to_slot(
+    chunk: &mut Chunk,
+    target_slot: u16,
+    out_slot: u16,
+    key: &str,
+    line: u32,
+) {
+    class_slots::emit_class_get(
+        chunk,
+        ObjSource::Local(target_slot),
+        &super::object_fields::field_slot(key),
+        Dest::Stack,
+        line,
+    );
+    chunk.emit_op_u16(Op::LOCAL_SET, out_slot, line);
+}
+
+fn emit_fill_type_field_if_null(
+    chunk: &mut Chunk,
+    target_slot: u16,
+    out_slot: u16,
+    key: &str,
+    line: u32,
+) {
+    chunk.emit_op_u16(Op::LOCAL_GET, out_slot, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_if_value(line);
+    emit_type_field_to_slot(chunk, target_slot, out_slot, key, line);
+    chunk.emit_end(line);
+}
+
+fn emit_type_name_to_slot(chunk: &mut Chunk, target: u16, out: u16, line: u32) {
+    chunk.emit_op_u16(Op::LOCAL_GET, target, line);
+    host::emit(chunk, "ecma:value", "typeof", 1, line);
+    chunk.emit_string_const("string", line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    chunk.emit_if_value(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, target, line);
+    chunk.emit_else(line);
+    emit_type_field_to_slot(chunk, target, out, "Name", line);
+    emit_fill_type_field_if_null(chunk, target, out, "name", line);
+    emit_fill_type_field_if_null(chunk, target, out, "FullName", line);
+    emit_fill_type_field_if_null(chunk, target, out, "fullname", line);
+    chunk.emit_op_u16(Op::LOCAL_GET, out, line);
+    chunk.emit_end(line);
+    chunk.emit_op_u16(Op::LOCAL_SET, out, line);
+}
+
+fn emit_type_name_starts_with(chunk: &mut Chunk, name: u16, prefix: &str, line: u32) {
+    chunk.emit_op_u16(Op::LOCAL_GET, name, line);
+    chunk.emit_string_const(prefix, line);
+    host::emit(chunk, "ecma:string", "startsWith", 2, line);
+}
+
+fn emit_nullable_inner_from_name(chunk: &mut Chunk, name: u16, prefix_len: i32, line: u32) {
+    chunk.emit_op_u16(Op::LOCAL_GET, name, line);
+    chunk.emit_i32_const(prefix_len, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, name, line);
+    vybe_compiler::primitives::strings::emit_length(chunk, line);
+    chunk.emit_i32_const(1, line);
+    chunk.emit_op(Op::I32_SUB, line);
+    host::emit(chunk, "wasm:js-string", "substring", 3, line);
+}
+
+pub fn emit_nullable_get_underlying_type(chunks: &mut [Chunk], current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    let target = reserve_slot(chunk);
+    let name = reserve_slot(chunk);
+    let underlying = reserve_slot(chunk);
+    chunk.emit_op_u16(Op::LOCAL_SET, target, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, target, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_if_value(line);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+    chunk.emit_else(line);
+    emit_type_field_to_slot(chunk, target, underlying, "UnderlyingType", line);
+    emit_fill_type_field_if_null(chunk, target, underlying, "underlyingType", line);
+    emit_fill_type_field_if_null(chunk, target, underlying, "underlyingtype", line);
+    chunk.emit_op_u16(Op::LOCAL_GET, underlying, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_if_value(line);
+    emit_type_name_to_slot(chunk, target, name, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, name, line);
+    vybe_compiler::primitives::strings::emit_to_string(chunk, line);
+    vybe_compiler::primitives::strings::emit_to_lower(chunk, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, name, line);
+    emit_type_name_starts_with(chunk, name, "nullable(of ", line);
+    chunk.emit_if_value(line);
+    emit_nullable_inner_from_name(chunk, name, 12, line);
+    chunk.emit_else(line);
+    emit_type_name_starts_with(chunk, name, "system.nullable(of ", line);
+    chunk.emit_if_value(line);
+    emit_nullable_inner_from_name(chunk, name, 19, line);
+    chunk.emit_else(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, name, line);
+    chunk.emit_string_const("nullable", line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    chunk.emit_if_value(line);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+    chunk.emit_else(line);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
+    chunk.emit_else(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, underlying, line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
+}
+
+pub fn emit_type_get_type_code(chunks: &mut [Chunk], current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    let target = reserve_slot(chunk);
+    let name = reserve_slot(chunk);
+    chunk.emit_op_u16(Op::LOCAL_SET, target, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, target, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_if_value(line);
+    chunk.emit_string_const("Empty", line);
+    chunk.emit_else(line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, target, line);
+    host::emit(chunk, "ecma:value", "typeof", 1, line);
+    chunk.emit_string_const("string", line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    chunk.emit_if_value(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, target, line);
+    chunk.emit_else(line);
+    emit_type_field_to_slot(chunk, target, name, "Name", line);
+    emit_fill_type_field_if_null(chunk, target, name, "name", line);
+    emit_fill_type_field_if_null(chunk, target, name, "FullName", line);
+    emit_fill_type_field_if_null(chunk, target, name, "fullname", line);
+    chunk.emit_op_u16(Op::LOCAL_GET, name, line);
+    chunk.emit_end(line);
+    vybe_compiler::primitives::strings::emit_to_string(chunk, line);
+    vybe_compiler::primitives::strings::emit_to_lower(chunk, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, name, line);
+
+    emit_type_name_matches(chunk, name, &["boolean", "bool", "system.boolean"], line);
+    chunk.emit_if_value(line);
+    chunk.emit_string_const("Boolean", line);
+    chunk.emit_else(line);
+    emit_type_name_matches(chunk, name, &["byte", "system.byte"], line);
+    chunk.emit_if_value(line);
+    chunk.emit_string_const("Byte", line);
+    chunk.emit_else(line);
+    emit_type_name_matches(chunk, name, &["char", "system.char"], line);
+    chunk.emit_if_value(line);
+    chunk.emit_string_const("Char", line);
+    chunk.emit_else(line);
+    emit_type_name_matches(chunk, name, &["datetime", "date", "system.datetime"], line);
+    chunk.emit_if_value(line);
+    chunk.emit_string_const("DateTime", line);
+    chunk.emit_else(line);
+    emit_type_name_matches(chunk, name, &["decimal", "system.decimal"], line);
+    chunk.emit_if_value(line);
+    chunk.emit_string_const("Decimal", line);
+    chunk.emit_else(line);
+    emit_type_name_matches(chunk, name, &["double", "system.double"], line);
+    chunk.emit_if_value(line);
+    chunk.emit_string_const("Double", line);
+    chunk.emit_else(line);
+    emit_type_name_matches(chunk, name, &["single", "system.single"], line);
+    chunk.emit_if_value(line);
+    chunk.emit_string_const("Single", line);
+    chunk.emit_else(line);
+    emit_type_name_matches(chunk, name, &["int16", "short", "system.int16"], line);
+    chunk.emit_if_value(line);
+    chunk.emit_string_const("Int16", line);
+    chunk.emit_else(line);
+    emit_type_name_matches(
+        chunk,
+        name,
+        &["int32", "integer", "int", "system.int32"],
+        line,
+    );
+    chunk.emit_if_value(line);
+    chunk.emit_string_const("Int32", line);
+    chunk.emit_else(line);
+    emit_type_name_matches(chunk, name, &["int64", "long", "system.int64"], line);
+    chunk.emit_if_value(line);
+    chunk.emit_string_const("Int64", line);
+    chunk.emit_else(line);
+    emit_type_name_matches(chunk, name, &["string", "system.string"], line);
+    chunk.emit_if_value(line);
+    chunk.emit_string_const("String", line);
+    chunk.emit_else(line);
+    chunk.emit_string_const("Object", line);
+    for _ in 0..11 {
+        chunk.emit_end(line);
+    }
+    chunk.emit_end(line);
+}
+
+pub fn emit_convert_change_type(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let (provider, target, value, name) = {
+        let chunk = &mut chunks[current];
+        let provider = if argc >= 3 {
+            let slot = reserve_slot(chunk);
+            chunk.emit_op_u16(Op::LOCAL_SET, slot, line);
+            Some(slot)
+        } else {
+            None
+        };
+        let target = reserve_slot(chunk);
+        let value = reserve_slot(chunk);
+        let name = reserve_slot(chunk);
+        chunk.emit_op_u16(Op::LOCAL_SET, target, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, value, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, target, line);
+        host::emit(chunk, "ecma:value", "typeof", 1, line);
+        chunk.emit_string_const("string", line);
+        vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+        chunk.emit_if_value(line);
+        chunk.emit_op_u16(Op::LOCAL_GET, target, line);
+        chunk.emit_else(line);
+        emit_type_field_to_slot(chunk, target, name, "Name", line);
+        emit_fill_type_field_if_null(chunk, target, name, "name", line);
+        emit_fill_type_field_if_null(chunk, target, name, "FullName", line);
+        emit_fill_type_field_if_null(chunk, target, name, "fullname", line);
+        chunk.emit_op_u16(Op::LOCAL_GET, name, line);
+        chunk.emit_end(line);
+        vybe_compiler::primitives::strings::emit_to_string(chunk, line);
+        vybe_compiler::primitives::strings::emit_to_lower(chunk, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, name, line);
+        (provider, target, value, name)
+    };
+    let _ = target;
+
+    {
+        let chunk = &mut chunks[current];
+        chunk.emit_op_u16(Op::LOCAL_GET, value, line);
+        chunk.emit_op(Op::REF_IS_NULL, line);
+        chunk.emit_if_value(line);
+        chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+        chunk.emit_else(line);
+
+        emit_type_name_matches(chunk, name, &["int32", "integer", "system.int32"], line);
+        chunk.emit_if_value(line);
+        chunk.emit_op_u16(Op::LOCAL_GET, value, line);
+    }
+    emit_convert_checked(
+        chunks,
+        current,
+        -2_147_483_648.0,
+        2_147_483_647.0,
+        "Int32",
+        line,
+    );
+    {
+        let chunk = &mut chunks[current];
+        chunk.emit_else(line);
+
+        emit_type_name_matches(chunk, name, &["double", "system.double"], line);
+        chunk.emit_if_value(line);
+        chunk.emit_op_u16(Op::LOCAL_GET, value, line);
+        if let Some(provider) = provider {
+            chunk.emit_op_u16(Op::LOCAL_GET, provider, line);
+        }
+    }
+    if provider.is_some() {
+        emit_convert_to_double_provider(chunks, current, line);
+    } else {
+        host::emit(&mut chunks[current], "ecma:number", "Number", 1, line);
+    }
+    {
+        let chunk = &mut chunks[current];
+        chunk.emit_else(line);
+
+        emit_type_name_matches(chunk, name, &["boolean", "bool", "system.boolean"], line);
+        chunk.emit_if_value(line);
+        chunk.emit_op_u16(Op::LOCAL_GET, value, line);
+    }
+    emit_convert_to_boolean(chunks, current, line);
+    {
+        let chunk = &mut chunks[current];
+        chunk.emit_else(line);
+
+        emit_type_name_matches(chunk, name, &["string", "system.string"], line);
+        chunk.emit_if_value(line);
+        chunk.emit_op_u16(Op::LOCAL_GET, value, line);
+        vybe_compiler::primitives::strings::emit_to_string(chunk, line);
+        chunk.emit_else(line);
+        chunk.emit_op_u16(Op::LOCAL_GET, value, line);
+        chunk.emit_end(line);
+        chunk.emit_end(line);
+        chunk.emit_end(line);
+        chunk.emit_end(line);
+        chunk.emit_end(line);
+    }
 }
 
 /// .NET also ROUNDS on the way in (banker's rounding, `Convert.ToInt32(2.5)`

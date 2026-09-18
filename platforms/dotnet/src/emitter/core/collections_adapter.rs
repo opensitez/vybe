@@ -13,6 +13,8 @@ const BLOCKING_ITEMS: &str = "__dotnet_blocking_items";
 const BLOCKING_CAPACITY: &str = "__dotnet_blocking_capacity";
 const BLOCKING_COMPLETED: &str = "__dotnet_blocking_completed";
 const BLOCKING_LIFO: &str = "__dotnet_blocking_lifo";
+const BLOCKING_ENUM_COLLECTION: &str = "__dotnet_blocking_enum_collection";
+const BLOCKING_ENUM_CURRENT: &str = "__dotnet_blocking_enum_current";
 const OBSERVABLE_ITEMS: &str = "__dotnet_observable_items";
 const OBSERVABLE_NOTIFYING: &str = "__dotnet_observable_notifying";
 const LIST_CAPACITY: &str = "__dotnet_list_capacity";
@@ -194,6 +196,23 @@ fn emit_set_field(
     chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
     collections::emit_set(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
+}
+
+fn emit_set_class_field(
+    chunks: &mut [Chunk],
+    current: usize,
+    object_slot: u16,
+    field: &str,
+    value_slot: u16,
+    line: u32,
+) {
+    class_slots::emit_class_set(
+        &mut chunks[current],
+        ObjSource::Local(object_slot),
+        &field_slot(field),
+        ValueSource::Local(value_slot),
+        line,
+    );
 }
 
 fn emit_array_with_slots(chunks: &mut [Chunk], current: usize, slots: &[u16], line: u32) {
@@ -2041,6 +2060,79 @@ pub fn emit_collection_copy_to(chunks: &mut [Chunk], current: usize, line: u32) 
     collections::emit_copy_to(chunks, current, line);
 }
 
+fn emit_throw_if_collection_empty(
+    chunks: &mut [Chunk],
+    current: usize,
+    collection: u16,
+    line: u32,
+) {
+    chunks[current].emit_op_u16(Op::LOCAL_GET, collection, line);
+    collections::emit_len(chunks, current, line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op(Op::I32_EQ, line);
+    chunks[current].emit_if(line);
+    emit_throw_dotnet_exception(
+        chunks,
+        current,
+        "InvalidOperationException",
+        "Collection was empty.",
+        line,
+    );
+    chunks[current].emit_end(line);
+}
+
+/// `Queue<T>.Dequeue()` / value-returning `TryDequeue()` lowering.
+///
+/// Stack: `[queue]` -> `[value]`, or throws on empty.
+pub fn emit_queue_dequeue_checked(chunks: &mut [Chunk], current: usize, line: u32) {
+    let queue = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, queue, line);
+    emit_throw_if_collection_empty(chunks, current, queue, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, queue, line);
+    collections::emit_shift(chunks, current, line);
+}
+
+/// `Queue<T>.Peek()` / value-returning `TryPeek()` lowering.
+///
+/// Stack: `[queue]` -> `[value]`, or throws on empty.
+pub fn emit_queue_peek_checked(chunks: &mut [Chunk], current: usize, line: u32) {
+    let queue = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, queue, line);
+    emit_throw_if_collection_empty(chunks, current, queue, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, queue, line);
+    chunks[current].emit_i32_const(0, line);
+    collections::emit_get(chunks, current, line);
+}
+
+/// `Stack<T>.Pop()` / value-returning `TryPop()` lowering.
+///
+/// Stack: `[stack]` -> `[value]`, or throws on empty.
+pub fn emit_stack_pop_checked(chunks: &mut [Chunk], current: usize, line: u32) {
+    let stack = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, stack, line);
+    emit_throw_if_collection_empty(chunks, current, stack, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, stack, line);
+    collections::emit_pop(chunks, current, line);
+}
+
+/// `Stack<T>.Peek()` / value-returning `TryPeek()` lowering.
+///
+/// Stack: `[stack]` -> `[value]`, or throws on empty.
+pub fn emit_stack_peek_checked(chunks: &mut [Chunk], current: usize, line: u32) {
+    let stack = chunks[current].alloc_scratch(2);
+    let len = stack + 1;
+    chunks[current].emit_op_u16(Op::LOCAL_SET, stack, line);
+    emit_throw_if_collection_empty(chunks, current, stack, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, stack, line);
+    collections::emit_len(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, len, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, stack, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, len, line);
+    chunks[current].emit_i32_const(-1, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(&mut chunks[current], line);
+    collections::emit_get(chunks, current, line);
+}
+
 fn emit_check_copy_to_args(chunks: &mut [Chunk], current: usize, dest: u16, index: u16, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, dest, line);
     chunks[current].emit_op(Op::REF_IS_NULL, line);
@@ -2223,6 +2315,155 @@ pub fn emit_blocking_collection_try_add(chunks: &mut [Chunk], current: usize, ar
     chunks[current].emit_end(line);
 }
 
+/// `BlockingCollection<T>.AddToAny(collections, item[, timeout])`.
+pub fn emit_blocking_collection_add_to_any(
+    chunks: &mut [Chunk],
+    current: usize,
+    argc: u8,
+    line: u32,
+) {
+    let base = stash_args(chunks, current, argc.max(2), line);
+    let collections_slot = base;
+    let value_slot = base + 1;
+    let slots = chunks[current].alloc_scratch(6);
+    let index_slot = slots;
+    let count_slot = slots + 1;
+    let recv_slot = slots + 2;
+    let items_slot = slots + 3;
+    let capacity_slot = slots + 4;
+    let len_slot = slots + 5;
+
+    core_wasm::i32_const(&mut chunks[current], line, -1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, index_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, collections_slot, line);
+    collections::emit_len(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, count_slot, line);
+
+    chunks[current].emit_block(line);
+    chunks[current].emit_loop_s(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, index_slot, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    chunks[current].emit_op_u16(Op::LOCAL_TEE, index_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, count_slot, line);
+    chunks[current].emit_op(Op::I32_GE_S, line);
+    chunks[current].emit_br_if(1, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, collections_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, index_slot, line);
+    collections::emit_get(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, recv_slot, line);
+    emit_check_adding_open(chunks, current, recv_slot, line);
+    emit_blocking_field(chunks, current, recv_slot, BLOCKING_ITEMS, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, items_slot, line);
+    emit_blocking_field(chunks, current, recv_slot, BLOCKING_CAPACITY, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, capacity_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, items_slot, line);
+    collections::emit_len(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, len_slot, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, capacity_slot, line);
+    chunks[current].emit_i32_const(0, line);
+    vybe_compiler::primitives::ops::emit_dyn_ge(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, len_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, capacity_slot, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
+    chunks[current].emit_else(line);
+    core_wasm::bool_const(&mut chunks[current], line, true);
+    chunks[current].emit_end(line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, items_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
+    collections::emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_br(2, line);
+    chunks[current].emit_end(line);
+
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, index_slot, line);
+}
+
+/// Hidden core for `TakeFromAny`/`TryTakeFromAny`: returns `[index, value]`.
+pub fn emit_blocking_collection_take_from_any_core(
+    chunks: &mut [Chunk],
+    current: usize,
+    argc: u8,
+    line: u32,
+) {
+    let base = stash_args(chunks, current, argc.max(1), line);
+    let collections_slot = base;
+    let slots = chunks[current].alloc_scratch(7);
+    let index_slot = slots;
+    let count_slot = slots + 1;
+    let recv_slot = slots + 2;
+    let items_slot = slots + 3;
+    let len_slot = slots + 4;
+    let lifo_slot = slots + 5;
+    let value_slot = slots + 6;
+
+    core_wasm::i32_const(&mut chunks[current], line, -1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, index_slot, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, value_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, collections_slot, line);
+    collections::emit_len(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, count_slot, line);
+
+    chunks[current].emit_block(line);
+    chunks[current].emit_loop_s(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, index_slot, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    chunks[current].emit_op_u16(Op::LOCAL_TEE, index_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, count_slot, line);
+    chunks[current].emit_op(Op::I32_GE_S, line);
+    chunks[current].emit_br_if(1, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, collections_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, index_slot, line);
+    collections::emit_get(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, recv_slot, line);
+    emit_blocking_field(chunks, current, recv_slot, BLOCKING_ITEMS, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, items_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, items_slot, line);
+    collections::emit_len(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, len_slot, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, len_slot, line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op(Op::I32_GT_S, line);
+    chunks[current].emit_if(line);
+    emit_blocking_field(chunks, current, recv_slot, BLOCKING_LIFO, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, lifo_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, lifo_slot, line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, items_slot, line);
+    collections::emit_pop(chunks, current, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, items_slot, line);
+    collections::emit_shift(chunks, current, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, value_slot, line);
+    chunks[current].emit_br(2, line);
+    chunks[current].emit_end(line);
+
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, index_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, count_slot, line);
+    chunks[current].emit_op(Op::I32_GE_S, line);
+    chunks[current].emit_if(line);
+    core_wasm::i32_const(&mut chunks[current], line, -1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, index_slot, line);
+    chunks[current].emit_end(line);
+    emit_array_with_slots(chunks, current, &[index_slot, value_slot], line);
+}
+
 /// Raise `OperationCanceledException` when the token in `slot` is cancelled.
 ///
 /// ⛔ The check is spelled out rather than delegated to
@@ -2233,7 +2474,8 @@ pub fn emit_blocking_collection_try_add(chunks: &mut [Chunk], current: usize, ar
 /// reads a leftover operand as its callee (`f64 is not callable`). A void `if`
 /// whose only arm throws is balanced.
 fn emit_check_not_cancelled(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
-    emit_get_field(chunks, current, slot, "iscancellationrequested", line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
+    super::thread_adapter::emit_cancellation_token_is_requested(chunks, current, line);
     vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
     crate::emitter::core::exceptions::emit_new_typed(
@@ -2336,10 +2578,165 @@ pub fn emit_blocking_collection_items(chunks: &mut [Chunk], current: usize, line
     emit_blocking_field(chunks, current, recv, BLOCKING_ITEMS, line);
 }
 
+fn emit_bind_blocking_enumerator_method(
+    chunks: &mut Vec<Chunk>,
+    current: usize,
+    object_slot: u16,
+    method_name: &str,
+    method_chunk_idx: usize,
+    line: u32,
+) {
+    let method_slot = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::REF_FUNC, method_chunk_idx as u16, line);
+    chunks[current].emit(0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, method_slot, line);
+    emit_set_class_field(
+        chunks,
+        current,
+        method_slot,
+        "__vybe_method_receiver",
+        object_slot,
+        line,
+    );
+    emit_set_class_field(chunks, current, object_slot, method_name, method_slot, line);
+}
+
+fn emit_blocking_enumerator_get_enumerator_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
+    let mut chunk = vybe_compiler::primitives::functions::create_function_chunk(
+        "__dotnet_blocking_collection_get_enumerator",
+        1,
+    );
+    chunk.emit_op_u16(Op::LOCAL_GET, 0, line);
+    chunk.emit_op(Op::RETURN, line);
+    chunk.local_count = chunk.local_count.max(1);
+    chunks.push(chunk);
+    chunks.len() - 1
+}
+
+fn emit_blocking_enumerator_move_next_from_slot(
+    chunks: &mut [Chunk],
+    current: usize,
+    recv: u16,
+    line: u32,
+) {
+    let slots = chunks[current].alloc_scratch(4);
+    let collection_slot = slots;
+    let items_slot = slots + 1;
+    let value_slot = slots + 2;
+    let has_value_slot = slots + 3;
+
+    emit_get_field(chunks, current, recv, BLOCKING_ENUM_COLLECTION, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, collection_slot, line);
+    emit_blocking_field(chunks, current, collection_slot, BLOCKING_ITEMS, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, items_slot, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, items_slot, line);
+    collections::emit_len(chunks, current, line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op(Op::I32_GT_S, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, has_value_slot, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, has_value_slot, line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, collection_slot, line);
+    emit_blocking_collection_take(chunks, current, 1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, value_slot, line);
+    emit_set_class_field(
+        chunks,
+        current,
+        recv,
+        BLOCKING_ENUM_CURRENT,
+        value_slot,
+        line,
+    );
+    emit_set_class_field(chunks, current, recv, "Current", value_slot, line);
+    emit_set_class_field(chunks, current, recv, "current", value_slot, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, value_slot, line);
+    emit_set_class_field(
+        chunks,
+        current,
+        recv,
+        BLOCKING_ENUM_CURRENT,
+        value_slot,
+        line,
+    );
+    emit_set_class_field(chunks, current, recv, "Current", value_slot, line);
+    emit_set_class_field(chunks, current, recv, "current", value_slot, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, has_value_slot, line);
+}
+
+pub fn emit_blocking_collection_enumerator_move_next(
+    chunks: &mut [Chunk],
+    current: usize,
+    line: u32,
+) {
+    let recv = stash_args(chunks, current, 1, line);
+    emit_blocking_enumerator_move_next_from_slot(chunks, current, recv, line);
+}
+
+fn emit_blocking_enumerator_move_next_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
+    let mut chunk = vybe_compiler::primitives::functions::create_function_chunk(
+        "__dotnet_blocking_collection_enumerator_move_next",
+        1,
+    );
+    chunk.local_count = chunk.local_count.max(1);
+    let mut method_chunks = vec![chunk];
+    emit_blocking_enumerator_move_next_from_slot(&mut method_chunks, 0, 0, line);
+    method_chunks[0].emit_op(Op::RETURN, line);
+    chunks.push(method_chunks.remove(0));
+    chunks.len() - 1
+}
+
+pub fn emit_blocking_collection_consuming_enumerator(
+    chunks: &mut Vec<Chunk>,
+    current: usize,
+    line: u32,
+) {
+    let collection_slot = stash_args(chunks, current, 1, line);
+    let enum_slot = chunks[current].alloc_scratch(2);
+    let current_slot = enum_slot + 1;
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, current_slot, line);
+    class_slots::emit_class_construct(
+        &mut chunks[current],
+        "BlockingCollectionConsumingEnumerator",
+        &[
+            (
+                field_slot(BLOCKING_ENUM_COLLECTION),
+                ValueSource::Local(collection_slot),
+            ),
+            (
+                field_slot(BLOCKING_ENUM_CURRENT),
+                ValueSource::Local(current_slot),
+            ),
+            (field_slot("Current"), ValueSource::Local(current_slot)),
+            (field_slot("current"), ValueSource::Local(current_slot)),
+        ],
+        line,
+    );
+    chunks[current].emit_op_u16(Op::LOCAL_SET, enum_slot, line);
+    let get_enumerator = emit_blocking_enumerator_get_enumerator_chunk(chunks, line);
+    let move_next = emit_blocking_enumerator_move_next_chunk(chunks, line);
+    emit_bind_blocking_enumerator_method(
+        chunks,
+        current,
+        enum_slot,
+        "GetEnumerator",
+        get_enumerator,
+        line,
+    );
+    emit_bind_blocking_enumerator_method(chunks, current, enum_slot, "MoveNext", move_next, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, enum_slot, line);
+}
+
 /// `bc.ToArray()` — a COPY. The live array would let a later `Add` show up in
 /// a snapshot taken before it.
 pub fn emit_blocking_collection_to_array(chunks: &mut [Chunk], current: usize, line: u32) {
-    emit_blocking_collection_items(chunks, current, line);
+    let recv = stash_args(chunks, current, 1, line);
+    emit_blocking_field(chunks, current, recv, BLOCKING_ITEMS, line);
     collections::emit_clone(chunks, current, line);
 }
 

@@ -544,9 +544,73 @@ pub fn emit_timespan_min_value(chunks: &mut Vec<Chunk>, current: usize, line: u3
     emit_build_timespan(chunks, current, line);
 }
 
+/// `ts.ToString([format])`.
+pub fn emit_timespan_to_string(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
+    if argc <= 1 {
+        emit_timespan_to_string_default(chunks, current, line);
+        return;
+    }
+    {
+        let chunk = &mut chunks[current];
+        for _ in 2..argc {
+            chunk.emit_op(Op::DROP, line);
+        }
+        chunk.emit_op(Op::DROP, line);
+    }
+    emit_timespan_to_string_hh_mm(chunks, current, line);
+}
+
+fn emit_timespan_two_digit_field(
+    chunk: &mut Chunk,
+    obj_slot: u16,
+    field: &str,
+    number_to_string: u16,
+    pad_start: u16,
+    line: u32,
+) {
+    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+    class_slots::emit_class_get(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(field),
+        Dest::Stack,
+        line,
+    );
+    push_const(chunk, Value::I32(10), line);
+    chunk.emit_call(number_to_string, 2, line);
+    push_const(chunk, Value::I32(2), line);
+    push_const(chunk, Value::String(Arc::from("0")), line);
+    chunk.emit_call(pad_start, 3, line);
+}
+
+fn emit_timespan_to_string_hh_mm(chunks: &mut [Chunk], current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    let obj_slot = chunk.alloc_scratch(2);
+    let out_slot = obj_slot + 1;
+    let number_to_string = chunk.add_import("ecma:number", "toString");
+    let pad_start = chunk.add_import("ecma:string", "padStart");
+    let concat = chunk.add_import("wasm:js-string", "concat");
+
+    chunk.emit_op_u16(Op::LOCAL_SET, obj_slot, line);
+    emit_timespan_two_digit_field(chunk, obj_slot, "Hours", number_to_string, pad_start, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, out_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, out_slot, line);
+    push_const(chunk, Value::String(Arc::from(":")), line);
+    chunk.emit_call(concat, 2, line);
+    emit_timespan_two_digit_field(
+        chunk,
+        obj_slot,
+        "Minutes",
+        number_to_string,
+        pad_start,
+        line,
+    );
+    chunk.emit_call(concat, 2, line);
+}
+
 /// `ts.ToString()` — .NET's constant format: `[-][d.]hh:mm:ss[.fffffff]`.
 /// Stack: `[ts]` → `[string]`.
-pub fn emit_timespan_to_string(chunks: &mut [Chunk], current: usize, line: u32) {
+fn emit_timespan_to_string_default(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
     let obj_slot = chunk.alloc_scratch(4);
     let ms_slot = obj_slot + 1;
@@ -707,6 +771,50 @@ pub fn emit_timespan_sub(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     emit_total_ms_from_obj(chunk, right_slot, line);
     chunk.emit_op(Op::F64_SUB, line);
     emit_build_timespan(chunks, current, line);
+}
+
+pub fn emit_timespan_multiply(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    let factor_slot = chunk.alloc_scratch(2);
+    let span_slot = factor_slot + 1;
+    chunk.emit_op_u16(Op::LOCAL_SET, factor_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, span_slot, line);
+    emit_total_ms_from_obj(chunk, span_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, factor_slot, line);
+    chunk.emit_op(Op::F64_MUL, line);
+    emit_build_timespan(chunks, current, line);
+}
+
+pub fn emit_timespan_divide(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    let right_slot = chunk.alloc_scratch(4);
+    let left_slot = right_slot + 1;
+    let right_ms_slot = right_slot + 2;
+    let result_slot = right_slot + 3;
+
+    chunk.emit_op_u16(Op::LOCAL_SET, right_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, left_slot, line);
+
+    let typeof_fn = chunk.add_import("ecma:value", "typeof");
+    chunk.emit_op_u16(Op::LOCAL_GET, right_slot, line);
+    chunk.emit_call(typeof_fn, 1, line);
+    chunk.emit_string_const("object", line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    chunk.emit_if(line);
+    emit_total_ms_from_obj(chunk, left_slot, line);
+    emit_total_ms_from_obj(chunk, right_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, right_ms_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, right_ms_slot, line);
+    chunk.emit_op(Op::F64_DIV, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, result_slot, line);
+    chunk.emit_else(line);
+    emit_total_ms_from_obj(chunk, left_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, right_slot, line);
+    chunk.emit_op(Op::F64_DIV, line);
+    emit_build_timespan(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
 }
 
 // ── Operator PROTOCOL SLOTS ──────────────────────────────────────────────────

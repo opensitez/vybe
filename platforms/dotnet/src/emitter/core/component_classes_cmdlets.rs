@@ -378,6 +378,40 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
         ),
         DotnetClassExport::new(
             "dotnet.System.Management.Automation",
+            ClassType::new("PSEventSubscriber")
+                .with_parent("Object")
+                .with_field("Name")
+                .with_field("name")
+                .with_field("SourceIdentifier")
+                .with_field("sourceidentifier")
+                .with_field("EventName")
+                .with_field("eventname")
+                .with_field("SourceObject")
+                .with_field("sourceobject")
+                .with_field("Action")
+                .with_field("action")
+                .with_field("MessageData")
+                .with_field("messagedata")
+                .with_field("SubscriptionId")
+                .with_field("subscriptionid"),
+        ),
+        DotnetClassExport::new(
+            "dotnet.System.Management.Automation",
+            ClassType::new("PSEventArgs")
+                .with_parent("Object")
+                .with_field("SourceIdentifier")
+                .with_field("sourceidentifier")
+                .with_field("EventIdentifier")
+                .with_field("eventidentifier")
+                .with_field("Sender")
+                .with_field("sender")
+                .with_field("SourceEventArgs")
+                .with_field("sourceeventargs")
+                .with_field("MessageData")
+                .with_field("messagedata"),
+        ),
+        DotnetClassExport::new(
+            "dotnet.System.Management.Automation",
             ClassType::new("PSDriveInfo")
                 .with_parent("Object")
                 .with_field("Name")

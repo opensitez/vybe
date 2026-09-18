@@ -379,8 +379,7 @@ fn emit_try_parse_double_text(chunks: &mut [Chunk], current: usize, argc: u8, li
         );
         let group =
             emit_field_or_default(&mut chunks[current], nf, "numbergroupseparator", ",", line);
-        let currency =
-            emit_field_or_default(&mut chunks[current], nf, "currencysymbol", "$", line);
+        let currency = emit_field_or_default(&mut chunks[current], nf, "currencysymbol", "$", line);
 
         emit_style_has_mask(&mut chunks[current], styles, 64, line);
         chunks[current].emit_op(Op::I32_EQZ, line);

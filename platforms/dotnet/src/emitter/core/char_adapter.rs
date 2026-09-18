@@ -61,8 +61,37 @@ fn set(chunk: &mut Chunk, slot: u16, line: u32) {
 
 /// `charCodeAt`. Stack: `[string, index]` → `[i32]`.
 fn char_code_at(chunk: &mut Chunk, line: u32) {
-    let f = chunk.add_import("wasm:js-string", "charCodeAt");
+    let f = chunk.add_import("ecma:string", "charCodeAt");
     chunk.emit_call(f, 2, line);
+    chunk.emit_i32_const(0xFFFF, line);
+    chunk.emit_op(Op::I32_AND, line);
+}
+
+/// .NET char APIs operate on UTF-16 code units. A char-like value may already
+/// be a numeric code unit (`Char.MinValue`, widened constants), or a one-unit
+/// JS string (`"A"c`, `ChrW(65)`). Use ECMA string access here so lone
+/// surrogate strings remain observable code units instead of trapping.
+fn char_like_code(chunk: &mut Chunk, line: u32) {
+    let value = chunk.alloc_scratch(1);
+    chunk.emit_op_u16(Op::LOCAL_SET, value, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, value, line);
+    let is_str = chunk.add_import("wasm:js-string", "test");
+    chunk.emit_call(is_str, 1, line);
+    chunk.emit_if_value(line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, value, line);
+    chunk.emit_i32_const(0, line);
+    char_code_at(chunk, line);
+
+    chunk.emit_else(line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, value, line);
+    let number = chunk.add_import("ecma:number", "Number");
+    chunk.emit_call(number, 1, line);
+    chunk.emit_op(Op::I32_FROM_F64, line);
+
+    chunk.emit_end(line);
 }
 
 /// Reduce the arguments of a classifier call to the UTF-16 CODE UNIT.
@@ -75,7 +104,7 @@ fn char_code_at(chunk: &mut Chunk, line: u32) {
 /// so a raw `charCodeAt` traps on exactly the values a limit test passes in.
 fn narrow_to_code(chunk: &mut Chunk, argc: u8, line: u32) {
     if argc < 2 {
-        strings::emit_char_code(chunk, line);
+        char_like_code(chunk, line);
         return;
     }
     // No shared equivalent for the INDEXED read: `emit_code_point_at` is
@@ -308,9 +337,8 @@ pub fn emit_is_surrogate(chunks: &mut [Chunk], current: usize, argc: u8, line: u
 ///
 /// ⛔ The one method in this file that argc CANNOT discriminate: both overloads
 /// take two arguments and differ only in the TYPE of the second. The runtime
-/// test is `wasm:js-string.test` on argument 2 — a string means the
-/// `(char, char)` form, a number means `(string, index)` and the low half is at
-/// `index + 1`.
+/// test is `wasm:js-string.test` on both arguments: only `(string, number)` is
+/// the indexed overload; everything else is the `(char, char)` form.
 pub fn emit_is_surrogate_pair(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
     let second = chunk.alloc_scratch(1);
@@ -320,19 +348,22 @@ pub fn emit_is_surrogate_pair(chunks: &mut [Chunk], current: usize, line: u32) {
     set(chunk, second, line);
     set(chunk, first, line);
 
-    get(chunk, second, line);
+    get(chunk, first, line);
     let is_str = chunk.add_import("wasm:js-string", "test");
     chunk.emit_call(is_str, 1, line);
+    get(chunk, second, line);
+    chunk.emit_call(is_str, 1, line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_op(Op::I32_AND, line);
+    chunk.emit_op(Op::I32_EQZ, line);
     chunk.emit_if_value(line);
 
     // `(char, char)` — each argument is its own one-character string.
     get(chunk, first, line);
-    chunk.emit_i32_const(0, line);
-    char_code_at(chunk, line);
+    char_like_code(chunk, line);
     set(chunk, high, line);
     get(chunk, second, line);
-    chunk.emit_i32_const(0, line);
-    char_code_at(chunk, line);
+    char_like_code(chunk, line);
     set(chunk, low, line);
     chunk.emit_i32_const(0, line);
 
@@ -370,16 +401,14 @@ pub fn emit_convert_to_utf32(chunks: &mut [Chunk], current: usize, line: u32) {
     set(chunk, high, line);
 
     get(chunk, high, line);
-    chunk.emit_i32_const(0, line);
-    char_code_at(chunk, line);
+    char_like_code(chunk, line);
     chunk.emit_i32_const(0xD800, line);
     chunk.emit_op(Op::I32_SUB, line);
     chunk.emit_i32_const(0x400, line);
     chunk.emit_op(Op::I32_MUL, line);
 
     get(chunk, low, line);
-    chunk.emit_i32_const(0, line);
-    char_code_at(chunk, line);
+    char_like_code(chunk, line);
     chunk.emit_i32_const(0xDC00, line);
     chunk.emit_op(Op::I32_SUB, line);
     chunk.emit_op(Op::I32_ADD, line);

@@ -283,6 +283,16 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     MethodBody::Common("dotnet.regex_replace".into()),
                 ))
                 .with_method(MethodDef::new(
+                    "Replace",
+                    3,
+                    MethodBody::Common("dotnet.regex_replace".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "Replace",
+                    4,
+                    MethodBody::Common("dotnet.regex_replace".into()),
+                ))
+                .with_method(MethodDef::new(
                     "Split",
                     1,
                     MethodBody::Common("dotnet.regex_split".into()),
@@ -333,6 +343,60 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
         // qualified `System.Security.Cryptography.SHA256.HashData(...)`, and a
         // dotted path resolves through the tree. Registered here rather than in
         // a language crate so VB reaches the identical surface.
+        DotnetClassExport::new(
+            "dotnet.System.Security.Cryptography",
+            ClassType::new("Aes")
+                .with_method(MethodDef::static_method(
+                    "Create",
+                    0,
+                    MethodBody::Common("dotnet.crypto_aes_create".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "CreateEncryptor",
+                    0,
+                    MethodBody::Common("dotnet.crypto_aes_encryptor".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "CreateEncryptor",
+                    2,
+                    MethodBody::Common("dotnet.crypto_aes_encryptor".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "CreateDecryptor",
+                    0,
+                    MethodBody::Common("dotnet.crypto_aes_decryptor".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "CreateDecryptor",
+                    2,
+                    MethodBody::Common("dotnet.crypto_aes_decryptor".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "Dispose",
+                    0,
+                    MethodBody::Common("dotnet.crypto_incremental_dispose".into()),
+                ))
+                .with_field("Key")
+                .with_field("key")
+                .with_field("IV")
+                .with_field("iv")
+                .with_field("KeySize")
+                .with_field("keysize")
+                .with_field("BlockSize")
+                .with_field("blocksize")
+                .with_field("Mode")
+                .with_field("mode")
+                .with_field("Padding")
+                .with_field("padding"),
+        ),
+        DotnetClassExport::new(
+            "dotnet.System.Security.Cryptography",
+            ClassType::new("AesTransform").with_method(MethodDef::new(
+                "TransformFinalBlock",
+                3,
+                MethodBody::Common("dotnet.crypto_aes_transform_final_block".into()),
+            )),
+        ),
         DotnetClassExport::new(
             "dotnet.System.Security.Cryptography",
             ClassType::new("AesGcm").with_method(MethodDef::static_method(
