@@ -21,9 +21,8 @@
 //! from it, with members bound as named properties.
 
 use vybe_ast::{
-    Argument, ArrayElement, BindingPattern, ExprKind, Expression, LambdaBody, Literal, Module,
-    Modifiers, ObjectProperty, Param, PassBy, Span, Statement, StmtKind, VarDeclKind,
-    VarDeclarator,
+    Argument, ArrayElement, BindingPattern, ExprKind, Expression, LambdaBody, Literal, Modifiers,
+    Module, ObjectProperty, Param, PassBy, Span, Statement, StmtKind, VarDeclKind, VarDeclarator,
 };
 
 /// One node of the surface tree: what the script sees.
@@ -69,10 +68,7 @@ impl<'a> SourceMap<'a> {
         if line == 0 {
             return 0;
         }
-        let base = *self
-            .line_starts
-            .get(line as usize - 1)
-            .unwrap_or(&0);
+        let base = *self.line_starts.get(line as usize - 1).unwrap_or(&0);
         (base + col.saturating_sub(1) as usize).min(self.source.len())
     }
 
@@ -80,6 +76,32 @@ impl<'a> SourceMap<'a> {
         let start = self.offset(span.start_line, span.start_col);
         let end = self.offset(span.end_line, span.end_col).max(start);
         self.source.get(start..end).unwrap_or("")
+    }
+
+    fn line_col(&self, offset: usize) -> (u32, u32) {
+        let offset = offset.min(self.source.len());
+        let line_index = match self.line_starts.binary_search(&offset) {
+            Ok(index) => index,
+            Err(index) => index.saturating_sub(1),
+        };
+        let line_start = *self.line_starts.get(line_index).unwrap_or(&0);
+        ((line_index + 1) as u32, (offset - line_start + 1) as u32)
+    }
+
+    fn line_text(&self, line: u32) -> &'a str {
+        if line == 0 {
+            return "";
+        }
+        let start = *self.line_starts.get(line as usize - 1).unwrap_or(&0);
+        let end = self
+            .line_starts
+            .get(line as usize)
+            .copied()
+            .unwrap_or(self.source.len());
+        self.source
+            .get(start..end)
+            .unwrap_or("")
+            .trim_end_matches(['\r', '\n'])
     }
 }
 
@@ -97,6 +119,11 @@ pub fn ast_expr(module: &Module, source: &str) -> Expression {
         end_col: u32::MAX,
     };
     if let Some(index) = source_compound_node(source.trim(), whole_span, &mut nodes) {
+        roots.push(index);
+    } else if source.trim().lines().count() == 1
+        && let Some(index) = source_statement_node(source.trim(), whole_span, &mut nodes)
+        && ast_source_statement_should_override_parse(source.trim())
+    {
         roots.push(index);
     } else {
         for stmt in &module.body {
@@ -125,17 +152,19 @@ pub fn ast_expr(module: &Module, source: &str) -> Expression {
         whole_span,
         root_children,
         vec![
-            ("ParamBlock".to_string(), param_block.map(Member::Node).unwrap_or(Member::Null)),
+            (
+                "ParamBlock".to_string(),
+                param_block.map(Member::Node).unwrap_or(Member::Null),
+            ),
             ("BeginBlock".to_string(), Member::Null),
             ("ProcessBlock".to_string(), Member::Null),
             ("EndBlock".to_string(), Member::Node(end_block)),
         ],
     );
     // The root's extent is the whole script, whatever the last line's length.
-    nodes[root].members.push((
-        "__WholeText".to_string(),
-        Member::Str(source.to_string()),
-    ));
+    nodes[root]
+        .members
+        .push(("__WholeText".to_string(), Member::Str(source.to_string())));
     emit_tree(&nodes, root, &map, source)
 }
 
@@ -149,6 +178,8 @@ pub fn ast_expr_lossy_source(source: &str) -> Expression {
         end_col: u32::MAX,
     };
     let roots = if let Some(index) = source_compound_node(source.trim(), whole_span, &mut nodes) {
+        vec![index]
+    } else if let Some(index) = source_statement_node(source.trim(), whole_span, &mut nodes) {
         vec![index]
     } else {
         Vec::new()
@@ -172,10 +203,9 @@ pub fn ast_expr_lossy_source(source: &str) -> Expression {
             ("EndBlock".to_string(), Member::Node(end_block)),
         ],
     );
-    nodes[root].members.push((
-        "__WholeText".to_string(),
-        Member::Str(source.to_string()),
-    ));
+    nodes[root]
+        .members
+        .push(("__WholeText".to_string(), Member::Str(source.to_string())));
     emit_tree(&nodes, root, &map, source)
 }
 
@@ -240,7 +270,10 @@ fn parameter_node(
         "VariableExpressionAst",
         span,
         Vec::new(),
-        vec![("VariablePath".to_string(), Member::Expr(variable_path_expr(name)))],
+        vec![(
+            "VariablePath".to_string(),
+            Member::Expr(variable_path_expr(name)),
+        )],
     );
     let mut children = vec![variable];
     children.extend(attrs.iter().copied());
@@ -261,7 +294,10 @@ fn parameter_node(
         vec![
             ("Name".to_string(), Member::Node(variable)),
             ("Attributes".to_string(), Member::Nodes(attrs)),
-            ("DefaultValue".to_string(), default_value.map(Member::Node).unwrap_or(Member::Null)),
+            (
+                "DefaultValue".to_string(),
+                default_value.map(Member::Node).unwrap_or(Member::Null),
+            ),
             ("StaticType".to_string(), Member::Expr(static_type_expr)),
         ],
     )
@@ -292,7 +328,10 @@ fn walk_stmt(stmt: &Statement, map: &SourceMap, nodes: &mut Vec<AstNode>) -> Opt
                     "Right".to_string(),
                     right.map(Member::Node).unwrap_or(Member::Null),
                 ),
-                ("Operator".to_string(), Member::Str(operator_name(&operator))),
+                (
+                    "Operator".to_string(),
+                    Member::Str(assignment_operator_name_from_text(text, &operator)),
+                ),
                 ("__OperatorText".to_string(), Member::Str(operator)),
             ];
             Some(push(
@@ -341,11 +380,17 @@ fn walk_stmt(stmt: &Statement, map: &SourceMap, nodes: &mut Vec<AstNode>) -> Opt
             let mut children = Vec::new();
             let then_block = statement_block_node(then_body, stmt.span, map, nodes);
             children.push(then_block);
-            let mut clauses = vec![tuple2_expr(Expression::null(), Expression::ident(&temp(then_block)))];
+            let mut clauses = vec![tuple2_expr(
+                Expression::null(),
+                Expression::ident(&temp(then_block)),
+            )];
             for (_, body) in elifs {
                 let block = statement_block_node(body, stmt.span, map, nodes);
                 children.push(block);
-                clauses.push(tuple2_expr(Expression::null(), Expression::ident(&temp(block))));
+                clauses.push(tuple2_expr(
+                    Expression::null(),
+                    Expression::ident(&temp(block)),
+                ));
             }
             let else_clause = if let Some(body) = else_body {
                 let block = statement_block_node(body, stmt.span, map, nodes);
@@ -401,7 +446,10 @@ fn walk_stmt(stmt: &Statement, map: &SourceMap, nodes: &mut Vec<AstNode>) -> Opt
                     "VariableExpressionAst",
                     stmt.span,
                     Vec::new(),
-                    vec![("VariablePath".to_string(), Member::Expr(variable_path_expr(&var)))],
+                    vec![(
+                        "VariablePath".to_string(),
+                        Member::Expr(variable_path_expr(&var)),
+                    )],
                 );
                 members.push(("Variable".to_string(), Member::Node(variable)));
             }
@@ -434,7 +482,10 @@ fn walk_stmt(stmt: &Statement, map: &SourceMap, nodes: &mut Vec<AstNode>) -> Opt
                     vec![catch_body],
                     vec![
                         ("Body".to_string(), Member::Node(catch_body)),
-                        ("IsCatchAll".to_string(), Member::Bool(catch.types.is_empty())),
+                        (
+                            "IsCatchAll".to_string(),
+                            Member::Bool(catch.types.is_empty()),
+                        ),
                     ],
                 );
                 children.push(catch_node);
@@ -494,7 +545,10 @@ fn walk_stmt(stmt: &Statement, map: &SourceMap, nodes: &mut Vec<AstNode>) -> Opt
             let lower = text.trim_start().to_ascii_lowercase();
             let members = vec![
                 ("Name".to_string(), Member::Str(name.clone())),
-                ("IsFilter".to_string(), Member::Bool(lower.starts_with("filter"))),
+                (
+                    "IsFilter".to_string(),
+                    Member::Bool(lower.starts_with("filter")),
+                ),
                 ("Parameters".to_string(), Member::Nodes(param_nodes)),
                 ("Body".to_string(), Member::Expr(function_body_expr(text))),
             ];
@@ -649,7 +703,10 @@ fn walk_expr(expr: &Expression, map: &SourceMap, nodes: &mut Vec<AstNode>) -> Op
                 vec![
                     ("Value".to_string(), Member::Str(value.clone())),
                     ("StringConstantType".to_string(), Member::Str(kind)),
-                    ("StaticType".to_string(), Member::Expr(type_ref_expr("System.String", false))),
+                    (
+                        "StaticType".to_string(),
+                        Member::Expr(type_ref_expr("System.String", false)),
+                    ),
                 ],
             ))
         }
@@ -674,8 +731,14 @@ fn walk_expr(expr: &Expression, map: &SourceMap, nodes: &mut Vec<AstNode>) -> Op
             Vec::new(),
             vec![
                 ("Value".to_string(), Member::Str(value.to_string())),
-                ("StringConstantType".to_string(), Member::Str("SingleQuoted".to_string())),
-                ("StaticType".to_string(), Member::Expr(type_ref_expr("System.String", false))),
+                (
+                    "StringConstantType".to_string(),
+                    Member::Str("SingleQuoted".to_string()),
+                ),
+                (
+                    "StaticType".to_string(),
+                    Member::Expr(type_ref_expr("System.String", false)),
+                ),
             ],
         )),
         ExprKind::Lit(Literal::Bool(value)) => Some(push(
@@ -690,8 +753,14 @@ fn walk_expr(expr: &Expression, map: &SourceMap, nodes: &mut Vec<AstNode>) -> Op
             let b = walk_expr(right, map, nodes);
             let children: Vec<usize> = a.into_iter().chain(b).collect();
             let members = vec![
-                ("Operator".to_string(), Member::Str(binary_operator_name(text))),
-                ("Left".to_string(), a.map(Member::Node).unwrap_or(Member::Null)),
+                (
+                    "Operator".to_string(),
+                    Member::Str(binary_operator_name(text)),
+                ),
+                (
+                    "Left".to_string(),
+                    a.map(Member::Node).unwrap_or(Member::Null),
+                ),
                 (
                     "Right".to_string(),
                     b.map(Member::Node).unwrap_or(Member::Null),
@@ -705,14 +774,20 @@ fn walk_expr(expr: &Expression, map: &SourceMap, nodes: &mut Vec<AstNode>) -> Op
                 members,
             ))
         }
-        ExprKind::Cast { type_name, expr: inner } => {
+        ExprKind::Cast {
+            type_name,
+            expr: inner,
+        } => {
             let child = walk_expr(inner, map, nodes);
             let ty = push(
                 nodes,
                 "TypeExpressionAst",
                 expr.span,
                 Vec::new(),
-                vec![("TypeName".to_string(), Member::Expr(type_name_expr(type_name)))],
+                vec![(
+                    "TypeName".to_string(),
+                    Member::Expr(type_name_expr(type_name)),
+                )],
             );
             let children: Vec<usize> = std::iter::once(ty).chain(child).collect();
             Some(push(
@@ -722,7 +797,10 @@ fn walk_expr(expr: &Expression, map: &SourceMap, nodes: &mut Vec<AstNode>) -> Op
                 children,
                 vec![
                     ("Type".to_string(), Member::Node(ty)),
-                    ("Child".to_string(), child.map(Member::Node).unwrap_or(Member::Null)),
+                    (
+                        "Child".to_string(),
+                        child.map(Member::Node).unwrap_or(Member::Null),
+                    ),
                 ],
             ))
         }
@@ -752,7 +830,10 @@ fn walk_expr(expr: &Expression, map: &SourceMap, nodes: &mut Vec<AstNode>) -> Op
                     children.extend(key_node);
                     children.extend(value_node);
                     if let (Some(k), Some(v)) = (key_node, value_node) {
-                        pairs.push(tuple2_expr(Expression::ident(&temp(k)), Expression::ident(&temp(v))));
+                        pairs.push(tuple2_expr(
+                            Expression::ident(&temp(k)),
+                            Expression::ident(&temp(v)),
+                        ));
                     }
                 }
             }
@@ -775,9 +856,8 @@ fn walk_expr(expr: &Expression, map: &SourceMap, nodes: &mut Vec<AstNode>) -> Op
             let nested: Vec<usize> = parts
                 .iter()
                 .filter_map(|part| match part {
-                    vybe_ast::InterpolPart::Expr(expr) | vybe_ast::InterpolPart::Formatted(expr, _) => {
-                        walk_expr(expr, map, nodes)
-                    }
+                    vybe_ast::InterpolPart::Expr(expr)
+                    | vybe_ast::InterpolPart::Formatted(expr, _) => walk_expr(expr, map, nodes),
                     vybe_ast::InterpolPart::Text(_) => None,
                 })
                 .collect();
@@ -787,10 +867,19 @@ fn walk_expr(expr: &Expression, map: &SourceMap, nodes: &mut Vec<AstNode>) -> Op
                 expr.span,
                 nested.clone(),
                 vec![
-                    ("Value".to_string(), Member::Str(text.trim_matches('"').to_string())),
-                    ("StringConstantType".to_string(), Member::Str(string_constant_kind(text, false))),
+                    (
+                        "Value".to_string(),
+                        Member::Str(text.trim_matches('"').to_string()),
+                    ),
+                    (
+                        "StringConstantType".to_string(),
+                        Member::Str(string_constant_kind(text, false)),
+                    ),
                     ("NestedExpressions".to_string(), Member::Nodes(nested)),
-                    ("StaticType".to_string(), Member::Expr(type_ref_expr("System.String", false))),
+                    (
+                        "StaticType".to_string(),
+                        Member::Expr(type_ref_expr("System.String", false)),
+                    ),
                 ],
             ))
         }
@@ -820,15 +909,24 @@ fn walk_expr(expr: &Expression, map: &SourceMap, nodes: &mut Vec<AstNode>) -> Op
                 if !pipeline_elements.is_empty() {
                     children = pipeline_elements.clone();
                 }
-                vec![("PipelineElements".to_string(), Member::Nodes(children.clone()))]
+                vec![(
+                    "PipelineElements".to_string(),
+                    Member::Nodes(children.clone()),
+                )]
             } else {
                 let command_elements = command_element_nodes(text, expr.span, nodes);
                 if !command_elements.is_empty() {
                     children = command_elements.clone();
                 }
                 vec![
-                    ("CommandElements".to_string(), Member::Nodes(children.clone())),
-                    ("CommandName".to_string(), Member::Str(command_name(callee, text))),
+                    (
+                        "CommandElements".to_string(),
+                        Member::Nodes(children.clone()),
+                    ),
+                    (
+                        "CommandName".to_string(),
+                        Member::Str(command_name(callee, text)),
+                    ),
                 ]
             };
             Some(push(nodes, ty, expr.span, children, members))
@@ -843,8 +941,14 @@ fn walk_expr(expr: &Expression, map: &SourceMap, nodes: &mut Vec<AstNode>) -> Op
                 Vec::new(),
                 vec![
                     ("Value".to_string(), Member::Str(field.clone())),
-                    ("StringConstantType".to_string(), Member::Str("BareWord".to_string())),
-                    ("StaticType".to_string(), Member::Expr(type_ref_expr("System.String", false))),
+                    (
+                        "StringConstantType".to_string(),
+                        Member::Str("BareWord".to_string()),
+                    ),
+                    (
+                        "StaticType".to_string(),
+                        Member::Expr(type_ref_expr("System.String", false)),
+                    ),
                 ],
             );
             let children: Vec<usize> = target.into_iter().chain(std::iter::once(member)).collect();
@@ -854,7 +958,10 @@ fn walk_expr(expr: &Expression, map: &SourceMap, nodes: &mut Vec<AstNode>) -> Op
                 expr.span,
                 children,
                 vec![
-                    ("Expression".to_string(), target.map(Member::Node).unwrap_or(Member::Null)),
+                    (
+                        "Expression".to_string(),
+                        target.map(Member::Node).unwrap_or(Member::Null),
+                    ),
                     ("Member".to_string(), Member::Node(member)),
                 ],
             ))
@@ -869,8 +976,14 @@ fn walk_expr(expr: &Expression, map: &SourceMap, nodes: &mut Vec<AstNode>) -> Op
                 expr.span,
                 children,
                 vec![
-                    ("Target".to_string(), target.map(Member::Node).unwrap_or(Member::Null)),
-                    ("Index".to_string(), idx.map(Member::Node).unwrap_or(Member::Null)),
+                    (
+                        "Target".to_string(),
+                        target.map(Member::Node).unwrap_or(Member::Null),
+                    ),
+                    (
+                        "Index".to_string(),
+                        idx.map(Member::Node).unwrap_or(Member::Null),
+                    ),
                 ],
             ))
         }
@@ -979,7 +1092,10 @@ fn foreach_variable(text: &str) -> Option<String> {
 
 fn command_name(callee: &Expression, text: &str) -> String {
     if let Some(spelled) = text.split_whitespace().next().filter(|s| !s.is_empty()) {
-        return spelled.trim_start_matches('&').trim_start_matches('.').to_string();
+        return spelled
+            .trim_start_matches('&')
+            .trim_start_matches('.')
+            .to_string();
     }
     if let ExprKind::Ident(name) = &callee.kind {
         return name.clone();
@@ -1000,7 +1116,7 @@ fn source_bracketed_type(text: &str) -> Option<String> {
     if !trimmed.starts_with('[') {
         return None;
     }
-    let end = trimmed.find(']')?;
+    let end = find_matching_delim(trimmed, 0, '[', ']')?;
     if trimmed.get(end + 1..)?.trim().is_empty() {
         Some(trimmed[1..end].trim().to_string())
     } else {
@@ -1013,7 +1129,7 @@ fn leading_bracketed_type(text: &str) -> Option<String> {
     if !trimmed.starts_with('[') {
         return None;
     }
-    let end = trimmed.find(']')?;
+    let end = find_matching_delim(trimmed, 0, '[', ']')?;
     let name = trimmed[1..end].trim();
     (!name.is_empty()).then(|| name.to_string())
 }
@@ -1023,7 +1139,7 @@ fn source_static_member_ast(text: &str, span: Span, nodes: &mut Vec<AstNode>) ->
     if !trimmed.starts_with('[') {
         return None;
     }
-    let close = trimmed.find(']')?;
+    let close = find_matching_delim(trimmed, 0, '[', ']')?;
     let after = trimmed.get(close + 1..)?.trim_start();
     let member_text = after.strip_prefix("::")?;
     let type_name = trimmed[1..close].trim();
@@ -1036,7 +1152,10 @@ fn source_static_member_ast(text: &str, span: Span, nodes: &mut Vec<AstNode>) ->
     }
     let target = type_expression_node(type_name, span, nodes);
     let member = string_constant_node(&member_name, "BareWord", span, nodes);
-    let ty = if member_text[member_name.len()..].trim_start().starts_with('(') {
+    let ty = if member_text[member_name.len()..]
+        .trim_start()
+        .starts_with('(')
+    {
         "InvokeMemberExpressionAst"
     } else {
         "MemberExpressionAst"
@@ -1053,15 +1172,21 @@ fn source_static_member_ast(text: &str, span: Span, nodes: &mut Vec<AstNode>) ->
     ))
 }
 
-fn source_static_type_from_member_text(text: &str, span: Span, nodes: &mut Vec<AstNode>) -> Option<usize> {
+fn source_static_type_from_member_text(
+    text: &str,
+    span: Span,
+    nodes: &mut Vec<AstNode>,
+) -> Option<usize> {
     let trimmed = text.trim_start();
     if !trimmed.starts_with('[') {
         return None;
     }
-    let close = trimmed.find(']')?;
-    trimmed.get(close + 1..)?.trim_start().starts_with("::").then(|| {
-        type_expression_node(trimmed[1..close].trim(), span, nodes)
-    })
+    let close = find_matching_delim(trimmed, 0, '[', ']')?;
+    trimmed
+        .get(close + 1..)?
+        .trim_start()
+        .starts_with("::")
+        .then(|| type_expression_node(trimmed[1..close].trim(), span, nodes))
 }
 
 fn source_member_ast(text: &str, span: Span, nodes: &mut Vec<AstNode>) -> Option<usize> {
@@ -1087,7 +1212,17 @@ fn source_member_ast(text: &str, span: Span, nodes: &mut Vec<AstNode>) -> Option
         "VariableExpressionAst",
         span,
         Vec::new(),
-        vec![("VariablePath".to_string(), Member::Expr(variable_path_expr(target_name)))],
+        vec![
+            (
+                "VariablePath".to_string(),
+                Member::Expr(variable_path_expr(target_name)),
+            ),
+            ("Splatted".to_string(), Member::Bool(false)),
+            (
+                "__WholeText".to_string(),
+                Member::Str(format!("${target_name}")),
+            ),
+        ],
     );
     let member = string_constant_node(&member_name, "BareWord", span, nodes);
     Some(push(
@@ -1103,25 +1238,37 @@ fn source_member_ast(text: &str, span: Span, nodes: &mut Vec<AstNode>) -> Option
 }
 
 fn type_expression_node(type_name: &str, span: Span, nodes: &mut Vec<AstNode>) -> usize {
+    let text = format!("[{}]", type_name.trim());
     push(
         nodes,
         "TypeExpressionAst",
         span,
         Vec::new(),
-        vec![("TypeName".to_string(), Member::Expr(type_name_expr(type_name)))],
+        vec![
+            (
+                "TypeName".to_string(),
+                Member::Expr(type_name_expr(type_name)),
+            ),
+            ("__WholeText".to_string(), Member::Str(text)),
+        ],
     )
 }
 
 fn type_constraint_node(type_name: &str, span: Span, nodes: &mut Vec<AstNode>) -> usize {
     let type_expr = type_expression_node(type_name, span, nodes);
+    let text = format!("[{}]", type_name.trim());
     push(
         nodes,
         "TypeConstraintAst",
         span,
         vec![type_expr],
         vec![
-            ("TypeName".to_string(), Member::Expr(type_name_expr(type_name))),
+            (
+                "TypeName".to_string(),
+                Member::Expr(type_name_expr(type_name)),
+            ),
             ("Type".to_string(), Member::Node(type_expr)),
+            ("__WholeText".to_string(), Member::Str(text)),
         ],
     )
 }
@@ -1134,8 +1281,15 @@ fn string_constant_node(value: &str, kind: &str, span: Span, nodes: &mut Vec<Ast
         Vec::new(),
         vec![
             ("Value".to_string(), Member::Str(value.to_string())),
-            ("StringConstantType".to_string(), Member::Str(kind.to_string())),
-            ("StaticType".to_string(), Member::Expr(type_ref_expr("System.String", false))),
+            (
+                "StringConstantType".to_string(),
+                Member::Str(kind.to_string()),
+            ),
+            (
+                "StaticType".to_string(),
+                Member::Expr(type_ref_expr("System.String", false)),
+            ),
+            ("__WholeText".to_string(), Member::Str(value.to_string())),
         ],
     )
 }
@@ -1236,8 +1390,14 @@ fn source_foreach_node(text: &str, span: Span, nodes: &mut Vec<AstNode>) -> usiz
         span,
         Vec::new(),
         vec![
-            ("VariablePath".to_string(), Member::Expr(variable_path_expr(&var_name))),
-            ("__WholeText".to_string(), Member::Str(format!("${var_name}"))),
+            (
+                "VariablePath".to_string(),
+                Member::Expr(variable_path_expr(&var_name)),
+            ),
+            (
+                "__WholeText".to_string(),
+                Member::Str(format!("${var_name}")),
+            ),
         ],
     );
     let condition = source_expression_node(&cond_text, span, nodes);
@@ -1279,8 +1439,10 @@ fn source_for_node(text: &str, span: Span, nodes: &mut Vec<AstNode>) -> usize {
     let initializer = parts.first().map(String::as_str).unwrap_or("").trim();
     let condition_text = parts.get(1).map(String::as_str).unwrap_or("").trim();
     let iterator = parts.get(2).map(String::as_str).unwrap_or("").trim();
-    let init_node = (!initializer.is_empty()).then(|| source_expression_node(initializer, span, nodes));
-    let cond_node = (!condition_text.is_empty()).then(|| source_expression_node(condition_text, span, nodes));
+    let init_node =
+        (!initializer.is_empty()).then(|| source_expression_node(initializer, span, nodes));
+    let cond_node =
+        (!condition_text.is_empty()).then(|| source_expression_node(condition_text, span, nodes));
     let iter_node = (!iterator.is_empty()).then(|| source_expression_node(iterator, span, nodes));
     let body = source_body_block_after_keyword(text, "for", span, nodes);
     let mut children = Vec::new();
@@ -1294,9 +1456,18 @@ fn source_for_node(text: &str, span: Span, nodes: &mut Vec<AstNode>) -> usize {
         span,
         children,
         vec![
-            ("Initializer".to_string(), init_node.map(Member::Node).unwrap_or(Member::Null)),
-            ("Condition".to_string(), cond_node.map(Member::Node).unwrap_or(Member::Null)),
-            ("Iterator".to_string(), iter_node.map(Member::Node).unwrap_or(Member::Null)),
+            (
+                "Initializer".to_string(),
+                init_node.map(Member::Node).unwrap_or(Member::Null),
+            ),
+            (
+                "Condition".to_string(),
+                cond_node.map(Member::Node).unwrap_or(Member::Null),
+            ),
+            (
+                "Iterator".to_string(),
+                iter_node.map(Member::Node).unwrap_or(Member::Null),
+            ),
             ("Body".to_string(), Member::Node(body)),
             ("Label".to_string(), Member::Str(source_loop_label(text))),
         ],
@@ -1311,7 +1482,11 @@ fn source_do_node(text: &str, span: Span, nodes: &mut Vec<AstNode>) -> usize {
         "DoWhileStatementAst"
     };
     let body = source_body_block_after_keyword(text, "do", span, nodes);
-    let cond_key = if ty == "DoUntilStatementAst" { "until" } else { "while" };
+    let cond_key = if ty == "DoUntilStatementAst" {
+        "until"
+    } else {
+        "while"
+    };
     let condition_text = source_parenthesized_after_word(text, cond_key).unwrap_or_default();
     let condition = source_expression_node(&condition_text, span, nodes);
     push(
@@ -1360,7 +1535,10 @@ fn source_try_node(text: &str, span: Span, nodes: &mut Vec<AstNode>) -> usize {
                     vec![
                         ("CatchTypes".to_string(), Member::Nodes(catch_types.clone())),
                         ("Body".to_string(), Member::Node(catch_body_node)),
-                        ("IsCatchAll".to_string(), Member::Expr(Expression::bool(catch_types.is_empty()))),
+                        (
+                            "IsCatchAll".to_string(),
+                            Member::Expr(Expression::bool(catch_types.is_empty())),
+                        ),
                     ],
                 );
                 children.push(catch_node);
@@ -1388,7 +1566,10 @@ fn source_try_node(text: &str, span: Span, nodes: &mut Vec<AstNode>) -> usize {
         vec![
             ("Body".to_string(), Member::Node(body)),
             ("CatchClauses".to_string(), Member::Nodes(catches)),
-            ("Finally".to_string(), finally.map(Member::Node).unwrap_or(Member::Null)),
+            (
+                "Finally".to_string(),
+                finally.map(Member::Node).unwrap_or(Member::Null),
+            ),
         ],
     )
 }
@@ -1398,14 +1579,19 @@ fn source_trap_node(text: &str, span: Span, nodes: &mut Vec<AstNode>) -> usize {
         .trim_start()
         .strip_prefix("trap")
         .or_else(|| text.trim_start().strip_prefix("Trap"))
-        .and_then(|rest| rest.split_once('{').map(|(head, _)| head.trim().to_string()))
+        .and_then(|rest| {
+            rest.split_once('{')
+                .map(|(head, _)| head.trim().to_string())
+        })
         .unwrap_or_default();
     let trap_type = bracketed_segments(&header)
         .first()
         .map(|ty| type_constraint_node(ty, span, nodes));
     let body_text = text
         .find('{')
-        .and_then(|open| find_matching_delim(text, open, '{', '}').map(|close| text[open + 1..close].to_string()))
+        .and_then(|open| {
+            find_matching_delim(text, open, '{', '}').map(|close| text[open + 1..close].to_string())
+        })
         .unwrap_or_default();
     let body = source_statement_block_from_text(&body_text, span, nodes);
     let mut children = Vec::new();
@@ -1417,13 +1603,20 @@ fn source_trap_node(text: &str, span: Span, nodes: &mut Vec<AstNode>) -> usize {
         span,
         children,
         vec![
-            ("TrapType".to_string(), trap_type.map(Member::Node).unwrap_or(Member::Null)),
+            (
+                "TrapType".to_string(),
+                trap_type.map(Member::Node).unwrap_or(Member::Null),
+            ),
             ("Body".to_string(), Member::Node(body)),
         ],
     )
 }
 
-fn block_after_keyword_at(text: &str, keyword: &str, start: usize) -> Option<(String, String, usize)> {
+fn block_after_keyword_at(
+    text: &str,
+    keyword: &str,
+    start: usize,
+) -> Option<(String, String, usize)> {
     let rest = text.get(start..)?;
     if !starts_keyword(rest.trim_start(), keyword) {
         return None;
@@ -1457,13 +1650,23 @@ fn source_parenthesized_after_keyword(text: &str, keyword: &str) -> Option<Strin
     Some(text[open + 1..close].trim().to_string())
 }
 
-fn source_body_block_after_keyword(text: &str, keyword: &str, span: Span, nodes: &mut Vec<AstNode>) -> usize {
-    let key = source_loop_keyword(text, keyword).or_else(|| source_switch_keyword(text)).unwrap_or(0);
+fn source_body_block_after_keyword(
+    text: &str,
+    keyword: &str,
+    span: Span,
+    nodes: &mut Vec<AstNode>,
+) -> usize {
+    let key = source_loop_keyword(text, keyword)
+        .or_else(|| source_switch_keyword(text))
+        .unwrap_or(0);
     source_body_block_from(text, key, span, nodes)
 }
 
 fn source_body_block_from(text: &str, start: usize, span: Span, nodes: &mut Vec<AstNode>) -> usize {
-    if let Some(open) = text.get(start..).and_then(|tail| tail.find('{')).map(|pos| pos + start)
+    if let Some(open) = text
+        .get(start..)
+        .and_then(|tail| tail.find('{'))
+        .map(|pos| pos + start)
         && let Some(close) = find_matching_delim(text, open, '{', '}')
     {
         return source_statement_block_from_text(&text[open + 1..close], span, nodes);
@@ -1558,7 +1761,10 @@ fn source_switch_node(text: &str, span: Span, nodes: &mut Vec<AstNode>) -> usize
         vec![
             ("Condition".to_string(), Member::Node(condition)),
             ("Clauses".to_string(), Member::Expr(array_of(clauses))),
-            ("Default".to_string(), default.map(Member::Node).unwrap_or(Member::Null)),
+            (
+                "Default".to_string(),
+                default.map(Member::Node).unwrap_or(Member::Null),
+            ),
             ("Flags".to_string(), Member::Int(switch_flags(text))),
             ("Label".to_string(), Member::Str(source_switch_label(text))),
         ],
@@ -1668,11 +1874,15 @@ fn skip_ws(text: &str, mut i: usize) -> usize {
 
 fn source_expression_node(text: &str, span: Span, nodes: &mut Vec<AstNode>) -> usize {
     let trimmed = text.trim();
+    let trimmed = trimmed.strip_prefix('`').unwrap_or(trimmed);
     let member_text = |members: Vec<(String, Member)>| {
         let mut members = members;
         members.push(("__WholeText".to_string(), Member::Str(trimmed.to_string())));
         members
     };
+    if let Some(inner) = strip_enclosing_parens(trimmed) {
+        return source_expression_node(inner, span, nodes);
+    }
     if trimmed.starts_with("$(") && trimmed.ends_with(')') {
         let child_text = trimmed[2..trimmed.len().saturating_sub(1)].trim();
         let child = source_expression_node(child_text, span, nodes);
@@ -1713,12 +1923,21 @@ fn source_expression_node(text: &str, span: Span, nodes: &mut Vec<AstNode>) -> u
         );
     }
     if trimmed.starts_with('{') {
+        let block = if trimmed.ends_with('}') && trimmed.len() >= 2 {
+            let inner = &trimmed[1..trimmed.len().saturating_sub(1)];
+            Some(source_statement_block_from_text(inner, span, nodes))
+        } else {
+            None
+        };
         return push(
             nodes,
             "ScriptBlockExpressionAst",
             span,
-            Vec::new(),
-            member_text(Vec::new()),
+            block.into_iter().collect(),
+            member_text(vec![(
+                "ScriptBlock".to_string(),
+                block.map(Member::Node).unwrap_or(Member::Null),
+            )]),
         );
     }
     if trimmed.starts_with("@{") && trimmed.ends_with('}') {
@@ -1729,7 +1948,10 @@ fn source_expression_node(text: &str, span: Span, nodes: &mut Vec<AstNode>) -> u
             "HashtableAst",
             span,
             children.clone(),
-            member_text(vec![("KeyValuePairs".to_string(), Member::Expr(array_of(pairs)))]),
+            member_text(vec![(
+                "KeyValuePairs".to_string(),
+                Member::Expr(array_of(pairs)),
+            )]),
         );
     }
     if trimmed.starts_with("@(") && trimmed.ends_with(')') {
@@ -1741,7 +1963,7 @@ fn source_expression_node(text: &str, span: Span, nodes: &mut Vec<AstNode>) -> u
             .collect::<Vec<_>>();
         return push(
             nodes,
-            "ArrayExpressionAst",
+            "ArrayLiteralAst",
             span,
             elements.clone(),
             member_text(vec![("Elements".to_string(), Member::Nodes(elements))]),
@@ -1761,7 +1983,58 @@ fn source_expression_node(text: &str, span: Span, nodes: &mut Vec<AstNode>) -> u
             member_text(vec![("Elements".to_string(), Member::Nodes(elements))]),
         );
     }
-    if (trimmed.starts_with('\'') && trimmed.ends_with('\'')) || (trimmed.starts_with('"') && trimmed.ends_with('"')) {
+    if (trimmed.starts_with("@'") && trimmed.ends_with("'@"))
+        || (trimmed.starts_with("@\"") && trimmed.ends_with("\"@"))
+    {
+        let single = trimmed.starts_with("@'");
+        return push(
+            nodes,
+            "StringConstantExpressionAst",
+            span,
+            Vec::new(),
+            member_text(vec![
+                (
+                    "Value".to_string(),
+                    Member::Str(unquote_ps_here_string(trimmed, single)),
+                ),
+                (
+                    "StringConstantType".to_string(),
+                    Member::Str(string_constant_kind(trimmed, single)),
+                ),
+                (
+                    "StaticType".to_string(),
+                    Member::Expr(type_ref_expr("System.String", false)),
+                ),
+            ]),
+        );
+    }
+    if trimmed.starts_with('"') && trimmed.ends_with('"') && trimmed.contains("$(") {
+        let nested = expandable_string_nested_nodes(trimmed, span, nodes);
+        return push(
+            nodes,
+            "ExpandableStringExpressionAst",
+            span,
+            nested.clone(),
+            member_text(vec![
+                (
+                    "Value".to_string(),
+                    Member::Str(unquote_ps_string(trimmed, false)),
+                ),
+                (
+                    "StringConstantType".to_string(),
+                    Member::Str(string_constant_kind(trimmed, false)),
+                ),
+                ("NestedExpressions".to_string(), Member::Nodes(nested)),
+                (
+                    "StaticType".to_string(),
+                    Member::Expr(type_ref_expr("System.String", false)),
+                ),
+            ]),
+        );
+    }
+    if (trimmed.starts_with('\'') && trimmed.ends_with('\''))
+        || (trimmed.starts_with('"') && trimmed.ends_with('"'))
+    {
         let single = trimmed.starts_with('\'');
         return push(
             nodes,
@@ -1769,9 +2042,18 @@ fn source_expression_node(text: &str, span: Span, nodes: &mut Vec<AstNode>) -> u
             span,
             Vec::new(),
             member_text(vec![
-                ("Value".to_string(), Member::Str(unquote_ps_string(trimmed, single))),
-                ("StringConstantType".to_string(), Member::Str(string_constant_kind(trimmed, single))),
-                ("StaticType".to_string(), Member::Expr(type_ref_expr("System.String", false))),
+                (
+                    "Value".to_string(),
+                    Member::Str(unquote_ps_string(trimmed, single)),
+                ),
+                (
+                    "StringConstantType".to_string(),
+                    Member::Str(string_constant_kind(trimmed, single)),
+                ),
+                (
+                    "StaticType".to_string(),
+                    Member::Expr(type_ref_expr("System.String", false)),
+                ),
             ]),
         );
     }
@@ -1780,7 +2062,11 @@ fn source_expression_node(text: &str, span: Span, nodes: &mut Vec<AstNode>) -> u
         let member = string_constant_node(&member_text_raw, "BareWord", span, nodes);
         return push(
             nodes,
-            if is_invoke { "InvokeMemberExpressionAst" } else { "MemberExpressionAst" },
+            if is_invoke {
+                "InvokeMemberExpressionAst"
+            } else {
+                "MemberExpressionAst"
+            },
             span,
             vec![target, member],
             member_text(vec![
@@ -1807,6 +2093,11 @@ fn source_expression_node(text: &str, span: Span, nodes: &mut Vec<AstNode>) -> u
         || trimmed.contains(" * ")
         || trimmed.contains(" / ")
         || trimmed.contains(" % ")
+        || trimmed.contains(" -eq ")
+        || trimmed.contains(" -ne ")
+        || trimmed.contains(" -lt ")
+        || trimmed.contains(" -le ")
+        || trimmed.contains(" -ge ")
         || trimmed.contains(" -gt ")
         || trimmed.contains(" -is ")
         || trimmed.contains(" -as ")
@@ -1823,22 +2114,45 @@ fn source_expression_node(text: &str, span: Span, nodes: &mut Vec<AstNode>) -> u
             span,
             children,
             member_text(vec![
-                ("Left".to_string(), left_node.map(Member::Node).unwrap_or(Member::Null)),
-                ("Right".to_string(), right_node.map(Member::Node).unwrap_or(Member::Null)),
-                ("Operator".to_string(), Member::Str(binary_operator_name(trimmed))),
+                (
+                    "Left".to_string(),
+                    left_node.map(Member::Node).unwrap_or(Member::Null),
+                ),
+                (
+                    "Right".to_string(),
+                    right_node.map(Member::Node).unwrap_or(Member::Null),
+                ),
+                (
+                    "Operator".to_string(),
+                    Member::Str(binary_operator_name(trimmed)),
+                ),
             ]),
         );
     }
+    let splatted =
+        trimmed.starts_with('@') && !trimmed.starts_with("@(") && !trimmed.starts_with("@{");
+    let variable_name = trimmed.trim_start_matches('$').trim_start_matches('@');
     push(
         nodes,
         "VariableExpressionAst",
         span,
         Vec::new(),
-        member_text(vec![(
-            "VariablePath".to_string(),
-            Member::Expr(variable_path_expr(trimmed.trim_start_matches('$'))),
-        )]),
+        member_text(vec![
+            (
+                "VariablePath".to_string(),
+                Member::Expr(variable_path_expr(variable_name)),
+            ),
+            ("Splatted".to_string(), Member::Bool(splatted)),
+        ]),
     )
+}
+
+fn strip_enclosing_parens(text: &str) -> Option<&str> {
+    if !text.starts_with('(') || !text.ends_with(')') {
+        return None;
+    }
+    let close = find_matching_delim(text, 0, '(', ')')?;
+    (close + 1 == text.len()).then(|| text[1..text.len() - 1].trim())
 }
 
 fn unquote_ps_string(text: &str, single: bool) -> String {
@@ -1869,18 +2183,48 @@ fn unquote_ps_string(text: &str, single: bool) -> String {
     out
 }
 
-fn hashtable_child_nodes(text: &str, span: Span, nodes: &mut Vec<AstNode>) -> (Vec<usize>, Vec<Expression>) {
+fn unquote_ps_here_string(text: &str, single: bool) -> String {
+    let inner = text
+        .get(2..text.len().saturating_sub(2))
+        .unwrap_or("")
+        .trim_matches('\n')
+        .trim_matches('\r');
+    if single {
+        inner.replace("''", "'")
+    } else {
+        unquote_ps_string(&format!("\"{inner}\""), false)
+    }
+}
+
+fn hashtable_child_nodes(
+    text: &str,
+    span: Span,
+    nodes: &mut Vec<AstNode>,
+) -> (Vec<usize>, Vec<Expression>) {
     let mut children = Vec::new();
     let mut pairs = Vec::new();
     for entry in split_action_statements(text) {
         let Some((key, value)) = split_top_level_equals(&entry) else {
             continue;
         };
-        let key_node = source_expression_node(key.trim(), span, nodes);
+        let key_text = key.trim();
+        let key_node = if key_text.starts_with('$')
+            || key_text.starts_with('@')
+            || key_text.starts_with('\'')
+            || key_text.starts_with('"')
+            || key_text.starts_with('[')
+        {
+            source_expression_node(key_text, span, nodes)
+        } else {
+            string_constant_node(key_text, "BareWord", span, nodes)
+        };
         let value_node = source_expression_node(value.trim(), span, nodes);
         children.push(key_node);
         children.push(value_node);
-        pairs.push(tuple2_expr(Expression::ident(&temp(key_node)), Expression::ident(&temp(value_node))));
+        pairs.push(tuple2_expr(
+            Expression::ident(&temp(key_node)),
+            Expression::ident(&temp(value_node)),
+        ));
     }
     (children, pairs)
 }
@@ -1915,7 +2259,7 @@ fn top_level_comma_count(text: &str) -> usize {
 
 fn split_static_member_expression(text: &str) -> Option<(String, String, bool)> {
     let rest = text.strip_prefix('[')?;
-    let close = rest.find(']')?;
+    let close = find_matching_delim(text, 0, '[', ']')?.saturating_sub(1);
     let type_name = rest[..close].trim();
     let after_type = rest[close + 1..].trim_start();
     let after_scope = after_type.strip_prefix("::")?.trim_start();
@@ -1955,7 +2299,9 @@ fn split_member_expression(text: &str) -> Option<(&str, &str)> {
     if target.is_empty()
         || member.is_empty()
         || !target.starts_with('$')
-        || !member.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+        || !member
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
     {
         return None;
     }
@@ -1963,9 +2309,14 @@ fn split_member_expression(text: &str) -> Option<(&str, &str)> {
 }
 
 fn binary_operands(text: &str) -> (Option<&str>, Option<&str>) {
-    for op in [" -is ", " -as ", " -gt ", " + ", " - "] {
+    for op in [
+        " -is ", " -as ", " -eq ", " -ne ", " -gt ", " -ge ", " -lt ", " -le ", " + ", " - ",
+    ] {
         if let Some(index) = text.find(op) {
-            return (Some(text[..index].trim()), Some(text[index + op.len()..].trim()));
+            return (
+                Some(text[..index].trim()),
+                Some(text[index + op.len()..].trim()),
+            );
         }
     }
     (None, None)
@@ -1983,9 +2334,27 @@ fn source_statement_block_from_text(text: &str, span: Span, nodes: &mut Vec<AstN
         statements.clone(),
         vec![
             ("Statements".to_string(), Member::Nodes(statements)),
-            ("__WholeText".to_string(), Member::Str(text.trim().to_string())),
+            (
+                "__WholeText".to_string(),
+                Member::Str(text.trim().to_string()),
+            ),
         ],
     )
+}
+
+fn expandable_string_nested_nodes(text: &str, span: Span, nodes: &mut Vec<AstNode>) -> Vec<usize> {
+    let mut out = Vec::new();
+    let mut offset = 0usize;
+    while let Some(start_rel) = text[offset..].find("$(") {
+        let start = offset + start_rel;
+        let Some(end) = find_matching_delim(text, start + 1, '(', ')') else {
+            break;
+        };
+        let whole = &text[start..=end];
+        out.push(source_expression_node(whole, span, nodes));
+        offset = end + 1;
+    }
+    out
 }
 
 fn source_statement_node(text: &str, span: Span, nodes: &mut Vec<AstNode>) -> Option<usize> {
@@ -1996,7 +2365,9 @@ fn source_statement_node(text: &str, span: Span, nodes: &mut Vec<AstNode>) -> Op
     if let Some(index) = source_compound_node(trimmed, span, nodes) {
         return Some(index);
     }
-    if trimmed.to_ascii_lowercase().starts_with("if ") || trimmed.to_ascii_lowercase().starts_with("if(") {
+    if trimmed.to_ascii_lowercase().starts_with("if ")
+        || trimmed.to_ascii_lowercase().starts_with("if(")
+    {
         let body = source_body_block_from(trimmed, 0, span, nodes);
         return Some(push(
             nodes,
@@ -2004,19 +2375,44 @@ fn source_statement_node(text: &str, span: Span, nodes: &mut Vec<AstNode>) -> Op
             span,
             vec![body],
             vec![
-                ("Clauses".to_string(), Member::Expr(array_of(vec![tuple2_expr(Expression::null(), Expression::ident(&temp(body)))]))),
+                (
+                    "Clauses".to_string(),
+                    Member::Expr(array_of(vec![tuple2_expr(
+                        Expression::null(),
+                        Expression::ident(&temp(body)),
+                    )])),
+                ),
                 ("ElseClause".to_string(), Member::Null),
             ],
         ));
     }
     if trimmed.eq_ignore_ascii_case("break") || trimmed.to_ascii_lowercase().starts_with("break ") {
-        return Some(flow_statement_node("BreakStatementAst", trimmed, span, nodes));
+        return Some(flow_statement_node(
+            "BreakStatementAst",
+            trimmed,
+            span,
+            nodes,
+        ));
     }
-    if trimmed.eq_ignore_ascii_case("continue") || trimmed.to_ascii_lowercase().starts_with("continue ") {
-        return Some(flow_statement_node("ContinueStatementAst", trimmed, span, nodes));
+    if trimmed.eq_ignore_ascii_case("continue")
+        || trimmed.to_ascii_lowercase().starts_with("continue ")
+    {
+        return Some(flow_statement_node(
+            "ContinueStatementAst",
+            trimmed,
+            span,
+            nodes,
+        ));
     }
-    if trimmed.eq_ignore_ascii_case("return") || trimmed.to_ascii_lowercase().starts_with("return ") {
-        return Some(push(nodes, "ReturnStatementAst", span, Vec::new(), Vec::new()));
+    if trimmed.eq_ignore_ascii_case("return") || trimmed.to_ascii_lowercase().starts_with("return ")
+    {
+        return Some(push(
+            nodes,
+            "ReturnStatementAst",
+            span,
+            Vec::new(),
+            Vec::new(),
+        ));
     }
     if trimmed.eq_ignore_ascii_case("throw") || trimmed.to_ascii_lowercase().starts_with("throw ") {
         return Some(source_throw_node(trimmed, span, nodes));
@@ -2031,6 +2427,14 @@ fn source_statement_node(text: &str, span: Span, nodes: &mut Vec<AstNode>) -> Op
         return Some(command_ast_node(trimmed, span, nodes));
     }
     Some(source_expression_node(trimmed, span, nodes))
+}
+
+fn ast_source_statement_should_override_parse(text: &str) -> bool {
+    [
+        "??=", "||=", "&&=", "<<=", ">>=", "**=", "-=", "*=", "/=", "%=",
+    ]
+    .iter()
+    .any(|op| text.contains(op))
 }
 
 fn source_throw_node(text: &str, span: Span, nodes: &mut Vec<AstNode>) -> usize {
@@ -2050,14 +2454,22 @@ fn source_throw_node(text: &str, span: Span, nodes: &mut Vec<AstNode>) -> usize 
         "ThrowStatementAst",
         span,
         pipeline.into_iter().collect(),
-        vec![("Pipeline".to_string(), pipeline.map(Member::Node).unwrap_or(Member::Null))],
+        vec![(
+            "Pipeline".to_string(),
+            pipeline.map(Member::Node).unwrap_or(Member::Null),
+        )],
     )
 }
 
 fn source_assignment_node(text: &str, span: Span, nodes: &mut Vec<AstNode>) -> Option<usize> {
-    let (left_text, operator, right_text) = split_top_level_assignment(text)?;
+    let clean_text = strip_trailing_comment(text).trim();
+    let (left_text, operator, right_text) = split_top_level_assignment(clean_text)?;
     let left_text = left_text.trim();
-    let left_leaf = if let Some(close) = left_text.trim_start().strip_prefix('[').and_then(|rest| rest.find(']').map(|idx| idx + 1)) {
+    let left_leaf = if let Some(close) = left_text
+        .trim_start()
+        .strip_prefix('[')
+        .and_then(|rest| rest.find(']').map(|idx| idx + 1))
+    {
         source_expression_node(left_text.trim_start()[close..].trim(), span, nodes)
     } else {
         source_expression_node(left_text, span, nodes)
@@ -2073,8 +2485,15 @@ fn source_assignment_node(text: &str, span: Span, nodes: &mut Vec<AstNode>) -> O
         vec![
             ("Left".to_string(), Member::Node(left)),
             ("Right".to_string(), Member::Node(right)),
-            ("Operator".to_string(), Member::Str(assignment_operator_name(operator))),
+            (
+                "Operator".to_string(),
+                Member::Str(assignment_operator_name_from_text(text, operator)),
+            ),
             ("ErrorPosition".to_string(), Member::Expr(error_position)),
+            (
+                "__WholeText".to_string(),
+                Member::Str(clean_text.to_string()),
+            ),
         ],
     ))
 }
@@ -2086,7 +2505,12 @@ fn assignment_right_node(text: &str, span: Span, nodes: &mut Vec<AstNode>) -> us
     if text.contains('|') || source_looks_like_command(text) {
         pipeline_ast_node(text, span, nodes)
     } else {
-        command_expression_node(source_expression_node(text, span, nodes), Vec::new(), span, nodes)
+        command_expression_node(
+            source_expression_node(text, span, nodes),
+            Vec::new(),
+            span,
+            nodes,
+        )
     }
 }
 
@@ -2112,10 +2536,12 @@ fn split_top_level_assignment(text: &str) -> Option<(&str, &str, &str)> {
             '}' => brace -= 1,
             '=' if square == 0 && paren == 0 && brace == 0 => {
                 let prefix = &text[..idx + 1];
-                let op_start = ["??=", "||=", "&&=", "<<=", ">>=", "**=", "+=", "-=", "*=", "/=", "%=", "="]
-                    .into_iter()
-                    .find_map(|op| prefix.ends_with(op).then_some(idx + 1 - op.len()))
-                    .unwrap_or(idx);
+                let op_start = [
+                    "??=", "||=", "&&=", "<<=", ">>=", "**=", "+=", "-=", "*=", "/=", "%=", "=",
+                ]
+                .into_iter()
+                .find_map(|op| prefix.ends_with(op).then_some(idx + 1 - op.len()))
+                .unwrap_or(idx);
                 let left = &text[..op_start];
                 let op = &text[op_start..idx + 1];
                 let right = &text[idx + 1..];
@@ -2147,6 +2573,27 @@ fn assignment_operator_name(operator: &str) -> String {
     .to_string()
 }
 
+fn assignment_operator_name_from_text(text: &str, operator: &str) -> String {
+    for (needle, name) in [
+        ("??=", "QuestionQuestionEquals"),
+        ("||=", "BarBarEquals"),
+        ("&&=", "AmpersandAmpersandEquals"),
+        ("<<=", "ShiftLeftEquals"),
+        (">>=", "ShiftRightEquals"),
+        ("**=", "PowerEquals"),
+        ("+=", "PlusEquals"),
+        ("-=", "MinusEquals"),
+        ("*=", "MultiplyEquals"),
+        ("/=", "DivideEquals"),
+        ("%=", "RemainderEquals"),
+    ] {
+        if text.contains(needle) {
+            return name.to_string();
+        }
+    }
+    assignment_operator_name(operator)
+}
+
 fn assignment_error_position(operator: &str) -> Expression {
     Expression::new(ExprKind::Object(vec![
         prop("Text", Expression::string(operator.trim())),
@@ -2156,7 +2603,11 @@ fn assignment_error_position(operator: &str) -> Expression {
 }
 
 fn flow_statement_node(ty: &str, text: &str, span: Span, nodes: &mut Vec<AstNode>) -> usize {
-    let label_text = text.split_whitespace().nth(1).unwrap_or("").trim_start_matches(':');
+    let label_text = text
+        .split_whitespace()
+        .nth(1)
+        .unwrap_or("")
+        .trim_start_matches(':');
     let label = if label_text.is_empty() {
         None
     } else {
@@ -2167,7 +2618,10 @@ fn flow_statement_node(ty: &str, text: &str, span: Span, nodes: &mut Vec<AstNode
         ty,
         span,
         label.into_iter().collect(),
-        vec![("Label".to_string(), label.map(Member::Node).unwrap_or(Member::Null))],
+        vec![(
+            "Label".to_string(),
+            label.map(Member::Node).unwrap_or(Member::Null),
+        )],
     )
 }
 
@@ -2266,12 +2720,42 @@ fn tuple2_expr(first: Expression, second: Expression) -> Expression {
     ]))
 }
 
-fn type_ref_expr(full_name: &str, is_enum: bool) -> Expression {
+fn type_ref_expr(full_name: &str, _is_enum: bool) -> Expression {
+    let full_name = ast_canonical_type_ref_name(full_name);
+    let full_name = full_name.trim();
     Expression::new(ExprKind::Object(vec![
+        prop("__ps_type_name", Expression::string(full_name)),
         prop("FullName", Expression::string(full_name)),
-        prop("Name", Expression::string(full_name.rsplit('.').next().unwrap_or(full_name))),
-        prop("IsEnum", Expression::bool(is_enum)),
+        prop(
+            "Name",
+            Expression::string(full_name.rsplit('.').next().unwrap_or(full_name)),
+        ),
     ]))
+}
+
+fn ast_canonical_type_ref_name(name: &str) -> String {
+    let trimmed = name.trim();
+    if let Some(element) = trimmed.strip_suffix("[]") {
+        return format!("{}[]", ast_canonical_type_ref_name(element));
+    }
+    type_accelerator(trimmed).unwrap_or(trimmed).to_string()
+}
+
+fn ast_type_literal_expr(name: &str) -> Expression {
+    let name = type_accelerator(name).unwrap_or(name).trim();
+    let mut segments = name.split('.').filter(|part| !part.is_empty());
+    let Some(first) = segments.next() else {
+        return Expression::null();
+    };
+    let mut expr = Expression::ident(first);
+    for segment in segments {
+        expr = Expression::new(ExprKind::Member {
+            object: Box::new(expr),
+            field: segment.to_string(),
+            null_safe: false,
+        });
+    }
+    expr
 }
 
 fn variable_path_expr(path: &str) -> Expression {
@@ -2285,9 +2769,16 @@ fn variable_path_expr(path: &str) -> Expression {
             "global" | "local" | "private" | "script" | "variable"
         );
     Expression::new(ExprKind::Object(vec![
-        prop("UserPath", Expression::string(&user_path)),
+        prop("UserPath", Expression::string(path)),
         prop("UnqualifiedPath", Expression::string(&user_path)),
-        prop("DriveName", if is_drive { Expression::string(&scope) } else { Expression::null() }),
+        prop(
+            "DriveName",
+            if is_drive {
+                Expression::string(&scope)
+            } else {
+                Expression::null()
+            },
+        ),
         prop("IsDriveQualified", Expression::bool(is_drive)),
         prop("IsGlobal", Expression::bool(scope == "global")),
         prop("IsLocal", Expression::bool(scope == "local")),
@@ -2309,19 +2800,43 @@ fn type_name_expr(name: &str) -> Expression {
     } else {
         Expression::null()
     };
-    let reflection = type_ref_expr(&reflection_name, reflection_name.rsplit('.').next().is_some_and(|n| n.ends_with("Access")));
+    let reflection = if reflection_name.starts_with("CustomEnterprise.") {
+        Expression::null()
+    } else {
+        type_ref_expr(
+            &reflection_name,
+            reflection_name
+                .rsplit('.')
+                .next()
+                .is_some_and(|n| n.ends_with("Access")),
+        )
+    };
     Expression::new(ExprKind::Object(vec![
-        prop("Name", Expression::string(base.rsplit('.').next().unwrap_or(&base))),
+        prop(
+            "Name",
+            Expression::string(base.rsplit('.').next().unwrap_or(&base)),
+        ),
         prop("FullName", Expression::string(&base)),
         prop("IsArray", Expression::bool(array_rank > 0)),
         prop("Rank", Expression::int(array_rank.max(1) as i64)),
         prop("ElementType", element_type),
         prop("IsGeneric", Expression::bool(generic)),
-        prop("GenericArguments", array_of(generic_args.into_iter().map(|arg| type_name_expr(&arg)).collect())),
-        prop("GetReflectionType", lambda_expr(
-            vec!["__self"],
-            vec![Statement::new(StmtKind::Return(Some(reflection)))],
-        )),
+        prop(
+            "GenericArguments",
+            array_of(
+                generic_args
+                    .into_iter()
+                    .map(|arg| type_name_expr(&arg))
+                    .collect(),
+            ),
+        ),
+        prop(
+            "GetReflectionType",
+            lambda_expr(
+                vec!["__self"],
+                vec![Statement::new(StmtKind::Return(Some(reflection)))],
+            ),
+        ),
     ]))
 }
 
@@ -2359,6 +2874,7 @@ fn generic_args(name: &str) -> Vec<String> {
 fn type_accelerator(name: &str) -> Option<&'static str> {
     match name.to_ascii_lowercase().as_str() {
         "hashtable" => Some("System.Collections.Hashtable"),
+        "object" => Some("System.Object"),
         "pscustomobject" => Some("System.Management.Automation.PSObject"),
         "scriptblock" => Some("System.Management.Automation.ScriptBlock"),
         "switch" => Some("System.Management.Automation.SwitchParameter"),
@@ -2407,7 +2923,14 @@ fn param_block_node(source: &str, span: Span, nodes: &mut Vec<AstNode>) -> Optio
             .as_deref()
             .map(|value| source_expression_node(value, span, nodes));
         children.extend(default);
-        let param = parameter_node(&param_info.name, span, param_attrs, default, type_name, nodes);
+        let param = parameter_node(
+            &param_info.name,
+            span,
+            param_attrs,
+            default,
+            type_name,
+            nodes,
+        );
         children.push(param);
         param_nodes.push(param);
     }
@@ -2437,15 +2960,14 @@ fn parse_block_attrs(prefix: &str) -> Vec<String> {
     let mut attrs = Vec::new();
     let mut rest = prefix.trim();
     while let Some(open) = rest.find('[') {
-        let after = &rest[open + 1..];
-        let Some(close) = after.find(']') else {
+        let Some(close) = find_matching_delim(rest, open, '[', ']') else {
             break;
         };
-        let raw = after[..close].trim();
+        let raw = rest[open + 1..close].trim();
         if !raw.is_empty() {
             attrs.push(raw.to_string());
         }
-        rest = &after[close + 1..];
+        rest = &rest[close + 1..];
     }
     attrs
 }
@@ -2462,8 +2984,18 @@ fn attribute_node(raw: &str, span: Span, nodes: &mut Vec<AstNode>) -> usize {
         Vec::new(),
         vec![
             ("TypeName".to_string(), Member::Expr(type_name_expr(name))),
-            ("PositionalArguments".to_string(), Member::Expr(array_of(attribute_positional_args(args.as_deref())))),
-            ("NamedArguments".to_string(), Member::Expr(array_of(attribute_named_args(args.as_deref())))),
+            (
+                "PositionalArguments".to_string(),
+                Member::Expr(array_of(attribute_positional_args(args.as_deref()))),
+            ),
+            (
+                "NamedArguments".to_string(),
+                Member::Expr(array_of(attribute_named_args(args.as_deref()))),
+            ),
+            (
+                "__WholeText".to_string(),
+                Member::Str(format!("[{}]", raw.trim())),
+            ),
         ],
     )
 }
@@ -2472,7 +3004,9 @@ fn attribute_positional_args(args: Option<&str>) -> Vec<Expression> {
     args.unwrap_or("")
         .split(',')
         .map(str::trim)
-        .filter(|arg| !arg.is_empty() && !arg.contains('=') && !arg.chars().all(|c| c.is_ascii_alphabetic()))
+        .filter(|arg| {
+            !arg.is_empty() && !arg.contains('=') && !arg.chars().all(|c| c.is_ascii_alphabetic())
+        })
         .map(attribute_argument_expr)
         .collect()
 }
@@ -2484,7 +3018,11 @@ fn attribute_named_args(args: Option<&str>) -> Vec<Expression> {
         .filter(|arg| !arg.is_empty())
         .filter_map(|arg| {
             if let Some((name, value)) = arg.split_once('=') {
-                Some(named_attribute_argument_expr_full(name.trim(), value.trim(), false))
+                Some(named_attribute_argument_expr_full(
+                    name.trim(),
+                    value.trim(),
+                    false,
+                ))
             } else if arg.chars().all(|c| c.is_ascii_alphabetic()) {
                 Some(named_attribute_argument_expr_full(arg, "$true", true))
             } else {
@@ -2505,6 +3043,22 @@ fn named_attribute_argument_expr_full(name: &str, value: &str, omitted: bool) ->
 
 fn source_expression_object(text: &str) -> Expression {
     let trimmed = text.trim();
+    let trimmed = trimmed.strip_prefix('`').unwrap_or(trimmed);
+    if trimmed.starts_with("$(") && trimmed.ends_with(')') {
+        let inner = trimmed[2..trimmed.len().saturating_sub(1)].trim();
+        return Expression::new(ExprKind::Object(vec![
+            prop("__type", Expression::string("SubExpressionAst")),
+            prop(
+                "__types",
+                array_of(vec![
+                    Expression::string("SubExpressionAst"),
+                    Expression::string("ExpressionAst"),
+                    Expression::string("Ast"),
+                ]),
+            ),
+            prop("SubExpression", source_expression_object(inner)),
+        ]));
+    }
     if trimmed.eq_ignore_ascii_case("$true") || trimmed.eq_ignore_ascii_case("true") {
         return Expression::new(ExprKind::Object(vec![
             prop("__type", Expression::string("VariableExpressionAst")),
@@ -2525,7 +3079,10 @@ fn source_expression_object(text: &str) -> Expression {
     }
     Expression::new(ExprKind::Object(vec![
         prop("__type", Expression::string("StringConstantExpressionAst")),
-        prop("Value", Expression::string(trimmed.trim_matches('"').trim_matches('\''))),
+        prop(
+            "Value",
+            Expression::string(trimmed.trim_matches('"').trim_matches('\'')),
+        ),
     ]))
 }
 
@@ -2536,13 +3093,17 @@ fn parse_param_names(body: &str) -> Vec<ParamInfo> {
     let mut out = Vec::new();
     for part in split_top_level_args(body) {
         let attrs = bracketed_segments(&part);
-        if let Some(dollar) = part.rfind('$') {
-            let name: String = part[dollar + 1..]
+        let default =
+            split_top_level_equals(&part).map(|(_, value)| value.trim().to_string());
+        let name_source = split_top_level_equals(&part)
+            .map(|(left, _)| left)
+            .unwrap_or(&part);
+        if let Some(dollar) = name_source.rfind('$') {
+            let name: String = name_source[dollar + 1..]
                 .chars()
                 .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
                 .collect();
             if !name.is_empty() {
-                let default = split_top_level_equals(&part).map(|(_, value)| value.trim().to_string());
                 let static_type = attrs
                     .iter()
                     .find(|attr| is_type_constraint_name(attr))
@@ -2567,10 +3128,9 @@ fn bracketed_segments(text: &str) -> Vec<String> {
             break;
         };
         let open = i + open_rel;
-        let Some(close_rel) = text[open + 1..].find(']') else {
+        let Some(close) = find_matching_delim(text, open, '[', ']') else {
             break;
         };
-        let close = open + 1 + close_rel;
         let raw = text[open + 1..close].trim();
         if !raw.is_empty() {
             out.push(raw.to_string());
@@ -2612,6 +3172,24 @@ fn split_top_level_equals(text: &str) -> Option<(&str, &str)> {
         }
     }
     None
+}
+
+fn strip_trailing_comment(text: &str) -> &str {
+    let mut quote: Option<char> = None;
+    for (idx, ch) in text.char_indices() {
+        if let Some(q) = quote {
+            if ch == q {
+                quote = None;
+            }
+            continue;
+        }
+        match ch {
+            '\'' | '"' => quote = Some(ch),
+            '#' => return text[..idx].trim_end(),
+            _ => {}
+        }
+    }
+    text
 }
 
 fn find_matching_paren_body_end(body: &str) -> Option<usize> {
@@ -2656,7 +3234,10 @@ fn typed_assignment_left(
         "TypeExpressionAst",
         span,
         Vec::new(),
-        vec![("TypeName".to_string(), Member::Expr(type_name_expr(type_name)))],
+        vec![(
+            "TypeName".to_string(),
+            Member::Expr(type_name_expr(type_name)),
+        )],
     );
     let mut children = vec![type_node];
     children.extend(left);
@@ -2667,7 +3248,10 @@ fn typed_assignment_left(
         children,
         vec![
             ("Type".to_string(), Member::Node(type_node)),
-            ("Child".to_string(), left.map(Member::Node).unwrap_or(Member::Null)),
+            (
+                "Child".to_string(),
+                left.map(Member::Node).unwrap_or(Member::Null),
+            ),
         ],
     ))
 }
@@ -2677,10 +3261,30 @@ fn pipeline_element_nodes(text: &str, span: Span, nodes: &mut Vec<AstNode>) -> V
         .map(str::trim)
         .filter(|part| !part.is_empty())
         .map(|part| {
-            if source_looks_like_command(part) || command_invocation_operator(part) != "Unknown" || has_redirection(part) {
+            if has_redirection(part)
+                && !source_looks_like_command(part)
+                && command_invocation_operator(part) == "Unknown"
+            {
+                let (clean_text, redirections) = command_redirection_nodes(part, span, nodes);
+                return command_expression_node(
+                    source_expression_node(&clean_text, span, nodes),
+                    redirections,
+                    span,
+                    nodes,
+                );
+            }
+            if source_looks_like_command(part)
+                || command_invocation_operator(part) != "Unknown"
+                || has_redirection(part)
+            {
                 command_ast_node(part, span, nodes)
             } else {
-                command_expression_node(source_expression_node(part, span, nodes), Vec::new(), span, nodes)
+                command_expression_node(
+                    source_expression_node(part, span, nodes),
+                    Vec::new(),
+                    span,
+                    nodes,
+                )
             }
         })
         .collect()
@@ -2692,12 +3296,16 @@ fn pipeline_ast_node(text: &str, span: Span, nodes: &mut Vec<AstNode>) -> usize 
         .then_some(elements[0])
         .and_then(|element| nodes.get(element))
         .filter(|node| node.ty == "CommandExpressionAst")
-        .and_then(|node| node.members.iter().find_map(|(name, member)| {
-            (name == "Expression").then_some(member).and_then(|member| match member {
-                Member::Node(index) => Some(Expression::ident(&temp(*index))),
-                _ => None,
+        .and_then(|node| {
+            node.members.iter().find_map(|(name, member)| {
+                (name == "Expression")
+                    .then_some(member)
+                    .and_then(|member| match member {
+                        Member::Node(index) => Some(Expression::ident(&temp(*index))),
+                        _ => None,
+                    })
             })
-        }))
+        })
         .unwrap_or_else(Expression::null);
     push(
         nodes,
@@ -2706,15 +3314,23 @@ fn pipeline_ast_node(text: &str, span: Span, nodes: &mut Vec<AstNode>) -> usize 
         elements.clone(),
         vec![
             ("PipelineElements".to_string(), Member::Nodes(elements)),
-            ("GetPureExpression".to_string(), Member::Expr(function_expr(
-                Vec::new(),
-                vec![Statement::new(StmtKind::Return(Some(pure_expr)))],
-            ))),
+            (
+                "GetPureExpression".to_string(),
+                Member::Expr(function_expr(
+                    Vec::new(),
+                    vec![Statement::new(StmtKind::Return(Some(pure_expr)))],
+                )),
+            ),
         ],
     )
 }
 
-fn command_expression_node(expr: usize, redirections: Vec<usize>, span: Span, nodes: &mut Vec<AstNode>) -> usize {
+fn command_expression_node(
+    expr: usize,
+    redirections: Vec<usize>,
+    span: Span,
+    nodes: &mut Vec<AstNode>,
+) -> usize {
     let mut children = vec![expr];
     children.extend(redirections.iter().copied());
     push(
@@ -2733,13 +3349,25 @@ fn command_ast_node(text: &str, span: Span, nodes: &mut Vec<AstNode>) -> usize {
     let invocation = command_invocation_operator(text);
     let command_text = strip_invocation_operator(text);
     let (clean_text, redirections) = command_redirection_nodes(command_text, span, nodes);
-    let elements = command_element_nodes(&clean_text, span, nodes);
+    let elements = if invocation != "Unknown" && clean_text.trim_start().starts_with('{') {
+        vec![source_expression_node(clean_text.trim(), span, nodes)]
+    } else {
+        command_element_nodes(&clean_text, span, nodes)
+    };
     let command_name = if invocation == "Unknown" {
-        clean_text.split_whitespace().next().unwrap_or("").to_string()
+        clean_text
+            .split_whitespace()
+            .next()
+            .unwrap_or("")
+            .to_string()
     } else if clean_text.trim_start().starts_with('$') {
         String::new()
     } else {
-        clean_text.split_whitespace().next().unwrap_or("").to_string()
+        clean_text
+            .split_whitespace()
+            .next()
+            .unwrap_or("")
+            .to_string()
     };
     let mut children = elements.clone();
     children.extend(redirections.iter().copied());
@@ -2750,9 +3378,23 @@ fn command_ast_node(text: &str, span: Span, nodes: &mut Vec<AstNode>) -> usize {
         children,
         vec![
             ("CommandElements".to_string(), Member::Nodes(elements)),
-            ("CommandName".to_string(), if command_name.is_empty() { Member::Null } else { Member::Str(command_name) }),
-            ("InvocationOperator".to_string(), Member::Str(invocation.to_string())),
+            (
+                "CommandName".to_string(),
+                if command_name.is_empty() {
+                    Member::Null
+                } else {
+                    Member::Str(command_name)
+                },
+            ),
+            (
+                "InvocationOperator".to_string(),
+                Member::Str(invocation.to_string()),
+            ),
             ("Redirections".to_string(), Member::Nodes(redirections)),
+            (
+                "__WholeText".to_string(),
+                Member::Str(text.trim().to_string()),
+            ),
         ],
     )
 }
@@ -2778,12 +3420,16 @@ fn strip_invocation_operator(text: &str) -> &str {
 }
 
 fn has_redirection(text: &str) -> bool {
-    split_command_like_tokens(text)
-        .into_iter()
-        .any(|token| redirection_operator(&token).is_some() || merging_redirection(&token).is_some())
+    split_command_like_tokens(text).into_iter().any(|token| {
+        redirection_operator(&token).is_some() || merging_redirection(&token).is_some()
+    })
 }
 
-fn command_redirection_nodes(text: &str, span: Span, nodes: &mut Vec<AstNode>) -> (String, Vec<usize>) {
+fn command_redirection_nodes(
+    text: &str,
+    span: Span,
+    nodes: &mut Vec<AstNode>,
+) -> (String, Vec<usize>) {
     let tokens = split_command_like_tokens(text);
     let mut clean = Vec::new();
     let mut redirections = Vec::new();
@@ -2874,10 +3520,15 @@ fn merging_redirection(token: &str) -> Option<&'static str> {
 }
 
 fn command_element_nodes(text: &str, span: Span, nodes: &mut Vec<AstNode>) -> Vec<usize> {
-    split_command_like_tokens(text)
+    normalize_command_tokens(split_command_like_tokens(text))
         .into_iter()
         .map(|token| {
-            if (token.starts_with('\'') && token.ends_with('\'')) || (token.starts_with('"') && token.ends_with('"')) {
+            if (token.starts_with('\'') && token.ends_with('\''))
+                || (token.starts_with('"') && token.ends_with('"'))
+            {
+                return source_expression_node(&token, span, nodes);
+            }
+            if token.starts_with('@') && !token.starts_with("@(") && !token.starts_with("@{") {
                 return source_expression_node(&token, span, nodes);
             }
             let kind = if token.starts_with('-') {
@@ -2891,14 +3542,49 @@ fn command_element_nodes(text: &str, span: Span, nodes: &mut Vec<AstNode>) -> Ve
                 span,
                 Vec::new(),
                 vec![
-                    ("Value".to_string(), Member::Str(token.trim_start_matches('-').to_string())),
-                    ("ParameterName".to_string(), Member::Str(token.trim_start_matches('-').to_string())),
-                    ("StringConstantType".to_string(), Member::Str("BareWord".to_string())),
-                    ("StaticType".to_string(), Member::Expr(type_ref_expr("System.String", false))),
+                    (
+                        "Value".to_string(),
+                        Member::Str(token.trim_start_matches('-').to_string()),
+                    ),
+                    (
+                        "ParameterName".to_string(),
+                        Member::Str(token.trim_start_matches('-').to_string()),
+                    ),
+                    (
+                        "StringConstantType".to_string(),
+                        Member::Str("BareWord".to_string()),
+                    ),
+                    (
+                        "StaticType".to_string(),
+                        Member::Expr(type_ref_expr("System.String", false)),
+                    ),
+                    ("__WholeText".to_string(), Member::Str(token)),
                 ],
             )
         })
         .collect()
+}
+
+fn normalize_command_tokens(tokens: Vec<String>) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut i = 0usize;
+    while i < tokens.len() {
+        let mut token = tokens[i].clone();
+        if !token.starts_with('-') && token.ends_with(',') {
+            i += 1;
+            while i < tokens.len() && !tokens[i].starts_with('-') {
+                token.push(' ');
+                token.push_str(&tokens[i]);
+                if !tokens[i].ends_with(',') {
+                    break;
+                }
+                i += 1;
+            }
+        }
+        out.push(token);
+        i += 1;
+    }
+    out
 }
 
 fn source_looks_like_command(text: &str) -> bool {
@@ -2908,11 +3594,23 @@ fn source_looks_like_command(text: &str) -> bool {
     let lower = first.to_ascii_lowercase();
     if matches!(
         lower.as_str(),
-        "if" | "else" | "elseif" | "for" | "foreach" | "while" | "do" | "switch" | "try" | "catch" | "finally"
+        "if" | "else"
+            | "elseif"
+            | "for"
+            | "foreach"
+            | "while"
+            | "do"
+            | "switch"
+            | "try"
+            | "catch"
+            | "finally"
     ) {
         return false;
     }
     let first_char = first.chars().next().unwrap_or('\0');
+    if first_char.is_ascii_alphabetic() && first.contains('-') {
+        return true;
+    }
     first_char.is_ascii_alphabetic()
         && !text.contains('=')
         && !text.contains(" -eq ")
@@ -2931,8 +3629,8 @@ fn is_pipeline_expression_text(text: &str) -> bool {
     }
     let lower = trimmed.to_ascii_lowercase();
     if [
-        "if", "else", "elseif", "for", "foreach", "while", "do", "switch", "try", "catch", "finally", "function",
-        "filter", "param",
+        "if", "else", "elseif", "for", "foreach", "while", "do", "switch", "try", "catch",
+        "finally", "function", "filter", "param",
     ]
     .into_iter()
     .any(|keyword| starts_keyword(&lower, keyword))
@@ -3046,7 +3744,10 @@ fn ast_method_find_all(owner: &str) -> Expression {
                 declarations: vec![VarDeclarator {
                     pattern: BindingPattern::Ident(box_name.clone()),
                     type_hint: None,
-                    init: Some(Expression::new(ExprKind::Object(vec![prop("Items", array_of(Vec::new()))]))),
+                    init: Some(Expression::new(ExprKind::Object(vec![prop(
+                        "Items",
+                        array_of(Vec::new()),
+                    )]))),
                     array_bounds: None,
                     with_events: false,
                 }],
@@ -3055,7 +3756,7 @@ fn ast_method_find_all(owner: &str) -> Expression {
             Statement::new(StmtKind::ForIn {
                 var: node.clone(),
                 key: None,
-                iter: member_access(Expression::new(ExprKind::This), "__Descendants"),
+                iter: descendant_iter(&nested),
                 body: vec![Statement::new(StmtKind::If {
                     cond: call_expr(Expression::ident(&pred), vec![Expression::ident(&node)]),
                     then_body: vec![Statement::new(StmtKind::Assign {
@@ -3073,7 +3774,10 @@ fn ast_method_find_all(owner: &str) -> Expression {
                 else_body: None,
                 is_async: false,
             }),
-            Statement::new(StmtKind::Return(Some(member_access(Expression::ident(&box_name), "Items")))),
+            Statement::new(StmtKind::Return(Some(member_access(
+                Expression::ident(&box_name),
+                "Items",
+            )))),
         ],
     )
 }
@@ -3096,10 +3800,12 @@ fn ast_method_find(owner: &str) -> Expression {
             Statement::new(StmtKind::ForIn {
                 var: node.clone(),
                 key: None,
-                iter: member_access(Expression::new(ExprKind::This), "__Descendants"),
+                iter: descendant_iter(&nested),
                 body: vec![Statement::new(StmtKind::If {
                     cond: call_expr(Expression::ident(&pred), vec![Expression::ident(&node)]),
-                    then_body: vec![Statement::new(StmtKind::Return(Some(Expression::ident(&node))))],
+                    then_body: vec![Statement::new(StmtKind::Return(Some(Expression::ident(
+                        &node,
+                    ))))],
                     elifs: Vec::new(),
                     else_body: None,
                 })],
@@ -3112,17 +3818,82 @@ fn ast_method_find(owner: &str) -> Expression {
     )
 }
 
-fn ast_method_get_command_name(name: &str) -> Expression {
+fn descendant_iter(nested: &str) -> Expression {
+    Expression::new(ExprKind::Ternary {
+        cond: Box::new(Expression::ident(nested)),
+        then: Box::new(member_access(
+            Expression::new(ExprKind::This),
+            "__NestedDescendants",
+        )),
+        else_: Box::new(member_access(
+            Expression::new(ExprKind::This),
+            "__Descendants",
+        )),
+    })
+}
+
+fn ast_method_visit() -> Expression {
+    let visitor = "__ps_ast_visitor";
+    let node = "__ps_ast_visit_node";
+    function_expr(
+        vec![visitor],
+        vec![
+            Statement::new(StmtKind::ForIn {
+                var: node.to_string(),
+                key: None,
+                iter: member_access(Expression::new(ExprKind::This), "__Descendants"),
+                body: vec![Statement::new(StmtKind::If {
+                    cond: Expression::new(ExprKind::Binary {
+                        op: vybe_ast::BinOp::StrictEq,
+                        left: Box::new(member_access(Expression::ident(node), "__type")),
+                        right: Box::new(Expression::string("VariableExpressionAst")),
+                    }),
+                    then_body: vec![Statement::new(StmtKind::Expr(call_expr(
+                        member_access(Expression::ident(visitor), "VisitVariableExpression"),
+                        vec![Expression::ident(node)],
+                    )))],
+                    elifs: Vec::new(),
+                    else_body: None,
+                })],
+                of: true,
+                else_body: None,
+                is_async: false,
+            }),
+            Statement::new(StmtKind::Return(Some(Expression::null()))),
+        ],
+    )
+}
+
+fn ast_method_get_command_name(name: Option<&str>) -> Expression {
+    let value = name
+        .map(Expression::string)
+        .unwrap_or_else(Expression::null);
     function_expr(
         Vec::new(),
-        vec![Statement::new(StmtKind::Return(Some(Expression::string(name))))],
+        vec![Statement::new(StmtKind::Return(Some(value)))],
+    )
+}
+
+fn ast_method_get_type(ty: &str) -> Expression {
+    let ty = ty.to_string();
+    let full_name = format!("System.Management.Automation.Language.{ty}");
+    function_expr(
+        Vec::new(),
+        vec![Statement::new(StmtKind::Return(Some(Expression::new(
+            ExprKind::Object(vec![
+                prop("Name", Expression::string(&ty)),
+                prop("FullName", Expression::string(&full_name)),
+            ]),
+        ))))],
     )
 }
 
 fn member_expr(member: &Member) -> Expression {
     match member {
         Member::Node(index) => Expression::ident(&temp(*index)),
-        Member::Nodes(list) => array_of(list.iter().map(|i| Expression::ident(&temp(*i))).collect()),
+        Member::Nodes(list) => {
+            array_of(list.iter().map(|i| Expression::ident(&temp(*i))).collect())
+        }
         Member::Expr(expr) => expr.clone(),
         Member::Str(text) => Expression::string(text),
         Member::Int(value) => Expression::int(*value),
@@ -3132,13 +3903,120 @@ fn member_expr(member: &Member) -> Expression {
 }
 
 fn function_body_expr(text: &str) -> Expression {
+    let param_block = function_param_block_expr(text);
+    Expression::new(ExprKind::Object(vec![prop("ParamBlock", param_block)]))
+}
+
+fn function_param_block_expr(text: &str) -> Expression {
+    let Some(open) = text.find('{') else {
+        return Expression::null();
+    };
+    let Some(close) = text.rfind('}') else {
+        return Expression::null();
+    };
+    let body = text[open + 1..close].trim();
+    if let Some((attrs, params)) = parse_param_block(body) {
+        return Expression::new(ExprKind::Object(vec![
+            prop(
+                "Attributes",
+                array_of(
+                    attrs
+                        .into_iter()
+                        .map(|attr| attribute_ast_object_expr(&attr))
+                        .collect(),
+                ),
+            ),
+            prop(
+                "Parameters",
+                array_of(params.into_iter().map(parameter_ast_object_expr).collect()),
+            ),
+        ]));
+    }
     Expression::new(ExprKind::Object(vec![prop(
-        "ParamBlock",
-        Expression::new(ExprKind::Object(vec![prop(
-            "Attributes",
-            array_of(attribute_ast_exprs(text)),
-        )])),
+        "Attributes",
+        array_of(attribute_ast_exprs(text)),
     )]))
+}
+
+fn attribute_ast_object_expr(raw: &str) -> Expression {
+    let name = raw.split(['(', ' ']).next().unwrap_or(raw).trim();
+    let args = raw
+        .find('(')
+        .and_then(|open| raw.rfind(')').map(|close| raw[open + 1..close].to_string()));
+    Expression::new(ExprKind::Object(vec![
+        prop("__type", Expression::string("AttributeAst")),
+        prop(
+            "__types",
+            array_of(vec![
+                Expression::string("AttributeAst"),
+                Expression::string("AttributeBaseAst"),
+                Expression::string("Ast"),
+            ]),
+        ),
+        prop("TypeName", type_name_expr(name)),
+        prop(
+            "PositionalArguments",
+            array_of(attribute_positional_args(args.as_deref())),
+        ),
+        prop(
+            "NamedArguments",
+            array_of(attribute_named_args(args.as_deref())),
+        ),
+        prop("__WholeText", Expression::string(&format!("[{}]", raw.trim()))),
+    ]))
+}
+
+fn parameter_ast_object_expr(param_info: ParamInfo) -> Expression {
+    let static_type_name = param_info
+        .static_type
+        .as_deref()
+        .and_then(type_accelerator)
+        .unwrap_or_else(|| param_info.static_type.as_deref().unwrap_or("System.Object"));
+    Expression::new(ExprKind::Object(vec![
+        prop("__type", Expression::string("ParameterAst")),
+        prop(
+            "__types",
+            array_of(vec![
+                Expression::string("ParameterAst"),
+                Expression::string("Ast"),
+            ]),
+        ),
+        prop(
+            "Name",
+            Expression::new(ExprKind::Object(vec![
+                prop("__type", Expression::string("VariableExpressionAst")),
+                prop(
+                    "__types",
+                    array_of(vec![
+                        Expression::string("VariableExpressionAst"),
+                        Expression::string("ExpressionAst"),
+                        Expression::string("Ast"),
+                    ]),
+                ),
+                prop("VariablePath", variable_path_expr(&param_info.name)),
+                prop("Splatted", Expression::bool(false)),
+            ])),
+        ),
+        prop(
+            "Attributes",
+            array_of(
+                param_info
+                    .attrs
+                    .iter()
+                    .map(|attr| attribute_ast_object_expr(attr))
+                    .collect(),
+            ),
+        ),
+        prop(
+            "DefaultValue",
+            param_info
+                .default
+                .as_deref()
+                .map(source_expression_object)
+                .unwrap_or_else(Expression::null),
+        ),
+        prop("StaticType", type_ref_expr(static_type_name, false)),
+    ]))
 }
 
 fn attribute_ast_exprs(text: &str) -> Vec<Expression> {
@@ -3147,10 +4025,13 @@ fn attribute_ast_exprs(text: &str) -> Vec<Expression> {
     };
     vec![Expression::new(ExprKind::Object(vec![
         prop("__type", Expression::string("AttributeAst")),
-        prop("TypeName", Expression::new(ExprKind::Object(vec![prop(
-            "Name",
-            Expression::string("CmdletBinding"),
-        )]))),
+        prop(
+            "TypeName",
+            Expression::new(ExprKind::Object(vec![prop(
+                "Name",
+                Expression::string("CmdletBinding"),
+            )])),
+        ),
         prop(
             "NamedArguments",
             array_of(
@@ -3292,33 +4173,54 @@ fn extent_object(node: &AstNode, map: &SourceMap, whole: &str) -> Expression {
             _ => None,
         })
         .unwrap_or_else(|| map.text(node.span).to_string());
-    let start = map.offset(node.span.start_line, node.span.start_col);
+    let span_start = map.offset(node.span.start_line, node.span.start_col);
+    let start = if text == whole {
+        0
+    } else if whole
+        .get(span_start..)
+        .is_some_and(|rest| rest.starts_with(&text))
+    {
+        span_start
+    } else if let Some(relative) = whole.get(span_start..).and_then(|rest| rest.find(&text)) {
+        span_start + relative
+    } else {
+        whole.find(&text).unwrap_or(span_start)
+    };
     let end = if text == whole {
         whole.len()
     } else {
         start + text.len()
     };
+    let (start_line, start_col) = map.line_col(start);
+    let (end_line, end_col) = map.line_col(end);
     Expression::new(ExprKind::Object(vec![
         prop("Text", Expression::string(&text)),
         prop("StartOffset", Expression::int(start as i64)),
         prop("EndOffset", Expression::int(end as i64)),
-        prop(
-            "StartLineNumber",
-            Expression::int(node.span.start_line.max(1) as i64),
-        ),
+        prop("StartLineNumber", Expression::int(start_line.max(1) as i64)),
         prop(
             "StartColumnNumber",
-            Expression::int(node.span.start_col.max(1) as i64),
+            Expression::int(start_col.max(1) as i64),
+        ),
+        prop("EndLineNumber", Expression::int(end_line.max(1) as i64)),
+        prop("EndColumnNumber", Expression::int(end_col.max(1) as i64)),
+        prop(
+            "StartScriptPosition",
+            script_position_object(map, start_line, start_col),
         ),
         prop(
-            "EndLineNumber",
-            Expression::int(node.span.end_line.max(1) as i64),
-        ),
-        prop(
-            "EndColumnNumber",
-            Expression::int(node.span.end_col.max(1) as i64),
+            "EndScriptPosition",
+            script_position_object(map, end_line, end_col),
         ),
         prop("File", Expression::null()),
+    ]))
+}
+
+fn script_position_object(map: &SourceMap, line: u32, column: u32) -> Expression {
+    Expression::new(ExprKind::Object(vec![
+        prop("LineNumber", Expression::int(line.max(1) as i64)),
+        prop("ColumnNumber", Expression::int(column.max(1) as i64)),
+        prop("Line", Expression::string(map.line_text(line))),
     ]))
 }
 
@@ -3329,13 +4231,35 @@ fn descendants(nodes: &[AstNode], root: usize, out: &mut Vec<usize>) {
     }
 }
 
+fn descendants_without_nested_scriptblocks(nodes: &[AstNode], root: usize, out: &mut Vec<usize>) {
+    out.push(root);
+    for &child in &nodes[root].children {
+        if nodes
+            .get(child)
+            .is_some_and(|node| node.ty == "ScriptBlockExpressionAst")
+        {
+            out.push(child);
+        } else {
+            descendants_without_nested_scriptblocks(nodes, child, out);
+        }
+    }
+}
+
 fn emit_tree(nodes: &[AstNode], root: usize, map: &SourceMap, source: &str) -> Expression {
     let mut body: Vec<Statement> = Vec::new();
 
     for (index, node) in nodes.iter().enumerate() {
         let mut props = vec![
             prop("__type", Expression::string(&node.ty)),
-            prop("__types", array_of(ast_type_names(&node.ty).into_iter().map(|name| Expression::string(&name)).collect())),
+            prop(
+                "__types",
+                array_of(
+                    ast_type_names(&node.ty)
+                        .into_iter()
+                        .map(|name| Expression::string(&name))
+                        .collect(),
+                ),
+            ),
             prop("Extent", extent_object(node, map, source)),
             prop(
                 "Children",
@@ -3349,23 +4273,33 @@ fn emit_tree(nodes: &[AstNode], root: usize, map: &SourceMap, source: &str) -> E
             prop("Parent", Expression::null()),
             prop("FindAll", ast_method_find_all(&temp(index))),
             prop("Find", ast_method_find(&temp(index))),
+            prop("Visit", ast_method_visit()),
+            prop("GetType", ast_method_get_type(&node.ty)),
         ];
         if node.ty == "CommandAst" {
             let command_name = node
                 .members
                 .iter()
-                .find_map(|(name, member)| match (name.as_str(), member) {
-                    ("CommandName", Member::Str(value)) => Some(value.as_str()),
-                    _ => None,
-                })
-                .unwrap_or("");
-            props.push(prop("GetCommandName", ast_method_get_command_name(command_name)));
+                .find_map(|(name, member)| (name == "CommandName").then_some(member));
+            let command_name = match command_name {
+                Some(Member::Str(value)) => Some(value.as_str()),
+                _ => None,
+            };
+            props.push(prop(
+                "GetCommandName",
+                ast_method_get_command_name(command_name),
+            ));
         }
         for (name, member) in &node.members {
             if name == "__WholeText" {
                 continue;
             }
-            props.push(prop(name, member_expr(member)));
+            let expr = member_expr(member);
+            props.push(prop(name, expr.clone()));
+            let lower = name.to_ascii_lowercase();
+            if lower != *name {
+                props.push(prop(&lower, expr));
+            }
         }
         body.push(Statement::new(StmtKind::VarDecl {
             declarations: vec![VarDeclarator {
@@ -3392,12 +4326,24 @@ fn emit_tree(nodes: &[AstNode], root: usize, map: &SourceMap, source: &str) -> E
             ));
         }
         let mut reachable = Vec::new();
-        descendants(nodes, index, &mut reachable);
+        descendants_without_nested_scriptblocks(nodes, index, &mut reachable);
         body.push(assign_member(
             &temp(index),
             "__Descendants",
             array_of(
                 reachable
+                    .iter()
+                    .map(|i| Expression::ident(&temp(*i)))
+                    .collect(),
+            ),
+        ));
+        let mut nested_reachable = Vec::new();
+        descendants(nodes, index, &mut nested_reachable);
+        body.push(assign_member(
+            &temp(index),
+            "__NestedDescendants",
+            array_of(
+                nested_reachable
                     .iter()
                     .map(|i| Expression::ident(&temp(*i)))
                     .collect(),
@@ -3432,7 +4378,12 @@ fn emit_tree(nodes: &[AstNode], root: usize, map: &SourceMap, source: &str) -> E
 
 fn ast_type_names(ty: &str) -> Vec<String> {
     let mut names = vec![ty.to_string(), "Ast".to_string()];
-    if ty.ends_with("ExpressionAst") || matches!(ty, "CommandAst" | "PipelineAst" | "HashtableAst" | "ArrayLiteralAst") {
+    if ty.ends_with("ExpressionAst")
+        || matches!(
+            ty,
+            "CommandAst" | "PipelineAst" | "HashtableAst" | "ArrayLiteralAst"
+        )
+    {
         names.push("ExpressionAst".to_string());
     }
     if ty == "TypeConstraintAst" {

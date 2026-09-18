@@ -26,6 +26,7 @@ statement = _{
   | enum_decl
   | class_decl
   | function_decl
+  | filter_decl
   | param_stmt
   | if_stmt
   | foreach_stmt
@@ -71,6 +72,7 @@ ws1 = _{ (" " | "\t" | "\r")+ }
 kw_class     = @{ ^"class" ~ !ident_tail }
 kw_enum      = @{ ^"enum" ~ !ident_tail }
 kw_function  = @{ ^"function" ~ !ident_tail }
+kw_filter    = @{ ^"filter" ~ !ident_tail }
 kw_namespace = @{ ^"namespace" ~ !ident_tail }
 kw_param     = @{ ^"param" ~ !ident_tail }
 kw_if        = @{ ^"if" ~ !ident_tail }
@@ -155,6 +157,7 @@ class_function_decl = { kw_function ~ function_name ~ function_params? ~ block }
 constructor_decl = { ^"constructor" ~ function_params? ~ block }
 
 function_decl = { kw_function ~ function_name ~ function_params? ~ block }
+filter_decl = { kw_filter ~ function_name ~ function_params? ~ block }
 param_stmt = { kw_param ~ eat_separators ~ "(" ~ eat_separators ~ function_param_list? ~ eat_separators ~ ")" }
 function_name = @{ IDENT | var_ref }
 function_params = { "(" ~ eat_separators ~ function_param_list? ~ eat_separators ~ ")" }
@@ -273,9 +276,10 @@ pipeline_head = _{ (expression ~ &(ws* ~ (pipe_op | ")" | chain_op))) | command_
 // a bare word is parsed by the expression grammar below, so there is exactly
 // one place that knows operator precedence.
 // ────────────────────────────────────────────────────────────────────────────
-// `.` (dot-source) and `&` (call) are invocation operators, not member access:
-// they are only these when followed by whitespace.
-invoke_op = @{ ("." | "&") ~ &(" " | "\t") }
+// `.` (dot-source) and `&` (call) are invocation operators, not member access.
+// Whitespace is optional for `&$sb` / `&{...}`, but `&&` remains the pipeline
+// chain operator.
+invoke_op = @{ "." ~ &(" " | "\t") | "&" ~ !("&") }
 command_stmt = { pipeline_expr ~ (ws* ~ chain_op ~ eat_ws_nl ~ pipeline_expr)* }
 chain_op = @{ "&&" | "||" }
 // `&&` / `||` bind LOOSER than `|`, so a chain is a sequence of PIPELINES. The
@@ -322,7 +326,7 @@ script_block = {
 }
 bare_token = @{ (!("|" | "&&" | NEWLINE | ";" | "{" | "}" | "(" | ")" | "\"" | "'" | WHITESPACE) ~ ANY)+ }
 
-keyword = @{ (^"if" | ^"elseif" | ^"else" | ^"while" | ^"foreach" | ^"for" | ^"switch" | ^"do" | ^"try" | ^"catch" | ^"finally" | ^"return" | ^"throw" | ^"break" | ^"continue" | ^"using" | ^"param" | ^"class" | ^"enum" | ^"namespace" | ^"function") ~ !(ASCII_ALPHANUMERIC | "_" | "-") }
+keyword = @{ (^"if" | ^"elseif" | ^"else" | ^"while" | ^"foreach" | ^"for" | ^"switch" | ^"do" | ^"try" | ^"catch" | ^"finally" | ^"return" | ^"throw" | ^"break" | ^"continue" | ^"using" | ^"param" | ^"class" | ^"enum" | ^"namespace" | ^"function" | ^"filter") ~ !(ASCII_ALPHANUMERIC | "_" | "-") }
 ws_boundary = _{ WHITESPACE | NEWLINE | "{" | "}" | "(" | ")" | ";" | "|" }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -434,8 +438,8 @@ postfix_op  = _{ null_method_call | null_member_get | null_index_get | method_ca
 null_method_call = { "?." ~ member_name ~ "(" ~ eat_separators ~ arg_list? ~ eat_separators ~ ")" }
 null_member_get  = { "?." ~ (member_name | quoted_string | single_quoted_string | var_ref) }
 null_index_get   = { "?[" ~ eat_separators ~ expression ~ eat_separators ~ "]" }
-method_call = { "." ~ member_name ~ "(" ~ eat_separators ~ arg_list? ~ eat_separators ~ ")" }
-static_call = { "::" ~ member_name ~ "(" ~ eat_separators ~ arg_list? ~ eat_separators ~ ")" }
+method_call = { "." ~ (member_name | var_ref) ~ "(" ~ eat_separators ~ arg_list? ~ eat_separators ~ ")" }
+static_call = { "::" ~ (member_name | var_ref) ~ "(" ~ eat_separators ~ arg_list? ~ eat_separators ~ ")" }
 static_member = { "::" ~ member_name }
 member_get  = { "." ~ (member_name | quoted_string | single_quoted_string | var_ref) }
 index_get   = { "[" ~ eat_separators ~ expression ~ eat_separators ~ "]" }
@@ -497,7 +501,7 @@ script_block_expr = { "{" ~ eat_separators ~ (statement ~ eat_separators)* ~ "}"
 number = @{
     "0" ~ (^"b") ~ ASCII_BIN_DIGIT+
   | "0" ~ (^"x") ~ ASCII_HEX_DIGIT+
-  | ASCII_DIGIT+ ~ ("." ~ ASCII_DIGIT+)? ~ (^"e" ~ ("+" | "-")? ~ ASCII_DIGIT+)? ~ (^"kb" | ^"mb" | ^"gb" | ^"tb" | ^"pb" | ^"l" | ^"d")?
+  | ASCII_DIGIT+ ~ ("." ~ ASCII_DIGIT+)? ~ (^"e" ~ ("+" | "-")? ~ ASCII_DIGIT+)? ~ (^"kb" | ^"mb" | ^"gb" | ^"tb" | ^"pb" | ^"ul" | ^"u" | ^"l" | ^"d")?
   | "." ~ ASCII_DIGIT+
 }
 

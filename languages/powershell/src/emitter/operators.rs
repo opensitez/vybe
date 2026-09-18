@@ -632,6 +632,111 @@ pub fn emit_multiply(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_end(line);
 }
 
+fn emit_rich_binary(
+    chunks: &mut [Chunk],
+    current: usize,
+    slot: vybe_ast::ProtocolSlot,
+    fallback: impl Fn(&mut Chunk, u32),
+    line: u32,
+) {
+    let chunk = &mut chunks[current];
+    let b_slot = chunk.alloc_scratch(1);
+    let a_slot = chunk.alloc_scratch(1);
+    chunk.emit_op_u16(Op::LOCAL_SET, b_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, a_slot, line);
+    vybe_compiler::primitives::expressions::emit_rich_arithmetic(
+        chunk,
+        a_slot,
+        b_slot,
+        &vybe_ast::protocol_slot_key(slot),
+        fallback,
+        line,
+    );
+}
+
+pub fn emit_subtract(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_rich_binary(
+        chunks,
+        current,
+        vybe_ast::ProtocolSlot::Sub,
+        |c: &mut Chunk, l: u32| c.emit_op(Op::F64_SUB, l),
+        line,
+    );
+}
+
+pub fn emit_remainder(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_rich_binary(
+        chunks,
+        current,
+        vybe_ast::ProtocolSlot::Mod,
+        vybe_compiler::primitives::math::emit_c_fmod,
+        line,
+    );
+}
+
+pub fn emit_bit_and(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_rich_binary(
+        chunks,
+        current,
+        vybe_ast::ProtocolSlot::And,
+        |c: &mut Chunk, l: u32| c.emit_op(Op::I32_AND, l),
+        line,
+    );
+}
+
+pub fn emit_bit_or(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_rich_binary(
+        chunks,
+        current,
+        vybe_ast::ProtocolSlot::Or,
+        |c: &mut Chunk, l: u32| c.emit_op(Op::I32_OR, l),
+        line,
+    );
+}
+
+pub fn emit_bit_xor(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_rich_binary(
+        chunks,
+        current,
+        vybe_ast::ProtocolSlot::Xor,
+        |c: &mut Chunk, l: u32| c.emit_op(Op::I32_XOR, l),
+        line,
+    );
+}
+
+pub fn emit_shl(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_rich_binary(
+        chunks,
+        current,
+        vybe_ast::ProtocolSlot::LShift,
+        |c: &mut Chunk, l: u32| c.emit_op(Op::I32_SHL, l),
+        line,
+    );
+}
+
+pub fn emit_shr(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_rich_binary(
+        chunks,
+        current,
+        vybe_ast::ProtocolSlot::RShift,
+        |c: &mut Chunk, l: u32| c.emit_op(Op::I32_SHR_S, l),
+        line,
+    );
+}
+
+pub fn emit_negate(chunks: &mut [Chunk], current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    let slot = chunk.alloc_scratch(1);
+    chunk.emit_op_u16(Op::LOCAL_SET, slot, line);
+    vybe_compiler::primitives::expressions::emit_rich_unary(
+        chunk,
+        slot,
+        &vybe_ast::protocol_slot_key(vybe_ast::ProtocolSlot::Neg),
+        |c: &mut Chunk, l: u32| c.emit_op(Op::F64_NEG, l),
+        line,
+    );
+}
+
 /// PowerShell's `+`, which is three operations chosen by the LEFT operand:
 ///
 /// | `$a` | `$a + $b` |
@@ -725,11 +830,17 @@ pub fn emit_add(chunks: &mut [Chunk], current: usize, line: u32) {
 
     chunk.emit_else(line);
 
-    // Number on the left: arithmetic. `F64_ADD` coerces BOTH operands through
-    // `Value::as_f64`, which is what makes `5 + '5'` equal `10`.
-    chunk.emit_op_u16(Op::LOCAL_GET, a_slot, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, b_slot, line);
-    chunk.emit_op(Op::F64_ADD, line);
+    // Number/object on the left: arithmetic through the common rich slot first.
+    // A BigInteger is a dotnet adapter object carrying `ProtocolSlot::Add`;
+    // falling straight to `F64_ADD` coerces that payload to `NaN`.
+    vybe_compiler::primitives::expressions::emit_rich_arithmetic(
+        chunk,
+        a_slot,
+        b_slot,
+        &vybe_ast::protocol_slot_key(vybe_ast::ProtocolSlot::Add),
+        |c: &mut Chunk, l: u32| c.emit_op(Op::F64_ADD, l),
+        line,
+    );
 
     chunk.emit_end(line);
     chunk.emit_end(line);
@@ -882,11 +993,7 @@ pub fn emit_to_int(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_if_value(line);
     chunk.emit_op_u16(Op::LOCAL_GET, value, line);
     chunk.emit_call(to_number, 1, line);
-    vybe_compiler::primitives::math::emit_round(
-        chunk,
-        vybe_ast::MidpointPolicy::HalfEven,
-        line,
-    );
+    vybe_compiler::primitives::math::emit_round(chunk, vybe_ast::MidpointPolicy::HalfEven, line);
     chunk.emit_else(line);
     chunk.emit_op_u16(Op::LOCAL_GET, int_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, value, line);
@@ -912,22 +1019,14 @@ pub fn emit_to_int(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_call(char_code, 2, line);
     chunk.emit_else(line);
     chunk.emit_op_u16(Op::LOCAL_GET, parsed, line);
-    vybe_compiler::primitives::math::emit_round(
-        chunk,
-        vybe_ast::MidpointPolicy::HalfEven,
-        line,
-    );
+    vybe_compiler::primitives::math::emit_round(chunk, vybe_ast::MidpointPolicy::HalfEven, line);
     chunk.emit_end(line);
 
     chunk.emit_else(line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, value, line);
     chunk.emit_call(to_number, 1, line);
-    vybe_compiler::primitives::math::emit_round(
-        chunk,
-        vybe_ast::MidpointPolicy::HalfEven,
-        line,
-    );
+    vybe_compiler::primitives::math::emit_round(chunk, vybe_ast::MidpointPolicy::HalfEven, line);
 
     chunk.emit_end(line);
 
@@ -1091,6 +1190,7 @@ pub fn emit_index_get(chunks: &mut [Chunk], current: usize, line: u32) {
     let raw = key + 2;
     let fallback = key + 3;
     let is_array = chunk.add_import("ecma:array", "isArray");
+    let array_len = chunk.add_import("ecma:array", "length");
     let cast_bool = chunk.add_import("wasm:js-boolean", "cast");
     let array_get = chunk.add_import("ecma:array", "get");
     let object_get = chunk.add_import("ecma:object", "get");
@@ -1103,6 +1203,17 @@ pub fn emit_index_get(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_call(is_array, 1, line);
     chunk.emit_call(cast_bool, 1, line);
     chunk.emit_if_value(line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, key, line);
+    chunk.emit_i32_const(0, line);
+    chunk.emit_op(Op::I32_LT_S, line);
+    chunk.emit_if(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, obj, line);
+    chunk.emit_call(array_len, 1, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, key, line);
+    chunk.emit_op(Op::I32_ADD, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, key, line);
+    chunk.emit_end(line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, obj, line);
     chunk.emit_op_u16(Op::LOCAL_GET, key, line);
@@ -1160,6 +1271,138 @@ pub fn emit_index_get(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, raw, line);
     chunks[current].emit_end(line);
 
+    chunks[current].emit_end(line);
+}
+
+fn emit_throw_exception_from_stack_message(chunk: &mut Chunk, exc_name: &str, line: u32) {
+    vybe_compiler::primitives::errors::emit_exception_new(
+        chunk,
+        exc_name,
+        vybe_compiler::primitives::class_slots::ValueSource::Stack,
+        line,
+    );
+    vybe_compiler::primitives::errors::emit_stamp_exception_ancestors(chunk, exc_name, line);
+    vybe_compiler::primitives::errors::emit_throw(chunk, line);
+}
+
+fn emit_throw_exception_const(chunk: &mut Chunk, exc_name: &str, message: &str, line: u32) {
+    chunk.emit_string_const(message, line);
+    emit_throw_exception_from_stack_message(chunk, exc_name, line);
+}
+
+pub fn emit_strict_var(chunks: &mut [Chunk], current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    let name = chunk.alloc_scratch(2);
+    let value = name + 1;
+    let is_undefined = chunk.add_import("wasm:js-undefined", "test");
+
+    chunk.emit_op_u16(Op::LOCAL_SET, name, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, value, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, value, line);
+    chunk.emit_call(is_undefined, 1, line);
+    chunk.emit_if_value(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, name, line);
+    emit_throw_exception_from_stack_message(chunk, "VariableIsUndefined", line);
+    chunk.emit_else(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, value, line);
+    chunk.emit_end(line);
+}
+
+pub fn emit_strict_member_get(chunks: &mut [Chunk], current: usize, line: u32) {
+    let base = chunks[current].alloc_scratch(3);
+    let key = base;
+    let obj = base + 1;
+    let value = base + 2;
+    {
+        let chunk = &mut chunks[current];
+        chunk.emit_op_u16(Op::LOCAL_SET, key, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, obj, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, obj, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, key, line);
+    }
+    emit_index_get(chunks, current, line);
+    {
+        let chunk = &mut chunks[current];
+        let is_undefined = chunk.add_import("wasm:js-undefined", "test");
+        chunk.emit_op_u16(Op::LOCAL_SET, value, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, value, line);
+        chunk.emit_op(Op::REF_IS_NULL, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, value, line);
+        chunk.emit_call(is_undefined, 1, line);
+        chunk.emit_op(Op::I32_OR, line);
+        chunk.emit_if_value(line);
+        emit_throw_exception_const(
+            chunk,
+            "PropertyNotFoundException",
+            "PropertyNotFoundStrict",
+            line,
+        );
+        chunk.emit_else(line);
+        chunk.emit_op_u16(Op::LOCAL_GET, value, line);
+        chunk.emit_end(line);
+    }
+}
+
+pub fn emit_strict_index_get(chunks: &mut [Chunk], current: usize, line: u32) {
+    let base = chunks[current].alloc_scratch(3);
+    let key = base;
+    let obj = base + 1;
+    let len = base + 2;
+    {
+        let chunk = &mut chunks[current];
+        let is_array = chunk.add_import("ecma:array", "isArray");
+        let cast_bool = chunk.add_import("wasm:js-boolean", "cast");
+        let array_len = chunk.add_import("ecma:array", "length");
+        let array_get = chunk.add_import("ecma:array", "get");
+
+        chunk.emit_op_u16(Op::LOCAL_SET, key, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, obj, line);
+
+        chunk.emit_op_u16(Op::LOCAL_GET, obj, line);
+        chunk.emit_call(is_array, 1, line);
+        chunk.emit_call(cast_bool, 1, line);
+        chunk.emit_if_value(line);
+
+        chunk.emit_op_u16(Op::LOCAL_GET, obj, line);
+        chunk.emit_call(array_len, 1, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, len, line);
+
+        chunk.emit_op_u16(Op::LOCAL_GET, key, line);
+        chunk.emit_i32_const(0, line);
+        chunk.emit_op(Op::I32_LT_S, line);
+        chunk.emit_if(line);
+        chunk.emit_op_u16(Op::LOCAL_GET, len, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, key, line);
+        chunk.emit_op(Op::I32_ADD, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, key, line);
+        chunk.emit_end(line);
+
+        chunk.emit_op_u16(Op::LOCAL_GET, key, line);
+        chunk.emit_i32_const(0, line);
+        chunk.emit_op(Op::I32_LT_S, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, key, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, len, line);
+        chunk.emit_op(Op::I32_GE_S, line);
+        chunk.emit_op(Op::I32_OR, line);
+        chunk.emit_if_value(line);
+        emit_throw_exception_const(
+            chunk,
+            "IndexOutOfRangeException",
+            "IndexOutOfRangeException",
+            line,
+        );
+        chunk.emit_else(line);
+        chunk.emit_op_u16(Op::LOCAL_GET, obj, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, key, line);
+        chunk.emit_call(array_get, 2, line);
+        chunk.emit_end(line);
+
+        chunk.emit_else(line);
+        chunk.emit_op_u16(Op::LOCAL_GET, obj, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, key, line);
+    }
+    emit_index_get(chunks, current, line);
     chunks[current].emit_end(line);
 }
 
@@ -1592,7 +1835,7 @@ pub fn emit_unique_adjacent(chunks: &mut [Chunk], current: usize, line: u32) {
 /// Stack: `[target]` -> `[descriptors]`.
 pub fn emit_psobject_properties(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let chunk = &mut chunks[current];
-    let target = chunk.alloc_scratch(10);
+    let target = chunk.alloc_scratch(13);
     let keys = target + 1;
     let out = target + 2;
     let cursor = target + 3;
@@ -1602,6 +1845,9 @@ pub fn emit_psobject_properties(chunks: &mut [Chunk], current: usize, argc: u8, 
     let desc = target + 7;
     let wanted = target + 8;
     let aliased = target + 9;
+    let folded_key = target + 10;
+    let code_marker = target + 11;
+    let member_type = target + 12;
     let explicit_keys = chunk.alloc_scratch(1);
 
     let arr_new = chunk.add_import("ecma:array", "new");
@@ -1651,27 +1897,36 @@ pub fn emit_psobject_properties(chunks: &mut [Chunk], current: usize, argc: u8, 
     chunk.emit_op_u16(Op::LOCAL_GET, cursor, line);
     chunk.emit_call(arr_get, 2, line);
     chunk.emit_op_u16(Op::LOCAL_SET, key, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, key, line);
+    chunk.emit_call(lower, 1, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, folded_key, line);
 
     // The accessor slots beside the name, read RAW: `object.get` on `__get_X`
     // hands back the function, where a read of `X` would run it.
     chunk.emit_op_u16(Op::LOCAL_GET, target, line);
     chunk.emit_string_const("__get_", line);
-    chunk.emit_op_u16(Op::LOCAL_GET, key, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, folded_key, line);
     vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     chunk.emit_call(obj_get, 2, line);
     chunk.emit_op_u16(Op::LOCAL_SET, getter, line);
     chunk.emit_op_u16(Op::LOCAL_GET, target, line);
     chunk.emit_string_const("__set_", line);
-    chunk.emit_op_u16(Op::LOCAL_GET, key, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, folded_key, line);
     vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     chunk.emit_call(obj_get, 2, line);
     chunk.emit_op_u16(Op::LOCAL_SET, setter, line);
     chunk.emit_op_u16(Op::LOCAL_GET, target, line);
     chunk.emit_string_const("__alias_", line);
-    chunk.emit_op_u16(Op::LOCAL_GET, key, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, folded_key, line);
     vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     chunk.emit_call(obj_get, 2, line);
     chunk.emit_op_u16(Op::LOCAL_SET, aliased, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, target, line);
+    chunk.emit_string_const("__code_", line);
+    chunk.emit_op_u16(Op::LOCAL_GET, folded_key, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
+    chunk.emit_call(obj_get, 2, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, code_marker, line);
 
     vybe_compiler::primitives::dict::emit_new(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, desc, line);
@@ -1691,18 +1946,27 @@ pub fn emit_psobject_properties(chunks: &mut [Chunk], current: usize, argc: u8, 
     chunk.emit_op_u16(Op::LOCAL_GET, key, line);
     chunk.emit_call(obj_set, 3, line);
     chunk.emit_op(Op::DROP, line);
+    field(chunk, "Name");
+    chunk.emit_op_u16(Op::LOCAL_GET, key, line);
+    chunk.emit_call(obj_set, 3, line);
+    chunk.emit_op(Op::DROP, line);
 
     // Reading the NAME runs a getter, which is what a descriptor's `Value` is.
     field(chunk, "value");
     chunk.emit_op_u16(Op::LOCAL_GET, target, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, key, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, folded_key, line);
+    chunk.emit_call(obj_get, 2, line);
+    chunk.emit_call(obj_set, 3, line);
+    chunk.emit_op(Op::DROP, line);
+    field(chunk, "Value");
+    chunk.emit_op_u16(Op::LOCAL_GET, target, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, folded_key, line);
     chunk.emit_call(obj_get, 2, line);
     chunk.emit_call(obj_set, 3, line);
     chunk.emit_op(Op::DROP, line);
 
     // An alias forwards through a getter like a `ScriptProperty` does, so the
     // `__alias_` slot is what tells the two apart and is asked first.
-    field(chunk, "membertype");
     chunk.emit_op_u16(Op::LOCAL_GET, aliased, line);
     chunk.emit_call(type_of, 1, line);
     chunk.emit_string_const("string", line);
@@ -1710,6 +1974,14 @@ pub fn emit_psobject_properties(chunks: &mut [Chunk], current: usize, argc: u8, 
     vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     chunk.emit_string_const("AliasProperty", line);
+    chunk.emit_else(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, code_marker, line);
+    chunk.emit_call(type_of, 1, line);
+    chunk.emit_string_const("object", line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if_value(line);
+    chunk.emit_string_const("CodeProperty", line);
     chunk.emit_else(line);
     chunk.emit_op_u16(Op::LOCAL_GET, getter, line);
     chunk.emit_call(type_of, 1, line);
@@ -1733,6 +2005,14 @@ pub fn emit_psobject_properties(chunks: &mut [Chunk], current: usize, argc: u8, 
     chunk.emit_end(line);
     chunk.emit_end(line);
     chunk.emit_end(line);
+    chunk.emit_end(line);
+    chunk.emit_op_u16(Op::LOCAL_SET, member_type, line);
+    field(chunk, "membertype");
+    chunk.emit_op_u16(Op::LOCAL_GET, member_type, line);
+    chunk.emit_call(obj_set, 3, line);
+    chunk.emit_op(Op::DROP, line);
+    field(chunk, "MemberType");
+    chunk.emit_op_u16(Op::LOCAL_GET, member_type, line);
     chunk.emit_call(obj_set, 3, line);
     chunk.emit_op(Op::DROP, line);
 
@@ -1776,14 +2056,22 @@ pub fn emit_psobject_properties(chunks: &mut [Chunk], current: usize, argc: u8, 
     chunk.emit_op_u16(Op::LOCAL_GET, getter, line);
     chunk.emit_call(obj_set, 3, line);
     chunk.emit_op(Op::DROP, line);
+    field(chunk, "GetterScript");
+    chunk.emit_op_u16(Op::LOCAL_GET, getter, line);
+    chunk.emit_call(obj_set, 3, line);
+    chunk.emit_op(Op::DROP, line);
 
     field(chunk, "setterscript");
     chunk.emit_op_u16(Op::LOCAL_GET, setter, line);
     chunk.emit_call(obj_set, 3, line);
     chunk.emit_op(Op::DROP, line);
+    field(chunk, "SetterScript");
+    chunk.emit_op_u16(Op::LOCAL_GET, setter, line);
+    chunk.emit_call(obj_set, 3, line);
+    chunk.emit_op(Op::DROP, line);
 
     if argc == 2 {
-        chunk.emit_op_u16(Op::LOCAL_GET, key, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, folded_key, line);
         chunk.emit_op_u16(Op::LOCAL_GET, wanted, line);
         vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
         vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
@@ -1838,7 +2126,7 @@ pub fn emit_psobject_properties(chunks: &mut [Chunk], current: usize, argc: u8, 
 /// what makes `2 -eq 2.0` True and keeps the numeric coercion intact.
 ///
 /// Stack: `[a, b]` → `[bool]`.
-pub fn emit_case_folding_eq(chunks: &mut [Chunk], current: usize, negated: bool, line: u32) {
+pub fn emit_case_folding_eq(chunks: &mut Vec<Chunk>, current: usize, negated: bool, line: u32) {
     let chunk = &mut chunks[current];
     let b_slot = chunk.alloc_scratch(2);
     let a_slot = b_slot + 1;
@@ -1868,12 +2156,20 @@ pub fn emit_case_folding_eq(chunks: &mut [Chunk], current: usize, negated: bool,
     // one's type, so `2 -eq '2'` is True — the same left-operand rule `+` has.
     // The exact comparison answered False, and `Get-Date -UFormat %j` compared
     // against `"130"` was one of six tests that lost that coercion.
-    chunk.emit_op_u16(Op::LOCAL_GET, a_slot, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, b_slot, line);
-    let abstract_eq = chunk.add_import("ecma:value", "abstractEq");
-    chunk.emit_call(abstract_eq, 2, line);
-    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+    let _ = chunk;
+    vybe_compiler::primitives::expressions::emit_rich_compare_locals(
+        chunks,
+        current,
+        a_slot,
+        b_slot,
+        "__eq__",
+        vybe_compiler::primitives::expressions::RichFallback::Target("host:ecma:value:abstractEq"),
+        line,
+        false,
+    );
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
 
+    let chunk = &mut chunks[current];
     chunk.emit_end(line);
 
     if negated {
@@ -1888,6 +2184,300 @@ pub fn emit_case_folding_eq(chunks: &mut [Chunk], current: usize, negated: bool,
     chunk.emit_else(line);
     chunk.emit_bool_const(false, line);
     chunk.emit_end(line);
+}
+
+fn emit_string_eq_const(chunk: &mut Chunk, slot: u16, value: &str, line: u32) {
+    chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
+    chunk.emit_string_const(value, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+}
+
+fn emit_append_const(chunk: &mut Chunk, out: u16, value: &str, concat: u16, line: u32) {
+    chunk.emit_op_u16(Op::LOCAL_GET, out, line);
+    chunk.emit_string_const(value, line);
+    chunk.emit_call(concat, 2, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, out, line);
+}
+
+fn emit_append_local(chunk: &mut Chunk, out: u16, value: u16, concat: u16, line: u32) {
+    chunk.emit_op_u16(Op::LOCAL_GET, out, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, value, line);
+    chunk.emit_call(concat, 2, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, out, line);
+}
+
+fn emit_append_regex_escaped_char(
+    chunk: &mut Chunk,
+    out: u16,
+    ch: u16,
+    regex_escape: u16,
+    concat: u16,
+    line: u32,
+) {
+    chunk.emit_op_u16(Op::LOCAL_GET, out, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, ch, line);
+    chunk.emit_call(regex_escape, 1, line);
+    chunk.emit_call(concat, 2, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, out, line);
+}
+
+fn emit_char_is_wildcard(chunk: &mut Chunk, ch: u16, line: u32) {
+    emit_string_eq_const(chunk, ch, "*", line);
+    emit_string_eq_const(chunk, ch, "?", line);
+    chunk.emit_op(Op::I32_OR, line);
+    emit_string_eq_const(chunk, ch, "[", line);
+    chunk.emit_op(Op::I32_OR, line);
+}
+
+pub fn emit_wildcard_regex(chunks: &mut [Chunk], current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    let length = chunk.add_import("ecma:string", "length");
+    let char_at = chunk.add_import("ecma:string", "charAt");
+    let regex_escape = chunk.add_import("ecma:regexp", "escape");
+    let concat = chunk.add_import("wasm:js-string", "concat");
+    let base = chunk.alloc_scratch(6);
+    let pattern = base;
+    let len = base + 1;
+    let i = base + 2;
+    let out = base + 3;
+    let ch = base + 4;
+    let escaped = base + 5;
+
+    chunk.emit_op_u16(Op::LOCAL_SET, pattern, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, pattern, line);
+    chunk.emit_call(length, 1, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, len, line);
+    chunk.emit_i32_const(0, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, i, line);
+    chunk.emit_string_const("^", line);
+    chunk.emit_op_u16(Op::LOCAL_SET, out, line);
+    chunk.emit_bool_const(false, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, escaped, line);
+
+    chunk.emit_block(line);
+    chunk.emit_loop_s(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, i, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, len, line);
+    chunk.emit_op(Op::I32_GE_S, line);
+    chunk.emit_br_if(1, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, pattern, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, i, line);
+    chunk.emit_call(char_at, 2, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, ch, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, escaped, line);
+    chunk.emit_if_value(line);
+    emit_append_regex_escaped_char(chunk, out, ch, regex_escape, concat, line);
+    chunk.emit_bool_const(false, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, escaped, line);
+    chunk.emit_else(line);
+
+    emit_string_eq_const(chunk, ch, "`", line);
+    chunk.emit_if_value(line);
+    chunk.emit_bool_const(true, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, escaped, line);
+    chunk.emit_else(line);
+
+    emit_string_eq_const(chunk, ch, "*", line);
+    chunk.emit_if_value(line);
+    emit_append_const(chunk, out, ".*", concat, line);
+    chunk.emit_else(line);
+    emit_string_eq_const(chunk, ch, "?", line);
+    chunk.emit_if_value(line);
+    emit_append_const(chunk, out, ".", concat, line);
+    chunk.emit_else(line);
+    emit_string_eq_const(chunk, ch, "[", line);
+    chunk.emit_if_value(line);
+    emit_append_const(chunk, out, "[", concat, line);
+    chunk.emit_else(line);
+    emit_string_eq_const(chunk, ch, "]", line);
+    chunk.emit_if_value(line);
+    emit_append_const(chunk, out, "]", concat, line);
+    chunk.emit_else(line);
+    emit_string_eq_const(chunk, ch, "-", line);
+    chunk.emit_if_value(line);
+    emit_append_const(chunk, out, "-", concat, line);
+    chunk.emit_else(line);
+    emit_append_regex_escaped_char(chunk, out, ch, regex_escape, concat, line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, i, line);
+    chunk.emit_i32_const(1, line);
+    chunk.emit_op(Op::I32_ADD, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, i, line);
+    chunk.emit_br(0, line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, escaped, line);
+    chunk.emit_if_value(line);
+    emit_append_const(chunk, out, "\\`", concat, line);
+    chunk.emit_end(line);
+    emit_append_const(chunk, out, "$", concat, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, out, line);
+}
+
+pub fn emit_wildcard_escape(chunks: &mut [Chunk], current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    let length = chunk.add_import("ecma:string", "length");
+    let char_at = chunk.add_import("ecma:string", "charAt");
+    let concat = chunk.add_import("wasm:js-string", "concat");
+    let base = chunk.alloc_scratch(5);
+    let pattern = base;
+    let len = base + 1;
+    let i = base + 2;
+    let out = base + 3;
+    let ch = base + 4;
+
+    chunk.emit_op_u16(Op::LOCAL_SET, pattern, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, pattern, line);
+    chunk.emit_call(length, 1, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, len, line);
+    chunk.emit_i32_const(0, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, i, line);
+    chunk.emit_string_const("", line);
+    chunk.emit_op_u16(Op::LOCAL_SET, out, line);
+
+    chunk.emit_block(line);
+    chunk.emit_loop_s(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, i, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, len, line);
+    chunk.emit_op(Op::I32_GE_S, line);
+    chunk.emit_br_if(1, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, pattern, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, i, line);
+    chunk.emit_call(char_at, 2, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, ch, line);
+    emit_char_is_wildcard(chunk, ch, line);
+    emit_string_eq_const(chunk, ch, "]", line);
+    chunk.emit_op(Op::I32_OR, line);
+    emit_string_eq_const(chunk, ch, "`", line);
+    chunk.emit_op(Op::I32_OR, line);
+    chunk.emit_if_value(line);
+    emit_append_const(chunk, out, "`", concat, line);
+    chunk.emit_end(line);
+    emit_append_local(chunk, out, ch, concat, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, i, line);
+    chunk.emit_i32_const(1, line);
+    chunk.emit_op(Op::I32_ADD, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, i, line);
+    chunk.emit_br(0, line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, out, line);
+}
+
+pub fn emit_wildcard_contains(chunks: &mut [Chunk], current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    let length = chunk.add_import("ecma:string", "length");
+    let char_at = chunk.add_import("ecma:string", "charAt");
+    let base = chunk.alloc_scratch(6);
+    let pattern = base;
+    let len = base + 1;
+    let i = base + 2;
+    let ch = base + 3;
+    let escaped = base + 4;
+    let found = base + 5;
+
+    chunk.emit_op_u16(Op::LOCAL_SET, pattern, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, pattern, line);
+    chunk.emit_call(length, 1, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, len, line);
+    chunk.emit_i32_const(0, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, i, line);
+    chunk.emit_bool_const(false, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, escaped, line);
+    chunk.emit_bool_const(false, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, found, line);
+
+    chunk.emit_block(line);
+    chunk.emit_loop_s(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, i, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, len, line);
+    chunk.emit_op(Op::I32_GE_S, line);
+    chunk.emit_br_if(1, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, pattern, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, i, line);
+    chunk.emit_call(char_at, 2, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, ch, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, escaped, line);
+    chunk.emit_if_value(line);
+    chunk.emit_bool_const(false, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, escaped, line);
+    chunk.emit_else(line);
+    emit_string_eq_const(chunk, ch, "`", line);
+    chunk.emit_if_value(line);
+    chunk.emit_bool_const(true, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, escaped, line);
+    chunk.emit_else(line);
+    emit_char_is_wildcard(chunk, ch, line);
+    chunk.emit_if_value(line);
+    chunk.emit_bool_const(true, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, found, line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, i, line);
+    chunk.emit_i32_const(1, line);
+    chunk.emit_op(Op::I32_ADD, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, i, line);
+    chunk.emit_br(0, line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, found, line);
+}
+
+pub fn emit_wildcard_is_match(chunks: &mut [Chunk], current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    let test = chunk.add_import("ecma:regexp", "test");
+    let concat = chunk.add_import("wasm:js-string", "concat");
+    let base = chunk.alloc_scratch(5);
+    let options = base;
+    let pattern = base + 1;
+    let input = base + 2;
+    let regex = base + 3;
+    let spec = base + 4;
+
+    chunk.emit_op_u16(Op::LOCAL_SET, options, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, pattern, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, input, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, pattern, line);
+    let _ = chunk;
+    emit_wildcard_regex(chunks, current, line);
+    let chunk = &mut chunks[current];
+    chunk.emit_op_u16(Op::LOCAL_SET, regex, line);
+
+    chunk.emit_string_const("/", line);
+    chunk.emit_op_u16(Op::LOCAL_GET, regex, line);
+    chunk.emit_call(concat, 2, line);
+    chunk.emit_string_const("/", line);
+    chunk.emit_call(concat, 2, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, spec, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, options, line);
+    chunk.emit_i32_const(1, line);
+    chunk.emit_op(Op::I32_AND, line);
+    chunk.emit_if(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, spec, line);
+    chunk.emit_string_const("i", line);
+    chunk.emit_call(concat, 2, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, spec, line);
+    chunk.emit_end(line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, spec, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, input, line);
+    chunk.emit_call(test, 2, line);
 }
 
 /// `Compare-Object -ReferenceObject $a -DifferenceObject $b` — a MULTISET

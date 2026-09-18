@@ -16,6 +16,7 @@ case_sensitive = false
 self_keyword = "this"
 constructor_name = "constructor"
 uses_common_resolver = true
+missing_arg_is_undefined = true
 
 # Route class declarations through `normalize_class.rs` -> `NormalClass` ->
 # the shared `class_normalize::emit::emit_class_from_ast` pipeline, the same
@@ -118,9 +119,22 @@ __ps_char_is_space  = { emit = "common:str_is_space",     min_args = 1, max_args
 __ps_char_to_upper  = { emit = "common:strings.to_upper", min_args = 1, max_args = 1 }
 __ps_char_to_lower  = { emit = "common:strings.to_lower", min_args = 1, max_args = 1 }
 __ps_str_contains   = { emit = "common:str_contains",     min_args = 2, max_args = 2 }
+__ps_str_index_of   = { emit = "common:dotnet.string_index_of",      min_args = 2, max_args = 3 }
+__ps_str_last_index_of = { emit = "common:dotnet.string_last_index_of", min_args = 2, max_args = 3 }
+__ps_str_equals     = { emit = "common:dotnet.string_equals",        min_args = 2, max_args = 3 }
+__ps_str_compare    = { emit = "common:dotnet.string_compare",       min_args = 2, max_args = 3 }
+__ps_wildcard_regex    = { emit = "common:powershell.wildcard_regex",    min_args = 1, max_args = 1 }
+__ps_wildcard_escape   = { emit = "common:powershell.wildcard_escape",   min_args = 1, max_args = 1 }
+__ps_wildcard_contains = { emit = "common:powershell.wildcard_contains", min_args = 1, max_args = 1 }
+__ps_wildcard_is_match = { emit = "common:powershell.wildcard_is_match", min_args = 3, max_args = 3 }
 # `[int]$x` — see `emit_to_int`: banker's rounding, a numeric parse, or a code
 # point, decided by the runtime value.
 __ps_to_int = { emit = "common:powershell.to_int", min_args = 1, max_args = 1 }
+# `[char]$x` — see `emit_to_char`: numeric code point or existing one-character
+# string, decided by the runtime value. The walker emits this helper directly
+# for casts and `System.Char` statics; the slot below is only the shared cast
+# path and does not define a callable symbol.
+__ps_to_char = { emit = "common:powershell.to_char", min_args = 1, max_args = 1 }
 # `$obj.$name` — a COMPUTED member read. `ExprKind::Index` was the obvious node
 # and it is the wrong one: indexing an OBJECT with a non-literal key falls
 # through to array indexing, so `$h[$k]` answered EMPTY where `$h['A']` worked.
@@ -128,6 +142,9 @@ __ps_to_int = { emit = "common:powershell.to_int", min_args = 1, max_args = 1 }
 __ps_member_dyn = { emit = "common:powershell.member_dyn", min_args = 2, max_args = 2 }
 __ps_index_set  = { emit = "common:powershell.index_set",  min_args = 3, max_args = 3 }
 __ps_index_get  = { emit = "common:powershell.index_get",  min_args = 2, max_args = 2 }
+__ps_strict_var = { emit = "common:powershell.strict_var", min_args = 2, max_args = 2 }
+__ps_strict_member_get = { emit = "common:powershell.strict_member_get", min_args = 2, max_args = 2 }
+__ps_strict_index_get = { emit = "common:powershell.strict_index_get", min_args = 2, max_args = 2 }
 __ps_is_null    = { emit = "common:object.is_null",        min_args = 1, max_args = 1 }
 __ps_out_null   = { emit = "common:powershell.out_null",   min_args = 1, max_args = 1 }
 # A pipeline whose stream holds ONE item is that item — see `emit_unwrap_single`.
@@ -142,6 +159,15 @@ __ps_divide     = { emit = "common:powershell.divide",    min_args = 2, max_args
 # NOT work: `compile_binop` consults that table in its `Add` arm and not in its
 # `Mul` arm, so the row is declared and never read (measured).
 __ps_multiply   = { emit = "common:powershell.multiply",  min_args = 2, max_args = 2 }
+__ps_subtract   = { emit = "common:powershell.subtract",  min_args = 2, max_args = 2 }
+__ps_remainder  = { emit = "common:powershell.remainder", min_args = 2, max_args = 2 }
+__ps_bit_and    = { emit = "common:powershell.bit_and",   min_args = 2, max_args = 2 }
+__ps_bit_or     = { emit = "common:powershell.bit_or",    min_args = 2, max_args = 2 }
+__ps_bit_xor    = { emit = "common:powershell.bit_xor",   min_args = 2, max_args = 2 }
+__ps_shl        = { emit = "common:powershell.shl",       min_args = 2, max_args = 2 }
+__ps_shr        = { emit = "common:powershell.shr",       min_args = 2, max_args = 2 }
+__ps_negate     = { emit = "common:powershell.negate",    min_args = 1, max_args = 1 }
+__ps_bigint_to_byte_array = { emit = "common:dotnet.bigint_to_byte_array", min_args = 1, max_args = 1 }
 # `-eq` / `-ne` — see `emit_case_folding_eq`. The `c`-prefixed spellings keep
 # the shared exact comparison and never reach these.
 # `-ceq` / `-cne` are the case-SENSITIVE spellings and keep the exact,
@@ -152,8 +178,9 @@ __ps_cne        = { emit = "host:ecma:value:abstractNe",  min_args = 2, max_args
 # `[builtin_slots.string] eq`: that slot is consulted ahead of EVERY equality
 # path, so filling it took `BigInteger`, `DateTime`, `DateTimeOffset` and
 # `TimeSpan` off the arm that knows how to compare them — 21 tests, measured.
-# The walker reaches these only where one operand is a string LITERAL, which is
-# where nothing richer can apply.
+# The walker reaches these for PowerShell equality. The emitter folds only when
+# both runtime operands are strings, otherwise it asks the common rich
+# comparison path before falling back to ECMA abstract equality.
 __ps_eq         = { emit = "common:powershell.eq",        min_args = 2, max_args = 2 }
 __ps_ne         = { emit = "common:powershell.ne",        min_args = 2, max_args = 2 }
 # `$obj.PSObject` — see `emit_psobject`. Two arguments: the target, and a fresh
@@ -250,6 +277,11 @@ __ps_from_entries = { emit = "host:ecma:object:fromEntries",    min_args = 1, ma
 __ps_sum       = { emit = "common:collections.sum",    min_args = 1, max_args = 1 }
 __ps_max       = { emit = "common:collections.max",    min_args = 1, max_args = 1 }
 __ps_min       = { emit = "common:collections.min",    min_args = 1, max_args = 1 }
+__ps_sb_index_get = { emit = "common:dotnet.sb_index_get", min_args = 2, max_args = 2 }
+__ps_sb_index_set = { emit = "common:dotnet.sb_index_set", min_args = 3, max_args = 3 }
+__ps_sb_set_length = { emit = "common:dotnet.sb_set_length", min_args = 2, max_args = 2 }
+__ps_binprim_reverse_i16 = { emit = "common:dotnet.binprim_reverse_i16", min_args = 1, max_args = 1 }
+__ps_binprim_reverse_i64 = { emit = "common:dotnet.binprim_reverse_i64", min_args = 1, max_args = 1 }
 
 # `Out-Null` discards its input. As a pipeline stage the walker drops the value
 # outright; reached as a plain command there is nothing to emit.

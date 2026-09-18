@@ -20,12 +20,16 @@ use vybe_runtime::opcode::Op;
 /// Stack: `[value]` → `[string]`.
 pub fn emit_to_display(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
-    let v = chunk.alloc_scratch(1);
+    let v = chunk.alloc_scratch(2);
+    let type_name = v + 1;
 
     let test_bool = chunk.add_import("wasm:js-boolean", "test");
     let is_array = chunk.add_import("ecma:array", "isArray");
     let cast_bool = chunk.add_import("wasm:js-boolean", "cast");
     let join = chunk.add_import("ecma:array", "join");
+    let type_of = chunk.add_import("ecma:value", "typeof");
+    let object_get = chunk.add_import("ecma:object", "get");
+    let is_undefined = chunk.add_import("wasm:js-undefined", "test");
 
     chunk.emit_op_u16(Op::LOCAL_SET, v, line);
 
@@ -62,6 +66,48 @@ pub fn emit_to_display(chunks: &mut [Chunk], current: usize, line: u32) {
 
     chunk.emit_else(line);
 
+    chunk.emit_op_u16(Op::LOCAL_GET, v, line);
+    chunk.emit_call(type_of, 1, line);
+    chunk.emit_string_const("object", line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if_value(line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, v, line);
+    chunk.emit_string_const("__ps_type_name", line);
+    chunk.emit_call(object_get, 2, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, type_name, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, type_name, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, type_name, line);
+    chunk.emit_call(is_undefined, 1, line);
+    chunk.emit_op(Op::I32_OR, line);
+    chunk.emit_if(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, v, line);
+    chunk.emit_string_const("Name", line);
+    chunk.emit_call(object_get, 2, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, type_name, line);
+    chunk.emit_end(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, type_name, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, type_name, line);
+    chunk.emit_call(is_undefined, 1, line);
+    chunk.emit_op(Op::I32_OR, line);
+    chunk.emit_if_value(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, v, line);
+    vybe_platform_dotnet::emitter::core::runtime_adapter::emit_helper(
+        "dotnet.tostring_runtime",
+        std::slice::from_mut(chunk),
+        0,
+        1,
+        line,
+    );
+    chunk.emit_else(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, type_name, line);
+    chunk.emit_end(line);
+
+    chunk.emit_else(line);
+
     // Everything else keeps the .NET rendering this slot was already bound to
     // (`common:dotnet.tostring_runtime`) — number formatting included. Only the
     // three cases above are PowerShell's own, so only they are handled here.
@@ -74,6 +120,7 @@ pub fn emit_to_display(chunks: &mut [Chunk], current: usize, line: u32) {
         line,
     );
 
+    chunk.emit_end(line);
     chunk.emit_end(line);
     chunk.emit_end(line);
     chunk.emit_end(line);

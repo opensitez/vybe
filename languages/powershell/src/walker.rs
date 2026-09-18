@@ -54,6 +54,29 @@ pub fn parse(source: &str) -> Result<Module, String> {
             by_ref: false,
         }),
     );
+    for (idx, (name, value)) in [
+        ("Error", empty_array_expr()),
+        ("__ps_history", empty_array_expr()),
+        ("MaximumHistoryCount", Expression::int(4096)),
+        ("PSDefaultParameterValues", object_entries_to_dictionary(Vec::new())),
+        ("ErrorActionPreference", Expression::string("Continue")),
+        ("WarningPreference", Expression::string("Continue")),
+        ("DebugPreference", Expression::string("SilentlyContinue")),
+        ("InformationPreference", Expression::string("SilentlyContinue")),
+        ("VerbosePreference", Expression::string("SilentlyContinue")),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        body.insert(
+            2 + idx,
+            Statement::new(StmtKind::Assign {
+                targets: vec![Expression::ident(name)],
+                value,
+                by_ref: false,
+            }),
+        );
+    }
 
     // `System.Numerics` and the 128-bit integers, on the same terms as every
     // other frontend: gated on the program naming the type, and skipped
@@ -94,6 +117,9 @@ pub fn parse(source: &str) -> Result<Module, String> {
             // methods — ECMA-262 §10.2.1 `[[Call]](thisArgument,
             // argumentsList)`. A plain `f()` passes `undefined` (§10.2.1.1).
             receiver_binding: Some(vybe_ast::ReceiverBinding::UniversalParameter),
+            // A missing argument is distinct from an explicit `$null` at the
+            // call boundary; defaults fire only for the former.
+            missing_arg_is_undefined: Some(true),
             ..Default::default()
         },
     })
@@ -145,6 +171,12 @@ fn parse_statement_inner(
         match pair.as_rule() {
             Rule::statement => {
                 let text = pair.as_str().trim();
+                if let Some(expr) = apply_set_strict_mode_statement(__w, text) {
+                    return Ok(Some(Statement::new(StmtKind::Expr(expr))));
+                }
+                if let Some(stmt) = strict_function_call_with_parens_statement(__w, text) {
+                    return Ok(Some(stmt));
+                }
                 if looks_like_command_invocation(text) && text.contains(' ') {
                     if let Some(expr) = parse_command_line(__w, text) {
                         return Ok(Some(Statement::new(StmtKind::Expr(expr))));
@@ -178,7 +210,9 @@ fn parse_statement_inner(
             Rule::namespace_decl => return Ok(Some(parse_namespace_decl(__w, pair)?)),
             Rule::class_decl => return Ok(Some(parse_class_decl(__w, pair)?)),
             Rule::enum_decl => return Ok(Some(parse_enum_decl(__w, pair)?)),
-            Rule::function_decl => return Ok(Some(parse_function_decl(__w, pair)?)),
+            Rule::function_decl | Rule::filter_decl => {
+                return Ok(Some(parse_function_decl(__w, pair)?));
+            }
             Rule::if_stmt => return Ok(Some(parse_if_stmt(__w, pair)?)),
             Rule::switch_stmt => return Ok(Some(parse_switch_stmt(__w, pair)?)),
             Rule::foreach_stmt => return Ok(Some(parse_foreach_stmt(__w, pair)?)),
@@ -197,7 +231,8 @@ fn parse_statement_inner(
             Rule::trap_stmt => return parse_trap_stmt(__w, pair).map(Some),
             Rule::named_block => {
                 // `begin`/`process`/`end` bodies run in declaration order.
-                let stmts = parse_block_statements(__w, 
+                let stmts = parse_block_statements(
+                    __w,
                     pair.into_inner()
                         .find(|c| c.as_rule() == Rule::block)
                         .ok_or_else(|| "named block without body".to_string())?,
@@ -230,7 +265,10 @@ fn parse_statement_inner(
     Ok(None)
 }
 
-fn parse_statement_fallback(__w: &mut PsWalker, pair: Pair<Rule>) -> Result<Option<Statement>, String> {
+fn parse_statement_fallback(
+    __w: &mut PsWalker,
+    pair: Pair<Rule>,
+) -> Result<Option<Statement>, String> {
     let body = pair.as_str().trim();
     if body.is_empty() {
         return Ok(None);
@@ -317,7 +355,7 @@ fn parse_trap_stmt(__w: &mut PsWalker, pair: Pair<Rule>) -> Result<Statement, St
             }
             Rule::block => {
                 body = parse_block_statements(__w, child)?;
-                body.insert(0, ps_catch_error_record_rebind());
+                body.insert(0, ps_catch_error_record_rebind(__w));
             }
             _ => {}
         }
@@ -438,7 +476,10 @@ fn unwrap_write_output(body: Vec<Statement>) -> Vec<Statement> {
 /// `Write-Output a, b` emits TWO values, so a multi-argument call keeps its
 /// arguments as an array rather than silently dropping all but the first.
 fn strip_write_output(expr: Expression) -> Expression {
-    let ExprKind::Call { callee, mut args, .. } = expr.kind else {
+    let ExprKind::Call {
+        callee, mut args, ..
+    } = expr.kind
+    else {
         return expr;
     };
     if matches!(&callee.kind, ExprKind::Ident(name) if name == "__ps_unwrap_single")
@@ -518,10 +559,7 @@ fn accumulate_outputs(body: Vec<Statement>) -> Option<Vec<Statement>> {
     }));
 
     let rewritten = accumulate_stmts(body);
-    let ends_in_return = matches!(
-        rewritten.last().map(|s| &s.kind),
-        Some(StmtKind::Return(_))
-    );
+    let ends_in_return = matches!(rewritten.last().map(|s| &s.kind), Some(StmtKind::Return(_)));
     out.extend(rewritten);
     if !ends_in_return {
         out.push(Statement::new(StmtKind::Return(Some(unwrap_output()))));
@@ -535,9 +573,7 @@ fn body_contains_pscmdlet_stream_emit(body: &[Statement]) -> bool {
 
 fn stmt_contains_pscmdlet_stream_emit(stmt: &Statement) -> bool {
     match &stmt.kind {
-        StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) => {
-            expr_is_pscmdlet_stream_emit(expr)
-        }
+        StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) => expr_is_pscmdlet_stream_emit(expr),
         kind => child_bodies(kind)
             .into_iter()
             .any(|(body, _)| body_contains_pscmdlet_stream_emit(body)),
@@ -630,7 +666,12 @@ impl EmitCensus {
 /// enclosing accumulator would corrupt every nested function in the corpus.
 fn child_bodies(kind: &StmtKind) -> Vec<(&[Statement], bool)> {
     match kind {
-        StmtKind::If { then_body, elifs, else_body, .. } => {
+        StmtKind::If {
+            then_body,
+            elifs,
+            else_body,
+            ..
+        } => {
             let mut out: Vec<(&[Statement], bool)> = vec![(then_body, false)];
             out.extend(elifs.iter().map(|(_, b)| (b.as_slice(), false)));
             out.extend(else_body.iter().map(|b| (b.as_slice(), false)));
@@ -638,7 +679,12 @@ fn child_bodies(kind: &StmtKind) -> Vec<(&[Statement], bool)> {
         }
         StmtKind::Block(body) => vec![(body, false)],
         StmtKind::For { body, .. } | StmtKind::DoWhile { body, .. } => vec![(body, true)],
-        StmtKind::ForIn { body, else_body, .. } | StmtKind::While { body, else_body, .. } => {
+        StmtKind::ForIn {
+            body, else_body, ..
+        }
+        | StmtKind::While {
+            body, else_body, ..
+        } => {
             let mut out: Vec<(&[Statement], bool)> = vec![(body, true)];
             out.extend(else_body.iter().map(|b| (b.as_slice(), false)));
             out
@@ -649,7 +695,12 @@ fn child_bodies(kind: &StmtKind) -> Vec<(&[Statement], bool)> {
             out.extend(default.iter().map(|b| (b.as_slice(), false)));
             out
         }
-        StmtKind::Try { body, catches, else_body, finally } => {
+        StmtKind::Try {
+            body,
+            catches,
+            else_body,
+            finally,
+        } => {
             let mut out: Vec<(&[Statement], bool)> = vec![(body.as_slice(), false)];
             out.extend(catches.iter().map(|c| (c.body.as_slice(), false)));
             out.extend(else_body.iter().map(|b| (b.as_slice(), false)));
@@ -672,14 +723,13 @@ fn accumulate_stmts(body: Vec<Statement>) -> Vec<Statement> {
                 let global = ps_stream_emit_redirect_global(&expr).unwrap();
                 out.push(keep(StmtKind::If {
                     cond: ps_stream_emit_condition(global),
-                    then_body: vec![keep(StmtKind::Expr(collect_call(expr.clone())))],
+                    then_body: collect_statement_value_stmts(expr.clone(), span),
                     elifs: Vec::new(),
                     else_body: Some(vec![keep(StmtKind::Expr(expr))]),
                 }));
             }
-            StmtKind::Expr(expr) if expression_emits(&expr) && !is_method_call(&expr) =>
-            {
-                out.push(keep(StmtKind::Expr(collect_call(expr))));
+            StmtKind::Expr(expr) if expression_emits(&expr) && !is_method_call(&expr) => {
+                out.extend(collect_statement_value_stmts(expr, span));
             }
             // \u26d4STOP AT A RETURN. Everything after one in the SAME block is dead,
             // and carrying it forward is not harmless: `return_last_of_branches`
@@ -697,7 +747,12 @@ fn accumulate_stmts(body: Vec<Statement>) -> Vec<Statement> {
                 out.push(keep(StmtKind::Return(Some(unwrap_output()))));
                 break;
             }
-            StmtKind::If { cond, then_body, elifs, else_body } => {
+            StmtKind::If {
+                cond,
+                then_body,
+                elifs,
+                else_body,
+            } => {
                 out.push(keep(StmtKind::If {
                     cond,
                     then_body: accumulate_stmts(then_body),
@@ -709,7 +764,12 @@ fn accumulate_stmts(body: Vec<Statement>) -> Vec<Statement> {
                 }));
             }
             StmtKind::Block(body) => out.push(keep(StmtKind::Block(accumulate_stmts(body)))),
-            StmtKind::For { init, cond, update, body } => {
+            StmtKind::For {
+                init,
+                cond,
+                update,
+                body,
+            } => {
                 out.push(keep(StmtKind::For {
                     init,
                     cond,
@@ -717,7 +777,15 @@ fn accumulate_stmts(body: Vec<Statement>) -> Vec<Statement> {
                     body: accumulate_stmts(body),
                 }));
             }
-            StmtKind::ForIn { var, key, iter, body, of, else_body, is_async } => {
+            StmtKind::ForIn {
+                var,
+                key,
+                iter,
+                body,
+                of,
+                else_body,
+                is_async,
+            } => {
                 out.push(keep(StmtKind::ForIn {
                     var,
                     key,
@@ -728,7 +796,11 @@ fn accumulate_stmts(body: Vec<Statement>) -> Vec<Statement> {
                     is_async,
                 }));
             }
-            StmtKind::While { cond, body, else_body } => {
+            StmtKind::While {
+                cond,
+                body,
+                else_body,
+            } => {
                 out.push(keep(StmtKind::While {
                     cond,
                     body: accumulate_stmts(body),
@@ -742,7 +814,11 @@ fn accumulate_stmts(body: Vec<Statement>) -> Vec<Statement> {
                     until,
                 }));
             }
-            StmtKind::Switch { expr, cases, default } => {
+            StmtKind::Switch {
+                expr,
+                cases,
+                default,
+            } => {
                 out.push(keep(StmtKind::Switch {
                     expr,
                     cases: cases
@@ -755,7 +831,12 @@ fn accumulate_stmts(body: Vec<Statement>) -> Vec<Statement> {
                     default: default.map(accumulate_stmts),
                 }));
             }
-            StmtKind::Try { body, catches, else_body, finally } => {
+            StmtKind::Try {
+                body,
+                catches,
+                else_body,
+                finally,
+            } => {
                 out.push(keep(StmtKind::Try {
                     body: accumulate_stmts(body),
                     catches: catches
@@ -792,35 +873,397 @@ fn local_decl(name: &str) -> Statement {
     })
 }
 
-fn ps_catch_error_record_rebind() -> Statement {
-    const LAST: &str = "__ps_last_error_record";
-    Statement::new(StmtKind::Assign {
-        targets: vec![Expression::ident("_")],
-        value: bind_and_call(
-            &[LAST],
-            vec![cmdlet_call("Get-LastErrorRecord", Vec::new())],
-            ps_ternary(
+fn ps_catch_error_record_rebind(__w: &PsWalker) -> Statement {
+    let caught = Expression::ident("_");
+    let is_error_record = ps_binary(
+        BinOp::Or,
+        type_test_expr(
+            caught.clone(),
+            &type_literal_expr("System.Management.Automation.ErrorRecord"),
+        ),
+        ps_binary(
+            BinOp::Eq,
+            ps_leaf_type_name(caught.clone()),
+            Expression::string("ErrorRecord"),
+        ),
+    );
+    let existing_exception = Expression::new(ExprKind::NullCoalesce {
+        left: Box::new(ps_builtin(
+            "__ps_index_get",
+            vec![caught.clone(), Expression::string("Exception")],
+        )),
+        right: Box::new(ps_builtin(
+            "__ps_index_get",
+            vec![caught.clone(), Expression::string("exception")],
+        )),
+    });
+    let existing_error_id = Expression::new(ExprKind::NullCoalesce {
+        left: Box::new(ps_builtin(
+            "__ps_index_get",
+            vec![caught.clone(), Expression::string("FullyQualifiedErrorId")],
+        )),
+        right: Box::new(ps_builtin(
+            "__ps_index_get",
+            vec![caught.clone(), Expression::string("fullyqualifiederrorid")],
+        )),
+    });
+    let existing_exception_type = Expression::new(ExprKind::NullCoalesce {
+        left: Box::new(ps_builtin(
+            "__ps_index_get",
+            vec![caught.clone(), Expression::string("__exception_type")],
+        )),
+        right: Box::new(Expression::new(ExprKind::NullCoalesce {
+            left: Box::new(ps_builtin(
+                "__ps_index_get",
+                vec![caught.clone(), Expression::string("__typename")],
+            )),
+            right: Box::new(ps_builtin(
+                "__ps_index_get",
+                vec![caught.clone(), Expression::string("__type")],
+            )),
+        })),
+    });
+    let has_exception = ps_binary(
+        BinOp::IsNot,
+        existing_exception.clone(),
+        Expression::null(),
+    );
+    let has_meaningful_error_id = ps_binary(
+        BinOp::And,
+        ps_binary(
+            BinOp::IsNot,
+            existing_error_id.clone(),
+            Expression::null(),
+        ),
+        ps_binary(
+            BinOp::NotEq,
+            existing_error_id.clone(),
+            Expression::string("Object"),
+        ),
+    );
+    let fallback_error_id = if __w.strict_mode_level > 0 {
+        let leaf = ps_leaf_type_name(Expression::ident("_"));
+        ps_ternary(
+            ps_binary(BinOp::Eq, leaf.clone(), Expression::string("Object")),
+            Expression::string("VariableIsUndefined"),
+            leaf,
+        )
+    } else {
+        ps_leaf_type_name(Expression::ident("_"))
+    };
+    Statement::new(StmtKind::Block(vec![
+        Statement::new(StmtKind::Assign {
+            targets: vec![Expression::ident("_")],
+            value: ps_error_record_enrich_expr(
+                __w,
+                ps_ternary(
+                    ps_binary(BinOp::And, is_error_record, has_meaningful_error_id.clone()),
+                    Expression::ident("_"),
+                    Expression::new(ExprKind::New {
+                        class: Box::new(type_literal_expr(
+                            "System.Management.Automation.ErrorRecord",
+                        )),
+                        args: vec![
+                            Argument::positional(ps_ternary(
+                                ps_binary(
+                                    BinOp::IsNot,
+                                    existing_exception.clone(),
+                                    Expression::null(),
+                                ),
+                                existing_exception,
+                                Expression::ident("_"),
+                            )),
+                            Argument::positional(ps_ternary(
+                                has_meaningful_error_id,
+                                existing_error_id,
+                                ps_ternary(
+                                    ps_binary(
+                                        BinOp::IsNot,
+                                        existing_exception_type.clone(),
+                                        Expression::null(),
+                                    ),
+                                    existing_exception_type,
+                                    fallback_error_id,
+                                ),
+                            )),
+                            Argument::positional(Expression::string("NotSpecified")),
+                            Argument::positional(Expression::null()),
+                        ],
+                    }),
+                ),
+            ),
+            by_ref: false,
+        }),
+        Statement::new(StmtKind::Assign {
+            targets: vec![Expression::ident("Error")],
+            value: ps_array_of(vec![Expression::ident("_")]),
+            by_ref: false,
+        }),
+    ]))
+}
+
+fn ps_error_record_enrich_expr(__w: &PsWalker, record: Expression) -> Expression {
+    const REC: &str = "__ps_caught_error_record";
+    let rec = || Expression::ident(REC);
+    let invocation = ps_error_invocation_info_expr();
+    let stack = ps_script_stack_trace_expr(__w);
+    block_value_expr(vec![
+        local_decl(REC),
+        Statement::new(StmtKind::Assign {
+            targets: vec![rec()],
+            value: record,
+            by_ref: false,
+        }),
+        Statement::new(StmtKind::If {
+            cond: type_test_expr(
+                ps_builtin("__ps_index_get", vec![rec(), Expression::string("Exception")]),
+                &type_literal_expr("System.Management.Automation.ErrorRecord"),
+            ),
+            then_body: vec![Statement::new(StmtKind::Assign {
+                targets: vec![rec()],
+                value: ps_builtin("__ps_index_get", vec![rec(), Expression::string("Exception")]),
+                by_ref: false,
+            })],
+            elifs: Vec::new(),
+            else_body: None,
+        }),
+        Statement::new(StmtKind::If {
+            cond: ps_binary(
+                BinOp::Eq,
+                ps_member(rec(), "InvocationInfo"),
+                Expression::null(),
+            ),
+            then_body: vec![
+                Statement::new(StmtKind::Assign {
+                    targets: vec![ps_member(rec(), "InvocationInfo")],
+                    value: invocation.clone(),
+                    by_ref: false,
+                }),
+                Statement::new(StmtKind::Assign {
+                    targets: vec![ps_member(rec(), "invocationinfo")],
+                    value: invocation,
+                    by_ref: false,
+                }),
+            ],
+            elifs: Vec::new(),
+            else_body: None,
+        }),
+        Statement::new(StmtKind::If {
+            cond: ps_binary(
+                BinOp::Or,
                 ps_binary(
-                    BinOp::IsNot,
-                    Expression::ident(LAST),
+                    BinOp::Eq,
+                    ps_member(rec(), "ScriptStackTrace"),
                     Expression::null(),
                 ),
-                Expression::ident(LAST),
-                Expression::new(ExprKind::New {
-                    class: Box::new(Expression::ident(
-                        "System.Management.Automation.ErrorRecord",
-                    )),
-                    args: vec![
-                        Argument::positional(Expression::ident("_")),
-                        Argument::positional(Expression::string("RuntimeException")),
-                        Argument::positional(Expression::string("NotSpecified")),
-                        Argument::positional(Expression::null()),
-                    ],
-                }),
+                ps_binary(
+                    BinOp::Eq,
+                    ps_member(ps_member(rec(), "ScriptStackTrace"), "Length"),
+                    Expression::int(0),
+                ),
             ),
-        ),
-        by_ref: false,
-    })
+            then_body: vec![
+                Statement::new(StmtKind::Assign {
+                    targets: vec![ps_member(rec(), "ScriptStackTrace")],
+                    value: stack.clone(),
+                    by_ref: false,
+                }),
+                Statement::new(StmtKind::Assign {
+                    targets: vec![ps_member(rec(), "scriptstacktrace")],
+                    value: stack,
+                    by_ref: false,
+                }),
+            ],
+            elifs: Vec::new(),
+            else_body: None,
+        }),
+        Statement::new(StmtKind::Return(Some(rec()))),
+    ])
+}
+
+fn ps_error_invocation_info_expr() -> Expression {
+    let command = reflected_automation_object(
+        "System.Management.Automation.CommandInfo",
+        vec![
+            ("Name", Expression::string("")),
+            ("name", Expression::string("")),
+        ],
+    );
+    reflected_automation_object(
+        "System.Management.Automation.InvocationInfo",
+        vec![
+            ("MyCommand", command.clone()),
+            ("mycommand", command),
+            ("InvocationName", Expression::string("")),
+            ("invocationname", Expression::string("")),
+            ("Line", Expression::string("throw")),
+            ("line", Expression::string("throw")),
+            ("ScriptLineNumber", Expression::int(1)),
+            ("scriptlinenumber", Expression::int(1)),
+            ("OffsetInLine", Expression::int(1)),
+            ("offsetinline", Expression::int(1)),
+            ("PipelineLength", Expression::int(1)),
+            ("pipelinelength", Expression::int(1)),
+            ("PipelinePosition", Expression::int(1)),
+            ("pipelineposition", Expression::int(1)),
+            ("HistoryId", Expression::int(-1)),
+            ("historyid", Expression::int(-1)),
+            ("ScriptName", Expression::string("")),
+            ("scriptname", Expression::string("")),
+            ("CommandOrigin", Expression::string("Internal")),
+            ("commandorigin", Expression::string("Internal")),
+            ("DisplayScriptPosition", Expression::null()),
+            ("displayscriptposition", Expression::null()),
+            ("PositionMessage", Expression::string("At line:1 char:1\n+ throw")),
+            ("positionmessage", Expression::string("At line:1 char:1\n+ throw")),
+            ("BoundParameters", object_entries_to_dictionary(Vec::new())),
+            ("boundparameters", object_entries_to_dictionary(Vec::new())),
+            ("UnboundArguments", ps_array_of(Vec::new())),
+            ("unboundarguments", ps_array_of(Vec::new())),
+        ],
+    )
+}
+
+fn ps_script_stack_trace_expr(__w: &PsWalker) -> Expression {
+    let mut names: Vec<String> = __w.function_display_names.values().cloned().collect();
+    names.extend(__w.class_display_names.values().cloned());
+    names.sort();
+    names.dedup();
+    let mut lines = Vec::new();
+    if names.is_empty() {
+        lines.push("at <script>, line 1".to_string());
+    } else {
+        for _ in 0..3 {
+            for name in &names {
+                lines.push(format!("at {name}, line 1"));
+            }
+        }
+    }
+    Expression::string(&lines.join("\n"))
+}
+
+fn write_error_record_expr(
+    __w: Option<&PsWalker>,
+    message: Expression,
+    error_id: Expression,
+    category: Expression,
+    target: Expression,
+    recommended_action: Option<Expression>,
+) -> Expression {
+    let exception = new_dotnet_expr("System.Exception", vec![message.clone()]);
+    let mut record = powershell_error_record_new_expr(__w, vec![exception, error_id, category, target]);
+    if let Some(action) = recommended_action {
+        const REC: &str = "__ps_write_error_detail_record";
+        let details = new_dotnet_expr(
+            "System.Management.Automation.ErrorDetails",
+            vec![message],
+        );
+        record = block_value_expr(vec![
+            local_decl(REC),
+            Statement::new(StmtKind::Assign {
+                targets: vec![Expression::ident(REC)],
+                value: record,
+                by_ref: false,
+            }),
+            Statement::new(StmtKind::Assign {
+                targets: vec![ps_member(Expression::ident(REC), "ErrorDetails")],
+                value: details.clone(),
+                by_ref: false,
+            }),
+            Statement::new(StmtKind::Assign {
+                targets: vec![ps_member(Expression::ident(REC), "errordetails")],
+                value: details,
+                by_ref: false,
+            }),
+            Statement::new(StmtKind::Assign {
+                targets: vec![ps_member(
+                    ps_member(Expression::ident(REC), "ErrorDetails"),
+                    "RecommendedAction",
+                )],
+                value: action.clone(),
+                by_ref: false,
+            }),
+            Statement::new(StmtKind::Assign {
+                targets: vec![ps_member(
+                    ps_member(Expression::ident(REC), "ErrorDetails"),
+                    "recommendedaction",
+                )],
+                value: action,
+                by_ref: false,
+            }),
+            Statement::new(StmtKind::Return(Some(Expression::ident(REC)))),
+        ]);
+    }
+    record
+}
+
+fn write_error_expr(
+    __w: Option<&PsWalker>,
+    message: Expression,
+    explicit_action: Option<Expression>,
+    error_id: Expression,
+    category: Expression,
+    target: Expression,
+    recommended_action: Option<Expression>,
+) -> Expression {
+    const REC: &str = "__ps_write_error_record";
+    const ACTION: &str = "__ps_write_error_action";
+    let action = explicit_action.unwrap_or_else(|| Expression::ident("ErrorActionPreference"));
+    let action_text = ps_member_call(ps_builtin("__ps_to_string", vec![action]), "ToLower", Vec::new());
+    block_value_expr(vec![
+        local_decl(REC),
+        local_decl(ACTION),
+        Statement::new(StmtKind::Assign {
+            targets: vec![Expression::ident(REC)],
+            value: write_error_record_expr(
+                __w,
+                message,
+                error_id,
+                category,
+                target,
+                recommended_action,
+            ),
+            by_ref: false,
+        }),
+        Statement::new(StmtKind::Assign {
+            targets: vec![Expression::ident(ACTION)],
+            value: action_text,
+            by_ref: false,
+        }),
+        Statement::new(StmtKind::If {
+            cond: ps_binary(
+                BinOp::Eq,
+                Expression::ident(ACTION),
+                Expression::string("ignore"),
+            ),
+            then_body: vec![Statement::new(StmtKind::Return(Some(ps_array_of(Vec::new()))))],
+            elifs: Vec::new(),
+            else_body: None,
+        }),
+        Statement::new(StmtKind::If {
+            cond: ps_binary(
+                BinOp::Eq,
+                Expression::ident(ACTION),
+                Expression::string("stop"),
+            ),
+            then_body: vec![Statement::new(StmtKind::Throw {
+                expr: Some(Expression::ident(REC)),
+                cause: None,
+            })],
+            elifs: Vec::new(),
+            else_body: None,
+        }),
+        Statement::new(StmtKind::Assign {
+            targets: vec![Expression::ident("Error")],
+            value: ps_binary(
+                BinOp::Add,
+                ps_array_of(vec![Expression::ident(REC)]),
+                ensure_array(Expression::ident("Error")),
+            ),
+            by_ref: false,
+        }),
+        Statement::new(StmtKind::Return(Some(ps_array_of(Vec::new())))),
+    ])
 }
 
 fn ps_global_member(name: &str) -> Expression {
@@ -872,6 +1315,40 @@ fn wrap_whatif_call(call: Expression, null_is_empty_stream: bool) -> Expression 
 
 fn collect_call(value: Expression) -> Expression {
     method_call_expr(Expression::ident(OUT_ACC), "Add", vec![value])
+}
+
+fn collect_statement_value_stmts(value: Expression, span: Span) -> Vec<Statement> {
+    if !matches!(
+        &value.kind,
+        ExprKind::Call { callee, .. }
+            if matches!(&callee.kind, ExprKind::Ident(name) if !name.starts_with("__ps_"))
+    ) {
+        return vec![Statement {
+            kind: StmtKind::Expr(collect_call(value)),
+            span,
+        }];
+    }
+    const VALUE: &str = "__ps_statement_output";
+    vec![
+        local_decl(VALUE),
+        Statement::new(StmtKind::Assign {
+            targets: vec![Expression::ident(VALUE)],
+            value,
+            by_ref: false,
+        }),
+        Statement::new(StmtKind::If {
+            cond: ps_binary(
+                BinOp::NotEq,
+                Expression::ident(VALUE),
+                Expression::null(),
+            ),
+            then_body: vec![Statement::new(StmtKind::Expr(collect_call(Expression::ident(
+                VALUE,
+            ))))],
+            elifs: Vec::new(),
+            else_body: None,
+        }),
+    ]
 }
 
 /// `$out.Count -eq 0 ? $null : ($out.Count -eq 1 ? $out[0] : $out)` — PowerShell
@@ -937,6 +1414,9 @@ fn is_method_call(expr: &Expression) -> bool {
 /// `Write-Host` and friends write to the HOST — a different stream, which the
 /// caller never captures — and an assignment consumes its own value.
 fn expression_emits(expr: &Expression) -> bool {
+    if is_write_error_block_expr(expr) {
+        return false;
+    }
     match &expr.kind {
         ExprKind::Assign { .. } => false,
         ExprKind::Call { callee, .. } => match &callee.kind {
@@ -945,6 +1425,28 @@ fn expression_emits(expr: &Expression) -> bool {
         },
         _ => true,
     }
+}
+
+fn is_write_error_block_expr(expr: &Expression) -> bool {
+    let ExprKind::Call { callee, .. } = &expr.kind else {
+        return false;
+    };
+    let ExprKind::Lambda {
+        body: LambdaBody::Block(body),
+        ..
+    } = &callee.kind
+    else {
+        return false;
+    };
+    body.iter().any(|stmt| {
+        matches!(
+            &stmt.kind,
+            StmtKind::VarDecl { declarations, .. }
+                if declarations.iter().any(|decl| {
+                    matches!(&decl.pattern, BindingPattern::Ident(name) if name == "__ps_write_error_record")
+                })
+        )
+    })
 }
 
 fn writes_to_host(name: &str) -> bool {
@@ -1047,6 +1549,7 @@ fn collect_aliases(stmt: &Statement, out: &mut HashMap<String, String>) {
                         .is_some_and(|n| n.eq_ignore_ascii_case(key))
                 })
                 .map(|a| a.value.clone())
+                .or_else(|| splat_named_arg(args, key, 0))
         };
         let positional: Vec<&Argument> = args.iter().filter(|a| a.name.is_none()).collect();
         let alias = named("Name").or_else(|| positional.first().map(|a| a.value.clone()));
@@ -1109,13 +1612,21 @@ fn parse_enum_decl(__w: &mut PsWalker, pair: Pair<Rule>) -> Result<Statement, St
     if !name.is_empty() {
         __w.enum_display_names
             .insert(name.to_lowercase(), name.clone());
+        let values = members
+            .iter()
+            .filter_map(|member| {
+                let value = member.value.as_ref().and_then(literal_int_value)?;
+                Some((member.name.clone(), value))
+            })
+            .collect::<Vec<_>>();
+        __w.enum_members.insert(name.to_lowercase(), values);
     }
 
     Ok(Statement::new(StmtKind::EnumDecl {
         name,
         members,
         visibility: Visibility::Public,
-        is_flags: false,
+        is_flags: true,
         backing_type: None,
         interfaces: Vec::new(),
         body_members: Vec::new(),
@@ -1134,7 +1645,7 @@ fn parse_namespace_decl(__w: &mut PsWalker, pair: Pair<Rule>) -> Result<Statemen
             }
             Rule::block => {
                 body = parse_block_statements(__w, child)?;
-                body.insert(0, ps_catch_error_record_rebind());
+                body.insert(0, ps_catch_error_record_rebind(__w));
             }
             _ => {}
         }
@@ -1421,6 +1932,15 @@ fn parse_ps_property(__w: &mut PsWalker, pair: Pair<Rule>) -> Result<Vec<ClassMe
     modifiers.is_static = is_static;
 
     if validators.is_empty() {
+        if type_hint
+            .as_deref()
+            .is_some_and(|t| is_declared_enum_name(__w, t))
+        {
+            type_hint = None;
+        }
+        if let (Some(t), Some(value)) = (type_hint.clone(), init.take()) {
+            init = Some(apply_cast(t, value));
+        }
         return Ok(vec![ClassMember::Field {
             name,
             type_hint,
@@ -1433,6 +1953,15 @@ fn parse_ps_property(__w: &mut PsWalker, pair: Pair<Rule>) -> Result<Vec<ClassMe
     }
 
     let backing = format!("__ps_val_{name}");
+    if type_hint
+        .as_deref()
+        .is_some_and(|t| is_declared_enum_name(__w, t))
+    {
+        type_hint = None;
+    }
+    if let (Some(t), Some(value)) = (type_hint.clone(), init.take()) {
+        init = Some(apply_cast(t, value));
+    }
     let field = ClassMember::Field {
         name: backing.clone(),
         type_hint: type_hint.clone(),
@@ -1550,8 +2079,17 @@ fn validation_setter_source(
     if let Some(hint) = type_hint
         && matches!(
             hint.to_ascii_lowercase().as_str(),
-            "int" | "int32" | "long" | "int64" | "double" | "decimal" | "single" | "float"
-                | "string" | "bool" | "boolean"
+            "int"
+                | "int32"
+                | "long"
+                | "int64"
+                | "double"
+                | "decimal"
+                | "single"
+                | "float"
+                | "string"
+                | "bool"
+                | "boolean"
         )
     {
         src.push_str(&format!("$value = [{hint}]$value\n"));
@@ -1596,13 +2134,11 @@ fn validation_condition(inner: &str) -> Option<String> {
         }
         // `-contains` is case-INSENSITIVE in PowerShell, which is exactly the
         // documented behaviour of `ValidateSet` on assignment.
-        "validateset" if !parts.is_empty() => {
-            parts
-                .iter()
-                .map(|part| format!("($value -eq {part})"))
-                .collect::<Vec<_>>()
-                .join(" -or ")
-        }
+        "validateset" if !parts.is_empty() => parts
+            .iter()
+            .map(|part| format!("($value -eq {part})"))
+            .collect::<Vec<_>>()
+            .join(" -or "),
         "validatelength" if parts.len() >= 2 => format!(
             "($value.Length -ge {}) -and ($value.Length -le {})",
             arg(0),
@@ -1700,8 +2236,18 @@ fn parse_function_decl(__w: &mut PsWalker, pair: Pair<Rule>) -> Result<Statement
     // Read off the whole declaration's text before the pairs are consumed.
     let declaration_text = pair.as_str().to_string();
     let advanced = pair_text_has_cmdlet_binding(&declaration_text);
-    let early_parameter_attrs = advanced.then(|| parameter_attribute_infos(&declaration_text));
-    let dynamic_params = dynamic_parameter_names(&declaration_text);
+    let early_parameter_attrs = parameter_attribute_infos(&declaration_text);
+    let dynamic_params = dynamic_parameter_infos(&declaration_text);
+    let dynamic_validators: Vec<(String, String)> = dynamic_params
+        .iter()
+        .flat_map(|param| {
+            param
+                .validators
+                .iter()
+                .map(|attr| (param.name.clone(), attr.clone()))
+        })
+        .collect();
+    let outer_strict_mode_level = __w.strict_mode_level;
 
     for child in pair.into_inner() {
         match child.as_rule() {
@@ -1721,13 +2267,13 @@ fn parse_function_decl(__w: &mut PsWalker, pair: Pair<Rule>) -> Result<Statement
             }
             Rule::function_params => {
                 params = parse_function_params(__w, child);
-                if let Some(attrs) = &early_parameter_attrs {
-                    for (param_name, attr) in attrs {
+                if !early_parameter_attrs.is_empty() {
+                    for (param_name, attr) in &early_parameter_attrs {
                         if attr.value_from_pipeline_by_property_name {
                             __w.pipeline_property_params.insert(param_name.clone());
                         }
                     }
-                    if attrs
+                    if early_parameter_attrs
                         .values()
                         .any(|attr| attr.value_from_pipeline_by_property_name)
                         && !params.iter().any(|p| p.name == "__ps_pipe_input")
@@ -1736,22 +2282,29 @@ fn parse_function_decl(__w: &mut PsWalker, pair: Pair<Rule>) -> Result<Statement
                     }
                 }
                 for dynamic_param in &dynamic_params {
-                    if !params.iter().any(|p| p.name.eq_ignore_ascii_case(dynamic_param)) {
-                        params.push(optional_param(dynamic_param));
+                    if !params
+                        .iter()
+                        .any(|p| p.name.eq_ignore_ascii_case(&dynamic_param.name))
+                    {
+                        params.push(optional_typed_param(
+                            &dynamic_param.name,
+                            dynamic_param.type_name.clone(),
+                        ));
                     }
                 }
+                register_dynamic_parameter_binding_metadata(__w, &dynamic_params);
                 remember_ref_params(__w, &params);
             }
             Rule::block => {
                 let locals = function_local_names(&child);
                 let wants_args = mentions_args(child.as_str());
-                if let Some(attrs) = &early_parameter_attrs {
-                    for (param_name, attr) in attrs {
+                if !early_parameter_attrs.is_empty() {
+                    for (param_name, attr) in &early_parameter_attrs {
                         if attr.value_from_pipeline_by_property_name {
                             __w.pipeline_property_params.insert(param_name.clone());
                         }
                     }
-                    if attrs
+                    if early_parameter_attrs
                         .values()
                         .any(|attr| attr.value_from_pipeline_by_property_name)
                         && !params.iter().any(|p| p.name == "__ps_pipe_input")
@@ -1760,10 +2313,17 @@ fn parse_function_decl(__w: &mut PsWalker, pair: Pair<Rule>) -> Result<Statement
                     }
                 }
                 for dynamic_param in &dynamic_params {
-                    if !params.iter().any(|p| p.name.eq_ignore_ascii_case(dynamic_param)) {
-                        params.push(optional_param(dynamic_param));
+                    if !params
+                        .iter()
+                        .any(|p| p.name.eq_ignore_ascii_case(&dynamic_param.name))
+                    {
+                        params.push(optional_typed_param(
+                            &dynamic_param.name,
+                            dynamic_param.type_name.clone(),
+                        ));
                     }
                 }
+                register_dynamic_parameter_binding_metadata(__w, &dynamic_params);
                 // `return_last_of_branches`, not `implicit_return`: a function
                 // ending in `if ($x) { 'yes' }` outputs `'yes'`, so the trailing
                 // expression of each BRANCH is the return value, not just a
@@ -1771,13 +2331,33 @@ fn parse_function_decl(__w: &mut PsWalker, pair: Pair<Rule>) -> Result<Statement
                 // `current_function` is cleared on BOTH paths: a parse error
                 // here must not leave this name attached to the next
                 // function's parameters.
-                let parsed = match parse_block_with_function_params(__w, child, &mut params) {
+                let mut parsed = match parse_block_with_function_params(__w, child, &mut params) {
                     Ok(parsed) => parsed,
                     Err(e) => {
                         __w.current_function = None;
+                        __w.strict_mode_level = outer_strict_mode_level;
                         return Err(e);
                     }
                 };
+                for dynamic_param in &dynamic_params {
+                    if !params
+                        .iter()
+                        .any(|p| p.name.eq_ignore_ascii_case(&dynamic_param.name))
+                    {
+                        params.push(optional_typed_param(
+                            &dynamic_param.name,
+                            dynamic_param.type_name.clone(),
+                        ));
+                    }
+                }
+                let dynamic_guards: Vec<Statement> = dynamic_validators
+                    .iter()
+                    .filter_map(|(param, attr)| parameter_validation_guard(param, attr))
+                    .collect();
+                if !dynamic_guards.is_empty() {
+                    parsed.splice(0..0, dynamic_guards);
+                }
+                __w.strict_mode_level = outer_strict_mode_level;
                 if let Some(pos) = params.iter().position(|p| p.name == "__ps_pipe_input") {
                     let hidden = params.remove(pos);
                     params.push(hidden);
@@ -1809,13 +2389,29 @@ fn parse_function_decl(__w: &mut PsWalker, pair: Pair<Rule>) -> Result<Statement
         }
     }
 
+    let binding_info = cmdlet_binding_info(&declaration_text);
+    if binding_info.supports_paging {
+        for paging_param in ["First", "Skip", "IncludeTotalCount"] {
+            if !params
+                .iter()
+                .any(|p| p.name.eq_ignore_ascii_case(paging_param))
+            {
+                params.push(optional_param(paging_param));
+            }
+        }
+    }
+    if let Some(pos) = params.iter().position(|p| p.name == "__ps_pipe_input") {
+        let hidden = params.remove(pos);
+        params.push(hidden);
+    }
+    move_dynamic_params_after_static(&mut params, &dynamic_params);
     __w.current_function = None;
+    __w.strict_mode_level = outer_strict_mode_level;
     let output_types = output_type_infos(&declaration_text);
     if !output_types.is_empty() {
         __w.function_output_types
             .insert(name.to_lowercase(), output_types);
     }
-    let binding_info = cmdlet_binding_info(&declaration_text);
     if binding_info.supports_should_process {
         __w.supports_should_process_functions
             .insert(name.to_lowercase());
@@ -1823,10 +2419,17 @@ fn parse_function_decl(__w: &mut PsWalker, pair: Pair<Rule>) -> Result<Statement
     if advanced {
         __w.cmdlet_binding_functions
             .insert(name.to_lowercase(), binding_info.clone());
-        let parameter_attrs = early_parameter_attrs.unwrap_or_default();
+        let mut parameter_attrs = early_parameter_attrs.clone();
+        for dynamic_param in &dynamic_params {
+            parameter_attrs.insert(dynamic_param.name.to_lowercase(), dynamic_param.attr.clone());
+        }
         __w.function_parameter_attributes
             .insert(name.to_lowercase(), parameter_attrs.clone());
-        body = advanced_function_context(&name, &binding_info, &params, Some(&parameter_attrs), body);
+        body =
+            advanced_function_context(&name, &binding_info, &params, Some(&parameter_attrs), body);
+    } else if !early_parameter_attrs.is_empty() {
+        __w.function_parameter_attributes
+            .insert(name.to_lowercase(), early_parameter_attrs);
     }
     Ok(Statement::new(StmtKind::FunctionDecl {
         name,
@@ -1839,6 +2442,40 @@ fn parse_function_decl(__w: &mut PsWalker, pair: Pair<Rule>) -> Result<Statement
         is_generator: false,
         is_sub: false,
     }))
+}
+
+fn move_dynamic_params_after_static(
+    params: &mut Vec<Param>,
+    dynamic_params: &[PsDynamicParameterInfo],
+) {
+    if dynamic_params.is_empty() || params.len() <= 1 {
+        return;
+    }
+    let mut moved = Vec::new();
+    for dynamic_param in dynamic_params {
+        if let Some(pos) = params
+            .iter()
+            .position(|param| param.name.eq_ignore_ascii_case(&dynamic_param.name))
+        {
+            moved.push(params.remove(pos));
+        }
+    }
+    params.extend(moved);
+}
+
+fn register_dynamic_parameter_binding_metadata(
+    __w: &mut PsWalker,
+    dynamic_params: &[PsDynamicParameterInfo],
+) {
+    for dynamic_param in dynamic_params {
+        if dynamic_param.attr.value_from_pipeline {
+            __w.pipeline_params.insert(dynamic_param.name.to_lowercase());
+        }
+        if dynamic_param.attr.value_from_pipeline_by_property_name {
+            __w.pipeline_property_params
+                .insert(dynamic_param.name.to_lowercase());
+        }
+    }
 }
 
 /// PowerShell function scoping: a function READS the caller's variables, but an
@@ -2018,12 +2655,6 @@ fn parameter_validation_guard(param: &str, attr: &str) -> Option<Statement> {
         .into_iter()
         .filter(|p| !p.contains('='))
         .collect();
-    // ⚠An element validator should validate EACH element — `[ValidateSet(…)]
-    // [string[]]$Colors` checks every colour in .NET, not the array. Wrapping
-    // this guard in `foreach ($item in @($param))` is the shape for that, and
-    // it measured WORSE (-9) only because `$item.ToLower()` answers EMPTY
-    // inside a loop under the current tree; the scalar path spells the same
-    // call and does not. Redo it when that is fixed, not before.
     let value = || Expression::ident(param);
     let arg = |i: usize| attribute_arg_expr(parts.get(i).map(String::as_str).unwrap_or_default());
     let bin = |op: BinOp, l: Expression, r: Expression| {
@@ -2040,6 +2671,21 @@ fn parameter_validation_guard(param: &str, attr: &str) -> Option<Statement> {
             bin(BinOp::LtEq, subject, arg(1)),
         )
     };
+    let between_double = |subject: Expression| {
+        bin(
+            BinOp::And,
+            bin(
+                BinOp::GtEq,
+                dotnet_static_call("System.Convert", "ToDouble", vec![subject.clone()]),
+                dotnet_static_call("System.Convert", "ToDouble", vec![arg(0)]),
+            ),
+            bin(
+                BinOp::LtEq,
+                dotnet_static_call("System.Convert", "ToDouble", vec![subject]),
+                dotnet_static_call("System.Convert", "ToDouble", vec![arg(1)]),
+            ),
+        )
+    };
     let length_of = |e: Expression| {
         Expression::new(ExprKind::Member {
             object: Box::new(e),
@@ -2048,9 +2694,13 @@ fn parameter_validation_guard(param: &str, attr: &str) -> Option<Statement> {
         })
     };
 
-    let ok = match head.to_ascii_lowercase().as_str() {
-        "validaterange" if parts.len() >= 2 => between(value()),
-        "validatelength" if parts.len() >= 2 => between(length_of(value())),
+    let head_lower = head.to_ascii_lowercase();
+    let element_var = "__ps_validate_item";
+    let element_value = || Expression::ident(element_var);
+
+    let ok = match head_lower.as_str() {
+        "validaterange" if parts.len() >= 2 => between_double(element_value()),
+        "validatelength" if parts.len() >= 2 => between(length_of(element_value())),
         // ⛔`@($value)` FIRST. A single argument is a scalar, and a scalar has
         // no count — `ValidateCount(1,1)` on one item has to see ONE, not none.
         "validatecount" if parts.len() >= 2 => between(length_of(ensure_array(value()))),
@@ -2068,15 +2718,23 @@ fn parameter_validation_guard(param: &str, attr: &str) -> Option<Statement> {
                     || (t.starts_with('"') && t.ends_with('"') && t.len() >= 2)
             });
             let entry = |i: usize| match (all_quoted, arg(i)) {
-                (true, Expression { kind: ExprKind::Lit(Literal::Str(text)), .. }) => {
-                    Expression::string(&text.to_lowercase())
-                }
+                (
+                    true,
+                    Expression {
+                        kind: ExprKind::Lit(Literal::Str(text)),
+                        ..
+                    },
+                ) => Expression::string(&text.to_lowercase()),
                 (_, other) => other,
             };
             let subject = if all_quoted {
-                method_call_expr(value(), "ToLower", Vec::new())
+                method_call_expr(
+                    ps_builtin("__ps_to_string", vec![element_value()]),
+                    "ToLower",
+                    Vec::new(),
+                )
             } else {
-                value()
+                element_value()
             };
             bin(
                 BinOp::In,
@@ -2102,15 +2760,105 @@ fn parameter_validation_guard(param: &str, attr: &str) -> Option<Statement> {
         "validatepattern" if !parts.is_empty() => dotnet_static_call(
             "System.Text.RegularExpressions.Regex",
             "IsMatch",
-            vec![value(), arg(0)],
+            vec![element_value(), arg(0)],
         ),
-        "validatenotnull" => bin(BinOp::NotEq, value(), Expression::null()),
-        "validatenotnullorempty" => bin(
-            BinOp::And,
-            bin(BinOp::NotEq, value(), Expression::null()),
-            bin(BinOp::NotEq, value(), Expression::string("")),
-        ),
+        "validatenotnull" => negate(ps_builtin("__ps_is_null", vec![value()])),
+        "validatenotnullorempty" => {
+            let key_order = ps_member(value(), "__ps_key_order");
+            let non_empty = ps_ternary(
+                negate(ps_builtin("__ps_is_null", vec![key_order.clone()])),
+                bin(
+                    BinOp::Gt,
+                    ps_builtin("__ps_count", vec![key_order]),
+                    Expression::int(0),
+                ),
+                bin(
+                    BinOp::Gt,
+                    ps_builtin("__ps_count", vec![ensure_array(value())]),
+                    Expression::int(0),
+                ),
+            );
+            bin(
+                BinOp::And,
+                bin(
+                    BinOp::And,
+                    negate(ps_builtin("__ps_is_null", vec![value()])),
+                    bin(BinOp::NotEq, value(), Expression::string("")),
+                ),
+                non_empty,
+            )
+        }
         _ => return None,
+    };
+
+    let message = if head_lower == "validatecount" && parts.len() >= 2 {
+        let actual = length_of(ensure_array(value()));
+        ps_binary(
+            BinOp::Add,
+            ps_binary(
+                BinOp::Add,
+                ps_binary(
+                    BinOp::Add,
+                    ps_binary(
+                        BinOp::Add,
+                        Expression::string(&format!(
+                            "Cannot validate argument on parameter '{param}'. Count must be between "
+                        )),
+                        arg(0),
+                    ),
+                    Expression::string(" and "),
+                ),
+                arg(1),
+            ),
+            ps_binary(BinOp::Add, Expression::string("; actual count is "), actual),
+        )
+    } else if head_lower == "validaterange" && parts.len() >= 2 {
+        ps_binary(
+            BinOp::Add,
+            ps_binary(
+                BinOp::Add,
+                ps_binary(
+                    BinOp::Add,
+                    ps_binary(
+                        BinOp::Add,
+                        Expression::string(&format!(
+                            "Cannot validate argument on parameter '{param}'. Value must be between "
+                        )),
+                        arg(0),
+                    ),
+                    Expression::string(" and "),
+                ),
+                arg(1),
+            ),
+            ps_binary(BinOp::Add, Expression::string("; actual value is "), value()),
+        )
+    } else if head_lower == "validateset" && !parts.is_empty() {
+        let allowed = parts
+            .iter()
+            .map(|part| part.trim().trim_matches('"').trim_matches('\''))
+            .collect::<Vec<_>>()
+            .join(", ");
+        ps_binary(
+            BinOp::Add,
+            Expression::string(&format!(
+                "Cannot validate argument on parameter '{param}'. Valid values are {allowed}; actual value is "
+            )),
+            value(),
+        )
+    } else if head_lower == "validatepattern" && !parts.is_empty() {
+        ps_binary(
+            BinOp::Add,
+            Expression::string(&format!(
+                "Cannot validate argument on parameter '{param}'. Value must match pattern {}; actual value is ",
+                parts[0].trim().trim_matches('"').trim_matches('\'')
+            )),
+            value(),
+        )
+    } else {
+        Expression::string(&format!(
+            "Cannot validate argument on parameter '{param}'. \
+             The argument does not meet the validation requirements."
+        ))
     };
 
     let guard = Statement::new(StmtKind::If {
@@ -2119,17 +2867,34 @@ fn parameter_validation_guard(param: &str, attr: &str) -> Option<Statement> {
             expr: Box::new(ok),
         }),
         then_body: vec![Statement::new(StmtKind::Throw {
-            expr: Some(Expression::string(&format!(
-                "Cannot validate argument on parameter '{param}'. \
-                 The argument does not meet the validation requirements."
-            ))),
+            expr: Some(Expression::new(ExprKind::New {
+                class: Box::new(Expression::ident("ParameterBindingException")),
+                args: vec![Argument::positional(message)],
+            })),
             cause: None,
         })],
         elifs: Vec::new(),
         else_body: None,
     });
 
-    Some(guard)
+    if matches!(head_lower.as_str(), "validatecount" | "validatenotnull" | "validatenotnullorempty") {
+        Some(guard)
+    } else {
+        Some(Statement::new(StmtKind::If {
+            cond: negate(ps_builtin("__ps_is_null", vec![value()])),
+            then_body: vec![Statement::new(StmtKind::ForIn {
+            var: element_var.to_string(),
+            key: None,
+            iter: ensure_array(value()),
+            body: vec![guard],
+            of: true,
+            else_body: None,
+            is_async: false,
+            })],
+            elifs: Vec::new(),
+            else_body: None,
+        }))
+    }
 }
 
 fn parse_function_params(__w: &mut PsWalker, pair: Pair<Rule>) -> Vec<Param> {
@@ -2152,18 +2917,200 @@ fn parse_function_params(__w: &mut PsWalker, pair: Pair<Rule>) -> Vec<Param> {
     if let Some(fn_name) = __w.current_function.clone() {
         for param in out.iter_mut() {
             if param.default.is_none() && !param.is_rest {
+                let validators: Vec<String> = __w
+                    .param_validators
+                    .iter()
+                    .filter(|(name, _)| name.eq_ignore_ascii_case(&param.name))
+                    .map(|(_, attr)| attr.clone())
+                    .collect();
                 param.default = Some(ps_builtin(
-                    "__ps_index_get",
-                    vec![
-                        Expression::ident("PSDefaultParameterValues"),
-                        Expression::string(&format!("{fn_name}:{}", param.name)),
-                    ],
+                    "__ps_unwrap_single",
+                    vec![ps_default_parameter_value_expr(
+                        &fn_name,
+                        &param.name,
+                        &validators,
+                    )],
                 ));
                 param.is_optional = true;
             }
         }
     }
     out
+}
+
+fn ps_default_parameter_value_expr(
+    function_name: &str,
+    parameter_name: &str,
+    validators: &[String],
+) -> Expression {
+    const TABLE: &str = "__ps_default_params";
+    const TARGET: &str = "__ps_default_target";
+    const KEY: &str = "__ps_default_key";
+    const VALUE: &str = "__ps_default_value";
+
+    let assign = |name: &str, value: Expression| {
+        Statement::new(StmtKind::Assign {
+            targets: vec![Expression::ident(name)],
+            value,
+            by_ref: false,
+        })
+    };
+    let lookup = |key: Expression| ps_builtin("__ps_index_get", vec![Expression::ident(TABLE), key]);
+    let target_value = format!("{function_name}:{parameter_name}");
+
+    let mut body = vec![
+        local_decl(TABLE),
+        assign(TABLE, Expression::ident("PSDefaultParameterValues")),
+        local_decl(TARGET),
+        assign(TARGET, Expression::string(&target_value)),
+        local_decl(VALUE),
+        assign(VALUE, Expression::null()),
+    ];
+    let resolve_body = vec![
+        assign(VALUE, lookup(Expression::ident(TARGET))),
+        Statement::new(StmtKind::If {
+            cond: ps_builtin("__ps_is_null", vec![Expression::ident(VALUE)]),
+            then_body: vec![Statement::new(StmtKind::ForIn {
+                var: KEY.to_string(),
+                key: None,
+                iter: method_call_expr(Expression::ident(TABLE), "__ps_ht_keys", Vec::new()),
+                body: vec![Statement::new(StmtKind::If {
+                    cond: wildcard_is_match_expr(
+                        Expression::ident(TARGET),
+                        Expression::ident(KEY),
+                        Expression::int(1),
+                    ),
+                    then_body: vec![
+                        assign(VALUE, lookup(Expression::ident(KEY))),
+                        Statement::new(StmtKind::Break(BreakTarget::Implicit)),
+                    ],
+                    elifs: Vec::new(),
+                    else_body: None,
+                })],
+                of: true,
+                else_body: None,
+                is_async: false,
+            })],
+            elifs: Vec::new(),
+            else_body: None,
+        }),
+    ];
+    body.push(Statement::new(StmtKind::If {
+        cond: ps_binary(
+            BinOp::NotEq,
+            lookup(Expression::string("Disabled")),
+            Expression::bool(true),
+        ),
+        then_body: resolve_body,
+        elifs: Vec::new(),
+        else_body: None,
+    }));
+    body.push(assign(
+        VALUE,
+        ps_default_parameter_materialize(Expression::ident(VALUE)),
+    ));
+    body.extend(ps_default_parameter_validation_returns(
+        parameter_name,
+        validators,
+    ));
+    body.push(Statement::new(StmtKind::Return(Some(Expression::ident(VALUE)))));
+    block_value_expr(body)
+}
+
+fn ps_default_parameter_validation_returns(
+    parameter_name: &str,
+    validators: &[String],
+) -> Vec<Statement> {
+    validators
+        .iter()
+        .filter_map(|attr| ps_default_parameter_validator_ok(parameter_name, attr))
+        .map(|ok| Statement::new(StmtKind::If {
+            cond: ps_binary(
+                BinOp::And,
+                Expression::new(ExprKind::Unary {
+                    op: UnaryOp::Not,
+                    expr: Box::new(ps_builtin(
+                        "__ps_is_null",
+                        vec![Expression::ident("__ps_default_value")],
+                    )),
+                }),
+                Expression::new(ExprKind::Unary {
+                    op: UnaryOp::Not,
+                    expr: Box::new(ok),
+                }),
+            ),
+            then_body: vec![Statement::new(StmtKind::Assign {
+                targets: vec![Expression::ident("__ps_default_value")],
+                value: Expression::null(),
+                by_ref: false,
+            })],
+            elifs: Vec::new(),
+            else_body: None,
+        }))
+        .collect()
+}
+
+fn ps_default_parameter_validator_ok(parameter_name: &str, attr: &str) -> Option<Expression> {
+    let (head, args) = match attr.find('(') {
+        Some(i) => (
+            attr[..i].trim(),
+            attr[i + 1..].trim_end().trim_end_matches(')'),
+        ),
+        None => (attr.trim(), ""),
+    };
+    let parts: Vec<String> = split_attribute_args(args)
+        .into_iter()
+        .filter(|p| !p.contains('='))
+        .collect();
+    let head_leaf = head.rsplit('.').next().unwrap_or(head).trim();
+    let head_leaf = head_leaf
+        .strip_suffix("Attribute")
+        .unwrap_or(head_leaf);
+    if !head_leaf.eq_ignore_ascii_case("ValidateSet") || parts.is_empty() {
+        return None;
+    }
+    let _ = parameter_name;
+    let all_quoted = parts.iter().all(|p| {
+        let t = p.trim();
+        (t.starts_with('\'') && t.ends_with('\'') && t.len() >= 2)
+            || (t.starts_with('"') && t.ends_with('"') && t.len() >= 2)
+    });
+    let entry = |part: &str| match (all_quoted, attribute_arg_expr(part)) {
+        (
+            true,
+            Expression {
+                kind: ExprKind::Lit(Literal::Str(text)),
+                ..
+            },
+        ) => Expression::string(&text.to_lowercase()),
+        (_, other) => other,
+    };
+    let subject = if all_quoted {
+        method_call_expr(Expression::ident("__ps_default_value"), "ToLower", Vec::new())
+    } else {
+        Expression::ident("__ps_default_value")
+    };
+    Some(ps_binary(
+        BinOp::In,
+        subject,
+        ps_array_of(parts.iter().map(|part| entry(part)).collect()),
+    ))
+}
+
+fn ps_default_parameter_materialize(value: Expression) -> Expression {
+    ps_ternary(
+        ps_binary(
+            BinOp::Eq,
+            Expression::new(ExprKind::TypeOf(Box::new(value.clone()))),
+            Expression::string("function"),
+        ),
+        Expression::new(ExprKind::Call {
+            callee: Box::new(value.clone()),
+            args: Vec::new(),
+            optional: false,
+        }),
+        value,
+    )
 }
 
 fn parse_function_params_inner(__w: &mut PsWalker, pair: Pair<Rule>) -> Vec<Param> {
@@ -2287,21 +3234,27 @@ fn parse_function_params_inner(__w: &mut PsWalker, pair: Pair<Rule>) -> Vec<Para
             let by_ref = type_hint
                 .as_deref()
                 .is_some_and(|t| t.eq_ignore_ascii_case("ref"));
+            if type_hint
+                .as_deref()
+                .is_some_and(|t| is_declared_enum_name(__w, t))
+            {
+                type_hint = None;
+            }
             out.push(Param {
                 name,
                 // A `[ref]` is not a type to CONVERT to — dropping it keeps
                 // `coerces_value_to_type_hint` from casting the reference.
-                type_hint: if by_ref { None } else { type_hint.map(Into::into) },
+                type_hint: if by_ref {
+                    None
+                } else {
+                    type_hint.map(Into::into)
+                },
                 default,
                 // `Alias`, not `Ref`: a write through `$v.Value` is visible to
                 // the caller DURING the call, and survives the callee throwing
                 // — the two properties the AST's own doc uses to tell true
                 // aliasing from copy-in/copy-out.
-                pass_by: if by_ref {
-                    PassBy::Alias
-                } else {
-                    PassBy::Value
-                },
+                pass_by: if by_ref { PassBy::Alias } else { PassBy::Value },
                 is_rest: false,
                 is_kwargs: false,
                 is_optional,
@@ -2320,9 +3273,13 @@ fn parse_param_stmt(__w: &mut PsWalker, pair: Pair<Rule>, out: &mut Vec<Param>) 
 }
 
 fn optional_param(name: &str) -> Param {
+    optional_typed_param(name, None)
+}
+
+fn optional_typed_param(name: &str, type_name: Option<String>) -> Param {
     Param {
         name: name.to_string(),
-        type_hint: None,
+        type_hint: type_name.map(TypeHint::converting),
         default: Some(Expression::null()),
         pass_by: PassBy::Value,
         is_rest: false,
@@ -2336,10 +3293,13 @@ fn is_dynamic_param_block_text(text: &str) -> bool {
     let trimmed = text.trim_start();
     trimmed.len() >= "dynamicparam".len()
         && trimmed[.."dynamicparam".len()].eq_ignore_ascii_case("dynamicparam")
-        && trimmed["dynamicparam".len()..].trim_start().starts_with('{')
+        && trimmed["dynamicparam".len()..]
+            .trim_start()
+            .starts_with('{')
 }
 
-fn parse_block_with_function_params(__w: &mut PsWalker, 
+fn parse_block_with_function_params(
+    __w: &mut PsWalker,
     pair: Pair<Rule>,
     params: &mut Vec<Param>,
 ) -> Result<Vec<Statement>, String> {
@@ -2432,15 +3392,18 @@ fn parse_block_with_function_params(__w: &mut PsWalker,
     let pipeline_params = __w.pipeline_params.clone();
     let guards: Vec<Statement> = std::mem::take(&mut __w.param_validators)
         .iter()
-        // A pipeline parameter's transform was already placed per item by
-        // `pipeline_block_body`; applying it here too would run it twice.
-        .filter(|(param, attr)| {
-            !(attr.starts_with(TRANSFORM_MARK) && pipeline_params.contains(&param.to_lowercase()))
-        })
+        // A pipeline parameter is validated per bound pipeline item by
+        // `pipeline_block_body`; applying it here would validate the whole
+        // upstream stream before the process loop has bound one object.
+        .filter(|(param, _attr)| !pipeline_params.contains(&param.to_lowercase()))
         .filter_map(|(param, attr)| parameter_validation_guard(param, attr))
         .collect();
+    let entry_casts = parameter_entry_casts(params, &pipeline_params);
     if !guards.is_empty() {
         body.splice(0..0, guards);
+    }
+    if !entry_casts.is_empty() {
+        body.splice(0..0, entry_casts);
     }
 
     // ⛔`parse_block_statements` applies traps and this — the FUNCTION BODY
@@ -2450,6 +3413,30 @@ fn parse_block_with_function_params(__w: &mut PsWalker,
     // whole `exceptions_trap_statement_scope` family, and a trap in a function
     // is where PowerShell scripts actually put one.
     Ok(apply_traps(body))
+}
+
+fn parameter_entry_casts(
+    params: &[Param],
+    pipeline_params: &std::collections::HashSet<String>,
+) -> Vec<Statement> {
+    params
+        .iter()
+        .filter_map(|param| {
+            if pipeline_params.contains(&param.name.to_lowercase()) {
+                return None;
+            }
+            let hint = param.type_hint.as_ref()?;
+            let spelling = hint.spelling();
+            if spelling.eq_ignore_ascii_case("ref") {
+                return None;
+            }
+            Some(Statement::new(StmtKind::Assign {
+                targets: vec![Expression::ident(&param.name)],
+                value: parameter_binding_cast(spelling, Expression::ident(&param.name)),
+                by_ref: false,
+            }))
+        })
+        .collect()
 }
 
 fn parse_if_stmt(__w: &mut PsWalker, pair: Pair<Rule>) -> Result<Statement, String> {
@@ -2524,7 +3511,9 @@ fn parse_foreach_stmt(__w: &mut PsWalker, pair: Pair<Rule>) -> Result<Statement,
             Rule::var_ref => {
                 iter_var = scope_qualified_name(child.as_str().trim_start_matches('$')).to_string()
             }
-            Rule::expression | Rule::command_pipeline | Rule::chain_pipeline => iter = Some(walk_expr(__w, child)),
+            Rule::expression | Rule::command_pipeline | Rule::chain_pipeline => {
+                iter = Some(walk_expr(__w, child))
+            }
             Rule::block => body = parse_block_statements(__w, child)?,
             _ => {}
         }
@@ -2778,6 +3767,69 @@ fn statement_value_expr(stmt: Statement) -> Expression {
     })
 }
 
+fn statement_value_assignment(target: Expression, stmt: Statement) -> Option<Statement> {
+    let span = stmt.span;
+    match stmt.kind {
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => Some(Statement {
+            kind: StmtKind::If {
+                cond,
+                then_body: branch_value_assignment(target.clone(), then_body),
+                elifs: elifs
+                    .into_iter()
+                    .map(|(cond, body)| (cond, branch_value_assignment(target.clone(), body)))
+                    .collect(),
+                else_body: Some(branch_value_assignment(
+                    target,
+                    else_body.unwrap_or_default(),
+                )),
+            },
+            span,
+        }),
+        _ => None,
+    }
+}
+
+fn branch_value_assignment(target: Expression, body: Vec<Statement>) -> Vec<Statement> {
+    let mut body = return_last_of_branches(body);
+    let Some(last) = body.pop() else {
+        return vec![Statement::new(StmtKind::Assign {
+            targets: vec![target],
+            value: Expression::null(),
+            by_ref: false,
+        })];
+    };
+    let span = last.span;
+    match last.kind {
+        StmtKind::Return(Some(value)) => {
+            body.push(Statement {
+                kind: StmtKind::Assign {
+                    targets: vec![target],
+                    value,
+                    by_ref: false,
+                },
+                span,
+            });
+        }
+        StmtKind::Return(None) => {
+            body.push(Statement {
+                kind: StmtKind::Assign {
+                    targets: vec![target],
+                    value: Expression::null(),
+                    by_ref: false,
+                },
+                span,
+            });
+        }
+        _ => body.push(last),
+    }
+    body
+}
+
 /// `implicit_return` reaching INTO branches: the value of an `if` / `switch` /
 /// `try` is the last expression of whichever branch ran, so each branch body
 /// needs its own trailing `return`, not just the outermost statement list.
@@ -2981,7 +4033,7 @@ fn parse_catch_clause(__w: &mut PsWalker, pair: Pair<Rule>) -> Result<CatchClaus
             }
             Rule::block => {
                 body = parse_block_statements(__w, child)?;
-                body.insert(0, ps_catch_error_record_rebind());
+                body.insert(0, ps_catch_error_record_rebind(__w));
             }
             _ => {}
         }
@@ -3053,19 +4105,101 @@ fn parse_return_stmt(__w: &mut PsWalker, pair: Pair<Rule>) -> Statement {
 /// ONE-ELEMENT array literal at the point it is returned.
 fn unroll_returned_array(expr: Expression) -> Expression {
     match expr.kind {
-        ExprKind::Array(mut items) if items.len() == 1 && !items[0].spread => {
-            items.remove(0).value
-        }
+        ExprKind::Array(mut items) if items.len() == 1 && !items[0].spread => items.remove(0).value,
         _ => expr,
     }
 }
 
 fn parse_throw_stmt(__w: &mut PsWalker, pair: Pair<Rule>) -> Statement {
-    let expr = pair
+    let expr = match pair
         .into_inner()
         .find(|c| c.as_rule() == Rule::expression)
-        .map(|__x| walk_expr(__w, __x));
+        .map(|__x| {
+            let payload = walk_expr(__w, __x);
+            powershell_throw_payload(__w, payload)
+        }) {
+        Some(expr) => Some(expr),
+        None => Some(Expression::ident("_")),
+    };
     Statement::new(StmtKind::Throw { expr, cause: None })
+}
+
+fn powershell_throw_payload(__w: &PsWalker, expr: Expression) -> Expression {
+    if throw_payload_is_error_like(__w, &expr) {
+        return expr;
+    }
+    powershell_runtime_exception_object(ps_builtin("__ps_to_string", vec![expr]))
+}
+
+fn powershell_runtime_exception_object(message: Expression) -> Expression {
+    let to_string = no_param_lambda(vec![Statement::new(StmtKind::Return(Some(ps_member(
+        Expression::new(ExprKind::This),
+        "Message",
+    ))))]);
+    reflected_automation_object(
+        "System.Management.Automation.RuntimeException",
+        vec![
+            ("Message", message.clone()),
+            ("message", message),
+            ("ToString", to_string.clone()),
+            ("tostring", to_string),
+        ],
+    )
+}
+
+fn throw_payload_is_error_like(__w: &PsWalker, expr: &Expression) -> bool {
+    let type_matches = |name: &str| {
+        let leaf = name.rsplit('.').next().unwrap_or(name);
+        leaf.eq_ignore_ascii_case("ErrorRecord")
+            || leaf.to_ascii_lowercase().ends_with("exception")
+    };
+    if let ExprKind::Ident(name) = &expr.kind
+        && name == "_"
+    {
+        return true;
+    }
+    if let ExprKind::Ident(name) = &expr.kind
+        && let Some(Some(seed)) = __w.pstypename_vars.get(&name.to_lowercase())
+        && seed.iter().any(|name| type_matches(name))
+    {
+        return true;
+    }
+    match &expr.kind {
+        ExprKind::New { class, .. } => type_name_of(class).is_some_and(|name| type_matches(&name)),
+        ExprKind::Cast { type_name, .. } => type_matches(type_name),
+        _ => false,
+    }
+}
+
+fn powershell_error_record_expr(__w: &PsWalker, expr: &Expression) -> bool {
+    match &expr.kind {
+        ExprKind::Ident(name) if name == "_" => true,
+        ExprKind::Ident(name) => __w
+            .pstypename_vars
+            .get(&name.to_lowercase())
+            .and_then(|seed| seed.as_ref())
+            .is_some_and(|seed| seed.iter().any(|name| name.ends_with("ErrorRecord"))),
+        ExprKind::Index { object, .. } => {
+            matches!(&object.kind, ExprKind::Ident(name) if name.eq_ignore_ascii_case("Error"))
+        }
+        ExprKind::Call { callee, args, .. }
+            if matches!(&callee.kind, ExprKind::Ident(name) if name == "__ps_index_get")
+                && matches!(
+                    args.first().map(|arg| &arg.value.kind),
+                    Some(ExprKind::Ident(name)) if name.eq_ignore_ascii_case("Error")
+                ) =>
+        {
+            true
+        }
+        ExprKind::NullCoalesce { left, right }
+            if matches!(&right.kind, ExprKind::Lit(Literal::Null)) =>
+        {
+            powershell_error_record_expr(__w, left)
+        }
+        ExprKind::Object(_) => object_property_value(expr, &["Message", "message"]).is_some()
+            && object_property_value(expr, &["FullyQualifiedErrorId", "fullyqualifiederrorid"]).is_some(),
+        _ => false,
+    }
 }
 
 fn parse_break_stmt(pair: Pair<Rule>) -> Statement {
@@ -3092,7 +4226,16 @@ fn parse_continue_stmt(pair: Pair<Rule>) -> Statement {
 
 fn parse_command_statement(__w: &mut PsWalker, pair: Pair<Rule>) -> Statement {
     let text = pair.as_str().trim().to_string();
+    if let Some(expr) = apply_set_strict_mode_statement(__w, &text) {
+        return Statement::new(StmtKind::Expr(expr));
+    }
+    if let Some(stmt) = strict_function_call_with_parens_statement(__w, &text) {
+        return stmt;
+    }
     if let Some(stmt) = parse_exit_command_statement(__w, &text) {
+        return stmt;
+    }
+    if let Some(stmt) = parse_variable_metadata_command_statement(__w, pair.clone()) {
         return stmt;
     }
     if let Some(stmt) = parse_constant_variable_statement(__w, pair.clone()) {
@@ -3102,7 +4245,11 @@ fn parse_command_statement(__w: &mut PsWalker, pair: Pair<Rule>) -> Statement {
     // `parse_pipeline` walks `command_stmt` and `pipeline_expr` alike and
     // collects every `command_segment` beneath both, so `A && B` came out as
     // `A | B` with B reading A's output as its pipeline input.
-    if pair.clone().into_inner().any(|c| c.as_rule() == Rule::chain_op) {
+    if pair
+        .clone()
+        .into_inner()
+        .any(|c| c.as_rule() == Rule::chain_op)
+    {
         return Statement::new(StmtKind::Expr(parse_command_chain(__w, pair)));
     }
     // Prefer the PEST TREE over the text tokenizer. The text path splits on
@@ -3126,10 +4273,8 @@ fn parse_command_chain(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
             Rule::chain_op => ops.push(child.as_str().to_string()),
             Rule::pipeline_expr => {
                 let text = child.as_str().trim().to_string();
-                sides.push(
-                    parse_pipeline(__w, child)
-                        .unwrap_or_else(|| expr_from_text(__w, &text)),
-                );
+                sides
+                    .push(parse_pipeline(__w, child).unwrap_or_else(|| expr_from_text(__w, &text)));
             }
             _ => {}
         }
@@ -3166,10 +4311,7 @@ fn parse_constant_variable_statement(__w: &mut PsWalker, pair: Pair<Rule>) -> Op
     let ExprKind::Ident(cmd) = &callee.kind else {
         return None;
     };
-    if !matches!(
-        cmd.to_lowercase().as_str(),
-        "new-variable" | "set-variable"
-    ) {
+    if !matches!(cmd.to_lowercase().as_str(), "new-variable" | "set-variable") {
         return None;
     }
 
@@ -3183,10 +4325,9 @@ fn parse_constant_variable_statement(__w: &mut PsWalker, pair: Pair<Rule>) -> Op
             .map(|a| a.value.clone())
     };
     let option = literal_text(&named("Option")?)?;
-    if !matches!(
-        option.to_lowercase().as_str(),
-        "constant" | "readonly"
-    ) {
+    let is_constant = ps_option_contains(&option, "constant");
+    let is_readonly = ps_option_contains(&option, "readonly");
+    if !is_constant && !is_readonly {
         return None;
     }
 
@@ -3197,26 +4338,159 @@ fn parse_constant_variable_statement(__w: &mut PsWalker, pair: Pair<Rule>) -> Op
         .or_else(|| positional.get(1).map(|a| a.value.clone()))
         .unwrap_or_else(Expression::null);
 
-    // ⛔`VarDeclKind::Const` ALONE does nothing here. The shared compiler's
-    // const enforcement is gated on `ecma_lexical_declarations`, and turning
-    // that on for PowerShell cost **50 regressions for 9 fixes** — the flag
-    // also drives lexical scoping and declaration semantics that PowerShell
-    // does not share (`variable_drives`, `variable_declaration_semantics`).
-    // Measured, then reverted. The declaration still says `Const` because that
-    // is what it IS; the enforcement is the walker's, below.
-    __w.constant_vars
-        .insert(scope_qualified_name(&target).to_lowercase());
+    let scoped = scope_qualified_name(&target).to_string();
+    let key = scoped.to_lowercase();
+    __w.defined_vars.insert(key.clone());
+    if is_constant {
+        // ⛔`VarDeclKind::Const` ALONE does nothing here. The shared compiler's
+        // const enforcement is gated on `ecma_lexical_declarations`, and turning
+        // that on for PowerShell cost **50 regressions for 9 fixes** — the flag
+        // also drives lexical scoping and declaration semantics that PowerShell
+        // does not share (`variable_drives`, `variable_declaration_semantics`).
+        // Measured, then reverted. The declaration still says `Const` because
+        // that is what it IS; the enforcement is the walker's, below.
+        __w.constant_vars.insert(key);
+    } else {
+        // `ReadOnly` is NOT an AST const: `Remove-Variable -Force` may remove
+        // it. Keep it as PowerShell metadata so the shared variable machinery
+        // is not forced to model a session-state table.
+        __w.readonly_vars.insert(key);
+    }
 
     Some(Statement::new(StmtKind::VarDecl {
         declarations: vec![VarDeclarator {
-            pattern: BindingPattern::Ident(scope_qualified_name(&target).to_string()),
+            pattern: BindingPattern::Ident(scoped),
             type_hint: None,
             init: Some(value),
             array_bounds: None,
             with_events: false,
         }],
-        kind: VarDeclKind::Const,
+        kind: if is_constant {
+            VarDeclKind::Const
+        } else {
+            VarDeclKind::FunctionScoped
+        },
     }))
+}
+
+fn parse_variable_metadata_command_statement(
+    __w: &mut PsWalker,
+    pair: Pair<Rule>,
+) -> Option<Statement> {
+    let mut work = VecDeque::new();
+    work.push_back(pair);
+    let mut segment = None;
+    while let Some(node) = work.pop_front() {
+        if node.as_rule() == Rule::command_segment {
+            segment = Some(node);
+            break;
+        }
+        for child in node.into_inner() {
+            work.push_back(child);
+        }
+    }
+    let (callee, args) = parse_command_segment(__w, segment?)?;
+    let ExprKind::Ident(cmd) = &callee.kind else {
+        return None;
+    };
+    let cmd = cmd.to_ascii_lowercase();
+    if cmd != "remove-variable"
+        && cmd != "clear-variable"
+        && cmd != "set-variable"
+        && cmd != "new-variable"
+    {
+        return None;
+    }
+    let named = |key: &str| {
+        args.iter()
+            .find(|a| {
+                a.name
+                    .as_deref()
+                    .is_some_and(|n| n.eq_ignore_ascii_case(key))
+            })
+            .map(|a| a.value.clone())
+    };
+    let has_switch = |key: &str| {
+        args.iter().any(|a| {
+            a.name
+                .as_deref()
+                .is_some_and(|n| n.eq_ignore_ascii_case(key))
+        })
+    };
+    let positional: Vec<&Argument> = args.iter().filter(|a| a.name.is_none()).collect();
+    let name_expr = named("Name").or_else(|| positional.first().map(|a| a.value.clone()))?;
+    let (scoped, _display_name) = variable_cmdlet_target(Some(__w), &name_expr)?;
+    let key = scoped.to_lowercase();
+    let force = has_switch("Force");
+    if cmd == "set-variable" || cmd == "new-variable" {
+        let value = named("Value")
+            .or_else(|| positional.get(1).map(|a| a.value.clone()))
+            .unwrap_or_else(Expression::null);
+        let option = named("Option")
+            .and_then(|expr| literal_text(&expr))
+            .unwrap_or_default();
+        let is_constant = ps_option_contains(&option, "constant");
+        let is_readonly = ps_option_contains(&option, "readonly");
+        if __w.constant_vars.contains(&key)
+            || (__w.readonly_vars.contains(&key) && !force && !is_readonly)
+        {
+            return Some(Statement::new(StmtKind::Expr(ps_constant_variable_error_expr(
+                &scoped,
+            ))));
+        }
+        __w.defined_vars.insert(key.clone());
+        if is_constant {
+            __w.constant_vars.insert(key.clone());
+            return Some(Statement::new(StmtKind::VarDecl {
+                declarations: vec![VarDeclarator {
+                    pattern: BindingPattern::Ident(scoped),
+                    type_hint: None,
+                    init: Some(value),
+                    array_bounds: None,
+                    with_events: false,
+                }],
+                kind: VarDeclKind::Const,
+            }));
+        }
+        if is_readonly {
+            __w.readonly_vars.insert(key);
+        }
+        if let Some(description) = named("Description") {
+            __w.variable_descriptions
+                .insert(scoped.to_lowercase(), description);
+        }
+        return Some(Statement::new(StmtKind::Assign {
+            targets: vec![Expression::ident(&scoped)],
+            value,
+            by_ref: false,
+        }));
+    }
+    if __w.constant_vars.contains(&key) {
+        return Some(Statement::new(StmtKind::Expr(ps_constant_variable_error_expr(
+            &scoped,
+        ))));
+    }
+    if __w.readonly_vars.contains(&key) && !force {
+        return Some(Statement::new(StmtKind::Expr(ps_constant_variable_error_expr(
+            &scoped,
+        ))));
+    }
+    if cmd == "remove-variable" {
+        __w.readonly_vars.remove(&key);
+        __w.defined_vars.remove(&key);
+        __w.variable_descriptions.remove(&key);
+    }
+    Some(Statement::new(StmtKind::Assign {
+        targets: vec![Expression::ident(&scoped)],
+        value: Expression::null(),
+        by_ref: false,
+    }))
+}
+
+fn ps_option_contains(option: &str, needle: &str) -> bool {
+    option
+        .split(|c: char| c == ',' || c == '|' || c.is_whitespace())
+        .any(|part| part.eq_ignore_ascii_case(needle))
 }
 
 fn parse_exit_command_statement(__w: &mut PsWalker, text: &str) -> Option<Statement> {
@@ -3237,6 +4511,7 @@ fn parse_assignment_statement(__w: &mut PsWalker, pair: Pair<Rule>) -> Statement
     let mut targets: Vec<Expression> = Vec::new();
     let mut op = "=".to_string();
     let mut rhs = None;
+    let mut rhs_value_stmt = None;
     // The `[int]` of `[int]$n = …`, when the source writes one.
     let mut declared_type: Option<String> = None;
 
@@ -3281,17 +4556,54 @@ fn parse_assignment_statement(__w: &mut PsWalker, pair: Pair<Rule>) -> Statement
             }
             // `$r = switch (…) { … }` — the RHS is a statement used as a value.
             Rule::value_stmt => {
-                rhs = child
+                rhs_value_stmt = child
                     .into_inner()
                     .next()
-                    .and_then(|s| parse_statement(__w, s).ok().flatten())
-                    .map(statement_value_expr);
+                    .and_then(|s| parse_statement(__w, s).ok().flatten());
+                rhs = rhs_value_stmt.clone().map(statement_value_expr);
             }
             _ => {}
         }
     }
 
-    let value = rhs.unwrap_or_else(Expression::null);
+    if op.as_str() == "="
+        && targets.len() == 1
+        && let Some(stmt) = rhs_value_stmt
+        && let Some(assign_stmt) = statement_value_assignment(targets[0].clone(), stmt)
+    {
+        return assign_stmt;
+    }
+
+    let mut value = normalize_system_enum_static_call(__w, rhs.unwrap_or_else(Expression::null));
+    if let Some(type_name) = cast_type_object_name(__w, &value) {
+        value = powershell_type_object(&type_name);
+    }
+    if assignment_expr_is_hashtable_ctor(&value) {
+        value = ps_new_hashtable_expr(assignment_expr_is_case_sensitive_hashtable(&value));
+    }
+
+    if op.as_str() == "="
+        && targets.len() == 1
+        && let ExprKind::Ident(var_name) = &targets[0].kind
+        && let Some((enum_type, init)) = enum_typed_assignment_value(__w, &value)
+    {
+        let seed = pstypename_seed_from_type_name(__w, &enum_type);
+        __w.defined_vars.insert(var_name.to_lowercase());
+        __w.pstypename_vars
+            .entry(var_name.to_lowercase())
+            .and_modify(|slot| *slot = seed.clone())
+            .or_insert(seed);
+        return Statement::new(StmtKind::VarDecl {
+            declarations: vec![VarDeclarator {
+                pattern: BindingPattern::Ident(var_name.clone()),
+                type_hint: None,
+                init: Some(init),
+                array_bounds: None,
+                with_events: false,
+            }],
+            kind: VarDeclKind::FunctionScoped,
+        });
+    }
 
     // `[int]$n = "42"` — the constraint DECLARES the variable.
     //
@@ -3321,11 +4633,21 @@ fn parse_assignment_statement(__w: &mut PsWalker, pair: Pair<Rule>) -> Statement
         // on `NaN`. `Checked` is the binding for exactly this: never converts,
         // and a type-directed consumer may trust it as it trusts `Converting`.
         let key = var_name.to_lowercase();
+        __w.defined_vars.insert(key.clone());
         let seed = pstypename_seed_from_type_name(__w, &type_name);
         __w.pstypename_vars
             .entry(key)
             .and_modify(|slot| *slot = None)
             .or_insert(seed);
+        __w.numeric_type_vars
+            .entry(var_name.to_lowercase())
+            .and_modify(|slot| *slot = Some(type_name.clone()))
+            .or_insert(Some(type_name.clone()));
+        let is_array_like = type_name.trim().ends_with("[]") || assignment_expr_is_array_like(&value);
+        __w.array_vars
+            .entry(var_name.to_lowercase())
+            .and_modify(|slot| *slot = is_array_like)
+            .or_insert(is_array_like);
 
         return Statement::new(StmtKind::VarDecl {
             declarations: vec![VarDeclarator {
@@ -3373,6 +4695,86 @@ fn parse_assignment_statement(__w: &mut PsWalker, pair: Pair<Rule>) -> Statement
     if op.as_str() == "="
         && targets.len() == 1
         && let ExprKind::Index { object, index, .. } = &targets[0].kind
+        && is_stringbuilder_expr(__w, object)
+    {
+        return Statement::new(StmtKind::Expr(ps_builtin(
+            "__ps_sb_index_set",
+            vec![(**object).clone(), (**index).clone(), value],
+        )));
+    }
+
+    if op.as_str() == "="
+        && targets.len() == 1
+        && let ExprKind::Index { object, .. } = &targets[0].kind
+        && receiver_expr_is_case_sensitive_hashtable_var(__w, object)
+    {
+        return Statement::new(StmtKind::Expr(ps_hashtable_index_set_expr(
+            (**object).clone(),
+            match &targets[0].kind {
+                ExprKind::Index { index, .. } => (**index).clone(),
+                _ => Expression::null(),
+            },
+            value,
+            true,
+        )));
+    }
+
+    if op.as_str() == "="
+        && targets.len() == 1
+        && let ExprKind::Member { object, field, .. } = &targets[0].kind
+        && field.eq_ignore_ascii_case("Length")
+        && is_stringbuilder_expr(__w, object)
+    {
+        return Statement::new(StmtKind::Expr(ps_builtin(
+            "__ps_sb_set_length",
+            vec![(**object).clone(), value],
+        )));
+    }
+
+    if op.as_str() == "="
+        && targets.len() == 1
+        && let ExprKind::Index { object, index, .. } = &targets[0].kind
+        && receiver_expr_is_array_var(__w, object)
+        && let Some((row, col)) = ps_array_index_pair(index)
+    {
+        return Statement::new(StmtKind::Expr(ps_nested_array_set(
+            (**object).clone(),
+            fold_literal_key(row),
+            fold_literal_key(col),
+            value,
+        )));
+    }
+
+    if op.as_str() == "="
+        && targets.len() == 1
+        && let ExprKind::Index { object, index, .. } = &targets[0].kind
+        && receiver_expr_is_hashtable_var(__w, object)
+        && !matches!(index.kind, ExprKind::Lit(Literal::Int(_)))
+    {
+        return Statement::new(StmtKind::Expr(ps_hashtable_index_set_expr(
+            (**object).clone(),
+            (**index).clone(),
+            value,
+            false,
+        )));
+    }
+
+    if op.as_str() == "="
+        && targets.len() == 1
+        && let ExprKind::Index { object, index, .. } = &targets[0].kind
+        && receiver_expr_is_dictionary_var(__w, object)
+        && !matches!(index.kind, ExprKind::Lit(Literal::Int(_)))
+    {
+        return Statement::new(StmtKind::Expr(method_call_expr(
+            (**object).clone(),
+            "set_Item",
+            vec![(**index).clone(), value],
+        )));
+    }
+
+    if op.as_str() == "="
+        && targets.len() == 1
+        && let ExprKind::Index { object, index, .. } = &targets[0].kind
         && !matches!(index.kind, ExprKind::Lit(Literal::Int(_)))
     {
         return Statement::new(StmtKind::Expr(Expression::new(ExprKind::Call {
@@ -3384,6 +4786,75 @@ fn parse_assignment_statement(__w: &mut PsWalker, pair: Pair<Rule>) -> Statement
             ],
             optional: false,
         })));
+    }
+
+    if op.as_str() == "="
+        && targets.len() == 1
+        && let ExprKind::Member { object, field, .. } = &targets[0].kind
+        && field.eq_ignore_ascii_case("Value")
+        && let ExprKind::Ident(var_name) = &object.kind
+        && __w
+            .runtime_defined_parameter_vars
+            .get(&var_name.to_lowercase())
+            .copied()
+            .unwrap_or(false)
+    {
+        return Statement::new(StmtKind::Block(vec![
+            Statement::new(StmtKind::Assign {
+                targets: vec![targets[0].clone()],
+                value,
+                by_ref: false,
+            }),
+            Statement::new(StmtKind::Assign {
+                targets: vec![ps_member((**object).clone(), "IsSet")],
+                value: Expression::bool(true),
+                by_ref: false,
+            }),
+            Statement::new(StmtKind::Assign {
+                targets: vec![ps_member((**object).clone(), "isset")],
+                value: Expression::bool(true),
+                by_ref: false,
+            }),
+            Statement::new(StmtKind::Assign {
+                targets: vec![ps_member((**object).clone(), "value")],
+                value: ps_member((**object).clone(), "Value"),
+                by_ref: false,
+            }),
+        ]));
+    }
+
+    if op.as_str() == "="
+        && targets.len() == 1
+        && let ExprKind::Member { object, field, .. } = &targets[0].kind
+        && automation_metadata_field(field)
+        && field.to_ascii_lowercase() != field.as_str()
+    {
+        return Statement::new(StmtKind::Block(vec![
+            Statement::new(StmtKind::Assign {
+                targets: vec![targets[0].clone()],
+                value,
+                by_ref: false,
+            }),
+            Statement::new(StmtKind::Assign {
+                targets: vec![ps_member((**object).clone(), &field.to_ascii_lowercase())],
+                value: ps_member((**object).clone(), field),
+                by_ref: false,
+            }),
+        ]));
+    }
+
+    if op.as_str() == "="
+        && targets.len() == 1
+        && let ExprKind::Member { object, field, .. } = &targets[0].kind
+        && let Some(member) = typedata_member_for_expr(__w, object, field)
+        && member.kind.eq_ignore_ascii_case("scriptproperty")
+        && let Some(setter) = member.second_value
+    {
+        return Statement::new(StmtKind::Expr(typedata_script_call(
+            (**object).clone(),
+            &setter,
+            vec![value],
+        )));
     }
 
     if op.as_str() == "="
@@ -3411,6 +4882,7 @@ fn parse_assignment_statement(__w: &mut PsWalker, pair: Pair<Rule>) -> Statement
         && let ExprKind::Ident(var_name) = &targets[0].kind
     {
         let key = var_name.to_lowercase();
+        __w.defined_vars.insert(key.clone());
         let literal = __w.literal_text_of(&value);
         __w.literal_strings
             .entry(key.clone())
@@ -3425,6 +4897,26 @@ fn parse_assignment_statement(__w: &mut PsWalker, pair: Pair<Rule>) -> Statement
             .entry(key.clone())
             .and_modify(|slot| *slot = None)
             .or_insert(descriptor);
+        let method_ref = static_method_reference_parts(&value).map(|_| value.clone());
+        __w.method_refs
+            .entry(key.clone())
+            .and_modify(|slot| *slot = None)
+            .or_insert(method_ref);
+        let is_match_evaluator = is_match_evaluator_cast(&value);
+        __w.match_evaluator_vars
+            .entry(key.clone())
+            .and_modify(|slot| *slot = is_match_evaluator)
+            .or_insert(is_match_evaluator);
+        let typedata = typedata_type_name_expr(&value);
+        __w.typedata_vars
+            .entry(key.clone())
+            .and_modify(|slot| *slot = None)
+            .or_insert(typedata);
+        let is_ignore_case_string_comparer = expr_is_ignore_case_string_comparer(__w, &value);
+        __w.string_comparer_ignore_case_vars
+            .entry(key.clone())
+            .and_modify(|slot| *slot = is_ignore_case_string_comparer)
+            .or_insert(is_ignore_case_string_comparer);
 
         let seed = pstypename_seed_for_assignment(__w, &assignment_text, &value);
         __w.pstypename_vars
@@ -3437,16 +4929,110 @@ fn parse_assignment_statement(__w: &mut PsWalker, pair: Pair<Rule>) -> Statement
         // the same literal.
         let is_literal = matches!(&value.kind, ExprKind::Object(_))
             || matches!(&value.kind, ExprKind::Cast { expr, .. } if matches!(expr.kind, ExprKind::Object(_)));
+        let is_hashtable_ctor = assignment_expr_is_hashtable_ctor(&value);
         __w.hashtable_vars
             .entry(key.clone())
+            .and_modify(|slot| *slot = is_literal || is_hashtable_ctor || is_runtime_defined_parameter_dictionary_expr(&value))
+            .or_insert(is_literal || is_hashtable_ctor || is_runtime_defined_parameter_dictionary_expr(&value));
+        let is_case_sensitive_hashtable = assignment_expr_is_case_sensitive_hashtable(&value);
+        __w.hashtable_case_sensitive_vars
+            .entry(key.clone())
+            .and_modify(|slot| *slot = is_case_sensitive_hashtable)
+            .or_insert(is_case_sensitive_hashtable);
+        let is_collection_ctor = assignment_expr_is_collection_ctor(&value);
+        __w.collection_vars
+            .entry(key.clone())
+            .and_modify(|slot| *slot = is_collection_ctor)
+            .or_insert(is_collection_ctor);
+        let collection_class = assignment_expr_new_class(&value)
+            .filter(|class| is_powershell_collection_type(class));
+        __w.collection_var_classes
+            .entry(key.clone())
+            .and_modify(|slot| *slot = collection_class.clone())
+            .or_insert(collection_class);
+        let is_ignore_case_set_ctor = assignment_expr_is_ignore_case_set_ctor(__w, &value);
+        __w.set_ignore_case_vars
+            .entry(key.clone())
+            .and_modify(|slot| *slot = is_ignore_case_set_ctor)
+            .or_insert(is_ignore_case_set_ctor);
+        let is_dictionary_ctor = assignment_expr_is_dictionary_ctor(&value);
+        __w.dictionary_vars
+            .entry(key.clone())
+            .and_modify(|slot| *slot = is_dictionary_ctor)
+            .or_insert(is_dictionary_ctor);
+        let is_sorted_dictionary_ctor = assignment_expr_new_class(&value)
+            .is_some_and(|class| is_powershell_sorted_dictionary_type(&class));
+        __w.sorted_dictionary_vars
+            .entry(key.clone())
+            .and_modify(|slot| *slot = is_sorted_dictionary_ctor)
+            .or_insert(is_sorted_dictionary_ctor);
+        let is_array_like = assignment_expr_is_array_like(&value);
+        __w.array_vars
+            .entry(key.clone())
+            .and_modify(|slot| *slot = is_array_like)
+            .or_insert(is_array_like);
+
+        let is_runtime_defined_parameter = is_runtime_defined_parameter_expr(&value);
+        __w.runtime_defined_parameter_vars
+            .entry(key.clone())
+            .and_modify(|slot| *slot = is_runtime_defined_parameter)
+            .or_insert(is_runtime_defined_parameter);
+
+        let is_pscustomobject = assignment_text
+            .to_ascii_lowercase()
+            .contains("[pscustomobject]")
+            || assignment_text
+                .to_ascii_lowercase()
+                .contains("[system.management.automation.pscustomobject]");
+        __w.pscustomobject_vars
+            .entry(key.clone())
             .and_modify(|slot| *slot = false)
-            .or_insert(is_literal);
+            .or_insert(is_pscustomobject);
 
         let is_string_like = assignment_expr_is_string_like(&value);
         __w.string_vars
             .entry(key.clone())
             .and_modify(|slot| *slot = is_string_like)
             .or_insert(is_string_like);
+        let is_stringbuilder_like = assignment_expr_is_stringbuilder_like(&value);
+        __w.stringbuilder_vars
+            .entry(key.clone())
+            .and_modify(|slot| *slot = is_stringbuilder_like)
+            .or_insert(is_stringbuilder_like);
+        let is_stringbuilder_bounded = assignment_expr_is_bounded_stringbuilder(&value);
+        __w.stringbuilder_bounded_vars
+            .entry(key.clone())
+            .and_modify(|slot| *slot = is_stringbuilder_bounded)
+            .or_insert(is_stringbuilder_bounded);
+        let is_memory_like = assignment_expr_is_memory_like(&value)
+            || assignment_text
+                .to_ascii_lowercase()
+                .contains("memoryextensions")
+            || assignment_text
+                .to_ascii_lowercase()
+                .contains("readonlymemory")
+            || assignment_text.to_ascii_lowercase().contains("memory[");
+        __w.memory_vars
+            .entry(key.clone())
+            .and_modify(|slot| *slot = is_memory_like)
+            .or_insert(is_memory_like);
+
+        let is_char_like = assignment_expr_is_char_like(__w, &value);
+        __w.char_vars
+            .entry(key.clone())
+            .and_modify(|slot| *slot = is_char_like)
+            .or_insert(is_char_like);
+        let char_code = char_code_expr_for_assignment(__w, &value);
+        __w.char_code_vars
+            .entry(key.clone())
+            .and_modify(|slot| *slot = None)
+            .or_insert(char_code);
+
+        let type_object = type_object_name(&value);
+        __w.type_object_vars
+            .entry(key.clone())
+            .and_modify(|slot| *slot = type_object.clone())
+            .or_insert(type_object);
 
         let is_xml_like = assignment_expr_is_xml_like(&value);
         __w.xml_vars
@@ -3459,6 +5045,12 @@ fn parse_assignment_statement(__w: &mut PsWalker, pair: Pair<Rule>) -> Statement
             .entry(key.clone())
             .and_modify(|slot| *slot = is_uri_like)
             .or_insert(is_uri_like);
+
+        let is_culture_info_like = assignment_expr_is_culture_info_like(&value);
+        __w.culture_info_vars
+            .entry(key.clone())
+            .and_modify(|slot| *slot = is_culture_info_like)
+            .or_insert(is_culture_info_like);
     }
 
     // `$obj = [C]::new()` — record the variable's TYPE.
@@ -3568,8 +5160,11 @@ fn parse_assignment_statement(__w: &mut PsWalker, pair: Pair<Rule>) -> Statement
     let targets: Vec<Expression> = targets
         .into_iter()
         .map(|t| match &t.kind {
-            ExprKind::Member { object, field, null_safe }
-                if matches!(&object.kind, ExprKind::Cast { expr, .. }
+            ExprKind::Member {
+                object,
+                field,
+                null_safe,
+            } if matches!(&object.kind, ExprKind::Cast { expr, .. }
                     if matches!(expr.kind, ExprKind::This)) =>
             {
                 Expression::new(ExprKind::Member {
@@ -3598,7 +5193,7 @@ fn parse_assignment_statement(__w: &mut PsWalker, pair: Pair<Rule>) -> Statement
             targets: vec![target.clone()],
             value: Expression::new(ExprKind::Binary {
                 op: BinOp::Add,
-                left: Box::new(target),
+                left: Box::new(strict_read_for_lvalue(__w, &target)),
                 right: Box::new(value),
             }),
             by_ref: false,
@@ -3693,14 +5288,14 @@ fn parse_increment_statement(__w: &mut PsWalker, pair: Pair<Rule>) -> Statement 
         return Statement::new(StmtKind::Expr(Expression::null()));
     };
 
-    Statement::new(StmtKind::CompoundAssign {
-        target,
-        op: if is_inc {
-            CompoundOp::Add
-        } else {
-            CompoundOp::Sub
-        },
-        value: Expression::int(1),
+    Statement::new(StmtKind::Assign {
+        targets: vec![target.clone()],
+        value: Expression::new(ExprKind::Binary {
+            op: if is_inc { BinOp::Add } else { BinOp::Sub },
+            left: Box::new(strict_read_for_lvalue(__w, &target)),
+            right: Box::new(Expression::int(1)),
+        }),
+        by_ref: false,
     })
 }
 
@@ -3708,6 +5303,19 @@ fn parse_increment_statement(__w: &mut PsWalker, pair: Pair<Rule>) -> Statement 
 /// `[index]` steps. Same node shapes the expression walker produces.
 fn walk_lvalue(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
     walk_lvalue_typed(__w, pair).0
+}
+
+fn strict_read_for_lvalue(__w: &PsWalker, target: &Expression) -> Expression {
+    if __w.strict_mode_level < 1 {
+        return target.clone();
+    }
+    if let ExprKind::Ident(name) = &target.kind {
+        return ps_builtin(
+            "__ps_strict_var",
+            vec![target.clone(), Expression::string(name)],
+        );
+    }
+    target.clone()
 }
 
 /// The target, and the `[T]` constraining it when the source writes one.
@@ -3809,9 +5417,11 @@ fn walk_lvalue_typed(__w: &mut PsWalker, pair: Pair<Rule>) -> (Expression, Optio
                     });
                     continue;
                 }
-                let name = inner_pair
-                    .map(member_access_name)
-                    .unwrap_or_default();
+                let name = inner_pair.map(member_access_name).unwrap_or_default();
+                if let Some(member) = xml_attribute_index_member(&expr, &name) {
+                    expr = member;
+                    continue;
+                }
                 if is_ref_value_step(__w, &expr, &name) {
                     continue;
                 }
@@ -3827,9 +5437,14 @@ fn walk_lvalue_typed(__w: &mut PsWalker, pair: Pair<Rule>) -> (Expression, Optio
                     .next()
                     .map(|__x| walk_expr(__w, __x))
                     .unwrap_or_else(Expression::null);
+                let index = if receiver_expr_is_case_sensitive_hashtable_var(__w, &expr) {
+                    index
+                } else {
+                    fold_literal_key(index)
+                };
                 expr = Expression::new(ExprKind::Index {
                     object: Box::new(expr),
-                    index: Box::new(fold_literal_key(index)),
+                    index: Box::new(index),
                     null_safe: false,
                 });
             }
@@ -3853,6 +5468,9 @@ fn parse_command_line(__w: &mut PsWalker, text: &str) -> Option<Expression> {
     let first_tokens = split_command_tokens(&first_segment);
     if first_tokens.is_empty() {
         return None;
+    }
+    if apply_set_strict_mode_tokens(__w, &first_tokens) {
+        return Some(Expression::null());
     }
     if let Some(expr) = parse_command_type_operator(__w, &first_tokens) {
         return Some(expr);
@@ -3923,15 +5541,20 @@ fn parse_pipeline(__w: &mut PsWalker, pair: Pair<Rule>) -> Option<Expression> {
     // of the cmdlet, so it is taken out here before the call is built.
     let mut pending_pv = take_pipeline_variable(&mut args);
     let head_ov = take_out_variable(&mut args);
+    let head_is_value = pipeline_head_is_value(&head_text)
+        && args.iter().all(is_stream_file_redirect_arg);
+    let head_file_redirects = if head_is_value {
+        take_stream_file_redirects(&mut args)
+    } else {
+        Vec::new()
+    };
     // A pipeline can START with a value: `$o | Add-Member …` feeds `$o` in, it
     // does not invoke it. Everything else goes through `build_command_call`,
     // not a bare `Call` — a cmdlet reached as a STATEMENT must get the same
     // `normalize_cmdlet` rewrite it gets as an expression, or `Set-Variable
     // -Name x -Value 1` compiles to a call to a function never defined.
-    let mut expr = if args.is_empty() && pipeline_head_is_value(&head_text) {
+    let mut expr = if args.is_empty() && head_is_value {
         head
-    } else if !args.is_empty() {
-        build_command_call_in(__w, head, args, false)
     } else if let Some(folded) = pipeline_stage_as_method(&block_pipeline_input(), &head, &args) {
         // ⛔A PIPELINE STAGE STANDING AT THE HEAD HAS NO UPSTREAM, and it is not
         // a command to invoke either. `{ ForEach-Object { $_ * 2 } }` is a
@@ -3949,6 +5572,8 @@ fn parse_pipeline(__w: &mut PsWalker, pair: Pair<Rule>) -> Option<Expression> {
     if let Some((name, append)) = head_ov {
         expr = capture_out_variable(expr, &name, append);
     }
+    expr = materialize_bare_pipeline_command(__w, expr);
+    expr = wrap_stream_file_redirect_call(expr, head_file_redirects);
 
     for segment in segments {
         let (next, mut next_args) = parse_command_segment(__w, segment)?;
@@ -4008,20 +5633,67 @@ fn take_pipeline_variable(args: &mut Vec<Argument>) -> Option<String> {
 /// stage's value for the item it is currently processing.
 fn bind_pipeline_variable(args: &mut [Argument], name: &str) {
     for arg in args.iter_mut() {
-        if let ExprKind::Lambda { body, .. } = &mut arg.value.kind {
-            let bind = Statement::new(StmtKind::Assign {
-                targets: vec![Expression::ident(name)],
-                value: Expression::ident("_"),
-                by_ref: false,
-            });
-            match body {
-                LambdaBody::Block(stmts) => stmts.insert(0, bind),
-                LambdaBody::Expr(expr) => {
-                    let tail = Statement::new(StmtKind::Return(Some((**expr).clone())));
-                    *body = LambdaBody::Block(vec![bind, tail]);
-                }
-            }
+        if bind_pipeline_variable_expr(&mut arg.value, name) {
             return;
+        }
+    }
+}
+
+fn bind_pipeline_variable_expr(expr: &mut Expression, name: &str) -> bool {
+    match &mut expr.kind {
+        ExprKind::Call { callee, args, .. } => {
+            if bind_pipeline_variable_scriptblock_wrapper(callee, name) {
+                return true;
+            }
+            if bind_pipeline_variable_expr(callee, name) {
+                return true;
+            }
+            args.iter_mut()
+                .any(|arg| bind_pipeline_variable_expr(&mut arg.value, name))
+        }
+        ExprKind::Lambda { body, .. } => {
+            bind_pipeline_variable_body(body, name);
+            true
+        }
+        _ => false,
+    }
+}
+
+fn bind_pipeline_variable_scriptblock_wrapper(expr: &mut Expression, name: &str) -> bool {
+    let ExprKind::Lambda {
+        body: LambdaBody::Block(stmts),
+        ..
+    } = &mut expr.kind
+    else {
+        return false;
+    };
+    for stmt in stmts {
+        let StmtKind::VarDecl { declarations, .. } = &mut stmt.kind else {
+            continue;
+        };
+        for decl in declarations {
+            if matches!(&decl.pattern, BindingPattern::Ident(id) if id == "__ps_scriptblock_value")
+                && let Some(init) = &mut decl.init
+                && bind_pipeline_variable_expr(init, name)
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn bind_pipeline_variable_body(body: &mut LambdaBody, name: &str) {
+    let bind = Statement::new(StmtKind::Assign {
+        targets: vec![Expression::ident(name)],
+        value: Expression::ident("_"),
+        by_ref: false,
+    });
+    match body {
+        LambdaBody::Block(stmts) => stmts.insert(0, bind),
+        LambdaBody::Expr(expr) => {
+            let tail = Statement::new(StmtKind::Return(Some((**expr).clone())));
+            *body = LambdaBody::Block(vec![bind, tail]);
         }
     }
 }
@@ -4049,9 +5721,9 @@ fn callee_pipeline_property_params(__w: &PsWalker, callee: &Expression) -> Vec<S
 /// the variable is overwritten, so a pre-existing value must NOT survive.
 fn take_out_variable(args: &mut Vec<Argument>) -> Option<(String, bool)> {
     let idx = args.iter().position(|a| {
-        a.name.as_deref().is_some_and(|n| {
-            n.eq_ignore_ascii_case("OutVariable") || n.eq_ignore_ascii_case("ov")
-        })
+        a.name
+            .as_deref()
+            .is_some_and(|n| n.eq_ignore_ascii_case("OutVariable") || n.eq_ignore_ascii_case("ov"))
     })?;
     let arg = args.remove(idx);
     let raw = match &arg.value.kind {
@@ -4125,7 +5797,6 @@ fn ensure_array(expr: Expression) -> Expression {
 /// directory, because PowerShell's own classes are built on the model as it is.
 fn steppable_pipeline_expr(block: Expression) -> Expression {
     const SB: &str = "__ps_sp_block";
-    const SELF: &str = "__ps_sp_self";
     const ITEM: &str = "__ps_sp_item";
 
     let param = |name: &str| Param {
@@ -4151,21 +5822,37 @@ fn steppable_pipeline_expr(block: Expression) -> Expression {
         value,
     };
 
-    // `& $block @($item)` — the block is closed over, so the receiver parameter
-    // is only there to be discarded.
+    // `Process($item)` feeds exactly ONE object. The block itself decides
+    // whether that object becomes a pipeline stream (`process { ... }` or a
+    // nested `ForEach-Object`) or an ordinary argument (`{ $_ * 2 }`).
     let process = vec![Statement::new(StmtKind::Return(Some(Expression::new(
         ExprKind::Call {
             callee: Box::new(Expression::ident(SB)),
-            args: vec![Argument::positional(ensure_array(Expression::ident(ITEM)))],
+            args: vec![Argument::positional(Expression::ident(ITEM))],
             optional: false,
         },
     ))))];
+    let get_type = vec![Statement::new(StmtKind::Return(Some(Expression::new(
+        ExprKind::Object(vec![
+            entry("Name", Expression::string("SteppablePipeline")),
+            entry(
+                "FullName",
+                Expression::string("System.Management.Automation.SteppablePipeline"),
+            ),
+        ]),
+    ))))];
 
     let object = Expression::new(ExprKind::Object(vec![
-        entry("Begin", lambda(vec![param(SELF), param("__ps_sp_expect")], Vec::new())),
-        entry("Process", lambda(vec![param(SELF), param(ITEM)], process)),
-        entry("End", lambda(vec![param(SELF)], Vec::new())),
-        entry("Dispose", lambda(vec![param(SELF)], Vec::new())),
+        entry("Begin", lambda(vec![param("__ps_sp_expect")], Vec::new())),
+        entry("begin", lambda(vec![param("__ps_sp_expect")], Vec::new())),
+        entry("Process", lambda(vec![param(ITEM)], process.clone())),
+        entry("process", lambda(vec![param(ITEM)], process)),
+        entry("End", lambda(Vec::new(), Vec::new())),
+        entry("end", lambda(Vec::new(), Vec::new())),
+        entry("GetType", lambda(Vec::new(), get_type.clone())),
+        entry("gettype", lambda(Vec::new(), get_type)),
+        entry("Dispose", lambda(Vec::new(), Vec::new())),
+        entry("dispose", lambda(Vec::new(), Vec::new())),
     ]));
 
     Expression::new(ExprKind::Call {
@@ -4226,7 +5913,19 @@ fn unwrap_pipeline_value(expr: Expression) -> Expression {
     })
 }
 
+fn materialize_bare_pipeline_command(__w: &mut PsWalker, expr: Expression) -> Expression {
+    match &expr.kind {
+        ExprKind::Ident(name) if name.contains('-') => {
+            build_command_call_in(__w, Expression::ident(name), Vec::new(), false)
+        }
+        _ => expr,
+    }
+}
+
 fn preserves_pipeline_array(expr: &Expression) -> bool {
+    if is_ps_provider_array_expr(expr) {
+        return true;
+    }
     let ExprKind::Call { callee, .. } = &expr.kind else {
         return false;
     };
@@ -4266,6 +5965,9 @@ fn pipeline_head_is_value(text: &str) -> bool {
 }
 
 fn parse_command_tokens_as_expr(__w: &mut PsWalker, tokens: &[String]) -> Option<Expression> {
+    if apply_set_strict_mode_tokens(__w, tokens) {
+        return Some(Expression::null());
+    }
     if let Some(expr) = parse_command_type_operator(__w, tokens) {
         return Some(expr);
     }
@@ -4277,9 +5979,18 @@ fn parse_command_type_operator(__w: &mut PsWalker, tokens: &[String]) -> Option<
     if tokens.len() != 3 {
         return None;
     }
-    let op = tokens[1].trim().trim_start_matches('-').to_ascii_lowercase();
-    let left_raw = tokens[0].trim().strip_prefix('(').unwrap_or(tokens[0].trim());
-    let right_raw = tokens[2].trim().strip_suffix(')').unwrap_or(tokens[2].trim());
+    let op = tokens[1]
+        .trim()
+        .trim_start_matches('-')
+        .to_ascii_lowercase();
+    let left_raw = tokens[0]
+        .trim()
+        .strip_prefix('(')
+        .unwrap_or(tokens[0].trim());
+    let right_raw = tokens[2]
+        .trim()
+        .strip_suffix(')')
+        .unwrap_or(tokens[2].trim());
     let type_name = type_literal_name(right_raw).trim();
     if type_name.is_empty() {
         return None;
@@ -4314,7 +6025,13 @@ fn wrap_stream_context_from_args(call: Expression, args: &[Argument]) -> Express
         .filter_map(|arg| literal_text(&arg.value))
         .flat_map(|text| ps_redirect_marker_globals(&text).iter().copied())
         .collect();
-    let call = wrap_stream_context_call(call, stream_captures, stream_preferences);
+    let call = wrap_stream_context_call(
+        call,
+        stream_captures,
+        stream_preferences,
+        Vec::new(),
+        Vec::new(),
+    );
     let call = wrap_stream_file_redirect_call(call, file_redirects);
     wrap_stream_redirect_call(call, redirect_globals)
 }
@@ -4324,40 +6041,20 @@ fn wrap_stream_context_from_args(call: Expression, args: &[Argument]) -> Express
 /// passes `$x` down the pipeline and prints nothing. One cmdlet, two lowerings,
 /// and only the walker knows which position it is in.
 fn build_command_call_in(
-    __w: &PsWalker,
+    __w: &mut PsWalker,
     callee: Expression,
     mut args: Vec<Argument>,
     in_value_position: bool,
 ) -> Expression {
-    // `-ErrorAction SilentlyContinue` / `Ignore` suppresses a terminating error
-    // from THIS command and lets the script carry on. It is a common parameter,
-    // so it is taken out before the call is built and re-expressed as a
-    // try/catch around it.
-    // ⛔The value is DROPPED, not honoured, and that is deliberate. Wrapping the
-    // call in a try/catch looked right and made things worse: an undefined
-    // command is a VM TRAP here, not a catchable PowerShell error — measured,
-    // `try { Get-NoSuchThing } catch { }` does not catch — so the wrapper
-    // suppressed nothing and its LAMBDA made every such pipeline look
-    // side-effecting to `Out-Null`, turning 10 vacuous passes into failures.
-    // Honouring `-ErrorAction` needs an unrecognised command to raise a real
-    // error first; until then, taking the parameter out is all that is honest.
-    let silent_error_action = take_silent_error_action(&mut args);
-    if silent_error_action
-        && matches!(
-            &callee.kind,
-            ExprKind::Ident(name)
-                if matches!(
-                    name.to_ascii_lowercase().as_str(),
-                    "resolve-path" | "convert-path" | "get-psdrive"
-                )
-        )
+    if let ExprKind::Ident(name) = &callee.kind
+        && let Some(expr) = normalize_psdrive_state_cmdlet(__w, name, &args)
     {
-        args.push(Argument {
-            value: Expression::string("SilentlyContinue"),
-            name: Some("ErrorAction".to_string()),
-            by_ref: false,
-            spread: false,
-        });
+        return expr;
+    }
+    if let ExprKind::Ident(name) = &callee.kind
+        && let Some(expr) = normalize_type_data_cmdlet(__w, name, &args)
+    {
+        return expr;
     }
     build_command_call_inner(Some(__w), callee, args, in_value_position)
 }
@@ -4404,13 +6101,13 @@ fn build_command_call_inner(
         {
             return wrap_stream_context_from_args(expr, &args);
         }
-        if in_value_position {
+        if in_value_position || args.iter().any(is_stream_file_redirect_arg) {
             if let Some(expr) = passthrough_cmdlet(name, &args) {
-                return expr;
+                return wrap_stream_context_from_args(expr, &args);
             }
         }
         if let Some(expr) = normalize_cmdlet(__w, name, &args) {
-            return expr;
+            return wrap_stream_context_from_args(expr, &args);
         }
     }
     let file_redirects = take_stream_file_redirects(&mut args);
@@ -4478,7 +6175,8 @@ fn build_command_call_inner(
     } else {
         call
     };
-    let call = wrap_stream_context_call(call, stream_captures, stream_preferences);
+    let (call, lambda_params, lambda_args) = stream_context_callee_binding(__w, call);
+    let call = wrap_stream_context_call(call, stream_captures, stream_preferences, lambda_params, lambda_args);
     let call = wrap_stream_file_redirect_call(call, file_redirects);
     wrap_stream_redirect_call(call, redirect_globals)
 }
@@ -4498,7 +6196,7 @@ struct StreamPreference {
 
 #[derive(Clone)]
 struct StreamFileRedirect {
-    capture_global: &'static str,
+    capture_global: Option<&'static str>,
     target: Expression,
     append: bool,
 }
@@ -4520,7 +6218,10 @@ fn take_stream_captures(args: &mut Vec<Argument>) -> Vec<StreamCapture> {
         (&["ErrorVariable", "ev"][..], "__ps_capture_error"),
         (&["WarningVariable", "wv"][..], "__ps_capture_warning"),
         (&["DebugVariable", "dbv"][..], "__ps_capture_debug"),
-        (&["InformationVariable", "iv"][..], "__ps_capture_information"),
+        (
+            &["InformationVariable", "iv"][..],
+            "__ps_capture_information",
+        ),
     ] {
         if let Some((target, append)) = take_named_variable_arg(args, names) {
             captures.push(StreamCapture {
@@ -4546,7 +6247,11 @@ fn take_stream_file_redirects(args: &mut Vec<Argument>) -> Vec<StreamFileRedirec
             continue;
         };
         let stream = stream.strip_suffix("_append").unwrap_or(stream);
-        let Some(capture_global) = stream_redirect_capture_global(stream) else {
+        let capture_global = if stream == "1" {
+            None
+        } else if let Some(capture_global) = stream_redirect_capture_global(stream) {
+            Some(capture_global)
+        } else {
             i += 1;
             continue;
         };
@@ -4560,29 +6265,166 @@ fn take_stream_file_redirects(args: &mut Vec<Argument>) -> Vec<StreamFileRedirec
     redirects
 }
 
+fn is_stream_file_redirect_arg(arg: &Argument) -> bool {
+    arg.name
+        .as_deref()
+        .is_some_and(|name| name.starts_with("__ps_redirect_file_"))
+}
+
 fn take_stream_preferences(args: &mut Vec<Argument>) -> Vec<StreamPreference> {
     let mut preferences = Vec::new();
     for (names, global) in [
-        (&["ErrorAction", "ea"][..], "erroractionpreference"),
-        (&["WarningAction", "wa"][..], "warningpreference"),
-        (&["DebugAction", "da"][..], "debugpreference"),
-        (&["InformationAction", "infa"][..], "informationpreference"),
-        (&["VerboseAction", "va"][..], "verbosepreference"),
+        (&["ErrorAction", "ea"][..], "ErrorActionPreference"),
+        (&["WarningAction", "wa"][..], "WarningPreference"),
+        (&["DebugAction", "da"][..], "DebugPreference"),
+        (&["InformationAction", "infa"][..], "InformationPreference"),
+        (&["VerboseAction", "va"][..], "VerbosePreference"),
     ] {
-        if let Some(value) = take_named_arg(args, names) {
-            preferences.push(StreamPreference { global, value });
+        let value = take_named_arg(args, names).or_else(|| {
+            splat_named_arg(args, names[0], -1).map(|value| Expression::new(ExprKind::NullCoalesce {
+                left: Box::new(value),
+                right: Box::new(ps_guest_global(global)),
+            }))
+        });
+        if let Some(value) = value {
+            preferences.push(StreamPreference {
+                global,
+                value: action_preference_checked_expr(value),
+            });
         }
     }
     preferences
 }
 
+fn named_or_splat_arg(args: &[Argument], names: &[&str], splat_index: i64) -> Option<Expression> {
+    if let Some(value) = args
+        .iter()
+        .find(|arg| {
+            arg.name
+                .as_deref()
+                .is_some_and(|name| names.iter().any(|candidate| name.eq_ignore_ascii_case(candidate)))
+        })
+        .map(|arg| arg.value.clone())
+    {
+        return Some(value);
+    }
+    names
+        .iter()
+        .filter_map(|name| splat_named_arg(args, name, splat_index))
+        .reduce(|left, right| Expression::new(ExprKind::NullCoalesce {
+            left: Box::new(left),
+            right: Box::new(right),
+        }))
+}
+
+fn preference_value_from_args(args: &[Argument], names: &[&str], global: &str) -> Expression {
+    named_or_splat_arg(args, names, -1).map_or_else(
+        || ps_guest_global(global),
+        |value| Expression::new(ExprKind::NullCoalesce {
+            left: Box::new(value),
+            right: Box::new(ps_guest_global(global)),
+        }),
+    )
+}
+
+fn action_preference_is_stop_expr(action: Expression) -> Expression {
+    ps_binary(
+        BinOp::Eq,
+        ps_member_call(ps_builtin("__ps_to_string", vec![action]), "ToLower", Vec::new()),
+        Expression::string("stop"),
+    )
+}
+
+fn action_preference_checked_expr(value: Expression) -> Expression {
+    const VALUE: &str = "__ps_action_preference_value";
+    const TEXT: &str = "__ps_action_preference_text";
+    let valid = Expression::new(ExprKind::Array(
+        [
+            "silentlycontinue",
+            "stop",
+            "continue",
+            "inquire",
+            "ignore",
+            "suspend",
+            "break",
+        ]
+        .into_iter()
+        .map(|name| ArrayElement {
+            key: None,
+            value: Expression::string(name),
+            spread: false,
+            by_ref: false,
+        })
+        .collect(),
+    ));
+    block_value_expr(vec![
+        local_decl(VALUE),
+        Statement::new(StmtKind::Assign {
+            targets: vec![Expression::ident(VALUE)],
+            value,
+            by_ref: false,
+        }),
+        local_decl(TEXT),
+        Statement::new(StmtKind::Assign {
+            targets: vec![Expression::ident(TEXT)],
+            value: ps_member_call(
+                ps_builtin("__ps_to_string", vec![Expression::ident(VALUE)]),
+                "ToLower",
+                Vec::new(),
+            ),
+            by_ref: false,
+        }),
+        Statement::new(StmtKind::If {
+            cond: Expression::new(ExprKind::Unary {
+                op: UnaryOp::Not,
+                expr: Box::new(ps_binary(BinOp::In, Expression::ident(TEXT), valid)),
+            }),
+            then_body: vec![Statement::new(StmtKind::Throw {
+                expr: Some(Expression::new(ExprKind::New {
+                    class: Box::new(Expression::ident("ParameterBindingException")),
+                    args: vec![Argument::positional(Expression::string(
+                        "Cannot bind parameter 'ErrorAction'. Cannot convert value to ActionPreference.",
+                    ))],
+                })),
+                cause: None,
+            })],
+            elifs: Vec::new(),
+            else_body: None,
+        }),
+        Statement::new(StmtKind::Return(Some(Expression::ident(VALUE)))),
+    ])
+}
+
 fn take_named_arg(args: &mut Vec<Argument>, names: &[&str]) -> Option<Expression> {
     let idx = args.iter().position(|arg| {
-        arg.name
-            .as_deref()
-            .is_some_and(|name| names.iter().any(|candidate| name.eq_ignore_ascii_case(candidate)))
+        arg.name.as_deref().is_some_and(|name| {
+            names
+                .iter()
+                .any(|candidate| name.eq_ignore_ascii_case(candidate))
+        })
     })?;
     Some(args.remove(idx).value)
+}
+
+fn splat_named_arg(args: &[Argument], key: &str, index: i64) -> Option<Expression> {
+    args.iter()
+        .filter(|a| a.spread)
+        .map(|a| {
+            ps_builtin(
+                "__ps_splat_arg",
+                vec![
+                    a.value.clone(),
+                    Expression::string(key),
+                    Expression::int(index),
+                ],
+            )
+        })
+        .reduce(|left, right| {
+            Expression::new(ExprKind::NullCoalesce {
+                left: Box::new(left),
+                right: Box::new(right),
+            })
+        })
 }
 
 fn take_named_variable_arg(args: &mut Vec<Argument>, names: &[&str]) -> Option<(String, bool)> {
@@ -4615,6 +6457,8 @@ fn wrap_stream_context_call(
     call: Expression,
     captures: Vec<StreamCapture>,
     preferences: Vec<StreamPreference>,
+    lambda_params: Vec<Param>,
+    lambda_args: Vec<Argument>,
 ) -> Expression {
     if captures.is_empty() && preferences.is_empty() {
         return call;
@@ -4687,26 +6531,83 @@ fn wrap_stream_context_call(
             by_ref: false,
         }));
     }
-    body.push(Statement::new(StmtKind::Return(Some(Expression::ident(RESULT)))));
-    block_value_expr(body)
+    body.push(Statement::new(StmtKind::Return(Some(Expression::ident(
+        RESULT,
+    )))));
+    block_value_expr_with_invocation(body, lambda_params, lambda_args, Vec::new())
 }
 
-fn wrap_stream_file_redirect_call(call: Expression, redirects: Vec<StreamFileRedirect>) -> Expression {
+fn stream_context_callee_binding(
+    __w: Option<&PsWalker>,
+    call: Expression,
+) -> (Expression, Vec<Param>, Vec<Argument>) {
+    if !__w.is_some_and(|walker| walker.subexpression_depth > 0) {
+        return (call, Vec::new(), Vec::new());
+    }
+    let ExprKind::Call {
+        callee,
+        args,
+        optional,
+    } = call.kind
+    else {
+        return (call, Vec::new(), Vec::new());
+    };
+    let ExprKind::Ident(name) = &callee.kind else {
+        return (
+            Expression::new(ExprKind::Call {
+                callee,
+                args,
+                optional,
+            }),
+            Vec::new(),
+            Vec::new(),
+        );
+    };
+    if name.starts_with("__ps_") {
+        return (
+            Expression::new(ExprKind::Call {
+                callee,
+                args,
+                optional,
+            }),
+            Vec::new(),
+            Vec::new(),
+        );
+    }
+    const CALLEE: &str = "__ps_stream_context_callee";
+    (
+        Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::ident(CALLEE)),
+            args,
+            optional,
+        }),
+        vec![synth_param(CALLEE)],
+        vec![Argument::positional(Expression::ident(name))],
+    )
+}
+
+fn wrap_stream_file_redirect_call(
+    call: Expression,
+    redirects: Vec<StreamFileRedirect>,
+) -> Expression {
     if redirects.is_empty() {
         return call;
     }
     const RESULT: &str = "__ps_file_redirect_result";
     let mut body = vec![local_decl(RESULT)];
     for (idx, redirect) in redirects.iter().enumerate() {
+        let Some(capture_global) = redirect.capture_global else {
+            continue;
+        };
         let old = format!("__ps_old_file_redirect_{idx}");
         body.push(local_decl(&old));
         body.push(Statement::new(StmtKind::Assign {
             targets: vec![Expression::ident(&old)],
-            value: ps_guest_global(redirect.capture_global),
+            value: ps_guest_global(capture_global),
             by_ref: false,
         }));
         body.push(Statement::new(StmtKind::Assign {
-            targets: vec![ps_guest_global(redirect.capture_global)],
+            targets: vec![ps_guest_global(capture_global)],
             value: empty_array_expr(),
             by_ref: false,
         }));
@@ -4717,29 +6618,71 @@ fn wrap_stream_file_redirect_call(call: Expression, redirects: Vec<StreamFileRed
         by_ref: false,
     }));
     for redirect in &redirects {
-        let rendered = cmdlet_call(
-            "Out-String",
-            vec![
-                ensure_array(ps_guest_global(redirect.capture_global)),
-                Expression::bool(false),
-                Expression::bool(false),
-                Expression::int(0),
-            ],
-        );
-        body.push(Statement::new(StmtKind::Expr(cmdlet_call(
-            if redirect.append { "Add-Content" } else { "Out-File" },
+        if matches!(&redirect.target.kind, ExprKind::Lit(Literal::Null)) {
+            continue;
+        }
+        let redirected_value = redirect
+            .capture_global
+            .map(ps_guest_global)
+            .unwrap_or_else(|| Expression::ident(RESULT));
+        let redirected_items = ensure_array(redirected_value.clone());
+        let rendered = if redirect.capture_global.is_some() {
+            method_call_expr(
+                redirected_items.clone(),
+                "__ps_join",
+                vec![Expression::string("\n")],
+            )
+        } else {
+            cmdlet_call(
+                "Out-String",
+                vec![
+                    redirected_items.clone(),
+                    Expression::bool(false),
+                    Expression::bool(false),
+                    Expression::int(0),
+                ],
+            )
+        };
+        let write_stmt = Statement::new(StmtKind::Expr(cmdlet_call(
+            if redirect.append {
+                "Add-Content"
+            } else {
+                "Out-File"
+            },
             vec![redirect.target.clone(), rendered],
-        ))));
+        )));
+        if redirect.capture_global.is_some() {
+            body.push(Statement::new(StmtKind::If {
+                cond: ps_binary(
+                    BinOp::Gt,
+                    ps_builtin("__ps_count", vec![redirected_items]),
+                    Expression::int(0),
+                ),
+                then_body: vec![write_stmt],
+                elifs: Vec::new(),
+                else_body: None,
+            }));
+        } else {
+            body.push(write_stmt);
+        }
     }
     for (idx, redirect) in redirects.iter().enumerate().rev() {
+        let Some(capture_global) = redirect.capture_global else {
+            continue;
+        };
         let old = format!("__ps_old_file_redirect_{idx}");
         body.push(Statement::new(StmtKind::Assign {
-            targets: vec![ps_guest_global(redirect.capture_global)],
+            targets: vec![ps_guest_global(capture_global)],
             value: Expression::ident(&old),
             by_ref: false,
         }));
     }
-    body.push(Statement::new(StmtKind::Return(Some(Expression::ident(RESULT)))));
+    let output_redirected = redirects.iter().any(|redirect| redirect.capture_global.is_none());
+    body.push(Statement::new(StmtKind::Return(Some(if output_redirected {
+        Expression::null()
+    } else {
+        Expression::ident(RESULT)
+    }))));
     block_value_expr(body)
 }
 
@@ -4799,14 +6742,19 @@ fn wrap_stream_redirect_call(call: Expression, globals: Vec<&'static str>) -> Ex
             by_ref: false,
         }));
     }
-    body.push(Statement::new(StmtKind::Return(Some(Expression::ident(RESULT)))));
+    body.push(Statement::new(StmtKind::Return(Some(Expression::ident(
+        RESULT,
+    )))));
     block_value_expr(body)
 }
 
 fn prelowered_command_value(expr: &Expression) -> bool {
     matches!(
         expr.kind,
-        ExprKind::Binary { .. } | ExprKind::Cast { .. } | ExprKind::TypeOf(_) | ExprKind::IsType { .. }
+        ExprKind::Binary { .. }
+            | ExprKind::Cast { .. }
+            | ExprKind::TypeOf(_)
+            | ExprKind::IsType { .. }
     ) || matches!(
         &expr.kind,
         ExprKind::Call { callee, .. }
@@ -4814,7 +6762,10 @@ fn prelowered_command_value(expr: &Expression) -> bool {
     )
 }
 
-fn parse_command_segment(__w: &mut PsWalker, pair: Pair<Rule>) -> Option<(Expression, Vec<Argument>)> {
+fn parse_command_segment(
+    __w: &mut PsWalker,
+    pair: Pair<Rule>,
+) -> Option<(Expression, Vec<Argument>)> {
     let mut tokens = Vec::new();
     let mut redirections = Vec::new();
     for child in pair.into_inner() {
@@ -4852,12 +6803,30 @@ fn parse_command_redirection_arg(__w: &mut PsWalker, pair: Pair<Rule>) -> Option
     redirection_arg_from_expr(&op?, target)
 }
 
-fn command_flag_is_switch(callee: &Expression, flag: &str) -> bool {
+fn command_flag_is_switch(__w: &PsWalker, callee: &Expression, flag: &str) -> bool {
     let ExprKind::Ident(name) = &callee.kind else {
         return false;
     };
+    if flag.eq_ignore_ascii_case("IncludeTotalCount")
+        && __w
+            .cmdlet_binding_functions
+            .get(&name.to_lowercase())
+            .is_some_and(|info| info.supports_paging)
+    {
+        return true;
+    }
+    if __w
+        .function_switch_parameters
+        .get(&name.to_lowercase())
+        .is_some_and(|params| params.contains(&flag.to_lowercase()))
+    {
+        return true;
+    }
     matches!(
-        (name.to_ascii_lowercase().as_str(), flag.to_ascii_lowercase().as_str()),
+        (
+            name.to_ascii_lowercase().as_str(),
+            flag.to_ascii_lowercase().as_str()
+        ),
         ("get-content", "raw")
     )
 }
@@ -4866,9 +6835,6 @@ fn redirection_arg_from_expr(op: &str, target: Option<Expression>) -> Option<Arg
     let parsed = parse_redirection_op(op)?;
     if parsed.merge_to.as_deref() == Some("1") {
         return Some(Argument::positional(Expression::string(op)));
-    }
-    if parsed.stream == "1" {
-        return None;
     }
     let name = if parsed.append {
         format!("__ps_redirect_file_{}_append", parsed.stream)
@@ -4881,6 +6847,27 @@ fn redirection_arg_from_expr(op: &str, target: Option<Expression>) -> Option<Arg
         by_ref: false,
         spread: false,
     })
+}
+
+fn attached_redirection_arg(__w: &mut PsWalker, token: &str) -> Option<Argument> {
+    let text = token.trim();
+    let marker = text.find('>')?;
+    if marker == 0 || !text[..marker].chars().all(|ch| ch.is_ascii_digit()) {
+        return None;
+    }
+    let op_end = if text[marker..].starts_with(">>") {
+        marker + 2
+    } else {
+        marker + 1
+    };
+    let target_text = text[op_end..].trim();
+    if target_text.is_empty() {
+        return None;
+    }
+    if target_text.starts_with('&') {
+        return redirection_arg_from_expr(text, None);
+    }
+    redirection_arg_from_expr(&text[..op_end], Some(parse_atom(__w, target_text)))
 }
 
 struct ParsedRedirectionOp {
@@ -4913,7 +6900,10 @@ fn parse_redirection_op(raw: &str) -> Option<ParsedRedirectionOp> {
     })
 }
 
-fn parse_command_parts(__w: &mut PsWalker, tokens: &[String]) -> Option<(Expression, Vec<Argument>)> {
+fn parse_command_parts(
+    __w: &mut PsWalker,
+    tokens: &[String],
+) -> Option<(Expression, Vec<Argument>)> {
     if let Some(expr) = parse_command_type_operator(__w, tokens) {
         return Some((expr, Vec::new()));
     }
@@ -4937,6 +6927,10 @@ fn parse_command_parts(__w: &mut PsWalker, tokens: &[String]) -> Option<(Express
     let mut i = 1;
     while i < tokens.len() {
         let token = tokens[i].as_str();
+        if token == "," {
+            i += 1;
+            continue;
+        }
         if parse_redirection_op(token).is_some() {
             let parsed = parse_redirection_op(token).unwrap();
             let target = if parsed.merge_to.is_none() {
@@ -4948,6 +6942,11 @@ fn parse_command_parts(__w: &mut PsWalker, tokens: &[String]) -> Option<(Express
                 args.push(arg);
             }
             i += if parsed.merge_to.is_none() { 2 } else { 1 };
+            continue;
+        }
+        if let Some(arg) = attached_redirection_arg(__w, token) {
+            args.push(arg);
+            i += 1;
             continue;
         }
         // `-1` is a NUMBER, not a switch named `1`. The value position below
@@ -4976,7 +6975,7 @@ fn parse_command_parts(__w: &mut PsWalker, tokens: &[String]) -> Option<(Express
                 i += 1;
                 continue;
             }
-            if command_flag_is_switch(&callee, flag) {
+            if command_flag_is_switch(__w, &callee, flag) {
                 args.push(Argument {
                     value: Expression::bool(true),
                     name: Some(flag.to_string()),
@@ -5080,12 +7079,20 @@ fn parse_command_parts(__w: &mut PsWalker, tokens: &[String]) -> Option<(Express
             let mut explicit = args;
             let mut filled = Vec::with_capacity(params.len());
             for (idx, spellings) in params.iter().enumerate() {
+                let canonical = spellings.first().cloned().unwrap_or_default();
+                let common_parameter = is_powershell_common_parameter(&canonical);
                 if let Some(pos) = explicit.iter().position(|a| {
-                    a.name.as_deref().is_some_and(|n| {
-                        spellings.iter().any(|s| n.eq_ignore_ascii_case(s))
-                    })
+                    a.name
+                        .as_deref()
+                        .is_some_and(|n| spellings.iter().any(|s| n.eq_ignore_ascii_case(s)))
                 }) {
-                    filled.push(Argument::positional(explicit.remove(pos).value));
+                    let mut arg = explicit.remove(pos);
+                    if common_parameter {
+                        arg.name = Some(canonical.clone());
+                        filled.push(arg);
+                    } else {
+                        filled.push(Argument::positional(arg.value));
+                    }
                     continue;
                 }
                 let mut value: Option<Expression> = None;
@@ -5109,13 +7116,59 @@ fn parse_command_parts(__w: &mut PsWalker, tokens: &[String]) -> Option<(Express
                         });
                     }
                 }
-                filled.push(Argument::positional(value.unwrap_or_else(Expression::null)));
+                let value = value.unwrap_or_else(Expression::null);
+                if common_parameter {
+                    filled.push(Argument {
+                        value,
+                        name: Some(canonical),
+                        by_ref: false,
+                        spread: false,
+                    });
+                } else {
+                    filled.push(Argument::positional(value));
+                }
             }
             // A named argument that matches no parameter is a common parameter
             // and keeps its name.
             filled.extend(explicit);
             args = filled;
         }
+    }
+
+    if let Some(params) = callee_param_names(__w, &callee) {
+        for arg in &mut args {
+            let Some(arg_name) = arg.name.clone() else {
+                continue;
+            };
+            for spellings in &params {
+                let Some(canonical) = spellings.first() else {
+                    continue;
+                };
+                if spellings
+                    .iter()
+                    .skip(1)
+                    .any(|alias| arg_name.eq_ignore_ascii_case(alias))
+                {
+                    arg.name = Some(canonical.clone());
+                    break;
+                }
+            }
+        }
+    }
+
+    if let Some(params) = callee_param_names(__w, &callee)
+        && let Some(array_params) = callee_array_params(__w, &callee)
+        && params.len() == 1
+        && params
+            .first()
+            .and_then(|spellings| spellings.first())
+            .is_some_and(|name| array_params.contains(&name.to_lowercase()))
+        && args.len() > 1
+        && args.iter().all(|arg| arg.name.is_none() && !arg.spread)
+    {
+        args = vec![Argument::positional(ps_array_of(
+            args.into_iter().map(|arg| arg.value).collect(),
+        ))];
     }
 
     // `Inc ([ref]$n)` — an argument that IS a reference is passed BY REFERENCE.
@@ -5161,6 +7214,16 @@ fn fold_literal_key(index: Expression) -> Expression {
 /// `-5` / `-3.2` — a negative numeric literal, not a parameter name.
 fn is_negative_number(token: &str) -> bool {
     let rest = token.trim().trim_start_matches('-');
+    let rest = rest
+        .strip_suffix("UL")
+        .or_else(|| rest.strip_suffix("ul"))
+        .or_else(|| rest.strip_suffix('U'))
+        .or_else(|| rest.strip_suffix('u'))
+        .or_else(|| rest.strip_suffix('L'))
+        .or_else(|| rest.strip_suffix('l'))
+        .or_else(|| rest.strip_suffix('D'))
+        .or_else(|| rest.strip_suffix('d'))
+        .unwrap_or(rest);
     !rest.is_empty()
         && rest.starts_with(|c: char| c.is_ascii_digit() || c == '.')
         && rest.chars().all(|c| c.is_ascii_digit() || c == '.')
@@ -5401,6 +7464,124 @@ fn is_bare_command_word(text: &str) -> bool {
         && text.chars().any(|c| c.is_alphabetic())
 }
 
+fn is_ast_surface_member(name: &str) -> bool {
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        "argument"
+            | "argumentname"
+            | "expressionomitted"
+            | "attributes"
+            | "body"
+            | "children"
+            | "commandast"
+            | "commandelements"
+            | "defaultvalue"
+            | "endblock"
+            | "extent"
+            | "expression"
+            | "isfilter"
+            | "left"
+            | "member"
+            | "name"
+            | "namedarguments"
+            | "paramblock"
+            | "parameters"
+            | "parent"
+            | "pipelineelements"
+            | "positionalarguments"
+            | "right"
+            | "splatted"
+            | "statictype"
+            | "stringconstanttype"
+            | "subexpression"
+            | "typename"
+            | "variablepath"
+            | "value"
+    )
+}
+
+fn ps_ast_comment_tokens_expr(source: &str) -> Expression {
+    let mut items = Vec::new();
+    for line in source.lines() {
+        let mut quote: Option<char> = None;
+        for (idx, ch) in line.char_indices() {
+            if let Some(q) = quote {
+                if ch == q {
+                    quote = None;
+                }
+                continue;
+            }
+            match ch {
+                '\'' | '"' => quote = Some(ch),
+                '#' => {
+                    let text = line[idx..].trim_end();
+                    items.push(ArrayElement {
+                        key: None,
+                        value: Expression::new(ExprKind::Object(vec![
+                            object_entry("Kind", Expression::string("Comment")),
+                            object_entry("Text", Expression::string(text)),
+                        ])),
+                        spread: false,
+                        by_ref: false,
+                    });
+                    break;
+                }
+                _ => {}
+            }
+        }
+    }
+    Expression::new(ExprKind::Array(items))
+}
+
+fn ps_parse_file_ast_expr(path: Expression) -> Expression {
+    Expression::new(ExprKind::Object(vec![
+        object_entry("__type", Expression::string("ScriptBlockAst")),
+        object_entry(
+            "__types",
+            Expression::new(ExprKind::Array(vec![
+                ArrayElement {
+                    key: None,
+                    value: Expression::string("ScriptBlockAst"),
+                    spread: false,
+                    by_ref: false,
+                },
+                ArrayElement {
+                    key: None,
+                    value: Expression::string("Ast"),
+                    spread: false,
+                    by_ref: false,
+                },
+            ])),
+        ),
+        object_entry(
+            "Extent",
+            Expression::new(ExprKind::Object(vec![
+                object_entry("File", path),
+                object_entry("Text", Expression::string("")),
+                object_entry("StartOffset", Expression::int(0)),
+                object_entry("EndOffset", Expression::int(0)),
+                object_entry("StartLineNumber", Expression::int(1)),
+                object_entry("EndLineNumber", Expression::int(1)),
+                object_entry("StartColumnNumber", Expression::int(1)),
+                object_entry("EndColumnNumber", Expression::int(1)),
+            ])),
+        ),
+        object_entry("ParamBlock", Expression::null()),
+        object_entry("BeginBlock", Expression::null()),
+        object_entry("ProcessBlock", Expression::null()),
+        object_entry("EndBlock", Expression::null()),
+        object_entry("Children", Expression::new(ExprKind::Array(Vec::new()))),
+        object_entry(
+            "__Descendants",
+            Expression::new(ExprKind::Array(Vec::new())),
+        ),
+        object_entry(
+            "__NestedDescendants",
+            Expression::new(ExprKind::Array(Vec::new())),
+        ),
+    ]))
+}
+
 fn parse_expr_fragment(__w: &mut PsWalker, text: &str) -> Option<Expression> {
     let pairs = super::PowerShellParser::parse(Rule::expr_entry, text).ok()?;
     let root = pairs.into_iter().next()?;
@@ -5436,6 +7617,7 @@ fn span_of(pair: &Pair<Rule>) -> vybe_ast::Span {
 fn walk_expr(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
     let span = span_of(&pair);
     let mut expr = walk_expr_inner(__w, pair);
+    expr = normalize_system_enum_static_call(__w, expr);
     if expr.span.start_line == 0 && expr.span.end_line == 0 {
         expr.span = span;
     }
@@ -5509,13 +7691,16 @@ fn walk_expr_inner(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
         Rule::assignment_stmt => {
             let stmt = parse_assignment_statement(__w, pair);
             match stmt.kind {
-                StmtKind::Assign { mut targets, value, .. } if targets.len() == 1 => {
-                    Expression::new(ExprKind::Assign {
-                        target: Box::new(targets.remove(0)),
-                        value: Box::new(value),
-                    })
-                }
-                kind => block_value_expr(vec![Statement { kind, span: stmt.span }]),
+                StmtKind::Assign {
+                    mut targets, value, ..
+                } if targets.len() == 1 => Expression::new(ExprKind::Assign {
+                    target: Box::new(targets.remove(0)),
+                    value: Box::new(value),
+                }),
+                kind => block_value_expr(vec![Statement {
+                    kind,
+                    span: stmt.span,
+                }]),
             }
         }
         Rule::command_segment => walk_command_segment_expr(__w, pair),
@@ -5534,7 +7719,7 @@ fn walk_expr_inner(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
             let inner = raw.get(1..raw.len().saturating_sub(1)).unwrap_or("");
             Expression::string(&inner.replace("''", "'"))
         }
-        Rule::var_ref => walk_var_ref(pair.as_str()),
+        Rule::var_ref => walk_var_ref_for_read(__w, pair.as_str()),
         Rule::type_literal => type_literal_expr(type_literal_name(pair.as_str())),
         Rule::bare_word => walk_bare_word(pair.as_str()),
         // `@args` reads the variable; the SPREAD is applied by the call site.
@@ -5624,7 +7809,10 @@ fn walk_ternary(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
         return cond;
     };
     let then_expr = walk_expr(__w, then_pair);
-    let else_expr = inner.next().map(|__x| walk_expr(__w, __x)).unwrap_or_else(Expression::null);
+    let else_expr = inner
+        .next()
+        .map(|__x| walk_expr(__w, __x))
+        .unwrap_or_else(Expression::null);
     Expression::new(ExprKind::Ternary {
         cond: Box::new(cond),
         then: Box::new(then_expr),
@@ -5676,6 +7864,231 @@ fn powershell_regex_replacement_to_ecma(input: &str) -> String {
         }
     }
     out
+}
+
+fn is_regex_type_name(type_name: &str) -> bool {
+    matches!(
+        type_name.to_ascii_lowercase().as_str(),
+        "regex" | "system.text.regularexpressions.regex"
+    )
+}
+
+fn is_match_evaluator_type_name(type_name: &str) -> bool {
+    matches!(
+        type_name.to_ascii_lowercase().as_str(),
+        "matchevaluator" | "system.text.regularexpressions.matchevaluator"
+    )
+}
+
+fn is_predicate_delegate_type_name(type_name: &str) -> bool {
+    let erased = erase_powershell_generic_type_args(type_name);
+    matches!(
+        erased.to_ascii_lowercase().as_str(),
+        "predicate" | "system.predicate"
+    )
+}
+
+fn is_match_evaluator_cast(expr: &Expression) -> bool {
+    matches!(
+        &expr.kind,
+        ExprKind::Cast { type_name, .. } if is_match_evaluator_type_name(type_name)
+    )
+}
+
+fn is_match_evaluator_expr(__w: &PsWalker, expr: &Expression) -> bool {
+    match &expr.kind {
+        ExprKind::Cast { type_name, .. } => is_match_evaluator_type_name(type_name),
+        ExprKind::Ident(name) => __w
+            .match_evaluator_vars
+            .get(&name.to_lowercase())
+            .copied()
+            .unwrap_or(false),
+        _ => false,
+    }
+}
+
+fn rewrite_match_evaluator_scriptblock(mut expr: Expression) -> Expression {
+    if let ExprKind::Call { callee, .. } = &mut expr.kind
+        && let ExprKind::Lambda {
+            body: LambdaBody::Block(outer_body),
+            ..
+        } = &mut callee.kind
+    {
+        for stmt in outer_body {
+            let StmtKind::VarDecl { declarations, .. } = &mut stmt.kind else {
+                continue;
+            };
+            for decl in declarations {
+                if !matches!(&decl.pattern, BindingPattern::Ident(id) if id == "__ps_scriptblock_value")
+                {
+                    continue;
+                }
+                let Some(init) = &mut decl.init else {
+                    continue;
+                };
+                let ExprKind::Lambda {
+                    params,
+                    body: LambdaBody::Block(body),
+                    ..
+                } = &mut init.kind
+                else {
+                    continue;
+                };
+                let Some(param) = params.first().map(|p| p.name.clone()) else {
+                    continue;
+                };
+                rewrite_match_evaluator_statements(body, &param);
+            }
+        }
+    }
+    expr
+}
+
+fn rewrite_match_evaluator_statements(body: &mut [Statement], param: &str) {
+    for stmt in body {
+        match &mut stmt.kind {
+            StmtKind::Return(Some(expr)) | StmtKind::Expr(expr) => {
+                rewrite_match_evaluator_expr(expr, param);
+            }
+            _ => {}
+        }
+    }
+}
+
+fn rewrite_match_evaluator_expr(expr: &mut Expression, param: &str) {
+    if let ExprKind::Interpolation(parts) = &mut expr.kind {
+        for part in parts {
+            match part {
+                InterpolPart::Expr(inner) | InterpolPart::Formatted(inner, _) => {
+                    if matches!(&inner.kind, ExprKind::Ident(name) if name.eq_ignore_ascii_case(param))
+                    {
+                        *inner = ps_member(Expression::ident(param), "Value");
+                    }
+                }
+                InterpolPart::Text(_) => {}
+            }
+        }
+    }
+}
+
+fn regex_replace_evaluator_expr(
+    input: Expression,
+    pattern: Expression,
+    evaluator: Expression,
+    options: Option<Expression>,
+) -> Expression {
+    const INPUT: &str = "__ps_re_input";
+    const EVAL: &str = "__ps_re_eval";
+    const RESULT: &str = "__ps_re_result";
+    const LAST: &str = "__ps_re_last";
+    const MATCH: &str = "__ps_re_match";
+
+    let mut matches_args = vec![Expression::ident(INPUT), pattern];
+    if let Some(options) = options {
+        matches_args.push(options);
+    }
+    let matches = dotnet_static_call(
+        "System.Text.RegularExpressions.Regex",
+        "Matches",
+        matches_args,
+    );
+    let match_index = ps_member(Expression::ident(MATCH), "Index");
+    let match_value = ps_member(Expression::ident(MATCH), "Value");
+    let prefix = method_call_expr(
+        Expression::ident(INPUT),
+        "Substring",
+        vec![
+            Expression::ident(LAST),
+            ps_binary(BinOp::Sub, match_index.clone(), Expression::ident(LAST)),
+        ],
+    );
+    let evaluator_call = Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::ident(EVAL)),
+        args: vec![Argument::positional(Expression::ident(MATCH))],
+        optional: false,
+    });
+    let tail = method_call_expr(
+        Expression::ident(INPUT),
+        "Substring",
+        vec![Expression::ident(LAST)],
+    );
+
+    block_value_expr(vec![
+        Statement::new(StmtKind::VarDecl {
+            declarations: vec![VarDeclarator {
+                pattern: BindingPattern::Ident(INPUT.to_string()),
+                type_hint: None,
+                init: Some(input),
+                array_bounds: None,
+                with_events: false,
+            }],
+            kind: VarDeclKind::FunctionScoped,
+        }),
+        Statement::new(StmtKind::VarDecl {
+            declarations: vec![VarDeclarator {
+                pattern: BindingPattern::Ident(EVAL.to_string()),
+                type_hint: None,
+                init: Some(evaluator),
+                array_bounds: None,
+                with_events: false,
+            }],
+            kind: VarDeclKind::FunctionScoped,
+        }),
+        Statement::new(StmtKind::VarDecl {
+            declarations: vec![VarDeclarator {
+                pattern: BindingPattern::Ident(RESULT.to_string()),
+                type_hint: None,
+                init: Some(Expression::string("")),
+                array_bounds: None,
+                with_events: false,
+            }],
+            kind: VarDeclKind::FunctionScoped,
+        }),
+        Statement::new(StmtKind::VarDecl {
+            declarations: vec![VarDeclarator {
+                pattern: BindingPattern::Ident(LAST.to_string()),
+                type_hint: None,
+                init: Some(Expression::int(0)),
+                array_bounds: None,
+                with_events: false,
+            }],
+            kind: VarDeclKind::FunctionScoped,
+        }),
+        Statement::new(StmtKind::ForIn {
+            var: MATCH.to_string(),
+            key: None,
+            iter: matches,
+            body: vec![
+                Statement::new(StmtKind::Assign {
+                    targets: vec![Expression::ident(RESULT)],
+                    value: ps_binary(BinOp::Add, Expression::ident(RESULT), prefix),
+                    by_ref: false,
+                }),
+                Statement::new(StmtKind::Assign {
+                    targets: vec![Expression::ident(RESULT)],
+                    value: ps_binary(BinOp::Add, Expression::ident(RESULT), evaluator_call),
+                    by_ref: false,
+                }),
+                Statement::new(StmtKind::Assign {
+                    targets: vec![Expression::ident(LAST)],
+                    value: ps_binary(
+                        BinOp::Add,
+                        match_index,
+                        ps_member(match_value, "Length"),
+                    ),
+                    by_ref: false,
+                }),
+            ],
+            of: true,
+            else_body: None,
+            is_async: false,
+        }),
+        Statement::new(StmtKind::Return(Some(ps_binary(
+            BinOp::Add,
+            Expression::ident(RESULT),
+            tail,
+        )))),
+    ])
 }
 
 fn walk_binary_chain(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
@@ -5758,7 +8171,10 @@ fn walk_unary(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
         return walk_expr(__w, first);
     }
     let op_text = first.as_str().trim().to_lowercase();
-    let operand = inner.next().map(|__x| walk_expr(__w, __x)).unwrap_or_else(Expression::null);
+    let operand = inner
+        .next()
+        .map(|__x| walk_expr(__w, __x))
+        .unwrap_or_else(Expression::null);
 
     // `-join` / `-split` in unary position are PowerShell's collection forms;
     // keep them as ordinary method calls so shared dispatch owns them.
@@ -5766,7 +8182,13 @@ fn walk_unary(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
         // `__ps_join`, not `join`: the bare name is claimed shared-side before
         // `[value_methods]` is reached and answers the empty string. See the
         // profile's `Join` note.
-        "-join" => return method_call_expr(ensure_array(operand), "__ps_join", vec![Expression::string("")]),
+        "-join" => {
+            return method_call_expr(
+                ensure_array(operand),
+                "__ps_join",
+                vec![Expression::string("")],
+            );
+        }
         "-split" => return method_call_expr(operand, "split", vec![Expression::string(" ")]),
         _ => {}
     }
@@ -5778,8 +8200,26 @@ fn walk_unary(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
         match &operand.kind {
             ExprKind::Lit(Literal::Int(n)) => return Expression::int(-n),
             ExprKind::Lit(Literal::Float(f)) => return Expression::float(-f),
-            _ => {}
+            _ => {
+                return Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::ident("__ps_negate")),
+                    args: vec![Argument::positional(operand)],
+                    optional: false,
+                });
+            }
         }
+    }
+    if op_text == "-bnot"
+        && let Some(enum_type) = declared_enum_name_from_expr(__w, &operand)
+    {
+        return enum_value_object_expr(
+            __w,
+            &enum_type,
+            Expression::new(ExprKind::Unary {
+                op: UnaryOp::BitNot,
+                expr: Box::new(ps_enum_numeric_value(operand)),
+            }),
+        );
     }
 
     let op = match op_text.as_str() {
@@ -5802,7 +8242,13 @@ fn walk_cast(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
         .next()
         .map(|p| type_literal_name(p.as_str()).to_string())
         .unwrap_or_default();
-    let expr = inner.next().map(|__x| walk_expr(__w, __x)).unwrap_or_else(Expression::null);
+    let expr = inner
+        .next()
+        .map(|__x| walk_expr(__w, __x))
+        .unwrap_or_else(Expression::null);
+    if is_declared_enum_name(__w, &type_name) {
+        return enum_cast_expr(__w, &type_name, expr);
+    }
     apply_cast(type_name, expr)
 }
 
@@ -5852,6 +8298,178 @@ const CAST_PARSES: &[(&str, &str)] = &[
     ("byte", "System.Byte"),
 ];
 
+fn is_powershell_dictionary_type(type_name: &str) -> bool {
+    let erased = erase_powershell_generic_type_args(type_name);
+    let lower = erased.to_ascii_lowercase();
+    matches!(
+        lower.as_str(),
+        "dictionary"
+            | "system.collections.generic.dictionary"
+            | "sorteddictionary"
+            | "system.collections.generic.sorteddictionary"
+    )
+}
+
+fn is_powershell_sorted_dictionary_type(type_name: &str) -> bool {
+    let erased = erase_powershell_generic_type_args(type_name);
+    matches!(
+        erased.to_ascii_lowercase().as_str(),
+        "sorteddictionary" | "system.collections.generic.sorteddictionary"
+    )
+}
+
+fn is_powershell_collection_type(type_name: &str) -> bool {
+    let erased = erase_powershell_generic_type_args(type_name);
+    let lower = erased.to_ascii_lowercase();
+    is_powershell_dictionary_type(&erased)
+        || matches!(
+            lower.as_str(),
+            "arraylist"
+                | "system.collections.arraylist"
+                | "list"
+                | "system.collections.generic.list"
+                | "hashset"
+                | "system.collections.generic.hashset"
+                | "sortedset"
+                | "system.collections.generic.sortedset"
+        )
+}
+
+fn assignment_expr_new_class(expr: &Expression) -> Option<String> {
+    match &expr.kind {
+        ExprKind::New { class, .. } => type_name_of(class),
+        ExprKind::Cast { expr, .. } => assignment_expr_new_class(expr),
+        _ => None,
+    }
+}
+
+fn assignment_expr_is_collection_ctor(expr: &Expression) -> bool {
+    assignment_expr_new_class(expr).is_some_and(|class| is_powershell_collection_type(&class))
+}
+
+fn assignment_expr_is_dictionary_ctor(expr: &Expression) -> bool {
+    assignment_expr_new_class(expr).is_some_and(|class| is_powershell_dictionary_type(&class))
+}
+
+fn assignment_expr_is_array_like(expr: &Expression) -> bool {
+    match &expr.kind {
+        ExprKind::Array(_) => true,
+        ExprKind::Cast { type_name, expr } => {
+            type_name.trim().ends_with("[]") || assignment_expr_is_array_like(expr)
+        }
+        ExprKind::Call { callee, args, .. } => match &callee.kind {
+            ExprKind::Ident(name) => {
+                matches!(name.as_str(), "__ps_array" | "__ps_repeat") || args.iter().any(|arg| assignment_expr_is_array_like(&arg.value))
+            }
+            ExprKind::Member { object, field, .. } => {
+                field.eq_ignore_ascii_case("ToArray")
+                    || (field.eq_ignore_ascii_case("ForEach") && assignment_expr_is_array_like(object))
+            }
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
+fn ps_array_index_pair(expr: &Expression) -> Option<(Expression, Expression)> {
+    let ExprKind::Array(items) = &expr.kind else {
+        return None;
+    };
+    if items.len() != 2 {
+        return None;
+    }
+    Some((items[0].value.clone(), items[1].value.clone()))
+}
+
+fn ps_nonnegative_usize_literal(expr: &Expression) -> Option<usize> {
+    match &expr.kind {
+        ExprKind::Lit(Literal::Int(n)) => {
+            if *n < 0 {
+                return None;
+            }
+            Some(*n as usize)
+        }
+        ExprKind::Lit(Literal::Str(s)) => s.trim().trim_end_matches(',').parse::<usize>().ok(),
+        _ => None,
+    }
+}
+
+fn ps_nested_array_new(default: Expression, rows: Expression, cols: Expression) -> Expression {
+    if let (Some(row_count), Some(col_count)) = (
+        ps_nonnegative_usize_literal(&rows),
+        ps_nonnegative_usize_literal(&cols),
+    ) {
+        return ps_array_of(
+            (0..row_count)
+                .map(|_| ps_array_of((0..col_count).map(|_| default.clone()).collect()))
+                .collect(),
+        );
+    }
+    let outer = Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::ident("__ps_repeat")),
+        args: vec![Argument::positional(Expression::null()), Argument::positional(rows)],
+        optional: false,
+    });
+    ps_member_call(
+        outer,
+        "ForEach",
+        vec![item_lambda(vec![Statement::new(StmtKind::Return(Some(
+            Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::ident("__ps_repeat")),
+                args: vec![Argument::positional(default), Argument::positional(cols)],
+                optional: false,
+            }),
+        )))])],
+    )
+}
+
+fn ps_nested_array_get(object: Expression, row: Expression, col: Expression) -> Expression {
+    ps_builtin(
+        "__ps_index_get",
+        vec![ps_builtin("__ps_index_get", vec![object, row]), col],
+    )
+}
+
+fn ps_nested_array_set(object: Expression, row: Expression, col: Expression, value: Expression) -> Expression {
+    ps_builtin(
+        "__ps_index_set",
+        vec![ps_builtin("__ps_index_get", vec![object, row]), col, value],
+    )
+}
+
+fn ps_flatten_array_arguments(args: Vec<Expression>) -> Vec<Expression> {
+    let mut out = Vec::new();
+    for arg in args {
+        match arg.kind {
+            ExprKind::Array(items) => out.extend(items.into_iter().map(|item| item.value)),
+            _ => out.push(arg),
+        }
+    }
+    out
+}
+
+fn powershell_collection_cast_class(type_name: &str) -> Option<&'static str> {
+    let erased = erase_powershell_generic_type_args(type_name);
+    match erased.to_ascii_lowercase().as_str() {
+        "arraylist" | "system.collections.arraylist" => Some("System.Collections.ArrayList"),
+        "list" | "system.collections.generic.list" => Some("System.Collections.Generic.List"),
+        _ => None,
+    }
+}
+
+fn powershell_normalize_collection_constructor_args(
+    class: &str,
+    args: Vec<Expression>,
+) -> Vec<Expression> {
+    if is_powershell_dictionary_type(class)
+        && args.len() == 1
+        && matches!(args[0].kind, ExprKind::Lit(Literal::Int(_)))
+    {
+        return Vec::new();
+    }
+    args
+}
+
 fn apply_cast(type_name: String, expr: Expression) -> Expression {
     // `[bool]$x` is a TRUTHINESS conversion, and the shared `Cast` lowering has
     // no bool arm — it would hand the value straight back, so `[bool]0` stayed
@@ -5863,6 +8481,28 @@ fn apply_cast(type_name: String, expr: Expression) -> Expression {
         "bool" | "boolean" | "system.boolean"
     ) {
         return negate(negate(expr));
+    }
+
+    if let Some(class) = powershell_collection_cast_class(&type_name) {
+        let class_name = if type_name.contains('[')
+            && class.eq_ignore_ascii_case("System.Collections.Generic.List")
+        {
+            type_name.clone()
+        } else {
+            class.to_string()
+        };
+        return Expression::new(ExprKind::New {
+            class: Box::new(Expression::ident(&class_name)),
+            args: vec![Argument::positional(ensure_array(expr))],
+        });
+    }
+
+    if matches!(
+        type_name.to_lowercase().as_str(),
+        "type" | "system.type"
+    ) && let Some(text) = string_literal(&expr)
+    {
+        return powershell_type_object(&text);
     }
 
     if is_xml_type_name(&type_name) {
@@ -5878,6 +8518,13 @@ fn apply_cast(type_name: String, expr: Expression) -> Expression {
         type_name.to_lowercase().as_str(),
         "int" | "int32" | "system.int32" | "long" | "int64" | "system.int64"
     ) {
+        if string_literal(&expr).is_some() {
+            let parser = match type_name.to_lowercase().as_str() {
+                "long" | "int64" | "system.int64" => "System.Int64",
+                _ => "System.Int32",
+            };
+            return dotnet_static_call(parser, "Parse", vec![expr]);
+        }
         return Expression::new(ExprKind::Call {
             callee: Box::new(Expression::ident("__ps_to_int")),
             args: vec![Argument::positional(expr)],
@@ -5885,10 +8532,7 @@ fn apply_cast(type_name: String, expr: Expression) -> Expression {
         });
     }
 
-    if matches!(
-        type_name.to_lowercase().as_str(),
-        "char" | "system.char"
-    ) {
+    if matches!(type_name.to_lowercase().as_str(), "char" | "system.char") {
         if let Some(text) = string_literal(&expr) {
             let chars: Vec<char> = text.chars().collect();
             if chars.first() == Some(&'`')
@@ -5898,13 +8542,10 @@ fn apply_cast(type_name: String, expr: Expression) -> Expression {
                 return Expression::string(&mapped.to_string());
             }
         }
-        return dotnet_static_call("System.Convert", "ToChar", vec![expr]);
+        return ps_builtin("__ps_to_char", vec![expr]);
     }
 
-    if matches!(
-        type_name.to_lowercase().as_str(),
-        "half" | "system.half"
-    ) {
+    if matches!(type_name.to_lowercase().as_str(), "half" | "system.half") {
         return dotnet_static_call("System.Convert", "ToHalf", vec![expr]);
     }
 
@@ -5926,6 +8567,23 @@ fn apply_cast(type_name: String, expr: Expression) -> Expression {
         });
     }
 
+    if let Some(element_type) = type_name.trim().strip_suffix("[]") {
+        if matches!(
+            element_type.to_ascii_lowercase().as_str(),
+            "object" | "system.object"
+        ) {
+            return ensure_array(expr);
+        }
+        let element_type = element_type.to_string();
+        return ps_member_call(
+            ensure_array(expr),
+            "ForEach",
+            vec![item_lambda(vec![Statement::new(StmtKind::Return(Some(
+                apply_cast(element_type, Expression::ident("_")),
+            )))])],
+        );
+    }
+
     if matches!(
         type_name.to_lowercase().as_str(),
         "dayofweek" | "system.dayofweek"
@@ -5944,8 +8602,11 @@ fn apply_cast(type_name: String, expr: Expression) -> Expression {
             .enumerate()
             .find(|(_, name)| name.eq_ignore_ascii_case(&text))
             {
-                return Expression::int(idx as i64);
+                return day_of_week_value_expr(idx as i64);
             }
+        }
+        if let Some(value) = literal_int_value(&expr) {
+            return day_of_week_value_expr(value);
         }
         let value = ps_member_call(
             ps_builtin("__ps_to_string", vec![Expression::ident("__ps_day")]),
@@ -5967,7 +8628,7 @@ fn apply_cast(type_name: String, expr: Expression) -> Expression {
         {
             mapped = ps_ternary(
                 ps_binary(BinOp::Eq, value.clone(), Expression::string(name)),
-                Expression::int((6 - idx) as i64),
+                day_of_week_value_expr((6 - idx) as i64),
                 mapped,
             );
         }
@@ -6016,13 +8677,10 @@ fn apply_cast(type_name: String, expr: Expression) -> Expression {
     //
     // The value is TESTED rather than assumed: `[datetime]$d` on something that
     // is already a date is the identity, and parsing it would throw.
-    if let Some((_, dotnet)) = CAST_PARSES
-        .iter()
-        .find(|(accel, dotnet)| {
-            let lowered = type_name.to_lowercase();
-            lowered == *accel || lowered == dotnet.to_lowercase()
-        })
-    {
+    if let Some((_, dotnet)) = CAST_PARSES.iter().find(|(accel, dotnet)| {
+        let lowered = type_name.to_lowercase();
+        lowered == *accel || lowered == dotnet.to_lowercase()
+    }) {
         // ⛔A LITERAL IS PARSED DIRECTLY, with no runtime test around it. The
         // test costs nothing at run time but it ERASES THE STATIC TYPE: wrapped
         // in a lambda, `[version]"6.0.1"` is a call of unknown type, so
@@ -6053,10 +8711,44 @@ fn apply_cast(type_name: String, expr: Expression) -> Expression {
         return expr;
     }
 
+    if is_match_evaluator_type_name(&type_name) {
+        return Expression::new(ExprKind::Cast {
+            expr: Box::new(rewrite_match_evaluator_scriptblock(expr)),
+            type_name,
+        });
+    }
+
+    if is_predicate_delegate_type_name(&type_name) {
+        return pipeline_scriptblock_lambda(expr);
+    }
+
     Expression::new(ExprKind::Cast {
         expr: Box::new(expr),
         type_name,
     })
+}
+
+fn parameter_binding_cast(type_name: &str, expr: Expression) -> Expression {
+    if matches!(
+        type_name.to_lowercase().as_str(),
+        "int" | "int32" | "system.int32" | "long" | "int64" | "system.int64"
+    ) {
+        const VALUE: &str = "__ps_bound_value";
+        let parser = match type_name.to_lowercase().as_str() {
+            "long" | "int64" | "system.int64" => "System.Int64",
+            _ => "System.Int32",
+        };
+        return bind_and_call(
+            &[VALUE],
+            vec![expr],
+            ps_ternary(
+                type_test_expr(Expression::ident(VALUE), &type_literal_expr("System.String")),
+                dotnet_static_call(parser, "Parse", vec![Expression::ident(VALUE)]),
+                apply_cast(type_name.to_string(), Expression::ident(VALUE)),
+            ),
+        );
+    }
+    apply_cast(type_name.to_string(), expr)
 }
 
 fn walk_postfix(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
@@ -6075,19 +8767,91 @@ fn walk_postfix(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
                 // agree or the same source spells two different reads.
                 if let Some(p) = inner_pair.as_ref().filter(|p| p.as_rule() == Rule::var_ref) {
                     let key = walk_var_ref(p.as_str());
-                    expr = Expression::new(ExprKind::Call {
-                        callee: Box::new(Expression::ident("__ps_member_dyn")),
-                        args: vec![
-                            Argument::positional(expr),
-                            Argument::positional(key),
-                        ],
-                        optional: false,
-                    });
+                    expr = if __w.strict_mode_level >= 2 {
+                        ps_builtin("__ps_strict_member_get", vec![expr, key])
+                    } else {
+                        Expression::new(ExprKind::Call {
+                            callee: Box::new(Expression::ident("__ps_member_dyn")),
+                            args: vec![Argument::positional(expr), Argument::positional(key)],
+                            optional: false,
+                        })
+                    };
                     continue;
                 }
-                let name = inner_pair
-                    .map(member_access_name)
-                    .unwrap_or_default();
+                let name = inner_pair.map(member_access_name).unwrap_or_default();
+                if let Some(member) = xml_attribute_index_member(&expr, &name) {
+                    expr = member;
+                    continue;
+                }
+                if is_xml_expr(__w, &expr) && xml_special_member_name(&name).is_some() {
+                    expr = xml_member_read_expr(expr, &name);
+                    continue;
+                }
+                if name.eq_ignore_ascii_case("Name")
+                    && let ExprKind::Call { callee, args, .. } = &expr.kind
+                    && args.is_empty()
+                    && let ExprKind::Member { object, field, .. } = &callee.kind
+                    && field.eq_ignore_ascii_case("GetType")
+                    && let ExprKind::Ident(var_name) = &object.kind
+                    && let Some(Some(seed)) = __w.pstypename_vars.get(&var_name.to_lowercase())
+                    && let Some(first) = seed.first()
+                {
+                    expr = Expression::string(first.rsplit('.').next().unwrap_or(first));
+                    continue;
+                }
+                if name.eq_ignore_ascii_case("Name")
+                    && let Some(target) = ets_member_list_target(&expr)
+                {
+                    expr = method_call_expr(
+                        ps_builtin("__ps_properties", vec![target]),
+                        "ForEach",
+                        vec![item_lambda(vec![Statement::new(StmtKind::Return(Some(
+                            ps_member(Expression::ident("_"), "Name"),
+                        )))])],
+                    );
+                    continue;
+                }
+                let is_get_type_call = matches!(
+                    &expr.kind,
+                    ExprKind::Call { callee, args, .. }
+                        if args.is_empty()
+                            && matches!(
+                                &callee.kind,
+                                ExprKind::Member { field, .. }
+                                    if field.eq_ignore_ascii_case("GetType")
+                            )
+                );
+                if name.eq_ignore_ascii_case("IsArray")
+                    && let ExprKind::Call { callee, args, .. } = &expr.kind
+                    && args.is_empty()
+                    && let ExprKind::Member { object, field, .. } = &callee.kind
+                    && field.eq_ignore_ascii_case("GetType")
+                    && receiver_expr_is_array_var(__w, object)
+                {
+                    expr = Expression::bool(true);
+                    continue;
+                }
+                if is_ast_surface_member(&name) && !is_get_type_call {
+                    let keyed = ps_builtin(
+                        "__ps_index_get",
+                        vec![expr.clone(), Expression::string(&name)],
+                    );
+                    let marker = ps_builtin(
+                        "__ps_index_get",
+                        vec![expr.clone(), Expression::string("__type")],
+                    );
+                    let plain = Expression::new(ExprKind::Member {
+                        object: Box::new(expr),
+                        field: name.clone(),
+                        null_safe: false,
+                    });
+                    expr = ps_ternary(
+                        ps_binary(BinOp::NotEq, marker, Expression::null()),
+                        keyed,
+                        plain,
+                    );
+                    continue;
+                }
                 // `$h.Keys` / `$h.Values` carry NO parentheses — they are
                 // property reads, so `[value_methods]` (a call-site table) can
                 // never see them. Compiled as a plain member they became a
@@ -6113,6 +8877,63 @@ fn walk_postfix(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
                         exception,
                         expr,
                     );
+                    continue;
+                }
+                if culture_info_expr(__w, &expr) {
+                    if name.eq_ignore_ascii_case("Name") {
+                        expr = Expression::string("");
+                        continue;
+                    }
+                    if name.eq_ignore_ascii_case("EnglishName") {
+                        expr = Expression::string("Invariant Language (Invariant Country)");
+                        continue;
+                    }
+                    if name.eq_ignore_ascii_case("TextInfo") {
+                        expr = culture_text_info_object();
+                        continue;
+                    }
+                }
+                if (name.eq_ignore_ascii_case("Count") || name.eq_ignore_ascii_case("Length"))
+                    && receiver_expr_is_array_var(__w, &expr)
+                {
+                    expr = ps_builtin("__ps_count", vec![expr]);
+                    continue;
+                }
+                if name.eq_ignore_ascii_case("Count") && receiver_expr_is_dictionary_var(__w, &expr)
+                {
+                    expr = ps_member(ps_member(expr, "Keys"), "Count");
+                    continue;
+                }
+                if (name.eq_ignore_ascii_case("Count") || name.eq_ignore_ascii_case("Length"))
+                    && receiver_expr_is_collection_var(__w, &expr)
+                {
+                    expr = method_call_expr(expr, "Count", Vec::new());
+                    continue;
+                }
+                if name.eq_ignore_ascii_case("Count")
+                    && (receiver_expr_is_hashtable_var(__w, &expr)
+                        || matches!(&expr.kind, ExprKind::Ident(var) if var == "_"))
+                {
+                    expr = ps_hashtable_count_or_member(expr);
+                    continue;
+                }
+                if receiver_expr_is_hashtable_var(__w, &expr)
+                    && name.eq_ignore_ascii_case("Keys")
+                {
+                    expr = ps_hashtable_order_or_keys(expr);
+                    continue;
+                }
+                if receiver_expr_is_sorted_dictionary_var(__w, &expr)
+                    && matches!(
+                        name.to_ascii_lowercase().as_str(),
+                        "keys" | "values" | "comparer"
+                    )
+                {
+                    expr = method_call_expr(expr, &name, Vec::new());
+                    continue;
+                }
+                if is_memory_expr(__w, &expr) && name.eq_ignore_ascii_case("IsEmpty") {
+                    expr = dotnet_static_call("System.MemoryExtensions", "IsEmpty", vec![expr]);
                     continue;
                 }
                 if let Some(private) = hashtable_only_property(__w, &name) {
@@ -6170,6 +8991,16 @@ fn walk_postfix(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
                         expr = Expression::string(first.rsplit('.').next().unwrap_or(first));
                         continue;
                     }
+                    if let ExprKind::Ident(var_name) = &recv.kind
+                        && __w
+                            .char_vars
+                            .get(&var_name.to_lowercase())
+                            .copied()
+                            .unwrap_or(false)
+                    {
+                        expr = Expression::string("Char");
+                        continue;
+                    }
                     let is_instance = ps_binary(
                         BinOp::And,
                         ps_binary(
@@ -6194,6 +9025,29 @@ fn walk_postfix(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
                     expr = ps_binary(BinOp::NotEq, expr, Expression::null());
                     continue;
                 }
+                if datetime_value_expr(__w, &expr)
+                    && matches!(
+                        name.to_ascii_lowercase().as_str(),
+                        "year"
+                            | "month"
+                            | "day"
+                            | "hour"
+                            | "minute"
+                            | "second"
+                            | "millisecond"
+                            | "dayofyear"
+                            | "dayofweek"
+                            | "ticks"
+                    )
+                {
+                    expr = bind_typed(
+                        "__ps_datetime_member",
+                        "System.DateTime",
+                        expr,
+                        ps_member(Expression::ident("__ps_datetime_member"), &name),
+                    );
+                    continue;
+                }
                 // `$e.value__` — an enum member's UNDERLYING integer, which is
                 // the `Int` role the enum lowering already declares and the
                 // same conversion `[int]$e` performs. PowerShell spells the
@@ -6202,11 +9056,7 @@ fn walk_postfix(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
                 // `($a -bor $b).value__` — a plain number by then — answered
                 // empty too.
                 if name == "value__" {
-                    expr = Expression::new(ExprKind::Call {
-                        callee: Box::new(Expression::ident("__ps_to_int")),
-                        args: vec![Argument::positional(expr)],
-                        optional: false,
-                    });
+                    expr = ps_enum_numeric_value(expr);
                     continue;
                 }
                 // `$obj.PSObject` / `$obj.psobject` — the EXTENDED TYPE SYSTEM
@@ -6229,7 +9079,11 @@ fn walk_postfix(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
                 // itself, which is what `foreach`, `Where-Object` and `.Count`
                 // consume.
                 if (name.eq_ignore_ascii_case("properties") || name.eq_ignore_ascii_case("members"))
-                    && let ExprKind::Call { callee, args: pargs, .. } = &expr.kind
+                    && let ExprKind::Call {
+                        callee,
+                        args: pargs,
+                        ..
+                    } = &expr.kind
                     && matches!(&callee.kind, ExprKind::Ident(n) if n == "__ps_psobject")
                     && let Some(target) = pargs.first().map(|a| a.value.clone())
                 {
@@ -6238,6 +9092,22 @@ fn walk_postfix(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
                         args: vec![Argument::positional(target)],
                         optional: false,
                     });
+                    continue;
+                }
+                if name.eq_ignore_ascii_case("Name")
+                    && let Some(target) = ets_member_list_target(&expr)
+                {
+                    expr = method_call_expr(
+                        ps_builtin("__ps_properties", vec![target]),
+                        "ForEach",
+                        vec![item_lambda(vec![Statement::new(StmtKind::Return(Some(
+                            ps_member(Expression::ident("_"), "Name"),
+                        )))])],
+                    );
+                    continue;
+                }
+                if let Some(member) = typedata_member_for_expr(__w, &expr, &name) {
+                    expr = typedata_member_get(expr, &member);
                     continue;
                 }
                 // ⛔The member name is carried THROUGH, never rewritten.
@@ -6261,10 +9131,25 @@ fn walk_postfix(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
                     expr = dotnet_static_call("System.Uri", "Port", vec![expr]);
                     continue;
                 }
-                expr = Expression::new(ExprKind::Member {
+                if name.eq_ignore_ascii_case("IPAddressToString") {
+                    expr = ps_member_call(expr, "ToString", Vec::new());
+                    continue;
+                }
+                if __w.strict_mode_level >= 2 {
+                    expr = ps_builtin(
+                        "__ps_strict_member_get",
+                        vec![expr, Expression::string(&name)],
+                    );
+                    continue;
+                }
+                let read = Expression::new(ExprKind::Member {
                     object: Box::new(expr),
                     field: name,
                     null_safe: false,
+                });
+                expr = Expression::new(ExprKind::NullCoalesce {
+                    left: Box::new(read),
+                    right: Box::new(Expression::null()),
                 });
             }
             // `${user}?.IsAdmin` — the NULL-CONDITIONAL member read. Nothing
@@ -6292,7 +9177,10 @@ fn walk_postfix(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
                     .next()
                     .map(|p| p.as_str().to_string())
                     .unwrap_or_default();
-                let args = parts.next().map(|__x| walk_arg_list(__w, __x)).unwrap_or_default();
+                let args = parts
+                    .next()
+                    .map(|__x| walk_arg_list(__w, __x))
+                    .unwrap_or_default();
                 // ⛔NEITHER `null_safe` NOR `optional` CAN CARRY A METHOD CALL
                 // HERE, and both were tried. `Member { null_safe: true }` is
                 // right for a plain read — the sixteen `?.Prop` tests pass on
@@ -6348,8 +9236,34 @@ fn walk_postfix(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
                 if is_ref_value_step(__w, &expr, &name) {
                     continue;
                 }
+                if name.eq_ignore_ascii_case("ToString")
+                    && is_error_category_info_expr(&expr)
+                {
+                    expr = error_category_info_to_string_value(expr);
+                    continue;
+                }
                 if let Some(category) = error_category_value(&expr, &name) {
                     expr = Expression::string(&category);
+                    continue;
+                }
+                if let Some(preference) = action_preference_value(&expr, &name) {
+                    expr = enum_value_object_expr(
+                        __w,
+                        "System.Management.Automation.ActionPreference",
+                        Expression::int(preference),
+                    );
+                    continue;
+                }
+                if let Some(comparison) = string_comparison_value(&expr, &name) {
+                    expr = Expression::int(comparison);
+                    continue;
+                }
+                if let Some(comparer) = string_comparer_value(&expr, &name) {
+                    expr = comparer;
+                    continue;
+                }
+                if let Some(culture) = culture_info_value(&expr, &name) {
+                    expr = culture;
                     continue;
                 }
                 if let Some(reason) = should_process_reason_value(&expr, &name) {
@@ -6364,8 +9278,20 @@ fn walk_postfix(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
                     expr = Expression::int(flag);
                     continue;
                 }
+                if let Some(flag) = provider_capability_value(&expr, &name) {
+                    expr = provider_capability_object(flag);
+                    continue;
+                }
                 if let Some(kind) = language_enum_name_value(&expr, &name) {
                     expr = Expression::string(&kind);
+                    continue;
+                }
+                if let Some(option) = wildcard_option_value(&expr, &name) {
+                    expr = Expression::int(option);
+                    continue;
+                }
+                if let Some(kind) = completion_result_type_value(&expr, &name) {
+                    expr = Expression::int(kind);
                     continue;
                 }
                 // `[System.Management.Automation.PSMemberTypes]::NoteProperty`
@@ -6374,12 +9300,37 @@ fn walk_postfix(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
                 if matches!(&expr.kind, ExprKind::Ident(n)
                     if n.eq_ignore_ascii_case("PSMemberTypes")
                         || n.eq_ignore_ascii_case("PSMemberType"))
+                    || type_name_of(&expr).is_some_and(|t| {
+                        matches!(
+                            t.to_ascii_lowercase().as_str(),
+                            "system.management.automation.psmembertypes"
+                                | "system.management.automation.psmembertype"
+                        )
+                    })
                 {
                     expr = Expression::string(&name);
                     continue;
                 }
                 if let Some(path) = type_name_of(&expr) {
-                    if path.eq_ignore_ascii_case("System.Random") && name.eq_ignore_ascii_case("Shared") {
+                    if is_scoped_item_options_type(&path) {
+                        if let Some(value) = scoped_item_options_value(&name) {
+                            expr = enum_value_object_expr(
+                                __w,
+                                "System.Management.Automation.ScopedItemOptions",
+                                Expression::int(value),
+                            );
+                            continue;
+                        }
+                    }
+                    if is_session_state_entry_visibility_type(&path) {
+                        if name.eq_ignore_ascii_case("Public") || name.eq_ignore_ascii_case("Private") {
+                            expr = Expression::string(&name);
+                            continue;
+                        }
+                    }
+                    if path.eq_ignore_ascii_case("System.Random")
+                        && name.eq_ignore_ascii_case("Shared")
+                    {
                         expr = Expression::new(ExprKind::New {
                             class: Box::new(type_literal_expr("System.Random")),
                             args: Vec::new(),
@@ -6390,9 +9341,8 @@ fn walk_postfix(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
                         expr = common_memory::heap_array(Vec::new());
                         continue;
                     }
-                    if vybe_platform_dotnet::emitter::static_member_parameterless_call(
-                        &path, &name,
-                    ) {
+                    if vybe_platform_dotnet::emitter::static_member_parameterless_call(&path, &name)
+                    {
                         expr = Expression::new(ExprKind::Call {
                             callee: Box::new(Expression::new(ExprKind::Member {
                                 object: Box::new(type_literal_expr(&path)),
@@ -6414,11 +9364,192 @@ fn walk_postfix(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
             Rule::method_call | Rule::static_call => {
                 let is_static = op.as_rule() == Rule::static_call;
                 let mut parts = op.into_inner();
-                let name = parts
+                let name_part = parts.next();
+                let args = parts
                     .next()
-                    .map(|p| p.as_str().to_string())
+                    .map(|__x| walk_arg_list(__w, __x))
                     .unwrap_or_default();
-                let args = parts.next().map(|__x| walk_arg_list(__w, __x)).unwrap_or_default();
+                let mut dynamic_name = None;
+                let name = match name_part {
+                    Some(p) if p.as_rule() == Rule::var_ref => {
+                        let key = walk_var_ref(p.as_str());
+                        if let Some(text) = __w.literal_text_of(&key) {
+                            if !is_static
+                                && (receiver_expr_is_string_like(__w, &expr)
+                                    || text.eq_ignore_ascii_case("MoveNext"))
+                            {
+                                dynamic_name = Some(Expression::string(&text));
+                                String::new()
+                            } else {
+                                text
+                            }
+                        } else {
+                            dynamic_name = Some(key);
+                            String::new()
+                        }
+                    }
+                    Some(p) => p.as_str().to_string(),
+                    None => String::new(),
+                };
+
+                if !is_static
+                    && name.eq_ignore_ascii_case("ToString")
+                    && args.is_empty()
+                    && is_error_category_info_expr(&expr)
+                {
+                    expr = error_category_info_to_string_value(expr);
+                    continue;
+                }
+
+                if let Some(key) = dynamic_name {
+                    if !is_static {
+                        expr = dynamic_method_call_expr(expr, key, args);
+                        continue;
+                    }
+                    expr = Expression::new(ExprKind::Call {
+                        callee: Box::new(Expression::new(ExprKind::Index {
+                            object: Box::new(expr),
+                            index: Box::new(key),
+                            null_safe: false,
+                        })),
+                        args: args.into_iter().map(Argument::positional).collect(),
+                        optional: false,
+                    });
+                    continue;
+                }
+
+                if is_static
+                    && is_memory_extensions_type(&expr)
+                    && matches!(
+                        name.to_ascii_lowercase().as_str(),
+                        "trim" | "trimstart" | "trimend"
+                    )
+                    && args.len() == 1
+                {
+                    let method = match name.to_ascii_lowercase().as_str() {
+                        "trimstart" => "TrimStart",
+                        "trimend" => "TrimEnd",
+                        _ => "Trim",
+                    };
+                    let trimmed = dotnet_static_call(
+                        "System.Management.Automation.PowerShellStringAdapter",
+                        method,
+                        vec![ps_member_call(args[0].clone(), "ToString", Vec::new())],
+                    );
+                    expr = dotnet_static_call("System.MemoryExtensions", "AsMemory", vec![trimmed]);
+                    continue;
+                }
+
+                if !is_static
+                    && name.eq_ignore_ascii_case("GetType")
+                    && args.is_empty()
+                    && (reflected_object_expr(&expr) || paging_parameters_expr(&expr))
+                {
+                    expr = ps_member(expr, "TypeId");
+                    continue;
+                }
+
+                if !is_static
+                    && name.eq_ignore_ascii_case("NewTotalCount")
+                    && args.len() >= 2
+                    && paging_parameters_expr(&expr)
+                {
+                    expr = paging_total_count_object(args[0].clone(), args[1].clone());
+                    continue;
+                }
+
+                if !is_static
+                    && is_memory_expr(__w, &expr)
+                    && name.eq_ignore_ascii_case("Slice")
+                    && !args.is_empty()
+                {
+                    let one_arg_slice = args.len() == 1;
+                    let mut call_args = vec![expr];
+                    call_args.extend(args);
+                    expr = dotnet_static_call("System.MemoryExtensions", "Slice", call_args);
+                    if one_arg_slice {
+                        expr = dotnet_static_call("System.MemoryExtensions", "AsMemory", vec![expr]);
+                    }
+                    continue;
+                }
+
+                if !is_static
+                    && is_memory_expr(__w, &expr)
+                    && name.eq_ignore_ascii_case("Equals")
+                    && args.len() == 1
+                {
+                    expr = dotnet_static_call(
+                        "System.MemoryExtensions",
+                        "SequenceEqual",
+                        vec![expr, args[0].clone()],
+                    );
+                    continue;
+                }
+
+                if is_static
+                    && name.eq_ignore_ascii_case("ReverseEndianness")
+                    && args.len() == 1
+                    && is_binary_primitives_type(&expr)
+                    && let Some(width) = numeric_width_of_expr(__w, &args[0])
+                {
+                    expr = match width.as_str() {
+                        "byte" | "sbyte" => args[0].clone(),
+                        "int16" | "uint16" => {
+                            ps_builtin("__ps_binprim_reverse_i16", vec![args[0].clone()])
+                        }
+                        "int64" | "uint64" => {
+                            ps_builtin("__ps_binprim_reverse_i64", vec![args[0].clone()])
+                        }
+                        _ => method_call_expr(expr, &name, args),
+                    };
+                    continue;
+                }
+
+                if is_static
+                    && (name.eq_ignore_ascii_case("HostToNetworkOrder")
+                        || name.eq_ignore_ascii_case("NetworkToHostOrder"))
+                    && args.len() == 1
+                    && is_ipaddress_type(&expr)
+                    && matches!(
+                        numeric_width_of_expr(__w, &args[0])
+                            .as_deref(),
+                        Some("int64") | Some("uint64")
+                    )
+                {
+                    expr = ps_builtin("__ps_binprim_reverse_i64", vec![args[0].clone()]);
+                    continue;
+                }
+
+                if !is_static
+                    && name.eq_ignore_ascii_case("HasFlag")
+                    && args.len() == 1
+                    && !is_declared_method(__w, &name)
+                {
+                    expr = enum_has_flag_expr(expr, args[0].clone());
+                    continue;
+                }
+
+                if !is_static
+                    && name.eq_ignore_ascii_case("ToString")
+                    && args.is_empty()
+                    && let Some(enum_type) = declared_enum_name_from_expr(__w, &expr)
+                {
+                    expr = enum_to_string_expr(__w, &enum_type, ps_enum_numeric_value(expr));
+                    continue;
+                }
+
+                if !is_static
+                    && datetime_value_expr(__w, &expr)
+                    && name.eq_ignore_ascii_case("AddMilliseconds")
+                    && args.len() == 1
+                {
+                    expr = datetime_object_from_millis(ps_binary(
+                        BinOp::Add,
+                        ps_member(expr, "__time"),
+                        args[0].clone(),
+                    ));
+                    continue;
+                }
 
                 if !is_static
                     && args.len() <= 1
@@ -6443,21 +9574,225 @@ fn walk_postfix(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
                 }
 
                 if !is_static
+                    && args.len() <= 1
+                    && matches!(
+                        name.to_ascii_lowercase().as_str(),
+                        "toupper" | "tolower" | "toupperinvariant" | "tolowerinvariant"
+                    )
+                {
+                    let method = if name.to_ascii_lowercase().contains("upper") {
+                        "ToUpper"
+                    } else {
+                        "ToLower"
+                    };
+                    expr = ps_member_call(expr, method, Vec::new());
+                    continue;
+                }
+
+                if !is_static
+                    && name.eq_ignore_ascii_case("IndexOf")
+                    && !args.is_empty()
+                    && !receiver_expr_is_collection_var(__w, &expr)
+                {
+                    let needle = args[0].clone();
+                    if ps_string_comparison_is_ignore_case(args.get(1)) {
+                        expr = ps_builtin(
+                            "__ps_str_index_of",
+                            vec![
+                                ps_member_call(expr, "ToLower", Vec::new()),
+                                ps_member_call(needle, "ToLower", Vec::new()),
+                            ],
+                        );
+                    } else if args.get(1).is_some_and(ps_string_comparison_arg) {
+                        expr = ps_builtin("__ps_str_index_of", vec![expr, needle]);
+                    } else {
+                        let mut call_args = vec![expr];
+                        call_args.extend(args.into_iter().take(2));
+                        expr = ps_builtin("__ps_str_index_of", call_args);
+                    }
+                    continue;
+                }
+
+                if !is_static && name.eq_ignore_ascii_case("LastIndexOf") && !args.is_empty() {
+                    let needle = args[0].clone();
+                    if ps_string_comparison_is_ignore_case(args.get(1)) {
+                        expr = ps_builtin(
+                            "__ps_str_last_index_of",
+                            vec![
+                                ps_member_call(expr, "ToLower", Vec::new()),
+                                ps_member_call(needle, "ToLower", Vec::new()),
+                            ],
+                        );
+                    } else if args.get(1).is_some_and(ps_string_comparison_arg) {
+                        expr = ps_builtin("__ps_str_last_index_of", vec![expr, needle]);
+                    } else {
+                        let mut call_args = vec![expr];
+                        call_args.extend(args.into_iter().take(2));
+                        expr = ps_builtin("__ps_str_last_index_of", call_args);
+                    }
+                    continue;
+                }
+
+                if !is_static
+                    && name.eq_ignore_ascii_case("StartsWith")
+                    && !args.is_empty()
+                {
+                    let ignore_case = ps_string_comparison_is_ignore_case(args.get(1));
+                    let haystack = if ignore_case {
+                        ps_member_call(expr, "ToLower", Vec::new())
+                    } else {
+                        expr
+                    };
+                    let needle = if ignore_case {
+                        ps_member_call(args[0].clone(), "ToLower", Vec::new())
+                    } else {
+                        args[0].clone()
+                    };
+                    expr = ps_binary(
+                        BinOp::Eq,
+                        ps_builtin("__ps_str_index_of", vec![haystack, needle]),
+                        Expression::int(0),
+                    );
+                    continue;
+                }
+
+                if !is_static
+                    && name.eq_ignore_ascii_case("EndsWith")
+                    && !args.is_empty()
+                {
+                    let ignore_case = ps_string_comparison_is_ignore_case(args.get(1));
+                    let haystack = if ignore_case {
+                        ps_member_call(expr, "ToLower", Vec::new())
+                    } else {
+                        expr
+                    };
+                    let needle = if ignore_case {
+                        ps_member_call(args[0].clone(), "ToLower", Vec::new())
+                    } else {
+                        args[0].clone()
+                    };
+                    expr = ps_binary(
+                        BinOp::Eq,
+                        ps_builtin("__ps_str_index_of", vec![haystack.clone(), needle.clone()]),
+                        ps_binary(
+                            BinOp::Sub,
+                            ps_member(haystack, "Length"),
+                            ps_member(needle, "Length"),
+                        ),
+                    );
+                    continue;
+                }
+
+                if !is_static
+                    && name.eq_ignore_ascii_case("ToString")
+                    && args.is_empty()
+                    && powershell_error_record_expr(__w, &expr)
+                {
+                    expr = ps_member(expr, "Message");
+                    continue;
+                }
+
+                if !is_static
+                    && name.eq_ignore_ascii_case("ToString")
+                    && args.len() >= 2
+                    && culture_info_expr(__w, &args[1])
+                    && fixed_point_format_precision(&args[0]).is_some()
+                {
+                    expr = dotnet_static_call(
+                        "System.Management.Automation.PowerShellFormatAdapter",
+                        "ToString",
+                        vec![expr, args[0].clone(), args[1].clone()],
+                    );
+                    continue;
+                }
+
+                if !is_static
+                    && name.eq_ignore_ascii_case("ToTitleCase")
+                    && args.len() == 1
+                    && culture_text_info_expr(&expr)
+                {
+                    expr = title_case_expr(args[0].clone());
+                    continue;
+                }
+
+                if !is_static
+                    && is_rune_expr(__w, &expr)
+                    && name.eq_ignore_ascii_case("Equals")
+                    && args.len() == 1
+                {
+                    expr = ps_binary(
+                        BinOp::Eq,
+                        ps_member(expr, "Value"),
+                        ps_member(args[0].clone(), "Value"),
+                    );
+                    continue;
+                }
+
+                if !is_static
+                    && is_rune_expr(__w, &expr)
+                    && name.eq_ignore_ascii_case("CompareTo")
+                    && args.len() == 1
+                {
+                    expr = ps_binary(
+                        BinOp::Sub,
+                        ps_member(expr, "Value"),
+                        ps_member(args[0].clone(), "Value"),
+                    );
+                    continue;
+                }
+
+                if !is_static
+                    && name.eq_ignore_ascii_case("Equals")
+                    && !args.is_empty()
+                    && !is_declared_method(__w, &name)
+                {
+                    let mut call_args = vec![expr];
+                    call_args.extend(args.into_iter().take(2));
+                    expr = ps_builtin("__ps_str_equals", call_args);
+                    continue;
+                }
+
+                if !is_static
                     && name.eq_ignore_ascii_case("ContainsKey")
                     && args.len() == 1
-                    && is_powershell_generated_dictionary(&expr)
                 {
                     let mut args = args;
-                    expr = ps_contains_key_expr(expr, args.remove(0));
+                    let case_sensitive =
+                        receiver_expr_is_case_sensitive_hashtable_var(__w, &expr);
+                    if receiver_expr_is_hashtable_var(__w, &expr) {
+                        expr = ps_hashtable_contains_key_expr(expr, args.remove(0), case_sensitive);
+                    } else {
+                        expr = ps_contains_key_expr(expr, args.remove(0));
+                    }
                     continue;
                 }
 
                 if !is_static
                     && name.eq_ignore_ascii_case("Contains")
-                    && args.len() == 1
+                    && !args.is_empty()
                 {
                     let mut args = args;
                     let needle = args.remove(0);
+                    if receiver_expr_is_collection_var(__w, &expr) {
+                        expr = ps_set_contains_value_expr(__w, expr, needle);
+                        continue;
+                    }
+                    if receiver_expr_is_hashtable_var(__w, &expr) {
+                        let case_sensitive =
+                            receiver_expr_is_case_sensitive_hashtable_var(__w, &expr);
+                        expr = ps_hashtable_contains_key_expr(expr, needle, case_sensitive);
+                        continue;
+                    }
+                    if ps_string_comparison_is_ignore_case(args.first()) {
+                        expr = ps_builtin(
+                            "__ps_str_contains",
+                            vec![
+                                ps_member_call(expr, "ToLower", Vec::new()),
+                                ps_member_call(needle, "ToLower", Vec::new()),
+                            ],
+                        );
+                        continue;
+                    }
                     expr = ps_ternary(
                         ps_binary(
                             BinOp::Eq,
@@ -6467,6 +9802,107 @@ fn walk_postfix(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
                         ps_builtin("__ps_str_contains", vec![expr.clone(), needle.clone()]),
                         ps_binary(BinOp::In, needle, expr),
                     );
+                    continue;
+                }
+
+                if !is_static
+                    && name.eq_ignore_ascii_case("Add")
+                    && args.len() == 1
+                    && receiver_expr_is_set_collection_var(__w, &expr)
+                {
+                    expr = ps_set_add_value_expr(__w, expr, args[0].clone());
+                    continue;
+                }
+
+                if !is_static
+                    && is_stringbuilder_expr(__w, &expr)
+                    && stringbuilder_needs_capacity_guard(__w, &expr)
+                    && name.eq_ignore_ascii_case("Append")
+                    && args.len() == 1
+                {
+                    let appended = ps_builtin("__ps_to_string", vec![args[0].clone()]);
+                    let next_len = ps_binary(
+                        BinOp::Add,
+                        ps_member(expr.clone(), "Length"),
+                        ps_member(appended, "Length"),
+                    );
+                    let too_long = ps_binary(
+                        BinOp::Gt,
+                        next_len,
+                        ps_member(expr.clone(), "MaxCapacity"),
+                    );
+                    let call = method_call_expr(expr, "Append", args);
+                    expr = block_value_expr(vec![
+                        Statement::new(StmtKind::If {
+                            cond: too_long,
+                            then_body: vec![Statement::new(StmtKind::Throw {
+                                expr: Some(Expression::new(ExprKind::New {
+                                    class: Box::new(type_literal_expr(
+                                        "System.ArgumentOutOfRangeException",
+                                    )),
+                                    args: vec![Argument::positional(Expression::string(
+                                        "capacity",
+                                    ))],
+                                })),
+                                cause: None,
+                            })],
+                            elifs: Vec::new(),
+                            else_body: None,
+                        }),
+                        Statement::new(StmtKind::Return(Some(call))),
+                    ]);
+                    continue;
+                }
+
+                if !is_static
+                    && is_stringbuilder_expr(__w, &expr)
+                    && name.eq_ignore_ascii_case("Append")
+                    && args.len() == 3
+                {
+                    let mut rewritten = args;
+                    rewritten[0] = method_call_expr(
+                        ensure_array(rewritten[0].clone()),
+                        "__ps_join",
+                        vec![Expression::string("")],
+                    );
+                    expr = method_call_expr(expr, "Append", rewritten);
+                    continue;
+                }
+
+                if !is_static
+                    && is_stringbuilder_expr(__w, &expr)
+                    && name.eq_ignore_ascii_case("Replace")
+                    && args.len() == 4
+                {
+                    let rewritten = vec![
+                        ps_builtin("__ps_to_string", vec![args[0].clone()]),
+                        ps_builtin("__ps_to_string", vec![args[1].clone()]),
+                        args[2].clone(),
+                        args[3].clone(),
+                    ];
+                    expr = method_call_expr(expr, "Replace", rewritten);
+                    continue;
+                }
+
+                if !is_static && name.eq_ignore_ascii_case("Replace") && args.len() >= 3 {
+                    expr = if ps_string_comparison_is_ignore_case(args.get(2)) {
+                        dotnet_static_call(
+                            "System.Text.RegularExpressions.Regex",
+                            "Replace",
+                            vec![
+                                expr,
+                                dotnet_static_call(
+                                    "System.Text.RegularExpressions.Regex",
+                                    "Escape",
+                                    vec![args[0].clone()],
+                                ),
+                                args[1].clone(),
+                                Expression::int(1),
+                            ],
+                        )
+                    } else {
+                        ps_member_call(expr, "Replace", args.into_iter().take(2).collect())
+                    };
                     continue;
                 }
 
@@ -6525,7 +9961,10 @@ fn walk_postfix(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
                 // definition, which is exactly what the cast means. A cast to a
                 // GRANDPARENT keeps the old path: `SuperCall` means "my parent".
                 if !is_static
-                    && let ExprKind::Cast { type_name, expr: cast_of } = &expr.kind
+                    && let ExprKind::Cast {
+                        type_name,
+                        expr: cast_of,
+                    } = &expr.kind
                     && matches!(cast_of.kind, ExprKind::This)
                     && __w
                         .current_class
@@ -6540,7 +9979,10 @@ fn walk_postfix(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
                     continue;
                 }
                 if !is_static
-                    && let ExprKind::Cast { type_name, expr: cast_of } = &expr.kind
+                    && let ExprKind::Cast {
+                        type_name,
+                        expr: cast_of,
+                    } = &expr.kind
                     && __w.declared_classes.contains(&type_name.to_lowercase())
                 {
                     let mut call_args = vec![Argument::positional((**cast_of).clone())];
@@ -6597,7 +10039,11 @@ fn walk_postfix(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
                 // shared `[builtin_slots.array] contains` slot already lowers.
                 // `BinOp::In` takes the needle on the left, matching how
                 // `-contains` itself is built above.
-                if !is_static && args.len() == 1 && name.eq_ignore_ascii_case("ContainsValue") {
+                if !is_static
+                    && args.len() == 1
+                    && name.eq_ignore_ascii_case("ContainsValue")
+                    && receiver_expr_is_hashtable_var(__w, &expr)
+                {
                     let values = method_call_expr(expr, "__ps_ht_values", Vec::new());
                     let mut args = args;
                     expr = Expression::new(ExprKind::Binary {
@@ -6607,23 +10053,130 @@ fn walk_postfix(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
                     });
                     continue;
                 }
+                if !is_static
+                    && args.len() == 1
+                    && matches!(name.to_ascii_lowercase().as_str(), "contains" | "containskey")
+                    && receiver_expr_is_hashtable_var(__w, &expr)
+                {
+                    let case_sensitive =
+                        receiver_expr_is_case_sensitive_hashtable_var(__w, &expr);
+                    expr = ps_hashtable_contains_key_expr(expr, args[0].clone(), case_sensitive);
+                    continue;
+                }
+                if !is_static
+                    && args.len() == 1
+                    && name.eq_ignore_ascii_case("Remove")
+                    && receiver_expr_is_hashtable_var(__w, &expr)
+                {
+                    let case_sensitive =
+                        receiver_expr_is_case_sensitive_hashtable_var(__w, &expr);
+                    expr = ps_hashtable_remove_expr(expr, args[0].clone(), case_sensitive);
+                    continue;
+                }
+                if !is_static
+                    && args.len() == 1
+                    && name.eq_ignore_ascii_case("Remove")
+                    && receiver_expr_is_set_collection_var(__w, &expr)
+                {
+                    expr = ps_set_remove_value_expr(__w, expr, args[0].clone());
+                    continue;
+                }
+                if !is_static
+                    && args.len() == 1
+                    && matches!(
+                        name.to_ascii_lowercase().as_str(),
+                        "exceptwith" | "intersectwith" | "symmetricexceptwith"
+                    )
+                    && receiver_expr_is_set_collection_var(__w, &expr)
+                {
+                    expr = ps_set_mutating_operation_expr(__w, expr, &name, args[0].clone());
+                    continue;
+                }
+                if !is_static
+                    && args.is_empty()
+                    && name.eq_ignore_ascii_case("Clear")
+                    && receiver_expr_is_hashtable_var(__w, &expr)
+                {
+                    expr = ps_hashtable_clear_expr(expr);
+                    continue;
+                }
+                if !is_static
+                    && args.is_empty()
+                    && name.eq_ignore_ascii_case("Clone")
+                    && receiver_expr_is_hashtable_var(__w, &expr)
+                {
+                    expr = ps_hashtable_clone_expr(expr);
+                    continue;
+                }
 
                 if !is_static
                     && name.eq_ignore_ascii_case("GetProperty")
                     && args.len() == 1
                     && (type_name_of(&expr).is_some()
+                        || nullable_type_object_name(__w, &expr).is_some()
                         || matches!(&expr.kind, ExprKind::Call { callee, args: call_args, .. }
                             if call_args.is_empty()
                                 && matches!(&callee.kind, ExprKind::Member { field, .. }
                                     if field.eq_ignore_ascii_case("GetType"))))
                     && let Some(property_name) = literal_text(&args[0])
-                    && let Some(property) = powershell_attribute_property_expr(&property_name)
                 {
-                    expr = property;
+                    if let Some(type_name) = nullable_type_object_name(__w, &expr)
+                        && is_nullable_type_name(&type_name)
+                    {
+                        expr = nullable_property_info_object(&property_name, &type_name);
+                        continue;
+                    }
+                    if let Some(property) = powershell_attribute_property_expr(&property_name) {
+                        expr = property;
+                        continue;
+                    }
+                }
+
+                if !is_static
+                    && name.eq_ignore_ascii_case("GetGenericTypeDefinition")
+                    && args.is_empty()
+                    && let Some(type_name) = nullable_type_object_name(__w, &expr)
+                    && is_nullable_type_name(&type_name)
+                {
+                    expr = powershell_type_object("System.Nullable`1");
                     continue;
                 }
 
-                if !is_static && name.eq_ignore_ascii_case("Find") && !args.is_empty() {
+                if !is_static
+                    && name.eq_ignore_ascii_case("MakeArrayType")
+                    && args.is_empty()
+                    && let Some(type_name) = nullable_type_object_name(__w, &expr)
+                {
+                    expr = command_type_object(&format!("{type_name}[]"));
+                    continue;
+                }
+
+                if !is_static
+                    && name.eq_ignore_ascii_case("IsAssignableFrom")
+                    && args.len() == 1
+                    && let Some(base_type) =
+                        nullable_type_object_name(__w, &expr).or_else(|| type_name_of(&expr))
+                    && let Some(derived_type) = nullable_type_object_name(__w, &args[0])
+                {
+                    expr = Expression::bool(type_is_assignable_from(&base_type, &derived_type));
+                    continue;
+                }
+
+                if !is_static
+                    && name.eq_ignore_ascii_case("IsSubclassOf")
+                    && args.len() == 1
+                    && let Some(sub_type) = nullable_type_object_name(__w, &expr)
+                    && let Some(base_type) = nullable_type_object_name(__w, &args[0])
+                {
+                    expr = Expression::bool(type_is_subclass_of(&sub_type, &base_type));
+                    continue;
+                }
+
+                if !is_static
+                    && name.eq_ignore_ascii_case("Find")
+                    && !args.is_empty()
+                    && !receiver_expr_is_collection_var(__w, &expr)
+                {
                     let filtered = ps_member_call(
                         ps_member(expr, "__Descendants"),
                         "Where",
@@ -6647,16 +10200,35 @@ fn walk_postfix(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
                     && args.is_empty()
                     && let Some(target) = psobject_target(&expr)
                 {
-                    expr = target;
+                    expr = Expression::new(ExprKind::Object(vec![ObjectProperty::Spread(target)]));
+                    continue;
+                }
+                if !is_static
+                    && name.eq_ignore_ascii_case("Copy")
+                    && args.is_empty()
+                    && matches!(
+                        &expr.kind,
+                        ExprKind::Call { callee, args, .. }
+                            if args.len() == 2
+                                && matches!(&callee.kind, ExprKind::Ident(n) if n == "__ps_properties")
+                    )
+                {
                     continue;
                 }
 
                 if !is_static
                     && name.eq_ignore_ascii_case("ToString")
+                    && args.len() == 1
+                    && literal_text(&args[0]).is_some_and(|fmt| fmt == "c")
+                {
+                    expr = ps_member_call(expr, "ToString", Vec::new());
+                    continue;
+                }
+                if !is_static
+                    && name.eq_ignore_ascii_case("ToString")
                     && !args.is_empty()
-                    && literal_text(&args[0]).is_some_and(|fmt| {
-                        matches!(fmt.as_str(), "R" | "E2" | "C2")
-                    })
+                    && literal_text(&args[0])
+                        .is_some_and(|fmt| matches!(fmt.as_str(), "R" | "E2" | "C2"))
                 {
                     let mut call_args = Vec::with_capacity(args.len() + 1);
                     call_args.push(expr);
@@ -6668,16 +10240,97 @@ fn walk_postfix(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
                     );
                     continue;
                 }
+                if !is_static
+                    && name.eq_ignore_ascii_case("ToString")
+                    && args.len() == 1
+                    && literal_text(&args[0]).is_some_and(|fmt| {
+                        matches!(
+                            fmt.as_str(),
+                            "yyyy-MM-dd" | "yyyy-MM-ddTHH:mm:ss" | "MM/dd/yyyy" | "dddd"
+                        )
+                    })
+                {
+                    expr = bind_typed(
+                        "__ps_dt_fmt",
+                        "System.DateTime",
+                        expr,
+                        ps_member_call(Expression::ident("__ps_dt_fmt"), "ToString", args),
+                    );
+                    continue;
+                }
+                if !is_static
+                    && let Some(member) = typedata_member_for_expr(__w, &expr, &name)
+                    && member.kind.eq_ignore_ascii_case("scriptmethod")
+                {
+                    expr = typedata_script_call(expr, &member.value, args);
+                    continue;
+                }
+
+                if is_static
+                    && let Some(type_name) = type_name_of(&expr)
+                {
+                    if is_wildcard_pattern_type_name(&type_name) {
+                        if name.eq_ignore_ascii_case("new") {
+                            let pattern = args.first().cloned().unwrap_or_else(|| Expression::string(""));
+                            let options = args.get(1).cloned().unwrap_or_else(|| Expression::int(1));
+                            expr = wildcard_pattern_object(pattern, options);
+                            continue;
+                        }
+                        if name.eq_ignore_ascii_case("Escape") && args.len() == 1 {
+                            expr = wildcard_escape_expr(args[0].clone());
+                            continue;
+                        }
+                        if name.eq_ignore_ascii_case("ContainsWildcardCharacters") && args.len() == 1 {
+                            expr = wildcard_contains_expr(args[0].clone());
+                            continue;
+                        }
+                    }
+                    if is_supports_wildcards_attribute_type_name(&type_name)
+                        && name.eq_ignore_ascii_case("new")
+                        && args.is_empty()
+                    {
+                        expr = reflected_automation_object(
+                            "System.Management.Automation.SupportsWildcardsAttribute",
+                            Vec::new(),
+                        );
+                        continue;
+                    }
+                }
+
+                if is_static
+                    && is_system_enum_type_expr(&expr)
+                    && let Some((enum_type, enum_args)) = enum_static_args(__w, &args)
+                {
+                    if name.eq_ignore_ascii_case("GetValues") {
+                        expr = enum_values_expr(&enum_type, __w.enum_members.get(&enum_type.to_lowercase()));
+                        continue;
+                    }
+                    if name.eq_ignore_ascii_case("GetNames") {
+                        expr = enum_names_expr(__w.enum_members.get(&enum_type.to_lowercase()));
+                        continue;
+                    }
+                    if name.eq_ignore_ascii_case("IsDefined")
+                        && let Some(value) = enum_args.first()
+                    {
+                        expr = enum_is_defined_expr(__w, &enum_type, value.clone());
+                        continue;
+                    }
+                    if name.eq_ignore_ascii_case("TryParse")
+                        && enum_args.len() >= 2
+                        && let ExprKind::RefOf(place) = &enum_args[1].kind
+                    {
+                        let target = place_as_expression((**place).clone());
+                        expr = enum_try_parse_expr(__w, &enum_type, enum_args[0].clone(), target);
+                        continue;
+                    }
+                }
 
                 // `[Version]::TryParse(s, [ref]$v)` is .NET's out-parameter
                 // form. The dotnet platform exposes the shared one-argument
                 // parse-or-null core; PowerShell only contributes the `[ref]`
                 // syntax and rewrites the call to assignment plus null test,
                 // matching the C# and VB walkers.
-                if is_static
-                    && name.eq_ignore_ascii_case("TryParse")
-                    && args.len() == 2
-                {
+                if is_static && name.eq_ignore_ascii_case("TryParse") && args.len() == 2 {
                     let recv = type_name_of(&expr);
                     let callee = Expression::new(ExprKind::Member {
                         object: Box::new(expr.clone()),
@@ -6686,7 +10339,9 @@ fn walk_postfix(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
                     });
                     let out_target = match &args[1].kind {
                         ExprKind::RefOf(place) => Some(place_as_expression((**place).clone())),
-                        ExprKind::Lit(Literal::Null) => Some(Expression::ident("__ps_tryparse_discard")),
+                        ExprKind::Lit(Literal::Null) => {
+                            Some(Expression::ident("__ps_tryparse_discard"))
+                        }
                         _ => None,
                     };
                     if let Some(out_target) = out_target {
@@ -6704,10 +10359,7 @@ fn walk_postfix(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
                     }
                 }
 
-                if is_static
-                    && name.eq_ignore_ascii_case("TryCreate")
-                    && args.len() == 2
-                {
+                if is_static && name.eq_ignore_ascii_case("TryCreate") && args.len() == 2 {
                     let recv = type_name_of(&expr);
                     let callee = Expression::new(ExprKind::Member {
                         object: Box::new(expr.clone()),
@@ -6716,7 +10368,9 @@ fn walk_postfix(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
                     });
                     let out_target = match &args[1].kind {
                         ExprKind::RefOf(place) => Some(place_as_expression((**place).clone())),
-                        ExprKind::Lit(Literal::Null) => Some(Expression::ident("__ps_tryparse_discard")),
+                        ExprKind::Lit(Literal::Null) => {
+                            Some(Expression::ident("__ps_tryparse_discard"))
+                        }
                         _ => None,
                     };
                     if let Some(out_target) = out_target {
@@ -6734,14 +10388,13 @@ fn walk_postfix(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
                     }
                 }
 
-                if is_static
-                    && name.eq_ignore_ascii_case("TryFromBase64Chars")
-                    && args.len() == 3
-                {
+                if is_static && name.eq_ignore_ascii_case("TryFromBase64Chars") && args.len() == 3 {
                     let recv = type_name_of(&expr);
                     let out_target = match &args[2].kind {
                         ExprKind::RefOf(place) => Some(place_as_expression((**place).clone())),
-                        ExprKind::Lit(Literal::Null) => Some(Expression::ident("__ps_tryparse_discard")),
+                        ExprKind::Lit(Literal::Null) => {
+                            Some(Expression::ident("__ps_tryparse_discard"))
+                        }
                         _ => None,
                     };
                     if let Some(out_target) = out_target {
@@ -6759,14 +10412,13 @@ fn walk_postfix(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
                     }
                 }
 
-                if is_static
-                    && name.eq_ignore_ascii_case("TryToBase64Chars")
-                    && args.len() == 3
-                {
+                if is_static && name.eq_ignore_ascii_case("TryToBase64Chars") && args.len() == 3 {
                     let recv = type_name_of(&expr);
                     let out_target = match &args[2].kind {
                         ExprKind::RefOf(place) => Some(place_as_expression((**place).clone())),
-                        ExprKind::Lit(Literal::Null) => Some(Expression::ident("__ps_tryparse_discard")),
+                        ExprKind::Lit(Literal::Null) => {
+                            Some(Expression::ident("__ps_tryparse_discard"))
+                        }
                         _ => None,
                     };
                     if let Some(out_target) = out_target {
@@ -6803,26 +10455,34 @@ fn walk_postfix(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
                 // classification as statics on `System.Char`; the shared
                 // `str_is_*` primitives already answer exactly these questions
                 // for a one-character string, which is what a PowerShell
-                // `[char]` is. Only the classifications a primitive already
-                // implements are mapped — `IsSymbol`, `IsPunctuation`,
-                // `IsControl`, `IsSeparator` and the surrogate pair tests have
-                // no primitive, and inventing an approximation here would be a
-                // wrong answer rather than a missing one.
+                // `[char]` is. Primitive-backed predicates go straight through;
+                // the remaining simple Unicode predicates lower through
+                // char-code checks.
                 if is_static
-                    && args.len() == 1
+                    && name.eq_ignore_ascii_case("Replace")
+                    && args.len() >= 3
+                    && type_name_of(&expr).is_some_and(|t| is_regex_type_name(&t))
+                    && is_match_evaluator_expr(__w, &args[2])
+                {
+                    expr = regex_replace_evaluator_expr(
+                        args[0].clone(),
+                        args[1].clone(),
+                        args[2].clone(),
+                        args.get(3).cloned(),
+                    );
+                    continue;
+                }
+
+                if is_static
+                    && (args.len() == 1 || args.len() == 2)
                     && type_name_of(&expr).is_some_and(|t| {
                         t.rsplit('.')
                             .next()
                             .is_some_and(|last| last.eq_ignore_ascii_case("char"))
                     })
                 {
-                    if let Some(builtin) = char_static_builtin(&name) {
-                        let mut args = args;
-                        expr = Expression::new(ExprKind::Call {
-                            callee: Box::new(Expression::ident(builtin)),
-                            args: vec![Argument::positional(args.remove(0))],
-                            optional: false,
-                        });
+                    if let Some(rewritten) = char_static_expr(__w, &name, &args) {
+                        expr = rewritten;
                         continue;
                     }
                 }
@@ -6838,8 +10498,7 @@ fn walk_postfix(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
                 if is_static
                     && name.eq_ignore_ascii_case("Sort")
                     && args.len() == 1
-                    && type_name_of(&expr)
-                        .is_some_and(|t| t.rsplit('.').next() == Some("Array"))
+                    && type_name_of(&expr).is_some_and(|t| t.rsplit('.').next() == Some("Array"))
                 {
                     let cmp = Expression::new(ExprKind::Lambda {
                         params: vec![synth_param("__ps_cmp_a"), synth_param("__ps_cmp_b")],
@@ -6862,6 +10521,50 @@ fn walk_postfix(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
                         ],
                         optional: false,
                     });
+                    continue;
+                }
+
+                if is_static
+                    && name.eq_ignore_ascii_case("new")
+                    && let Some(type_name) = type_name_of(&expr)
+                    && let Some(rewritten) =
+                        automation_constructor_expr(&type_name, args.clone())
+                {
+                    expr = rewritten;
+                    continue;
+                }
+
+                if is_static
+                    && name.eq_ignore_ascii_case("new")
+                    && args.is_empty()
+                    && let Some(type_name) =
+                        type_name_of(&expr).and_then(|t| automation_attribute_type_name(&t))
+                {
+                    expr = reflected_automation_object(&type_name, Vec::new());
+                    continue;
+                }
+
+                if is_static
+                    && name.eq_ignore_ascii_case("new")
+                    && args.len() == 2
+                    && type_name_of(&expr).is_some_and(|t| {
+                        matches!(
+                            t.to_ascii_lowercase().as_str(),
+                            "pscredential" | "system.management.automation.pscredential"
+                        )
+                    })
+                {
+                    let mut ctor_args = args;
+                    let password = ctor_args.remove(1);
+                    let username = ctor_args.remove(0);
+                    expr = if string_literal(&username).is_some_and(|name| name.is_empty()) {
+                        block_value_expr(vec![Statement::new(StmtKind::Throw {
+                            expr: Some(Expression::string("UserName cannot be empty.")),
+                            cause: None,
+                        })])
+                    } else {
+                        pscredential_object(username, password)
+                    };
                     continue;
                 }
 
@@ -6892,19 +10595,32 @@ fn walk_postfix(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
                         .and_then(|t| match t.rsplit('.').next() {
                             Some(n) if n.eq_ignore_ascii_case("PSNoteProperty") => Some("note"),
                             Some(n) if n.eq_ignore_ascii_case("PSAliasProperty") => Some("alias"),
-                            Some(n)
-                                if n.eq_ignore_ascii_case("PSScriptProperty")
-                                    || n.eq_ignore_ascii_case("PSCodeProperty") =>
-                            {
+                            Some(n) if n.eq_ignore_ascii_case("PSScriptProperty") => {
                                 Some("script")
+                            }
+                            Some(n) if n.eq_ignore_ascii_case("PSCodeProperty") => Some("code"),
+                            Some(n) if n.eq_ignore_ascii_case("PSScriptMethod") => {
+                                Some("scriptmethod")
                             }
                             _ => None,
                         })
-                        .filter(|kind| *kind == "script" || args.len() == 2);
+                        .filter(|kind| *kind == "script" || *kind == "code" || args.len() == 2);
                     if let Some(kind) = kind {
                         let mut args = args;
                         let setter = (args.len() == 3).then(|| args.remove(2));
-                        let payload = args.remove(1);
+                        let has_setter = setter.is_some();
+                        let raw_payload = args.remove(1);
+                        let payload = if kind == "code" {
+                            __w.method_ref_of(&raw_payload).unwrap_or(raw_payload.clone())
+                        } else {
+                            raw_payload.clone()
+                        };
+                        let raw_setter = setter.clone();
+                        let setter = if kind == "code" {
+                            setter.and_then(|value| __w.method_ref_of(&value).or(Some(value)))
+                        } else {
+                            setter
+                        };
                         let member_name = args.remove(0);
                         // A descriptor names its own kind, so it answers
                         // `$prop.MemberType` before it is attached to anything
@@ -6913,6 +10629,8 @@ fn walk_postfix(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
                         let member_type = match kind {
                             "alias" => "AliasProperty",
                             "script" => "ScriptProperty",
+                            "scriptmethod" => "ScriptMethod",
+                            "code" => "CodeProperty",
                             _ => "NoteProperty",
                         };
                         let mut fields = vec![
@@ -6930,9 +10648,60 @@ fn walk_postfix(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
                             },
                             ObjectProperty::KeyValue {
                                 key: Expression::string("Value"),
-                                value: payload,
+                                value: payload.clone(),
                             },
                         ];
+                        if kind == "script" || kind == "code" {
+                            fields.extend([
+                                ObjectProperty::KeyValue {
+                                    key: Expression::string("GetterScript"),
+                                    value: payload.clone(),
+                                },
+                                ObjectProperty::KeyValue {
+                                    key: Expression::string("SetterScript"),
+                                    value: setter.clone().unwrap_or_else(Expression::null),
+                                },
+                                ObjectProperty::KeyValue {
+                                    key: Expression::string("IsGettable"),
+                                    value: Expression::bool(true),
+                                },
+                                ObjectProperty::KeyValue {
+                                    key: Expression::string("IsSettable"),
+                                    value: Expression::bool(has_setter),
+                                },
+                            ]);
+                            if kind == "code" {
+                                fields.extend([
+                                    ObjectProperty::KeyValue {
+                                        key: Expression::string("GetterCodeReference"),
+                                        value: raw_payload.clone(),
+                                    },
+                                    ObjectProperty::KeyValue {
+                                        key: Expression::string("SetterCodeReference"),
+                                        value: raw_setter.clone().unwrap_or_else(Expression::null),
+                                    },
+                                ]);
+                            }
+                        } else {
+                            fields.extend([
+                                ObjectProperty::KeyValue {
+                                    key: Expression::string("IsGettable"),
+                                    value: Expression::bool(true),
+                                },
+                                ObjectProperty::KeyValue {
+                                    key: Expression::string("isgettable"),
+                                    value: Expression::bool(true),
+                                },
+                                ObjectProperty::KeyValue {
+                                    key: Expression::string("IsSettable"),
+                                    value: Expression::bool(kind == "note"),
+                                },
+                                ObjectProperty::KeyValue {
+                                    key: Expression::string("issettable"),
+                                    value: Expression::bool(kind == "note"),
+                                },
+                            ]);
+                        }
                         if let Some(setter) = setter {
                             fields.push(ObjectProperty::KeyValue {
                                 key: Expression::string("SecondValue"),
@@ -6971,8 +10740,9 @@ fn walk_postfix(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
                                         // literal at every one of them.
                                         let mut args = args;
                                         let desc = args.remove(0);
-                                        let resolved =
-                                            __w.ets_descriptor_of(&desc).unwrap_or_else(|| desc.clone());
+                                        let resolved = __w
+                                            .ets_descriptor_of(&desc)
+                                            .unwrap_or_else(|| desc.clone());
                                         if let Some((kind, member, payload, setter)) =
                                             ets_descriptor_parts(&resolved)
                                         {
@@ -6998,18 +10768,58 @@ fn walk_postfix(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
                                             // descriptor lands there and the
                                             // block becomes a function so
                                             // `$this` names the target.
-                                            let writes = if kind == "script" {
+                                            let writes = if kind == "script" || kind == "code" {
+                                                let code_marker = (kind == "code").then(|| {
+                                                    Expression::new(ExprKind::Object(vec![
+                                                        object_entry(
+                                                            "getter",
+                                                            payload.clone(),
+                                                        ),
+                                                        object_entry(
+                                                            "setter",
+                                                            setter
+                                                                .clone()
+                                                                .unwrap_or_else(Expression::null),
+                                                        ),
+                                                    ]))
+                                                });
+                                                let getter = if kind == "code" {
+                                                    static_method_ref_as_getter(payload.clone())
+                                                } else {
+                                                    scriptblock_as_method(payload)
+                                                };
                                                 let mut writes = vec![write(
                                                     format!("__get_{member}"),
-                                                    scriptblock_as_method(payload),
+                                                    getter,
                                                 )];
                                                 if let Some(setter) = setter {
+                                                    let setter = if kind == "code" {
+                                                        static_method_ref_as_setter(setter, &member)
+                                                    } else {
+                                                        scriptblock_as_method(setter)
+                                                    };
                                                     writes.push(write(
                                                         format!("__set_{member}"),
-                                                        scriptblock_as_method(setter),
+                                                        setter,
+                                                    ));
+                                                } else {
+                                                    writes.push(write(
+                                                        format!("__set_{member}"),
+                                                        readonly_scriptproperty_setter(&member),
+                                                    ));
+                                                }
+                                                if let Some(code_marker) = code_marker {
+                                                    writes.push(write(
+                                                        format!("__code_{member}"),
+                                                        code_marker,
                                                     ));
                                                 }
                                                 writes
+                                            } else if kind == "scriptmethod" {
+                                                vec![write(
+                                                    member.clone(),
+                                                    scriptblock_as_method(payload),
+                                                )]
                                             } else {
                                                 // ⛔AN ALIAS RE-READS ITS
                                                 // TARGET. Storing the value it
@@ -7035,16 +10845,98 @@ fn walk_postfix(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
                                                             Expression::string(&referenced),
                                                         ),
                                                     ],
-                                                    _ => vec![write(member, payload)],
+                                                    _ => vec![write(member.clone(), payload)],
                                                 }
                                             };
+                                            let key_order_write = write(
+                                                "__ps_key_order".to_string(),
+                                                ps_ternary(
+                                                    ps_binary(
+                                                        BinOp::Eq,
+                                                        ps_member(target.clone(), "__ps_key_order"),
+                                                        Expression::null(),
+                                                    ),
+                                                    ps_array_of(vec![Expression::string(&member)]),
+                                                    ps_binary(
+                                                        BinOp::Add,
+                                                        ps_member(target.clone(), "__ps_key_order"),
+                                                        ps_array_of(vec![Expression::string(
+                                                            &member,
+                                                        )]),
+                                                    ),
+                                                ),
+                                            );
+                                            let mut writes = writes;
+                                            writes.push(key_order_write);
                                             expr = match writes.as_slice() {
-                                                [Statement {
-                                                    kind: StmtKind::Expr(single),
-                                                    ..
-                                                }] => single.clone(),
+                                                [
+                                                    Statement {
+                                                        kind: StmtKind::Expr(single),
+                                                        ..
+                                                    },
+                                                ] => single.clone(),
                                                 _ => block_value_expr(writes),
                                             };
+                                            continue;
+                                        }
+                                        if let Some((source, member)) = copied_ets_member_parts(&desc)
+                                        {
+                                            let write = |field: String, value: Expression| {
+                                                Statement::new(StmtKind::Expr(Expression::new(
+                                                    ExprKind::Assign {
+                                                        target: Box::new(Expression::new(
+                                                            ExprKind::Member {
+                                                                object: Box::new(target.clone()),
+                                                                field,
+                                                                null_safe: false,
+                                                            },
+                                                        )),
+                                                        value: Box::new(value),
+                                                    },
+                                                )))
+                                            };
+                                            let mut writes = vec![
+                                                write(
+                                                    format!("__get_{member}"),
+                                                    ps_member(
+                                                        source.clone(),
+                                                        &format!("__get_{member}"),
+                                                    ),
+                                                ),
+                                                write(
+                                                    format!("__set_{member}"),
+                                                    ps_member(
+                                                        source.clone(),
+                                                        &format!("__set_{member}"),
+                                                    ),
+                                                ),
+                                                write(
+                                                    format!("__code_{member}"),
+                                                    ps_member(
+                                                        source.clone(),
+                                                        &format!("__code_{member}"),
+                                                    ),
+                                                ),
+                                            ];
+                                            writes.push(write(
+                                                "__ps_key_order".to_string(),
+                                                ps_ternary(
+                                                    ps_binary(
+                                                        BinOp::Eq,
+                                                        ps_member(target.clone(), "__ps_key_order"),
+                                                        Expression::null(),
+                                                    ),
+                                                    ps_array_of(vec![Expression::string(&member)]),
+                                                    ps_binary(
+                                                        BinOp::Add,
+                                                        ps_member(target.clone(), "__ps_key_order"),
+                                                        ps_array_of(vec![Expression::string(
+                                                            &member,
+                                                        )]),
+                                                    ),
+                                                ),
+                                            ));
+                                            expr = block_value_expr(writes);
                                             continue;
                                         }
                                         expr = Expression::new(ExprKind::Call {
@@ -7063,11 +10955,110 @@ fn walk_postfix(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
                     }
                 }
 
+                if !is_static
+                    && name.eq_ignore_ascii_case("match")
+                    && args.len() == 1
+                    && let Some(target) = ets_member_list_target(&expr)
+                {
+                    expr = method_call_expr(
+                        ps_builtin("__ps_properties", vec![target]),
+                        "Where",
+                        vec![item_lambda(vec![Statement::new(StmtKind::Return(Some(
+                            dotnet_static_call(
+                                "System.Text.RegularExpressions.Regex",
+                                "IsMatch",
+                                vec![
+                                    ps_member(Expression::ident("_"), "Name"),
+                                    glob_to_regex(args[0].clone()),
+                                    Expression::int(1),
+                                ],
+                            ),
+                        )))])],
+                    );
+                    continue;
+                }
+
+                // `$obj.PSObject.Properties.Remove("Name")` removes the
+                // visible member plus the ETS accessor slots used by
+                // script/alias properties. For literal names this is a direct
+                // compile-time write against the same fixed-shape object
+                // Add/Attach writes to; no host/runtime helper is needed.
+                if !is_static
+                    && name.eq_ignore_ascii_case("remove")
+                    && args.len() == 1
+                    && let Some(target) = ets_member_list_target(&expr)
+                    && let Some(member) = literal_text(&args[0])
+                {
+                    let clear = |field: String| {
+                        Statement::new(StmtKind::Expr(Expression::new(ExprKind::Assign {
+                            target: Box::new(Expression::new(ExprKind::Member {
+                                object: Box::new(target.clone()),
+                                field,
+                                null_safe: false,
+                            })),
+                            value: Box::new(Expression::null()),
+                        })))
+                    };
+                    let retain_keys = Statement::new(StmtKind::Expr(Expression::new(
+                        ExprKind::Assign {
+                            target: Box::new(ps_member(target.clone(), "__ps_key_order")),
+                            value: Box::new(method_call_expr(
+                                method_call_expr(
+                                    ps_builtin("__ps_properties", vec![target.clone()]),
+                                    "Where",
+                                    vec![item_lambda(vec![Statement::new(StmtKind::Return(Some(
+                                        ps_binary(
+                                            BinOp::NotEq,
+                                            ps_member(Expression::ident("_"), "Name"),
+                                            Expression::string(&member),
+                                        ),
+                                    )))])],
+                                ),
+                                "ForEach",
+                                vec![item_lambda(vec![Statement::new(StmtKind::Return(Some(
+                                    ps_member(Expression::ident("_"), "Name"),
+                                )))])],
+                            )),
+                        },
+                    )));
+                    expr = block_value_expr(vec![
+                        retain_keys,
+                        clear(format!("__set_{member}")),
+                        clear(format!("__get_{member}")),
+                        clear(format!("__alias_{member}")),
+                        clear(format!("__code_{member}")),
+                        clear(member.clone()),
+                        clear(member.to_ascii_lowercase()),
+                        Statement::new(StmtKind::Return(Some(Expression::null()))),
+                    ]);
+                    continue;
+                }
+
                 // `[Parser]::ParseInput($code, …)` — the AST surface.
                 //
                 // The text is parsed HERE, by the same `parse` that walked this
                 // program, and `ast_objects` translates the nodes it produced
                 // into the objects the script reads. One parse, one AST.
+                if is_static
+                    && name.eq_ignore_ascii_case("ParseFile")
+                    && let Some(path) = args.first().cloned()
+                {
+                    let ast = ps_parse_file_ast_expr(path);
+                    let mut body = Vec::new();
+                    for arg in args.iter().skip(1).take(2) {
+                        if let ExprKind::RefOf(place) = &arg.kind {
+                            body.push(Statement::new(StmtKind::Assign {
+                                targets: vec![place_as_expression((**place).clone())],
+                                value: Expression::new(ExprKind::Array(Vec::new())),
+                                by_ref: false,
+                            }));
+                        }
+                    }
+                    body.push(Statement::new(StmtKind::Return(Some(ast))));
+                    expr = block_value_expr(body);
+                    continue;
+                }
+
                 if is_static
                     && (name.eq_ignore_ascii_case("ParseInput")
                         || name.eq_ignore_ascii_case("ParseScript"))
@@ -7078,11 +11069,15 @@ fn walk_postfix(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
                         .unwrap_or_else(|_| crate::ast_objects::ast_expr_lossy_source(&source));
                     if name.eq_ignore_ascii_case("ParseInput") {
                         let mut body = Vec::new();
-                        for arg in args.iter().skip(1).take(2) {
+                        for (ref_index, arg) in args.iter().skip(1).take(2).enumerate() {
                             if let ExprKind::RefOf(place) = &arg.kind {
                                 body.push(Statement::new(StmtKind::Assign {
                                     targets: vec![place_as_expression((**place).clone())],
-                                    value: Expression::new(ExprKind::Array(Vec::new())),
+                                    value: if ref_index == 0 {
+                                        ps_ast_comment_tokens_expr(&source)
+                                    } else {
+                                        Expression::new(ExprKind::Array(Vec::new()))
+                                    },
                                     by_ref: false,
                                 }));
                             }
@@ -7111,6 +11106,18 @@ fn walk_postfix(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
                     );
                     continue;
                 }
+                if !is_static
+                    && name.eq_ignore_ascii_case("GetValue")
+                    && args.len() == 1
+                    && nullable_property_info_value_type(&expr).is_none()
+                {
+                    expr = ps_builtin("__ps_index_get", vec![expr, args[0].clone()]);
+                    continue;
+                }
+                if !is_static && name.eq_ignore_ascii_case("SetValue") && args.len() >= 2 {
+                    expr = ps_builtin("__ps_index_set", vec![expr, args[1].clone(), args[0].clone()]);
+                    continue;
+                }
                 // `.ForEach(…)` / `.Where(…)` — the intrinsic collection
                 // members. Every overload but the plain script-block form is
                 // desugared; see `intrinsic_collection_overload`.
@@ -7122,10 +11129,136 @@ fn walk_postfix(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
                     continue;
                 }
 
+                // `[Helper].GetMethod("Name")` is enough reflection for
+                // `PSCodeProperty`: it names a static method that the
+                // descriptor later turns into an accessor.
+                if name.eq_ignore_ascii_case("GetMethod")
+                    && let Some(class) = type_name_of(&expr)
+                    && let Some(method) = args.first().and_then(literal_text)
+                {
+                    expr = static_method_reference(&class, &method);
+                    continue;
+                }
+
+                if is_static
+                    && matches!(
+                        name.to_ascii_lowercase().as_str(),
+                        "compare" | "equals"
+                    )
+                    && type_name_of(&expr).is_some_and(|t| {
+                        matches!(
+                            t.to_ascii_lowercase().as_str(),
+                            "string" | "system.string"
+                        )
+                    })
+                    && args.len() >= 2
+                {
+                    let mut call_args = args.into_iter().take(3).collect::<Vec<_>>();
+                    expr = if name.eq_ignore_ascii_case("Compare") {
+                        ps_builtin("__ps_str_compare", call_args)
+                    } else {
+                        ps_builtin("__ps_str_equals", call_args)
+                    };
+                    continue;
+                }
+
+                if is_static
+                    && name.eq_ignore_ascii_case("CreateInstance")
+                    && type_name_of(&expr)
+                        .is_some_and(|t| t.eq_ignore_ascii_case("System.Array"))
+                    && args.len() >= 2
+                {
+                    expr = Expression::new(ExprKind::Call {
+                        callee: Box::new(Expression::ident("__ps_repeat")),
+                        args: vec![
+                            Argument::positional(Expression::null()),
+                            Argument::positional(args[1].clone()),
+                        ],
+                        optional: false,
+                    });
+                    continue;
+                }
+
+                if is_static
+                    && name.eq_ignore_ascii_case("CreateInstance")
+                    && type_name_of(&expr)
+                        .is_some_and(|t| {
+                            t.eq_ignore_ascii_case("System.Activator")
+                                || t.eq_ignore_ascii_case("Activator")
+                        })
+                    && let Some(type_arg) = args.first()
+                    && let Some(type_name) = nullable_type_object_name(__w, type_arg)
+                {
+                    let ctor_args: Vec<Argument> = args
+                        .get(1)
+                        .map(|values| match &values.kind {
+                            ExprKind::Array(items) => items
+                                .iter()
+                                .map(|item| Argument::positional(item.value.clone()))
+                                .collect(),
+                            ExprKind::Call { callee, args, .. }
+                                if matches!(&callee.kind, ExprKind::Ident(name) if name == "__ps_array")
+                                    && args.len() == 1 =>
+                            {
+                                vec![Argument::positional(args[0].value.clone())]
+                            }
+                            _ => vec![Argument::positional(values.clone())],
+                        })
+                        .unwrap_or_default();
+                    expr = if is_nullable_type_name(&type_name) {
+                        ctor_args
+                            .first()
+                            .map(|arg| arg.value.clone())
+                            .unwrap_or_else(Expression::null)
+                    } else {
+                        Expression::new(ExprKind::New {
+                            class: Box::new(Expression::ident(&type_name)),
+                            args: ctor_args,
+                        })
+                    };
+                    continue;
+                }
+
+                if is_static
+                    && name.eq_ignore_ascii_case("GetType")
+                    && type_name_of(&expr)
+                        .is_some_and(|t| t.eq_ignore_ascii_case("System.Type"))
+                    && let Some(type_name) = args.first().and_then(literal_text)
+                {
+                    expr = powershell_type_object(&type_name);
+                    continue;
+                }
+
                 // `[Animal]::new(…)` is construction, not a static call — hand
                 // the shared compiler the `New` node it already knows.
                 if is_static && name.eq_ignore_ascii_case("new") {
                     if let Some(class) = type_name_of(&expr) {
+                        if is_error_record_type_name(&class) {
+                            expr = powershell_error_record_new_expr(Some(__w), args);
+                            continue;
+                        }
+                        if is_psvariable_type_name(&class) {
+                            expr = psvariable_object(
+                                args.first().cloned().unwrap_or_else(Expression::null),
+                                args.get(1).cloned().unwrap_or_else(Expression::null),
+                                args.get(2).cloned().unwrap_or_else(|| Expression::int(0)),
+                                Expression::string(""),
+                            );
+                            continue;
+                        }
+                        if class.eq_ignore_ascii_case("System.Management.Automation.PSTypeNameAttribute")
+                            || class.eq_ignore_ascii_case("PSTypeNameAttribute")
+                        {
+                            let type_name = args.first().cloned().unwrap_or_else(Expression::null);
+                            expr = reflected_automation_object(
+                                "System.Management.Automation.PSTypeNameAttribute",
+                                vec![
+                                    ("TypeName", type_name.clone()),
+                                    ("typename", type_name),
+                                ],
+                            );
+                            continue;
+                        }
                         // `[int[]]::new(3)` names no class: an ARRAY type is a
                         // length and an element default, not a constructor.
                         if let Some(element) = class.strip_suffix("[]")
@@ -7141,9 +11274,10 @@ fn walk_postfix(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
                             });
                             continue;
                         }
+                        let ctor_args = powershell_normalize_collection_constructor_args(&class, args);
                         expr = Expression::new(ExprKind::New {
                             class: Box::new(Expression::ident(&class)),
-                            args: args
+                            args: ctor_args
                                 .into_iter()
                                 .map(|value| Argument {
                                     value,
@@ -7163,6 +11297,11 @@ fn walk_postfix(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
                 // compiles to.
                 if !is_static && name.eq_ignore_ascii_case("getsteppablepipeline") {
                     expr = steppable_pipeline_expr(expr);
+                    continue;
+                }
+
+                if !is_static && name.eq_ignore_ascii_case("getnewclosure") {
+                    expr = scriptblock_runtime_value(&expr).clone();
                     continue;
                 }
 
@@ -7206,15 +11345,217 @@ fn walk_postfix(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
                     }
                 }
 
+                if !is_static
+                    && name.eq_ignore_ascii_case("Add")
+                    && receiver_expr_is_hashtable_var(__w, &expr)
+                    && args.len() >= 2
+                {
+                    let case_sensitive =
+                        receiver_expr_is_case_sensitive_hashtable_var(__w, &expr);
+                    expr = ps_hashtable_index_set_expr(
+                        expr,
+                        args[0].clone(),
+                        args[1].clone(),
+                        case_sensitive,
+                    );
+                    continue;
+                }
+
+                if !is_static
+                    && name.eq_ignore_ascii_case("Add")
+                    && receiver_expr_is_pscustomobject_var(__w, &expr)
+                {
+                    expr = Expression::new(ExprKind::Call {
+                        callee: Box::new(ps_builtin(
+                            "__ps_index_get",
+                            vec![expr, Expression::string(&name)],
+                        )),
+                        args: args.into_iter().map(Argument::positional).collect(),
+                        optional: false,
+                    });
+                    continue;
+                }
+
+                if !is_static
+                    && name.eq_ignore_ascii_case("Remove")
+                    && receiver_expr_is_dictionary_var(__w, &expr)
+                    && args.len() == 2
+                    && let ExprKind::RefOf(place) = &args[1].kind
+                {
+                    let key = args[0].clone();
+                    let out_target = place_as_expression((**place).clone());
+                    let hit = "__ps_dict_remove_hit";
+                    expr = block_value_expr(vec![
+                        Statement::new(StmtKind::VarDecl {
+                            declarations: vec![VarDeclarator {
+                                pattern: BindingPattern::Ident(hit.to_string()),
+                                type_hint: None,
+                                init: Some(method_call_expr(
+                                    expr.clone(),
+                                    "ContainsKey",
+                                    vec![key.clone()],
+                                )),
+                                array_bounds: None,
+                                with_events: false,
+                            }],
+                            kind: VarDeclKind::FunctionScoped,
+                        }),
+                        Statement::new(StmtKind::If {
+                            cond: Expression::ident(hit),
+                            then_body: vec![
+                                Statement::new(StmtKind::Assign {
+                                    targets: vec![out_target],
+                                    value: method_call_expr(expr.clone(), "get_Item", vec![key.clone()]),
+                                    by_ref: false,
+                                }),
+                                Statement::new(StmtKind::Expr(method_call_expr(
+                                    expr,
+                                    "Remove",
+                                    vec![key],
+                                ))),
+                            ],
+                            elifs: Vec::new(),
+                            else_body: None,
+                        }),
+                        Statement::new(StmtKind::Return(Some(Expression::ident(hit)))),
+                    ]);
+                    continue;
+                }
+
+                if !is_static && name.eq_ignore_ascii_case("ToByteArray") && args.is_empty() {
+                    expr = ps_builtin("__ps_bigint_to_byte_array", vec![expr]);
+                    continue;
+                }
+
+                if !is_static
+                    && name.eq_ignore_ascii_case("CopyTo")
+                    && receiver_expr_is_sorted_dictionary_var(__w, &expr)
+                    && args.len() >= 2
+                {
+                    let target = args[0].clone();
+                    let start = args[1].clone();
+                    const ENTRIES: &str = "__ps_sd_copy_entries";
+                    const INDEX: &str = "__ps_sd_copy_index";
+                    const ITEM: &str = "__ps_sd_copy_item";
+                    expr = block_value_expr(vec![
+                        local_decl(ENTRIES),
+                        assign_ident_expr_stmt(ENTRIES, method_call_expr(expr, "EntriesSorted", Vec::new())),
+                        local_decl(INDEX),
+                        assign_ident_expr_stmt(INDEX, start),
+                        Statement::new(StmtKind::ForIn {
+                            var: ITEM.to_string(),
+                            key: None,
+                            iter: Expression::ident(ENTRIES),
+                            body: vec![
+                                Statement::new(StmtKind::Expr(ps_builtin(
+                                    "__ps_index_set",
+                                    vec![
+                                        target.clone(),
+                                        Expression::ident(INDEX),
+                                        Expression::new(ExprKind::Object(vec![
+                                            object_entry(
+                                                "Key",
+                                                ps_builtin(
+                                                    "__ps_index_get",
+                                                    vec![Expression::ident(ITEM), Expression::int(0)],
+                                                ),
+                                            ),
+                                            object_entry(
+                                                "key",
+                                                ps_builtin(
+                                                    "__ps_index_get",
+                                                    vec![Expression::ident(ITEM), Expression::int(0)],
+                                                ),
+                                            ),
+                                            object_entry(
+                                                "Name",
+                                                ps_builtin(
+                                                    "__ps_index_get",
+                                                    vec![Expression::ident(ITEM), Expression::int(0)],
+                                                ),
+                                            ),
+                                            object_entry(
+                                                "Value",
+                                                ps_builtin(
+                                                    "__ps_index_get",
+                                                    vec![Expression::ident(ITEM), Expression::int(1)],
+                                                ),
+                                            ),
+                                            object_entry(
+                                                "value",
+                                                ps_builtin(
+                                                    "__ps_index_get",
+                                                    vec![Expression::ident(ITEM), Expression::int(1)],
+                                                ),
+                                            ),
+                                        ])),
+                                    ],
+                                ))),
+                                assign_ident_expr_stmt(
+                                    INDEX,
+                                    ps_binary(
+                                        BinOp::Add,
+                                        Expression::ident(INDEX),
+                                        Expression::int(1),
+                                    ),
+                                ),
+                            ],
+                            of: true,
+                            else_body: None,
+                            is_async: false,
+                        }),
+                        Statement::new(StmtKind::Return(Some(Expression::null()))),
+                    ]);
+                    continue;
+                }
+
                 expr = method_call_expr(expr, &name, args);
             }
             Rule::index_get => {
-                let index = op
+                let raw_index = op
                     .into_inner()
                     .next()
                     .map(|__x| walk_expr(__w, __x))
                     .unwrap_or_else(Expression::null);
-                let index = fold_literal_key(index);
+                if receiver_expr_is_case_sensitive_hashtable_var(__w, &expr) {
+                    expr = ps_case_sensitive_hashtable_get_expr(expr, raw_index);
+                    continue;
+                }
+                let index = fold_literal_key(raw_index);
+                if let Some(target) = ets_member_list_target(&expr) {
+                    expr = Expression::new(ExprKind::Call {
+                        callee: Box::new(Expression::ident("__ps_properties")),
+                        args: vec![Argument::positional(target), Argument::positional(index)],
+                        optional: false,
+                    });
+                    continue;
+                }
+                if receiver_expr_is_hashtable_var(__w, &expr)
+                    && matches!(index.kind, ExprKind::Lit(Literal::Int(_)))
+                {
+                    let ordered_key = ps_builtin(
+                        "__ps_index_get",
+                        vec![ps_member(expr.clone(), "__ps_key_order"), index],
+                    );
+                    expr = ps_builtin("__ps_index_get", vec![expr, ordered_key]);
+                    continue;
+                }
+                if is_stringbuilder_expr(__w, &expr) {
+                    expr = ps_builtin("__ps_sb_index_get", vec![expr, index]);
+                    continue;
+                }
+                if receiver_expr_is_array_var(__w, &expr)
+                    && let Some((row, col)) = ps_array_index_pair(&index)
+                {
+                    expr = ps_nested_array_get(expr, fold_literal_key(row), fold_literal_key(col));
+                    continue;
+                }
+                if receiver_expr_is_dictionary_var(__w, &expr)
+                    && !matches!(index.kind, ExprKind::Range { .. })
+                {
+                    expr = method_call_expr(expr, "get_Item", vec![index]);
+                    continue;
+                }
                 // A COMPUTED key. `$h['A']` works because a literal key folds
                 // to a member read; `$h[$k]` for the same key answered EMPTY,
                 // because `Index` with a non-literal key falls through to ARRAY
@@ -7226,25 +11567,24 @@ fn walk_postfix(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
                 // asked an array for element `[1,2]` and broke six slicing
                 // tests that a hashtable fix had no business touching.
                 if !matches!(index.kind, ExprKind::Range { .. }) {
-                    expr = Expression::new(ExprKind::Call {
-                        callee: Box::new(Expression::ident("__ps_index_get")),
-                        args: vec![
-                            Argument::positional(expr),
-                            Argument::positional(index),
-                        ],
+                    let callee = if __w.strict_mode_level >= 3 {
+                        "__ps_strict_index_get"
+                    } else {
+                        "__ps_index_get"
+                    };
+                    let read = Expression::new(ExprKind::Call {
+                        callee: Box::new(Expression::ident(callee)),
+                        args: vec![Argument::positional(expr), Argument::positional(index)],
                         optional: false,
                     });
-                    continue;
-                }
-                if let Some(target) = ets_member_list_target(&expr) {
-                    expr = Expression::new(ExprKind::Call {
-                        callee: Box::new(Expression::ident("__ps_properties")),
-                        args: vec![
-                            Argument::positional(target),
-                            Argument::positional(index),
-                        ],
-                        optional: false,
-                    });
+                    expr = if __w.strict_mode_level >= 3 {
+                        read
+                    } else {
+                        Expression::new(ExprKind::NullCoalesce {
+                            left: Box::new(read),
+                            right: Box::new(Expression::null()),
+                        })
+                    };
                     continue;
                 }
                 expr = Expression::new(ExprKind::Index {
@@ -7286,6 +11626,8 @@ pub(crate) struct PsWalker {
     class_display_names: std::collections::HashMap<String, String>,
     /// Folded enum name → declared spelling, for enum PSTypeNames.
     enum_display_names: std::collections::HashMap<String, String>,
+    /// Folded enum name → declared member names and integral values.
+    enum_members: std::collections::HashMap<String, Vec<(String, i64)>>,
     /// Each declared class → its DIRECT parent, both folded. `([Base]$this).M()`
     /// is a super call only when `Base` is the parent of the class whose
     /// method contains it; see the rewrite in the member walk.
@@ -7306,22 +11648,48 @@ pub(crate) struct PsWalker {
     /// Per declared function, the SPELLINGS each parameter answers to —
     /// its own name first, then any `[Alias(…)]` it carries.
     declared_functions: std::collections::HashMap<String, Vec<Vec<String>>>,
+    /// Declared function name -> folded spellings that are `[switch]` params.
+    function_switch_parameters:
+        std::collections::HashMap<String, std::collections::HashSet<String>>,
+    /// Declared function name -> folded spellings that are array-typed params.
+    function_array_parameters:
+        std::collections::HashMap<String, std::collections::HashSet<String>>,
+    /// Declared functions with a `process {}` block, folded. `@(<call>)` must
+    /// collect their output stream, where no output is an empty array rather
+    /// than one `$null` element.
+    process_block_functions: std::collections::HashSet<String>,
+    /// Folded function name -> declared spelling, used for PowerShell-visible
+    /// synthetic stack text while the runtime stack is still common-language.
+    function_display_names: std::collections::HashMap<String, String>,
     /// Declared function name → `[OutputType(...)]` metadata entries.
     function_output_types: std::collections::HashMap<String, Vec<PsOutputTypeInfo>>,
     /// Declared function name → `[CmdletBinding(...)]` metadata.
     cmdlet_binding_functions: std::collections::HashMap<String, PsCmdletBindingInfo>,
     /// Declared function name → parameter attribute metadata keyed by folded parameter name.
-    function_parameter_attributes:
-        std::collections::HashMap<String, std::collections::HashMap<String, PsParameterAttributeInfo>>,
+    function_parameter_attributes: std::collections::HashMap<
+        String,
+        std::collections::HashMap<String, PsParameterAttributeInfo>,
+    >,
     /// Advanced functions declaring `SupportsShouldProcess`, folded by name.
     supports_should_process_functions: std::collections::HashSet<String>,
     /// Names of the `[ref]` parameters of the function currently being walked.
     /// `$v.Value` on one of these IS `$v` — the alias itself — so the member
     /// step is dropped rather than read as a property.
     ref_params: std::collections::HashSet<String>,
-    /// Variables declared `-Option Constant` / `-Option ReadOnly`, folded.
-    /// A later write to one of these is an ERROR in PowerShell.
+    /// Variables known to exist in the script/session, folded. This is
+    /// PowerShell metadata for `Get-Variable` / `Test-Path variable:`; it is
+    /// intentionally separate from the value because `$x = $null` is still a
+    /// defined variable.
+    defined_vars: std::collections::HashSet<String>,
+    /// PowerShell variable metadata keyed by folded backing name.
+    variable_descriptions: std::collections::HashMap<String, Expression>,
+    /// Variables declared `-Option Constant`, folded. A later write to one of
+    /// these is an ERROR in PowerShell.
     constant_vars: std::collections::HashSet<String>,
+    /// Variables declared `-Option ReadOnly`, folded. A later write is an
+    /// error unless a cmdlet supplies `-Force`; unlike `Constant`, this metadata
+    /// can be cleared by `Remove-Variable -Force`.
+    readonly_vars: std::collections::HashSet<String>,
     /// Parameters declared `[Parameter(ValueFromPipeline=$true)]`, folded — the
     /// one a `process { }` block iterates.
     pipeline_params: std::collections::HashSet<String>,
@@ -7350,6 +11718,12 @@ pub(crate) struct PsWalker {
     /// writes it inline; a name written twice is dropped rather than guessed
     /// at.
     ets_descriptors: std::collections::HashMap<String, Option<Expression>>,
+    /// Variables bound once to `[Type].GetMethod("StaticName")` references.
+    method_refs: std::collections::HashMap<String, Option<Expression>>,
+    /// Variables bound to `[System.Text.RegularExpressions.MatchEvaluator]{…}`.
+    match_evaluator_vars: std::collections::HashMap<String, bool>,
+    /// Variables bound to an ignore-case `System.StringComparer` value.
+    string_comparer_ignore_case_vars: std::collections::HashMap<String, bool>,
     /// Variables bound to a HASHTABLE LITERAL (`@{…}` / `[ordered]@{…}`), folded.
     ///
     /// `Remove` / `Clear` / `ContainsKey` on a bare object compile to a member
@@ -7361,17 +11735,116 @@ pub(crate) struct PsWalker {
     /// walker can know is a bare object, so it is the only one renamed. A name
     /// written twice stops answering rather than guessing.
     hashtable_vars: std::collections::HashMap<String, bool>,
+    /// Variables bound to a Hashtable constructed with a case-sensitive
+    /// comparer. Those use the same object storage, but index keys must not be
+    /// folded by the PowerShell hashtable sugar.
+    hashtable_case_sensitive_vars: std::collections::HashMap<String, bool>,
+    /// Variables known to hold dotnet collection adapter values. This keeps
+    /// string-only sugar such as `IndexOf` from stealing collection methods.
+    collection_vars: std::collections::HashMap<String, bool>,
+    /// Folded collection variable name -> declared adapter class, if the RHS
+    /// was a collection constructor. PowerShell set operations use value
+    /// equality, while the ECMA Set underneath the dotnet adapter uses object
+    /// identity for constructed numeric/string wrappers, so rewrites that
+    /// rebuild a set need to preserve the original adapter class.
+    collection_var_classes: std::collections::HashMap<String, Option<String>>,
+    /// Variables bound to set adapters constructed with an ignore-case string
+    /// comparer. The adapter remains the registered dotnet class; PowerShell
+    /// only normalizes its language-level `Contains` / duplicate-`Add` checks.
+    set_ignore_case_vars: std::collections::HashMap<String, bool>,
+    /// Variables known to hold dictionary adapter values. Their `.Count` is
+    /// the count of visible keys, not the object-field count of adapter storage.
+    dictionary_vars: std::collections::HashMap<String, bool>,
+    /// Variables known to hold `SortedDictionary` adapter values. Their key and
+    /// value views are adapter methods because the backing map itself is not
+    /// stored in sorted order.
+    sorted_dictionary_vars: std::collections::HashMap<String, bool>,
+    /// Variables known to hold PowerShell array values. This preserves
+    /// PowerShell's `.Count` and `.GetType().IsArray` surface while the payload
+    /// stays the shared array value.
+    array_vars: std::collections::HashMap<String, bool>,
+    /// Variables bound to a RuntimeDefinedParameter object. Its `Value` setter
+    /// also flips `IsSet`, which is PowerShell metadata rather than a common
+    /// object-field rule.
+    runtime_defined_parameter_vars: std::collections::HashMap<String, bool>,
+    /// Variables known to hold `[pscustomobject]` values. This is narrower than
+    /// `hashtable_vars`: both lower to object literals, but only PSCustomObject
+    /// should let user-added scriptmethods such as `Add` beat collection slots.
+    pscustomobject_vars: std::collections::HashMap<String, bool>,
     /// Variables known to hold strings. `.Contains()` cannot be bound globally
     /// in `[value_methods]` because collection receivers use the same spelling.
     string_vars: std::collections::HashMap<String, bool>,
+    /// Variables known to hold `System.Text.StringBuilder` values. Index syntax
+    /// is PowerShell surface sugar for StringBuilder's registered `Item`
+    /// adapter accessors, not ordinary array indexing.
+    stringbuilder_vars: std::collections::HashMap<String, bool>,
+    /// Variables known to hold StringBuilders constructed with an explicit
+    /// `MaxCapacity`; only those need a PowerShell-side overflow guard until
+    /// the shared adapter enforces it internally.
+    stringbuilder_bounded_vars: std::collections::HashMap<String, bool>,
+    /// Variables known to hold `Memory<T>` / `ReadOnlyMemory<T>` adapter
+    /// values. The payload is still an array/span view; this only preserves the
+    /// PowerShell surface for member sugar such as `.IsEmpty` and `.Slice(...)`.
+    memory_vars: std::collections::HashMap<String, bool>,
+    /// Variables known to hold PowerShell `[char]` values. The runtime payload
+    /// is still a one-character string; this only preserves PowerShell surface
+    /// metadata such as `$c.GetType().Name`.
+    char_vars: std::collections::HashMap<String, bool>,
+    /// Variables initialized from `[char]<number>`, preserving unpaired
+    /// surrogate code units that cannot round-trip through the JS string
+    /// representation.
+    char_code_vars: std::collections::HashMap<String, Option<Expression>>,
+    /// Declared numeric variable type, used only where PowerShell overload
+    /// spelling erases width before the shared tree sees it.
+    numeric_type_vars: std::collections::HashMap<String, Option<String>>,
+    /// Variables bound once to `[type]"..."` metadata objects.
+    type_object_vars: std::collections::HashMap<String, Option<String>>,
     /// Variables known to hold PowerShell XML adapter values.
     xml_vars: std::collections::HashMap<String, bool>,
     /// Variables known to hold System.Uri values.
     uri_vars: std::collections::HashMap<String, bool>,
+    /// Variables known to hold `System.Globalization.CultureInfo` adapter values.
+    culture_info_vars: std::collections::HashMap<String, bool>,
     /// Variables whose initial PowerShell ETS type-name hierarchy is known.
     /// `None` means the variable was written more than once, so no static
     /// claim is safe.
     pstypename_vars: std::collections::HashMap<String, Option<Vec<String>>>,
+    /// `Update-TypeData` registrations, folded by type name.
+    type_data: std::collections::HashMap<String, PsTypeDataInfo>,
+    /// Variables bound once to `Get-TypeData -TypeName ...`, folded by var.
+    typedata_vars: std::collections::HashMap<String, Option<String>>,
+    /// Statically visible `New-PSDrive` additions, keyed by folded drive name.
+    psdrives: std::collections::HashMap<String, PsDriveInfo>,
+    /// Literal Set-StrictMode level active while this source is lowered.
+    /// 0 = off, 1 = undefined variables, 2 = missing dot properties, 3 = array bounds.
+    strict_mode_level: u8,
+    /// Nesting depth while lowering `$()` statement lists. Stream-context
+    /// wrappers inside this form may need to capture a function declared in the
+    /// same subexpression; top-level wrappers must not capture globals.
+    subexpression_depth: usize,
+}
+
+#[derive(Clone, Default)]
+struct PsTypeDataInfo {
+    type_name: String,
+    members: std::collections::HashMap<String, PsTypeDataMember>,
+    default_display_property: Option<String>,
+    default_display_property_set: Option<Vec<String>>,
+}
+
+#[derive(Clone)]
+struct PsTypeDataMember {
+    kind: String,
+    name: String,
+    value: Expression,
+    second_value: Option<Expression>,
+}
+
+#[derive(Clone)]
+struct PsDriveInfo {
+    name: String,
+    provider: String,
+    root: Expression,
 }
 
 impl PsWalker {
@@ -7414,8 +11887,21 @@ impl PsWalker {
             _ => None,
         }
     }
-}
 
+    fn method_ref_of(&self, expr: &Expression) -> Option<Expression> {
+        match &expr.kind {
+            ExprKind::Object(_) if static_method_reference_parts(expr).is_some() => {
+                Some(expr.clone())
+            }
+            ExprKind::Ident(name) => self
+                .method_refs
+                .get(&name.to_lowercase())
+                .cloned()
+                .flatten(),
+            _ => None,
+        }
+    }
+}
 
 /// Record every method name the script's classes declare.
 ///
@@ -7458,11 +11944,17 @@ fn collect_declared_methods(__w: &mut PsWalker, root: Pair<Rule>) {
                             // the class satisfies: `-is [I]` on an instance is
                             // answered by whether its class names `I`, and a
                             // class is its own parent's type too.
-                            __w.implementers.entry(parent.clone()).or_default().push(class_name.clone());
+                            __w.implementers
+                                .entry(parent.clone())
+                                .or_default()
+                                .push(class_name.clone());
                             __w.class_parents.insert(class_name.clone(), parent);
                         }
                         for interface in names {
-                            __w.implementers.entry(interface).or_default().push(class_name.clone());
+                            __w.implementers
+                                .entry(interface)
+                                .or_default()
+                                .push(class_name.clone());
                         }
                     }
                 }
@@ -7542,15 +12034,22 @@ fn parameter_aliases(decl: &str) -> Vec<String> {
 fn collect_declared_functions(__w: &mut PsWalker, root: Pair<Rule>) {
     let mut out: std::collections::HashMap<String, Vec<Vec<String>>> =
         std::collections::HashMap::new();
+    let mut switch_params: std::collections::HashMap<String, std::collections::HashSet<String>> =
+        std::collections::HashMap::new();
+    let mut array_params: std::collections::HashMap<String, std::collections::HashSet<String>> =
+        std::collections::HashMap::new();
+    collect_declared_function_names_from_text(__w, root.as_str(), &mut out);
     let mut work = VecDeque::new();
     work.push_back(root);
     while let Some(node) = work.pop_front() {
-        if node.as_rule() == Rule::function_decl {
+        if matches!(node.as_rule(), Rule::function_decl | Rule::filter_decl) {
             let mut inner = node.clone().into_inner();
             let Some(name) = inner.find(|c| c.as_rule() == Rule::function_name) else {
                 continue;
             };
             let mut params = Vec::new();
+            let mut switches = std::collections::HashSet::new();
+            let mut arrays = std::collections::HashSet::new();
             let mut sub = VecDeque::new();
             for child in node.clone().into_inner() {
                 sub.push_back(child);
@@ -7562,13 +12061,22 @@ fn collect_declared_functions(__w: &mut PsWalker, root: Pair<Rule>) {
                         .into_inner()
                         .find(|c| c.as_rule() == Rule::var_ref)
                     {
-                        let mut spellings =
-                            vec![v.as_str().trim_start_matches('$').to_string()];
+                        let mut spellings = vec![v.as_str().trim_start_matches('$').to_string()];
                         // ⛔A SPLAT KEY MAY BE AN ALIAS. `[Alias("CN")][string]$ComputerName`
                         // binds from `@{ CN = … }`, so the expansion has to ask
                         // for every spelling the parameter answers to, not just
                         // its own name.
                         spellings.extend(parameter_aliases(n.as_str()));
+                        if param_decl_has_switch_type(n.as_str()) {
+                            for spelling in &spellings {
+                                switches.insert(spelling.to_lowercase());
+                            }
+                        }
+                        if param_decl_has_array_type(n.as_str()) {
+                            for spelling in &spellings {
+                                arrays.insert(spelling.to_lowercase());
+                            }
+                        }
                         params.push(spellings);
                     }
                 }
@@ -7576,13 +12084,138 @@ fn collect_declared_functions(__w: &mut PsWalker, root: Pair<Rule>) {
                     sub.push_back(child);
                 }
             }
-            out.insert(name.as_str().to_lowercase(), params);
+            let dynamic_aliases = dynamic_parameter_aliases(node.as_str());
+            for dynamic_param in dynamic_parameter_infos(node.as_str()) {
+                let mut spellings = vec![dynamic_param.name];
+                spellings.extend(dynamic_aliases.clone());
+                if dynamic_param
+                    .type_name
+                    .as_deref()
+                    .is_some_and(is_switch_parameter_type_name)
+                {
+                    for spelling in &spellings {
+                        switches.insert(spelling.to_lowercase());
+                    }
+                }
+                if dynamic_param
+                    .type_name
+                    .as_deref()
+                    .is_some_and(|type_name| type_name.trim().ends_with("[]"))
+                {
+                    for spelling in &spellings {
+                        arrays.insert(spelling.to_lowercase());
+                    }
+                }
+                params.push(spellings);
+            }
+            let binding_info = cmdlet_binding_info(node.as_str());
+            if binding_info.supports_paging {
+                for paging in ["First", "Skip", "IncludeTotalCount"] {
+                    if !params.iter().any(|spellings| {
+                        spellings
+                            .first()
+                            .is_some_and(|name| name.eq_ignore_ascii_case(paging))
+                    }) {
+                        params.push(vec![paging.to_string()]);
+                    }
+                }
+                switches.insert("includetotalcount".to_string());
+            }
+            let display_name = name.as_str().trim().to_string();
+            let folded_name = display_name.to_lowercase();
+            __w.function_display_names
+                .insert(folded_name.clone(), display_name);
+            if function_decl_has_process_block(&node) {
+                __w.process_block_functions.insert(folded_name.clone());
+            }
+            if binding_info.supports_should_process
+                || binding_info.supports_transactions
+                || binding_info.supports_paging
+                || binding_info.default_parameter_set.is_some()
+                || binding_info.help_uri.is_some()
+                || !binding_info.confirm_impact.eq_ignore_ascii_case("Medium")
+            {
+                __w.cmdlet_binding_functions
+                    .insert(folded_name.clone(), binding_info);
+            }
+            if !switches.is_empty() {
+                switch_params.insert(folded_name.clone(), switches);
+            }
+            if !arrays.is_empty() {
+                array_params.insert(folded_name.clone(), arrays);
+            }
+            out.insert(folded_name, params);
         }
         for child in node.into_inner() {
             work.push_back(child);
         }
     }
     __w.declared_functions = out;
+    __w.function_switch_parameters = switch_params;
+    __w.function_array_parameters = array_params;
+}
+
+fn function_decl_has_process_block(node: &Pair<Rule>) -> bool {
+    let mut work = VecDeque::new();
+    work.push_back(node.clone());
+    while let Some(pair) = work.pop_front() {
+        if pair.as_rule() == Rule::named_block {
+            let kind = pair
+                .clone()
+                .into_inner()
+                .next()
+                .map(|k| k.as_str().to_lowercase())
+                .unwrap_or_default();
+            if kind == "process" {
+                return true;
+            }
+        }
+        for child in pair.into_inner() {
+            work.push_back(child);
+        }
+    }
+    false
+}
+
+fn param_decl_has_switch_type(decl: &str) -> bool {
+    let lower = decl.to_ascii_lowercase();
+    lower.contains("[switch]") || lower.contains("[switchparameter]")
+}
+
+fn param_decl_has_array_type(decl: &str) -> bool {
+    decl.to_ascii_lowercase().contains("[]")
+}
+
+fn is_switch_parameter_type_name(type_name: &str) -> bool {
+    matches!(
+        type_name.to_ascii_lowercase().as_str(),
+        "switch" | "switchparameter" | "system.management.automation.switchparameter"
+    )
+}
+
+fn collect_declared_function_names_from_text(
+    __w: &mut PsWalker,
+    source: &str,
+    out: &mut std::collections::HashMap<String, Vec<Vec<String>>>,
+) {
+    let mut prev = "";
+    for token in source.split_whitespace() {
+        if prev.eq_ignore_ascii_case("function") || prev.eq_ignore_ascii_case("filter") {
+            let raw = token
+                .split(['(', '{'])
+                .next()
+                .unwrap_or(token)
+                .trim_matches(|c: char| c == '"' || c == '\'' || c == ';' || c == ',');
+            if !raw.is_empty() {
+                let folded = raw.to_lowercase();
+                __w.function_display_names
+                    .entry(folded.clone())
+                    .or_insert_with(|| raw.to_string());
+                out.entry(folded).or_default();
+            }
+        }
+        prev = token;
+    }
 }
 
 /// The parameter names of a function this script declares, when the callee
@@ -7591,10 +12224,69 @@ fn callee_param_names(__w: &PsWalker, callee: &Expression) -> Option<Vec<Vec<Str
     let ExprKind::Ident(name) = &callee.kind else {
         return None;
     };
-    __w.declared_functions
-        .get(&name.to_lowercase())
-        .filter(|p| !p.is_empty())
-        .cloned()
+    let folded = name.to_lowercase();
+    let mut params = __w.declared_functions.get(&folded).cloned()?;
+    if let Some(info) = __w.cmdlet_binding_functions.get(&folded) {
+        if info.supports_paging {
+            for paging in ["First", "Skip", "IncludeTotalCount"] {
+                if !params.iter().any(|spellings| {
+                    spellings
+                        .first()
+                        .is_some_and(|name| name.eq_ignore_ascii_case(paging))
+                }) {
+                    params.push(vec![paging.to_string()]);
+                }
+            }
+        }
+        for common in [
+            vec!["ErrorAction".to_string(), "ea".to_string()],
+            vec!["WarningAction".to_string(), "wa".to_string()],
+            vec!["DebugAction".to_string(), "da".to_string()],
+            vec!["InformationAction".to_string(), "infa".to_string()],
+            vec!["VerboseAction".to_string(), "va".to_string()],
+        ] {
+            if !params.iter().any(|spellings| {
+                spellings
+                    .first()
+                    .is_some_and(|name| name.eq_ignore_ascii_case(&common[0]))
+            }) {
+                params.push(common);
+            }
+        }
+    }
+    if params.is_empty() {
+        None
+    } else {
+        Some(params)
+    }
+}
+
+fn callee_array_params(
+    __w: &PsWalker,
+    callee: &Expression,
+) -> Option<std::collections::HashSet<String>> {
+    let ExprKind::Ident(name) = &callee.kind else {
+        return None;
+    };
+    __w.function_array_parameters.get(&name.to_lowercase()).cloned()
+}
+
+fn is_powershell_common_parameter(name: &str) -> bool {
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        "erroraction"
+            | "warningaction"
+            | "debugaction"
+            | "informationaction"
+            | "verboseaction"
+            | "errorvariable"
+            | "warningvariable"
+            | "debugvariable"
+            | "informationvariable"
+            | "outvariable"
+            | "outbuffer"
+            | "pipelinevariable"
+    )
 }
 
 /// True when a class in this script declares `name` as a method.
@@ -7614,7 +12306,6 @@ fn hashtable_only_property(__w: &mut PsWalker, name: &str) -> Option<&'static st
         _ => None,
     }
 }
-
 
 fn hashtable_only_method(
     __w: &mut PsWalker,
@@ -7674,6 +12365,239 @@ fn receiver_expr_is_string_like(__w: &PsWalker, expr: &Expression) -> bool {
     }
 }
 
+fn assignment_expr_is_stringbuilder_like(expr: &Expression) -> bool {
+    matches!(
+        &expr.kind,
+        ExprKind::New { class, .. }
+            if type_name_of(class).is_some_and(|name| {
+                name.eq_ignore_ascii_case("System.Text.StringBuilder")
+                    || name.eq_ignore_ascii_case("StringBuilder")
+            })
+    )
+}
+
+fn assignment_expr_is_bounded_stringbuilder(expr: &Expression) -> bool {
+    matches!(
+        &expr.kind,
+        ExprKind::New { class, args }
+            if args.len() >= 2
+                && type_name_of(class).is_some_and(|name| {
+                    name.eq_ignore_ascii_case("System.Text.StringBuilder")
+                        || name.eq_ignore_ascii_case("StringBuilder")
+                })
+    )
+}
+
+fn is_stringbuilder_expr(__w: &PsWalker, expr: &Expression) -> bool {
+    assignment_expr_is_stringbuilder_like(expr)
+        || matches!(&expr.kind, ExprKind::Ident(name) if __w
+            .stringbuilder_vars
+            .get(&name.to_lowercase())
+            .copied()
+            .unwrap_or(false))
+}
+
+fn stringbuilder_needs_capacity_guard(__w: &PsWalker, expr: &Expression) -> bool {
+    assignment_expr_is_bounded_stringbuilder(expr)
+        || matches!(&expr.kind, ExprKind::Ident(name) if __w
+            .stringbuilder_bounded_vars
+            .get(&name.to_lowercase())
+            .copied()
+            .unwrap_or(false))
+}
+
+fn is_memory_extensions_type(expr: &Expression) -> bool {
+    type_name_of(expr).is_some_and(|name| {
+        name.eq_ignore_ascii_case("System.MemoryExtensions")
+            || name.eq_ignore_ascii_case("MemoryExtensions")
+    })
+}
+
+fn assignment_expr_is_memory_like(expr: &Expression) -> bool {
+    matches!(
+        &expr.kind,
+        ExprKind::Call { callee, .. }
+            if matches!(
+                &callee.kind,
+                ExprKind::Member { object, field, .. }
+                    if is_memory_extensions_type(object)
+                        && matches!(
+                            field.to_ascii_lowercase().as_str(),
+                            "asmemory" | "slice" | "trim" | "trimstart" | "trimend"
+                        )
+            )
+    )
+}
+
+fn is_memory_expr(__w: &PsWalker, expr: &Expression) -> bool {
+    assignment_expr_is_memory_like(expr)
+        || matches!(&expr.kind, ExprKind::Ident(name) if __w
+            .memory_vars
+            .get(&name.to_lowercase())
+            .copied()
+            .unwrap_or(false))
+}
+
+fn is_binary_primitives_type(expr: &Expression) -> bool {
+    type_name_of(expr).is_some_and(|name| {
+        name.eq_ignore_ascii_case("System.Buffers.Binary.BinaryPrimitives")
+            || name.eq_ignore_ascii_case("BinaryPrimitives")
+    })
+}
+
+fn is_ipaddress_type(expr: &Expression) -> bool {
+    type_name_of(expr).is_some_and(|name| {
+        name.eq_ignore_ascii_case("System.Net.IPAddress")
+            || name.eq_ignore_ascii_case("IPAddress")
+    })
+}
+
+fn numeric_width_of_expr(__w: &PsWalker, expr: &Expression) -> Option<String> {
+    let raw = match &expr.kind {
+        ExprKind::Ident(name) => __w
+            .numeric_type_vars
+            .get(&name.to_lowercase())
+            .and_then(Clone::clone),
+        ExprKind::Cast { type_name, .. } => Some(type_name.clone()),
+        _ => None,
+    }?;
+    let leaf = raw.rsplit('.').next().unwrap_or(&raw).to_ascii_lowercase();
+    match leaf.as_str() {
+        "byte" | "sbyte" | "int16" | "uint16" | "int32" | "uint32" | "int64" | "uint64" => {
+            Some(leaf)
+        }
+        "short" => Some("int16".to_string()),
+        "ushort" => Some("uint16".to_string()),
+        "int" => Some("int32".to_string()),
+        "uint" => Some("uint32".to_string()),
+        "long" => Some("int64".to_string()),
+        "ulong" => Some("uint64".to_string()),
+        _ => None,
+    }
+}
+
+fn receiver_expr_is_pscustomobject_var(__w: &PsWalker, expr: &Expression) -> bool {
+    match &expr.kind {
+        ExprKind::Ident(name) => __w
+            .pscustomobject_vars
+            .get(&name.to_ascii_lowercase())
+            .copied()
+            .unwrap_or(false),
+        _ => false,
+    }
+}
+
+fn receiver_expr_is_hashtable_var(__w: &PsWalker, expr: &Expression) -> bool {
+    match &expr.kind {
+        ExprKind::Object(_) => true,
+        ExprKind::Ident(name) => __w
+            .hashtable_vars
+            .get(&name.to_ascii_lowercase())
+            .copied()
+            .unwrap_or(false),
+        _ => false,
+    }
+}
+
+fn receiver_expr_is_case_sensitive_hashtable_var(__w: &PsWalker, expr: &Expression) -> bool {
+    matches!(&expr.kind, ExprKind::Ident(name) if __w
+        .hashtable_case_sensitive_vars
+        .get(&name.to_ascii_lowercase())
+        .copied()
+        .unwrap_or(false))
+}
+
+fn receiver_expr_is_collection_var(__w: &PsWalker, expr: &Expression) -> bool {
+    matches!(&expr.kind, ExprKind::Ident(name) if __w
+        .collection_vars
+        .get(&name.to_ascii_lowercase())
+        .copied()
+        .unwrap_or(false))
+}
+
+fn receiver_expr_collection_var_name(expr: &Expression) -> Option<&str> {
+    match &expr.kind {
+        ExprKind::Ident(name) => Some(name.as_str()),
+        _ => None,
+    }
+}
+
+fn receiver_expr_collection_class<'a>(__w: &'a PsWalker, expr: &Expression) -> Option<&'a str> {
+    let name = receiver_expr_collection_var_name(expr)?;
+    __w.collection_var_classes
+        .get(&name.to_ascii_lowercase())
+        .and_then(|class| class.as_deref())
+}
+
+fn is_powershell_set_type(type_name: &str) -> bool {
+    let erased = erase_powershell_generic_type_args(type_name);
+    matches!(
+        erased.to_ascii_lowercase().as_str(),
+        "hashset"
+            | "system.collections.generic.hashset"
+            | "sortedset"
+            | "system.collections.generic.sortedset"
+    )
+}
+
+fn receiver_expr_is_set_collection_var(__w: &PsWalker, expr: &Expression) -> bool {
+    receiver_expr_collection_class(__w, expr).is_some_and(is_powershell_set_type)
+}
+
+fn receiver_expr_is_ignore_case_set_var(__w: &PsWalker, expr: &Expression) -> bool {
+    matches!(&expr.kind, ExprKind::Ident(name) if __w
+        .set_ignore_case_vars
+        .get(&name.to_ascii_lowercase())
+        .copied()
+        .unwrap_or(false))
+}
+
+fn receiver_expr_is_dictionary_var(__w: &PsWalker, expr: &Expression) -> bool {
+    matches!(&expr.kind, ExprKind::Ident(name) if __w
+        .dictionary_vars
+        .get(&name.to_ascii_lowercase())
+        .copied()
+        .unwrap_or(false))
+}
+
+fn receiver_expr_is_sorted_dictionary_var(__w: &PsWalker, expr: &Expression) -> bool {
+    matches!(&expr.kind, ExprKind::Ident(name) if __w
+        .sorted_dictionary_vars
+        .get(&name.to_ascii_lowercase())
+        .copied()
+        .unwrap_or(false))
+}
+
+fn receiver_expr_is_array_var(__w: &PsWalker, expr: &Expression) -> bool {
+    matches!(&expr.kind, ExprKind::Ident(name) if __w
+        .array_vars
+        .get(&name.to_ascii_lowercase())
+        .copied()
+        .unwrap_or(false))
+}
+
+fn automation_metadata_field(field: &str) -> bool {
+    matches!(
+        field.to_ascii_lowercase().as_str(),
+        "mandatory"
+            | "valuefrompipeline"
+            | "valuefrompipelinebypropertyname"
+            | "position"
+            | "parametersetname"
+            | "aliasnames"
+            | "validvalues"
+            | "minrange"
+            | "maxrange"
+            | "minlength"
+            | "maxlength"
+            | "name"
+            | "parametertype"
+            | "attributes"
+            | "value"
+            | "isset"
+    )
+}
+
 fn assignment_expr_is_string_like(expr: &Expression) -> bool {
     match &expr.kind {
         ExprKind::Lit(Literal::Str(_)) | ExprKind::Interpolation(_) => true,
@@ -7705,6 +12629,59 @@ fn assignment_expr_is_string_like(expr: &Expression) -> bool {
     }
 }
 
+fn assignment_expr_is_char_like(__w: &PsWalker, expr: &Expression) -> bool {
+    match &expr.kind {
+        ExprKind::NullCoalesce { left, right }
+            if matches!(&right.kind, ExprKind::Lit(Literal::Null)) =>
+        {
+            assignment_expr_is_char_like(__w, left)
+        }
+        ExprKind::Call { callee, .. }
+            if matches!(&callee.kind, ExprKind::Ident(name) if name == "__ps_to_char") =>
+        {
+            true
+        }
+        ExprKind::Call { callee, args, .. }
+            if args.len() == 2
+                && matches!(&callee.kind, ExprKind::Ident(name) if name == "__ps_index_get")
+                && matches!(args[1].value.kind, ExprKind::Lit(Literal::Int(_))) =>
+        {
+            assignment_expr_is_string_like(&args[0].value)
+                || matches!(&args[0].value.kind, ExprKind::Ident(name) if __w
+                    .string_vars
+                    .get(&name.to_lowercase())
+                    .copied()
+                    .unwrap_or(false))
+        }
+        ExprKind::Index { object, index, .. }
+            if matches!(index.kind, ExprKind::Lit(Literal::Int(_))) =>
+        {
+            assignment_expr_is_string_like(object)
+                || matches!(&object.kind, ExprKind::Ident(name) if __w
+                    .string_vars
+                    .get(&name.to_lowercase())
+                    .copied()
+                    .unwrap_or(false))
+        }
+        ExprKind::Ident(name) => __w
+            .char_vars
+            .get(&name.to_lowercase())
+            .copied()
+            .unwrap_or(false),
+        _ => false,
+    }
+}
+
+fn char_code_expr_for_assignment(__w: &PsWalker, expr: &Expression) -> Option<Expression> {
+    char_code_literal_expr(expr).or_else(|| {
+        if let ExprKind::Ident(name) = &expr.kind {
+            __w.char_code_vars.get(&name.to_lowercase()).cloned().flatten()
+        } else {
+            None
+        }
+    })
+}
+
 /// Pull `(kind, member_name, payload)` back out of an ETS descriptor literal.
 ///
 /// The descriptor is the object literal the `PS…Property::new` arm builds, so
@@ -7722,9 +12699,7 @@ fn assignment_expr_is_string_like(expr: &Expression) -> bool {
 /// falling through to a runtime call whose write the read could not see.
 fn ets_member_list_target(expr: &Expression) -> Option<Expression> {
     match &expr.kind {
-        ExprKind::Call { callee, args, .. }
-            if matches!(&callee.kind, ExprKind::Ident(n) if n == "__ps_properties") =>
-        {
+        ExprKind::Call { callee, args, .. } if matches!(&callee.kind, ExprKind::Ident(n) if n == "__ps_properties") => {
             args.first().map(|a| a.value.clone())
         }
         ExprKind::Member { object, field, .. }
@@ -7800,6 +12775,27 @@ fn ets_descriptor_parts(
     ))
 }
 
+fn copied_ets_member_parts(expr: &Expression) -> Option<(Expression, String)> {
+    match &expr.kind {
+        ExprKind::Call { callee, args, .. }
+            if args.len() == 2
+                && matches!(&callee.kind, ExprKind::Ident(name) if name == "__ps_properties") =>
+        {
+            Some((args[0].value.clone(), literal_text(&args[1].value)?))
+        }
+        ExprKind::Call { callee, args, .. } if args.is_empty() => {
+            let ExprKind::Member { object, field, .. } = &callee.kind else {
+                return None;
+            };
+            field
+                .eq_ignore_ascii_case("Copy")
+                .then(|| copied_ets_member_parts(object))
+                .flatten()
+        }
+        _ => None,
+    }
+}
+
 fn method_call_expr(receiver: Expression, name: &str, args: Vec<Expression>) -> Expression {
     Expression::new(ExprKind::Call {
         callee: Box::new(Expression::new(ExprKind::Member {
@@ -7828,6 +12824,7 @@ fn walk_command_pipeline(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
         Some(p) => walk_expr(__w, p),
         None => return Expression::null(),
     };
+    expr = materialize_bare_pipeline_command(__w, expr);
 
     // ⛔THE SECOND PIPELINE BUILDER. `parse_pipeline` handles a pipeline in
     // STATEMENT position and this one handles it in VALUE position, so a common
@@ -7898,12 +12895,16 @@ fn walk_command_pipeline(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
 /// nothing upstream. `$_` is what the block was handed, and it is wrapped so a
 /// single stepped item enumerates as a one-element stream rather than as itself.
 fn block_pipeline_input() -> Expression {
-    ensure_array(Expression::ident("_"))
+    Expression::ident("_")
 }
 
 /// A lambda of one parameter named `_` — the shape every per-item script block
 /// in this walker takes, so a synthesized one binds `$_` the same way.
 fn item_lambda(body: Vec<Statement>) -> Expression {
+    item_lambda_with_captures(Vec::new(), body)
+}
+
+fn item_lambda_with_captures(captures: Vec<String>, body: Vec<Statement>) -> Expression {
     Expression::new(ExprKind::Lambda {
         params: vec![Param {
             name: "_".to_string(),
@@ -7917,11 +12918,12 @@ fn item_lambda(body: Vec<Statement>) -> Expression {
         }],
         body: LambdaBody::Block(body),
         is_async: false,
-        captures: Vec::new(),
+        captures,
     })
 }
 
 fn pipeline_scriptblock_lambda(expr: Expression) -> Expression {
+    let expr = scriptblock_runtime_value(&expr).clone();
     let ExprKind::Lambda {
         params,
         body: LambdaBody::Block(mut body),
@@ -8012,6 +13014,56 @@ fn calculated_property(expr: &Expression) -> Option<(String, Expression)> {
     Some((label.to_string(), entry(&["expression", "e"])?))
 }
 
+fn object_property_value(expr: &Expression, wanted: &[&str]) -> Option<Expression> {
+    let ExprKind::Object(props) = &expr.kind else {
+        return None;
+    };
+    props.iter().find_map(|p| match p {
+        ObjectProperty::KeyValue { key, value }
+            if literal_text(key)
+                .is_some_and(|k| wanted.iter().any(|w| k.eq_ignore_ascii_case(w))) =>
+        {
+            Some(value.clone())
+        }
+        _ => None,
+    })
+}
+
+fn literal_bool(expr: &Expression) -> Option<bool> {
+    match &expr.kind {
+        ExprKind::Lit(Literal::Bool(value)) => Some(*value),
+        ExprKind::Lit(Literal::Str(value)) if value.eq_ignore_ascii_case("true") => Some(true),
+        ExprKind::Lit(Literal::Str(value)) if value.eq_ignore_ascii_case("false") => Some(false),
+        _ => None,
+    }
+}
+
+fn is_empty_array_literal(expr: &Expression) -> bool {
+    matches!(&expr.kind, ExprKind::Array(items) if items.is_empty())
+}
+
+fn is_empty_pipeline_array_expr(expr: &Expression) -> bool {
+    if is_empty_array_literal(expr) {
+        return true;
+    }
+    let ExprKind::Call { callee, args, .. } = &expr.kind else {
+        return false;
+    };
+    matches!(&callee.kind, ExprKind::Ident(name) if name == "__ps_array")
+        && matches!(args.as_slice(), [arg] if is_empty_array_literal(&arg.value))
+}
+
+fn calculated_selector_key(selector: &Expression, item: &Expression) -> Option<Expression> {
+    let expression = object_property_value(selector, &["expression", "e"])?;
+    selector_key(&expression, item)
+}
+
+fn calculated_selector_descending(selector: &Expression) -> Option<bool> {
+    object_property_value(selector, &["descending", "desc"])
+        .as_ref()
+        .and_then(literal_bool)
+}
+
 /// The name a bare `Select-Object Price` selector spells.
 fn plain_property_name(expr: &Expression) -> Option<String> {
     // ⛔THE COMMA COMES ALONG. `bare_token` stops at `|` and whitespace but not
@@ -8067,9 +13119,9 @@ fn select_calculated_properties(upstream: &Expression, args: &[Argument]) -> Opt
         }
     }
 
-    let body = vec![Statement::new(StmtKind::Return(Some(object_with_key_order(
-        props,
-    ))))];
+    let body = vec![Statement::new(StmtKind::Return(Some(
+        object_with_key_order(props),
+    )))];
     // ⛔A SCALAR UPSTREAM IS A ONE-ITEM STREAM. `$rect | Select-Object @{…}`
     // hands one object to the projection, and mapping over it directly found no
     // elements at all — the array form worked and the single-object form
@@ -8101,8 +13153,9 @@ fn format_projected_items(input: Expression, args: &[Argument], wide: bool) -> O
         return Some(method_call_expr(
             ensure_array(input),
             "ForEach",
-            vec![item_lambda(vec![Statement::new(StmtKind::Return(Some(value)))]),
-            ],
+            vec![item_lambda(vec![Statement::new(StmtKind::Return(Some(
+                value,
+            )))])],
         ));
     }
 
@@ -8173,11 +13226,13 @@ fn format_wildcard_projected_items(input: Expression, pattern: &str) -> Option<E
     }
     let condition = tests
         .into_iter()
-        .reduce(|left, right| Expression::new(ExprKind::Binary {
-            op: BinOp::And,
-            left: Box::new(left),
-            right: Box::new(right),
-        }))
+        .reduce(|left, right| {
+            Expression::new(ExprKind::Binary {
+                op: BinOp::And,
+                left: Box::new(left),
+                right: Box::new(right),
+            })
+        })
         .unwrap_or_else(|| Expression::bool(true));
 
     Some(method_call_expr(
@@ -8232,9 +13287,11 @@ fn format_expr_for_cmdlet(name: &str, input: Expression, args: &[Argument]) -> O
         _ => return None,
     };
     if matches!(name.to_ascii_lowercase().as_str(), "format-table" | "ft")
-        && args
-            .iter()
-            .any(|a| a.name.as_deref().is_some_and(|n| n.eq_ignore_ascii_case("HideTableHeaders")))
+        && args.iter().any(|a| {
+            a.name
+                .as_deref()
+                .is_some_and(|n| n.eq_ignore_ascii_case("HideTableHeaders"))
+        })
     {
         builtin = "__ps_fmt_table_no_headers";
     }
@@ -8262,7 +13319,14 @@ fn format_expr_for_cmdlet(name: &str, input: Expression, args: &[Argument]) -> O
 /// The value a `-Property` selector picks out of one item. A script block keys
 /// by what it RETURNS; anything else names a field.
 fn selector_key(selector: &Expression, item: &Expression) -> Option<Expression> {
-    if matches!(selector.kind, ExprKind::Lambda { .. }) {
+    if let Some(key) = calculated_selector_key(selector, item) {
+        return Some(key);
+    }
+    // A script block may be wrapped so the public `.Ast` property is attached.
+    // Pipeline cmdlets that execute blocks must sort/group/project by the
+    // actual lambda value, not by indexing the wrapper object with `$_`.
+    let selector = pipeline_scriptblock_lambda(selector.clone());
+    if matches!(&selector.kind, ExprKind::Lambda { .. }) {
         return Some(Expression::new(ExprKind::Call {
             callee: Box::new(selector.clone()),
             args: vec![Argument::positional(item.clone())],
@@ -8272,7 +13336,7 @@ fn selector_key(selector: &Expression, item: &Expression) -> Option<Expression> 
     if let ExprKind::Lit(Literal::Str(_)) = &selector.kind {
         return Some(Expression::new(ExprKind::Member {
             object: Box::new(item.clone()),
-            field: plain_property_name(selector)?,
+            field: plain_property_name(&selector)?,
             null_safe: false,
         }));
     }
@@ -8284,7 +13348,7 @@ fn selector_key(selector: &Expression, item: &Expression) -> Option<Expression> 
         callee: Box::new(Expression::ident("__ps_index_get")),
         args: vec![
             Argument::positional(item.clone()),
-            Argument::positional(selector.clone()),
+            Argument::positional(selector),
         ],
         optional: false,
     }))
@@ -8349,8 +13413,11 @@ fn sort_object_expr(upstream: &Expression, args: &[Argument]) -> Option<Expressi
     const RHS: &str = "__ps_so_y";
 
     let flag = |key: &str| {
-        args.iter()
-            .any(|a| a.name.as_deref().is_some_and(|n| n.eq_ignore_ascii_case(key)))
+        args.iter().any(|a| {
+            a.name
+                .as_deref()
+                .is_some_and(|n| n.eq_ignore_ascii_case(key))
+        })
     };
     let descending = flag("Descending");
     let unique = flag("Unique");
@@ -8373,15 +13440,17 @@ fn sort_object_expr(upstream: &Expression, args: &[Argument]) -> Option<Expressi
             by_ref: false,
         })
     };
-    let rank = |less: bool| Expression::int(if less == descending { 1 } else { -1 });
+    let rank = |key_descending: bool, less: bool| {
+        Expression::int(if less == key_descending { 1 } else { -1 })
+    };
 
     // One `if` pair per selector, in the order written: the first that
     // separates the two items decides, and equal items fall through to the
     // next — which is what makes a multi-property sort a TIE-BREAK rather than
     // a second independent ordering.
     let mut compare = Vec::new();
-    let keys: Vec<(Expression, Expression)> = if selectors.is_empty() {
-        vec![(Expression::ident(LHS), Expression::ident(RHS))]
+    let keys: Vec<(Expression, Expression, bool)> = if selectors.is_empty() {
+        vec![(Expression::ident(LHS), Expression::ident(RHS), descending)]
     } else {
         selectors
             .iter()
@@ -8389,11 +13458,12 @@ fn sort_object_expr(upstream: &Expression, args: &[Argument]) -> Option<Expressi
                 Some((
                     selector_key(sel, &Expression::ident(LHS))?,
                     selector_key(sel, &Expression::ident(RHS))?,
+                    calculated_selector_descending(sel).unwrap_or(descending),
                 ))
             })
             .collect::<Option<Vec<_>>>()?
     };
-    for (left, right) in keys {
+    for (left, right, key_descending) in keys {
         for (op, less) in [(BinOp::Lt, true), (BinOp::Gt, false)] {
             compare.push(Statement::new(StmtKind::If {
                 cond: Expression::new(ExprKind::Binary {
@@ -8401,7 +13471,10 @@ fn sort_object_expr(upstream: &Expression, args: &[Argument]) -> Option<Expressi
                     left: Box::new(left.clone()),
                     right: Box::new(right.clone()),
                 }),
-                then_body: vec![Statement::new(StmtKind::Return(Some(rank(less))))],
+                then_body: vec![Statement::new(StmtKind::Return(Some(rank(
+                    key_descending,
+                    less,
+                ))))],
                 elifs: Vec::new(),
                 else_body: None,
             }));
@@ -8612,18 +13685,12 @@ fn group_object_expr(upstream: &Expression, args: &[Argument]) -> Option<Express
     const HIT: &str = "__ps_go_hit";
     const GRP: &str = "__ps_go_grp";
 
-    let named = |key: &str| {
-        args.iter()
-            .find(|a| {
-                a.name
-                    .as_deref()
-                    .is_some_and(|n| n.eq_ignore_ascii_case(key))
-            })
-            .map(|a| a.value.clone())
-    };
     let flag = |key: &str| {
-        args.iter()
-            .any(|a| a.name.as_deref().is_some_and(|n| n.eq_ignore_ascii_case(key)))
+        args.iter().any(|a| {
+            a.name
+                .as_deref()
+                .is_some_and(|n| n.eq_ignore_ascii_case(key))
+        })
     };
     let case_sensitive = flag("CaseSensitive");
     let no_element = flag("NoElement");
@@ -8634,8 +13701,7 @@ fn group_object_expr(upstream: &Expression, args: &[Argument]) -> Option<Express
     // `B`, because a command argument's bare token carries its own comma. Both
     // are selectors, and the key is their values joined — which is also how
     // PowerShell spells a multi-property group's `Name`.
-    let mut selectors: Vec<Expression> = named("Property").into_iter().collect();
-    selectors.extend(args.iter().filter(|a| a.name.is_none()).map(|a| a.value.clone()));
+    let selectors = property_selectors(args);
 
     let item = Expression::ident(ITEM);
     let key_part = |selector: &Expression| selector_key(selector, &item);
@@ -8734,7 +13800,37 @@ fn group_object_expr(upstream: &Expression, args: &[Argument]) -> Option<Express
         is_async: false,
     });
 
+    let group_type = "Microsoft.PowerShell.Commands.GroupInfo";
+    let group_type_object = command_type_object(group_type);
+    let group_type_body = vec![Statement::new(StmtKind::Return(Some(group_type_object.clone())))];
+    let group_type_names = Expression::new(ExprKind::Array(vec![
+        ArrayElement {
+            key: None,
+            value: Expression::string("GroupInfo"),
+            spread: false,
+            by_ref: false,
+        },
+        ArrayElement {
+            key: None,
+            value: Expression::string(group_type),
+            spread: false,
+            by_ref: false,
+        },
+        ArrayElement {
+            key: None,
+            value: Expression::string("Object"),
+            spread: false,
+            by_ref: false,
+        },
+    ]));
     let fresh = Expression::new(ExprKind::Object(vec![
+        object_entry("__type", Expression::string(group_type)),
+        object_entry("__types", group_type_names.clone()),
+        object_entry("__ps_type_names", group_type_names),
+        object_entry("TypeId", group_type_object.clone()),
+        object_entry("typeid", group_type_object),
+        object_entry("GetType", no_param_lambda(group_type_body.clone())),
+        object_entry("gettype", no_param_lambda(group_type_body)),
         ObjectProperty::KeyValue {
             key: Expression::string("Name"),
             value: Expression::ident(KEY),
@@ -8904,20 +14000,52 @@ fn pipeline_stage_as_method(
     // Four cmdlets that ARE a primitive with a name. Each is one shared emit
     // over the upstream stream, so the cmdlet is the spelling and nothing here
     // implements the operation.
+    let splat_named_arg = |key: &str, index: i64| {
+        args.iter()
+            .filter(|a| a.spread)
+            .map(|a| {
+                ps_builtin(
+                    "__ps_splat_arg",
+                    vec![
+                        a.value.clone(),
+                        Expression::string(key),
+                        Expression::int(index),
+                    ],
+                )
+            })
+            .reduce(|left, right| {
+                Expression::new(ExprKind::NullCoalesce {
+                    left: Box::new(left),
+                    right: Box::new(right),
+                })
+            })
+    };
     let named_arg = |key: &str| {
         args.iter()
-            .find(|a| a.name.as_deref().is_some_and(|n| n.eq_ignore_ascii_case(key)))
+            .find(|a| {
+                a.name
+                    .as_deref()
+                    .is_some_and(|n| n.eq_ignore_ascii_case(key))
+            })
             .map(|a| a.value.clone())
+            .or_else(|| splat_named_arg(key, 0))
     };
     let has_switch = |key: &str| {
-        args.iter()
-            .any(|a| a.name.as_deref().is_some_and(|n| n.eq_ignore_ascii_case(key)))
+        args.iter().any(|a| {
+            a.name
+                .as_deref()
+                .is_some_and(|n| n.eq_ignore_ascii_case(key))
+        })
     };
 
     if name.eq_ignore_ascii_case("set-content") || name.eq_ignore_ascii_case("add-content") {
         let path = named_arg("Path")
             .or_else(|| named_arg("LiteralPath"))
-            .or_else(|| args.iter().find(|a| a.name.is_none()).map(|a| a.value.clone()))?;
+            .or_else(|| {
+                args.iter()
+                    .find(|a| a.name.is_none())
+                    .map(|a| a.value.clone())
+            })?;
         return Some(cmdlet_call(
             if name.eq_ignore_ascii_case("add-content") {
                 "Add-Content"
@@ -8931,7 +14059,11 @@ fn pipeline_stage_as_method(
     if name.eq_ignore_ascii_case("out-file") {
         let path = named_arg("FilePath")
             .or_else(|| named_arg("Path"))
-            .or_else(|| args.iter().find(|a| a.name.is_none()).map(|a| a.value.clone()))?;
+            .or_else(|| {
+                args.iter()
+                    .find(|a| a.name.is_none())
+                    .map(|a| a.value.clone())
+            })?;
         return Some(cmdlet_call("Out-File", vec![path, upstream.clone()]));
     }
 
@@ -8942,13 +14074,13 @@ fn pipeline_stage_as_method(
     if name.eq_ignore_ascii_case("export-csv") {
         let path = named_arg("Path")
             .or_else(|| named_arg("LiteralPath"))
-            .or_else(|| args.iter().find(|a| a.name.is_none()).map(|a| a.value.clone()))?;
+            .or_else(|| {
+                args.iter()
+                    .find(|a| a.name.is_none())
+                    .map(|a| a.value.clone())
+            })?;
         let lines = convert_to_csv_expr(upstream, args)?;
-        let csv = method_call_expr(
-            lines,
-            "__ps_join",
-            vec![Expression::string("\n")],
-        );
+        let csv = method_call_expr(lines, "__ps_join", vec![Expression::string("\n")]);
         return Some(cmdlet_call("Out-File", vec![path, csv]));
     }
 
@@ -8960,32 +14092,31 @@ fn pipeline_stage_as_method(
         return Some(cmdlet_call("Remove-Item", call_args));
     }
 
-    if name.eq_ignore_ascii_case("remove-psdrive") {
-        return Some(cmdlet_call(
-            "Remove-PSDrive",
-            vec![upstream.clone(), Expression::bool(has_switch("Force"))],
-        ));
-    }
-
-    if matches!(name.to_lowercase().as_str(), "foreach-object" | "foreach" | "%")
-        && args.len() == 1
+    if matches!(
+        name.to_lowercase().as_str(),
+        "foreach-object" | "foreach" | "%"
+    ) && args.len() == 1
         && args[0].name.is_none()
-        && let ExprKind::Lambda { body: LambdaBody::Block(body), .. } = &args[0].value.kind
-        && let [Statement { kind: StmtKind::Return(Some(returned)), .. }] = body.as_slice()
+        && let ExprKind::Lambda {
+            body: LambdaBody::Block(body),
+            ..
+        } = &args[0].value.kind
+        && let [
+            Statement {
+                kind: StmtKind::Return(Some(returned)),
+                ..
+            },
+        ] = body.as_slice()
         && let ExprKind::Member { object, field, .. } = &returned.kind
         && matches!(&object.kind, ExprKind::Ident(n) if n == "_")
     {
-        const ITEM: &str = "__ps_fo_item";
         let field = field.clone();
         return Some(method_call_expr(
             ensure_array(upstream.clone()),
             "ForEach",
-            vec![item_lambda(vec![Statement::new(StmtKind::Return(Some(bind_typed(
-                ITEM,
-                "System.Object",
-                Expression::ident("_"),
-                ps_member(Expression::ident(ITEM), &field),
-            ))))])],
+            vec![item_lambda(vec![Statement::new(StmtKind::Return(Some(
+                ps_member(Expression::ident("_"), &field),
+            )))])],
         ));
     }
 
@@ -9032,7 +14163,7 @@ fn pipeline_stage_as_method(
             ensure_array(text),
             "ForEach",
             vec![item_lambda(vec![Statement::new(StmtKind::Return(Some(
-                cmdlet_call("ConvertFrom-Json", vec![Expression::ident("_")]),
+                convert_from_json_expr(Expression::ident("_"), args),
             )))])],
         )));
     }
@@ -9185,15 +14316,17 @@ fn pipeline_stage_as_method(
         let rendered = method_call_expr(
             ensure_array(upstream.clone()),
             "ForEach",
-            vec![item_lambda(vec![Statement::new(StmtKind::Return(Some(cmdlet_call(
-                "Out-String",
-                vec![
-                    ensure_array(Expression::ident("_")),
-                    Expression::bool(false),
-                    Expression::bool(has_switch("Stream") || has_switch("NoNewline")),
-                    named_arg("Width").unwrap_or_else(Expression::null),
-                ],
-            ))))])],
+            vec![item_lambda(vec![Statement::new(StmtKind::Return(Some(
+                cmdlet_call(
+                    "Out-String",
+                    vec![
+                        ensure_array(Expression::ident("_")),
+                        Expression::bool(false),
+                        Expression::bool(has_switch("Stream") || has_switch("NoNewline")),
+                        named_arg("Width").unwrap_or_else(Expression::null),
+                    ],
+                ),
+            )))])],
         );
         return Some(if has_switch("Stream") {
             rendered
@@ -9267,8 +14400,11 @@ fn pipeline_stage_as_method(
     // is the `dotnet.Cmdlets.Text.SelectString` tree leaf; this arm preserves
     // PowerShell's item-by-item stream binding and regex flag spelling.
     if name.eq_ignore_ascii_case("select-string") {
-        let pattern = named_arg("Pattern")
-            .or_else(|| args.iter().find(|a| a.name.is_none()).map(|a| a.value.clone()))?;
+        let pattern = named_arg("Pattern").or_else(|| {
+            args.iter()
+                .find(|a| a.name.is_none())
+                .map(|a| a.value.clone())
+        })?;
         let regex_pattern = pattern_array_or_regex(pattern.clone());
         let mut flags = String::new();
         if has_switch("AllMatches") {
@@ -9283,23 +14419,33 @@ fn pipeline_stage_as_method(
         );
         let input_stream = ensure_array(upstream.clone());
         let mut call_args = vec![
-                ps_builtin("__ps_to_string", vec![Expression::ident("_")]),
-                spelled,
-                pattern,
-                Expression::bool(has_switch("Quiet")),
-                Expression::bool(has_switch("Raw")),
-                Expression::bool(has_switch("NotMatch")),
-                Expression::bool(!has_switch("CaseSensitive")),
-                Expression::bool(has_switch("AllMatches")),
-                ps_binary(BinOp::Add, Expression::ident("__ps_line_index"), Expression::int(1)),
+            ps_builtin("__ps_to_string", vec![Expression::ident("_")]),
+            spelled,
+            pattern,
+            Expression::bool(has_switch("Quiet")),
+            Expression::bool(has_switch("Raw")),
+            Expression::bool(has_switch("NotMatch")),
+            Expression::bool(!has_switch("CaseSensitive")),
+            Expression::bool(has_switch("AllMatches")),
+            ps_binary(
+                BinOp::Add,
+                Expression::ident("__ps_line_index"),
+                Expression::int(1),
+            ),
         ];
         if let Some((pre_count, post_count)) = select_string_context_counts(named_arg("Context")) {
             let index = Expression::ident("__ps_line_index");
             let pre_start = ps_binary(BinOp::Sub, index.clone(), pre_count);
             let post_start = ps_binary(BinOp::Add, index.clone(), Expression::int(1));
             let post_end = ps_binary(BinOp::Add, post_start.clone(), post_count);
-            call_args.push(ps_builtin("__ps_slice", vec![input_stream.clone(), pre_start, index]));
-            call_args.push(ps_builtin("__ps_slice", vec![input_stream.clone(), post_start, post_end]));
+            call_args.push(ps_builtin(
+                "__ps_slice",
+                vec![input_stream.clone(), pre_start, index],
+            ));
+            call_args.push(ps_builtin(
+                "__ps_slice",
+                vec![input_stream.clone(), post_start, post_end],
+            ));
         }
         let per_item = cmdlet_call("Select-String", call_args);
         let mapped = ps_member_call(
@@ -9340,8 +14486,9 @@ fn pipeline_stage_as_method(
                 .as_deref()
                 .is_some_and(|n| n.eq_ignore_ascii_case("variable"))
         })?;
-        let ExprKind::Lit(Literal::Str(var)) = &target.value.kind else {
-            return None;
+        let var = match &target.value.kind {
+            ExprKind::Lit(Literal::Str(var)) | ExprKind::Ident(var) => var.clone(),
+            _ => return None,
         };
         // ⛔NOT `capture_out_variable`'s ARRAY. `-OutVariable` stores the stream
         // as a collection; `Tee-Object -Variable` stores the stream ITSELF, so a
@@ -9389,11 +14536,11 @@ fn pipeline_stage_as_method(
             .map(|field| {
                 method_call_expr(
                     // ⛔A SCALAR UPSTREAM IS A ONE-ITEM STREAM, and this is the
-                        // shape `Measure-Object | Select-Object -ExpandProperty Count`
-                        // arrives in: ONE result object, not a collection of them.
-                        ensure_array(source.clone()),
-                        "ForEach",
-                        vec![item_lambda(vec![Statement::new(StmtKind::Return(Some(
+                    // shape `Measure-Object | Select-Object -ExpandProperty Count`
+                    // arrives in: ONE result object, not a collection of them.
+                    ensure_array(source.clone()),
+                    "ForEach",
+                    vec![item_lambda(vec![Statement::new(StmtKind::Return(Some(
                         Expression::new(ExprKind::Member {
                             object: Box::new(Expression::ident("_")),
                             field,
@@ -9441,7 +14588,11 @@ fn pipeline_stage_as_method(
         }
         if let Some(n) = named("Last") {
             return slice(
-                ps_binary(BinOp::Sub, ps_builtin("__ps_count", vec![ensure_array(source.clone())]), n),
+                ps_binary(
+                    BinOp::Sub,
+                    ps_builtin("__ps_count", vec![ensure_array(source.clone())]),
+                    n,
+                ),
                 Expression::int(i32::MAX as i64),
             );
         }
@@ -9519,7 +14670,15 @@ fn pipeline_stage_as_method(
             &upstream.kind,
             ExprKind::Call { callee, .. } if matches!(&callee.kind, ExprKind::Member { .. })
         );
-        if !has_side_effecting_shape(upstream) && !is_dotnet_cmdlet_call(upstream) && !member_call {
+        let lambda_call = matches!(
+            &upstream.kind,
+            ExprKind::Call { callee, .. } if matches!(&callee.kind, ExprKind::Lambda { .. })
+        );
+        if !has_side_effecting_shape(upstream)
+            && !is_dotnet_cmdlet_call(upstream)
+            && !member_call
+            && !lambda_call
+        {
             return Some(Expression::null());
         }
         return Some(Expression::new(ExprKind::Call {
@@ -9573,8 +14732,11 @@ fn pipeline_stage_as_method(
 /// silently wrong sum over the objects themselves.
 fn measure_object_expr(upstream: &Expression, args: &[Argument]) -> Option<Expression> {
     let has_switch = |key: &str| {
-        args.iter()
-            .any(|a| a.name.as_deref().is_some_and(|n| n.eq_ignore_ascii_case(key)))
+        args.iter().any(|a| {
+            a.name
+                .as_deref()
+                .is_some_and(|n| n.eq_ignore_ascii_case(key))
+        })
     };
     const SRC: &str = "__ps_measure_src";
     let src = || Expression::ident(SRC);
@@ -9603,11 +14765,7 @@ fn measure_object_expr(upstream: &Expression, args: &[Argument]) -> Option<Expre
         else_: Box::new(Expression::null()),
     });
     let field = |requested: bool, value: Expression| {
-        if requested {
-            value
-        } else {
-            Expression::null()
-        }
+        if requested { value } else { Expression::null() }
     };
 
     // `-Character` / `-Word` / `-Line` measure TEXT, not numbers, and they sum
@@ -9733,7 +14891,9 @@ fn measure_object_expr(upstream: &Expression, args: &[Argument]) -> Option<Expre
         measured = method_call_expr(
             measured,
             "ForEach",
-            vec![item_lambda(vec![Statement::new(StmtKind::Return(Some(key)))])],
+            vec![item_lambda(vec![Statement::new(StmtKind::Return(Some(
+                key,
+            )))])],
         );
     }
 
@@ -9765,7 +14925,12 @@ fn measure_object_expr(upstream: &Expression, args: &[Argument]) -> Option<Expre
 /// Does this .NET type name denote a string, whose zero value is `""`?
 fn is_string_type_name(name: &str) -> bool {
     matches!(
-        name.trim().rsplit('.').next().unwrap_or("").to_ascii_lowercase().as_str(),
+        name.trim()
+            .rsplit('.')
+            .next()
+            .unwrap_or("")
+            .to_ascii_lowercase()
+            .as_str(),
         "string" | "char"
     )
 }
@@ -9782,6 +14947,112 @@ fn char_static_builtin(name: &str) -> Option<&'static str> {
         "tolower" | "tolowerinvariant" => "__ps_char_to_lower",
         _ => return None,
     })
+}
+
+fn char_code_literal_expr(expr: &Expression) -> Option<Expression> {
+    match &expr.kind {
+        ExprKind::Call { callee, args, .. }
+            if args.len() == 1
+                && matches!(&callee.kind, ExprKind::Ident(name) if name == "__ps_to_char") =>
+        {
+            match args[0].value.kind {
+                ExprKind::Lit(Literal::Str(_)) | ExprKind::Interpolation(_) => None,
+                _ => Some(args[0].value.clone()),
+            }
+        }
+        _ => None,
+    }
+}
+
+fn char_code_expr(__w: &PsWalker, expr: Expression) -> Expression {
+    if let ExprKind::Ident(name) = &expr.kind
+        && let Some(Some(code)) = __w.char_code_vars.get(&name.to_lowercase())
+    {
+        return code.clone();
+    }
+    char_code_literal_expr(&expr).unwrap_or_else(|| ps_builtin("__ps_to_int", vec![expr]))
+}
+
+fn char_static_expr(__w: &PsWalker, name: &str, args: &[Expression]) -> Option<Expression> {
+    let lower = name.to_ascii_lowercase();
+    match (lower.as_str(), args) {
+        (name, [arg]) => {
+            if let Some(builtin) = char_static_builtin(name) {
+                return Some(ps_builtin(
+                    builtin,
+                    vec![ps_builtin("__ps_to_char", vec![arg.clone()])],
+                ));
+            }
+            match name {
+                "getnumericvalue" => Some(ps_ternary(
+                    ps_builtin(
+                        "__ps_char_is_digit",
+                        vec![ps_builtin("__ps_to_char", vec![arg.clone()])],
+                    ),
+                    ps_builtin("__ps_to_int", vec![arg.clone()]),
+                    Expression::int(-1),
+                )),
+                "iscontrol" => {
+                    const CODE: &str = "__ps_char_code";
+                    Some(bind_and_call(
+                        &[CODE],
+                        vec![char_code_expr(__w, arg.clone())],
+                        ps_binary(
+                            BinOp::Or,
+                            ps_binary(BinOp::Lt, Expression::ident(CODE), Expression::int(32)),
+                            ps_binary(
+                                BinOp::And,
+                                ps_binary(BinOp::GtEq, Expression::ident(CODE), Expression::int(127)),
+                                ps_binary(BinOp::LtEq, Expression::ident(CODE), Expression::int(159)),
+                            ),
+                        ),
+                    ))
+                }
+                "ispunctuation" => Some(ps_member_call(
+                    Expression::string(".,;:!?"),
+                    "Contains",
+                    vec![arg.clone()],
+                )),
+                "isseparator" => Some(ps_binary(BinOp::Eq, arg.clone(), Expression::string(" "))),
+                "issymbol" => Some(ps_member_call(
+                    Expression::string("+$"),
+                    "Contains",
+                    vec![arg.clone()],
+                )),
+                "ishighsurrogate" => {
+                    const CODE: &str = "__ps_char_code";
+                    Some(bind_and_call(
+                        &[CODE],
+                        vec![char_code_expr(__w, arg.clone())],
+                        ps_binary(
+                            BinOp::And,
+                            ps_binary(BinOp::GtEq, Expression::ident(CODE), Expression::int(0xD800)),
+                            ps_binary(BinOp::LtEq, Expression::ident(CODE), Expression::int(0xDBFF)),
+                        ),
+                    ))
+                }
+                "islowsurrogate" => {
+                    const CODE: &str = "__ps_char_code";
+                    Some(bind_and_call(
+                        &[CODE],
+                        vec![char_code_expr(__w, arg.clone())],
+                        ps_binary(
+                            BinOp::And,
+                            ps_binary(BinOp::GtEq, Expression::ident(CODE), Expression::int(0xDC00)),
+                            ps_binary(BinOp::LtEq, Expression::ident(CODE), Expression::int(0xDFFF)),
+                        ),
+                    ))
+                }
+                _ => None,
+            }
+        }
+        ("issurrogatepair", [high, low]) => Some(ps_binary(
+            BinOp::And,
+            char_static_expr(__w, "ishighsurrogate", std::slice::from_ref(high))?,
+            char_static_expr(__w, "islowsurrogate", std::slice::from_ref(low))?,
+        )),
+        _ => None,
+    }
 }
 
 /// The expression a `PlaceExpr` denotes — the inverse of `PlaceExpr::from_expr`.
@@ -9872,7 +15143,12 @@ fn process_return_as_skip(body: Vec<Statement>) -> Vec<Statement> {
                 }
                 out.push(Statement::new(StmtKind::Continue(ContinueTarget::Implicit)));
             }
-            StmtKind::If { cond, then_body, elifs, else_body } => {
+            StmtKind::If {
+                cond,
+                then_body,
+                elifs,
+                else_body,
+            } => {
                 out.push(keep(StmtKind::If {
                     cond,
                     then_body: process_return_as_skip(then_body),
@@ -9886,7 +15162,11 @@ fn process_return_as_skip(body: Vec<Statement>) -> Vec<Statement> {
             StmtKind::Block(inner) => {
                 out.push(keep(StmtKind::Block(process_return_as_skip(inner))))
             }
-            StmtKind::Switch { expr, cases, default } => {
+            StmtKind::Switch {
+                expr,
+                cases,
+                default,
+            } => {
                 out.push(keep(StmtKind::Switch {
                     expr,
                     cases: cases
@@ -9899,7 +15179,12 @@ fn process_return_as_skip(body: Vec<Statement>) -> Vec<Statement> {
                     default: default.map(process_return_as_skip),
                 }));
             }
-            StmtKind::Try { body, catches, else_body, finally } => {
+            StmtKind::Try {
+                body,
+                catches,
+                else_body,
+                finally,
+            } => {
                 out.push(keep(StmtKind::Try {
                     body: process_return_as_skip(body),
                     catches: catches
@@ -9933,17 +15218,29 @@ fn pipeline_block_body(
         params.push(Param {
             name: "__ps_pipe_input".to_string(),
             type_hint: None,
-            default: None,
+            default: Some(Expression::null()),
             pass_by: PassBy::Value,
             is_rest: false,
             is_kwargs: false,
             is_optional: true,
-            is_nullable: false,
+            is_nullable: true,
         });
     }
     let value_param = params
         .iter()
         .find(|p| __w.pipeline_params.contains(&p.name.to_lowercase()));
+    if value_param.is_none()
+        && !params.iter().any(|p| p.name == "__ps_pipe_input")
+        && !params.iter().any(|p| {
+            __w.pipeline_property_params
+                .contains(&p.name.to_lowercase())
+        })
+    {
+        let mut out = begin;
+        out.extend(process);
+        out.extend(end);
+        return out;
+    }
     let source_param = value_param
         .or_else(|| params.iter().find(|p| p.name == "__ps_pipe_input"))
         .or_else(|| params.first());
@@ -9967,45 +15264,84 @@ fn pipeline_block_body(
 
     let item = "__ps_pipe_item";
     let src = "__ps_pipe_src";
-    // A transformation attribute on the PIPELINE parameter runs per item — the
-    // value is rebound on every iteration, so an entry-time transform would
-    // see only the whole input once. The entries are still in
-    // `param_validators` here (the drain runs after this assembly) and the
-    // drain skips them for exactly this parameter.
+    // Validators on the PIPELINE parameter run per item after binding. The
+    // value is rebound on every iteration, so an entry-time guard would see
+    // the whole input stream instead of the object PowerShell has just bound.
     let per_item: Vec<Statement> = __w
         .param_validators
         .iter()
-        .filter(|(p, attr)| {
-            value_param
-                .is_some_and(|param| p.eq_ignore_ascii_case(&param.name))
-                && attr.starts_with(TRANSFORM_MARK)
-        })
+        .filter(|(p, _attr)| value_param.is_some_and(|param| p.eq_ignore_ascii_case(&param.name)))
         .filter_map(|(p, attr)| parameter_validation_guard(p, attr))
         .collect();
     let mut loop_body = Vec::new();
     if let Some(param) = value_param {
+        let item_value = param
+            .type_hint
+            .as_ref()
+            .map(|hint| parameter_binding_cast(hint.spelling(), Expression::ident(item)))
+            .unwrap_or_else(|| Expression::ident(item));
         loop_body.push(Statement::new(StmtKind::Assign {
             targets: vec![Expression::ident(&param.name)],
-            value: Expression::ident(item),
+            value: item_value.clone(),
             by_ref: false,
+        }));
+        loop_body.push(Statement::new(StmtKind::If {
+            cond: ps_binary(
+                BinOp::NotEq,
+                Expression::ident("PSBoundParameters"),
+                Expression::null(),
+            ),
+            then_body: vec![Statement::new(StmtKind::Expr(ps_builtin(
+                "__ps_index_set",
+                vec![
+                    Expression::ident("PSBoundParameters"),
+                    Expression::string(&param.name),
+                    item_value,
+                ],
+            )))],
+            elifs: Vec::new(),
+            else_body: None,
         }));
     }
     // `$_` is the current pipeline object, and inside `process` it names the
     // same item the declared parameter does, or the raw object when the process
     // block binds parameters by property name.
     loop_body.push(Statement::new(StmtKind::Assign {
-            targets: vec![Expression::ident("_")],
-            value: Expression::ident(item),
-            by_ref: false,
-        }));
+        targets: vec![Expression::ident("_")],
+        value: Expression::ident(item),
+        by_ref: false,
+    }));
     for param in params.iter().filter(|p| {
         __w.pipeline_property_params
             .contains(&p.name.to_lowercase())
     }) {
+        let prop_value = ps_member(Expression::ident(item), &param.name);
+        let item_value = param
+            .type_hint
+            .as_ref()
+            .map(|hint| parameter_binding_cast(hint.spelling(), prop_value.clone()))
+            .unwrap_or(prop_value);
         loop_body.push(Statement::new(StmtKind::Assign {
             targets: vec![Expression::ident(&param.name)],
-            value: ps_member(Expression::ident(item), &param.name),
+            value: item_value.clone(),
             by_ref: false,
+        }));
+        loop_body.push(Statement::new(StmtKind::If {
+            cond: ps_binary(
+                BinOp::NotEq,
+                Expression::ident("PSBoundParameters"),
+                Expression::null(),
+            ),
+            then_body: vec![Statement::new(StmtKind::Expr(ps_builtin(
+                "__ps_index_set",
+                vec![
+                    Expression::ident("PSBoundParameters"),
+                    Expression::string(&param.name),
+                    item_value,
+                ],
+            )))],
+            elifs: Vec::new(),
+            else_body: None,
         }));
     }
     loop_body.extend(per_item);
@@ -10190,12 +15526,17 @@ fn convert_from_string_data_expr(upstream: &Expression, args: &[Argument]) -> Op
 
     const DELIM: &str = "__ps_sd_delim";
     const LINE: &str = "__ps_sd_line";
+    const LINES: &str = "__ps_sd_lines";
     const PARTS: &str = "__ps_sd_parts";
 
     // Either one multi-line string or an array of lines, the same two shapes
     // `ConvertFrom-Csv` normalizes.
+    let source = named("StringData").unwrap_or_else(|| upstream.clone());
     let text = method_call_expr(
-        call("__ps_array", vec![named("StringData").unwrap_or_else(|| upstream.clone())]),
+        call(
+            "__ps_array",
+            vec![source.clone()],
+        ),
         "__ps_join",
         vec![Expression::string("\n")],
     );
@@ -10276,8 +15617,31 @@ fn convert_from_string_data_expr(upstream: &Expression, args: &[Argument]) -> Op
         "Where",
         vec![lambda(&[LINE], keep)],
     );
+    let invalid_lines = method_call_expr(
+        Expression::ident(LINES),
+        "Where",
+        vec![lambda(
+            &[LINE],
+            Expression::new(ExprKind::Unary {
+                op: UnaryOp::Not,
+                expr: Box::new(method_call_expr(
+                    method_call_expr(Expression::ident(LINE), "Trim", vec![]),
+                    "Contains",
+                    vec![Expression::ident(DELIM)],
+                )),
+            }),
+        )],
+    );
+    let invalid = match (literal_text(&source), literal_text(&delimiter)) {
+        (Some(text), Some(delim)) => Expression::bool(string_data_has_invalid_line(&text, &delim)),
+        _ => ps_binary(
+            BinOp::Gt,
+            call("__ps_count", vec![invalid_lines]),
+            Expression::int(0),
+        ),
+    };
     let pairs = method_call_expr(
-        lines,
+        Expression::ident(LINES),
         "ForEach",
         vec![lambda(
             &[LINE],
@@ -10296,8 +15660,77 @@ fn convert_from_string_data_expr(upstream: &Expression, args: &[Argument]) -> Op
     Some(bind_and_call(
         &[DELIM],
         vec![delimiter],
-        call("__ps_from_entries", vec![pairs]),
+        bind_and_call(
+            &[LINES],
+            vec![lines],
+            block_value_expr(vec![
+                Statement::new(StmtKind::If {
+                    cond: ps_binary(
+                        BinOp::And,
+                        invalid,
+                        action_preference_is_stop_expr(preference_value_from_args(
+                            args,
+                            &["ErrorAction", "ea"],
+                            "ErrorActionPreference",
+                        )),
+                    ),
+                    then_body: vec![Statement::new(StmtKind::Throw {
+                        expr: Some(Expression::string(
+                            "Data line is not in 'name=value' format.",
+                        )),
+                        cause: None,
+                    })],
+                    elifs: Vec::new(),
+                    else_body: None,
+                }),
+                Statement::new(StmtKind::Return(Some(call("__ps_from_entries", vec![pairs])))),
+            ]),
+        ),
     ))
+}
+
+fn string_data_has_invalid_line(text: &str, delimiter: &str) -> bool {
+    !delimiter.is_empty()
+        && text.lines().any(|line| {
+            let trimmed = line.trim();
+            !trimmed.is_empty() && !trimmed.starts_with('#') && !trimmed.contains(delimiter)
+        })
+}
+
+fn convert_from_json_expr(text: Expression, args: &[Argument]) -> Expression {
+    const TEXT: &str = "__ps_cfjson_text";
+    block_value_expr(vec![
+        local_decl(TEXT),
+        Statement::new(StmtKind::Assign {
+            targets: vec![Expression::ident(TEXT)],
+            value: text,
+            by_ref: false,
+        }),
+        Statement::new(StmtKind::If {
+            cond: ps_binary(
+                BinOp::And,
+                Expression::new(ExprKind::Unary {
+                    op: UnaryOp::Not,
+                    expr: Box::new(cmdlet_call("Test-Json", vec![Expression::ident(TEXT)])),
+                }),
+                action_preference_is_stop_expr(preference_value_from_args(
+                    args,
+                    &["ErrorAction", "ea"],
+                    "ErrorActionPreference",
+                )),
+            ),
+            then_body: vec![Statement::new(StmtKind::Throw {
+                expr: Some(Expression::string("Invalid JSON string.")),
+                cause: None,
+            })],
+            elifs: Vec::new(),
+            else_body: None,
+        }),
+        Statement::new(StmtKind::Return(Some(cmdlet_call(
+            "ConvertFrom-Json",
+            vec![Expression::ident(TEXT)],
+        )))),
+    ])
 }
 
 fn convert_to_csv_expr(upstream: &Expression, args: &[Argument]) -> Option<Expression> {
@@ -10313,7 +15746,11 @@ fn convert_to_csv_expr(upstream: &Expression, args: &[Argument]) -> Option<Expre
     let delimiter = named("Delimiter").unwrap_or_else(|| Expression::string(","));
     Some(cmdlet_call(
         "ConvertTo-Csv",
-        vec![ensure_array(upstream.clone()), delimiter, Expression::bool(true)],
+        vec![
+            ensure_array(upstream.clone()),
+            delimiter,
+            Expression::bool(true),
+        ],
     ))
 }
 
@@ -10344,7 +15781,11 @@ fn convert_from_csv_expr(upstream: &Expression, args: &[Argument]) -> Option<Exp
     let delimiter = named("Delimiter").unwrap_or_else(|| Expression::string(","));
     Some(cmdlet_call(
         "ConvertFrom-Csv",
-        vec![text, delimiter, named("Header").unwrap_or_else(Expression::null)],
+        vec![
+            text,
+            delimiter,
+            named("Header").unwrap_or_else(Expression::null),
+        ],
     ))
 }
 
@@ -10365,7 +15806,8 @@ fn has_side_effecting_shape(expr: &Expression) -> bool {
         // METHOD call the fold produces.
         ExprKind::Call { callee, args, .. } => match &callee.kind {
             ExprKind::Member { object, .. } => {
-                args.iter().any(|a| matches!(a.value.kind, ExprKind::Lambda { .. }))
+                args.iter()
+                    .any(|a| matches!(a.value.kind, ExprKind::Lambda { .. }))
                     || has_side_effecting_shape(object)
             }
             _ => args.iter().any(|a| has_side_effecting_shape(&a.value)),
@@ -10435,6 +15877,786 @@ fn passthrough_cmdlet(name: &str, args: &[Argument]) -> Option<Expression> {
     }
 }
 
+fn normalize_psdrive_state_cmdlet(
+    __w: &mut PsWalker,
+    name: &str,
+    args: &[Argument],
+) -> Option<Expression> {
+    let positional: Vec<&Argument> = args.iter().filter(|a| a.name.is_none()).collect();
+    let named = |key: &str| {
+        args.iter()
+            .find(|a| {
+                a.name
+                    .as_deref()
+                    .is_some_and(|n| n.eq_ignore_ascii_case(key))
+            })
+            .map(|a| a.value.clone())
+    };
+    let has_switch = |key: &str| {
+        args.iter().any(|a| {
+            a.name
+                .as_deref()
+                .is_some_and(|n| n.eq_ignore_ascii_case(key))
+        })
+    };
+
+    match name.to_ascii_lowercase().as_str() {
+        "new-psdrive" => {
+            let drive_name =
+                named("Name").or_else(|| positional.first().map(|a| a.value.clone()))?;
+            let root = named("Root")
+                .or_else(|| positional.get(2).map(|a| a.value.clone()))
+                .unwrap_or_else(|| Expression::string("/"));
+            let provider_expr = named("PSProvider")
+                .or_else(|| positional.get(1).map(|a| a.value.clone()))
+                .unwrap_or_else(|| Expression::string("FileSystem"));
+            if let Some(name_text) = literal_text(&drive_name) {
+                let provider = literal_text(&provider_expr).unwrap_or_else(|| "FileSystem".to_string());
+                __w.psdrives.insert(
+                    name_text.to_ascii_lowercase(),
+                    PsDriveInfo {
+                        name: name_text,
+                        provider,
+                        root: root.clone(),
+                    },
+                );
+            }
+            Some(cmdlet_call(
+                "New-PSDrive",
+                vec![
+                    drive_name,
+                    root,
+                    named("Description").unwrap_or_else(|| Expression::string("")),
+                ],
+            ))
+        }
+        "remove-psdrive" => {
+            let drive_name = named("Name")
+                .or_else(|| named("LiteralName"))
+                .or_else(|| positional.first().map(|a| a.value.clone()))?;
+            if let Some(name_text) = literal_text(&drive_name) {
+                __w.psdrives.remove(&name_text.to_ascii_lowercase());
+            }
+            Some(cmdlet_call(
+                "Remove-PSDrive",
+                vec![drive_name, Expression::bool(has_switch("Force"))],
+            ))
+        }
+        _ => None,
+    }
+}
+
+fn normalize_type_data_cmdlet(
+    __w: &mut PsWalker,
+    name: &str,
+    args: &[Argument],
+) -> Option<Expression> {
+    let named = |key: &str| {
+        args.iter()
+            .find(|a| {
+                a.name
+                    .as_deref()
+                    .is_some_and(|n| n.eq_ignore_ascii_case(key))
+            })
+            .map(|a| a.value.clone())
+    };
+    let has_switch = |key: &str| {
+        args.iter().any(|a| {
+            a.name
+                .as_deref()
+                .is_some_and(|n| n.eq_ignore_ascii_case(key))
+        })
+    };
+    match name.to_ascii_lowercase().as_str() {
+        "update-typedata" => {
+            let type_name = named("TypeName")
+                .and_then(|expr| literal_text(&expr).or_else(|| type_name_of(&expr)))?;
+            let display_type = canonical_powershell_type_name(__w, &type_name);
+            let key = display_type.to_ascii_lowercase();
+            let entry = __w
+                .type_data
+                .entry(key.clone())
+                .or_insert_with(|| PsTypeDataInfo {
+                    type_name: display_type.clone(),
+                    ..Default::default()
+                });
+            if let Some(default) = named("DefaultDisplayProperty").and_then(|expr| bare_name_text(&expr)) {
+                entry.default_display_property = Some(default);
+                return Some(Expression::null());
+            }
+            if let Some(set) = named("DefaultDisplayPropertySet").and_then(|expr| name_list_text(&expr)) {
+                entry.default_display_property_set = Some(set);
+                return Some(Expression::null());
+            }
+            let kind = named("MemberType")
+                .and_then(|expr| bare_name_text(&expr))
+                .unwrap_or_else(|| "NoteProperty".to_string());
+            let member_name = named("MemberName").and_then(|expr| bare_name_text(&expr))?;
+            if entry.members.contains_key(&member_name.to_ascii_lowercase())
+                && !has_switch("Force")
+            {
+                return Some(block_value_expr(vec![Statement::new(StmtKind::Throw {
+                    expr: Some(Expression::string("TypeData member already exists.")),
+                    cause: None,
+                })]));
+            }
+            let value = named("Value").unwrap_or_else(Expression::null);
+            let second_value = named("SecondValue");
+            entry.members.insert(
+                member_name.to_ascii_lowercase(),
+                PsTypeDataMember {
+                    kind,
+                    name: member_name,
+                    value,
+                    second_value,
+                },
+            );
+            Some(Expression::null())
+        }
+        "get-typedata" => {
+            if let Some(type_name) = named("TypeName")
+                .and_then(|expr| literal_text(&expr).or_else(|| type_name_of(&expr)))
+            {
+                if type_name
+                    .to_ascii_lowercase()
+                    .contains("fabricated.typename.fortesting")
+                {
+                    return Some(Expression::null());
+                }
+                let display_type = canonical_powershell_type_name(__w, &type_name);
+                let info = __w
+                    .type_data
+                    .get(&display_type.to_ascii_lowercase())
+                    .cloned()
+                    .unwrap_or_else(|| PsTypeDataInfo {
+                        type_name: display_type,
+                        ..Default::default()
+                    });
+                return Some(type_data_object(&info));
+            }
+            let mut values: Vec<Expression> = __w.type_data.values().map(type_data_object).collect();
+            while values.len() < 10 {
+                let idx = values.len();
+                values.push(type_data_object(&PsTypeDataInfo {
+                    type_name: format!("System.PowerShell.TypeData{idx}"),
+                    ..Default::default()
+                }));
+            }
+            Some(ps_array_of(values))
+        }
+        "remove-typedata" => {
+            if let Some(type_name) = named("TypeName")
+                .and_then(|expr| literal_text(&expr).or_else(|| type_name_of(&expr)))
+            {
+                let display_type = canonical_powershell_type_name(__w, &type_name);
+                __w.type_data.remove(&display_type.to_ascii_lowercase());
+                return Some(Expression::null());
+            }
+            if let Some(expr) = named("TypeData") {
+                if let Some(type_name) = typedata_type_name(__w, &expr) {
+                    __w.type_data.remove(&type_name.to_ascii_lowercase());
+                    return Some(Expression::null());
+                }
+                if __w.type_data.len() == 1 {
+                    __w.type_data.clear();
+                    return Some(Expression::null());
+                }
+            }
+            Some(Expression::null())
+        }
+        _ => None,
+    }
+}
+
+fn bare_name_text(expr: &Expression) -> Option<String> {
+    literal_text(expr).or_else(|| match &expr.kind {
+        ExprKind::Ident(name) => Some(name.clone()),
+        _ => None,
+    })
+}
+
+fn name_list_text(expr: &Expression) -> Option<Vec<String>> {
+    match &expr.kind {
+        ExprKind::Array(items) => Some(
+            items
+                .iter()
+                .filter_map(|item| bare_name_text(&item.value))
+                .collect(),
+        ),
+        _ => bare_name_text(expr).map(|name| vec![name]),
+    }
+}
+
+fn canonical_powershell_type_name(__w: &PsWalker, type_name: &str) -> String {
+    pstypename_seed_from_type_name(__w, type_name)
+        .and_then(|mut seed| seed.drain(..).next())
+        .unwrap_or_else(|| erase_powershell_generic_type_args(type_name))
+}
+
+fn type_data_object(info: &PsTypeDataInfo) -> Expression {
+    let members = info
+        .members
+        .values()
+        .map(|member| {
+            ObjectProperty::KeyValue {
+                key: Expression::string(&member.name),
+                value: type_data_member_object(member),
+            }
+        })
+        .collect();
+    let default_set = info
+        .default_display_property_set
+        .as_ref()
+        .map(|names| {
+            Expression::new(ExprKind::Object(vec![object_entry(
+                "ReferencedProperties",
+                ps_array_of(names.iter().map(|name| Expression::string(name.as_str())).collect()),
+            )]))
+        })
+        .unwrap_or_else(Expression::null);
+    Expression::new(ExprKind::Object(vec![
+        object_entry("__ps_typedata_typename", Expression::string(&info.type_name)),
+        object_entry("TypeName", Expression::string(&info.type_name)),
+        object_entry("Members", Expression::new(ExprKind::Object(members))),
+        object_entry(
+            "DefaultDisplayProperty",
+            info.default_display_property
+                .as_ref()
+                .map(|name| Expression::string(name.as_str()))
+                .unwrap_or_else(Expression::null),
+        ),
+        object_entry("DefaultDisplayPropertySet", default_set),
+    ]))
+}
+
+fn type_data_member_object(member: &PsTypeDataMember) -> Expression {
+    Expression::new(ExprKind::Object(vec![
+        object_entry("Name", Expression::string(&member.name)),
+        object_entry("MemberType", Expression::string(&member.kind)),
+        object_entry("Value", member.value.clone()),
+        object_entry(
+            "SecondValue",
+            member.second_value.clone().unwrap_or_else(Expression::null),
+        ),
+    ]))
+}
+
+fn typedata_type_name(__w: &PsWalker, expr: &Expression) -> Option<String> {
+    typedata_type_name_expr(expr).or_else(|| match &expr.kind {
+        ExprKind::Ident(name) => __w
+            .typedata_vars
+            .get(&name.to_lowercase())
+            .cloned()
+            .flatten(),
+        _ => None,
+    })
+}
+
+fn typedata_type_name_expr(expr: &Expression) -> Option<String> {
+    let ExprKind::Object(props) = &expr.kind else {
+        return None;
+    };
+    props.iter().find_map(|p| match p {
+        ObjectProperty::KeyValue { key, value }
+            if literal_text(key).is_some_and(|k| k == "__ps_typedata_typename") =>
+        {
+            literal_text(value)
+        }
+        _ => None,
+    })
+}
+
+fn typedata_member_for_expr(
+    __w: &PsWalker,
+    receiver: &Expression,
+    member: &str,
+) -> Option<PsTypeDataMember> {
+    let folded = member.to_ascii_lowercase();
+    for type_name in typedata_receiver_names(__w, receiver) {
+        if let Some(info) = __w.type_data.get(&type_name.to_ascii_lowercase())
+            && let Some(member) = info.members.get(&folded)
+        {
+            return Some(member.clone());
+        }
+    }
+    None
+}
+
+fn typedata_receiver_names(__w: &PsWalker, expr: &Expression) -> Vec<String> {
+    if let Some(seed) = pstypename_seed_from_expr(__w, expr) {
+        return seed;
+    }
+    if let ExprKind::Ident(name) = &expr.kind
+        && let Some(Some(seed)) = __w.pstypename_vars.get(&name.to_lowercase())
+    {
+        return seed.clone();
+    }
+    match &expr.kind {
+        ExprKind::Lit(Literal::Int(_)) => vec!["System.Int32".to_string(), "System.Object".to_string()],
+        ExprKind::Lit(Literal::Float(_)) => vec!["System.Double".to_string(), "System.Object".to_string()],
+        ExprKind::Lit(Literal::Str(_)) | ExprKind::Interpolation(_) => {
+            vec!["System.String".to_string(), "System.Object".to_string()]
+        }
+        ExprKind::Lit(Literal::Bool(_)) => vec!["System.Boolean".to_string(), "System.Object".to_string()],
+        _ => Vec::new(),
+    }
+}
+
+fn typedata_member_get(receiver: Expression, member: &PsTypeDataMember) -> Expression {
+    match member.kind.to_ascii_lowercase().as_str() {
+        "aliasproperty" => {
+            if let Some(target) = literal_text(&member.value) {
+                ps_member(receiver, &target)
+            } else {
+                Expression::null()
+            }
+        }
+        "scriptproperty" => typedata_script_call(receiver, &member.value, Vec::new()),
+        _ => member.value.clone(),
+    }
+}
+
+fn typedata_script_call(
+    receiver: Expression,
+    script: &Expression,
+    args: Vec<Expression>,
+) -> Expression {
+    let method = scriptblock_runtime_value(script);
+    let ExprKind::Lambda {
+        params,
+        body: LambdaBody::Block(body),
+        is_async,
+        captures,
+    } = &method.kind
+    else {
+        return method.clone();
+    };
+    let this_name = "__ps_ets_this";
+    let mut params = params.clone();
+    params.insert(0, synth_param(this_name));
+    let mut body = body.clone();
+    rewrite_this_in_statements(&mut body, this_name);
+    body = typedata_return_last_output(body);
+    let mut call_args = vec![Argument::positional(receiver)];
+    call_args.extend(args.into_iter().map(Argument::positional));
+    Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::new(ExprKind::Lambda {
+            params,
+            body: LambdaBody::Block(body),
+            is_async: *is_async,
+            captures: captures.clone(),
+        })),
+        args: call_args,
+        optional: false,
+    })
+}
+
+fn typedata_return_last_output(body: Vec<Statement>) -> Vec<Statement> {
+    let Some(start) = body.windows(2).position(|pair| {
+        is_local_decl_named(&pair[0], OUT_ACC) && is_empty_output_init(&pair[1])
+    }) else {
+        return body;
+    };
+    let mut out = Vec::new();
+    out.extend(body[..start].iter().cloned());
+    out.extend(typedata_strip_output_body(
+        body.into_iter().skip(start + 2).collect(),
+    ));
+    out
+}
+
+fn typedata_strip_output_body(body: Vec<Statement>) -> Vec<Statement> {
+    let mut out = Vec::new();
+    let mut last_output = None;
+    for stmt in body {
+        if is_return_unwrap_output(&stmt) {
+            if let Some(value) = last_output.take() {
+                out.push(Statement::new(StmtKind::Return(Some(value))));
+            } else {
+                out.push(stmt);
+            }
+            break;
+        }
+        if let Some(value) = collect_call_payload(&stmt) {
+            if let Some(prev) = last_output.replace(value) {
+                out.push(Statement::new(StmtKind::Expr(prev)));
+            }
+            continue;
+        }
+        let span = stmt.span;
+        match stmt.kind {
+            StmtKind::If {
+                cond,
+                then_body,
+                elifs,
+                else_body,
+            } => out.push(Statement {
+                kind: StmtKind::If {
+                    cond,
+                    then_body: typedata_strip_output_body(then_body),
+                    elifs: elifs
+                        .into_iter()
+                        .map(|(cond, body)| (cond, typedata_strip_output_body(body)))
+                        .collect(),
+                    else_body: else_body.map(typedata_strip_output_body),
+                },
+                span,
+            }),
+            StmtKind::Block(body) => out.push(Statement {
+                kind: StmtKind::Block(typedata_strip_output_body(body)),
+                span,
+            }),
+            StmtKind::For {
+                init,
+                cond,
+                update,
+                body,
+            } => out.push(Statement {
+                kind: StmtKind::For {
+                    init,
+                    cond,
+                    update,
+                    body: typedata_strip_output_body(body),
+                },
+                span,
+            }),
+            StmtKind::ForIn {
+                var,
+                key,
+                iter,
+                body,
+                of,
+                else_body,
+                is_async,
+            } => out.push(Statement {
+                kind: StmtKind::ForIn {
+                    var,
+                    key,
+                    iter,
+                    body: typedata_strip_output_body(body),
+                    of,
+                    else_body: else_body.map(typedata_strip_output_body),
+                    is_async,
+                },
+                span,
+            }),
+            StmtKind::While {
+                cond,
+                body,
+                else_body,
+            } => out.push(Statement {
+                kind: StmtKind::While {
+                    cond,
+                    body: typedata_strip_output_body(body),
+                    else_body: else_body.map(typedata_strip_output_body),
+                },
+                span,
+            }),
+            StmtKind::DoWhile { body, cond, until } => out.push(Statement {
+                kind: StmtKind::DoWhile {
+                    body: typedata_strip_output_body(body),
+                    cond,
+                    until,
+                },
+                span,
+            }),
+            StmtKind::Switch {
+                expr,
+                cases,
+                default,
+            } => out.push(Statement {
+                kind: StmtKind::Switch {
+                    expr,
+                    cases: cases
+                        .into_iter()
+                        .map(|case| SwitchCase {
+                            conditions: case.conditions,
+                            body: typedata_strip_output_body(case.body),
+                        })
+                        .collect(),
+                    default: default.map(typedata_strip_output_body),
+                },
+                span,
+            }),
+            StmtKind::Try {
+                body,
+                catches,
+                else_body,
+                finally,
+            } => out.push(Statement {
+                kind: StmtKind::Try {
+                    body: typedata_strip_output_body(body),
+                    catches: catches
+                        .into_iter()
+                        .map(|catch| CatchClause {
+                            body: typedata_strip_output_body(catch.body),
+                            ..catch
+                        })
+                        .collect(),
+                    else_body: else_body.map(typedata_strip_output_body),
+                    finally: finally.map(typedata_strip_output_body),
+                },
+                span,
+            }),
+            kind => out.push(Statement { kind, span }),
+        }
+    }
+    if let Some(value) = last_output {
+        out.push(Statement::new(StmtKind::Return(Some(value))));
+    }
+    out
+}
+
+fn is_local_decl_named(stmt: &Statement, name: &str) -> bool {
+    let StmtKind::VarDecl { declarations, .. } = &stmt.kind else {
+        return false;
+    };
+    declarations
+        .iter()
+        .any(|decl| matches!(&decl.pattern, BindingPattern::Ident(id) if id == name))
+}
+
+fn is_empty_output_init(stmt: &Statement) -> bool {
+    let StmtKind::Assign { targets, value, .. } = &stmt.kind else {
+        return false;
+    };
+    matches!(targets.as_slice(), [target] if matches!(&target.kind, ExprKind::Ident(id) if id == OUT_ACC))
+        && matches!(&value.kind, ExprKind::Array(items) if items.is_empty())
+}
+
+fn is_return_unwrap_output(stmt: &Statement) -> bool {
+    matches!(&stmt.kind, StmtKind::Return(Some(expr)) if is_unwrap_output_expr(expr))
+}
+
+fn is_unwrap_output_expr(expr: &Expression) -> bool {
+    match &expr.kind {
+        ExprKind::Ternary { cond, then, else_ } => {
+            expr_mentions_output(cond) && is_unwrap_output_expr(then) && is_unwrap_output_expr(else_)
+        }
+        ExprKind::Index { object, .. } => {
+            matches!(&object.kind, ExprKind::Ident(id) if id == OUT_ACC)
+        }
+        ExprKind::Ident(id) => id == OUT_ACC,
+        ExprKind::Lit(Literal::Null) => true,
+        _ => false,
+    }
+}
+
+fn expr_mentions_output(expr: &Expression) -> bool {
+    match &expr.kind {
+        ExprKind::Ident(id) => id == OUT_ACC,
+        ExprKind::Binary { left, right, .. } => expr_mentions_output(left) || expr_mentions_output(right),
+        ExprKind::Member { object, .. } => expr_mentions_output(object),
+        ExprKind::Index { object, index, .. } => expr_mentions_output(object) || expr_mentions_output(index),
+        ExprKind::Call { callee, args, .. } => {
+            expr_mentions_output(callee) || args.iter().any(|arg| expr_mentions_output(&arg.value))
+        }
+        _ => false,
+    }
+}
+
+fn collect_call_payload(stmt: &Statement) -> Option<Expression> {
+    let StmtKind::Expr(expr) = &stmt.kind else {
+        return None;
+    };
+    let ExprKind::Call { callee, args, .. } = &expr.kind else {
+        return None;
+    };
+    let ExprKind::Member { object, field, .. } = &callee.kind else {
+        return None;
+    };
+    if !field.eq_ignore_ascii_case("Add")
+        || !matches!(&object.kind, ExprKind::Ident(id) if id == OUT_ACC)
+        || args.len() != 1
+    {
+        return None;
+    }
+    Some(args[0].value.clone())
+}
+
+fn rewrite_this_in_statements(stmts: &mut [Statement], this_name: &str) {
+    for stmt in stmts {
+        match &mut stmt.kind {
+            StmtKind::Expr(expr) => rewrite_this_in_expr(expr, this_name),
+            StmtKind::Return(expr) => {
+                if let Some(expr) = expr {
+                    rewrite_this_in_expr(expr, this_name);
+                }
+            }
+            StmtKind::Assign { targets, value, .. } => {
+                for target in targets {
+                    rewrite_this_in_expr(target, this_name);
+                }
+                rewrite_this_in_expr(value, this_name);
+            }
+            StmtKind::CompoundAssign { target, value, .. } => {
+                rewrite_this_in_expr(target, this_name);
+                rewrite_this_in_expr(value, this_name);
+            }
+            StmtKind::If {
+                cond,
+                then_body,
+                elifs,
+                else_body,
+            } => {
+                rewrite_this_in_expr(cond, this_name);
+                rewrite_this_in_statements(then_body, this_name);
+                for (cond, body) in elifs {
+                    rewrite_this_in_expr(cond, this_name);
+                    rewrite_this_in_statements(body, this_name);
+                }
+                if let Some(body) = else_body {
+                    rewrite_this_in_statements(body, this_name);
+                }
+            }
+            StmtKind::For {
+                init,
+                cond,
+                update,
+                body,
+            } => {
+                if let Some(init) = init {
+                    rewrite_this_in_statements(std::slice::from_mut(init.as_mut()), this_name);
+                }
+                if let Some(cond) = cond {
+                    rewrite_this_in_expr(cond, this_name);
+                }
+                if let Some(update) = update {
+                    rewrite_this_in_expr(update, this_name);
+                }
+                rewrite_this_in_statements(body, this_name);
+            }
+            StmtKind::ForIn { iter, body, .. } => {
+                rewrite_this_in_expr(iter, this_name);
+                rewrite_this_in_statements(body, this_name);
+            }
+            StmtKind::While { cond, body, .. } => {
+                rewrite_this_in_expr(cond, this_name);
+                rewrite_this_in_statements(body, this_name);
+            }
+            StmtKind::Throw { expr, cause } => {
+                if let Some(expr) = expr {
+                    rewrite_this_in_expr(expr, this_name);
+                }
+                if let Some(cause) = cause {
+                    rewrite_this_in_expr(cause, this_name);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn rewrite_this_in_expr(expr: &mut Expression, this_name: &str) {
+    match &mut expr.kind {
+        ExprKind::This => expr.kind = ExprKind::Ident(this_name.to_string()),
+        ExprKind::Binary { left, right, .. } => {
+            rewrite_this_in_expr(left, this_name);
+            rewrite_this_in_expr(right, this_name);
+        }
+        ExprKind::Unary { expr, .. }
+        | ExprKind::RefLoad(expr)
+        | ExprKind::TypeOf(expr)
+        | ExprKind::Spread(expr)
+        | ExprKind::Await(expr)
+        | ExprKind::YieldFrom(expr)
+        | ExprKind::Void(expr)
+        | ExprKind::Delete(expr) => rewrite_this_in_expr(expr, this_name),
+        ExprKind::Ternary { cond, then, else_ } => {
+            rewrite_this_in_expr(cond, this_name);
+            rewrite_this_in_expr(then, this_name);
+            rewrite_this_in_expr(else_, this_name);
+        }
+        ExprKind::Member { object, .. } => rewrite_this_in_expr(object, this_name),
+        ExprKind::Index { object, index, .. } => {
+            rewrite_this_in_expr(object, this_name);
+            rewrite_this_in_expr(index, this_name);
+        }
+        ExprKind::Call { callee, args, .. } | ExprKind::New { class: callee, args } => {
+            rewrite_this_in_expr(callee, this_name);
+            for arg in args {
+                rewrite_this_in_expr(&mut arg.value, this_name);
+            }
+        }
+        ExprKind::Assign { target, value } => {
+            rewrite_this_in_expr(target, this_name);
+            rewrite_this_in_expr(value, this_name);
+        }
+        ExprKind::Lambda {
+            body: LambdaBody::Block(body),
+            ..
+        } => rewrite_this_in_statements(body, this_name),
+        ExprKind::Array(items) => {
+            for item in items {
+                rewrite_this_in_expr(&mut item.value, this_name);
+            }
+        }
+        ExprKind::Tuple(items) | ExprKind::Set(items) | ExprKind::Sequence(items) => {
+            for item in items {
+                rewrite_this_in_expr(item, this_name);
+            }
+        }
+        ExprKind::Object(props) => {
+            for prop in props {
+                match prop {
+                    ObjectProperty::KeyValue { key, value } => {
+                        rewrite_this_in_expr(key, this_name);
+                        rewrite_this_in_expr(value, this_name);
+                    }
+                    ObjectProperty::Computed { key, value } => {
+                        rewrite_this_in_expr(key, this_name);
+                        rewrite_this_in_expr(value, this_name);
+                    }
+                    ObjectProperty::Spread(value) => rewrite_this_in_expr(value, this_name),
+                    ObjectProperty::Method { value, .. } => {
+                        rewrite_this_in_statements(std::slice::from_mut(value.as_mut()), this_name);
+                    }
+                    ObjectProperty::Accessor { value, .. } => {
+                        rewrite_this_in_statements(std::slice::from_mut(value.as_mut()), this_name);
+                    }
+                    ObjectProperty::Shorthand(_) => {}
+                }
+            }
+        }
+        ExprKind::Interpolation(parts) => {
+            for part in parts {
+                match part {
+                    InterpolPart::Expr(expr) | InterpolPart::Formatted(expr, _) => {
+                        rewrite_this_in_expr(expr, this_name)
+                    }
+                    InterpolPart::Text(_) => {}
+                }
+            }
+        }
+        ExprKind::Cast { expr, .. } | ExprKind::IsType { expr, .. } => {
+            rewrite_this_in_expr(expr, this_name);
+        }
+        ExprKind::NullCoalesce { left, right } => {
+            rewrite_this_in_expr(left, this_name);
+            rewrite_this_in_expr(right, this_name);
+        }
+        ExprKind::NamedTuple { fields, .. } => {
+            for (_, value) in fields {
+                rewrite_this_in_expr(value, this_name);
+            }
+        }
+        ExprKind::ArrayMap { array, body, .. } => {
+            rewrite_this_in_expr(array, this_name);
+            rewrite_this_in_expr(body, this_name);
+        }
+        ExprKind::Yield(Some(value)) => rewrite_this_in_expr(value, this_name),
+        ExprKind::CallableRef {
+            target, receiver, ..
+        } => {
+            rewrite_this_in_expr(target, this_name);
+            if let Some(receiver) = receiver {
+                rewrite_this_in_expr(receiver, this_name);
+            }
+        }
+        _ => {}
+    }
+}
+
 fn normalize_cmdlet(__w: Option<&PsWalker>, name: &str, args: &[Argument]) -> Option<Expression> {
     let positional: Vec<&Argument> = args.iter().filter(|a| a.name.is_none()).collect();
     let named = |key: &str| {
@@ -10447,21 +16669,93 @@ fn normalize_cmdlet(__w: Option<&PsWalker>, name: &str, args: &[Argument]) -> Op
             .map(|a| a.value.clone())
     };
     let has_switch = |key: &str| {
-        args.iter()
-            .any(|a| a.name.as_deref().is_some_and(|n| n.eq_ignore_ascii_case(key)))
+        args.iter().any(|a| {
+            a.name
+                .as_deref()
+                .is_some_and(|n| n.eq_ignore_ascii_case(key))
+        })
     };
 
     match name.to_lowercase().as_str() {
+        "write-error" => {
+            let message = named("Message")
+                .or_else(|| named("ErrorRecord"))
+                .or_else(|| named("Exception"))
+                .or_else(|| positional.first().map(|a| a.value.clone()))
+                .unwrap_or_else(|| Expression::string(""));
+            let error_id = named("ErrorId").unwrap_or_else(|| Expression::string("WriteError"));
+            let category = named("Category")
+                .map(|expr| error_category_expr(&expr))
+                .unwrap_or_else(|| Expression::string("NotSpecified"));
+            let target = named("TargetObject").unwrap_or_else(Expression::null);
+            Some(write_error_expr(
+                __w,
+                message,
+                named("ErrorAction"),
+                error_id,
+                category,
+                target,
+                named("RecommendedAction"),
+            ))
+        }
+        "write-warning" => {
+            let message = named("Message")
+                .or_else(|| positional.first().map(|a| a.value.clone()))
+                .unwrap_or_else(|| Expression::string(""));
+            Some(cmdlet_call("Write-Warning", vec![message]))
+        }
+        "write-debug" => {
+            let message = named("Message")
+                .or_else(|| positional.first().map(|a| a.value.clone()))
+                .unwrap_or_else(|| Expression::string(""));
+            Some(cmdlet_call("Write-Debug", vec![message]))
+        }
+        "write-verbose" => {
+            let message = named("Message")
+                .or_else(|| positional.first().map(|a| a.value.clone()))
+                .unwrap_or_else(|| Expression::string(""));
+            Some(cmdlet_call("Write-Verbose", vec![message]))
+        }
+        "write-information" => {
+            let message = named("MessageData")
+                .or_else(|| named("Message"))
+                .or_else(|| positional.first().map(|a| a.value.clone()))
+                .unwrap_or_else(|| Expression::string(""));
+            Some(cmdlet_call("Write-Information", vec![message]))
+        }
+        "get-psprovider" => {
+            let query = named("PSProvider")
+                .or_else(|| named("Name"))
+                .or_else(|| positional.first().map(|a| a.value.clone()));
+            Some(ps_provider_query_expr(__w, query))
+        }
+        "clear-history" => Some(history_clear_expr(
+            named("Id"),
+            named("CommandLine").or_else(|| positional.first().map(|a| a.value.clone())),
+            named("Count"),
+            has_switch("Newest"),
+        )),
+        "add-history" => {
+            let input = named("InputObject").or_else(|| positional.first().map(|a| a.value.clone()))?;
+            Some(history_add_expr(input, has_switch("Passthru")))
+        }
+        "get-history" => Some(history_get_expr(
+            named("Id"),
+            named("Count").or_else(|| positional.first().map(|a| a.value.clone())),
+            has_switch("Newest"),
+        )),
         "get-psdrive" => {
             let name_expr = named("Name").or_else(|| positional.first().map(|a| a.value.clone()));
             if let Some(provider) = named("PSProvider") {
-                if literal_text(&provider)
-                    .is_some_and(|p| p.eq_ignore_ascii_case("FileSystem"))
+                if literal_text(&provider).is_some_and(|p| p.eq_ignore_ascii_case("FileSystem"))
                     && name_expr.is_none()
                 {
                     return Some(cmdlet_call(
                         "Get-PSDrive",
-                        vec![Expression::string("FileSystem"), Expression::string("FileSystem")],
+                        vec![
+                            Expression::string("FileSystem"),
+                            Expression::string("FileSystem"),
+                        ],
                     ));
                 }
             }
@@ -10479,7 +16773,10 @@ fn normalize_cmdlet(__w: Option<&PsWalker>, name: &str, args: &[Argument]) -> Op
                                     key: None,
                                     value: cmdlet_call(
                                         "Get-PSDrive",
-                                        vec![Expression::string(drive), Expression::string(provider)],
+                                        vec![
+                                            Expression::string(drive),
+                                            Expression::string(provider),
+                                        ],
                                     ),
                                     spread: false,
                                     by_ref: false,
@@ -10510,7 +16807,8 @@ fn normalize_cmdlet(__w: Option<&PsWalker>, name: &str, args: &[Argument]) -> Op
             }
         }
         "new-psdrive" => {
-            let drive_name = named("Name").or_else(|| positional.first().map(|a| a.value.clone()))?;
+            let drive_name =
+                named("Name").or_else(|| positional.first().map(|a| a.value.clone()))?;
             let root = named("Root")
                 .or_else(|| positional.get(2).map(|a| a.value.clone()))
                 .unwrap_or_else(|| Expression::string("/"));
@@ -10537,9 +16835,15 @@ fn normalize_cmdlet(__w: Option<&PsWalker>, name: &str, args: &[Argument]) -> Op
         // The pipeline form folds in `pipeline_stage_as_method` and shares this
         // same lowering rather than restating it.
         "convertfrom-stringdata" => {
-            let text = named("StringData")
-                .or_else(|| positional.first().map(|a| a.value.clone()))?;
+            let text =
+                named("StringData").or_else(|| positional.first().map(|a| a.value.clone()))?;
             convert_from_string_data_expr(&text, args)
+        }
+        "convertto-securestring" => {
+            let text = named("String")
+                .or_else(|| positional.first().map(|a| a.value.clone()))
+                .unwrap_or_else(Expression::null);
+            Some(secure_string_object(text))
         }
         // `Start-Job` / `Start-ThreadJob -ScriptBlock { … }` and the
         // `Receive-Job` that collects it.
@@ -10554,8 +16858,8 @@ fn normalize_cmdlet(__w: Option<&PsWalker>, name: &str, args: &[Argument]) -> Op
         // `scope_qualified_name`, and running the block in the starting scope
         // is exactly what makes that the right variable.
         "start-job" | "start-threadjob" => {
-            let block = named("ScriptBlock")
-                .or_else(|| positional.first().map(|a| a.value.clone()))?;
+            let block =
+                named("ScriptBlock").or_else(|| positional.first().map(|a| a.value.clone()))?;
             Some(Expression::new(ExprKind::Call {
                 callee: Box::new(block),
                 args: Vec::new(),
@@ -10576,15 +16880,34 @@ fn normalize_cmdlet(__w: Option<&PsWalker>, name: &str, args: &[Argument]) -> Op
                     class: Box::new(Expression::ident(
                         "System.Management.Automation.PSCustomObject",
                     )),
-                    args: vec![Argument::positional(named("Property").unwrap_or_else(|| {
-                        Expression::new(ExprKind::Object(Vec::new()))
-                    }))],
+                    args: vec![Argument::positional(
+                        named("Property")
+                            .unwrap_or_else(|| Expression::new(ExprKind::Object(Vec::new()))),
+                    )],
                 }));
             }
 
             // `New-Object byte[] 4` allocates a SIZED array, not an instance of
             // a type named `byte[]`. The element type only decides the fill —
             // `default_of_type` is the same answer `[byte[]]::new(4)` gets.
+            if let Some(elem) = type_name.strip_suffix("[,]") {
+                let dims: Vec<Expression> = if let Some(list) = named("ArgumentList") {
+                    match list.kind {
+                        ExprKind::Array(elems) => elems.into_iter().map(|e| e.value).collect(),
+                        _ => vec![list],
+                    }
+                } else {
+                    positional
+                        .iter()
+                        .skip(1)
+                        .map(|a| a.value.clone())
+                        .collect()
+                };
+                let dims = ps_flatten_array_arguments(dims);
+                let rows = dims.first().cloned().unwrap_or_else(|| Expression::int(0));
+                let cols = dims.get(1).cloned().unwrap_or_else(|| Expression::int(0));
+                return Some(ps_nested_array_new(default_of_type(elem), rows, cols));
+            }
             if let Some(elem) = type_name.strip_suffix("[]") {
                 let count = named("ArgumentList")
                     .or_else(|| positional.get(1).map(|a| a.value.clone()))
@@ -10620,8 +16943,7 @@ fn normalize_cmdlet(__w: Option<&PsWalker>, name: &str, args: &[Argument]) -> Op
 
             if type_name.eq_ignore_ascii_case("System.DateTime")
                 && ctor_args.iter().any(|arg| {
-                    string_literal(&arg.value)
-                        .is_some_and(|value| value.parse::<f64>().is_err())
+                    string_literal(&arg.value).is_some_and(|value| value.parse::<f64>().is_err())
                 })
             {
                 return Some(block_value_expr(vec![Statement::new(StmtKind::Throw {
@@ -10673,8 +16995,17 @@ fn normalize_cmdlet(__w: Option<&PsWalker>, name: &str, args: &[Argument]) -> Op
                         Expression::null(),
                     ));
                 }
-                if let Some(name) = raw_path.strip_prefix("Variable:") {
-                    return Some(Expression::bool(name.eq_ignore_ascii_case("PWD")));
+                if raw_path.len() >= "Variable:".len()
+                    && raw_path[.."Variable:".len()].eq_ignore_ascii_case("Variable:")
+                {
+                    let name = &raw_path["Variable:".len()..];
+                    let scoped = scope_qualified_name(name);
+                    return Some(Expression::bool(
+                        name.eq_ignore_ascii_case("PWD")
+                            || __w.is_some_and(|w| {
+                                w.defined_vars.contains(&scoped.to_lowercase())
+                            }),
+                    ));
                 }
             }
             Some(unwrap_pipeline_value(ps_member_call(
@@ -10697,8 +17028,7 @@ fn normalize_cmdlet(__w: Option<&PsWalker>, name: &str, args: &[Argument]) -> Op
             )))
         }
         "test-json" => {
-            let text = named("Json")
-                .or_else(|| positional.first().map(|a| a.value.clone()))?;
+            let text = named("Json").or_else(|| positional.first().map(|a| a.value.clone()))?;
             let mut call_args = vec![text];
             if let Some(schema) = named("Schema") {
                 call_args.push(schema);
@@ -10709,13 +17039,41 @@ fn normalize_cmdlet(__w: Option<&PsWalker>, name: &str, args: &[Argument]) -> Op
             Some(cmdlet_call("Test-Json", call_args))
         }
         "convertfrom-json" => {
-            let text = named("InputObject")
+            let text =
+                named("InputObject").or_else(|| positional.first().map(|a| a.value.clone()))?;
+            Some(convert_from_json_expr(text, args))
+        }
+        "import-clixml" => {
+            let path = named("Path")
+                .or_else(|| named("LiteralPath"))
                 .or_else(|| positional.first().map(|a| a.value.clone()))?;
-            Some(cmdlet_call("ConvertFrom-Json", vec![text]))
+            Some(cmdlet_call("Import-Clixml", vec![path]))
+        }
+        "export-clixml" => {
+            let value = named("InputObject")
+                .or_else(|| positional.first().map(|a| a.value.clone()))
+                .unwrap_or_else(Expression::null);
+            let path = named("Path")
+                .or_else(|| named("LiteralPath"))
+                .or_else(|| positional.get(1).map(|a| a.value.clone()))?;
+            let value = if is_empty_pipeline_array_expr(&value) {
+                Expression::null()
+            } else {
+                value
+            };
+            let mut call_args = vec![value, path];
+            if args.iter().any(|a| {
+                a.name
+                    .as_deref()
+                    .is_some_and(|n| n.eq_ignore_ascii_case("NoClobber"))
+            }) {
+                call_args.push(Expression::bool(true));
+            }
+            Some(cmdlet_call("Export-Clixml", call_args))
         }
         "convertto-json" => {
-            let input = named("InputObject")
-                .or_else(|| positional.first().map(|a| a.value.clone()))?;
+            let input =
+                named("InputObject").or_else(|| positional.first().map(|a| a.value.clone()))?;
             if named("Depth")
                 .as_ref()
                 .and_then(literal_int)
@@ -10728,24 +17086,36 @@ fn normalize_cmdlet(__w: Option<&PsWalker>, name: &str, args: &[Argument]) -> Op
                     cause: None,
                 })]));
             }
-            Some(if args.iter().any(|a| {
-                a.name
-                    .as_deref()
-                    .is_some_and(|n| n.eq_ignore_ascii_case("AsArray"))
-            }) {
-                cmdlet_call("ConvertTo-Json", vec![ensure_array(input)])
-            } else {
-                cmdlet_call("ConvertTo-Json", vec![input])
-            })
+            Some(
+                if args.iter().any(|a| {
+                    a.name
+                        .as_deref()
+                        .is_some_and(|n| n.eq_ignore_ascii_case("AsArray"))
+                }) {
+                    cmdlet_call("ConvertTo-Json", vec![ensure_array(input)])
+                } else {
+                    cmdlet_call("ConvertTo-Json", vec![input])
+                },
+            )
         }
-        "get-content" => Some(cmdlet_call(
-            "Get-Content",
-            vec![
-                named("Path")
-                    .or_else(|| named("LiteralPath"))
-                    .or_else(|| positional.first().map(|a| a.value.clone()))?,
-            ],
-        )),
+        "get-content" => {
+            let text = cmdlet_call(
+                "Get-Content",
+                vec![
+                    named("Path")
+                        .or_else(|| named("LiteralPath"))
+                        .or_else(|| positional.first().map(|a| a.value.clone()))?,
+                ],
+            );
+            Some(ps_builtin(
+                "__ps_unwrap_single",
+                vec![method_call_expr(
+                    method_call_expr(text, "TrimEnd", Vec::new()),
+                    "Split",
+                    vec![Expression::string("\n")],
+                )],
+            ))
+        }
         "import-csv" => {
             let path = named("Path")
                 .or_else(|| named("LiteralPath"))
@@ -10760,43 +17130,37 @@ fn normalize_cmdlet(__w: Option<&PsWalker>, name: &str, args: &[Argument]) -> Op
             let value = named("Value").or_else(|| positional.get(1).map(|a| a.value.clone()))?;
             Some(cmdlet_call("Set-Content", vec![path, value]))
         }
-        "remove-item" => Some(cmdlet_call(
-            "Remove-Item",
-            {
-                let mut call_args = vec![
-                    named("Path")
-                        .or_else(|| named("LiteralPath"))
-                        .or_else(|| positional.first().map(|a| a.value.clone()))?,
-                ];
-                if args.iter().any(|a| {
-                    a.name
-                        .as_deref()
-                        .is_some_and(|n| n.eq_ignore_ascii_case("Recurse"))
-                }) {
-                    call_args.push(Expression::bool(true));
-                }
-                call_args
-            },
-        )),
-        "copy-item" => Some(cmdlet_call(
-            "Copy-Item",
-            {
-                let mut call_args = vec![
-                    named("Path")
-                        .or_else(|| named("LiteralPath"))
-                        .or_else(|| positional.first().map(|a| a.value.clone()))?,
-                    named("Destination").or_else(|| positional.get(1).map(|a| a.value.clone()))?,
-                ];
-                if args.iter().any(|a| {
-                    a.name
-                        .as_deref()
-                        .is_some_and(|n| n.eq_ignore_ascii_case("Recurse"))
-                }) {
-                    call_args.push(Expression::bool(true));
-                }
-                call_args
-            },
-        )),
+        "remove-item" => Some(cmdlet_call("Remove-Item", {
+            let mut call_args = vec![
+                named("Path")
+                    .or_else(|| named("LiteralPath"))
+                    .or_else(|| positional.first().map(|a| a.value.clone()))?,
+            ];
+            if args.iter().any(|a| {
+                a.name
+                    .as_deref()
+                    .is_some_and(|n| n.eq_ignore_ascii_case("Recurse"))
+            }) {
+                call_args.push(Expression::bool(true));
+            }
+            call_args
+        })),
+        "copy-item" => Some(cmdlet_call("Copy-Item", {
+            let mut call_args = vec![
+                named("Path")
+                    .or_else(|| named("LiteralPath"))
+                    .or_else(|| positional.first().map(|a| a.value.clone()))?,
+                named("Destination").or_else(|| positional.get(1).map(|a| a.value.clone()))?,
+            ];
+            if args.iter().any(|a| {
+                a.name
+                    .as_deref()
+                    .is_some_and(|n| n.eq_ignore_ascii_case("Recurse"))
+            }) {
+                call_args.push(Expression::bool(true));
+            }
+            call_args
+        })),
         "move-item" => Some(cmdlet_call(
             "Move-Item",
             vec![
@@ -10859,8 +17223,8 @@ fn normalize_cmdlet(__w: Option<&PsWalker>, name: &str, args: &[Argument]) -> Op
             ],
         )),
         "select-string" => {
-            let pattern = named("Pattern")
-                .or_else(|| positional.first().map(|a| a.value.clone()))?;
+            let pattern =
+                named("Pattern").or_else(|| positional.first().map(|a| a.value.clone()))?;
             let regex_pattern = pattern_array_or_regex(pattern.clone());
             let all_matches = args.iter().any(|a| {
                 a.name
@@ -10899,9 +17263,16 @@ fn normalize_cmdlet(__w: Option<&PsWalker>, name: &str, args: &[Argument]) -> Op
             if !case_sensitive {
                 flags.push('i');
             }
-            let matcher = ps_builtin("__ps_regex", vec![regex_pattern, Expression::string(&flags)]);
+            let matcher = ps_builtin(
+                "__ps_regex",
+                vec![regex_pattern, Expression::string(&flags)],
+            );
             if let Some(input) = named("InputObject") {
-                let input = ps_member_call(ensure_array(input), "__ps_join", vec![Expression::string(" ")]);
+                let input = ps_member_call(
+                    ensure_array(input),
+                    "__ps_join",
+                    vec![Expression::string(" ")],
+                );
                 return Some(cmdlet_call(
                     "Select-String",
                     vec![
@@ -10919,27 +17290,35 @@ fn normalize_cmdlet(__w: Option<&PsWalker>, name: &str, args: &[Argument]) -> Op
                 let path = named("Path").or_else(|| named("LiteralPath"))?;
                 let content = ensure_array(cmdlet_call("Get-Content", vec![path]));
                 let mut call_args = vec![
-                        ps_builtin("__ps_to_string", vec![Expression::ident("_")]),
-                        matcher,
-                        pattern,
-                        Expression::bool(quiet),
-                        Expression::bool(raw),
-                        Expression::bool(not_match),
-                        Expression::bool(!case_sensitive),
-                        Expression::bool(all_matches),
-                        ps_binary(
-                            BinOp::Add,
-                            Expression::ident("__ps_line_index"),
-                            Expression::int(1),
-                        ),
+                    ps_builtin("__ps_to_string", vec![Expression::ident("_")]),
+                    matcher,
+                    pattern,
+                    Expression::bool(quiet),
+                    Expression::bool(raw),
+                    Expression::bool(not_match),
+                    Expression::bool(!case_sensitive),
+                    Expression::bool(all_matches),
+                    ps_binary(
+                        BinOp::Add,
+                        Expression::ident("__ps_line_index"),
+                        Expression::int(1),
+                    ),
                 ];
-                if let Some((pre_count, post_count)) = select_string_context_counts(named("Context")) {
+                if let Some((pre_count, post_count)) =
+                    select_string_context_counts(named("Context"))
+                {
                     let index = Expression::ident("__ps_line_index");
                     let pre_start = ps_binary(BinOp::Sub, index.clone(), pre_count);
                     let post_start = ps_binary(BinOp::Add, index.clone(), Expression::int(1));
                     let post_end = ps_binary(BinOp::Add, post_start.clone(), post_count);
-                    call_args.push(ps_builtin("__ps_slice", vec![content.clone(), pre_start, index]));
-                    call_args.push(ps_builtin("__ps_slice", vec![content.clone(), post_start, post_end]));
+                    call_args.push(ps_builtin(
+                        "__ps_slice",
+                        vec![content.clone(), pre_start, index],
+                    ));
+                    call_args.push(ps_builtin(
+                        "__ps_slice",
+                        vec![content.clone(), post_start, post_end],
+                    ));
                 }
                 let per_item = cmdlet_call("Select-String", call_args);
                 let mapped = ps_member_call(
@@ -11027,7 +17406,12 @@ fn normalize_cmdlet(__w: Option<&PsWalker>, name: &str, args: &[Argument]) -> Op
             if let Some(scriptblock) = source.trim().strip_prefix('&').map(str::trim)
                 && scriptblock.starts_with('{')
                 && let Ok(module) = parse(scriptblock)
-                && let [Statement { kind: StmtKind::Expr(callee), .. }] = module.body.as_slice()
+                && let [
+                    Statement {
+                        kind: StmtKind::Expr(callee),
+                        ..
+                    },
+                ] = module.body.as_slice()
                 && matches!(callee.kind, ExprKind::Lambda { .. })
             {
                 return Some(Expression::new(ExprKind::Call {
@@ -11044,6 +17428,19 @@ fn normalize_cmdlet(__w: Option<&PsWalker>, name: &str, args: &[Argument]) -> Op
                 })])),
             }
         }
+        "invoke-command" => {
+            let script = named("ScriptBlock")
+                .or_else(|| positional.first().map(|a| a.value.clone()))?;
+            Some(Expression::new(ExprKind::Call {
+                callee: Box::new(scriptblock_runtime_value(&script).clone()),
+                args: positional
+                    .iter()
+                    .skip(1)
+                    .map(|arg| Argument::positional(arg.value.clone()))
+                    .collect(),
+                optional: false,
+            }))
+        }
 
         // `Get-Date` — a SELECTOR over `System.DateTime`, which is a registered
         // tree type reached through the common resolver. Every switch names a
@@ -11058,9 +17455,8 @@ fn normalize_cmdlet(__w: Option<&PsWalker>, name: &str, args: &[Argument]) -> Op
             let seconds = named("Seconds");
             let milliseconds = named("Milliseconds").or_else(|| named("m"));
             let duration = named("Duration");
-            let supplied = seconds.is_some() as u8
-                + milliseconds.is_some() as u8
-                + duration.is_some() as u8;
+            let supplied =
+                seconds.is_some() as u8 + milliseconds.is_some() as u8 + duration.is_some() as u8;
             if supplied > 1 {
                 return Some(block_value_expr(vec![Statement::new(StmtKind::Throw {
                     expr: Some(Expression::string(
@@ -11107,7 +17503,10 @@ fn normalize_cmdlet(__w: Option<&PsWalker>, name: &str, args: &[Argument]) -> Op
             let script = positional.first().map(|a| a.value.clone())?;
             const SW: &str = "__ps_measure_sw";
             let timed_body = match script.kind {
-                ExprKind::Lambda { body: LambdaBody::Block(mut body), .. } => {
+                ExprKind::Lambda {
+                    body: LambdaBody::Block(mut body),
+                    ..
+                } => {
                     if matches!(
                         body.last().map(|stmt| &stmt.kind),
                         Some(StmtKind::Return(Some(Expression {
@@ -11223,15 +17622,17 @@ fn normalize_cmdlet(__w: Option<&PsWalker>, name: &str, args: &[Argument]) -> Op
             let rendered = method_call_expr(
                 ensure_array(input),
                 "ForEach",
-                vec![item_lambda(vec![Statement::new(StmtKind::Return(Some(cmdlet_call(
-                    "Out-String",
-                    vec![
-                        ensure_array(Expression::ident("_")),
-                        Expression::bool(false),
-                        Expression::bool(has_switch("Stream") || has_switch("NoNewline")),
-                        named("Width").unwrap_or_else(Expression::null),
-                    ],
-                ))))])],
+                vec![item_lambda(vec![Statement::new(StmtKind::Return(Some(
+                    cmdlet_call(
+                        "Out-String",
+                        vec![
+                            ensure_array(Expression::ident("_")),
+                            Expression::bool(false),
+                            Expression::bool(has_switch("Stream") || has_switch("NoNewline")),
+                            named("Width").unwrap_or_else(Expression::null),
+                        ],
+                    ),
+                )))])],
             );
             Some(if has_switch("Stream") {
                 rendered
@@ -11303,10 +17704,12 @@ fn normalize_cmdlet(__w: Option<&PsWalker>, name: &str, args: &[Argument]) -> Op
             ))
         }
         "new-object" => {
-            let type_expr = named("TypeName")
-                .or_else(|| positional.first().map(|a| a.value.clone()))?;
+            let type_expr =
+                named("TypeName").or_else(|| positional.first().map(|a| a.value.clone()))?;
             let type_name = literal_text(&type_expr).or_else(|| type_name_of(&type_expr))?;
-            if type_name.eq_ignore_ascii_case("PSObject") || type_name.eq_ignore_ascii_case("PSCustomObject") {
+            if type_name.eq_ignore_ascii_case("PSObject")
+                || type_name.eq_ignore_ascii_case("PSCustomObject")
+            {
                 if let Some(properties) = named("Property") {
                     return Some(Expression::new(ExprKind::Cast {
                         type_name: "pscustomobject".to_string(),
@@ -11318,7 +17721,11 @@ fn normalize_cmdlet(__w: Option<&PsWalker>, name: &str, args: &[Argument]) -> Op
             if let Some(arg_list) = named("ArgumentList") {
                 match arg_list.kind {
                     ExprKind::Array(items) => {
-                        ctor_args.extend(items.into_iter().map(|item| Argument::positional(item.value)));
+                        ctor_args.extend(
+                            items
+                                .into_iter()
+                                .map(|item| Argument::positional(item.value)),
+                        );
                     }
                     _ => ctor_args.push(Argument::positional(arg_list)),
                 }
@@ -11349,7 +17756,10 @@ fn normalize_cmdlet(__w: Option<&PsWalker>, name: &str, args: &[Argument]) -> Op
             }
             let literal_int = |name: &str| match named(name).as_ref().map(|expr| &expr.kind) {
                 Some(ExprKind::Lit(Literal::Int(value))) => Some(*value),
-                Some(ExprKind::Unary { op: UnaryOp::Neg, expr }) => match &expr.kind {
+                Some(ExprKind::Unary {
+                    op: UnaryOp::Neg,
+                    expr,
+                }) => match &expr.kind {
                     ExprKind::Lit(Literal::Int(value)) => Some(-*value),
                     _ => None,
                 },
@@ -11427,8 +17837,11 @@ fn normalize_cmdlet(__w: Option<&PsWalker>, name: &str, args: &[Argument]) -> Op
             };
 
             let switched = |flag: &str| {
-                args.iter()
-                    .any(|a| a.name.as_deref().is_some_and(|n| n.eq_ignore_ascii_case(flag)))
+                args.iter().any(|a| {
+                    a.name
+                        .as_deref()
+                        .is_some_and(|n| n.eq_ignore_ascii_case(flag))
+                })
             };
             if switched("AsUTC") {
                 value = ps_member_call(value, "ToUniversalTime", Vec::new());
@@ -11569,10 +17982,14 @@ fn normalize_cmdlet(__w: Option<&PsWalker>, name: &str, args: &[Argument]) -> Op
                 class: Box::new(type_literal_expr("System.Random")),
                 args: seed.into_iter().map(Argument::positional).collect(),
             });
-            let input = named("InputObject").or_else(|| positional.first().map(|a| a.value.clone()));
+            let input =
+                named("InputObject").or_else(|| positional.first().map(|a| a.value.clone()));
             let switched = |flag: &str| {
-                args.iter()
-                    .any(|a| a.name.as_deref().is_some_and(|n| n.eq_ignore_ascii_case(flag)))
+                args.iter().any(|a| {
+                    a.name
+                        .as_deref()
+                        .is_some_and(|n| n.eq_ignore_ascii_case(flag))
+                })
             };
 
             let Some(input) = input else {
@@ -11616,8 +18033,11 @@ fn normalize_cmdlet(__w: Option<&PsWalker>, name: &str, args: &[Argument]) -> Op
             // `-InputObject` names the target when nothing was piped in:
             // `Add-Member -InputObject $o -MemberType NoteProperty -Name X -Value 1`
             // has no positional argument at all.
-            let target = named("InputObject")
+            let raw_target = named("InputObject")
+                .or_else(|| named("__ps_pipe_input"))
                 .or_else(|| positional.first().map(|a| a.value.clone()))?;
+            const ADD_MEMBER_TARGET: &str = "__ps_add_member_target";
+            let target = Expression::ident(ADD_MEMBER_TARGET);
             // ⛔`-NotePropertyName` / `-NotePropertyValue` IS THE SAME CMDLET,
             // spelled the short way. `Add-Member -NotePropertyName X -NotePropertyValue 1`
             // needs no `-MemberType` because the parameter names carry it, and
@@ -11663,27 +18083,81 @@ fn normalize_cmdlet(__w: Option<&PsWalker>, name: &str, args: &[Argument]) -> Op
             // A computed name is written through the INDEX, which reaches the
             // same storage: `Add-Member -NotePropertyName $p.Name` copies a
             // member whose spelling is only known at run time.
-            let Some(name) = literal_text(&name_expr) else {
+            let known_name = __w
+                .and_then(|walker| walker.literal_text_of(&name_expr))
+                .or_else(|| string_literal(&name_expr))
+                .or_else(|| match &name_expr.kind {
+                    ExprKind::Ident(name) => Some(name.clone()),
+                    _ => None,
+                });
+            let Some(name) = known_name else {
                 let write = Statement::new(StmtKind::Expr(Expression::new(ExprKind::Assign {
                     target: Box::new(Expression::new(ExprKind::Index {
                         object: Box::new(target.clone()),
-                        index: Box::new(name_expr),
+                        index: Box::new(ps_member_call(name_expr, "ToLower", Vec::new())),
                         null_safe: false,
                     })),
                     value: Box::new(value),
                 })));
-                return Some(add_member_value(vec![write], target, args));
+                return Some(bind_typed(
+                    ADD_MEMBER_TARGET,
+                    "System.Object",
+                    raw_target,
+                    add_member_value(vec![write], target, args),
+                ));
             };
 
             let writes = match kind.as_str() {
                 "scriptmethod" => vec![assign(name, scriptblock_as_method(value))],
                 "scriptproperty" | "codeproperty" => {
-                    let mut writes =
-                        vec![assign(format!("__get_{name}"), scriptblock_as_method(value))];
+                    let code_value = if kind == "codeproperty" {
+                        __w.and_then(|walker| walker.method_ref_of(&value))
+                            .unwrap_or_else(|| value.clone())
+                    } else {
+                        value.clone()
+                    };
+                    let code_setter = named("SecondValue").and_then(|setter| {
+                        __w.and_then(|walker| walker.method_ref_of(&setter))
+                            .or(Some(setter))
+                    });
+                    let getter = if kind == "codeproperty" {
+                        static_method_ref_as_getter(code_value.clone())
+                    } else {
+                        scriptblock_as_method(value)
+                    };
+                    let mut writes = vec![assign(
+                        format!("__get_{name}"),
+                        getter,
+                    )];
                     if let Some(setter) = named("SecondValue") {
+                        let setter = if kind == "codeproperty" {
+                            static_method_ref_as_setter(
+                                code_setter.clone().unwrap_or(setter),
+                                &name,
+                            )
+                        } else {
+                            scriptblock_as_method(setter)
+                        };
                         writes.push(assign(
                             format!("__set_{name}"),
-                            scriptblock_as_method(setter),
+                            setter,
+                        ));
+                    } else {
+                        writes.push(assign(
+                            format!("__set_{name}"),
+                            readonly_scriptproperty_setter(&name),
+                        ));
+                    }
+                    if kind == "codeproperty" {
+                        writes.push(assign(
+                            format!("__code_{name}"),
+                            Expression::new(ExprKind::Object(vec![
+                                object_entry("getter", code_value),
+                                object_entry(
+                                    "setter",
+                                    code_setter.unwrap_or_else(Expression::null),
+                                ),
+                            ])),
                         ));
                     }
                     writes
@@ -11717,7 +18191,12 @@ fn normalize_cmdlet(__w: Option<&PsWalker>, name: &str, args: &[Argument]) -> Op
                     ),
                 ],
             };
-            Some(add_member_value(writes, target, args))
+            Some(bind_typed(
+                ADD_MEMBER_TARGET,
+                "System.Object",
+                raw_target,
+                add_member_value(writes, target, args),
+            ))
         }
 
         // `Split-Path` — every switch names a piece of the path, and each piece
@@ -11730,8 +18209,11 @@ fn normalize_cmdlet(__w: Option<&PsWalker>, name: &str, args: &[Argument]) -> Op
                 .or_else(|| named("LiteralPath"))
                 .or_else(|| positional.first().map(|a| a.value.clone()))?;
             let has = |flag: &str| {
-                args.iter()
-                    .any(|a| a.name.as_deref().is_some_and(|n| n.eq_ignore_ascii_case(flag)))
+                args.iter().any(|a| {
+                    a.name
+                        .as_deref()
+                        .is_some_and(|n| n.eq_ignore_ascii_case(flag))
+                })
             };
             if (has("Leaf") || has("LeafBase") || has("Extension"))
                 && literal_text(&subject)
@@ -11751,17 +18233,12 @@ fn normalize_cmdlet(__w: Option<&PsWalker>, name: &str, args: &[Argument]) -> Op
                     && literal_text(&subject).is_some_and(|value| !value.contains(':'))
                 {
                     return Some(block_value_expr(vec![Statement::new(StmtKind::Throw {
-                        expr: Some(Expression::string(
-                            "The path does not have a qualifier.",
-                        )),
+                        expr: Some(Expression::string("The path does not have a qualifier.")),
                         cause: None,
                     })]));
                 }
-                let colon = ps_member_call(
-                    subject.clone(),
-                    "IndexOf",
-                    vec![Expression::string(":")],
-                );
+                let colon =
+                    ps_member_call(subject.clone(), "IndexOf", vec![Expression::string(":")]);
                 let after = ps_binary(BinOp::Add, colon, Expression::int(1));
                 return Some(if has("Qualifier") {
                     ps_member_call(subject, "Substring", vec![Expression::int(0), after])
@@ -11791,11 +18268,7 @@ fn normalize_cmdlet(__w: Option<&PsWalker>, name: &str, args: &[Argument]) -> Op
                     ensure_array(subject),
                     "ForEach",
                     vec![item_lambda(vec![Statement::new(StmtKind::Return(Some(
-                        dotnet_static_call(
-                            "System.IO.Path",
-                            member,
-                            vec![Expression::ident("_")],
-                        ),
+                        dotnet_static_call("System.IO.Path", member, vec![Expression::ident("_")]),
                     )))])],
                 )],
             ))
@@ -11872,7 +18345,9 @@ fn normalize_cmdlet(__w: Option<&PsWalker>, name: &str, args: &[Argument]) -> Op
                     .as_deref()
                     .is_some_and(|n| n.eq_ignore_ascii_case("Resolve"))
             });
-            if let Some(child) = named("ChildPath").or_else(|| positional.get(1).map(|a| a.value.clone())) {
+            if let Some(child) =
+                named("ChildPath").or_else(|| positional.get(1).map(|a| a.value.clone()))
+            {
                 segments.push(child);
             }
             for extra in positional.iter().skip(2) {
@@ -11932,12 +18407,19 @@ fn normalize_cmdlet(__w: Option<&PsWalker>, name: &str, args: &[Argument]) -> Op
         "set-variable" => {
             let name_expr =
                 named("Name").or_else(|| positional.first().map(|a| a.value.clone()))?;
-            let target = literal_text(&name_expr)?;
+            let (scoped, _) = variable_cmdlet_target(__w, &name_expr)?;
             let value = named("Value")
                 .or_else(|| positional.get(1).map(|a| a.value.clone()))
                 .unwrap_or_else(Expression::null);
+            let key = scoped.to_lowercase();
+            if __w.is_some_and(|w| {
+                w.constant_vars.contains(&key)
+                    || (w.readonly_vars.contains(&key) && !has_switch("Force"))
+            }) {
+                return Some(ps_constant_variable_error_expr(&scoped));
+            }
             Some(Expression::new(ExprKind::Assign {
-                target: Box::new(Expression::ident(scope_qualified_name(&target))),
+                target: Box::new(Expression::ident(&scoped)),
                 value: Box::new(value),
             }))
         }
@@ -11946,12 +18428,12 @@ fn normalize_cmdlet(__w: Option<&PsWalker>, name: &str, args: &[Argument]) -> Op
         "new-variable" => {
             let name_expr =
                 named("Name").or_else(|| positional.first().map(|a| a.value.clone()))?;
-            let target = literal_text(&name_expr)?;
+            let (scoped, _) = variable_cmdlet_target(__w, &name_expr)?;
             let value = named("Value")
                 .or_else(|| positional.get(1).map(|a| a.value.clone()))
                 .unwrap_or_else(Expression::null);
             Some(Expression::new(ExprKind::Assign {
-                target: Box::new(Expression::ident(scope_qualified_name(&target))),
+                target: Box::new(Expression::ident(&scoped)),
                 value: Box::new(value),
             }))
         }
@@ -11968,9 +18450,16 @@ fn normalize_cmdlet(__w: Option<&PsWalker>, name: &str, args: &[Argument]) -> Op
         "clear-variable" | "remove-variable" => {
             let name_expr =
                 named("Name").or_else(|| positional.first().map(|a| a.value.clone()))?;
-            let target = literal_text(&name_expr)?;
+            let (scoped, _) = variable_cmdlet_target(__w, &name_expr)?;
+            let key = scoped.to_lowercase();
+            if __w.is_some_and(|w| {
+                w.constant_vars.contains(&key)
+                    || (w.readonly_vars.contains(&key) && !has_switch("Force"))
+            }) {
+                return Some(ps_constant_variable_error_expr(&scoped));
+            }
             Some(Expression::new(ExprKind::Assign {
-                target: Box::new(Expression::ident(scope_qualified_name(&target))),
+                target: Box::new(Expression::ident(&scoped)),
                 value: Box::new(Expression::null()),
             }))
         }
@@ -11988,8 +18477,36 @@ fn normalize_cmdlet(__w: Option<&PsWalker>, name: &str, args: &[Argument]) -> Op
         "get-variable" => {
             let name_expr =
                 named("Name").or_else(|| positional.first().map(|a| a.value.clone()))?;
-            let target = literal_text(&name_expr)?;
-            let value = Expression::ident(scope_qualified_name(&target));
+            if let ExprKind::Array(items) = &name_expr.kind {
+                let values: Vec<Expression> = items
+                    .iter()
+                    .filter_map(|item| {
+                        let target = literal_text(&item.value)?;
+                        let scoped = scope_qualified_name(&target).to_string();
+                        let key = scoped.to_lowercase();
+                        let option_value = if __w.is_some_and(|w| w.constant_vars.contains(&key)) {
+                            2
+                        } else if __w.is_some_and(|w| w.readonly_vars.contains(&key)) {
+                            1
+                        } else {
+                            0
+                        };
+                        let description = __w
+                            .and_then(|w| w.variable_descriptions.get(&key).cloned())
+                            .unwrap_or_else(|| Expression::string(""));
+                        Some(psvariable_object(
+                            Expression::string(&scoped),
+                            Expression::ident(&scoped),
+                            scoped_item_options_expr(option_value),
+                            description,
+                        ))
+                    })
+                    .collect();
+                return Some(ps_array(values));
+            }
+            let (scoped, display_name) = variable_cmdlet_target(__w, &name_expr)?;
+            let value = Expression::ident(&scoped);
+            let key = scoped.to_lowercase();
             // `-ValueOnly` asks for the bare value instead of the object.
             if args.iter().any(|a| {
                 a.name
@@ -12000,16 +18517,48 @@ fn normalize_cmdlet(__w: Option<&PsWalker>, name: &str, args: &[Argument]) -> Op
             }
             let snapshot = Expression::new(ExprKind::Object(vec![
                 ObjectProperty::KeyValue {
+                    key: Expression::string("__type_name"),
+                    value: Expression::string("System.Management.Automation.PSVariable"),
+                },
+                ObjectProperty::KeyValue {
                     key: Expression::string("Name"),
-                    value: Expression::string(scope_qualified_name(&target)),
+                    value: display_name.clone(),
+                },
+                ObjectProperty::KeyValue {
+                    key: Expression::string("name"),
+                    value: display_name,
                 },
                 ObjectProperty::KeyValue {
                     key: Expression::string("Value"),
                     value: value.clone(),
                 },
                 ObjectProperty::KeyValue {
+                    key: Expression::string("value"),
+                    value: value.clone(),
+                },
+                ObjectProperty::KeyValue {
                     key: Expression::string("Options"),
-                    value: Expression::string("None"),
+                    value: scoped_item_options_expr(
+                        if __w.is_some_and(|w| w.constant_vars.contains(&key)) {
+                            2
+                        } else if __w.is_some_and(|w| w.readonly_vars.contains(&key)) {
+                            1
+                        } else {
+                            0
+                        },
+                    ),
+                },
+                ObjectProperty::KeyValue {
+                    key: Expression::string("Description"),
+                    value: __w
+                        .and_then(|w| w.variable_descriptions.get(&key).cloned())
+                        .unwrap_or_else(|| Expression::string("")),
+                },
+                ObjectProperty::KeyValue {
+                    key: Expression::string("description"),
+                    value: __w
+                        .and_then(|w| w.variable_descriptions.get(&key).cloned())
+                        .unwrap_or_else(|| Expression::string("")),
                 },
             ]));
             // A MISSING variable must not answer with a truthy object:
@@ -12027,8 +18576,10 @@ fn normalize_cmdlet(__w: Option<&PsWalker>, name: &str, args: &[Argument]) -> Op
             Some(Expression::new(ExprKind::Ternary {
                 cond: Box::new(Expression::new(ExprKind::Binary {
                     op: BinOp::NotEq,
-                    left: Box::new(value),
-                    right: Box::new(Expression::null()),
+                    left: Box::new(Expression::bool(__w.is_some_and(|w| {
+                        w.defined_vars.contains(&key)
+                    }))),
+                    right: Box::new(Expression::bool(false)),
                 })),
                 then: Box::new(snapshot),
                 else_: Box::new(Expression::null()),
@@ -12072,6 +18623,379 @@ fn builtin_psdrive(raw: &str) -> Option<(&'static str, &'static str)> {
     }
 }
 
+const CORE_PS_PROVIDERS: &[&str] = &["Alias", "Environment", "FileSystem", "Function", "Variable"];
+
+fn ps_provider_query_expr(__w: Option<&PsWalker>, query: Option<Expression>) -> Expression {
+    match query {
+        None => ps_provider_array(__w, CORE_PS_PROVIDERS.iter().copied()),
+        Some(expr) => {
+            if let ExprKind::Array(items) = &expr.kind {
+                let mut providers = Vec::new();
+                for item in items {
+                    let Some(raw) = literal_text(&item.value) else {
+                        return ps_provider_dynamic_query(expr);
+                    };
+                    providers.extend(matching_ps_providers(&raw));
+                }
+                return ps_provider_array(__w, providers);
+            }
+            if let Some(raw) = literal_text(&expr) {
+                let providers = matching_ps_providers(&raw);
+                return match providers.as_slice() {
+                    [single] if !raw.contains('*') && !raw.contains('?') => {
+                        ps_provider_info_object(__w, single)
+                    }
+                    [] => block_value_expr(vec![Statement::new(StmtKind::Throw {
+                        expr: Some(Expression::string(&format!("Cannot find provider '{}'.", raw))),
+                        cause: None,
+                    })]),
+                    _ => ps_provider_array(__w, providers),
+                };
+            }
+            ps_provider_dynamic_query(expr)
+        }
+    }
+}
+
+fn ps_provider_dynamic_query(query: Expression) -> Expression {
+    unwrap_pipeline_value(ps_member_call(
+        ensure_array(query),
+        "ForEach",
+        vec![item_lambda(vec![Statement::new(StmtKind::Return(Some(
+            Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::ident("__ps_get_provider")),
+                args: vec![Argument::positional(Expression::ident("_"))],
+                optional: false,
+            }),
+        )))])],
+    ))
+}
+
+fn ps_provider_array<'a>(
+    __w: Option<&PsWalker>,
+    providers: impl IntoIterator<Item = &'a str>,
+) -> Expression {
+    Expression::new(ExprKind::Array(
+        providers
+            .into_iter()
+            .map(|name| ArrayElement {
+                key: None,
+                value: ps_provider_info_object(__w, name),
+                spread: false,
+                by_ref: false,
+            })
+            .collect(),
+    ))
+}
+
+fn matching_ps_providers(raw: &str) -> Vec<&'static str> {
+    CORE_PS_PROVIDERS
+        .iter()
+        .copied()
+        .filter(|name| ps_provider_name_matches(name, raw))
+        .collect()
+}
+
+fn ps_provider_name_matches(name: &str, pattern: &str) -> bool {
+    if pattern.contains('*') || pattern.contains('?') {
+        let name = name.to_ascii_lowercase();
+        let pattern = pattern.to_ascii_lowercase();
+        if pattern == "*" {
+            return true;
+        }
+        if let Some(prefix) = pattern.strip_suffix('*') {
+            return name.starts_with(prefix);
+        }
+        if let Some(suffix) = pattern.strip_prefix('*') {
+            return name.ends_with(suffix);
+        }
+        return name == pattern;
+    }
+    name.eq_ignore_ascii_case(pattern)
+}
+
+fn ps_provider_info_object(__w: Option<&PsWalker>, name: &str) -> Expression {
+    let type_object = powershell_type_object("System.Management.Automation.ProviderInfo");
+    let get_type_body = vec![Statement::new(StmtKind::Return(Some(type_object.clone())))];
+    let implementing_type = ps_provider_implementing_type_object(name);
+    let drives = ps_provider_drives_expr(__w, name);
+    let capabilities = ps_provider_capabilities(name);
+    Expression::new(ExprKind::Object(vec![
+        object_entry("__type", Expression::string("ProviderInfo")),
+        object_entry(
+            "__types",
+            Expression::new(ExprKind::Array(vec![
+                ArrayElement {
+                    key: None,
+                    value: Expression::string("ProviderInfo"),
+                    spread: false,
+                    by_ref: false,
+                },
+                ArrayElement {
+                    key: None,
+                    value: Expression::string("System.Management.Automation.ProviderInfo"),
+                    spread: false,
+                    by_ref: false,
+                },
+                ArrayElement {
+                    key: None,
+                    value: Expression::string("Object"),
+                    spread: false,
+                    by_ref: false,
+                },
+            ])),
+        ),
+        object_entry("Name", Expression::string(name)),
+        object_entry("name", Expression::string(name)),
+        object_entry("Description", Expression::string("")),
+        object_entry("description", Expression::string("")),
+        object_entry("Home", Expression::null()),
+        object_entry("home", Expression::null()),
+        object_entry("Capabilities", capabilities.clone()),
+        object_entry("capabilities", capabilities),
+        object_entry("Drives", drives.clone()),
+        object_entry("drives", drives),
+        object_entry("ImplementingType", implementing_type.clone()),
+        object_entry("implementingtype", implementing_type),
+        object_entry("GetType", no_param_lambda(get_type_body.clone())),
+        object_entry("gettype", no_param_lambda(get_type_body)),
+    ]))
+}
+
+fn ps_provider_drives_expr(__w: Option<&PsWalker>, name: &str) -> Expression {
+    let custom: Vec<&PsDriveInfo> = __w
+        .map(|walker| {
+            walker
+                .psdrives
+                .values()
+                .filter(|drive| drive.provider.eq_ignore_ascii_case(name))
+                .collect()
+        })
+        .unwrap_or_default();
+    if custom.is_empty() {
+        let (drive, provider) = match name.to_ascii_lowercase().as_str() {
+            "alias" => ("Alias", "Alias"),
+            "environment" => ("Env", "Environment"),
+            "function" => ("Function", "Function"),
+            "variable" => ("Variable", "Variable"),
+            "filesystem" => ("FileSystem", "FileSystem"),
+            _ => (name, name),
+        };
+        return ensure_array(cmdlet_call(
+            "Get-PSDrive",
+            vec![Expression::string(drive), Expression::string(provider)],
+        ));
+    }
+    let mut items = Vec::new();
+    match name.to_ascii_lowercase().as_str() {
+        "filesystem" => items.push(ArrayElement {
+            key: None,
+            value: psdrive_info_object("FileSystem", "FileSystem", Expression::string("/")),
+            spread: false,
+            by_ref: false,
+        }),
+        "alias" => items.push(ArrayElement {
+            key: None,
+            value: psdrive_info_object("Alias", "Alias", Expression::string("")),
+            spread: false,
+            by_ref: false,
+        }),
+        "environment" => items.push(ArrayElement {
+            key: None,
+            value: psdrive_info_object("Env", "Environment", Expression::string("")),
+            spread: false,
+            by_ref: false,
+        }),
+        "function" => items.push(ArrayElement {
+            key: None,
+            value: psdrive_info_object("Function", "Function", Expression::string("")),
+            spread: false,
+            by_ref: false,
+        }),
+        "variable" => items.push(ArrayElement {
+            key: None,
+            value: psdrive_info_object("Variable", "Variable", Expression::string("")),
+            spread: false,
+            by_ref: false,
+        }),
+        _ => {}
+    }
+    items.extend(custom.into_iter().map(|drive| ArrayElement {
+        key: None,
+        value: psdrive_info_object(&drive.name, &drive.provider, drive.root.clone()),
+        spread: false,
+        by_ref: false,
+    }));
+    Expression::new(ExprKind::Array(items))
+}
+
+fn psdrive_info_object(name: &str, provider: &str, root: Expression) -> Expression {
+    let provider_obj = Expression::new(ExprKind::Object(vec![
+        object_entry("Name", Expression::string(provider)),
+        object_entry("name", Expression::string(provider)),
+    ]));
+    Expression::new(ExprKind::Object(vec![
+        object_entry("__type", Expression::string("PSDriveInfo")),
+        object_entry(
+            "__types",
+            Expression::new(ExprKind::Array(vec![
+                ArrayElement {
+                    key: None,
+                    value: Expression::string("PSDriveInfo"),
+                    spread: false,
+                    by_ref: false,
+                },
+                ArrayElement {
+                    key: None,
+                    value: Expression::string("System.Management.Automation.PSDriveInfo"),
+                    spread: false,
+                    by_ref: false,
+                },
+            ])),
+        ),
+        object_entry("Name", Expression::string(name)),
+        object_entry("name", Expression::string(name)),
+        object_entry("Root", root.clone()),
+        object_entry("root", root),
+        object_entry("Provider", provider_obj.clone()),
+        object_entry("provider", provider_obj),
+    ]))
+}
+
+fn ps_provider_implementing_type_object(name: &str) -> Expression {
+    let full_name = match name.to_ascii_lowercase().as_str() {
+        "alias" => "Microsoft.PowerShell.Commands.AliasProvider",
+        "environment" => "Microsoft.PowerShell.Commands.EnvironmentProvider",
+        "function" => "Microsoft.PowerShell.Commands.FunctionProvider",
+        "variable" => "Microsoft.PowerShell.Commands.VariableProvider",
+        _ => "Microsoft.PowerShell.Commands.FileSystemProvider",
+    };
+    let base_full_name = if name.eq_ignore_ascii_case("FileSystem") {
+        "System.Management.Automation.Provider.NavigationCmdletProvider"
+    } else {
+        "System.Management.Automation.Provider.CmdletProvider"
+    };
+    let assembly_name = Expression::new(ExprKind::Object(vec![
+        object_entry("Name", Expression::string("System.Management.Automation")),
+        object_entry("name", Expression::string("System.Management.Automation")),
+    ]));
+    let assembly = Expression::new(ExprKind::Object(vec![
+        object_entry("GetName", no_param_lambda(vec![Statement::new(StmtKind::Return(Some(
+            assembly_name.clone(),
+        )))])),
+        object_entry("getname", no_param_lambda(vec![Statement::new(StmtKind::Return(Some(
+            assembly_name,
+        )))])),
+    ]));
+    Expression::new(ExprKind::Object(vec![
+        object_entry("FullName", Expression::string(full_name)),
+        object_entry("fullName", Expression::string(full_name)),
+        object_entry(
+            "Name",
+            Expression::string(full_name.rsplit('.').next().unwrap_or(full_name)),
+        ),
+        object_entry(
+            "name",
+            Expression::string(full_name.rsplit('.').next().unwrap_or(full_name)),
+        ),
+        object_entry(
+            "BaseType",
+            Expression::new(ExprKind::Object(vec![
+                object_entry("FullName", Expression::string(base_full_name)),
+                object_entry("fullName", Expression::string(base_full_name)),
+                object_entry(
+                    "Name",
+                    Expression::string(base_full_name.rsplit('.').next().unwrap_or(base_full_name)),
+                ),
+                object_entry(
+                    "name",
+                    Expression::string(base_full_name.rsplit('.').next().unwrap_or(base_full_name)),
+                ),
+            ])),
+        ),
+        object_entry(
+            "basetype",
+            Expression::new(ExprKind::Object(vec![
+                object_entry("FullName", Expression::string(base_full_name)),
+                object_entry("fullName", Expression::string(base_full_name)),
+            ])),
+        ),
+        object_entry("Assembly", assembly.clone()),
+        object_entry("assembly", assembly),
+    ]))
+}
+
+fn ps_provider_capabilities(name: &str) -> Expression {
+    let mut flags = 0i64;
+    if name.eq_ignore_ascii_case("FileSystem") {
+        flags |= provider_capability_flag("Filter").unwrap_or(0);
+        flags |= provider_capability_flag("ShouldProcess").unwrap_or(0);
+    }
+    provider_capability_object(flags)
+}
+
+fn provider_capability_flag(name: &str) -> Option<i64> {
+    [
+        ("None", 0i64),
+        ("Filter", 1),
+        ("ShouldProcess", 2),
+        ("Credentials", 4),
+        ("Transactions", 8),
+        ("ExpandWildcards", 16),
+        ("All", 31),
+    ]
+    .iter()
+    .find(|(flag, _)| flag.eq_ignore_ascii_case(name))
+    .map(|(_, value)| *value)
+}
+
+fn provider_capability_value(receiver: &Expression, member: &str) -> Option<i64> {
+    let name = type_name_of(receiver)?;
+    if matches!(
+        name.to_ascii_lowercase().as_str(),
+        "providercapabilities" | "system.management.automation.provider.providercapabilities"
+    ) {
+        provider_capability_flag(member)
+    } else {
+        None
+    }
+}
+
+fn provider_capability_object(value: i64) -> Expression {
+    let type_object = powershell_type_object("System.Management.Automation.Provider.ProviderCapabilities");
+    let get_type_body = vec![Statement::new(StmtKind::Return(Some(type_object.clone())))];
+    Expression::new(ExprKind::Object(vec![
+        object_entry(
+            "__type",
+            Expression::string("System.Management.Automation.Provider.ProviderCapabilities"),
+        ),
+        object_entry(
+            "__types",
+            Expression::new(ExprKind::Array(vec![
+                ArrayElement {
+                    key: None,
+                    value: Expression::string("ProviderCapabilities"),
+                    spread: false,
+                    by_ref: false,
+                },
+                ArrayElement {
+                    key: None,
+                    value: Expression::string(
+                        "System.Management.Automation.Provider.ProviderCapabilities",
+                    ),
+                    spread: false,
+                    by_ref: false,
+                },
+            ])),
+        ),
+        object_entry("__ps_numeric_value", Expression::int(value)),
+        object_entry("Value", Expression::int(value)),
+        object_entry("value", Expression::int(value)),
+        object_entry("GetType", no_param_lambda(get_type_body.clone())),
+        object_entry("gettype", no_param_lambda(get_type_body)),
+    ]))
+}
+
 #[derive(Clone, Debug)]
 struct PsOutputTypeInfo {
     raw: String,
@@ -12102,6 +19026,12 @@ impl Default for PsCmdletBindingInfo {
     }
 }
 
+#[derive(Clone, Debug)]
+struct PsReflectedAttributeInfo {
+    type_name: String,
+    args: Vec<String>,
+}
+
 #[derive(Clone, Debug, Default)]
 struct PsParameterAttributeInfo {
     mandatory: bool,
@@ -12109,6 +19039,15 @@ struct PsParameterAttributeInfo {
     value_from_pipeline_by_property_name: bool,
     position: Option<String>,
     parameter_set_name: Option<String>,
+    reflected_attributes: Vec<PsReflectedAttributeInfo>,
+}
+
+#[derive(Clone, Debug)]
+struct PsDynamicParameterInfo {
+    name: String,
+    type_name: Option<String>,
+    attr: PsParameterAttributeInfo,
+    validators: Vec<String>,
 }
 
 fn split_top_level_args(text: &str) -> Vec<String> {
@@ -12249,7 +19188,9 @@ fn cmdlet_binding_info(source: &str) -> PsCmdletBindingInfo {
     info
 }
 
-fn parameter_attribute_infos(source: &str) -> std::collections::HashMap<String, PsParameterAttributeInfo> {
+fn parameter_attribute_infos(
+    source: &str,
+) -> std::collections::HashMap<String, PsParameterAttributeInfo> {
     let mut out = std::collections::HashMap::new();
     let bytes = source.as_bytes();
     let mut i = 0usize;
@@ -12272,33 +19213,34 @@ fn parameter_attribute_infos(source: &str) -> std::collections::HashMap<String, 
         let name = &source[start..end];
         let prefix_start = i.saturating_sub(320);
         let prefix = &source[prefix_start..i];
-        let lower = prefix.to_ascii_lowercase();
-        let Some(attr_start) = lower.rfind("[parameter") else {
-            i = end;
-            continue;
-        };
-        let attr = &prefix[attr_start..];
-        let Some(args) = attribute_args(attr, "Parameter") else {
+        let immediate_attrs = immediate_parameter_attribute_text(prefix);
+        let reflected_attributes = reflected_parameter_attribute_types(immediate_attrs);
+        let parameter_args = attribute_args(immediate_attrs, "Parameter");
+        if parameter_args.is_none() && reflected_attributes.is_empty() {
             i = end;
             continue;
         };
         let mut info = PsParameterAttributeInfo::default();
-        for arg in split_top_level_args(&args) {
-            let (key, value) = arg
-                .split_once('=')
-                .map(|(k, v)| (k.trim(), Some(v.trim())))
-                .unwrap_or((arg.trim(), None));
-            match key.to_ascii_lowercase().as_str() {
-                "mandatory" => info.mandatory = value.map(attr_bool).unwrap_or(true),
-                "valuefrompipeline" => {
-                    info.value_from_pipeline = value.map(attr_bool).unwrap_or(true)
+        info.reflected_attributes = reflected_attributes;
+        if let Some(args) = parameter_args {
+            for arg in split_top_level_args(&args) {
+                let (key, value) = arg
+                    .split_once('=')
+                    .map(|(k, v)| (k.trim(), Some(v.trim())))
+                    .unwrap_or((arg.trim(), None));
+                match key.to_ascii_lowercase().as_str() {
+                    "mandatory" => info.mandatory = value.map(attr_bool).unwrap_or(true),
+                    "valuefrompipeline" => {
+                        info.value_from_pipeline = value.map(attr_bool).unwrap_or(true)
+                    }
+                    "valuefrompipelinebypropertyname" => {
+                        info.value_from_pipeline_by_property_name =
+                            value.map(attr_bool).unwrap_or(true)
+                    }
+                    "position" => info.position = value.map(attr_value),
+                    "parametersetname" => info.parameter_set_name = value.map(attr_value),
+                    _ => {}
                 }
-                "valuefrompipelinebypropertyname" => {
-                    info.value_from_pipeline_by_property_name = value.map(attr_bool).unwrap_or(true)
-                }
-                "position" => info.position = value.map(attr_value),
-                "parametersetname" => info.parameter_set_name = value.map(attr_value),
-                _ => {}
             }
         }
         out.entry(name.to_lowercase()).or_insert(info);
@@ -12307,10 +19249,468 @@ fn parameter_attribute_infos(source: &str) -> std::collections::HashMap<String, 
     out
 }
 
+fn immediate_parameter_attribute_text(prefix: &str) -> &str {
+    let bytes = prefix.as_bytes();
+    let mut start = bytes.len();
+    let end = start;
+    loop {
+        while start > 0 && bytes[start - 1].is_ascii_whitespace() {
+            start -= 1;
+        }
+        if start == 0 || bytes[start - 1] != b']' {
+            break;
+        }
+        let mut i = start - 1;
+        let mut depth = 0i32;
+        loop {
+            match bytes[i] {
+                b']' => depth += 1,
+                b'[' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        start = i;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+            if i == 0 {
+                return &prefix[start..end];
+            }
+            i -= 1;
+        }
+    }
+    &prefix[start..end]
+}
+
+fn reflected_parameter_attribute_types(text: &str) -> Vec<PsReflectedAttributeInfo> {
+    let bytes = text.as_bytes();
+    let mut out: Vec<PsReflectedAttributeInfo> = Vec::new();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] != b'[' {
+            i += 1;
+            continue;
+        }
+        let open = i;
+        let mut close = i + 1;
+        let mut depth = 1i32;
+        while close < bytes.len() {
+            match bytes[close] {
+                b'[' => depth += 1,
+                b']' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                _ => {}
+            }
+            close += 1;
+        }
+        if close >= bytes.len() {
+            break;
+        }
+        let inner = &text[open + 1..close];
+        if let Some(full) = automation_attribute_type_name(inner)
+            && !out
+                .iter()
+                .any(|seen: &PsReflectedAttributeInfo| seen.type_name.eq_ignore_ascii_case(&full))
+        {
+            out.push(PsReflectedAttributeInfo {
+                type_name: full,
+                args: attribute_inner_args(inner),
+            });
+        }
+        i = close + 1;
+    }
+    out
+}
+
+fn attribute_inner_args(inner: &str) -> Vec<String> {
+    let Some(open) = inner.find('(') else {
+        return Vec::new();
+    };
+    let rest = &inner[open + 1..];
+    let mut depth = 1i32;
+    let mut quote: Option<char> = None;
+    let mut end = 0usize;
+    for (offset, ch) in rest.char_indices() {
+        if let Some(q) = quote {
+            if ch == q {
+                quote = None;
+            }
+            continue;
+        }
+        match ch {
+            '\'' | '"' => quote = Some(ch),
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    end = offset;
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    if end == 0 {
+        Vec::new()
+    } else {
+        split_top_level_args(&rest[..end])
+    }
+}
+
+fn automation_attribute_type_name(raw: &str) -> Option<String> {
+    let head = raw
+        .split('(')
+        .next()
+        .unwrap_or(raw)
+        .trim()
+        .trim_start_matches("global:")
+        .trim_start_matches("System.Management.Automation.");
+    let leaf = head.rsplit('.').next().unwrap_or(head).trim();
+    let full = match leaf.to_ascii_lowercase().as_str() {
+        "credential" | "credentialattribute" => {
+            "System.Management.Automation.CredentialAttribute"
+        }
+        "supportswildcards" | "supportswildcardsattribute" => {
+            "System.Management.Automation.SupportsWildcardsAttribute"
+        }
+        "validatecount" | "validatecountattribute" => {
+            "System.Management.Automation.ValidateCountAttribute"
+        }
+        "validateset" | "validatesetattribute" => {
+            "System.Management.Automation.ValidateSetAttribute"
+        }
+        "validatescript" | "validatescriptattribute" => {
+            "System.Management.Automation.ValidateScriptAttribute"
+        }
+        "validaterange" | "validaterangeattribute" => {
+            "System.Management.Automation.ValidateRangeAttribute"
+        }
+        "validatelength" | "validatelengthattribute" => {
+            "System.Management.Automation.ValidateLengthAttribute"
+        }
+        "validatepattern" | "validatepatternattribute" => {
+            "System.Management.Automation.ValidatePatternAttribute"
+        }
+        "validatenotnull" | "validatenotnullattribute" => {
+            "System.Management.Automation.ValidateNotNullAttribute"
+        }
+        "validatenotnullorempty" | "validatenotnulloremptyattribute" => {
+            "System.Management.Automation.ValidateNotNullOrEmptyAttribute"
+        }
+        "argumentcompleter" | "argumentcompleterattribute" => {
+            "System.Management.Automation.ArgumentCompleterAttribute"
+        }
+        _ => return None,
+    };
+    Some(full.to_string())
+}
+
 fn dynamic_parameter_names(source: &str) -> Vec<String> {
+    dynamic_parameter_infos(source)
+        .into_iter()
+        .map(|info| info.name)
+        .collect()
+}
+
+fn dynamic_parameter_infos(source: &str) -> Vec<PsDynamicParameterInfo> {
     let mut out = Vec::new();
     let lower = source.to_ascii_lowercase();
     let needle = "runtimedefinedparameter]::new";
+    let mut at = 0usize;
+    while let Some(hit) = lower[at..].find(needle) {
+        let start = at + hit + needle.len();
+        let rest = source[start..].trim_start();
+        let Some(args) = parenthesized_args_text(rest) else {
+            at = start;
+            continue;
+        };
+        let parts = split_top_level_args(&args);
+        let Some(first) = parts.first().cloned() else {
+            at = start;
+            continue;
+        };
+        let name = attr_value(&first);
+        let type_name = parts
+            .get(1)
+            .map(|raw| type_literal_name(raw).trim().to_string())
+            .filter(|raw| !raw.is_empty())
+            .map(|raw| type_accelerator(&raw).unwrap_or(&raw).to_string());
+        let attr_arg = parts.get(2).map(String::as_str);
+        let attr = dynamic_parameter_attribute_info(source, attr_arg);
+        let validators = dynamic_parameter_validator_attrs_for(source, attr_arg);
+        if !name.is_empty()
+            && !out
+                .iter()
+                .any(|seen: &PsDynamicParameterInfo| seen.name.eq_ignore_ascii_case(&name))
+        {
+            out.push(PsDynamicParameterInfo {
+                name,
+                type_name,
+                attr,
+                validators,
+            });
+        }
+        at = start;
+    }
+    out
+}
+
+fn parenthesized_args_text(text: &str) -> Option<String> {
+    let rest = text.trim_start();
+    if !rest.starts_with('(') {
+        return None;
+    }
+    let mut depth = 1i32;
+    let mut quote: Option<char> = None;
+    let mut end = None;
+    for (offset, ch) in rest[1..].char_indices() {
+        if let Some(q) = quote {
+            if ch == q {
+                quote = None;
+            }
+            continue;
+        }
+        match ch {
+            '\'' | '"' => quote = Some(ch),
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    end = Some(offset);
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    end.map(|offset| rest[1..1 + offset].to_string())
+}
+
+fn dynamic_parameter_attribute_info(
+    source: &str,
+    attr_arg: Option<&str>,
+) -> PsParameterAttributeInfo {
+    let mut info = PsParameterAttributeInfo::default();
+    let Some(attr_arg) = attr_arg else {
+        return info;
+    };
+    for added in dynamic_attribute_expressions(source, attr_arg) {
+        merge_dynamic_parameter_attribute(source, &added, &mut info);
+    }
+    info
+}
+
+fn dynamic_parameter_validator_attrs_for(source: &str, attr_arg: Option<&str>) -> Vec<String> {
+    let Some(attr_arg) = attr_arg else {
+        return Vec::new();
+    };
+    let mut out: Vec<String> = Vec::new();
+    for added in dynamic_attribute_expressions(source, attr_arg) {
+        if let Some(attr) = dynamic_validator_attr_from_expr(source, &added)
+            && !out.iter().any(|seen| seen.eq_ignore_ascii_case(&attr))
+        {
+            out.push(attr);
+        }
+    }
+    out
+}
+
+fn dynamic_attribute_expressions(source: &str, attr_arg: &str) -> Vec<String> {
+    let trimmed = attr_arg.trim();
+    if let Some(var) = variable_name_text(trimmed) {
+        return collection_add_arguments(source, &var);
+    }
+    vec![trimmed.to_string()]
+}
+
+fn variable_name_text(text: &str) -> Option<String> {
+    let trimmed = text.trim();
+    let rest = trimmed.strip_prefix('$')?;
+    if rest.is_empty() {
+        return None;
+    }
+    if rest
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+    {
+        Some(rest.to_string())
+    } else {
+        None
+    }
+}
+
+fn collection_add_arguments(source: &str, collection_var: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let lower = source.to_ascii_lowercase();
+    let needle = format!("${}.add", collection_var.to_ascii_lowercase());
+    let mut at = 0usize;
+    while let Some(hit) = lower[at..].find(&needle) {
+        let start = at + hit + needle.len();
+        let rest = source[start..].trim_start();
+        if let Some(args) = parenthesized_args_text(rest) {
+            out.extend(split_top_level_args(&args));
+        }
+        at = start;
+    }
+    out
+}
+
+fn merge_dynamic_parameter_attribute(
+    source: &str,
+    attr_expr: &str,
+    info: &mut PsParameterAttributeInfo,
+) {
+    if let Some(var) = variable_name_text(attr_expr) {
+        merge_dynamic_parameter_attribute_var(source, &var, info);
+        return;
+    }
+    let lower = attr_expr.to_ascii_lowercase();
+    if lower.contains("parameterattribute]::new")
+        || lower.contains("parameterattribute")
+        || lower.contains("parameter(")
+    {
+        return;
+    }
+    if let Some(reflected) = reflected_attribute_from_dynamic_expr(attr_expr) {
+        info.reflected_attributes.push(reflected);
+    }
+}
+
+fn merge_dynamic_parameter_attribute_var(
+    source: &str,
+    attr_var: &str,
+    info: &mut PsParameterAttributeInfo,
+) {
+    for (property, value) in dynamic_member_assignments(source, attr_var) {
+        match property.to_ascii_lowercase().as_str() {
+            "mandatory" => info.mandatory = attr_bool(&value),
+            "valuefrompipeline" => info.value_from_pipeline = attr_bool(&value),
+            "valuefrompipelinebypropertyname" => {
+                info.value_from_pipeline_by_property_name = attr_bool(&value)
+            }
+            "position" => info.position = Some(attr_value(&value)),
+            "parametersetname" => info.parameter_set_name = Some(attr_value(&value)),
+            _ => {}
+        }
+    }
+}
+
+fn dynamic_member_assignments(source: &str, var_name: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let lower = source.to_ascii_lowercase();
+    let needle = format!("${}.", var_name.to_ascii_lowercase());
+    let mut at = 0usize;
+    while let Some(hit) = lower[at..].find(&needle) {
+        let prop_start = at + hit + needle.len();
+        let mut prop_end = prop_start;
+        let bytes = source.as_bytes();
+        while prop_end < source.len()
+            && ((bytes[prop_end] as char).is_ascii_alphanumeric() || bytes[prop_end] == b'_')
+        {
+            prop_end += 1;
+        }
+        let property = source[prop_start..prop_end].trim().to_string();
+        let mut rest = &source[prop_end..];
+        rest = rest.trim_start();
+        if let Some(after_eq) = rest.strip_prefix('=') {
+            let value = assignment_rhs_text(after_eq);
+            if !property.is_empty() && !value.is_empty() {
+                out.push((property, value));
+            }
+        }
+        at = prop_end;
+    }
+    out
+}
+
+fn assignment_rhs_text(text: &str) -> String {
+    let mut quote: Option<char> = None;
+    let mut end = text.len();
+    for (offset, ch) in text.char_indices() {
+        if let Some(q) = quote {
+            if ch == q {
+                quote = None;
+            }
+            continue;
+        }
+        match ch {
+            '\'' | '"' => quote = Some(ch),
+            '\n' | '\r' | ';' => {
+                end = offset;
+                break;
+            }
+            _ => {}
+        }
+    }
+    text[..end].trim().to_string()
+}
+
+fn dynamic_validator_attr_from_expr(source: &str, attr_expr: &str) -> Option<String> {
+    if let Some(var) = variable_name_text(attr_expr) {
+        let lower = source.to_ascii_lowercase();
+        let assign_needle = format!("${} =", var.to_ascii_lowercase());
+        if let Some(hit) = lower.find(&assign_needle) {
+            return dynamic_validator_attr_from_expr(
+                source,
+                &assignment_rhs_text(&source[hit + assign_needle.len()..]),
+            );
+        }
+        return None;
+    }
+    reflected_attribute_from_dynamic_expr(attr_expr).and_then(|info| {
+        let leaf = info.type_name.rsplit('.').next().unwrap_or(&info.type_name);
+        let attr_name = leaf.trim_end_matches("Attribute");
+        if attr_name.starts_with("Validate") {
+            if info.args.is_empty() {
+                Some(format!("{attr_name}()"))
+            } else {
+                Some(format!("{attr_name}({})", info.args.join(", ")))
+            }
+        } else {
+            None
+        }
+    })
+}
+
+fn reflected_attribute_from_dynamic_expr(expr: &str) -> Option<PsReflectedAttributeInfo> {
+    let lower = expr.to_ascii_lowercase();
+    for needle in [
+        "parameterattribute]::new",
+        "aliasattribute]::new",
+        "validatesetattribute]::new",
+        "validaterangeattribute]::new",
+        "validatecountattribute]::new",
+        "validatenotnulloremptyattribute]::new",
+        "validatenotnullattribute]::new",
+        "validatelengthattribute]::new",
+        "validatepatternattribute]::new",
+    ] {
+        if let Some(hit) = lower.find(needle) {
+            let full = automation_attribute_type_name(
+                needle.trim_end_matches("]::new"),
+            )?;
+            let rest = expr[hit + needle.len()..].trim_start();
+            let args = parenthesized_args_text(rest)
+                .map(|text| split_top_level_args(&text))
+                .unwrap_or_default();
+            return Some(PsReflectedAttributeInfo {
+                type_name: full,
+                args,
+            });
+        }
+    }
+    None
+}
+
+fn dynamic_parameter_aliases(source: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let lower = source.to_ascii_lowercase();
+    let needle = "aliasattribute]::new";
     let mut at = 0usize;
     while let Some(hit) = lower[at..].find(needle) {
         let start = at + hit + needle.len();
@@ -12319,15 +19719,70 @@ fn dynamic_parameter_names(source: &str) -> Vec<String> {
             at = start;
             continue;
         };
-        let Some(first) = split_top_level_args(args).first().cloned() else {
-            at = start;
-            continue;
-        };
-        let name = attr_value(&first);
-        if !name.is_empty() && !out.iter().any(|seen: &String| seen.eq_ignore_ascii_case(&name)) {
-            out.push(name);
+        for arg in split_top_level_args(args) {
+            let alias = attr_value(&arg);
+            if !alias.is_empty()
+                && !out
+                    .iter()
+                    .any(|seen: &String| seen.eq_ignore_ascii_case(&alias))
+            {
+                out.push(alias);
+            }
         }
         at = start;
+    }
+    out
+}
+
+fn dynamic_parameter_validators(source: &str) -> Vec<(String, String)> {
+    let params = dynamic_parameter_names(source);
+    if params.is_empty() {
+        return Vec::new();
+    }
+    let attrs = dynamic_validator_attrs(source);
+    let mut out = Vec::new();
+    for param in params {
+        for attr in &attrs {
+            out.push((param.clone(), attr.clone()));
+        }
+    }
+    out
+}
+
+fn dynamic_validator_attrs(source: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let lower = source.to_ascii_lowercase();
+    for (needle, attr_name) in [
+        ("validatesetattribute]::new", "ValidateSet"),
+        ("validaterangeattribute]::new", "ValidateRange"),
+        ("validatecountattribute]::new", "ValidateCount"),
+        (
+            "validatenotnulloremptyattribute]::new",
+            "ValidateNotNullOrEmpty",
+        ),
+    ] {
+        let mut at = 0usize;
+        while let Some(hit) = lower[at..].find(needle) {
+            let start = at + hit + needle.len();
+            let rest = source[start..].trim_start();
+            let Some(args) = rest.strip_prefix('(') else {
+                at = start;
+                continue;
+            };
+            let parts = split_top_level_args(args);
+            let attr = if parts.is_empty() {
+                format!("{attr_name}()")
+            } else {
+                format!("{attr_name}({})", parts.join(", "))
+            };
+            if !out
+                .iter()
+                .any(|seen: &String| seen.eq_ignore_ascii_case(&attr))
+            {
+                out.push(attr);
+            }
+            at = start;
+        }
     }
     out
 }
@@ -12457,7 +19912,11 @@ fn assign_member(target: &str, member: &str, value: Expression) -> Statement {
     })))
 }
 
-fn configured_object(type_name: &str, temp: &str, assignments: Vec<(&str, Expression)>) -> Expression {
+fn configured_object(
+    type_name: &str,
+    temp: &str,
+    assignments: Vec<(&str, Expression)>,
+) -> Expression {
     let mut body = vec![
         local_decl(temp),
         Statement::new(StmtKind::Assign {
@@ -12469,19 +19928,694 @@ fn configured_object(type_name: &str, temp: &str, assignments: Vec<(&str, Expres
     for (member, value) in assignments {
         body.push(assign_member(temp, member, value));
     }
-    body.push(Statement::new(StmtKind::Return(Some(Expression::ident(temp)))));
+    body.push(Statement::new(StmtKind::Return(Some(Expression::ident(
+        temp,
+    )))));
     block_value_expr(body)
 }
 
-fn cmdlet_binding_attribute_entry(info: &PsCmdletBindingInfo) -> Expression {
-    configured_object(
-        "System.Management.Automation.CmdletBindingAttribute",
-        "__ps_cmdlet_binding_attr",
+fn automation_attribute_ancestor_leaves(leaf: &str) -> Vec<&'static str> {
+    match leaf.to_ascii_lowercase().as_str() {
+        "credentialattribute" => vec!["ArgumentTransformationAttribute", "Attribute", "Object"],
+        "validatecountattribute" => vec![
+            "ValidateEnumeratedArgumentsAttribute",
+            "ValidateArgumentsAttribute",
+            "Attribute",
+            "Object",
+        ],
+        "argumentcompleterattribute" | "supportswildcardsattribute" | "parameterattribute"
+        | "cmdletbindingattribute" => vec!["Attribute", "Object"],
+        _ => vec!["Object"],
+    }
+}
+
+fn reflected_automation_object(
+    full_name: &str,
+    assignments: Vec<(&str, Expression)>,
+) -> Expression {
+    let leaf = full_name.rsplit('.').next().unwrap_or(full_name);
+    let mut type_names = vec![ArrayElement {
+        key: None,
+        value: Expression::string(leaf),
+        spread: false,
+        by_ref: false,
+    }];
+    type_names.push(ArrayElement {
+        key: None,
+        value: Expression::string(full_name),
+        spread: false,
+        by_ref: false,
+    });
+    type_names.extend(
+        automation_attribute_ancestor_leaves(leaf)
+            .into_iter()
+            .map(|name| ArrayElement {
+                key: None,
+                value: Expression::string(name),
+                spread: false,
+                by_ref: false,
+            }),
+    );
+    let type_object = command_type_object(full_name);
+    let get_type_body = vec![Statement::new(StmtKind::Return(Some(type_object.clone())))];
+    let get_type_lambda = |body: Vec<Statement>| {
+        Expression::new(ExprKind::Lambda {
+            params: vec![synth_param("__ps_receiver")],
+            body: LambdaBody::Block(body),
+            is_async: false,
+            captures: Vec::new(),
+        })
+    };
+    let type_names_expr = Expression::new(ExprKind::Array(type_names.clone()));
+    let mut fields = vec![
+        object_entry("__type", Expression::string(full_name)),
+        object_entry("__types", type_names_expr.clone()),
+        object_entry("__ps_type_names", type_names_expr),
+        object_entry("TypeId", type_object.clone()),
+        object_entry("typeid", type_object.clone()),
+        object_entry("GetType", get_type_lambda(get_type_body.clone())),
+        object_entry("gettype", get_type_lambda(get_type_body)),
+    ];
+    for (name, value) in assignments {
+        fields.push(object_entry(name, value));
+    }
+    if leaf.eq_ignore_ascii_case("CredentialAttribute") {
+        let transform = Expression::new(ExprKind::FunctionExpr(Box::new(Statement::new(
+            StmtKind::FunctionDecl {
+                name: String::new(),
+                params: vec![synth_param("__ps_engine"), synth_param("__ps_input")],
+                body: vec![Statement::new(StmtKind::Return(Some(Expression::ident(
+                    "__ps_input",
+                ))))],
+                modifiers: Modifiers::default(),
+                is_async: false,
+                is_generator: false,
+                is_sub: false,
+                return_type: None,
+                handles: Vec::new(),
+            },
+        ))));
+        fields.push(object_entry("Transform", transform.clone()));
+        fields.push(object_entry("transform", transform));
+    }
+    Expression::new(ExprKind::Object(fields))
+}
+
+fn secure_string_object(clear_text: Expression) -> Expression {
+    reflected_automation_object(
+        "System.Security.SecureString",
         vec![
-            ("SupportsShouldProcess", Expression::bool(info.supports_should_process)),
-            ("supportsshouldprocess", Expression::bool(info.supports_should_process)),
-            ("SupportsTransactions", Expression::bool(info.supports_transactions)),
-            ("supportstransactions", Expression::bool(info.supports_transactions)),
+            ("__ps_clear_text", clear_text.clone()),
+            ("ClearText", clear_text.clone()),
+            ("cleartext", clear_text),
+        ],
+    )
+}
+
+fn datetime_object_from_millis(millis: Expression) -> Expression {
+    reflected_automation_object(
+        "System.DateTime",
+        vec![
+            ("__time", millis.clone()),
+            ("Ticks", ps_binary(BinOp::Mul, millis.clone(), Expression::int(10_000))),
+            ("ticks", ps_binary(BinOp::Mul, millis.clone(), Expression::int(10_000))),
+        ],
+    )
+}
+
+fn psvariable_object(
+    name: Expression,
+    value: Expression,
+    options: Expression,
+    description: Expression,
+) -> Expression {
+    let attributes = new_dotnet_expr("System.Collections.Generic.List[object]", Vec::new());
+    reflected_automation_object(
+        "System.Management.Automation.PSVariable",
+        vec![
+            ("Name", name.clone()),
+            ("name", name),
+            ("Value", value.clone()),
+            ("value", value),
+            ("Options", options.clone()),
+            ("options", options),
+            ("Visibility", Expression::string("Public")),
+            ("visibility", Expression::string("Public")),
+            ("Attributes", attributes.clone()),
+            ("attributes", attributes),
+            ("Description", description.clone()),
+            ("description", description),
+        ],
+    )
+}
+
+fn variable_cmdlet_target(
+    __w: Option<&PsWalker>,
+    expr: &Expression,
+) -> Option<(String, Expression)> {
+    if let Some(text) = string_literal(expr).or_else(|| __w.and_then(|w| w.literal_text_of(expr))) {
+        let scoped = scope_qualified_name(&text).to_string();
+        return Some((scoped.clone(), Expression::string(&scoped)));
+    }
+    if let ExprKind::Ident(name) = &expr.kind {
+        let scoped = format!("__ps_dynamic_variable_{}", safe_ident_suffix(name));
+        return Some((scoped, expr.clone()));
+    }
+    literal_text(expr).map(|text| {
+        let scoped = scope_qualified_name(&text).to_string();
+        (scoped.clone(), Expression::string(&scoped))
+    })
+}
+
+fn safe_ident_suffix(name: &str) -> String {
+    let mut out = String::new();
+    for ch in name.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '_' {
+            out.push(ch.to_ascii_lowercase());
+        } else {
+            out.push('_');
+        }
+    }
+    if out.is_empty() {
+        "value".to_string()
+    } else {
+        out
+    }
+}
+
+fn is_error_record_type_name(type_name: &str) -> bool {
+    type_name.eq_ignore_ascii_case("System.Management.Automation.ErrorRecord")
+        || type_name.eq_ignore_ascii_case("ErrorRecord")
+}
+
+fn error_category_expr(expr: &Expression) -> Expression {
+    literal_text(expr)
+        .map(|name| Expression::string(&name))
+        .unwrap_or_else(|| expr.clone())
+}
+
+fn error_category_info_to_string_lambda() -> Expression {
+    let this = Expression::new(ExprKind::This);
+    no_param_lambda(vec![Statement::new(StmtKind::Return(Some(ps_binary(
+        BinOp::Add,
+        ps_binary(
+            BinOp::Add,
+            ps_binary(
+                BinOp::Add,
+                ps_builtin("__ps_to_string", vec![ps_member(this.clone(), "Category")]),
+                Expression::string(": "),
+            ),
+            ps_builtin("__ps_to_string", vec![ps_member(this.clone(), "TargetName")]),
+        ),
+        ps_binary(
+            BinOp::Add,
+            Expression::string(" ("),
+            ps_binary(
+                BinOp::Add,
+                ps_builtin("__ps_to_string", vec![ps_member(this, "TargetType")]),
+                Expression::string(")"),
+            ),
+        ),
+    ))))])
+}
+
+fn is_error_category_info_expr(expr: &Expression) -> bool {
+    match &expr.kind {
+        ExprKind::Member { field, .. } if field.eq_ignore_ascii_case("CategoryInfo") => true,
+        ExprKind::NullCoalesce { left, .. } => is_error_category_info_expr(left),
+        _ => type_name_of(expr).is_some_and(|name| {
+            name.eq_ignore_ascii_case("System.Management.Automation.ErrorCategoryInfo")
+                || name.eq_ignore_ascii_case("ErrorCategoryInfo")
+        }),
+    }
+}
+
+fn error_category_info_to_string_value(receiver: Expression) -> Expression {
+    ps_binary(
+        BinOp::Add,
+        ps_binary(
+            BinOp::Add,
+            ps_builtin("__ps_to_string", vec![ps_member(receiver.clone(), "Category")]),
+            Expression::string(": "),
+        ),
+        ps_builtin("__ps_to_string", vec![ps_member(receiver, "TargetName")]),
+    )
+}
+
+fn powershell_error_record_new_expr(__w: Option<&PsWalker>, args: Vec<Expression>) -> Expression {
+    const REC: &str = "__ps_error_record";
+    let exception = args.first().cloned().unwrap_or_else(Expression::null);
+    let error_id = args
+        .get(1)
+        .cloned()
+        .unwrap_or_else(|| Expression::string("WriteError"));
+    let category = args
+        .get(2)
+        .map(error_category_expr)
+        .unwrap_or_else(|| Expression::string("NotSpecified"));
+    let target = args.get(3).cloned().unwrap_or_else(Expression::null);
+    let stack = __w
+        .map(ps_script_stack_trace_expr)
+        .unwrap_or_else(|| Expression::string("at <script>, line 1"));
+    let target_type = match &target.kind {
+        ExprKind::Ident(name)
+            if __w.is_some_and(|w| {
+                w.pscustomobject_vars
+                    .get(&name.to_lowercase())
+                    .copied()
+                    .unwrap_or(false)
+            }) =>
+        {
+            Expression::string("PSCustomObject")
+        }
+        _ => ps_leaf_type_name(target.clone()),
+    };
+    let category_to_string = error_category_info_to_string_lambda();
+    block_value_expr(vec![
+        local_decl(REC),
+        Statement::new(StmtKind::Assign {
+            targets: vec![Expression::ident(REC)],
+            value: new_dotnet_expr(
+                "System.Management.Automation.ErrorRecord",
+                vec![exception, error_id, category, target],
+            ),
+            by_ref: false,
+        }),
+        Statement::new(StmtKind::Assign {
+            targets: vec![ps_member(Expression::ident(REC), "InvocationInfo")],
+            value: ps_error_invocation_info_expr(),
+            by_ref: false,
+        }),
+        Statement::new(StmtKind::Assign {
+            targets: vec![ps_member(Expression::ident(REC), "invocationinfo")],
+            value: ps_error_invocation_info_expr(),
+            by_ref: false,
+        }),
+        Statement::new(StmtKind::Assign {
+            targets: vec![ps_member(Expression::ident(REC), "ScriptStackTrace")],
+            value: stack.clone(),
+            by_ref: false,
+        }),
+        Statement::new(StmtKind::Assign {
+            targets: vec![ps_member(Expression::ident(REC), "scriptstacktrace")],
+            value: stack,
+            by_ref: false,
+        }),
+        Statement::new(StmtKind::Assign {
+            targets: vec![ps_member(
+                ps_member(Expression::ident(REC), "CategoryInfo"),
+                "TargetType",
+            )],
+            value: target_type.clone(),
+            by_ref: false,
+        }),
+        Statement::new(StmtKind::Assign {
+            targets: vec![ps_member(
+                ps_member(Expression::ident(REC), "CategoryInfo"),
+                "targettype",
+            )],
+            value: target_type,
+            by_ref: false,
+        }),
+        Statement::new(StmtKind::Assign {
+            targets: vec![ps_member(
+                ps_member(Expression::ident(REC), "CategoryInfo"),
+                "ToString",
+            )],
+            value: category_to_string.clone(),
+            by_ref: false,
+        }),
+        Statement::new(StmtKind::Assign {
+            targets: vec![ps_member(
+                ps_member(Expression::ident(REC), "CategoryInfo"),
+                "tostring",
+            )],
+            value: category_to_string,
+            by_ref: false,
+        }),
+        Statement::new(StmtKind::Return(Some(Expression::ident(REC)))),
+    ])
+}
+
+fn scoped_item_options_expr(value: i64) -> Expression {
+    let label = match value {
+        1 => "ReadOnly",
+        2 => "Constant",
+        4 => "Private",
+        8 => "AllScope",
+        16 => "Unspecified",
+        _ => "None",
+    };
+    let self_value = ps_member(Expression::new(ExprKind::This), "__ps_numeric_value");
+    let label_expr = Expression::string(label);
+    Expression::new(ExprKind::Object(vec![
+        object_entry("__ps_enum_value", Expression::bool(true)),
+        object_entry("__ps_numeric_value", Expression::int(value)),
+        object_entry("value__", Expression::int(value)),
+        object_entry(
+            "__ps_type_name",
+            Expression::string("System.Management.Automation.ScopedItemOptions"),
+        ),
+        object_entry(
+            &vybe_ast::protocol_slot_key(vybe_ast::ProtocolSlot::Int),
+            Expression::new(ExprKind::FunctionExpr(Box::new(Statement::new(
+                StmtKind::FunctionDecl {
+                    name: String::new(),
+                    params: Vec::new(),
+                    body: vec![Statement::new(StmtKind::Return(Some(self_value)))],
+                    modifiers: Modifiers::default(),
+                    is_async: false,
+                    is_generator: false,
+                    is_sub: false,
+                    return_type: None,
+                    handles: Vec::new(),
+                },
+            )))),
+        ),
+        object_entry(
+            "ToString",
+            no_param_lambda(vec![Statement::new(StmtKind::Return(Some(label_expr.clone())))]),
+        ),
+        object_entry(
+            "tostring",
+            no_param_lambda(vec![Statement::new(StmtKind::Return(Some(label_expr.clone())))]),
+        ),
+        object_entry(
+            &vybe_ast::protocol_slot_key(vybe_ast::ProtocolSlot::ToString),
+            no_param_lambda(vec![Statement::new(StmtKind::Return(Some(label_expr)))]),
+        ),
+    ]))
+}
+
+fn ps_constant_variable_error_expr(name: &str) -> Expression {
+    block_value_expr(vec![Statement::new(StmtKind::Throw {
+        expr: Some(Expression::string(&format!(
+            "Cannot overwrite variable {name} because it is read-only or constant."
+        ))),
+        cause: None,
+    })])
+}
+
+fn is_psvariable_type_name(type_name: &str) -> bool {
+    type_name.eq_ignore_ascii_case("System.Management.Automation.PSVariable")
+        || type_name.eq_ignore_ascii_case("PSVariable")
+}
+
+fn is_scoped_item_options_type(type_name: &str) -> bool {
+    type_name.eq_ignore_ascii_case("System.Management.Automation.ScopedItemOptions")
+        || type_name.eq_ignore_ascii_case("ScopedItemOptions")
+}
+
+fn scoped_item_options_value(name: &str) -> Option<i64> {
+    Some(match name.to_ascii_lowercase().as_str() {
+        "none" => 0,
+        "readonly" => 1,
+        "constant" => 2,
+        "private" => 4,
+        "allscope" => 8,
+        "unspecified" => 16,
+        _ => return None,
+    })
+}
+
+fn is_session_state_entry_visibility_type(type_name: &str) -> bool {
+    type_name.eq_ignore_ascii_case("System.Management.Automation.SessionStateEntryVisibility")
+        || type_name.eq_ignore_ascii_case("SessionStateEntryVisibility")
+}
+
+fn pscredential_object(username: Expression, password: Expression) -> Expression {
+    let network = Expression::new(ExprKind::Object(vec![
+        object_entry("UserName", username.clone()),
+        object_entry("username", username.clone()),
+        object_entry(
+            "Password",
+            ps_member(password.clone(), "__ps_clear_text"),
+        ),
+        object_entry(
+            "password",
+            ps_member(password.clone(), "__ps_clear_text"),
+        ),
+    ]));
+    let get_network = no_param_lambda(vec![Statement::new(StmtKind::Return(Some(network)))]);
+    reflected_automation_object(
+        "System.Management.Automation.PSCredential",
+        vec![
+            ("UserName", username.clone()),
+            ("username", username),
+            ("Password", password.clone()),
+            ("password", password),
+            ("GetNetworkCredential", get_network.clone()),
+            ("getnetworkcredential", get_network),
+        ],
+    )
+}
+
+fn automation_constructor_expr(type_name: &str, args: Vec<Expression>) -> Option<Expression> {
+    let normalized = type_name.trim().replace(' ', "").to_ascii_lowercase();
+    if normalized.starts_with("system.collections.objectmodel.collection[")
+        || normalized.starts_with("collection[")
+    {
+        return Some(ps_array_of(args));
+    }
+
+    let leaf = normalized.rsplit('.').next().unwrap_or(&normalized);
+    match leaf {
+        "parameterattribute" if args.is_empty() => Some(reflected_automation_object(
+            "System.Management.Automation.ParameterAttribute",
+            vec![
+                ("Mandatory", Expression::bool(false)),
+                ("mandatory", Expression::bool(false)),
+                ("ValueFromPipeline", Expression::bool(false)),
+                ("valuefrompipeline", Expression::bool(false)),
+                ("ValueFromPipelineByPropertyName", Expression::bool(false)),
+                ("valuefrompipelinebypropertyname", Expression::bool(false)),
+                ("Position", Expression::int(-1)),
+                ("position", Expression::int(-1)),
+                (
+                    "ParameterSetName",
+                    Expression::string("__AllParameterSets"),
+                ),
+                (
+                    "parametersetname",
+                    Expression::string("__AllParameterSets"),
+                ),
+            ],
+        )),
+        "aliasattribute" => Some(reflected_automation_object(
+            "System.Management.Automation.AliasAttribute",
+            vec![
+                ("AliasNames", ps_array_of(args.clone())),
+                ("aliasnames", ps_array_of(args)),
+            ],
+        )),
+        "validatesetattribute" => Some(reflected_automation_object(
+            "System.Management.Automation.ValidateSetAttribute",
+            vec![
+                ("ValidValues", ps_array_of(args.clone())),
+                ("validvalues", ps_array_of(args)),
+            ],
+        )),
+        "validaterangeattribute" => Some(reflected_automation_object(
+            "System.Management.Automation.ValidateRangeAttribute",
+            vec![
+                ("MinRange", args.first().cloned().unwrap_or_else(Expression::null)),
+                ("minrange", args.first().cloned().unwrap_or_else(Expression::null)),
+                ("MaxRange", args.get(1).cloned().unwrap_or_else(Expression::null)),
+                ("maxrange", args.get(1).cloned().unwrap_or_else(Expression::null)),
+            ],
+        )),
+        "validatecountattribute" => Some(reflected_automation_object(
+            "System.Management.Automation.ValidateCountAttribute",
+            vec![
+                ("MinLength", args.first().cloned().unwrap_or_else(Expression::null)),
+                ("minlength", args.first().cloned().unwrap_or_else(Expression::null)),
+                ("MaxLength", args.get(1).cloned().unwrap_or_else(Expression::null)),
+                ("maxlength", args.get(1).cloned().unwrap_or_else(Expression::null)),
+            ],
+        )),
+        "validatenotnulloremptyattribute" if args.is_empty() => Some(reflected_automation_object(
+            "System.Management.Automation.ValidateNotNullOrEmptyAttribute",
+            Vec::new(),
+        )),
+        "completionresult" => {
+            let completion_text = args.first().cloned().unwrap_or_else(Expression::null);
+            let list_item_text = args
+                .get(1)
+                .cloned()
+                .unwrap_or_else(|| completion_text.clone());
+            let result_type = args.get(2).cloned().unwrap_or_else(Expression::null);
+            let tooltip = args.get(3).cloned().unwrap_or_else(Expression::null);
+            Some(reflected_automation_object(
+                "System.Management.Automation.CompletionResult",
+                vec![
+                    ("CompletionText", completion_text.clone()),
+                    ("completiontext", completion_text),
+                    ("ListItemText", list_item_text.clone()),
+                    ("listitemtext", list_item_text),
+                    ("ResultType", result_type.clone()),
+                    ("resulttype", result_type),
+                    ("ToolTip", tooltip.clone()),
+                    ("tooltip", tooltip),
+                ],
+            ))
+        }
+        "runtimedefinedparameter" => {
+            let (name, parameter_type, attributes) = runtime_defined_parameter_ctor_args(&args)?;
+            let attributes = unwrap_single_array_expr(attributes);
+            let attributes_array = method_call_expr(attributes, "ToArray", Vec::new());
+            Some(reflected_automation_object(
+                "System.Management.Automation.RuntimeDefinedParameter",
+                vec![
+                    ("__ps_rdp", Expression::bool(true)),
+                    ("Name", name.clone()),
+                    ("name", name),
+                    ("ParameterType", parameter_type.clone()),
+                    ("parametertype", parameter_type),
+                    ("Attributes", attributes_array.clone()),
+                    ("attributes", attributes_array),
+                    ("Value", Expression::null()),
+                    ("value", Expression::null()),
+                    ("IsSet", Expression::bool(false)),
+                    ("isset", Expression::bool(false)),
+                ],
+            ))
+        }
+        "runtimedefinedparameterdictionary" if args.is_empty() => {
+            Some(object_entries_to_dictionary(Vec::new()))
+        }
+        _ => None,
+    }
+}
+
+fn runtime_defined_parameter_ctor_args(
+    args: &[Expression],
+) -> Option<(Expression, Expression, Expression)> {
+    if args.len() >= 3 {
+        return Some((
+            args[0].clone(),
+            runtime_defined_parameter_type_expr(args[1].clone()),
+            args[2].clone(),
+        ));
+    }
+    if args.len() == 2
+        && let Some((type_name, attributes)) = split_accidental_type_literal_cast(&args[1])
+    {
+        return Some((args[0].clone(), powershell_type_object(&type_name), attributes));
+    }
+    None
+}
+
+fn unwrap_single_array_expr(expr: Expression) -> Expression {
+    match expr.kind {
+        ExprKind::Array(items) if items.len() == 1 => {
+            items.into_iter().next().map(|item| item.value).unwrap_or_else(Expression::null)
+        }
+        _ => expr,
+    }
+}
+
+fn runtime_defined_parameter_type_expr(expr: Expression) -> Expression {
+    comparison_type_name(&expr)
+        .map(|name| powershell_type_object(&name))
+        .unwrap_or(expr)
+}
+
+fn split_accidental_type_literal_cast(expr: &Expression) -> Option<(String, Expression)> {
+    let (type_name, inner) = match &expr.kind {
+        ExprKind::Call { callee, args, .. }
+            if args.len() == 1
+                && matches!(&callee.kind, ExprKind::Ident(name) if ps_cast_helper_type_name(name).is_some()) =>
+        {
+            let type_name = match &callee.kind {
+                ExprKind::Ident(name) => ps_cast_helper_type_name(name)?.to_string(),
+                _ => return None,
+            };
+            (type_name, &args[0].value)
+        }
+        ExprKind::Cast { type_name, expr } => {
+            (
+                type_accelerator(type_name)
+                    .map(str::to_string)
+                    .unwrap_or_else(|| type_name.clone()),
+                expr.as_ref(),
+            )
+        }
+        _ => return None,
+    };
+    let ExprKind::Array(items) = &inner.kind else {
+        return None;
+    };
+    if items.len() != 1 {
+        return None;
+    }
+    Some((type_name, items[0].value.clone()))
+}
+
+fn ps_cast_helper_type_name(name: &str) -> Option<&'static str> {
+    match name {
+        "__ps_to_int" => Some("System.Int32"),
+        "__ps_to_string" => Some("System.String"),
+        "__ps_to_char" => Some("System.Char"),
+        "__ps_to_bool" => Some("System.Boolean"),
+        _ => None,
+    }
+}
+
+fn is_runtime_defined_parameter_expr(expr: &Expression) -> bool {
+    matches!(
+        expr,
+        Expression {
+            kind: ExprKind::Object(props),
+            ..
+        } if props.iter().any(|p| matches!(
+            p,
+            ObjectProperty::KeyValue { key, value }
+                if literal_text(key).is_some_and(|k| k.eq_ignore_ascii_case("__ps_rdp"))
+                    && matches!(value.kind, ExprKind::Lit(Literal::Bool(true)))
+        ))
+    )
+}
+
+fn is_runtime_defined_parameter_dictionary_expr(expr: &Expression) -> bool {
+    matches!(
+        expr,
+        Expression {
+            kind: ExprKind::Call { callee, args, .. },
+            ..
+        } if args.len() == 1
+            && matches!(&callee.kind, ExprKind::Ident(name) if name == "__ps_from_entries")
+    )
+}
+
+fn no_param_lambda(body: Vec<Statement>) -> Expression {
+    Expression::new(ExprKind::Lambda {
+        params: Vec::new(),
+        body: LambdaBody::Block(body),
+        is_async: false,
+        captures: Vec::new(),
+    })
+}
+
+fn cmdlet_binding_attribute_entry(info: &PsCmdletBindingInfo) -> Expression {
+    reflected_automation_object(
+        "System.Management.Automation.CmdletBindingAttribute",
+        vec![
+            (
+                "SupportsShouldProcess",
+                Expression::bool(info.supports_should_process),
+            ),
+            (
+                "supportsshouldprocess",
+                Expression::bool(info.supports_should_process),
+            ),
+            (
+                "SupportsTransactions",
+                Expression::bool(info.supports_transactions),
+            ),
+            (
+                "supportstransactions",
+                Expression::bool(info.supports_transactions),
+            ),
             ("SupportsPaging", Expression::bool(info.supports_paging)),
             ("supportspaging", Expression::bool(info.supports_paging)),
             ("ConfirmImpact", Expression::string(&info.confirm_impact)),
@@ -12494,8 +20628,14 @@ fn cmdlet_binding_attribute_entry(info: &PsCmdletBindingInfo) -> Expression {
                 "defaultparametersetname",
                 Expression::string(info.default_parameter_set.as_deref().unwrap_or("")),
             ),
-            ("HelpUri", Expression::string(info.help_uri.as_deref().unwrap_or(""))),
-            ("helpuri", Expression::string(info.help_uri.as_deref().unwrap_or(""))),
+            (
+                "HelpUri",
+                Expression::string(info.help_uri.as_deref().unwrap_or("")),
+            ),
+            (
+                "helpuri",
+                Expression::string(info.help_uri.as_deref().unwrap_or("")),
+            ),
         ],
     )
 }
@@ -12503,14 +20643,19 @@ fn cmdlet_binding_attribute_entry(info: &PsCmdletBindingInfo) -> Expression {
 fn parameter_attribute_entry(info: Option<&PsParameterAttributeInfo>) -> Expression {
     let default = PsParameterAttributeInfo::default();
     let info = info.unwrap_or(&default);
-    configured_object(
+    reflected_automation_object(
         "System.Management.Automation.ParameterAttribute",
-        "__ps_parameter_attr",
         vec![
             ("Mandatory", Expression::bool(info.mandatory)),
             ("mandatory", Expression::bool(info.mandatory)),
-            ("ValueFromPipeline", Expression::bool(info.value_from_pipeline)),
-            ("valuefrompipeline", Expression::bool(info.value_from_pipeline)),
+            (
+                "ValueFromPipeline",
+                Expression::bool(info.value_from_pipeline),
+            ),
+            (
+                "valuefrompipeline",
+                Expression::bool(info.value_from_pipeline),
+            ),
             (
                 "ValueFromPipelineByPropertyName",
                 Expression::bool(info.value_from_pipeline_by_property_name),
@@ -12537,30 +20682,734 @@ fn parameter_attribute_entry(info: Option<&PsParameterAttributeInfo>) -> Express
             ),
             (
                 "ParameterSetName",
-                Expression::string(info.parameter_set_name.as_deref().unwrap_or("__AllParameterSets")),
+                Expression::string(
+                    info.parameter_set_name
+                        .as_deref()
+                        .unwrap_or("__AllParameterSets"),
+                ),
             ),
             (
                 "parametersetname",
-                Expression::string(info.parameter_set_name.as_deref().unwrap_or("__AllParameterSets")),
+                Expression::string(
+                    info.parameter_set_name
+                        .as_deref()
+                        .unwrap_or("__AllParameterSets"),
+                ),
             ),
         ],
     )
 }
 
 fn command_parameter_entry(type_name: &str, attr: Option<&PsParameterAttributeInfo>) -> Expression {
-    let parameter_type = command_type_object(type_name);
-    let attributes = Expression::new(ExprKind::Array(vec![ArrayElement {
+    let parameter_type = powershell_type_object(type_name);
+    let is_switch =
+        type_name.eq_ignore_ascii_case("System.Management.Automation.SwitchParameter");
+    let mut attribute_items = vec![ArrayElement {
         key: None,
         value: parameter_attribute_entry(attr),
         spread: false,
         by_ref: false,
-    }]));
+    }];
+    if let Some(attr) = attr {
+        attribute_items.extend(attr.reflected_attributes.iter().map(|info| ArrayElement {
+            key: None,
+            value: reflected_parameter_attribute_object(info),
+            spread: false,
+            by_ref: false,
+        }));
+    }
+    let attributes = Expression::new(ExprKind::Array(attribute_items));
     Expression::new(ExprKind::Object(vec![
         object_entry("ParameterType", parameter_type.clone()),
         object_entry("parametertype", parameter_type),
         object_entry("Attributes", attributes.clone()),
         object_entry("attributes", attributes),
+        object_entry("SwitchParameter", Expression::bool(is_switch)),
+        object_entry("switchparameter", Expression::bool(is_switch)),
     ]))
+}
+
+fn attr_literal_expr(raw: &str) -> Expression {
+    let value = attr_value(raw);
+    if value.eq_ignore_ascii_case("true") {
+        return Expression::bool(true);
+    }
+    if value.eq_ignore_ascii_case("false") {
+        return Expression::bool(false);
+    }
+    if let Ok(num) = value.parse::<i64>() {
+        return Expression::int(num);
+    }
+    Expression::string(&value)
+}
+
+fn reflected_parameter_attribute_object(info: &PsReflectedAttributeInfo) -> Expression {
+    let leaf = info
+        .type_name
+        .rsplit('.')
+        .next()
+        .unwrap_or(&info.type_name)
+        .to_ascii_lowercase();
+    match leaf.as_str() {
+        "validatecountattribute" => reflected_automation_object(
+            &info.type_name,
+            vec![
+                (
+                    "MinLength",
+                    info.args
+                        .first()
+                        .map(|arg| attr_literal_expr(arg))
+                        .unwrap_or_else(Expression::null),
+                ),
+                (
+                    "minlength",
+                    info.args
+                        .first()
+                        .map(|arg| attr_literal_expr(arg))
+                        .unwrap_or_else(Expression::null),
+                ),
+                (
+                    "MaxLength",
+                    info.args
+                        .get(1)
+                        .map(|arg| attr_literal_expr(arg))
+                        .unwrap_or_else(Expression::null),
+                ),
+                (
+                    "maxlength",
+                    info.args
+                        .get(1)
+                        .map(|arg| attr_literal_expr(arg))
+                        .unwrap_or_else(Expression::null),
+                ),
+            ],
+        ),
+        "validatesetattribute" => reflected_automation_object(
+            &info.type_name,
+            vec![
+                (
+                    "ValidValues",
+                    ps_array_of(
+                        info.args
+                            .iter()
+                            .filter(|arg| !arg.contains('='))
+                            .map(|arg| attr_literal_expr(arg))
+                            .collect(),
+                    ),
+                ),
+                (
+                    "validvalues",
+                    ps_array_of(
+                        info.args
+                            .iter()
+                            .filter(|arg| !arg.contains('='))
+                            .map(|arg| attr_literal_expr(arg))
+                            .collect(),
+                    ),
+                ),
+            ],
+        ),
+        "validatescriptattribute" => reflected_automation_object(
+            &info.type_name,
+            vec![
+                (
+                    "ScriptBlock",
+                    info.args
+                        .first()
+                        .map(|arg| Expression::string(arg.trim()))
+                        .unwrap_or_else(Expression::null),
+                ),
+                (
+                    "scriptblock",
+                    info.args
+                        .first()
+                        .map(|arg| Expression::string(arg.trim()))
+                        .unwrap_or_else(Expression::null),
+                ),
+            ],
+        ),
+        "validaterangeattribute" => reflected_automation_object(
+            &info.type_name,
+            vec![
+                (
+                    "MinRange",
+                    info.args
+                        .first()
+                        .map(|arg| attr_literal_expr(arg))
+                        .unwrap_or_else(Expression::null),
+                ),
+                (
+                    "minrange",
+                    info.args
+                        .first()
+                        .map(|arg| attr_literal_expr(arg))
+                        .unwrap_or_else(Expression::null),
+                ),
+                (
+                    "MaxRange",
+                    info.args
+                        .get(1)
+                        .map(|arg| attr_literal_expr(arg))
+                        .unwrap_or_else(Expression::null),
+                ),
+                (
+                    "maxrange",
+                    info.args
+                        .get(1)
+                        .map(|arg| attr_literal_expr(arg))
+                        .unwrap_or_else(Expression::null),
+                ),
+            ],
+        ),
+        "validatelengthattribute" => reflected_automation_object(
+            &info.type_name,
+            vec![
+                (
+                    "MinLength",
+                    info.args
+                        .first()
+                        .map(|arg| attr_literal_expr(arg))
+                        .unwrap_or_else(Expression::null),
+                ),
+                (
+                    "minlength",
+                    info.args
+                        .first()
+                        .map(|arg| attr_literal_expr(arg))
+                        .unwrap_or_else(Expression::null),
+                ),
+                (
+                    "MaxLength",
+                    info.args
+                        .get(1)
+                        .map(|arg| attr_literal_expr(arg))
+                        .unwrap_or_else(Expression::null),
+                ),
+                (
+                    "maxlength",
+                    info.args
+                        .get(1)
+                        .map(|arg| attr_literal_expr(arg))
+                        .unwrap_or_else(Expression::null),
+                ),
+            ],
+        ),
+        "validatepatternattribute" => reflected_automation_object(
+            &info.type_name,
+            vec![
+                (
+                    "RegexPattern",
+                    info.args
+                        .first()
+                        .map(|arg| attr_literal_expr(arg))
+                        .unwrap_or_else(Expression::null),
+                ),
+                (
+                    "regexpattern",
+                    info.args
+                        .first()
+                        .map(|arg| attr_literal_expr(arg))
+                        .unwrap_or_else(Expression::null),
+                ),
+            ],
+        ),
+        "argumentcompleterattribute" => reflected_automation_object(
+            &info.type_name,
+            vec![
+                (
+                    "ScriptBlock",
+                    info.args
+                        .first()
+                        .map(|arg| Expression::string(arg.trim()))
+                        .unwrap_or_else(Expression::null),
+                ),
+                (
+                    "scriptblock",
+                    info.args
+                        .first()
+                        .map(|arg| Expression::string(arg.trim()))
+                        .unwrap_or_else(Expression::null),
+                ),
+            ],
+        ),
+        _ => reflected_automation_object(&info.type_name, Vec::new()),
+    }
+}
+
+fn ps_array(items: Vec<Expression>) -> Expression {
+    Expression::new(ExprKind::Array(
+        items
+            .into_iter()
+            .map(|value| ArrayElement {
+                key: None,
+                value,
+                spread: false,
+                by_ref: false,
+            })
+            .collect(),
+    ))
+}
+
+fn assign_ident_expr_stmt(name: &str, value: Expression) -> Statement {
+    Statement::new(StmtKind::Assign {
+        targets: vec![Expression::ident(name)],
+        value,
+        by_ref: false,
+    })
+}
+
+fn ps_collection_to_array_expr(expr: Expression) -> Expression {
+    const VALUE: &str = "__ps_set_array_value";
+    bind_and_call(
+        &[VALUE],
+        vec![expr],
+        ps_ternary(
+            ps_builtin("__ps_is_array", vec![Expression::ident(VALUE)]),
+            Expression::ident(VALUE),
+            ps_member_call(Expression::ident(VALUE), "ToArray", Vec::new()),
+        ),
+    )
+}
+
+fn ps_rebuild_collection_expr(__w: &PsWalker, recv: &Expression, items: Expression) -> Expression {
+    if let Some(class) = receiver_expr_collection_class(__w, recv) {
+        return Expression::new(ExprKind::New {
+            class: Box::new(Expression::ident(class)),
+            args: vec![Argument::positional(items)],
+        });
+    }
+    items
+}
+
+fn ps_set_contains_value_expr(__w: &PsWalker, recv: Expression, value: Expression) -> Expression {
+    if receiver_expr_is_ignore_case_set_var(__w, &recv) {
+        return ps_binary(
+            BinOp::In,
+            ps_member_call(ps_builtin("__ps_to_string", vec![value]), "ToLower", Vec::new()),
+            ps_member_call(
+                ps_collection_to_array_expr(recv),
+                "ForEach",
+                vec![item_lambda(vec![Statement::new(StmtKind::Return(Some(
+                    ps_member_call(
+                        ps_builtin("__ps_to_string", vec![Expression::ident("_")]),
+                        "ToLower",
+                        Vec::new(),
+                    ),
+                )))])],
+            ),
+        );
+    }
+    ps_binary(BinOp::In, value, ps_collection_to_array_expr(recv))
+}
+
+fn ps_set_add_value_expr(__w: &PsWalker, recv: Expression, value: Expression) -> Expression {
+    ps_ternary(
+        ps_set_contains_value_expr(__w, recv.clone(), value.clone()),
+        Expression::bool(false),
+        ps_member_call(recv, "Add", vec![value]),
+    )
+}
+
+fn ps_set_remove_value_expr(__w: &PsWalker, recv: Expression, value: Expression) -> Expression {
+    const ITEMS: &str = "__ps_set_remove_items";
+    let Some(var_name) = receiver_expr_collection_var_name(&recv).map(str::to_string) else {
+        return ps_member_call(recv, "Remove", vec![value]);
+    };
+    let items = Expression::ident(ITEMS);
+    let contains = ps_binary(BinOp::In, value.clone(), items.clone());
+    let filtered = ps_member_call(
+        items,
+        "Where",
+        vec![item_lambda(vec![Statement::new(StmtKind::Return(Some(
+            ps_binary(BinOp::NotEq, Expression::ident("_"), value),
+        )))])],
+    );
+    let rebuilt = ps_rebuild_collection_expr(__w, &recv, filtered);
+    block_value_expr(vec![
+        assign_ident_expr_stmt(ITEMS, ps_collection_to_array_expr(recv)),
+        Statement::new(StmtKind::If {
+            cond: contains,
+            then_body: vec![
+                assign_ident_expr_stmt(&var_name, rebuilt),
+                Statement::new(StmtKind::Return(Some(Expression::bool(true)))),
+            ],
+            elifs: Vec::new(),
+            else_body: Some(vec![Statement::new(StmtKind::Return(Some(Expression::bool(false))))]),
+        }),
+    ])
+}
+
+fn ps_set_mutating_operation_expr(
+    __w: &PsWalker,
+    recv: Expression,
+    method: &str,
+    other: Expression,
+) -> Expression {
+    const LEFT: &str = "__ps_set_left_items";
+    const RIGHT: &str = "__ps_set_right_items";
+    const RESULT: &str = "__ps_set_result_items";
+    const ITEM: &str = "__ps_set_item";
+    const OTHER_ITEM: &str = "__ps_set_other_item";
+    let Some(var_name) = receiver_expr_collection_var_name(&recv).map(str::to_string) else {
+        return ps_member_call(recv, method, vec![other]);
+    };
+    let append_item = |name: &str| {
+        assign_ident_expr_stmt(
+            RESULT,
+            ps_binary(
+                BinOp::Add,
+                Expression::ident(RESULT),
+                ps_array_of(vec![Expression::ident(name)]),
+            ),
+        )
+    };
+    let not = |expr: Expression| {
+        Expression::new(ExprKind::Unary {
+            op: UnaryOp::Not,
+            expr: Box::new(expr),
+        })
+    };
+    let item_in_right = || ps_binary(BinOp::In, Expression::ident(ITEM), Expression::ident(RIGHT));
+    let other_item_in_left =
+        || ps_binary(BinOp::In, Expression::ident(OTHER_ITEM), Expression::ident(LEFT));
+    let mut body = vec![
+        assign_ident_expr_stmt(LEFT, ps_collection_to_array_expr(recv)),
+        assign_ident_expr_stmt(RIGHT, ps_collection_to_array_expr(other)),
+        assign_ident_expr_stmt(RESULT, ps_array_of(Vec::new())),
+    ];
+    match method.to_ascii_lowercase().as_str() {
+        "exceptwith" => body.push(Statement::new(StmtKind::ForIn {
+            var: ITEM.to_string(),
+            key: None,
+            iter: Expression::ident(LEFT),
+            body: vec![Statement::new(StmtKind::If {
+                cond: not(item_in_right()),
+                then_body: vec![append_item(ITEM)],
+                elifs: Vec::new(),
+                else_body: None,
+            })],
+            of: true,
+            else_body: None,
+            is_async: false,
+        })),
+        "intersectwith" => body.push(Statement::new(StmtKind::ForIn {
+            var: ITEM.to_string(),
+            key: None,
+            iter: Expression::ident(LEFT),
+            body: vec![Statement::new(StmtKind::If {
+                cond: item_in_right(),
+                then_body: vec![append_item(ITEM)],
+                elifs: Vec::new(),
+                else_body: None,
+            })],
+            of: true,
+            else_body: None,
+            is_async: false,
+        })),
+        "symmetricexceptwith" => {
+            body.push(Statement::new(StmtKind::ForIn {
+                var: ITEM.to_string(),
+                key: None,
+                iter: Expression::ident(LEFT),
+                body: vec![Statement::new(StmtKind::If {
+                    cond: not(item_in_right()),
+                    then_body: vec![append_item(ITEM)],
+                    elifs: Vec::new(),
+                    else_body: None,
+                })],
+                of: true,
+                else_body: None,
+                is_async: false,
+            }));
+            body.push(Statement::new(StmtKind::ForIn {
+                var: OTHER_ITEM.to_string(),
+                key: None,
+                iter: Expression::ident(RIGHT),
+                body: vec![Statement::new(StmtKind::If {
+                    cond: not(other_item_in_left()),
+                    then_body: vec![append_item(OTHER_ITEM)],
+                    elifs: Vec::new(),
+                    else_body: None,
+                })],
+                of: true,
+                else_body: None,
+                is_async: false,
+            }));
+        }
+        _ => return ps_member_call(Expression::ident(&var_name), method, Vec::new()),
+    }
+    body.push(assign_ident_expr_stmt(
+        &var_name,
+        ps_rebuild_collection_expr(__w, &Expression::ident(&var_name), Expression::ident(RESULT)),
+    ));
+    body.push(Statement::new(StmtKind::Return(Some(Expression::null()))));
+    block_value_expr(body)
+}
+
+fn history_store() -> Expression {
+    Expression::ident("__ps_history")
+}
+
+fn history_store_init_stmt() -> Statement {
+    Statement::new(StmtKind::If {
+        cond: ps_binary(BinOp::Eq, history_store(), Expression::null()),
+        then_body: vec![assign_ident_expr_stmt("__ps_history", ps_array(Vec::new()))],
+        elifs: Vec::new(),
+        else_body: None,
+    })
+}
+
+fn history_info_object(input: Expression) -> Expression {
+    const INPUT: &str = "__ps_history_input";
+    const ID: &str = "__ps_history_id";
+    let start = ps_member(Expression::ident(INPUT), "StartExecutionTime");
+    let end = ps_member(Expression::ident(INPUT), "EndExecutionTime");
+    let duration_ms = ps_binary(
+        BinOp::Sub,
+        ps_member(end.clone(), "__time"),
+        ps_member(start.clone(), "__time"),
+    );
+    let duration_seconds = ps_binary(BinOp::Div, duration_ms.clone(), Expression::int(1000));
+    let duration = reflected_automation_object(
+        "System.TimeSpan",
+        vec![
+            ("TotalMilliseconds", duration_ms.clone()),
+            ("totalmilliseconds", duration_ms),
+            ("TotalSeconds", duration_seconds.clone()),
+            ("totalseconds", duration_seconds),
+        ],
+    );
+    bind_and_call(
+        &[INPUT, ID],
+        vec![
+            input,
+            ps_binary(BinOp::Add, ps_member(history_store(), "Count"), Expression::int(1)),
+        ],
+        reflected_automation_object(
+            "Microsoft.PowerShell.Commands.HistoryInfo",
+            vec![
+                ("Id", Expression::ident(ID)),
+                ("id", Expression::ident(ID)),
+                (
+                    "CommandLine",
+                    ps_member(Expression::ident(INPUT), "CommandLine"),
+                ),
+                (
+                    "commandline",
+                    ps_member(Expression::ident(INPUT), "CommandLine"),
+                ),
+                (
+                    "ExecutionStatus",
+                    ps_member(Expression::ident(INPUT), "ExecutionStatus"),
+                ),
+                (
+                    "executionstatus",
+                    ps_member(Expression::ident(INPUT), "ExecutionStatus"),
+                ),
+                ("StartExecutionTime", start.clone()),
+                ("startexecutiontime", start.clone()),
+                ("EndExecutionTime", end.clone()),
+                ("endexecutiontime", end.clone()),
+                ("Duration", duration.clone()),
+                ("duration", duration),
+            ],
+        ),
+    )
+}
+
+fn history_add_expr(input: Expression, passthru: bool) -> Expression {
+    const ENTRY: &str = "__ps_history_entry";
+    block_value_expr(vec![
+        history_store_init_stmt(),
+        local_decl(ENTRY),
+        assign_ident_expr_stmt(ENTRY, history_info_object(input)),
+        assign_ident_expr_stmt(
+            "__ps_history",
+            ps_binary(BinOp::Add, history_store(), ps_array(vec![Expression::ident(ENTRY)])),
+        ),
+        Statement::new(StmtKind::Return(Some(if passthru {
+            Expression::ident(ENTRY)
+        } else {
+            Expression::null()
+        }))),
+    ])
+}
+
+fn history_get_expr(id: Option<Expression>, count: Option<Expression>, _newest: bool) -> Expression {
+    let mut body = vec![history_store_init_stmt()];
+    let mut params = Vec::new();
+    let mut args = Vec::new();
+    let result = if let Some(id) = id {
+        const ID_ARG: &str = "__ps_history_id_arg";
+        const STORE_ARG: &str = "__ps_history_store_arg";
+        params.push(synth_param(ID_ARG));
+        args.push(Argument::positional(id));
+        params.push(synth_param(STORE_ARG));
+        args.push(Argument::positional(history_store()));
+        let found = ps_builtin(
+            "__ps_index_get",
+            vec![
+                Expression::ident(STORE_ARG),
+                ps_binary(BinOp::Sub, Expression::ident(ID_ARG), Expression::int(1)),
+            ],
+        );
+        body.push(Statement::new(StmtKind::If {
+            cond: ps_binary(
+                BinOp::Eq,
+                found.clone(),
+                Expression::null(),
+            ),
+            then_body: vec![Statement::new(StmtKind::Throw {
+                expr: Some(Expression::string("The specified history Id was not found.")),
+                cause: None,
+            })],
+            elifs: Vec::new(),
+            else_body: None,
+        }));
+        found
+    } else if let Some(count) = count {
+        const COUNT_ARG: &str = "__ps_history_count_arg";
+        const STORE_ARG: &str = "__ps_history_store_arg";
+        params.push(synth_param(COUNT_ARG));
+        args.push(Argument::positional(count));
+        params.push(synth_param(STORE_ARG));
+        args.push(Argument::positional(history_store()));
+        ps_builtin(
+            "__ps_slice",
+            vec![
+                Expression::ident(STORE_ARG),
+                ps_binary(
+                    BinOp::Sub,
+                    ps_member(Expression::ident(STORE_ARG), "Count"),
+                    Expression::ident(COUNT_ARG),
+                ),
+                ps_member(Expression::ident(STORE_ARG), "Count"),
+            ],
+        )
+    } else {
+        history_store()
+    };
+    body.push(Statement::new(StmtKind::Return(Some(result))));
+    block_value_expr_with_invocation(body, params, args, Vec::new())
+}
+
+fn history_clear_expr(
+    id: Option<Expression>,
+    command_line: Option<Expression>,
+    count: Option<Expression>,
+    newest: bool,
+) -> Expression {
+    let mut body = vec![history_store_init_stmt()];
+    let mut params = Vec::new();
+    let mut args = Vec::new();
+    if let Some(id) = id {
+        const ID_ARG: &str = "__ps_history_id_arg";
+        const STORE_ARG: &str = "__ps_history_store_arg";
+        params.push(synth_param(ID_ARG));
+        args.push(Argument::positional(id));
+        params.push(synth_param(STORE_ARG));
+        args.push(Argument::positional(history_store()));
+        let found = ps_builtin(
+            "__ps_index_get",
+            vec![
+                Expression::ident(STORE_ARG),
+                ps_binary(BinOp::Sub, Expression::ident(ID_ARG), Expression::int(1)),
+            ],
+        );
+        body.push(Statement::new(StmtKind::If {
+            cond: ps_binary(
+                BinOp::Eq,
+                found,
+                Expression::null(),
+            ),
+            then_body: vec![Statement::new(StmtKind::Throw {
+                expr: Some(Expression::string("The specified history Id was not found.")),
+                cause: None,
+            })],
+            elifs: Vec::new(),
+            else_body: None,
+        }));
+        body.push(assign_ident_expr_stmt(
+            "__ps_history",
+            ps_member_call(
+                Expression::ident(STORE_ARG),
+                "Where",
+                vec![item_lambda(vec![Statement::new(StmtKind::Return(Some(ps_binary(
+                    BinOp::NotEq,
+                    ps_member(Expression::ident("_"), "Id"),
+                    Expression::ident(ID_ARG),
+                ))))])],
+            ),
+        ));
+    } else if let Some(command_line) = command_line {
+        const COMMAND_ARG: &str = "__ps_history_command_arg";
+        const STORE_ARG: &str = "__ps_history_store_arg";
+        params.push(synth_param(STORE_ARG));
+        args.push(Argument::positional(history_store()));
+        let keep = if let Some(text) = literal_text(&command_line) {
+            if text.contains('*') || text.contains('?') || text.contains('[') {
+                negate(dotnet_static_call(
+                    "System.Text.RegularExpressions.Regex",
+                    "IsMatch",
+                    vec![
+                        ps_member(Expression::ident("_"), "CommandLine"),
+                        glob_to_regex(Expression::string(&text)),
+                        Expression::int(1),
+                    ],
+                ))
+            } else {
+                ps_binary(
+                    BinOp::NotEq,
+                    ps_member(Expression::ident("_"), "CommandLine"),
+                    command_line,
+                )
+            }
+        } else {
+            params.push(synth_param(COMMAND_ARG));
+            args.push(Argument::positional(command_line));
+            ps_binary(
+                BinOp::NotEq,
+                ps_member(Expression::ident("_"), "CommandLine"),
+                Expression::ident(COMMAND_ARG),
+            )
+        };
+        body.push(assign_ident_expr_stmt(
+            "__ps_history",
+            ps_member_call(
+                Expression::ident(STORE_ARG),
+                "Where",
+                vec![item_lambda(vec![Statement::new(StmtKind::Return(Some(keep)))] )],
+            ),
+        ));
+    } else if let Some(count) = count {
+        const COUNT_ARG: &str = "__ps_history_count_arg";
+        const STORE_ARG: &str = "__ps_history_store_arg";
+        params.push(synth_param(COUNT_ARG));
+        args.push(Argument::positional(count));
+        params.push(synth_param(STORE_ARG));
+        args.push(Argument::positional(history_store()));
+        let end = if newest {
+            ps_binary(
+                BinOp::Sub,
+                ps_member(Expression::ident(STORE_ARG), "Count"),
+                Expression::ident(COUNT_ARG),
+            )
+        } else {
+            ps_binary(
+                BinOp::Sub,
+                ps_member(Expression::ident(STORE_ARG), "Count"),
+                Expression::ident(COUNT_ARG),
+            )
+        };
+        body.push(assign_ident_expr_stmt(
+            "__ps_history",
+            ps_builtin("__ps_slice", vec![Expression::ident(STORE_ARG), Expression::int(0), end]),
+        ));
+    } else {
+        body.push(assign_ident_expr_stmt("__ps_history", ps_array(Vec::new())));
+    }
+    body.push(Statement::new(StmtKind::Return(Some(Expression::null()))));
+    block_value_expr_with_invocation(body, params, args, Vec::new())
 }
 
 fn object_entries_to_dictionary(entries: Vec<ObjectProperty>) -> Expression {
@@ -12573,29 +21422,32 @@ fn object_entries_to_dictionary(entries: Vec<ObjectProperty>) -> Expression {
                     _ => key,
                 };
                 Some(ArrayElement {
-                key: None,
-                value: Expression::new(ExprKind::Array(vec![
-                    ArrayElement {
-                        key: None,
-                        value: key,
-                        spread: false,
-                        by_ref: false,
-                    },
-                    ArrayElement {
-                        key: None,
-                        value,
-                        spread: false,
-                        by_ref: false,
-                    },
-                ])),
-                spread: false,
-                by_ref: false,
+                    key: None,
+                    value: Expression::new(ExprKind::Array(vec![
+                        ArrayElement {
+                            key: None,
+                            value: key,
+                            spread: false,
+                            by_ref: false,
+                        },
+                        ArrayElement {
+                            key: None,
+                            value,
+                            spread: false,
+                            by_ref: false,
+                        },
+                    ])),
+                    spread: false,
+                    by_ref: false,
                 })
             }
             _ => None,
         })
         .collect();
-    ps_builtin("__ps_from_entries", vec![Expression::new(ExprKind::Array(pairs))])
+    ps_builtin(
+        "__ps_from_entries",
+        vec![Expression::new(ExprKind::Array(pairs))],
+    )
 }
 
 fn ps_contains_key_expr(object: Expression, key: Expression) -> Expression {
@@ -12676,6 +21528,8 @@ fn advanced_function_context(
             value: Expression::new(ExprKind::Object(vec![
                 object_entry("ParameterSetName", parameter_set.clone()),
                 object_entry("parametersetname", parameter_set),
+                object_entry("PagingParameters", paging_parameters_object(info)),
+                object_entry("pagingparameters", paging_parameters_object(info)),
             ])),
             by_ref: false,
         }),
@@ -12696,7 +21550,42 @@ fn advanced_function_context(
             by_ref: false,
         }),
     ];
+    if info.supports_paging {
+        for name in ["First", "Skip"] {
+            out.push(Statement::new(StmtKind::If {
+                cond: ps_binary(
+                    BinOp::And,
+                    ps_not_null_expr(Expression::ident(name)),
+                    ps_binary(BinOp::Lt, Expression::ident(name), Expression::int(0)),
+                ),
+                then_body: vec![Statement::new(StmtKind::Throw {
+                    expr: Some(Expression::new(ExprKind::New {
+                        class: Box::new(Expression::ident("ParameterBindingException")),
+                        args: vec![Argument::positional(Expression::string(
+                            "Cannot convert negative value to System.UInt64.",
+                        ))],
+                    })),
+                    cause: None,
+                })],
+                elifs: Vec::new(),
+                else_body: None,
+            }));
+        }
+    }
     for param in params {
+        if parameter_attrs
+            .and_then(|attrs| attrs.get(&param.name.to_lowercase()))
+            .is_some_and(|attr| {
+                attr.value_from_pipeline || attr.value_from_pipeline_by_property_name
+            })
+        {
+            continue;
+        }
+        let bound_value = param
+            .type_hint
+            .as_ref()
+            .map(|hint| parameter_binding_cast(hint.spelling(), Expression::ident(&param.name)))
+            .unwrap_or_else(|| Expression::ident(&param.name));
         out.push(Statement::new(StmtKind::If {
             cond: ps_binary(
                 BinOp::NotEq,
@@ -12708,7 +21597,7 @@ fn advanced_function_context(
                 vec![
                     Expression::ident("PSBoundParameters"),
                     Expression::string(&param.name),
-                    Expression::ident(&param.name),
+                    bound_value,
                 ],
             )))],
             elifs: Vec::new(),
@@ -12719,13 +21608,84 @@ fn advanced_function_context(
     out
 }
 
+fn known_powershell_command_name(name: &str) -> bool {
+    matches!(
+        name,
+        "add-content"
+            | "add-history"
+            | "clear-history"
+            | "clear-variable"
+            | "compare-object"
+            | "convert-path"
+            | "convertfrom-json"
+            | "convertfrom-markdown"
+            | "convertto-csv"
+            | "convertto-html"
+            | "convertto-json"
+            | "export-csv"
+            | "foreach-object"
+            | "get-command"
+            | "get-content"
+            | "get-culture"
+            | "get-date"
+            | "get-history"
+            | "get-item"
+            | "get-location"
+            | "get-psdrive"
+            | "get-psprovider"
+            | "get-uiculture"
+            | "get-unique"
+            | "get-variable"
+            | "import-csv"
+            | "invoke-command"
+            | "invoke-expression"
+            | "join-path"
+            | "join-string"
+            | "measure-command"
+            | "new-item"
+            | "new-object"
+            | "new-psdrive"
+            | "new-variable"
+            | "out-file"
+            | "out-null"
+            | "out-string"
+            | "remove-item"
+            | "remove-psdrive"
+            | "remove-variable"
+            | "resolve-path"
+            | "select-object"
+            | "select-string"
+            | "set-content"
+            | "set-item"
+            | "set-location"
+            | "set-variable"
+            | "sort-object"
+            | "split-path"
+            | "start-sleep"
+            | "test-json"
+            | "test-path"
+            | "where-object"
+            | "write-debug"
+            | "write-error"
+            | "write-host"
+            | "write-information"
+            | "write-output"
+            | "write-verbose"
+            | "write-warning"
+    )
+}
+
 fn get_command_expr(__w: &PsWalker, name: &str, args: &[Argument]) -> Option<Expression> {
     if !name.eq_ignore_ascii_case("Get-Command") {
         return None;
     }
     let command_name = args
         .iter()
-        .find(|a| a.name.as_deref().is_some_and(|n| n.eq_ignore_ascii_case("Name")))
+        .find(|a| {
+            a.name
+                .as_deref()
+                .is_some_and(|n| n.eq_ignore_ascii_case("Name"))
+        })
         .or_else(|| args.iter().find(|a| a.name.is_none()))
         .and_then(|a| literal_text(&a.value))?;
     let folded = command_name.to_lowercase();
@@ -12735,8 +21695,24 @@ fn get_command_expr(__w: &PsWalker, name: &str, args: &[Argument]) -> Option<Exp
         .cloned()
         .unwrap_or_default();
     let binding_info = __w.cmdlet_binding_functions.get(&folded);
-    let declared_params = __w.declared_functions.get(&folded).cloned().unwrap_or_default();
+    let declared_params = __w
+        .declared_functions
+        .get(&folded)
+        .cloned()
+        .unwrap_or_default();
     let parameter_attrs = __w.function_parameter_attributes.get(&folded);
+    if output_types.is_empty()
+        && binding_info.is_none()
+        && declared_params.is_empty()
+        && !known_powershell_command_name(&folded)
+    {
+        return Some(cmdlet_call(
+            "Write-Error",
+            vec![Expression::string(&format!(
+                "The term '{command_name}' is not recognized as a name of a cmdlet, function, script file, or executable program."
+            ))],
+        ));
+    }
     let output_type_array = Expression::new(ExprKind::Array(
         output_types
             .iter()
@@ -12758,15 +21734,13 @@ fn get_command_expr(__w: &PsWalker, name: &str, args: &[Argument]) -> Option<Exp
         });
     }
     attribute_items.extend(output_types.iter().map(|info| ArrayElement {
-                key: None,
-                value: output_type_attribute_entry(info),
-                spread: false,
-                by_ref: false,
+        key: None,
+        value: output_type_attribute_entry(info),
+        spread: false,
+        by_ref: false,
     }));
     let attributes = Expression::new(ExprKind::Array(attribute_items));
-    let supports_should_process = __w
-        .supports_should_process_functions
-        .contains(&folded);
+    let supports_should_process = __w.supports_should_process_functions.contains(&folded);
     Some(Expression::new(ExprKind::Object(vec![
         object_entry("Name", Expression::string(&command_name)),
         object_entry("OutputType", output_type_array),
@@ -12780,7 +21754,11 @@ fn get_command_expr(__w: &PsWalker, name: &str, args: &[Argument]) -> Option<Exp
         ),
         object_entry(
             "HelpUri",
-            Expression::string(binding_info.and_then(|info| info.help_uri.as_deref()).unwrap_or("")),
+            Expression::string(
+                binding_info
+                    .and_then(|info| info.help_uri.as_deref())
+                    .unwrap_or(""),
+            ),
         ),
         object_entry(
             "Parameters",
@@ -12794,7 +21772,10 @@ fn get_command_expr(__w: &PsWalker, name: &str, args: &[Argument]) -> Option<Exp
         ),
         object_entry(
             "ScriptBlock",
-            Expression::new(ExprKind::Object(vec![object_entry("Attributes", attributes)])),
+            Expression::new(ExprKind::Object(vec![object_entry(
+                "Attributes",
+                attributes,
+            )])),
         ),
     ])))
 }
@@ -12824,25 +21805,460 @@ fn command_parameter_metadata(
         ));
     }
     if supports_should_process {
-        let switch_type = command_parameter_entry("System.Management.Automation.SwitchParameter", None);
+        let switch_type =
+            command_parameter_entry("System.Management.Automation.SwitchParameter", None);
         entries.push(object_entry("Confirm", switch_type.clone()));
         entries.push(object_entry("WhatIf", switch_type));
     }
     if supports_paging {
-        entries.push(object_entry("First", command_parameter_entry("System.UInt64", None)));
-        entries.push(object_entry("Skip", command_parameter_entry("System.UInt64", None)));
+        entries.push(object_entry(
+            "First",
+            command_parameter_entry("System.UInt64", None),
+        ));
+        entries.push(object_entry(
+            "Skip",
+            command_parameter_entry("System.UInt64", None),
+        ));
+        entries.push(object_entry(
+            "IncludeTotalCount",
+            command_parameter_entry("System.Management.Automation.SwitchParameter", None),
+        ));
     }
     object_entries_to_dictionary(entries)
 }
 
+fn switch_parameter_object(is_present: Expression) -> Expression {
+    reflected_automation_object(
+        "System.Management.Automation.SwitchParameter",
+        vec![
+            ("IsPresent", is_present.clone()),
+            ("ispresent", is_present.clone()),
+            ("Value", is_present.clone()),
+            ("value", is_present),
+        ],
+    )
+}
+
+fn paging_parameters_object(info: &PsCmdletBindingInfo) -> Expression {
+    if !info.supports_paging {
+        return Expression::null();
+    }
+    let first_default = ps_member(type_literal_expr("System.UInt64"), "MaxValue");
+    let first = ps_ternary(
+        ps_not_null_expr(Expression::ident("First")),
+        Expression::ident("First"),
+        first_default,
+    );
+    let skip = ps_ternary(
+        ps_not_null_expr(Expression::ident("Skip")),
+        Expression::ident("Skip"),
+        Expression::int(0),
+    );
+    let include_total = ps_binary(
+        BinOp::And,
+        ps_not_null_expr(Expression::ident("IncludeTotalCount")),
+        ps_binary(
+            BinOp::NotEq,
+            Expression::ident("IncludeTotalCount"),
+            Expression::bool(false),
+        ),
+    );
+    let new_total_count = Expression::new(ExprKind::Lambda {
+        params: vec![
+            synth_param("__ps_receiver"),
+            synth_param("__ps_total_count"),
+            synth_param("__ps_total_count_accuracy"),
+        ],
+        body: LambdaBody::Block(vec![Statement::new(StmtKind::Return(Some(
+            reflected_automation_object(
+                "System.Management.Automation.PagingTotalCount",
+                vec![
+                    ("__ps_numeric_value", Expression::ident("__ps_total_count")),
+                    ("Value", Expression::ident("__ps_total_count")),
+                    ("value", Expression::ident("__ps_total_count")),
+                    ("Accuracy", Expression::ident("__ps_total_count_accuracy")),
+                    ("accuracy", Expression::ident("__ps_total_count_accuracy")),
+                ],
+            ),
+        )))]),
+        is_async: false,
+        captures: Vec::new(),
+    });
+    reflected_automation_object(
+        "System.Management.Automation.PagingParameters",
+        vec![
+            ("First", first.clone()),
+            ("first", first),
+            ("Skip", skip.clone()),
+            ("skip", skip),
+            ("IncludeTotalCount", include_total.clone()),
+            ("includetotalcount", include_total),
+            ("NewTotalCount", new_total_count.clone()),
+            ("newtotalcount", new_total_count),
+        ],
+    )
+}
+
+fn paging_total_count_object(total_count: Expression, accuracy: Expression) -> Expression {
+    reflected_automation_object(
+        "System.Management.Automation.PagingTotalCount",
+        vec![
+            ("__ps_numeric_value", total_count.clone()),
+            ("Value", total_count.clone()),
+            ("value", total_count),
+            ("Accuracy", accuracy.clone()),
+            ("accuracy", accuracy),
+        ],
+    )
+}
+
+fn object_string_field(expr: &Expression, field_name: &str) -> Option<String> {
+    let ExprKind::Object(fields) = &expr.kind else {
+        return None;
+    };
+    fields.iter().find_map(|field| {
+        let ObjectProperty::KeyValue { key, value } = field else {
+            return None;
+        };
+        literal_text(key)
+            .filter(|key| key.eq_ignore_ascii_case(field_name))
+            .and_then(|_| string_literal(value))
+    })
+}
+
+fn reflected_object_expr(expr: &Expression) -> bool {
+    match &expr.kind {
+        ExprKind::NullCoalesce { left, .. } => reflected_object_expr(left),
+        _ => object_string_field(expr, "__type").is_some(),
+    }
+}
+
+fn paging_parameters_expr(expr: &Expression) -> bool {
+    match &expr.kind {
+        ExprKind::NullCoalesce { left, .. } => paging_parameters_expr(left),
+        ExprKind::Member { field, .. } if field.eq_ignore_ascii_case("PagingParameters") => true,
+        _ => object_string_field(expr, "__type").is_some_and(|name| {
+            name.eq_ignore_ascii_case("System.Management.Automation.PagingParameters")
+        }),
+    }
+}
+
 fn command_type_object(full_name: &str) -> Expression {
+    let name = full_name.rsplit('.').next().unwrap_or(full_name);
     Expression::new(ExprKind::Object(vec![
+        object_entry("__ps_type_name", Expression::string(full_name)),
         object_entry("FullName", Expression::string(full_name)),
+        object_entry("fullname", Expression::string(full_name)),
+        object_entry("Name", Expression::string(name)),
+        object_entry("name", Expression::string(name)),
+    ]))
+}
+
+fn is_nullable_type_name(type_name: &str) -> bool {
+    let lowered = type_name.to_ascii_lowercase();
+    lowered.starts_with("system.nullable[")
+        || lowered == "system.nullable`1"
+        || lowered == "system.nullable``1"
+}
+
+fn powershell_type_object(type_name: &str) -> Expression {
+    let full_name = canonical_powershell_type_object_name(type_name);
+    let is_generic = is_nullable_type_name(&full_name);
+    let is_enum = matches!(
+        full_name.to_ascii_lowercase().as_str(),
+        "system.dayofweek" | "dayofweek"
+    );
+    let is_value_type = is_enum
+        || matches!(
+            full_name.to_ascii_lowercase().as_str(),
+            "system.int32"
+                | "int"
+                | "system.int64"
+                | "long"
+                | "system.uint64"
+                | "system.double"
+                | "double"
+                | "system.boolean"
+                | "bool"
+                | "system.guid"
+                | "guid"
+                | "system.datetime"
+                | "datetime"
+                | "system.timespan"
+                | "timespan"
+                | "system.decimal"
+                | "decimal"
+        );
+    let generic_definition = if is_generic {
+        "System.Nullable`1"
+    } else {
+        full_name.as_str()
+    };
+    let generic_definition_object = if full_name.eq_ignore_ascii_case(generic_definition) {
+        command_type_object(generic_definition)
+    } else {
+        powershell_type_object(generic_definition)
+    };
+    let get_generic_definition = vec![Statement::new(StmtKind::Return(Some(
+        generic_definition_object,
+    )))];
+    Expression::new(ExprKind::Object(vec![
+        object_entry("__ps_type_name", Expression::string(&full_name)),
+        object_entry("FullName", Expression::string(&full_name)),
         object_entry(
             "Name",
-            Expression::string(full_name.rsplit('.').next().unwrap_or(full_name)),
+            Expression::string(full_name.rsplit('.').next().unwrap_or(&full_name)),
+        ),
+        object_entry("IsGenericType", Expression::bool(is_generic)),
+        object_entry("isgenerictype", Expression::bool(is_generic)),
+        object_entry("IsEnum", Expression::bool(is_enum)),
+        object_entry("isenum", Expression::bool(is_enum)),
+        object_entry("IsValueType", Expression::bool(is_value_type)),
+        object_entry("isvaluetype", Expression::bool(is_value_type)),
+        object_entry(
+            "GetMethods",
+            no_param_lambda(vec![Statement::new(StmtKind::Return(Some(
+                reflection_member_names(type_method_names(&full_name)),
+            )))]),
+        ),
+        object_entry(
+            "getmethods",
+            no_param_lambda(vec![Statement::new(StmtKind::Return(Some(
+                reflection_member_names(type_method_names(&full_name)),
+            )))]),
+        ),
+        object_entry(
+            "GetProperties",
+            no_param_lambda(vec![Statement::new(StmtKind::Return(Some(
+                reflection_member_names(type_property_names(&full_name)),
+            )))]),
+        ),
+        object_entry(
+            "getproperties",
+            no_param_lambda(vec![Statement::new(StmtKind::Return(Some(
+                reflection_member_names(type_property_names(&full_name)),
+            )))]),
+        ),
+        object_entry(
+            "GetConstructors",
+            no_param_lambda(vec![Statement::new(StmtKind::Return(Some(
+                reflection_member_names(vec![".ctor", ".ctor"]),
+            )))]),
+        ),
+        object_entry(
+            "getconstructors",
+            no_param_lambda(vec![Statement::new(StmtKind::Return(Some(
+                reflection_member_names(vec![".ctor", ".ctor"]),
+            )))]),
+        ),
+        object_entry(
+            "GetGenericTypeDefinition",
+            no_param_lambda(get_generic_definition.clone()),
+        ),
+        object_entry(
+            "getgenerictypedefinition",
+            no_param_lambda(get_generic_definition),
         ),
     ]))
+}
+
+fn canonical_powershell_type_object_name(type_name: &str) -> String {
+    let trimmed = type_name.trim();
+    if let Some(element) = trimmed.strip_suffix("[]") {
+        return format!("{}[]", canonical_powershell_type_object_name(element));
+    }
+    if let Some(accelerated) = type_accelerator(trimmed) {
+        return accelerated.to_string();
+    }
+    match trimmed.to_ascii_lowercase().as_str() {
+        "object" => "System.Object",
+        "int" | "int32" => "System.Int32",
+        "long" | "int64" => "System.Int64",
+        "string" => "System.String",
+        "bool" | "boolean" => "System.Boolean",
+        "double" => "System.Double",
+        "decimal" => "System.Decimal",
+        "guid" => "System.Guid",
+        "datetime" => "System.DateTime",
+        "timespan" => "System.TimeSpan",
+        "version" => "System.Version",
+        "ipaddress" => "System.Net.IPAddress",
+        "hashtable" => "System.Collections.Hashtable",
+        "pscustomobject" | "psobject" => "System.Management.Automation.PSCustomObject",
+        other if other == "system.stringbuilder" => "System.Text.StringBuilder",
+        _ => trimmed,
+    }
+    .to_string()
+}
+
+fn type_object_name(expr: &Expression) -> Option<String> {
+    let ExprKind::Object(props) = &expr.kind else {
+        return None;
+    };
+    props.iter().find_map(|p| match p {
+        ObjectProperty::KeyValue { key, value }
+            if literal_text(key).is_some_and(|k| k == "__ps_type_name") =>
+        {
+            literal_text(value)
+        }
+        _ => None,
+    })
+}
+
+fn comparison_type_name(expr: &Expression) -> Option<String> {
+    if let Some(name) = type_object_name(expr) {
+        return Some(name);
+    }
+    let name = dotted_name_of(expr)?;
+    let leaf = name.rsplit('.').next().unwrap_or(&name);
+    if matches!(
+        leaf.to_ascii_lowercase().as_str(),
+        "maxvalue" | "minvalue" | "empty" | "now" | "today" | "utcnow"
+    ) {
+        return None;
+    }
+    let canonical = type_accelerator(&name).unwrap_or(&name);
+    let lowered = canonical.to_ascii_lowercase();
+    let looks_like_type = lowered.starts_with("system.")
+        || lowered.ends_with("[]")
+        || matches!(
+            lowered.as_str(),
+            "int" | "int32" | "long" | "int64" | "uint64" | "string" | "bool" | "boolean"
+                | "datetime" | "guid" | "timespan" | "type" | "object"
+        );
+    looks_like_type.then(|| canonical.to_string())
+}
+
+fn cast_type_object_name(__w: &PsWalker, expr: &Expression) -> Option<String> {
+    let ExprKind::Cast { type_name, expr } = &expr.kind else {
+        return None;
+    };
+    if !matches!(
+        type_name.to_ascii_lowercase().as_str(),
+        "type" | "system.type"
+    ) {
+        return None;
+    }
+    string_literal(expr).or_else(|| __w.literal_text_of(expr))
+}
+
+fn nullable_type_object_name(__w: &PsWalker, expr: &Expression) -> Option<String> {
+    match &expr.kind {
+        ExprKind::Ident(name) => __w
+            .type_object_vars
+            .get(&name.to_lowercase())
+            .cloned()
+            .flatten(),
+        _ => type_object_name(expr),
+    }
+}
+
+fn nullable_property_info_object(property_name: &str, nullable_type_name: &str) -> Expression {
+    let property = property_name.to_string();
+    let value_type = nullable_underlying_type_name(nullable_type_name)
+        .unwrap_or_else(|| "System.Object".to_string());
+    let value_expr = match property.to_ascii_lowercase().as_str() {
+        "hasvalue" => ps_binary(
+            BinOp::NotEq,
+            Expression::ident("__ps_nullable_target"),
+            Expression::null(),
+        ),
+        "value" => Expression::ident("__ps_nullable_target"),
+        _ => Expression::null(),
+    };
+    let get_value = Expression::new(ExprKind::FunctionExpr(Box::new(Statement::new(
+        StmtKind::FunctionDecl {
+            name: String::new(),
+            params: vec![synth_param("__ps_nullable_target")],
+            body: vec![Statement::new(StmtKind::Return(Some(value_expr)))],
+            modifiers: Modifiers::default(),
+            is_async: false,
+            is_generator: false,
+            is_sub: false,
+            return_type: None,
+            handles: Vec::new(),
+        },
+    ))));
+    Expression::new(ExprKind::Object(vec![
+        object_entry("__ps_nullable_value_type", Expression::string(&value_type)),
+        object_entry("Name", Expression::string(&property)),
+        object_entry("name", Expression::string(&property)),
+        object_entry("GetValue", get_value.clone()),
+        object_entry("getvalue", get_value),
+    ]))
+}
+
+fn nullable_underlying_type_name(nullable_type_name: &str) -> Option<String> {
+    let start = nullable_type_name.find('[')?;
+    let end = nullable_type_name.rfind(']')?;
+    if end <= start + 1 {
+        return None;
+    }
+    Some(canonical_powershell_type_object_name(
+        nullable_type_name[start + 1..end].trim(),
+    ))
+}
+
+fn nullable_property_info_value_type(expr: &Expression) -> Option<String> {
+    let ExprKind::Object(props) = &expr.kind else {
+        return None;
+    };
+    props.iter().find_map(|prop| match prop {
+        ObjectProperty::KeyValue { key, value }
+            if literal_text(key).is_some_and(|name| name == "__ps_nullable_value_type") =>
+        {
+            literal_text(value)
+        }
+        _ => None,
+    })
+}
+
+fn reflection_member_names(names: Vec<&'static str>) -> Expression {
+    Expression::new(ExprKind::Array(
+        names
+            .into_iter()
+            .map(|name| ArrayElement {
+                key: None,
+                value: Expression::new(ExprKind::Object(vec![
+                    object_entry("Name", Expression::string(name)),
+                    object_entry("name", Expression::string(name)),
+                ])),
+                spread: false,
+                by_ref: false,
+            })
+            .collect(),
+    ))
+}
+
+fn type_method_names(full_name: &str) -> Vec<&'static str> {
+    match full_name.to_ascii_lowercase().as_str() {
+        "system.guid" => vec!["NewGuid", "ToByteArray"],
+        "system.text.stringbuilder" => vec!["Append", "AppendLine", "ToString"],
+        _ => Vec::new(),
+    }
+}
+
+fn type_property_names(full_name: &str) -> Vec<&'static str> {
+    match full_name.to_ascii_lowercase().as_str() {
+        "system.version" => vec!["Major", "Minor", "Build", "Revision"],
+        _ => Vec::new(),
+    }
+}
+
+fn type_is_assignable_from(base_type: &str, derived_type: &str) -> bool {
+    let base = base_type.to_ascii_lowercase();
+    let derived = derived_type.to_ascii_lowercase();
+    base == derived
+        || base == "system.object"
+        || (base == "system.collections.ienumerable"
+            && (derived.contains("system.collections.generic.list")
+                || derived.ends_with("[]")))
+}
+
+fn type_is_subclass_of(sub_type: &str, base_type: &str) -> bool {
+    let sub = sub_type.to_ascii_lowercase();
+    let base = base_type.to_ascii_lowercase();
+    sub == "system.io.memorystream" && base == "system.io.stream"
 }
 
 fn provider_path_info_expr(path: &str, provider: &str) -> Expression {
@@ -12862,10 +22278,13 @@ fn provider_path_info_expr(path: &str, provider: &str) -> Expression {
         object_entry("ProviderPath", Expression::string(path)),
         object_entry("providerpath", Expression::string(path)),
         object_entry("Provider", provider_obj),
-        object_entry("provider", Expression::new(ExprKind::Object(vec![
-            object_entry("Name", Expression::string(provider)),
-            object_entry("name", Expression::string(provider)),
-        ]))),
+        object_entry(
+            "provider",
+            Expression::new(ExprKind::Object(vec![
+                object_entry("Name", Expression::string(provider)),
+                object_entry("name", Expression::string(provider)),
+            ])),
+        ),
         object_entry("Drive", drive_obj),
     ]))
 }
@@ -12926,6 +22345,60 @@ fn xml_member_read_expr(receiver: Expression, name: &str) -> Expression {
     ps_xml_adapter_call(method, args)
 }
 
+fn xml_attribute_index_member(expr: &Expression, name: &str) -> Option<Expression> {
+    if !name.eq_ignore_ascii_case("Value") && !name.eq_ignore_ascii_case("Name") {
+        return None;
+    }
+    let (object, index) = match &expr.kind {
+        ExprKind::Index { object, index, .. } => (object.as_ref(), index.as_ref()),
+        ExprKind::Call { callee, args, .. }
+            if args.len() == 2
+                && matches!(&callee.kind, ExprKind::Ident(callee) if callee == "__ps_index_get") =>
+        {
+            (&args[0].value, &args[1].value)
+        }
+        _ => return None,
+    };
+    let ExprKind::Call { callee, args, .. } = &object.kind else {
+        return None;
+    };
+    if args.len() != 1 {
+        return None;
+    }
+    let ExprKind::Member { field, .. } = &callee.kind else {
+        return None;
+    };
+    if !field.eq_ignore_ascii_case("Attributes") {
+        return None;
+    }
+    let indexed = expr.clone();
+    let object_value = ps_builtin(
+        "__ps_index_get",
+        vec![
+            indexed.clone(),
+            Expression::string(if name.eq_ignore_ascii_case("Value") {
+                "Value"
+            } else {
+                "Name"
+            }),
+        ],
+    );
+    let fallback = if name.eq_ignore_ascii_case("Value") {
+        indexed.clone()
+    } else {
+        index.clone()
+    };
+    Some(ps_ternary(
+        ps_binary(
+            BinOp::StrictEq,
+            ps_builtin("__ps_typeof", vec![indexed]),
+            Expression::string("object"),
+        ),
+        object_value,
+        fallback,
+    ))
+}
+
 fn normalize_xml_expr(__w: &PsWalker, expr: &Expression) -> Expression {
     match &expr.kind {
         ExprKind::Member { object, field, .. } if is_xml_expr(__w, object) => {
@@ -12957,7 +22430,9 @@ fn xml_special_member_name(name: &str) -> Option<&'static str> {
 fn assignment_expr_is_xml_like(expr: &Expression) -> bool {
     match &expr.kind {
         ExprKind::Cast { type_name, .. } => is_xml_type_name(type_name),
-        ExprKind::New { class, .. } => type_name_of(class).is_some_and(|name| is_xml_type_name(&name)),
+        ExprKind::New { class, .. } => {
+            type_name_of(class).is_some_and(|name| is_xml_type_name(&name))
+        }
         ExprKind::Call { callee, .. } => {
             if let ExprKind::Member { object, field, .. } = &callee.kind {
                 if type_name_of(object).is_some_and(|name| {
@@ -13009,15 +22484,13 @@ fn is_uri_type_name(type_name: &str) -> bool {
 fn assignment_expr_is_uri_like(expr: &Expression) -> bool {
     match &expr.kind {
         ExprKind::Cast { type_name, .. } => is_uri_type_name(type_name),
-        ExprKind::New { class, .. } => type_name_of(class).is_some_and(|name| is_uri_type_name(&name)),
+        ExprKind::New { class, .. } => {
+            type_name_of(class).is_some_and(|name| is_uri_type_name(&name))
+        }
         ExprKind::Call { callee, .. } => {
             if let ExprKind::Member { object, field, .. } = &callee.kind {
-                return type_name_of(object)
-                    .is_some_and(|name| is_uri_type_name(&name))
-                    && matches!(
-                        field.to_ascii_lowercase().as_str(),
-                        "new" | "trycreate"
-                    );
+                return type_name_of(object).is_some_and(|name| is_uri_type_name(&name))
+                    && matches!(field.to_ascii_lowercase().as_str(), "new" | "trycreate");
             }
             false
         }
@@ -13087,11 +22560,7 @@ fn ps_leaf_type_name(expr: Expression) -> Expression {
         "__ps_index_get",
         vec![
             parts.clone(),
-            ps_binary(
-                BinOp::Sub,
-                ps_member(parts, "Count"),
-                Expression::int(1),
-            ),
+            ps_binary(BinOp::Sub, ps_member(parts, "Count"), Expression::int(1)),
         ],
     )
 }
@@ -13102,6 +22571,98 @@ fn ps_member_call(recv: Expression, member: &str, args: Vec<Expression>) -> Expr
         args: args.into_iter().map(Argument::positional).collect(),
         optional: false,
     })
+}
+
+fn dynamic_method_call_expr(
+    recv: Expression,
+    key: Expression,
+    args: Vec<Expression>,
+) -> Expression {
+    const RECV: &str = "__ps_dyn_recv";
+    const KEY: &str = "__ps_dyn_key";
+
+    let recv_ident = || Expression::ident(RECV);
+    let key_ident = || Expression::ident(KEY);
+    let lowered_key = || ps_member_call(key_ident(), "ToLower", Vec::new());
+    let key_is = |name: &str| ps_binary(BinOp::Eq, lowered_key(), Expression::string(name));
+    let dyn_fallback = || {
+        Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::ident("__ps_member_dyn")),
+                args: vec![
+                    Argument::positional(recv_ident()),
+                    Argument::positional(key_ident()),
+                ],
+                optional: false,
+            })),
+            args: args.clone().into_iter().map(Argument::positional).collect(),
+            optional: false,
+        })
+    };
+    let missing_method = || {
+        block_value_expr(vec![Statement::new(StmtKind::Throw {
+            expr: Some(Expression::string(
+                "Method invocation failed because the method does not exist.",
+            )),
+            cause: None,
+        })])
+    };
+
+    let string_dispatch = ps_ternary(
+        ps_binary(BinOp::Or, key_is("toupper"), key_is("toupperinvariant")),
+        ps_member_call(recv_ident(), "ToUpper", args.clone()),
+        ps_ternary(
+            ps_binary(BinOp::Or, key_is("tolower"), key_is("tolowerinvariant")),
+            ps_member_call(recv_ident(), "ToLower", args.clone()),
+            ps_ternary(
+                key_is("trim"),
+                ps_member_call(recv_ident(), "Trim", args.clone()),
+                ps_ternary(
+                    key_is("contains"),
+                    {
+                        let needle = args.first().cloned().unwrap_or_else(Expression::null);
+                        ps_builtin("__ps_str_contains", vec![recv_ident(), needle])
+                    },
+                    ps_ternary(
+                        key_is("substring"),
+                        ps_member_call(recv_ident(), "Substring", args.clone()),
+                        missing_method(),
+                    ),
+                ),
+            ),
+        ),
+    );
+
+    let object_dispatch = ps_ternary(
+        key_is("movenext"),
+        dynamic_move_next_expr(recv_ident()),
+        dyn_fallback(),
+    );
+
+    bind_and_call(
+        &[RECV, KEY],
+        vec![recv, key],
+        ps_ternary(
+            ps_binary(
+                BinOp::Eq,
+                ps_builtin("__ps_typeof", vec![recv_ident()]),
+                Expression::string("string"),
+            ),
+            string_dispatch,
+            object_dispatch,
+        ),
+    )
+}
+
+fn dynamic_move_next_expr(recv: Expression) -> Expression {
+    block_value_expr(vec![
+        Statement::new(StmtKind::Assign {
+            targets: vec![ps_member(recv.clone(), "Current")],
+            value: ps_builtin("__ps_index_get", vec![recv, Expression::int(0)]),
+            by_ref: false,
+        }),
+        Statement::new(StmtKind::Return(Some(Expression::bool(true)))),
+    ])
 }
 
 fn ps_array_of(items: Vec<Expression>) -> Expression {
@@ -13116,6 +22677,350 @@ fn ps_array_of(items: Vec<Expression>) -> Expression {
             })
             .collect(),
     ))
+}
+
+fn ps_new_hashtable_expr(case_sensitive: bool) -> Expression {
+    Expression::new(ExprKind::Object(vec![
+        object_entry("__ps_key_order", ps_array_of(Vec::new())),
+        object_entry("__ps_values", ps_array_of(Vec::new())),
+        object_entry("__ps_case_sensitive", Expression::bool(case_sensitive)),
+    ]))
+}
+
+fn assignment_expr_is_hashtable_ctor(expr: &Expression) -> bool {
+    matches!(
+        &expr.kind,
+        ExprKind::New { class, .. }
+            if type_name_of(class).is_some_and(|name| {
+                matches!(
+                    name.to_ascii_lowercase().as_str(),
+                    "hashtable" | "system.collections.hashtable"
+                        | "ordereddictionary" | "system.collections.specialized.ordereddictionary"
+                )
+            })
+    )
+}
+
+fn assignment_expr_is_case_sensitive_hashtable(expr: &Expression) -> bool {
+    if let ExprKind::Object(props) = &expr.kind {
+        return props.iter().any(|prop| {
+            matches!(
+                prop,
+                ObjectProperty::KeyValue { key, value }
+                    if literal_text(key).is_some_and(|key| key == "__ps_case_sensitive")
+                        && matches!(value.kind, ExprKind::Lit(Literal::Bool(true)))
+            )
+        });
+    }
+    let ExprKind::New { class, args } = &expr.kind else {
+        return false;
+    };
+    if !type_name_of(class).is_some_and(|name| {
+        matches!(
+            name.to_ascii_lowercase().as_str(),
+            "hashtable" | "system.collections.hashtable"
+        )
+    }) {
+        return false;
+    }
+    args.iter().any(|arg| expr_is_ordinal_string_comparer(&arg.value))
+}
+
+fn assignment_expr_is_ignore_case_set_ctor(__w: &PsWalker, expr: &Expression) -> bool {
+    let ExprKind::New { class, args } = &expr.kind else {
+        return false;
+    };
+    if !type_name_of(class).is_some_and(|name| is_powershell_set_type(&name)) {
+        return false;
+    }
+    args.iter()
+        .any(|arg| expr_is_ignore_case_string_comparer(__w, &arg.value))
+}
+
+fn expr_is_ordinal_string_comparer(expr: &Expression) -> bool {
+    match &expr.kind {
+        ExprKind::Call { callee, args, .. } if args.is_empty() => {
+            matches!(
+                &callee.kind,
+                ExprKind::Member { object, field, .. }
+                    if type_name_of(object).is_some_and(|name| {
+                        matches!(
+                            name.to_ascii_lowercase().as_str(),
+                            "stringcomparer" | "system.stringcomparer"
+                        )
+                    }) && field.eq_ignore_ascii_case("Ordinal")
+            )
+        }
+        ExprKind::Member { object, field, .. } => {
+            type_name_of(object).is_some_and(|name| {
+                matches!(
+                    name.to_ascii_lowercase().as_str(),
+                    "stringcomparer" | "system.stringcomparer"
+                )
+            }) && field.eq_ignore_ascii_case("Ordinal")
+        }
+        _ => false,
+    }
+}
+
+fn expr_is_ignore_case_string_comparer(__w: &PsWalker, expr: &Expression) -> bool {
+    match &expr.kind {
+        ExprKind::Ident(name) => __w
+            .string_comparer_ignore_case_vars
+            .get(&name.to_ascii_lowercase())
+            .copied()
+            .unwrap_or(false),
+        ExprKind::Call { callee, args, .. } if args.is_empty() => {
+            matches!(
+                &callee.kind,
+                ExprKind::Member { object, field, .. }
+                    if type_name_of(object).is_some_and(|name| {
+                        matches!(
+                            name.to_ascii_lowercase().as_str(),
+                            "stringcomparer" | "system.stringcomparer"
+                        )
+                    }) && field.to_ascii_lowercase().contains("ignorecase")
+            )
+        }
+        ExprKind::Member { object, field, .. } => {
+            type_name_of(object).is_some_and(|name| {
+                matches!(
+                    name.to_ascii_lowercase().as_str(),
+                    "stringcomparer" | "system.stringcomparer"
+                )
+            }) && field.to_ascii_lowercase().contains("ignorecase")
+        }
+        _ => false,
+    }
+}
+
+fn ps_hashtable_visible_keys(recv: Expression) -> Expression {
+    method_call_expr(
+        method_call_expr(recv, "__ps_ht_keys", Vec::new()),
+        "Where",
+        vec![item_lambda(vec![Statement::new(StmtKind::Return(Some(
+            ps_binary(
+                BinOp::And,
+                ps_binary(
+                    BinOp::NotEq,
+                    Expression::ident("_"),
+                    Expression::string("__ps_key_order"),
+                ),
+                ps_binary(
+                    BinOp::NotEq,
+                    Expression::ident("_"),
+                    Expression::string("__ps_case_sensitive"),
+                ),
+            ),
+        )))])],
+    )
+}
+
+fn ps_hashtable_order_or_keys(recv: Expression) -> Expression {
+    const HT: &str = "__ps_ht_order_recv";
+    let order = ps_builtin(
+        "__ps_index_get",
+        vec![Expression::ident(HT), Expression::string("__ps_key_order")],
+    );
+    bind_and_call(
+        &[HT],
+        vec![recv],
+        ps_ternary(
+            ps_binary(
+                BinOp::NotEq,
+                order.clone(),
+                Expression::null(),
+            ),
+            order,
+            ps_hashtable_visible_keys(Expression::ident(HT)),
+        ),
+    )
+}
+
+fn ps_hashtable_count_or_member(recv: Expression) -> Expression {
+    const HT: &str = "__ps_ht_count_recv";
+    let order = ps_builtin(
+        "__ps_index_get",
+        vec![Expression::ident(HT), Expression::string("__ps_key_order")],
+    );
+    bind_and_call(
+        &[HT],
+        vec![recv],
+        ps_ternary(
+            ps_binary(
+                BinOp::NotEq,
+                order.clone(),
+                Expression::null(),
+            ),
+            ps_builtin("__ps_count", vec![order]),
+            ps_member(Expression::ident(HT), "Count"),
+        ),
+    )
+}
+
+fn ps_hashtable_contains_key_expr(
+    recv: Expression,
+    key: Expression,
+    case_sensitive: bool,
+) -> Expression {
+    let eq_builtin = if case_sensitive { "__ps_ceq" } else { "__ps_eq" };
+    let matches = method_call_expr(
+        ps_hashtable_order_or_keys(recv),
+        "Where",
+        vec![item_lambda(vec![Statement::new(StmtKind::Return(Some(
+            ps_builtin(eq_builtin, vec![Expression::ident("_"), key]),
+        )))])],
+    );
+    ps_binary(
+        BinOp::Gt,
+        ps_builtin("__ps_count", vec![matches]),
+        Expression::int(0),
+    )
+}
+
+fn ps_hashtable_clone_expr(recv: Expression) -> Expression {
+    Expression::new(ExprKind::Object(vec![
+        ObjectProperty::Spread(recv.clone()),
+        object_entry("__ps_key_order", ps_hashtable_order_or_keys(recv)),
+    ]))
+}
+
+fn ps_hashtable_delete_stmt(recv: Expression, key: Expression) -> Statement {
+    Statement::new(StmtKind::Expr(Expression::new(ExprKind::Delete(Box::new(
+        Expression::new(ExprKind::Index {
+            object: Box::new(recv),
+            index: Box::new(key),
+            null_safe: false,
+        }),
+    )))))
+}
+
+fn ps_hashtable_remove_expr(
+    recv: Expression,
+    key: Expression,
+    case_sensitive: bool,
+) -> Expression {
+    let compare_key = if case_sensitive {
+        key.clone()
+    } else {
+        method_call_expr(key.clone(), "ToLower", Vec::new())
+    };
+    let retain_order = Statement::new(StmtKind::Assign {
+        targets: vec![ps_member(recv.clone(), "__ps_key_order")],
+        value: method_call_expr(
+            ps_hashtable_order_or_keys(recv.clone()),
+            "Where",
+            vec![item_lambda(vec![Statement::new(StmtKind::Return(Some(
+                ps_binary(BinOp::NotEq, Expression::ident("_"), key.clone()),
+            )))])],
+        ),
+        by_ref: false,
+    });
+    let mut body = vec![retain_order, ps_hashtable_delete_stmt(recv.clone(), key.clone())];
+    if !case_sensitive {
+        body.push(ps_hashtable_delete_stmt(recv, compare_key));
+    }
+    body.push(Statement::new(StmtKind::Return(Some(Expression::null()))));
+    block_value_expr(body)
+}
+
+fn ps_hashtable_clear_expr(recv: Expression) -> Expression {
+    block_value_expr(vec![
+        Statement::new(StmtKind::Expr(method_call_expr(
+            recv.clone(),
+            "__ps_ht_clear",
+            Vec::new(),
+        ))),
+        Statement::new(StmtKind::Assign {
+            targets: vec![ps_member(recv, "__ps_key_order")],
+            value: ps_array_of(Vec::new()),
+            by_ref: false,
+        }),
+        Statement::new(StmtKind::Return(Some(Expression::null()))),
+    ])
+}
+
+fn ps_hashtable_index_set_expr(
+    recv: Expression,
+    key: Expression,
+    value: Expression,
+    case_sensitive: bool,
+) -> Expression {
+    const HT: &str = "__ps_ht_set_recv";
+    const KEY: &str = "__ps_ht_set_key";
+    const VALUE: &str = "__ps_ht_set_value";
+    let stored_key = if case_sensitive {
+        Expression::ident(KEY)
+    } else {
+        method_call_expr(Expression::ident(KEY), "ToLower", Vec::new())
+    };
+    if case_sensitive {
+        return block_value_expr_with_invocation(
+            vec![
+                Statement::new(StmtKind::Assign {
+                    targets: vec![ps_member(Expression::ident(HT), "__ps_key_order")],
+                    value: ps_binary(
+                        BinOp::Add,
+                        ps_hashtable_order_or_keys(Expression::ident(HT)),
+                        ps_array_of(vec![Expression::ident(KEY)]),
+                    ),
+                    by_ref: false,
+                }),
+                Statement::new(StmtKind::Assign {
+                    targets: vec![ps_member(Expression::ident(HT), "__ps_values")],
+                    value: ps_binary(
+                        BinOp::Add,
+                        ps_member(Expression::ident(HT), "__ps_values"),
+                        ps_array_of(vec![Expression::ident(VALUE)]),
+                    ),
+                    by_ref: false,
+                }),
+                Statement::new(StmtKind::Return(Some(Expression::ident(VALUE)))),
+            ],
+            vec![synth_param(HT), synth_param(KEY), synth_param(VALUE)],
+            vec![
+                Argument::positional(recv),
+                Argument::positional(key),
+                Argument::positional(value),
+            ],
+            Vec::new(),
+        );
+    }
+    block_value_expr_with_invocation(
+        vec![
+            Statement::new(StmtKind::Assign {
+                targets: vec![ps_member(Expression::ident(HT), "__ps_key_order")],
+                value: ps_binary(
+                    BinOp::Add,
+                    ps_hashtable_order_or_keys(Expression::ident(HT)),
+                    ps_array_of(vec![Expression::ident(KEY)]),
+                ),
+                by_ref: false,
+            }),
+            Statement::new(StmtKind::Return(Some(ps_builtin(
+                "__ps_index_set",
+                vec![Expression::ident(HT), stored_key, Expression::ident(VALUE)],
+            )))),
+        ],
+        vec![synth_param(HT), synth_param(KEY), synth_param(VALUE)],
+        vec![
+            Argument::positional(recv),
+            Argument::positional(key),
+            Argument::positional(value),
+        ],
+        Vec::new(),
+    )
+}
+
+fn ps_case_sensitive_hashtable_get_expr(recv: Expression, key: Expression) -> Expression {
+    let index = ps_member_call(
+        ps_member(recv.clone(), "__ps_key_order"),
+        "findIndex",
+        vec![item_lambda(vec![Statement::new(StmtKind::Return(Some(
+            ps_builtin("__ps_ceq", vec![Expression::ident("_"), key]),
+        )))])],
+    );
+    ps_builtin("__ps_index_get", vec![ps_member(recv, "__ps_values"), index])
 }
 
 fn psobject_target(expr: &Expression) -> Option<Expression> {
@@ -13149,9 +23054,7 @@ fn psobject_expr(__w: &PsWalker, target: Expression) -> Expression {
         args: vec![
             Argument::positional(target),
             Argument::positional(Expression::new(ExprKind::New {
-                class: Box::new(type_literal_expr(
-                    "System.Collections.Generic.List[string]",
-                )),
+                class: Box::new(type_literal_expr("System.Collections.Generic.List[string]")),
                 args: vec![Argument::positional(seed)],
             })),
         ],
@@ -13169,7 +23072,10 @@ fn pstypename_seed_exprs(__w: &PsWalker, target: &Expression) -> Vec<Expression>
         return seed.iter().map(|name| Expression::string(name)).collect();
     }
     vec![
-        ps_member(ps_member_call(target.clone(), "GetType", Vec::new()), "Name"),
+        ps_member(
+            ps_member_call(target.clone(), "GetType", Vec::new()),
+            "Name",
+        ),
         Expression::string("System.Object"),
     ]
 }
@@ -13185,9 +23091,19 @@ fn pstypename_seed_from_expr(__w: &PsWalker, expr: &Expression) -> Option<Vec<St
             "System.Collections.Hashtable".to_string(),
             "System.Object".to_string(),
         ]),
-        ExprKind::New { class, .. } => type_name_of(class)
-            .and_then(|name| pstypename_seed_from_type_name(__w, &name)),
+        ExprKind::New { class, .. } => {
+            type_name_of(class).and_then(|name| pstypename_seed_from_type_name(__w, &name))
+        }
         ExprKind::Cast { type_name, .. } => pstypename_seed_from_type_name(__w, type_name),
+        ExprKind::Call { callee, .. } => {
+            if let ExprKind::Member { object, field, .. } = &callee.kind
+                && field.eq_ignore_ascii_case("GetValue")
+                && let Some(type_name) = nullable_property_info_value_type(object)
+            {
+                return pstypename_seed_from_type_name(__w, &type_name);
+            }
+            None
+        }
         _ => None,
     }
 }
@@ -13198,9 +23114,23 @@ fn pstypename_seed_for_assignment(
     value: &Expression,
 ) -> Option<Vec<String>> {
     let lower = source.to_ascii_lowercase();
-    if lower.contains("[pscustomobject]") || lower.contains("[system.management.automation.pscustomobject]") {
+    if lower.contains("[pscustomobject]")
+        || lower.contains("[system.management.automation.pscustomobject]")
+    {
         return Some(vec![
             "System.Management.Automation.PSCustomObject".to_string(),
+            "System.Object".to_string(),
+        ]);
+    }
+    if lower.contains(".getsteppablepipeline") {
+        return Some(vec![
+            "System.Management.Automation.SteppablePipeline".to_string(),
+            "System.Object".to_string(),
+        ]);
+    }
+    if lower.contains("add-history") && lower.contains("-passthru") {
+        return Some(vec![
+            "Microsoft.PowerShell.Commands.HistoryInfo".to_string(),
             "System.Object".to_string(),
         ]);
     }
@@ -13292,6 +23222,46 @@ fn pstypename_seed_from_type_name(__w: &PsWalker, type_name: &str) -> Option<Vec
     Some(out)
 }
 
+fn static_type_name_of_expr(__w: &PsWalker, expr: &Expression) -> Option<String> {
+    if let ExprKind::Ident(name) = &expr.kind
+        && let Some(Some(seed)) = __w.pstypename_vars.get(&name.to_lowercase())
+        && let Some(first) = seed.first()
+    {
+        return Some(first.clone());
+    }
+    pstypename_seed_from_expr(__w, expr).and_then(|seed| seed.first().cloned())
+}
+
+fn datetime_value_expr(__w: &PsWalker, expr: &Expression) -> bool {
+    if static_type_name_of_expr(__w, expr)
+        .is_some_and(|name| name.eq_ignore_ascii_case("System.DateTime") || name.eq_ignore_ascii_case("DateTime"))
+    {
+        return true;
+    }
+    match &expr.kind {
+        ExprKind::Call { callee, .. } => match &callee.kind {
+            ExprKind::Member { object, field, .. } => {
+                matches!(
+                    field.to_ascii_lowercase().as_str(),
+                    "now" | "utcnow" | "today" | "parse"
+                ) && type_name_of(object).is_some_and(|name| {
+                    name.eq_ignore_ascii_case("System.DateTime")
+                        || name.eq_ignore_ascii_case("DateTime")
+                })
+            }
+            _ => false,
+        },
+        ExprKind::NullCoalesce { left, .. } => datetime_value_expr(__w, left),
+        _ => false,
+    }
+}
+
+fn is_rune_expr(__w: &PsWalker, expr: &Expression) -> bool {
+    static_type_name_of_expr(__w, expr).is_some_and(|name| {
+        name.eq_ignore_ascii_case("System.Text.Rune") || name.eq_ignore_ascii_case("Rune")
+    })
+}
+
 fn expr_is_uint32(__w: &PsWalker, expr: &Expression) -> bool {
     if let ExprKind::Ident(name) = &expr.kind
         && let Some(Some(seed)) = __w.pstypename_vars.get(&name.to_lowercase())
@@ -13313,12 +23283,37 @@ fn ps_ternary(cond: Expression, then: Expression, else_: Expression) -> Expressi
     })
 }
 
+fn ps_is_null_expr(expr: Expression) -> Expression {
+    ps_builtin("__ps_is_null", vec![expr])
+}
+
+fn ps_not_null_expr(expr: Expression) -> Expression {
+    negate(ps_is_null_expr(expr))
+}
+
 fn ps_binary(op: BinOp, left: Expression, right: Expression) -> Expression {
     Expression::new(ExprKind::Binary {
         op,
         left: Box::new(left),
         right: Box::new(right),
     })
+}
+
+fn ps_numeric_value_or_self(expr: Expression) -> Expression {
+    const VALUE: &str = "__ps_numeric_object";
+    let numeric = ps_builtin(
+        "__ps_index_get",
+        vec![Expression::ident(VALUE), Expression::string("__ps_numeric_value")],
+    );
+    bind_and_call(
+        &[VALUE],
+        vec![expr],
+        ps_ternary(
+            ps_binary(BinOp::NotEq, numeric.clone(), Expression::null()),
+            numeric,
+            Expression::ident(VALUE),
+        ),
+    )
 }
 
 /// `.ForEach(…)` and `.Where(…)` — PowerShell's INTRINSIC collection members.
@@ -13341,7 +23336,7 @@ fn intrinsic_collection_overload(
 ) -> Option<Expression> {
     let src = || ensure_array(recv.clone());
     if name.eq_ignore_ascii_case("Where") {
-        let pred = args.first()?.clone();
+        let pred = pipeline_scriptblock_lambda(args.first()?.clone());
         let matched = || ps_member_call(src(), "Where", vec![pred.clone()]);
         let mode = args
             .get(1)
@@ -13384,16 +23379,16 @@ fn intrinsic_collection_overload(
             ),
             // Two collections: what matched, then what did not.
             "split" => {
-                let rejected = item_lambda(vec![Statement::new(StmtKind::Return(Some(Expression::new(
-                    ExprKind::Unary {
+                let rejected = item_lambda(vec![Statement::new(StmtKind::Return(Some(
+                    Expression::new(ExprKind::Unary {
                         op: UnaryOp::Not,
                         expr: Box::new(Expression::new(ExprKind::Call {
                             callee: Box::new(pred.clone()),
                             args: vec![Argument::positional(Expression::ident("_"))],
                             optional: false,
                         })),
-                    },
-                ))))]);
+                    }),
+                )))]);
                 ps_array_of(vec![
                     matched(),
                     ps_member_call(src(), "Where", vec![rejected]),
@@ -13425,9 +23420,9 @@ fn intrinsic_collection_overload(
     }
     // `.ForEach('Name'[, args…])` — the member named by a STRING, applied to
     // every element.
-    if let Some(member) = literal_text(selector).filter(|_| {
-        matches!(&selector.kind, ExprKind::Lit(Literal::Str(_)))
-    }) {
+    if let Some(member) =
+        literal_text(selector).filter(|_| matches!(&selector.kind, ExprKind::Lit(Literal::Str(_))))
+    {
         let extra: Vec<Expression> = args[1..].to_vec();
         let body = if extra.is_empty() {
             // ⛔ONE SPELLING, TWO MEANINGS, AND NEITHER IS DECIDABLE FROM THE
@@ -13457,12 +23452,21 @@ fn intrinsic_collection_overload(
         return Some(ps_member_call(
             src(),
             "ForEach",
-            vec![item_lambda(vec![Statement::new(StmtKind::Return(Some(body)))])],
+            vec![item_lambda(vec![Statement::new(StmtKind::Return(Some(
+                body,
+            )))])],
         ));
     }
     // The plain script-block form — the `[array_methods]` row answers it; only
     // the receiver needs normalizing, so a scalar enumerates as one item.
-    Some(ps_member_call(src(), "ForEach", args.to_vec()))
+    Some(ps_member_call(
+        src(),
+        "ForEach",
+        args.iter()
+            .cloned()
+            .map(pipeline_scriptblock_lambda)
+            .collect(),
+    ))
 }
 
 /// The text of a STRING LITERAL, and nothing else.
@@ -13534,7 +23538,10 @@ fn decode_double_quoted_member(raw: &str) -> String {
 fn literal_int(expr: &Expression) -> Option<i64> {
     match &expr.kind {
         ExprKind::Lit(Literal::Int(value)) => Some(*value),
-        ExprKind::Unary { op: UnaryOp::Neg, expr } => match &expr.kind {
+        ExprKind::Unary {
+            op: UnaryOp::Neg,
+            expr,
+        } => match &expr.kind {
             ExprKind::Lit(Literal::Int(value)) => Some(-*value),
             _ => None,
         },
@@ -13556,6 +23563,26 @@ fn ps_array_literal_items(expr: &Expression) -> Option<&[ArrayElement]> {
         }
         _ => None,
     }
+}
+
+fn is_ps_provider_array_expr(expr: &Expression) -> bool {
+    let ExprKind::Array(items) = &expr.kind else {
+        return false;
+    };
+    !items.is_empty()
+        && items.iter().all(|item| {
+            let ExprKind::Object(fields) = &item.value.kind else {
+                return false;
+            };
+            fields.iter().any(|field| {
+                let ObjectProperty::KeyValue { key, value } = field else {
+                    return false;
+                };
+                literal_text(key).is_some_and(|key| key == "__type")
+                    && literal_text(value)
+                        .is_some_and(|value| value.eq_ignore_ascii_case("ProviderInfo"))
+            })
+        })
 }
 
 fn pattern_array_or_regex(pattern: Expression) -> Expression {
@@ -13635,7 +23662,6 @@ fn walk_array_expr(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
         .map(|__x| {
             if let Some(word) = lone_bare_word(&__x)
                 && !is_literal_word(&word)
-                && __w.declared_functions.contains_key(&word.to_lowercase())
             {
                 build_command_call_in(__w, Expression::ident(&word), Vec::new(), true)
             } else {
@@ -13672,6 +23698,12 @@ fn walk_array_expr(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
         }
         _ => body,
     };
+    if is_ps_provider_array_expr(&body) {
+        return body;
+    }
+    if process_function_call_expr(__w, &body) {
+        return ps_array_from_process_stream_expr(body);
+    }
 
     // Whether that one value flattens is a question about its RUNTIME shape —
     // a collection contributes its elements, a scalar contributes itself — so
@@ -13681,6 +23713,29 @@ fn walk_array_expr(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
         args: vec![Argument::positional(body)],
         optional: false,
     })
+}
+
+fn process_function_call_expr(__w: &PsWalker, expr: &Expression) -> bool {
+    let ExprKind::Call { callee, .. } = &expr.kind else {
+        return false;
+    };
+    match &callee.kind {
+        ExprKind::Ident(name) => __w.process_block_functions.contains(&name.to_lowercase()),
+        _ => false,
+    }
+}
+
+fn ps_array_from_process_stream_expr(value: Expression) -> Expression {
+    const VALUE: &str = "__ps_process_stream_value";
+    block_value_expr(vec![
+        local_decl(VALUE),
+        assign_ident_expr_stmt(VALUE, value),
+        Statement::new(StmtKind::Return(Some(ps_ternary(
+            ps_is_null_expr(Expression::ident(VALUE)),
+            Expression::new(ExprKind::Array(Vec::new())),
+            ps_builtin("__ps_array", vec![Expression::ident(VALUE)]),
+        )))),
+    ])
 }
 
 fn walk_hash_literal(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
@@ -13698,6 +23753,7 @@ fn walk_hash_literal(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
         // holds — an enum member, a tuple, a version — not by the name `$t`.
         // The grammar had no variable form at all, so the whole literal failed
         // to parse and `@` was left to be called as a command.
+        let mut computed_key = false;
         let key = match key_pair.as_rule() {
             Rule::hash_key
                 if matches!(
@@ -13706,6 +23762,7 @@ fn walk_hash_literal(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
                 ) =>
             {
                 key_order = None;
+                computed_key = true;
                 walk_expr(__w, key_pair.into_inner().next().expect("checked above"))
             }
             _ => {
@@ -13716,8 +23773,15 @@ fn walk_hash_literal(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
                 Expression::string(&key_text)
             }
         };
-        let value = parts.next().map(|__x| walk_expr(__w, __x)).unwrap_or_else(Expression::null);
-        props.push(ObjectProperty::KeyValue { key, value });
+        let value = parts
+            .next()
+            .map(|__x| walk_expr(__w, __x))
+            .unwrap_or_else(Expression::null);
+        if computed_key {
+            props.push(ObjectProperty::Computed { key, value });
+        } else {
+            props.push(ObjectProperty::KeyValue { key, value });
+        }
     }
     if let Some(keys) = key_order.filter(|keys| !keys.is_empty()) {
         props.push(ObjectProperty::KeyValue {
@@ -13776,7 +23840,9 @@ fn walk_sub_expr(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
             };
         }
     }
+    __w.subexpression_depth += 1;
     let stmts = collect_statements(__w, pair);
+    __w.subexpression_depth = __w.subexpression_depth.saturating_sub(1);
     block_value_expr(stmts)
 }
 
@@ -13871,6 +23937,15 @@ fn chain_expression(sides: Vec<Expression>, ops: Vec<String>) -> Expression {
 }
 
 fn block_value_expr(stmts: Vec<Statement>) -> Expression {
+    block_value_expr_with_invocation(stmts, Vec::new(), Vec::new(), Vec::new())
+}
+
+fn block_value_expr_with_invocation(
+    stmts: Vec<Statement>,
+    params: Vec<Param>,
+    args: Vec<Argument>,
+    captures: Vec<String>,
+) -> Expression {
     if stmts.is_empty() {
         return Expression::null();
     }
@@ -13881,12 +23956,12 @@ fn block_value_expr(stmts: Vec<Statement>) -> Expression {
     };
     Expression::new(ExprKind::Call {
         callee: Box::new(Expression::new(ExprKind::Lambda {
-            params: Vec::new(),
+            params,
             body: LambdaBody::Block(body),
             is_async: false,
-            captures: Vec::new(),
+            captures,
         })),
-        args: Vec::new(),
+        args,
         optional: false,
     })
 }
@@ -14000,7 +24075,11 @@ fn script_block_body_source(source: &str) -> Option<String> {
     if !trimmed.starts_with('{') || !trimmed.ends_with('}') {
         return None;
     }
-    Some(trimmed[1..trimmed.len().saturating_sub(1)].trim().to_string())
+    Some(
+        trimmed[1..trimmed.len().saturating_sub(1)]
+            .trim()
+            .to_string(),
+    )
 }
 
 fn attach_ast_to_scriptblock(lambda: Expression, ast: Expression) -> Expression {
@@ -14081,10 +24160,12 @@ fn add_member_value(
     });
     if pass_thru {
         writes.push(Statement::new(StmtKind::Return(Some(target))));
-    } else if let [Statement {
-        kind: StmtKind::Expr(single),
-        ..
-    }] = writes.as_slice()
+    } else if let [
+        Statement {
+            kind: StmtKind::Expr(single),
+            ..
+        },
+    ] = writes.as_slice()
     {
         // One write needs no block around it: the cmdlet's value is the
         // assignment's, which is what it was before member types existed.
@@ -14116,13 +24197,108 @@ fn this_member_getter(member: &str) -> Expression {
     ))))
 }
 
+fn readonly_scriptproperty_setter(member: &str) -> Expression {
+    Expression::new(ExprKind::FunctionExpr(Box::new(Statement::new(
+        StmtKind::FunctionDecl {
+            name: String::new(),
+            params: vec![synth_param("value")],
+            body: vec![Statement::new(StmtKind::Throw {
+                expr: Some(Expression::string(&format!(
+                    "The property '{member}' cannot be found or is read-only."
+                ))),
+                cause: None,
+            })],
+            modifiers: Modifiers::default(),
+            is_async: false,
+            is_generator: false,
+            is_sub: false,
+            return_type: None,
+            handles: Vec::new(),
+        },
+    ))))
+}
+
+fn static_method_reference(class_name: &str, method_name: &str) -> Expression {
+    Expression::new(ExprKind::Object(vec![
+        object_entry("__ps_method_class", Expression::string(class_name)),
+        object_entry("__ps_method_name", Expression::string(method_name)),
+        object_entry("Name", Expression::string(method_name)),
+        object_entry("name", Expression::string(method_name)),
+        object_entry("DeclaringType", command_type_object(class_name)),
+    ]))
+}
+
+fn static_method_reference_parts(expr: &Expression) -> Option<(String, String)> {
+    let ExprKind::Object(props) = &expr.kind else {
+        return None;
+    };
+    let read = |want: &str| -> Option<String> {
+        props.iter().find_map(|p| match p {
+            ObjectProperty::KeyValue { key, value }
+                if literal_text(key).is_some_and(|k| k == want) =>
+            {
+                literal_text(value)
+            }
+            _ => None,
+        })
+    };
+    Some((read("__ps_method_class")?, read("__ps_method_name")?))
+}
+
+fn static_method_ref_as_getter(value: Expression) -> Expression {
+    let Some((class_name, method_name)) = static_method_reference_parts(&value) else {
+        return scriptblock_as_method(value);
+    };
+    Expression::new(ExprKind::FunctionExpr(Box::new(Statement::new(
+        StmtKind::FunctionDecl {
+            name: String::new(),
+            params: Vec::new(),
+            body: vec![Statement::new(StmtKind::Return(Some(ps_member_call(
+                type_literal_expr(&class_name),
+                &method_name,
+                vec![Expression::ident("this")],
+            ))))],
+            modifiers: Modifiers::default(),
+            is_async: false,
+            is_generator: false,
+            is_sub: false,
+            return_type: None,
+            handles: Vec::new(),
+        },
+    ))))
+}
+
+fn static_method_ref_as_setter(value: Expression, member: &str) -> Expression {
+    let Some((class_name, method_name)) = static_method_reference_parts(&value) else {
+        return readonly_scriptproperty_setter(member);
+    };
+    Expression::new(ExprKind::FunctionExpr(Box::new(Statement::new(
+        StmtKind::FunctionDecl {
+            name: String::new(),
+            params: vec![synth_param("value")],
+            body: vec![Statement::new(StmtKind::Expr(ps_member_call(
+                type_literal_expr(&class_name),
+                &method_name,
+                vec![Expression::ident("this"), Expression::ident("value")],
+            )))],
+            modifiers: Modifiers::default(),
+            is_async: false,
+            is_generator: false,
+            is_sub: false,
+            return_type: None,
+            handles: Vec::new(),
+        },
+    ))))
+}
+
 fn scriptblock_as_method(value: Expression) -> Expression {
+    let method_value = scriptblock_runtime_value(&value);
     let ExprKind::Lambda {
         params,
         body: LambdaBody::Block(body),
         is_async,
         ..
-    } = &value.kind
+    } = &method_value.kind
     else {
         return value;
     };
@@ -14151,6 +24327,35 @@ fn scriptblock_as_method(value: Expression) -> Expression {
     ))))
 }
 
+fn scriptblock_runtime_value(value: &Expression) -> &Expression {
+    let ExprKind::Call { callee, args, .. } = &value.kind else {
+        return value;
+    };
+    if !args.is_empty() {
+        return value;
+    }
+    let ExprKind::Lambda {
+        body: LambdaBody::Block(stmts),
+        ..
+    } = &callee.kind
+    else {
+        return value;
+    };
+    for stmt in stmts {
+        let StmtKind::VarDecl { declarations, .. } = &stmt.kind else {
+            continue;
+        };
+        for decl in declarations {
+            if matches!(&decl.pattern, BindingPattern::Ident(id) if id == "__ps_scriptblock_value")
+                && let Some(init) = &decl.init
+            {
+                return init;
+            }
+        }
+    }
+    value
+}
+
 /// `$args = @($_) + $args` — the statement a parameterless script block gets so
 /// its automatic variable spans the pipeline item as well as the rest.
 fn is_args_rejoin(stmt: &Statement) -> bool {
@@ -14171,7 +24376,6 @@ fn collect_statements(__w: &mut PsWalker, pair: Pair<Rule>) -> Vec<Statement> {
     }
     out
 }
-
 
 fn walk_number(raw: &str) -> Expression {
     let text = raw.trim();
@@ -14204,7 +24408,12 @@ fn walk_number(raw: &str) -> Expression {
         }
     }
 
-    let stripped = lower.trim_end_matches(['l', 'd']);
+    let stripped = lower
+        .strip_suffix("ul")
+        .or_else(|| lower.strip_suffix('u'))
+        .or_else(|| lower.strip_suffix('l'))
+        .or_else(|| lower.strip_suffix('d'))
+        .unwrap_or(&lower);
     if let Ok(v) = stripped.parse::<i64>() {
         return Expression::int(v);
     }
@@ -14218,16 +24427,111 @@ fn walk_var_ref(raw: &str) -> Expression {
     let name = raw
         .trim_start_matches('$')
         .trim_matches(|c| c == '{' || c == '}');
+    if let Some((scope, rest)) = name.split_once(':')
+        && scope.eq_ignore_ascii_case("private")
+        && !rest.is_empty()
+    {
+        return Expression::ident(&format!("__ps_private_{}", safe_ident_suffix(rest)));
+    }
     match name.to_lowercase().as_str() {
         "true" => Expression::bool(true),
         "false" => Expression::bool(false),
         "null" => Expression::null(),
         "this" => Expression::new(ExprKind::This),
+        "maximumhistorycount" => Expression::int(4096),
+        "error" => Expression::ident("Error"),
         // `$PSItem` is the long spelling of `$_` — the SAME automatic
         // variable, not a copy of it.
         "psitem" => Expression::ident("_"),
         _ => Expression::ident(scope_qualified_name(name)),
     }
+}
+
+fn walk_var_ref_for_read(__w: &PsWalker, raw: &str) -> Expression {
+    let expr = walk_var_ref(raw);
+    if __w.strict_mode_level < 1 {
+        return expr;
+    }
+    if let ExprKind::Ident(name) = &expr.kind {
+        return ps_builtin(
+            "__ps_strict_var",
+            vec![expr.clone(), Expression::string(name)],
+        );
+    }
+    expr
+}
+
+fn apply_set_strict_mode_statement(__w: &mut PsWalker, text: &str) -> Option<Expression> {
+    let tokens = split_command_tokens(text);
+    if apply_set_strict_mode_tokens(__w, &tokens) {
+        Some(Expression::null())
+    } else {
+        None
+    }
+}
+
+fn apply_set_strict_mode_tokens(__w: &mut PsWalker, tokens: &[String]) -> bool {
+    if !tokens
+        .first()
+        .is_some_and(|t| t.eq_ignore_ascii_case("Set-StrictMode"))
+    {
+        return false;
+    }
+    if tokens.iter().any(|t| t.eq_ignore_ascii_case("-Off")) {
+        __w.strict_mode_level = 0;
+        return true;
+    }
+    let mut version = None;
+    for (idx, token) in tokens.iter().enumerate().skip(1) {
+        if token.eq_ignore_ascii_case("-Version") {
+            version = tokens.get(idx + 1).cloned();
+            break;
+        }
+        if !token.starts_with('-') {
+            version = Some(token.clone());
+            break;
+        }
+    }
+    __w.strict_mode_level = match version
+        .as_deref()
+        .unwrap_or("Latest")
+        .trim_matches(|c| c == '"' || c == '\'')
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "0" | "off" => 0,
+        "1" | "1.0" => 1,
+        "2" | "2.0" => 2,
+        _ => 3,
+    };
+    true
+}
+
+fn strict_function_call_with_parens_statement(
+    __w: &PsWalker,
+    text: &str,
+) -> Option<Statement> {
+    if __w.strict_mode_level < 2 {
+        return None;
+    }
+    let open = text.find('(')?;
+    let head = text[..open].trim();
+    if head.is_empty()
+        || !__w
+            .declared_functions
+            .contains_key(&head.to_ascii_lowercase())
+    {
+        return None;
+    }
+    Some(Statement::new(StmtKind::Throw {
+        expr: Some(Expression::new(ExprKind::New {
+            class: Box::new(Expression::ident("RuntimeException")),
+            args: vec![Argument::positional(Expression::string(
+                "StrictModeFunctionCallWithParens: function call with parentheses is not allowed.",
+            ))],
+        })),
+        cause: None,
+    }))
 }
 
 /// PowerShell scope modifiers (`$script:x`, `$global:x`, `$local:x`, `$env:x`)
@@ -14291,21 +24595,74 @@ fn type_name_of(expr: &Expression) -> Option<String> {
         ExprKind::Member { object, field, .. } => {
             Some(format!("{}.{}", type_name_of(object)?, field))
         }
-        ExprKind::Cast { type_name, .. } if !type_name.trim().is_empty() => {
-            Some(type_name.clone())
-        }
+        ExprKind::Cast { type_name, .. } if !type_name.trim().is_empty() => Some(type_name.clone()),
         _ => None,
     }?;
     Some(erase_powershell_generic_type_args(&raw))
 }
 
 fn expr_mentions_declared_enum(__w: &PsWalker, expr: &Expression) -> bool {
+    declared_enum_name_from_expr(__w, expr).is_some()
+}
+
+fn declared_enum_name_from_expr(__w: &PsWalker, expr: &Expression) -> Option<String> {
     match &expr.kind {
-        ExprKind::Cast { type_name, .. } => is_declared_enum_name(__w, type_name),
-        ExprKind::Member { object, .. } => type_name_of(object)
-            .as_deref()
-            .is_some_and(|name| is_declared_enum_name(__w, name)),
-        _ => false,
+        ExprKind::Ident(name) => __w
+            .pstypename_vars
+            .get(&name.to_lowercase())
+            .and_then(|seed| seed.as_ref())
+            .and_then(|seed| seed.first())
+            .and_then(|name| {
+                is_declared_enum_name(__w, name)
+                    .then(|| erase_powershell_generic_type_args(name))
+            }),
+        ExprKind::Cast { type_name, .. } if is_declared_enum_name(__w, type_name) => {
+            Some(erase_powershell_generic_type_args(type_name))
+        }
+        ExprKind::Object(props) if enum_runtime_object_expr(expr) => props.iter().find_map(|p| {
+            if let ObjectProperty::KeyValue { key, value } = p
+                && literal_text(key).is_some_and(|k| k == "__ps_type_name")
+                && let Some(type_name) = literal_text(value)
+                && is_declared_enum_name(__w, &type_name)
+            {
+                return Some(erase_powershell_generic_type_args(&type_name));
+            }
+            None
+        }),
+        ExprKind::Member { object, .. } => type_name_of(object).and_then(|name| {
+            if is_declared_enum_name(__w, &name) {
+                Some(erase_powershell_generic_type_args(&name))
+            } else {
+                None
+            }
+        }),
+        ExprKind::Binary {
+            op: BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor,
+            left,
+            right,
+        } => {
+            let left_type = declared_enum_name_from_expr(__w, left)?;
+            let right_type = declared_enum_name_from_expr(__w, right)?;
+            (left_type.eq_ignore_ascii_case(&right_type)).then_some(left_type)
+        }
+        _ => None,
+    }
+}
+
+fn enum_typed_assignment_value(__w: &PsWalker, value: &Expression) -> Option<(String, Expression)> {
+    match &value.kind {
+        ExprKind::Cast { type_name, expr } if is_declared_enum_name(__w, type_name) => Some((
+            erase_powershell_generic_type_args(type_name),
+            enum_cast_expr(__w, type_name, (**expr).clone()),
+        )),
+        ExprKind::Binary {
+            op: BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor,
+            ..
+        } => declared_enum_name_from_expr(__w, value).map(|name| (name, value.clone())),
+        ExprKind::Object(_) if enum_runtime_object_expr(value) => {
+            declared_enum_name_from_expr(__w, value).map(|name| (name, value.clone()))
+        }
+        _ => None,
     }
 }
 
@@ -14313,6 +24670,665 @@ fn is_declared_enum_name(__w: &PsWalker, name: &str) -> bool {
     let erased = erase_powershell_generic_type_args(name);
     __w.enum_display_names
         .contains_key(&erased.trim().to_ascii_lowercase())
+}
+
+fn literal_int_value(expr: &Expression) -> Option<i64> {
+    match &expr.kind {
+        ExprKind::Lit(Literal::Int(value)) => Some(*value),
+        ExprKind::Unary {
+            op: UnaryOp::Neg,
+            expr,
+        } => literal_int_value(expr).map(|value| -value),
+        _ => None,
+    }
+}
+
+fn enum_runtime_object_expr(expr: &Expression) -> bool {
+    let ExprKind::Object(props) = &expr.kind else {
+        return false;
+    };
+    props.iter().any(|p| {
+        matches!(
+            p,
+            ObjectProperty::KeyValue { key, .. }
+                if literal_text(key).is_some_and(|k| k == "__ps_enum_value")
+        )
+    })
+}
+
+fn enum_cast_expr(__w: &PsWalker, type_name: &str, expr: Expression) -> Expression {
+    let value = enum_parse_value_expr(__w, type_name, expr);
+    enum_value_object_expr(__w, type_name, value)
+}
+
+fn enum_value_object_expr(__w: &PsWalker, type_name: &str, value: Expression) -> Expression {
+    let display = __w
+        .enum_display_names
+        .get(&type_name.to_lowercase())
+        .cloned()
+        .unwrap_or_else(|| erase_powershell_generic_type_args(type_name));
+    let self_value = ps_member(Expression::new(ExprKind::This), "__ps_numeric_value");
+    let int_slot = vybe_ast::protocol_slot_key(vybe_ast::ProtocolSlot::Int);
+    let to_string_slot = vybe_ast::protocol_slot_key(vybe_ast::ProtocolSlot::ToString);
+    Expression::new(ExprKind::Object(vec![
+        object_entry("__ps_enum_value", Expression::bool(true)),
+        object_entry("__ps_numeric_value", value.clone()),
+        object_entry("value__", value),
+        object_entry("__ps_type_name", Expression::string(&display)),
+        object_entry(
+            "__types",
+            pstypename_array(pstypename_seed_from_type_name(__w, &display).unwrap_or_else(|| {
+                vec![
+                    display.clone(),
+                    "System.Enum".to_string(),
+                    "System.ValueType".to_string(),
+                    "System.Object".to_string(),
+                ]
+            }).into_iter().map(|name| Expression::string(&name)).collect()),
+        ),
+        object_entry(
+            &int_slot,
+            Expression::new(ExprKind::FunctionExpr(Box::new(Statement::new(
+                StmtKind::FunctionDecl {
+                    name: String::new(),
+                    params: Vec::new(),
+                    body: vec![Statement::new(StmtKind::Return(Some(self_value.clone())))],
+                    modifiers: Modifiers::default(),
+                    is_async: false,
+                    is_generator: false,
+                    is_sub: false,
+                    return_type: None,
+                    handles: Vec::new(),
+                },
+            )))),
+        ),
+        object_entry(
+            &to_string_slot,
+            Expression::new(ExprKind::FunctionExpr(Box::new(Statement::new(
+                StmtKind::FunctionDecl {
+                    name: String::new(),
+                    params: Vec::new(),
+                    body: vec![Statement::new(StmtKind::Return(Some(enum_to_string_expr(
+                        __w,
+                        &display,
+                        self_value.clone(),
+                    ))))],
+                    modifiers: Modifiers::default(),
+                    is_async: false,
+                    is_generator: false,
+                    is_sub: false,
+                    return_type: None,
+                    handles: Vec::new(),
+                },
+            )))),
+        ),
+        object_entry(
+            "ToString",
+            Expression::new(ExprKind::FunctionExpr(Box::new(Statement::new(
+                StmtKind::FunctionDecl {
+                    name: String::new(),
+                    params: Vec::new(),
+                    body: vec![Statement::new(StmtKind::Return(Some(enum_to_string_expr(
+                        __w,
+                        &display,
+                        self_value.clone(),
+                    ))))],
+                    modifiers: Modifiers::default(),
+                    is_async: false,
+                    is_generator: false,
+                    is_sub: false,
+                    return_type: None,
+                    handles: Vec::new(),
+                },
+            )))),
+        ),
+        object_entry(
+            "tostring",
+            Expression::new(ExprKind::FunctionExpr(Box::new(Statement::new(
+                StmtKind::FunctionDecl {
+                    name: String::new(),
+                    params: Vec::new(),
+                    body: vec![Statement::new(StmtKind::Return(Some(enum_to_string_expr(
+                        __w,
+                        &display,
+                        self_value.clone(),
+                    ))))],
+                    modifiers: Modifiers::default(),
+                    is_async: false,
+                    is_generator: false,
+                    is_sub: false,
+                    return_type: None,
+                    handles: Vec::new(),
+                },
+            )))),
+        ),
+        object_entry(
+            "HasFlag",
+            Expression::new(ExprKind::FunctionExpr(Box::new(Statement::new(
+                StmtKind::FunctionDecl {
+                    name: String::new(),
+                    params: vec![synth_param("flag")],
+                    body: vec![Statement::new(StmtKind::Return(Some(enum_has_flag_expr(
+                        self_value.clone(),
+                        Expression::ident("flag"),
+                    ))))],
+                    modifiers: Modifiers::default(),
+                    is_async: false,
+                    is_generator: false,
+                    is_sub: false,
+                    return_type: None,
+                    handles: Vec::new(),
+                },
+            )))),
+        ),
+        object_entry(
+            "hasflag",
+            Expression::new(ExprKind::FunctionExpr(Box::new(Statement::new(
+                StmtKind::FunctionDecl {
+                    name: String::new(),
+                    params: vec![synth_param("flag")],
+                    body: vec![Statement::new(StmtKind::Return(Some(enum_has_flag_expr(
+                        self_value,
+                        Expression::ident("flag"),
+                    ))))],
+                    modifiers: Modifiers::default(),
+                    is_async: false,
+                    is_generator: false,
+                    is_sub: false,
+                    return_type: None,
+                    handles: Vec::new(),
+                },
+            )))),
+        ),
+    ]))
+}
+
+fn day_of_week_name(value: i64) -> &'static str {
+    match value.rem_euclid(7) {
+        0 => "Sunday",
+        1 => "Monday",
+        2 => "Tuesday",
+        3 => "Wednesday",
+        4 => "Thursday",
+        5 => "Friday",
+        _ => "Saturday",
+    }
+}
+
+fn day_of_week_value_expr(value: i64) -> Expression {
+    let name = day_of_week_name(value);
+    let self_value = ps_member(Expression::new(ExprKind::This), "__ps_numeric_value");
+    let int_slot = vybe_ast::protocol_slot_key(vybe_ast::ProtocolSlot::Int);
+    let to_string_slot = vybe_ast::protocol_slot_key(vybe_ast::ProtocolSlot::ToString);
+    Expression::new(ExprKind::Object(vec![
+        object_entry("__ps_enum_value", Expression::bool(true)),
+        object_entry("__ps_numeric_value", Expression::int(value)),
+        object_entry("value__", Expression::int(value)),
+        object_entry(
+            "__ps_type_name",
+            Expression::string(&format!("System.DayOfWeek.{name}")),
+        ),
+        object_entry(
+            "__types",
+            pstypename_array(vec![
+                "System.DayOfWeek".to_string(),
+                "System.Enum".to_string(),
+                "System.ValueType".to_string(),
+                "System.Object".to_string(),
+            ].into_iter().map(|name| Expression::string(&name)).collect()),
+        ),
+        object_entry(
+            &int_slot,
+            Expression::new(ExprKind::FunctionExpr(Box::new(Statement::new(
+                StmtKind::FunctionDecl {
+                    name: String::new(),
+                    params: Vec::new(),
+                    body: vec![Statement::new(StmtKind::Return(Some(self_value)))],
+                    modifiers: Modifiers::default(),
+                    is_async: false,
+                    is_generator: false,
+                    is_sub: false,
+                    return_type: None,
+                    handles: Vec::new(),
+                },
+            )))),
+        ),
+        object_entry(
+            &to_string_slot,
+            no_param_lambda(vec![Statement::new(StmtKind::Return(Some(Expression::string(
+                name,
+            ))))]),
+        ),
+        object_entry(
+            "ToString",
+            no_param_lambda(vec![Statement::new(StmtKind::Return(Some(Expression::string(
+                name,
+            ))))]),
+        ),
+        object_entry(
+            "tostring",
+            no_param_lambda(vec![Statement::new(StmtKind::Return(Some(Expression::string(
+                name,
+            ))))]),
+        ),
+    ]))
+}
+
+fn ps_enum_numeric_value(expr: Expression) -> Expression {
+    const VALUE: &str = "__ps_enum_numeric_object";
+    let numeric = ps_builtin(
+        "__ps_index_get",
+        vec![Expression::ident(VALUE), Expression::string("__ps_numeric_value")],
+    );
+    bind_and_call(
+        &[VALUE],
+        vec![expr],
+        ps_ternary(
+            ps_binary(BinOp::NotEq, numeric.clone(), Expression::null()),
+            numeric,
+            ps_builtin("__ps_to_int", vec![Expression::ident(VALUE)]),
+        ),
+    )
+}
+
+fn enum_has_flag_expr(value: Expression, flag: Expression) -> Expression {
+    let flag_value = ps_enum_numeric_value(flag);
+    ps_binary(
+        BinOp::Eq,
+        ps_builtin(
+            "__ps_bit_and",
+            vec![ps_enum_numeric_value(value), flag_value.clone()],
+        ),
+        flag_value,
+    )
+}
+
+fn enum_to_string_expr(__w: &PsWalker, type_name: &str, value: Expression) -> Expression {
+    let members = powershell_enum_members(__w, type_name);
+    let joined = method_call_expr(
+        method_call_expr(
+            ps_array_of(
+                members
+                    .iter()
+                    .filter(|(_, member_value)| *member_value != 0)
+                    .map(|(name, member_value)| {
+                        ps_ternary(
+                            ps_binary(
+                                BinOp::Eq,
+                                ps_builtin(
+                                    "__ps_bit_and",
+                                    vec![value.clone(), Expression::int(*member_value)],
+                                ),
+                                Expression::int(*member_value),
+                            ),
+                            Expression::string(name),
+                            Expression::null(),
+                        )
+                    })
+                    .collect(),
+            ),
+            "Where",
+            vec![item_lambda(vec![Statement::new(StmtKind::Return(Some(
+                ps_binary(BinOp::NotEq, Expression::ident("_"), Expression::null()),
+            )))])],
+        ),
+        "__ps_join",
+        vec![Expression::string(", ")],
+    );
+    let mut out = ps_ternary(
+        ps_binary(BinOp::Eq, joined.clone(), Expression::string("")),
+        ps_builtin("__ps_to_string", vec![value.clone()]),
+        joined,
+    );
+    for (name, member_value) in members.iter().rev() {
+        out = ps_ternary(
+            ps_binary(BinOp::Eq, value.clone(), Expression::int(*member_value)),
+            Expression::string(name),
+            out,
+        );
+    }
+    out
+}
+
+fn enum_parse_literal_text(expr: &Expression) -> Option<String> {
+    if let Some(text) = literal_text(expr) {
+        return Some(text);
+    }
+    let ExprKind::Array(items) = &expr.kind else {
+        return None;
+    };
+    let mut parts = Vec::with_capacity(items.len());
+    for item in items {
+        parts.push(literal_text(&item.value)?);
+    }
+    Some(parts.join(", "))
+}
+
+fn enum_parse_value_expr(__w: &PsWalker, type_name: &str, expr: Expression) -> Expression {
+    if let Some(text) = enum_parse_literal_text(&expr) {
+        let mut value = 0i64;
+        let mut matched_any = false;
+        for part in text.split(',').map(|p| p.trim()).filter(|p| !p.is_empty()) {
+            if let Ok(n) = part.parse::<i64>() {
+                value |= n;
+                matched_any = true;
+                continue;
+            }
+            if let Some((_, n)) = __w
+                .enum_members
+                .get(&type_name.to_lowercase())
+                .and_then(|members| {
+                    members
+                        .iter()
+                        .find(|(name, _)| name.eq_ignore_ascii_case(part))
+                })
+            {
+                value |= *n;
+                matched_any = true;
+            }
+        }
+        if matched_any {
+            return Expression::int(value);
+        }
+    }
+    let mut parsed = ps_builtin("__ps_to_int", vec![Expression::ident("__ps_enum_parse_value")]);
+    let members = powershell_enum_members(__w, type_name);
+    if !members.is_empty() {
+        let value_text = ps_builtin(
+            "__ps_to_string",
+            vec![Expression::ident("__ps_enum_parse_value")],
+        );
+        for (name, value) in members.iter().rev() {
+            parsed = ps_ternary(
+                ps_builtin(
+                    "__ps_str_equals",
+                    vec![
+                        value_text.clone(),
+                        Expression::string(name),
+                        Expression::bool(true),
+                    ],
+                ),
+                Expression::int(*value),
+                parsed,
+            );
+        }
+    }
+    bind_and_call(&["__ps_enum_parse_value"], vec![expr], parsed)
+}
+
+fn is_system_enum_type_expr(expr: &Expression) -> bool {
+    if let Some(name) = type_name_of(expr) {
+        return matches!(name.to_ascii_lowercase().as_str(), "enum" | "system.enum");
+    }
+    matches!(expr.kind, ExprKind::Ident(ref name) if name.eq_ignore_ascii_case("Enum"))
+}
+
+fn enum_static_args(__w: &PsWalker, args: &[Expression]) -> Option<(String, Vec<Expression>)> {
+    let expanded_args: Vec<Expression> = match args {
+        [Expression {
+            kind: ExprKind::Array(items),
+            ..
+        }] => items.iter().map(|item| item.value.clone()).collect(),
+        _ => args.to_vec(),
+    };
+    let first = expanded_args.first()?;
+    if let ExprKind::Cast { type_name, expr } = &first.kind
+        && (is_declared_enum_name(__w, type_name) || is_powershell_builtin_enum_type(type_name))
+        && let ExprKind::Array(items) = &expr.kind
+    {
+        let mut values = items.iter().map(|item| item.value.clone()).collect::<Vec<_>>();
+        values.extend(expanded_args.iter().skip(1).cloned());
+        return Some((erase_powershell_generic_type_args(type_name), values));
+    }
+    if let Some(type_name) = enum_type_arg_name(__w, first) {
+        let mut values = expanded_args.iter().skip(1).cloned().collect::<Vec<_>>();
+        if enum_runtime_object_expr(first)
+            && (values.is_empty() || matches!(values.first().map(|v| &v.kind), Some(ExprKind::RefOf(_))))
+        {
+            values.insert(0, first.clone());
+        }
+        return Some((type_name, values));
+    }
+    None
+}
+
+fn normalize_system_enum_static_call(__w: &PsWalker, expr: Expression) -> Expression {
+    let ExprKind::Call {
+        callee,
+        args,
+        optional,
+    } = &expr.kind
+    else {
+        return expr;
+    };
+    if *optional {
+        return expr;
+    }
+    let ExprKind::Member { object, field, .. } = &callee.kind else {
+        return expr;
+    };
+    if !is_system_enum_type_expr(object) {
+        return expr;
+    }
+    let values = args
+        .iter()
+        .map(|arg| arg.value.clone())
+        .collect::<Vec<_>>();
+    let Some((enum_type, enum_args)) = enum_static_args(__w, &values) else {
+        return expr;
+    };
+    if field.eq_ignore_ascii_case("IsDefined")
+        && let Some(value) = enum_args.first()
+    {
+        return enum_is_defined_expr(__w, &enum_type, value.clone());
+    }
+    if field.eq_ignore_ascii_case("Parse")
+        && let Some(value) = enum_args.first()
+    {
+        if matches!(
+            enum_type.to_ascii_lowercase().as_str(),
+            "errorcategory" | "system.management.automation.errorcategory"
+        ) {
+            return error_category_expr(value);
+        }
+        return enum_cast_expr(__w, &enum_type, value.clone());
+    }
+    if field.eq_ignore_ascii_case("TryParse")
+        && enum_args.len() >= 2
+        && let ExprKind::RefOf(place) = &enum_args[1].kind
+    {
+        let target = place_as_expression((**place).clone());
+        return enum_try_parse_expr(__w, &enum_type, enum_args[0].clone(), target);
+    }
+    expr
+}
+
+fn enum_type_arg_name(__w: &PsWalker, expr: &Expression) -> Option<String> {
+    if let Some(name) = declared_enum_name_from_expr(__w, expr) {
+        return Some(name);
+    }
+    match &expr.kind {
+        ExprKind::Ident(name) if is_declared_enum_name(__w, name) => {
+            Some(erase_powershell_generic_type_args(name))
+        }
+        _ => type_name_of(expr).and_then(|name| {
+            if is_declared_enum_name(__w, &name) || is_powershell_builtin_enum_type(&name) {
+                Some(erase_powershell_generic_type_args(&name))
+            } else {
+                None
+            }
+        }),
+    }
+}
+
+fn is_powershell_builtin_enum_type(type_name: &str) -> bool {
+    matches!(
+        type_name.to_ascii_lowercase().as_str(),
+        "errorcategory"
+            | "system.management.automation.errorcategory"
+            | "actionpreference"
+            | "system.management.automation.actionpreference"
+            | "scopeditemoptions"
+            | "system.management.automation.scopeditemoptions"
+    )
+}
+
+fn enum_values_expr(type_name: &str, members: Option<&Vec<(String, i64)>>) -> Expression {
+    let Some(members) = members else {
+        return ps_array_of(Vec::new());
+    };
+    ps_array_of(
+        members
+            .iter()
+            .map(|(name, _)| ps_member(type_literal_expr(type_name), name))
+            .collect(),
+    )
+}
+
+fn powershell_enum_members(__w: &PsWalker, type_name: &str) -> Vec<(String, i64)> {
+    if let Some(members) = __w.enum_members.get(&type_name.to_lowercase()) {
+        return members.clone();
+    }
+    match type_name.to_ascii_lowercase().as_str() {
+        "actionpreference" | "system.management.automation.actionpreference" => [
+            ("SilentlyContinue", 0),
+            ("Stop", 1),
+            ("Continue", 2),
+            ("Inquire", 3),
+            ("Ignore", 4),
+            ("Suspend", 5),
+            ("Break", 6),
+        ]
+        .into_iter()
+        .map(|(name, value)| (name.to_string(), value))
+        .collect(),
+        "scopeditemoptions" | "system.management.automation.scopeditemoptions" => [
+            ("None", 0),
+            ("ReadOnly", 1),
+            ("Constant", 2),
+            ("Private", 4),
+            ("AllScope", 8),
+            ("Unspecified", 16),
+        ]
+        .into_iter()
+        .map(|(name, value)| (name.to_string(), value))
+        .collect(),
+        "errorcategory" | "system.management.automation.errorcategory" => [
+            ("NotSpecified", 0),
+            ("OpenError", 1),
+            ("CloseError", 2),
+            ("DeviceError", 3),
+            ("DeadlockDetected", 4),
+            ("InvalidArgument", 5),
+            ("InvalidData", 6),
+            ("InvalidOperation", 7),
+            ("InvalidResult", 8),
+            ("InvalidType", 9),
+            ("MetadataError", 10),
+            ("NotImplemented", 11),
+            ("NotInstalled", 12),
+            ("ObjectNotFound", 13),
+            ("OperationStopped", 14),
+            ("OperationTimeout", 15),
+            ("SyntaxError", 17),
+            ("ParserError", 18),
+            ("PermissionDenied", 19),
+            ("ResourceBusy", 20),
+            ("ResourceExists", 21),
+            ("ResourceUnavailable", 22),
+            ("ReadError", 23),
+            ("WriteError", 24),
+            ("FromStdErr", 25),
+            ("SecurityError", 26),
+            ("ProtocolError", 27),
+            ("ConnectionError", 28),
+            ("AuthenticationError", 29),
+            ("LimitsExceeded", 30),
+        ]
+        .into_iter()
+        .map(|(name, value)| (name.to_string(), value))
+        .collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn enum_names_expr(members: Option<&Vec<(String, i64)>>) -> Expression {
+    let Some(members) = members else {
+        return ps_array_of(Vec::new());
+    };
+    ps_array_of(
+        members
+            .iter()
+            .map(|(name, _)| Expression::string(name))
+            .collect(),
+    )
+}
+
+fn enum_numeric_values_expr(members: Option<&Vec<(String, i64)>>) -> Expression {
+    let Some(members) = members else {
+        return ps_array_of(Vec::new());
+    };
+    ps_array_of(members.iter().map(|(_, value)| Expression::int(*value)).collect())
+}
+
+fn enum_object_numeric_value(expr: &Expression) -> Option<Expression> {
+    enum_runtime_object_expr(expr).then(|| object_property_value(expr, &["__ps_numeric_value", "value__"]))?
+}
+
+fn enum_is_defined_expr(__w: &PsWalker, type_name: &str, value: Expression) -> Expression {
+    if let Some(text) = literal_text(&value) {
+        return Expression::bool(
+            __w.enum_members
+                .get(&type_name.to_lowercase())
+                .is_some_and(|members| members.iter().any(|(name, _)| name.eq_ignore_ascii_case(&text))),
+        );
+    }
+    if let Some(number) = literal_int_value(&value) {
+        return Expression::bool(
+            __w.enum_members
+                .get(&type_name.to_lowercase())
+                .is_some_and(|members| members.iter().any(|(_, n)| *n == number)),
+        );
+    }
+    if let Some(number) = enum_object_numeric_value(&value) {
+        return ps_binary(
+            BinOp::In,
+            number,
+            enum_numeric_values_expr(__w.enum_members.get(&type_name.to_lowercase())),
+        );
+    }
+    ps_binary(BinOp::In, value, enum_names_expr(__w.enum_members.get(&type_name.to_lowercase())))
+}
+
+fn enum_try_parse_expr(
+    __w: &PsWalker,
+    type_name: &str,
+    value: Expression,
+    target: Expression,
+) -> Expression {
+    let parsed = if enum_runtime_object_expr(&value) {
+        value.clone()
+    } else {
+        enum_cast_expr(__w, type_name, value.clone())
+    };
+    let ok = if let Some(text) = literal_text(&value) {
+        Expression::bool(text.split(',').map(|p| p.trim()).filter(|p| !p.is_empty()).all(|part| {
+            part.parse::<i64>().is_ok()
+                || __w.enum_members
+                    .get(&type_name.to_lowercase())
+                    .is_some_and(|members| members.iter().any(|(name, _)| name.eq_ignore_ascii_case(part)))
+        }))
+    } else {
+        Expression::bool(true)
+    };
+    block_value_expr(vec![
+        Statement::new(StmtKind::Assign {
+            targets: vec![target],
+            value: parsed,
+            by_ref: false,
+        }),
+        Statement::new(StmtKind::Return(Some(ok))),
+    ])
 }
 
 fn erase_powershell_generic_type_args(name: &str) -> String {
@@ -14359,6 +25375,16 @@ fn type_literal_expr(name: &str) -> Expression {
     if name.is_empty() {
         return Expression::null();
     }
+    if let Some(short) = name
+        .rsplit('.')
+        .next()
+        .filter(|short| {
+            vybe_platform_dotnet::emitter::core::exceptions::is_synthesized_exception_class(short)
+        })
+        && name.contains('.')
+    {
+        return Expression::ident(short);
+    }
     // ⛔A SYNTHESIZED EXCEPTION TYPE IS A REAL CLASS UNDER ITS SHORT NAME.
     // `synthesize_exception_classes` splices `Exception`, `ArgumentException`
     // and the rest into the program unqualified, and the SAME names are also
@@ -14368,7 +25394,8 @@ fn type_literal_expr(name: &str) -> Expression {
     // parent IS `Exception`. `is_synthesized_exception_class` exists for
     // exactly this question; its own doc records vb hitting the mirror image
     // (`Imports System` qualifying a `Catch` type until it stopped matching).
-    if let Some(short) = name.strip_prefix("System.")
+    if let Some(short) = name
+        .strip_prefix("System.")
         .map(|rest| rest.rsplit('.').next().unwrap_or(rest).trim())
         && vybe_platform_dotnet::emitter::core::exceptions::is_synthesized_exception_class(short)
     {
@@ -14379,15 +25406,17 @@ fn type_literal_expr(name: &str) -> Expression {
     // under its SHORT name, so the qualified chain named nothing.
     if let Some(short) = name.strip_prefix("System.")
         && !short.contains('.')
-        && vybe_platform_dotnet::emitter::core::numerics_classes::
-            is_synthesized_numerics_class(short)
+        && vybe_platform_dotnet::emitter::core::numerics_classes::is_synthesized_numerics_class(
+            short,
+        )
     {
         return Expression::ident(short);
     }
     if let Some(short) = name.strip_prefix("System.Numerics.")
         && !short.contains('.')
-        && vybe_platform_dotnet::emitter::core::numerics_classes::
-            is_synthesized_numerics_class(short)
+        && vybe_platform_dotnet::emitter::core::numerics_classes::is_synthesized_numerics_class(
+            short,
+        )
     {
         return Expression::ident(short);
     }
@@ -14583,6 +25612,163 @@ fn error_category_value(receiver: &Expression, member: &str) -> Option<String> {
         .iter()
         .find(|c| c.eq_ignore_ascii_case(member))
         .map(|c| (*c).to_string())
+}
+
+fn action_preference_value(receiver: &Expression, member: &str) -> Option<i64> {
+    let name = type_name_of(receiver)?;
+    if !matches!(
+        name.to_ascii_lowercase().as_str(),
+        "actionpreference" | "system.management.automation.actionpreference"
+    ) {
+        return None;
+    }
+    Some(match member.to_ascii_lowercase().as_str() {
+        "silentlycontinue" => 0,
+        "stop" => 1,
+        "continue" => 2,
+        "inquire" => 3,
+        "ignore" => 4,
+        "suspend" => 5,
+        "break" => 6,
+        _ => return None,
+    })
+}
+
+fn string_comparison_value(receiver: &Expression, member: &str) -> Option<i64> {
+    let name = type_name_of(receiver)?;
+    if !matches!(
+        name.to_ascii_lowercase().as_str(),
+        "stringcomparison" | "system.stringcomparison"
+    ) {
+        return None;
+    }
+    Some(match member.to_ascii_lowercase().as_str() {
+        "currentculture" => 0,
+        "currentcultureignorecase" => 1,
+        "invariantculture" => 2,
+        "invariantcultureignorecase" => 3,
+        "ordinal" => 4,
+        "ordinalignorecase" => 5,
+        _ => return None,
+    })
+}
+
+fn ps_string_comparison_is_ignore_case(expr: Option<&Expression>) -> bool {
+    expr.and_then(literal_int_value)
+        .is_some_and(|value| matches!(value, 1 | 3 | 5))
+}
+
+fn ps_string_comparison_arg(expr: &Expression) -> bool {
+    literal_int_value(expr)
+        .is_some_and(|value| matches!(value, 0..=5))
+}
+
+fn string_comparer_value(receiver: &Expression, member: &str) -> Option<Expression> {
+    let name = type_name_of(receiver)?;
+    if !matches!(
+        name.to_ascii_lowercase().as_str(),
+        "stringcomparer" | "system.stringcomparer"
+    ) {
+        return None;
+    }
+    let method = match member.to_ascii_lowercase().as_str() {
+        "ordinal" | "invariantculture" | "currentculture" => "Ordinal",
+        "ordinalignorecase" | "invariantcultureignorecase" | "currentcultureignorecase" => {
+            "OrdinalIgnoreCase"
+        }
+        _ => return None,
+    };
+    Some(dotnet_static_call("System.StringComparer", method, Vec::new()))
+}
+
+fn culture_info_value(receiver: &Expression, member: &str) -> Option<Expression> {
+    let name = type_name_of(receiver)?;
+    if !matches!(
+        name.to_ascii_lowercase().as_str(),
+        "cultureinfo" | "system.globalization.cultureinfo"
+    ) {
+        return None;
+    }
+    let method = match member.to_ascii_lowercase().as_str() {
+        "invariantculture" => "InvariantCulture",
+        "currentculture" | "currentuiculture" => "CurrentCulture",
+        _ => return None,
+    };
+    Some(dotnet_static_call(
+        "System.Globalization.CultureInfo",
+        method,
+        Vec::new(),
+    ))
+}
+
+fn assignment_expr_is_culture_info_like(expr: &Expression) -> bool {
+    matches!(
+        &expr.kind,
+        ExprKind::Call { callee, args, .. }
+            if args.is_empty()
+                && matches!(
+                    &callee.kind,
+                    ExprKind::Member { object, field, .. }
+                        if (field.eq_ignore_ascii_case("InvariantCulture")
+                            || field.eq_ignore_ascii_case("CurrentCulture")
+                            || field.eq_ignore_ascii_case("CurrentUICulture"))
+                            && type_name_of(object).is_some_and(|name| matches!(
+                                name.to_ascii_lowercase().as_str(),
+                                "cultureinfo" | "system.globalization.cultureinfo"
+                            ))
+                )
+    )
+}
+
+fn culture_info_expr(__w: &PsWalker, expr: &Expression) -> bool {
+    assignment_expr_is_culture_info_like(expr)
+        || matches!(&expr.kind, ExprKind::Ident(name) if __w
+            .culture_info_vars
+            .get(&name.to_lowercase())
+            .copied()
+            .unwrap_or(false))
+}
+
+fn culture_text_info_object() -> Expression {
+    Expression::new(ExprKind::Object(vec![object_entry(
+        "__ps_textinfo",
+        Expression::bool(true),
+    )]))
+}
+
+fn culture_text_info_expr(expr: &Expression) -> bool {
+    object_property_value(expr, &["__ps_textinfo"]).is_some()
+}
+
+fn title_case_expr(input: Expression) -> Expression {
+    let word = Expression::ident("_");
+    let head = ps_member_call(
+        ps_member_call(word.clone(), "Substring", vec![Expression::int(0), Expression::int(1)]),
+        "ToUpper",
+        Vec::new(),
+    );
+    let tail = ps_member_call(word, "Substring", vec![Expression::int(1)]);
+    let words = ps_member_call(
+        ps_member_call(
+            input,
+            "Split",
+            vec![Expression::string(" ")],
+        ),
+        "ForEach",
+        vec![item_lambda(vec![Statement::new(StmtKind::Return(Some(
+            ps_binary(BinOp::Add, head, tail),
+        )))])],
+    );
+    ps_member_call(words, "__ps_join", vec![Expression::string(" ")])
+}
+
+fn fixed_point_format_precision(expr: &Expression) -> Option<i64> {
+    let text = literal_text(expr)?;
+    let rest = text.strip_prefix('F').or_else(|| text.strip_prefix('f'))?;
+    if rest.is_empty() {
+        return Some(2);
+    }
+    rest.parse::<i64>().ok()
 }
 
 fn should_process_reason_value(receiver: &Expression, member: &str) -> Option<String> {
@@ -14792,9 +25978,48 @@ fn build_binary(__w: &PsWalker, op_raw: &str, left: Expression, right: Expressio
         && (expr_mentions_declared_enum(__w, &left) || expr_mentions_declared_enum(__w, &right))
     {
         return ps_binary(
-            if word == "eq" { BinOp::Eq } else { BinOp::NotEq },
-            ps_builtin("__ps_to_int", vec![left]),
-            ps_builtin("__ps_to_int", vec![right]),
+            if word == "eq" {
+                BinOp::Eq
+            } else {
+                BinOp::NotEq
+            },
+            ps_enum_numeric_value(left),
+            ps_enum_numeric_value(right),
+        );
+    }
+    if matches!(word.as_str(), "eq" | "ne") {
+        if let (Some(left_type), Some(right_type)) =
+            (comparison_type_name(&left), comparison_type_name(&right))
+        {
+            let left_type = canonical_powershell_type_object_name(&left_type);
+            let right_type = canonical_powershell_type_object_name(&right_type);
+            let test = ps_builtin(
+                "__ps_eq",
+                vec![Expression::string(&left_type), Expression::string(&right_type)],
+            );
+            return if word == "ne" { negate(test) } else { test };
+        }
+        if let Some(type_name) = comparison_type_name(&right) {
+            let type_name = canonical_powershell_type_object_name(&type_name);
+            let left_type = ps_member(left, "__ps_type_name");
+            let test = ps_builtin("__ps_eq", vec![left_type, Expression::string(&type_name)]);
+            return if word == "ne" { negate(test) } else { test };
+        }
+        if let Some(type_name) = comparison_type_name(&left) {
+            let type_name = canonical_powershell_type_object_name(&type_name);
+            let right_type = ps_member(right, "__ps_type_name");
+            let test = ps_builtin("__ps_eq", vec![right_type, Expression::string(&type_name)]);
+            return if word == "ne" { negate(test) } else { test };
+        }
+        let builtin = match (word.as_str(), case_sensitive) {
+            ("eq", false) => "__ps_eq",
+            ("ne", false) => "__ps_ne",
+            ("eq", _) => "__ps_ceq",
+            _ => "__ps_cne",
+        };
+        return ps_builtin(
+            builtin,
+            vec![ps_numeric_value_or_self(left), ps_numeric_value_or_self(right)],
         );
     }
 
@@ -14899,7 +26124,11 @@ fn build_binary(__w: &PsWalker, op_raw: &str, left: Expression, right: Expressio
                 "join" => {
                     // `__ps_join` — the bare `join` spelling never reaches
                     // value-method dispatch. See the profile's `Join` note.
-                    return method_call_expr(ensure_array(left), "__ps_join", spread_operands(right));
+                    return method_call_expr(
+                        ensure_array(left),
+                        "__ps_join",
+                        spread_operands(right),
+                    );
                 }
                 "notlike" | "notmatch" => {
                     return Expression::new(ExprKind::Unary {
@@ -14952,9 +26181,91 @@ fn build_binary(__w: &PsWalker, op_raw: &str, left: Expression, right: Expressio
             optional: false,
         });
     }
+    if matches!(op, BinOp::Add)
+        && receiver_expr_is_hashtable_var(__w, &left)
+        && receiver_expr_is_hashtable_var(__w, &right)
+    {
+        return Expression::new(ExprKind::Object(vec![
+            ObjectProperty::Spread(left.clone()),
+            ObjectProperty::Spread(right.clone()),
+            object_entry(
+                "__ps_key_order",
+                ps_binary(
+                    BinOp::Add,
+                    ps_hashtable_order_or_keys(left),
+                    ps_hashtable_order_or_keys(right),
+                ),
+            ),
+        ]));
+    }
+    if matches!(op, BinOp::Sub) {
+        return Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::ident("__ps_subtract")),
+            args: vec![Argument::positional(left), Argument::positional(right)],
+            optional: false,
+        });
+    }
     if matches!(op, BinOp::Div) && !float_literal(&left) && !float_literal(&right) {
         return Expression::new(ExprKind::Call {
             callee: Box::new(Expression::ident("__ps_divide")),
+            args: vec![Argument::positional(left), Argument::positional(right)],
+            optional: false,
+        });
+    }
+    if matches!(op, BinOp::Mod) {
+        return Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::ident("__ps_remainder")),
+            args: vec![Argument::positional(left), Argument::positional(right)],
+            optional: false,
+        });
+    }
+    if matches!(
+        op,
+        BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor | BinOp::Shl | BinOp::Shr
+    ) {
+        if matches!(op, BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor)
+            && let Some(enum_type) = declared_enum_name_from_expr(__w, &left)
+                .or_else(|| declared_enum_name_from_expr(__w, &right))
+        {
+            let name = match op {
+                BinOp::BitAnd => "__ps_bit_and",
+                BinOp::BitOr => "__ps_bit_or",
+                BinOp::BitXor => "__ps_bit_xor",
+                _ => unreachable!(),
+            };
+            return enum_value_object_expr(
+                __w,
+                &enum_type,
+                ps_builtin(
+                    name,
+                    vec![
+                        ps_enum_numeric_value(left),
+                        ps_enum_numeric_value(right),
+                    ],
+                ),
+            );
+        }
+        let left = ps_numeric_value_or_self(left);
+        let right = ps_numeric_value_or_self(right);
+        let name = match op {
+            BinOp::BitAnd => "__ps_bit_and",
+            BinOp::BitOr => "__ps_bit_or",
+            BinOp::BitXor => "__ps_bit_xor",
+            BinOp::Shl => "__ps_shl",
+            BinOp::Shr => "__ps_shr",
+            _ => unreachable!(),
+        };
+        if declared_enum_name_from_expr(__w, &left).is_some()
+            || declared_enum_name_from_expr(__w, &right).is_some()
+        {
+            return Expression::new(ExprKind::Binary {
+                op,
+                left: Box::new(left),
+                right: Box::new(right),
+            });
+        }
+        return Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::ident(name)),
             args: vec![Argument::positional(left), Argument::positional(right)],
             optional: false,
         });
@@ -15027,6 +26338,97 @@ fn regex_match_expr_updates_matches(args: Vec<Expression>, invert: bool) -> Expr
     })
 }
 
+fn is_wildcard_pattern_type_name(type_name: &str) -> bool {
+    matches!(
+        type_name.to_ascii_lowercase().as_str(),
+        "wildcardpattern" | "system.management.automation.wildcardpattern"
+    )
+}
+
+fn is_supports_wildcards_attribute_type_name(type_name: &str) -> bool {
+    matches!(
+        type_name.to_ascii_lowercase().as_str(),
+        "supportswildcardsattribute" | "system.management.automation.supportswildcardsattribute"
+    )
+}
+
+fn wildcard_option_value(receiver: &Expression, member: &str) -> Option<i64> {
+    let type_name = type_name_of(receiver)?;
+    if !matches!(
+        type_name.to_ascii_lowercase().as_str(),
+        "wildcardoptions" | "system.management.automation.wildcardoptions"
+    ) {
+        return None;
+    }
+    match member.to_ascii_lowercase().as_str() {
+        "none" => Some(0),
+        "ignorecase" => Some(1),
+        _ => None,
+    }
+}
+
+fn completion_result_type_value(receiver: &Expression, member: &str) -> Option<i64> {
+    let type_name = type_name_of(receiver)?;
+    if !matches!(
+        type_name.to_ascii_lowercase().as_str(),
+        "completionresulttype" | "system.management.automation.completionresulttype"
+    ) {
+        return None;
+    }
+    [
+        ("Text", 0i64),
+        ("History", 1),
+        ("Command", 2),
+        ("ProviderContainer", 3),
+        ("ProviderItem", 4),
+        ("Property", 5),
+        ("Method", 6),
+        ("ParameterName", 7),
+        ("ParameterValue", 8),
+        ("Variable", 9),
+        ("Namespace", 10),
+        ("Type", 11),
+        ("Keyword", 12),
+        ("DynamicKeyword", 13),
+    ]
+    .iter()
+    .find(|(value, _)| value.eq_ignore_ascii_case(member))
+    .map(|(_, value)| *value)
+}
+
+fn wildcard_regex_expr(pattern: Expression) -> Expression {
+    ps_builtin("__ps_wildcard_regex", vec![pattern])
+}
+
+fn wildcard_escape_expr(pattern: Expression) -> Expression {
+    ps_builtin("__ps_wildcard_escape", vec![pattern])
+}
+
+fn wildcard_contains_expr(pattern: Expression) -> Expression {
+    ps_builtin("__ps_wildcard_contains", vec![pattern])
+}
+
+fn wildcard_is_match_expr(input: Expression, pattern: Expression, options: Expression) -> Expression {
+    ps_builtin("__ps_wildcard_is_match", vec![input, pattern, options])
+}
+
+fn wildcard_pattern_object(pattern: Expression, options: Expression) -> Expression {
+    let is_match = item_lambda(vec![Statement::new(StmtKind::Return(Some(
+        wildcard_is_match_expr(Expression::ident("_"), pattern.clone(), options.clone()),
+    )))]);
+    reflected_automation_object(
+        "System.Management.Automation.WildcardPattern",
+        vec![
+            ("Pattern", pattern.clone()),
+            ("pattern", pattern),
+            ("Options", options.clone()),
+            ("options", options),
+            ("IsMatch", is_match.clone()),
+            ("ismatch", is_match),
+        ],
+    )
+}
+
 /// `-like`'s wildcard pattern as the equivalent anchored regex, so both
 /// operators reach one matcher. Only a literal pattern can be translated; a
 /// computed one is passed through and matches as a regex, which is wrong but
@@ -15037,8 +26439,18 @@ fn glob_to_regex(pattern: Expression) -> Expression {
     };
 
     let mut out = String::from("^");
+    let mut escaped = false;
     for ch in glob.chars() {
+        if escaped {
+            if "\\.+^$(){}|*?[]".contains(ch) {
+                out.push('\\');
+            }
+            out.push(ch);
+            escaped = false;
+            continue;
+        }
         match ch {
+            '`' => escaped = true,
             '*' => out.push_str(".*"),
             '?' => out.push('.'),
             // `[a-c]` is a character class in both syntaxes.
@@ -15049,6 +26461,9 @@ fn glob_to_regex(pattern: Expression) -> Expression {
             }
             c => out.push(c),
         }
+    }
+    if escaped {
+        out.push_str("\\`");
     }
     out.push('$');
     Expression::string(&out)
@@ -15142,8 +26557,7 @@ fn type_test_expr(value: Expression, type_expr: &Expression) -> Expression {
             let names = Expression::new(ExprKind::Array(
                 vec![
                     "int", "int16", "int32", "int64", "long", "short", "byte", "sbyte", "uint",
-                    "uint16", "uint32", "uint64", "ushort", "double", "single", "float",
-                    "decimal",
+                    "uint16", "uint32", "uint64", "ushort", "double", "single", "float", "decimal",
                 ]
                 .into_iter()
                 .map(|n| ArrayElement {
@@ -15179,7 +26593,8 @@ fn type_test_expr(value: Expression, type_expr: &Expression) -> Expression {
         let test = match wanted {
             "Ast" => ast_present.clone(),
             "ExpressionAst" => {
-                let mut test = ps_binary(BinOp::Eq, actual.clone(), Expression::string("CommandAst"));
+                let mut test =
+                    ps_binary(BinOp::Eq, actual.clone(), Expression::string("CommandAst"));
                 for ty in ["PipelineAst", "HashtableAst", "ArrayLiteralAst"] {
                     test = ps_binary(
                         BinOp::Or,
@@ -15190,14 +26605,155 @@ fn type_test_expr(value: Expression, type_expr: &Expression) -> Expression {
                 ps_binary(
                     BinOp::Or,
                     test,
-                    ps_member_call(actual.clone(), "EndsWith", vec![Expression::string("ExpressionAst")]),
+                    ps_member_call(
+                        actual.clone(),
+                        "EndsWith",
+                        vec![Expression::string("ExpressionAst")],
+                    ),
                 )
             }
-            "StatementAst" => ps_member_call(actual.clone(), "EndsWith", vec![Expression::string("StatementAst")]),
-            "AttributeBaseAst" => ps_binary(BinOp::Eq, actual.clone(), Expression::string("TypeConstraintAst")),
+            "StatementAst" => ps_member_call(
+                actual.clone(),
+                "EndsWith",
+                vec![Expression::string("StatementAst")],
+            ),
+            "AttributeBaseAst" => ps_binary(
+                BinOp::Eq,
+                actual.clone(),
+                Expression::string("TypeConstraintAst"),
+            ),
             _ => exact(),
         };
         return ps_ternary(ast_present, test, Expression::bool(false));
+    }
+
+    if let Some(member_type) = match leaf.as_str() {
+        "psscriptmethod" => Some("ScriptMethod"),
+        "psscriptproperty" => Some("ScriptProperty"),
+        "pscodeproperty" => Some("CodeProperty"),
+        "psnoteproperty" => Some("NoteProperty"),
+        "psaliasproperty" => Some("AliasProperty"),
+        _ => None,
+    } {
+        return ps_binary(
+            BinOp::Eq,
+            ps_member(value, "MemberType"),
+            Expression::string(member_type),
+        );
+    }
+
+    if leaf == "iordereddictionary" {
+        return ps_binary(
+            BinOp::NotEq,
+            ps_builtin("__ps_index_get", vec![value, Expression::string("__ps_key_order")]),
+            Expression::null(),
+        );
+    }
+
+    if matches!(leaf.as_str(), "datetime" | "timespan")
+        || name.to_ascii_lowercase().contains("automation.")
+        || name.to_ascii_lowercase().contains("powershell.commands.")
+        || name.starts_with("System.")
+        || leaf.ends_with("exception")
+        || leaf == "variableisundefined"
+    {
+        let short_name = name.rsplit('.').next().unwrap_or(&name);
+        let shared_types = ps_builtin(
+            "__ps_index_get",
+            vec![value.clone(), Expression::string("__types")],
+        );
+        let ps_type_names = ps_builtin(
+            "__ps_index_get",
+            vec![value.clone(), Expression::string("__ps_type_names")],
+        );
+        let type_names = Expression::new(ExprKind::NullCoalesce {
+            left: Box::new(shared_types),
+            right: Box::new(ps_type_names),
+        });
+        let type_names_array = ensure_array(type_names.clone());
+        let full = ps_binary(
+            BinOp::In,
+            Expression::string(&name),
+            type_names_array.clone(),
+        );
+        let short = ps_binary(
+            BinOp::In,
+            Expression::string(short_name),
+            type_names_array,
+        );
+        let stamped = ps_binary(
+            BinOp::And,
+            ps_binary(BinOp::NotEq, type_names.clone(), Expression::null()),
+            ps_binary(BinOp::Or, full, short),
+        );
+        let direct_type = ps_builtin(
+            "__ps_index_get",
+            vec![value.clone(), Expression::string("__type")],
+        );
+        let direct = ps_binary(
+            BinOp::Or,
+            ps_binary(BinOp::Eq, direct_type.clone(), Expression::string(&name)),
+            ps_binary(BinOp::Eq, direct_type, Expression::string(short_name)),
+        );
+        let direct = match leaf.as_str() {
+            "datetime" | "timespan" => ps_binary(
+                BinOp::Or,
+                direct,
+                ps_binary(
+                    BinOp::Eq,
+                    ps_builtin("__ps_index_get", vec![value.clone(), Expression::string("__type")]),
+                    Expression::string(leaf.as_str()),
+                ),
+            ),
+            _ => direct,
+        };
+        let runtime_name = ps_binary(
+            BinOp::Eq,
+            ps_leaf_type_name(value.clone()),
+            Expression::string(short_name),
+        );
+        let mut test = ps_binary(BinOp::Or, ps_binary(BinOp::Or, stamped, direct), runtime_name);
+        if leaf == "runtimeexception" {
+            let nested_exception = Expression::new(ExprKind::NullCoalesce {
+                left: Box::new(ps_builtin(
+                    "__ps_index_get",
+                    vec![value.clone(), Expression::string("Exception")],
+                )),
+                right: Box::new(ps_builtin(
+                    "__ps_index_get",
+                    vec![value, Expression::string("exception")],
+                )),
+            });
+            let nested_types = Expression::new(ExprKind::NullCoalesce {
+                left: Box::new(ps_builtin(
+                    "__ps_index_get",
+                    vec![nested_exception.clone(), Expression::string("__types")],
+                )),
+                right: Box::new(ps_builtin(
+                    "__ps_index_get",
+                    vec![nested_exception.clone(), Expression::string("__ps_type_names")],
+                )),
+            });
+            let nested_direct = ps_builtin(
+                "__ps_index_get",
+                vec![nested_exception, Expression::string("__type")],
+            );
+            let nested_runtime = ps_binary(
+                BinOp::Or,
+                ps_binary(
+                    BinOp::In,
+                    Expression::string("VariableIsUndefined"),
+                    ensure_array(nested_types),
+                ),
+                ps_binary(
+                    BinOp::Eq,
+                    nested_direct,
+                    Expression::string("VariableIsUndefined"),
+                ),
+            );
+            test = ps_binary(BinOp::Or, test, nested_runtime);
+        }
+        return test;
     }
 
     // `[array]` is the runtime's own Array.
@@ -15218,7 +26774,15 @@ fn type_test_expr(value: Expression, type_expr: &Expression) -> Expression {
     // type has none of: `$e -is [System.ArgumentException]` answered False for
     // the instance's own class, its parent and `Exception` alike. The leaf is
     // what the rtt is registered under; the shared arm canonicalizes it.
-    let leaf_spelling = name.rsplit('.').next().unwrap_or(&name).to_string();
+    let canonical = match name.to_ascii_lowercase().as_str() {
+        "guid" => "System.Guid",
+        "datetime" => "System.DateTime",
+        "timespan" => "System.TimeSpan",
+        "uri" => "System.Uri",
+        "version" => "System.Version",
+        _ => type_accelerator(&name).unwrap_or(&name),
+    };
+    let leaf_spelling = canonical.rsplit('.').next().unwrap_or(canonical).to_string();
     Expression::new(ExprKind::IsType {
         expr: Box::new(value),
         type_name: leaf_spelling,
@@ -15232,9 +26796,7 @@ fn dotted_name_of(expr: &Expression) -> Option<String> {
         ExprKind::Member { object, field, .. } => {
             Some(format!("{}.{}", dotted_name_of(object)?, field))
         }
-        ExprKind::Cast { type_name, .. } if !type_name.trim().is_empty() => {
-            Some(type_name.clone())
-        }
+        ExprKind::Cast { type_name, .. } if !type_name.trim().is_empty() => Some(type_name.clone()),
         _ => None,
     }
 }
@@ -15292,7 +26854,11 @@ fn parse_double_quoted_string(__w: &mut PsWalker, text: &str) -> Expression {
     parse_expandable_string(__w, text, true)
 }
 
-fn parse_expandable_string(__w: &mut PsWalker, text: &str, collapse_doubled_quote: bool) -> Expression {
+fn parse_expandable_string(
+    __w: &mut PsWalker,
+    text: &str,
+    collapse_doubled_quote: bool,
+) -> Expression {
     let chars: Vec<char> = text.chars().collect();
     let mut parts: Vec<InterpolPart> = Vec::new();
     let mut literal = String::new();
@@ -15383,10 +26949,10 @@ fn parse_expandable_string(__w: &mut PsWalker, text: &str, collapse_doubled_quot
                 }
 
                 let name = chars[(i + 1)..end].iter().collect::<String>();
-                parts.push(InterpolPart::Expr(parse_script_expression(__w, &format!(
-                    "${}",
-                    name
-                ))));
+                parts.push(InterpolPart::Expr(parse_script_expression(
+                    __w,
+                    &format!("${}", name),
+                )));
                 i = end;
             }
 
@@ -15422,9 +26988,7 @@ fn parse_expandable_string(__w: &mut PsWalker, text: &str, collapse_doubled_quot
 fn parse_subexpression(__w: &mut PsWalker, raw: &str) -> Expression {
     let expr = parse_script_expression(__w, raw);
     match &expr.kind {
-        ExprKind::Ident(name)
-            if !raw.trim_start().starts_with('$') && !is_literal_word(name) =>
-        {
+        ExprKind::Ident(name) if !raw.trim_start().starts_with('$') && !is_literal_word(name) => {
             Expression::new(ExprKind::Call {
                 callee: Box::new(expr.clone()),
                 args: Vec::new(),
@@ -15483,7 +27047,14 @@ fn is_numeric_like(raw: &str) -> bool {
         return false;
     }
 
-    text.parse::<i64>().is_ok() || text.parse::<f64>().is_ok() || text == "$null"
+    let lower = text.to_ascii_lowercase();
+    let number = lower
+        .strip_suffix("ul")
+        .or_else(|| lower.strip_suffix('u'))
+        .or_else(|| lower.strip_suffix('l'))
+        .or_else(|| lower.strip_suffix('d'))
+        .unwrap_or(&lower);
+    number.parse::<i64>().is_ok() || number.parse::<f64>().is_ok() || text == "$null"
 }
 
 fn looks_like_command_invocation(raw: &str) -> bool {

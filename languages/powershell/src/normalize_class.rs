@@ -67,7 +67,8 @@ pub fn normalize_class(
                 };
 
                 let (canonical, name_kind) = crate::protocol::canonical_method(src_name);
-                let special_kind = resolve_special_kind(m.protocol_slot, name_kind, &declared_slots);
+                let special_kind =
+                    resolve_special_kind(m.protocol_slot, name_kind, &declared_slots);
                 let access = Access::from(m.visibility);
                 let Some(method) = from_method_stmt(span.clone(), stmt, &canonical, access) else {
                     continue;

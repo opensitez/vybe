@@ -32,6 +32,14 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         // a string operand to a number, so `@(1,2) * 3` answered 0 elements
         // and `"ab" * 3` answered `NaN`.
         "powershell.multiply" => super::operators::emit_multiply(chunks, current, line),
+        "powershell.subtract" => super::operators::emit_subtract(chunks, current, line),
+        "powershell.remainder" => super::operators::emit_remainder(chunks, current, line),
+        "powershell.bit_and" => super::operators::emit_bit_and(chunks, current, line),
+        "powershell.bit_or" => super::operators::emit_bit_or(chunks, current, line),
+        "powershell.bit_xor" => super::operators::emit_bit_xor(chunks, current, line),
+        "powershell.shl" => super::operators::emit_shl(chunks, current, line),
+        "powershell.shr" => super::operators::emit_shr(chunks, current, line),
+        "powershell.negate" => super::operators::emit_negate(chunks, current, line),
         "powershell.psobject" => super::operators::emit_psobject(chunks, current, line),
         "powershell.prop_add" => super::operators::emit_prop_add(chunks, current, line),
         "powershell.collection_clear" => {
@@ -41,9 +49,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "powershell.collection_remove" => {
             super::operators::emit_collection_remove(chunks, current, line)
         }
-        "powershell.compare_object" => {
-            super::operators::emit_compare_object(chunks, current, line)
-        }
+        "powershell.compare_object" => super::operators::emit_compare_object(chunks, current, line),
         "powershell.properties" => {
             super::operators::emit_psobject_properties(chunks, current, argc, line)
         }
@@ -53,12 +59,31 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "powershell.index_get" => super::operators::emit_index_get(chunks, current, line),
         "powershell.index_set" => super::operators::emit_index_set(chunks, current, line),
         "powershell.member_dyn" => super::operators::emit_member_dyn(chunks, current, line),
+        "powershell.strict_var" => super::operators::emit_strict_var(chunks, current, line),
+        "powershell.strict_member_get" => {
+            super::operators::emit_strict_member_get(chunks, current, line)
+        }
+        "powershell.strict_index_get" => {
+            super::operators::emit_strict_index_get(chunks, current, line)
+        }
         "powershell.to_int" => super::operators::emit_to_int(chunks, current, line),
         "powershell.to_char" => super::operators::emit_to_char(chunks, current, line),
         "powershell.compare_to" => super::operators::emit_compare_to(chunks, current, line),
         "powershell.eq" => super::operators::emit_case_folding_eq(chunks, current, false, line),
         "powershell.ne" => super::operators::emit_case_folding_eq(chunks, current, true, line),
         "powershell.get_type" => super::operators::emit_get_type(chunks, current, line),
+        "powershell.wildcard_regex" => {
+            super::operators::emit_wildcard_regex(chunks, current, line)
+        }
+        "powershell.wildcard_escape" => {
+            super::operators::emit_wildcard_escape(chunks, current, line)
+        }
+        "powershell.wildcard_contains" => {
+            super::operators::emit_wildcard_contains(chunks, current, line)
+        }
+        "powershell.wildcard_is_match" => {
+            super::operators::emit_wildcard_is_match(chunks, current, line)
+        }
         "powershell.to_display" => super::display::emit_to_display(chunks, current, line),
         "powershell.format_list" => {
             super::display::emit_format(chunks, current, super::display::FormatMode::List, line)
