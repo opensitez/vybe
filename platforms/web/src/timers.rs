@@ -25,7 +25,7 @@ use std::sync::{Arc, Mutex};
 use vybe_runtime::event_loop::monotonic_now_ms;
 use vybe_runtime::scheduler::DeferredSource;
 use vybe_runtime::vm::HostFnDecl;
-use vybe_runtime::{FuncSig, Param, HostContext, VM, ValType, Value};
+use vybe_runtime::{FuncSig, HostContext, Param, VM, ValType, Value};
 
 use crate::engine::{ScheduleOp, ScheduleValue, schedule};
 

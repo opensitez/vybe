@@ -16,16 +16,16 @@
 use std::sync::Arc;
 
 use crate::canvas_backend::{
-    self, CanvasBackend, GradientDef, GradientKind as SeamGradientKind, Op2D, PathDef,
-    PathOp2D, PatternDef, Query2D, Query2DValue, StringAttribute, TextMetrics2D,
+    self, CanvasBackend, GradientDef, GradientKind as SeamGradientKind, Op2D, PathDef, PathOp2D,
+    PatternDef, Query2D, Query2DValue, StringAttribute, TextMetrics2D,
 };
 use crate::engine::DocumentId;
 use webcore::canvas::{
     Canvas as _, Color, ColorStop, CompositeOp, Direction, FillRule, Font, FontKerning,
     FontStretch, FontStyle, FontVariantCaps, FontWeight, Gradient as CanvasGradient, Image,
-    ImageData, LineCap, LineJoin, Paint as CanvasPaint, Pattern as CanvasPattern, Repetition,
-    Path2D as CanvasPath, PathOp as EnginePathOp, Shadow, SmoothingQuality, TextAlign,
-    TextBaseline, TextRendering,
+    ImageData, LineCap, LineJoin, Paint as CanvasPaint, Path2D as CanvasPath,
+    PathOp as EnginePathOp, Pattern as CanvasPattern, Repetition, Shadow, SmoothingQuality,
+    TextAlign, TextBaseline, TextRendering,
 };
 use webcore::types::Document;
 
@@ -82,13 +82,14 @@ fn node_of(document: &Document, target: &str) -> Option<u32> {
 }
 
 fn document_of(target: &Target<'_>) -> DocumentId {
-    target
-        .document
-        .unwrap_or_else(crate::html::active_document)
+    target.document.unwrap_or_else(crate::html::active_document)
 }
 
 /// Borrow the 2D context `target` names.
-fn with_canvas<T>(target: &str, f: impl FnOnce(&mut dyn webcore::canvas::Canvas) -> T) -> Option<T> {
+fn with_canvas<T>(
+    target: &str,
+    f: impl FnOnce(&mut dyn webcore::canvas::Canvas) -> T,
+) -> Option<T> {
     let target = split_target(target);
     crate::engine_webcore::with_document(document_of(&target), |document| {
         let node = node_of(document, target.node)?;
@@ -145,9 +146,11 @@ impl CanvasBackend for WebCoreBackend {
                 },
                 None => Query2DValue::Absent,
             },
-            Query2D::IsPointInPath { x, y, rule } => Query2DValue::Bool(
-                c.is_point_in_path(x, y, FillRule::parse(&rule).unwrap_or(FillRule::NonZero)),
-            ),
+            Query2D::IsPointInPath { x, y, rule } => Query2DValue::Bool(c.is_point_in_path(
+                x,
+                y,
+                FillRule::parse(&rule).unwrap_or(FillRule::NonZero),
+            )),
             Query2D::IsPointInStroke { x, y } => Query2DValue::Bool(c.is_point_in_stroke(x, y)),
             Query2D::GetTransform => {
                 let m = c.get_transform();
@@ -165,14 +168,14 @@ impl CanvasBackend for WebCoreBackend {
                 // the API layer, which is `canvas.rs`'s job, not a painter's.
                 None => Query2DValue::Absent,
             },
-            Query2D::IsPointInPathOf { path, x, y, rule } => Query2DValue::Bool(
-                c.is_point_in_path2d(
+            Query2D::IsPointInPathOf { path, x, y, rule } => {
+                Query2DValue::Bool(c.is_point_in_path2d(
                     &path_of(&path),
                     x,
                     y,
                     FillRule::parse(&rule).unwrap_or(FillRule::NonZero),
-                ),
-            ),
+                ))
+            }
             Query2D::IsPointInStrokeOf { path, x, y } => {
                 Query2DValue::Bool(c.is_point_in_stroke2d(&path_of(&path), x, y))
             }
@@ -324,29 +327,6 @@ impl CanvasBackend for WebCoreBackend {
                     let img = Image::from_rgba(width, height, pixels);
                     c.draw_image(&img, dx, dy, dw, dh);
                 }
-                Op2D::DrawImagePaletted {
-                    indices,
-                    palette,
-                    width,
-                    height,
-                    dx,
-                    dy,
-                    dw,
-                    dh,
-                } => {
-                    // The palette arrives as RGB triples (SDL's shape); the
-                    // engine wants packed 0xRRGGBB entries.
-                    let packed: Vec<u32> = palette
-                        .chunks(3)
-                        .map(|c| {
-                            ((*c.first().unwrap_or(&0) as u32) << 16)
-                                | ((*c.get(1).unwrap_or(&0) as u32) << 8)
-                                | (*c.get(2).unwrap_or(&0) as u32)
-                        })
-                        .collect();
-                    let img = Image::from_paletted(width, height, &indices, &packed);
-                    c.draw_image(&img, dx, dy, dw, dh);
-                }
 
                 // ── CSS values, parsed by the engine ──────────────────
                 Op2D::SetFillStyleCss(css) => c.set_fill_style_css(&css),
@@ -374,15 +354,24 @@ impl CanvasBackend for WebCoreBackend {
                 // time (a page assigns `shadowBlur` without touching
                 // `shadowColor`) while the engine holds them as one value.
                 Op2D::SetShadowBlur(v) => {
-                    let s = Shadow { blur: v, ..current_shadow(c) };
+                    let s = Shadow {
+                        blur: v,
+                        ..current_shadow(c)
+                    };
                     c.set_shadow(&s);
                 }
                 Op2D::SetShadowOffsetX(v) => {
-                    let s = Shadow { offset_x: v, ..current_shadow(c) };
+                    let s = Shadow {
+                        offset_x: v,
+                        ..current_shadow(c)
+                    };
                     c.set_shadow(&s);
                 }
                 Op2D::SetShadowOffsetY(v) => {
-                    let s = Shadow { offset_y: v, ..current_shadow(c) };
+                    let s = Shadow {
+                        offset_y: v,
+                        ..current_shadow(c)
+                    };
                     c.set_shadow(&s);
                 }
 
@@ -419,9 +408,16 @@ impl CanvasBackend for WebCoreBackend {
                 // ── Paths ─────────────────────────────────────────────
                 Op2D::ArcTo(x1, y1, x2, y2, r) => c.arc_to(x1, y1, x2, y2, r),
                 Op2D::RoundRect { x, y, w, h, radii } => c.round_rect_radii(x, y, w, h, radii),
-                Op2D::EllipseFull { x, y, rx, ry, rotation, start, end, ccw } => {
-                    c.ellipse_arc(x, y, rx, ry, rotation, start, end, ccw)
-                }
+                Op2D::EllipseFull {
+                    x,
+                    y,
+                    rx,
+                    ry,
+                    rotation,
+                    start,
+                    end,
+                    ccw,
+                } => c.ellipse_arc(x, y, rx, ry, rotation, start, end, ccw),
                 Op2D::FillWithRule(rule) => {
                     c.fill_with_rule(FillRule::parse(&rule).unwrap_or(FillRule::NonZero))
                 }
@@ -430,12 +426,8 @@ impl CanvasBackend for WebCoreBackend {
                 }
 
                 // ── Text ──────────────────────────────────────────────
-                Op2D::FillTextMaxWidth(t, x, y, max) => {
-                    c.fill_text_constrained(&t, x, y, max)
-                }
-                Op2D::StrokeTextMaxWidth(t, x, y, max) => {
-                    c.stroke_text_constrained(&t, x, y, max)
-                }
+                Op2D::FillTextMaxWidth(t, x, y, max) => c.fill_text_constrained(&t, x, y, max),
+                Op2D::StrokeTextMaxWidth(t, x, y, max) => c.stroke_text_constrained(&t, x, y, max),
 
                 // ── Gradients and patterns ────────────────────────────
                 Op2D::SetFillGradient(def) => {
@@ -444,9 +436,7 @@ impl CanvasBackend for WebCoreBackend {
                 Op2D::SetStrokeGradient(def) => {
                     c.set_stroke_paint(&CanvasPaint::Gradient(gradient(&def)))
                 }
-                Op2D::SetFillPattern(def) => {
-                    c.set_fill_paint(&CanvasPaint::Pattern(pattern(def)))
-                }
+                Op2D::SetFillPattern(def) => c.set_fill_paint(&CanvasPaint::Pattern(pattern(def))),
                 Op2D::SetStrokePattern(def) => {
                     c.set_stroke_paint(&CanvasPaint::Pattern(pattern(def)))
                 }
@@ -454,7 +444,15 @@ impl CanvasBackend for WebCoreBackend {
                 // ── The rest ──────────────────────────────────────────
                 Op2D::Reset => c.reset(),
                 Op2D::PutImageDataDirty {
-                    pixels, width, height, dx, dy, dirty_x, dirty_y, dirty_w, dirty_h,
+                    pixels,
+                    width,
+                    height,
+                    dx,
+                    dy,
+                    dirty_x,
+                    dirty_y,
+                    dirty_w,
+                    dirty_h,
                 } => {
                     let data = ImageData {
                         width,
@@ -463,8 +461,13 @@ impl CanvasBackend for WebCoreBackend {
                         color_space: "srgb",
                     };
                     c.put_image_data_dirty(
-                        &data, dx, dy,
-                        dirty_x as i32, dirty_y as i32, dirty_w as i32, dirty_h as i32,
+                        &data,
+                        dx,
+                        dy,
+                        dirty_x as i32,
+                        dirty_y as i32,
+                        dirty_w as i32,
+                        dirty_h as i32,
                     );
                 }
                 Op2D::DrawFocusIfNeeded(focused) => c.draw_focus_if_needed(focused),
@@ -540,23 +543,36 @@ fn parse_serialized_color(css: &str) -> Color {
     }
     // Transparent black is the initial `shadowColor`, so an unreadable value
     // lands on the value a canvas starts with rather than on opaque black.
-    Color { r: 0, g: 0, b: 0, a: 0 }
+    Color {
+        r: 0,
+        g: 0,
+        b: 0,
+        a: 0,
+    }
 }
 
 /// The seam's gradient definition, in the engine's terms.
 fn gradient(def: &GradientDef) -> CanvasGradient {
     let mut g = match def.kind {
         SeamGradientKind::Linear { x0, y0, x1, y1 } => CanvasGradient::linear(x0, y0, x1, y1),
-        SeamGradientKind::Radial { x0, y0, r0, x1, y1, r1 } => {
-            CanvasGradient::radial(x0, y0, r0, x1, y1, r1)
-        }
+        SeamGradientKind::Radial {
+            x0,
+            y0,
+            r0,
+            x1,
+            y1,
+            r1,
+        } => CanvasGradient::radial(x0, y0, r0, x1, y1, r1),
         SeamGradientKind::Conic { angle, x, y } => CanvasGradient::conic(angle, x, y),
     };
     for (offset, css) in &def.stops {
         // A stop whose colour will not parse is DROPPED: `addColorStop` throws
         // on one, so a gradient can never contain it.
         if let Some(color) = parse_stop_color(css) {
-            g.stops.push(ColorStop { offset: *offset, color });
+            g.stops.push(ColorStop {
+                offset: *offset,
+                color,
+            });
         }
     }
     g
@@ -590,22 +606,72 @@ fn path_of(def: &PathDef) -> CanvasPath {
             PathOp2D::QuadraticCurveTo { cx, cy, x, y } => {
                 EnginePathOp::QuadraticCurveTo { cx, cy, x, y }
             }
-            PathOp2D::BezierCurveTo { cx1, cy1, cx2, cy2, x, y } => {
-                EnginePathOp::BezierCurveTo { cx1, cy1, cx2, cy2, x, y }
-            }
-            PathOp2D::ArcTo { x1, y1, x2, y2, radius } => {
-                EnginePathOp::ArcTo { x1, y1, x2, y2, radius }
-            }
+            PathOp2D::BezierCurveTo {
+                cx1,
+                cy1,
+                cx2,
+                cy2,
+                x,
+                y,
+            } => EnginePathOp::BezierCurveTo {
+                cx1,
+                cy1,
+                cx2,
+                cy2,
+                x,
+                y,
+            },
+            PathOp2D::ArcTo {
+                x1,
+                y1,
+                x2,
+                y2,
+                radius,
+            } => EnginePathOp::ArcTo {
+                x1,
+                y1,
+                x2,
+                y2,
+                radius,
+            },
             PathOp2D::Rect { x, y, w, h } => EnginePathOp::Rect { x, y, w, h },
             PathOp2D::RoundRect { x, y, w, h, radii } => {
                 EnginePathOp::RoundRect { x, y, w, h, radii }
             }
-            PathOp2D::Arc { x, y, r, start, end, ccw } => {
-                EnginePathOp::Arc { x, y, r, start, end, ccw }
-            }
-            PathOp2D::Ellipse { x, y, rx, ry, rotation, start, end, ccw } => {
-                EnginePathOp::Ellipse { x, y, rx, ry, rotation, start, end, ccw }
-            }
+            PathOp2D::Arc {
+                x,
+                y,
+                r,
+                start,
+                end,
+                ccw,
+            } => EnginePathOp::Arc {
+                x,
+                y,
+                r,
+                start,
+                end,
+                ccw,
+            },
+            PathOp2D::Ellipse {
+                x,
+                y,
+                rx,
+                ry,
+                rotation,
+                start,
+                end,
+                ccw,
+            } => EnginePathOp::Ellipse {
+                x,
+                y,
+                rx,
+                ry,
+                rotation,
+                start,
+                end,
+                ccw,
+            },
         });
     }
     path

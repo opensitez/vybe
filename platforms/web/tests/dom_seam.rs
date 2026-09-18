@@ -374,12 +374,18 @@ fn only_a_modal_dialog_is_positioned_against_the_viewport() {
     );
 
     assert_eq!(
-        text(apply(doc, DomOp::ComputedStyleProperty(modal, "position".into()))),
+        text(apply(
+            doc,
+            DomOp::ComputedStyleProperty(modal, "position".into())
+        )),
         "fixed",
         "the UA sheet's `dialog:modal` rule reaches the computed value"
     );
     assert_ne!(
-        text(apply(doc, DomOp::ComputedStyleProperty(plain, "position".into()))),
+        text(apply(
+            doc,
+            DomOp::ComputedStyleProperty(plain, "position".into())
+        )),
         "fixed",
         "a non-modal dialog is not positioned against the viewport"
     );
@@ -387,7 +393,10 @@ fn only_a_modal_dialog_is_positioned_against_the_viewport() {
     // `null` for `getAttribute("style")` here, and so must we, or an author's
     // `position` could never win.
     assert_eq!(
-        text(apply(doc, DomOp::GetStyleProperty(modal, "position".into()))),
+        text(apply(
+            doc,
+            DomOp::GetStyleProperty(modal, "position".into())
+        )),
         "",
         "the UA sheet does the work, not an inline write"
     );
@@ -405,8 +414,8 @@ fn only_a_modal_dialog_is_positioned_against_the_viewport() {
 #[test]
 fn remove_event_listener_takes_the_listener_it_was_given() {
     use std::sync::{Arc, Mutex};
-    use vybe_runtime::value::{Object, ObjectKind, Value};
     use vybe_platform_web::html;
+    use vybe_runtime::value::{Object, ObjectKind, Value};
 
     let doc = setup();
     let button = create(doc, "button", "");
@@ -491,7 +500,10 @@ fn inner_html_replaces_the_subtree_and_reads_back() {
         other => panic!("expected nodes, got {other:?}"),
     };
     assert_eq!(kids.len(), 2, "the fragment did not build two children");
-    assert_eq!(text(apply(doc, DomOp::NodeName(kids[0]))).to_lowercase(), "button");
+    assert_eq!(
+        text(apply(doc, DomOp::NodeName(kids[0]))).to_lowercase(),
+        "button"
+    );
 
     // Setting again REPLACES — the spec's own wording, and the difference
     // between a page that redraws and one that grows on every render.
@@ -681,7 +693,10 @@ fn outer_html_reads_the_element_and_its_setter_replaces_it() {
     );
 
     let outer = text(apply(doc, DomOp::OuterHtml(victim)));
-    assert!(outer.contains("<p"), "outerHTML includes the element: {outer:?}");
+    assert!(
+        outer.contains("<p"),
+        "outerHTML includes the element: {outer:?}"
+    );
 
     apply(
         doc,
@@ -893,7 +908,10 @@ fn the_documents_text_is_its_title_and_writing_it_keeps_the_tree() {
     // no-op; `widgets` answers the title instead, and one seam cannot have
     // two answers.
     let doc = setup();
-    apply(doc, DomOp::SetTextContent(DOCUMENT, "Contact Manager".into()));
+    apply(
+        doc,
+        DomOp::SetTextContent(DOCUMENT, "Contact Manager".into()),
+    );
 
     assert_eq!(
         text(apply(doc, DomOp::Title)),
@@ -1003,7 +1021,10 @@ fn a_checkboxs_value_is_what_it_submits_and_checked_is_its_state() {
 
     // And ticking it must not disturb the submission value.
     apply(doc, DomOp::SetChecked(cb, true));
-    assert!(matches!(apply(doc, DomOp::Checked(cb)), DomValue::Bool(true)));
+    assert!(matches!(
+        apply(doc, DomOp::Checked(cb)),
+        DomValue::Bool(true)
+    ));
     assert_eq!(text(apply(doc, DomOp::Value(cb))), "true");
 }
 
@@ -1029,22 +1050,34 @@ fn checkedness_is_not_the_checked_attribute() {
 
     // The markup says nothing yet.
     assert!(
-        matches!(apply(doc, DomOp::GetAttribute(cb, "checked".into())), DomValue::Null),
+        matches!(
+            apply(doc, DomOp::GetAttribute(cb, "checked".into())),
+            DomValue::Null
+        ),
         "a checkbox nobody wrote markup for has no `checked` attribute"
     );
 
     // Ticking it is a STATE change, not a markup change.
     apply(doc, DomOp::SetChecked(cb, true));
-    assert!(matches!(apply(doc, DomOp::Checked(cb)), DomValue::Bool(true)));
+    assert!(matches!(
+        apply(doc, DomOp::Checked(cb)),
+        DomValue::Bool(true)
+    ));
     assert!(
-        matches!(apply(doc, DomOp::GetAttribute(cb, "checked".into())), DomValue::Null),
+        matches!(
+            apply(doc, DomOp::GetAttribute(cb, "checked".into())),
+            DomValue::Null
+        ),
         "ticking the box wrote a `checked` attribute into the document — the \
          state and the markup are one store"
     );
 
     // And the markup is the DEFAULT: setting it must not move a box whose
     // checkedness the program has already set.
-    apply(doc, DomOp::SetAttribute(cb, "checked".into(), String::new()));
+    apply(
+        doc,
+        DomOp::SetAttribute(cb, "checked".into(), String::new()),
+    );
     assert!(
         matches!(apply(doc, DomOp::Checked(cb)), DomValue::Bool(true)),
         "the attribute overwrote checkedness the program had already set"
@@ -1105,7 +1138,10 @@ fn casing_is_tolerated_where_html_says_and_not_where_it_does_not() {
         DomValue::Node(_)
     ));
     assert!(
-        matches!(apply(doc, DomOp::GetElementById("mixed".into())), DomValue::Null),
+        matches!(
+            apply(doc, DomOp::GetElementById("mixed".into())),
+            DomValue::Null
+        ),
         "an id lookup folded the case — ids are case-SENSITIVE"
     );
 }
@@ -1142,9 +1178,12 @@ fn click_point(doc: u64, node: u64, x: f32, y: f32) {
 
 fn rect(doc: u64, node: u64) -> (f32, f32, f32, f32) {
     match apply(doc, DomOp::BoundingClientRect(node)) {
-        DomValue::Rect { x, y, width, height } => {
-            (x as f32, y as f32, width as f32, height as f32)
-        }
+        DomValue::Rect {
+            x,
+            y,
+            width,
+            height,
+        } => (x as f32, y as f32, width as f32, height as f32),
         other => panic!("getBoundingClientRect answered {other:?}"),
     }
 }
@@ -1174,7 +1213,13 @@ fn clicking_a_list_box_row_selects_that_row() {
     let doc = setup();
     let s = create(doc, "select", "");
     apply(doc, DomOp::SetAttribute(s, "size".into(), "4".into()));
-    apply(doc, DomOp::AppendChild { parent: DOCUMENT, child: s });
+    apply(
+        doc,
+        DomOp::AppendChild {
+            parent: DOCUMENT,
+            child: s,
+        },
+    );
     for label in ["one", "two", "three", "four"] {
         apply(doc, DomOp::AddItem(s, label.into()));
     }
@@ -1184,12 +1229,20 @@ fn clicking_a_list_box_row_selects_that_row() {
     assert_eq!(selected(doc, s), -1, "a fresh list box has no selection");
 
     let (x, y, w, h) = rect(doc, s);
-    assert!(w > 0.0 && h > 0.0, "the list box has no geometry to click: {w}x{h}");
+    assert!(
+        w > 0.0 && h > 0.0,
+        "the list box has no geometry to click: {w}x{h}"
+    );
     // The THIRD of four rows, off the ENGINE's own row metric. Quartering the
     // box happens to agree only while the box is exactly four rows tall — it
     // is not what decides which row a click lands on.
     let row_h = webcore::html::forms::list_box_row_height(16.0);
-    click_point(doc, s, x + w / 2.0, y + webcore::html::forms::LIST_BOX_PADDING + row_h * 2.5);
+    click_point(
+        doc,
+        s,
+        x + w / 2.0,
+        y + webcore::html::forms::LIST_BOX_PADDING + row_h * 2.5,
+    );
 
     assert_eq!(
         selected(doc, s),
@@ -1219,7 +1272,13 @@ fn clicking_a_list_box_row_selects_that_row() {
 fn clicking_a_dropdown_reaches_the_control() {
     let doc = setup();
     let s = create(doc, "select", "");
-    apply(doc, DomOp::AppendChild { parent: DOCUMENT, child: s });
+    apply(
+        doc,
+        DomOp::AppendChild {
+            parent: DOCUMENT,
+            child: s,
+        },
+    );
     for label in ["alpha", "beta"] {
         apply(doc, DomOp::AddItem(s, label.into()));
     }
@@ -1257,9 +1316,20 @@ fn clicking_a_dropdown_reaches_the_control() {
 #[test]
 fn one_press_is_one_click_on_every_kind_of_element() {
     let doc = setup();
-    for (tag, input_type) in [("div", ""), ("button", ""), ("input", "checkbox"), ("select", "")] {
+    for (tag, input_type) in [
+        ("div", ""),
+        ("button", ""),
+        ("input", "checkbox"),
+        ("select", ""),
+    ] {
         let e = create(doc, tag, input_type);
-        apply(doc, DomOp::AppendChild { parent: DOCUMENT, child: e });
+        apply(
+            doc,
+            DomOp::AppendChild {
+                parent: DOCUMENT,
+                child: e,
+            },
+        );
         apply(doc, DomOp::SetTextContent(e, "xx".into()));
         apply(doc, DomOp::DrainEvents);
 
@@ -1269,8 +1339,17 @@ fn one_press_is_one_click_on_every_kind_of_element() {
             panic!("DrainEvents must answer with events");
         };
         let clicks = events.iter().filter(|(_, k)| k == "click").count();
-        assert_eq!(clicks, 1, "<{tag}> reported {clicks} clicks for one press: {events:?}");
-        apply(doc, DomOp::RemoveChild { parent: DOCUMENT, child: e });
+        assert_eq!(
+            clicks, 1,
+            "<{tag}> reported {clicks} clicks for one press: {events:?}"
+        );
+        apply(
+            doc,
+            DomOp::RemoveChild {
+                parent: DOCUMENT,
+                child: e,
+            },
+        );
     }
 }
 
@@ -1286,10 +1365,19 @@ fn clicking_a_range_track_moves_its_value() {
     apply(doc, DomOp::SetAttribute(r, "min".into(), "0".into()));
     apply(doc, DomOp::SetAttribute(r, "max".into(), "100".into()));
     apply(doc, DomOp::SetValue(r, "0".into()));
-    apply(doc, DomOp::AppendChild { parent: DOCUMENT, child: r });
+    apply(
+        doc,
+        DomOp::AppendChild {
+            parent: DOCUMENT,
+            child: r,
+        },
+    );
 
     let (x, y, w, h) = rect(doc, r);
-    assert!(w > 0.0 && h > 0.0, "the range has no geometry to click: {w}x{h}");
+    assert!(
+        w > 0.0 && h > 0.0,
+        "the range has no geometry to click: {w}x{h}"
+    );
     // Three quarters along the track. Not the exact end, because a thumb has
     // width and the last pixel is not reachable by its centre.
     click_point(doc, r, x + w * 0.75, y + h / 2.0);
@@ -1317,7 +1405,13 @@ fn an_inserted_control_has_geometry() {
         ("div", ""),
     ] {
         let e = create(doc, tag, input_type);
-        apply(doc, DomOp::AppendChild { parent: DOCUMENT, child: e });
+        apply(
+            doc,
+            DomOp::AppendChild {
+                parent: DOCUMENT,
+                child: e,
+            },
+        );
         apply(doc, DomOp::SetTextContent(e, "xx".into()));
         let (_, _, w, h) = rect(doc, e);
         assert!(
@@ -1342,17 +1436,38 @@ fn an_inserted_control_has_geometry() {
 fn clearing_inner_html_empties_an_element_that_was_built_by_appending() {
     let doc = setup();
     let box_ = create(doc, "div", "");
-    apply(doc, DomOp::AppendChild { parent: DOCUMENT, child: box_ });
+    apply(
+        doc,
+        DomOp::AppendChild {
+            parent: DOCUMENT,
+            child: box_,
+        },
+    );
     for _ in 0..3 {
         let kid = create(doc, "span", "");
-        apply(doc, DomOp::AppendChild { parent: box_, child: kid });
+        apply(
+            doc,
+            DomOp::AppendChild {
+                parent: box_,
+                child: kid,
+            },
+        );
         // ⛔ NESTED, not three flat spans. A control that rebuilds itself has a
         // subtree, not a row of leaves, and "remove the children" has to mean
         // the whole of each one.
         let grandkid = create(doc, "b", "");
-        apply(doc, DomOp::SetAttribute(grandkid, "class".into(), "gone".into()));
+        apply(
+            doc,
+            DomOp::SetAttribute(grandkid, "class".into(), "gone".into()),
+        );
         apply(doc, DomOp::SetTextContent(grandkid, "x".into()));
-        apply(doc, DomOp::AppendChild { parent: kid, child: grandkid });
+        apply(
+            doc,
+            DomOp::AppendChild {
+                parent: kid,
+                child: grandkid,
+            },
+        );
     }
     let before = match apply(doc, DomOp::ChildNodes(box_)) {
         DomValue::Nodes(n) => n.len(),
@@ -1360,7 +1475,13 @@ fn clearing_inner_html_empties_an_element_that_was_built_by_appending() {
     };
     assert_eq!(before, 3, "the fixture must have children to clear");
 
-    apply(doc, DomOp::SetInnerHtml { node: box_, html: String::new() });
+    apply(
+        doc,
+        DomOp::SetInnerHtml {
+            node: box_,
+            html: String::new(),
+        },
+    );
 
     let after = match apply(doc, DomOp::ChildNodes(box_)) {
         DomValue::Nodes(n) => n.len(),
@@ -1405,22 +1526,59 @@ fn a_subtree_built_while_detached_can_still_be_cleared_once_appended() {
     // Built DETACHED, exactly as a control fills itself in at construction.
     for _ in 0..2 {
         let part = create(doc, "section", "");
-        apply(doc, DomOp::SetAttribute(part, "class".into(), "first-pass".into()));
+        apply(
+            doc,
+            DomOp::SetAttribute(part, "class".into(), "first-pass".into()),
+        );
         let leaf = create(doc, "b", "");
-        apply(doc, DomOp::SetAttribute(leaf, "class".into(), "first-leaf".into()));
-        apply(doc, DomOp::AppendChild { parent: part, child: leaf });
-        apply(doc, DomOp::AppendChild { parent: host, child: part });
+        apply(
+            doc,
+            DomOp::SetAttribute(leaf, "class".into(), "first-leaf".into()),
+        );
+        apply(
+            doc,
+            DomOp::AppendChild {
+                parent: part,
+                child: leaf,
+            },
+        );
+        apply(
+            doc,
+            DomOp::AppendChild {
+                parent: host,
+                child: part,
+            },
+        );
     }
     // …and only now put in the document.
-    apply(doc, DomOp::AppendChild { parent: DOCUMENT, child: host });
-    assert_eq!(nodes_matching(doc, ".first-leaf").len(), 2, "the fixture must be built");
+    apply(
+        doc,
+        DomOp::AppendChild {
+            parent: DOCUMENT,
+            child: host,
+        },
+    );
+    assert_eq!(
+        nodes_matching(doc, ".first-leaf").len(),
+        2,
+        "the fixture must be built"
+    );
 
     // The redraw: clear, then build again.
     apply(doc, DomOp::SetTextContent(host, String::new()));
     for _ in 0..2 {
         let part = create(doc, "section", "");
-        apply(doc, DomOp::SetAttribute(part, "class".into(), "second-pass".into()));
-        apply(doc, DomOp::AppendChild { parent: host, child: part });
+        apply(
+            doc,
+            DomOp::SetAttribute(part, "class".into(), "second-pass".into()),
+        );
+        apply(
+            doc,
+            DomOp::AppendChild {
+                parent: host,
+                child: part,
+            },
+        );
     }
 
     assert!(
@@ -1431,7 +1589,11 @@ fn a_subtree_built_while_detached_can_still_be_cleared_once_appended() {
         nodes_matching(doc, ".first-leaf").is_empty(),
         "nor must anything inside it"
     );
-    assert_eq!(nodes_matching(doc, ".second-pass").len(), 2, "the rebuild is what is there now");
+    assert_eq!(
+        nodes_matching(doc, ".second-pass").len(),
+        2,
+        "the rebuild is what is there now"
+    );
 }
 
 /// Closing a browsing context DISCARDS its document — HTML §7.4.
@@ -1461,7 +1623,13 @@ fn closing_a_context_discards_its_document() {
     };
 
     let node = create(doc, "p", "");
-    apply(doc, DomOp::AppendChild { parent: DOCUMENT, child: node });
+    apply(
+        doc,
+        DomOp::AppendChild {
+            parent: DOCUMENT,
+            child: node,
+        },
+    );
     assert_eq!(
         text(apply(doc, DomOp::LocalName(node))),
         "p",

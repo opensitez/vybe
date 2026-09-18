@@ -73,10 +73,8 @@ impl vybe_runtime::Plugin for Plugin {
                 };
                 let mut ctor = vybe_runtime::value::Object::new();
                 ctor.kind = vybe_runtime::value::ObjectKind::HostFunction(idx);
-                ctor.properties.insert(
-                    "name".into(),
-                    Value::String(std::sync::Arc::from(name)),
-                );
+                ctor.properties
+                    .insert("name".into(), Value::String(std::sync::Arc::from(name)));
                 ctor.properties.insert("prototype".into(), proto.clone());
                 let ctor = Value::Object(vybe_runtime::heap::alloc(ctor));
                 if let Value::Object(p) = &proto {

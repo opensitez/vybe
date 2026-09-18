@@ -39,7 +39,7 @@ use std::sync::{Arc, Mutex};
 
 use vybe_runtime::value::Object;
 use vybe_runtime::vm::{HostFnDecl, ResourceBinding, ResourceMemberKind};
-use vybe_runtime::{FuncSig, Param, HostContext, VM, ValType, Value};
+use vybe_runtime::{FuncSig, HostContext, Param, VM, ValType, Value};
 
 use crate::engine::{DOCUMENT, DocumentId, DomOp, DomValue, NodeId, apply};
 
@@ -391,7 +391,8 @@ pub fn document_handle(document: DocumentId) -> Value {
     // a method on it, and inserts NOTHING while raising nothing — the page just
     // comes out empty. The `web:html:body` host fn stays: it is the same fact
     // for a caller that imports rather than dispatches.
-    o.properties.insert("body".into(), element(document, DOCUMENT));
+    o.properties
+        .insert("body".into(), element(document, DOCUMENT));
     Value::Object(vybe_runtime::heap::alloc(o))
 }
 
@@ -621,20 +622,22 @@ fn receiver(arg: Option<&Value>) -> Option<Receiver> {
 fn with_receiver(
     call: Box<dyn Fn(&mut HostContext, &[Value]) -> Value + Send + Sync>,
 ) -> Box<dyn Fn(&mut HostContext, &[Value]) -> Value + Send + Sync> {
-    Box::new(move |ctx: &mut HostContext, args: &[Value]| match receiver(args.first()) {
-        Some(Receiver::Element(document)) => {
-            let mut expanded = Vec::with_capacity(args.len() + 1);
-            expanded.push(Value::F64(document as f64));
-            expanded.extend_from_slice(args);
-            call(ctx, &expanded)
-        }
-        Some(Receiver::Document(document)) => {
-            let mut positional = args.to_vec();
-            positional[0] = Value::F64(document as f64);
-            call(ctx, &positional)
-        }
-        None => call(ctx, args),
-    })
+    Box::new(
+        move |ctx: &mut HostContext, args: &[Value]| match receiver(args.first()) {
+            Some(Receiver::Element(document)) => {
+                let mut expanded = Vec::with_capacity(args.len() + 1);
+                expanded.push(Value::F64(document as f64));
+                expanded.extend_from_slice(args);
+                call(ctx, &expanded)
+            }
+            Some(Receiver::Document(document)) => {
+                let mut positional = args.to_vec();
+                positional[0] = Value::F64(document as f64);
+                call(ctx, &positional)
+            }
+            None => call(ctx, args),
+        },
+    )
 }
 
 fn dom_fn(
@@ -895,13 +898,7 @@ pub fn register(vm: &mut VM) {
             let document = doc_arg(args, 0);
             let me = node_arg(args, 1);
             if let DomValue::Node(parent) = apply(document, DomOp::ParentNode(me)) {
-                apply(
-                    document,
-                    DomOp::RemoveChild {
-                        parent,
-                        child: me,
-                    },
-                );
+                apply(document, DomOp::RemoveChild { parent, child: me });
             }
             Value::Null
         }),
@@ -1314,7 +1311,13 @@ pub fn register(vm: &mut VM) {
         vm,
         "setAttributeNS",
         "set-attribute-ns",
-        vec![doc(), node(), ValType::String, ValType::String, ValType::String],
+        vec![
+            doc(),
+            node(),
+            ValType::String,
+            ValType::String,
+            ValType::String,
+        ],
         vec![],
         Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
             apply(
@@ -1454,9 +1457,7 @@ pub fn register(vm: &mut VM) {
         .with_sig(node_method(
             "get-element-by-id",
             vec![ValType::Borrow(DOCUMENT_RES.to_string()), ValType::String],
-            vec![ValType::Option(Box::new(ValType::Borrow(
-                NODE.to_string(),
-            )))],
+            vec![ValType::Option(Box::new(ValType::Borrow(NODE.to_string())))],
         ))
         .method_on(DOCUMENT_RES),
     );
@@ -1570,9 +1571,7 @@ pub fn register(vm: &mut VM) {
         "body",
         vec![doc()],
         vec![node()],
-        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
-            element(doc_arg(args, 0), DOCUMENT)
-        }),
+        Box::new(move |_ctx: &mut HostContext, args: &[Value]| element(doc_arg(args, 0), DOCUMENT)),
     );
     // `document.defaultView` (HTML §3.1.1) — the WindowProxy of this document's
     // browsing context, or null if it has none.
@@ -1810,10 +1809,7 @@ pub fn register(vm: &mut VM) {
                 DomValue::Text(s) => s,
                 _ => String::new(),
             };
-            apply(
-                document,
-                DomOp::SetStyleProperty(n, prop, String::new()),
-            );
+            apply(document, DomOp::SetStyleProperty(n, prop, String::new()));
             Value::String(std::sync::Arc::from(old.as_str()))
         }),
     );

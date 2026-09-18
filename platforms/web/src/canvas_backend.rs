@@ -107,22 +107,13 @@ pub enum Op2D {
         dx: f32,
         dy: f32,
     },
-    /// `drawImage` over dense RGBA pixels — `putImageData`'s cousin, and what
-    /// a software renderer (SDL, Doom) hands over each frame.
+    /// Internal transport for a resolved `CanvasImageSource`.
+    ///
+    /// The public API is still WHATWG `drawImage(image, ...)`: the platform
+    /// resolves that source to pixels through `getImageData`, then asks the
+    /// backend to draw the resulting bitmap.
     DrawImageRgba {
         pixels: Vec<u8>,
-        width: u32,
-        height: u32,
-        dx: f32,
-        dy: f32,
-        dw: f32,
-        dh: f32,
-    },
-    /// 8-bit paletted pixels expanded through a 256-entry RGB palette by the
-    /// backend — the frame path of every palette-era game.
-    DrawImagePaletted {
-        indices: Vec<u8>,
-        palette: Vec<u8>,
         width: u32,
         height: u32,
         dx: f32,
@@ -286,13 +277,58 @@ pub enum PathOp2D {
     ClosePath,
     MoveTo(f32, f32),
     LineTo(f32, f32),
-    QuadraticCurveTo { cx: f32, cy: f32, x: f32, y: f32 },
-    BezierCurveTo { cx1: f32, cy1: f32, cx2: f32, cy2: f32, x: f32, y: f32 },
-    ArcTo { x1: f32, y1: f32, x2: f32, y2: f32, radius: f32 },
-    Rect { x: f32, y: f32, w: f32, h: f32 },
-    RoundRect { x: f32, y: f32, w: f32, h: f32, radii: [f32; 4] },
-    Arc { x: f32, y: f32, r: f32, start: f32, end: f32, ccw: bool },
-    Ellipse { x: f32, y: f32, rx: f32, ry: f32, rotation: f32, start: f32, end: f32, ccw: bool },
+    QuadraticCurveTo {
+        cx: f32,
+        cy: f32,
+        x: f32,
+        y: f32,
+    },
+    BezierCurveTo {
+        cx1: f32,
+        cy1: f32,
+        cx2: f32,
+        cy2: f32,
+        x: f32,
+        y: f32,
+    },
+    ArcTo {
+        x1: f32,
+        y1: f32,
+        x2: f32,
+        y2: f32,
+        radius: f32,
+    },
+    Rect {
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+    },
+    RoundRect {
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        radii: [f32; 4],
+    },
+    Arc {
+        x: f32,
+        y: f32,
+        r: f32,
+        start: f32,
+        end: f32,
+        ccw: bool,
+    },
+    Ellipse {
+        x: f32,
+        y: f32,
+        rx: f32,
+        ry: f32,
+        rotation: f32,
+        start: f32,
+        end: f32,
+        ccw: bool,
+    },
 }
 
 /// A gradient, as the page built it.
@@ -360,24 +396,12 @@ pub enum Query2D {
     /// a whole canvas every frame is copying a whole canvas every frame. That
     /// is inherent to the spec's design, not to this seam — but it is worth
     /// knowing before putting one in a render loop.
-    GetImageData {
-        sx: i32,
-        sy: i32,
-        sw: u32,
-        sh: u32,
-    },
+    GetImageData { sx: i32, sy: i32, sw: u32, sh: u32 },
     /// `isPointInPath(x, y, fillRule)` — the point is in the space the page's
     /// own transform maps into, and is mapped back through it.
-    IsPointInPath {
-        x: f32,
-        y: f32,
-        rule: String,
-    },
+    IsPointInPath { x: f32, y: f32, rule: String },
     /// `isPointInStroke(x, y)`
-    IsPointInStroke {
-        x: f32,
-        y: f32,
-    },
+    IsPointInStroke { x: f32, y: f32 },
     /// `getTransform()` — the page's own matrix, `[a, b, c, d, e, f]`.
     GetTransform,
     /// `getLineDash()` — after the spec's normalisation, so an odd-length list
@@ -386,15 +410,9 @@ pub enum Query2D {
     /// `isContextLost()`
     IsContextLost,
     /// `canvas.toDataURL(type, quality)`
-    ToDataUrl {
-        mime: String,
-        quality: Option<f32>,
-    },
+    ToDataUrl { mime: String, quality: Option<f32> },
     /// `canvas.toBlob(callback, type, quality)` — the encoded bytes.
-    ToBlob {
-        mime: String,
-        quality: Option<f32>,
-    },
+    ToBlob { mime: String, quality: Option<f32> },
     /// `getContextAttributes()` — the settings the context was created with.
     GetContextAttributes,
     /// `isPointInPath(path, x, y, fillRule)` — the explicit-path overload.

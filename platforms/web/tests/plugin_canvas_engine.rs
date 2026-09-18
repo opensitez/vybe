@@ -35,8 +35,14 @@ fn plugin_init_keeps_webcore_canvas_backend_with_webcore_engine() {
             input_type: String::new(),
         },
     ));
-    apply(doc, DomOp::SetAttribute(canvas, "width".into(), "80".into()));
-    apply(doc, DomOp::SetAttribute(canvas, "height".into(), "40".into()));
+    apply(
+        doc,
+        DomOp::SetAttribute(canvas, "width".into(), "80".into()),
+    );
+    apply(
+        doc,
+        DomOp::SetAttribute(canvas, "height".into(), "40".into()),
+    );
     apply(
         doc,
         DomOp::AppendChild {

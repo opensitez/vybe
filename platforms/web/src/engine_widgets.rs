@@ -98,7 +98,12 @@ impl WebEngine for Widgets {
                 // An element that was never laid out has no box. CSSOM-View
                 // gives one an all-zero rect rather than nothing, which is what
                 // lets a caller do arithmetic on it unconditionally.
-                None => DomValue::Rect { x: 0.0, y: 0.0, width: 0.0, height: 0.0 },
+                None => DomValue::Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 0.0,
+                    height: 0.0,
+                },
             },
             DomOp::CanvasSize(node) => match doc.get_bounding_client_rect(node) {
                 Some(rect) => DomValue::Pair(rect.w as f64, rect.h as f64),

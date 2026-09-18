@@ -11,13 +11,13 @@
 //! the API moving.
 //!
 //! Adapters that speak another vocabulary live on THEIR side: SDL's
-//! `SDL_FillRect` is `fillRect` plus its rect struct, `SDL_BlitPaletted` is
-//! `drawImage` over paletted pixels, .NET's `Graphics`/`Pen`/`Brush` objects
-//! are a dotnet-facing shim over `fillStyle`/`strokeStyle`/`lineWidth`.
+//! `SDL_FillRect` is `fillRect` plus its rect struct, paletted SDL frames are
+//! adapter-expanded into `ImageData`, and .NET's `Graphics`/`Pen`/`Brush`
+//! objects are a dotnet-facing shim over `fillStyle`/`strokeStyle`/`lineWidth`.
 
 use std::sync::{Arc, OnceLock};
 
-use vybe_runtime::value::{Object, ObjectKind};
+use vybe_runtime::value::{Object, ObjectKind, TypedElemKind};
 use vybe_runtime::{HostContext, VM, Value};
 
 use crate::canvas_backend::{
@@ -44,11 +44,7 @@ fn target_of(arg: Option<&Value>) -> String {
             // An element-bound context: document + node is the identity.
             if let Some(node) = o.properties.get("__node") {
                 if let Some(document) = o.properties.get("__document") {
-                    return format!(
-                        "d{}:n{}",
-                        document.as_f64() as u64,
-                        node.as_f64() as u64
-                    );
+                    return format!("d{}:n{}", document.as_f64() as u64, node.as_f64() as u64);
                 }
                 return format!("n{}", node.as_f64() as u64);
             }
@@ -84,6 +80,14 @@ fn document_of(arg: Option<&Value>) -> Option<u64> {
     }
 }
 
+fn numeric_property(arg: Option<&Value>, key: &str) -> Option<f64> {
+    let Some(Value::Object(obj)) = arg else {
+        return None;
+    };
+    let o = obj.lock().unwrap();
+    o.properties.get(key).map(|v| v.as_f64())
+}
+
 fn f32_arg(args: &[Value], idx: usize) -> f32 {
     args.get(idx).map(|v| v.as_f64() as f32).unwrap_or(0.0)
 }
@@ -104,6 +108,39 @@ fn str_arg(args: &[Value], idx: usize) -> String {
     args.get(idx).map(|v| format!("{}", v)).unwrap_or_default()
 }
 
+fn object_field(ctx: Option<&HostContext<'_>>, o: &Object, key: &str) -> Option<Value> {
+    if let Some(value) = o.properties.get(key) {
+        return Some(value.clone());
+    }
+    let ctx = ctx?;
+    for (idx, (name, _enumerable)) in ctx.declared_fields(o.type_id).into_iter().enumerate() {
+        if name == key {
+            return o.fields.get(idx).cloned();
+        }
+    }
+    None
+}
+
+fn carray_view_from_object(ctx: Option<&HostContext<'_>>, o: &Object) -> Option<(Value, usize)> {
+    let kind = object_field(ctx, o, "__ref_kind")?;
+    if format!("{}", kind) != "carray" {
+        return None;
+    }
+    let base = object_field(ctx, o, "__base")?;
+    let idx = object_field(ctx, o, "__idx")
+        .map(|v| v.as_i32().max(0) as usize)
+        .unwrap_or(0);
+    Some((base, idx))
+}
+
+fn carray_view(ctx: Option<&HostContext<'_>>, value: &Value) -> Option<(Value, usize)> {
+    let Value::Object(obj) = value else {
+        return None;
+    };
+    let o = obj.lock().unwrap();
+    carray_view_from_object(ctx, &o)
+}
+
 /// The pixels of an `ImageData`-shaped argument: `{data, width, height}`.
 ///
 /// `None` when the object is not that shape or its buffer does not match its
@@ -118,7 +155,7 @@ fn image_data_arg(arg: Option<&Value>) -> Option<(Vec<u8>, u32, u32)> {
     let height = bag.properties.get("height").map(|v| v.as_f64() as u32)?;
     let data = bag.properties.get("data").cloned()?;
     drop(bag);
-    let pixels = bytes_arg(&[data], 0);
+    let pixels = bytes_arg(None, &[data], 0);
     if pixels.len() != (width as usize) * (height as usize) * 4 {
         return None;
     }
@@ -206,41 +243,45 @@ fn text_arg(args: &[Value], idx: usize) -> String {
 }
 
 /// Dense byte decode for `drawImage` pixel data.
-fn bytes_arg(args: &[Value], idx: usize) -> Vec<u8> {
+fn bytes_arg(ctx: Option<&HostContext<'_>>, args: &[Value], idx: usize) -> Vec<u8> {
     let Some(v) = args.get(idx) else {
         return Vec::new();
     };
-    let unwrapped = match v {
-        Value::Object(obj) => {
-            let o = obj.lock().unwrap();
-            if o.properties
-                .get("__ref_kind")
-                .map(|k| format!("{}", k) == "carray")
-                .unwrap_or(false)
-            {
-                o.properties.get("__base").cloned()
-            } else {
-                None
-            }
-        }
-        _ => None,
-    };
-    let target = unwrapped.unwrap_or_else(|| v.clone());
+    let (target, skip) = carray_view(ctx, v).unwrap_or_else(|| (v.clone(), 0));
     match &target {
         Value::Object(obj) => {
             let o = obj.lock().unwrap();
             match &o.kind {
                 ObjectKind::Array(items) => items
                     .iter()
+                    .skip(skip)
                     .map(|it| it.as_i32().clamp(0, 255) as u8)
                     .collect(),
+                ObjectKind::TypedArray(ta) => {
+                    let bytes = ta.buffer.lock().unwrap();
+                    let elem_bytes = ta.elem.bytes_per_element();
+                    let start = ta
+                        .byte_offset
+                        .saturating_add(skip.saturating_mul(elem_bytes))
+                        .min(bytes.len());
+                    let len = ta.length.saturating_sub(skip).saturating_mul(elem_bytes);
+                    let end = start.saturating_add(len).min(bytes.len());
+                    match ta.elem {
+                        TypedElemKind::I8 | TypedElemKind::U8 | TypedElemKind::U8Clamped => {
+                            bytes[start..end].to_vec()
+                        }
+                        _ => bytes[start..end]
+                            .chunks(elem_bytes)
+                            .map(|chunk| *chunk.first().unwrap_or(&0))
+                            .collect(),
+                    }
+                }
                 _ => Vec::new(),
             }
         }
         _ => Vec::new(),
     }
 }
-
 
 /// The IDL ATTRIBUTES of `CanvasRenderingContext2D`, and the host functions
 /// that read and write each one.
@@ -269,7 +310,11 @@ const ATTRIBUTES: &[(&str, &str, &str)] = &[
     ("wordSpacing", "getWordSpacing", "setWordSpacing"),
     ("fontKerning", "getFontKerning", "setFontKerning"),
     ("fontStretch", "getFontStretch", "setFontStretch"),
-    ("fontVariantCaps", "getFontVariantCaps", "setFontVariantCaps"),
+    (
+        "fontVariantCaps",
+        "getFontVariantCaps",
+        "setFontVariantCaps",
+    ),
     ("textRendering", "getTextRendering", "setTextRendering"),
     ("lang", "getLang", "setLang"),
     ("shadowColor", "getShadowColor", "setShadowColor"),
@@ -330,7 +375,6 @@ fn install_accessors(ctx: &mut Object) {
         }
     }
 }
-
 
 /// What `fillStyle` / `strokeStyle` was assigned.
 enum StyleValue {
@@ -427,7 +471,7 @@ fn style_value(v: Option<&Value>) -> StyleValue {
             let pixels = lock
                 .properties
                 .get("__pixels")
-                .map(|p| bytes_arg(&[p.clone()], 0))
+                .map(|p| bytes_arg(None, &[p.clone()], 0))
                 .unwrap_or_default();
             let repetition = lock
                 .properties
@@ -460,7 +504,6 @@ fn numbers(v: &Value) -> Vec<f32> {
     }
 }
 
-
 /// Read a `Path2D` argument back into the seam's form.
 ///
 /// A `Path2D` is a plain object carrying `__ops`, appended to by its own
@@ -471,7 +514,13 @@ fn path_arg(v: Option<&Value>) -> Option<PathDef> {
         return None;
     };
     let lock = o.lock().unwrap();
-    if lock.properties.get("__type").map(|t| format!("{}", t)).as_deref() != Some("Path2D") {
+    if lock
+        .properties
+        .get("__type")
+        .map(|t| format!("{}", t))
+        .as_deref()
+        != Some("Path2D")
+    {
         return None;
     }
     let Some(Value::Object(list)) = lock.properties.get("__ops") else {
@@ -578,7 +627,14 @@ fn copy_path_op(path: Option<&Value>, op: &PathOp2D) {
             "quadraticCurveTo",
             &[("cx", f(cx)), ("cy", f(cy)), ("x", f(x)), ("y", f(y))],
         ),
-        PathOp2D::BezierCurveTo { cx1, cy1, cx2, cy2, x, y } => push_path_op(
+        PathOp2D::BezierCurveTo {
+            cx1,
+            cy1,
+            cx2,
+            cy2,
+            x,
+            y,
+        } => push_path_op(
             path,
             "bezierCurveTo",
             &[
@@ -590,7 +646,13 @@ fn copy_path_op(path: Option<&Value>, op: &PathOp2D) {
                 ("y", f(y)),
             ],
         ),
-        PathOp2D::ArcTo { x1, y1, x2, y2, radius } => push_path_op(
+        PathOp2D::ArcTo {
+            x1,
+            y1,
+            x2,
+            y2,
+            radius,
+        } => push_path_op(
             path,
             "arcTo",
             &[
@@ -620,7 +682,14 @@ fn copy_path_op(path: Option<&Value>, op: &PathOp2D) {
                 ("r3", f(radii[3])),
             ],
         ),
-        PathOp2D::Arc { x, y, r, start, end, ccw } => push_path_op(
+        PathOp2D::Arc {
+            x,
+            y,
+            r,
+            start,
+            end,
+            ccw,
+        } => push_path_op(
             path,
             "arc",
             &[
@@ -632,7 +701,16 @@ fn copy_path_op(path: Option<&Value>, op: &PathOp2D) {
                 ("ccw", Value::Bool(ccw)),
             ],
         ),
-        PathOp2D::Ellipse { x, y, rx, ry, rotation, start, end, ccw } => push_path_op(
+        PathOp2D::Ellipse {
+            x,
+            y,
+            rx,
+            ry,
+            rotation,
+            start,
+            end,
+            ccw,
+        } => push_path_op(
             path,
             "ellipse",
             &[
@@ -661,8 +739,7 @@ fn push_path_op(path: Option<&Value>, op: &str, fields: &[(&str, Value)]) {
         return;
     };
     let mut seg = Object::new();
-    seg.properties
-        .insert("op".into(), Value::String(op.into()));
+    seg.properties.insert("op".into(), Value::String(op.into()));
     for (k, v) in fields {
         seg.properties.insert((*k).into(), v.clone());
     }
@@ -738,7 +815,8 @@ pub fn register(vm: &mut VM) {
                 o.properties.insert("canvas".into(), Value::F64(id as f64));
             }
             if let Some(doc) = document {
-                o.properties.insert("__document".into(), Value::F64(doc as f64));
+                o.properties
+                    .insert("__document".into(), Value::F64(doc as f64));
             }
             match node {
                 // Element-bound: document + node is the identity, and
@@ -849,7 +927,9 @@ pub fn register(vm: &mut VM) {
     simple!("setTextBaseline", |a| Op2D::SetTextBaseline(
         a.get(1).map(|v| format!("{}", v)).unwrap_or_default()
     ));
-    simple!("setLineDashOffset", |a| Op2D::SetLineDashOffset(f32_arg(a, 1)));
+    simple!("setLineDashOffset", |a| Op2D::SetLineDashOffset(f32_arg(
+        a, 1
+    )));
     // `ellipse(x, y, radiusX, radiusY, rotation, startAngle, endAngle, ccw)` —
     // the trailing five are accepted and dropped: the engine draws an
     // axis-aligned full ellipse. Taking them and ignoring them is honest about
@@ -1005,15 +1085,13 @@ pub fn register(vm: &mut VM) {
             let height = args.get(2).map(|v| v.as_i32().max(0)).unwrap_or(0);
             // Transparent black, per spec — every byte zero, INCLUDING alpha.
             let bytes = (width as usize).saturating_mul(height as usize) * 4;
-            let data = Object::new_array(vec![Value::I32(0); bytes]);
+            let data =
+                vybe_platform_ecma::typedarray::new_typed_array(TypedElemKind::U8Clamped, bytes);
             let mut image_data = Object::new();
             image_data
                 .properties
                 .insert("__type".into(), Value::String("ImageData".into()));
-            image_data.properties.insert(
-                "data".into(),
-                Value::Object(vybe_runtime::heap::alloc(data)),
-            );
+            image_data.properties.insert("data".into(), data);
             image_data
                 .properties
                 .insert("width".into(), Value::I32(width));
@@ -1040,7 +1118,7 @@ pub fn register(vm: &mut VM) {
                     let data = bag.properties.get("data").cloned();
                     drop(bag);
                     match (data, width, height) {
-                        (Some(data), Some(w), Some(h)) => (bytes_arg(&[data], 0), w, h),
+                        (Some(data), Some(w), Some(h)) => (bytes_arg(Some(_ctx), &[data], 0), w, h),
                         _ => (Vec::new(), 0, 0),
                     }
                 }
@@ -1068,51 +1146,84 @@ pub fn register(vm: &mut VM) {
 
     // ── images ───────────────────────────────────────────────────────────
     //
-    // `drawImage(image, dx, dy, dw, dh)` where the image is dense RGBA —
-    // `putImageData`'s territory, and the frame path of a software renderer.
+    // `drawImage(image, ...)` where image is a `CanvasImageSource`.
+    // Software-renderer pixels must become `ImageData` and enter through
+    // `putImageData`; a byte array is not a valid `drawImage` source.
     vm.register_host_fn(
         "web:canvas",
         "drawImage",
-        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+        Box::new(move |ctx: &mut HostContext, args: &[Value]| {
             let target = target_of(args.first());
-            apply(
-                &target,
-                Op2D::DrawImageRgba {
-                    pixels: bytes_arg(args, 1),
-                    width: args.get(2).map(|v| v.as_i32().max(0) as u32).unwrap_or(0),
-                    height: args.get(3).map(|v| v.as_i32().max(0) as u32).unwrap_or(0),
-                    dx: f32_arg(args, 4),
-                    dy: f32_arg(args, 5),
-                    dw: f32_arg(args, 6),
-                    dh: f32_arg(args, 7),
-                },
-            );
-            Value::Null
-        }),
-    );
-
-    // Paletted variant: 8-bit indices + a 256-entry RGB palette, expanded by
-    // the backend. Not a DOM method — an extension for palette-era software
-    // renderers, kept here because it is a canvas concern, not an SDL one.
-    vm.register_host_fn(
-        "web:canvas",
-        "drawImagePaletted",
-        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
-            let target = target_of(args.first());
-            apply(
-                &target,
-                Op2D::DrawImagePaletted {
-                    indices: bytes_arg(args, 1),
-                    palette: bytes_arg(args, 2),
-                    width: args.get(3).map(|v| v.as_i32().max(0) as u32).unwrap_or(0),
-                    height: args.get(4).map(|v| v.as_i32().max(0) as u32).unwrap_or(0),
-                    dx: f32_arg(args, 5),
-                    dy: f32_arg(args, 6),
-                    dw: f32_arg(args, 7),
-                    dh: f32_arg(args, 8),
-                },
-            );
-            Value::Null
+            if node_of(args.get(1)).is_some() {
+                let source = target_of(args.get(1));
+                let natural_w = numeric_property(args.get(1), "width")
+                    .unwrap_or(0.0)
+                    .max(0.0) as u32;
+                let natural_h = numeric_property(args.get(1), "height")
+                    .unwrap_or(0.0)
+                    .max(0.0) as u32;
+                let (sx, sy, sw, sh, dx, dy, dw, dh) = match args.len() {
+                    10.. => (
+                        args.get(2).map(|v| v.as_i32()).unwrap_or(0),
+                        args.get(3).map(|v| v.as_i32()).unwrap_or(0),
+                        args.get(4).map(|v| v.as_i32().max(0) as u32).unwrap_or(0),
+                        args.get(5).map(|v| v.as_i32().max(0) as u32).unwrap_or(0),
+                        f32_arg(args, 6),
+                        f32_arg(args, 7),
+                        f32_arg(args, 8),
+                        f32_arg(args, 9),
+                    ),
+                    6.. => (
+                        0,
+                        0,
+                        natural_w,
+                        natural_h,
+                        f32_arg(args, 2),
+                        f32_arg(args, 3),
+                        f32_arg(args, 4),
+                        f32_arg(args, 5),
+                    ),
+                    _ => (
+                        0,
+                        0,
+                        natural_w,
+                        natural_h,
+                        f32_arg(args, 2),
+                        f32_arg(args, 3),
+                        natural_w as f32,
+                        natural_h as f32,
+                    ),
+                };
+                if sw == 0 || sh == 0 || dw == 0.0 || dh == 0.0 {
+                    return Value::Null;
+                }
+                if let Query2DValue::Pixels {
+                    data,
+                    width,
+                    height,
+                } = query(&source, Query2D::GetImageData { sx, sy, sw, sh })
+                {
+                    apply(
+                        &target,
+                        Op2D::DrawImageRgba {
+                            pixels: data,
+                            width,
+                            height,
+                            dx,
+                            dy,
+                            dw,
+                            dh,
+                        },
+                    );
+                }
+                return Value::Null;
+            }
+            ctx.throw_value(vybe_platform_ecma::error::new_error(
+                ctx,
+                "TypeError",
+                "drawImage source is not a CanvasImageSource",
+            ));
+            Value::Undefined
         }),
     );
 
@@ -1260,8 +1371,12 @@ pub fn register(vm: &mut VM) {
 
     // Shadows — three numbers and the colour above.
     simple!("setShadowBlur", |a| Op2D::SetShadowBlur(f32_arg(a, 1)));
-    simple!("setShadowOffsetX", |a| Op2D::SetShadowOffsetX(f32_arg(a, 1)));
-    simple!("setShadowOffsetY", |a| Op2D::SetShadowOffsetY(f32_arg(a, 1)));
+    simple!("setShadowOffsetX", |a| Op2D::SetShadowOffsetX(f32_arg(
+        a, 1
+    )));
+    simple!("setShadowOffsetY", |a| Op2D::SetShadowOffsetY(f32_arg(
+        a, 1
+    )));
 
     // Paths the seam could not express.
     simple!("arcTo", |a| Op2D::ArcTo(
@@ -1344,18 +1459,8 @@ pub fn register(vm: &mut VM) {
             );
         };
     }
-    overloaded!(
-        "fill",
-        || Op2D::Fill,
-        Op2D::FillWithRule,
-        Op2D::FillPath
-    );
-    overloaded!(
-        "clip",
-        || Op2D::Clip,
-        Op2D::ClipWithRule,
-        Op2D::ClipPath
-    );
+    overloaded!("fill", || Op2D::Fill, Op2D::FillWithRule, Op2D::FillPath);
+    overloaded!("clip", || Op2D::Clip, Op2D::ClipWithRule, Op2D::ClipPath);
     // `stroke` has no fill rule — a stroke has no inside to decide about.
     vm.register_host_fn(
         "web:canvas",
@@ -1438,9 +1543,9 @@ pub fn register(vm: &mut VM) {
     }
     fn as_floats(v: Query2DValue) -> Value {
         match v {
-            Query2DValue::Floats(f) => Value::Object(vybe_runtime::heap::alloc(
-                Object::new_array(f.into_iter().map(|x| Value::F64(x as f64)).collect()),
-            )),
+            Query2DValue::Floats(f) => Value::Object(vybe_runtime::heap::alloc(Object::new_array(
+                f.into_iter().map(|x| Value::F64(x as f64)).collect(),
+            ))),
             _ => Value::Null,
         }
     }
@@ -1539,9 +1644,12 @@ pub fn register(vm: &mut VM) {
             let mut o = Object::new();
             o.properties
                 .insert("__type".into(), Value::String("ImageData".into()));
+            o.properties.insert(
+                "data".into(),
+                Value::Object(vybe_runtime::heap::alloc(bytes)),
+            );
             o.properties
-                .insert("data".into(), Value::Object(vybe_runtime::heap::alloc(bytes)));
-            o.properties.insert("width".into(), Value::I32(width as i32));
+                .insert("width".into(), Value::I32(width as i32));
             o.properties
                 .insert("height".into(), Value::I32(height as i32));
             Value::Object(vybe_runtime::heap::alloc(o))
@@ -1575,9 +1683,9 @@ pub fn register(vm: &mut VM) {
             quality: a.get(2).map(|v| v.as_f64() as f32),
         },
         |v| match v {
-            Query2DValue::Bytes(b) => Value::Object(vybe_runtime::heap::alloc(
-                Object::new_array(b.into_iter().map(|x| Value::I32(x as i32)).collect()),
-            )),
+            Query2DValue::Bytes(b) => Value::Object(vybe_runtime::heap::alloc(Object::new_array(
+                b.into_iter().map(|x| Value::I32(x as i32)).collect()
+            ),)),
             _ => Value::Null,
         }
     );
@@ -1621,11 +1729,7 @@ pub fn register(vm: &mut VM) {
     // serialize, and until now a page could set them and never ask.
     macro_rules! read_attr {
         ($name:literal, $which:expr) => {
-            ask!(
-                $name,
-                |_a| Query2D::GetStringAttribute($which),
-                as_text
-            );
+            ask!($name, |_a| Query2D::GetStringAttribute($which), as_text);
         };
     }
     read_attr!("getFont", StringAttribute::Font);
@@ -1694,7 +1798,10 @@ pub fn register(vm: &mut VM) {
                     o.properties.insert(
                         "__coords".into(),
                         Value::Object(vybe_runtime::heap::alloc(Object::new_array(
-                            read(args).into_iter().map(|v| Value::F64(v as f64)).collect(),
+                            read(args)
+                                .into_iter()
+                                .map(|v| Value::F64(v as f64))
+                                .collect(),
                         ))),
                     );
                     // The stops, in the order `addColorStop` adds them.
@@ -1776,7 +1883,8 @@ pub fn register(vm: &mut VM) {
                     pixels.into_iter().map(|b| Value::I32(b as i32)).collect(),
                 ))),
             );
-            o.properties.insert("__width".into(), Value::I32(width as i32));
+            o.properties
+                .insert("__width".into(), Value::I32(width as i32));
             o.properties
                 .insert("__height".into(), Value::I32(height as i32));
             o.properties.insert(
@@ -1961,4 +2069,34 @@ pub fn register(vm: &mut VM) {
             })
             .collect::<Vec<_>>(),
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn array(values: Vec<Value>) -> Value {
+        Value::Object(vybe_runtime::heap::alloc(Object::new_array(values)))
+    }
+
+    fn carray(base: Value, idx: i32) -> Value {
+        let mut obj = Object::new();
+        obj.properties
+            .insert("__ref_kind".into(), Value::String("carray".into()));
+        obj.properties.insert("__base".into(), base);
+        obj.properties.insert("__idx".into(), Value::I32(idx));
+        Value::Object(vybe_runtime::heap::alloc(obj))
+    }
+
+    #[test]
+    fn bytes_arg_unwraps_carray_pointer_offset() {
+        let bytes = array(vec![
+            Value::I32(10),
+            Value::I32(20),
+            Value::I32(30),
+            Value::I32(40),
+        ]);
+
+        assert_eq!(bytes_arg(None, &[carray(bytes, 2)], 0), vec![30, 40]);
+    }
 }

@@ -77,7 +77,11 @@ fn clicking_a_list_box_row_selects_that_row() {
     // NOTHING selected and `selectedIndex` is −1. The assertion this replaced
     // asserted the drop-down's rule against a list box.
     let lb = find_by_id(&doc.root, "lb").unwrap();
-    assert_eq!(webcore::html::forms::selected_index(lb), -1, "a fresh list box has no selection");
+    assert_eq!(
+        webcore::html::forms::selected_index(lb),
+        -1,
+        "a fresh list box has no selection"
+    );
 
     let (x, y) = list_box_row(&doc, "lb", 2);
     click(&mut doc, x, y);
@@ -88,7 +92,10 @@ fn clicking_a_list_box_row_selects_that_row() {
         2,
         "clicking the third row must select the third option"
     );
-    assert_eq!(doc.open_select, 0, "a list box has no popup and must not open one");
+    assert_eq!(
+        doc.open_select, 0,
+        "a list box has no popup and must not open one"
+    );
 }
 
 /// A DROPDOWN is the same element without `size`. HTML gives `<select>` no
@@ -113,7 +120,10 @@ fn clicking_a_dropdown_changes_its_selection() {
     let (x, y, w, h) = rect_of(&doc, "cb");
     let node = find_by_id(&doc.root, "cb").unwrap().node_id;
     click(&mut doc, x + w / 2.0, y + h / 2.0);
-    assert_eq!(doc.open_select, node, "the first click must OPEN the dropdown");
+    assert_eq!(
+        doc.open_select, node,
+        "the first click must OPEN the dropdown"
+    );
 
     // The second click lands on a row of the open list. A popup's row height is
     // the user agent's own metric with no API to ask for it, so this asserts

@@ -1565,7 +1565,10 @@ impl DocumentSink {
     /// parser, the grammar and the tree-building were all here, and every entry
     /// point made a fresh `Document`. Seeding the open-element stack with the
     /// target is what points the same machinery at a subtree.
-    fn fragment(document: crate::engine::DocumentId, parent: crate::engine::NodeId) -> DocumentSink {
+    fn fragment(
+        document: crate::engine::DocumentId,
+        parent: crate::engine::NodeId,
+    ) -> DocumentSink {
         DocumentSink {
             document,
             floor: 1,
@@ -1790,7 +1793,11 @@ fn parse_html_document(source: &str) -> Value {
 /// `innerHTML` is defined as discarding the children and inserting the parsed
 /// fragment, so appending would leave a page that grows every time it is
 /// redrawn — which is exactly what a framework does on each render.
-pub fn set_inner_html(document: crate::engine::DocumentId, node: crate::engine::NodeId, source: &str) {
+pub fn set_inner_html(
+    document: crate::engine::DocumentId,
+    node: crate::engine::NodeId,
+    source: &str,
+) {
     // Remove first, so a parse that yields nothing still empties the box —
     // `el.innerHTML = ""` is how a page clears itself.
     for child in match crate::engine::apply(document, DomOp::ChildNodes(node)) {
@@ -1882,7 +1889,13 @@ pub fn set_outer_html(
     if fragment != 0 {
         place(document, parent, fragment, Some(node));
     }
-    crate::engine::apply(document, DomOp::RemoveChild { parent, child: node });
+    crate::engine::apply(
+        document,
+        DomOp::RemoveChild {
+            parent,
+            child: node,
+        },
+    );
 }
 
 /// `document.importNode(externalNode, deep)`.
@@ -1914,11 +1927,10 @@ pub fn import_node(
     // The first ELEMENT, not the first node. Markup that begins with
     // whitespace parses to a leading text node, and returning that would hand
     // back a text node where the caller asked for the element it imported.
-    let imported = match children_of(document, fragment)
-        .into_iter()
-        .find(|child| matches!(crate::engine::apply(document, DomOp::NodeType(*child)),
-                               DomValue::Number(kind) if kind == 1.0))
-    {
+    let imported = match children_of(document, fragment).into_iter().find(|child| {
+        matches!(crate::engine::apply(document, DomOp::NodeType(*child)),
+                               DomValue::Number(kind) if kind == 1.0)
+    }) {
         Some(element) => element,
         None => return 0,
     };
@@ -2114,7 +2126,9 @@ fn make_element_from_start(e: &quick_xml::events::BytesStart, grammar: Grammar) 
         };
         let val = match grammar {
             Grammar::Xml => attr.unescape_value().map(|c| c.into_owned()),
-            Grammar::Html => attr.unescape_value_with(html_entity).map(|c| c.into_owned()),
+            Grammar::Html => attr
+                .unescape_value_with(html_entity)
+                .map(|c| c.into_owned()),
         }
         .unwrap_or_default();
         if key == "id" {
@@ -2312,7 +2326,9 @@ fn finalize_node_tree(
             // the backing vector (right), the array-like iteration fallback
             // reads this property (was stale ⇒ spread drained NOTHING).
             if replaced {
-                guard.properties.insert("length".into(), Value::I32(len as i32));
+                guard
+                    .properties
+                    .insert("length".into(), Value::I32(len as i32));
             }
         } else {
             n.properties
@@ -3443,7 +3459,9 @@ fn refresh_node_relationships(parent: &Arc<Mutex<Object>>) {
                 // insertBefore / fragment move) reaches `children` through
                 // here, so this one write covers all of them.
                 if replaced {
-                    guard.properties.insert("length".into(), Value::I32(len as i32));
+                    guard
+                        .properties
+                        .insert("length".into(), Value::I32(len as i32));
                 }
             } else {
                 p.properties
@@ -3913,13 +3931,21 @@ mod html_document_tests {
         // A `<style>` is not decoration on the way past: its text IS the
         // cascade's author origin. A parsed page whose rules did not apply
         // would be a document in shape only.
-        let document = parse("<html><head><style>p { color: #ff0000 }</style></head><body><p>x</p></body></html>");
+        let document = parse(
+            "<html><head><style>p { color: #ff0000 }</style></head><body><p>x</p></body></html>",
+        );
         let colour = dom::with_document(document, |doc| {
-            let p = doc.query_selector("p").expect("the paragraph is in the tree");
+            let p = doc
+                .query_selector("p")
+                .expect("the paragraph is in the tree");
             doc.get_computed_style(p).color
         })
         .expect("the document is open");
-        assert_eq!(colour, Some(0xffff0000), "the parsed rule reached the cascade");
+        assert_eq!(
+            colour,
+            Some(0xffff0000),
+            "the parsed rule reached the cascade"
+        );
     }
 
     #[test]
@@ -3928,7 +3954,9 @@ mod html_document_tests {
         // inert attribute for as long as the parser has existed.
         let document = parse("<p style='color: #00ff00'>x</p>");
         let colour = dom::with_document(document, |doc| {
-            let p = doc.query_selector("p").expect("the paragraph is in the tree");
+            let p = doc
+                .query_selector("p")
+                .expect("the paragraph is in the tree");
             doc.get_computed_style(p).color
         })
         .expect("the document is open");
@@ -3940,11 +3968,11 @@ mod html_document_tests {
         // Two origins, one element — which is the only way to show the
         // stylesheet and the attribute are genuinely the same cascade rather
         // than two writes racing.
-        let document = parse(
-            "<style>p { color: #ff0000 }</style><p style='color: #0000ff'>x</p>",
-        );
+        let document = parse("<style>p { color: #ff0000 }</style><p style='color: #0000ff'>x</p>");
         let colour = dom::with_document(document, |doc| {
-            let p = doc.query_selector("p").expect("the paragraph is in the tree");
+            let p = doc
+                .query_selector("p")
+                .expect("the paragraph is in the tree");
             doc.get_computed_style(p).color
         })
         .expect("the document is open");
@@ -4000,7 +4028,8 @@ mod html_document_tests {
         // `<html>`, `<head>` and `<body>` are the three elements nothing ever
         // created until a parser did. As leaves they refused every child, so
         // a whole page arrived empty.
-        let document = parse("<html><head><meta charset='utf-8'></head><body><p>x</p></body></html>");
+        let document =
+            parse("<html><head><meta charset='utf-8'></head><body><p>x</p></body></html>");
         let (has_meta, has_p) = dom::with_document(document, |doc| {
             (
                 doc.query_selector("head meta").is_some(),

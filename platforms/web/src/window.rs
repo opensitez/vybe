@@ -18,7 +18,7 @@
 //! `open` comes from the namespace. Everything after it is standard.
 
 use vybe_runtime::vm::{HostFnDecl, ResourceBinding, ResourceMemberKind};
-use vybe_runtime::{FuncSig, Param, HostContext, VM, ValType, Value};
+use vybe_runtime::{FuncSig, HostContext, Param, VM, ValType, Value};
 
 use crate::engine::{WindowId, WindowOp, WindowValue, window};
 
@@ -98,8 +98,8 @@ pub fn register(vm: &mut VM) {
             "web:window",
             "open",
             Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
-            // `url` is accepted and ignored: there is no navigation here, so
-            // every window opens the spec's initial `about:blank`.
+                // `url` is accepted and ignored: there is no navigation here, so
+                // every window opens the spec's initial `about:blank`.
                 match window(WindowOp::Open {
                     target: str_arg(args, 1),
                     features: str_arg(args, 2),

@@ -14,7 +14,7 @@ use sha2::{Digest, Sha256, Sha384, Sha512};
 use std::sync::{Arc, Mutex};
 use vybe_runtime::value::{Object, ObjectKind};
 use vybe_runtime::vm::HostFnDecl;
-use vybe_runtime::{FuncSig, Param, HostContext, VM, ValType, Value};
+use vybe_runtime::{FuncSig, HostContext, Param, VM, ValType, Value};
 
 /// Declare a `web:crypto` function. No resource: `crypto` is a namespace, not a
 /// handle — `randomUUID` has nothing to be a method ON.
@@ -64,16 +64,16 @@ pub fn register(vm: &mut VM) {
             "web:crypto",
             "randomUUID",
             Box::new(|_ctx: &mut HostContext, _args: &[Value]| {
-            let a = random_u64();
-            let b = random_u64();
-            let s = format!(
-                "{:08x}-{:04x}-4{:03x}-{:04x}-{:012x}",
-                (a >> 32) as u32,
-                (a >> 16) as u16 & 0xFFFF,
-                a as u16 & 0x0FFF,
-                (b >> 48) as u16 & 0x3FFF | 0x8000,
-                b & 0xFFFFFFFFFFFF,
-            );
+                let a = random_u64();
+                let b = random_u64();
+                let s = format!(
+                    "{:08x}-{:04x}-4{:03x}-{:04x}-{:012x}",
+                    (a >> 32) as u32,
+                    (a >> 16) as u16 & 0xFFFF,
+                    a as u16 & 0x0FFF,
+                    (b >> 48) as u16 & 0x3FFF | 0x8000,
+                    b & 0xFFFFFFFFFFFF,
+                );
                 Value::String(Arc::from(s.as_str()))
             }),
         )
@@ -90,14 +90,14 @@ pub fn register(vm: &mut VM) {
             "web:crypto",
             "getRandomValues",
             Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            if let Some(Value::Object(arr)) = args.first() {
-                let mut o = arr.lock().unwrap();
-                if let ObjectKind::Array(ref mut v) = o.kind {
-                    for slot in v.iter_mut() {
-                        *slot = Value::F64((random_u64() & 0xFF) as f64);
+                if let Some(Value::Object(arr)) = args.first() {
+                    let mut o = arr.lock().unwrap();
+                    if let ObjectKind::Array(ref mut v) = o.kind {
+                        for slot in v.iter_mut() {
+                            *slot = Value::F64((random_u64() & 0xFF) as f64);
+                        }
                     }
                 }
-            }
                 args.first().cloned().unwrap_or(Value::Null)
             }),
         )
@@ -117,23 +117,23 @@ pub fn register(vm: &mut VM) {
             "web:crypto",
             "digest",
             Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            let algo = args
-                .first()
-                .map(|v| format!("{}", v).to_uppercase())
-                .unwrap_or_default();
-            let bytes = bytes_from_arg(args.get(1));
-            let digest_bytes: Vec<u8> = match algo.as_str() {
-                "SHA-256" => Sha256::digest(&bytes).to_vec(),
-                "SHA-384" => Sha384::digest(&bytes).to_vec(),
-                "SHA-512" => Sha512::digest(&bytes).to_vec(),
-                "SHA-1" => sha1_digest(&bytes),
-                "MD5" => md5_digest(&bytes),
-                _ => Vec::new(),
-            };
-            let mut buf_obj = Object::new();
-            buf_obj.kind = ObjectKind::ArrayBuffer(make_buffer_state(digest_bytes));
-            let buffer = Value::Object(vybe_runtime::heap::alloc(buf_obj));
-            make_promise_fulfilled(buffer)
+                let algo = args
+                    .first()
+                    .map(|v| format!("{}", v).to_uppercase())
+                    .unwrap_or_default();
+                let bytes = bytes_from_arg(args.get(1));
+                let digest_bytes: Vec<u8> = match algo.as_str() {
+                    "SHA-256" => Sha256::digest(&bytes).to_vec(),
+                    "SHA-384" => Sha384::digest(&bytes).to_vec(),
+                    "SHA-512" => Sha512::digest(&bytes).to_vec(),
+                    "SHA-1" => sha1_digest(&bytes),
+                    "MD5" => md5_digest(&bytes),
+                    _ => Vec::new(),
+                };
+                let mut buf_obj = Object::new();
+                buf_obj.kind = ObjectKind::ArrayBuffer(make_buffer_state(digest_bytes));
+                let buffer = Value::Object(vybe_runtime::heap::alloc(buf_obj));
+                make_promise_fulfilled(buffer)
             }),
         )
         // `Any` for both the data and the result, deliberately: the IDL takes a

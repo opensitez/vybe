@@ -56,12 +56,12 @@ pub mod encoding;
 pub mod engine;
 /// Which engine is live, chosen at run time. See `engine_select`.
 pub mod engine_select;
-#[cfg(feature = "gui")]
-pub mod engine_widgets;
 /// The other engine behind the same trait. Additive to `engine_widgets`: both
 /// are compiled in, and `install()` decides which one is live.
 #[cfg(feature = "engine-webcore")]
 pub mod engine_webcore;
+#[cfg(feature = "gui")]
+pub mod engine_widgets;
 
 /// Getting a frame out of whichever engine is live. A STOPGAP — see the
 /// module docs for the shape that survives an out-of-process browser.
@@ -277,11 +277,11 @@ pub fn with_browser<T>(
     }
 }
 pub mod fetch;
-pub mod html;
 /// WHATWG File System Access — `showOpenFilePicker` and friends. Behind `gui`
 /// because a picker is the user agent's own chrome, which only the toolkit has.
 #[cfg(feature = "gui")]
 pub mod file_system_access;
+pub mod html;
 pub mod timers;
 pub mod ui_events;
 pub mod url;

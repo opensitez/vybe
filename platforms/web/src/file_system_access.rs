@@ -171,10 +171,7 @@ pub fn register(vm: &mut VM) {
         "web:file-system-access",
         "showDirectoryPicker",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            path_or_null(pick_directory(
-                &string_arg(args, 0),
-                &string_arg(args, 1),
-            ))
+            path_or_null(pick_directory(&string_arg(args, 0), &string_arg(args, 1)))
         }),
     );
 }

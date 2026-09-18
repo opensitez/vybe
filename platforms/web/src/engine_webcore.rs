@@ -119,7 +119,11 @@ fn with_entry<T>(id: DocumentId, f: impl FnOnce(&mut Entry) -> T) -> Option<T> {
 /// so the document's stand-in is `<html>`. For INSERTING one it is not: see
 /// [`insertion_parent`].
 fn to_hb(doc: &Document, node: NodeId) -> u32 {
-    if node == DOCUMENT { doc.root.node_id } else { node as u32 }
+    if node == DOCUMENT {
+        doc.root.node_id
+    } else {
+        node as u32
+    }
 }
 
 /// The node a DOCUMENT-addressed CONTENT operation means: the **body**.
@@ -171,7 +175,11 @@ fn insertion_parent(doc: &Document, parent: NodeId, child: NodeId) -> u32 {
 /// webcore node → seam node. The root box answers as `DOCUMENT` so that
 /// walking up from `<body>` lands on the document, as the DOM says it should.
 fn from_hb(doc: &Document, id: u32) -> NodeId {
-    if id == doc.root.node_id || id == 0 { DOCUMENT } else { id as NodeId }
+    if id == doc.root.node_id || id == 0 {
+        DOCUMENT
+    } else {
+        id as NodeId
+    }
 }
 
 /// The DOM event name for a form interaction. webcore reports what HAPPENED;
@@ -224,10 +232,12 @@ impl WebEngine for WebCore {
         );
         let doc = webcore::load_html(&html, DEFAULT_VIEWPORT_W);
 
-        let events: Arc<Mutex<VecDeque<(NodeId, String)>>> =
-            Arc::new(Mutex::new(VecDeque::new()));
+        let events: Arc<Mutex<VecDeque<(NodeId, String)>>> = Arc::new(Mutex::new(VecDeque::new()));
 
-        let mut entry = Entry { doc, events: Arc::clone(&events) };
+        let mut entry = Entry {
+            doc,
+            events: Arc::clone(&events),
+        };
 
         // The bridge: webcore calls this synchronously as interactions happen,
         // and `DrainEvents` pulls whatever accumulated since the last drain.
@@ -288,12 +298,14 @@ impl WebEngine for WebCore {
                 DomOp::CreateTextNode(data) => {
                     DomValue::Node(doc.create_text_node(&data) as NodeId)
                 }
-                DomOp::CreateComment(data) => {
-                    DomValue::Node(doc.create_comment(&data) as NodeId)
-                }
+                DomOp::CreateComment(data) => DomValue::Node(doc.create_comment(&data) as NodeId),
 
                 // ── XML ──
-                DomOp::CreateElementNS { namespace, qualified_name, input_type } => {
+                DomOp::CreateElementNS {
+                    namespace,
+                    qualified_name,
+                    input_type,
+                } => {
                     let id = doc.create_element_ns(&namespace, &qualified_name);
                     if !input_type.is_empty() {
                         doc.set_attribute(id, "type", &input_type);
@@ -315,16 +327,23 @@ impl WebEngine for WebCore {
                     None => DomValue::Null,
                 },
                 DomOp::LocalName(n) => DomValue::Text(doc.local_name(to_hb(doc, n))),
-                DomOp::SetAttributeNS { node, namespace, qualified_name, value } => {
+                DomOp::SetAttributeNS {
+                    node,
+                    namespace,
+                    qualified_name,
+                    value,
+                } => {
                     doc.set_attribute_ns(to_hb(doc, node), &namespace, &qualified_name, &value);
                     DomValue::None
                 }
-                DomOp::GetAttributeNS { node, namespace, local_name } => {
-                    match doc.get_attribute_ns(to_hb(doc, node), &namespace, &local_name) {
-                        Some(v) => DomValue::Text(v),
-                        None => DomValue::Null,
-                    }
-                }
+                DomOp::GetAttributeNS {
+                    node,
+                    namespace,
+                    local_name,
+                } => match doc.get_attribute_ns(to_hb(doc, node), &namespace, &local_name) {
+                    Some(v) => DomValue::Text(v),
+                    None => DomValue::Null,
+                },
 
                 // ── Queries ──
                 DomOp::GetElementById(id) => match doc.get_element_by_id(&id) {
@@ -363,18 +382,30 @@ impl WebEngine for WebCore {
                     doc.remove_child(child as u32);
                     DomValue::Bool(true)
                 }
-                DomOp::InsertBefore { parent, child, reference } => {
+                DomOp::InsertBefore {
+                    parent,
+                    child,
+                    reference,
+                } => {
                     let p = insertion_parent(doc, parent, child);
                     doc.insert_before(p, child as u32, reference as u32);
                     DomValue::Bool(true)
                 }
-                DomOp::ReplaceChild { parent, new_child, old_child } => {
+                DomOp::ReplaceChild {
+                    parent,
+                    new_child,
+                    old_child,
+                } => {
                     let p = insertion_parent(doc, parent, new_child);
                     DomValue::Bool(doc.replace_child(p, new_child as u32, old_child as u32))
                 }
                 DomOp::CloneNode { node, deep } => {
                     let clone = doc.clone_node(to_hb(doc, node), deep);
-                    if clone == 0 { DomValue::Null } else { DomValue::Node(clone as NodeId) }
+                    if clone == 0 {
+                        DomValue::Null
+                    } else {
+                        DomValue::Node(clone as NodeId)
+                    }
                 }
                 // The document is not its own element. webcore has no node for
                 // it, so `to_hb` answers `<html>` — right for reaching into the
@@ -383,9 +414,7 @@ impl WebEngine for WebCore {
                 // answers, and the seam is one API or it is not one.
                 DomOp::NodeType(DOCUMENT) => DomValue::Number(9.0),
                 DomOp::NodeName(DOCUMENT) => DomValue::Text("#document".to_string()),
-                DomOp::NodeType(n) => {
-                    DomValue::Number(f64::from(doc.node_type(to_hb(doc, n))))
-                }
+                DomOp::NodeType(n) => DomValue::Number(f64::from(doc.node_type(to_hb(doc, n)))),
                 DomOp::NodeName(n) => DomValue::Text(doc.node_name(to_hb(doc, n))),
                 DomOp::NodeValue(n) => match doc.node_value(to_hb(doc, n)) {
                     Some(v) => DomValue::Text(v),
@@ -393,7 +422,11 @@ impl WebEngine for WebCore {
                 },
                 DomOp::ParentNode(n) => {
                     let parent = doc.parent_node(to_hb(doc, n));
-                    if parent == 0 { DomValue::Null } else { DomValue::Node(from_hb(doc, parent)) }
+                    if parent == 0 {
+                        DomValue::Null
+                    } else {
+                        DomValue::Node(from_hb(doc, parent))
+                    }
                 }
                 DomOp::ChildNodes(n) => {
                     let kids = doc.child_nodes(to_hb(doc, n));
@@ -444,15 +477,11 @@ impl WebEngine for WebCore {
                     doc.set_attribute(to_hb(doc, n), &name, &value);
                     DomValue::None
                 }
-                DomOp::GetAttribute(n, name) => {
-                    match doc.get_attribute(to_hb(doc, n), &name) {
-                        Some(v) => DomValue::Text(v),
-                        None => DomValue::Null,
-                    }
-                }
-                DomOp::AttributeNames(n) => {
-                    DomValue::Texts(doc.get_attribute_names(to_hb(doc, n)))
-                }
+                DomOp::GetAttribute(n, name) => match doc.get_attribute(to_hb(doc, n), &name) {
+                    Some(v) => DomValue::Text(v),
+                    None => DomValue::Null,
+                },
+                DomOp::AttributeNames(n) => DomValue::Texts(doc.get_attribute_names(to_hb(doc, n))),
                 DomOp::RemoveAttribute(n, name) => {
                     doc.remove_attribute(to_hb(doc, n), &name);
                     DomValue::None
@@ -464,11 +493,10 @@ impl WebEngine for WebCore {
                 // The DECLARED value — what was authored, un-resolved. webcore
                 // already answered this way, which is why it disagreed with the
                 // old `widgets` for `left`/`top`/`width`/`height`.
-                DomOp::GetStyleProperty(n, p) => {
-                    DomValue::Text(
-                        doc.get_style_property(content_node(doc, n), &p).unwrap_or_default(),
-                    )
-                }
+                DomOp::GetStyleProperty(n, p) => DomValue::Text(
+                    doc.get_style_property(content_node(doc, n), &p)
+                        .unwrap_or_default(),
+                ),
                 // The RESOLVED value. Geometry comes off the laid-out rect;
                 // everything else falls back to the declared value, matching
                 // the floor `widgets` sets.
@@ -571,9 +599,7 @@ impl WebEngine for WebCore {
                     doc.close_dialog(to_hb(doc, node));
                     DomValue::None
                 }
-                DomOp::DialogOpen(node) => {
-                    DomValue::Bool(doc.dialog_open(to_hb(doc, node)))
-                }
+                DomOp::DialogOpen(node) => DomValue::Bool(doc.dialog_open(to_hb(doc, node))),
 
                 DomOp::BoundingClientRect(node) => {
                     // A geometry question flushes layout first — the whole
@@ -587,7 +613,12 @@ impl WebEngine for WebCore {
                             width: rect.w as f64,
                             height: rect.h as f64,
                         },
-                        None => DomValue::Rect { x: 0.0, y: 0.0, width: 0.0, height: 0.0 },
+                        None => DomValue::Rect {
+                            x: 0.0,
+                            y: 0.0,
+                            width: 0.0,
+                            height: 0.0,
+                        },
                     }
                 }
                 DomOp::CanvasSize(node) => match {
@@ -627,7 +658,10 @@ impl WebEngine for WebCore {
             WindowOp::DefaultView(d) => WindowValue::Window(d),
             WindowOp::AdoptTopLevel(d) => WindowValue::Window(d),
             WindowOp::Closed(w) => WindowValue::Bool(
-                docs().lock().map(|m| !m.entries.contains_key(&w)).unwrap_or(true),
+                docs()
+                    .lock()
+                    .map(|m| !m.entries.contains_key(&w))
+                    .unwrap_or(true),
             ),
             WindowOp::Close(w) => {
                 if let Ok(mut m) = docs().lock() {

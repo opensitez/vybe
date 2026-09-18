@@ -213,7 +213,7 @@ fn a_full_drawing_sequence_crosses_the_seam() {
         },
         Op2D::DrawImagePaletted {
             indices: vec![0, 1, 1, 0],
-            palette: vec![255, 0, 0, 0, 255, 0],
+            palette: vec![0xff0000, 0x00ff00],
             width: 2,
             height: 2,
             dx: 0.0,
@@ -237,7 +237,6 @@ fn a_full_drawing_sequence_crosses_the_seam() {
 // is what "exactly the same API" is actually enforced by — the trait being
 // identical is a fact about two crates; this is a fact about what a page gets.
 
-
 fn text(v: Query2DValue) -> String {
     match v {
         Query2DValue::Text(t) => t,
@@ -250,10 +249,7 @@ fn a_measurement_carries_all_twelve_metrics() {
     // The seam used to carry `width` alone: the engine computed the other
     // eleven and they were dropped on the way out.
     let (_doc, target) = canvas_on_the_page("metrics");
-    paint(
-        &target,
-        Op2D::SetFontCss("48px sans-serif".into()),
-    );
+    paint(&target, Op2D::SetFontCss("48px sans-serif".into()));
     let Query2DValue::Metrics(m) = query(&target, Query2D::MeasureText("Hg".into())) else {
         panic!("a canvas that exists can be measured");
     };
@@ -280,7 +276,10 @@ fn a_page_can_read_back_what_it_set() {
     let (_doc, target) = canvas_on_the_page("read-back");
     paint(&target, Op2D::SetFillStyleCss("#3366cc".into()));
     paint(&target, Op2D::SetFontCss("32px serif".into()));
-    paint(&target, Op2D::SetGlobalCompositeOperation("multiply".into()));
+    paint(
+        &target,
+        Op2D::SetGlobalCompositeOperation("multiply".into()),
+    );
     paint(&target, Op2D::SetDirection("rtl".into()));
 
     let get = |a| text(query(&target, Query2D::GetStringAttribute(a)));
@@ -297,11 +296,19 @@ fn a_colour_serializes_the_way_the_spec_says_and_not_as_written() {
     // input would look more faithful and be wrong.
     let (_doc, target) = canvas_on_the_page("serialize");
     paint(&target, Op2D::SetFillStyleCss("red".into()));
-    let get = || text(query(&target, Query2D::GetStringAttribute(StringAttribute::FillStyle)));
+    let get = || {
+        text(query(
+            &target,
+            Query2D::GetStringAttribute(StringAttribute::FillStyle),
+        ))
+    };
     assert_eq!(get(), "#ff0000");
 
     // Translucent goes to `rgba(...)`, because hex cannot carry alpha.
-    paint(&target, Op2D::SetFillStyleCss("rgba(0, 128, 255, 0.5)".into()));
+    paint(
+        &target,
+        Op2D::SetFillStyleCss("rgba(0, 128, 255, 0.5)".into()),
+    );
     let out = get();
     assert!(
         out.starts_with("rgba(0, 128, 255,"),
@@ -333,7 +340,11 @@ fn what_was_drawn_can_be_read_back_through_the_seam() {
     let (_doc, target) = canvas_on_the_page("pixels");
     paint(&target, Op2D::SetFillStyleCss("#ff8000".into()));
     paint(&target, Op2D::FillRect(0.0, 0.0, 8.0, 8.0));
-    let Query2DValue::Pixels { data, width, height } = query(
+    let Query2DValue::Pixels {
+        data,
+        width,
+        height,
+    } = query(
         &target,
         Query2D::GetImageData {
             sx: 0,
@@ -341,7 +352,8 @@ fn what_was_drawn_can_be_read_back_through_the_seam() {
             sw: 4,
             sh: 4,
         },
-    ) else {
+    )
+    else {
         panic!("a canvas has pixels to hand back");
     };
     assert_eq!((width, height), (4, 4));
@@ -421,7 +433,11 @@ fn a_canvas_can_hand_the_page_its_own_pixels() {
             quality: None,
         },
     ));
-    assert!(url.starts_with("data:image/png;base64,"), "got {}", &url[..30.min(url.len())]);
+    assert!(
+        url.starts_with("data:image/png;base64,"),
+        "got {}",
+        &url[..30.min(url.len())]
+    );
 }
 
 #[test]
@@ -604,14 +620,12 @@ use vybe_platform_web::canvas_backend::{PathDef, PathOp2D};
 /// A 20×20 square at (10, 10), as a `Path2D` would carry it.
 fn square() -> PathDef {
     PathDef {
-        ops: vec![
-            PathOp2D::Rect {
-                x: 10.0,
-                y: 10.0,
-                w: 20.0,
-                h: 20.0,
-            },
-        ],
+        ops: vec![PathOp2D::Rect {
+            x: 10.0,
+            y: 10.0,
+            w: 20.0,
+            h: 20.0,
+        }],
     }
 }
 

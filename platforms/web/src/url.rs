@@ -39,7 +39,6 @@ pub fn shared_url_search_params_prototype() -> Value {
     named_prototype(&URL_SEARCH_PARAMS_PROTOTYPE, "URLSearchParams")
 }
 
-
 const MODULE: &str = "web:url";
 
 #[derive(Clone, Copy)]

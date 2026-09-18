@@ -526,7 +526,8 @@ pub fn register_types(fw: &mut Framework<'_>) {
     {
         let mut t = TypeDef::new("CanvasGradient");
         if let Some(idx) = fw.host_fn_index("web:canvas", "addColorStop") {
-            t.methods.insert("addColorStop".to_string(), Method::HostFn(idx));
+            t.methods
+                .insert("addColorStop".to_string(), Method::HostFn(idx));
         }
         t.parent = Some(0);
         fw.register_type(t);

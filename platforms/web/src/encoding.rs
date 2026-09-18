@@ -46,7 +46,6 @@ pub fn shared_text_decoder_prototype() -> Value {
     named_prototype(&TEXT_DECODER_PROTOTYPE, "TextDecoder")
 }
 
-
 fn make_uint8_array(bytes: Vec<u8>) -> Value {
     let array = vybe_platform_ecma::typedarray::new_typed_array(TypedElemKind::U8, bytes.len());
     if let Value::Object(obj) = &array {
