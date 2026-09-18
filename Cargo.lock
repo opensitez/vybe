@@ -136,12 +136,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "arraydeque"
-version = "0.5.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7d902e3d592a523def97af8f317b08ce16b7ab854c1985a0c671e6f15cebc236"
-
-[[package]]
 name = "arrayref"
 version = "0.3.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -763,7 +757,7 @@ checksum = "0c9ea0ac24bc397ab3c98583a3c9ba74fa56b09a4449bbe172b9b1ddb016027a"
 
 [[package]]
 name = "code_editor"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "arboard",
  "crossbeam-channel",
@@ -910,7 +904,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bbe782a9e7520cc7de2232c957a47f99d3a35e855552677d07a557bc1a3b66ed"
 dependencies = [
  "bitflags 2.11.0",
- "fontdb 0.23.0",
+ "fontdb",
  "harfrust",
  "linebender_resource_handle",
  "log",
@@ -1098,12 +1092,6 @@ dependencies = [
  "once_cell",
  "parking_lot_core",
 ]
-
-[[package]]
-name = "data-url"
-version = "0.3.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "be1e0bca6c3637f992fc1cc7cbc52a78c1ef6db076dbf1059c4323d6a2048376"
 
 [[package]]
 name = "deranged"
@@ -1297,7 +1285,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -1305,15 +1293,6 @@ name = "error-code"
 version = "3.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dea2df4cf52843e0452895c455a1a2cfbb842a1e7329671acf418fdc53ed4c59"
-
-[[package]]
-name = "euclid"
-version = "0.22.14"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f1a05365e3b1c6d1650318537c7460c6923f1abdd272ad6842baa2b509957a06"
-dependencies = [
- "num-traits",
-]
 
 [[package]]
 name = "event-listener"
@@ -1409,12 +1388,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "float-cmp"
-version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "98de4bbd547a563b716d8dfa9aad1cb19bfab00f4fa09a6a4ed21dbcf44ce9c4"
-
-[[package]]
 name = "fluent-uri"
 version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1461,20 +1434,6 @@ dependencies = [
 
 [[package]]
 name = "fontdb"
-version = "0.22.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a3a6f9af55fb97ad673fb7a69533eb2f967648a06fa21f8c9bb2cd6d33975716"
-dependencies = [
- "fontconfig-parser",
- "log",
- "memmap2",
- "slotmap",
- "tinyvec",
- "ttf-parser 0.24.1",
-]
-
-[[package]]
-name = "fontdb"
 version = "0.23.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "457e789b3d1202543297a350643cf459f836cade38934e7a4cf6a39e7cde2905"
@@ -1484,7 +1443,7 @@ dependencies = [
  "memmap2",
  "slotmap",
  "tinyvec",
- "ttf-parser 0.25.1",
+ "ttf-parser",
 ]
 
 [[package]]
@@ -1742,16 +1701,6 @@ dependencies = [
 
 [[package]]
 name = "gif"
-version = "0.13.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4ae047235e33e2829703574b54fdec96bfbad892062d97fed2f76022287de61b"
-dependencies = [
- "color_quant",
- "weezl",
-]
-
-[[package]]
-name = "gif"
 version = "0.14.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f5df2ba84018d80c213569363bdcd0c64e6933c67fe4c1d60ecf822971a3c35e"
@@ -1845,15 +1794,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6ba4ff7128dee98c7dc9794b6a411377e1404dba1c97deb8d1a55297bd25d8af"
 dependencies = [
  "hashbrown 0.14.5",
-]
-
-[[package]]
-name = "hashlink"
-version = "0.11.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "824e001ac4f3012dd16a264bec811403a67ca9deb6c102fc5049b32c4574b35f"
-dependencies = [
- "hashbrown 0.16.1",
 ]
 
 [[package]]
@@ -2016,7 +1956,7 @@ dependencies = [
  "libc",
  "percent-encoding",
  "pin-project-lite",
- "socket2 0.6.3",
+ "socket2 0.5.10",
  "system-configuration",
  "tokio",
  "tower-layer",
@@ -2636,23 +2576,13 @@ dependencies = [
  "bytemuck",
  "byteorder-lite",
  "color_quant",
- "gif 0.14.1",
- "image-webp 0.2.4",
+ "gif",
+ "image-webp",
  "moxcms",
  "num-traits",
- "png 0.18.1",
- "zune-core 0.5.1",
- "zune-jpeg 0.5.15",
-]
-
-[[package]]
-name = "image-webp"
-version = "0.1.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f79afb8cbee2ef20f59ccd477a218c12a93943d075b492015ecb1bb81f8ee904"
-dependencies = [
- "byteorder-lite",
- "quick-error",
+ "png",
+ "zune-core",
+ "zune-jpeg",
 ]
 
 [[package]]
@@ -2664,12 +2594,6 @@ dependencies = [
  "byteorder-lite",
  "quick-error",
 ]
-
-[[package]]
-name = "imagesize"
-version = "0.13.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "edcd27d72f2f071c64249075f42e205ff93c9a4c5f6c6da53e79ed9f9832c285"
 
 [[package]]
 name = "indexmap"
@@ -2837,17 +2761,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cb26cec98cce3a3d96cbb7bced3c4b16e3d13f27ec56dbd62cbc8f39cfb9d653"
 dependencies = [
  "cpufeatures 0.2.17",
-]
-
-[[package]]
-name = "kurbo"
-version = "0.11.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c62026ae44756f8a599ba21140f350303d4f08dcdcc71b5ad9c9bb8128c13c62"
-dependencies = [
- "arrayvec",
- "euclid",
- "smallvec",
 ]
 
 [[package]]
@@ -3739,7 +3652,7 @@ version = "0.25.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "36820e9051aca1014ddc75770aab4d68bc1e9e632f0f5627c4086bc216fb583b"
 dependencies = [
- "ttf-parser 0.25.1",
+ "ttf-parser",
 ]
 
 [[package]]
@@ -3868,12 +3781,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "pico-args"
-version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5be167a7af36ee22fe3115051bc51f6e6c7054c9348e28deb4f49bd6f705a315"
-
-[[package]]
 name = "pin-project"
 version = "1.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3921,19 +3828,6 @@ name = "plain"
 version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
-
-[[package]]
-name = "png"
-version = "0.17.16"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "82151a2fc869e011c153adc57cf2789ccb8d9906ce52c0b39a6b5697749d7526"
-dependencies = [
- "bitflags 1.3.2",
- "crc32fast",
- "fdeflate",
- "flate2",
- "miniz_oxide",
-]
 
 [[package]]
 name = "png"
@@ -4378,23 +4272,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "resvg"
-version = "0.44.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4a325d5e8d1cebddd070b13f44cec8071594ab67d1012797c121f27a669b7958"
-dependencies = [
- "gif 0.13.3",
- "image-webp 0.1.3",
- "log",
- "pico-args",
- "rgb",
- "svgtypes",
- "tiny-skia 0.11.4",
- "usvg",
- "zune-jpeg 0.4.21",
-]
-
-[[package]]
 name = "rfd"
 version = "0.14.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4415,15 +4292,6 @@ dependencies = [
  "wasm-bindgen-futures",
  "web-sys",
  "windows-sys 0.48.0",
-]
-
-[[package]]
-name = "rgb"
-version = "0.8.53"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "47b34b781b31e5d73e9fbc8689c70551fd1ade9a19e3e28cfec8580a79290cc4"
-dependencies = [
- "bytemuck",
 ]
 
 [[package]]
@@ -4503,7 +4371,7 @@ dependencies = [
  "bitflags 2.11.0",
  "fallible-iterator 0.3.0",
  "fallible-streaming-iterator",
- "hashlink 0.9.1",
+ "hashlink",
  "libsqlite3-sys",
  "smallvec",
 ]
@@ -4563,7 +4431,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -4604,24 +4472,6 @@ name = "rustversion"
 version = "1.0.22"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b39cdef0fa800fc44525c84ccb54a029961a8215f9619753635a9c0d2538d46d"
-
-[[package]]
-name = "rustybuzz"
-version = "0.18.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c85d1ccd519e61834798eb52c4e886e8c2d7d698dd3d6ce0b1b47eb8557f1181"
-dependencies = [
- "bitflags 2.11.0",
- "bytemuck",
- "core_maths",
- "log",
- "smallvec",
- "ttf-parser 0.24.1",
- "unicode-bidi-mirroring",
- "unicode-ccc",
- "unicode-properties",
- "unicode-script",
-]
 
 [[package]]
 name = "ryu"
@@ -4876,15 +4726,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e3a9fe34e3e7a50316060351f37187a3f546bce95496156754b601a5fa71b76e"
 
 [[package]]
-name = "simplecss"
-version = "0.2.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7a9c6883ca9c3c7c90e888de77b7a5c849c779d25d74a1269b0218b14e8b136c"
-dependencies = [
- "log",
-]
-
-[[package]]
 name = "siphasher"
 version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4978,7 +4819,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3a766e1110788c36f4fa1c2b71b387a7815aa65f88ce0229841826633d93723e"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -5036,9 +4877,6 @@ name = "strict-num"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6637bab7722d379c8b41ba849228d680cc12d0a45ba1fa2b48f2a30577a06731"
-dependencies = [
- "float-cmp",
-]
 
 [[package]]
 name = "stringprep"
@@ -5072,16 +4910,6 @@ name = "subtle"
 version = "2.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
-
-[[package]]
-name = "svgtypes"
-version = "0.15.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "68c7541fff44b35860c1a7a47a7cadf3e4a304c457b58f9870d9706ece028afc"
-dependencies = [
- "kurbo",
- "siphasher",
-]
 
 [[package]]
 name = "swash"
@@ -5182,7 +5010,7 @@ dependencies = [
  "getrandom 0.4.2",
  "once_cell",
  "rustix 1.1.4",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -5192,28 +5020,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "06794f8f6c5c898b3275aebefa6b8a1cb24cd2c6c79397ab15774837a0bc5755"
 dependencies = [
  "winapi-util",
-]
-
-[[package]]
-name = "testecma"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "chrono",
- "indicatif",
- "rayon",
- "regex",
- "serde",
- "serde_json",
- "vybe_compiler",
- "vybe_language_js",
- "vybe_platform_ecma",
- "vybe_platform_wasi",
- "vybe_runtime",
- "vybex",
- "wait-timeout",
- "walkdir",
- "yaml-rust2",
 ]
 
 [[package]]
@@ -5319,7 +5125,6 @@ dependencies = [
  "bytemuck",
  "cfg-if",
  "log",
- "png 0.17.16",
  "tiny-skia-path 0.11.4",
 ]
 
@@ -5334,7 +5139,7 @@ dependencies = [
  "bytemuck",
  "cfg-if",
  "log",
- "png 0.18.1",
+ "png",
  "tiny-skia-path 0.12.0",
 ]
 
@@ -5636,15 +5441,6 @@ checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
 
 [[package]]
 name = "ttf-parser"
-version = "0.24.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5be21190ff5d38e8b4a2d3b6a3ae57f612cc39c96e83cedeaf7abc338a8bac4a"
-dependencies = [
- "core_maths",
-]
-
-[[package]]
-name = "ttf-parser"
 version = "0.25.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d2df906b07856748fa3f6e0ad0cbaa047052d4a7dd609e231c4f72cee8c36f31"
@@ -5683,7 +5479,7 @@ checksum = "f2f6fb2847f6742cd76af783a2a2c49e9375d0a111c7bef6f71cd9e738c72d6e"
 dependencies = [
  "memoffset",
  "tempfile",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -5715,18 +5511,6 @@ name = "unicode-bidi"
 version = "0.3.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5c1cb5db39152898a79168971543b1cb5020dff7fe43c8dc468b0885f5e29df5"
-
-[[package]]
-name = "unicode-bidi-mirroring"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "64af057ad7466495ca113126be61838d8af947f41d93a949980b2389a118082f"
-
-[[package]]
-name = "unicode-ccc"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "260bc6647b3893a9a90668360803a15f96b85a5257b1c3a0c3daf6ae2496de42"
 
 [[package]]
 name = "unicode-ident"
@@ -5768,12 +5552,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9629274872b2bfaf8d66f5f15725007f635594914870f65218920345aa11aa8c"
 
 [[package]]
-name = "unicode-vo"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b1d386ff53b415b7fe27b50bb44679e2cc4660272694b7b6f3326d8480823a94"
-
-[[package]]
 name = "unicode-width"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5809,33 +5587,6 @@ name = "urlencoding"
 version = "2.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "daf8dba3b7eb870caf1ddeed7bc9d2a049f3cfdfae7cb521b087cc33ae4c49da"
-
-[[package]]
-name = "usvg"
-version = "0.44.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7447e703d7223b067607655e625e0dbca80822880248937da65966194c4864e6"
-dependencies = [
- "base64 0.22.1",
- "data-url",
- "flate2",
- "fontdb 0.22.0",
- "imagesize",
- "kurbo",
- "log",
- "pico-args",
- "roxmltree",
- "rustybuzz",
- "simplecss",
- "siphasher",
- "strict-num",
- "svgtypes",
- "tiny-skia-path 0.11.4",
- "unicode-bidi",
- "unicode-script",
- "unicode-vo",
- "xmlwriter",
-]
 
 [[package]]
 name = "utf16_iter"
@@ -5875,11 +5626,11 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "vybe_ast"
-version = "0.6.0"
+version = "0.6.1"
 
 [[package]]
 name = "vybe_compiler"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "chrono",
  "crossbeam-channel",
@@ -5903,7 +5654,7 @@ dependencies = [
 
 [[package]]
 name = "vybe_language_c"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "inventory",
  "pest",
@@ -5916,7 +5667,7 @@ dependencies = [
 
 [[package]]
 name = "vybe_language_cobol"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "inventory",
  "pest",
@@ -5928,7 +5679,7 @@ dependencies = [
 
 [[package]]
 name = "vybe_language_csharp"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "inventory",
  "pest",
@@ -5944,7 +5695,7 @@ dependencies = [
 
 [[package]]
 name = "vybe_language_dart"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "inventory",
  "pest",
@@ -5957,7 +5708,7 @@ dependencies = [
 
 [[package]]
 name = "vybe_language_fortran"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "inventory",
  "pest",
@@ -5969,7 +5720,7 @@ dependencies = [
 
 [[package]]
 name = "vybe_language_go"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "inventory",
  "pest",
@@ -5982,7 +5733,7 @@ dependencies = [
 
 [[package]]
 name = "vybe_language_java"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "inventory",
  "pest",
@@ -5996,7 +5747,7 @@ dependencies = [
 
 [[package]]
 name = "vybe_language_js"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "inventory",
  "pest",
@@ -6009,7 +5760,7 @@ dependencies = [
 
 [[package]]
 name = "vybe_language_kotlin"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "inventory",
  "pest",
@@ -6022,7 +5773,7 @@ dependencies = [
 
 [[package]]
 name = "vybe_language_lua"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "inventory",
  "pest",
@@ -6034,7 +5785,7 @@ dependencies = [
 
 [[package]]
 name = "vybe_language_pascal"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "inventory",
  "pest",
@@ -6048,7 +5799,7 @@ dependencies = [
 
 [[package]]
 name = "vybe_language_php"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "inventory",
  "pest",
@@ -6061,7 +5812,7 @@ dependencies = [
 
 [[package]]
 name = "vybe_language_powershell"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "inventory",
  "pest",
@@ -6074,11 +5825,14 @@ dependencies = [
 
 [[package]]
 name = "vybe_language_python"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "inventory",
  "pest",
  "pest_derive",
+ "serde",
+ "serde_json",
+ "toml",
  "vybe_ast",
  "vybe_compiler",
  "vybe_runtime",
@@ -6086,7 +5840,7 @@ dependencies = [
 
 [[package]]
 name = "vybe_language_ruby"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "inventory",
  "pest",
@@ -6099,7 +5853,7 @@ dependencies = [
 
 [[package]]
 name = "vybe_language_vb"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "chrono",
  "inventory",
@@ -6115,8 +5869,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "vybe_language_wast"
-version = "0.6.0"
+name = "vybe_language_washm"
+version = "0.6.1"
 dependencies = [
  "inventory",
  "pest",
@@ -6127,8 +5881,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "vybe_language_wast"
+version = "0.6.1"
+dependencies = [
+ "inventory",
+ "pest",
+ "pest_derive",
+ "vybe_ast",
+ "vybe_compiler",
+ "vybe_platform_wasm",
+ "vybe_runtime",
+]
+
+[[package]]
 name = "vybe_platform_dotnet"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "inventory",
  "quick-xml 0.39.2",
@@ -6143,7 +5910,7 @@ dependencies = [
 
 [[package]]
 name = "vybe_platform_ecma"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "chrono",
  "chrono-tz",
@@ -6167,16 +5934,17 @@ dependencies = [
 
 [[package]]
 name = "vybe_platform_flutter"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "inventory",
  "vybe_ast",
+ "vybe_compiler",
  "vybe_runtime",
 ]
 
 [[package]]
 name = "vybe_platform_jvm"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "inventory",
  "vybe_ast",
@@ -6186,7 +5954,7 @@ dependencies = [
 
 [[package]]
 name = "vybe_platform_libc"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "inventory",
  "vybe_ast",
@@ -6196,7 +5964,7 @@ dependencies = [
 
 [[package]]
 name = "vybe_platform_node"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "brotli 7.0.0",
  "flate2",
@@ -6217,7 +5985,7 @@ dependencies = [
 
 [[package]]
 name = "vybe_platform_plib"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "inventory",
  "vybe_ast",
@@ -6227,7 +5995,7 @@ dependencies = [
 
 [[package]]
 name = "vybe_platform_wasi"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "blake2",
  "getrandom 0.2.17",
@@ -6250,15 +6018,16 @@ dependencies = [
 
 [[package]]
 name = "vybe_platform_wasm"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
+ "indexmap",
  "inventory",
  "vybe_runtime",
 ]
 
 [[package]]
 name = "vybe_platform_web"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "form_urlencoded",
  "inventory",
@@ -6274,7 +6043,7 @@ dependencies = [
 
 [[package]]
 name = "vybe_runtime"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "indexmap",
  "inventory",
@@ -6285,7 +6054,7 @@ dependencies = [
 
 [[package]]
 name = "vybex"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "bytes",
  "dashmap",
@@ -6317,6 +6086,7 @@ dependencies = [
  "vybe_language_python",
  "vybe_language_ruby",
  "vybe_language_vb",
+ "vybe_language_washm",
  "vybe_language_wast",
  "vybe_platform_dotnet",
  "vybe_platform_ecma",
@@ -6622,21 +6392,20 @@ dependencies = [
 
 [[package]]
 name = "webcore"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0b78ba7702f815c3d987c6362bc4fe5c4b65baa79269a9e8111eb8655b70f16f"
+version = "0.3.2"
 dependencies = [
  "base64 0.21.7",
+ "brotli 8.0.4",
  "bytemuck",
  "cosmic-text",
  "encoding_rs",
  "flate2",
+ "fontdb",
  "image",
  "rand 0.8.5",
  "raw-window-handle",
  "rayon",
  "reqwest",
- "resvg",
  "softbuffer",
  "swash",
  "tiny-skia 0.12.0",
@@ -6666,8 +6435,6 @@ dependencies = [
 [[package]]
 name = "widgets"
 version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "50b0198f134d7969beaad8f5cae7296e61d7edd1892560b6cdd1da0ccfff2d6e"
 dependencies = [
  "arboard",
  "base64 0.21.7",
@@ -6705,7 +6472,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]
@@ -7262,23 +7029,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b9cc00251562a284751c9973bace760d86c0276c471b4be569fe6b068ee97a56"
 
 [[package]]
-name = "xmlwriter"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ec7a2a501ed189703dba8b08142f057e887dfc4b2cc4db2d343ac6376ba3e0b9"
-
-[[package]]
-name = "yaml-rust2"
-version = "0.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "631a50d867fafb7093e709d75aaee9e0e0d5deb934021fcea25ac2fe09edc51e"
-dependencies = [
- "arraydeque",
- "encoding_rs",
- "hashlink 0.11.1",
-]
-
-[[package]]
 name = "yazi"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7539,24 +7289,9 @@ dependencies = [
 
 [[package]]
 name = "zune-core"
-version = "0.4.12"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3f423a2c17029964870cfaabb1f13dfab7d092a62a29a89264f4d36990ca414a"
-
-[[package]]
-name = "zune-core"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cb8a0807f7c01457d0379ba880ba6322660448ddebc890ce29bb64da71fb40f9"
-
-[[package]]
-name = "zune-jpeg"
-version = "0.4.21"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "29ce2c8a9384ad323cf564b67da86e21d3cfdff87908bc1223ed5c99bc792713"
-dependencies = [
- "zune-core 0.4.12",
-]
 
 [[package]]
 name = "zune-jpeg"
@@ -7564,7 +7299,7 @@ version = "0.5.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "27bc9d5b815bc103f142aa054f561d9187d191692ec7c2d1e2b4737f8dbd7296"
 dependencies = [
- "zune-core 0.5.1",
+ "zune-core",
 ]
 
 [[package]]
