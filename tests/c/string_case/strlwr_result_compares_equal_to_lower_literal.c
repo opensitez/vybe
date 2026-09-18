@@ -1,8 +1,10 @@
 // vybe-test: c/string_case/strlwr_result_compares_equal_to_lower_literal
 // origin: languages/c/tests/c/test_string_case.rs
+// vybe-test-units: case_helper.c
 #include <stdio.h>
 #include <string.h>
 #include <assert.h>
+#include "case_helper.h"
 int main() {
 const char *__w[] = {"ok\n"};
 int __n = 1, __i = 0;

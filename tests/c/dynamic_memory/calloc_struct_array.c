@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <assert.h>
+#include <stdlib.h>
 struct Point { int x; int y; };
 int main() {
 const char *__w[] = {"0 0 5 10\n"};

@@ -1,6 +1,7 @@
 // vybe-test: c/strtol/strtol_auto_base
 // origin: languages/c/tests/c/test_strtol.rs
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <assert.h>
 int main() {

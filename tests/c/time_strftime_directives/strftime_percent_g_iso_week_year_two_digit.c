@@ -7,7 +7,7 @@
 int main() {
 const char *__w[] = {"24\n"};
 int __n = 1, __i = 0;
-struct tm t={.tm_year=124,.tm_mon=5,.tm_mday=15,.tm_wday=6}; char b[4]; strftime(b,sizeof(b),"%g",&t); { char __t[512]; snprintf(__t, sizeof(__t), "%s\n", b);
+struct tm t={.tm_year=124,.tm_mon=5,.tm_mday=15,.tm_wday=6}; mktime(&t); char b[4]; strftime(b,sizeof(b),"%g",&t); { char __t[512]; snprintf(__t, sizeof(__t), "%s\n", b);
   if (__i >= __n || strcmp(__t, __w[__i]) != 0) { printf("FAIL at line %d: got [%s]\n", __i, __t); assert(0); } __i++; } if (__i != __n) { printf("FAIL: %d line(s), wanted %d\n", __i, __n); assert(0); }
 return 0;
 }

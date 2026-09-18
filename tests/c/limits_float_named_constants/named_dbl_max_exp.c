@@ -2,6 +2,7 @@
 // origin: languages/c/tests/c/test_limits_float_named_constants.rs
 #include <string.h>
 #include <assert.h>
+#include <limits.h>
 #include <stdio.h>
 #include <float.h>
 int main() {

@@ -3,5 +3,5 @@
 #include <stdio.h>
 #include <string.h>
 #include <assert.h>
-int main() { int res = fgetpos(NULL, NULL); /* usually crashes, but we check compiler handling. Let's test a closed file instead */ FILE *f = fopen("test_inv.txt", "w"); fclose(f); fpos_t pos; printf("%d", fgetpos(f, &pos) != 0); return 0; }
+int main() { FILE *f = fopen("test_inv.txt", "w"); fclose(f); fpos_t pos; printf("%d", fgetpos(f, &pos) != 0); remove("test_inv.txt"); return 0; }
 

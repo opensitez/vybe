@@ -9,7 +9,7 @@
 int main() {const char *__w[] = {"hello world\n"};
 int __n = 1, __i = 0;
 
-    char *a = "hello";
+    char a[64] = "hello";
     char *b = " world";
     char *c = strcat(a, b);
     { char __t[512]; snprintf(__t, sizeof(__t), "%s\n", c);

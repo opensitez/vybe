@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <assert.h>
+#include <stddef.h>
 int main() {
 const char *__w[] = {"2\n"};
 int __n = 1, __i = 0;

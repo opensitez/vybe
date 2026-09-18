@@ -4,8 +4,8 @@
 #include <string.h>
 #include <assert.h>
 int main() {
-const char *__w[] = {"one two"};
-int __n = 1, __i = 0;
+const char *__w[] = {"one ", "two\n"};
+int __n = 2, __i = 0;
 
 int x = 1;
 switch (x) {

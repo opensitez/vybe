@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <assert.h>
+#include <stdlib.h>
 int main() {
 const char *__w[] = {"-1234\n"};
 int __n = 1, __i = 0;

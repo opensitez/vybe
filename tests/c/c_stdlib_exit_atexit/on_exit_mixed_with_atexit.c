@@ -3,14 +3,25 @@
 #include <stdio.h>
 #include <string.h>
 #include <assert.h>
-static const char *__w[] = {"21"};
-static int __n = 1, __i = 0;
+static const char *__w[] = {"2", "1"};
+static int __n = 2, __i = 0;
 #define _BSD_SOURCE
 #include <stdlib.h>
-void f1() { { char __t[512]; snprintf(__t, sizeof(__t), "1");
-  if (__i >= __n || strcmp(__t, __w[__i]) != 0) { printf("FAIL at line %d: got [%s]\n", __i, __t); assert(0); } __i++; } }
-void f2(int s, void *a) { { char __t[512]; snprintf(__t, sizeof(__t), "2");
-  if (__i >= __n || strcmp(__t, __w[__i]) != 0) { printf("FAIL at line %d: got [%s]\n", __i, __t); assert(0); } __i++; } }
-int main() { atexit(f1); on_exit(f2, NULL); if (__i != __n) { printf("FAIL: %d line(s), wanted %d\n", __i, __n); assert(0); }
-return 0; }
-
+#include "on_exit_compat.h"
+void f1(void) {
+  char __t[512]; snprintf(__t, sizeof(__t), "1");
+  if (__i >= __n || strcmp(__t, __w[__i]) != 0) { printf("FAIL at line %d: got [%s]\n", __i, __t); assert(0); }
+  __i++;
+  if (__i != __n) { printf("FAIL: %d line(s), wanted %d\n", __i, __n); assert(0); }
+}
+void f2(int s, void *a) {
+  (void)s; (void)a;
+  char __t[512]; snprintf(__t, sizeof(__t), "2");
+  if (__i >= __n || strcmp(__t, __w[__i]) != 0) { printf("FAIL at line %d: got [%s]\n", __i, __t); assert(0); }
+  __i++;
+}
+int main() {
+  atexit(f1);
+  on_exit(f2, NULL);
+  return 0;
+}

@@ -3,8 +3,8 @@
 #include <stdio.h>
 #include <string.h>
 #include <assert.h>
-static const char *__w[] = {"42 hi 3.1 "};
-static int __n = 1, __i = 0;
+static const char *__w[] = {"42 ", "hi ", "3.1 ", "\n"};
+static int __n = 4, __i = 0;
 
 #include <stdio.h>
 #include <stdarg.h>

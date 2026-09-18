@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <assert.h>
+#include <stddef.h>
 struct S { char a; char b; };
 int main() {
 const char *__w[] = {"1\n"};

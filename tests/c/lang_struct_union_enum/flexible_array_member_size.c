@@ -3,6 +3,7 @@
 #include <string.h>
 #include <assert.h>
 #include <stdio.h>
+#include <stdlib.h>
 struct Buf { int n; char data[]; };
 int main() {
 const char *__w[] = {"a\n"};

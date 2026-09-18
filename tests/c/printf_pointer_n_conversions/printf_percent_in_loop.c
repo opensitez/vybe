@@ -5,8 +5,8 @@
 #include <stdio.h>
 #include <stddef.h>
 int main() {
-const char *__w[] = {"%%%"};
-int __n = 1, __i = 0;
+const char *__w[] = {"%", "%", "%", "\n"};
+int __n = 4, __i = 0;
 for(int i=0;i<3;i++) { char __t[512]; snprintf(__t, sizeof(__t), "%%");
   if (__i >= __n || strcmp(__t, __w[__i]) != 0) { printf("FAIL at line %d: got [%s]\n", __i, __t); assert(0); } __i++; } { char __t[512]; snprintf(__t, sizeof(__t), "\n");
   if (__i >= __n || strcmp(__t, __w[__i]) != 0) { printf("FAIL at line %d: got [%s]\n", __i, __t); assert(0); } __i++; } if (__i != __n) { printf("FAIL: %d line(s), wanted %d\n", __i, __n); assert(0); }

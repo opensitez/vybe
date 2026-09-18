@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <assert.h>
+#include <stdlib.h>
 char dest[32] = "";
 int main() {
 const char *__w[] = {"42\n"};

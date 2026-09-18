@@ -5,7 +5,7 @@
 #include <assert.h>
 
 #include <stdio.h>
-int main() {const char *__w[] = {"hello world"};
+int main() {const char *__w[] = {"hello world\n"};
 int __n = 1, __i = 0;
 
     FILE *f = fopen("/tmp/vybe_test_fputs.txt", "w");

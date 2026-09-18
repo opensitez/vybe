@@ -1,8 +1,10 @@
 // vybe-test: c/string_memory_search_ops/memmem_at_end
 // origin: languages/c/tests/c/test_string_memory_search_ops.rs
+// vybe-test-units: mem_helper.c
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
+#include "mem_helper.h"
 int main() {
 const char *__w[] = {"ot\n"};
 int __n = 1, __i = 0;

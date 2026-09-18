@@ -3,7 +3,7 @@
 #include <string.h>
 #include <assert.h>
 #include <stdio.h>
-int add(restrict int *a, restrict int *b) { return *a + *b; }
+int add(int * restrict a, int * restrict b) { return *a + *b; }
 int main() {
 const char *__w[] = {"5\n"};
 int __n = 1, __i = 0;

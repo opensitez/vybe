@@ -2,8 +2,12 @@
 // origin: languages/c/tests/c/test_limits_float_named_constants.rs
 #include <string.h>
 #include <assert.h>
+#include <limits.h>
 #include <stdio.h>
 #include <float.h>
+#ifndef DBL_RADIX
+#define DBL_RADIX FLT_RADIX
+#endif
 int main() {
 const char *__w[] = {"2\n"};
 int __n = 1, __i = 0;

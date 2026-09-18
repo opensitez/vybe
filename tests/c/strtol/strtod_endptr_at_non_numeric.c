@@ -1,6 +1,7 @@
 // vybe-test: c/strtol/strtod_endptr_at_non_numeric
 // origin: languages/c/tests/c/test_strtol.rs
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <assert.h>
 int main() {

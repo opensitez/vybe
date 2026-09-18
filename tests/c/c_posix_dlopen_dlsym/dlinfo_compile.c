@@ -6,7 +6,8 @@
 #define _GNU_SOURCE
 #include <dlfcn.h>
 #include <link.h>
-int main() { /* dlinfo is very glibc specific, let's just check compile of macros */ #ifdef RTLD_DI_LINKMAP
+int main() { /* dlinfo is very glibc specific, let's just check compile of macros */
+#ifdef RTLD_DI_LINKMAP
  printf("ok");
 #else
  printf("ok");

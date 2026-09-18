@@ -1,8 +1,10 @@
 // vybe-test: c/string_memory_search_ops/memrchr_partial_range
 // origin: languages/c/tests/c/test_string_memory_search_ops.rs
+// vybe-test-units: mem_helper.c
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
+#include "mem_helper.h"
 char h[]="aabaa";
 int main() {
 const char *__w[] = {"1\n"};

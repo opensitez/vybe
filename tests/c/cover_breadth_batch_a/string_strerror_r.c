@@ -2,6 +2,7 @@
 // origin: languages/c/tests/c/test_cover_breadth_batch_a.rs
 // vybe-test-mode: compile
 #include <string.h>
+#include <errno.h>
 int main() {
 char b[64]; return strerror_r(EINVAL,b,64) != 0;
 }

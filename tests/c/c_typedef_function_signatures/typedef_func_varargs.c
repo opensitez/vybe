@@ -3,6 +3,6 @@
 #include <stdio.h>
 #include <string.h>
 #include <assert.h>
-typedef int (*F)(const char*, ...); #include <stdio.h>
+typedef int (*F)(const char*, ...);
 int main() { F p = printf; p("%d", 42); return 0; }
 

@@ -1,6 +1,7 @@
 // vybe-test: c/stdlib_math/atof_basic
 // origin: languages/c/tests/c/test_stdlib_math.rs
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <assert.h>
 int main() {

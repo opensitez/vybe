@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <assert.h>
+#include <stdlib.h>
 
 typedef struct { int *data; int len; int cap; } Vec;
 void vec_push(Vec *v, int x) {

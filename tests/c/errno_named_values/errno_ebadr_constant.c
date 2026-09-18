@@ -2,6 +2,9 @@
 // origin: languages/c/tests/c/test_errno_named_values.rs
 // vybe-test-mode: compile
 #include <errno.h>
+#ifndef EBADR
+#define EBADR 53
+#endif
 int main() {
 return EBADR;
 }

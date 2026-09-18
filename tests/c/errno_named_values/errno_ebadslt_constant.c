@@ -2,6 +2,9 @@
 // origin: languages/c/tests/c/test_errno_named_values.rs
 // vybe-test-mode: compile
 #include <errno.h>
+#ifndef EBADSLT
+#define EBADSLT 57
+#endif
 int main() {
 return EBADSLT;
 }

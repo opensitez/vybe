@@ -9,7 +9,7 @@
 #include <unistd.h>
 #include <string.h>
 #include <pthread.h>
-void* f(void* a) { int s = socket(AF_UNIX, SOCK_STREAM, 0); struct sockaddr_un addr={0}; addr.sun_family = AF_UNIX; strcpy(addr.sun_path, "test_unix5.sock"); while(connect(s, (struct sockaddr*)&addr, sizeof(addr)) != 0) usleep(10000); close(s); return NULL; }
+void* f(void* a) { (void)a; int s = socket(AF_UNIX, SOCK_STREAM, 0); struct sockaddr_un addr={0}; addr.sun_family = AF_UNIX; strcpy(addr.sun_path, "test_unix5.sock"); while(connect(s, (struct sockaddr*)&addr, sizeof(addr)) != 0) usleep(10000); usleep(100000); close(s); return NULL; }
 int main() {const char *__w[] = {"1"};
 int __n = 1, __i = 0;
  unlink("test_unix5.sock"); int l = socket(AF_UNIX, SOCK_STREAM, 0); struct sockaddr_un a={0}; a.sun_family = AF_UNIX; strcpy(a.sun_path, "test_unix5.sock"); bind(l, (struct sockaddr*)&a, sizeof(a)); listen(l, 5); pthread_t t; pthread_create(&t, NULL, f, NULL); int c = accept(l, NULL, NULL); struct sockaddr_un p={0}; socklen_t len=sizeof(p); getpeername(c, (struct sockaddr*)&p, &len); { char __t[512]; snprintf(__t, sizeof(__t), "%d", p.sun_family == AF_UNIX);

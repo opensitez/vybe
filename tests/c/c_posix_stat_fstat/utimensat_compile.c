@@ -6,6 +6,7 @@
 #define _POSIX_C_SOURCE 200809L
 #include <sys/stat.h>
 #include <fcntl.h>
+#include <unistd.h>
 int main() {const char *__w[] = {"1"};
 int __n = 1, __i = 0;
  /* AT_FDCWD */ int fd = open("test_utime.txt", O_CREAT|O_WRONLY, 0644); close(fd); struct timespec ts[2] = {{0, UTIME_NOW}, {0, UTIME_NOW}}; int r = utimensat(AT_FDCWD, "test_utime.txt", ts, 0); { char __t[512]; snprintf(__t, sizeof(__t), "%d", r == 0);

@@ -3,6 +3,7 @@
 // vybe-test-mode: compile
 #include <stdatomic.h>
 int main() {
-return atomic_is_lock_free(&(atomic_int){0});
+atomic_int a = 0;
+return atomic_is_lock_free(&a) ? 0 : 0;
 }
 

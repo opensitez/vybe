@@ -5,7 +5,7 @@
 #include <stdio.h>
 #include <stddef.h>
 int main() {
-const char *__w[] = {"5\n", "2\n"};
+const char *__w[] = {"5\n", "1\n"};
 int __n = 2, __i = 0;
 int n=0; { char __t[512]; snprintf(__t, sizeof(__t), "%d%n\n", 5, &n);
   if (__i >= __n || strcmp(__t, __w[__i]) != 0) { printf("FAIL at line %d: got [%s]\n", __i, __t); assert(0); } __i++; } { char __t[512]; snprintf(__t, sizeof(__t), "%d\n", n);

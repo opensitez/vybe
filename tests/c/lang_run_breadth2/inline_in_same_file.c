@@ -3,7 +3,7 @@
 #include <string.h>
 #include <assert.h>
 #include <stdio.h>
-inline int sq(int x){return x*x;}
+static inline int sq(int x){return x*x;}
 int main() {
 const char *__w[] = {"25\n"};
 int __n = 1, __i = 0;

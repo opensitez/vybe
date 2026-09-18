@@ -4,6 +4,7 @@
 #include <string.h>
 #include <assert.h>
 #include <complex.h>
+#include <math.h>
 int main() {const char *__w[] = {"1"};
 int __n = 1, __i = 0;
  double complex z = cproj(1.0 + INFINITY * I); { char __t[512]; snprintf(__t, sizeof(__t), "%d", isinf(creal(z)));

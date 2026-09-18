@@ -3,6 +3,8 @@
 #include <stdio.h>
 #include <string.h>
 #include <assert.h>
+#include <limits.h>
+#include <float.h>
 int main() {
 const char *__w[] = {"1\n"};
 int __n = 1, __i = 0;

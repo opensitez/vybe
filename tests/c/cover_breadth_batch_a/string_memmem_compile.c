@@ -3,6 +3,6 @@
 // vybe-test-mode: compile
 #include <string.h>
 int main() {
-return memmem("abc","bc",3,2) != 0;
+return memmem("abc",3,"bc",2) != 0;
 }
 

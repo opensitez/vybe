@@ -4,6 +4,9 @@
 #include <assert.h>
 #include <stdio.h>
 #include <math.h>
+#ifndef isnotequal
+#define isnotequal(x, y) (isunordered((x), (y)) || ((x) != (y)))
+#endif
 int main() {
 const char *__w[] = {"1\n"};
 int __n = 1, __i = 0;

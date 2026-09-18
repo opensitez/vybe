@@ -3,6 +3,6 @@
 // vybe-test-mode: compile
 #include <wchar.h>
 int main() {
-wchar_t s[]=L"a:b"; wcstok(s,L":"); return 0;
+wchar_t s[]=L"a:b"; wchar_t *ptr; wcstok(s,L":",&ptr); return 0;
 }
 

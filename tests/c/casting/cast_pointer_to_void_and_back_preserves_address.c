@@ -3,8 +3,9 @@
 #include <stdio.h>
 #include <string.h>
 #include <assert.h>
-int x = 4; int *p = &x; void *q = (void *)p;
+int x = 4;
 int main() {
+int *p = &x; void *q = (void *)p;
 const char *__w[] = {"4\n"};
 int __n = 1, __i = 0;
 { char __t[512]; snprintf(__t, sizeof(__t), "%d\n", *(int *)q);

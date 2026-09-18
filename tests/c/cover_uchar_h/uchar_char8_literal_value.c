@@ -1,4 +1,5 @@
 // vybe-test: c/cover_uchar_h/uchar_char8_literal_value
+// vybe-test-std: gnu2x
 // origin: languages/c/tests/c/test_cover_uchar_h.rs
 #include <string.h>
 #include <assert.h>

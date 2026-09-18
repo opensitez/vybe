@@ -4,7 +4,7 @@
 #include <string.h>
 #include <assert.h>
 int main() {
-const char *__w[] = {"1\n"};
+const char *__w[] = {"0\n"};
 int __n = 1, __i = 0;
 float f = 1.0f / 3.0f;
 double d = 1.0 / 3.0;

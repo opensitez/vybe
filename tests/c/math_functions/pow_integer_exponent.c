@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <assert.h>
+#include <math.h>
 int main() {
 const char *__w[] = {"1024\n"};
 int __n = 1, __i = 0;

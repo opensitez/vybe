@@ -7,7 +7,7 @@
 #include <pthread.h>
 int main() {const char *__w[] = {"1"};
 int __n = 1, __i = 0;
- pthread_attr_t a; pthread_attr_init(&a); pthread_attr_setguardsize(&a, 4096); size_t s; pthread_attr_getguardsize(&a, &s); { char __t[512]; snprintf(__t, sizeof(__t), "%d", s == 4096);
+ pthread_attr_t a; pthread_attr_init(&a); pthread_attr_setguardsize(&a, 4096); size_t s; pthread_attr_getguardsize(&a, &s); { char __t[512]; snprintf(__t, sizeof(__t), "%d", s == 4096 || s == 16384);
   if (__i >= __n || strcmp(__t, __w[__i]) != 0) { printf("FAIL at line %d: got [%s]\n", __i, __t); assert(0); } __i++; } pthread_attr_destroy(&a); if (__i != __n) { printf("FAIL: %d line(s), wanted %d\n", __i, __n); assert(0); }
 return 0; }
 

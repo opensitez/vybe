@@ -1,6 +1,7 @@
 // vybe-test: c/ctype_extended/tolower_uppercase
 // origin: languages/c/tests/c/test_ctype_extended.rs
 #include <stdio.h>
+#include <ctype.h>
 #include <string.h>
 #include <assert.h>
 int main() {

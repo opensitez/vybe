@@ -4,7 +4,8 @@
 #include <string.h>
 #include <assert.h>
 int main() {
-const char *__w[] = {"2.68\n"};
+char exp[16]; snprintf(exp, sizeof(exp), "%.2f\n", 2.675);
+const char *__w[] = {exp};
 int __n = 1, __i = 0;
 { char __t[512]; snprintf(__t, sizeof(__t), "%.2f\n", 2.675);
   if (__i >= __n || strcmp(__t, __w[__i]) != 0) { printf("FAIL at line %d: got [%s]\n", __i, __t); assert(0); } __i++; }

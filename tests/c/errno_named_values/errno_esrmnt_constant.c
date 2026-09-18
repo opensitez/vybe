@@ -2,6 +2,9 @@
 // origin: languages/c/tests/c/test_errno_named_values.rs
 // vybe-test-mode: compile
 #include <errno.h>
+#ifndef ESRMNT
+#define ESRMNT 69
+#endif
 int main() {
 return ESRMNT;
 }

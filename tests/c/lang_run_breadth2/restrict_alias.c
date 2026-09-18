@@ -3,7 +3,7 @@
 #include <string.h>
 #include <assert.h>
 #include <stdio.h>
-void addp(restrict int *a, restrict int *b){*a+=*b;}
+void addp(int * restrict a, int * restrict b){*a+=*b;}
 int main() {
 const char *__w[] = {"3\n"};
 int __n = 1, __i = 0;

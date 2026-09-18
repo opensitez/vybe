@@ -4,5 +4,6 @@
 #include <string.h>
 #include <assert.h>
 #define M do { return 42; } while(0)
-int main() { M; return 0; }
+static int f() { M; return 0; }
+int main() { return f() == 42 ? 0 : 1; }
 

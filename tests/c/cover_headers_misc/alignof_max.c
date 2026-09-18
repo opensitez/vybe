@@ -2,6 +2,7 @@
 // origin: languages/c/tests/c/test_cover_headers_misc.rs
 // vybe-test-mode: compile
 #include <stdalign.h>
+#include <stddef.h>
 int main() {
 return alignof(max_align_t);
 }
