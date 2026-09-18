@@ -47,8 +47,10 @@ Module Program
     Sub Main()
         Dim ts As TimeSpan
         Dim ok = TimeSpan.TryParse("1.12:00:00", ts)
+        ' A failed `TryParse` OVERWRITES the out-parameter with the default.
+        Dim days = ts.Days
         Dim fail = TimeSpan.TryParse("Invalid", ts)
-        __P(CStr(ok & ":" & ts.Days & "|" & fail))
+        __P(CStr(ok & ":" & days & "|" & fail))
         __Check("True:1|False")
     End Sub
 End Module

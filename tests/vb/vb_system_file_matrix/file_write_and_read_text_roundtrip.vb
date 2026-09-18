@@ -46,10 +46,10 @@ End Module
 
 Module M
     Sub Main()
-        Dim path As String = Path.Combine(Path.GetTempPath(), "vb_file_text_" & Guid.NewGuid().ToString("N"))
-        File.WriteAllText(path, "hello")
-        __P(CStr(File.ReadAllText(path)))
-        File.Delete(path)
+        Dim filePath As String = Path.Combine(Path.GetTempPath(), "vb_file_text_" & Guid.NewGuid().ToString("N"))
+        File.WriteAllText(filePath, "hello")
+        __P(CStr(File.ReadAllText(filePath)))
+        File.Delete(filePath)
         __Check("hello")
     End Sub
 End Module

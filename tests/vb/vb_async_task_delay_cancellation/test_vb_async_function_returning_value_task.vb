@@ -44,15 +44,17 @@ End Module
 
 
 Module Program
-    Private Async Function GetCachedValueAsync(id As Integer) As ValueTask(Of String)
+    ' ⛔ VB's `Async` may only return `Task` or `Task(Of T)` — never
+    ' `ValueTask` (BC36945). A ValueTask is built from the Task instead.
+    Private Async Function GetCachedValueAsync(id As Integer) As Task(Of String)
         If id = 1 Then Return "Cached"
         Await Task.Delay(5)
         Return "Computed"
     End Function
 
     Sub Main()
-        Dim t1 = GetCachedValueAsync(1).AsTask()
-        Dim t2 = GetCachedValueAsync(2).AsTask()
+        Dim t1 = New ValueTask(Of String)(GetCachedValueAsync(1)).AsTask()
+        Dim t2 = New ValueTask(Of String)(GetCachedValueAsync(2)).AsTask()
         __P(CStr(t1.Result & "|" & t2.Result))
         __Check("Cached|Computed")
     End Sub

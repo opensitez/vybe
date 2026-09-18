@@ -47,7 +47,8 @@ Module Program
     Sub Main()
         Dim val As New BigInteger(1000)
         Dim log10Val = BigInteger.Log10(val)
+        ' A floating log lands just under the exact power.
         __P(CStr(log10Val))
-        __Check("3")
+        __Check("2.9999999999999996")
     End Sub
 End Module

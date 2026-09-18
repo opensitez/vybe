@@ -45,13 +45,13 @@ End Module
 
 Module M
     Sub Main()
-        Dim path As String = Path.Combine(Path.GetTempPath(), "vb_file_lines_" & Guid.NewGuid().ToString("N"))
-        File.WriteAllText(path, "a" & vbLf & "b" & vbLf & "c")
-        Dim lines() As String = File.ReadAllLines(path)
+        Dim filePath As String = Path.Combine(Path.GetTempPath(), "vb_file_lines_" & Guid.NewGuid().ToString("N"))
+        File.WriteAllText(filePath, "a" & vbLf & "b" & vbLf & "c")
+        Dim lines() As String = File.ReadAllLines(filePath)
         __P(CStr(lines.Length))
         __P(CStr(lines(0)))
         __P(CStr(lines(2)))
-        File.Delete(path)
+        File.Delete(filePath)
         __Check("3
 a
 c")

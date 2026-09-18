@@ -43,7 +43,13 @@ End Module
 
 Module M
     Sub Main()
-        __P(CStr(Math.Round(Rate(10, -100, 1000, 0, 0, 0.1), 4)))
-        __Check("0")
+        ' A schedule that never repays its principal has no rate: `Rate`
+        ' throws rather than converging on zero.
+        Try
+            __P(CStr(Math.Round(Rate(10, -100, 1000, 0, 0, 0.1), 4)))
+        Catch ex As ArgumentException
+            __P(CStr("no rate"))
+        End Try
+        __Check("no rate")
     End Sub
 End Module

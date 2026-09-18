@@ -42,7 +42,18 @@ Module VybeCheck
 End Module
 
 Class GlobalCounter
-    Public Shared Property TotalCount As Integer { Get; Private Set; } = 0
+    ' ⛔ `{ Get; Private Set; }` is C# AUTO-PROPERTY syntax — VB has no
+    ' brace form, and an auto-property cannot carry a per-accessor access
+    ' modifier. The expanded property with a backing field is VB's spelling.
+    Private Shared _totalCount As Integer = 0
+    Public Shared Property TotalCount As Integer
+        Get
+            Return _totalCount
+        End Get
+        Private Set(value As Integer)
+            _totalCount = value
+        End Set
+    End Property
     Public Shared Sub Increment()
         TotalCount += 1
     End Sub

@@ -43,7 +43,8 @@ End Module
 
 Module M
     Sub PrintFirst(Of T)(arr() As T)
-        __P(CStr(arr(0)))
+        ' `CStr` has no conversion from an unconstrained `T`.
+        __P(arr(0).ToString())
     End Sub
 
     Sub Main()

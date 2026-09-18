@@ -43,8 +43,9 @@ End Module
 
 Module M
     Sub Main()
-        Dim double As Func(Of Integer, Integer) = Function(x) x * 2
-        __P(CStr(double(5)))
+        ' ⛔ `Double` is a VB keyword and cannot be an identifier (BC30183).
+        Dim doubler As Func(Of Integer, Integer) = Function(x) x * 2
+        __P(CStr(doubler(5)))
         __Check("10")
     End Sub
 End Module

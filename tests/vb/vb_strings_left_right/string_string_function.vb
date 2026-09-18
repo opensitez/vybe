@@ -44,9 +44,10 @@ End Module
 Module M
     Sub Main()
         ' Creates a string of a repeated character
-        __P(CStr(String(5, "x"c)))
+        ' VB.NET spells VB6's `String$` repeater `StrDup`; `String` is a type.
+        __P(CStr(StrDup(5, "x"c)))
         ' Also works with char code
-        __P(CStr(String(3, 42))) ' 42 is '*'
+        __P(CStr(StrDup(3, ChrW(42)))) ' 42 is '*'
         __Check("xxxxx
 ***")
     End Sub

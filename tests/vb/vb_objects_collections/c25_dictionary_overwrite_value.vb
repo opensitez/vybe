@@ -45,7 +45,9 @@ Module Program
     Sub Main()
         Dim dict As New Dictionary(Of String, String)
         dict.Add("key", "old")
-        dict.Add("key", "new")
+        ' `Add` on an existing key THROWS; the indexer overwrites.
+        dict("key") = "new"
         __P(CStr(dict.Item("key")))
+        __Check("new")
     End Sub
 End Module

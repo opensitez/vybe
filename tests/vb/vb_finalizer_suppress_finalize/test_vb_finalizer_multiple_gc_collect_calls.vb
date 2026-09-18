@@ -51,11 +51,19 @@ Class MultiCollectObject
 End Class
 
 Module Program
+    ' The allocation lives in its own method so the reference is dead
+    ' before the collection runs.
+    Private Sub Allocate()
+        Dim m As New MultiCollectObject()
+    End Sub
+
     Sub Main()
         ' The generator emitted this body inside a bare `Sub() … End Sub()`,
         ' which is not VB, and ran __Check BEFORE the value it checks was
         ' printed. Hoisted; the assertion now runs last.
-        Dim m As New MultiCollectObject()
+        ' ⛔ A live local ROOTS the object, so `GC.Collect` cannot finalize it.
+        ' Allocating in a helper that returns lets the reference die first.
+        Allocate()
 
         GC.Collect()
         GC.WaitForPendingFinalizers()

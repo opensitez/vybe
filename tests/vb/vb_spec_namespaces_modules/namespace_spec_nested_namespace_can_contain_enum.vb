@@ -49,7 +49,9 @@ Namespace Demo.Core
 End Namespace
 Module M
     Sub Main()
-        __P(CStr(Demo.Core.Tone.High))
+        ' `CStr` on an enum converts NUMERICALLY; the member name comes from
+        ' `ToString`.
+        __P(Demo.Core.Tone.High.ToString())
         __Check("High")
     End Sub
 End Module

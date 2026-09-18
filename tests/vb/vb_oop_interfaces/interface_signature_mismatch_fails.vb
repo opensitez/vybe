@@ -42,15 +42,22 @@ Module VybeCheck
 End Module
 
 Interface I
-Sub M(v As Integer)
+    Sub M(v As Integer)
 End Interface
+
 Class C
-Implements I
-' Public Sub M(v As String) Implements I.M ' Fails signature match
+    Implements I
+    ' `Implements I.M` requires an EXACT signature match — `v As String`
+    ' would not satisfy `Sub M(v As Integer)`.
+    Public Sub M(v As Integer) Implements I.M
+        __P(CStr(v))
+    End Sub
 End Class
+
 Module M
-Sub Main()
-__P(CStr("Parsed"))
-    __Check("Parsed")
-End Sub
+    Sub Main()
+        Dim c As I = New C()
+        c.M(5)
+        __Check("5")
+    End Sub
 End Module

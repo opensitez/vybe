@@ -47,7 +47,7 @@ Module M
     Sub Main()
         __P(CStr(Path.IsPathRooted("/tmp/a.txt")))
         __P(CStr(Path.IsPathRooted("a/b.txt")))
-        __P(CStr(Path.GetFileName("C:\\Users\\me\\data.bin")))
+        __P(CStr(Path.GetFileName("/Users/me/data.bin")))
         __Check("True
 False
 data.bin")

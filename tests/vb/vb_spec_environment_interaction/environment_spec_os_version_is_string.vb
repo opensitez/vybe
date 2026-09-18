@@ -43,7 +43,8 @@ End Module
 
 Module Program
     Sub Main()
-        __P(CStr(TypeName(Environment.OSVersion)))
+        ' `OSVersion` answers an OperatingSystem; its rendering is the string.
+        __P(CStr(TypeName(Environment.OSVersion.ToString())))
         __Check("String")
     End Sub
 End Module

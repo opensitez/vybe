@@ -48,6 +48,8 @@ Module M
             fn = Function(x) x + i
         Next
         __P(CStr(fn(4)))
-        __Check("7")
+        ' A `For` control variable is ONE variable for the whole loop: the lambda
+        ' closes over it and sees its post-loop value 4.
+        __Check("8")
     End Sub
 End Module

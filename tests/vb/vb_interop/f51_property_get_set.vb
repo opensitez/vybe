@@ -41,7 +41,7 @@ Module VybeCheck
     End Sub
 End Module
 Public Class Person
-    Dim _name As String
+    Public _name As String
     Public Property Name As String
         Get
             Return _name

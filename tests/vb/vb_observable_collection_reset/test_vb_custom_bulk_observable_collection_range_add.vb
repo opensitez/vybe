@@ -48,9 +48,12 @@ End Module
 Class RangeObservableCollection(Of T)
     Inherits ObservableCollection(Of T)
 
-    Public Sub AddRange(items As IEnumerable(Of T))
-        For Each item In items
-            Items.Add(item)
+    ' ⛔ VB is case-insensitive: a parameter named `items` shadows the
+    ' inherited `Items` collection, and `item` shadows the default
+    ' property `Item`.
+    Public Sub AddRange(source As IEnumerable(Of T))
+        For Each elem In source
+            Items.Add(elem)
         Next
         OnCollectionChanged(New NotifyCollectionChangedEventArgs(NotifyCollectionChangedAction.Reset))
     End Sub
@@ -62,9 +65,9 @@ Module Program
         Dim resetCount = 0
         AddHandler col.CollectionChanged, Sub(s, e)
             If e.Action = NotifyCollectionChangedAction.Reset Then resetCount += 1
-            __Check("3|Reset=1")
         End Sub
         col.AddRange({10, 20, 30})
         __P(CStr(col.Count & "|Reset=" & resetCount))
+        __Check("3|Reset=1")
     End Sub
 End Module

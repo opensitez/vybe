@@ -52,7 +52,8 @@ Module Program
         Dim priorities(0) As Priority
         priorities(0) = Priority.High
         ReDim Preserve priorities(1)
-        __P(CStr(priorities(0) & ":" & priorities(1)))
+        ' ⛔ `CStr` of an enum renders its NUMBER; `ToString` renders the name.
+        __P(priorities(0).ToString() & ":" & priorities(1).ToString())
         __Check("High:Low")
     End Sub
 End Module

@@ -47,7 +47,7 @@ Module M
     Sub Main()
         Dim scale As Integer = 3
         Dim build As Func(Of Integer, Func(Of Integer)) = _
-            Function(base As Integer) Function(x As Integer) (base + x) * scale
+            Function(base As Integer) Function() (base + 3) * scale
 
         Dim f As Func(Of Integer) = build(4)
         __P(CStr(f()))

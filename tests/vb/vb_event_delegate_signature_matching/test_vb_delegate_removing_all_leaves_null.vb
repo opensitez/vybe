@@ -50,8 +50,12 @@ Module Program
     End Sub
 
     Sub Main()
-        Dim d As SimpleDel = AddressOf Target
-        d = CType([Delegate].Remove(d, AddressOf Target), SimpleDel)
+        ' `AddressOf` has no target type here: `Delegate.Combine`/`Remove`
+        ' take the abstract `Delegate`, so each handler is bound to the
+        ' concrete delegate type first.
+        Dim first As SimpleDel = AddressOf Target
+        Dim same As SimpleDel = AddressOf Target
+        Dim d As SimpleDel = CType([Delegate].Remove(first, same), SimpleDel)
         __P(CStr(d Is Nothing))
         __Check("True")
     End Sub

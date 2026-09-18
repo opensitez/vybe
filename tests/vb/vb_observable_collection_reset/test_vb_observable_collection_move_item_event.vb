@@ -52,9 +52,9 @@ Module Program
             If e.Action = NotifyCollectionChangedAction.Move Then
                 moveInfo = e.OldStartingIndex & "->" & e.NewStartingIndex
             End If
-            __Check("0->2")
         End Sub
         col.Move(0, 2)
         __P(CStr(moveInfo))
+        __Check("0->2")
     End Sub
 End Module

@@ -47,8 +47,10 @@ End Module
 Module ExtensionMethods
     <Extension()>
     Public Sub PrintItems(Of T)(collection As IEnumerable(Of T))
+        ' ⛔ `CStr` needs a convertible type — an unconstrained `T` is not one
+        ' (BC30311). Every value answers `ToString`.
         For Each item In collection
-            __P(CStr(item))
+            __P(item.ToString())
         Next
     End Sub
 End Module

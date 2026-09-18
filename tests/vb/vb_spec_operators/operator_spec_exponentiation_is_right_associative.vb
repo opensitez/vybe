@@ -43,7 +43,9 @@ End Module
 
 Module M
     Sub Main()
+        ' ⛔ VB's `^` is LEFT-associative, unlike most languages: this is
+        ' `(2 ^ 3) ^ 2` = 64, not `2 ^ (3 ^ 2)` = 512.
         __P(CStr(2 ^ 3 ^ 2))
-        __Check("512")
+        __Check("64")
     End Sub
 End Module

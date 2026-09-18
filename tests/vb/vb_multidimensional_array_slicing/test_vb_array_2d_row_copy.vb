@@ -45,7 +45,8 @@ Module Program
     Sub Main()
         Dim matrix(,) As Integer = {{10, 20, 30}, {40, 50, 60}}
         Dim row1(2) As Integer
-        Buffer.BlockCopy(matrix, 0, row1, 0, 3 * sizeof(Integer))
+        ' ⛔ `sizeof` is a C# operator; VB has none. An Integer is 4 bytes.
+        Buffer.BlockCopy(matrix, 0, row1, 0, 3 * 4)
         __P(CStr(String.Join(",", row1)))
         __Check("10,20,30")
     End Sub

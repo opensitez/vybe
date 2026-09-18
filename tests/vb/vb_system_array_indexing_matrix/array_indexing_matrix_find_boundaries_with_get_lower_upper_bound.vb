@@ -49,4 +49,6 @@ Module M
         __P(CStr(values.GetUpperBound(0)))
         __P(CStr(values(values.GetLowerBound(0))))
         __P(CStr(values(values.GetUpperBound(0))))
-    End Module
+        __Check("0" & vbLf & "2" & vbLf & "10" & vbLf & "30")
+    End Sub
+End Module

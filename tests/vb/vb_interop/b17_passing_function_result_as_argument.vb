@@ -42,13 +42,15 @@ Module VybeCheck
 End Module
 
 Module Program
-    Sub Main()
-        Function Double(n As Integer) As Integer
+    Function [Double](n As Integer) As Integer
         Return n * 2
-        End Function
-        Function AddOne(n As Integer) As Integer
+    End Function
+
+    Function AddOne(n As Integer) As Integer
         Return n + 1
-        End Function
-        __P(CStr(AddOne(Double(5))))
+    End Function
+
+    Sub Main()
+        __P(CStr(AddOne([Double](5))))
     End Sub
 End Module

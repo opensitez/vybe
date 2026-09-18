@@ -42,14 +42,22 @@ Module VybeCheck
 End Module
 
 Module M
-Sub Main()
-On Error Resume Next
-On Error GoTo 0 ' Disables error handling
-Try
-Dim x = 1 \ 0
-Catch
-__P(CStr("CaughtByTry"))
-End Try
-    __Check("CaughtByTry")
-End Sub
+    ' A method cannot contain BOTH `On Error` and `Try`, and a CONSTANT `\ 0`
+    ' is rejected at COMPILE time (BC30542) — the divisor has to arrive at run
+    ' time, in its own method.
+    Sub Divide()
+        Dim zero As Integer = 0
+        Try
+            Dim x = 1 \ zero
+        Catch
+            __P(CStr("CaughtByTry"))
+        End Try
+    End Sub
+
+    Sub Main()
+        On Error Resume Next
+        On Error GoTo 0 ' Disables error handling
+        Divide()
+        __Check("CaughtByTry")
+    End Sub
 End Module

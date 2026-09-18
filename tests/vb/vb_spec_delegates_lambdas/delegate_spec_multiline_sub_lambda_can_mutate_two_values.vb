@@ -48,9 +48,9 @@ Module M
         Dim action As Action = Sub()
             left += 2
             right += 3
-            __Check("8")
         End Sub
         action()
         __P(CStr(left + right))
+        __Check("8")
     End Sub
 End Module

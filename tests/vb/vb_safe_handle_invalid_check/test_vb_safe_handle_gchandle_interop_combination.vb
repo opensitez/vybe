@@ -47,10 +47,12 @@ End Module
 Module Program
     Sub Main()
         Dim data = "InteropPayload"
-        Dim gcHandle = GCHandle.Alloc(data, GCHandleType.Pinned)
-        Dim ptr = gcHandle.AddrOfPinnedObject()
+        ' ⛔ VB is case-insensitive: a local named `gcHandle` cannot be
+        ' inferred from an initialiser mentioning `GCHandle`.
+        Dim pin = GCHandle.Alloc(data, GCHandleType.Pinned)
+        Dim ptr = pin.AddrOfPinnedObject()
         __P(CStr(ptr <> IntPtr.Zero))
-        gcHandle.Free()
+        pin.Free()
         __Check("True")
     End Sub
 End Module

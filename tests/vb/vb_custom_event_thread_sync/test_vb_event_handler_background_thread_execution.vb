@@ -52,6 +52,9 @@ Class BackgroundWorkerNotifier
             Thread.Sleep(10)
             RaiseEvent WorkDone(Me, EventArgs.Empty)
         End Sub)
+        ' ⛔ A `New Thread(...)` is a FOREGROUND thread — `IsBackground` is
+        ' False unless it is set, so this has to opt in.
+        t.IsBackground = True
         t.Start()
         t.Join()
     End Sub

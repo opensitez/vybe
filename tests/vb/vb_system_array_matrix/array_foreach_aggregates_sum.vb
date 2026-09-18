@@ -50,9 +50,9 @@ Module M
 
         Array.ForEach(values, Sub(v As Integer)
             sum += v
-            __Check("6")
         End Sub)
 
         __P(CStr(sum))
+        __Check("6")
     End Sub
 End Module

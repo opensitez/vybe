@@ -47,7 +47,9 @@ Module Program
     Sub Main()
         Dim n As Integer? = 42
         Select Case n
-            Case HasValue
+            ' `Case HasValue` is not VB; a Select Case on a nullable compares
+            ' the lifted value.
+            Case 42
                 __P(CStr("Value: " & n.Value))
         End Select
         __Check("Value: 42")

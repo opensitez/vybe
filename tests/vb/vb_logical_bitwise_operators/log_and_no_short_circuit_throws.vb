@@ -43,8 +43,11 @@ End Module
 
 Module M
 Sub Main()
+' ⛔ A CONSTANT `\ 0` / `Mod 0` is rejected at COMPILE time (BC30542), so
+' it can never reach a handler — the divisor has to arrive at run time.
+Dim zero As Integer = 0
 Try
-Dim x = False And (1 \ 0 > 0)
+Dim x = False And (1 \ zero > 0)
 Catch
 __P(CStr("Caught"))
 End Try

@@ -47,8 +47,12 @@ End Module
 Module M
     Sub Main()
         Dim title As New Texts.StringBuilder("ß")
-        Dim culture = Culture.InvariantCulture
-        __P(CStr(title.ToString().ToUpper(culture)))
-        __Check("SS")
+        ' ⛔ The local shadows the `Culture` alias inside its own initialiser,
+        ' so the type cannot be inferred (BC30980).
+        Dim inv = Culture.InvariantCulture
+        __P(CStr(title.ToString().ToUpper(inv)))
+        ' .NET's `ToUpper` does NOT expand ß to SS — it is a one-to-one
+        ' mapping, and ß has no single-char uppercase form.
+        __Check("ß")
     End Sub
 End Module

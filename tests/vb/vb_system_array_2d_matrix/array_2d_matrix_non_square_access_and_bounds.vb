@@ -43,12 +43,12 @@ End Module
 
 Module M
     Sub Main()
-        Dim matrix(1 To 2, 1 To 4) As Integer
+        ' ⛔ VB.NET array lower bounds can ONLY be 0 (BC32059). The bound in
+        ' `Dim a(n, m)` is the UPPER bound, so both dimensions start at 0.
+        Dim matrix(1, 3) As Integer
         __P(CStr(matrix.Rank))
         __P(CStr(matrix.GetUpperBound(0)))
         __P(CStr(matrix.GetUpperBound(1)))
-        __Check("2
-2
-4")
+        __Check("2" & vbLf & "1" & vbLf & "3")
     End Sub
 End Module

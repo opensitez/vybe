@@ -50,8 +50,10 @@ Module Program
         Try
             t.Wait()
         Catch
-    End Try
-    __P(CStr(t.IsCanceled & "|" & t.IsFaulted))
-    __Check("True|False")
-End Sub
+        End Try
+        ' An OperationCanceledException with no MATCHING token faults the task
+        ' rather than cancelling it.
+        __P(CStr(t.IsCanceled & "|" & t.IsFaulted))
+        __Check("False|True")
+    End Sub
 End Module

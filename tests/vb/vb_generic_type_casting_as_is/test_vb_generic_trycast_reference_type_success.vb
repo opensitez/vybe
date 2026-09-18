@@ -48,7 +48,9 @@ Module Program
 
     Sub Main()
         Dim str = SafeCast(Of String)("Hello World")
-        __P(CStr(str IsNot Nothing & "|" & str))
+        ' ⛔ `&` binds TIGHTER than `IsNot`, so the whole concatenation became
+        ' the comparison's right operand.
+        __P(CStr(str IsNot Nothing) & "|" & str)
         __Check("True|Hello World")
     End Sub
 End Module

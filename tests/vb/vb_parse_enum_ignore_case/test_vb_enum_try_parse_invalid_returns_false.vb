@@ -52,7 +52,9 @@ Module Program
     Sub Main()
         Dim dir As Direction
         Dim ok = [Enum].TryParse(Of Direction)("West", dir)
-        __P(CStr(ok & "|" & dir))
+        ' `&` on an enum concatenates its NUMERIC value; the member name comes
+        ' from `ToString`.
+        __P(CStr(ok & "|" & dir.ToString()))
         __Check("False|North")
     End Sub
 End Module

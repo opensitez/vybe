@@ -41,9 +41,9 @@ Module VybeCheck
     End Sub
 End Module
 Public Class Config
-    Dim host As String
-    Dim port As Integer
-    Dim secure As Boolean
+    Public host As String
+    Public port As Integer
+    Public secure As Boolean
     Public Sub New()
         host = "localhost"
         port = 8080

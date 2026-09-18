@@ -45,7 +45,9 @@ End Module
 
 Module Program
     Sub Main()
-        Dim b1 As BigInteger = 100000000000000000000000000000000000000D
+        ' ⛔ Not a `D` literal — that is a DECIMAL, and 10^38 is past its range
+        ' (BC30036). A BigInteger this large is built from its digits.
+        Dim b1 As BigInteger = BigInteger.Parse("100000000000000000000000000000000000000")
         Dim b2 As BigInteger = 3
         Dim res = b1 Mod b2
         __P(CStr(res.ToString()))

@@ -44,9 +44,10 @@ End Module
 
 
 Enum LogLevel
-    Debug
+    ' Keywords need bracket escaping to serve as enum member names.
+    [Debug]
     Warning
-    Error
+    [Error]
 End Enum
 
 Module Program

@@ -48,11 +48,11 @@ Module M
     Sub Main()
         Dim signal As New AutoResetEvent(False)
 
-        ThreadPool.QueueUserWorkItem(Sub(_)
+        ThreadPool.QueueUserWorkItem(Sub(state)
             signal.Set()
-            __Check("True")
         End Sub)
 
         __P(CStr(signal.WaitOne(2000)))
+        __Check("True")
     End Sub
 End Module

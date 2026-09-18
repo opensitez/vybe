@@ -45,18 +45,15 @@ End Module
 
 Module Program
     Sub Main()
-        Dim set As New SortedSet(Of (Integer, String)) From {
+        ' ⛔ `Set` is a VB keyword and cannot be an identifier (BC30183).
+        Dim items As New SortedSet(Of (Integer, String)) From {
         (2, "B"),
         (1, "Z"),
         (1, "A")
         }
-        For Each item In set
+        For Each item In items
             __P(CStr(item.Item1 & ":" & item.Item2))
         Next
-        __Check("1:A
-1
-Z
-2
-B")
+        __Check("1:A" & vbLf & "1:Z" & vbLf & "2:B")
     End Sub
 End Module

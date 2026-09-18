@@ -44,5 +44,6 @@ End Module
 Module M
     Sub Main()
         __P(CStr(CBool(1)))
+        __Check("True")
     End Sub
 End Module

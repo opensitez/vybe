@@ -43,13 +43,13 @@ End Module
 
 Module M
     Sub Main()
-        ' ISO format YYYY-MM-DD
-        Dim d1 As Date = #2024-05-15#
-        
-        ' With time YYYY-MM-DD HH:MM:SS
-        Dim d2 As Date = #2024-05-15 14:30:00#
-        
-        ' AM/PM format
+        ' ⛔ VB has ONE date-literal form: `#M/d/yyyy#`, optionally followed by
+        ' a time. The ISO `#yyyy-MM-dd#` spelling the old comments claimed is
+        ' not accepted (BC30201), and a literal time is 12-hour with AM/PM.
+        Dim d1 As Date = #5/15/2024#
+
+        Dim d2 As Date = #5/15/2024 2:30:00 PM#
+
         Dim d3 As Date = #5/15/2024 2:30 PM#
         
         __P(CStr(d1.Year))

@@ -46,14 +46,14 @@ End Module
 
 Module M
     Sub Main()
-        Dim path As String = Path.Combine(Path.GetTempPath(), "vb_file_bytes_" & Guid.NewGuid().ToString("N"))
+        Dim filePath As String = Path.Combine(Path.GetTempPath(), "vb_file_bytes_" & Guid.NewGuid().ToString("N"))
         Dim input() As Byte = {1, 2, 3, 4, 5}
-        File.WriteAllBytes(path, input)
-        Dim output() As Byte = File.ReadAllBytes(path)
+        File.WriteAllBytes(filePath, input)
+        Dim output() As Byte = File.ReadAllBytes(filePath)
         __P(CStr(output.Length))
         __P(CStr(output(0)))
         __P(CStr(output(4)))
-        File.Delete(path)
+        File.Delete(filePath)
         __Check("5
 1
 5")

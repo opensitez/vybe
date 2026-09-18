@@ -62,5 +62,6 @@ Module M
         Dim original As String = "abc"
         __P(CStr(original.Wrap("[", "]")))
         __P(CStr(original.ReverseText()))
-    End Module
+        __Check("[abc]" & vbLf & "cba")
+    End Sub
 End Module

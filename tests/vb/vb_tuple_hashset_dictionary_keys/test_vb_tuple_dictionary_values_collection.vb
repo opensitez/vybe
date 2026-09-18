@@ -49,8 +49,10 @@ Module Program
             {1, ("Alice", 25)},
             {2, ("Bob", 30)}
         }
-        For Each val In dict.Values
-            __P(CStr(val.Name & "=" & val.Age))
+        ' ⛔ `Val` is a VB BUILT-IN function — a loop variable of that name is
+        ' read as a call to it (BC30516).
+        For Each item In dict.Values
+            __P(CStr(item.Name & "=" & item.Age))
         Next
         __Check("Alice=25
 Bob=30")

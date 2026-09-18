@@ -47,14 +47,14 @@ Module M
         Err.Raise(5, "Test", "Test Error")
         __P(CStr("Ignored"))
         
+        ' ⛔ A method may not contain BOTH `Try` and `On Error` (BC30544), so
+        ' the second stage stays on the `On Error` model.
         On Error GoTo 0 ' Disables error handling
-        
-        Try
-            Err.Raise(6, "Test2", "Test Error 2")
-        Catch ex As Exception
+        On Error Resume Next
+        Err.Raise(6, "Test2", "Test Error 2")
+        If Err.Number <> 0 Then
             __P(CStr("Caught by Try"))
-        End Try
-        __Check("Ignored
-Caught by Try")
+        End If
+        __Check("Ignored" & vbLf & "Caught by Try")
     End Sub
 End Module

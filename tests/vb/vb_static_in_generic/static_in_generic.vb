@@ -41,18 +41,22 @@ Module VybeCheck
     End Sub
 End Module
 
-Module M
-    Function GetCounter(Of T)() As Integer
-        ' Static variables inside generic methods are scoped per generic type parameter
-        Static c As Integer = 0
+' A `Static` local is not allowed in a generic method; per-type state lives
+' in a `Shared` field of a generic class, which the runtime instantiates once
+' per type argument.
+Class Counter(Of T)
+    Private Shared c As Integer = 0
+    Public Shared Function Bump() As Integer
         c += 1
         Return c
     End Function
+End Class
 
+Module M
     Sub Main()
-        __P(CStr(GetCounter(Of Integer)()))
-        __P(CStr(GetCounter(Of Integer)()))
-        __P(CStr(GetCounter(Of String)()))
+        __P(CStr(Counter(Of Integer).Bump()))
+        __P(CStr(Counter(Of Integer).Bump()))
+        __P(CStr(Counter(Of String).Bump()))
         __Check("1
 2
 1")

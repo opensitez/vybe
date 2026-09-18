@@ -53,10 +53,10 @@ Module Program
         Dim addedPt As Point2D
         AddHandler col.CollectionChanged, Sub(s, e)
             If e.NewItems IsNot Nothing Then addedPt = CType(e.NewItems(0), Point2D)
-            __Check("5,10")
         End Sub
 
         col.Add(New Point2D With {.X = 5, .Y = 10})
         __P(CStr(addedPt.X & "," & addedPt.Y))
+        __Check("5,10")
     End Sub
 End Module

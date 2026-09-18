@@ -42,10 +42,11 @@ Module VybeCheck
 End Module
 
 Module Program
-    Sub Main()
-        Function Hello() As String
+    Function Hello() As String
         Return "world"
-        End Function
+    End Function
+
+    Sub Main()
         __P(CStr(Hello()))
     End Sub
 End Module

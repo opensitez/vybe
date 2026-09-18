@@ -43,19 +43,19 @@ End Module
 
 Module M
     Sub Main()
-        Dim grid(1 To 2, 1 To 3) As Integer
-        grid(1, 1) = 10
-        grid(1, 2) = 20
-        grid(1, 3) = 30
-        grid(2, 1) = 40
-        grid(2, 2) = 50
-        grid(2, 3) = 60
+        ' ⛔ VB.NET array lower bounds can ONLY be 0 (BC32059). The bound in
+        ' `Dim a(n, m)` is the UPPER bound, so both dimensions start at 0.
+        Dim grid(1, 2) As Integer
+        grid(0, 0) = 10
+        grid(0, 1) = 20
+        grid(0, 2) = 30
+        grid(1, 0) = 40
+        grid(1, 1) = 50
+        grid(1, 2) = 60
 
         __P(CStr(grid.GetLength(0)))
         __P(CStr(grid.GetLength(1)))
-        __P(CStr(grid(1, 1) + grid(1, 2) + grid(2, 3)))
-        __Check("2
-3
-90")
+        __P(CStr(grid(0, 0) + grid(0, 1) + grid(1, 2)))
+        __Check("2" & vbLf & "3" & vbLf & "90")
     End Sub
 End Module

@@ -58,7 +58,9 @@ Module M
         __P(CStr(AppName))
         
         Dim m As Mode = Mode.Fast
-        __P(CStr(m))
+        ' `CStr` on an enum converts NUMERICALLY; the member name comes from
+        ' `ToString`.
+        __P(CStr(m.ToString()))
         __Check("3.14159
 MyApp
 Fast")

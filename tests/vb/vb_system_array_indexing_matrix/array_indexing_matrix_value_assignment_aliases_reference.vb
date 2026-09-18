@@ -44,11 +44,12 @@ End Module
 Module M
     Sub Main()
         Dim source() As Integer = {1, 2, 3}
-        Dim alias() As Integer = source
+        ' `Alias` is a VB keyword, so the identifier is bracket-escaped (BC30183).
+        Dim [alias]() As Integer = source
 
-        alias(1) = 42
+        [alias](1) = 42
         __P(CStr(source(1)))
-        __P(CStr(alias.Length))
+        __P(CStr([alias].Length))
         __Check("42
 3")
     End Sub

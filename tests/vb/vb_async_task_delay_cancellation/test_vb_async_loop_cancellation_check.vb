@@ -49,7 +49,8 @@ Module Program
         Dim iterations As Integer = 0
         While Not token.IsCancellationRequested
             iterations += 1
-            If iterations >= 3 Then Break
+            ' ⛔ `Break` is C# — VB spells it `Exit While`.
+            If iterations >= 3 Then Exit While
             Await Task.Delay(1, token)
         End While
         Return iterations

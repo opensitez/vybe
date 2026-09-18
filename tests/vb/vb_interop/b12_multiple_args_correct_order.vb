@@ -42,10 +42,11 @@ Module VybeCheck
 End Module
 
 Module Program
-    Sub Main()
-        Function Subtract(a As Double, b As Double) As Double
+    Function Subtract(a As Double, b As Double) As Double
         Return a - b
-        End Function
+    End Function
+
+    Sub Main()
         __P(CStr(Subtract(10, 3)))
     End Sub
 End Module

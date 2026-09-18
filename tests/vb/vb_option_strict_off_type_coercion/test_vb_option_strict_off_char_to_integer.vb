@@ -46,7 +46,9 @@ End Module
 Module Program
     Sub Main()
         Dim objCh As Object = "A"c
-        Dim charCode As Integer = objCh
+        ' A late-bound Char does NOT coerce to Integer — VB throws; the code
+        ' point comes from `AscW`.
+        Dim charCode As Integer = AscW(CChar(objCh))
         __P(CStr(charCode))
         __Check("65")
     End Sub

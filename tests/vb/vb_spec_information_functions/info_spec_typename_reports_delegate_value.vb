@@ -45,6 +45,7 @@ Module M
     Sub Main()
         Dim value As Func(Of Integer, Integer) = Function(x) x + 1
         __P(CStr(TypeName(value)))
-        __Check("Func`2")
+        ' `TypeName` renders a generic in VB SPELLING, not CLR arity notation.
+        __Check("Func(Of Integer,Integer)")
     End Sub
 End Module

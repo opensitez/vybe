@@ -46,7 +46,7 @@ End Module
 Module Program
     Sub Main()
         Dim list As Object = New List(Of String)()
-        __P(CStr(TypeOf list Is List(Of String) & "|" & TypeOf list IsIsNot List(Of Integer)))
+        __P(CStr(TypeOf list Is List(Of String) & "|" & TypeOf list IsNot List(Of Integer)))
         __Check("True|True")
     End Sub
 End Module

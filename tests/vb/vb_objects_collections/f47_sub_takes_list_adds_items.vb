@@ -42,11 +42,12 @@ Module VybeCheck
 End Module
 
 Module Program
-    Sub Main()
-        Sub FillList(lst As List)
+    Sub FillList(lst As List(Of String))
         lst.Add("one")
         lst.Add("two")
-        End Sub
+    End Sub
+
+    Sub Main()
         Dim myList As New List(Of String)
         FillList(myList)
         __P(CStr(myList.Count))

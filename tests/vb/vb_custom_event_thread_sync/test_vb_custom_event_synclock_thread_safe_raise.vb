@@ -51,12 +51,12 @@ Class ThreadSafeNotifier
     Public Custom Event StatusUpdate As EventHandler
         AddHandler(value As EventHandler)
             SyncLock lockObj
-                handlerDelegate = CType(Delegate.Combine(handlerDelegate, value), EventHandler)
+                handlerDelegate = CType([Delegate].Combine(handlerDelegate, value), EventHandler)
             End SyncLock
         End AddHandler
         RemoveHandler(value As EventHandler)
             SyncLock lockObj
-                handlerDelegate = CType(Delegate.Remove(handlerDelegate, value), EventHandler)
+                handlerDelegate = CType([Delegate].Remove(handlerDelegate, value), EventHandler)
             End SyncLock
         End RemoveHandler
         RaiseEvent(sender As Object, e As EventArgs)

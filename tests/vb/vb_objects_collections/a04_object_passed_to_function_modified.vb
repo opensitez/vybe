@@ -45,10 +45,11 @@ Class Counter
 End Class
 
 Module Program
-    Sub Main()
-        Sub Increment(c As Counter)
+    Sub Increment(c As Counter)
         c.Value = c.Value + 1
-        End Sub
+    End Sub
+
+    Sub Main()
         Dim c As New Counter()
         c.Value = 10
         Increment(c)

@@ -53,6 +53,7 @@ Module Program
         Dim prop = acc.GetType().GetProperty("Balance")
         prop.SetValue(acc, 500.0D)
         __P(CStr(acc.Balance))
-        __Check("500")
+        ' A Decimal keeps the scale it was written with.
+        __Check("500.0")
     End Sub
 End Module

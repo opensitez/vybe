@@ -45,7 +45,8 @@ End Module
 
 
 Module M
-    Private Shared _tickCount As Integer
+    ' A Module member is already shared; `Shared` is not allowed on it.
+    Private _tickCount As Integer
 
     Sub Main()
         _tickCount = 0
@@ -61,7 +62,7 @@ Module M
 True")
     End Sub
 
-    Private Shared Sub OnPeriodicTick(state As Object)
+    Private Sub OnPeriodicTick(state As Object)
         Interlocked.Increment(_tickCount)
         Dim gate As AutoResetEvent = CType(state, AutoResetEvent)
         gate.Set()

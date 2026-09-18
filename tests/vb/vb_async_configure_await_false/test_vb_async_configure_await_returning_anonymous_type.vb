@@ -51,7 +51,9 @@ Module Program
 
     Sub Main()
         Dim t = GetAnonAsync()
-        Dim res As Dynamic = t.Result
+        ' ⛔ `Dynamic` is C#; VB has no such type (BC30182). Late binding in VB
+        ' is an `Object` under the default Option Strict Off.
+        Dim res As Object = t.Result
         __P(CStr(res.Tag))
         __Check("ConfiguredAnon")
     End Sub

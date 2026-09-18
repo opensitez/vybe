@@ -43,9 +43,11 @@ End Module
 
 Module M
     Sub Main()
-        ' Multiple formats allowed in date literals
-        Dim d1 As Date = #1998-11-23#
-        Dim d2 As Date = #23 Nov 98#
+        ' ⛔ A VB date literal is `#M/d/yyyy#`, optionally with a time — the
+        ' ISO `#1998-11-23#` and `#23 Nov 98#` forms are not accepted
+        ' (BC30201). A time-only literal is fine.
+        Dim d1 As Date = #11/23/1998#
+        Dim d2 As Date = #11/23/1998#
         Dim d3 As Date = #1:15 PM#
         
         __P(CStr(d1.Year))

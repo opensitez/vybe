@@ -22,6 +22,7 @@
 
 Imports System
 Imports System.Runtime.InteropServices
+Imports Microsoft.Win32.SafeHandles
 Module VybeCheck
     Public __buf As String = ""
 

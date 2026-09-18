@@ -48,10 +48,10 @@ Class ReadOnlyEventSource
 
     Public Custom Event SimpleEvent As EventHandler
         AddHandler(value As EventHandler)
-            list = CType(Delegate.Combine(list, value), EventHandler)
+            list = CType([Delegate].Combine(list, value), EventHandler)
         End AddHandler
         RemoveHandler(value As EventHandler)
-            list = CType(Delegate.Remove(list, value), EventHandler)
+            list = CType([Delegate].Remove(list, value), EventHandler)
         End RemoveHandler
         RaiseEvent(sender As Object, e As EventArgs)
             If list IsNot Nothing Then list(sender, e)

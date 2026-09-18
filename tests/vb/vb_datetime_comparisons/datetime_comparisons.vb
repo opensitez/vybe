@@ -43,9 +43,11 @@ End Module
 
 Module M
     Sub Main()
-        Dim d1 As Date = #2024-01-01 12:00:00#
-        Dim d2 As Date = #2024-01-01 12:00:00#
-        Dim d3 As Date = #2024-01-02#
+        ' ⛔ A VB date literal is `#M/d/yyyy#` — the ISO `#yyyy-MM-dd#` form
+        ' is not accepted (BC30201).
+        Dim d1 As Date = #1/1/2024 12:00:00 PM#
+        Dim d2 As Date = #1/1/2024 12:00:00 PM#
+        Dim d3 As Date = #1/2/2024#
         
         __P(CStr(d1 = d2))
         __P(CStr(d1 < d3))

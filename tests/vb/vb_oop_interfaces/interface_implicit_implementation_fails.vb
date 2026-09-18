@@ -42,15 +42,22 @@ Module VybeCheck
 End Module
 
 Interface I
-Sub M()
+    Sub M()
 End Interface
+
 Class C
-Implements I
-' Public Sub M() ' VB requires explicit Implements I.M
+    Implements I
+    ' VB has no implicit implementation: the member must name the interface
+    ' member with `Implements`, and its own name is then free.
+    Public Sub Anything() Implements I.M
+        __P(CStr("M"))
+    End Sub
 End Class
+
 Module M
-Sub Main()
-__P(CStr("Parsed"))
-    __Check("Parsed")
-End Sub
+    Sub Main()
+        Dim c As I = New C()
+        c.M()
+        __Check("M")
+    End Sub
 End Module

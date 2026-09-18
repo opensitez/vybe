@@ -49,7 +49,6 @@ Module M
         __P(CStr(sb.Chars(1)))
         sb.Chars(1) = "E"c
         __P(CStr(sb.ToString()))
-        __Check("e
-dEeta")
+        __Check("e" & vbLf & "dElta")
     End Sub
 End Module

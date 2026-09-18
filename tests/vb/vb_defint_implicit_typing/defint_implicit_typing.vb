@@ -41,14 +41,11 @@ Module VybeCheck
     End Sub
 End Module
 
-' Variables starting with I through N default to Integer
-DefInt I-N
-' Variables starting with S default to String
-DefStr S
-
+' ⛔ VB.NET REMOVED the `Def<type>` statements (`DefInt I-N`, `DefStr S`) —
+' they are VB6 and are BC30195 here. Ordinary type inference produces the same
+' types, which is what this covers.
 Module M
     Sub Main()
-        ' iVar starts with I, so it is an Integer implicitly
         Dim iVar = 10
         Dim nVar = 20
         Dim sVar = "Hello"

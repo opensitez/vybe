@@ -43,8 +43,10 @@ End Module
 
 Module Program
     Sub Main()
+        ' VB has no `%=` — `Mod` has no compound form, so the assignment is
+        ' written out.
         Dim val As Integer = 27
-        val %= 5
+        val = val Mod 5
         __P(CStr(val))
         __Check("2")
     End Sub

@@ -47,7 +47,8 @@ Module M
     Sub Main()
         Dim now As Dates.DateTime = Dates.DateTime.Parse("2026-02-03T00:00:00")
         __P(CStr(now.Month))
-        __P(CStr(CStr(now.DayOfWeek)))
+        ' ⛔ `CStr` of an enum renders its NUMBER; `ToString` renders the name.
+        __P(now.DayOfWeek.ToString())
         __Check("2
 Tuesday")
     End Sub

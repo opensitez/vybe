@@ -46,7 +46,9 @@ End Module
 Module M
     Sub Main()
         Dim letter As MyCharacter = "Z"c
-        __P(CStr(CInt(letter)))
+        ' ⛔ VB has no Char→Integer conversion (BC32006); `AscW` reads the
+        ' code point.
+        __P(CStr(AscW(letter)))
         __Check("90")
     End Sub
 End Module

@@ -57,7 +57,8 @@ Module M
 
         __P(CStr(value))
         __P(CStr(compare))
-        __Check("5
-5")
+        ' The comparand matches, so the exchange lands: `value` becomes 100 and
+        ' `CompareExchange` answers the PREVIOUS value.
+        __Check("100" & vbLf & "5")
     End Sub
 End Module

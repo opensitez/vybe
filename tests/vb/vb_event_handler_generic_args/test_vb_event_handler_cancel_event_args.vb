@@ -57,10 +57,12 @@ End Class
 Module Program
     Sub Main()
         Dim doc As New Document()
+        ' The assertion sat INSIDE the handler, so it ran before `TryClose`
+        ' had returned anything to check.
         AddHandler doc.Closing, Sub(sender, e)
-            e.Cancel = True
-            __Check("False")
-        End Sub
+                                    e.Cancel = True
+                                End Sub
         __P(CStr(doc.TryClose()))
+        __Check("False")
     End Sub
 End Module

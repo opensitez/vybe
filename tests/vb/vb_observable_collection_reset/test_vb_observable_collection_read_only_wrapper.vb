@@ -21,6 +21,7 @@
 ' rather than inside the helper.
 
 Imports System.Collections.ObjectModel
+Imports System.Collections.Specialized
 Module VybeCheck
     Public __buf As String = ""
 
@@ -51,10 +52,10 @@ Module Program
         Dim actionFired = ""
         AddHandler CType(roCol, INotifyCollectionChanged).CollectionChanged, Sub(s, e)
             actionFired = e.Action.ToString()
-            __Check("2|Add")
         End Sub
 
         col.Add("B")
         __P(CStr(roCol.Count & "|" & actionFired))
+        __Check("2|Add")
     End Sub
 End Module

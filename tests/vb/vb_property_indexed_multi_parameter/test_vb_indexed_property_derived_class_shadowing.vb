@@ -52,7 +52,6 @@ Class ParentMap
 End Class
 
 Class ChildMap
-    Sub Main()
     Inherits ParentMap
     Default Public Shadows Property Item(key As String) As String
         Get

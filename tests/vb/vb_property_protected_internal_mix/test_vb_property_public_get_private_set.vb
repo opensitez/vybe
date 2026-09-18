@@ -42,7 +42,18 @@ Module VybeCheck
 End Module
 
 Class Entity
-    Public Property Id As Integer { Get; Private Set; }
+    ' ⛔ `{ Get; Private Set; }` is C# AUTO-PROPERTY syntax — VB has no
+    ' brace form, and an auto-property cannot carry a per-accessor access
+    ' modifier. The expanded property with a backing field is VB's spelling.
+    Private _id As Integer
+    Public Property Id As Integer
+        Get
+            Return _id
+        End Get
+        Private Set(value As Integer)
+            _id = value
+        End Set
+    End Property
     Public Sub New(id As Integer)
         Me.Id = id
     End Sub

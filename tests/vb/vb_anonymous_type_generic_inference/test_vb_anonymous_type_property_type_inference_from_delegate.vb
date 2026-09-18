@@ -46,7 +46,10 @@ End Module
 Module Program
     Sub Main()
         Dim obj = New With {.Action = CType(Sub() __P(CStr("ActionInAnon")), Action)}
-        obj.Action()
+        ' ⛔ `obj.Action` is a PROPERTY holding a delegate. `obj.Action()` reads
+        ' as a property access with an argument list (BC30545) — VB needs an
+        ' explicit `.Invoke()` where C# would just call it.
+        obj.Action.Invoke()
         __Check("ActionInAnon")
     End Sub
 End Module

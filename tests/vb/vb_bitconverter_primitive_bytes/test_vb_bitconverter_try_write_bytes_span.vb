@@ -45,10 +45,12 @@ End Module
 
 Module Program
     Sub Main()
+        ' ⛔ VB cannot DECLARE a `Span` local — it is a ref struct (BC30668) —
+        ' but it can pass an array straight to a `Span` PARAMETER, so the
+        ' span overload is still what gets called.
         Dim destination(3) As Byte
-        Dim span As Span(Of Byte) = destination
-        Dim ok = BitConverter.TryWriteBytes(span, 9999)
-        __P(CStr(ok & "|" & BitConverter.ToInt32(destination, 0)))
+        Dim ok = BitConverter.TryWriteBytes(destination, 9999)
+        __P(CStr(ok) & "|" & CStr(BitConverter.ToInt32(destination, 0)))
         __Check("True|9999")
     End Sub
 End Module

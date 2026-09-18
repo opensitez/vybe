@@ -42,13 +42,15 @@ Module VybeCheck
 End Module
 
 Module Program
-    Sub Main()
-        Function Add(a As Integer, b As Integer) As Integer
+    Function Add(a As Integer, b As Integer) As Integer
         Return a + b
-        End Function
-        Function Mul(a As Integer, b As Integer) As Integer
+    End Function
+
+    Function Mul(a As Integer, b As Integer) As Integer
         Return a * b
-        End Function
+    End Function
+
+    Sub Main()
         __P(CStr(Add(Mul(2, 3), Mul(4, 5))))
     End Sub
 End Module

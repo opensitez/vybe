@@ -54,14 +54,12 @@ Module M
         Dim submit As Integer = 0
         For i As Integer = 1 To 3
             ThreadPool.QueueUserWorkItem(
-                Sub(_)
+                Sub(state)
                     Interlocked.Increment(done)
                     barrier.Signal()
                     If barrier.CurrentCount = 0 Then
                         mark.Set()
                     End If
-                    __Check("True
-3")
                 End Sub
             )
             submit += 1
@@ -70,5 +68,6 @@ Module M
         mark.WaitOne(2000)
         __P(CStr(done = submit))
         __P(CStr(done))
+        __Check("True" & vbLf & "3")
     End Sub
 End Module

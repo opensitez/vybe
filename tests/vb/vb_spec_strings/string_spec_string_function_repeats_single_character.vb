@@ -43,7 +43,8 @@ End Module
 
 Module M
     Sub Main()
-        __P(CStr(String(5, "*"c)))
+        ' VB.NET spells VB6's `String$` repeater `StrDup`; `String` is a type.
+        __P(CStr(StrDup(5, "*"c)))
         __Check("*****")
     End Sub
 End Module

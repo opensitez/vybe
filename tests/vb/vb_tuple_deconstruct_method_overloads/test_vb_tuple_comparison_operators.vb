@@ -46,7 +46,9 @@ Module Program
         Dim t1 = (1, 10)
         Dim t2 = (1, 20)
         Dim t3 = (2, 5)
-        __P(CStr((t1 < t2) & "|" & (t2 < t3)))
+        ' ⛔ VB defines no relational operators on tuples; ordering is the
+        ' lexicographic comparison of the fields.
+        __P(CStr((t1.CompareTo(t2) < 0) & "|" & (t2.CompareTo(t3) < 0)))
         __Check("True|True")
     End Sub
 End Module

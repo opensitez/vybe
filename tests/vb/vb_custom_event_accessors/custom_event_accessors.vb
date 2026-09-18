@@ -46,7 +46,9 @@ Class Publisher
     
     ' Custom event with modifiers on accessors
     Public Custom Event Notify As EventHandler
-        Private AddHandler(value As EventHandler)
+        ' ⛔ An access specifier is not valid on `AddHandler`/`RemoveHandler`/
+        ' `RaiseEvent` (BC31135) — the accessors take the event's accessibility.
+        AddHandler(value As EventHandler)
             _count += 1
             __P(CStr("Added"))
         End AddHandler

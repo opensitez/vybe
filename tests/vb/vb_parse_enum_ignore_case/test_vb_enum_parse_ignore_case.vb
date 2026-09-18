@@ -44,8 +44,9 @@ End Module
 
 
 Enum Command
+    ' Keywords need bracket escaping to serve as enum member names.
     Start
-    Stop
+    [Stop]
 End Enum
 
 Module Program

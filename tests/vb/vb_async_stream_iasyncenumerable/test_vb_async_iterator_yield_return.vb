@@ -45,9 +45,11 @@ End Module
 
 
 Module Program
-    Async Function GenerateNumbersAsync() As IAsyncEnumerable(Of Integer)
-        ' Mock async stream pattern using list Task result
-        Return FetchListAsync().Result
+    ' ⛔ VB has NO async iterators — `Async` may only return `Task`/`Task(Of T)`
+    ' (BC36945) and there is no `Yield` inside an Async method. A Task of a list
+    ' is the shape VB has for this.
+    Function GenerateNumbersAsync() As Task(Of List(Of Integer))
+        Return FetchListAsync()
     End Function
 
     Async Function FetchListAsync() As Task(Of List(Of Integer))

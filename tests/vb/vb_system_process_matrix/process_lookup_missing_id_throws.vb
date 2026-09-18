@@ -48,7 +48,10 @@ Module M
         Dim threw As Boolean = False
 
         Try
-            Process.GetProcessById(-1)
+            ' A NEGATIVE id is rejected before the lookup off Windows and
+            ' answers nothing; a valid-range id that names no process is
+            ' what raises.
+            Process.GetProcessById(2147483000)
         Catch ex As Exception
             threw = True
         End Try

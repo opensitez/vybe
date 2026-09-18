@@ -48,7 +48,9 @@ Module M
         values(1)=2
         values(2)=3
         Erase values
-        __P(CStr(values(0)))
-        __P(CStr(values(2)))
+        ' `Erase` RELEASES the array — the variable becomes Nothing; it does
+        ' not zero the elements in place.
+        __P(CStr(values Is Nothing))
+        __Check("True")
     End Sub
 End Module

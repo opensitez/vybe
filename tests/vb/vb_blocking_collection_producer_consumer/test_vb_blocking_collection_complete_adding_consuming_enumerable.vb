@@ -52,8 +52,10 @@ Module Program
 
         __P(CStr(bc.IsAddingCompleted))
         Dim sum As Integer = 0
-        For Each val In bc.GetConsumingEnumerable()
-            sum += val
+        ' ⛔ `Val` is a VB BUILT-IN function, so a loop variable of that name
+        ' is read as a call to it (BC30516).
+        For Each item In bc.GetConsumingEnumerable()
+            sum += item
         Next
         __P(CStr(sum))
         __P(CStr(bc.IsCompleted))

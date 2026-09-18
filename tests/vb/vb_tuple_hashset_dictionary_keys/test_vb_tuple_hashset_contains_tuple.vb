@@ -45,8 +45,9 @@ End Module
 
 Module Program
     Sub Main()
-        Dim set As New HashSet(Of (String, Integer)) From {("Alpha", 1), ("Beta", 2)}
-        __P(CStr(set.Contains(("Alpha", 1)) & "|" & set.Contains(("Alpha", 2))))
+        ' ⛔ `Set` is a VB keyword and cannot be an identifier (BC30183).
+        Dim items As New HashSet(Of (String, Integer)) From {("Alpha", 1), ("Beta", 2)}
+        __P(CStr(items.Contains(("Alpha", 1)) & "|" & items.Contains(("Alpha", 2))))
         __Check("True|False")
     End Sub
 End Module

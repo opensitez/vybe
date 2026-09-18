@@ -44,6 +44,8 @@ End Module
 Module M
     Sub Main()
         __P(CStr(VarType(1)))
-        __Check("2")
+        ' VB.NET's `Integer` is 32-bit, i.e. VariantType.Long (3); VB6's
+        ' 16-bit Integer (2) is today's `Short`.
+        __Check("3")
     End Sub
 End Module

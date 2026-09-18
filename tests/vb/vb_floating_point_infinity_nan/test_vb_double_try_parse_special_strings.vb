@@ -47,8 +47,10 @@ Module Program
     Sub Main()
         Dim val As Double
         Dim okNaN = Double.TryParse("NaN", val)
+        ' ⛔ `"Infinity"` is the ECMA word, not a .NET number: the invariant
+        ' culture spells infinity `∞`, so .NET answers False here.
         Dim okInf = Double.TryParse("Infinity", val)
         __P(CStr(okNaN & "|" & okInf))
-        __Check("True|True")
+        __Check("True|False")
     End Sub
 End Module

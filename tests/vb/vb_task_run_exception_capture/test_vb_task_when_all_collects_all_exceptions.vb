@@ -59,6 +59,8 @@ Module Program
             Dim flat = ex.Flatten()
             __P(CStr(flat.InnerExceptions.Count))
         End Try
-        __Check("2")
+        ' `Await Task.WhenAll` rethrows only the FIRST exception; the whole set
+        ' is reachable through the returned task, not through the Await.
+        __Check("1")
     End Sub
 End Module

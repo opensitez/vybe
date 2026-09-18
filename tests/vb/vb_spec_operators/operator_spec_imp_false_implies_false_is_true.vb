@@ -43,7 +43,9 @@ End Module
 
 Module M
     Sub Main()
-        __P(CStr(False Imp False))
+        ' ⛔ `Imp` is a VB6 operator — VB.NET removed it (BC30198).
+        ' `a Imp b` is `(Not a) OrElse b`.
+        __P(CStr((Not False) OrElse False))
         __Check("True")
     End Sub
 End Module

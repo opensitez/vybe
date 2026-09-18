@@ -50,7 +50,8 @@ Interface IDerived
     Sub MethodB()
 End Interface
 
-Class MyClass
+' ⛔ `MyClass` is a VB keyword (BC30183).
+Class [MyClass]
     Implements IDerived
     
     Public Sub MethodA() Implements IDerived.MethodA
@@ -64,7 +65,7 @@ End Class
 
 Module M
     Sub Main()
-        Dim d As IDerived = New MyClass()
+        Dim d As IDerived = New [MyClass]()
         d.MethodA()
         d.MethodB()
         __Check("A

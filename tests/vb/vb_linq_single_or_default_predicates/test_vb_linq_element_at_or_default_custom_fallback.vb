@@ -46,7 +46,10 @@ End Module
 Module Program
     Sub Main()
         Dim numbers = {10, 20}
-        __P(CStr(numbers.ElementAtOrDefault(5, -1)))
+        ' ⛔ `ElementAtOrDefault` takes ONE argument (BC30516) — there is no
+        ' custom-fallback overload, so the fallback is applied afterwards.
+        Dim at5 = numbers.ElementAtOrDefault(5)
+        __P(CStr(If(at5 = 0, -1, at5)))
         __Check("-1")
     End Sub
 End Module

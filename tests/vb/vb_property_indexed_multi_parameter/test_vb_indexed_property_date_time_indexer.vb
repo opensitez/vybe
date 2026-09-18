@@ -50,7 +50,6 @@ Class Schedule
         Get
             If events.ContainsKey(dt) Then Return events(dt)
             Return "Free"
-        Get
         End Get
         Set(value As String)
             events(dt) = value

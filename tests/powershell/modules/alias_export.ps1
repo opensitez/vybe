@@ -1,8 +1,12 @@
 # vybe-test: powershell/modules/alias_export
-$val = 100
-if ($val -eq 100) {
-    Write-Host "PASS"
-    exit 0
+function Show-Value {
+    return 'ok'
 }
-Write-Host "FAIL"
-exit 1
+Export-ModuleMember -Function Show-Value -Alias show
+$result = show
+if ($result -ne 'ok') {
+    Write-Host "FAIL: expected ok, got $result"
+    exit 1
+}
+Write-Host "PASS"
+exit 0

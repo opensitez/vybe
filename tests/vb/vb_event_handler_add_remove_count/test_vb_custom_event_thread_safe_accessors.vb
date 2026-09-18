@@ -51,12 +51,12 @@ Class ThreadSafeEventSource
     Public Custom Event SafeEvent As EventHandler
         AddHandler(value As EventHandler)
             SyncLock lockObj
-                handlers = CType(Delegate.Combine(handlers, value), EventHandler)
+                handlers = CType([Delegate].Combine(handlers, value), EventHandler)
             End SyncLock
         End AddHandler
         RemoveHandler(value As EventHandler)
             SyncLock lockObj
-                handlers = CType(Delegate.Remove(handlers, value), EventHandler)
+                handlers = CType([Delegate].Remove(handlers, value), EventHandler)
             End SyncLock
         End RemoveHandler
         RaiseEvent(sender As Object, e As EventArgs)

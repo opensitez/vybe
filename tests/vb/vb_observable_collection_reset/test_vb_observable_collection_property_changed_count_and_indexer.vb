@@ -50,9 +50,9 @@ Module Program
         Dim propChangedList As New System.Collections.Generic.List(Of String)()
         AddHandler CType(col, INotifyPropertyChanged).PropertyChanged, Sub(s, e)
             propChangedList.Add(e.PropertyName)
-            __Check("Count,Item[]")
         End Sub
         col.Add(100)
         __P(CStr(String.Join(",", propChangedList)))
+        __Check("Count,Item[]")
     End Sub
 End Module

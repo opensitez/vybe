@@ -46,7 +46,9 @@ Module Program
         Dim tuple As (String, Integer) = ("Alice", 30)
         Dim name As String = Nothing
         Dim age As Integer = 0
-        tuple.Deconstruct(name, age)
+        ' ⛔ VB has no tuple deconstruction and ValueTuple exposes no
+        ' `Deconstruct` to VB; the fields are read positionally.
+        name = tuple.Item1 : age = tuple.Item2
         __P(CStr(name & " is " & age))
         __Check("Alice is 30")
     End Sub

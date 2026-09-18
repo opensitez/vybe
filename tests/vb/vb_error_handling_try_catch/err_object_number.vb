@@ -44,7 +44,10 @@ End Module
 Module M
 Sub Main()
 On Error Resume Next
-Dim x = 1 \ 0
+' ⛔ A CONSTANT `\ 0` is a COMPILE error (BC30542) and could never reach the
+' handler; the divisor has to arrive at run time.
+Dim zero As Integer = 0
+Dim x = 1 \ zero
 __P(CStr(Err.Number <> 0))
     __Check("True")
 End Sub

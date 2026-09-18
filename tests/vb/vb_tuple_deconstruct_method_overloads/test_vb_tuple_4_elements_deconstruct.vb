@@ -45,7 +45,9 @@ Module Program
     Sub Main()
         Dim t = (1, 2, 3, 4)
         Dim a As Integer = 0, b As Integer = 0, c As Integer = 0, d As Integer = 0
-        t.Deconstruct(a, b, c, d)
+        ' ⛔ VB has no tuple deconstruction and ValueTuple exposes no
+        ' `Deconstruct` to VB; the fields are read positionally.
+        a = t.Item1 : b = t.Item2 : c = t.Item3 : d = t.Item4
         __P(CStr(a + b + c + d))
         __Check("10")
     End Sub

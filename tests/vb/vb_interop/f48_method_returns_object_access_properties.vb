@@ -41,8 +41,8 @@ Module VybeCheck
     End Sub
 End Module
 Public Class Pair
-    Dim first As String
-    Dim second As String
+    Public first As String
+    Public second As String
     Public Sub New(a As String, b As String)
         first = a
         second = b

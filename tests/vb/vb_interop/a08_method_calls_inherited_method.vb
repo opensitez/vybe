@@ -41,7 +41,7 @@ Module VybeCheck
     End Sub
 End Module
 Public Class Animal
-    Dim species As String
+    Public species As String
     Public Sub New(s As String)
         species = s
     End Sub

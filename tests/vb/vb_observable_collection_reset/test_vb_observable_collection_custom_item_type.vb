@@ -55,10 +55,10 @@ Module Program
             If e.NewItems IsNot Nothing Then
                 addedTitle = CType(e.NewItems(0), TaskItem).Title
             End If
-            __Check("BuildApp")
         End Sub
 
         col.Add(New TaskItem With {.Title = "BuildApp"})
         __P(CStr(addedTitle))
+        __Check("BuildApp")
     End Sub
 End Module

@@ -45,7 +45,9 @@ Module M
     Sub Main()
         ' If bounds are provided and initialized, they must match the initializers length
         ' Dim arr(2) As Integer = {1, 2, 3} ' 3 elements (0,1,2)
-        Dim arr(2) As Integer = {10, 20, 30}
+        ' ⛔ VB forbids an initializer on an array declared with EXPLICIT
+        ' bounds — the bound and the initializer cannot both state the size.
+        Dim arr() As Integer = {10, 20, 30}
         __P(CStr(arr(2)))
         __Check("30")
     End Sub

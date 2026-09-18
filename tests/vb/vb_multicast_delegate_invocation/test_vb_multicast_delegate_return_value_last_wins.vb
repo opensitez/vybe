@@ -52,8 +52,12 @@ Module Program
     End Function
 
     Sub Main()
-        Dim f As ComputeFunc = AddressOf Func1
-        f = CType([Delegate].Combine(f, AddressOf Func2), ComputeFunc)
+        ' `AddressOf` has no target type here: `Delegate.Combine`/`Remove`
+        ' take the abstract `Delegate`, so each handler is bound to the
+        ' concrete delegate type first.
+        Dim one As ComputeFunc = AddressOf Func1
+        Dim two As ComputeFunc = AddressOf Func2
+        Dim f As ComputeFunc = CType([Delegate].Combine(one, two), ComputeFunc)
         __P(CStr(f.Invoke()))
         __Check("20")
     End Sub

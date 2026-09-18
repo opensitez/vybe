@@ -55,7 +55,6 @@ Class ObservableInt
     Public Property Value As Integer Implements IObservableValue(Of Integer).Value
         Get
             Return _val
-        Get
         End Get
         Set(val As Integer)
             _val = val

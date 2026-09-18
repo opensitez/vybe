@@ -47,8 +47,10 @@ Module Program
     Sub Main()
         Dim ver As Version
         Dim ok = Version.TryParse("1.0.0", ver)
+        ' A failed `TryParse` OVERWRITES the out-parameter with Nothing.
+        Dim parsed = ver
         Dim fail = Version.TryParse("InvalidVersion", ver)
-        __P(CStr(ok & ":" & ver.ToString() & "|" & fail))
+        __P(CStr(ok & ":" & parsed.ToString() & "|" & fail))
         __Check("True:1.0.0|False")
     End Sub
 End Module

@@ -47,7 +47,9 @@ Module M
     Sub Main()
         Dim left As MyInt = 11
         Dim right As MyInt = 3
-        left = left + (right * MyInt(2))
+        ' ⛔ A type name is not callable — `MyInt(2)` reads as an invocation
+        ' (BC30110); `CType` is the conversion.
+        left = left + (right * CType(2, MyInt))
         __P(CStr(left))
         __Check("17")
     End Sub

@@ -43,18 +43,16 @@ End Module
 
 Module M
     Sub Main()
-        ' VB does not allow Static locals inside lambdas.
-        ' This is purely to ensure the parser handles the error gracefully.
-        ' We wrap it in a scenario that might parse if parser is permissive or correctly flags it.
+        ' VB does not allow a `Static` local inside a lambda; a captured outer
+        ' local gives the same persistence across calls.
+        Dim count As Integer = 0
         Dim act = Sub()
-                      Static count As Integer = 0
                       count += 1
                       __P(CStr(count))
-                      __Check("1
-2")
                   End Sub
-                  
+
         act()
         act()
+        __Check("1" & vbLf & "2")
     End Sub
 End Module

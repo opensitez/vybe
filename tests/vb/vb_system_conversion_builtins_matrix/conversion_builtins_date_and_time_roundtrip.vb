@@ -50,9 +50,7 @@ Module M
         __P(CStr(d.Month))
         __P(CStr(d.Day))
         __P(CStr(Convert.ToString(d.Date)))
-        __Check("2026
-7
-21
-07/21/2026")
+        ' .NET separates the time from AM/PM with a NARROW NO-BREAK SPACE.
+        __Check("2026" & vbLf & "7" & vbLf & "21" & vbLf & "7/21/2026 12:00:00" & ChrW(&H202F) & "AM")
     End Sub
 End Module

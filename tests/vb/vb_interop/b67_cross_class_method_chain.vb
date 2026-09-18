@@ -46,7 +46,7 @@ Public Class A
     End Function
 End Class
 Public Class B
-    Dim a As A
+    Public a As A
     Public Sub New()
         a = New A()
     End Sub
@@ -55,7 +55,7 @@ Public Class B
     End Function
 End Class
 Public Class C
-    Dim b As B
+    Public b As B
     Public Sub New()
         b = New B()
     End Sub

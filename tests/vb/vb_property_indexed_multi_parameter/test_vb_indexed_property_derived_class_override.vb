@@ -52,7 +52,6 @@ Class BaseStore
 End Class
 
 Class CustomStore
-    Sub Main()
     Inherits BaseStore
     Default Public Overrides Property Item(id As Integer) As String
         Get

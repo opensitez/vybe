@@ -49,7 +49,9 @@ Namespace Demo
 End Namespace
 Module M
     Sub Main()
-        __P(CStr(Demo.Size.Large))
+        ' `CStr` on an enum converts NUMERICALLY; the member name comes from
+        ' `ToString`.
+        __P(Demo.Size.Large.ToString())
         __Check("Large")
     End Sub
 End Module

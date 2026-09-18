@@ -46,7 +46,7 @@ End Module
 Module Program
     Sub Main()
         Dim eps = Double.Epsilon
-        __P(CStr(eps > 0.0 & "|" & eps < 0.00001))
+        __P(CStr((eps > 0.0) & "|" & (eps < 0.00001)))
         __Check("True|True")
     End Sub
 End Module

@@ -45,10 +45,9 @@ Module M
     Sub Main()
         On Error Resume Next
 
-        10
-        Dim a = 1
-        20
-        Error 5 ' Simulate an error on line 20
+        ' ⛔ A numeric label must be followed by a COLON (BC30801).
+10:     Dim a = 1
+20:     Error 5 ' Simulate an error on line 20
 
         ' Err object contains information about run-time errors
         __P(CStr(Err.Number))

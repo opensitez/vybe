@@ -43,7 +43,7 @@ End Module
 
 Module M
     Sub Main()
-        __P(CStr(Switch(False, 1, True, 2)))
+        __P(CStr(Microsoft.VisualBasic.Interaction.Switch(False, 1, True, 2)))
         __Check("2")
     End Sub
 End Module

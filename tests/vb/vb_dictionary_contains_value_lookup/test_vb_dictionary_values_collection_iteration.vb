@@ -47,8 +47,10 @@ Module Program
     Sub Main()
         Dim dict As New Dictionary(Of String, Integer) From {{"A", 10}, {"B", 20}}
         Dim sum As Integer = 0
-        For Each val In dict.Values
-            sum += val
+        ' ⛔ `Val` is a VB BUILT-IN function — a loop variable of that name is
+        ' read as a call to it (BC30516).
+        For Each item In dict.Values
+            sum += item
         Next
         __P(CStr(sum))
         __Check("30")

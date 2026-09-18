@@ -46,7 +46,9 @@ Module M
         Dim boxed As Object = 12.5
         Dim intRef As Nullable(Of Integer)
 
-        intRef = TryCast(boxed, Integer)
+        ' ⛔ `TryCast` requires a REFERENCE-type operand; a boxed value type
+        ' is unwrapped with a `TypeOf` test instead.
+        If TypeOf boxed Is Integer Then intRef = CType(boxed, Integer)
         __P(CStr(intRef.HasValue))
 
         Dim asObj As String = TryCast(boxed, String)

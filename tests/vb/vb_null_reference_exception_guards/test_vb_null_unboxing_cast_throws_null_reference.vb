@@ -46,14 +46,10 @@ End Module
 Module Program
     Sub Main()
         Dim obj As Object = Nothing
-        Try
-            Dim i As Integer = CInt(obj)
-            __P(CStr(i))
-        Catch ex As NullReferenceException
-            __P(CStr("Unboxing Null NullReferenceException Caught"))
-        Catch ex As Exception
-            __P(CStr("Caught: " & ex.GetType().Name))
-        End Try
-        __Check("Caught: NullReferenceException")
+        ' ⛔ `CInt` is a CONVERSION, not an unboxing cast: a Nothing Object
+        ' converts to 0 and throws nothing.
+        Dim i As Integer = CInt(obj)
+        __P(CStr(i))
+        __Check("0")
     End Sub
 End Module

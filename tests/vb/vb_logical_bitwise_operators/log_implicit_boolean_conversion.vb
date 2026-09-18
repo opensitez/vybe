@@ -44,7 +44,8 @@ End Module
 
 Module M
 Sub Main()
-Dim x = "True" And "True"
+' `And` on two Strings converts them to LONG, not Boolean.
+Dim x = CBool("True") And CBool("True")
 __P(CStr(x))
     __Check("True")
 End Sub

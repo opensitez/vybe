@@ -48,10 +48,10 @@ Class SharedEventSource
 
     Public Shared Custom Event SharedNotice As EventHandler
         AddHandler(value As EventHandler)
-            handlers = CType(Delegate.Combine(handlers, value), EventHandler)
+            handlers = CType([Delegate].Combine(handlers, value), EventHandler)
         End AddHandler
         RemoveHandler(value As EventHandler)
-            handlers = CType(Delegate.Remove(handlers, value), EventHandler)
+            handlers = CType([Delegate].Remove(handlers, value), EventHandler)
         End RemoveHandler
         RaiseEvent(sender As Object, e As EventArgs)
             If handlers IsNot Nothing Then handlers(sender, e)

@@ -45,11 +45,11 @@ End Module
 
 Module M
     Sub Main()
-        Dim path As String = Path.Combine(Path.GetTempPath(), "vybe_dir_" & Guid.NewGuid().ToString("N"))
-        Directory.CreateDirectory(path)
-        __P(CStr(Directory.Exists(path)))
-        Directory.Delete(path)
-        __P(CStr(Directory.Exists(path)))
+        Dim filePath As String = Path.Combine(Path.GetTempPath(), "vybe_dir_" & Guid.NewGuid().ToString("N"))
+        Directory.CreateDirectory(filePath)
+        __P(CStr(Directory.Exists(filePath)))
+        Directory.Delete(filePath)
+        __P(CStr(Directory.Exists(filePath)))
         __Check("True
 False")
     End Sub

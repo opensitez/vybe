@@ -43,8 +43,8 @@ End Module
 
 Module M
     Sub Main()
-        Dim text As String * 6
-        LSet text = "VB"
+        ' `LSet` is a FUNCTION in VB.NET, not a statement.
+        Dim text As String = LSet("VB", 6)
         __P(CStr("[" & text & "]"))
         __Check("[VB    ]")
     End Sub

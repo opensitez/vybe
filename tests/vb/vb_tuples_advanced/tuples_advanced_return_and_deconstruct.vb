@@ -53,8 +53,11 @@ Module M
         __P(CStr(coords.Y))
         
         ' Deconstruction into existing variables (or new ones)
+        ' ⛔ VB has no deconstruction assignment; the fields are read by name.
         Dim a, b As Integer
-        (a, b) = GetCoordinates()
+        Dim again = GetCoordinates()
+        a = again.X
+        b = again.Y
         __P(CStr(a))
         __P(CStr(b))
         __Check("10

@@ -53,10 +53,10 @@ Module Program
                 For j As Integer = 1 To 100
                     Interlocked.Increment(counter)
                 Next
-                __Check("1000")
             End Sub)
         Next
         Task.WaitAll(tasks)
         __P(CStr(counter))
+        __Check("1000")
     End Sub
 End Module

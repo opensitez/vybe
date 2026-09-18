@@ -42,7 +42,7 @@ Module VybeCheck
 End Module
 Class Calc
     Public Base As Integer
-    Public Function Double() As Integer
+    Public Function Doubled() As Integer
         Return Base * 2
     End Function
 End Class
@@ -54,6 +54,7 @@ Module Program
         c.Base = 21
         list.Add(c)
         Dim retrieved As Calc = list.Item(0)
-        __P(CStr(retrieved.Double()))
+        __P(CStr(retrieved.Doubled()))
+        __Check("42")
     End Sub
 End Module

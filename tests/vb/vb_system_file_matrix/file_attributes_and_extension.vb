@@ -45,12 +45,12 @@ End Module
 
 Module M
     Sub Main()
-        Dim path As String = Path.Combine(Path.GetTempPath(), "vb_ext." & Guid.NewGuid().ToString("N") & ".bin")
-        File.WriteAllText(path, "x")
-        Dim info As New FileInfo(path)
+        Dim filePath As String = Path.Combine(Path.GetTempPath(), "vb_ext." & Guid.NewGuid().ToString("N") & ".bin")
+        File.WriteAllText(filePath, "x")
+        Dim info As New FileInfo(filePath)
         __P(CStr(info.Extension = ".bin"))
         __P(CStr(info.Exists))
-        File.Delete(path)
+        File.Delete(filePath)
         __Check("True
 True")
     End Sub

@@ -45,8 +45,11 @@ End Module
 
 Module Program
     Sub Main()
+        ' A literal zero divisor is a COMPILE error (BC30542); the divisor has
+        ' to arrive at run time for the exception to be raisable.
+        Dim zero As Integer = 0
         Try
-            Dim res = 10 Mod 0
+            Dim res = 10 Mod zero
         Catch ex As DivideByZeroException
             __P(CStr("DivideByZeroException Caught on Mod 0"))
         End Try

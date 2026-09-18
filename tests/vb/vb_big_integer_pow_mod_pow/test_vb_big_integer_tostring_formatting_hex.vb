@@ -46,7 +46,9 @@ End Module
 Module Program
     Sub Main()
         Dim val As New BigInteger(255)
+        ' `BigInteger`'s hex format SIGN-PADS — a leading `0` marks the value
+        ' positive — so 255 renders `0FF`, not `FF`.
         __P(CStr(val.ToString("X")))
-        __Check("FF")
+        __Check("0FF")
     End Sub
 End Module

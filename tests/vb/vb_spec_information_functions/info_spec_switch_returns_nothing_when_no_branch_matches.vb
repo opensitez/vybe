@@ -43,7 +43,7 @@ End Module
 
 Module M
     Sub Main()
-        __P(CStr(IsNothing(Switch(False, "x"))))
+        __P(CStr(IsNothing(Microsoft.VisualBasic.Interaction.Switch(False, "x"))))
         __Check("True")
     End Sub
 End Module

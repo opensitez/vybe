@@ -47,10 +47,11 @@ End Module
 Module Program
     Sub Main()
         Using ms As New MemoryStream(New Byte() {10, 20, 30})
+            ' ⛔ VB cannot DECLARE a `Span` local (BC30668), but it can pass an
+            ' array to a `Span` PARAMETER — this is still `Read(Span(Of Byte))`.
             Dim buffer(2) As Byte
-            Dim span As Span(Of Byte) = buffer
-            Dim readCount = ms.Read(span)
-            __P(CStr(readCount & ":" & String.Join(",", buffer)))
+            Dim readCount = ms.Read(buffer)
+            __P(CStr(readCount) & ":" & String.Join(",", buffer))
         End Using
         __Check("3:10,20,30")
     End Sub

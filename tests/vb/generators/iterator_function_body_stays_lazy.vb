@@ -20,6 +20,7 @@
 ' its static type — the same reason the C# harness renders with `.ToString()`
 ' rather than inside the helper.
 
+Imports System.Collections.Generic
 Module VybeCheck
     Public __buf As String = ""
 
@@ -42,7 +43,9 @@ Module VybeCheck
 End Module
 
 Module Program
-    Function Loud()
+    ' `Iterator` is what makes `Yield` a keyword; without it VB reads `Yield 1`
+    ' as a paren-less call (BC30800).
+    Iterator Function Loud() As IEnumerable(Of Integer)
         __P(CStr("bad"))
         Yield 1
     End Function

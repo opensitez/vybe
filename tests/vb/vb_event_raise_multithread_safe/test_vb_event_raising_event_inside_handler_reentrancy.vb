@@ -50,18 +50,23 @@ Class ChainEmitter
     Public Sub Run()
         RaiseEvent Step1()
     End Sub
+
+    ' ⛔ `RaiseEvent` may only raise an event of the CONTAINING type, so a
+    ' re-entrant raise has to go through a method on the class.
+    Public Sub RaiseStep2()
+        RaiseEvent Step2()
+    End Sub
 End Class
 
 Module Program
     Sub Main()
         Dim c As New ChainEmitter()
         AddHandler c.Step1, Sub()
-            __P(CStr("Step1 Triggered"))
-            RaiseEvent c.Step2()
-            __Check("Step1 Triggered
-Step2 Triggered")
-        End Sub
+                                __P(CStr("Step1 Triggered"))
+                                c.RaiseStep2()
+                            End Sub
         AddHandler c.Step2, Sub() __P(CStr("Step2 Triggered"))
         c.Run()
+        __Check("Step1 Triggered" & vbLf & "Step2 Triggered")
     End Sub
 End Module

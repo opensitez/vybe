@@ -46,7 +46,9 @@ End Module
 Module Program
     Sub Main()
         Dim kv As New KeyValuePair(Of String, String)(Nothing, Nothing)
-        __P(CStr(kv.Key Is Nothing & "|" & kv.Value Is Nothing))
+        ' ⛔ `&` binds TIGHTER than `Is` (BC30020) — each test needs its own
+        ' CStr.
+        __P(CStr(kv.Key Is Nothing) & "|" & CStr(kv.Value Is Nothing))
         __Check("True|True")
     End Sub
 End Module

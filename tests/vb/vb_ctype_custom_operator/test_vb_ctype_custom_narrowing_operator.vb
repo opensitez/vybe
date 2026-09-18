@@ -58,8 +58,10 @@ End Class
 Module Program
     Sub Main()
         Dim temp As New Temperature(36.6)
-        Dim cInt As Integer = CType(temp, Integer)
-        __P(CStr(cInt))
+        ' ⛔ `CInt` is a VB conversion KEYWORD, so it cannot be an identifier
+        ' (BC30183).
+        Dim degrees As Integer = CType(temp, Integer)
+        __P(CStr(degrees))
         __Check("37")
     End Sub
 End Module

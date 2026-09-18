@@ -48,7 +48,7 @@ Module Program
         Dim h As Half = CType(1.5F, Half)
         Dim bytes = BitConverter.GetBytes(h)
         Dim restored = BitConverter.ToHalf(bytes, 0)
-        __P(CStr(bytes.Length & "|" & restored))
+        __P(CStr(bytes.Length) & "|" & restored.ToString())
         __Check("2|1.5")
     End Sub
 End Module

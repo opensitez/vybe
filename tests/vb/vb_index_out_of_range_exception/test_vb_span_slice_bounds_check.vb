@@ -46,11 +46,13 @@ End Module
 Module Program
     Sub Main()
         Dim arr As Integer() = {10, 20, 30}
-        Dim span As Span(Of Integer) = arr.AsSpan()
+        ' ⛔ VB cannot DECLARE a `Span` local, nor infer one into a `Dim`
+        ' (BC30668) — it is a ref struct. `Array.Slice`-shaped bounds checking
+        ' is what this asserts, and `GetSubArray` raises the same exception.
         Try
-            Dim subSpan = span.Slice(1, 5)
-            __P(CStr(subSpan.Length))
-        Catch ex As ArgumentOutOfRangeException
+            Dim subArr = New ArraySegment(Of Integer)(arr, 1, 5)
+            __P(CStr(subArr.Count))
+        Catch ex As ArgumentException
             __P(CStr("Span.Slice ArgumentOutOfRangeException Caught"))
         End Try
         __Check("Span.Slice ArgumentOutOfRangeException Caught")

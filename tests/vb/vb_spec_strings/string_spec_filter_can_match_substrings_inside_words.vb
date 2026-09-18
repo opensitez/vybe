@@ -43,7 +43,7 @@ End Module
 
 Module M
     Sub Main()
-        __P(CStr(UBound(Filter(Array("stone", "tone", "ring"), "one"))))
+        __P(CStr(UBound(Filter(New String() {"stone", "tone", "ring"}, "one"))))
         __Check("1")
     End Sub
 End Module

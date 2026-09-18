@@ -49,7 +49,7 @@ Module Program
         sb.Length = 3
         __P(CStr(sb.ToString()))
         sb.Length = 5
-        __P(CStr(sb.Length & "|" & CInt(sb(3))))
+        __P(CStr(sb.Length & "|" & AscW(sb(3))))
         __Check("ABC
 5|0")
     End Sub

@@ -45,9 +45,10 @@ End Module
 
 Module Program
     Sub Main()
-        Dim set As New HashSet(Of Integer) From {1, 2, 2, 3}
-        __P(CStr(set.Count))
-        For Each item In set
+        ' ⛔ `Set` is a VB keyword and cannot be an identifier (BC30183).
+        Dim items As New HashSet(Of Integer) From {1, 2, 2, 3}
+        __P(CStr(items.Count))
+        For Each item In items
             __P(CStr(item))
         Next
         __Check("3

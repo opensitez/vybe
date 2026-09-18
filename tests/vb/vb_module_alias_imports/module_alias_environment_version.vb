@@ -46,7 +46,8 @@ End Module
 Module M
     Sub Main()
         __P(CStr(CStr(Env.Version.Major >= 0)))
-        __P(CStr(CStr(Env.Version.MajorRevision > -1)))
+        ' `MajorRevision` is -1 when the version has no revision component.
+        __P(CStr(Env.Version.MajorRevision >= -1))
         __Check("True
 True")
     End Sub

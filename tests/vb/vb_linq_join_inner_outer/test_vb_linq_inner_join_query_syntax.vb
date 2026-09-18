@@ -56,12 +56,14 @@ Module Program
             New With {.Name = "Charlie", .DeptId = 2}
         }
 
+        ' ⛔ Two range variables cannot share a name (BC36600), so each
+        ' projected column is given its own.
         Dim query = From emp In employees
                     Join dept In departments On emp.DeptId Equals dept.Id
-                    Select emp.Name, dept.Name
+                    Select EmpName = emp.Name, DeptName = dept.Name
 
         For Each item In query
-            __P(CStr(item.Name & " in " & item.dept_Name))
+            __P(CStr(item.EmpName & " in " & item.DeptName))
         Next
         __Check("Alice in Engineering
 Bob in Engineering

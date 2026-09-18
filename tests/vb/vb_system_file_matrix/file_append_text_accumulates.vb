@@ -46,11 +46,11 @@ End Module
 
 Module M
     Sub Main()
-        Dim path As String = Path.Combine(Path.GetTempPath(), "vb_file_append_" & Guid.NewGuid().ToString("N"))
-        File.WriteAllText(path, "left")
-        File.AppendAllText(path, "-right")
-        __P(CStr(File.ReadAllText(path)))
-        File.Delete(path)
+        Dim filePath As String = Path.Combine(Path.GetTempPath(), "vb_file_append_" & Guid.NewGuid().ToString("N"))
+        File.WriteAllText(filePath, "left")
+        File.AppendAllText(filePath, "-right")
+        __P(CStr(File.ReadAllText(filePath)))
+        File.Delete(filePath)
         __Check("left-right")
     End Sub
 End Module

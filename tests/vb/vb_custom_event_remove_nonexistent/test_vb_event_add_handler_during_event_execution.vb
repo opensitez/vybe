@@ -55,17 +55,23 @@ Module Program
         Dim de As New DynamicEmitter()
         Dim h2 As Action = Sub() __P(CStr("H2 Executed"))
 
+        ' The assertion sat INSIDE the handler and carried a
+        ' `VYBEBUF>>><<<VYBEBUF` delimiter joining two separate expected
+        ' buffers; the statements it was meant to observe had been left
+        ' outside `Sub Main`.
         AddHandler de.Trigger, Sub()
-            __P(CStr("H1 Executing & Adding H2"))
-            AddHandler de.Trigger, h2
-            __Check("H1 Executing & Adding H2
-VYBEBUF>>><<<VYBEBUFH1 Executing & Adding H2
-Second Fire:
-H1 Executing & Adding H2")
-        End Sub
+                                   __P(CStr("H1 Executing & Adding H2"))
+                                   AddHandler de.Trigger, h2
+                               End Sub
 
         de.Fire()
         __P(CStr("Second Fire:"))
         de.Fire()
+        ' A handler added DURING a raise does not join that raise — the
+        ' invocation list is snapshotted — but it runs on the next one.
+        __Check("H1 Executing & Adding H2" & vbLf &
+                "Second Fire:" & vbLf &
+                "H1 Executing & Adding H2" & vbLf &
+                "H2 Executed")
     End Sub
 End Module

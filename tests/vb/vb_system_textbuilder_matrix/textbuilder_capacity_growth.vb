@@ -49,5 +49,6 @@ Module M
         sb.Append("abcdef")
         __P(CStr(sb.Length))
         __P(CStr(sb.Capacity >= 2))
-    End Module
+        __Check("6" & vbLf & "True")
+    End Sub
 End Module

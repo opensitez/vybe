@@ -43,7 +43,8 @@ End Module
 
 Module M
     Sub Main()
-        __P(CStr(String(3, "A"c)))
+        ' VB.NET spells VB6's `String$` repeater `StrDup`; `String` is a type.
+        __P(CStr(StrDup(3, "A"c)))
         __Check("AAA")
     End Sub
 End Module

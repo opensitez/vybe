@@ -46,7 +46,9 @@ Module M
 Sub Main()
 Dim x = "ABC"
 Try
-Select Case x
+' A String test expression compares the range as STRINGS and never raises;
+' the mismatch surfaces on the conversion.
+Select Case CInt(x)
 Case 1 To 10
 __P(CStr("A"))
 End Select

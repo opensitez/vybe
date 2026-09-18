@@ -48,9 +48,11 @@ Module Program
     Sub Main()
         Try
             CallByName(Nothing, "AnyMethod", CallType.Method)
-        Catch ex As ArgumentNullException
-            __P(CStr("ArgumentNullException Caught on Null CallByName Instance"))
+        Catch ex As NullReferenceException
+            ' A Nothing target is dereferenced before any argument check, so
+            ' the throw is a NullReferenceException.
+            __P(CStr("NullReferenceException Caught on Null CallByName Instance"))
         End Try
-        __Check("ArgumentNullException Caught on Null CallByName Instance")
+        __Check("NullReferenceException Caught on Null CallByName Instance")
     End Sub
 End Module

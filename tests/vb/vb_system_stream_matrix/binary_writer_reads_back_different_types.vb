@@ -46,13 +46,14 @@ End Module
 Module M
     Sub Main()
         Using ms As New MemoryStream()
-            Using writer As New BinaryWriter(ms)
+            ' The writer owns the stream unless `leaveOpen` says otherwise.
+            Using writer As New BinaryWriter(ms, Text.Encoding.UTF8, True)
                 writer.Write(123)
                 writer.Write(True)
                 writer.Write("done")
             End Using
             ms.Position = 0
-            Using reader As New BinaryReader(ms)
+            Using reader As New BinaryReader(ms, Text.Encoding.UTF8, True)
                 __P(CStr(reader.ReadInt32()))
                 __P(CStr(reader.ReadBoolean()))
                 __P(CStr(reader.ReadString()))

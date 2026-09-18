@@ -50,9 +50,9 @@ Class Base
 End Class
 
 Class Derived
-    Sub Main()
     Inherits Base
-    
+
+
     Public Overrides ReadOnly Property Name As String
         Get
             Return MyBase.Name & "Derived"

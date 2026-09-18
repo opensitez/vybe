@@ -50,7 +50,9 @@ End Class
 Module M
     Sub Main()
         Dim clock As New Clock()
-        Dim handler As Action = Sub() __P(CStr("tick"))
+        ' `Public Event Tick()` declares its own delegate type; an `Action`
+        ' is not convertible to it.
+        Dim handler As Clock.TickEventHandler = Sub() __P(CStr("tick"))
         AddHandler clock.Tick, handler
         RemoveHandler clock.Tick, handler
         clock.RaiseTick()

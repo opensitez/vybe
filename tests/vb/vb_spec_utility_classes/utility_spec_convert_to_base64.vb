@@ -43,7 +43,8 @@ End Module
 
 Module Program
     Sub Main()
-        __P(CStr(Convert.ToBase64String("hello")))
+        ' `ToBase64String` takes BYTES, not a string.
+        __P(CStr(Convert.ToBase64String(Text.Encoding.UTF8.GetBytes("hello"))))
         __Check("aGVsbG8=")
     End Sub
 End Module

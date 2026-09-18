@@ -45,7 +45,9 @@ Module Program
     Sub Main()
         Dim s As String = ", ,Hello, World!..."
         Dim punct As Char() = {","c, "."c, "!"c}
+        ' `Trim` removes only characters IN the set, so it stops at the space
+        ' and the leading " ," survives.
         __P(CStr(s.Trim(punct)))
-        __Check("Hello, World")
+        __Check(" ,Hello, World")
     End Sub
 End Module

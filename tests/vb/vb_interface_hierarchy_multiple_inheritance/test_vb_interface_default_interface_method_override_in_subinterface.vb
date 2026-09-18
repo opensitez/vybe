@@ -43,14 +43,14 @@ End Module
 
 Interface ILogger
     Sub Log(msg As String)
-    End Interface
+End Interface
 
-    Interface IAdvancedLogger
-        Inherits ILogger
-        Sub Log(msg As String, severity As Integer)
-        End Interface
+Interface IAdvancedLogger
+    Inherits ILogger
+    Sub Log(msg As String, severity As Integer)
+End Interface
 
-        Class CustomLogger
+Class CustomLogger
             Implements IAdvancedLogger
             Public Sub Log(msg As String) Implements ILogger.Log
                 __P(CStr("Basic: " & msg))
@@ -62,11 +62,12 @@ Interface ILogger
 
         Module Program
             Sub Main()
+                ' ⛔ A same-named member in a DERIVED interface SHADOWS the base
+                ' one, so the one-argument `Log` is only reachable through
+                ' `ILogger` (BC30455).
                 Dim l As IAdvancedLogger = New CustomLogger()
-                l.Log("System Start")
+                CType(l, ILogger).Log("System Start")
                 l.Log("Critical Failure", 5)
-                __Check("Basic: System Start
-Advanced [5]
-Critical Failure")
+                __Check("Basic: System Start" & vbLf & "Advanced [5]: Critical Failure")
             End Sub
         End Module

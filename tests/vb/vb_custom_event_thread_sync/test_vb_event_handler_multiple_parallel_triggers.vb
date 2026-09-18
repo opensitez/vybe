@@ -56,14 +56,16 @@ Module Program
         Dim pes As New ParallelEventSource()
         Dim counter = 0
         Dim lockObj As New Object()
+        ' The assertion sat INSIDE the handler, so it ran on the first Ping —
+        ' before the other four had fired.
         AddHandler pes.Ping, Sub(s, e)
-            SyncLock lockObj
-                counter += 1
-            End SyncLock
-            __Check("Parallel Count: 5")
-        End Sub
+                                 SyncLock lockObj
+                                     counter += 1
+                                 End SyncLock
+                             End Sub
 
         Parallel.For(0, 5, Sub(i) pes.Fire())
         __P(CStr("Parallel Count: " & counter))
+        __Check("Parallel Count: 5")
     End Sub
 End Module

@@ -65,7 +65,9 @@ Module M
         __P(CStr(arr?(0)))
         ' We can't really print Nothing directly for integer in VB without it being 0 if not nullable, 
         ' but for arrays ?. indexing returns Nullable(Of T)
-        __P(CStr(emptyArr?(0).HasValue))
+        ' `?(0).HasValue` binds `HasValue` to the ELEMENT before the lift;
+        ' the parentheses make the lifted `Integer?` the receiver.
+        __P(CStr((emptyArr?(0)).HasValue))
         __Check("Root
 True
 1

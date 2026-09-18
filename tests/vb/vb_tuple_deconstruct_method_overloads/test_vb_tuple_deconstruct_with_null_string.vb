@@ -46,7 +46,9 @@ Module Program
         Dim t As (String, Integer) = (Nothing, 0)
         Dim s As String = "Initial"
         Dim i As Integer = -1
-        t.Deconstruct(s, i)
+        ' ⛔ VB has no tuple deconstruction and ValueTuple exposes no
+        ' `Deconstruct` to VB; the fields are read positionally.
+        s = t.Item1 : i = t.Item2
         __P(CStr((s Is Nothing) & "|" & i))
         __Check("True|0")
     End Sub

@@ -47,6 +47,6 @@ Module Program
         Dim u2 As ULong = 7UL
         Dim res = u1 Mod u2
         __P(CStr(res))
-        __Check("2")
+        __Check("4")
     End Sub
 End Module

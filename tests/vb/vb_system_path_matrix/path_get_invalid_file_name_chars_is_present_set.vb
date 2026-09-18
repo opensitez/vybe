@@ -50,7 +50,8 @@ Module M
 
         Dim ok As Boolean = False
         For i As Integer = 0 To bad.Length - 1
-            If bad(i) <> ""C Then
+            ' `""C` is not a Char literal; NUL is written `ChrW(0)`.
+            If bad(i) <> ChrW(0) Then
                 ok = True
                 Exit For
             End If

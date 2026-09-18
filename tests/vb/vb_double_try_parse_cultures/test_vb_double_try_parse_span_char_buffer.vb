@@ -46,9 +46,11 @@ End Module
 
 Module Program
     Sub Main()
-        Dim span As ReadOnlySpan(Of Char) = "789.123".ToCharArray()
+        ' ⛔ VB cannot DECLARE a `ReadOnlySpan` local (BC30668), but the Char()
+        ' passes straight to the `ReadOnlySpan(Of Char)` PARAMETER.
+        Dim buf As Char() = "789.123".ToCharArray()
         Dim val As Double
-        Dim ok = Double.TryParse(span, NumberStyles.Float, CultureInfo.InvariantCulture, val)
+        Dim ok = Double.TryParse(buf, NumberStyles.Float, CultureInfo.InvariantCulture, val)
         __P(CStr(ok & "|" & val))
         __Check("True|789.123")
     End Sub

@@ -52,8 +52,8 @@ Module M
         __P(CStr(builder.Uri.IsAbsoluteUri))
         __P(CStr(builder.Uri.PathAndQuery))
         __P(CStr(builder.Uri.ToString()))
-        __Check("False
-relative/path?x=1
-relative/path?x=1")
+        ' An empty host does NOT make the Uri relative: UriBuilder fills in the
+        ' default scheme and localhost.
+        __Check("True" & vbLf & "/relative/path?x=1" & vbLf & "http://localhost/relative/path?x=1")
     End Sub
 End Module

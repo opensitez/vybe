@@ -60,7 +60,9 @@ Module Program
     Sub Main()
         Dim pt As New Point2D(3.0, 4.0)
         Dim px, py As Double
-        (px, py) = pt
+        ' ⛔ VB has no deconstruction assignment; `Deconstruct` is an ordinary
+        ' method with ByRef parameters.
+        pt.Deconstruct(px, py)
         __P(CStr(px & "," & py))
         __Check("3,4")
     End Sub

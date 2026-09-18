@@ -47,9 +47,16 @@ End Module
 Class AsyncResource
     Implements IAsyncDisposable
 
-    Public Async Function DisposeAsync() As ValueTask Implements IAsyncDisposable.DisposeAsync
+    ' ⛔ `IAsyncDisposable.DisposeAsync` REQUIRES a `ValueTask`, and VB cannot
+    ' mark a `ValueTask`-returning method `Async` (BC36945) — so the work goes
+    ' in an Async helper and this wraps its Task.
+    Private Async Function DisposeCoreAsync() As Task
         Await Task.Yield()
         __P(CStr("Async Disposed"))
+    End Function
+
+    Public Function DisposeAsync() As ValueTask Implements IAsyncDisposable.DisposeAsync
+        Return New ValueTask(DisposeCoreAsync())
     End Function
 End Class
 

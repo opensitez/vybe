@@ -56,7 +56,10 @@ Module M
         ' TypeOf ... Is / IsNot
         __P(CStr(TypeOf d Is Dog))
         __P(CStr(TypeOf d Is Animal))
-        __P(CStr(TypeOf d IsNot String))
+        ' `TypeOf d IsNot String` on a Dog-typed local is a COMPILE error;
+        ' the test needs an Object-typed reference.
+        Dim o As Object = d
+        __P(CStr(TypeOf o IsNot String))
         __Check("True
 True
 True")

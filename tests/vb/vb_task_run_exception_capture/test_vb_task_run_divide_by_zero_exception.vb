@@ -46,16 +46,19 @@ End Module
 
 Module Program
     Sub Main()
+        ' ⛔ The assertion sat AFTER the `Return`, inside the lambda — it was
+        ' unreachable, so this test asserted nothing at all.
+        Dim zero As Integer = 0
         Dim t = Task.Run(Function()
-            Dim a = 10, b = 0
-            Return a \ b
-            __Check("DivideByZeroException")
-        End Function)
+                             Dim a = 10
+                             Return a \ zero
+                         End Function)
 
         Try
             Dim r = t.Result
         Catch ex As AggregateException
             __P(CStr(ex.InnerException.GetType().Name))
         End Try
+        __Check("DivideByZeroException")
     End Sub
 End Module

@@ -43,7 +43,8 @@ Module VybeCheck
 End Module
 
 
-Enum LogLevel
+' An attribute argument type must be Public.
+Public Enum LogLevel
     Debug
     Info
     ErrorVal
@@ -59,7 +60,9 @@ Class LogAttribute
 End Class
 
 Class Service
-    <Math.Log(LogLevel.ErrorVal)>
+    ' The bare name `Log` collides with `Math.Log`; the full attribute
+    ' class name is unambiguous.
+    <LogAttribute(LogLevel.ErrorVal)>
     Public Sub Process()
     End Sub
 End Class

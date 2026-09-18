@@ -41,13 +41,14 @@ Module VybeCheck
     End Sub
 End Module
 Class MathHelper
-    Shared Function Double(x As Integer) As Integer
-        Double = x * 2
+    ' ⛔ `Double` is a VB keyword (BC30183).
+    Shared Function [Double](x As Integer) As Integer
+        [Double] = x * 2
     End Function
 End Class
 
 Module Program
     Sub Main()
-        __P(CStr(MathHelper.Double(5)))
+        __P(CStr(MathHelper.[Double](5)))
     End Sub
 End Module

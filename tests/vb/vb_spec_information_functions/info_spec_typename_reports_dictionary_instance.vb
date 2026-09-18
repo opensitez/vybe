@@ -44,6 +44,7 @@ End Module
 Module M
     Sub Main()
         __P(CStr(TypeName(New Dictionary(Of String, Integer)())))
-        __Check("Dictionary`2")
+        ' `TypeName` renders a generic in VB SPELLING, not CLR arity notation.
+        __Check("Dictionary(Of String,Integer)")
     End Sub
 End Module

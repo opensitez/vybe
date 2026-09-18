@@ -47,7 +47,7 @@ End Interface
 
 Class HelloGreeter
     Implements IGreeter
-    Public Function Greet() As String
+    Public Function Greet() As String Implements IGreeter.Greet
         Return "Hello!"
     End Function
 End Class

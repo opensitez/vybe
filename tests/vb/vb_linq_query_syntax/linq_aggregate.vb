@@ -46,11 +46,13 @@ Module M
         Dim numbers As Integer() = {1, 2, 3, 4, 5}
         
         ' Aggregate is a distinct keyword in VB LINQ
-        Dim sum = Aggregate n In numbers Into Sum()
-        __P(CStr(sum))
+        ' ⛔ `Into Sum()` names a range variable `Sum`, colliding with a local
+        ' of the same name (BC30978).
+        Dim total = Aggregate n In numbers Into Sum()
+        __P(CStr(total))
         
-        Dim max = Aggregate n In numbers Into Max()
-        __P(CStr(max))
+        Dim largest = Aggregate n In numbers Into Max()
+        __P(CStr(largest))
         __Check("15
 5")
     End Sub

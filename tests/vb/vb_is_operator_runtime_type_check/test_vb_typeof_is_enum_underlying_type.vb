@@ -51,7 +51,8 @@ End Enum
 Module Program
     Sub Main()
         Dim e As Object = Level.Low
-        __P(CStr(TypeOf e Is Level & "|" & TypeOf e Is Enum))
+        ' ⛔ `Enum` is a KEYWORD (BC30180) — the type is [Enum].
+        __P(CStr(TypeOf e Is Level) & "|" & CStr(TypeOf e Is [Enum]))
         __Check("True|True")
     End Sub
 End Module

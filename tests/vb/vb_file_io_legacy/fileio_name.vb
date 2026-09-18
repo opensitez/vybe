@@ -48,8 +48,10 @@ Module M
         PrintLine(f, "Hello")
         FileClose(f)
         FileCopy("test_rename_src.txt", "test_rename.txt")
-        Rename("test_rename.txt", "test_renamed.txt")
+        ' VB6's `Rename` is not supported off Windows; the move is `File.Move`.
+        System.IO.File.Move("test_rename.txt", "test_renamed.txt")
         __P(CStr(System.IO.File.Exists("test_renamed.txt")))
+        __Check("True")
         Kill("test_renamed.txt")
     End Sub
 End Module

@@ -45,11 +45,12 @@ End Module
 
 Module Program
     Sub Main()
-        Dim set As New HashSet(Of (Integer, Integer))()
-        set.Add((1, 2))
-        set.Add((1, 2))
-        set.Add((2, 3))
-        __P(CStr(set.Count))
+        ' ⛔ `Set` is a VB keyword and cannot be an identifier (BC30183).
+        Dim items As New HashSet(Of (Integer, Integer))()
+        items.Add((1, 2))
+        items.Add((1, 2))
+        items.Add((2, 3))
+        __P(CStr(items.Count))
         __Check("2")
     End Sub
 End Module

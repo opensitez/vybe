@@ -42,13 +42,21 @@ Module VybeCheck
 End Module
 
 Module M
+    Class Button
+        Public Event Click()
+        Public Sub PerformClick()
+            RaiseEvent Click()
+        End Sub
+    End Class
+
     Class MyForm
         Public Status As String = "idle"
 
-        Sub New()
-        End Sub
+        ' A `Handles` clause needs a `WithEvents` variable of the declaring
+        ' type; there is no ambient designer field.
+        Private WithEvents Button1 As New Button()
 
-        Sub Button1_Click(sender As Object, e As Object) Handles Button1.Click
+        Sub Button1_Click() Handles Button1.Click
             Me.Status = "clicked"
         End Sub
     End Class

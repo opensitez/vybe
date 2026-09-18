@@ -41,7 +41,7 @@ Module VybeCheck
     End Sub
 End Module
 Public Class Calc
-    Dim total As Double
+    Public total As Double
     Public Sub New()
         total = 0
     End Sub

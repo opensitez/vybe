@@ -46,7 +46,8 @@ End Module
 Module Program
     Class Catalog
         Private items As String() = {"Alpha", "Beta", "Gamma"}
-        Default Public Property Item(idx As Integer) As String
+        ' A property with only a `Get` must be declared `ReadOnly` (BC30124).
+        Default Public ReadOnly Property Item(idx As Integer) As String
             Get
                 Return items(idx)
             End Get

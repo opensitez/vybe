@@ -43,7 +43,9 @@ End Module
 
 Module M
     Sub Main()
-        __P(CStr(True Eqv False))
+        ' ⛔ `Eqv` is a VB6 operator — VB.NET removed it (BC30198). For
+        ' booleans it is equality.
+        __P(CStr(True = False))
         __Check("False")
     End Sub
 End Module

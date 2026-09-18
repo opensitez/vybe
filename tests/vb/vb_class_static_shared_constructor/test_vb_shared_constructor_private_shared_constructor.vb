@@ -43,7 +43,9 @@ End Module
 
 Class ConnectionPool
     Public Shared MaxConnections As Integer
-    Private Shared Sub New()
+    ' A `Shared Sub New` is implicitly private — an explicit `Private` is
+    ' BC30480.
+    Shared Sub New()
         MaxConnections = 10
     End Sub
 End Class

@@ -55,5 +55,6 @@ Module M
         Next
         __P(CStr(total))
         __P(CStr(map.Count))
-    End Module
+        __Check("60" & vbLf & "3")
+    End Sub
 End Module

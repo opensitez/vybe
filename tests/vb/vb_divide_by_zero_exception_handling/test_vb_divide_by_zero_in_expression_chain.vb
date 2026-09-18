@@ -45,8 +45,11 @@ End Module
 
 Module Program
     Sub Main()
+        ' ⛔ `(10 - 10)` folds to a CONSTANT zero, which VB rejects at compile
+        ' time (BC30542); the divisor has to arrive at run time.
+        Dim ten As Integer = 10
         Try
-            Dim val As Integer = (100 + 50) \ (10 - 10)
+            Dim val As Integer = (100 + 50) \ (ten - ten)
         Catch ex As DivideByZeroException
             __P(CStr("Chain DivideByZeroException Handled"))
         End Try

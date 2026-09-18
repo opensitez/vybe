@@ -46,8 +46,7 @@ Module M
         For i As Decimal = 1.5D To 2.5D Step 0.5D
             __P(CStr(i))
         Next
-        __Check("1.5
-2
-2.5")
+        ' Decimal arithmetic PRESERVES SCALE, so the middle step renders 2.0.
+        __Check("1.5" & vbLf & "2.0" & vbLf & "2.5")
     End Sub
 End Module

@@ -41,7 +41,7 @@ Module VybeCheck
     End Sub
 End Module
 Public Class Foo
-    Dim value As String
+    Public value As String
     Public Sub New()
         Setup()
     End Sub

@@ -52,12 +52,12 @@ Class ConcurrentNotifier
     Public Custom Event SharedEvent As EventHandler
         AddHandler(value As EventHandler)
             SyncLock lockObj
-                multicast = CType(Delegate.Combine(multicast, value), EventHandler)
+                multicast = CType([Delegate].Combine(multicast, value), EventHandler)
             End SyncLock
         End AddHandler
         RemoveHandler(value As EventHandler)
             SyncLock lockObj
-                multicast = CType(Delegate.Remove(multicast, value), EventHandler)
+                multicast = CType([Delegate].Remove(multicast, value), EventHandler)
             End SyncLock
         End RemoveHandler
         RaiseEvent(sender As Object, e As EventArgs)

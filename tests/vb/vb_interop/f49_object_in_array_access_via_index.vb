@@ -41,7 +41,7 @@ Module VybeCheck
     End Sub
 End Module
 Public Class Item
-    Dim name As String
+    Public name As String
     Public Sub New(n As String)
         name = n
     End Sub

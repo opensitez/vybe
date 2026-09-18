@@ -43,16 +43,16 @@ End Module
 
 Module M
     Sub Main()
-        Dim values(1 To 5) As Integer
-        For i As Integer = 1 To 5
+        ' ⛔ VB.NET arrays are ALWAYS zero-based — `Dim v(1 To 5)` is BC32059.
+        ' The bound in `Dim v(5)` is the UPPER bound, so there are 6 elements.
+        Dim values(5) As Integer
+        For i As Integer = 0 To 5
             values(i) = i * i
         Next
 
         __P(CStr(values.Length))
         __P(CStr(values(1)))
         __P(CStr(values(5)))
-        __Check("5
-1
-25")
+        __Check("6" & vbLf & "1" & vbLf & "25")
     End Sub
 End Module

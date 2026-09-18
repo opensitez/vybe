@@ -45,16 +45,17 @@ End Module
 
 <Flags>
 Enum Attributes
+    ' Keywords need bracket escaping to serve as enum member names.
     None = 0
-    ReadOnly = 1
+    [ReadOnly] = 1
     Hidden = 2
-    System = 4
+    [System] = 4
 End Enum
 
 Module Program
     Sub Main()
         Dim attr = Attributes.ReadOnly Or Attributes.Hidden
-        __P(CStr(attr.HasFlag(Attributes.ReadOnly) & "|" & attr.HasFlag(Attributes.System)))
+        __P(CStr(attr.HasFlag(Attributes.[ReadOnly]) & "|" & attr.HasFlag(Attributes.[System])))
         __Check("True|False")
     End Sub
 End Module

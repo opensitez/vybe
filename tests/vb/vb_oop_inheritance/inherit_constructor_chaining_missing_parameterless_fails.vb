@@ -42,16 +42,26 @@ Module VybeCheck
 End Module
 
 Class B
-Public Sub New(v As Integer)
-End Sub
+    Public V As Integer
+    ' ⛔ VB is case-insensitive: a parameter named `v` would shadow the field
+    ' `V`, making `V = v` a self-assignment.
+    Public Sub New(seed As Integer)
+        V = seed
+    End Sub
 End Class
+
 Class C
-Inherits B
-' Public Sub New() ' Fails if it doesn't explicitly call MyBase.New(v) because B has no parameterless Sub New
+    Inherits B
+    ' B has no parameterless `Sub New`, so C must declare one that chains
+    ' explicitly — the implicit `MyBase.New()` has nothing to call.
+    Public Sub New()
+        MyBase.New(7)
+    End Sub
 End Class
+
 Module M
-Sub Main()
-__P(CStr("Parsed"))
-    __Check("Parsed")
-End Sub
+    Sub Main()
+        __P(CStr(New C().V))
+        __Check("7")
+    End Sub
 End Module

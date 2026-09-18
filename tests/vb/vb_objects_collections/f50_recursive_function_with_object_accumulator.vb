@@ -45,12 +45,13 @@ Class Acc
 End Class
 
 Module Program
-    Sub Main()
-        Sub AddUp(a As Acc, n As Integer)
+    Sub AddUp(a As Acc, n As Integer)
         If n <= 0 Then Return
         a.Total = a.Total + n
         AddUp(a, n - 1)
-        End Sub
+    End Sub
+
+    Sub Main()
         Dim acc As New Acc()
         acc.Total = 0
         AddUp(acc, 5)

@@ -52,7 +52,13 @@ End Interface
 
 Class ModeConfig
     Implements IConfig(Of Mode)
-    Public Property CurrentMode As Mode Implements IConfig(Of Mode).CurrentMode = Mode.Advanced
+    ' ⛔ An `Implements` clause ENDS the declaration — an initializer cannot
+    ' follow it (BC30205); the value is set in the constructor.
+    Public Property CurrentMode As Mode Implements IConfig(Of Mode).CurrentMode
+
+    Public Sub New()
+        CurrentMode = Mode.Advanced
+    End Sub
 End Class
 
 Module Program

@@ -48,10 +48,14 @@ Module Program
         Dim dict As New ConcurrentDictionary(Of String, Integer)()
         dict("A") = 1
 
+        ' ⛔ A FAILED `TryRemove` still ASSIGNS its out-parameter — the type's
+        ' default — so reusing one variable across both calls wipes the value
+        ' the successful call produced.
         Dim removedVal As Integer
         Dim ok = dict.TryRemove("A", removedVal)
-        Dim okMissing = dict.TryRemove("B", removedVal)
-        __P(CStr(ok & "|" & removedVal & "|" & okMissing))
+        Dim missingVal As Integer
+        Dim okMissing = dict.TryRemove("B", missingVal)
+        __P(CStr(ok) & "|" & CStr(removedVal) & "|" & CStr(okMissing))
         __Check("True|1|False")
     End Sub
 End Module

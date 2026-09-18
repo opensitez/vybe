@@ -62,7 +62,10 @@ Module M
             __P(CStr("t1 is true"))
         End If
         
-        If Not t2 Then
+        ' ⛔ `IsTrue`/`IsFalse` enable `If x Then`, `AndAlso` and `OrElse` —
+        ' they do NOT define `Not` (BC30487), which needs its own operator.
+        If t2 Then
+        Else
             __P(CStr("t2 is false"))
         End If
         __Check("t1 is true

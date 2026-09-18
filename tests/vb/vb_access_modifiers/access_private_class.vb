@@ -41,10 +41,11 @@ Module VybeCheck
     End Sub
 End Module
 
+Module M
+' ⛔ BC31089 — a type declared `Private` must live INSIDE another type.
 Private Class C
 Public V As Integer = 1
 End Class
-Module M
 Sub Main()
 Dim c1 As New C()
 __P(CStr(c1.V))

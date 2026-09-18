@@ -43,7 +43,9 @@ End Module
 
 Module M
     Sub Main()
-        Dim items = Array("one","two")
+        ' VB.NET has no `Array()` function; `Array` is a type.
+        Dim items = New Object() {"one", "two"}
         __P(CStr(items(0)))
+        __Check("one")
     End Sub
 End Module

@@ -44,6 +44,8 @@ End Module
 Module Program
     Sub Main()
         Dim p = Process.Start("/bin/echo")
+        ' `ExitCode` is only readable once the process has exited.
+        p.WaitForExit()
         __P(CStr(p.ExitCode))
         __Check("0")
     End Sub

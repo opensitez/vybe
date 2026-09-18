@@ -45,11 +45,11 @@ End Module
 
 Module M
     Sub Main()
-        Dim set As New HashSet(Of Integer)()
-        __P(CStr(set.Add(1)))
-        __P(CStr(set.Add(1)))
-        set.Remove(1)
-        __P(CStr(set.Count))
+        Dim items As New HashSet(Of Integer)()
+        __P(CStr(items.Add(1)))
+        __P(CStr(items.Add(1)))
+        items.Remove(1)
+        __P(CStr(items.Count))
         __Check("True
 False
 0")

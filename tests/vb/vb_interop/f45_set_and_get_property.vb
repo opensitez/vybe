@@ -41,7 +41,7 @@ Module VybeCheck
     End Sub
 End Module
 Public Class Box
-    Dim content As String
+    Public content As String
     Public Sub New()
         content = "empty"
     End Sub

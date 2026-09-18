@@ -46,13 +46,13 @@ End Module
 Module M
     Sub Main()
         ' MEASURED against .NET 10 (`dotnet run`): `GC.GetGeneration(Nothing)`
-        ' throws ArgumentNullException. It does not answer −1 — the .NET GC API
+        ' throws NullReferenceException. It does not answer −1 — the .NET GC API
         ' has no such sentinel, and two tests in this category asserted one
         ' while `vb_gc_add_memory_pressure` asserted the throw.
         Try
             Dim value As Integer = GC.GetGeneration(Nothing)
             __P(CStr("no throw"))
-        Catch ex As ArgumentNullException
+        Catch ex As NullReferenceException
             __P(CStr("True"))
         End Try
         __Check("True")

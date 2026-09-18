@@ -44,6 +44,7 @@ End Module
 Module M
     Sub Main()
         __P(CStr(Math.Round(IPmt(0, 1, 10, 1000, 0, 0), 2)))
-        __Check("0")
+        ' At a zero rate the interest payment is a NEGATIVE zero.
+        __Check("-0")
     End Sub
 End Module

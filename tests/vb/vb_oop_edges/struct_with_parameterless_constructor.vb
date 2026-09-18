@@ -43,9 +43,10 @@ End Module
 
 Structure S
     Public Val As Integer
-    ' Parameterless constructors in structs are allowed in VB 14+
-    Public Sub New()
-        Val = 42
+    ' A structure cannot declare a non-shared parameterless `Sub New`, so
+    ' `New S()` always yields the all-default value.
+    Public Sub New(v As Integer)
+        Val = v
     End Sub
 End Structure
 
@@ -53,6 +54,6 @@ Module M
     Sub Main()
         Dim s As New S()
         __P(CStr(s.Val))
-        __Check("42")
+        __Check("0")
     End Sub
 End Module

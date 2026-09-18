@@ -44,6 +44,8 @@ End Module
 Module M
     Sub Main()
         __P(CStr(Partition(12, 0, 9, 5)))
-        __Check("10:10")
+        ' Above the stop value `Partition` answers the open upper bucket, its
+        ' second field padded to the width of the first.
+        __Check("10:  ")
     End Sub
 End Module

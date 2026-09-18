@@ -48,11 +48,11 @@ End Module
 Module Program
     Sub Main()
         Dim ptr As IntPtr = Marshal.AllocHGlobal(100)
-        Using ums As New UnmanagedMemoryStream(CType(ptr.ToPointer(), Byte*), 100, 100, FileAccess.ReadWrite)
-            ums.WriteByte(77)
-            ums.Position = 0
-            __P(CStr(ums.ReadByte()))
-        End Using
+        ' VB has no pointer types, so `UnmanagedMemoryStream`'s pointer
+        ' constructor is unreachable; the block is read and written through
+        ' Marshal instead.
+        Marshal.WriteByte(ptr, 0, 77)
+        __P(CStr(Marshal.ReadByte(ptr, 0)))
         Marshal.FreeHGlobal(ptr)
         __Check("77")
     End Sub

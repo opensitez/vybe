@@ -42,7 +42,18 @@ Module VybeCheck
 End Module
 
 Class Box(Of T)
-    Public Property Item As T { Get; Private Set; }
+    ' ⛔ `{ Get; Private Set; }` is C# AUTO-PROPERTY syntax — VB has no
+    ' brace form, and an auto-property cannot carry a per-accessor access
+    ' modifier. The expanded property with a backing field is VB's spelling.
+    Private _item As T
+    Public Property Item As T
+        Get
+            Return _item
+        End Get
+        Private Set(value As T)
+            _item = value
+        End Set
+    End Property
     Public Sub New(val As T)
         Item = val
     End Sub

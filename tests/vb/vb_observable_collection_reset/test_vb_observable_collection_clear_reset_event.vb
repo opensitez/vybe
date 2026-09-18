@@ -50,9 +50,9 @@ Module Program
         Dim resetFired = False
         AddHandler col.CollectionChanged, Sub(s, e)
             If e.Action = NotifyCollectionChangedAction.Reset Then resetFired = True
-            __Check("True")
         End Sub
         col.Clear()
         __P(CStr(resetFired))
+        __Check("True")
     End Sub
 End Module

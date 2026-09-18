@@ -45,14 +45,14 @@ End Module
 
 Module M
     Sub Main()
-        Dim path As String = Path.Combine(Path.GetTempPath(), "vb_create_" & Guid.NewGuid().ToString("N"))
-        Using fs As FileStream = File.Create(path)
+        Dim filePath As String = Path.Combine(Path.GetTempPath(), "vb_create_" & Guid.NewGuid().ToString("N"))
+        Using fs As FileStream = File.Create(filePath)
             fs.WriteByte(10)
         End Using
-        Using fs2 As FileStream = File.OpenRead(path)
+        Using fs2 As FileStream = File.OpenRead(filePath)
             __P(CStr(fs2.Length))
         End Using
-        File.Delete(path)
+        File.Delete(filePath)
         __Check("1")
     End Sub
 End Module

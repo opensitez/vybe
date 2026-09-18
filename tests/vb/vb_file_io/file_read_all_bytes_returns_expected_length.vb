@@ -45,10 +45,10 @@ End Module
 
 Module M
     Sub Main()
-        Dim path As String = Path.GetTempFileName()
-        File.WriteAllBytes(path, New Byte() {1, 2, 3, 4, 5})
-        __P(CStr(File.ReadAllBytes(path).Length))
-        File.Delete(path)
+        Dim filePath As String = Path.GetTempFileName()
+        File.WriteAllBytes(filePath, New Byte() {1, 2, 3, 4, 5})
+        __P(CStr(File.ReadAllBytes(filePath).Length))
+        File.Delete(filePath)
         __Check("5")
     End Sub
 End Module

@@ -41,7 +41,7 @@ Module VybeCheck
     End Sub
 End Module
 Public Class Temperature
-    Dim _celsius As Double
+    Public _celsius As Double
     Public Property Celsius As Double
         Get
             Return _celsius

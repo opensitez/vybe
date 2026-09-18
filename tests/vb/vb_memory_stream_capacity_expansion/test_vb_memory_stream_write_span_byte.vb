@@ -47,8 +47,10 @@ End Module
 Module Program
     Sub Main()
         Using ms As New MemoryStream()
-            Dim span As ReadOnlySpan(Of Byte) = New Byte() {1, 2, 3}
-            ms.Write(span)
+            ' ⛔ VB cannot DECLARE a `Span` local (BC30668), but it can pass an
+            ' array to a `Span` PARAMETER — this is `Write(ReadOnlySpan(Of Byte))`.
+            Dim data = New Byte() {1, 2, 3}
+            ms.Write(data)
             __P(CStr(ms.Length))
         End Using
         __Check("3")

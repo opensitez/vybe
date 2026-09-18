@@ -75,7 +75,8 @@ Module Program
         Dim vm As New CustomerViewModel()
         Dim changedName = ""
         AddHandler vm.PropertyChanged, Sub(s, e) changedName = e.PropertyName
-        Dim res = vm.Age = 30
+        ' `Dim res = vm.Age = 30` is a COMPARISON, not an assignment.
+        vm.Age = 30
         __P(CStr(changedName & "|Value=" & vm.Age))
         __Check("Age|Value=30")
     End Sub

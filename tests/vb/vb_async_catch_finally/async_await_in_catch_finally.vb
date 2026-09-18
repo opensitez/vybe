@@ -54,14 +54,18 @@ Module M
         __P(CStr("Cleaned Up Async"))
     End Function
 
+    Function FailAsync() As Task
+        Return Task.Run(Sub() Throw New Exception("Fail"))
+    End Function
+
+    ' ⛔ VB cannot `Await` inside a `Catch` or a `Finally` (BC36943) — that is
+    ' C#. VB's equivalent is the CONTINUATION surface: a fault continuation for
+    ' the handler, then an unconditional one for the cleanup.
     Async Function DoWorkAsync() As Task
-        Try
-            Throw New Exception("Fail")
-        Catch ex As Exception
-            Await LogErrorAsync()
-        Finally
-            Await CleanupAsync()
-        End Try
+        Await FailAsync() _
+            .ContinueWith(Function(t) LogErrorAsync(),
+                          TaskContinuationOptions.OnlyOnFaulted).Unwrap() _
+            .ContinueWith(Function(t) CleanupAsync()).Unwrap()
     End Function
 
     Sub Main()

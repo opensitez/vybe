@@ -50,7 +50,10 @@ End Enum
 Module Program
     Sub Main()
         Dim boxed As Object = Status.Active
-        Dim s As Status? = TryCast(boxed, Status?)
+        ' ⛔ `TryCast` requires a REFERENCE-type operand; a boxed value type
+        ' is unwrapped with a `TypeOf` test instead.
+        Dim s As Status? = Nothing
+        If TypeOf boxed Is Status Then s = CType(boxed, Status)
         __P(CStr(s.HasValue & "|" & s.Value.ToString()))
         __Check("True|Active")
     End Sub

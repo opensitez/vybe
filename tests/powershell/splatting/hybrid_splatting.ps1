@@ -1,10 +1,14 @@
 # vybe-test: powershell/splatting/hybrid_splatting
-$x = 10
-$x += 5
-$x *= 2
-if ($x -eq 30) {
-    Write-Host "PASS"
-    exit 0
+function Add-Values {
+    param($x, $y, $z)
+    return $x + $y + $z
 }
-Write-Host "FAIL"
-exit 1
+$arrayArgs = 1, 2
+$hashArgs = @{ z = 3 }
+$result = Add-Values @arrayArgs @hashArgs
+if ($result -ne 6) {
+    Write-Host "FAIL: expected 6, got $result"
+    exit 1
+}
+Write-Host "PASS"
+exit 0

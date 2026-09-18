@@ -44,6 +44,9 @@ End Module
 Module M
     Sub Main()
         __P(CStr(CStr(CDate("5/14/2024 3:45:59 PM"))))
-        __Check("5/14/2024 3:45:59 PM")
+        ' ⛔ .NET 8+ on ICU separates the time from AM/PM with U+202F NARROW
+        ' NO-BREAK SPACE, not a plain space — visually identical, different
+        ' codepoint.
+        __Check("5/14/2024 3:45:59" & ChrW(&H202F) & "PM")
     End Sub
 End Module

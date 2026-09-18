@@ -43,7 +43,8 @@ End Module
 
 Module M
     Sub Main()
-        Dim x As Integer = 0x12345678
+        ' VB spells a hex literal `&H`, not `0x`.
+        Dim x As Integer = &H12345678
         Dim highNibble As Integer = (x And &HF0000000) >> 28
         Dim lowNibble As Integer = x And &HF
 

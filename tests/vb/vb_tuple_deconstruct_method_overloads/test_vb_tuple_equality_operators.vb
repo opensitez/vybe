@@ -46,7 +46,8 @@ Module Program
         Dim t1 = (1, "A")
         Dim t2 = (1, "A")
         Dim t3 = (2, "B")
-        __P(CStr((t1 = t2) & "|" & (t1 <> t3)))
+        ' ⛔ VB defines no `=` on tuples; equality is `Equals`.
+        __P(CStr(t1.Equals(t2) & "|" & (Not t1.Equals(t3))))
         __Check("True|True")
     End Sub
 End Module

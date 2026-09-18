@@ -50,7 +50,9 @@ End Class
 Module Program
     Sub Main()
         Dim w As New Wrapper(Of Double)()
-        Dim anon As Dynamic = w.Wrap(3.14159)
+        ' ⛔ `Dynamic` is C#; VB has no such type (BC30182). Late binding in VB
+        ' is an `Object` under the default Option Strict Off.
+        Dim anon As Object = w.Wrap(3.14159)
         __P(CStr(anon.WrappedVal))
         __Check("3.14159")
     End Sub

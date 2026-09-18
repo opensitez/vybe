@@ -47,7 +47,7 @@ Module M
     Sub Main()
         Dim temp As String = Path.GetTempFileName()
         __P(CStr(Path.GetExtension(temp)))
-        __P(CStr(Path.GetDirectoryName(temp) = Path.GetTempPath()))
+        __P(CStr(Path.GetDirectoryName(temp) = Path.GetTempPath().TrimEnd(Path.DirectorySeparatorChar)))
         __Check(".tmp
 True")
     End Sub

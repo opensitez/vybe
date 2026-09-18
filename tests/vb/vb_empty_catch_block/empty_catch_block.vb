@@ -43,8 +43,11 @@ End Module
 
 Module M
     Sub Main()
+        ' ⛔ A CONSTANT `\ 0` is a COMPILE error (BC30542); the divisor has to
+        ' arrive at run time for the exception to be raisable.
+        Dim zero As Integer = 0
         Try
-            Dim i = 1 \ 0
+            Dim i = 1 \ zero
         Catch
             ' Empty catch block to swallow exceptions
         End Try

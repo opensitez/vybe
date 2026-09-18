@@ -47,7 +47,7 @@ Module Program
     Sub Main()
         Dim sb As New StringBuilder()
         Dim newCap = sb.EnsureCapacity(500)
-        __P(CStr(newCap >= 500 & "|" & sb.Capacity >= 500))
+        __P(CStr((newCap >= 500) & "|" & (sb.Capacity >= 500)))
         __Check("True|True")
     End Sub
 End Module

@@ -1,10 +1,13 @@
 # vybe-test: powershell/splatting/general_parameter_splatting
-$x = 10
-$x += 5
-$x *= 2
-if ($x -eq 30) {
-    Write-Host "PASS"
-    exit 0
+function Sum-Values {
+    param($a, $b, $c)
+    return $a + $b + $c
 }
-Write-Host "FAIL"
-exit 1
+$args = @{ a = 10; b = 20; c = 30 }
+$result = Sum-Values @args
+if ($result -ne 60) {
+    Write-Host "FAIL: expected 60, got $result"
+    exit 1
+}
+Write-Host "PASS"
+exit 0

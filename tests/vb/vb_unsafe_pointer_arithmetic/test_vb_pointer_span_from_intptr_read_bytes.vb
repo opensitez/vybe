@@ -50,8 +50,9 @@ Module Program
         Dim handle = GCHandle.Alloc(data, GCHandleType.Pinned)
         Dim ptr = handle.AddrOfPinnedObject()
 
-        Dim span As ReadOnlySpan(Of Byte) = New ReadOnlySpan(Of Byte)(ptr.ToPointer(), 4)
-        __P(CStr(span(0) & "|" & span(3)))
+        ' VB cannot declare a local of a ref struct like ReadOnlySpan; the
+        ' bytes are read through the pinned pointer directly.
+        __P(CStr(Marshal.ReadByte(ptr, 0) & "|" & Marshal.ReadByte(ptr, 3)))
         handle.Free()
         __Check("5|20")
     End Sub

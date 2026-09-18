@@ -43,7 +43,9 @@ End Module
 
 Module M
     Sub Main()
-        __P(CStr(NameOf(Integer)))
-        __Check("Integer")
+        ' ⛔ `NameOf` needs a NAMED symbol — the built-in keyword `Integer` is
+        ' not one (BC37244). The CLR type name is.
+        __P(CStr(NameOf(Int32)))
+        __Check("Int32")
     End Sub
 End Module

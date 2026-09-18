@@ -45,8 +45,11 @@ End Module
 
 Module Program
     Sub Main()
-        Dim span As ReadOnlySpan(Of Byte) = New Byte() {10, 0, 0, 0}
-        Dim val = BitConverter.ToInt32(span)
+        ' ⛔ VB cannot DECLARE a `Span` local — it is a ref struct (BC30668) —
+        ' but it can pass an array straight to a `Span` PARAMETER, so the
+        ' span overload is still what gets called.
+        Dim bytes = New Byte() {10, 0, 0, 0}
+        Dim val = BitConverter.ToInt32(bytes)
         __P(CStr(val))
         __Check("10")
     End Sub

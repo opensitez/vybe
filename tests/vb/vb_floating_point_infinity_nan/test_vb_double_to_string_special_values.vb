@@ -45,7 +45,9 @@ End Module
 
 Module Program
     Sub Main()
+        ' ⛔ .NET renders infinity with the culture's `PositiveInfinitySymbol`,
+        ' which is `∞` — `"Infinity"` is the ECMA word, not .NET's.
         __P(CStr(Double.NaN.ToString() & "|" & Double.PositiveInfinity.ToString()))
-        __Check("NaN|Infinity")
+        __Check("NaN|∞")
     End Sub
 End Module

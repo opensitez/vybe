@@ -44,9 +44,9 @@ End Module
 Module Program
     Sub Main()
         Dim lines = {"Header", "Body", "Footer"}
+        ' ⛔ The delimiter is CRLF, so the expectation has to be built from
+        ' `vbCrLf` — a literal newline in this file is LF alone.
         __P(CStr(String.Join(vbCrLf, lines)))
-        __Check("Header
-Body
-Footer")
+        __Check("Header" & vbCrLf & "Body" & vbCrLf & "Footer")
     End Sub
 End Module

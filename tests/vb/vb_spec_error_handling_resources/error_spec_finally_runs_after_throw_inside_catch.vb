@@ -46,10 +46,15 @@ Module M
         Try
             Throw New Exception("boom")
         Catch ex As Exception
+            ' The rethrow must be caught: `Finally` runs on the way out, but the
+            ' exception still propagates.
             Try
-                Throw New Exception("other")
-            Finally
-                __P(CStr("finally"))
+                Try
+                    Throw New Exception("other")
+                Finally
+                    __P(CStr("finally"))
+                End Try
+            Catch inner As Exception
             End Try
         End Try
         __Check("finally")

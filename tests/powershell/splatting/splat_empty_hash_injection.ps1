@@ -1,10 +1,13 @@
 # vybe-test: powershell/splatting/splat_empty_hash_injection
-$x = 10
-$x += 5
-$x *= 2
-if ($x -eq 30) {
-    Write-Host "PASS"
-    exit 0
+function Combine-Values {
+    param($x, $y, $z = 5)
+    return $x + $y + $z
 }
-Write-Host "FAIL"
-exit 1
+$params = @{ x = 1; y = 2 }
+$result = Combine-Values @params
+if ($result -ne 8) {
+    Write-Host "FAIL: expected 8, got $result"
+    exit 1
+}
+Write-Host "PASS"
+exit 0

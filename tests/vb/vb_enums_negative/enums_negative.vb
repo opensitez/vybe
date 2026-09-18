@@ -42,7 +42,9 @@ Module VybeCheck
 End Module
 
 Enum Status As Short
-    Error = -1
+    ' `Error` is a VB statement keyword — escaped, or the body is parsed as
+    ' an `Error` statement (BC31001).
+    [Error] = -1
     Pending = 0
     Active = 1
     Completed = 2
@@ -50,8 +52,9 @@ End Enum
 
 Module M
     Sub Main()
-        Dim s As Status = Status.Error
-        __P(CStr(s))
+        Dim s As Status = Status.[Error]
+        ' ⛔ `CStr` of an enum renders its NUMBER; `ToString` renders the name.
+        __P(s.ToString())
         
         Dim val As Short = CShort(s)
         __P(CStr(val))

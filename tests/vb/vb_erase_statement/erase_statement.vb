@@ -46,13 +46,13 @@ Module M
         Dim fixedArray(2) As Integer
         Dim dynArray() As Integer = {1, 2, 3}
         
-        ' Erase clears the array
-        Erase fixedArray ' Reinitializes elements to default (0)
-        Erase dynArray   ' Sets the reference to Nothing
-        
-        __P(CStr(fixedArray(0)))
+        ' `Erase` RELEASES the array: both variables become Nothing. It does
+        ' not zero a fixed-size array in place.
+        Erase fixedArray
+        Erase dynArray
+
+        __P(CStr(fixedArray Is Nothing))
         __P(CStr(dynArray Is Nothing))
-        __Check("0
-True")
+        __Check("True" & vbLf & "True")
     End Sub
 End Module

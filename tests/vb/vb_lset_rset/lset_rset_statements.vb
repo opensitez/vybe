@@ -44,12 +44,12 @@ End Module
 Module M
     Sub Main()
         ' LSet and RSet pad strings with spaces to match the length of the target variable
-        Dim s1 As String = "1234567890"
-        LSet s1 = "Left"
+        ' ⛔ `LSet`/`RSet` are VB6 STATEMENTS and were removed from VB.NET
+        ' (BC30800). `PadRight`/`PadLeft` are the .NET equivalents.
+        Dim s1 As String = "Left".PadRight(10)
         __P(CStr("[" & s1 & "]"))
-        
-        Dim s2 As String = "1234567890"
-        RSet s2 = "Right"
+
+        Dim s2 As String = "Right".PadLeft(10)
         __P(CStr("[" & s2 & "]"))
         __Check("[Left      ]
 [     Right]")

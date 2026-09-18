@@ -45,7 +45,7 @@ End Module
 
 Module Program
     Sub Main()
-        __P(CStr(Double.MinValue < 0.0 & "|" & Double.MaxValue > 0.0))
+        __P(CStr((Double.MinValue < 0.0) & "|" & (Double.MaxValue > 0.0)))
         __Check("True|True")
     End Sub
 End Module

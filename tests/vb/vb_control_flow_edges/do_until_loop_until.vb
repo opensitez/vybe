@@ -43,9 +43,10 @@ End Module
 
 Module M
     Sub Main()
+        ' ⛔ A `Do` and its `Loop` cannot BOTH carry a condition (BC30238).
+        ' The post-test `Loop Until` form is the one this covers.
         Dim i = 0
-        ' Technically Do Until and Loop Until together is a syntax edge case
-        Do Until i > 5
+        Do
             i += 1
         Loop Until i = 3
         __P(CStr(i))

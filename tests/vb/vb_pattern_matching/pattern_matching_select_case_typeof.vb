@@ -43,23 +43,21 @@ End Module
 
 Module M
     Sub PrintType(obj As Object)
-        Select Case obj
-        Case i As Integer
-            __P(CStr("Integer: " & i.ToString()))
-        Case s As String
-            __P(CStr("String: " & s))
-        Case Else
+        ' ⛔ `Case x As T` is C# pattern matching — VB's `Select Case` has no
+        ' type patterns. `TypeOf … Is` is the VB spelling.
+        If TypeOf obj Is Integer Then
+            __P(CStr("Integer: " & CInt(obj).ToString()))
+        ElseIf TypeOf obj Is String Then
+            __P(CStr("String: " & CStr(obj)))
+        Else
             __P(CStr("Unknown"))
-        End Select
+        End If
     End Sub
 
     Sub Main()
         PrintType(42)
         PrintType("Hello")
         PrintType(5.5)
-        __Check("Integer: 42
-String
-Hello
-Unknown")
+        __Check("Integer: 42" & vbLf & "String: Hello" & vbLf & "Unknown")
     End Sub
 End Module

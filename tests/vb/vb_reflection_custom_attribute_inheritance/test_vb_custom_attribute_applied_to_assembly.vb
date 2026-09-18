@@ -22,6 +22,11 @@
 
 Imports System
 Imports System.Reflection
+' An Assembly attribute statement must precede every declaration in the
+' file — the harness module included. The SDK already emits
+' AssemblyTitle, so the marker is a custom attribute.
+<Assembly: VybeMark("MyVybeAssembly")>
+
 Module VybeCheck
     Public __buf As String = ""
 
@@ -44,13 +49,20 @@ Module VybeCheck
 End Module
 
 
-<Assembly
-AssemblyTitle("MyVybeAssembly")>
+
+<AttributeUsage(AttributeTargets.Assembly)>
+Public Class VybeMarkAttribute
+    Inherits Attribute
+    Public ReadOnly Title As String
+    Public Sub New(t As String)
+        Title = t
+    End Sub
+End Class
 
 Module Program
     Sub Main()
         Dim asm = Assembly.GetExecutingAssembly()
-        Dim titleAttr = CType(asm.GetCustomAttributes(GetType(AssemblyTitleAttribute), False)(0), AssemblyTitleAttribute)
+        Dim titleAttr = CType(asm.GetCustomAttributes(GetType(VybeMarkAttribute), False)(0), VybeMarkAttribute)
         __P(CStr(titleAttr.Title))
         __Check("MyVybeAssembly")
     End Sub

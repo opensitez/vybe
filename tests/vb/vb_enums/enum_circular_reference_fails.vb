@@ -41,7 +41,11 @@ Module VybeCheck
     End Sub
 End Module
 
+' ⛔ A VB Enum must contain at least one member (BC30280) — with both members
+' commented out this did not compile. The circular pair stays commented,
+' because that is the thing being shown to be rejected.
 Enum E
+    None
 ' A = B
 ' B = A
 End Enum

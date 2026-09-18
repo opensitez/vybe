@@ -51,20 +51,23 @@ Class ResurrectedObject
 End Class
 
 Module Program
-    Sub Main()
-        Dim weakRefShort As WeakReference
-        Dim weakRefLong As WeakReference
+    Sub MakeWeak(ByRef shortRef As WeakReference, ByRef longRef As WeakReference)
+        Dim obj As New ResurrectedObject()
+        shortRef = New WeakReference(obj, trackResurrection:=False)
+        longRef = New WeakReference(obj, trackResurrection:=True)
+    End Sub
 
-        Sub()
-            Dim obj As New ResurrectedObject()
-            weakRefShort = New WeakReference(obj, trackResurrection:=False)
-            weakRefLong = New WeakReference(obj, trackResurrection:=True)
-            __Check("LongTrackAlive: True")
-        End Sub()
+    Sub Main()
+        ' `Sub() … End Sub()` is not VB, and a local in `Main` stays rooted for
+        ' the whole method: the allocation needs its own frame.
+        Dim weakRefShort As WeakReference = Nothing
+        Dim weakRefLong As WeakReference = Nothing
+        MakeWeak(weakRefShort, weakRefLong)
 
         GC.Collect()
         GC.WaitForPendingFinalizers()
 
         __P(CStr("LongTrackAlive: " & (ResurrectedObject.Holder IsNot Nothing)))
+        __Check("LongTrackAlive: True")
     End Sub
 End Module

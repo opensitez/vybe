@@ -52,7 +52,9 @@ Class Worker
     Public Property Handler As Action(Of String) Implements ICallbackContainer.Handler
     Public Sub Run()
         If Handler IsNot Nothing Then
-            Handler("Finished Work")
+            ' ⛔ A property holding a delegate needs `.Invoke` — bare parens
+            ' read as arguments TO the property (BC30057).
+            Handler.Invoke("Finished Work")
         End If
     End Sub
 End Class

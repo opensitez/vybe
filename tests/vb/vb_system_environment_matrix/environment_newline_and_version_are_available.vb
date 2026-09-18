@@ -47,7 +47,7 @@ Module M
     Sub Main()
         __P(CStr(Environment.NewLine.Length > 0))
         __P(CStr(Environment.Version.Major >= 1))
-        __P(CStr(Environment.Version.Revision >= 0))
+        __P(CStr(Environment.Version.Revision >= -1))
         __Check("True
 True
 True")

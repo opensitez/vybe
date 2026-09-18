@@ -50,8 +50,12 @@ Module Program
     End Sub
 
     Sub Main()
-        Dim d As SimpleAction = AddressOf HandlerA
-        d = CType([Delegate].Combine(d, AddressOf HandlerB), SimpleAction)
+        ' `AddressOf` has no target type here: `Delegate.Combine`/`Remove`
+        ' take the abstract `Delegate`, so each handler is bound to the
+        ' concrete delegate type first.
+        Dim a As SimpleAction = AddressOf HandlerA
+        Dim b As SimpleAction = AddressOf HandlerB
+        Dim d As SimpleAction = CType([Delegate].Combine(a, b), SimpleAction)
         Dim list As [Delegate]() = d.GetInvocationList()
         __P(CStr(list.Length))
         __Check("2")

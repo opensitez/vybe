@@ -50,7 +50,6 @@ Class BaseConfig
 End Class
 
 Class AdminConfig
-    Sub Main()
     Inherits BaseConfig
     Public Shadows ReadOnly Property Role As String
         Get

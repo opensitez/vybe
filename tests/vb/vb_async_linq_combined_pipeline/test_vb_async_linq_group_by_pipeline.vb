@@ -65,11 +65,10 @@ Sub Main()
     t.Wait()
 
     Dim grouped = t.Result.GroupBy(Function(m) m.Category)
-    For Each g In grouped.OrderBy(Function(g) g.Key)
+    ' ⛔ A lambda parameter may not shadow an enclosing loop variable (BC36641).
+    For Each g In grouped.OrderBy(Function(grp) grp.Key)
         __P(CStr(g.Key & ":" & g.Average(Function(m) m.Value)))
     Next
-    __Check("CPU:55
-RAM
-70")
+    __Check("CPU:55" & vbLf & "RAM:70")
 End Sub
 End Module

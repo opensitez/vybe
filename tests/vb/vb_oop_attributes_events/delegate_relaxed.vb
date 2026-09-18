@@ -41,10 +41,18 @@ Module VybeCheck
     End Sub
 End Module
 
-Delegate Sub D()
+Delegate Sub D(x As Integer)
 Module M
-    Sub Target(x As Integer)
-        __P(CStr(x))
+    Sub Target()
+        __P(CStr("called"))
     End Sub
     Sub Main()
-        ' Relaxed delegate instantiation (dropping args) is a VB feature: Dim act As D = AddressOf Target: act(): End Sub: End Module
+        ' Relaxed delegate conversion: a method that IGNORES the delegate's
+        ' arguments still binds to it.
+        ' ⛔ A `:` does NOT end a VB comment — writing the body after one
+        ' commented the whole method out.
+        Dim act As D = AddressOf Target
+        act(5)
+        __Check("called")
+    End Sub
+End Module

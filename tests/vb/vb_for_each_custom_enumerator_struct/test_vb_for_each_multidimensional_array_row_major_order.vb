@@ -45,8 +45,10 @@ Module Program
     Sub Main()
         Dim grid(,) As Integer = {{1, 2}, {3, 4}}
         Dim res = ""
-        For Each val In grid
-            res &= val & ","
+        ' ⛔ `Val` is a VB BUILT-IN function — a loop variable of that name is
+        ' read as a call to it (BC30516).
+        For Each item In grid
+            res &= item & ","
         Next
         __P(CStr(res.TrimEnd(","c)))
         __Check("1,2,3,4")

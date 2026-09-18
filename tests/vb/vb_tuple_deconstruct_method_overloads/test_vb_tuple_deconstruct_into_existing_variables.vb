@@ -46,7 +46,9 @@ Module Program
         Dim t = (100, "User")
         Dim id As Integer = 0
         Dim role As String = Nothing
-        t.Deconstruct(id, role)
+        ' ⛔ VB has no tuple deconstruction and ValueTuple exposes no
+        ' `Deconstruct` to VB; the fields are read positionally.
+        id = t.Item1 : role = t.Item2
         __P(CStr("ID: " & id & " | Role: " & role))
         __Check("ID: 100 | Role: User")
     End Sub

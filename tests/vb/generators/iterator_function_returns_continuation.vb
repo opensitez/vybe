@@ -20,6 +20,7 @@
 ' its static type — the same reason the C# harness renders with `.ToString()`
 ' rather than inside the helper.
 
+Imports System.Collections.Generic
 Module VybeCheck
     Public __buf As String = ""
 
@@ -42,13 +43,19 @@ Module VybeCheck
 End Module
 
 Module Program
-    Function Count()
+    Iterator Function Count() As IEnumerable(Of Integer)
         Yield 1
         Yield 2
     End Function
 
     Sub Main()
-        __P(CStr(Count()))
-        __Check("[continuation]")
+        ' The call hands back a sequence, not a value — `CStr` of one is not a
+        ' VB conversion. Enumerating it is what runs the body.
+        Dim total = 0
+        For Each n In Count()
+            total += n
+        Next
+        __P(CStr(total))
+        __Check("3")
     End Sub
 End Module

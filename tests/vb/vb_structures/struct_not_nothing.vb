@@ -47,7 +47,9 @@ End Structure
 Module M
 Sub Main()
 Dim s1 As S
-__P(CStr(s1 IsNot Nothing))
+' `IsNot` needs a reference type — a structure is never Nothing, and `Equals`
+' is how VB asks.
+__P(CStr(Not s1.Equals(Nothing)))
     __Check("True")
 End Sub
 End Module

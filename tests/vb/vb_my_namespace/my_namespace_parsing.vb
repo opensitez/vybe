@@ -46,8 +46,13 @@ Module M
         ' My is a virtual namespace in VB.NET
         ' Usually includes My.Application, My.Computer, My.User
         
-        ' Just checking compiler support for 'My' namespace 
-        ' (availability of properties depends on the framework version)
+        ' ⛔ NOT VERIFIABLE UNDER `tools/vbrun` ON MACOS. `My.Computer` /
+        ' `My.Application` / `My.User` are GENERATED members, emitted only when
+        ' the project sets `<MyType>`, and the types behind them
+        ' (`Microsoft.VisualBasic.Devices.Computer`) are Windows-only. Both the
+        ' `My` members and their backing types are absent here, so real VB
+        ' cannot compile this file on this platform — the same limitation the
+        ' WinForms tests have.
         Dim b As Boolean = True
         If Not b Then
             __P(CStr(My.Computer.Name))

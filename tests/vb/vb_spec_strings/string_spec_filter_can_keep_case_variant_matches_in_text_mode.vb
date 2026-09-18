@@ -43,7 +43,7 @@ End Module
 
 Module M
     Sub Main()
-        __P(CStr(UBound(Filter(Array("Alpha", "beta", "ALP"), "alp", True, CompareMethod.Text))))
+        __P(CStr(UBound(Filter(New String() {"Alpha", "beta", "ALP"}, "alp", True, CompareMethod.Text))))
         __Check("1")
     End Sub
 End Module

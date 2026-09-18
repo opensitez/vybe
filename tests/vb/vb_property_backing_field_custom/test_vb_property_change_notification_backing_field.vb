@@ -62,14 +62,19 @@ End Class
 Module Program
     Sub Main()
         Dim item As New NotifyingItem()
+        ' The assertion sat INSIDE the handler and carried a
+        ' `VYBEBUF>>><<<VYBEBUF` delimiter joining two separate expected
+        ' buffers; the statements it was meant to observe had been left
+        ' outside `Sub Main`.
         AddHandler item.ValueChanged, Sub(oldV, newV)
-        __P(CStr("Changed: " & oldV & "->" & newV))
-        __Check("Changed: 0->10
-VYBEBUF>>><<<VYBEBUFChanged: 0->10
-Changed: 10->20")
+                                          __P(CStr("Changed: " & oldV & "->" & newV))
+                                      End Sub
+
+        item.Value = 10
+        item.Value = 10 ' No event
+        item.Value = 20
+        ' Setting the same value again raises nothing, so only two changes
+        ' are reported.
+        __Check("Changed: 0->10" & vbLf & "Changed: 10->20")
     End Sub
-    item.Value = 10
-    item.Value = 10 ' No event
-    item.Value = 20
-End Sub
 End Module

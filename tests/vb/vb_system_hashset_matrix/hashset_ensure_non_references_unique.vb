@@ -45,10 +45,10 @@ End Module
 
 Module M
     Sub Main()
-        Dim set As New HashSet(Of String)()
-        set.Add("same")
-        set.Add(New String("same".ToCharArray()))
-        __P(CStr(set.Count))
+        Dim items As New HashSet(Of String)()
+        items.Add("same")
+        items.Add(New String("same".ToCharArray()))
+        __P(CStr(items.Count))
         __Check("1")
     End Sub
 End Module

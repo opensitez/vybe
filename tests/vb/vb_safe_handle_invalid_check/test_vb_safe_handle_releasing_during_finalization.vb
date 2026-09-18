@@ -66,13 +66,18 @@ End Function
 End Class
 
 Module Program
+    ' The allocation lives in its own frame: a local in `Main` stays rooted
+    ' for the whole method, so the handle would never become collectable.
+    Sub Allocate()
+        Dim h As New GcFinalizedSafeHandle()
+    End Sub
+
     Sub Main()
         ' The handle is dropped so a collection can finalize it. `Sub() … End Sub()`
         ' is not VB and this file carried `Sub Main()` twice, with `__Check` run
         ' before the value it checks was ever printed — the test could not pass
         ' as written in any implementation.
-        Dim h As New GcFinalizedSafeHandle()
-        h = Nothing
+        Allocate()
 
         GC.Collect()
         GC.WaitForPendingFinalizers()

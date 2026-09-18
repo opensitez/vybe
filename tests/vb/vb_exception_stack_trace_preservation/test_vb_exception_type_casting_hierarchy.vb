@@ -50,6 +50,8 @@ Module Program
         Catch ex As ArgumentException
             __P(CStr("Caught as ArgumentException: " & ex.Message.Split(vbCrLf(0))(0)))
         End Try
-        __Check("Caught as ArgumentException: Null Param")
+        ' .NET Core carries the parameter name INLINE on the message's first
+        ' line, so splitting on CR does not remove it.
+        __Check("Caught as ArgumentException: Null Param (Parameter 'paramName')")
     End Sub
 End Module

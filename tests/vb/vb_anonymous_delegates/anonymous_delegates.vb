@@ -44,16 +44,15 @@ End Module
 Module M
     Sub Main()
         ' Anonymous Sub delegate
-        Dim log = Sub(msg As String) __P(CStr("Log: " & msg))
-        
+        Dim writeLog = Sub(msg As String) __P(CStr("Log: " & msg))
+
         ' Anonymous Function delegate
         Dim multiply = Function(x As Integer, y As Integer) As Integer
                            Return x * y
-                           __Check("Log: Test
-12")
                        End Function
-        
-        Math.Log("Test")
+
+        writeLog("Test")
         __P(CStr(multiply(3, 4)))
+        __Check("Log: Test" & vbLf & "12")
     End Sub
 End Module

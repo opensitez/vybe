@@ -48,6 +48,8 @@ Module M
         Dim xml = <?PI <%= piData %>?>
                   
         __P(CStr(xml.Data.Trim()))
-        __Check("Version=1.0")
+        ' An embedded expression is NOT substituted inside an XML comment or
+        ' processing instruction — the text is literal.
+        __Check("<%= piData %>")
     End Sub
 End Module

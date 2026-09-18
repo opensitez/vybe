@@ -46,7 +46,8 @@ End Module
 Module Program
     Sub Main()
         Dim list As New SortedList(Of Integer, String) From {{10, "X"}, {20, "Y"}}
-        list.SetValueAt(1, "Z")
+        ' The GENERIC SortedList has no `SetValueAt`; it indexes by KEY.
+        list(20) = "Z"
         __P(CStr(list(20)))
         __Check("Z")
     End Sub

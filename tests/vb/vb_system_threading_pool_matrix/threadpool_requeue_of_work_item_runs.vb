@@ -50,15 +50,14 @@ Module M
         Dim payload As String = "ok"
 
         ThreadPool.QueueUserWorkItem(
-            Sub(_)
+            Sub(state)
                 payload = "done"
                 done.Set()
-                __Check("True
-done")
             End Sub
         )
 
         __P(CStr(done.WaitOne(2000)))
         __P(CStr(payload))
+        __Check("True" & vbLf & "done")
     End Sub
 End Module

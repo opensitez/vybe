@@ -45,9 +45,10 @@ Module M
     Sub Main()
         Dim text As String = "Apple"
         
-        ' If length is omitted, it replaces as much as possible
+        ' With no length `Mid` still replaces IN PLACE — the string keeps its
+        ' original length, so "Apple" keeps its trailing "e".
         Mid(text, 2) = "nna"
         __P(CStr(text))
-        __Check("Annna")
+        __Check("Annae")
     End Sub
 End Module

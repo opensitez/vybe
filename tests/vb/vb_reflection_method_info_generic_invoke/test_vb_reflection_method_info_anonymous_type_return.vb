@@ -51,7 +51,9 @@ Module Program
     Sub Main()
         Dim svc As New AnonService()
         Dim m = GetType(AnonService).GetMethod("GetAnon")
-        Dim res As Dynamic = m.Invoke(svc, Nothing)
+        ' ⛔ `Dynamic` is C#; VB has no such type (BC30182). Late binding in VB
+        ' is an `Object` under the default Option Strict Off.
+        Dim res As Object = m.Invoke(svc, Nothing)
         __P(CStr(res.Status))
         __Check("AnonSuccess")
     End Sub

@@ -68,6 +68,7 @@ Module Program
         AddHandler p.PropertyChanged, Sub(s, e) lastProp = e.PropertyName
         p.Name = "Alice"
         __P(CStr(lastProp))
-        __Check("Alice")
+        ' `PropertyChangedEventArgs` carries the PROPERTY NAME, not the value.
+        __Check("Name")
     End Sub
 End Module

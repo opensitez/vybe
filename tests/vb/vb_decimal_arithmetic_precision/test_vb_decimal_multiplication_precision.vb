@@ -47,6 +47,6 @@ Module Program
         Dim d2 As Decimal = 789.012D
         Dim prod As Decimal = d1 * d2
         __P(CStr(prod))
-        __Check("97408.261472")
+        __Check("97408.265472")
     End Sub
 End Module

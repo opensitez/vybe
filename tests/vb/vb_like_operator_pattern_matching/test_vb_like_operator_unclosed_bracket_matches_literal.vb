@@ -50,6 +50,8 @@ Module Program
         Catch ex As System.Exception
             __P(CStr("Like Pattern Syntax Exception Caught"))
         End Try
-        __Check("True")
+        ' An unclosed `[` in a Like pattern RAISES in VB — it is not matched
+        ' literally.
+        __Check("Like Pattern Syntax Exception Caught")
     End Sub
 End Module

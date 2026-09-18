@@ -48,6 +48,7 @@ Module Program
     Sub Main()
         Dim ctor = GetType(Sample).GetConstructor(Type.EmptyTypes)
         __P(CStr(ctor.CallingConvention.ToString()))
-        __Check("HasThis")
+        ' An instance constructor's calling convention carries Standard as well.
+        __Check("Standard, HasThis")
     End Sub
 End Module

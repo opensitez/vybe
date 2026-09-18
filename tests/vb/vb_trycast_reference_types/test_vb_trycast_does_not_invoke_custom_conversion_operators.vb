@@ -49,7 +49,7 @@ Class ComplexNum
 
     Public Shared Narrowing Operator CType(d As Double) As ComplexNum
         Return New ComplexNum(d)
-    End Narrowing Operator
+    End Operator
 End Class
 
 Module Program

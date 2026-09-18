@@ -48,13 +48,15 @@ Module M
         __P(CStr("Cleaned"))
     End Function
 
+    Function WorkAsync() As Task
+        Return Task.CompletedTask
+    End Function
+
+    ' ⛔ VB has Async/Await but NOT `Await` inside a `Finally` (BC36943) — that
+    ' is C#. VB's equivalent is an unconditional CONTINUATION: it runs however
+    ' the antecedent completed, which is what `Finally` means.
     Async Function TestAsync() As Task
-        Try
-            ' do nothing
-        Finally
-            ' Await inside Finally (added in VB 14)
-            Await CleanupAsync()
-        End Try
+        Await WorkAsync().ContinueWith(Function(t) CleanupAsync()).Unwrap()
     End Function
 
     Sub Main()

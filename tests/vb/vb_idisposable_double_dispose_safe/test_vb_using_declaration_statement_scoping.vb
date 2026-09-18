@@ -52,14 +52,14 @@ End Class
 
 Module Program
     Sub Main()
-        Sub()
-            Using res As New ScopeTracker()
-                __P(CStr("Doing Work in Inner Scope"))
-            End Using
-            __Check("Doing Work in Inner Scope
-ScopeTracker Disposed
-Outer Scope")
-        End Sub()
+        ' ⛔ The body was wrapped in a bare `Sub() … End Sub()` — not VB — and
+        ' asserted before the outer line ran.
+        Using res As New ScopeTracker()
+            __P(CStr("Doing Work in Inner Scope"))
+        End Using
         __P(CStr("Outer Scope"))
+        __Check("Doing Work in Inner Scope" & vbLf &
+                "ScopeTracker Disposed" & vbLf &
+                "Outer Scope")
     End Sub
 End Module

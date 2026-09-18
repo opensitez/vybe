@@ -46,7 +46,8 @@ End Module
 Module Program
     Sub Main()
         Dim sb As New StringBuilder()
-        sb.AppendJoin(", "c, New String() {"Alpha", "Beta", "Gamma"})
+        ' `", "c` is not a Char literal — a multi-character separator is a String.
+        sb.AppendJoin(", ", New String() {"Alpha", "Beta", "Gamma"})
         __P(CStr(sb.ToString()))
         __Check("Alpha, Beta, Gamma")
     End Sub

@@ -48,7 +48,7 @@ Module M
         Dim sb As New StringBuilder()
         sb.AppendLine("line1")
         sb.Append("line2")
-        __P(CStr(sb.ToString().Contains(vbCrLf)))
+        __P(CStr(sb.ToString().Contains(Environment.NewLine)))
         __Check("True")
     End Sub
 End Module

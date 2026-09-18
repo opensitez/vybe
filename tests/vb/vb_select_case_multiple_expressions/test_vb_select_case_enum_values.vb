@@ -42,9 +42,10 @@ Module VybeCheck
 End Module
 
 Enum LogLevel
-    Debug = 1
+    ' Keywords need bracket escaping to serve as enum member names.
+    [Debug] = 1
     Info = 2
-    Error = 3
+    [Error] = 3
 End Enum
 
 Module Program

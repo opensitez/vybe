@@ -43,8 +43,11 @@ End Module
 
 Module M
 Sub Main()
+' ⛔ A CONSTANT `\ 0` / `Mod 0` is rejected at COMPILE time (BC30542), so
+' it can never reach a handler — the divisor has to arrive at run time.
+Dim zero As Integer = 0
 Try
-Dim x = 1 \ 0
+Dim x = 1 \ zero
 Catch ex As System.DivideByZeroException
 __P(CStr("DivByZero"))
 Catch ex As System.Exception

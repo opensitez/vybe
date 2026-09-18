@@ -43,18 +43,16 @@ End Module
 
 Module M
     Sub Main()
-        Dim values(-2 To 2) As Integer
-        values(-2) = -2
-        values(-1) = -1
-        values(0) = 0
-        values(1) = 1
-        values(2) = 2
+        ' ⛔ VB.NET has no non-zero lower bound — `Dim v(-2 To 2)` is BC32059.
+        ' The lower bound is always 0.
+        Dim values(4) As Integer
+        For i As Integer = 0 To 4
+            values(i) = i - 2
+        Next
 
         __P(CStr(values.GetLowerBound(0)))
         __P(CStr(values.GetUpperBound(0)))
-        __P(CStr(values(1) + values(-1)))
-        __Check("-2
-2
-0")
+        __P(CStr(values(3) + values(1)))
+        __Check("0" & vbLf & "4" & vbLf & "0")
     End Sub
 End Module

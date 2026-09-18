@@ -43,7 +43,10 @@ End Module
 
 Module M
     Sub Main()
+        ' `Kill` raises when nothing matches, so the file is created first.
+        System.IO.File.WriteAllText("test_copy.txt", "x")
         Kill("test_copy.txt")
         __P(CStr(System.IO.File.Exists("test_copy.txt")))
+        __Check("False")
     End Sub
 End Module

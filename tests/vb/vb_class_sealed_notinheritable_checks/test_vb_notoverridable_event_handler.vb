@@ -44,7 +44,10 @@ End Module
 
 
 Class BaseEmitter
-    Public Overridable Custom Event Action As EventHandler
+    ' ⛔ VB permits NO overridability modifier on an event — not `Overridable`,
+    ' not `Overrides`, not `NotOverridable` (BC30243). A derived class can only
+    ' SHADOW an event, and shadowing binds by the STATIC type.
+    Public Custom Event Action As EventHandler
         AddHandler(value As EventHandler)
         End AddHandler
         RemoveHandler(value As EventHandler)
@@ -56,7 +59,7 @@ End Class
 
 Class FixedEmitter
     Inherits BaseEmitter
-    Public NotOverridable Overrides Custom Event Action As EventHandler
+    Public Shadows Custom Event Action As EventHandler
         AddHandler(value As EventHandler)
             __P(CStr("Handler Added to Fixed"))
         End AddHandler
@@ -69,7 +72,9 @@ End Class
 
 Module Program
     Sub Main()
-        Dim e As BaseEmitter = New FixedEmitter()
+        ' Shadowing binds statically, so the derived `AddHandler` runs only
+        ' through a `FixedEmitter` reference.
+        Dim e As FixedEmitter = New FixedEmitter()
         AddHandler e.Action, Sub(sender, args)
                              End Sub
         __Check("Handler Added to Fixed")

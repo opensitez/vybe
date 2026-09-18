@@ -42,11 +42,16 @@ Module VybeCheck
 End Module
 
 Structure S
-Public V As Integer = 5 ' This works in newer VB but traditionally required a constructor or Dim s As New S
+' ⛔ BC31049 — a structure member may not carry an initializer unless it is
+' Shared or a constant. A constructor is what supplies the value.
+Public V As Integer
+Public Sub New(v As Integer)
+Me.V = v
+End Sub
 End Structure
 Module M
 Sub Main()
-Dim s1 As New S()
+Dim s1 As New S(5)
 __P(CStr(s1.V))
     __Check("5")
 End Sub

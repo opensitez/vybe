@@ -48,6 +48,8 @@ Module M
         Dim xml = <!-- <%= info %> -->
                   
         __P(CStr(xml.Value.Trim()))
-        __Check("TestComment")
+        ' An embedded expression is NOT substituted inside an XML comment or
+        ' processing instruction — the text is literal.
+        __Check("<%= info %>")
     End Sub
 End Module

@@ -54,7 +54,8 @@ Module M
         
         ' Check underlying type
         __P(CStr(s.GetTypeCode().ToString()))
-        __P(CStr(s))
+        ' ⛔ `CStr` of an enum renders its NUMBER; `ToString` renders the name.
+        __P(s.ToString())
         __Check("Byte
 Active")
     End Sub

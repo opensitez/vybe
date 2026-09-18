@@ -51,8 +51,7 @@ Module M
         __P(CStr(q.TryDequeue(value)))
         __P(CStr(value))
         __P(CStr(q.Count))
-        __Check("False
-42
-0")
+        ' A failed `TryDequeue` OVERWRITES the out-parameter with the default.
+        __Check("False" & vbLf & "0" & vbLf & "0")
     End Sub
 End Module

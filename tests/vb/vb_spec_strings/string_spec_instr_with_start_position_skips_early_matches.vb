@@ -43,7 +43,8 @@ End Module
 
 Module M
     Sub Main()
-        __P(CStr(InStr(3, "banana", "na")))
+        ' "na" sits at 3 and at 5; starting past the first one reports 5.
+        __P(CStr(InStr(4, "banana", "na")))
         __Check("5")
     End Sub
 End Module

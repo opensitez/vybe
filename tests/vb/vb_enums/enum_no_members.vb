@@ -41,7 +41,10 @@ Module VybeCheck
     End Sub
 End Module
 
+' ⛔ BC30280 — a VB Enum must contain at least one member; an empty one does
+' not compile. The default of the first member is still 0.
 Enum E
+    None
 End Enum
 Module M
 Sub Main()

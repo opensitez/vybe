@@ -48,7 +48,7 @@ MustInherit Class BaseLogger
 
     Protected MustOverride Sub WriteEntry(formatted As String)
 
-    Protected Virtual Function FormatMessage(msg As String) As String
+    Protected Overridable Function FormatMessage(msg As String) As String
         Return "[LOG] " & msg
     End Function
 End Class

@@ -43,7 +43,9 @@ End Module
 
 Module M
     Sub Main()
+        ' Ties go to EVEN, and 12.345 is not even a tie in f64 — it sits just
+        ' below the midpoint, so this rounds DOWN.
         __P(CStr(Math.Round(12.345, 2)))
-        __Check("12.35")
+        __Check("12.34")
     End Sub
 End Module

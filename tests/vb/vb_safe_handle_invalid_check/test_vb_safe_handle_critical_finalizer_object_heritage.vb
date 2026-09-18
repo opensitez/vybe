@@ -22,6 +22,7 @@
 
 Imports System
 Imports System.Runtime.InteropServices
+Imports System.Runtime.ConstrainedExecution
 Module VybeCheck
     Public __buf As String = ""
 
@@ -66,7 +67,7 @@ Module Program
     Sub Main()
         Dim h As New CriticalSafeHandle()
         ' Inherits CriticalFinalizerObject implicitly
-        __P(CStr(TypeOf h Is ConstrainedExecution.CriticalFinalizerObject))
+        __P(CStr(TypeOf h Is CriticalFinalizerObject))
         __Check("True")
     End Sub
 End Module

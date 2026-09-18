@@ -53,7 +53,7 @@ Class InterlockedEventSource
             Dim newHandlers As EventHandler = Nothing
             Do
                 oldHandlers = handlers
-                newHandlers = CType(Delegate.Combine(oldHandlers, value), EventHandler)
+                newHandlers = CType([Delegate].Combine(oldHandlers, value), EventHandler)
             Loop While Interlocked.CompareExchange(handlers, newHandlers, oldHandlers) IsNot oldHandlers
         End AddHandler
 
@@ -62,7 +62,7 @@ Class InterlockedEventSource
             Dim newHandlers As EventHandler = Nothing
             Do
                 oldHandlers = handlers
-                newHandlers = CType(Delegate.Remove(oldHandlers, value), EventHandler)
+                newHandlers = CType([Delegate].Remove(oldHandlers, value), EventHandler)
             Loop While Interlocked.CompareExchange(handlers, newHandlers, oldHandlers) IsNot oldHandlers
         End RemoveHandler
 

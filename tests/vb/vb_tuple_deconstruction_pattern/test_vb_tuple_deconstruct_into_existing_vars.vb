@@ -46,7 +46,10 @@ Module Program
         Dim t = (10, "Ten")
         Dim x As Integer
         Dim y As String
-        (x, y) = t
+        ' ⛔ VB has no deconstruction assignment; the fields are read by
+        ' position.
+        x = t.Item1
+        y = t.Item2
         __P(CStr(x & ":" & y))
         __Check("10:Ten")
     End Sub

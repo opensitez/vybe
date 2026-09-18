@@ -47,7 +47,9 @@ Module Program
     Sub Main()
         Dim b1 As BigInteger = 1000
         Dim b2 As BigInteger = 300
-        Dim div As BigInteger = b1 \ b2
+        ' ⛔ `\` has no BigInteger overload (BC30452); `Divide` is BigInteger's
+        ' integer division.
+        Dim div As BigInteger = BigInteger.Divide(b1, b2)
         Dim remVal As BigInteger = b1 Mod b2
         __P(CStr(div.ToString()))
         __P(CStr(remVal.ToString()))

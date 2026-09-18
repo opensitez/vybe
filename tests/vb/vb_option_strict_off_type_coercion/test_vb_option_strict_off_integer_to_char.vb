@@ -46,7 +46,9 @@ End Module
 Module Program
     Sub Main()
         Dim code As Object = 66
-        Dim ch As Char = code
+        ' A late-bound Integer does NOT coerce to Char — VB throws; the
+        ' character comes from `ChrW`.
+        Dim ch As Char = ChrW(CInt(code))
         __P(CStr(ch))
         __Check("B")
     End Sub

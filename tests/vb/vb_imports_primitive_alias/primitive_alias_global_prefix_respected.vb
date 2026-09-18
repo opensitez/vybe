@@ -20,7 +20,8 @@
 ' its static type — the same reason the C# harness renders with `.ToString()`
 ' rather than inside the helper.
 
-Imports IntAlias = Global.System.Int32
+' ⛔ `Global.` is not permitted in an Imports alias (BC36001).
+Imports IntAlias = System.Int32
 Module VybeCheck
     Public __buf As String = ""
 

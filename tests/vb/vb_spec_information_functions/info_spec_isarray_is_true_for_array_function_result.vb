@@ -42,8 +42,14 @@ Module VybeCheck
 End Module
 
 Module M
+    ' VB.NET has no `Array()` function; an array comes from an array
+    ' creation expression.
+    Function MakeArray() As Object
+        Return New Object() {1, 2, 3}
+    End Function
+
     Sub Main()
-        __P(CStr(IsArray(Array(1, 2, 3))))
+        __P(CStr(IsArray(MakeArray())))
         __Check("True")
     End Sub
 End Module

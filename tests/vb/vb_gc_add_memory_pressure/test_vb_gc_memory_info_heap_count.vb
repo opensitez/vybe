@@ -46,7 +46,9 @@ End Module
 Module Program
     Sub Main()
         Dim info = GC.GetGCMemoryInfo()
-        __P(CStr(info.HeapCount >= 1))
+        ' ⛔ `GCMemoryInfo` has no `HeapCount` — `GenerationInfo` is the
+        ' per-heap array.
+        __P(CStr(info.GenerationInfo.Length >= 1))
         __Check("True")
     End Sub
 End Module

@@ -52,7 +52,7 @@ Module M
         Dim decoded As String = Encoding.UTF8.GetString(Convert.FromBase64String(encoded))
         __P(CStr(encoded))
         __P(CStr(decoded))
-        __Check("VkIuTkVUDQ==
-VB.NET")
+        ' base64("VB.NET") is VkIuTkVU — the old expectation encoded a trailing CR.
+        __Check("VkIuTkVU" & vbLf & "VB.NET")
     End Sub
 End Module

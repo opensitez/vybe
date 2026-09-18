@@ -43,7 +43,7 @@ Module VybeCheck
 End Module
 
 
-<StructLayout(LayoutKind.Sequential)>
+'  ⛔ `StructLayout` cannot be applied to a GENERIC type (BC30972).
 Structure GenericPair(Of T)
     Public First As T
     Public Second As T
@@ -51,7 +51,12 @@ End Structure
 
 Module Program
     Sub Main()
-        __P(CStr(Marshal.SizeOf(GetType(GenericPair(Of Double)))))
-        __Check("16")
+        ' `Marshal.SizeOf` rejects a generic type outright, closed or not.
+        Try
+            __P(CStr(Marshal.SizeOf(GetType(GenericPair(Of Double)))))
+        Catch ex As ArgumentException
+            __P(CStr("generic rejected"))
+        End Try
+        __Check("generic rejected")
     End Sub
 End Module

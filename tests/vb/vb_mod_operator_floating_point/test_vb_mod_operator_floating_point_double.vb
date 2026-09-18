@@ -43,11 +43,12 @@ End Module
 
 Module Program
     Sub Main()
-        ' Unlike C#, VB.NET Mod rounds floating point operands to Long before computing Mod!
-        Dim a As Double = 17.6 ' Rounds to 18
-        Dim b As Double = 4.9  ' Rounds to 5
-        Dim res = a Mod b      ' 18 Mod 5 = 3
+        ' Double operands keep their fraction: the result is the floating
+        ' remainder, and it carries the f64 representation error.
+        Dim a As Double = 17.6
+        Dim b As Double = 4.9
+        Dim res = a Mod b
         __P(CStr(res))
-        __Check("3")
+        __Check("2.9000000000000004")
     End Sub
 End Module

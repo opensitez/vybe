@@ -46,8 +46,9 @@ End Module
 
 Module Program
     Sub Main()
-        Dim set As New HashSet(Of (Integer, String)) From {(1, "A"), (2, "B")}
-        Dim arr = set.ToArray()
+        ' ⛔ `Set` is a VB keyword and cannot be an identifier (BC30183).
+        Dim items As New HashSet(Of (Integer, String)) From {(1, "A"), (2, "B")}
+        Dim arr = items.ToArray()
         __P(CStr(arr.Length & ":" & arr(0).Item2 & "," & arr(1).Item2))
         __Check("2:A,B")
     End Sub

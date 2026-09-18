@@ -45,12 +45,13 @@ Class Pair
 End Class
 
 Module Program
-    Sub Main()
-        Sub SwapVals(a As Pair, b As Pair)
+    Sub SwapVals(a As Pair, b As Pair)
         Dim tmp As String = a.Val
         a.Val = b.Val
         b.Val = tmp
-        End Sub
+    End Sub
+
+    Sub Main()
         Dim p1 As New Pair()
         p1.Val = "hello"
         Dim p2 As New Pair()

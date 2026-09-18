@@ -50,6 +50,9 @@ Module M
         Dim b As Task(Of Integer) = Task.Run(Function() 2)
         Dim all As Task(Of Integer()) = Task.WhenAll(a, b)
 
+        ' `WhenAll` answers immediately; the state has to be waited on before
+        ' it can be read.
+        all.Wait()
         __P(CStr(all.IsCompleted))
         __P(CStr(all.Result.Sum()))
         __Check("True

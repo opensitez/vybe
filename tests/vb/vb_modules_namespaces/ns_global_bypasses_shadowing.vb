@@ -46,13 +46,17 @@ Public Class C
 Public V As Integer = 1
 End Class
 End Namespace
-Class N1
-Public V As Integer = 2
+Class Holder
+    Public V As Integer = 2
 End Class
+
 Module M
-Sub Main()
-Dim c As New Global.N1.C()
-__P(CStr(c.V))
-    __Check("1")
-End Sub
+    Sub Main()
+        ' A local named `N1` shadows the namespace inside `Main`; `Global.`
+        ' reaches past the shadow to the namespace.
+        Dim N1 As New Holder()
+        Dim c As New Global.N1.C()
+        __P(CStr(c.V))
+        __Check("1")
+    End Sub
 End Module

@@ -44,6 +44,7 @@ End Module
 Module M
     Sub Main()
         __P(CStr(TypeName(New List(Of Integer)())))
-        __Check("List`1")
+        ' `TypeName` renders a generic in VB SPELLING, not CLR arity notation.
+        __Check("List(Of Integer)")
     End Sub
 End Module

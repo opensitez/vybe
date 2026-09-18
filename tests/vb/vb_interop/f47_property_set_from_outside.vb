@@ -41,7 +41,7 @@ Module VybeCheck
     End Sub
 End Module
 Public Class Holder
-    Dim data As String
+    Public data As String
     Public Sub New()
         data = ""
     End Sub

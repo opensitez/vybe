@@ -46,9 +46,10 @@ End Module
 Module Program
     Sub Main()
         Dim param = Expression.Parameter(GetType(String), "s")
-        Dim anonExpr = Expression.New(
-            GetType(Object)
-        )
+        ' ⛔ `New` is a VB keyword, so `Expression.New(...)` parses as
+        ' CONSTRUCTING an `Expression` (BC30251) — the method name has to be
+        ' bracket-escaped. It also takes a ConstructorInfo, not a Type.
+        Dim anonExpr = Expression.[New](GetType(Object).GetConstructor(Type.EmptyTypes))
         __P(CStr(param.Name))
         __Check("s")
     End Sub

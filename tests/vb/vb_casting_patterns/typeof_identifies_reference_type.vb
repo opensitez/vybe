@@ -50,7 +50,9 @@ Module M
     Sub Main()
         Dim o As Object = New Animal()
         __P(CStr(TypeOf o Is Animal))
-        __P(CStr(TypeOf o IsNot Nothing))
+        ' `TypeOf` requires a TYPE on the right; `Nothing` is not one
+        ' (BC30180). The null test is a plain `IsNot`.
+        __P(CStr(o IsNot Nothing))
         __Check("True
 True")
     End Sub

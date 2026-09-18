@@ -43,7 +43,9 @@ End Module
 
 Module M
 Sub Main()
-Dim s = $"A{""B""}"
+' ⛔ Inside an interpolated string `""` is an ESCAPED QUOTE, so it cannot open
+' a string literal inside a hole — that closes the hole early (BC30370).
+Dim s = $"A""B"""
 __P(CStr(s))
     __Check("A""B""")
 End Sub

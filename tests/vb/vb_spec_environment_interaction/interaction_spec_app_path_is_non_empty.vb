@@ -43,7 +43,9 @@ End Module
 
 Module Program
     Sub Main()
-        __P(CStr(Len(App.Path) > 0))
+        ' VB.NET has no VB6 `App` object; the running application's directory
+        ' comes from the AppDomain.
+        __P(CStr(Len(AppDomain.CurrentDomain.BaseDirectory) > 0))
         __Check("True")
     End Sub
 End Module

@@ -53,6 +53,8 @@ Module Program
         fieldX.SetValue(pt, 99)
         Dim unboxed As Point = CType(pt, Point)
         __P(CStr(unboxed.X))
-        __Check("99")
+        ' ⛔ `SetValue` on a value type writes through a COPY: the box the
+        ' local still refers to keeps its original field.
+        __Check("10")
     End Sub
 End Module

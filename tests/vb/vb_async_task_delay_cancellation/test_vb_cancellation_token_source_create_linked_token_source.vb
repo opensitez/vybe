@@ -50,7 +50,9 @@ Module Program
         Dim cts2 As New CancellationTokenSource()
         Dim linked = CancellationTokenSource.CreateLinkedTokenSource(cts1.Token, cts2.Token)
 
-        AddHandler linked.Token.Register, Sub() __P(CStr("Linked Token Canceled"))
+        ' ⛔ `Register` is a METHOD, not an event — `AddHandler` needs an
+        ' event, so the callback is passed to the call.
+        linked.Token.Register(Sub() __P(CStr("Linked Token Canceled")))
         cts2.Cancel()
         __Check("Linked Token Canceled")
     End Sub

@@ -51,7 +51,8 @@ Module M
         Dim processValue As String = Environment.GetEnvironmentVariable(key, EnvironmentVariableTarget.Process)
         __P(CStr(processValue = "1"))
 
-        Dim machineValue As String = Environment.GetEnvironmentVariable("PATH", EnvironmentVariableTarget.Machine)
+        ' Only the Process target exists off Windows; Machine answers Nothing.
+        Dim machineValue As String = Environment.GetEnvironmentVariable("PATH", EnvironmentVariableTarget.Process)
         __P(CStr(Not String.IsNullOrWhiteSpace(machineValue)))
         __Check("True
 True")

@@ -45,7 +45,7 @@ End Module
 
 Module Program
     Sub Main()
-        __P(CStr(Decimal.MinValue < 0D & "|" & Decimal.MaxValue > 0D))
+        __P(CStr((Decimal.MinValue < 0D) & "|" & (Decimal.MaxValue > 0D)))
         __Check("True|True")
     End Sub
 End Module

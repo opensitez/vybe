@@ -43,8 +43,11 @@ End Module
 
 Module M
     Sub Main()
+        ' A constant out of range is a COMPILE error; the overflow has to
+        ' reach the conversion at run time.
+        Dim source As Integer = 300
         Try
-            Dim value As Byte = CByte(300)
+            Dim value As Byte = CByte(source)
             __P(CStr(value))
         Catch ex As OverflowException
             __P(CStr(ex.GetType().Name))

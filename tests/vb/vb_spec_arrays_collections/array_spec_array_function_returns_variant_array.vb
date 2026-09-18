@@ -43,8 +43,10 @@ End Module
 
 Module M
     Sub Main()
-        Dim items = Array(1, 2, 3)
+        ' VB.NET has no `Array()` function; `Array` is a type.
+        Dim items = New Object() {1, 2, 3}
         __P(CStr(items(0)))
         __P(CStr(items(2)))
+        __Check("1" & vbLf & "3")
     End Sub
 End Module

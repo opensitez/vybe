@@ -44,6 +44,8 @@ End Module
 Module M
     Sub Main()
         __P(CStr(Replace("banana", "na", "XY", 3)))
-        __Check("banXYna")
+        ' `Replace` with a Start does not keep the prefix — it answers the
+        ' remainder of the string from Start, with the replacements applied.
+        __Check("XYXY")
     End Sub
 End Module

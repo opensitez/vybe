@@ -78,10 +78,10 @@ Module Program
             If e.PropertyName = "Val1" Then
                 vm.Val2 = vm.Val1 * 10
             End If
-            __Check("50")
         End Sub
 
         vm.Val1 = 5
         __P(CStr(vm.Val2))
+        __Check("50")
     End Sub
 End Module

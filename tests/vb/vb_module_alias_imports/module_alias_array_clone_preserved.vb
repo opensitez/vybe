@@ -20,7 +20,7 @@
 ' its static type — the same reason the C# harness renders with `.ToString()`
 ' rather than inside the helper.
 
-Imports Arr = System
+Imports Arr = System.Array
 Module VybeCheck
     Public __buf As String = ""
 

@@ -44,8 +44,10 @@ End Module
 Module Program
     Sub Main()
         Dim ch As Char = "A"c
-        Dim code As Integer = CType(ch, Integer)
-        Dim restored As Char = CType(code, Char)
+        ' ⛔ VB has no Char<->Integer `CType` conversion — `AscW`/`ChrW` are
+        ' the code-point conversions it provides.
+        Dim code As Integer = AscW(ch)
+        Dim restored As Char = ChrW(code)
         __P(CStr(code & "|" & restored))
         __Check("65|A")
     End Sub

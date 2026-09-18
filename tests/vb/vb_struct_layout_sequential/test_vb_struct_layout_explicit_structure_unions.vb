@@ -55,7 +55,7 @@ End Structure
 Module Program
     Sub Main()
         Dim p As New ColorPixel With {.RgbaValue = &HFF0000FFUI}
-        __P(CStr(Marshal.SizeOf(GetType(ColorPixel)) & "|" & p.RgbaValue <> 0))
+        __P(CStr(Marshal.SizeOf(GetType(ColorPixel))) & "|" & CStr(p.RgbaValue <> 0))
         __Check("4|True")
     End Sub
 End Module

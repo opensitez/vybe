@@ -50,9 +50,12 @@ Module Program
 
         Dim val As Integer
         Dim found = dict.TryGetValue("Score", val)
+        ' A failed `TryGetValue` OVERWRITES the out-parameter with the default,
+        ' so the hit is captured before the miss.
+        Dim score = val
         Dim missing = dict.TryGetValue("Missing", val)
 
-        __P(CStr(found & "|" & val & "|" & missing))
+        __P(CStr(found & "|" & score & "|" & missing))
         __Check("True|100|False")
     End Sub
 End Module

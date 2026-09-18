@@ -45,10 +45,11 @@ Class Score
 End Class
 
 Module Program
-    Sub Main()
-        Sub AddPoints(s As Score, p As Integer)
+    Sub AddPoints(s As Score, p As Integer)
         s.Points = s.Points + p
-        End Sub
+    End Sub
+
+    Sub Main()
         Dim sc As New Score()
         sc.Points = 100
         AddPoints(sc, 50)

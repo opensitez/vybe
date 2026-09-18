@@ -48,10 +48,11 @@ Class Greeter
 End Class
 
 Module Program
-    Sub Main()
-        Function GetGreeting(g As Greeter) As String
+    Function GetGreeting(g As Greeter) As String
         Return g.Greet()
-        End Function
+    End Function
+
+    Sub Main()
         Dim gr As New Greeter()
         gr.Name = "World"
         __P(CStr(GetGreeting(gr)))

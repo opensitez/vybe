@@ -53,7 +53,10 @@ End Class
 Class ExplicitPropertyListener
     Private _notifier As Notifier
 
-    Public Custom WithEvents Property NotifierProp As Notifier
+    ' ⛔ `Custom` applies to an EVENT and `WithEvents` to a FIELD — neither is
+    ' a PROPERTY modifier. The explicit wiring in the setter is what this
+    ' covers, and a plain property carries it.
+    Public Property NotifierProp As Notifier
         Get
             Return _notifier
         End Get

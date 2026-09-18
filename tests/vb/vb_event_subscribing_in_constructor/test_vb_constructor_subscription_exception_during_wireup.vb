@@ -59,6 +59,7 @@ Class FaultySubscriber
     Public Sub New(pub As FaultyPublisher)
         Try
             AddHandler pub.CustomEvent, Sub(s, e)
+                                        End Sub
         Catch ex As InvalidOperationException
             __P(CStr("Caught Exception During Wireup"))
         End Try

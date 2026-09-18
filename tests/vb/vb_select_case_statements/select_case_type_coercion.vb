@@ -45,7 +45,9 @@ End Module
 Module M
 Sub Main()
 Dim x As String = "5"
-Select Case x
+' `Select Case` on a String compares the range as STRINGS — "5" sorts after
+' "10" — so the test expression is converted first.
+Select Case CInt(x)
 Case 1 To 10
 __P(CStr("A"))
 End Select

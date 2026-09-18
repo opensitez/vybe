@@ -45,11 +45,19 @@ End Module
 
 Module Program
     Sub Main()
-        Dim span As ReadOnlySpan(Of Char) = "AQID".ToCharArray()
+        ' ⛔ VB cannot DECLARE a `Span` local — it is a ref struct (BC30668)
+        ' — but an array passes straight to a `Span` PARAMETER, so the span
+        ' overload is still the one called.
+        Dim span = "AQID".ToCharArray()
         Dim dest(3) As Byte
         Dim bytesWritten As Integer
         Dim ok = Convert.TryFromBase64Chars(span, dest, bytesWritten)
-        __P(CStr(ok & ":" & String.Join(",", dest, 0, bytesWritten)))
+        ' ⛔ `String.Join(sep, arr, index, count)` takes a STRING array — with a
+        ' Byte() it binds to the `ParamArray Object()` form and renders
+        ' "System.Byte[],0,3". Copy the written prefix out first.
+        Dim written(bytesWritten - 1) As Byte
+        Array.Copy(dest, written, bytesWritten)
+        __P(CStr(ok) & ":" & String.Join(",", written))
         __Check("True:1,2,3")
     End Sub
 End Module

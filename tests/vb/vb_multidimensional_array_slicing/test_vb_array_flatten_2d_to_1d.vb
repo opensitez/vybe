@@ -46,8 +46,10 @@ Module Program
         Dim grid(,) As Integer = {{1, 2}, {3, 4}}
         Dim flat(grid.Length - 1) As Integer
         Dim idx As Integer = 0
-        For Each val In grid
-            flat(idx) = val
+        ' ⛔ `Val` is a VB BUILT-IN function — a loop variable of that name is
+        ' read as a call to it (BC30516).
+        For Each item In grid
+            flat(idx) = item
             idx += 1
         Next
         __P(CStr(String.Join(",", flat)))

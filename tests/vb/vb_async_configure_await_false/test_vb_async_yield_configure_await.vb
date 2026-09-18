@@ -45,7 +45,9 @@ End Module
 
 Module Program
     Private Async Function YieldConfiguredAsync() As Task(Of String)
-        Await Task.Yield().ConfigureAwait(False)
+        ' ⛔ `Task.Yield()` answers a `YieldAwaitable`, which has no
+        ' `ConfigureAwait`. A Task does.
+        Await Task.Delay(1).ConfigureAwait(False)
         Return "Yield Configured Completed"
     End Function
 

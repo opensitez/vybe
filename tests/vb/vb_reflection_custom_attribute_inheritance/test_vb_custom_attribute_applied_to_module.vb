@@ -22,6 +22,11 @@
 
 Imports System
 Imports System.Reflection
+Imports System.ComponentModel
+' A Module attribute statement must precede every declaration in the
+' file — the harness module included.
+<Module: Description("VybeModule")>
+
 Module VybeCheck
     Public __buf As String = ""
 
@@ -44,8 +49,6 @@ Module VybeCheck
 End Module
 
 
-<Module
-Description("VybeModule")>
 
 Module Program
     Sub Main()

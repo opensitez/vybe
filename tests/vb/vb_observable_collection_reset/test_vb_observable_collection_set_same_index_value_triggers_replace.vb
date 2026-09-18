@@ -50,9 +50,9 @@ Module Program
         Dim fired = False
         AddHandler col.CollectionChanged, Sub(s, e)
             If e.Action = NotifyCollectionChangedAction.Replace Then fired = True
-            __Check("True")
         End Sub
         col(0) = "Same"
         __P(CStr(fired))
+        __Check("True")
     End Sub
 End Module

@@ -51,7 +51,7 @@ Module M
         
         ' Switch returns the value associated with the first True expression
         Dim val As Integer = 10
-        Dim category = Switch(
+        Dim category = Microsoft.VisualBasic.Interaction.Switch(
             val < 0, "Negative",
             val = 0, "Zero",
             val > 0, "Positive"

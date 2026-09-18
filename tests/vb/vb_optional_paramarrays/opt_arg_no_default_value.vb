@@ -42,7 +42,8 @@ Module VybeCheck
 End Module
 
 Module M
-Function GetV(Optional v As Integer) As Integer
+' An Optional parameter MUST specify a default value.
+Function GetV(Optional v As Integer = 0) As Integer
 Return v
 End Function
 Sub Main()

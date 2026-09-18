@@ -41,13 +41,14 @@ Module VybeCheck
     End Sub
 End Module
 Public Class MathUtils
-    Public Shared Function Double(n As Integer) As Integer
+    ' ⛔ `Double` is a VB keyword (BC30183).
+    Public Shared Function [Double](n As Integer) As Integer
         Return n * 2
     End Function
 End Class
 
 Module Program
     Sub Main()
-        __P(CStr(MathUtils.Double(21)))
+        __P(CStr(MathUtils.[Double](21)))
     End Sub
 End Module

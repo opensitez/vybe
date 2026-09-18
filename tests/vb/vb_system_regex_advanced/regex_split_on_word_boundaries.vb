@@ -45,7 +45,7 @@ End Module
 
 Module M
     Sub Main()
-        Dim parts As String() = Regex.Split("a,b; c", "[,;]\\s*")
+        Dim parts As String() = Regex.Split("a,b; c", "[,;]\s*")
         __P(CStr(parts.Length))
         __P(CStr(parts(0)))
         __P(CStr(parts(2)))

@@ -43,9 +43,10 @@ End Module
 
 Module M
     Sub Main()
-        ' Explicit bounds 1 To 3 for dimension 1, and 0 To 5 for dimension 2
-        ' VB supports non-zero lower bounds in declarations
-        Dim grid(1 To 3, 0 To 5) As Integer
+        ' ⛔ VB.NET array lower bounds can ONLY be 0 (BC32059) — a non-zero
+        ' lower bound does not compile. `Dim grid(3, 5)` states the UPPER
+        ' bounds, so both dimensions start at 0.
+        Dim grid(3, 5) As Integer
         
         ' Dimension is 1-based index in LBound/UBound
         __P(CStr(LBound(grid, 1)))
@@ -53,9 +54,6 @@ Module M
         
         __P(CStr(LBound(grid, 2)))
         __P(CStr(UBound(grid, 2)))
-        __Check("1
-3
-0
-5")
+        __Check("0" & vbLf & "3" & vbLf & "0" & vbLf & "5")
     End Sub
 End Module

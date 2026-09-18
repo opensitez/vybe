@@ -46,7 +46,7 @@ Module M
         Dim age As Integer = 25
         
         ' Switch evaluates a list of expressions and returns the corresponding value for the first True expression
-        Dim category = Switch(
+        Dim category = Microsoft.VisualBasic.Interaction.Switch(
             age < 18, "Minor",
             age >= 18 AndAlso age < 65, "Adult",
             age >= 65, "Senior"

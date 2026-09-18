@@ -48,7 +48,11 @@ End Module
 Module M
     Sub Main()
         Dim cts As New CancellationTokenSource()
-        Dim task As Task = cts.Task
+        ' A CancellationTokenSource carries no Task; the task comes from a
+        ' TaskCompletionSource that the token cancels.
+        Dim tcs As New TaskCompletionSource(Of Integer)()
+        cts.Token.Register(Sub() tcs.TrySetCanceled())
+        Dim task As Task = tcs.Task
 
         cts.Cancel()
 

@@ -53,8 +53,10 @@ Module Program
     Sub Main()
         Dim t As New Transformer()
         Dim val As Integer = 25
+        ' ⛔ `CallByName` binds late and does NOT write a `ByRef` parameter
+        ' back to the caller's variable — it stays 25.
         CallByName(t, "DoubleValue", CallType.Method, val)
         __P(CStr(val))
-        __Check("50")
+        __Check("25")
     End Sub
 End Module

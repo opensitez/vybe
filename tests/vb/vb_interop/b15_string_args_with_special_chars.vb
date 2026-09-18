@@ -42,10 +42,11 @@ Module VybeCheck
 End Module
 
 Module Program
-    Sub Main()
-        Function Echo(s As String) As String
+    Function Echo(s As String) As String
         Return s
-        End Function
+    End Function
+
+    Sub Main()
         __P(CStr(Echo("hello world")))
         __P(CStr(Echo("it's")))
         __P(CStr(Echo("a&b")))

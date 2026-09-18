@@ -44,13 +44,15 @@ End Module
 Module M
     Sub Main()
         Dim counter As Integer = 0
+        ' The assertion sat INSIDE the closure, so it ran on the first of the
+        ' three calls, when the counter was still 1.
         Dim inc As Action = Sub()
-            counter = counter + 1
-            __Check("3")
-        End Sub
+                                counter = counter + 1
+                            End Sub
         inc()
         inc()
         inc()
         __P(CStr(counter))
+        __Check("3")
     End Sub
 End Module

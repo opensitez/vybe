@@ -45,11 +45,11 @@ End Module
 
 Module M
     Sub Main()
-        Dim set As New HashSet(Of String)()
-        set.Add("a")
-        set.Add("b")
-        __P(CStr(set.Contains("a")))
-        __P(CStr(set.Contains("c")))
+        Dim items As New HashSet(Of String)()
+        items.Add("a")
+        items.Add("b")
+        __P(CStr(items.Contains("a")))
+        __P(CStr(items.Contains("c")))
         __Check("True
 False")
     End Sub

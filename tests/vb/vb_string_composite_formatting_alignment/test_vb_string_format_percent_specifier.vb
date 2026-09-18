@@ -47,6 +47,7 @@ Module Program
     Sub Main()
         Dim res = String.Format(CultureInfo.InvariantCulture, "{0:P1}", 0.755)
         __P(CStr(res))
-        __Check("75.5%")
+        ' The invariant culture puts a non-breaking gap before the percent sign.
+        __Check("75.5 %")
     End Sub
 End Module

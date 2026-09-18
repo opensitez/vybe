@@ -48,22 +48,24 @@ Module Program
     Sub Main()
         Dim bc As New BlockingCollection(Of Integer)()
 
+        ' The assertion sat INSIDE the producer lambda, so it ran before the
+        ' consumer had seen anything.
         Dim producer = Task.Run(Sub()
-        For i As Integer = 1 To 5
-            bc.Add(i)
-        Next
-        bc.CompleteAdding()
+                                    For i As Integer = 1 To 5
+                                        bc.Add(i)
+                                    Next
+                                    bc.CompleteAdding()
+                                End Sub)
+
+        Dim consumerSum = 0
+        Dim consumer = Task.Run(Sub()
+                                    For Each item In bc.GetConsumingEnumerable()
+                                        consumerSum += item
+                                    Next
+                                End Sub)
+
+        Task.WaitAll(producer, consumer)
+        __P(CStr("Consumer Sum: " & consumerSum))
         __Check("Consumer Sum: 15")
-    End Sub)
-
-    Dim consumerSum = 0
-    Dim consumer = Task.Run(Sub()
-    For Each item In bc.GetConsumingEnumerable()
-        consumerSum += item
-    Next
-End Sub)
-
-Task.WaitAll(producer, consumer)
-__P(CStr("Consumer Sum: " & consumerSum))
-End Sub
+    End Sub
 End Module

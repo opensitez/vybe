@@ -44,14 +44,18 @@ End Module
 
 
 Module Program
-    Private Async Function GetValAsync() As ValueTask(Of String)
-        Await Task.Yield().ConfigureAwait(False)
+    ' ⛔ VB's `Async` may only return `Task` or `Task(Of T)` — never
+    ' `ValueTask` (BC36945). C# allows it through a builder; VB does not.
+    Private Async Function GetValAsync() As Task(Of String)
+        ' ⛔ `Task.Yield()` answers a `YieldAwaitable`, which has no
+        ' `ConfigureAwait`. A Task does.
+        Await Task.Delay(1).ConfigureAwait(False)
         Return "ValueTask Success"
     End Function
 
     Sub Main()
         Dim vt = GetValAsync()
-        __P(CStr(vt.AsTask().Result))
+        __P(CStr(vt.Result))
         __Check("ValueTask Success")
     End Sub
 End Module

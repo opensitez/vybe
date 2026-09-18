@@ -42,11 +42,14 @@ Module VybeCheck
 End Module
 
 Module M
+    ' ⛔ A VB LAMBDA CANNOT BE GENERIC (BC32065) — a generic method can.
+    Private Function Process(Of T)(val As T) As T
+        Return val
+    End Function
+
     Sub Main()
-        Dim process = Function(Of T)(val As T) val
-        
-        __P(CStr(process("Hello")))
-        __P(CStr(process(42)))
+        __P(CStr(Process("Hello")))
+        __P(CStr(Process(42)))
         __Check("Hello
 42")
     End Sub

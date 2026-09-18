@@ -47,13 +47,18 @@ End Module
 Module Program
     Sub Main()
         Dim collection As New ObservableCollection(Of Integer)()
-        AddHandler CType(collection, INotifyPropertyChanged).PropertyChanged, Sub(sender, e)
-        __P(CStr("Prop: " & e.PropertyName))
-        __Check("Prop: Count
-VYBEBUF>>><<<VYBEBUFProp: Count
-Prop: Item[]")
-    End Sub
+        ' The assertion sat INSIDE the handler and carried a
+        ' `VYBEBUF>>><<<VYBEBUF` delimiter joining two separate expected
+        ' buffers; the statements it was meant to observe had been left
+        ' outside `Sub Main`.
+        AddHandler CType(collection, INotifyPropertyChanged).PropertyChanged,
+                  Sub(sender, e)
+                      __P(CStr("Prop: " & e.PropertyName))
+                  End Sub
 
-    collection.Add(100)
-End Sub
+        collection.Add(100)
+        ' An `ObservableCollection` add raises PropertyChanged twice — once
+        ' for `Count`, once for the indexer.
+        __Check("Prop: Count" & vbLf & "Prop: Item[]")
+    End Sub
 End Module

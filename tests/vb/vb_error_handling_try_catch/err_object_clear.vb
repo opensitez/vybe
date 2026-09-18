@@ -43,8 +43,11 @@ End Module
 
 Module M
 Sub Main()
+' ⛔ A CONSTANT `\ 0` / `Mod 0` is rejected at COMPILE time (BC30542), so
+' it can never reach a handler — the divisor has to arrive at run time.
+Dim zero As Integer = 0
 On Error Resume Next
-Dim x = 1 \ 0
+Dim x = 1 \ zero
 Err.Clear()
 __P(CStr(Err.Number))
     __Check("0")

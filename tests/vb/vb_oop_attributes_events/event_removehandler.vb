@@ -50,10 +50,13 @@ End Class
 Module M
     Sub Main()
         Dim obj As New C()
-        Dim h As System.Action = Sub() __P(CStr("X"))
+        ' `Public Event E()` declares its own delegate type `EEventHandler`;
+        ' an `Action` is not convertible to it.
+        Dim h As C.EEventHandler = Sub() __P(CStr("X"))
         AddHandler obj.E, h
         RemoveHandler obj.E, h
         obj.DoE()
         __P(CStr("Done"))
+        __Check("Done")
     End Sub
 End Module

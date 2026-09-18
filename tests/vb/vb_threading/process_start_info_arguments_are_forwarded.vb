@@ -43,7 +43,7 @@ End Module
 
 Module Program
     Sub Main()
-        Dim si = New ProcessStartInfo("/usr/bin/test", "hello = hello")
+        Dim si = New ProcessStartInfo("/bin/test", "hello = hello")
         Dim p = Process.Start(si)
         p.WaitForExit()
         __P(CStr(p.ExitCode))

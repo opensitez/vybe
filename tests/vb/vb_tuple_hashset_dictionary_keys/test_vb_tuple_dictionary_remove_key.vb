@@ -45,9 +45,11 @@ End Module
 
 Module Program
     Sub Main()
+        ' A Dictionary initialiser pairs key and value in BRACES; a bare
+        ' parenthesised pair is read as one tuple argument.
         Dim dict As New Dictionary(Of (Integer, Integer), String) From {
-            ((1, 1), "V1"),
-            ((2, 2), "V2")
+            {(1, 1), "V1"},
+            {(2, 2), "V2"}
         }
         Dim removed = dict.Remove((1, 1))
         __P(CStr(removed & "|" & dict.Count))

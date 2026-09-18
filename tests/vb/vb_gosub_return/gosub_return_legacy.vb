@@ -42,16 +42,17 @@ Module VybeCheck
 End Module
 
 Module M
+    Private Function DoubleIt(n As Integer) As Integer
+        Return n * 2
+    End Function
+
     Sub Main()
+        ' ⛔ `GoSub` was REMOVED from VB.NET (BC30814) — it is VB6. A local
+        ' procedure call is the replacement.
         Dim x As Integer = 1
-        GoSub DoubleIt
-        GoSub DoubleIt
+        x = DoubleIt(x)
+        x = DoubleIt(x)
         __P(CStr(x))
-        Exit Sub
-        
-DoubleIt:
-        x *= 2
-        Return ' In a Sub with GoSub, Return jumps back to the line after GoSub
         __Check("4")
     End Sub
 End Module

@@ -52,9 +52,9 @@ Module Program
             If e.Action = NotifyCollectionChangedAction.Replace Then
                 changeLog = e.OldItems(0).ToString() & "->" & e.NewItems(0).ToString()
             End If
-            __Check("Old->New")
         End Sub
         col(0) = "New"
         __P(CStr(changeLog))
+        __Check("Old->New")
     End Sub
 End Module

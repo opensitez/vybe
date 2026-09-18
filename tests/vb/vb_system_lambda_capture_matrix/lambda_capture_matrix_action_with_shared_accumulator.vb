@@ -48,12 +48,12 @@ Module M
         Dim total As Integer = 0
         Dim add As Action(Of Integer) = Sub(v As Integer)
             total += v
-            __Check("10")
         End Sub
 
         add(4)
         add(6)
 
         __P(CStr(total))
+        __Check("10")
     End Sub
 End Module

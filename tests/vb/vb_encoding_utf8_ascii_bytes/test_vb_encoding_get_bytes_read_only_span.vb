@@ -46,8 +46,10 @@ End Module
 
 Module Program
     Sub Main()
-        Dim textSpan As ReadOnlySpan(Of Char) = "SpanEncoding".ToCharArray()
-        Dim bytes = Encoding.UTF8.GetBytes(textSpan)
+        ' ⛔ VB cannot DECLARE a `ReadOnlySpan` local (BC30668), but the Char()
+        ' passes straight to the `ReadOnlySpan(Of Char)` PARAMETER.
+        Dim chars = "SpanEncoding".ToCharArray()
+        Dim bytes = Encoding.UTF8.GetBytes(chars)
         __P(CStr(Encoding.UTF8.GetString(bytes)))
         __Check("SpanEncoding")
     End Sub

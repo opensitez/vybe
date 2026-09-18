@@ -45,7 +45,10 @@ End Module
 
 Module Program
     Sub Main()
-        Dim srcBytes As ReadOnlySpan(Of Byte) = New Byte() {1, 2, 3}
+        ' ⛔ VB cannot DECLARE a `Span` local — it is a ref struct (BC30668)
+        ' — but an array passes straight to a `Span` PARAMETER, so the span
+        ' overload is still the one called.
+        Dim srcBytes = New Byte() {1, 2, 3}
         Dim b64Str = Convert.ToBase64String(srcBytes)
         __P(CStr(b64Str))
         __Check("AQID")

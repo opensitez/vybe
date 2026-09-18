@@ -45,8 +45,8 @@ End Module
 
 Module M
     Sub Main()
-        Dim path As String = Path.Combine(Path.GetTempPath(), "vb_file_missing_" & Guid.NewGuid().ToString("N"))
-        __P(CStr(File.Exists(path)))
+        Dim filePath As String = Path.Combine(Path.GetTempPath(), "vb_file_missing_" & Guid.NewGuid().ToString("N"))
+        __P(CStr(File.Exists(filePath)))
         __Check("False")
     End Sub
 End Module

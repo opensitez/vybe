@@ -42,8 +42,10 @@ Module VybeCheck
 End Module
 
 Module Program
-    Function Double(n As Integer) As Integer
-        Double = n * 2
+    ' `Double` is a type keyword — as an identifier it must be escaped
+    ' (BC30183).
+    Function [Double](n As Integer) As Integer
+        [Double] = n * 2
     End Function
 
     Function AddOne(n As Integer) As Integer
@@ -51,7 +53,7 @@ Module Program
     End Function
 
     Sub Main()
-        __P(CStr(Double(AddOne(4))))
+        __P(CStr([Double](AddOne(4))))
         __Check("10")
     End Sub
 End Module

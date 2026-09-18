@@ -42,13 +42,18 @@ Module VybeCheck
 End Module
 
 Structure S
-    ' Field initializers in structs are allowed in VB 14+
-    Public Val As Integer = 100
+    ' An initializer on a structure member is valid only for `Shared`
+    ' members and constants; instance fields start at the type default.
+    Public Const Seed As Integer = 100
+    Public Val As Integer
+    Public Sub New(v As Integer)
+        Val = v
+    End Sub
 End Structure
 
 Module M
     Sub Main()
-        Dim s As New S()
+        Dim s As New S(S.Seed)
         __P(CStr(s.Val))
         __Check("100")
     End Sub

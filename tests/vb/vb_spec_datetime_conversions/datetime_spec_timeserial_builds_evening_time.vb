@@ -44,6 +44,9 @@ End Module
 Module M
     Sub Main()
         __P(CStr(CStr(TimeSerial(20, 15, 0))))
-        __Check("8:15:00 PM")
+        ' ⛔ .NET 8+ on ICU separates the time from AM/PM with U+202F NARROW
+        ' NO-BREAK SPACE, not a plain space — visually identical, different
+        ' codepoint.
+        __Check("8:15:00" & ChrW(&H202F) & "PM")
     End Sub
 End Module

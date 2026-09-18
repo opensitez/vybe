@@ -49,7 +49,7 @@ Module M
         Dim right As UInteger = &H80000000UI
 
         Dim combined As UInteger = left Or right
-        __P(CStr(combined = CUInt(&H80000001)))
+        __P(CStr(combined = &H80000001UI))
         __P(CStr((combined And right) = right))
         __Check("True
 True")

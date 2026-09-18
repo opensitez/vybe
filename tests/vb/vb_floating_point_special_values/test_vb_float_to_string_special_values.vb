@@ -45,7 +45,7 @@ Module Program
     Sub Main()
         __P(CStr(Double.NaN.ToString()))
         __P(CStr(Double.PositiveInfinity.ToString()))
-        __Check("NaN
-Infinity")
+        ' .NET renders infinity with the culture's PositiveInfinitySymbol, `∞`.
+        __Check("NaN" & vbLf & ChrW(&H221E))
     End Sub
 End Module

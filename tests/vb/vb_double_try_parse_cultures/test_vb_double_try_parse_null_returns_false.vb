@@ -46,7 +46,9 @@ End Module
 Module Program
     Sub Main()
         Dim val As Double
-        Dim ok = Double.TryParse(Nothing, val)
+        ' `Nothing` alone is ambiguous across the TryParse overloads (BC30521);
+        ' the null STRING is what this asserts.
+        Dim ok = Double.TryParse(CType(Nothing, String), val)
         __P(CStr(ok & "|" & val))
         __Check("False|0")
     End Sub

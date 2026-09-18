@@ -43,7 +43,13 @@ End Module
 
 Class Circle
     Public Property Radius As Double
-    Public ReadOnly Property Area As Double => Math.PI * Radius * Radius
+    ' ⛔ `=>` on a member declaration is C# EXPRESSION-BODIED syntax. VB
+    ' uses `=>` only for lambdas; a member needs its full block form.
+    Public ReadOnly Property Area As Double
+        Get
+            Return Math.PI * Radius * Radius
+        End Get
+    End Property
     Public Sub New(r As Double)
         Radius = r
     End Sub

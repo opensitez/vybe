@@ -46,7 +46,7 @@ End Module
 Module M
     Sub Main()
         Dim matches As MatchCollection = Regex.Matches(
-            "start\nnew line",
+            "start" & vbLf & "new line",
             "^[a-z]",
             RegexOptions.Multiline
         )

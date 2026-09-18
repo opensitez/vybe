@@ -47,8 +47,9 @@ End Module
 Module M
     Sub Main()
         __P(CStr(Encoding.UTF8.GetMaxByteCount(0) >= 0))
+        ' `GetMaxByteCount(1)` budgets for a surrogate pair, so UTF-16 answers
+        ' 4 for a single character, not 2.
         __P(CStr(Encoding.Unicode.GetMaxByteCount(1)))
-        __Check("True
-2")
+        __Check("True" & vbLf & "4")
     End Sub
 End Module

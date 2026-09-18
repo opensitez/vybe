@@ -45,7 +45,9 @@ End Module
 
 Module M
     Sub Main()
-        Dim o As Object = True
+        ' ⛔ `CType(True, Integer)` SUCCEEDS (VB's True is -1). A non-numeric
+        ' String is the incompatible value this covers.
+        Dim o As Object = "abc"
         Try
             __P(CStr(CType(o, Integer)))
             __P(CStr("NoCast"))

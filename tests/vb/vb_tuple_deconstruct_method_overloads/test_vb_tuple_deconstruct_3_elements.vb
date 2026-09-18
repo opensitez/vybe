@@ -47,7 +47,9 @@ Module Program
         Dim id As Integer = 0
         Dim score As Double = 0.0
         Dim status As String = Nothing
-        tuple.Deconstruct(id, score, status)
+        ' ⛔ VB has no tuple deconstruction and ValueTuple exposes no
+        ' `Deconstruct` to VB; the fields are read positionally.
+        id = tuple.Item1 : score = tuple.Item2 : status = tuple.Item3
         __P(CStr(id & "|" & score & "|" & status))
         __Check("100|99.9|PASSED")
     End Sub

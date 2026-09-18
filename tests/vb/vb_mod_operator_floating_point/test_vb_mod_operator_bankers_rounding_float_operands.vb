@@ -43,10 +43,10 @@ End Module
 
 Module Program
     Sub Main()
-        ' 2.5 rounds to 2 (even), 3.5 rounds to 4 (even)
-        ' 2 Mod 4 = 2
+        ' `Mod` on Double operands is a FLOATING remainder — VB does not round
+        ' them to an integer first. 2.5 Mod 3.5 is 2.5.
         Dim res = 2.5 Mod 3.5
         __P(CStr(res))
-        __Check("2")
+        __Check("2.5")
     End Sub
 End Module

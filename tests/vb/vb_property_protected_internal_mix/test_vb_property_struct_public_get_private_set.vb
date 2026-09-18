@@ -42,8 +42,30 @@ Module VybeCheck
 End Module
 
 Structure StructPoint
-    Public Property X As Integer { Get; Private Set; }
-        Public Property Y As Integer { Get; Private Set; }
+    ' ⛔ `{ Get; Private Set; }` is C# AUTO-PROPERTY syntax — VB has no
+    ' brace form, and an auto-property cannot carry a per-accessor access
+    ' modifier. The expanded property with a backing field is VB's spelling.
+    Private _x As Integer
+    Public Property X As Integer
+        Get
+            Return _x
+        End Get
+        Private Set(value As Integer)
+            _x = value
+        End Set
+    End Property
+        ' ⛔ `{ Get; Private Set; }` is C# AUTO-PROPERTY syntax — VB has no
+        ' brace form, and an auto-property cannot carry a per-accessor access
+        ' modifier. The expanded property with a backing field is VB's spelling.
+        Private _y As Integer
+        Public Property Y As Integer
+            Get
+                Return _y
+            End Get
+            Private Set(value As Integer)
+                _y = value
+            End Set
+        End Property
             Public Sub New(x As Integer, y As Integer)
                 Me.X = x
                 Me.Y = y

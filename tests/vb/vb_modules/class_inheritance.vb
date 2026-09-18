@@ -46,7 +46,7 @@ Class Animal
     Public Sub New(n As String)
         Name = n
     End Sub
-    Public Function Speak() As String
+    Public Overridable Function Speak() As String
         Return Name & " makes a sound"
     End Function
 End Class

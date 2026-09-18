@@ -50,7 +50,7 @@ End Structure
 Module M
 Sub Main()
 Dim s1 As S
-__P(CStr(s1 IsNot Nothing))
+__P(CStr(Not s1.Equals(Nothing)))
     __Check("True")
 End Sub
 End Module

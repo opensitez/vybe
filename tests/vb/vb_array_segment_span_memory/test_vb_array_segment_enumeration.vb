@@ -46,8 +46,10 @@ Module Program
         Dim numbers As Integer() = {10, 20, 30, 40, 50}
         Dim segment As New ArraySegment(Of Integer)(numbers, 1, 3)
         Dim sum As Integer = 0
-        For Each val In segment
-            sum += val
+        ' ⛔ `Val` is a VB BUILT-IN function — a loop variable of that name is
+        ' read as a call to it (BC30516).
+        For Each item In segment
+            sum += item
         Next
         __P(CStr(sum))
         __Check("90")

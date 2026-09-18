@@ -41,7 +41,8 @@ Module VybeCheck
     End Sub
 End Module
 Public Class Base
-    Public Function Name() As String
+    ' ⛔ A method is only overridable if the base says so (BC31086).
+    Public Overridable Function Name() As String
         Return "Base"
     End Function
 End Class

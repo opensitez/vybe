@@ -54,8 +54,8 @@ Module Program
             Catch ex As InvalidOperationException
                 __P(CStr("InvalidOperationException Caught on Reentrant Add"))
             End Try
-            __Check("InvalidOperationException Caught on Reentrant Add")
         End Sub
         col.Add(1)
+        __Check("InvalidOperationException Caught on Reentrant Add")
     End Sub
 End Module

@@ -47,13 +47,15 @@ Class DisposableTarget
 End Class
 
 Module Program
+    ' `Sub() … End Sub()` is not VB, and a local in `Main` stays rooted for the
+    ' whole method: the allocation needs its own frame to become collectable.
+    Function MakeWeak() As WeakReference(Of DisposableTarget)
+        Dim obj As New DisposableTarget()
+        Return New WeakReference(Of DisposableTarget)(obj)
+    End Function
+
     Sub Main()
-        Dim weakRef As WeakReference(Of DisposableTarget)
-        Sub()
-            Dim obj As New DisposableTarget()
-            weakRef = New WeakReference(Of DisposableTarget)(obj)
-            __Check("False")
-        End Sub()
+        Dim weakRef As WeakReference(Of DisposableTarget) = MakeWeak()
 
         GC.Collect()
         GC.WaitForPendingFinalizers()
@@ -62,5 +64,6 @@ Module Program
         Dim target As DisposableTarget = Nothing
         Dim isAlive = weakRef.TryGetTarget(target)
         __P(CStr(isAlive))
+        __Check("False")
     End Sub
 End Module

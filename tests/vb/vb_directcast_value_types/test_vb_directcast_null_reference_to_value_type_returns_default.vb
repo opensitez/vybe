@@ -44,8 +44,15 @@ End Module
 Module Program
     Sub Main()
         Dim obj As Object = Nothing
-        Dim num As Integer = DirectCast(obj, Integer)
+        ' ⛔ `DirectCast` to a value type UNBOXES: a null reference throws
+        ' rather than answering the default.
+        Dim num As Integer = 0
+        Try
+            num = DirectCast(obj, Integer)
+        Catch ex As NullReferenceException
+            num = -1
+        End Try
         __P(CStr(num))
-        __Check("0")
+        __Check("-1")
     End Sub
 End Module

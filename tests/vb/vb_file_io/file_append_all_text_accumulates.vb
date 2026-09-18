@@ -45,11 +45,11 @@ End Module
 
 Module M
     Sub Main()
-        Dim path As String = Path.GetTempFileName()
-        File.WriteAllText(path, "hello")
-        File.AppendAllText(path, " world")
-        __P(CStr(File.ReadAllText(path)))
-        File.Delete(path)
+        Dim filePath As String = Path.GetTempFileName()
+        File.WriteAllText(filePath, "hello")
+        File.AppendAllText(filePath, " world")
+        __P(CStr(File.ReadAllText(filePath)))
+        File.Delete(filePath)
         __Check("hello world")
     End Sub
 End Module

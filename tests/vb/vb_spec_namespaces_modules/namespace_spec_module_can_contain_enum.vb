@@ -49,7 +49,9 @@ Module Data
 End Module
 Module M
     Sub Main()
-        __P(CStr(Data.Tone.High))
+        ' `CStr` on an enum converts NUMERICALLY; the member name comes from
+        ' `ToString`.
+        __P(Data.Tone.High.ToString())
         __Check("High")
     End Sub
 End Module

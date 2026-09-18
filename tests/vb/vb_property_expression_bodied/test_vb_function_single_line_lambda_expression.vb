@@ -42,8 +42,15 @@ Module VybeCheck
 End Module
 
 Module Program
-    Public Function Multiply(x As Integer, y As Integer) As Integer => x * y
-    Public Function IsPositive(n As Integer) As Boolean => n > 0
+    ' ⛔ `=>` on a member declaration is C# EXPRESSION-BODIED syntax. VB
+    ' uses `=>` only for lambdas; a member needs its full block form.
+    Public Function Multiply(x As Integer, y As Integer) As Integer
+        Return x * y
+    End Function
+
+    Public Function IsPositive(n As Integer) As Boolean
+        Return n > 0
+    End Function
 
     Sub Main()
         __P(CStr(Multiply(3, 4)))

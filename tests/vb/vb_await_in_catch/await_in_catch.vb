@@ -48,13 +48,17 @@ Module M
         __P(CStr("Logged"))
     End Function
 
+    Function FailAsync() As Task
+        Return Task.Run(Sub() Throw New System.Exception())
+    End Function
+
+    ' ⛔ VB has Async/Await but NOT `Await` inside a `Catch` (BC36943) — that
+    ' is C#. VB's equivalent is a fault CONTINUATION: the async handler is
+    ' scheduled only when the antecedent faults, and `Unwrap` awaits the inner
+    ' task rather than the `Task(Of Task)` the lambda returns.
     Async Function TestAsync() As Task
-        Try
-            Throw New System.Exception()
-        Catch ex As System.Exception
-            ' Await inside Catch (added in VB 14)
-            Await LogErrorAsync()
-        End Try
+        Await FailAsync().ContinueWith(Function(t) LogErrorAsync(),
+                                       TaskContinuationOptions.OnlyOnFaulted).Unwrap()
     End Function
 
     Sub Main()

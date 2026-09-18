@@ -41,7 +41,7 @@ Module VybeCheck
     End Sub
 End Module
 Public Class Item
-    Dim name As String
+    Public name As String
     Public Sub New(n As String)
         name = n
     End Sub
@@ -51,10 +51,11 @@ Public Class Item
 End Class
 
 Module Program
-    Sub Main()
-        Function Describe(item As Object) As String
+    Function Describe(item As Object) As String
         Return "Item: " & item.GetName()
-        End Function
+    End Function
+
+    Sub Main()
         Dim it As New Item("Widget")
         __P(CStr(Describe(it)))
     End Sub

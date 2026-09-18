@@ -22,6 +22,7 @@
 
 Imports System
 Imports System.IO
+Imports System.Text
 Module VybeCheck
     Public __buf As String = ""
 

@@ -53,7 +53,8 @@ Module Program
         Dim cells(2) As Cell(Of Integer)
         cells(0) = New Cell(Of Integer)(100)
         cells(1) = New Cell(Of Integer)(200)
-        __P(CStr(cells(0).Value & "+" & cells(1).Value))
+        ' ⛔ `&` CONCATENATES; the sum needs `+`.
+        __P(CStr(cells(0).Value + cells(1).Value))
         __Check("300")
     End Sub
 End Module

@@ -43,10 +43,13 @@ End Module
 
 Module M
     Sub Main()
+        ' The file has to exist before it can be opened for Input.
+        System.IO.File.WriteAllText("test_write.txt", "Hello")
         Dim f = FreeFile()
         FileOpen(f, "test_write.txt", OpenMode.Input)
         Dim e = EOF(f)
         FileClose(f)
         __P(CStr(e = False Or e = True))
+        __Check("True")
     End Sub
 End Module

@@ -45,6 +45,7 @@ Module M
     Sub Main()
         Dim obj As Object = True
         __P(CStr(TypeOf obj Is Object))
-        __Check("False")
+        ' Every value IS an Object — boxing included.
+        __Check("True")
     End Sub
 End Module

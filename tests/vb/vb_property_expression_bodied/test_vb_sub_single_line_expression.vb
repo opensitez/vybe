@@ -42,7 +42,11 @@ Module VybeCheck
 End Module
 
 Module Program
-    Public Sub LogMessage(msg As String) => __P(CStr("[LOG] " & msg))
+    ' ⛔ `=>` on a member declaration is C# EXPRESSION-BODIED syntax. VB
+    ' uses `=>` only for lambdas; a member needs its full block form.
+    Public Sub LogMessage(msg As String)
+        __P(CStr("[LOG] " & msg))
+    End Sub
 
     Sub Main()
         LogMessage("Test")

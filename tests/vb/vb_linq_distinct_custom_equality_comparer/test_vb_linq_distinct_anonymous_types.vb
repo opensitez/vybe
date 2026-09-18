@@ -48,6 +48,9 @@ Module Program
         Dim items = {New With {.ID = 1, .Val = "A"}, New With {.ID = 1, .Val = "A"}, New With {.ID = 2, .Val = "B"}}
         Dim unique = items.Distinct()
         __P(CStr(unique.Count()))
-        __Check("2")
+        ' Each `New With` in an array initialiser yields its own instance, and
+        ' the inferred element type here is Object — so `Distinct` compares by
+        ' REFERENCE and keeps all three.
+        __Check("3")
     End Sub
 End Module

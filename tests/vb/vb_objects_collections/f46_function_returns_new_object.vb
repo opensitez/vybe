@@ -45,12 +45,13 @@ Class Result
 End Class
 
 Module Program
-    Sub Main()
-        Function GetResult() As Result
+    Function GetResult() As Result
         Dim r As New Result()
         r.Status = "OK"
         Return r
-        End Function
+    End Function
+
+    Sub Main()
         Dim res As Result = GetResult()
         __P(CStr(res.Status))
     End Sub

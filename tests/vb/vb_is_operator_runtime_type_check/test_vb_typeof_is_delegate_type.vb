@@ -46,7 +46,9 @@ End Module
 Module Program
     Sub Main()
         Dim act As Object = CType(Sub() __P(CStr("Hi")), Action)
-        __P(CStr(TypeOf act Is Action & "|" & TypeOf act Is Delegate))
+        ' ⛔ `Delegate` is a KEYWORD (BC30180) — the type is [Delegate]. And
+        ' `&` binds tighter than `Is`, so each test needs its own CStr.
+        __P(CStr(TypeOf act Is Action) & "|" & CStr(TypeOf act Is [Delegate]))
         __Check("True|True")
     End Sub
 End Module

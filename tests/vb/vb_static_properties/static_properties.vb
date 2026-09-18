@@ -44,7 +44,8 @@ End Module
 Class Cache
     ' Static properties maintain state across all instances
     Public Shared Property LastAccessed As String = "None"
-    Public Shared ReadOnly Property CreatedAt As Date = #2024-01-01#
+    ' ⛔ A VB date literal is `#M/d/yyyy#`, not ISO (BC30201).
+    Public Shared ReadOnly Property CreatedAt As Date = #1/1/2024#
     
     Public Sub Access(item As String)
         LastAccessed = item

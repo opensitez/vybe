@@ -56,12 +56,16 @@ Class ReRegisteredObject
 End Class
 
 Module Program
-    Sub Main()
+    Private Sub Allocate()
         Dim obj As New ReRegisteredObject()
         GC.SuppressFinalize(obj)
-        obj.ReRegister() ' Re-enable finalization!
+        obj.ReRegister() ' Re-enable finalization
+    End Sub
 
-        obj = Nothing
+    Sub Main()
+        ' ⛔ A live local ROOTS the object — allocating in a helper that
+        ' returns is what lets the reference die.
+        Allocate()
         GC.Collect()
         GC.WaitForPendingFinalizers()
 

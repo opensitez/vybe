@@ -45,9 +45,12 @@ Module M
     Sub Main()
         Dim o As Object = "A"
         Try
-            DirectCast(o, Integer)
+            ' A cast is an EXPRESSION; its value has to go somewhere.
+            Dim n As Integer = DirectCast(o, Integer)
+            __P(CStr(n))
         Catch
-        __P(CStr("Err"))
-    End Try
-End Sub
+            __P(CStr("Err"))
+        End Try
+        __Check("Err")
+    End Sub
 End Module

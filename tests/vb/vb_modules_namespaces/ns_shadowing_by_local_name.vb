@@ -46,13 +46,15 @@ Public Class C
 Public V As Integer = 1
 End Class
 End Namespace
-Class N1
-Public V As Integer = 2
+Class Holder
+    Public V As Integer = 2
 End Class
+
 Module M
-Sub Main()
-Dim n As New N1()
-__P(CStr(n.V))
-    __Check("2")
-End Sub
+    Sub Main()
+        ' A local named `N1` shadows the namespace `N1` inside `Main`.
+        Dim N1 As New Holder()
+        __P(CStr(N1.V))
+        __Check("2")
+    End Sub
 End Module

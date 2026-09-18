@@ -42,8 +42,11 @@ Module VybeCheck
 End Module
 
 Module FunctionTracker
+    ' ⛔ A generic method may NOT declare a `Static` local (BC32068); the
+    ' persistent counter lives on the module instead.
+    Private count As Integer = 0
+
     Public Function Increment(Of T)() As Integer
-        Static count As Integer = 0
         count += 1
         Return count
     End Function

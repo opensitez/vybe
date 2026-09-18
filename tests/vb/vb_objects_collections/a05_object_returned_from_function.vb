@@ -45,12 +45,13 @@ Class Item
 End Class
 
 Module Program
-    Sub Main()
-        Function MakeItem(lbl As String) As Item
+    Function MakeItem(lbl As String) As Item
         Dim it As New Item()
         it.Label = lbl
         Return it
-        End Function
+    End Function
+
+    Sub Main()
         Dim x As Item = MakeItem("hello")
         __P(CStr(x.Label))
     End Sub

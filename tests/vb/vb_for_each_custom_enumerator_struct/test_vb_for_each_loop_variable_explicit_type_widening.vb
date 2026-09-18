@@ -45,8 +45,10 @@ Module Program
     Sub Main()
         Dim bytes As Byte() = {1, 2, 3}
         ' Explicitly typed loop variable Double widens from Byte!
-        For Each val As Double In bytes
-            __P(CStr(val.ToString("F1")))
+        ' ⛔ `Val` is a VB BUILT-IN function — a loop variable of that name is
+        ' read as a call to it (BC30516).
+        For Each item As Double In bytes
+            __P(CStr(item.ToString("F1")))
         Next
         __Check("1.0
 2.0

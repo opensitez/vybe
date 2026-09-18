@@ -41,7 +41,7 @@ Module VybeCheck
     End Sub
 End Module
 Public Class Wrapper
-    Dim val As Integer
+    Public val As Integer
     Public Sub New(v As Integer)
         val = v
     End Sub

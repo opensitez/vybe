@@ -49,11 +49,11 @@ Class MonitoredEventSource
     Public Custom Event MonitoredEvent As EventHandler
         AddHandler(value As EventHandler)
             __P(CStr("Subscriber Added"))
-            internalDelegate = CType(Delegate.Combine(internalDelegate, value), EventHandler)
+            internalDelegate = CType([Delegate].Combine(internalDelegate, value), EventHandler)
         End AddHandler
         RemoveHandler(value As EventHandler)
             __P(CStr("Subscriber Removed"))
-            internalDelegate = CType(Delegate.Remove(internalDelegate, value), EventHandler)
+            internalDelegate = CType([Delegate].Remove(internalDelegate, value), EventHandler)
         End RemoveHandler
         RaiseEvent(sender As Object, e As EventArgs)
             If internalDelegate IsNot Nothing Then internalDelegate(sender, e)

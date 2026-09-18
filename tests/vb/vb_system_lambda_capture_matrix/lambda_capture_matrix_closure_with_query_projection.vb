@@ -51,6 +51,7 @@ Module M
         Dim projected = values.Where(Function(v) (v + offset) Mod 2 = 0).Select(Function(v) v + offset)
 
         __P(CStr(String.Join(",", projected)))
-        __Check("3,5")
+        ' `(v + 1) Mod 2 = 0` keeps the ODD values 1 and 3; the projection adds 1.
+        __Check("2,4")
     End Sub
 End Module

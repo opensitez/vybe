@@ -43,7 +43,7 @@ End Module
 
 Module Program
     Sub Main()
-        Dim inf As Double = Double.Parse("Infinity")
+        Dim inf As Double = Double.Parse("Infinity", Globalization.CultureInfo.InvariantCulture)
         __P(CStr(Double.IsPositiveInfinity(inf)))
         __Check("True")
     End Sub

@@ -46,11 +46,10 @@ End Module
 
 Module Program
     Sub Main()
-        Try
-            Double.Parse("1e309", CultureInfo.InvariantCulture)
-        Catch ex As OverflowException
-            __P(CStr("OverflowException Caught on Double Overflow"))
-        End Try
-        __Check("OverflowException Caught on Double Overflow")
+        ' Past Double's range .NET Core SATURATES rather than throwing — the
+        ' OverflowException was .NET Framework behaviour, dropped in Core 3.0.
+        Dim v = Double.Parse("1e309", CultureInfo.InvariantCulture)
+        __P(CStr(Double.IsPositiveInfinity(v)))
+        __Check("True")
     End Sub
 End Module

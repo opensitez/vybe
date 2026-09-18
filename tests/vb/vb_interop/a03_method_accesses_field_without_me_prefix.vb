@@ -41,8 +41,8 @@ Module VybeCheck
     End Sub
 End Module
 Public Class Person
-    Dim name As String
-    Dim age As Integer
+    Public name As String
+    Public age As Integer
     Public Sub New(n As String, a As Integer)
         name = n
         age = a

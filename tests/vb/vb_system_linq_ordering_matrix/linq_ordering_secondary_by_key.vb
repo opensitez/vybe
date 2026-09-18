@@ -67,8 +67,7 @@ Module M
         __P(CStr(sorted.First().Score))
         __P(CStr(firstName))
         __P(CStr(lastName))
-        __Check("1
-a
-c")
+        ' Score then Name orders (a,1) (c,1) (a,2) (b,2) — the last is "b".
+        __Check("1" & vbLf & "a" & vbLf & "b")
     End Sub
 End Module

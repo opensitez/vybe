@@ -41,7 +41,7 @@ Module VybeCheck
     End Sub
 End Module
 Public Class Counter
-    Dim count As Integer
+    Public count As Integer
     Public Sub New(start As Integer)
         count = start
     End Sub

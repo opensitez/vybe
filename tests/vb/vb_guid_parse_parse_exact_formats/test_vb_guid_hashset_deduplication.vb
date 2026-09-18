@@ -47,10 +47,11 @@ End Module
 Module Program
     Sub Main()
         Dim g = Guid.NewGuid()
-        Dim set As New HashSet(Of Guid)()
-        set.Add(g)
-        set.Add(g)
-        __P(CStr(set.Count))
+        ' ⛔ `Set` is a VB keyword and cannot be an identifier (BC30183).
+        Dim items As New HashSet(Of Guid)()
+        items.Add(g)
+        items.Add(g)
+        __P(CStr(items.Count))
         __Check("1")
     End Sub
 End Module

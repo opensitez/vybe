@@ -56,9 +56,14 @@ Class Destructible
 End Class
 
 Module Program
-    Sub Main()
+    Private Sub Allocate()
         Dim d As New Destructible()
-        d = Nothing
+    End Sub
+
+    Sub Main()
+        ' ⛔ Assigning Nothing does not retire the local's slot for the JIT in
+        ' a Debug build — allocating in a helper that returns does.
+        Allocate()
         GC.Collect()
         GC.WaitForPendingFinalizers()
         __Check("Finalizer executed")

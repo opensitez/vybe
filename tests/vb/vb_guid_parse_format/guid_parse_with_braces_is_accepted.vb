@@ -44,7 +44,8 @@ End Module
 Module M
     Sub Main()
         Dim g As Guid = Guid.Parse("{d87a74a4-5694-4d8b-a3ed-3085794711f1}")
-        __P(CStr(g.ToString("N")))
+        ' ⛔ `"N"` is the DASHLESS Guid format; `"D"` is the dashed one.
+        __P(CStr(g.ToString("D")))
         __Check("d87a74a4-5694-4d8b-a3ed-3085794711f1")
     End Sub
 End Module

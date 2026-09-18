@@ -20,6 +20,8 @@
 ' its static type — the same reason the C# harness renders with `.ToString()`
 ' rather than inside the helper.
 
+Imports System.Threading
+
 Module VybeCheck
     Public __buf As String = ""
 
@@ -46,9 +48,9 @@ Module Program
         Dim t = Task.Run(Function()
             Thread.Sleep(100)
             Return "success"
-            __Check("success")
         End Function)
         Dim result = t.Result
         __P(CStr(result))
+        __Check("success")
     End Sub
 End Module

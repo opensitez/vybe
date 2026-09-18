@@ -46,7 +46,7 @@ End Module
 Module Program
     Sub Main()
         Dim os = Environment.OSVersion
-        __P(CStr(os.Platform.ToString() & "|" & os.Version.Major > 0))
+        __P(CStr(os.Platform.ToString() & "|" & (os.Version.Major > 0)))
         __Check("Unix|True")
     End Sub
 End Module

@@ -44,5 +44,6 @@ End Module
 Module M
     Sub Main()
         __P(CStr(Len("Hello")))
+        __Check("5")
     End Sub
 End Module

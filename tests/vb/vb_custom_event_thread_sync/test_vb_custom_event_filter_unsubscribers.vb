@@ -48,10 +48,10 @@ Class FilteredBroadcaster
 
     Public Custom Event FilteredEvent As EventHandler
         AddHandler(value As EventHandler)
-            multicast = CType(Delegate.Combine(multicast, value), EventHandler)
+            multicast = CType([Delegate].Combine(multicast, value), EventHandler)
         End AddHandler
         RemoveHandler(value As EventHandler)
-            multicast = CType(Delegate.Remove(multicast, value), EventHandler)
+            multicast = CType([Delegate].Remove(multicast, value), EventHandler)
         End RemoveHandler
         RaiseEvent(sender As Object, e As EventArgs)
             If multicast IsNot Nothing Then

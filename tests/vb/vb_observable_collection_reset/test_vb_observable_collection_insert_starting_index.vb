@@ -50,9 +50,9 @@ Module Program
         Dim newIdx = -1
         AddHandler col.CollectionChanged, Sub(s, e)
             If e.Action = NotifyCollectionChangedAction.Add Then newIdx = e.NewStartingIndex
-            __Check("1|ABC")
         End Sub
         col.Insert(1, "B")
         __P(CStr(newIdx & "|" & String.Join("", col)))
+        __Check("1|ABC")
     End Sub
 End Module

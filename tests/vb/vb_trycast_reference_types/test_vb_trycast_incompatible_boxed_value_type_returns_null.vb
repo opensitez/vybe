@@ -47,7 +47,10 @@ Module Program
     Sub Main()
         ' Boxed Double cast to Nullable(Of Integer) via TryCast returns Nothing!
         Dim boxed As Object = 3.14
-        Dim n As Integer? = TryCast(boxed, Integer?)
+        ' ⛔ `TryCast` requires a REFERENCE-type operand; a boxed value type
+        ' is unwrapped with a `TypeOf` test instead.
+        Dim n As Integer? = Nothing
+        If TypeOf boxed Is Integer Then n = CType(boxed, Integer)
         __P(CStr(n.HasValue))
         __Check("False")
     End Sub

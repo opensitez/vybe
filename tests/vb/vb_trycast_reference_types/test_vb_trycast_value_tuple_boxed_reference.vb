@@ -46,7 +46,10 @@ End Module
 Module Program
     Sub Main()
         Dim tupleBox As Object = ValueTuple.Create(10, "A")
-        Dim t As ValueTuple(Of Integer, String)? = TryCast(tupleBox, ValueTuple(Of Integer, String)?)
+        ' ⛔ `TryCast` requires a REFERENCE-type operand; a boxed value type
+        ' is unwrapped with a `TypeOf` test instead.
+        Dim t As ValueTuple(Of Integer, String)? = Nothing
+        If TypeOf tupleBox Is ValueTuple(Of Integer, String) Then t = CType(tupleBox, ValueTuple(Of Integer, String))
         __P(CStr(t.HasValue & "|" & t.Value.Item2))
         __Check("True|A")
     End Sub

@@ -43,7 +43,9 @@ End Module
 
 Module Program
     Sub Main()
-        __P(CStr(TypeName(App.Title)))
+        ' VB.NET has no VB6 `App` object; the application's name comes from the
+        ' AppDomain.
+        __P(CStr(TypeName(AppDomain.CurrentDomain.FriendlyName)))
         __Check("String")
     End Sub
 End Module

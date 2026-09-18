@@ -48,10 +48,10 @@ Class Publisher
 
     Public Custom Event StatusChanged As EventHandler
         AddHandler(value As EventHandler)
-            delegateList = CType(Delegate.Combine(delegateList, value), EventHandler)
+            delegateList = CType([Delegate].Combine(delegateList, value), EventHandler)
         End AddHandler
         RemoveHandler(value As EventHandler)
-            delegateList = CType(Delegate.Remove(delegateList, value), EventHandler)
+            delegateList = CType([Delegate].Remove(delegateList, value), EventHandler)
         End RemoveHandler
         RaiseEvent(sender As Object, e As EventArgs)
             If delegateList IsNot Nothing Then delegateList(sender, e)

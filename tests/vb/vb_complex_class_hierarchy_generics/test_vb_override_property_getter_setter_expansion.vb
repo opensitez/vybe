@@ -64,7 +64,9 @@ Module Program
         Dim p As BaseProperty = New LoggedProperty()
         p.Value = 42
         __P(CStr(p.Value))
-        __Check("Setting Value to 42
-42")
+        ' The base's `Property Value As Integer = 10` initializer runs through
+        ' the DERIVED override — a virtual call from the base constructor — so
+        ' the log carries that write before anything in Main.
+        __Check("Setting Value to 10" & vbLf & "Setting Value to 42" & vbLf & "42")
     End Sub
 End Module

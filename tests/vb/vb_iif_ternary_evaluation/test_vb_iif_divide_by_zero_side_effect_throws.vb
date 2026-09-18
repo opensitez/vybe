@@ -46,9 +46,12 @@ End Module
 
 Module Program
     Sub Main()
+    ' ⛔ A CONSTANT `\ 0` / `Mod 0` is rejected at COMPILE time (BC30542), so
+    ' it can never reach a handler — the divisor has to arrive at run time.
+    Dim zero As Integer = 0
         Try
             ' Because IIf evaluates both branches, 10 / 0 in falsepart throws DivideByZeroException even when condition is True!
-            Dim res = IIf(True, 42, 10 \ 0)
+            Dim res = IIf(True, 42, 10 \ zero)
         Catch ex As DivideByZeroException
             __P(CStr("DivideByZeroException Caught in Eager IIf"))
         End Try

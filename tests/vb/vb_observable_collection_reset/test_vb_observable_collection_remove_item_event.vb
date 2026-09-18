@@ -52,9 +52,9 @@ Module Program
             If e.Action = NotifyCollectionChangedAction.Remove Then
                 removedItem = e.OldItems(0).ToString()
             End If
-            __Check("Item1")
         End Sub
         col.Remove("Item1")
         __P(CStr(removedItem))
+        __Check("Item1")
     End Sub
 End Module

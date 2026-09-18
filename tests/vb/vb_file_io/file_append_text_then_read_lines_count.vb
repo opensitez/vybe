@@ -45,13 +45,14 @@ End Module
 
 Module M
     Sub Main()
-        Dim path As String = Path.GetTempFileName()
-        File.WriteAllText(path, "one\n")
-        File.AppendAllText(path, "two\n")
-        Dim lines As String() = File.ReadAllText(path).Split("\n"c)
+        Dim filePath As String = Path.GetTempFileName()
+        ' VB string literals carry NO escapes; a newline is `vbLf`.
+        File.WriteAllText(filePath, "one" & vbLf)
+        File.AppendAllText(filePath, "two" & vbLf)
+        Dim lines As String() = File.ReadAllText(filePath).Split(vbLf(0))
         __P(CStr(lines.Length))
         __P(CStr(lines(0)))
-        File.Delete(path)
+        File.Delete(filePath)
         __Check("3
 one")
     End Sub

@@ -53,15 +53,17 @@ Module Program
 
         Dim sum = 0
         Dim lockObj As New Object()
+        ' The assertion sat INSIDE the `Parallel.For` body, so it ran on every
+        ' worker before the loop had finished.
         Parallel.For(0, 100, Sub(i)
-        Dim item As Integer
-        If q.TryDequeue(item) Then
-            SyncLock lockObj
-                sum += item
-            End SyncLock
-        End If
+                                 Dim item As Integer
+                                 If q.TryDequeue(item) Then
+                                     SyncLock lockObj
+                                         sum += item
+                                     End SyncLock
+                                 End If
+                             End Sub)
+        __P(CStr(sum) & "|QueueEmpty=" & CStr(q.IsEmpty))
         __Check("5050|QueueEmpty=True")
-    End Sub)
-    __P(CStr(sum & "|QueueEmpty=" & q.IsEmpty))
-End Sub
+    End Sub
 End Module

@@ -50,9 +50,9 @@ Module Program
         Dim oldIdx = -1
         AddHandler col.CollectionChanged, Sub(s, e)
             If e.Action = NotifyCollectionChangedAction.Remove Then oldIdx = e.OldStartingIndex
-            __Check("1|XZ")
         End Sub
         col.RemoveAt(1)
         __P(CStr(oldIdx & "|" & String.Join("", col)))
+        __Check("1|XZ")
     End Sub
 End Module

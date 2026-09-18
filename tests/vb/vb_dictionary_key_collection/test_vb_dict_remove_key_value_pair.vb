@@ -46,8 +46,11 @@ End Module
 Module Program
     Sub Main()
         Dim dict As New Dictionary(Of Integer, String) From {{1, "One"}, {2, "Two"}}
-        Dim removedWrong As Boolean = dict.Remove(New KeyValuePair(Of Integer, String)(1, "Wrong"))
-        Dim removedRight As Boolean = dict.Remove(New KeyValuePair(Of Integer, String)(1, "One"))
+        ' ⛔ `Dictionary.Remove` takes a KEY (BC30311); the KeyValuePair
+        ' overload is on `ICollection(Of KeyValuePair(...))`.
+        Dim asColl = CType(dict, ICollection(Of KeyValuePair(Of Integer, String)))
+        Dim removedWrong As Boolean = asColl.Remove(New KeyValuePair(Of Integer, String)(1, "Wrong"))
+        Dim removedRight As Boolean = asColl.Remove(New KeyValuePair(Of Integer, String)(1, "One"))
         __P(CStr(removedWrong))
         __P(CStr(removedRight))
         __P(CStr(dict.Count))

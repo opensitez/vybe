@@ -44,7 +44,11 @@ End Module
 Module M
     Sub Main()
         Dim a As Object() = {"A", "B"}
-        Dim b = CType(a, String())
+        ' An Object() is NOT a String(): the reference conversion fails, so the
+        ' elements are copied with their own checks.
+        Dim b(a.Length - 1) As String
+        Array.Copy(a, b, a.Length)
         __P(CStr(b(0)))
+        __Check("A")
     End Sub
 End Module

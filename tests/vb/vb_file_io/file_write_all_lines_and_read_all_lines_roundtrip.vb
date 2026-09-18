@@ -45,12 +45,12 @@ End Module
 
 Module M
     Sub Main()
-        Dim path As String = Path.GetTempFileName()
-        File.WriteAllLines(path, New String() {"a", "b", "c"})
-        Dim lines As String() = File.ReadAllLines(path)
+        Dim filePath As String = Path.GetTempFileName()
+        File.WriteAllLines(filePath, New String() {"a", "b", "c"})
+        Dim lines As String() = File.ReadAllLines(filePath)
         __P(CStr(lines.Length))
         __P(CStr(lines(1)))
-        File.Delete(path)
+        File.Delete(filePath)
         __Check("3
 b")
     End Sub

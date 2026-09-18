@@ -43,7 +43,9 @@ End Module
 
 Enum BigEnum As Long
     Max = 9223372036854775807
-    Min = -9223372036854775808
+    ' ⛔ `-9223372036854775808` is unary minus on a literal one PAST
+    ' Long.MaxValue, so the literal overflows before the negation (BC30036).
+    Min = Long.MinValue
 End Enum
 
 Module M

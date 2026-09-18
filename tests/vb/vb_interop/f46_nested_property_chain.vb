@@ -41,13 +41,13 @@ Module VybeCheck
     End Sub
 End Module
 Public Class Inner
-    Dim value As String
+    Public value As String
     Public Sub New(v As String)
         value = v
     End Sub
 End Class
 Public Class Outer
-    Dim inner As Inner
+    Public inner As Inner
     Public Sub New()
         inner = New Inner("deep")
     End Sub

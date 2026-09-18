@@ -42,10 +42,11 @@ Module VybeCheck
 End Module
 
 Module Program
-    Sub Main()
-        Sub SetFirst(a() As Integer, val As Integer)
+    Sub SetFirst(a() As Integer, val As Integer)
         a(0) = val
-        End Sub
+    End Sub
+
+    Sub Main()
         Dim arr(3) As Integer
         SetFirst(arr, 77)
         __P(CStr(arr(0)))

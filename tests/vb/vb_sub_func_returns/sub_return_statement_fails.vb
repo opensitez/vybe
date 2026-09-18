@@ -47,6 +47,8 @@ Sub Print()
 __P(CStr("Parsed"))
 End Sub
 Sub Main()
+    ' A bare `Return` in a Sub is legal — it just carries no value.
+    Print()
     __Check("Parsed")
 End Sub
 End Module

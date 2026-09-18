@@ -56,10 +56,11 @@ End Class
 
 Module Program
     Sub Main()
-        Dim set As New HashSet(Of (String, Integer))(New TupleIgnoreCaseComparer())
-        set.Add(("apple", 10))
-        set.Add(("APPLE", 10))
-        __P(CStr(set.Count))
+        ' ⛔ `Set` is a VB keyword and cannot be an identifier (BC30183).
+        Dim items As New HashSet(Of (String, Integer))(New TupleIgnoreCaseComparer())
+        items.Add(("apple", 10))
+        items.Add(("APPLE", 10))
+        __P(CStr(items.Count))
         __Check("1")
     End Sub
 End Module

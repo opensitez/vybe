@@ -47,7 +47,9 @@ Module M
     Sub Main()
         Dim current As OptionalInt = 7
         Dim empty As OptionalInt = Nothing
-        Dim total As Integer = If(current, 0) + If(empty.GetValueOrDefault(0), 0)
+        ' ⛔ The binary `If` needs a NULLABLE first operand (BC33107);
+        ' `GetValueOrDefault` already yields a plain Integer.
+        Dim total As Integer = If(current, 0) + empty.GetValueOrDefault(0)
         __P(CStr(total))
         __Check("7")
     End Sub

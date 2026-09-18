@@ -44,8 +44,10 @@ End Module
 Module M
     Sub Main()
         Dim nums() = {10, 20, 30}
-        Dim sum = Aggregate n In nums Into Sum()
-        __P(CStr(sum))
+        ' ⛔ `Into Sum()` names a range variable `Sum`, which collides with a
+        ' local of the same name — VB is case-insensitive (BC30978).
+        Dim total = Aggregate n In nums Into Sum()
+        __P(CStr(total))
         __Check("60")
     End Sub
 End Module

@@ -56,7 +56,6 @@ Module M
                         value += 1
                     End SyncLock
                 Next
-                __Check("2000")
             End Sub)
         Dim t2 As New Thread(
             Sub()
@@ -73,5 +72,6 @@ Module M
         t2.Join()
 
         __P(CStr(value))
+        __Check("2000")
     End Sub
 End Module

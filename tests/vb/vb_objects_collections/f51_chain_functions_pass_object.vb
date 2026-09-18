@@ -45,18 +45,21 @@ Class Data
 End Class
 
 Module Program
-    Sub Main()
-        Function CreateData() As Data
+    Function CreateData() As Data
         Dim d As New Data()
         d.Value = "start"
         Return d
-        End Function
-        Sub TransformData(d As Data)
+    End Function
+
+    Sub TransformData(d As Data)
         d.Value = d.Value & "-transformed"
-        End Sub
-        Sub FinalizeData(d As Data)
+    End Sub
+
+    Sub FinalizeData(d As Data)
         d.Value = d.Value & "-done"
-        End Sub
+    End Sub
+
+    Sub Main()
         Dim d As Data = CreateData()
         TransformData(d)
         FinalizeData(d)

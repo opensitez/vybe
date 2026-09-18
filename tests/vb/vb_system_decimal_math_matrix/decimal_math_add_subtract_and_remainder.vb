@@ -49,8 +49,8 @@ Module M
         __P(CStr(a + b))
         __P(CStr(a - b))
         __P(CStr(a Mod b))
-        __Check("13.5
-12
-0")
+        ' Decimal arithmetic PRESERVES SCALE: two-place operands answer with
+        ' two places, trailing zeros and all.
+        __Check("13.50" & vbLf & "12.00" & vbLf & "0.00")
     End Sub
 End Module

@@ -45,6 +45,8 @@ Module M
     Sub Main()
         Dim items() As Integer = {1, 2}
         __P(CStr(VarType(items)))
-        __Check("8194")
+        ' VbVariantType.Array (8192) OR'd with the element type — VB.NET's
+        ' `Integer` is 32-bit, i.e. VariantType.Long (3).
+        __Check("8195")
     End Sub
 End Module

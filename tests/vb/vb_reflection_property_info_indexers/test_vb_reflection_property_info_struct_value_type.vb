@@ -53,6 +53,8 @@ Module Program
         prop.SetValue(pt, 50)
         Dim unboxed As Point = CType(pt, Point)
         __P(CStr(unboxed.X))
-        __Check("50")
+        ' ⛔ `SetValue` on a value type writes through a COPY: the box the
+        ' local still refers to keeps its original property.
+        __Check("10")
     End Sub
 End Module

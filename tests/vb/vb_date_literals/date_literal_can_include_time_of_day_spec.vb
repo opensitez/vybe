@@ -50,6 +50,9 @@ Module M
         ' are always rendered. The bare `3:45 PM` this used to expect was an
         ' artifact of the walker's chrono `format_vb_time`, which omitted a
         ' zero seconds field.
-        __Check("5/14/2024 3:45:00 PM")
+        ' ⛔ .NET 8+ on ICU separates the time from AM/PM with U+202F NARROW
+        ' NO-BREAK SPACE, not a plain space — visually identical, different
+        ' codepoint.
+        __Check("5/14/2024 3:45:00" & ChrW(&H202F) & "PM")
     End Sub
 End Module

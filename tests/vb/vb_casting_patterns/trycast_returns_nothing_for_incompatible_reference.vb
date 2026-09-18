@@ -51,7 +51,9 @@ End Class
 
 Module M
     Sub Main()
-        Dim b As Base = New Base()
+        ' ⛔ VB REJECTS a TryCast whose failure it can see at compile time
+        ' (BC30311); the value has to reach it as Object.
+        Dim b As Object = New Base()
         Dim d As Other = TryCast(b, Other)
         __P(CStr(d Is Nothing))
         __Check("True")

@@ -48,6 +48,9 @@ Module Program
     Sub Main()
         Dim dt = DateTime.ParseExact("2025-01-01 10:00:00Z", "yyyy-MM-dd HH:mm:ss'Z'", CultureInfo.InvariantCulture, DateTimeStyles.AdjustToUniversal)
         __P(CStr(dt.Kind.ToString()))
-        __Check("Utc")
+        ' The `'Z'` in the format is an ESCAPED LITERAL, not an offset, so
+        ' `AdjustToUniversal` has nothing to adjust and the Kind stays
+        ' Unspecified.
+        __Check("Unspecified")
     End Sub
 End Module

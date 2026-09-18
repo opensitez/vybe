@@ -44,12 +44,14 @@ End Module
 Module M
     Sub Main()
         ' Explicit ByVal in lambda arguments
+        ' The assertion sat INSIDE the lambda, before the value it checks was
+        ' printed.
         Dim act As Action(Of Integer) = Sub(ByVal x As Integer)
                                             x += 10
-                                            __Check("5")
                                         End Sub
         Dim val = 5
         act(val)
         __P(CStr(val)) ' Should still be 5
+        __Check("5")
     End Sub
 End Module

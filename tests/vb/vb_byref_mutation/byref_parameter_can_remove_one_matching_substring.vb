@@ -43,7 +43,8 @@ End Module
 
 Module M
     Sub TrimBang(ByRef text As String)
-        text = text.Replace("!", "")
+        ' `Replace` would remove EVERY "!"; removing ONE is `Remove(i, 1)`.
+        text = text.Remove(text.IndexOf("!"), 1)
     End Sub
 
     Sub Main()

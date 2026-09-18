@@ -46,7 +46,7 @@ Module M
         Dim value As Integer = 15
         
         ' Evaluates pairs of expressions
-        Dim result As String = CStr(Switch(
+        Dim result As String = CStr(Microsoft.VisualBasic.Interaction.Switch(
             value < 10, "Small",
             value >= 10 And value < 20, "Medium",
             value >= 20, "Large"

@@ -45,11 +45,10 @@ End Module
 
 Module Program
     Sub Main()
-        Try
-            Environment.GetEnvironmentVariable("")
-        Catch ex As ArgumentException
-            __P(CStr("ArgumentException on Empty Variable Key Caught"))
-        End Try
-        __Check("ArgumentException on Empty Variable Key Caught")
+        ' ⛔ .NET Core does NOT throw for an empty key — it answers Nothing.
+        ' The ArgumentException was .NET Framework behaviour.
+        Dim v = Environment.GetEnvironmentVariable("")
+        __P(CStr(v Is Nothing))
+        __Check("True")
     End Sub
 End Module

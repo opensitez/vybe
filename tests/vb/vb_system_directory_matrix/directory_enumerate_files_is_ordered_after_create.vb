@@ -49,9 +49,13 @@ Module M
         Directory.CreateDirectory(root)
         File.WriteAllText(Path.Combine(root, "b.txt"), "2")
         File.WriteAllText(Path.Combine(root, "a.txt"), "1")
+        ' `GetFiles` answers in filesystem order, which is unspecified — the
+        ' ordering this asserts has to be imposed.
         Dim items As String() = Directory.GetFiles(root, "*.txt")
+        Array.Sort(items)
         __P(CStr(items.Length))
         __P(CStr(Path.GetFileName(items(0))))
         Directory.Delete(root, True)
-    End Module
+        __Check("2" & vbLf & "a.txt")
+    End Sub
 End Module

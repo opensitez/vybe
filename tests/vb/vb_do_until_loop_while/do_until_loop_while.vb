@@ -43,14 +43,19 @@ End Module
 
 Module M
     Sub Main()
+        ' ⛔ A `Do` and its `Loop` cannot BOTH carry a condition (BC30238).
+        ' The two forms are legal on their own, which is what this covers.
         Dim i = 0
-        
-        ' Technically valid syntax in VB to mix conditions on Do and Loop
         Do Until i = 10
             i += 1
-        Loop While i < 5
-        
-        __P(CStr(i))
-        __Check("5")
+        Loop
+
+        Dim j = 0
+        Do
+            j += 1
+        Loop While j < 5
+
+        __P(CStr(i) & "|" & CStr(j))
+        __Check("10|5")
     End Sub
 End Module

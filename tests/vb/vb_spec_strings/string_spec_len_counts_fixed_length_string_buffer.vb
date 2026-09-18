@@ -43,8 +43,9 @@ End Module
 
 Module M
     Sub Main()
-        Dim text As String * 4
-        text = "AB"
+        ' VB.NET has no fixed-length string local; a buffer of a set width
+        ' is built with PadRight, and `Len` counts its characters.
+        Dim text As String = "AB".PadRight(4)
         __P(CStr(Len(text)))
         __Check("4")
     End Sub

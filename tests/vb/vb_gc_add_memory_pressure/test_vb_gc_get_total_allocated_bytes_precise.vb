@@ -46,7 +46,8 @@ End Module
 Module Program
     Sub Main()
         Dim b1 = GC.GetTotalAllocatedBytes(precise:=True)
-        Dim dummy As New Byte(1000) {}
+        ' ⛔ `New Byte(1000) {}` is not VB array syntax (BC30205).
+        Dim dummy(1000) As Byte
         Dim b2 = GC.GetTotalAllocatedBytes(precise:=True)
         __P(CStr(b2 > b1))
         __Check("True")

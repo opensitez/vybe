@@ -51,7 +51,8 @@ Class DisposableCollection
     Private Class CustomDispEnum
         Implements IEnumerator(Of String)
         Public Property Current As String Implements IEnumerator(Of String).Current
-        Private Property Current1 As Object Implements IEnumerator.Current
+        ' A get-only property must be declared `ReadOnly` (BC30124).
+        Private ReadOnly Property Current1 As Object Implements IEnumerator.Current
             Get
                 Return Current
             End Get

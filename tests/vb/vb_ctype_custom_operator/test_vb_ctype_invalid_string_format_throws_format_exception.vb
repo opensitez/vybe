@@ -47,9 +47,11 @@ Module Program
     Sub Main()
         Try
             Dim n As Integer = CType("NotANumber", Integer)
-        Catch ex As FormatException
-            __P(CStr("FormatException Caught on CType String"))
+        Catch ex As InvalidCastException
+            ' VB wraps the parse failure: `CType` on an unparsable String
+            ' raises InvalidCastException, not FormatException.
+            __P(CStr("InvalidCastException Caught on CType String"))
         End Try
-        __Check("FormatException Caught on CType String")
+        __Check("InvalidCastException Caught on CType String")
     End Sub
 End Module

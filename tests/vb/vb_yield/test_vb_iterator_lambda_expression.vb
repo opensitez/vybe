@@ -50,9 +50,9 @@ Module Program
         Dim gen As Func(Of IEnumerable(Of Integer)) = Iterator Function()
             Yield 5
             Yield 10
-            __Check("5+10")
         End Function
 
         __P(CStr(String.Join("+", gen())))
+        __Check("5+10")
     End Sub
 End Module

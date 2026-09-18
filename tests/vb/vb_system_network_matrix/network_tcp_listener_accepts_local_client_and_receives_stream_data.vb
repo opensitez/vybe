@@ -62,10 +62,6 @@ Module M
                 outStream.Flush()
                 accepted.Close()
                 handshakeDone = True
-                __Check("ok
-True
-True
-True")
             End Sub
         )
 
@@ -84,5 +80,6 @@ True")
         __P(CStr(count = 2))
         __P(CStr(handshakeDone))
         __P(CStr(Not serverThread.IsAlive))
+        __Check("ok" & vbLf & "True" & vbLf & "True" & vbLf & "True")
     End Sub
 End Module
