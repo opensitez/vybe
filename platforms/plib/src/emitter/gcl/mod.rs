@@ -375,7 +375,13 @@ static CLASSES: &[GclClass] = &[
         SHOW_METHODS
     ),
     widget_class!("TButton", "TWinControl", "button", &[], EMPTY_METHODS),
-    widget_class!("TLabel", "TControl", "label", ALIGNED_PROPERTIES, EMPTY_METHODS),
+    widget_class!(
+        "TLabel",
+        "TControl",
+        "label",
+        ALIGNED_PROPERTIES,
+        EMPTY_METHODS
+    ),
     widget_class!(
         "TEdit",
         "TWinControl",

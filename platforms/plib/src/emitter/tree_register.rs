@@ -635,7 +635,9 @@ mod tests {
             ("tedit", "Text"),
             ("tform", "Name"),
         ] {
-            let found = vybe_compiler::primitives::namespaces::lookup_type_instance_member(&scope, class, prop);
+            let found = vybe_compiler::primitives::namespaces::lookup_type_instance_member(
+                &scope, class, prop,
+            );
             assert!(
                 found.is_some(),
                 "{class}.{prop} did not resolve — registration is not answering"
