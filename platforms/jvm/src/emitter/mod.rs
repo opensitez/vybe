@@ -1,7 +1,6 @@
 //! Compiler-side surface for the JVM platform.
 
 pub mod arrays_adapter;
-pub mod object_fields;
 pub mod base64_adapter;
 pub mod biginteger_adapter;
 pub mod bitset_adapter;
@@ -10,22 +9,23 @@ pub mod dispatch;
 pub mod enum_adapter;
 pub mod enum_set_adapter;
 pub(crate) mod exceptions;
+pub mod executor_adapter;
 pub mod instant_adapter;
 pub mod io_adapter;
 pub mod list_adapter;
 pub mod map_adapter;
 pub mod math_adapter;
 pub mod object_adapter;
+pub mod object_fields;
 pub mod optional_adapter;
 pub mod print_adapter;
 pub mod random_adapter;
 pub mod reflection_adapter;
 pub mod regex_adapter;
+pub mod spliterator_adapter;
 pub mod stream_adapter;
 pub mod string_adapter;
 pub mod stringbuilder_adapter;
-pub mod executor_adapter;
-pub mod spliterator_adapter;
 pub mod stringjoiner_adapter;
 pub mod stringtokenizer_adapter;
 pub mod system_adapter;

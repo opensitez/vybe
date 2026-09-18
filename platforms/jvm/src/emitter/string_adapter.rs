@@ -160,7 +160,6 @@ pub fn emit_index_of(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) 
     host::emit(&mut chunks[current], "ecma:string", "indexOf", argc, line);
 }
 
-
 /// `(char)n` — `String.fromCharCode`, EXCEPT a lone surrogate stays a
 /// NUMBER: the string host cannot hold one (it renders empty), which then
 /// breaks every downstream `charCodeAt`. Mirrors the walker's rule for a
@@ -184,7 +183,6 @@ pub fn emit_from_char_code(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_end(line);
 }
 
-
 pub fn emit_last_index_of(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let chunk = &mut chunks[current];
     let arg_count = argc.saturating_sub(1);
@@ -203,7 +201,6 @@ pub fn emit_last_index_of(chunks: &mut [Chunk], current: usize, argc: u8, line: 
     chunk.emit_call(invoke, argc.saturating_add(1), line);
 }
 
-
 pub fn emit_starts_with(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     host::emit(
         &mut chunks[current],
@@ -214,14 +211,12 @@ pub fn emit_starts_with(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
     );
 }
 
-
 /// `String.valueOf(x)` — `java.lang.String`, so the rendering itself lives in
 /// `platforms/jvm` and Kotlin reaches the identical one. This was
 /// `ecma:string.String`, which never consults the object's ToString slot.
 pub fn emit_value_of(chunks: &mut [Chunk], current: usize, line: u32) {
     crate::emitter::object_adapter::emit_to_string(chunks, current, line);
 }
-
 
 pub fn emit_concat(chunks: &mut [Chunk], current: usize, line: u32) {
     let right_slot = chunks[current].alloc_scratch(1);
@@ -236,12 +231,10 @@ pub fn emit_concat(chunks: &mut [Chunk], current: usize, line: u32) {
     vybe_compiler::primitives::strings::emit_str_concat(&mut chunks[current], line);
 }
 
-
 pub fn emit_compare_to(chunks: &mut [Chunk], current: usize, line: u32) {
     let cmp = chunks[current].add_import("ecma:string", "localeCompare");
     chunks[current].emit_call(cmp, 2, line);
 }
-
 
 pub fn emit_char_ord(chunks: &mut [Chunk], current: usize, line: u32) {
     let value_slot = chunks[current].alloc_scratch(1);
@@ -262,7 +255,6 @@ pub fn emit_char_ord(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
     chunks[current].emit_end(line);
 }
-
 
 pub fn emit_trunc_cast(chunks: &mut [Chunk], current: usize, line: u32) {
     let value_slot = chunks[current].alloc_scratch(1);
@@ -285,14 +277,12 @@ pub fn emit_trunc_cast(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_end(line);
 }
 
-
 pub fn emit_compare_ignore_case(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
     lower_pair(chunk, line);
     let cmp = chunk.add_import("ecma:string", "localeCompare");
     chunk.emit_call(cmp, 2, line);
 }
-
 
 pub fn emit_equals_ignore_case(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
@@ -301,11 +291,9 @@ pub fn emit_equals_ignore_case(chunks: &mut [Chunk], current: usize, line: u32) 
     vybe_compiler::primitives::ops::emit_i32_to_bool(chunk, line);
 }
 
-
 pub fn emit_hash_code(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_i32_const(0, line);
 }
-
 
 pub fn emit_matches(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
@@ -321,7 +309,6 @@ pub fn emit_matches(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, self_slot, line);
     chunk.emit_call(regex_test, 2, line);
 }
-
 
 pub fn emit_replace_regex(chunks: &mut [Chunk], current: usize, replace_all: bool, line: u32) {
     let chunk = &mut chunks[current];
@@ -342,13 +329,11 @@ pub fn emit_replace_regex(chunks: &mut [Chunk], current: usize, replace_all: boo
     chunk.emit_call(replace, 3, line);
 }
 
-
 pub fn emit_to_char_array(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_string_const("", line);
     let idx = chunks[current].add_import("ecma:string", "split");
     chunks[current].emit_call(idx, 2, line);
 }
-
 
 fn lower_pair(chunk: &mut Chunk, line: u32) {
     let other_slot = chunk.alloc_scratch(1);

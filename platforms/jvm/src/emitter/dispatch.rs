@@ -32,9 +32,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
     use crate::emitter::random_adapter as random;
     use crate::emitter::reflection_adapter as reflection;
     use crate::emitter::regex_adapter as regex;
+    use crate::emitter::spliterator_adapter as spl;
     use crate::emitter::stream_adapter as stream;
     use crate::emitter::string_adapter;
-    use crate::emitter::spliterator_adapter as spl;
     use crate::emitter::stringbuilder_adapter as sb;
     use crate::emitter::stringjoiner_adapter as sj;
     use crate::emitter::stringtokenizer_adapter as st;
@@ -94,13 +94,31 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             list_adapter::emit_blocking_queue_drain_to(chunks, current, argc, line);
         }
         "jvm.java.atomic_new" => {
-            list_adapter::emit_atomic_new(chunks, current, argc, list_adapter::AtomicDefault::Zero, line);
+            list_adapter::emit_atomic_new(
+                chunks,
+                current,
+                argc,
+                list_adapter::AtomicDefault::Zero,
+                line,
+            );
         }
         "jvm.java.atomic_new_bool" => {
-            list_adapter::emit_atomic_new(chunks, current, argc, list_adapter::AtomicDefault::False, line);
+            list_adapter::emit_atomic_new(
+                chunks,
+                current,
+                argc,
+                list_adapter::AtomicDefault::False,
+                line,
+            );
         }
         "jvm.java.atomic_new_ref" => {
-            list_adapter::emit_atomic_new(chunks, current, argc, list_adapter::AtomicDefault::Null, line);
+            list_adapter::emit_atomic_new(
+                chunks,
+                current,
+                argc,
+                list_adapter::AtomicDefault::Null,
+                line,
+            );
         }
         "jvm.java.atomic_get" => {
             list_adapter::emit_atomic_get(chunks, current, line);
@@ -402,14 +420,10 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "jvm.java.str_last_index_of" => {
             string_adapter::emit_last_index_of(chunks, current, argc, line)
         }
-        "jvm.java.str_starts_with" => {
-            string_adapter::emit_starts_with(chunks, current, argc, line)
-        }
+        "jvm.java.str_starts_with" => string_adapter::emit_starts_with(chunks, current, argc, line),
         "jvm.java.string_value_of" => string_adapter::emit_value_of(chunks, current, line),
         "jvm.java.string_concat" => string_adapter::emit_concat(chunks, current, line),
-        "jvm.java.replace_regex" => {
-            string_adapter::emit_replace_regex(chunks, current, true, line)
-        }
+        "jvm.java.replace_regex" => string_adapter::emit_replace_regex(chunks, current, true, line),
         "jvm.java.replace_first_regex" => {
             string_adapter::emit_replace_regex(chunks, current, false, line)
         }
@@ -456,9 +470,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         // ── java.lang.Class / Object.getClass() ──
         "jvm.java.class_name" => reflection::emit_class_name(chunks, current, line),
-        "jvm.java.class_simple_name" => {
-            reflection::emit_class_simple_name(chunks, current, line)
-        }
+        "jvm.java.class_simple_name" => reflection::emit_class_simple_name(chunks, current, line),
         "jvm.java.object_get_class" => reflection::emit_object_get_class(chunks, current, line),
         // ── java.math.BigInteger (ecma:bigint-backed; tree-bound so every
         // JVM-family language resolves it) ──
@@ -539,14 +551,18 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "jvm.java.net.uri_new" => url::emit_uri_new(chunks, current, argc, line),
         "jvm.java.random_new" => random::emit_new(chunks, current, argc, line),
         "jvm.java.tlr_current" => random::emit_tlr_current(chunks, current, line),
-        "jvm.java.regex_pattern_compile" => regex::emit_pattern_compile(chunks, current, argc, line),
+        "jvm.java.regex_pattern_compile" => {
+            regex::emit_pattern_compile(chunks, current, argc, line)
+        }
         "jvm.java.regex_pattern_compile_flags" => {
             regex::emit_pattern_compile_flags(chunks, current, argc, line)
         }
         "jvm.java.regex_pattern_pattern" => regex::emit_pattern_pattern(chunks, current, line),
         "jvm.java.regex_pattern_flags" => regex::emit_pattern_flags(chunks, current, line),
         "jvm.java.regex_pattern_matcher" => regex::emit_pattern_matcher(chunks, current, line),
-        "jvm.java.regex_pattern_match_full" => regex::emit_pattern_match_full(chunks, current, line),
+        "jvm.java.regex_pattern_match_full" => {
+            regex::emit_pattern_match_full(chunks, current, line)
+        }
         "jvm.java.regex_pattern_match_entire" => {
             regex::emit_pattern_match_entire(chunks, current, line)
         }
@@ -571,8 +587,12 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "jvm.java.regex_matcher_start" => regex::emit_matcher_start(chunks, current, line),
         "jvm.java.regex_matcher_end" => regex::emit_matcher_end(chunks, current, line),
         "jvm.java.regex_matcher_reset" => regex::emit_matcher_reset(chunks, current, argc, line),
-        "jvm.java.regex_match_result_value" => regex::emit_match_result_value(chunks, current, line),
-        "jvm.java.regex_match_result_range" => regex::emit_match_result_range(chunks, current, line),
+        "jvm.java.regex_match_result_value" => {
+            regex::emit_match_result_value(chunks, current, line)
+        }
+        "jvm.java.regex_match_result_range" => {
+            regex::emit_match_result_range(chunks, current, line)
+        }
         "jvm.java.io_byte_array_output_stream_new" => {
             io::emit_byte_array_output_stream_new(chunks, current, argc, line)
         }
@@ -647,7 +667,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "jvm.java.nio_files_read_all_bytes" => {
             io::emit_nio_files_read_all_bytes(chunks, current, line)
         }
-        "jvm.java.nio_files_new_buffered_reader" => io::emit_file_input_stream(chunks, current, line),
+        "jvm.java.nio_files_new_buffered_reader" => {
+            io::emit_file_input_stream(chunks, current, line)
+        }
         "jvm.java.nio_files_new_byte_channel" => {
             for _ in 1..argc {
                 chunks[current].emit_op(vybe_runtime::opcode::Op::DROP, line);
@@ -1566,9 +1588,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "jvm.java.stringbuilder_new" => sb::emit_new(chunks, current, argc, line),
         "jvm.java.spliterator_new" => spl::emit_new(chunks, current, line),
         "jvm.java.spliterator_estimate_size" => spl::emit_estimate_size(chunks, current, line),
-        "jvm.java.spliterator_characteristics" => {
-            spl::emit_characteristics(chunks, current, line)
-        }
+        "jvm.java.spliterator_characteristics" => spl::emit_characteristics(chunks, current, line),
         "jvm.java.spliterator_has_characteristics" => {
             spl::emit_has_characteristics(chunks, current, line)
         }
@@ -1599,9 +1619,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "jvm.java.stringjoiner_new" => sj::emit_new(chunks, current, argc, line),
         "jvm.java.stringjoiner_add" => sj::emit_add(chunks, current, line),
         "jvm.java.stringjoiner_merge" => sj::emit_merge(chunks, current, line),
-        "jvm.java.stringjoiner_set_empty_value" => {
-            sj::emit_set_empty_value(chunks, current, line)
-        }
+        "jvm.java.stringjoiner_set_empty_value" => sj::emit_set_empty_value(chunks, current, line),
         "jvm.java.stringjoiner_to_string" => sj::emit_to_string(chunks, current, line),
         "jvm.java.stringjoiner_length" => sj::emit_length(chunks, current, line),
         "jvm.java.sb_length" => sb::emit_length(chunks, current, argc, line),
@@ -1628,9 +1646,12 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "jvm.java.str_is_empty" => string_adapter::emit_str_is_empty(chunks, current, line),
         "jvm.java.str_is_blank" => string_adapter::emit_str_is_blank(chunks, current, line),
         "jvm.java.new_array" => arrays::emit_new_array(chunks, current, line),
-        "jvm.java.new_int_array" => {
-            arrays::emit_new_array_with_default(chunks, current, arrays::JavaArrayDefault::IntZero, line)
-        }
+        "jvm.java.new_int_array" => arrays::emit_new_array_with_default(
+            chunks,
+            current,
+            arrays::JavaArrayDefault::IntZero,
+            line,
+        ),
         "jvm.java.new_bool_array" => arrays::emit_new_array_with_default(
             chunks,
             current,
@@ -1643,7 +1664,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "jvm.java.equals" => object::emit_equals(chunks, current, line),
         "jvm.java.hash_code" => object::emit_hash_code(chunks, current, line),
         "jvm.java.array_clone" => collections::emit_slice(chunks, current, line),
-        "jvm.java.mutable_list_of" => collections::emit_array_new(chunks, current, argc as u16, line),
+        "jvm.java.mutable_list_of" => {
+            collections::emit_array_new(chunks, current, argc as u16, line)
+        }
         "jvm.java.sb_delete_char_at" => sb::emit_delete(chunks, current, 2, line),
         "jvm.java.sb_clear" => sb::emit_clear(chunks, current, argc, line),
         "jvm.java.sb_set_char_at" => sb::emit_set_char_at(chunks, current, argc, line),

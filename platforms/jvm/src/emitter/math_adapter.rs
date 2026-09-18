@@ -56,11 +56,7 @@ pub fn emit_scalb(chunks: &mut [Chunk], current: usize, line: u32) {
 /// back 2.22e-13 where Java gives 1.1368683772161603e-13, wrong by 2x. It is
 /// right only at 1.0, where EPSILON happens to BE the ULP.
 pub fn emit_ulp(chunks: &mut [Chunk], current: usize, line: u32) {
-    vybe_compiler::primitives::math::emit_ulp(
-        &mut chunks[current],
-        vybe_ast::FloatLane::F64,
-        line,
-    );
+    vybe_compiler::primitives::math::emit_ulp(&mut chunks[current], vybe_ast::FloatLane::F64, line);
 }
 
 pub fn emit_get_exponent(chunks: &mut [Chunk], current: usize, line: u32) {

@@ -31,8 +31,8 @@
 //! behaviour over a shared component read, which is what an adapter is for.
 
 use vybe_compiler::primitives::url::{self, ParseOptions, PercentOptions, UrlField};
-use vybe_runtime::opcode::Op;
 use vybe_runtime::Chunk;
+use vybe_runtime::opcode::Op;
 
 // ── local emit helpers ──────────────────────────────────────────────────────
 

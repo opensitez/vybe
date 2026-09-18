@@ -26,8 +26,8 @@
 use std::collections::BTreeMap;
 use std::sync::Once;
 
-use vybe_runtime::Value;
 use vybe_compiler::primitives::namespaces::{self, NamespaceNode, Subtree};
+use vybe_runtime::Value;
 
 /// Insert `node` at the dotted `path` under `root`, creating interior
 /// namespaces as needed. Keys are lowercase-canonical.
@@ -330,8 +330,9 @@ fn java_type_ctor_target(qualified: &str) -> Option<NamespaceNode> {
         // Each atomic carries its own zero-argument default, so the ctor emit
         // differs per type: `new AtomicInteger()` is 0, `new AtomicBoolean()`
         // is false, `new AtomicReference()` is null (JLS 17.9).
-        "java.util.concurrent.atomic.AtomicInteger"
-        | "java.util.concurrent.atomic.AtomicLong" => "jvm.java.atomic_new",
+        "java.util.concurrent.atomic.AtomicInteger" | "java.util.concurrent.atomic.AtomicLong" => {
+            "jvm.java.atomic_new"
+        }
         "java.util.concurrent.atomic.AtomicBoolean" => "jvm.java.atomic_new_bool",
         "java.util.concurrent.atomic.AtomicReference" => "jvm.java.atomic_new_ref",
         "java.util.BitSet" => "jvm.java.bitset_new",
@@ -724,18 +725,60 @@ fn insert_java_util_collection_methods(root: &mut Subtree) {
         // ── Iterator / ListIterator ────────────────────────────────────────
         ("Iterator", "next", "jvm.java.iterator_next", 0, 0),
         ("Iterator", "hasNext", "jvm.java.iterator_has_next", 0, 0),
-        ("Iterator", "remove", "jvm.java.iterator_remove_unsupported", 0, 0),
+        (
+            "Iterator",
+            "remove",
+            "jvm.java.iterator_remove_unsupported",
+            0,
+            0,
+        ),
         ("ListIterator", "next", "jvm.java.iterator_next", 0, 0),
-        ("ListIterator", "hasNext", "jvm.java.iterator_has_next", 0, 0),
-        ("ListIterator", "previous", "jvm.java.iterator_previous", 0, 0),
-        ("ListIterator", "hasPrevious", "jvm.java.iterator_has_previous", 0, 0),
-        ("ListIterator", "nextIndex", "jvm.java.iterator_next_index", 0, 0),
-        ("ListIterator", "previousIndex", "jvm.java.iterator_previous_index", 0, 0),
+        (
+            "ListIterator",
+            "hasNext",
+            "jvm.java.iterator_has_next",
+            0,
+            0,
+        ),
+        (
+            "ListIterator",
+            "previous",
+            "jvm.java.iterator_previous",
+            0,
+            0,
+        ),
+        (
+            "ListIterator",
+            "hasPrevious",
+            "jvm.java.iterator_has_previous",
+            0,
+            0,
+        ),
+        (
+            "ListIterator",
+            "nextIndex",
+            "jvm.java.iterator_next_index",
+            0,
+            0,
+        ),
+        (
+            "ListIterator",
+            "previousIndex",
+            "jvm.java.iterator_previous_index",
+            0,
+            0,
+        ),
         ("ListIterator", "set", "jvm.java.list_set", 1, 1),
         // `it.add(x)` — `jvm.java.add`'s argc-2 form probes the
         // `__java_list_iterator` shape and inserts at the cursor.
         ("ListIterator", "add", "jvm.java.add", 1, 1),
-        ("ListIterator", "remove", "jvm.java.iterator_remove_unsupported", 0, 0),
+        (
+            "ListIterator",
+            "remove",
+            "jvm.java.iterator_remove_unsupported",
+            0,
+            0,
+        ),
         // ── Collection ─────────────────────────────────────────────────────
         ("Collection", "add", "jvm.java.add", 1, 1),
         ("Collection", "size", "jvm.java.size", 0, 0),
@@ -745,7 +788,13 @@ fn insert_java_util_collection_methods(root: &mut Subtree) {
         // `AbstractCollection.toString()` — see `emit_collection_to_string` for
         // why this cannot be a runtime probe: a `List` and a Java array are the
         // same ECMA array, and Java renders only one of them element-wise.
-        ("Collection", "toString", "jvm.java.collection_to_string", 0, 0),
+        (
+            "Collection",
+            "toString",
+            "jvm.java.collection_to_string",
+            0,
+            0,
+        ),
         // `Collection.remove(Object)` is BY VALUE — `jvm.java.list_remove` at
         // this arity is `emit_remove_at`, i.e. by INDEX, which a `Set` has no
         // notion of. `List` overrides below with the index overload that is
@@ -754,9 +803,21 @@ fn insert_java_util_collection_methods(root: &mut Subtree) {
         ("Collection", "addAll", "jvm.java.add_all", 1, 1),
         ("Collection", "removeAll", "jvm.java.remove_all", 1, 1),
         ("Collection", "retainAll", "jvm.java.retain_all", 1, 1),
-        ("Collection", "containsAll", "jvm.java.list_contains_all", 1, 1),
+        (
+            "Collection",
+            "containsAll",
+            "jvm.java.list_contains_all",
+            1,
+            1,
+        ),
         ("Collection", "removeIf", "jvm.java.list_remove_if", 1, 1),
-        ("Collection", "spliterator", "jvm.java.spliterator_new", 0, 0),
+        (
+            "Collection",
+            "spliterator",
+            "jvm.java.spliterator_new",
+            0,
+            0,
+        ),
         // ── List ───────────────────────────────────────────────────────────
         // `add(index, e)` is the List-only overload, so List widens the arity.
         ("List", "add", "jvm.java.add", 1, 2),
@@ -825,7 +886,13 @@ fn insert_java_util_collection_methods(root: &mut Subtree) {
         ("Map", "containsValue", "jvm.java.map_contains_value", 1, 1),
         ("Map", "putIfAbsent", "jvm.java.put_if_absent", 2, 2),
         ("Map", "computeIfAbsent", "jvm.java.compute_if_absent", 2, 2),
-        ("Map", "computeIfPresent", "jvm.java.compute_if_present", 2, 2),
+        (
+            "Map",
+            "computeIfPresent",
+            "jvm.java.compute_if_present",
+            2,
+            2,
+        ),
         ("Map", "compute", "jvm.java.map_compute", 2, 2),
         ("Map", "merge", "jvm.java.map_merge", 3, 3),
         // `replace(k, v)` and the conditional `replace(k, old, new)`.
@@ -1202,7 +1269,12 @@ fn insert_java_optional_and_class(root: &mut Subtree) {
         ("orElseGet", "jvm.java.optional_or_else_get", 1, 1),
         ("orElseThrow", "jvm.java.optional_or_else_throw", 0, 1),
         ("ifPresent", "jvm.java.optional_if_present", 1, 1),
-        ("ifPresentOrElse", "jvm.java.optional_if_present_or_else", 2, 2),
+        (
+            "ifPresentOrElse",
+            "jvm.java.optional_if_present_or_else",
+            2,
+            2,
+        ),
         ("filter", "jvm.java.optional_filter", 1, 1),
         ("map", "jvm.java.optional_map", 1, 1),
         ("flatMap", "jvm.java.optional_flat_map", 1, 1),
@@ -1220,7 +1292,12 @@ fn insert_java_optional_and_class(root: &mut Subtree) {
             common_method(emit, min_args, max_args),
         );
     }
-    for type_path in ["util.Optional", "util.OptionalInt", "util.OptionalLong", "util.OptionalDouble"] {
+    for type_path in [
+        "util.Optional",
+        "util.OptionalInt",
+        "util.OptionalLong",
+        "util.OptionalDouble",
+    ] {
         ensure_type_node(root, type_path);
         merge_type_methods(root, type_path, optional.clone());
     }
@@ -1251,7 +1328,12 @@ fn insert_java_util_bitset(root: &mut Subtree) {
         ("nextSetBit", "jvm.java.bitset_next_set_bit", 1, 1),
         ("nextClearBit", "jvm.java.bitset_next_clear_bit", 1, 1),
         ("previousSetBit", "jvm.java.bitset_previous_set_bit", 1, 1),
-        ("previousClearBit", "jvm.java.bitset_previous_clear_bit", 1, 1),
+        (
+            "previousClearBit",
+            "jvm.java.bitset_previous_clear_bit",
+            1,
+            1,
+        ),
         ("and", "jvm.java.bitset_and", 1, 1),
         ("or", "jvm.java.bitset_or", 1, 1),
         ("xor", "jvm.java.bitset_xor", 1, 1),
@@ -1402,17 +1484,11 @@ fn insert_java_util_regex(root: &mut Subtree) {
             // own `m.value()` call form is unchanged.
             (
                 "value".to_string(),
-                namespaces::property(
-                    Some(common_emit("jvm.java.regex_match_result_value")),
-                    None,
-                ),
+                namespaces::property(Some(common_emit("jvm.java.regex_match_result_value")), None),
             ),
             (
                 "range".to_string(),
-                namespaces::property(
-                    Some(common_emit("jvm.java.regex_match_result_range")),
-                    None,
-                ),
+                namespaces::property(Some(common_emit("jvm.java.regex_match_result_range")), None),
             ),
         ]
         .into_iter()
@@ -2051,19 +2127,34 @@ fn insert_java_nio(root: &mut Subtree) {
         ("readAllLines", "jvm.java.nio_files_read_all_lines", 1, 2),
         ("lines", "jvm.java.nio_files_read_all_lines", 1, 2),
         ("delete", "jvm.java.nio_files_delete", 1, 1),
-        ("deleteIfExists", "jvm.java.nio_files_delete_if_exists", 1, 1),
+        (
+            "deleteIfExists",
+            "jvm.java.nio_files_delete_if_exists",
+            1,
+            1,
+        ),
         ("exists", "jvm.java.nio_files_exists", 1, 1),
         ("notExists", "jvm.java.nio_files_not_exists", 1, 1),
         ("size", "jvm.java.nio_files_size", 1, 1),
         ("createFile", "jvm.java.nio_files_create_file", 1, 1),
-        ("createDirectory", "jvm.java.nio_files_create_directories", 1, 1),
+        (
+            "createDirectory",
+            "jvm.java.nio_files_create_directories",
+            1,
+            1,
+        ),
         (
             "createDirectories",
             "jvm.java.nio_files_create_directories",
             1,
             1,
         ),
-        ("createTempFile", "jvm.java.nio_files_create_temp_file", 0, 3),
+        (
+            "createTempFile",
+            "jvm.java.nio_files_create_temp_file",
+            0,
+            3,
+        ),
         (
             "createTempDirectory",
             "jvm.java.nio_files_create_temp_directory",
@@ -2092,7 +2183,12 @@ fn insert_java_nio(root: &mut Subtree) {
             1,
             2,
         ),
-        ("newByteChannel", "jvm.java.nio_files_new_byte_channel", 1, 2),
+        (
+            "newByteChannel",
+            "jvm.java.nio_files_new_byte_channel",
+            1,
+            2,
+        ),
         (
             "probeContentType",
             "jvm.java.nio_files_probe_content_type",
@@ -2132,10 +2228,7 @@ fn insert_java_nio(root: &mut Subtree) {
             ("newOutputStream", "java.io.OutputStream"),
             ("newByteChannel", "java.nio.channels.SeekableByteChannel"),
             ("setLastModifiedTime", "java.nio.file.Path"),
-            (
-                "getLastModifiedTime",
-                "java.nio.file.attribute.FileTime",
-            ),
+            ("getLastModifiedTime", "java.nio.file.attribute.FileTime"),
         ],
     );
 
@@ -2195,9 +2288,7 @@ fn insert_java_nio(root: &mut Subtree) {
         insert_path(
             root,
             &format!("nio.file.StandardOpenOption.{}", option.to_uppercase()),
-            NamespaceNode::Const(vybe_runtime::Value::String(
-                option.to_uppercase().into(),
-            )),
+            NamespaceNode::Const(vybe_runtime::Value::String(option.to_uppercase().into())),
         );
     }
 
@@ -2284,7 +2375,12 @@ fn insert_java_util_spliterator(root: &mut Subtree) {
     ensure_type_node(root, "util.Spliterator");
     let mut methods = Subtree::new();
     for (member, emit, min_args, max_args) in [
-        ("estimateSize", "jvm.java.spliterator_estimate_size", 0u8, 0u8),
+        (
+            "estimateSize",
+            "jvm.java.spliterator_estimate_size",
+            0u8,
+            0u8,
+        ),
         (
             "getexactsizeifknown",
             "jvm.java.spliterator_estimate_size",
@@ -2311,12 +2407,7 @@ fn insert_java_util_spliterator(root: &mut Subtree) {
             1,
         ),
         ("trySplit", "jvm.java.spliterator_try_split", 0, 0),
-        (
-            "getComparator",
-            "jvm.java.spliterator_get_comparator",
-            0,
-            0,
-        ),
+        ("getComparator", "jvm.java.spliterator_get_comparator", 0, 0),
     ] {
         methods.insert(member.to_string(), common_method(emit, min_args, max_args));
     }
@@ -2416,10 +2507,7 @@ fn insert_java_util_executors(root: &mut Subtree) {
         root,
         "util.concurrent.Executors",
         &[
-            (
-                "newFixedThreadPool",
-                "java.util.concurrent.ExecutorService",
-            ),
+            ("newFixedThreadPool", "java.util.concurrent.ExecutorService"),
             (
                 "newCachedThreadPool",
                 "java.util.concurrent.ExecutorService",
@@ -2523,7 +2611,12 @@ fn insert_java_util_atomic(root: &mut Subtree) {
         ("getAndAdd", "jvm.java.atomic_get_and_add", 1, 1),
         ("updateAndGet", "jvm.java.atomic_update_and_get", 1, 1),
         ("getAndUpdate", "jvm.java.atomic_get_and_update", 1, 1),
-        ("accumulateAndGet", "jvm.java.atomic_accumulate_and_get", 2, 2),
+        (
+            "accumulateAndGet",
+            "jvm.java.atomic_accumulate_and_get",
+            2,
+            2,
+        ),
     ];
     for ty in [
         "util.concurrent.atomic.AtomicInteger",
@@ -3357,7 +3450,12 @@ fn insert_java_stream_statics(root: &mut Subtree) {
     }
     for type_path in ["util.stream.IntStream", "util.stream.LongStream"] {
         insert_common_static(root, type_path, "range", "jvm.java.stream_range");
-        insert_common_static(root, type_path, "rangeClosed", "jvm.java.stream_range_closed");
+        insert_common_static(
+            root,
+            type_path,
+            "rangeClosed",
+            "jvm.java.stream_range_closed",
+        );
         insert_common_static(root, type_path, "iterate", "jvm.java.stream_iterate");
     }
     insert_common_static(
@@ -3391,7 +3489,10 @@ fn insert_java_stream_statics(root: &mut Subtree) {
         ("toUnmodifiableMap", "jvm.java.collectors_to_map"),
         ("mapping", "jvm.java.collectors_mapping"),
         ("filtering", "jvm.java.collectors_filtering"),
-        ("collectingAndThen", "jvm.java.collectors_collecting_and_then"),
+        (
+            "collectingAndThen",
+            "jvm.java.collectors_collecting_and_then",
+        ),
         ("reducing", "jvm.java.collectors_reducing"),
         ("groupingBy", "jvm.java.collectors_grouping_by"),
         ("partitioningBy", "jvm.java.collectors_partitioning_by"),
@@ -4026,12 +4127,7 @@ pub const JAVA_TYPES: &[JavaType] = &[
         &["StringTokenizer", "Enumeration", "Object"],
         None,
     ),
-    t(
-        "StringJoiner",
-        "util",
-        &["StringJoiner", "Object"],
-        None,
-    ),
+    t("StringJoiner", "util", &["StringJoiner", "Object"], None),
     // Types whose `[known_types]` entry declares a constructor but which had no
     // JAVA_TYPES row, so they never registered as tree `Type` nodes. While the
     // declarations lived in the Java profile that was invisible —
@@ -4074,18 +4170,8 @@ pub const JAVA_TYPES: &[JavaType] = &[
         &["SplittableRandom", "Object"],
         None,
     ),
-    t(
-        "Pattern",
-        "util.regex",
-        &["Pattern", "Object"],
-        None,
-    ),
-    t(
-        "Matcher",
-        "util.regex",
-        &["Matcher", "Object"],
-        None,
-    ),
+    t("Pattern", "util.regex", &["Pattern", "Object"], None),
+    t("Matcher", "util.regex", &["Matcher", "Object"], None),
     t(
         "ByteArrayOutputStream",
         "io",
@@ -4629,27 +4715,46 @@ mod tests {
         super::register_namespace_tree();
         let scopes = vec!["jvm".to_string()];
         assert!(
-            vybe_compiler::primitives::namespaces::lookup_type_ctor_target(&scopes, "java.util.ArrayList")
-                .is_some()
+            vybe_compiler::primitives::namespaces::lookup_type_ctor_target(
+                &scopes,
+                "java.util.ArrayList"
+            )
+            .is_some()
         );
         assert!(
-            vybe_compiler::primitives::namespaces::lookup_type_ctor_target(&scopes, "java.util.HashMap")
-                .is_some()
+            vybe_compiler::primitives::namespaces::lookup_type_ctor_target(
+                &scopes,
+                "java.util.HashMap"
+            )
+            .is_some()
         );
         assert!(
-            vybe_compiler::primitives::namespaces::lookup_type_ctor_target(&scopes, "java.util.UUID").is_some()
+            vybe_compiler::primitives::namespaces::lookup_type_ctor_target(
+                &scopes,
+                "java.util.UUID"
+            )
+            .is_some()
         );
         assert!(
-            vybe_compiler::primitives::namespaces::lookup_type_ctor_target(&scopes, "java.lang.Object")
-                .is_some()
+            vybe_compiler::primitives::namespaces::lookup_type_ctor_target(
+                &scopes,
+                "java.lang.Object"
+            )
+            .is_some()
         );
         assert!(
-            vybe_compiler::primitives::namespaces::lookup_type_ctor_target(&scopes, "java.lang.StringBuffer")
-                .is_some()
+            vybe_compiler::primitives::namespaces::lookup_type_ctor_target(
+                &scopes,
+                "java.lang.StringBuffer"
+            )
+            .is_some()
         );
         assert!(
-            vybe_compiler::primitives::namespaces::lookup_type_ctor_target(&scopes, "java.util.Random")
-                .is_some()
+            vybe_compiler::primitives::namespaces::lookup_type_ctor_target(
+                &scopes,
+                "java.util.Random"
+            )
+            .is_some()
         );
         assert!(
             vybe_compiler::primitives::namespaces::lookup_type_ctor_target(
@@ -4673,15 +4778,23 @@ mod tests {
             .is_some()
         );
         assert_eq!(
-            vybe_compiler::primitives::namespaces::lookup_type_member_return(&scopes, "URI", "resolve"),
+            vybe_compiler::primitives::namespaces::lookup_type_member_return(
+                &scopes, "URI", "resolve"
+            ),
             Some("java.net.URI".to_string())
         );
         assert_eq!(
-            vybe_compiler::primitives::namespaces::lookup_type_member_return(&scopes, "java.net.URI", "toURL"),
+            vybe_compiler::primitives::namespaces::lookup_type_member_return(
+                &scopes,
+                "java.net.URI",
+                "toURL"
+            ),
             Some("java.net.URL".to_string())
         );
         assert_eq!(
-            vybe_compiler::primitives::namespaces::lookup_type_member_return(&scopes, "URL", "toURI"),
+            vybe_compiler::primitives::namespaces::lookup_type_member_return(
+                &scopes, "URL", "toURI"
+            ),
             Some("java.net.URI".to_string())
         );
     }
@@ -4691,8 +4804,11 @@ mod tests {
         super::register_namespace_tree();
         let scopes = vec!["jvm".to_string()];
         assert!(
-            vybe_compiler::primitives::namespaces::lookup_type_ctor_target(&scopes, "java.lang.StringBuilder")
-                .is_some()
+            vybe_compiler::primitives::namespaces::lookup_type_ctor_target(
+                &scopes,
+                "java.lang.StringBuilder"
+            )
+            .is_some()
         );
         assert!(
             vybe_compiler::primitives::namespaces::lookup_type_instance_target(
@@ -4718,8 +4834,11 @@ mod tests {
         super::register_namespace_tree();
         let scopes = vec!["jvm".to_string()];
         assert!(
-            vybe_compiler::primitives::namespaces::lookup_type_ctor_target(&scopes, "java.util.StringTokenizer")
-                .is_some()
+            vybe_compiler::primitives::namespaces::lookup_type_ctor_target(
+                &scopes,
+                "java.util.StringTokenizer"
+            )
+            .is_some()
         );
         assert!(
             vybe_compiler::primitives::namespaces::lookup_type_instance_target(
@@ -4920,8 +5039,10 @@ mod tests {
                 if emit == "jvm.java.enum_set_contains"
         ));
         assert_eq!(
-            vybe_compiler::primitives::namespaces::lookup_type_member_return(&scopes, "EnumSet", "of")
-                .as_deref(),
+            vybe_compiler::primitives::namespaces::lookup_type_member_return(
+                &scopes, "EnumSet", "of"
+            )
+            .as_deref(),
             Some("java.util.EnumSet"),
         );
         // `java.lang.Enum`'s metadata hook, which is what makes a leaf handed

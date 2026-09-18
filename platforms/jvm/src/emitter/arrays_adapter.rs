@@ -590,9 +590,17 @@ pub fn emit_set_all(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_br_if(1, line);
     get(&mut chunks[current], mapper, line);
     let __abi = vybe_compiler::primitives::class_context::module_receiver_abi(chunks);
-    let __recv = vybe_compiler::primitives::callable::emit_callback_receiver(&mut chunks[current], __abi, line);
+    let __recv = vybe_compiler::primitives::callable::emit_callback_receiver(
+        &mut chunks[current],
+        __abi,
+        line,
+    );
     get(&mut chunks[current], index, line);
-    vybe_compiler::primitives::callable::emit_direct_invoke_chunk(&mut chunks[current], 1 + __recv, line);
+    vybe_compiler::primitives::callable::emit_direct_invoke_chunk(
+        &mut chunks[current],
+        1 + __recv,
+        line,
+    );
     set(&mut chunks[current], value, line);
     get(&mut chunks[current], array, line);
     get(&mut chunks[current], index, line);
@@ -651,10 +659,18 @@ pub fn emit_parallel_prefix(chunks: &mut [Chunk], current: usize, argc: u8, line
     set(&mut chunks[current], current_value, line);
     get(&mut chunks[current], operator, line);
     let __abi = vybe_compiler::primitives::class_context::module_receiver_abi(chunks);
-    let __recv = vybe_compiler::primitives::callable::emit_callback_receiver(&mut chunks[current], __abi, line);
+    let __recv = vybe_compiler::primitives::callable::emit_callback_receiver(
+        &mut chunks[current],
+        __abi,
+        line,
+    );
     get(&mut chunks[current], previous, line);
     get(&mut chunks[current], current_value, line);
-    vybe_compiler::primitives::callable::emit_direct_invoke_chunk(&mut chunks[current], 2 + __recv, line);
+    vybe_compiler::primitives::callable::emit_direct_invoke_chunk(
+        &mut chunks[current],
+        2 + __recv,
+        line,
+    );
     set(&mut chunks[current], value, line);
     get(&mut chunks[current], array, line);
     get(&mut chunks[current], index, line);

@@ -95,8 +95,9 @@ pub fn emit_atomic_new(
         match default {
             AtomicDefault::Zero => chunks[current].emit_f64_const(0.0, line),
             AtomicDefault::False => chunks[current].emit_bool_const(false, line),
-            AtomicDefault::Null => chunks[current]
-                .emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line),
+            AtomicDefault::Null => {
+                chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line)
+            }
         }
     }
     let value = chunks[current].alloc_scratch(1);
@@ -238,7 +239,8 @@ pub fn emit_atomic_apply(
     get_object_prop(chunks, current, cell, "value", line);
     set(&mut chunks[current], old, line);
 
-    let recv = vybe_compiler::primitives::callable::push_callback_from_slot(chunks, current, f, line);
+    let recv =
+        vybe_compiler::primitives::callable::push_callback_from_slot(chunks, current, f, line);
     get(&mut chunks[current], old, line);
     if binary {
         get(&mut chunks[current], operand, line);

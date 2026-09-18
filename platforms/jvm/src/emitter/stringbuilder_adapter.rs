@@ -44,7 +44,12 @@ pub fn emit_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     vybe_compiler::primitives::class_slots::emit_class_alloc(&mut chunks[current], line);
     core_wasm::dup(&mut chunks[current], line);
     get(&mut chunks[current], initial, line);
-    buf_set(&mut chunks[current], ObjSource::Stack, ValueSource::Stack, line);
+    buf_set(
+        &mut chunks[current],
+        ObjSource::Stack,
+        ValueSource::Stack,
+        line,
+    );
 }
 
 pub fn emit_append(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
@@ -124,7 +129,12 @@ fn append_slot(
         chunks[current].emit_string_const("\n", line);
         strings::emit_str_concat(&mut chunks[current], line);
     }
-    buf_set(&mut chunks[current], ObjSource::Stack, ValueSource::Stack, line);
+    buf_set(
+        &mut chunks[current],
+        ObjSource::Stack,
+        ValueSource::Stack,
+        line,
+    );
     get(&mut chunks[current], sb, line);
 }
 

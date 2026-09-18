@@ -1253,10 +1253,18 @@ pub fn emit_collection_extreme(
     // §10.2.1: the receiver is argument 0, inserted while the callee is alone
     // on the stack — once the arguments are pushed there is no room for it.
     let __abi = vybe_compiler::primitives::class_context::module_receiver_abi(chunks);
-    let __recv = vybe_compiler::primitives::callable::emit_callback_receiver(&mut chunks[current], __abi, line);
+    let __recv = vybe_compiler::primitives::callable::emit_callback_receiver(
+        &mut chunks[current],
+        __abi,
+        line,
+    );
     get(&mut chunks[current], value, line);
     get(&mut chunks[current], best, line);
-    vybe_compiler::primitives::callable::emit_direct_invoke_chunk(&mut chunks[current], 2 + __recv, line);
+    vybe_compiler::primitives::callable::emit_direct_invoke_chunk(
+        &mut chunks[current],
+        2 + __recv,
+        line,
+    );
     core_wasm::i32_const(&mut chunks[current], line, 0);
     if min {
         ops::emit_dyn_lt(&mut chunks[current], line);

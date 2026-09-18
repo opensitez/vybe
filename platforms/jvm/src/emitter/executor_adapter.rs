@@ -122,7 +122,13 @@ pub fn emit_submit(chunks: &mut Vec<Chunk>, current: usize, returns_future: bool
     let invoke = chunks[current].alloc_scratch(1);
     get(&mut chunks[current], task, line);
     chunks[current].emit_string_const("call", line);
-    host::emit(&mut chunks[current], "ecma:value", "getMethodForCall", 2, line);
+    host::emit(
+        &mut chunks[current],
+        "ecma:value",
+        "getMethodForCall",
+        2,
+        line,
+    );
     set(&mut chunks[current], invoke, line);
     get(&mut chunks[current], invoke, line);
     ops::emit_dyn_to_bool(&mut chunks[current], line);
@@ -130,7 +136,13 @@ pub fn emit_submit(chunks: &mut Vec<Chunk>, current: usize, returns_future: bool
     chunks[current].emit_if(line);
     get(&mut chunks[current], task, line);
     chunks[current].emit_string_const("run", line);
-    host::emit(&mut chunks[current], "ecma:value", "getMethodForCall", 2, line);
+    host::emit(
+        &mut chunks[current],
+        "ecma:value",
+        "getMethodForCall",
+        2,
+        line,
+    );
     set(&mut chunks[current], invoke, line);
     get(&mut chunks[current], invoke, line);
     ops::emit_dyn_to_bool(&mut chunks[current], line);

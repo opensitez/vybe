@@ -3093,5 +3093,11 @@ pub fn emit_nio_path_compare_to(chunks: &mut [Chunk], current: usize, line: u32)
     set(&mut chunks[current], this, line);
     path_string_from_slot(chunks, current, this, line);
     path_string_from_slot(chunks, current, other, line);
-    host::emit(&mut chunks[current], "ecma:string", "localeCompare", 2, line);
+    host::emit(
+        &mut chunks[current],
+        "ecma:string",
+        "localeCompare",
+        2,
+        line,
+    );
 }

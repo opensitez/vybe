@@ -6,13 +6,9 @@
 
 use std::sync::Arc;
 
-use vybe_compiler::primitives::{
-    collections,
-    instructions::host,
-    ops,
-};
-use vybe_runtime::opcode::heaptype;
+use vybe_compiler::primitives::{collections, instructions::host, ops};
 use vybe_runtime::opcode::Op;
+use vybe_runtime::opcode::heaptype;
 use vybe_runtime::{Chunk, Value};
 
 const RE_KEY: &str = "__jvm_regex_re";
@@ -104,7 +100,12 @@ fn emit_clone_matcher_from_slot(chunks: &mut [Chunk], current: usize, matcher: u
     get(&mut chunks[current], copy, line);
 }
 
-fn emit_match_range_object_from_slot(chunks: &mut [Chunk], current: usize, matcher: u16, line: u32) {
+fn emit_match_range_object_from_slot(
+    chunks: &mut [Chunk],
+    current: usize,
+    matcher: u16,
+    line: u32,
+) {
     let chunk = &mut chunks[current];
     vybe_compiler::primitives::class_slots::emit_class_alloc(chunk, line);
     let range = chunk.alloc_scratch(1);
