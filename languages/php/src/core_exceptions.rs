@@ -145,7 +145,10 @@ fn exception_constructor(span: &Span) -> ClassMember {
                 ExprKind::Ident("code".to_string()),
                 span.clone(),
             )),
-            right: Box::new(Expression::with_span(ExprKind::Lit(Literal::Int(0)), span.clone())),
+            right: Box::new(Expression::with_span(
+                ExprKind::Lit(Literal::Int(0)),
+                span.clone(),
+            )),
         },
         span.clone(),
     );
@@ -155,7 +158,10 @@ fn exception_constructor(span: &Span) -> ClassMember {
                 ExprKind::Ident("previous".to_string()),
                 span.clone(),
             )),
-            right: Box::new(Expression::with_span(ExprKind::Lit(Literal::Null), span.clone())),
+            right: Box::new(Expression::with_span(
+                ExprKind::Lit(Literal::Null),
+                span.clone(),
+            )),
         },
         span.clone(),
     );
@@ -171,11 +177,17 @@ fn exception_constructor(span: &Span) -> ClassMember {
             ),
             param(
                 "code",
-                Some(Expression::with_span(ExprKind::Lit(Literal::Int(0)), span.clone())),
+                Some(Expression::with_span(
+                    ExprKind::Lit(Literal::Int(0)),
+                    span.clone(),
+                )),
             ),
             param(
                 "previous",
-                Some(Expression::with_span(ExprKind::Lit(Literal::Null), span.clone())),
+                Some(Expression::with_span(
+                    ExprKind::Lit(Literal::Null),
+                    span.clone(),
+                )),
             ),
         ],
         body: vec![
@@ -231,7 +243,11 @@ fn exception_base_members(class_name: &str, span: &Span) -> Vec<ClassMember> {
             ),
             span,
         ),
-        exception_method("__toString", exception_to_string_expr(class_name, span), span),
+        exception_method(
+            "__toString",
+            exception_to_string_expr(class_name, span),
+            span,
+        ),
     ];
     members.push(lsb_class_field(class_name, span));
     members
@@ -245,7 +261,10 @@ fn core_exception_decl(
     kind: ClassKind,
     span: &Span,
 ) -> Statement {
-    let parents = parent.into_iter().map(|p| p.to_string()).collect::<Vec<_>>();
+    let parents = parent
+        .into_iter()
+        .map(|p| p.to_string())
+        .collect::<Vec<_>>();
     Statement::with_span(
         StmtKind::ClassDecl {
             name: name.to_string(),

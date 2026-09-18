@@ -15,11 +15,7 @@ const PHP_INI_ENTRIES: [(&str, &str, &str); 11] = [
     ("precision", "__php_ini_precision", "14"),
     ("memory_limit", "__php_ini_memory_limit", "128M"),
     ("post_max_size", "__php_ini_post_max_size", "8M"),
-    (
-        "upload_max_filesize",
-        "__php_ini_upload_max_filesize",
-        "2M",
-    ),
+    ("upload_max_filesize", "__php_ini_upload_max_filesize", "2M"),
     ("default_charset", "__php_ini_default_charset", "UTF-8"),
     ("error_reporting", "__php_ini_error_reporting", "32767"),
     ("max_execution_time", "__php_ini_max_execution_time", "0"),

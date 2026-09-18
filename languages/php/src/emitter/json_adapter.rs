@@ -3,8 +3,8 @@
 //! Public JSON builtins live in their existing adapters; this file owns the
 //! PHP-specific normalization step used before JSON encoding.
 
-use vybe_runtime::opcode::Op;
 use vybe_runtime::Chunk;
+use vybe_runtime::opcode::Op;
 
 fn lset(chunk: &mut Chunk, slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_SET, slot, line);

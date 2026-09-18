@@ -114,18 +114,21 @@ pub fn emit_php_phpinfo(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
     push_const(chunk, Value::Bool(true), line);
 }
 
-pub fn emit_php_get_loaded_extensions(
-    chunks: &mut [Chunk],
-    current: usize,
-    argc: u8,
-    line: u32,
-) {
+pub fn emit_php_get_loaded_extensions(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let chunk = &mut chunks[current];
     for _ in 0..argc {
         chunk.emit_op(Op::DROP, line);
     }
     for ext in [
-        "Core", "standard", "date", "json", "pcre", "SPL", "PDO", "mysqli", "mysqlnd",
+        "Core",
+        "standard",
+        "date",
+        "json",
+        "pcre",
+        "SPL",
+        "PDO",
+        "mysqli",
+        "mysqlnd",
         "pdo_mysql",
     ] {
         push_str(chunk, ext, line);
@@ -149,7 +152,15 @@ pub fn emit_php_extension_loaded(chunks: &mut [Chunk], current: usize, argc: u8,
     lset(chunk, ext_slot, line);
 
     for ext in [
-        "core", "standard", "date", "json", "pcre", "spl", "pdo", "mysqli", "mysqlnd",
+        "core",
+        "standard",
+        "date",
+        "json",
+        "pcre",
+        "spl",
+        "pdo",
+        "mysqli",
+        "mysqlnd",
         "pdo_mysql",
     ] {
         emit_eq_str(chunk, ext_slot, ext, line);

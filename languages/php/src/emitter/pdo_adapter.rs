@@ -922,12 +922,20 @@ fn emit_record_failure(chunks: &mut [Chunk], current: usize, conn_slot: u16, lin
 
     lget(&mut chunks[current], conn_slot, line);
     lget(&mut chunks[current], msg_slot, line);
-    struct_set_key(&mut chunks[current], &ClassSlot::internal("__pdo_error"), line);
+    struct_set_key(
+        &mut chunks[current],
+        &ClassSlot::internal("__pdo_error"),
+        line,
+    );
 
     emit_string_slot_nonempty(&mut chunks[current], msg_slot, line);
     chunks[current].emit_if(line);
     lget(&mut chunks[current], conn_slot, line);
-    struct_get_key(&mut chunks[current], &ClassSlot::internal("__pdo_attr"), line);
+    struct_get_key(
+        &mut chunks[current],
+        &ClassSlot::internal("__pdo_attr"),
+        line,
+    );
     push_const(&mut chunks[current], Value::F64(2.0), line);
     vybe_compiler::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
     vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
@@ -935,7 +943,11 @@ fn emit_record_failure(chunks: &mut [Chunk], current: usize, conn_slot: u16, lin
     // PHP's message shape, so `$e->getMessage()` reads the way a PDO user
     // expects rather than exposing the bare driver text.
     let text_slot = alloc_local(&mut chunks[current]);
-    push_str(&mut chunks[current], "SQLSTATE[HY000]: General error: ", line);
+    push_str(
+        &mut chunks[current],
+        "SQLSTATE[HY000]: General error: ",
+        line,
+    );
     lset(&mut chunks[current], text_slot, line);
     concat_slot_with_slot(&mut chunks[current], text_slot, msg_slot, line);
     class_slots::emit_class_alloc(&mut chunks[current], line);
@@ -2581,7 +2593,11 @@ pub fn emit_php_pdo_error_code(chunks: &mut [Chunk], current: usize, argc: u8, l
     lset(chunk, conn_slot, line);
     let msg_slot = alloc_local(&mut chunks[current]);
     lget(&mut chunks[current], conn_slot, line);
-    struct_get_key(&mut chunks[current], &ClassSlot::internal("__pdo_error"), line);
+    struct_get_key(
+        &mut chunks[current],
+        &ClassSlot::internal("__pdo_error"),
+        line,
+    );
     lset(&mut chunks[current], msg_slot, line);
 
     let code_slot = alloc_local(&mut chunks[current]);

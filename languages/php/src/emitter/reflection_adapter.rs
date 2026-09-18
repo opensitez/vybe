@@ -106,7 +106,10 @@ fn build_method_invoke(chunks: &mut Vec<Chunk>, line: u32) -> usize {
 fn build_implements_interface(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     let mut c = Chunk::new("__refl_implements");
     c.arity = 2; // this, interface_name
-    let cs_slot = class_slots::resolve(&ClassSlot::Internal(("__interfaces").to_string()), &PlainNames);
+    let cs_slot = class_slots::resolve(
+        &ClassSlot::Internal(("__interfaces").to_string()),
+        &PlainNames,
+    );
     let indexof_i = c.add_import("ecma:array".to_string(), "indexOf".to_string());
     c.emit_op_u16(Op::LOCAL_GET, 0, line);
     class_slots::emit_class_get(&mut c, ObjSource::Stack, &cs_slot, Dest::Stack, line);
@@ -148,8 +151,16 @@ fn build_get_methods(chunks: &mut Vec<Chunk>, line: u32) -> usize {
 fn build_get_properties(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     let mut c = Chunk::new("__refl_getProperties");
     c.arity = 2; // this, filter
-    let cs_slot_1 = class_slots::resolve_interned(&mut c, &ClassSlot::Internal(("__fields").to_string()), &PlainNames);
-    let cs_slot_2 = class_slots::resolve_interned(&mut c, &ClassSlot::Internal(("__fields_public").to_string()), &PlainNames);
+    let cs_slot_1 = class_slots::resolve_interned(
+        &mut c,
+        &ClassSlot::Internal(("__fields").to_string()),
+        &PlainNames,
+    );
+    let cs_slot_2 = class_slots::resolve_interned(
+        &mut c,
+        &ClassSlot::Internal(("__fields_public").to_string()),
+        &PlainNames,
+    );
     c.emit_op_u16(Op::LOCAL_GET, 1, line);
     c.emit_f64_const(1.0, line);
     vybe_compiler::primitives::ops::emit_dyn_eq(&mut c, line);
@@ -352,7 +363,10 @@ pub fn emit_refl_class(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: 
         // this.__parent_ref = parent_ref
         chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
         chunk.emit_op_u16(Op::LOCAL_GET, parent_ref_slot, line);
-        let cs_slot = class_slots::resolve(&ClassSlot::Internal(("__parent_ref").to_string()), &PlainNames);
+        let cs_slot = class_slots::resolve(
+            &ClassSlot::Internal(("__parent_ref").to_string()),
+            &PlainNames,
+        );
         class_slots::emit_class_set(chunk, ObjSource::Stack, &cs_slot, ValueSource::Stack, line);
     }
     chunk.emit_end(line);

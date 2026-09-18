@@ -16,9 +16,7 @@ use std::sync::Arc;
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
 
-use vybe_compiler::primitives::class_slots::{
-    self, ClassSlot, Dest, ObjSource, PlainNames,
-};
+use vybe_compiler::primitives::class_slots::{self, ClassSlot, Dest, ObjSource, PlainNames};
 use vybe_compiler::primitives::ops::{emit_dyn_eq, emit_dyn_to_bool};
 
 fn alloc_local(chunk: &mut Chunk) -> u16 {
@@ -65,10 +63,10 @@ fn emit_numeric_fallback(
 }
 
 pub fn emit_php_loose_eq(chunks: &mut [Chunk], current: usize, _argc: u8, negate: bool, line: u32) {
-    let parse_float = chunks[0].add_import("ecma:number", "parseFloat");
-    let str_eq = chunks[0].add_import("wasm:js-string", "equals");
-    let test_num = chunks[0].add_import("wasm:js-number", "test");
-    let to_f64 = chunks[0].add_import("wasm:js-number", "toF64");
+    let parse_float = chunks[current].add_import("ecma:number", "parseFloat");
+    let str_eq = chunks[current].add_import("wasm:js-string", "equals");
+    let test_num = chunks[current].add_import("wasm:js-number", "test");
+    let to_f64 = chunks[current].add_import("wasm:js-number", "toF64");
     let chunk = &mut chunks[current];
     let b_slot = alloc_local(chunk);
     let a_slot = alloc_local(chunk);

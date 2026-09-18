@@ -135,6 +135,7 @@ fn emit_php_arrayish_slot(chunk: &mut Chunk, slot: u16, line: u32) {
 fn build_copy_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     let helper_idx = chunks.len();
     let mut c = create_function_chunk("__php_copy_on_assign_impl", 1);
+    c.local_count = c.local_count.max(1);
     let value_slot = 0;
     let out_slot = alloc_local(&mut c);
     let entries_slot = alloc_local(&mut c);
@@ -158,11 +159,53 @@ fn build_copy_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     lset(&mut c, packed_slot, line);
     lget(&mut c, packed_slot, line);
     c.emit_if_i32(line);
-    c.emit_array_new_fixed(0, 0, line);
+    vybe_compiler::primitives::collections::emit_array_new_into(&mut chunks[0], &mut c, 0, line);
     c.emit_else(line);
     call_import(&mut c, "ecma:map", "new", 0, line);
     c.emit_end(line);
     lset(&mut c, out_slot, line);
+
+    lget(&mut c, packed_slot, line);
+    c.emit_if_i32(line);
+    lget(&mut c, value_slot, line);
+    vybe_compiler::primitives::collections::emit_len_into(&mut chunks[0], &mut c, line);
+    lset(&mut c, len_slot, line);
+    c.emit_i32_const(0, line);
+    lset(&mut c, i_slot, line);
+
+    let array_loop = helper_loop_start(&mut c, line);
+    lget(&mut c, i_slot, line);
+    lget(&mut c, len_slot, line);
+    c.emit_op(Op::I32_LT_S, line);
+    c.emit_op(Op::I32_EQZ, line);
+    c.emit_br_if(1, line);
+
+    lget(&mut c, value_slot, line);
+    lget(&mut c, i_slot, line);
+    call_import(&mut c, "ecma:array", "get", 2, line);
+    lset(&mut c, item_slot, line);
+
+    emit_php_arrayish_slot(&mut c, item_slot, line);
+    c.emit_if_i32(line);
+    ref_func(&mut c, helper_idx, line);
+    lget(&mut c, item_slot, line);
+    call_ref(&mut c, 1, line);
+    c.emit_else(line);
+    lget(&mut c, item_slot, line);
+    c.emit_end(line);
+    lset(&mut c, copied_slot, line);
+
+    lget(&mut c, out_slot, line);
+    lget(&mut c, copied_slot, line);
+    call_import(&mut c, "ecma:array", "push", 2, line);
+    c.emit_op(Op::DROP, line);
+
+    bump_i32(&mut c, i_slot, line);
+    helper_loop_end(&mut c, array_loop, line);
+
+    lget(&mut c, out_slot, line);
+    c.emit_op(Op::RETURN, line);
+    c.emit_end(line);
 
     lget(&mut c, value_slot, line);
     call_import(&mut c, "ecma:object", "entries", 1, line);
@@ -230,6 +273,7 @@ fn build_copy_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
 fn build_strict_eq_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     let helper_idx = chunks.len();
     let mut c = create_function_chunk("__php_strict_eq_impl", 2);
+    c.local_count = c.local_count.max(2);
     let a_slot = 0;
     let b_slot = 1;
     let a_is_slot = alloc_local(&mut c);

@@ -495,7 +495,8 @@ pub fn emit_pathinfo(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) 
 
     chunk.emit_dup(line);
     lget(chunk, extension_slot, line);
-    let cs_slot = class_slots::resolve(&ClassSlot::Internal(("extension").to_string()), &PlainNames);
+    let cs_slot =
+        class_slots::resolve(&ClassSlot::Internal(("extension").to_string()), &PlainNames);
     class_slots::emit_class_set(chunk, ObjSource::Stack, &cs_slot, ValueSource::Stack, line);
 
     chunk.emit_dup(line);
@@ -761,7 +762,8 @@ pub fn emit_dir(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
 
     chunk.emit_dup(line);
     lget(chunk, entries_slot, line);
-    let cs_slot = class_slots::resolve(&ClassSlot::Internal(("__entries").to_string()), &PlainNames);
+    let cs_slot =
+        class_slots::resolve(&ClassSlot::Internal(("__entries").to_string()), &PlainNames);
     class_slots::emit_class_set(chunk, ObjSource::Stack, &cs_slot, ValueSource::Stack, line);
 
     chunk.emit_dup(line);
@@ -780,8 +782,16 @@ pub fn emit_dir_read(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32)
     let index_slot = alloc_local(chunk);
     let len_slot = alloc_local(chunk);
     let entry_slot = alloc_local(chunk);
-    let cs_slot_1 = class_slots::resolve_interned(chunk, &ClassSlot::Internal(("__entries").to_string()), &PlainNames);
-    let cs_slot_2 = class_slots::resolve_interned(chunk, &ClassSlot::Internal(("__index").to_string()), &PlainNames);
+    let cs_slot_1 = class_slots::resolve_interned(
+        chunk,
+        &ClassSlot::Internal(("__entries").to_string()),
+        &PlainNames,
+    );
+    let cs_slot_2 = class_slots::resolve_interned(
+        chunk,
+        &ClassSlot::Internal(("__index").to_string()),
+        &PlainNames,
+    );
     let cs_slot = class_slots::resolve(&ClassSlot::Internal(("__index").to_string()), &PlainNames);
     lset(chunk, dir_slot, line);
 

@@ -24,7 +24,6 @@ uses_common_resolver = true
 # literals past f64 exactness, and the shared compiler derives the capability
 # from the literals themselves (module prescan).
 has_generators = true                # PHP generators (yield)
-abstract_equality = true             # PHP == loose equality
 function_return = "explicit"
 member_call_on_null_error = "Error" # `$null->method()` throws `Error` (PHP);
                                     # JS default is `TypeError`.
@@ -320,6 +319,11 @@ preg_match          = { emit = "host:ecma:regexp:test",          min_args = 2, m
 preg_match_all      = { emit = "common:php.regex_match_all_pat_first", min_args = 2, max_args = 5 }
 preg_replace        = { emit = "common:php.regex_replace_pat_first", min_args = 3, max_args = 4 }
 preg_replace_callback = { emit = "common:php.preg_replace_callback", min_args = 3, max_args = 5 }
+__php_clone_shell   = { emit = "common:php.clone_shell",         min_args = 1, max_args = 1 }
+__php_clone_field_get = { emit = "common:php.clone_field_get",   min_args = 2, max_args = 2 }
+__php_clone_field_set = { emit = "common:php.clone_field_set",   min_args = 3, max_args = 3 }
+__php_field_get       = { emit = "common:php.field_get",         min_args = 2, max_args = 2 }
+__php_field_set       = { emit = "common:php.field_set",         min_args = 3, max_args = 3 }
 __php_clone_helper  = { emit = "common:php.clone_helper",        min_args = 1, max_args = 2 }
 __php_dynamic_method_call = { emit = "common:php.dynamic_method_call", min_args = 3, max_args = 3 }
 __php_method_exists = { emit = "common:php.method_exists", min_args = 2, max_args = 2 }
@@ -469,6 +473,7 @@ range               = { emit = "intrinsic:php_range",              min_args = 2,
 array_map           = { emit = "common:php.array_map",             min_args = 2, max_args = 255 }
 zip                 = { emit = "common:php.zip",                       min_args = 2, max_args = 255 }
 array_filter        = { emit = "common:php.array_filter",          min_args = 1, max_args = 3 }
+array_walk          = { emit = "common:php.array_walk",             min_args = 2, max_args = 3 }
 array_walk_recursive = { emit = "common:php.array_walk_recursive", min_args = 2, max_args = 3 }
 array_sum           = { emit = "common:php.array_sum",             min_args = 1, max_args = 1 }
 # Walker-injected, but ONLY for a negative literal subscript (`$s[-2]`), where
@@ -550,7 +555,9 @@ array_unique        = { emit = "common:php.uniq",                     min_args =
 # JS profile uses. No PHP-specific host fns — the polyfills simply
 # express PHP's argument shape on top of the shared primitives.
 array_pad           = { emit = "common:php.array_pad",            min_args = 3, max_args = 3 }
-# `array_splice` walker-rewritten to `$arr.splice($start, $length, ...$rep)`
+# `array_splice` packed arrays walker-rewritten to `$arr.splice($start, $length, ...$rep)`;
+# associative arrays use the PHP adapter helper below.
+__php_array_splice_assoc_removed = { emit = "common:php.array_splice_assoc_removed", min_args = 3, max_args = 4 }
 # — JS Array.prototype.splice with the replacement array spread.
 array_chunk         = { emit = "common:php.array_chunk",          min_args = 2, max_args = 3 }
 array_flip          = { emit = "common:php.array_flip",           min_args = 1, max_args = 1 }
@@ -587,6 +594,7 @@ uksort              = { emit = "common:php.uksort",               min_args = 2, 
 # ── JSON ────────────────────────────────────────────────────────────────────
 
 json_encode         = { emit = "common:php.json_encode",         min_args = 1, max_args = 3 }
+__php_json_encode_ordered_map = { emit = "common:php.json_encode_ordered_map", min_args = 1, max_args = 1 }
 json_decode         = { emit = "common:php.json_decode",         min_args = 1, max_args = 4 }
 json_last_error     = { emit = "common:php.json_last_error",     min_args = 0, max_args = 0 }
 json_last_error_msg = { emit = "common:php.json_last_error_msg", min_args = 0, max_args = 0 }
@@ -615,13 +623,40 @@ __dom_hasAttribute    = { emit = "host:web:dom-parser:hasAttribute",          mi
 __dom_setAttributeNS  = { emit = "host:web:dom-parser:setAttributeNS",        min_args = 4, max_args = 4 }
 __dom_getAttributeNS  = { emit = "host:web:dom-parser:getAttributeNS",        min_args = 3, max_args = 3 }
 __dom_getElementsByTagName = { emit = "host:web:dom-parser:getElementsByTagName", min_args = 2, max_args = 2 }
+__dom_getElementsByTagNameNS = { emit = "host:web:dom-parser:getElementsByTagNameNS", min_args = 3, max_args = 3 }
 __dom_getElementById  = { emit = "host:web:dom-parser:getElementById",        min_args = 2, max_args = 2 }
 __dom_getElementsByClassName = { emit = "host:web:dom-parser:getElementsByClassName", min_args = 2, max_args = 2 }
+__dom_querySelectorAll = { emit = "host:web:dom-parser:querySelectorAll", min_args = 2, max_args = 2 }
 __dom_parseFromString = { emit = "host:web:dom-parser:parseFromString",       min_args = 2, max_args = 3 }
 __dom_serializeToString = { emit = "host:web:dom-parser:serializeToString",   min_args = 1, max_args = 1 }
 __dom_parse           = { emit = "host:web:dom-parser:parse",                 min_args = 1, max_args = 1 }
 __dom_save_xml        = { emit = "common:php.dom_save_xml",                    min_args = 1, max_args = 1 }
 simplexml_load_string = { emit = "common:php.simplexml_load_string",           min_args = 1, max_args = 5 }
+__php_domxpath_new    = { emit = "common:php.domxpath_new",                    min_args = 1, max_args = 1 }
+__php_dom_attr_new    = { emit = "common:php.dom_attr_new",                    min_args = 1, max_args = 1 }
+__php_simplexml_child_text = { emit = "common:php.simplexml_child_text",        min_args = 2, max_args = 2 }
+__php_dom_node_item   = { emit = "common:php.dom_node_item",                   min_args = 2, max_args = 2 }
+__php_xmlwriter_new   = { emit = "common:php.xmlwriter_new",                   min_args = 0, max_args = 0 }
+__php_xmlwriter_open_memory = { emit = "common:php.xmlwriter_open_memory",      min_args = 1, max_args = 1 }
+__php_xmlwriter_start_document = { emit = "common:php.xmlwriter_start_document", min_args = 1, max_args = 3 }
+__php_xmlwriter_start_element = { emit = "common:php.xmlwriter_start_element",  min_args = 2, max_args = 2 }
+__php_xmlwriter_start_element_ns = { emit = "common:php.xmlwriter_start_element_ns", min_args = 4, max_args = 4 }
+__php_xmlwriter_write_attribute = { emit = "common:php.xmlwriter_write_attribute", min_args = 3, max_args = 3 }
+__php_xmlwriter_start_attribute = { emit = "common:php.xmlwriter_start_attribute", min_args = 2, max_args = 2 }
+__php_xmlwriter_end_attribute = { emit = "common:php.xmlwriter_end_attribute",  min_args = 1, max_args = 1 }
+__php_xmlwriter_text  = { emit = "common:php.xmlwriter_text",                  min_args = 2, max_args = 2 }
+__php_xmlwriter_write_element = { emit = "common:php.xmlwriter_write_element", min_args = 3, max_args = 3 }
+__php_xmlwriter_end_element = { emit = "common:php.xmlwriter_end_element",     min_args = 1, max_args = 1 }
+__php_xmlwriter_output_memory = { emit = "common:php.xmlwriter_output_memory", min_args = 1, max_args = 1 }
+__php_xmlwriter_flush = { emit = "common:php.xmlwriter_flush",                 min_args = 1, max_args = 1 }
+__php_xmlwriter_end_document = { emit = "common:php.xmlwriter_end_document",   min_args = 1, max_args = 1 }
+__php_xmlwriter_set_indent = { emit = "common:php.xmlwriter_set_indent",       min_args = 2, max_args = 2 }
+__php_xmlwriter_set_indent_string = { emit = "common:php.xmlwriter_set_indent_string", min_args = 2, max_args = 2 }
+__php_xmlwriter_write_comment = { emit = "common:php.xmlwriter_write_comment", min_args = 2, max_args = 2 }
+__php_xmlwriter_write_cdata = { emit = "common:php.xmlwriter_write_cdata",     min_args = 2, max_args = 2 }
+__php_xmlwriter_write_pi = { emit = "common:php.xmlwriter_write_pi",           min_args = 2, max_args = 3 }
+__php_xmlwriter_start_dtd = { emit = "common:php.xmlwriter_start_dtd",         min_args = 2, max_args = 2 }
+__php_xmlwriter_end_dtd = { emit = "common:php.xmlwriter_end_dtd",             min_args = 1, max_args = 1 }
 __php_xml_name        = { emit = "common:xml.name",                            min_args = 3, max_args = 3 }
 __php_xml_local       = { emit = "common:xml.local",                           min_args = 1, max_args = 1 }
 __php_xml_namespace   = { emit = "common:xml.namespace",                       min_args = 1, max_args = 1 }
@@ -911,6 +946,7 @@ unserialize         = { emit = "common:php.unserialize",    min_args = 1, max_ar
 __php_dt_new           = { emit = "common:php.datetime_new",            min_args = 1, max_args = 2 }
 __php_dt_imm_new       = { emit = "common:php.datetime_immutable_new",  min_args = 1, max_args = 2 }
 __php_datetimezone_new = { emit = "common:php.datetimezone_new",        min_args = 1, max_args = 1 }
+__php_datetimezone_list_identifiers = { emit = "common:php.datetimezone_list_identifiers", min_args = 0, max_args = 2 }
 __php_dt_get_timezone  = { emit = "common:php.datetime_get_timezone",   min_args = 1, max_args = 1 }
 __php_dt_clone         = { emit = "common:php.datetime_clone",          min_args = 1, max_args = 1 }
 __php_dt_get_offset    = { emit = "common:php.datetime_get_offset",     min_args = 1, max_args = 2 }
@@ -918,8 +954,9 @@ __php_dt_set_timezone  = { emit = "common:php.datetime_set_timezone",   min_args
 __php_dt_set_date      = { emit = "common:php.datetime_set_date",       min_args = 4, max_args = 4 }
 __php_dt_set_time      = { emit = "common:php.datetime_set_time",       min_args = 4, max_args = 4 }
 __php_dt_set_timestamp = { emit = "common:php.datetime_set_timestamp",  min_args = 2, max_args = 2 }
-__php_dt_create_from_format = { emit = "common:php.datetime_create_from_format", min_args = 2, max_args = 2 }
-__php_dt_imm_create_from_format = { emit = "common:php.datetime_immutable_create_from_format", min_args = 2, max_args = 2 }
+__php_dt_create_from_format = { emit = "common:php.datetime_create_from_format", min_args = 2, max_args = 3 }
+__php_dt_imm_create_from_format = { emit = "common:php.datetime_immutable_create_from_format", min_args = 2, max_args = 3 }
+__php_dt_with_microseconds = { emit = "common:php.datetime_with_microseconds", min_args = 2, max_args = 2 }
 __php_dt_format        = { emit = "common:php.datetime_format",         min_args = 2, max_args = 2 }
 __php_dt_get_timestamp = { emit = "common:php.datetime_get_timestamp",  min_args = 1, max_args = 1 }
 __php_dt_modify        = { emit = "common:php.datetime_modify",         min_args = 2, max_args = 2 }

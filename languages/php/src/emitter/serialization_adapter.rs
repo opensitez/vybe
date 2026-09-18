@@ -202,7 +202,13 @@ fn build_php_alloc_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
             lget(&mut helper, obj_slot, line);
             push_str(&mut helper, &ty.name, line);
             let cs_id = class_slots::resolve(&ClassSlot::TypeIdentity, &PlainNames);
-            class_slots::emit_class_set(&mut helper, ObjSource::Stack, &cs_id, ValueSource::Stack, line);
+            class_slots::emit_class_set(
+                &mut helper,
+                ObjSource::Stack,
+                &cs_id,
+                ValueSource::Stack,
+                line,
+            );
 
             lget(&mut helper, obj_slot, line);
             push_str(&mut helper, &ty.name.to_lowercase(), line);
@@ -258,6 +264,7 @@ fn build_php_alloc_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
 
 fn build_php_serialize_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     let helper_idx = chunks.len();
+    let types = chunks[0].types.clone();
     let mut helper = create_function_chunk("__php_serialize_value", 1);
     helper.alloc_scratch(1);
 
@@ -336,7 +343,11 @@ fn build_php_serialize_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
         set_struct_from_slot(&mut helper, out_slot, "items", items_slot, line);
 
         lget(&mut helper, value_slot, line);
-        struct_get_key(&mut helper, &ClassSlot::internal("vybe$assoc_keys_csv"), line);
+        struct_get_key(
+            &mut helper,
+            &ClassSlot::internal("vybe$assoc_keys_csv"),
+            line,
+        );
         lset(&mut helper, tmp_slot, line);
         lget(&mut helper, tmp_slot, line);
         helper.emit_dup(line);
@@ -386,7 +397,7 @@ fn build_php_serialize_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
         helper.emit_end(line);
 
         lget(&mut helper, value_slot, line);
-        struct_get_key(&mut helper, &ClassSlot::internal("__serialize"), line);
+        struct_get_key(&mut helper, &ClassSlot::Slot(vybe_ast::ProtocolSlot::Serialize), line);
         lset(&mut helper, method_slot, line);
         // function test: not null AND not number AND not string AND not boolean
         {
@@ -520,6 +531,38 @@ fn build_php_serialize_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
         set_struct_from_slot(&mut helper, out_slot, "class", tmp_slot, line);
         call_import_into(imports, &mut helper, "ecma:object", "new", 0, line);
         lset(&mut helper, assoc_slot, line);
+
+        for ty in types.iter().filter(|ty| !ty.is_interface) {
+            lget(&mut helper, tmp_slot, line);
+            push_str(&mut helper, &ty.name, line);
+            vybe_compiler::primitives::ops::emit_dyn_eq(&mut helper, line);
+            helper.emit_if(line);
+
+            for field in ty.fields.iter().filter(|field| {
+                !matches!(
+                    field.as_str(),
+                    "__type" | "__types" | "__control_name" | "__super" | "vybe$assoc_keys_csv"
+                )
+            }) {
+                push_str(&mut helper, field, line);
+                lset(&mut helper, key_slot, line);
+                lget(&mut helper, value_slot, line);
+                struct_get_key(&mut helper, &ClassSlot::internal(field), line);
+                lset(&mut helper, tmp_slot, line);
+
+                ref_func(&mut helper, helper_idx, line);
+                lget(&mut helper, tmp_slot, line);
+                call_ref(&mut helper, 1, line);
+                lset(&mut helper, tmp_slot, line);
+                dynamic_set_from_slots(&mut helper, assoc_slot, key_slot, tmp_slot, line);
+            }
+
+            set_struct_from_slot(&mut helper, out_slot, "fields", assoc_slot, line);
+            lget(&mut helper, out_slot, line);
+            helper.emit_op(Op::RETURN, line);
+            helper.emit_end(line);
+        }
+
         lget(&mut helper, value_slot, line);
         call_import_into(imports, &mut helper, "ecma:object", "keys", 1, line);
         lset(&mut helper, names_slot, line);
@@ -763,7 +806,7 @@ fn build_php_unserialize_helper(chunks: &mut Vec<Chunk>, alloc_idx: usize, line:
         vybe_compiler::primitives::ops::emit_dyn_eq(&mut helper, line);
         helper.emit_if(line);
         lget(&mut helper, out_slot, line);
-        struct_get_key(&mut helper, &ClassSlot::internal("__unserialize"), line);
+        struct_get_key(&mut helper, &ClassSlot::Slot(vybe_ast::ProtocolSlot::Deserialize), line);
         lset(&mut helper, method_slot, line);
         // function test: not null AND not number AND not string AND not boolean
         {
@@ -879,7 +922,6 @@ fn build_php_unserialize_helper(chunks: &mut Vec<Chunk>, alloc_idx: usize, line:
     chunks.push(helper);
     helper_idx
 }
-
 
 pub fn emit_php_serialize(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32) {
     let helper_idx = build_php_serialize_helper(chunks, line);

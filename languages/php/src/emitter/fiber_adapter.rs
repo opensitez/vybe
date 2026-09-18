@@ -77,25 +77,54 @@ pub fn emit_php_fiber_start(chunks: &mut [Chunk], current: usize, argc: u8, line
     let value_slot = alloc_local(chunk);
     let fiber_slot = alloc_local(chunk);
     let ret_slot = alloc_local(chunk);
-    let started_key = class_slots::resolve_interned(chunk, &ClassSlot::internal("__started"), &PlainNames);
-    let suspended_key = class_slots::resolve_interned(chunk, &ClassSlot::internal("__suspended"), &PlainNames);
-    let running_key = class_slots::resolve_interned(chunk, &ClassSlot::internal("__running"), &PlainNames);
-    let terminated_key = class_slots::resolve_interned(chunk, &ClassSlot::internal("__terminated"), &PlainNames);
-    let return_key = class_slots::resolve_interned(chunk, &ClassSlot::internal("__return"), &PlainNames);
+    let started_key =
+        class_slots::resolve_interned(chunk, &ClassSlot::internal("__started"), &PlainNames);
+    let suspended_key =
+        class_slots::resolve_interned(chunk, &ClassSlot::internal("__suspended"), &PlainNames);
+    let running_key =
+        class_slots::resolve_interned(chunk, &ClassSlot::internal("__running"), &PlainNames);
+    let terminated_key =
+        class_slots::resolve_interned(chunk, &ClassSlot::internal("__terminated"), &PlainNames);
+    let return_key =
+        class_slots::resolve_interned(chunk, &ClassSlot::internal("__return"), &PlainNames);
 
     lset(chunk, value_slot, line); // [$fiber]
     chunk.emit_op_u16(Op::LOCAL_TEE, fiber_slot, line); // [$fiber]
     chunk.emit_bool_const(true, line); // [$fiber, true]
-    class_slots::emit_class_set(chunk, ObjSource::Stack, &started_key, ValueSource::Stack, line); // [true]
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &started_key,
+        ValueSource::Stack,
+        line,
+    ); // [true]
     lget(chunk, fiber_slot, line);
     chunk.emit_bool_const(false, line);
-    class_slots::emit_class_set(chunk, ObjSource::Stack, &suspended_key, ValueSource::Stack, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &suspended_key,
+        ValueSource::Stack,
+        line,
+    );
     lget(chunk, fiber_slot, line);
     chunk.emit_bool_const(false, line);
-    class_slots::emit_class_set(chunk, ObjSource::Stack, &terminated_key, ValueSource::Stack, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &terminated_key,
+        ValueSource::Stack,
+        line,
+    );
     lget(chunk, fiber_slot, line);
     chunk.emit_bool_const(true, line);
-    class_slots::emit_class_set(chunk, ObjSource::Stack, &running_key, ValueSource::Stack, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &running_key,
+        ValueSource::Stack,
+        line,
+    );
     lget(chunk, fiber_slot, line);
     vybe_compiler::primitives::globals::emit_write(chunk, "__php_current_fiber", line);
 
@@ -112,16 +141,40 @@ pub fn emit_php_fiber_start(chunks: &mut [Chunk], current: usize, argc: u8, line
     vybe_compiler::primitives::globals::emit_write(chunk, "__php_current_fiber", line);
     lget(chunk, fiber_slot, line);
     chunk.emit_bool_const(false, line);
-    class_slots::emit_class_set(chunk, ObjSource::Stack, &running_key, ValueSource::Stack, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &running_key,
+        ValueSource::Stack,
+        line,
+    );
     lget(chunk, fiber_slot, line); // [ret, fiber]
     chunk.emit_bool_const(false, line); // [ret, fiber, false]
-    class_slots::emit_class_set(chunk, ObjSource::Stack, &suspended_key, ValueSource::Stack, line); // [ret, true]
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &suspended_key,
+        ValueSource::Stack,
+        line,
+    ); // [ret, true]
     lget(chunk, fiber_slot, line); // [ret, fiber]
     chunk.emit_bool_const(true, line); // [ret, fiber, true]
-    class_slots::emit_class_set(chunk, ObjSource::Stack, &terminated_key, ValueSource::Stack, line); // [ret, true]
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &terminated_key,
+        ValueSource::Stack,
+        line,
+    ); // [ret, true]
     lget(chunk, fiber_slot, line); // [ret, fiber]
     lget(chunk, ret_slot, line); // [ret, fiber, ret]
-    class_slots::emit_class_set(chunk, ObjSource::Stack, &return_key, ValueSource::Stack, line); // [ret, ret]
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &return_key,
+        ValueSource::Stack,
+        line,
+    ); // [ret, ret]
     chunk.emit_br(0, line);
 
     // Yield arm: VM jumps here from SUSPEND with [yielded_value].
@@ -131,16 +184,40 @@ pub fn emit_php_fiber_start(chunks: &mut [Chunk], current: usize, argc: u8, line
     vybe_compiler::primitives::globals::emit_write(chunk, "__php_current_fiber", line);
     lget(chunk, fiber_slot, line);
     chunk.emit_bool_const(false, line);
-    class_slots::emit_class_set(chunk, ObjSource::Stack, &running_key, ValueSource::Stack, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &running_key,
+        ValueSource::Stack,
+        line,
+    );
     lget(chunk, fiber_slot, line);
     chunk.emit_bool_const(true, line);
-    class_slots::emit_class_set(chunk, ObjSource::Stack, &suspended_key, ValueSource::Stack, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &suspended_key,
+        ValueSource::Stack,
+        line,
+    );
     lget(chunk, fiber_slot, line);
     chunk.emit_bool_const(false, line);
-    class_slots::emit_class_set(chunk, ObjSource::Stack, &terminated_key, ValueSource::Stack, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &terminated_key,
+        ValueSource::Stack,
+        line,
+    );
     lget(chunk, fiber_slot, line);
     chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
-    class_slots::emit_class_set(chunk, ObjSource::Stack, &return_key, ValueSource::Stack, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &return_key,
+        ValueSource::Stack,
+        line,
+    );
     chunk.emit_end(line);
     chunk.patch_block(block_p);
     chunk.stack_switch_handlers.insert(
@@ -172,16 +249,34 @@ pub fn emit_php_fiber_throw(chunks: &mut [Chunk], current: usize, argc: u8, line
     }
     let exn_slot = alloc_local(chunk);
     let fiber_slot = alloc_local(chunk);
-    let running_key = class_slots::resolve_interned(chunk, &ClassSlot::internal("__running"), &PlainNames);
-    let suspended_key = class_slots::resolve_interned(chunk, &ClassSlot::internal("__suspended"), &PlainNames);
-    let cs_slot_1 = class_slots::resolve_interned(chunk, &ClassSlot::Internal(("__return").to_string()), &PlainNames);
+    let running_key =
+        class_slots::resolve_interned(chunk, &ClassSlot::internal("__running"), &PlainNames);
+    let suspended_key =
+        class_slots::resolve_interned(chunk, &ClassSlot::internal("__suspended"), &PlainNames);
+    let cs_slot_1 = class_slots::resolve_interned(
+        chunk,
+        &ClassSlot::Internal(("__return").to_string()),
+        &PlainNames,
+    );
     lset(chunk, exn_slot, line);
     chunk.emit_op_u16(Op::LOCAL_TEE, fiber_slot, line);
     chunk.emit_bool_const(false, line);
-    class_slots::emit_class_set(chunk, ObjSource::Stack, &suspended_key, ValueSource::Stack, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &suspended_key,
+        ValueSource::Stack,
+        line,
+    );
     lget(chunk, fiber_slot, line);
     chunk.emit_bool_const(true, line);
-    class_slots::emit_class_set(chunk, ObjSource::Stack, &running_key, ValueSource::Stack, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &running_key,
+        ValueSource::Stack,
+        line,
+    );
     lget(chunk, fiber_slot, line);
     vybe_compiler::primitives::globals::emit_write(chunk, "__php_current_fiber", line);
     lget(chunk, fiber_slot, line);
@@ -194,13 +289,31 @@ pub fn emit_php_fiber_throw(chunks: &mut [Chunk], current: usize, argc: u8, line
     vybe_compiler::primitives::globals::emit_write(chunk, "__php_current_fiber", line);
     lget(chunk, fiber_slot, line);
     chunk.emit_bool_const(false, line);
-    class_slots::emit_class_set(chunk, ObjSource::Stack, &running_key, ValueSource::Stack, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &running_key,
+        ValueSource::Stack,
+        line,
+    );
     lget(chunk, fiber_slot, line);
     chunk.emit_bool_const(true, line);
-    class_slots::emit_class_set(chunk, ObjSource::Stack, &suspended_key, ValueSource::Stack, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &suspended_key,
+        ValueSource::Stack,
+        line,
+    );
     lget(chunk, fiber_slot, line);
     lget(chunk, ret_slot, line);
-    class_slots::emit_class_set(chunk, ObjSource::Stack, &cs_slot_1, ValueSource::Stack, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &cs_slot_1,
+        ValueSource::Stack,
+        line,
+    );
 }
 
 /// `$fiber->getReturn()` — return the fiber's return value. After the
@@ -225,20 +338,52 @@ pub fn emit_php_fiber_get_return(chunks: &mut [Chunk], current: usize, _argc: u8
 /// continuation Object doesn't currently expose phase queries through
 /// public properties; pending VM-level state accessor opcodes).
 pub fn emit_php_fiber_is_started(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
-    let cs_slot = class_slots::resolve(&ClassSlot::Internal(("__started").to_string()), &PlainNames);
-    class_slots::emit_class_get(&mut chunks[current], ObjSource::Stack, &cs_slot, Dest::Stack, line);
+    let cs_slot =
+        class_slots::resolve(&ClassSlot::Internal(("__started").to_string()), &PlainNames);
+    class_slots::emit_class_get(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &cs_slot,
+        Dest::Stack,
+        line,
+    );
 }
 pub fn emit_php_fiber_is_suspended(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
-    let cs_slot = class_slots::resolve(&ClassSlot::Internal(("__suspended").to_string()), &PlainNames);
-    class_slots::emit_class_get(&mut chunks[current], ObjSource::Stack, &cs_slot, Dest::Stack, line);
+    let cs_slot = class_slots::resolve(
+        &ClassSlot::Internal(("__suspended").to_string()),
+        &PlainNames,
+    );
+    class_slots::emit_class_get(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &cs_slot,
+        Dest::Stack,
+        line,
+    );
 }
 pub fn emit_php_fiber_is_running(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
-    let cs_slot = class_slots::resolve(&ClassSlot::Internal(("__running").to_string()), &PlainNames);
-    class_slots::emit_class_get(&mut chunks[current], ObjSource::Stack, &cs_slot, Dest::Stack, line);
+    let cs_slot =
+        class_slots::resolve(&ClassSlot::Internal(("__running").to_string()), &PlainNames);
+    class_slots::emit_class_get(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &cs_slot,
+        Dest::Stack,
+        line,
+    );
 }
 pub fn emit_php_fiber_is_terminated(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
-    let cs_slot = class_slots::resolve(&ClassSlot::Internal(("__terminated").to_string()), &PlainNames);
-    class_slots::emit_class_get(&mut chunks[current], ObjSource::Stack, &cs_slot, Dest::Stack, line);
+    let cs_slot = class_slots::resolve(
+        &ClassSlot::Internal(("__terminated").to_string()),
+        &PlainNames,
+    );
+    class_slots::emit_class_get(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &cs_slot,
+        Dest::Stack,
+        line,
+    );
 }
 
 // Suppress unused-import warnings if some helpers grow.

@@ -7,8 +7,8 @@
 use vybe_compiler::primitives::class_slots::{
     self, ClassSlot, Dest, ObjSource, PlainNames, ValueSource,
 };
-use vybe_runtime::opcode::Op;
 use vybe_runtime::Chunk;
+use vybe_runtime::opcode::Op;
 
 /// `WeakReference::create($obj)` -> object with `get()` that derefs the weak ref.
 pub fn emit_weak_ref_create(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32) {

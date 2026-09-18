@@ -5,9 +5,7 @@
 
 use std::sync::Arc;
 
-use vybe_compiler::primitives::class_slots::{
-    self, ClassSlot, Dest, ObjSource, PlainNames,
-};
+use vybe_compiler::primitives::class_slots::{self, ClassSlot, Dest, ObjSource, PlainNames};
 use vybe_compiler::primitives::instructions::core_wasm;
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
@@ -161,7 +159,10 @@ pub fn emit_php_empty(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32
     lset(chunk, base_len_slot, line);
 
     lget(chunk, value_slot, line);
-    let cs_slot = class_slots::resolve(&ClassSlot::Internal("vybe$assoc_keys_csv".to_string()), &PlainNames);
+    let cs_slot = class_slots::resolve(
+        &ClassSlot::Internal("vybe$assoc_keys_csv".to_string()),
+        &PlainNames,
+    );
     class_slots::emit_class_get(chunk, ObjSource::Stack, &cs_slot, Dest::Stack, line);
     chunk.emit_dup(line);
     chunk.emit_op(Op::REF_IS_NULL, line);

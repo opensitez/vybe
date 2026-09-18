@@ -78,7 +78,7 @@ fn emit_min_or_max(chunks: &mut [Chunk], current: usize, argc: u8, want_lt: bool
     // (→ "010") and then trap in the comparison's `toF64`, so coerce with
     // `ecma:number.parseFloat` instead. Resolve the import up-front (it
     // lives on chunk 0's import table).
-    let pf_idx = chunks[0].add_import("ecma:number".to_string(), "parseFloat".to_string());
+    let pf_idx = chunks[current].add_import("ecma:number".to_string(), "parseFloat".to_string());
     let chunk = &mut chunks[current];
     if argc == 0 {
         push_const(chunk, Value::Bool(false), line);

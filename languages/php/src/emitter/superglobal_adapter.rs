@@ -101,12 +101,7 @@ fn bump_index(chunk: &mut Chunk, slot: u16, line: u32) {
     lset(chunk, slot, line);
 }
 
-pub fn emit_php_superglobal_server(
-    chunks: &mut [Chunk],
-    current: usize,
-    _argc: u8,
-    line: u32,
-) {
+pub fn emit_php_superglobal_server(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     vybe_compiler::primitives::http_request_env::emit_environ(chunks, current, line);
     let server_slot = alloc_local(&mut chunks[current]);
     lset(&mut chunks[current], server_slot, line);
@@ -124,12 +119,7 @@ pub fn emit_php_superglobal_server(
     lget(&mut chunks[current], server_slot, line);
 }
 
-pub fn emit_php_superglobal_files(
-    chunks: &mut [Chunk],
-    current: usize,
-    _argc: u8,
-    line: u32,
-) {
+pub fn emit_php_superglobal_files(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     vybe_compiler::primitives::http_form::emit_body_files(chunks, current, line);
     vybe_compiler::primitives::collections::emit_iter_entries(chunks, current, line);
     let entries_slot = alloc_local(&mut chunks[current]);
@@ -209,12 +199,7 @@ pub fn emit_php_superglobal_files(
     lget(&mut chunks[current], out_slot, line);
 }
 
-pub fn emit_php_superglobal_env(
-    chunks: &mut [Chunk],
-    current: usize,
-    _argc: u8,
-    line: u32,
-) {
+pub fn emit_php_superglobal_env(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     call_import(
         chunks,
         current,

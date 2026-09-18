@@ -12,11 +12,9 @@
 //! `ecma:number.parseInt` plus string opcodes.
 
 use std::sync::Arc;
+use vybe_compiler::primitives::class_slots::{self};
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
-use vybe_compiler::primitives::class_slots::{
-    self,
-};
 
 fn alloc_local(chunk: &mut Chunk) -> u16 {
     chunk.alloc_scratch(1)
@@ -57,9 +55,9 @@ fn lget(chunk: &mut Chunk, slot: u16, line: u32) {
 /// `floatval('bad')` was NaN and one non-numeric element poisoned a whole
 /// `array_sum`.
 pub fn emit_php_floatval(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
-    let parse_float = chunks[0].add_import("ecma:number", "parseFloat");
-    let test_bool = chunks[0].add_import("wasm:js-boolean", "test");
-    let is_nan = chunks[0].add_import("ecma:number", "isNaN");
+    let parse_float = chunks[current].add_import("ecma:number", "parseFloat");
+    let test_bool = chunks[current].add_import("wasm:js-boolean", "test");
+    let is_nan = chunks[current].add_import("ecma:number", "isNaN");
     let chunk = &mut chunks[current];
     let v_slot = alloc_local(chunk);
     let n_slot = alloc_local(chunk);
@@ -479,7 +477,7 @@ fn emit_zend_string_increment(chunk: &mut Chunk, v_slot: u16, line: u32) {
 /// (2147483647). Composes only `wasi:random` + arithmetic opcodes — no new
 /// host fns.
 pub fn emit_rand(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
-    let rand_idx = chunks[0].add_import(
+    let rand_idx = chunks[current].add_import(
         "wasi:random/insecure".to_string(),
         "get-insecure-random-u64".to_string(),
     );
@@ -527,7 +525,7 @@ pub fn emit_rand(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
 /// Composes `wasi:random` (a raw u64) scaled by 2^64, matching the `rand`
 /// family's entropy source. No arguments.
 pub fn emit_lcg_value(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
-    let rand_idx = chunks[0].add_import(
+    let rand_idx = chunks[current].add_import(
         "wasi:random/insecure".to_string(),
         "get-insecure-random-u64".to_string(),
     );

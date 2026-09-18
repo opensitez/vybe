@@ -173,6 +173,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             );
             super::array_adapter::emit_array_filter(chunks, current, argc, line)
         }
+        "php.array_walk" => super::array_adapter::emit_array_walk(chunks, current, argc, line),
         "php.array_walk_recursive" => {
             super::array_adapter::emit_array_walk_recursive(chunks, current, argc, line)
         }
@@ -182,6 +183,21 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "php.key" => super::array_adapter::emit_php_key(chunks, current, argc, line),
         "php.copy_on_assign" => {
             super::copy_adapter::emit_php_copy_on_assign(chunks, current, argc, line)
+        }
+        "php.clone_shell" => {
+            crate::emitter::string_adapter::emit_php_clone_shell(chunks, current, argc, line)
+        }
+        "php.clone_field_get" => {
+            crate::emitter::string_adapter::emit_php_clone_field_get(chunks, current, argc, line)
+        }
+        "php.clone_field_set" => {
+            crate::emitter::string_adapter::emit_php_clone_field_set(chunks, current, argc, line)
+        }
+        "php.field_get" => {
+            crate::emitter::string_adapter::emit_php_field_get(chunks, current, argc, line)
+        }
+        "php.field_set" => {
+            crate::emitter::string_adapter::emit_php_field_set(chunks, current, argc, line)
         }
         "php.strict_eq" => super::copy_adapter::emit_php_strict_eq(chunks, current, argc, line),
         "php.array_fill" => super::array_adapter::emit_array_fill(chunks, current, argc, line),
@@ -218,6 +234,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "php.json_encode" => {
             super::array_adapter::emit_php_json_encode(chunks, current, argc, line)
         }
+        "php.json_encode_ordered_map" => {
+            super::array_adapter::emit_php_json_encode_ordered_map(chunks, current, argc, line)
+        }
         "php.json_decode" => {
             super::array_adapter::emit_php_json_decode(chunks, current, argc, line)
         }
@@ -234,6 +253,69 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             super::xml_adapter::emit_simplexml_load_string(chunks, current, argc, line)
         }
         "php.dom_save_xml" => super::xml_adapter::emit_dom_save_xml(chunks, current, argc, line),
+        "php.domxpath_new" => super::xml_adapter::emit_domxpath_new(chunks, current, argc, line),
+        "php.dom_attr_new" => super::xml_adapter::emit_dom_attr_new(chunks, current, argc, line),
+        "php.simplexml_child_text" => {
+            super::xml_adapter::emit_simplexml_child_text(chunks, current, argc, line)
+        }
+        "php.dom_node_item" => super::xml_adapter::emit_dom_node_item(chunks, current, argc, line),
+        "php.xmlwriter_new" => super::xml_adapter::emit_php_xmlwriter_new(chunks, current, argc, line),
+        "php.xmlwriter_open_memory" => {
+            super::xml_adapter::emit_php_xmlwriter_open_memory(chunks, current, argc, line)
+        }
+        "php.xmlwriter_start_document" => {
+            super::xml_adapter::emit_php_xmlwriter_start_document(chunks, current, argc, line)
+        }
+        "php.xmlwriter_start_element" => {
+            super::xml_adapter::emit_php_xmlwriter_start_element(chunks, current, argc, line)
+        }
+        "php.xmlwriter_start_element_ns" => {
+            super::xml_adapter::emit_php_xmlwriter_start_element_ns(chunks, current, argc, line)
+        }
+        "php.xmlwriter_write_attribute" => {
+            super::xml_adapter::emit_php_xmlwriter_write_attribute(chunks, current, argc, line)
+        }
+        "php.xmlwriter_start_attribute" => {
+            super::xml_adapter::emit_php_xmlwriter_start_attribute(chunks, current, argc, line)
+        }
+        "php.xmlwriter_end_attribute" => {
+            super::xml_adapter::emit_php_xmlwriter_end_attribute(chunks, current, argc, line)
+        }
+        "php.xmlwriter_text" => super::xml_adapter::emit_php_xmlwriter_text(chunks, current, argc, line),
+        "php.xmlwriter_write_element" => {
+            super::xml_adapter::emit_php_xmlwriter_write_element(chunks, current, argc, line)
+        }
+        "php.xmlwriter_end_element" => {
+            super::xml_adapter::emit_php_xmlwriter_end_element(chunks, current, argc, line)
+        }
+        "php.xmlwriter_output_memory" => {
+            super::xml_adapter::emit_php_xmlwriter_output_memory(chunks, current, argc, line)
+        }
+        "php.xmlwriter_flush" => super::xml_adapter::emit_php_xmlwriter_flush(chunks, current, argc, line),
+        "php.xmlwriter_end_document" => {
+            super::xml_adapter::emit_php_xmlwriter_end_document(chunks, current, argc, line)
+        }
+        "php.xmlwriter_set_indent" => {
+            super::xml_adapter::emit_php_xmlwriter_set_indent(chunks, current, argc, line)
+        }
+        "php.xmlwriter_set_indent_string" => {
+            super::xml_adapter::emit_php_xmlwriter_set_indent_string(chunks, current, argc, line)
+        }
+        "php.xmlwriter_write_comment" => {
+            super::xml_adapter::emit_php_xmlwriter_write_comment(chunks, current, argc, line)
+        }
+        "php.xmlwriter_write_cdata" => {
+            super::xml_adapter::emit_php_xmlwriter_write_cdata(chunks, current, argc, line)
+        }
+        "php.xmlwriter_write_pi" => {
+            super::xml_adapter::emit_php_xmlwriter_write_pi(chunks, current, argc, line)
+        }
+        "php.xmlwriter_start_dtd" => {
+            super::xml_adapter::emit_php_xmlwriter_start_dtd(chunks, current, argc, line)
+        }
+        "php.xmlwriter_end_dtd" => {
+            super::xml_adapter::emit_php_xmlwriter_end_dtd(chunks, current, argc, line)
+        }
         "php.array_keys" => {
             super::type_guard::guard_arg(
                 chunks,
@@ -306,6 +388,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "php.array_replace" => {
             super::array_adapter::emit_array_replace(chunks, current, argc, line)
+        }
+        "php.array_splice_assoc_removed" => {
+            super::array_adapter::emit_array_splice_assoc_removed(chunks, current, argc, line)
         }
         "php.array_replace_recursive" => {
             super::array_adapter::emit_array_replace_recursive(chunks, current, argc, line)
@@ -407,6 +492,11 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "php.datetimezone_new" => {
             crate::emitter::datetime_adapter::emit_datetimezone_new(chunks, current, line)
         }
+        "php.datetimezone_list_identifiers" => {
+            crate::emitter::datetime_adapter::emit_datetimezone_list_identifiers(
+                chunks, current, argc, line,
+            )
+        }
         "php.datetime_get_timezone" => {
             crate::emitter::datetime_adapter::emit_datetime_get_timezone(chunks, current, line)
         }
@@ -430,13 +520,16 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "php.datetime_create_from_format" => {
             crate::emitter::datetime_adapter::emit_datetime_create_from_format(
-                chunks, current, line,
+                chunks, current, argc, line,
             )
         }
         "php.datetime_immutable_create_from_format" => {
             crate::emitter::datetime_adapter::emit_datetime_immutable_create_from_format(
-                chunks, current, line,
+                chunks, current, argc, line,
             )
+        }
+        "php.datetime_with_microseconds" => {
+            crate::emitter::datetime_adapter::emit_datetime_with_microseconds(chunks, current, line)
         }
         "php.datetime_format" => {
             crate::emitter::datetime_adapter::emit_datetime_format(chunks, current, line)
@@ -889,6 +982,11 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "php.preg_match_all_groups" => {
             crate::emitter::string_adapter::emit_preg_match_all_groups(chunks, current, argc, line)
         }
+        "php.preg_match_all_set_order_groups" => {
+            crate::emitter::string_adapter::emit_preg_match_all_set_order_groups(
+                chunks, current, argc, line,
+            )
+        }
         "php.preg_match_groups" => {
             crate::emitter::string_adapter::emit_preg_match_groups(chunks, current, argc, line)
         }
@@ -1081,11 +1179,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "php.get_class" => {
             crate::emitter::reflection_adapter::emit_php_get_class(chunks, current, argc, line)
         }
-        "php.get_parent_class" => {
-            crate::emitter::reflection_adapter::emit_php_get_parent_class(
-                chunks, current, argc, line,
-            )
-        }
+        "php.get_parent_class" => crate::emitter::reflection_adapter::emit_php_get_parent_class(
+            chunks, current, argc, line,
+        ),
         "php.refl_class" => {
             crate::emitter::reflection_adapter::emit_refl_class(chunks, current, argc, line)
         }
@@ -1325,16 +1421,12 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
                 chunks, current, argc, line,
             )
         }
-        "php.superglobal_files" => {
-            crate::emitter::superglobal_adapter::emit_php_superglobal_files(
-                chunks, current, argc, line,
-            )
-        }
-        "php.superglobal_env" => {
-            crate::emitter::superglobal_adapter::emit_php_superglobal_env(
-                chunks, current, argc, line,
-            )
-        }
+        "php.superglobal_files" => crate::emitter::superglobal_adapter::emit_php_superglobal_files(
+            chunks, current, argc, line,
+        ),
+        "php.superglobal_env" => crate::emitter::superglobal_adapter::emit_php_superglobal_env(
+            chunks, current, argc, line,
+        ),
         "php.spl_autoload_register" => {
             crate::emitter::autoload_adapter::emit_spl_autoload_register(
                 chunks, current, argc, line,
@@ -1366,9 +1458,11 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "php.session_status" => {
             crate::emitter::session_adapter::emit_php_session_status(chunks, current, argc, line)
         }
-        "php.session_regenerate_id" => crate::emitter::session_adapter::emit_php_session_regenerate_id(
-            chunks, current, argc, line,
-        ),
+        "php.session_regenerate_id" => {
+            crate::emitter::session_adapter::emit_php_session_regenerate_id(
+                chunks, current, argc, line,
+            )
+        }
         "php.session_write_close" => crate::emitter::session_adapter::emit_php_session_write_close(
             chunks, current, argc, line,
         ),
@@ -1394,21 +1488,25 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
                 chunks, current, argc, line,
             )
         }
-        "php.session_cache_limiter" => crate::emitter::session_adapter::emit_php_session_cache_limiter(
-            chunks, current, argc, line,
-        ),
-        "php.session_cache_expire" => crate::emitter::session_adapter::emit_php_session_cache_expire(
-            chunks, current, argc, line,
-        ),
+        "php.session_cache_limiter" => {
+            crate::emitter::session_adapter::emit_php_session_cache_limiter(
+                chunks, current, argc, line,
+            )
+        }
+        "php.session_cache_expire" => {
+            crate::emitter::session_adapter::emit_php_session_cache_expire(
+                chunks, current, argc, line,
+            )
+        }
         "php.session_module_name" => crate::emitter::session_adapter::emit_php_session_module_name(
             chunks, current, argc, line,
         ),
-        "php.session_save_path" => crate::emitter::session_adapter::emit_php_session_save_path(
-            chunks, current, argc, line,
-        ),
-        "php.session_create_id" => crate::emitter::session_adapter::emit_php_session_create_id(
-            chunks, current, argc, line,
-        ),
+        "php.session_save_path" => {
+            crate::emitter::session_adapter::emit_php_session_save_path(chunks, current, argc, line)
+        }
+        "php.session_create_id" => {
+            crate::emitter::session_adapter::emit_php_session_create_id(chunks, current, argc, line)
+        }
         "php.session_gc" => {
             crate::emitter::session_adapter::emit_php_session_gc(chunks, current, argc, line)
         }

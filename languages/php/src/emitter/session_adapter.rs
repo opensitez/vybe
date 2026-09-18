@@ -282,11 +282,7 @@ pub fn emit_php_session_set_cookie_params(
     );
     chunks[current].emit_else(line);
     lget(&mut chunks[current], lifetime_slot, line);
-    global_set(
-        &mut chunks[current],
-        "__php_session_cookie_lifetime",
-        line,
-    );
+    global_set(&mut chunks[current], "__php_session_cookie_lifetime", line);
     lget(&mut chunks[current], path_slot, line);
     global_set(&mut chunks[current], "__php_session_cookie_path", line);
     lget(&mut chunks[current], domain_slot, line);
@@ -365,12 +361,7 @@ fn bump_slot(chunk: &mut Chunk, slot: u16, by: f64, line: u32) {
     lset(chunk, slot, line);
 }
 
-pub fn emit_php_session_cache_limiter(
-    chunks: &mut [Chunk],
-    current: usize,
-    argc: u8,
-    line: u32,
-) {
+pub fn emit_php_session_cache_limiter(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     emit_get_set_global(
         chunks,
         current,
@@ -381,12 +372,7 @@ pub fn emit_php_session_cache_limiter(
     );
 }
 
-pub fn emit_php_session_cache_expire(
-    chunks: &mut [Chunk],
-    current: usize,
-    argc: u8,
-    line: u32,
-) {
+pub fn emit_php_session_cache_expire(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     emit_get_set_global(
         chunks,
         current,
@@ -397,24 +383,14 @@ pub fn emit_php_session_cache_expire(
     );
 }
 
-pub fn emit_php_session_module_name(
-    chunks: &mut [Chunk],
-    current: usize,
-    argc: u8,
-    line: u32,
-) {
+pub fn emit_php_session_module_name(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     for _ in 0..argc {
         chunks[current].emit_op(Op::DROP, line);
     }
     push_str(&mut chunks[current], "files", line);
 }
 
-pub fn emit_php_session_save_path(
-    chunks: &mut [Chunk],
-    current: usize,
-    argc: u8,
-    line: u32,
-) {
+pub fn emit_php_session_save_path(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     emit_get_set_global(
         chunks,
         current,
@@ -838,12 +814,7 @@ pub fn emit_php_session_status(chunks: &mut [Chunk], current: usize, _argc: u8, 
     vybe_compiler::primitives::http_session::emit_status(chunks, current, line);
 }
 
-pub fn emit_php_session_regenerate_id(
-    chunks: &mut [Chunk],
-    current: usize,
-    argc: u8,
-    line: u32,
-) {
+pub fn emit_php_session_regenerate_id(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     if argc > 0 {
         chunks[current].emit_op(Op::DROP, line);
     }

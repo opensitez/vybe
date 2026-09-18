@@ -13,11 +13,9 @@
 //! throws on failure, then restores every argument in its original order so the
 //! underlying builtin emit consumes an unchanged stack.
 
+use vybe_compiler::primitives::class_slots::{self};
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
-use vybe_compiler::primitives::class_slots::{
-    self,
-};
 
 /// What an argument is required to be for a builtin to accept it.
 #[derive(Clone, Copy)]

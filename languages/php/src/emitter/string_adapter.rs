@@ -9,7 +9,7 @@
 
 use std::sync::Arc;
 use vybe_compiler::primitives::class_slots::{
-    self, ClassSlot, Dest, ObjSource, PlainNames, ResolvedSlot, ValueSource,
+    self, ClassSlot, Dest, ObjSource, PlainNames, ValueSource,
 };
 use vybe_compiler::primitives::{string_encoding, string_similarity, strings, url};
 use vybe_runtime::opcode::Op;
@@ -74,6 +74,14 @@ fn call_import(
     let idx = chunks[current].add_import(module.to_string(), name.to_string());
     let chunk = &mut chunks[current];
     chunk.emit_call(idx, argc, line);
+}
+
+fn ecma_object_get_literal(chunks: &mut [Chunk], current: usize, key: &str, line: u32) {
+    {
+        let chunk = &mut chunks[current];
+        push_str(chunk, key, line);
+    }
+    call_import(chunks, current, "ecma:object", "get", 2, line);
 }
 
 pub fn emit_strtoupper(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
@@ -1137,8 +1145,8 @@ pub fn emit_number_format(chunks: &mut [Chunk], current: usize, argc: u8, line: 
     // (which uses f64::round in vybe_host = half-away-from-zero) at
     // scale 10^decimals to force PHP semantics:
     //   n = Math.round(n * scale) / scale
-    let pow = chunks[0].add_import("ecma:math", "pow");
-    let round = chunks[0].add_import("ecma:math", "round");
+    let pow = chunks[current].add_import("ecma:math", "pow");
+    let round = chunks[current].add_import("ecma:math", "round");
     let chunk = &mut chunks[current];
     let scale_slot = alloc_local(chunk);
     push_const(chunk, Value::F64(10.0), line);
@@ -1156,7 +1164,7 @@ pub fn emit_number_format(chunks: &mut [Chunk], current: usize, argc: u8, line: 
     // fixed = ecma:number.toFixed(n, decimals)
     lget(chunk, n_slot, line);
     lget(chunk, decimals_slot, line);
-    let to_fixed = chunks[0].add_import("ecma:number", "toFixed");
+    let to_fixed = chunks[current].add_import("ecma:number", "toFixed");
     let chunk = &mut chunks[current];
     chunk.emit_call(to_fixed, 2, line);
     lset(chunk, fixed_slot, line);
@@ -2508,7 +2516,8 @@ pub fn emit_preg_split(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
             c.emit_op(Op::REF_IS_NULL, line);
             c.emit_op(Op::I32_EQZ, line);
             c.emit_if(line);
-            let cs_slot = class_slots::resolve(&ClassSlot::Internal(("index").to_string()), &PlainNames);
+            let cs_slot =
+                class_slots::resolve(&ClassSlot::Internal(("index").to_string()), &PlainNames);
             lget(c, match_slot, line);
             class_slots::emit_class_get(c, ObjSource::Stack, &cs_slot, Dest::Stack, line);
             lget(c, match_slot, line);
@@ -2902,10 +2911,11 @@ pub fn emit_preg_match_all_groups(chunks: &mut [Chunk], current: usize, _argc: u
     vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
 
-    let cs_slot = class_slots::resolve(&ClassSlot::Internal(("groups").to_string()), &PlainNames);
     let groups_slot = alloc_local(chunk);
     lget(chunk, exec_slot, line);
-    class_slots::emit_class_get(chunk, ObjSource::Stack, &cs_slot, Dest::Stack, line);
+    let _ = chunk;
+    ecma_object_get_literal(chunks, current, "groups", line);
+    let chunk = &mut chunks[current];
     lset(chunk, groups_slot, line);
 
     // if groups is not null: copy named entries
@@ -3059,6 +3069,176 @@ pub fn emit_preg_match_all_groups(chunks: &mut [Chunk], current: usize, _argc: u
     lget(chunk, result_map_slot, line);
 }
 
+/// Build PHP `PREG_SET_ORDER` matches:
+/// `[[0=>full, 1=>g1, "name"=>g1, ...], ...]`.
+///
+/// Stack on entry: `[pat, str]`; stack on exit: `[matches_array]`.
+pub fn emit_preg_match_all_set_order_groups(
+    chunks: &mut [Chunk],
+    current: usize,
+    _argc: u8,
+    line: u32,
+) {
+    let chunk = &mut chunks[current];
+    let str_slot = alloc_local(chunk);
+    let pat_slot = alloc_local(chunk);
+    let raw_slot = alloc_local(chunk);
+    let raw_len_slot = alloc_local(chunk);
+    let result_slot = alloc_local(chunk);
+    let i_slot = alloc_local(chunk);
+    let m_slot = alloc_local(chunk);
+    let row_slot = alloc_local(chunk);
+    let group_count_slot = alloc_local(chunk);
+    let j_slot = alloc_local(chunk);
+    let groups_slot = alloc_local(chunk);
+    let names_slot = alloc_local(chunk);
+    let nm_count_slot = alloc_local(chunk);
+    let nm_i_slot = alloc_local(chunk);
+    let nm_key_slot = alloc_local(chunk);
+
+    lset(chunk, str_slot, line);
+    lset(chunk, pat_slot, line);
+
+    lget(chunk, str_slot, line);
+    lget(chunk, pat_slot, line);
+    let _ = chunk;
+    call_import(chunks, current, "ecma:regexp", "matchAll", 2, line);
+    let chunk = &mut chunks[current];
+    lset(chunk, raw_slot, line);
+
+    lget(chunk, raw_slot, line);
+    chunk.emit_op(Op::ARRAY_LENGTH, line);
+    lset(chunk, raw_len_slot, line);
+
+    chunk.emit_array_new_fixed(0, 0, line);
+    lset(chunk, result_slot, line);
+
+    push_const(chunk, Value::F64(0.0), line);
+    lset(chunk, i_slot, line);
+    let _ = chunk;
+    let outer_state = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
+    let chunk = &mut chunks[current];
+    lget(chunk, i_slot, line);
+    lget(chunk, raw_len_slot, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
+    let _ = chunk;
+    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
+    let chunk = &mut chunks[current];
+
+    lget(chunk, raw_slot, line);
+    lget(chunk, i_slot, line);
+    chunk.emit_op(Op::ARRAY_GET, line);
+    lset(chunk, m_slot, line);
+
+    let _ = chunk;
+    call_import(chunks, current, "ecma:map", "new", 0, line);
+    let chunk = &mut chunks[current];
+    lset(chunk, row_slot, line);
+
+    lget(chunk, m_slot, line);
+    chunk.emit_op(Op::ARRAY_LENGTH, line);
+    lset(chunk, group_count_slot, line);
+    push_const(chunk, Value::F64(0.0), line);
+    lset(chunk, j_slot, line);
+    let _ = chunk;
+    let group_state = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
+    let chunk = &mut chunks[current];
+    lget(chunk, j_slot, line);
+    lget(chunk, group_count_slot, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
+    let _ = chunk;
+    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
+    let chunk = &mut chunks[current];
+
+    lget(chunk, row_slot, line);
+    lget(chunk, j_slot, line);
+    lget(chunk, m_slot, line);
+    lget(chunk, j_slot, line);
+    chunk.emit_op(Op::ARRAY_GET, line);
+    chunk.emit_op(Op::ARRAY_SET, line);
+
+    lget(chunk, j_slot, line);
+    push_const(chunk, Value::F64(1.0), line);
+    chunk.emit_op(Op::F64_ADD, line);
+    lset(chunk, j_slot, line);
+    let _ = chunk;
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, group_state, line);
+    let chunk = &mut chunks[current];
+
+    lget(chunk, m_slot, line);
+    let _ = chunk;
+    ecma_object_get_literal(chunks, current, "groups", line);
+    let chunk = &mut chunks[current];
+    lset(chunk, groups_slot, line);
+
+    lget(chunk, groups_slot, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    vybe_compiler::primitives::ops::emit_dyn_not(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if(line);
+
+    lget(chunk, groups_slot, line);
+    let _ = chunk;
+    call_import(chunks, current, "ecma:object", "keys", 1, line);
+    let chunk = &mut chunks[current];
+    lset(chunk, names_slot, line);
+    lget(chunk, names_slot, line);
+    chunk.emit_op(Op::ARRAY_LENGTH, line);
+    lset(chunk, nm_count_slot, line);
+    push_const(chunk, Value::F64(0.0), line);
+    lset(chunk, nm_i_slot, line);
+
+    let _ = chunk;
+    let names_state = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
+    let chunk = &mut chunks[current];
+    lget(chunk, nm_i_slot, line);
+    lget(chunk, nm_count_slot, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
+    let _ = chunk;
+    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
+    let chunk = &mut chunks[current];
+
+    lget(chunk, names_slot, line);
+    lget(chunk, nm_i_slot, line);
+    chunk.emit_op(Op::ARRAY_GET, line);
+    lset(chunk, nm_key_slot, line);
+
+    lget(chunk, row_slot, line);
+    lget(chunk, nm_key_slot, line);
+    lget(chunk, groups_slot, line);
+    lget(chunk, nm_key_slot, line);
+    let _ = chunk;
+    call_import(chunks, current, "ecma:object", "get", 2, line);
+    let chunk = &mut chunks[current];
+    chunk.emit_op(Op::ARRAY_SET, line);
+
+    lget(chunk, nm_i_slot, line);
+    push_const(chunk, Value::F64(1.0), line);
+    chunk.emit_op(Op::F64_ADD, line);
+    lset(chunk, nm_i_slot, line);
+    let _ = chunk;
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, names_state, line);
+    let chunk = &mut chunks[current];
+    chunk.emit_end(line);
+
+    lget(chunk, result_slot, line);
+    lget(chunk, row_slot, line);
+    let _ = chunk;
+    call_import(chunks, current, "ecma:array", "push", 2, line);
+    chunks[current].emit_op(Op::DROP, line);
+    let chunk = &mut chunks[current];
+
+    lget(chunk, i_slot, line);
+    push_const(chunk, Value::F64(1.0), line);
+    chunk.emit_op(Op::F64_ADD, line);
+    lset(chunk, i_slot, line);
+    let _ = chunk;
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, outer_state, line);
+    let chunk = &mut chunks[current];
+
+    lget(chunk, result_slot, line);
+}
+
 /// Build the PHP-shape `$matches` array for `preg_match($pat, $str, $matches)`.
 /// The 3-arg form populates $matches with the FIRST match's groups
 /// (`$matches[0]` = full match, `$matches[1..]` = group captures).
@@ -3134,9 +3314,10 @@ pub fn emit_preg_match_groups(chunks: &mut [Chunk], current: usize, _argc: u8, l
     let chunk = &mut chunks[current];
 
     // groups = result.groups
-    let cs_slot = class_slots::resolve(&ClassSlot::Internal(("groups").to_string()), &PlainNames);
     lget(chunk, result_slot, line);
-    class_slots::emit_class_get(chunk, ObjSource::Stack, &cs_slot, Dest::Stack, line);
+    let _ = chunk;
+    ecma_object_get_literal(chunks, current, "groups", line);
+    let chunk = &mut chunks[current];
     lset(chunk, groups_slot, line);
 
     // if groups is non-null: copy each named entry
@@ -3366,21 +3547,107 @@ pub fn emit_preg_replace_callback(chunks: &mut [Chunk], current: usize, _argc: u
 
 // ── clone (PHP `clone` operator) ─────────────────────────────────
 //
-/// PHP `clone $obj` — produce a shallow copy of `$obj` with all
-/// enumerable own properties copied, then invoke `__clone()` on the
-/// copy if the class defines that magic method.
+/// Allocate the object shell used by PHP `clone`.
 ///
-/// Stack on entry: `[obj]` ; Stack on exit: `[clone]`.
-///
-/// Strategy: build an empty target object (`ecma:object.new`), copy
-/// non-internal properties via `ecma:object.assign(target, source)`,
-/// then check for a `__clone` method on the copy. If present, invoke
-/// it as a method (passing the copy as `$this`) and discard the
-/// return value. Object.assign skips `__`-prefixed metadata, so
-/// internals like `__type` aren't carried — acceptable for the
-/// common `clone` test surface where only user fields/methods need
-/// to round-trip.
-pub fn emit_php_clone(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+/// This deliberately preserves the original object in the ECMA prototype chain
+/// so method lookup uses the same object/class machinery as normal member
+/// calls. Known-class clones then materialize declared fields through AST-level
+/// member assignments, letting the common class slot owner handle indexed or
+/// hidden storage.
+pub fn emit_php_clone_shell(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let chunk = &mut chunks[current];
+    for _ in 1..argc {
+        chunk.emit_op(Op::DROP, line);
+    }
+    let obj_slot = alloc_local(chunk);
+    let copy_slot = alloc_local(chunk);
+
+    lset(chunk, obj_slot, line);
+
+    lget(chunk, obj_slot, line);
+    crate::emitter::array_adapter::emit_test_object(chunk, line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_if(line);
+    let _ = chunk;
+    crate::emitter::type_guard::emit_throw_const(
+        chunks,
+        current,
+        "TypeError",
+        "clone expects object",
+        line,
+    );
+    let chunk = &mut chunks[current];
+    chunk.emit_end(line);
+
+    lget(chunk, obj_slot, line);
+    let _ = chunk;
+    call_import(chunks, current, "ecma:object", "create", 1, line);
+    let chunk = &mut chunks[current];
+    lset(chunk, copy_slot, line);
+
+    lget(chunk, copy_slot, line);
+    lget(chunk, obj_slot, line);
+    let _ = chunk;
+    call_import(chunks, current, "ecma:object", "assign", 2, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    lget(&mut chunks[current], copy_slot, line);
+}
+
+pub fn emit_php_field_get(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let chunk = &mut chunks[current];
+    for _ in 2..argc {
+        chunk.emit_op(Op::DROP, line);
+    }
+    let key_slot = alloc_local(chunk);
+    let obj_slot = alloc_local(chunk);
+    lset(chunk, key_slot, line);
+    lset(chunk, obj_slot, line);
+    let slot = class_slots::resolve(
+        &ClassSlot::Dynamic(ValueSource::Local(key_slot)),
+        &PlainNames,
+    );
+    class_slots::emit_class_get(chunk, ObjSource::Local(obj_slot), &slot, Dest::Stack, line);
+}
+
+pub fn emit_php_field_set(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let chunk = &mut chunks[current];
+    for _ in 3..argc {
+        chunk.emit_op(Op::DROP, line);
+    }
+    let value_slot = alloc_local(chunk);
+    let key_slot = alloc_local(chunk);
+    let obj_slot = alloc_local(chunk);
+    lset(chunk, value_slot, line);
+    lset(chunk, key_slot, line);
+    lset(chunk, obj_slot, line);
+    let slot = class_slots::resolve(
+        &ClassSlot::Dynamic(ValueSource::Local(key_slot)),
+        &PlainNames,
+    );
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Local(obj_slot),
+        &slot,
+        ValueSource::Local(value_slot),
+        line,
+    );
+    chunk.emit_op(Op::DROP, line);
+    lget(chunk, value_slot, line);
+}
+
+pub fn emit_php_clone_field_get(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    emit_php_field_get(chunks, current, argc, line);
+}
+
+pub fn emit_php_clone_field_set(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    emit_php_field_set(chunks, current, argc, line);
+}
+
+/// PHP `clone $obj` fallback for objects whose class is not known to the
+/// walker. Known classes are normalized in `walker.rs` so declared fields go
+/// through normal class slots.
+pub fn emit_php_clone(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
     let chunk = &mut chunks[current];
     let obj_slot = alloc_local(chunk);
     let copy_slot = alloc_local(chunk);
@@ -3412,60 +3679,20 @@ pub fn emit_php_clone(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
     let chunk = &mut chunks[current];
     chunk.emit_end(line);
 
-    // copy = ecma:object.new()
-    let _ = chunk;
-    call_import(chunks, current, "ecma:object", "new", 0, line);
-    let chunk = &mut chunks[current];
-    lset(chunk, copy_slot, line);
-
-    // ecma:object.assign(copy, obj) → returns copy (ignored).
-    // The host's `assign` skips `__`-prefixed property names — that's
-    // appropriate for runtime metadata (`__type`, `__base_*`, `__proto__`)
-    // but accidentally elides user magic methods like `__clone`. Copy
-    // the well-known magic method names back over manually below so
-    // the cloned instance keeps its method bindings.
-    lget(chunk, copy_slot, line);
     lget(chunk, obj_slot, line);
     let _ = chunk;
-    call_import(chunks, current, "ecma:object", "assign", 2, line);
-    chunks[current].emit_op(Op::DROP, line);
+    emit_php_clone_shell(chunks, current, 1, line);
     let chunk = &mut chunks[current];
-
-    let clone_key = class_slots::resolve_interned(chunk, &ClassSlot::internal("__clone"), &PlainNames);
-    let copy_magic = |chunk: &mut Chunk, key: &ResolvedSlot| {
-        // copy.<key> = obj.<key>  (only writes if obj has it; STRUCT_GET
-        // returns null/undefined for missing keys, which gets shadowed
-        // back onto copy harmlessly — methods on the original class
-        // always have these slots populated when bound).
-        let line = line;
-        lget(chunk, obj_slot, line);
-        class_slots::emit_class_get(chunk, ObjSource::Stack, key, Dest::Stack, line);
-        // Stack: [val]. Skip the SET if val is null/undefined (no
-        // method to copy). REF_IS_NULL returns i32: 1=null, 0=non-null.
-        // emit_if enters then-block when 1 (null), else-block when 0 (non-null).
-        chunk.emit_dup(line);
-        chunk.emit_op(Op::REF_IS_NULL, line);
-        chunk.emit_if(line); // then: val is null — drop the dup
-        chunk.emit_op(Op::DROP, line); // drop the dup'd null
-        chunk.emit_else(line); // else: val is non-null — write to copy
-        // Stack: [val]. Push copy under val, swap so STRUCT_SET sees [copy, val].
-        let val_slot = alloc_local(chunk);
-        chunk.emit_op_u16(Op::LOCAL_SET, val_slot, line);
-        lget(chunk, copy_slot, line);
-        chunk.emit_op_u16(Op::LOCAL_GET, val_slot, line);
-        class_slots::emit_class_set(chunk, ObjSource::Stack, key, ValueSource::Stack, line);
-        chunk.emit_end(line); // end null check
-    };
-    copy_magic(chunk, &clone_key);
-    let to_string_key = class_slots::resolve_interned(chunk, &ClassSlot::internal("__toString"), &PlainNames);
-    copy_magic(chunk, &to_string_key);
-    let invoke_key = class_slots::resolve_interned(chunk, &ClassSlot::internal("__invoke"), &PlainNames);
-    copy_magic(chunk, &invoke_key);
+    lset(chunk, copy_slot, line);
 
     let i_slot = alloc_local(chunk);
     let len_slot = alloc_local(chunk);
     let key_slot = alloc_local(chunk);
     let val_slot = alloc_local(chunk);
+    let dyn_field_key = class_slots::resolve(
+        &ClassSlot::Dynamic(ValueSource::Local(key_slot)),
+        &PlainNames,
+    );
 
     push_const(chunk, Value::F64(0.0), line);
     lset(chunk, i_slot, line);
@@ -3491,24 +3718,33 @@ pub fn emit_php_clone(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
         chunk.emit_op(Op::ARRAY_GET, line);
         lset(chunk, key_slot, line);
 
-        lget(chunk, obj_slot, line);
-        lget(chunk, key_slot, line);
-        let get_idx = chunk.add_import("ecma:object", "get");
-        chunk.emit_call(get_idx, 2, line);
-        lset(chunk, val_slot, line);
+        class_slots::emit_class_get(
+            chunk,
+            ObjSource::Local(obj_slot),
+            &dyn_field_key,
+            Dest::Local(val_slot),
+            line,
+        );
 
         lget(chunk, val_slot, line);
         chunk.emit_op(Op::REF_IS_NULL, line);
         chunk.emit_op(Op::I32_EQZ, line);
         chunk.emit_if(line);
-        lget(chunk, copy_slot, line);
-        lget(chunk, key_slot, line);
         lget(chunk, val_slot, line);
-        let set_idx = chunk.add_import("ecma:object", "set");
-        chunk.emit_call(set_idx, 3, line);
-        // ECMA-262 §10.1.9 OrdinarySet RETURNS A BOOLEAN, so this call leaves a
-        // value and the assignment's own result is `V` (§13.15.2), not it.
-        // Removing this `DROP` made `++o.x` evaluate to null.
+        let _ = chunk;
+        crate::emitter::copy_adapter::emit_php_copy_on_assign(chunks, current, 1, line);
+        let chunk = &mut chunks[current];
+        lset(chunk, val_slot, line);
+        class_slots::emit_class_set(
+            chunk,
+            ObjSource::Local(copy_slot),
+            &dyn_field_key,
+            ValueSource::Local(val_slot),
+            line,
+        );
+        // Dynamic class-slot writes lower to `ecma:object.set`, which returns a
+        // boolean. This adapter chose a dynamic key above, so consume that host
+        // result here.
         chunk.emit_op(Op::DROP, line);
         chunk.emit_end(line);
 
@@ -3520,46 +3756,29 @@ pub fn emit_php_clone(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
     vybe_compiler::primitives::loops::emit_loop_end(chunks, current, loop_state, line);
     let chunk = &mut chunks[current];
 
-    // Check for __clone method on the copy.
+    // Check for the shared Clone protocol method on the copy. PHP binds
+    // `__clone` to this slot in the walker, so clone dispatch shares the class
+    // machinery used by other frontends.
     lget(chunk, copy_slot, line);
-    class_slots::emit_class_get(chunk, ObjSource::Stack, &clone_key, Dest::Stack, line);
+    push_str(chunk, &vybe_ast::protocol_slot_key(vybe_ast::ProtocolSlot::Clone), line);
+    chunk.emit_bool_const(false, line);
+    let lookup_clone = chunk.add_import("ecma:value", "getMethodForCall");
+    chunk.emit_call(lookup_clone, 3, line);
     lset(chunk, clone_fn_slot, line);
 
-    // function test: not null AND not number AND not string AND not boolean
-    let fn_test_slot = alloc_local(chunk);
     lget(chunk, clone_fn_slot, line);
-    lset(chunk, fn_test_slot, line);
-    // not null
-    lget(chunk, fn_test_slot, line);
-    chunk.emit_op(Op::REF_IS_NULL, line);
-    chunk.emit_op(Op::I32_EQZ, line);
-    // AND not number
-    lget(chunk, fn_test_slot, line);
-    let test_num_fn = chunk.add_import("wasm:js-number", "test");
-    chunk.emit_call(test_num_fn, 1, line);
-    chunk.emit_op(Op::I32_EQZ, line);
-    chunk.emit_op(Op::I32_AND, line);
-    // AND not string
-    lget(chunk, fn_test_slot, line);
-    let test_str_fn = chunk.add_import("wasm:js-string", "test");
-    chunk.emit_call(test_str_fn, 1, line);
-    chunk.emit_op(Op::I32_EQZ, line);
-    chunk.emit_op(Op::I32_AND, line);
-    // AND not boolean
-    lget(chunk, fn_test_slot, line);
-    let test_bool_fn = chunk.add_import("wasm:js-boolean", "test");
-    chunk.emit_call(test_bool_fn, 1, line);
-    chunk.emit_op(Op::I32_EQZ, line);
-    chunk.emit_op(Op::I32_AND, line);
+    let typeof_fn = chunk.add_import("ecma:value", "typeof");
+    chunk.emit_call(typeof_fn, 1, line);
+    push_str(chunk, "function", line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
 
-    // Invoke __clone with $this=copy. Vybe's PHP method ABI passes
-    // the receiver as arg0, so callable invoke with 1 arg
-    // (the copy itself) which lands in the `$this` slot inside the
-    // function frame.
     lget(chunk, clone_fn_slot, line);
     lget(chunk, copy_slot, line);
-    vybe_compiler::primitives::callable::emit_direct_invoke_chunk(chunk, 1, line);
+    chunk.emit_array_new_fixed(0, 0, line);
+    let apply_fn = chunk.add_import("ecma:function", "apply");
+    chunk.emit_call(apply_fn, 3, line);
     chunk.emit_op(Op::DROP, line);
 
     chunk.emit_end(line);
@@ -4464,8 +4683,8 @@ pub fn emit_php_uniqid(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
         lset(chunk, prefix_slot, line);
     }
 
-    let date_now_idx = chunks[0].add_import("ecma:date".to_string(), "now".to_string());
-    let num_tostr_idx = chunks[0].add_import("ecma:number".to_string(), "toString".to_string());
+    let date_now_idx = chunks[current].add_import("ecma:date".to_string(), "now".to_string());
+    let num_tostr_idx = chunks[current].add_import("ecma:number".to_string(), "toString".to_string());
     let chunk = &mut chunks[current];
 
     // hex = floor(Date.now() * 1000).toString(16)
@@ -4507,8 +4726,8 @@ pub fn emit_php_uniqid(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
 /// PHP `preg_replace($pat, $repl, $str, $limit)`.
 /// When limit=-1 (unlimited), uses replaceAll. Otherwise uses replace (first match only).
 pub fn emit_preg_replace_limited(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
-    let replace_all = chunks[0].add_import("ecma:regexp".to_string(), "replaceAll".to_string());
-    let replace_one = chunks[0].add_import("ecma:regexp".to_string(), "replace".to_string());
+    let replace_all = chunks[current].add_import("ecma:regexp".to_string(), "replaceAll".to_string());
+    let replace_one = chunks[current].add_import("ecma:regexp".to_string(), "replace".to_string());
     let chunk = &mut chunks[current];
     let limit_slot = alloc_local(chunk);
     let str_slot = alloc_local(chunk);
