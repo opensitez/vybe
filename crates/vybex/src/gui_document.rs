@@ -215,9 +215,9 @@ pub fn viewport() -> Option<(u32, u32)> {
     if !vybe_platform_web::present::has_content(active()) {
         return None;
     }
-    match vybe_platform_web::engine::window(vybe_platform_web::engine::WindowOp::InnerSize(
-        active(),
-    )) {
+    match vybe_platform_web::engine::window(
+        vybe_platform_web::engine::WindowOp::InnerSize(active()),
+    ) {
         vybe_platform_web::engine::WindowValue::Pair(w, h) if w >= 1.0 && h >= 1.0 => {
             Some((w.round() as u32, h.round() as u32))
         }

@@ -66,10 +66,10 @@ struct ClauseTok {
 /// result arity: the branch keeps exactly that many values.
 fn clause_arity(kind: u8) -> u8 {
     match kind {
-        KIND_CATCH => 1,          // payload
-        KIND_CATCH_REF => 2,      // payload + exnref
-        KIND_CATCH_ALL => 0,      // spec: no values
-        KIND_CATCH_ALL_REF => 1,  // exnref only
+        KIND_CATCH => 1,         // payload
+        KIND_CATCH_REF => 2,     // payload + exnref
+        KIND_CATCH_ALL => 0,     // spec: no values
+        KIND_CATCH_ALL_REF => 1, // exnref only
         _ => 0,
     }
 }

@@ -245,7 +245,11 @@ mod tests {
         let mut t = CMTask::new(1);
         t.start();
         assert_eq!(t.return_(Value::I32(7)), Ok(()));
-        assert_eq!(t.result, Some(Value::I32(7)), "the result belongs to the TASK");
+        assert_eq!(
+            t.result,
+            Some(Value::I32(7)),
+            "the result belongs to the TASK"
+        );
         assert!(t.resolved());
         // `trap_if(self.state == RESOLVED)` — a second return is a trap.
         assert_eq!(t.return_(Value::I32(8)), Err(ResolveError::AlreadyResolved));
@@ -256,7 +260,10 @@ mod tests {
         let mut t = CMTask::new(1);
         t.start();
         t.num_borrows = 2;
-        assert_eq!(t.return_(Value::I32(1)), Err(ResolveError::OutstandingBorrows(2)));
+        assert_eq!(
+            t.return_(Value::I32(1)),
+            Err(ResolveError::OutstandingBorrows(2))
+        );
         assert!(!t.resolved(), "a refused return must not resolve the task");
     }
 

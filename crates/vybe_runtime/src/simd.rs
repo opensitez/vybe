@@ -389,9 +389,7 @@ impl VM {
         if let Some((want_params, want_results)) = self.declared_func_sig(type_index) {
             return match self.function_chunk_index(val) {
                 Some(ci) => match &self.chunks[ci].func_sig {
-                    Some((params, results)) => {
-                        *params == want_params && *results == want_results
-                    }
+                    Some((params, results)) => *params == want_params && *results == want_results,
                     // A function with no recorded signature cannot be claimed
                     // to match — answering true here would be a guess.
                     None => false,
@@ -514,7 +512,9 @@ impl VM {
             if e.parent_index == 0 {
                 None
             } else {
-                types.get(e.parent_index as usize - 1).map(|p| p.fields.clone())
+                types
+                    .get(e.parent_index as usize - 1)
+                    .map(|p| p.fields.clone())
             }
         };
         parent_shape(ea) == parent_shape(eb)
@@ -633,11 +633,7 @@ impl VM {
             // nothing can until every allocation carries an rtt. It removes the
             // case where a GENUINE instance can be relabelled, which is the one
             // that reads as privilege escalation.
-            crate::opcode::heaptype::HeapType::Concrete(index)
-                if self.value_has_rtt(val) =>
-            {
-                false
-            }
+            crate::opcode::heaptype::HeapType::Concrete(index) if self.value_has_rtt(val) => false,
             crate::opcode::heaptype::HeapType::Concrete(index) => self
                 .declared_type_name(index)
                 .is_some_and(|name| self.test_type(val, &name)),

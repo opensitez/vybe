@@ -121,14 +121,10 @@ pub fn flatten_type(t: &ValType, ptr: CoreType) -> Vec<CoreType> {
         // them through the same path, so they must not get a shape of their
         // own here or a `result` would flatten differently from the two-case
         // variant it is defined to be.
-        ValType::Option(inner) => flatten_variant_cases(
-            &[None, Some(inner.as_ref().clone())],
-            ptr,
-        ),
-        ValType::Result(ok, err) => flatten_variant_cases(
-            &[ok.as_deref().cloned(), err.as_deref().cloned()],
-            ptr,
-        ),
+        ValType::Option(inner) => flatten_variant_cases(&[None, Some(inner.as_ref().clone())], ptr),
+        ValType::Result(ok, err) => {
+            flatten_variant_cases(&[ok.as_deref().cloned(), err.as_deref().cloned()], ptr)
+        }
         ValType::Variant(cases) => {
             let payloads: Vec<Option<ValType>> = cases.iter().map(|(_, t)| t.clone()).collect();
             flatten_variant_cases(&payloads, ptr)
@@ -289,12 +285,7 @@ mod tests {
         ]);
         assert_eq!(
             flatten_type(&r, CoreType::I32),
-            [
-                CoreType::I32,
-                CoreType::I32,
-                CoreType::I32,
-                CoreType::F64
-            ]
+            [CoreType::I32, CoreType::I32, CoreType::I32, CoreType::F64]
         );
     }
 
@@ -342,13 +333,27 @@ mod tests {
     #[test]
     fn too_many_params_collapse_to_one_pointer() {
         let many: Vec<ValType> = (0..MAX_FLAT_PARAMS + 1).map(|_| ValType::I32).collect();
-        let ft = flatten_functype(&many, None, FlattenContext::Lift, false, false, CoreType::I32);
+        let ft = flatten_functype(
+            &many,
+            None,
+            FlattenContext::Lift,
+            false,
+            false,
+            CoreType::I32,
+        );
         assert_eq!(ft.params, [CoreType::I32]);
         assert!(ft.results.is_empty());
 
         // Exactly at the limit is NOT over it.
         let exact: Vec<ValType> = (0..MAX_FLAT_PARAMS).map(|_| ValType::I32).collect();
-        let ft = flatten_functype(&exact, None, FlattenContext::Lift, false, false, CoreType::I32);
+        let ft = flatten_functype(
+            &exact,
+            None,
+            FlattenContext::Lift,
+            false,
+            false,
+            CoreType::I32,
+        );
         assert_eq!(ft.params.len(), MAX_FLAT_PARAMS);
     }
 
@@ -383,15 +388,31 @@ mod tests {
 
     #[test]
     fn async_lower_falls_back_to_memory_at_four_params() {
-        let five: Vec<ValType> = (0..MAX_FLAT_ASYNC_PARAMS + 1).map(|_| ValType::I32).collect();
-        let ft = flatten_functype(&five, None, FlattenContext::Lower, true, false, CoreType::I32);
+        let five: Vec<ValType> = (0..MAX_FLAT_ASYNC_PARAMS + 1)
+            .map(|_| ValType::I32)
+            .collect();
+        let ft = flatten_functype(
+            &five,
+            None,
+            FlattenContext::Lower,
+            true,
+            false,
+            CoreType::I32,
+        );
         assert_eq!(ft.params, [CoreType::I32]);
         // An async lowering always answers the packed i32.
         assert_eq!(ft.results, [CoreType::I32]);
 
         // A sync lowering of the same five is NOT collapsed — the async limit
         // is four, the sync limit sixteen.
-        let ft = flatten_functype(&five, None, FlattenContext::Lower, false, false, CoreType::I32);
+        let ft = flatten_functype(
+            &five,
+            None,
+            FlattenContext::Lower,
+            false,
+            false,
+            CoreType::I32,
+        );
         assert_eq!(ft.params.len(), 5);
     }
 

@@ -318,7 +318,10 @@ pub fn store_with(
                 ptr,
                 case,
                 &payload,
-                &[("none".into(), None), ("some".into(), Some((**inner).clone()))],
+                &[
+                    ("none".into(), None),
+                    ("some".into(), Some((**inner).clone())),
+                ],
             )?;
         }
         ValType::Result(ok, err) => {
@@ -541,7 +544,9 @@ fn variant_case(
             }
         }
     }
-    Err(CanonError::Unsupported("variant case not named by the value"))
+    Err(CanonError::Unsupported(
+        "variant case not named by the value",
+    ))
 }
 
 /// `load(cx, ptr, t)` — read one value of type `t` from `ptr`.
@@ -571,7 +576,9 @@ pub fn load(
         ValType::F64 => Value::F64(memory.load_f64(addr).unwrap_or(0.0)),
         ValType::Char => {
             let raw = memory.load_i32(addr).unwrap_or(0) as u32;
-            Value::String(std::sync::Arc::from(scalar_to_char(raw)?.to_string().as_str()))
+            Value::String(std::sync::Arc::from(
+                scalar_to_char(raw)?.to_string().as_str(),
+            ))
         }
         // `load_flags` = `unpack_flags_from_int(load_int(ptr, elem_size))` —
         // read only the packed width, then one bit per label.
@@ -586,9 +593,7 @@ pub fn load(
         | ValType::Borrow(_)
         | ValType::Stream(_)
         | ValType::Future(_)
-        | ValType::ErrorContext => {
-            Value::I32(memory.load_i32(addr).unwrap_or(0))
-        }
+        | ValType::ErrorContext => Value::I32(memory.load_i32(addr).unwrap_or(0)),
         // `load_string` — (ptr, length) where length is BYTES of UTF-8.
         ValType::String => {
             let at = memory.load_i32(addr).unwrap_or(0) as usize;
@@ -631,8 +636,10 @@ pub fn load(
         // `option` and `result` despecialise to `variant`, so they load through
         // the same discriminant arithmetic rather than repeating it.
         ValType::Option(inner) => {
-            let cases: [(String, Option<ValType>); 2] =
-                [("none".into(), None), ("some".into(), Some((**inner).clone()))];
+            let cases: [(String, Option<ValType>); 2] = [
+                ("none".into(), None),
+                ("some".into(), Some((**inner).clone())),
+            ];
             let (case, payload) = load_variant_parts(memory, ptr, &cases)?;
             // `none` is `Value::Null`, which is how every host here spells it.
             if case == 0 { Value::Null } else { payload }
@@ -680,9 +687,10 @@ pub fn load(
                     // A payload-carrying case is `{ tag, val }` — the shape
                     // `variant_case` reads back on the store side.
                     let mut object = crate::value::Object::new();
-                    object
-                        .properties
-                        .insert("tag".into(), Value::String(std::sync::Arc::from(name.as_str())));
+                    object.properties.insert(
+                        "tag".into(),
+                        Value::String(std::sync::Arc::from(name.as_str())),
+                    );
                     object.properties.insert("val".into(), payload);
                     Value::Object(crate::heap::alloc(object))
                 }
@@ -690,7 +698,7 @@ pub fn load(
                     return Err(CanonError::DiscriminantOutOfRange {
                         got: case,
                         cases: cases.len(),
-                    })
+                    });
                 }
             }
         }
@@ -872,8 +880,10 @@ mod tests {
 
         let entry = |kind: &str, name: &str| {
             let mut o = crate::value::Object::new();
-            o.properties.insert("type".into(), Value::String(kind.into()));
-            o.properties.insert("name".into(), Value::String(name.into()));
+            o.properties
+                .insert("type".into(), Value::String(kind.into()));
+            o.properties
+                .insert("name".into(), Value::String(name.into()));
             Value::Object(crate::heap::alloc(o))
         };
         let field = |v: &Value, key: &str| {
@@ -990,7 +1000,9 @@ pub fn load_pair_public(
                 crate::value::Object::new_array(items),
             )))
         }
-        _ => Err(CanonError::Unsupported("load_pair: not a (ptr, length) type")),
+        _ => Err(CanonError::Unsupported(
+            "load_pair: not a (ptr, length) type",
+        )),
     }
 }
 
@@ -1022,7 +1034,9 @@ pub fn store_pair_public(
             }
             Ok((at, items.len() as u32))
         }
-        _ => Err(CanonError::Unsupported("store_pair: not a (ptr, length) type")),
+        _ => Err(CanonError::Unsupported(
+            "store_pair: not a (ptr, length) type",
+        )),
     }
 }
 
@@ -1087,9 +1101,10 @@ pub fn pack_flags(v: &Value, labels: &[String]) -> u32 {
 pub fn unpack_flags(packed: u32, labels: &[String]) -> Value {
     let mut object = crate::value::Object::new();
     for (shift, label) in labels.iter().enumerate() {
-        object
-            .properties
-            .insert(label.as_str().into(), Value::Bool((packed >> shift) & 1 == 1));
+        object.properties.insert(
+            label.as_str().into(),
+            Value::Bool((packed >> shift) & 1 == 1),
+        );
     }
     Value::Object(crate::heap::alloc(object))
 }

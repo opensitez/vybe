@@ -214,12 +214,10 @@ impl VM {
         // was true — and as a layering violation, since they are vybe stamps
         // and that file implements ECMA only. Adding them back here would
         // reintroduce it from the other side.
-        let proto = self
-            .global("__ctor_TypeError")
-            .and_then(|ctor| match ctor {
-                Value::Object(o) => o.lock().ok()?.properties.get("prototype").cloned(),
-                _ => None,
-            });
+        let proto = self.global("__ctor_TypeError").and_then(|ctor| match ctor {
+            Value::Object(o) => o.lock().ok()?.properties.get("prototype").cloned(),
+            _ => None,
+        });
         if let (Value::Object(obj), Some(proto)) = (&err, proto) {
             if let Ok(mut guard) = obj.lock() {
                 guard.properties.insert("__proto__".into(), proto);
@@ -804,8 +802,8 @@ impl VM {
                         // handed to `map` — and the callee then had to ask the
                         // CALL which reality it was in. That question is now
                         // answered once, here, from the declaration.
-                        let universal = self.module_receiver_abi()
-                            == crate::chunk::ReceiverAbi::Parameter;
+                        let universal =
+                            self.module_receiver_abi() == crate::chunk::ReceiverAbi::Parameter;
                         let declares_receiver = self.host_fn_declares_receiver(idx);
                         let param_abi = universal && declares_receiver;
                         let receiver_on_stack = !from_host && argc > 0;
@@ -818,8 +816,7 @@ impl VM {
                         // this on the declaration instead left the receiver in
                         // front of the real arguments and `const g = eval;
                         // g("3+4")` evaluated the receiver.
-                        let stack_args: Vec<Value> =
-                            self.stack[self.stack.len() - argc..].to_vec();
+                        let stack_args: Vec<Value> = self.stack[self.stack.len() - argc..].to_vec();
                         let mut args: Vec<Value> = Vec::with_capacity(bound.len() + argc + 1);
                         if param_abi {
                             // A bytecode call site put the receiver on the
@@ -909,10 +906,8 @@ impl VM {
                         // §7.3.14: a non-callable callee is a THROWN
                         // TypeError, catchable by user code — not a trap.
                         let _ = (&chunk_name, &kind_name);
-                        let err = self.make_ecma_type_error(&format!(
-                            "{} is not a function",
-                            chunk_name
-                        ));
+                        let err =
+                            self.make_ecma_type_error(&format!("{} is not a function", chunk_name));
                         self.raise_exception_value(err)?;
                         return Ok(());
                     }

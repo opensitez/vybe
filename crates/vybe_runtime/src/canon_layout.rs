@@ -92,7 +92,10 @@ pub fn variant_discriminant_size(cases: &[(String, Option<ValType>)]) -> u32 {
 /// `payload_ptr = ptr + align_to(discriminant_size, max_case_alignment)`.
 pub fn variant_payload_offset(cases: &[(String, Option<ValType>)]) -> u32 {
     let borrowed = variant_cases(cases);
-    align_to(discriminant_size(cases.len()), max_case_alignment(&borrowed))
+    align_to(
+        discriminant_size(cases.len()),
+        max_case_alignment(&borrowed),
+    )
 }
 
 /// `alignment_variant(cases)` — `CanonicalABI.md:2269`.
@@ -201,7 +204,10 @@ mod tests {
 
     #[test]
     fn scalars_match_the_spec_table() {
-        assert_eq!((alignment(&ValType::Bool), elem_size(&ValType::Bool)), (1, 1));
+        assert_eq!(
+            (alignment(&ValType::Bool), elem_size(&ValType::Bool)),
+            (1, 1)
+        );
         assert_eq!((alignment(&ValType::I32), elem_size(&ValType::I32)), (4, 4));
         assert_eq!((alignment(&ValType::I64), elem_size(&ValType::I64)), (8, 8));
         assert_eq!((alignment(&ValType::F64), elem_size(&ValType::F64)), (8, 8));
@@ -212,7 +218,11 @@ mod tests {
         assert_eq!(elem_size(&ValType::String), 8);
         assert_eq!(alignment(&ValType::String), 4);
         let l = ValType::List(Box::new(ValType::I64));
-        assert_eq!(elem_size(&l), 8, "an unfixed list is (ptr, len), not its payload");
+        assert_eq!(
+            elem_size(&l),
+            8,
+            "an unfixed list is (ptr, len), not its payload"
+        );
         assert_eq!(alignment(&l), 4);
     }
 
@@ -242,17 +252,11 @@ mod tests {
     #[test]
     fn result_is_a_two_case_variant_whose_payloads_overlap() {
         // Two cases, a 1-byte discriminant, payload i32 → align to 4, 4+4 = 8.
-        let r = ValType::Result(
-            Some(Box::new(ValType::I32)),
-            Some(Box::new(ValType::I32)),
-        );
+        let r = ValType::Result(Some(Box::new(ValType::I32)), Some(Box::new(ValType::I32)));
         assert_eq!(alignment(&r), 4);
         assert_eq!(elem_size(&r), 8);
         // The cases OVERLAP — widening one does not add to the other.
-        let wide = ValType::Result(
-            Some(Box::new(ValType::I64)),
-            Some(Box::new(ValType::I32)),
-        );
+        let wide = ValType::Result(Some(Box::new(ValType::I64)), Some(Box::new(ValType::I32)));
         assert_eq!(elem_size(&wide), 16, "8-aligned discriminant + 8 payload");
     }
 

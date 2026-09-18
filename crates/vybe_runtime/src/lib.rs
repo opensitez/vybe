@@ -14,8 +14,8 @@ pub mod vm;
 // its own `impl VM { ... }` block operating on the same struct defined in
 // vm.rs. Private to the crate; external consumers keep using `VM::*`.
 pub(crate) mod calls;
-pub mod canon_def;
 pub mod canon_copy;
+pub mod canon_def;
 pub mod canon_flat;
 pub mod canon_flat_values;
 pub mod canon_layout;
@@ -65,8 +65,7 @@ pub mod profile;
 pub mod registry;
 pub use component::{
     BinaryLoader, Component, ExportImpl, FuncSig, ImportPolicy, Interface, Language, LinkResult,
-    Param,
-    Linker, ModuleExport, ModuleResolver, ResolvedModule, ValType, register_binary_loader,
+    Linker, ModuleExport, ModuleResolver, Param, ResolvedModule, ValType, register_binary_loader,
 };
 pub use framework::{
     Framework, Plugin, PluginEntry, finalize_plugins, finalize_registered_plugins, init_all,
@@ -89,15 +88,11 @@ pub use project::ProjectConfig;
 
 static HOST_SIGNATURES: std::sync::OnceLock<
     std::sync::RwLock<
-        std::collections::HashMap<
-            (String, String),
-            (FuncSig, Option<crate::vm::ResourceBinding>),
-        >,
+        std::collections::HashMap<(String, String), (FuncSig, Option<crate::vm::ResourceBinding>)>,
     >,
 > = std::sync::OnceLock::new();
 
-fn host_signatures()
--> &'static std::sync::RwLock<
+fn host_signatures() -> &'static std::sync::RwLock<
     std::collections::HashMap<(String, String), (FuncSig, Option<crate::vm::ResourceBinding>)>,
 > {
     HOST_SIGNATURES.get_or_init(Default::default)
@@ -232,9 +227,15 @@ mod host_signature_tests {
         assert_eq!(host_arity_mismatch("test:method", "appendChild", 2), None);
         // Short by TWO is still short: the receiver can only supply one handle,
         // so this is the forgotten-argument bug the check exists for.
-        assert_eq!(host_arity_mismatch("test:method", "appendChild", 1), Some(3));
+        assert_eq!(
+            host_arity_mismatch("test:method", "appendChild", 1),
+            Some(3)
+        );
         // And too many is always wrong.
-        assert_eq!(host_arity_mismatch("test:method", "appendChild", 4), Some(3));
+        assert_eq!(
+            host_arity_mismatch("test:method", "appendChild", 4),
+            Some(3)
+        );
     }
 
     #[test]
@@ -257,7 +258,10 @@ mod host_signature_tests {
         assert_eq!(sig.params.len(), 2);
         let binding = resource.expect("declared as a method on a resource");
         assert_eq!(binding.resource, "node");
-        assert!(binding.borrows_self, "a DOM op borrows, it does not consume");
+        assert!(
+            binding.borrows_self,
+            "a DOM op borrows, it does not consume"
+        );
     }
 }
 

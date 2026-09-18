@@ -724,7 +724,9 @@ impl VM {
         // through `HostContext`, and a stream that reached EOF has an answer
         // too (`DROPPED`), which is equally a reason not to park.
         let el = self.event_loop.borrow();
-        el.stream_has_bytes(stream_id) || el.stream_has_item(stream_id) || el.stream_is_eof(stream_id)
+        el.stream_has_bytes(stream_id)
+            || el.stream_has_item(stream_id)
+            || el.stream_is_eof(stream_id)
     }
 
     fn park_sync_copy(&mut self, pending: crate::fiber::PendingCopy) -> VMError {
@@ -1048,9 +1050,7 @@ impl VM {
                     .get("__thread_id")
                     .map(|v| v.as_f64() as i32)
                     .unwrap_or(-1),
-                task.properties
-                    .get(TASK_FUTEX)
-                    .map(|v| v.as_f64() as usize),
+                task.properties.get(TASK_FUTEX).map(|v| v.as_f64() as usize),
             )
         };
         if let Some(handle) = self.thread_handles.remove(&tid) {
@@ -1148,7 +1148,9 @@ impl VM {
         // promote rows: it refused a handoff the spec defines as a fallback.
 
         let other = self.cm_instance.threads.get(target_idx).ok_or_else(|| {
-            VMError::new(format!("canon {who}: no thread at index {target_idx} (trap)"))
+            VMError::new(format!(
+                "canon {who}: no thread at index {target_idx} (trap)"
+            ))
         })?;
 
         // `promote` consults READINESS; `resume` demands SUSPENDED.
@@ -1204,7 +1206,11 @@ impl VM {
         // `yield_then_*` leaves this thread READY rather than parked. After the
         // cancel check, per `yield_then_resume`.
         if yields {
-            let me_t = self.cm_instance.threads.get_mut(me).expect("current thread");
+            let me_t = self
+                .cm_instance
+                .threads
+                .get_mut(me)
+                .expect("current thread");
             // `start_waiting_internal` asserts we are not already waiting; the
             // running thread never is, so a failure here is a real state bug.
             me_t.start_waiting_internal(crate::cm_thread::ReadyWhen::Always)
@@ -1229,9 +1235,9 @@ impl VM {
                 "canon {who}: definition carries no $ftbl immediate"
             ))
         })? as usize;
-        let table = self.table_ref(tableidx).ok_or_else(|| {
-            VMError::new(format!("canon {who}: unknown table {tableidx} (trap)"))
-        })?;
+        let table = self
+            .table_ref(tableidx)
+            .ok_or_else(|| VMError::new(format!("canon {who}: unknown table {tableidx} (trap)")))?;
         if fi < 0 || fi as usize >= table.len() {
             return Err(VMError::new(format!(
                 "canon {who}: table index {fi} out of bounds (len {}) (trap)",
@@ -1248,9 +1254,7 @@ impl VM {
         self.cm_instance
             .threads
             .get_mut(index)
-            .ok_or_else(|| {
-                VMError::new(format!("canon {who}: no thread at index {index} (trap)"))
-            })?
+            .ok_or_else(|| VMError::new(format!("canon {who}: no thread at index {index} (trap)")))?
             .resume_later()
             .map_err(|e| VMError::new(format!("canon {who}: {e} (trap)")))
     }
@@ -1520,9 +1524,7 @@ impl VM {
             Value::Object(obj) => {
                 let o = obj.lock().unwrap();
                 match &o.kind {
-                    ObjectKind::Continuation(cs) => {
-                        (*cs.state.lock().unwrap(), cs.entry.clone())
-                    }
+                    ObjectKind::Continuation(cs) => (*cs.state.lock().unwrap(), cs.entry.clone()),
                     _ => return Err(VMError::new(format!("{who}: not a continuation"))),
                 }
             }
@@ -1696,10 +1698,7 @@ impl VM {
     /// what is missing. `lift`/`lower` cannot fall back to the identity
     /// section: identity answers "which TYPE", and these need `$callee`,
     /// `$opts` and `$ft` — three immediates no import name can carry.
-    fn canon_def_required(
-        &self,
-        builtin: &str,
-    ) -> Result<crate::canon_def::CanonDef, VMError> {
+    fn canon_def_required(&self, builtin: &str) -> Result<crate::canon_def::CanonDef, VMError> {
         let idx = self.canon_type_immediate.ok_or_else(|| {
             VMError::new(format!(
                 "canon {builtin}: no canonidx — `{builtin}` is defined by a \
@@ -1725,7 +1724,9 @@ impl VM {
         def: &crate::canon_def::CanonDef,
     ) -> Result<crate::canon_def::CanonFuncType, VMError> {
         let idx = def.functype.ok_or_else(|| {
-            VMError::new(format!("canon {builtin}: definition carries no $ft immediate"))
+            VMError::new(format!(
+                "canon {builtin}: definition carries no $ft immediate"
+            ))
         })?;
         match self.canon_functypes.get(idx as usize) {
             Some(Some(ft)) => Ok(ft.clone()),
@@ -1865,9 +1866,7 @@ impl VM {
         use crate::canon_flat::{CoreType, FlattenContext, MAX_FLAT_PARAMS, MAX_FLAT_RESULTS};
         let def = self.canon_def_required("lower")?;
         let ft = self.canon_functype("lower", &def)?;
-        let callee = def
-            .require_callee("lower")
-            .map_err(VMError::new)?;
+        let callee = def.require_callee("lower").map_err(VMError::new)?;
 
         let flat_ft = crate::canon_flat::flatten_functype(
             &ft.params,
@@ -2296,10 +2295,9 @@ impl VM {
         }
         // Nothing had been copied into the buffer — the copy blocked before
         // making progress — so the count is 0.
-        self.push(Value::I32(crate::canon_copy::pack(
-            crate::canon_copy::CopyResult::Cancelled,
-            0,
-        ) as i32))?;
+        self.push(Value::I32(
+            crate::canon_copy::pack(crate::canon_copy::CopyResult::Cancelled, 0) as i32,
+        ))?;
         Ok(())
     }
 
@@ -2649,7 +2647,9 @@ impl VM {
                 // `Buffer`'s constructor eagerly checks the bounds of (ptr, n),
                 // and MAX_LENGTH is fixed independently of the address type.
                 if n < 0 || ptr < 0 || n as u32 > crate::canon_copy::MAX_LENGTH {
-                    return Err(VMError::new("canon stream.read: buffer length out of range"));
+                    return Err(VMError::new(
+                        "canon stream.read: buffer length out of range",
+                    ));
                 }
                 let (ptr, n) = (ptr as usize, n as usize);
                 if ptr.saturating_add(n) > self.memory.len() {
@@ -2791,7 +2791,9 @@ impl VM {
                 }
                 let settled = {
                     let el = self.event_loop.borrow();
-                    el.future_states.get(&end.id).map(|r| (r.phase, r.value.clone()))
+                    el.future_states
+                        .get(&end.id)
+                        .map(|r| (r.phase, r.value.clone()))
                 };
                 match settled {
                     Some((crate::event_loop::FuturePhase::Resolved, Some(v))) => {
@@ -2931,9 +2933,7 @@ impl VM {
                     .map_err(|e| VMError::new(format!("canon error-context.new: {e}")))?;
                 let h = self
                     .handle_table
-                    .insert(crate::handle_table::HandleEntry::ErrorContext {
-                        debug_message: msg,
-                    });
+                    .insert(crate::handle_table::HandleEntry::ErrorContext { debug_message: msg });
                 self.push(Value::I32(h as i32))?;
             }
             // 📝 canon error-context.debug-message — `CanonicalABI.md:5189`.
@@ -2955,13 +2955,13 @@ impl VM {
                             "canon error-context.debug-message: handle {handle} is a {} , \
                              not an error-context (trap)",
                             crate::handle_table::HandleEntry::kind_name(other)
-                        )))
+                        )));
                     }
                     None => {
                         return Err(VMError::new(format!(
                             "canon error-context.debug-message: handle {handle} is not in the \
                              instance handle table (trap)"
-                        )))
+                        )));
                     }
                 };
                 let memory = self.memory.clone();
@@ -2976,9 +2976,7 @@ impl VM {
                         &crate::component::ValType::String,
                         ptr,
                     )
-                    .map_err(|e| {
-                        VMError::new(format!("canon error-context.debug-message: {e}"))
-                    })?;
+                    .map_err(|e| VMError::new(format!("canon error-context.debug-message: {e}")))?;
                 }
                 self.canon_bump_commit(bump);
             }
@@ -2995,13 +2993,13 @@ impl VM {
                             "canon error-context.drop: handle {handle} is a {}, not an \
                              error-context (trap)",
                             crate::handle_table::HandleEntry::kind_name(other)
-                        )))
+                        )));
                     }
                     None => {
                         return Err(VMError::new(format!(
                             "canon error-context.drop: handle {handle} is not in the instance \
                              handle table (trap)"
-                        )))
+                        )));
                     }
                 }
                 self.handle_table.remove(handle);
@@ -3031,7 +3029,9 @@ impl VM {
                 match self.handle_table.get(handle) {
                     Some(crate::handle_table::HandleEntry::OwnedResource { type_id, value })
                     | Some(crate::handle_table::HandleEntry::BorrowedResource {
-                        type_id, value, ..
+                        type_id,
+                        value,
+                        ..
                     }) => {
                         if self.canon_type_index().is_some() && *type_id != want {
                             return Err(VMError::new(format!(
@@ -3190,9 +3190,9 @@ impl VM {
                         "canon thread.resume-later: no thread at index {i} (trap)"
                     ))
                 })?;
-                thread.resume_later().map_err(|e| {
-                    VMError::new(format!("canon thread.resume-later: {e} (trap)"))
-                })?;
+                thread
+                    .resume_later()
+                    .map_err(|e| VMError::new(format!("canon thread.resume-later: {e} (trap)")))?;
             }
             // The four compound handoffs are a 2x2 in the spec and get one
             // implementation here for the same reason: **what happens to me**
@@ -3544,12 +3544,15 @@ impl VM {
         &mut self,
         p: &crate::fiber::PendingCopy,
     ) -> Result<Option<i32>, VMError> {
-        use crate::canon_copy::{pack, CopyResult};
+        use crate::canon_copy::{CopyResult, pack};
         use crate::fiber::PendingCopyKind as K;
 
         match &p.kind {
             K::StreamBytes => {
-                let bytes = self.event_loop.borrow_mut().stream_read_bytes(p.end_id, p.n);
+                let bytes = self
+                    .event_loop
+                    .borrow_mut()
+                    .stream_read_bytes(p.end_id, p.n);
                 if !bytes.is_empty() {
                     self.write_memory_bytes(0, p.ptr, &bytes)?;
                     // The copy completed, so the end leaves COPYING — the reset
@@ -3564,7 +3567,10 @@ impl VM {
                 Ok(None)
             }
             K::StreamTyped(elem) => {
-                let items = self.event_loop.borrow_mut().stream_read_items(p.end_id, p.n);
+                let items = self
+                    .event_loop
+                    .borrow_mut()
+                    .stream_read_items(p.end_id, p.n);
                 if items.is_empty() {
                     if self.event_loop.borrow().stream_is_eof(p.end_id) {
                         self.mark_end_done(p.handle);
@@ -3579,7 +3585,8 @@ impl VM {
                 let mut copied = 0u32;
                 for (i, item) in items.iter().enumerate() {
                     let at = (p.ptr + stride * i) as u32;
-                    if let Err(e) = crate::canon_value::store_with(&memory, &mut realloc, item, elem, at)
+                    if let Err(e) =
+                        crate::canon_value::store_with(&memory, &mut realloc, item, elem, at)
                     {
                         return Err(VMError::new(format!("canon stream.read: {e}")));
                     }
@@ -3876,9 +3883,13 @@ impl VM {
         opcode_start: usize,
         tail: bool,
     ) -> Result<(), VMError> {
-        let Value::Object(o) = funcref else { return Ok(()) };
+        let Value::Object(o) = funcref else {
+            return Ok(());
+        };
         let ob = o.lock().unwrap();
-        let crate::value::ObjectKind::Function(f) = &ob.kind else { return Ok(()) };
+        let crate::value::ObjectKind::Function(f) = &ob.kind else {
+            return Ok(());
+        };
         let ch = &self.chunks[f.chunk_index];
         let how = if tail { " (return_call_indirect)" } else { "" };
         if ch.param_count as usize != argc || ch.result_arity as usize != expected_results {
@@ -3917,8 +3928,11 @@ impl VM {
         // difference there is a real difference, and it is the only part of
         // the identity precise enough to trap on.
         let same_module = |a: &str, b: &str| {
-            let seq =
-                |n: &str| n.strip_prefix("m#").and_then(|r| r.split_once('#')).map(|(s, _)| s.to_string());
+            let seq = |n: &str| {
+                n.strip_prefix("m#")
+                    .and_then(|r| r.split_once('#'))
+                    .map(|(s, _)| s.to_string())
+            };
             matches!((seq(a), seq(b)), (Some(x), Some(y)) if x == y)
         };
         if let (Some(want), Some(got)) = (
@@ -3966,7 +3980,10 @@ impl VM {
                 let mut it = s.splitn(2, "->");
                 let (p, r) = (it.next().unwrap_or(""), it.next().unwrap_or(""));
                 let list = |x: &str| {
-                    x.split(',').filter(|t| !t.is_empty()).map(str::to_string).collect::<Vec<_>>()
+                    x.split(',')
+                        .filter(|t| !t.is_empty())
+                        .map(str::to_string)
+                        .collect::<Vec<_>>()
                 };
                 (list(p), list(r))
             };
@@ -3980,8 +3997,14 @@ impl VM {
             // and it rejects `(ref null $t1)` against `(ref null func)`, which
             // the spec accepts.
             if (want_p.len(), want_r.len()) == (argc, expected_results)
-                && !(got_p.iter().zip(&want_p).all(|(g, w)| self.val_type_matches(w, g))
-                    && got_r.iter().zip(&want_r).all(|(g, w)| self.val_type_matches(g, w)))
+                && !(got_p
+                    .iter()
+                    .zip(&want_p)
+                    .all(|(g, w)| self.val_type_matches(w, g))
+                    && got_r
+                        .iter()
+                        .zip(&want_r)
+                        .all(|(g, w)| self.val_type_matches(g, w)))
             {
                 return Err(VMError::new(format!(
                     "trap: indirect call type mismatch{how} (callee {got}, expected {want})"
@@ -4082,8 +4105,10 @@ impl VM {
             // Which hierarchy a concrete type belongs to is not recorded here,
             // so it is taken to be below the abstract type it is compared with.
             (None, Some(_)) => true,
-            (None, None) => match (self.type_registry.get_id(got), self.type_registry.get_id(want))
-            {
+            (None, None) => match (
+                self.type_registry.get_id(got),
+                self.type_registry.get_id(want),
+            ) {
                 (Some(g), Some(w)) => self.type_registry.is_subtype(g, w),
                 _ => true,
             },
@@ -4430,7 +4455,9 @@ impl VM {
                         // `struct.new` / `struct.new_default` put its values.
                         let obj = self.pop();
                         if obj.is_null_ref() {
-                            return Err(VMError::new("trap: null structure reference (struct.get)"));
+                            return Err(VMError::new(
+                                "trap: null structure reference (struct.get)",
+                            ));
                         }
                         let val = match &obj {
                             Value::Object(o) => o
@@ -4560,7 +4587,9 @@ impl VM {
                         let val = self.pop();
                         let obj = self.pop();
                         if obj.is_null_ref() {
-                            return Err(VMError::new("trap: null structure reference (struct.set)"));
+                            return Err(VMError::new(
+                                "trap: null structure reference (struct.set)",
+                            ));
                         }
                         match &obj {
                             Value::Object(o) => {
@@ -4846,7 +4875,9 @@ impl VM {
                                         continue;
                                     }
                                     _ => {
-                                        return Err(VMError::new("trap: out of bounds array access (array.set)"));
+                                        return Err(VMError::new(
+                                            "trap: out of bounds array access (array.set)",
+                                        ));
                                     }
                                 }
                             }
@@ -5246,10 +5277,9 @@ impl VM {
                     let table = self
                         .table_ref(table_idx)
                         .ok_or_else(|| VMError::new("trap: table.get unknown table"))?;
-                    let val = table
-                        .get(idx)
-                        .cloned()
-                        .ok_or_else(|| VMError::new("trap: out of bounds table access (table.get)"))?;
+                    let val = table.get(idx).cloned().ok_or_else(|| {
+                        VMError::new("trap: out of bounds table access (table.get)")
+                    })?;
                     self.push(val)?;
                 }
                 // `table.set tbl` — pop value + index, write into table.
@@ -6132,14 +6162,15 @@ impl VM {
                         .and_then(|td| td.field_defs.first())
                         .and_then(|f| array_elem_storage_kind(&f.name))
                         .unwrap_or((1, 4));
-                    let data = self
-                        .data_segments
-                        .get(dataidx as usize)
-                        .ok_or_else(|| VMError::new("trap: array.new_data: missing data segment"))?;
+                    let data = self.data_segments.get(dataidx as usize).ok_or_else(|| {
+                        VMError::new("trap: array.new_data: missing data segment")
+                    })?;
                     let seg_len = if dropped { 0 } else { data.len() };
                     let end = offset.saturating_add(size.saturating_mul(elem_size));
                     if end > seg_len {
-                        return Err(VMError::new("trap: out of bounds memory access (array.new_data)"));
+                        return Err(VMError::new(
+                            "trap: out of bounds memory access (array.new_data)",
+                        ));
                     }
                     let elems: Vec<Value> = (0..size)
                         .map(|i| {
@@ -6165,14 +6196,15 @@ impl VM {
                     let dropped = self.dropped_elems.contains(&elemidx);
                     let size = self.pop_u32_operand();
                     let offset = self.pop_u32_operand();
-                    let elems = self
-                        .elem_segments
-                        .get(elemidx as usize)
-                        .ok_or_else(|| VMError::new("trap: array.new_elem: missing element segment"))?;
+                    let elems = self.elem_segments.get(elemidx as usize).ok_or_else(|| {
+                        VMError::new("trap: array.new_elem: missing element segment")
+                    })?;
                     let seg_len = if dropped { 0 } else { elems.len() };
                     let end = offset.saturating_add(size);
                     if end > seg_len {
-                        return Err(VMError::new("trap: out of bounds table access (array.new_elem)"));
+                        return Err(VMError::new(
+                            "trap: out of bounds table access (array.new_elem)",
+                        ));
                     }
                     self.push(Value::Object(crate::heap::alloc(Object::new_array(
                         elems[offset..end].to_vec(),
@@ -6213,7 +6245,9 @@ impl VM {
                     };
                     if let Some(len) = gc_len {
                         if raw_idx < 0 || raw_idx as usize >= len {
-                            return Err(VMError::new("trap: out of bounds array access (array.get)"));
+                            return Err(VMError::new(
+                                "trap: out of bounds array access (array.get)",
+                            ));
                         }
                     }
                     let idx = raw_idx.max(0) as usize;
@@ -6294,7 +6328,9 @@ impl VM {
                     let check_src = |elem_size: usize| -> Result<(), VMError> {
                         let end = src_offset.saturating_add(size.saturating_mul(elem_size));
                         if end > seg_len {
-                            return Err(VMError::new("trap: out of bounds memory access (array.init_data source)"));
+                            return Err(VMError::new(
+                                "trap: out of bounds memory access (array.init_data source)",
+                            ));
                         }
                         Ok(())
                     };
@@ -6347,7 +6383,11 @@ impl VM {
                                     typed_array_write(ta, dst_offset + i, &v);
                                 }
                             }
-                            _ => return Err(VMError::new("trap: null array reference (array.init_data)")),
+                            _ => {
+                                return Err(VMError::new(
+                                    "trap: null array reference (array.init_data)",
+                                ));
+                            }
                         }
                     } else {
                         return Err(VMError::new("trap: null array reference (array.init_data)"));
@@ -6362,10 +6402,9 @@ impl VM {
                     let src_offset = self.pop_u32_operand();
                     let dst_offset = self.pop_u32_operand();
                     let array = self.pop();
-                    let source = self
-                        .elem_segments
-                        .get(elemidx as usize)
-                        .ok_or_else(|| VMError::new("trap: array.init_elem: missing element segment"))?;
+                    let source = self.elem_segments.get(elemidx as usize).ok_or_else(|| {
+                        VMError::new("trap: array.init_elem: missing element segment")
+                    })?;
                     let seg_len = if dropped { 0 } else { source.len() };
                     let src_end = src_offset.saturating_add(size);
                     // ⚠ The DESTINATION check is inside the object match below
@@ -6388,7 +6427,9 @@ impl VM {
                             elems[dst_offset..dst_end]
                                 .clone_from_slice(&source[src_offset..src_end]);
                         } else {
-                            return Err(VMError::new("trap: null array reference (array.init_elem)"));
+                            return Err(VMError::new(
+                                "trap: null array reference (array.init_elem)",
+                            ));
                         }
                     } else {
                         return Err(VMError::new("trap: null array reference (array.init_elem)"));
@@ -6542,9 +6583,7 @@ impl VM {
                             return Err(VMError::new("trap: descriptor cast failure"));
                         }
                     } else if !ref_eq(&descriptor_of(&val), &expected) {
-                        return Err(VMError::new(
-                            "trap: descriptor cast failure",
-                        ));
+                        return Err(VMError::new("trap: descriptor cast failure"));
                     }
                 }
                 // `br_on_cast_desc_eq $l ht ht` / `..._fail` — the branching
@@ -8136,10 +8175,14 @@ impl VM {
                             .unwrap_or(0)
                     };
                     if src.saturating_add(count) > seg_len {
-                        return Err(VMError::new("trap: out of bounds memory access (memory.init source)"));
+                        return Err(VMError::new(
+                            "trap: out of bounds memory access (memory.init source)",
+                        ));
                     }
                     if dst.saturating_add(count) > self.mem_len(memidx) {
-                        return Err(VMError::new("trap: out of bounds memory access (memory.init destination)"));
+                        return Err(VMError::new(
+                            "trap: out of bounds memory access (memory.init destination)",
+                        ));
                     }
                     if count > 0 {
                         let bytes =
@@ -8212,7 +8255,9 @@ impl VM {
                         .ok_or_else(|| VMError::new("trap: table.fill unknown table"))?;
                     let end = dst.saturating_add(count);
                     if end > table.len() {
-                        return Err(VMError::new("trap: out of bounds table access (table.fill)"));
+                        return Err(VMError::new(
+                            "trap: out of bounds table access (table.fill)",
+                        ));
                     }
                     for i in dst..end {
                         table[i] = value.clone();
@@ -8230,14 +8275,18 @@ impl VM {
                         .table_ref(src_table_idx)
                         .ok_or_else(|| VMError::new("trap: table.copy unknown table"))?;
                     if src.saturating_add(count) > source.len() {
-                        return Err(VMError::new("trap: out of bounds table access (table.copy)".to_string()));
+                        return Err(VMError::new(
+                            "trap: out of bounds table access (table.copy)".to_string(),
+                        ));
                     }
                     let values: Vec<Value> = source[src..src + count].to_vec();
                     let destination = self
                         .table_mut(dst_table_idx)
                         .ok_or_else(|| VMError::new("trap: table.copy unknown table"))?;
                     if dst.saturating_add(count) > destination.len() {
-                        return Err(VMError::new("trap: out of bounds table access (table.copy)".to_string()));
+                        return Err(VMError::new(
+                            "trap: out of bounds table access (table.copy)".to_string(),
+                        ));
                     }
                     destination[dst..dst + count].clone_from_slice(&values);
                 }
@@ -8263,14 +8312,18 @@ impl VM {
                         .ok_or_else(|| VMError::new("trap: table.init: missing element segment"))?;
                     let seg_len = if dropped { 0 } else { elems.len() };
                     if src.saturating_add(count) > seg_len {
-                        return Err(VMError::new("trap: out of bounds table access (table.init source)"));
+                        return Err(VMError::new(
+                            "trap: out of bounds table access (table.init source)",
+                        ));
                     }
                     let values: Vec<Value> = elems[src..src + count].to_vec();
                     let table = self
                         .table_mut(table_idx)
                         .ok_or_else(|| VMError::new("trap: table.init unknown table"))?;
                     if dst.saturating_add(count) > table.len() {
-                        return Err(VMError::new("trap: out of bounds table access (table.init destination)"));
+                        return Err(VMError::new(
+                            "trap: out of bounds table access (table.init destination)",
+                        ));
                     }
                     table[dst..dst + count].clone_from_slice(&values);
                 }
@@ -8370,7 +8423,9 @@ impl VM {
                                 _ => 0,
                             };
                             if start + count > len {
-                                return Err(VMError::new("trap: out of bounds array access (array.fill)"));
+                                return Err(VMError::new(
+                                    "trap: out of bounds array access (array.fill)",
+                                ));
                             }
                         }
                     }
@@ -8410,7 +8465,9 @@ impl VM {
                             }
                         };
                         if src_off + len > arr_len(&src) || dst_off + len > arr_len(&dst) {
-                            return Err(VMError::new("trap: out of bounds array access (array.copy)"));
+                            return Err(VMError::new(
+                                "trap: out of bounds array access (array.copy)",
+                            ));
                         }
                     }
                     // Read source slice
@@ -8836,7 +8893,9 @@ impl VM {
                         .unwrap_or_default();
                     let exn = self.pop();
                     if exn.is_null_ref() {
-                        return Err(VMError::new("trap: resume_throw_ref: null exception reference"));
+                        return Err(VMError::new(
+                            "trap: resume_throw_ref: null exception reference",
+                        ));
                     }
                     let cont = self.pop();
                     if let Value::Object(ref obj) = cont {
@@ -10145,8 +10204,11 @@ impl VM {
                             let b0 = i16::from_le_bytes([vb[i * 4], vb[i * 4 + 1]]) as i32;
                             let a1 = i16::from_le_bytes([va[i * 4 + 2], va[i * 4 + 3]]) as i32;
                             let b1 = i16::from_le_bytes([vb[i * 4 + 2], vb[i * 4 + 3]]) as i32;
-                            out[i * 4..i * 4 + 4]
-                                .copy_from_slice(&a0.wrapping_mul(b0).wrapping_add(a1.wrapping_mul(b1)).to_le_bytes());
+                            out[i * 4..i * 4 + 4].copy_from_slice(
+                                &a0.wrapping_mul(b0)
+                                    .wrapping_add(a1.wrapping_mul(b1))
+                                    .to_le_bytes(),
+                            );
                         }
                         self.push(Value::V128(out))?;
                     } else {
@@ -11093,10 +11155,16 @@ mod thread_block_tests {
         let cont = vm.new_parked_continuation();
         let mut t = crate::cm_thread::Thread::new(0, cont);
         t.resume_later().expect("a fresh thread is suspended");
-        assert!(t.ready(), "resume_later must leave it READY or this proves nothing");
+        assert!(
+            t.ready(),
+            "resume_later must leave it READY or this proves nothing"
+        );
         let idx = vm.cm_instance.threads.register(t);
 
-        let err = vm.thread_block("thread.suspend", idx + 1).unwrap_err().message;
+        let err = vm
+            .thread_block("thread.suspend", idx + 1)
+            .unwrap_err()
+            .message;
         assert!(
             !err.contains("no host work is pending"),
             "a ready thread must be switched to, never reported as a deadlock: {err}"

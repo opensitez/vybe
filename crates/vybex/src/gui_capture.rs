@@ -124,11 +124,7 @@ fn control_rect(name: &str) -> Result<widgets::LayoutRect, String> {
 ///
 /// Builds its own `FontSystem`, so it needs no live window — that is what lets
 /// the step debugger and the headless flag share it.
-pub fn capture_to_png(
-    path: &str,
-    control: Option<&str>,
-    scale: f32,
-) -> Result<(u32, u32), String> {
+pub fn capture_to_png(path: &str, control: Option<&str>, scale: f32) -> Result<(u32, u32), String> {
     // The frame IS the document's viewport: a form's `Width`/`Height` are CSS
     // on the body and land there.
     // The failure says WHAT THE ENGINE HOLDS, not just that it holds nothing

@@ -22,7 +22,6 @@ use widgets::{
     Application, FontSystem, KeyEvent, MouseEvent, PanelWidget, Pixmap, SwashCache, run_app,
 };
 
-
 // ── FormApp — Application impl ─────────────────────────────────────────
 
 struct FormApp {
@@ -262,7 +261,6 @@ impl FormApp {
             }
         }
     }
-
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────
@@ -400,6 +398,3 @@ pub fn capture_gui(
 
     crate::gui_capture::capture_to_png(path, control, 1.0)
 }
-
-
-

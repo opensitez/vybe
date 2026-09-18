@@ -20,6 +20,7 @@
 //!                     Also settable with VYBE_ENGINE; the flag wins.
 //!   --capture FILE    Render one GUI frame to a PNG instead of opening a window
 //!   --capture-control N  Crop --capture to a single control
+//!   --                Stop parsing vybex flags; remaining words are guest argv
 //!
 //! Supports single source files (detected by extension), MULTIPLE source files
 //! linked together like a C compiler (`vybex main.c util.c` — the first file is
@@ -210,6 +211,7 @@ pub fn run() {
     let mut dump_ast = false;
     let mut dump_classes = false;
     let mut emit_wasm = false;
+    let mut emit_vybe_metadata = false;
     // `--check` compiles the program and reports diagnostics WITHOUT running it,
     // exiting non-zero on any parse/compile error. Intended for editors and CI.
     let mut check = false;
@@ -254,6 +256,7 @@ pub fn run() {
             "--dump-classes" => dump_classes = true,
             "--check" | "-c" => check = true,
             "--emit-wasm" | "-w" => emit_wasm = true,
+            "--emit-vybe-metadata" => emit_vybe_metadata = true,
             "--entry" | "-e" => {
                 let Some(name) = iter.next() else {
                     eprintln!("Missing value for --entry");
@@ -364,6 +367,7 @@ pub fn run() {
                 print_usage();
                 return;
             }
+            "--" => break,
             "--version" | "-V" => {
                 println!("vybex {}", env!("CARGO_PKG_VERSION"));
                 return;
@@ -686,17 +690,19 @@ pub fn run() {
     if dump {
         print_chunk_summary(&compiled.chunks, chunk_filter.as_deref());
         for chunk in filter_chunks(&compiled.chunks, chunk_filter.as_deref()) {
-            println!(
-                "{}",
-                vybe_runtime::debug::disassemble(chunk)
-            );
+            println!("{}", vybe_runtime::debug::disassemble(chunk));
         }
         return;
     }
 
     // ── --emit-wasm: write .wasm binary and exit ────────────────────────────
     if emit_wasm {
-        let wasm_bytes = vybe_platform_wasm::write_wasm(&compiled.chunks);
+        let wasm_bytes = vybe_platform_wasm::write_wasm_with_options(
+            &compiled.chunks,
+            vybe_platform_wasm::writer::WasmWriteOptions {
+                include_vybe_metadata: emit_vybe_metadata,
+            },
+        );
         let out_path = source_path.with_extension("wasm");
         std::fs::write(&out_path, &wasm_bytes).unwrap();
         eprintln!("Wrote {} bytes to {}", wasm_bytes.len(), out_path.display());
@@ -942,10 +948,7 @@ fn run_wasm(
 
     if dump {
         for chunk in filter_chunks(&chunks, chunk_filter) {
-            println!(
-                "{}",
-                vybe_runtime::debug::disassemble(chunk)
-            );
+            println!("{}", vybe_runtime::debug::disassemble(chunk));
         }
         return;
     }
@@ -1001,15 +1004,19 @@ fn print_usage() {
     eprintln!("vybex — Universal compiler");
     eprintln!();
     eprintln!("Usage: vybex [flags] <file...>   (several files link together)");
+    eprintln!("       vybex [flags] <file> -- [program args...]");
     eprintln!("       vybex --eval CODE --lang NAME [--virtual-path PATH]");
     eprintln!("       vybex --serve [--bind BIND] [BIND] [ROOT]");
     eprintln!();
     eprintln!("Flags:");
     eprintln!("  -d, --dump        Disassemble bytecode (no run)");
-    eprintln!("      --dump-ast    Parse and print the prepared common AST
-      --dump-classes  Print the class table the declaration pass built");
+    eprintln!(
+        "      --dump-ast    Parse and print the prepared common AST
+      --dump-classes  Print the class table the declaration pass built"
+    );
     eprintln!("  -c, --check       Compile and report errors without running (exit 1 on error)");
     eprintln!("  -w, --emit-wasm   Compile to .wasm binary");
+    eprintln!("      --emit-vybe-metadata  Include Vybe roundtrip debug metadata in emitted wasm");
     eprintln!("      --eval CODE   Compile source from a string");
     eprintln!("      --lang NAME   Language for --eval (js, php, python, vb, ...)");
     eprintln!("      --virtual-path PATH  Source path used for relative imports in --eval");
@@ -1034,6 +1041,7 @@ fn print_usage() {
     eprintln!("      --cold        With --serve: fresh VM per request instead of the warm pool");
     eprintln!("      --no-cache    With --serve: recompile on every request");
     eprintln!("      --list-languages  List registered language frontends and their extensions");
+    eprintln!("      --             Stop parsing vybex flags; remaining words are guest argv");
     eprintln!("  -V, --version     Print the vybex version and exit");
     eprintln!("  -h, --help        Show this help");
     eprintln!();
@@ -1055,7 +1063,10 @@ fn print_languages() {
     }
     for ext in vybe_compiler::languages::supported_extensions() {
         if let Some(lang) = vybe_compiler::languages::find_by_extension(&ext) {
-            by_lang.entry(lang.name).or_default().push(format!(".{ext}"));
+            by_lang
+                .entry(lang.name)
+                .or_default()
+                .push(format!(".{ext}"));
         }
     }
 

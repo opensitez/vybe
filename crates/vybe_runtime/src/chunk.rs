@@ -285,7 +285,11 @@ pub enum ConstExpr {
     /// known default (every numeric one, and a concrete typed null), so a
     /// segment holding `(item (array.new_default $t …))` arrives here or at
     /// [`ConstExpr::ArrayNewDefault`] depending on `$t`'s element type.
-    ArrayNew { typeidx: u16, value: Box<ConstExpr>, len: Box<ConstExpr> },
+    ArrayNew {
+        typeidx: u16,
+        value: Box<ConstExpr>,
+        len: Box<ConstExpr>,
+    },
 }
 
 /// A global variable initializer — evaluated at link/load time.

@@ -156,7 +156,10 @@ fn disassemble_instruction_inner(
                 _ => String::new(),
             };
             (
-                format!("{} table={} tag={}{} argc={}", name, table, tag, tag_name, argc),
+                format!(
+                    "{} table={} tag={}{} argc={}",
+                    name, table, tag, tag_name, argc
+                ),
                 operand_start + 5,
             )
         }
@@ -310,10 +313,7 @@ fn disassemble_instruction_inner(
             let params = chunk.code.get(operand_start).copied().unwrap_or(0);
             let results = chunk.code.get(operand_start + 1).copied().unwrap_or(0);
             (
-                format!(
-                    "try_table (p{params} r{results}) [{}]",
-                    clauses.join(", ")
-                ),
+                format!("try_table (p{params} r{results}) [{}]", clauses.join(", ")),
                 operand_start + total,
             )
         }

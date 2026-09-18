@@ -227,9 +227,8 @@ impl<'a> HostContext<'a> {
         };
         // SAFETY: same contract as every other slot here — the pointers are the
         // VM's own tables, valid for the duration of the host call.
-        let (registry, func_tags) = unsafe {
-            (&*self.call_tag_registry_slot, &*self.func_call_tags_slot)
-        };
+        let (registry, func_tags) =
+            unsafe { (&*self.call_tag_registry_slot, &*self.func_call_tags_slot) };
         if let Some(&id) = registry.get(tag)
             && let Some(tags) = func_tags.get(&chunk_index)
         {
@@ -267,7 +266,6 @@ impl<'a> HostContext<'a> {
         }
         chunk.is_some_and(|c| c.is_method && c.arity >= 2)
     }
-
 
     /// Does THIS MODULE pass receivers as parameters?
     ///
@@ -505,9 +503,7 @@ impl<'a> HostContext<'a> {
     /// `prototype`, wired by a language prelude) so host-minted values
     /// stay identical to compiled ones.
     pub fn get_global(&self, name: &str) -> Value {
-        unsafe {
-            self.slot_get(name)
-        }
+        unsafe { self.slot_get(name) }
     }
 
     /// Resolve a name through the index slot, then read the value slot.
@@ -516,11 +512,11 @@ impl<'a> HostContext<'a> {
             return Value::Undefined;
         }
         unsafe {
-        let vals: &Vec<Value> = &*self.globals_slot;
-        match (*self.global_index_slot).get(name) {
-            Some(&i) => vals.get(i as usize).cloned().unwrap_or(Value::Undefined),
-            None => Value::Undefined,
-        }
+            let vals: &Vec<Value> = &*self.globals_slot;
+            match (*self.global_index_slot).get(name) {
+                Some(&i) => vals.get(i as usize).cloned().unwrap_or(Value::Undefined),
+                None => Value::Undefined,
+            }
         }
     }
 
@@ -530,26 +526,26 @@ impl<'a> HostContext<'a> {
             return;
         }
         unsafe {
-        let vals: &mut Vec<Value> = &mut *self.globals_slot;
-        let index: &mut HashMap<String, u32> = &mut *self.global_index_slot;
-        // ⚠ A GLOBAL IS NEVER CREATED HERE.
-        //
-        // This used to mint an entry — `index.insert(name); vals.push(Null)` —
-        // for any unknown name. That is not something WASM can express: a
-        // module's global index space is fixed at instantiation, so a global
-        // conjured by name at runtime cannot exist on a stock engine, and any
-        // program depending on one would not run there.
-        //
-        // Every global a module actually uses is assigned a `globalidx` by the
-        // compiler's global-table normalisation pass before the module is
-        // handed to the VM. A name that misses here was never declared, so
-        // writing it would be writing to a global the module does not have.
-        let Some(&i) = index.get(name) else { return };
-        let idx = i as usize;
-        if idx >= vals.len() {
-            vals.resize(idx + 1, Value::Null);
-        }
-        vals[idx] = value;
+            let vals: &mut Vec<Value> = &mut *self.globals_slot;
+            let index: &mut HashMap<String, u32> = &mut *self.global_index_slot;
+            // ⚠ A GLOBAL IS NEVER CREATED HERE.
+            //
+            // This used to mint an entry — `index.insert(name); vals.push(Null)` —
+            // for any unknown name. That is not something WASM can express: a
+            // module's global index space is fixed at instantiation, so a global
+            // conjured by name at runtime cannot exist on a stock engine, and any
+            // program depending on one would not run there.
+            //
+            // Every global a module actually uses is assigned a `globalidx` by the
+            // compiler's global-table normalisation pass before the module is
+            // handed to the VM. A name that misses here was never declared, so
+            // writing it would be writing to a global the module does not have.
+            let Some(&i) = index.get(name) else { return };
+            let idx = i as usize;
+            if idx >= vals.len() {
+                vals.resize(idx + 1, Value::Null);
+            }
+            vals[idx] = value;
         }
     }
 
@@ -721,8 +717,8 @@ impl<'a> HostContext<'a> {
             if self.handle_table_slot.is_null() {
                 return None;
             }
-            let handle = (*self.handle_table_slot)
-                .insert(crate::handle_table::HandleEntry::OwnedResource {
+            let handle =
+                (*self.handle_table_slot).insert(crate::handle_table::HandleEntry::OwnedResource {
                     type_id,
                     value: rep,
                 });
@@ -738,10 +734,7 @@ impl<'a> HostContext<'a> {
     /// A stream that did not record its own element type could only ever be
     /// read as bytes, which is precisely why `stream<directory-entry>` and
     /// `stream<tcp-socket>` were unreadable.
-    pub fn create_stream_of(
-        &mut self,
-        elem: Option<crate::component::ValType>,
-    ) -> (Value, u64) {
+    pub fn create_stream_of(&mut self, elem: Option<crate::component::ValType>) -> (Value, u64) {
         use crate::value::{Object, ObjectKind};
         if let Some(ref el) = self.event_loop {
             let id = el.borrow_mut().create_stream_of(elem);
@@ -1022,7 +1015,6 @@ impl CanonBuiltin {
             None => (name, None),
         }
     }
-
 
     /// The Binary.md spelling of this built-in — the inverse of [`Self::by_name`].
     ///
@@ -2312,7 +2304,8 @@ impl VM {
         self.chunk_tag_maps.truncate(snap.chunk_tag_maps_len);
         self.tag_entities.truncate(snap.tag_entities_len);
         self.call_tags.truncate(snap.call_tags_len);
-        self.chunk_call_tag_maps.truncate(snap.chunk_call_tag_maps_len);
+        self.chunk_call_tag_maps
+            .truncate(snap.chunk_call_tag_maps_len);
         self.call_tag_registry = snap.call_tag_registry.clone();
         self.canonical_call_tags = snap.canonical_call_tags.clone();
         self.call_tag_errors.clear();
@@ -2848,7 +2841,9 @@ impl VM {
             // pointer — would separate a segment's `ref.i31 7` from an
             // instruction's.
             ConstExpr::RefI31(inner) => {
-                let v = self.eval_const_expr_with_type_base(inner, type_base).as_i32();
+                let v = self
+                    .eval_const_expr_with_type_base(inner, type_base)
+                    .as_i32();
                 Value::I32(v & 0x7FFF_FFFF)
             }
             // Mirrors `Op::ARRAY_NEW_DEFAULT`: a defaulted array carrying the
@@ -2861,7 +2856,11 @@ impl VM {
                     .max(0) as usize;
                 self.const_array(*typeidx, type_base, vec![Value::Null; n])
             }
-            ConstExpr::ArrayNew { typeidx, value, len } => {
+            ConstExpr::ArrayNew {
+                typeidx,
+                value,
+                len,
+            } => {
                 let v = self.eval_const_expr_with_type_base(value, type_base);
                 let n = self
                     .eval_const_expr_with_type_base(len, type_base)
@@ -3210,7 +3209,10 @@ impl VM {
     /// Unknown indices answer `true` — the historical shape — so a lookup that
     /// races registration cannot silently drop a method's receiver.
     pub(crate) fn host_fn_declares_receiver(&self, idx: usize) -> bool {
-        self.host_fn_takes_receiver.get(idx).copied().unwrap_or(true)
+        self.host_fn_takes_receiver
+            .get(idx)
+            .copied()
+            .unwrap_or(true)
     }
 
     // ── Call tags (proposals/call-tags) ──────────────────────────────────
@@ -3759,9 +3761,8 @@ impl VM {
         // 6 → 141. Every internal settler had its arguments shifted.
         // `call_value_inner` tells the host function which of the two it was,
         // via `HostContext::call_receiver_argc`.
-        let receiver_argc = usize::from(
-            !self.suppress_receiver_prepend && self.callee_takes_receiver(func_ref),
-        );
+        let receiver_argc =
+            usize::from(!self.suppress_receiver_prepend && self.callee_takes_receiver(func_ref));
         if receiver_argc == 1 {
             // WHICH receiver — not a hard-coded `undefined`.
             //
@@ -3983,7 +3984,8 @@ impl VM {
         // remapped their `CALL` operands into `chunks[script_idx].imports`, so
         // that is the ONLY table those indices mean anything against — and the
         // VM-wide one is about to be replaced by the next unit's.
-        self.chunk_import_owner.resize(self.chunks.len(), script_idx);
+        self.chunk_import_owner
+            .resize(self.chunks.len(), script_idx);
         for owner in self.chunk_import_owner[script_idx..].iter_mut() {
             *owner = script_idx;
         }
@@ -4189,7 +4191,8 @@ impl VM {
         // remapped their `CALL` operands into `chunks[script_idx].imports`, so
         // that is the ONLY table those indices mean anything against — and the
         // VM-wide one is about to be replaced by the next unit's.
-        self.chunk_import_owner.resize(self.chunks.len(), script_idx);
+        self.chunk_import_owner
+            .resize(self.chunks.len(), script_idx);
         for owner in self.chunk_import_owner[script_idx..].iter_mut() {
             *owner = script_idx;
         }
@@ -4358,7 +4361,11 @@ impl VM {
                 // Apply only to a slot nobody has written — a host-installed
                 // native or a real program value both count as written.
                 let unwritten = match self.global_index.get(&gi.name) {
-                    Some(&i) => !self.globals_assigned.get(i as usize).copied().unwrap_or(true),
+                    Some(&i) => !self
+                        .globals_assigned
+                        .get(i as usize)
+                        .copied()
+                        .unwrap_or(true),
                     None => true,
                 };
                 if unwritten {
@@ -4384,11 +4391,7 @@ impl VM {
         // frame, because at instantiation there is no frame yet — `resolve_gc_rtt`
         // would fall back to base 0 and name another module's type.
         let elem_items = self.chunks[script_idx].passive_elem_items.clone();
-        let type_base = self
-            .chunk_type_base
-            .get(script_idx)
-            .copied()
-            .unwrap_or(0);
+        let type_base = self.chunk_type_base.get(script_idx).copied().unwrap_or(0);
         for (seg_idx, items) in elem_items.iter().enumerate() {
             // ⛔ AN EMPTY SEGMENT IS STILL A SEGMENT. Skipping it left its index
             // unoccupied, so `table.init $e` on a dropped or empty segment
@@ -5279,8 +5282,7 @@ impl VM {
                 };
                 let operand_start = ip + 4;
                 let operand_len = op.operand_format().size_in(code, operand_start);
-                if (op == crate::opcode::Op::GLOBAL_GET
-                    || op == crate::opcode::Op::GLOBAL_SET)
+                if (op == crate::opcode::Op::GLOBAL_GET || op == crate::opcode::Op::GLOBAL_SET)
                     && operand_start + 3 < code.len()
                 {
                     let old = u32::from_be_bytes([
@@ -5395,10 +5397,7 @@ impl VM {
         }
         if module == "*" {
             let candidates = [name.to_string(), name.to_lowercase()];
-            if let Some(global_name) = candidates
-                .iter()
-                .find(|g| self.has_global(g.as_str()))
-            {
+            if let Some(global_name) = candidates.iter().find(|g| self.has_global(g.as_str())) {
                 return Ok(ImportTarget::StdlibRedirect(global_name.clone()));
             }
         }
@@ -5406,10 +5405,7 @@ impl VM {
             format!("__vybe_{}", name),
             format!("__vybe_{}", name.to_lowercase()),
         ];
-        if let Some(global_name) = candidates
-            .iter()
-            .find(|g| self.has_global(g.as_str()))
-        {
+        if let Some(global_name) = candidates.iter().find(|g| self.has_global(g.as_str())) {
             return Ok(ImportTarget::StdlibRedirect(global_name.clone()));
         }
         Err(VMError::new(format!(

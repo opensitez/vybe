@@ -597,9 +597,7 @@ impl App {
                                 file: name.clone(),
                                 line: d.line + 1,
                                 severity: match d.severity {
-                                    widgets::DiagnosticSeverity::Error => {
-                                        ProblemSeverity::Error
-                                    }
+                                    widgets::DiagnosticSeverity::Error => ProblemSeverity::Error,
                                     widgets::DiagnosticSeverity::Warning => {
                                         ProblemSeverity::Warning
                                     }

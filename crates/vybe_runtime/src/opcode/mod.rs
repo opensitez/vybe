@@ -241,7 +241,7 @@ impl Op {
             (0x00, 0x29 | 0x2B | 0x37 | 0x39) => Some(8), // i64/f64 load/store
             (0x00, 0x2C | 0x2D | 0x30 | 0x31 | 0x3A | 0x3C) => Some(1), // 8-bit
             (0x00, 0x2E | 0x2F | 0x32 | 0x33 | 0x3B | 0x3D) => Some(2), // 16-bit
-            (0x00, 0x34 | 0x35 | 0x3E) => Some(4),                      // i64 32-bit
+            (0x00, 0x34 | 0x35 | 0x3E) => Some(4),        // i64 32-bit
             // ── v128 loads/stores (prefix 0xFD) ──────────────────────────
             (0xFD, 0x00 | 0x0B) => Some(16), // v128.load / v128.store
             (0xFD, 0x01..=0x06 | 0x0A | 0x57 | 0x5B | 0x5D) => Some(8),
@@ -251,13 +251,13 @@ impl Op {
             // ── atomics (prefix 0xFE) ────────────────────────────────────
             // An atomic's align must EQUAL its natural alignment, not merely
             // not exceed it; the caller applies that stricter rule.
-            (0xFE, 0x00 | 0x01) => Some(4),  // notify, wait32
-            (0xFE, 0x02) => Some(8),         // wait64
-            (0xFE, 0x10) => Some(4),         // i32.atomic.load
-            (0xFE, 0x11) => Some(8),         // i64.atomic.load
-            (0xFE, 0x12 | 0x17) => Some(1),  // i32/i64 atomic load8_u
-            (0xFE, 0x13 | 0x18) => Some(2),  // …load16_u
-            (0xFE, 0x14) => Some(4),         // i64.atomic.load32_u
+            (0xFE, 0x00 | 0x01) => Some(4), // notify, wait32
+            (0xFE, 0x02) => Some(8),        // wait64
+            (0xFE, 0x10) => Some(4),        // i32.atomic.load
+            (0xFE, 0x11) => Some(8),        // i64.atomic.load
+            (0xFE, 0x12 | 0x17) => Some(1), // i32/i64 atomic load8_u
+            (0xFE, 0x13 | 0x18) => Some(2), // …load16_u
+            (0xFE, 0x14) => Some(4),        // i64.atomic.load32_u
             _ => None,
         }
     }

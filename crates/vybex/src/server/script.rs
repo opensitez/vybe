@@ -903,9 +903,7 @@ mod tests {
         let session_id =
             cookie_pair_value(&cookie, PHP_SESSION_COOKIE_NAME).expect("session id from cookie");
         assert_eq!(
-            first_vm
-                .global(PHP_SESSION_ID_GLOBAL)
-                .map(value_as_string),
+            first_vm.global(PHP_SESSION_ID_GLOBAL).map(value_as_string),
             Some(session_id.clone())
         );
         persist_superglobals(&first_vm, &first_ctx);

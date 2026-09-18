@@ -9,8 +9,8 @@
 
 use std::sync::{Mutex, OnceLock};
 
-use crate::chunk::ReceiverAbi;
 use crate::Chunk;
+use crate::chunk::ReceiverAbi;
 use vybe_ast::class_normalize::NormalClass;
 use vybe_ast::{ClassMember, ClassModifiers, Module, Span};
 

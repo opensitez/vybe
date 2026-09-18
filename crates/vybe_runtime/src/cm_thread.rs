@@ -330,7 +330,10 @@ mod tests {
         let mut t = suspended_thread();
         t.resume_later().unwrap();
         assert!(t.waiting(), "resume_later moves suspended → waiting");
-        assert!(t.ready(), "with `lambda: True`, waiting is immediately ready");
+        assert!(
+            t.ready(),
+            "with `lambda: True`, waiting is immediately ready"
+        );
     }
 
     #[test]
@@ -531,13 +534,14 @@ mod handoff_tests {
         // before switching, so the yielding thread can be picked up again.
         // `suspend_then_*` does not, leaving it merely Suspended.
         let mut yielding = Thread::new(1, Value::I32(0));
-        yielding
-            .start_waiting_internal(ReadyWhen::Always)
-            .unwrap();
+        yielding.start_waiting_internal(ReadyWhen::Always).unwrap();
         assert!(yielding.ready(), "a yielder stays runnable");
 
         let parked = Thread::new(1, Value::I32(0));
-        assert!(parked.suspended() && !parked.ready(), "a suspender does not");
+        assert!(
+            parked.suspended() && !parked.ready(),
+            "a suspender does not"
+        );
     }
 
     #[test]

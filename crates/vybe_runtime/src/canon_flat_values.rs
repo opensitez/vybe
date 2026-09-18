@@ -82,7 +82,9 @@ impl<'a> CoreValueIter<'a> {
             .values
             .get(self.i)
             .copied()
-            .ok_or(CanonError::Unsupported("flat lift ran off the end of its values"))?;
+            .ok_or(CanonError::Unsupported(
+                "flat lift ran off the end of its values",
+            ))?;
         self.i += 1;
         Ok(v)
     }
@@ -246,7 +248,10 @@ pub fn lift_flat(
             Value::Object(crate::heap::alloc(object))
         }
         ValType::Option(inner) => {
-            let cases = [(String::from("none"), None), (String::from("some"), Some((**inner).clone()))];
+            let cases = [
+                (String::from("none"), None),
+                (String::from("some"), Some((**inner).clone())),
+            ];
             let (case, payload) = lift_flat_variant(memory, vi, &cases, ptr_type)?;
             if case == 0 { Value::Null } else { payload }
         }
@@ -274,9 +279,10 @@ pub fn lift_flat(
                 }
                 Some((name, _)) => {
                     let mut object = crate::value::Object::new();
-                    object
-                        .properties
-                        .insert("tag".into(), Value::String(std::sync::Arc::from(name.as_str())));
+                    object.properties.insert(
+                        "tag".into(),
+                        Value::String(std::sync::Arc::from(name.as_str())),
+                    );
                     object.properties.insert("val".into(), payload);
                     Value::Object(crate::heap::alloc(object))
                 }
@@ -284,7 +290,7 @@ pub fn lift_flat(
                     return Err(CanonError::DiscriminantOutOfRange {
                         got: case,
                         cases: cases.len(),
-                    })
+                    });
                 }
             }
         }
@@ -293,9 +299,7 @@ pub fn lift_flat(
         | ValType::Borrow(_)
         | ValType::Stream(_)
         | ValType::Future(_)
-        | ValType::ErrorContext => {
-            Value::I32(flat_ptr(vi.next()?)? as i32)
-        }
+        | ValType::ErrorContext => Value::I32(flat_ptr(vi.next()?)? as i32),
         ValType::Any => return Err(CanonError::Unsupported("any (not a component type)")),
     })
 }
@@ -314,10 +318,7 @@ fn lift_flat_variant(
     ptr_type: CoreType,
 ) -> Result<(u32, Value), CanonError> {
     let payloads: Vec<Option<ValType>> = cases.iter().map(|(_, t)| t.clone()).collect();
-    let joined = crate::canon_flat::flatten_type(
-        &ValType::Variant(cases.to_vec()),
-        ptr_type,
-    );
+    let joined = crate::canon_flat::flatten_type(&ValType::Variant(cases.to_vec()), ptr_type);
     // Element 0 is the discriminant; the rest are the joined payload slots.
     let joined_payload = &joined[1..];
 
@@ -413,7 +414,10 @@ pub fn lower_flat(
             flat
         }
         ValType::Option(inner) => {
-            let cases = [(String::from("none"), None), (String::from("some"), Some((**inner).clone()))];
+            let cases = [
+                (String::from("none"), None),
+                (String::from("some"), Some((**inner).clone())),
+            ];
             let (idx, payload) = if matches!(v, Value::Null) {
                 (0u32, Value::Null)
             } else {
@@ -468,10 +472,7 @@ fn lower_flat_variant(
         let have_types = flatten_type(t, ptr_type);
         let lowered = lower_flat(memory, realloc, payload, t, ptr_type)?;
         for (i, fv) in lowered.into_iter().enumerate() {
-            let have = have_types
-                .get(i)
-                .copied()
-                .unwrap_or_else(|| fv.core_type());
+            let have = have_types.get(i).copied().unwrap_or_else(|| fv.core_type());
             let want = joined_payload
                 .get(written)
                 .copied()
@@ -578,7 +579,10 @@ pub fn lift_flat_values(
     let tuple = crate::canon_value::load(memory, &tuple_ty, at)?;
     let mut out = Vec::with_capacity(types.len());
     for i in 0..types.len() {
-        out.push(crate::canon_value::record_field_public(&tuple, &format!("{i}")));
+        out.push(crate::canon_value::record_field_public(
+            &tuple,
+            &format!("{i}"),
+        ));
     }
     Ok(out)
 }
@@ -695,7 +699,10 @@ mod tests {
         let v = Value::Object(crate::heap::alloc(o));
 
         let back = round_trip(&v, &t);
-        assert_eq!(crate::canon_value::record_field_public(&back, "a").as_i32(), 3);
+        assert_eq!(
+            crate::canon_value::record_field_public(&back, "a").as_i32(),
+            3
+        );
         assert_eq!(
             format!("{}", crate::canon_value::record_field_public(&back, "b")),
             "x"
@@ -720,7 +727,9 @@ mod tests {
         ]);
 
         let mut small = crate::value::Object::new();
-        small.properties.insert("tag".into(), Value::String("small".into()));
+        small
+            .properties
+            .insert("tag".into(), Value::String("small".into()));
         small.properties.insert("val".into(), Value::I32(42));
         let small = Value::Object(crate::heap::alloc(small));
         let back = round_trip(&small, &t);
@@ -735,7 +744,8 @@ mod tests {
         );
 
         let mut wide = crate::value::Object::new();
-        wide.properties.insert("tag".into(), Value::String("wide".into()));
+        wide.properties
+            .insert("tag".into(), Value::String("wide".into()));
         wide.properties.insert("val".into(), Value::F64(2.5));
         let wide = Value::Object(crate::heap::alloc(wide));
         let back = round_trip(&wide, &t);
@@ -751,10 +761,7 @@ mod tests {
     /// parameter is read from this variant's tail.
     #[test]
     fn a_payload_free_case_still_occupies_the_joined_width() {
-        let t = ValType::Variant(vec![
-            (s("none"), None),
-            (s("wide"), Some(ValType::F64)),
-        ]);
+        let t = ValType::Variant(vec![(s("none"), None), (s("wide"), Some(ValType::F64))]);
         let m = mem();
         let bare = Value::String("none".into());
         let flat = with_alloc(&m, |r| lower_flat(&m, r, &bare, &t, CoreType::I32).unwrap());
@@ -764,7 +771,10 @@ mod tests {
 
         let mut vi = CoreValueIter::new(&flat);
         let back = lift_flat(&m, &mut vi, &t, CoreType::I32).unwrap();
-        assert!(vi.done(), "the unused slot must be drained, not left behind");
+        assert!(
+            vi.done(),
+            "the unused slot must be drained, not left behind"
+        );
         assert_eq!(format!("{back}"), "none");
     }
 

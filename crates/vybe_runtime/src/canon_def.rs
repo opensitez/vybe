@@ -153,16 +153,14 @@ impl CanonDef {
     /// Refuses rather than defaulting — substituting a plausible width moves
     /// the wrong number of bytes and nothing downstream can detect it.
     pub fn require_type(&self, builtin: &str) -> Result<u32, String> {
-        self.ty.ok_or_else(|| {
-            format!("canon {builtin}: definition carries no $t immediate")
-        })
+        self.ty
+            .ok_or_else(|| format!("canon {builtin}: definition carries no $t immediate"))
     }
 
     /// The callee this row wraps, or an error. `lift`/`lower` only.
     pub fn require_callee(&self, builtin: &str) -> Result<CalleeRef, String> {
-        self.callee.ok_or_else(|| {
-            format!("canon {builtin}: definition carries no $callee immediate")
-        })
+        self.callee
+            .ok_or_else(|| format!("canon {builtin}: definition carries no $callee immediate"))
     }
 }
 
@@ -197,7 +195,10 @@ mod tests {
         // error naming the missing declaration, never a guessed width.
         let d = CanonDef::default();
         let err = d.require_type("stream.read").unwrap_err();
-        assert!(err.contains("stream.read"), "the error names the row: {err}");
+        assert!(
+            err.contains("stream.read"),
+            "the error names the row: {err}"
+        );
         assert!(err.contains("$t"));
     }
 

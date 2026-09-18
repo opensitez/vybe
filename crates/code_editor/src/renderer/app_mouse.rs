@@ -1013,9 +1013,7 @@ impl App {
                 let stab_top = tch;
                 if my >= stab_top && my < stab_top + SIDEBAR_TAB_H {
                     // Route to sidebar_tabs TabPanel
-                    use widgets::layout::{
-                        MouseEvent as WMouseEvent, MouseEventKind as WMEKind,
-                    };
+                    use widgets::layout::{MouseEvent as WMouseEvent, MouseEventKind as WMEKind};
                     let click = WMouseEvent {
                         x: mx,
                         y: my,
