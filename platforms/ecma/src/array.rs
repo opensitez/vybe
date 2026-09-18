@@ -22,7 +22,7 @@ use std::collections::{BTreeSet, HashSet};
 use std::sync::{Arc, Mutex, OnceLock};
 use vybe_runtime::value::{Object, ObjectKind, TypedElemKind, Value};
 use vybe_runtime::vm::HostFnDecl;
-use vybe_runtime::{FuncSig, Param, HostContext, VM, ValType};
+use vybe_runtime::{FuncSig, HostContext, Param, VM, ValType};
 
 fn invoke_callback(ctx: &mut HostContext, callback: &Value, args: &[Value]) -> Value {
     if let Some(v) = crate::function::invoke_bound_callback_if_needed(ctx, callback, args) {
@@ -894,20 +894,24 @@ fn register_constructors(vm: &mut VM) {
             let args = ctx.user_args(args, 0).to_vec();
             let args = &args[..];
             match args.len() {
-            0 => make_array(Vec::new()),
-            1 => match &args[0] {
-                Value::F64(_) | Value::I32(_) | Value::I64(_) => {
-                    match parse_js_array_length(&args[0]) {
-                        Ok(length) => make_holey_array(length),
-                        Err(message) => {
-                            ctx.throw_value(crate::error::new_error(ctx, "RangeError", message));
-                            Value::Undefined
+                0 => make_array(Vec::new()),
+                1 => match &args[0] {
+                    Value::F64(_) | Value::I32(_) | Value::I64(_) => {
+                        match parse_js_array_length(&args[0]) {
+                            Ok(length) => make_holey_array(length),
+                            Err(message) => {
+                                ctx.throw_value(crate::error::new_error(
+                                    ctx,
+                                    "RangeError",
+                                    message,
+                                ));
+                                Value::Undefined
+                            }
                         }
                     }
-                }
-                other => make_array(vec![other.clone()]),
-            },
-            _ => make_array(args.to_vec()),
+                    other => make_array(vec![other.clone()]),
+                },
+                _ => make_array(args.to_vec()),
             }
         }),
     );
@@ -1249,7 +1253,8 @@ fn register_property_access(vm: &mut VM) {
                             Value::I64(n) if *n >= 0 => Some(*n as usize),
                             Value::F64(n) if n.fract() == 0.0 && *n >= 0.0 => Some(*n as usize),
                             Value::String(s) => s.parse::<usize>().ok(),
-                            _ => None };
+                            _ => None,
+                        };
                         if let Some(idx) = numeric_idx {
                             let old_len = v.len();
                             // ECMA-262 §6.1.7.2 / §23.1.3 — holes from
@@ -1267,14 +1272,20 @@ fn register_property_access(vm: &mut VM) {
                         } else {
                             let key_str = match &key {
                                 Value::String(s) => s.to_string(),
-                                other => format!("{}", other) };
+                                other => format!("{}", other),
+                            };
                             o.properties.insert(key_str, val);
                         }
                     }
                     ObjectKind::Map(m) => {
                         let map_key = match &key {
-                            Value::String(_) | Value::I32(_) | Value::I64(_) | Value::F64(_) => key.clone(),
-                            other => Value::String(std::sync::Arc::from(format!("{}", other).as_str())) };
+                            Value::String(_) | Value::I32(_) | Value::I64(_) | Value::F64(_) => {
+                                key.clone()
+                            }
+                            other => {
+                                Value::String(std::sync::Arc::from(format!("{}", other).as_str()))
+                            }
+                        };
                         m.insert(map_key, val);
                     }
                     ObjectKind::TypedArray(ta) => {
@@ -1283,7 +1294,8 @@ fn register_property_access(vm: &mut VM) {
                             Value::I64(n) if *n >= 0 => Some(*n as usize),
                             Value::F64(n) if n.fract() == 0.0 && *n >= 0.0 => Some(*n as usize),
                             Value::String(s) => s.parse::<usize>().ok(),
-                            _ => None };
+                            _ => None,
+                        };
                         if let Some(idx) = numeric_idx {
                             write_element(ta, idx, &val);
                         }
@@ -1291,7 +1303,8 @@ fn register_property_access(vm: &mut VM) {
                     _ => {
                         let key_str = match &key {
                             Value::String(s) => s.to_string(),
-                            other => format!("{}", other) };
+                            other => format!("{}", other),
+                        };
                         o.properties.insert(key_str, val);
                     }
                 }

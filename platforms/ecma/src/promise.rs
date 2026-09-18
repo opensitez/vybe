@@ -49,7 +49,11 @@ pub fn register(vm: &mut VM) {
         "__settle_fulfilled",
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
             let promise = ctx.capture(args, 0);
-            let value = ctx.user_args(args, 1).first().cloned().unwrap_or(Value::Undefined);
+            let value = ctx
+                .user_args(args, 1)
+                .first()
+                .cloned()
+                .unwrap_or(Value::Undefined);
             settle_and_drain(ctx, &[promise, value], "fulfilled");
             Value::Undefined
         }),
@@ -59,7 +63,11 @@ pub fn register(vm: &mut VM) {
         "__settle_rejected",
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
             let promise = ctx.capture(args, 0);
-            let reason = ctx.user_args(args, 1).first().cloned().unwrap_or(Value::Undefined);
+            let reason = ctx
+                .user_args(args, 1)
+                .first()
+                .cloned()
+                .unwrap_or(Value::Undefined);
             settle_and_drain(ctx, &[promise, reason], "rejected");
             Value::Undefined
         }),
@@ -74,7 +82,11 @@ pub fn register(vm: &mut VM) {
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
             let aggregate = ctx.capture(args, 0);
             let index = ctx.capture(args, 1).as_f64() as usize;
-            let value = ctx.user_args(args, 2).first().cloned().unwrap_or(Value::Undefined);
+            let value = ctx
+                .user_args(args, 2)
+                .first()
+                .cloned()
+                .unwrap_or(Value::Undefined);
             let complete = aggregate_record_element(&aggregate, index, value);
             if let Some(results) = complete {
                 settle_and_drain(ctx, &[aggregate, results], "fulfilled");
@@ -91,7 +103,11 @@ pub fn register(vm: &mut VM) {
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
             let aggregate = ctx.capture(args, 0);
             let index = ctx.capture(args, 1).as_f64() as usize;
-            let value = ctx.user_args(args, 2).first().cloned().unwrap_or(Value::Undefined);
+            let value = ctx
+                .user_args(args, 2)
+                .first()
+                .cloned()
+                .unwrap_or(Value::Undefined);
             let complete =
                 aggregate_record_element(&aggregate, index, settled_descriptor("fulfilled", value));
             if let Some(results) = complete {
@@ -106,7 +122,11 @@ pub fn register(vm: &mut VM) {
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
             let aggregate = ctx.capture(args, 0);
             let index = ctx.capture(args, 1).as_f64() as usize;
-            let reason = ctx.user_args(args, 2).first().cloned().unwrap_or(Value::Undefined);
+            let reason = ctx
+                .user_args(args, 2)
+                .first()
+                .cloned()
+                .unwrap_or(Value::Undefined);
             let complete =
                 aggregate_record_element(&aggregate, index, settled_descriptor("rejected", reason));
             if let Some(results) = complete {
@@ -122,7 +142,11 @@ pub fn register(vm: &mut VM) {
         "__aggregate_reject",
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
             let aggregate = ctx.capture(args, 0);
-            let reason = ctx.user_args(args, 1).first().cloned().unwrap_or(Value::Undefined);
+            let reason = ctx
+                .user_args(args, 1)
+                .first()
+                .cloned()
+                .unwrap_or(Value::Undefined);
             settle_and_drain(ctx, &[aggregate, reason], "rejected");
             Value::Undefined
         }),
@@ -135,7 +159,11 @@ pub fn register(vm: &mut VM) {
         "__any_fulfilled",
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
             let aggregate = ctx.capture(args, 0);
-            let value = ctx.user_args(args, 1).first().cloned().unwrap_or(Value::Undefined);
+            let value = ctx
+                .user_args(args, 1)
+                .first()
+                .cloned()
+                .unwrap_or(Value::Undefined);
             settle_and_drain(ctx, &[aggregate, value], "fulfilled");
             Value::Undefined
         }),
@@ -146,7 +174,11 @@ pub fn register(vm: &mut VM) {
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
             let aggregate = ctx.capture(args, 0);
             let index = ctx.capture(args, 1).as_f64() as usize;
-            let reason = ctx.user_args(args, 2).first().cloned().unwrap_or(Value::Undefined);
+            let reason = ctx
+                .user_args(args, 2)
+                .first()
+                .cloned()
+                .unwrap_or(Value::Undefined);
             if let Some(error) = any_record_rejection(ctx, &aggregate, index, reason) {
                 settle_and_drain(ctx, &[aggregate, error], "rejected");
             }
@@ -161,7 +193,11 @@ pub fn register(vm: &mut VM) {
             let state = format!("{}", ctx.capture(args, 1));
             let on_fulfilled = ctx.capture(args, 2);
             let on_rejected = ctx.capture(args, 3);
-            let value = ctx.user_args(args, 4).first().cloned().unwrap_or(Value::Undefined);
+            let value = ctx
+                .user_args(args, 4)
+                .first()
+                .cloned()
+                .unwrap_or(Value::Undefined);
             run_reaction(
                 ctx,
                 result_promise,
@@ -197,7 +233,11 @@ pub fn register(vm: &mut VM) {
         "__resolve",
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
             let promise = ctx.capture(args, 0);
-            let value = ctx.user_args(args, 1).first().cloned().unwrap_or(Value::Undefined);
+            let value = ctx
+                .user_args(args, 1)
+                .first()
+                .cloned()
+                .unwrap_or(Value::Undefined);
             resolve_promise_with_value(ctx, &promise, value);
             Value::Undefined
         }),

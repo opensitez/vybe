@@ -84,10 +84,7 @@ pub fn register(vm: &mut VM) {
         "ecma:global",
         "eval",
         Box::new(
-            |_ctx: &mut HostContext, args: &[Value]| match _ctx
-                .user_args(args, 0)
-                .first()
-            {
+            |_ctx: &mut HostContext, args: &[Value]| match _ctx.user_args(args, 0).first() {
                 // ⛔ `user_args`: INDIRECT eval (`const g = eval; g("3+4")`)
                 // reaches this host fn as a VALUE through a dynamic call, and
                 // under `ReceiverAbi::Parameter` that call puts a receiver at

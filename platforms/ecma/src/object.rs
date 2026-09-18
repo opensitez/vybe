@@ -18,7 +18,7 @@ use crate::function::invoke_with_explicit_this;
 use std::sync::{Arc, Mutex, OnceLock};
 use vybe_runtime::value::{Object, ObjectKind, Value};
 use vybe_runtime::vm::HostFnDecl;
-use vybe_runtime::{FuncSig, Param, HostContext, VM, ValType};
+use vybe_runtime::{FuncSig, HostContext, Param, VM, ValType};
 
 /// Declare an `ecma:object` function — same closure, plus the signature.
 ///
@@ -32,11 +32,13 @@ fn object_fn(
     results: Vec<ValType>,
     call: Box<dyn Fn(&mut HostContext, &[Value]) -> Value + Send + Sync>,
 ) {
-    vm.register_host(HostFnDecl::new("ecma:object", name, call).with_sig(FuncSig {
-        name: name.to_string(),
-        params: Param::unnamed_list(params),
-        results,
-    }));
+    vm.register_host(
+        HostFnDecl::new("ecma:object", name, call).with_sig(FuncSig {
+            name: name.to_string(),
+            params: Param::unnamed_list(params),
+            results,
+        }),
+    );
 }
 
 /// Any JS value — the Component Model has no `any`-of-object type and these
@@ -2335,13 +2337,8 @@ fn register_access(vm: &mut VM) {
                 // no-op — `o.g` kept returning 7 where ECMA-262 §13.5.1 says
                 // the whole property goes. Measured against node, which
                 // returns `undefined`.
-                let removed_accessor = o
-                    .properties
-                    .shift_remove(&format!("__get_{key}"))
-                    .is_some()
-                    | o.properties
-                        .shift_remove(&format!("__set_{key}"))
-                        .is_some();
+                let removed_accessor = o.properties.shift_remove(&format!("__get_{key}")).is_some()
+                    | o.properties.shift_remove(&format!("__set_{key}")).is_some();
                 let existed = o.properties.shift_remove(&key).is_some() | removed_accessor;
                 // Drop the key from `__keys` so re-adding goes to the
                 // end (ECMA-262 §13.5.1 + §7.3.22 ordering — delete
@@ -3970,10 +3967,7 @@ fn register_locking(vm: &mut VM) {
                             &[target.clone()],
                         ));
                         if !success {
-                            throw_type_error(
-                                ctx,
-                                "Proxy preventExtensions trap returned false",
-                            );
+                            throw_type_error(ctx, "Proxy preventExtensions trap returned false");
                             return Value::Undefined;
                         }
                         if value_is_extensible(&target) {

@@ -3260,11 +3260,7 @@ fn is_receiver_host_fn(value: &Value) -> bool {
         && o.properties.contains_key("__vybe_method_receiver")
 }
 
-fn bind_method_receiver(
-    receiver: Arc<Mutex<Object>>,
-    method: Value,
-    bind_receiver: bool,
-) -> Value {
+fn bind_method_receiver(receiver: Arc<Mutex<Object>>, method: Value, bind_receiver: bool) -> Value {
     // The caller passes the receiver itself — see `getMethodForCall`. Binding
     // it here as well would hand the builtin two.
     if !bind_receiver {

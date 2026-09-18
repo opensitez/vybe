@@ -986,9 +986,7 @@ pub fn register(vm: &mut VM) {
             // Construction links to these same objects (`arraybuffer.rs`).
             let proto = match *global_name {
                 "ArrayBuffer" => crate::arraybuffer::shared_arraybuffer_prototype(),
-                "SharedArrayBuffer" => {
-                    crate::arraybuffer::shared_sharedarraybuffer_prototype()
-                }
+                "SharedArrayBuffer" => crate::arraybuffer::shared_sharedarraybuffer_prototype(),
                 _ => crate::arraybuffer::shared_dataview_prototype(),
             };
             set_prop(&proto, "__proto__", object_proto.clone());

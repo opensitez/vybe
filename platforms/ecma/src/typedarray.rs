@@ -51,8 +51,9 @@ use std::sync::{Arc, Mutex, OnceLock};
 /// `Object.getPrototypeOf(ta) === Int32Array.prototype` was `false` and
 /// `ta instanceof Int32Array` fell through to a `__type` string. Both sides now
 /// use THIS object. Primed in `lib::prime_shared_prototypes`.
-static TYPEDARRAY_PROTOTYPES: OnceLock<Mutex<std::collections::HashMap<String, Arc<Mutex<Object>>>>> =
-    OnceLock::new();
+static TYPEDARRAY_PROTOTYPES: OnceLock<
+    Mutex<std::collections::HashMap<String, Arc<Mutex<Object>>>>,
+> = OnceLock::new();
 
 pub fn shared_typedarray_prototype(name: &str) -> Value {
     let map = TYPEDARRAY_PROTOTYPES.get_or_init(|| Mutex::new(std::collections::HashMap::new()));
@@ -446,8 +447,10 @@ pub fn new_typed_array(elem: TypedElemKind, length: usize) -> Value {
         .insert("BYTES_PER_ELEMENT".into(), Value::I32(bpe as i32));
     // §23.2.5.1 — AllocateTypedArray links the instance to its
     // `%<Type>Array.prototype%`.
-    obj.properties
-        .insert("__proto__".into(), shared_typedarray_prototype(typed_array_name(elem)));
+    obj.properties.insert(
+        "__proto__".into(),
+        shared_typedarray_prototype(typed_array_name(elem)),
+    );
     obj.properties.insert(
         "__type".into(),
         Value::String(Arc::from(typed_array_name(elem))),
@@ -496,8 +499,10 @@ pub fn new_view_over_buffer(
         .insert("BYTES_PER_ELEMENT".into(), Value::I32(bpe as i32));
     // §23.2.5.1 — AllocateTypedArray links the instance to its
     // `%<Type>Array.prototype%`.
-    obj.properties
-        .insert("__proto__".into(), shared_typedarray_prototype(typed_array_name(elem)));
+    obj.properties.insert(
+        "__proto__".into(),
+        shared_typedarray_prototype(typed_array_name(elem)),
+    );
     obj.properties.insert(
         "__type".into(),
         Value::String(Arc::from(typed_array_name(elem))),
@@ -1352,7 +1357,6 @@ fn register_variant(vm: &mut VM, elem: TypedElemKind, module: &'static str) {
             Value::Null
         }),
     );
-
 
     // ── Mutators that don't change length ───────────────────────────
 

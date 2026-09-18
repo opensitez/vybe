@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use vybe_runtime::vm::HostFnDecl;
-use vybe_runtime::{FuncSig, Param, HostContext, VM, ValType, Value};
+use vybe_runtime::{FuncSig, HostContext, Param, VM, ValType, Value};
 
 /// Declare an `ecma:math` function — same closure, plus the signature.
 ///
@@ -61,26 +61,10 @@ fn constant(
 pub fn register(vm: &mut VM) {
     // Core math — callable ops stay as host functions, while spec
     // constants are registered as immutable value exports.
-    unary(
-        vm,
-        "floor",
-        Box::new(|_ctx, a| Value::F64(f(a, 0).floor())),
-    );
-    unary(
-        vm,
-        "ceil",
-        Box::new(|_ctx, a| Value::F64(f(a, 0).ceil())),
-    );
-    unary(
-        vm,
-        "abs",
-        Box::new(|_ctx, a| Value::F64(f(a, 0).abs())),
-    );
-    unary(
-        vm,
-        "sqrt",
-        Box::new(|_ctx, a| Value::F64(f(a, 0).sqrt())),
-    );
+    unary(vm, "floor", Box::new(|_ctx, a| Value::F64(f(a, 0).floor())));
+    unary(vm, "ceil", Box::new(|_ctx, a| Value::F64(f(a, 0).ceil())));
+    unary(vm, "abs", Box::new(|_ctx, a| Value::F64(f(a, 0).abs())));
+    unary(vm, "sqrt", Box::new(|_ctx, a| Value::F64(f(a, 0).sqrt())));
     unary(
         vm,
         "trunc",
@@ -173,16 +157,8 @@ pub fn register(vm: &mut VM) {
             Value::F64((t as f64 % 1_000_000.0) / 1_000_000.0)
         }),
     );
-    unary(
-        vm,
-        "sin",
-        Box::new(|_ctx, a| Value::F64(f(a, 0).sin())),
-    );
-    unary(
-        vm,
-        "cos",
-        Box::new(|_ctx, a| Value::F64(f(a, 0).cos())),
-    );
+    unary(vm, "sin", Box::new(|_ctx, a| Value::F64(f(a, 0).sin())));
+    unary(vm, "cos", Box::new(|_ctx, a| Value::F64(f(a, 0).cos())));
     vm.register_host_fn(
         "ecma:math",
         "log",
@@ -204,11 +180,7 @@ pub fn register(vm: &mut VM) {
         "PI",
         Box::new(|_ctx, _| Value::F64(std::f64::consts::PI)),
     );
-    constant(
-        vm,
-        "E",
-        Box::new(|_ctx, _| Value::F64(std::f64::consts::E)),
-    );
+    constant(vm, "E", Box::new(|_ctx, _| Value::F64(std::f64::consts::E)));
     constant(
         vm,
         "LN2",
@@ -260,21 +232,9 @@ pub fn register(vm: &mut VM) {
             }
         }),
     );
-    unary(
-        vm,
-        "log2",
-        Box::new(|_ctx, a| Value::F64(f(a, 0).log2())),
-    );
-    unary(
-        vm,
-        "log10",
-        Box::new(|_ctx, a| Value::F64(f(a, 0).log10())),
-    );
-    unary(
-        vm,
-        "cbrt",
-        Box::new(|_ctx, a| Value::F64(f(a, 0).cbrt())),
-    );
+    unary(vm, "log2", Box::new(|_ctx, a| Value::F64(f(a, 0).log2())));
+    unary(vm, "log10", Box::new(|_ctx, a| Value::F64(f(a, 0).log10())));
+    unary(vm, "cbrt", Box::new(|_ctx, a| Value::F64(f(a, 0).cbrt())));
     vm.register_host_fn(
         "ecma:math",
         "hypot",
@@ -295,61 +255,17 @@ pub fn register(vm: &mut VM) {
         "atan2",
         Box::new(|_ctx, a| Value::F64(f(a, 0).atan2(f(a, 1)))),
     );
-    unary(
-        vm,
-        "tan",
-        Box::new(|_ctx, a| Value::F64(f(a, 0).tan())),
-    );
-    unary(
-        vm,
-        "asin",
-        Box::new(|_ctx, a| Value::F64(f(a, 0).asin())),
-    );
-    unary(
-        vm,
-        "acos",
-        Box::new(|_ctx, a| Value::F64(f(a, 0).acos())),
-    );
-    unary(
-        vm,
-        "atan",
-        Box::new(|_ctx, a| Value::F64(f(a, 0).atan())),
-    );
-    unary(
-        vm,
-        "asinh",
-        Box::new(|_ctx, a| Value::F64(f(a, 0).asinh())),
-    );
-    unary(
-        vm,
-        "acosh",
-        Box::new(|_ctx, a| Value::F64(f(a, 0).acosh())),
-    );
-    unary(
-        vm,
-        "atanh",
-        Box::new(|_ctx, a| Value::F64(f(a, 0).atanh())),
-    );
-    unary(
-        vm,
-        "exp",
-        Box::new(|_ctx, a| Value::F64(f(a, 0).exp())),
-    );
-    unary(
-        vm,
-        "sinh",
-        Box::new(|_ctx, a| Value::F64(f(a, 0).sinh())),
-    );
-    unary(
-        vm,
-        "cosh",
-        Box::new(|_ctx, a| Value::F64(f(a, 0).cosh())),
-    );
-    unary(
-        vm,
-        "tanh",
-        Box::new(|_ctx, a| Value::F64(f(a, 0).tanh())),
-    );
+    unary(vm, "tan", Box::new(|_ctx, a| Value::F64(f(a, 0).tan())));
+    unary(vm, "asin", Box::new(|_ctx, a| Value::F64(f(a, 0).asin())));
+    unary(vm, "acos", Box::new(|_ctx, a| Value::F64(f(a, 0).acos())));
+    unary(vm, "atan", Box::new(|_ctx, a| Value::F64(f(a, 0).atan())));
+    unary(vm, "asinh", Box::new(|_ctx, a| Value::F64(f(a, 0).asinh())));
+    unary(vm, "acosh", Box::new(|_ctx, a| Value::F64(f(a, 0).acosh())));
+    unary(vm, "atanh", Box::new(|_ctx, a| Value::F64(f(a, 0).atanh())));
+    unary(vm, "exp", Box::new(|_ctx, a| Value::F64(f(a, 0).exp())));
+    unary(vm, "sinh", Box::new(|_ctx, a| Value::F64(f(a, 0).sinh())));
+    unary(vm, "cosh", Box::new(|_ctx, a| Value::F64(f(a, 0).cosh())));
+    unary(vm, "tanh", Box::new(|_ctx, a| Value::F64(f(a, 0).tanh())));
     // clamp(x, min, max) → emit_clamp (pure WASM F64_MAX + F64_MIN, no host fn).
     unary(
         vm,
@@ -415,11 +331,7 @@ pub fn register(vm: &mut VM) {
         "expm1",
         Box::new(|_ctx, a| Value::F64(f(a, 0).exp_m1())),
     );
-    unary(
-        vm,
-        "log1p",
-        Box::new(|_ctx, a| Value::F64(f(a, 0).ln_1p())),
-    );
+    unary(vm, "log1p", Box::new(|_ctx, a| Value::F64(f(a, 0).ln_1p())));
 
     // VB `Fix(x)` → walker rewrites to System.Math.Truncate → ecma:math.trunc (§21.3.2.34).
     // VB `Int(x)` → walker rewrites to System.Math.Floor   → ecma:math.floor (§21.3.2.16).

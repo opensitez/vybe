@@ -23,7 +23,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use unicode_normalization::UnicodeNormalization;
 use vybe_runtime::value::{Object, ObjectKind};
 use vybe_runtime::vm::HostFnDecl;
-use vybe_runtime::{FuncSig, Param, HostContext, VM, ValType, Value};
+use vybe_runtime::{FuncSig, HostContext, Param, VM, ValType, Value};
 
 static STRING_PROTOTYPE: OnceLock<Arc<Mutex<Object>>> = OnceLock::new();
 
@@ -217,11 +217,13 @@ fn string_fn(
     results: Vec<ValType>,
     call: Box<dyn Fn(&mut HostContext, &[Value]) -> Value + Send + Sync>,
 ) {
-    vm.register_host(HostFnDecl::new("ecma:string", name, call).with_sig(FuncSig {
-        name: name.to_string(),
-        params: Param::unnamed_list(params),
-        results,
-    }));
+    vm.register_host(
+        HostFnDecl::new("ecma:string", name, call).with_sig(FuncSig {
+            name: name.to_string(),
+            params: Param::unnamed_list(params),
+            results,
+        }),
+    );
 }
 /// Register a FREE FUNCTION — one whose type has no receiver parameter.
 ///

@@ -14,7 +14,7 @@ use indexmap::IndexMap;
 use std::sync::{Arc, Mutex, OnceLock};
 use vybe_runtime::value::{Object, ObjectKind, Value};
 use vybe_runtime::vm::HostFnDecl;
-use vybe_runtime::{FuncSig, Param, HostContext, VM, ValType};
+use vybe_runtime::{FuncSig, HostContext, Param, VM, ValType};
 
 /// Declare an `ecma:map` member that takes the RECEIVER and nothing else —
 /// `m.size`, `m.keys()`, `m.clear()`. Prototype dispatch prepends the map

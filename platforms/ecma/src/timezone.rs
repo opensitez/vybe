@@ -181,6 +181,21 @@ pub fn identifiers_for_region(region: &str) -> Vec<String> {
     out
 }
 
+/// Zones whose primary identifier starts with a tzdb area prefix such as
+/// `Europe/` or `Asia/`. PHP exposes these as DateTimeZone constants, but the
+/// underlying data is the same ECMA/tzdb identifier set.
+pub fn identifiers_with_prefix(prefix: &str) -> Vec<String> {
+    let mut out: Vec<String> = TZ_VARIANTS
+        .iter()
+        .map(|tz| tz.name())
+        .filter(|name| name.starts_with(prefix))
+        .map(str::to_string)
+        .collect();
+    out.sort();
+    out.dedup();
+    out
+}
+
 /// VM global holding the host environment's current time zone — the ONE clock
 /// every layer reads.
 ///
@@ -279,6 +294,28 @@ pub fn register(vm: &mut VM) {
             let mut names: Vec<&str> = TZ_VARIANTS.iter().map(|tz| tz.name()).collect();
             names.sort_unstable();
             make_array(names.into_iter().map(s).collect())
+        }),
+    );
+
+    vm.register_host_fn(
+        "ecma:intl/timezone",
+        "identifiersWithPrefix",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            let Some(prefix) = arg_str(args, 0) else {
+                return make_array(vec![]);
+            };
+            make_array(identifiers_with_prefix(&prefix).into_iter().map(|n| s(&n)).collect())
+        }),
+    );
+
+    vm.register_host_fn(
+        "ecma:intl/timezone",
+        "identifiersForCountry",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            let Some(country) = arg_str(args, 0) else {
+                return make_array(vec![]);
+            };
+            make_array(identifiers_for_region(&country).into_iter().map(|n| s(&n)).collect())
         }),
     );
 

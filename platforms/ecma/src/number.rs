@@ -17,7 +17,7 @@
 use std::sync::{Arc, Mutex, OnceLock};
 use vybe_runtime::value::Object;
 use vybe_runtime::vm::HostFnDecl;
-use vybe_runtime::{FuncSig, Param, HostContext, VM, ValType, Value};
+use vybe_runtime::{FuncSig, HostContext, Param, VM, ValType, Value};
 
 /// Declare an `ecma:number` function — same closure, plus the signature.
 fn number_fn(
@@ -27,11 +27,13 @@ fn number_fn(
     results: Vec<ValType>,
     call: Box<dyn Fn(&mut HostContext, &[Value]) -> Value + Send + Sync>,
 ) {
-    vm.register_host(HostFnDecl::new("ecma:number", name, call).with_sig(FuncSig {
-        name: name.to_string(),
-        params: Param::unnamed_list(params),
-        results,
-    }));
+    vm.register_host(
+        HostFnDecl::new("ecma:number", name, call).with_sig(FuncSig {
+            name: name.to_string(),
+            params: Param::unnamed_list(params),
+            results,
+        }),
+    );
 }
 /// Register a FREE FUNCTION — one whose type has no receiver parameter.
 ///
@@ -274,7 +276,11 @@ fn register_constants(vm: &mut VM) {
         "MIN_SAFE_INTEGER",
         Box::new(|_ctx, _args| Value::F64(-9007199254740991.0)),
     );
-    number_const(vm, "MAX_VALUE", Box::new(|_ctx, _args| Value::F64(f64::MAX)));
+    number_const(
+        vm,
+        "MAX_VALUE",
+        Box::new(|_ctx, _args| Value::F64(f64::MAX)),
+    );
     number_const(
         vm,
         "MIN_VALUE",
@@ -365,12 +371,10 @@ fn register_predicates(vm: &mut VM) {
         "isFinite",
         vec![ValType::Any],
         vec![ValType::Bool],
-        Box::new(|_ctx, args| {
-            match args.first() {
-                Some(Value::F64(n)) => Value::Bool(n.is_finite()),
-                Some(Value::I32(_)) => Value::Bool(true),
-                _ => Value::Bool(false),
-            }
+        Box::new(|_ctx, args| match args.first() {
+            Some(Value::F64(n)) => Value::Bool(n.is_finite()),
+            Some(Value::I32(_)) => Value::Bool(true),
+            _ => Value::Bool(false),
         }),
     );
 
@@ -380,11 +384,9 @@ fn register_predicates(vm: &mut VM) {
         "isNaN",
         vec![ValType::Any],
         vec![ValType::Bool],
-        Box::new(|_ctx, args| {
-            match args.first() {
-                Some(Value::F64(n)) => Value::Bool(n.is_nan()),
-                _ => Value::Bool(false),
-            }
+        Box::new(|_ctx, args| match args.first() {
+            Some(Value::F64(n)) => Value::Bool(n.is_nan()),
+            _ => Value::Bool(false),
         }),
     );
 
