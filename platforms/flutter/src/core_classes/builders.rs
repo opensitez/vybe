@@ -10,7 +10,7 @@
 //! copy of that file.
 
 use vybe_ast::{
-    Argument, BindingPattern, ClassMember, Expression, ExprKind, Literal, Modifiers, Param, PassBy,
+    Argument, BindingPattern, ClassMember, ExprKind, Expression, Literal, Modifiers, Param, PassBy,
     PropertySetter, Span, Statement, StmtKind, VarDeclKind, VarDeclarator, Visibility,
 };
 

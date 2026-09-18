@@ -108,10 +108,5 @@ pub(crate) const CLASSES: &[FlutterClass] = &[
     FlutterClass::wrapper("AnimatedPadding", "ImplicitlyAnimatedWidget", F_ANIMPADDING),
     FlutterClass::wrapper("AnimatedSize", "StatefulWidget", F_ANIMSIZE),
     FlutterClass::wrapper("AnimatedOpacity", "ImplicitlyAnimatedWidget", F_ANIMOPACITY),
-    FlutterClass::widget(
-        "InteractiveViewer",
-        "StatefulWidget",
-        "div",
-        F_INTERACTIVE,
-    ),
+    FlutterClass::widget("InteractiveViewer", "StatefulWidget", "div", F_INTERACTIVE),
 ];

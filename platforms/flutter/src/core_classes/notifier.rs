@@ -55,7 +55,6 @@ pub(super) fn init_state() -> Vec<Statement> {
 
 /// The observable surface both notifier classes publish.
 pub(super) fn members() -> Vec<ClassMember> {
-
     vec![
         field(LISTENERS, "List", empty_list()),
         field(DISPOSED, "bool", bool_lit(false)),

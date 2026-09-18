@@ -323,12 +323,7 @@ pub(crate) const CLASSES: &[FlutterClass] = &[
     FlutterClass::widget("Icon", "StatelessWidget", "span", ICON_FIELDS),
     // `Flexible`/`Expanded` are the child's share of the parent's main axis —
     // `flex-grow`. `Expanded` is `Flexible(fit: tight)`, i.e. `flex: 1`.
-    FlutterClass::widget(
-        "Flexible",
-        "ParentDataWidget",
-        "div",
-        FLEXIBLE_FIELDS,
-    ),
+    FlutterClass::widget("Flexible", "ParentDataWidget", "div", FLEXIBLE_FIELDS),
     // **`FlexFit.tight` IS a single-cell grid.** `Expanded` forces its child
     // to fill the share it was given, on both axes — and a grid item stretches
     // to its cell on both axes by default (`align-items`/`justify-items` are
@@ -363,7 +358,12 @@ pub(crate) const CLASSES: &[FlutterClass] = &[
     ),
     // A Spacer takes the free space and draws nothing.
     FlutterClass::widget("Spacer", "StatelessWidget", "div;flex:1", F_SPACER),
-    FlutterClass::widget("IndexedStack", "Stack", "div;position:relative", F_INDEXEDSTACK),
+    FlutterClass::widget(
+        "IndexedStack",
+        "Stack",
+        "div;position:relative",
+        F_INDEXEDSTACK,
+    ),
     // `Wrap` is the one whose name CSS shares outright.
     FlutterClass::widget(
         "Wrap",

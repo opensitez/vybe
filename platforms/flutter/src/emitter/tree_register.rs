@@ -95,9 +95,7 @@ fn ctor_spec(class: &FlutterClass) -> CtorSpec {
                 // A field may name its own event through `role` — a text field
                 // wants `input`, which fires per keystroke as Flutter's
                 // `onChanged` does, rather than `change` on commit.
-                FieldGui::Event(
-                    f.role.unwrap_or_else(|| dom_event_for(f.name)).to_string(),
-                )
+                FieldGui::Event(f.role.unwrap_or_else(|| dom_event_for(f.name)).to_string())
             } else if f.name == "data" {
                 // `Text('x').data` is the control's caption.
                 FieldGui::NestOrProp("Text".to_string())

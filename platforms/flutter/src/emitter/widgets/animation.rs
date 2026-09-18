@@ -14,7 +14,6 @@ const F_TICKER: &[FlutterField] = &[FlutterField::positional("onTick", 0)];
 
 const F_ALWAYSANIM: &[FlutterField] = &[FlutterField::positional("value", 0)];
 
-
 pub(crate) const CLASSES: &[FlutterClass] = &[
     FlutterClass::data("AnimationController", None, F_ANIMCONTROLLER),
     FlutterClass::data("Ticker", None, F_TICKER),

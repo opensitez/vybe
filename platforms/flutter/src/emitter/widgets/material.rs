@@ -481,7 +481,12 @@ pub(crate) const CLASSES: &[FlutterClass] = &[
     FlutterClass::widget("OutlinedButton", "StatefulWidget", "button", F_OUTLINEDBTN),
     FlutterClass::widget("TextButton", "StatefulWidget", "button", F_TEXTBUTTON),
     FlutterClass::widget("FloatingActionButton", "StatelessWidget", "button", F_FAB),
-    FlutterClass::widget("PopupMenuButton", "StatefulWidget", "button", F_POPUPMENUBTN),
+    FlutterClass::widget(
+        "PopupMenuButton",
+        "StatefulWidget",
+        "button",
+        F_POPUPMENUBTN,
+    ),
     // A menu ITEM is the same `<menu>` element as the strip that opens it —
     // the spelling plib and dotnet both use for `TMenuItem` /
     // `ToolStripMenuItem`.
