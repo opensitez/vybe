@@ -1,4 +1,4 @@
-# Vybe v0.6.1
+# Vybe v0.6.2
 
 Vybe is a Rust workspace for compiling multiple source languages into one
 shared JS-shaped AST and one shared WASM bytecode runtime. Every frontend is
