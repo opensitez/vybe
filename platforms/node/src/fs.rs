@@ -10,11 +10,11 @@
 //! methods (`isFile()`, `isDirectory()`, `isSymbolicLink()`, etc.)
 //! bound as host fn refs taking the Stats object as the receiver.
 
+use crate::fsops;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
-use crate::fsops;
 use vybe_runtime::value::{Object, ObjectKind};
 use vybe_runtime::{HostContext, VM, Value};
 

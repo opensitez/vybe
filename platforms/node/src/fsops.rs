@@ -28,7 +28,10 @@ pub fn write(path: &str, data: &[u8]) -> std::io::Result<()> {
 
 /// Append, creating the file when absent.
 pub fn append(path: &str, data: &[u8]) -> std::io::Result<()> {
-    let mut file = fs::OpenOptions::new().create(true).append(true).open(path)?;
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
     file.write_all(data)
 }
 
