@@ -84,7 +84,11 @@ fn option_spec_append_body(target: Expr) -> Vec<Statement> {
                     member(
                         index(
                             ident("__flags"),
-                            binary(BinOp::Sub, call_global("len", vec![ident("__flags")]), num(1.0)),
+                            binary(
+                                BinOp::Sub,
+                                call_global("len", vec![ident("__flags")]),
+                                num(1.0),
+                            ),
                         ),
                         "replace",
                     ),

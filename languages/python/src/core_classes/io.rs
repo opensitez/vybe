@@ -40,6 +40,14 @@ fn len_of(e: Expr) -> Expr {
     call_global("len", vec![e])
 }
 
+fn dyn_method(object: Expr, name: &str) -> Expr {
+    call_global("getattr", vec![object, str_lit(name)])
+}
+
+fn dyn_call(object: Expr, name: &str, args: Vec<Expr>) -> Expr {
+    call(dyn_method(object, name), args)
+}
+
 type ClassMemberList = vybe_ast::ClassMember;
 
 /// `self._buf[self._pos:]` — everything not yet read.
@@ -170,7 +178,14 @@ fn common(wrap: fn(Expr) -> Expr) -> Vec<ClassMemberList> {
         method("writable", vec![], vec![ret(bool_lit(true))]),
         method("seekable", vec![], vec![ret(bool_lit(true))]),
         method("flush", vec![], vec![ret(null())]),
-        method("detach", vec![], vec![ret(null())]),
+        method(
+            "detach",
+            vec![],
+            vec![raise_new(
+                "UnsupportedOperation",
+                vec![str_lit("detach unsupported")],
+            )],
+        ),
         method("close", vec![], vec![set_this("closed", bool_lit(true))]),
         method("__enter__", vec![], vec![ret(ident("self"))]),
         method(
@@ -200,6 +215,7 @@ pub(super) fn string_io() -> Statement {
                 ),
                 set_this("_pos", i(0)),
                 set_this("closed", bool_lit(false)),
+                set_this("line_buffering", bool_lit(false)),
             ],
         ),
         method(
@@ -275,8 +291,381 @@ pub(super) fn bytes_io() -> Statement {
     class("BytesIO", members)
 }
 
+pub(super) fn io_base() -> Statement {
+    class(
+        "IOBase",
+        vec![
+            init(vec![], vec![set_this("closed", bool_lit(false))]),
+            method("close", vec![], vec![set_this("closed", bool_lit(true))]),
+            method("flush", vec![], vec![ret(null())]),
+            method("readable", vec![], vec![ret(bool_lit(false))]),
+            method("writable", vec![], vec![ret(bool_lit(false))]),
+            method("seekable", vec![], vec![ret(bool_lit(false))]),
+            method("__enter__", vec![], vec![ret(ident("self"))]),
+            method(
+                "__exit__",
+                any_args(),
+                vec![set_this("closed", bool_lit(true)), ret(bool_lit(false))],
+            ),
+        ],
+    )
+}
+
+pub(super) fn raw_io_base() -> Statement {
+    class(
+        "RawIOBase",
+        vec![
+            init(vec![], vec![set_this("closed", bool_lit(false))]),
+            method("readable", vec![], vec![ret(bool_lit(true))]),
+            method("writable", vec![], vec![ret(bool_lit(true))]),
+            method("seekable", vec![], vec![ret(bool_lit(true))]),
+            method("close", vec![], vec![set_this("closed", bool_lit(true))]),
+        ],
+    )
+}
+
+pub(super) fn buffered_reader() -> Statement {
+    class(
+        "BufferedReader",
+        vec![
+            init(
+                vec![param("raw", None), param("buffer_size", Some(i(8192)))],
+                vec![
+                    set_this("raw", ident("raw")),
+                    set_this("buffer_size", ident("buffer_size")),
+                    set_this("closed", bool_lit(false)),
+                ],
+            ),
+            method(
+                "read",
+                vec![param("size", Some(i(-1)))],
+                vec![ret(dyn_call(
+                    this_field("raw"),
+                    "read",
+                    vec![ident("size")],
+                ))],
+            ),
+            method(
+                "read1",
+                vec![param("size", Some(i(-1)))],
+                vec![ret(call(
+                    member(ident("self"), "read"),
+                    vec![ident("size")],
+                ))],
+            ),
+            method(
+                "readline",
+                vec![],
+                vec![ret(dyn_call(this_field("raw"), "readline", vec![]))],
+            ),
+            method("readable", vec![], vec![ret(bool_lit(true))]),
+            method("writable", vec![], vec![ret(bool_lit(false))]),
+            method(
+                "seek",
+                vec![param("pos", Some(i(0))), param("whence", Some(i(0)))],
+                vec![ret(dyn_call(
+                    this_field("raw"),
+                    "seek",
+                    vec![ident("pos"), ident("whence")],
+                ))],
+            ),
+            method(
+                "tell",
+                vec![],
+                vec![ret(dyn_call(this_field("raw"), "tell", vec![]))],
+            ),
+            method(
+                "flush",
+                vec![],
+                vec![ret(dyn_call(this_field("raw"), "flush", vec![]))],
+            ),
+            method("close", vec![], vec![set_this("closed", bool_lit(true))]),
+        ],
+    )
+}
+
+pub(super) fn buffered_writer() -> Statement {
+    class(
+        "BufferedWriter",
+        vec![
+            init(
+                vec![param("raw", None), param("buffer_size", Some(i(8192)))],
+                vec![
+                    set_this("raw", ident("raw")),
+                    set_this("buffer_size", ident("buffer_size")),
+                    set_this("closed", bool_lit(false)),
+                ],
+            ),
+            method(
+                "write",
+                vec![param("b", Some(null()))],
+                vec![ret(dyn_call(this_field("raw"), "write", vec![ident("b")]))],
+            ),
+            method(
+                "flush",
+                vec![],
+                vec![ret(dyn_call(this_field("raw"), "flush", vec![]))],
+            ),
+            method("readable", vec![], vec![ret(bool_lit(false))]),
+            method("writable", vec![], vec![ret(bool_lit(true))]),
+            method("close", vec![], vec![set_this("closed", bool_lit(true))]),
+        ],
+    )
+}
+
+pub(super) fn text_io_wrapper() -> Statement {
+    class(
+        "TextIOWrapper",
+        vec![
+            init(
+                vec![
+                    param("buffer", None),
+                    param("encoding", Some(str_lit("utf-8"))),
+                    param("errors", Some(null())),
+                    param("newline", Some(null())),
+                ],
+                vec![
+                    set_this("buffer", ident("buffer")),
+                    set_this("encoding", ident("encoding")),
+                    set_this("errors", ident("errors")),
+                    set_this("newline", ident("newline")),
+                    set_this("closed", bool_lit(false)),
+                ],
+            ),
+            method(
+                "read",
+                vec![param("size", Some(i(-1)))],
+                vec![
+                    assign(
+                        ident("__pyio_raw_buffer"),
+                        member(this_field("buffer"), "_buf"),
+                    ),
+                    assign(ident("__pyio_start"), member(this_field("buffer"), "_pos")),
+                    assign(ident("__pyio_end"), len_of(ident("__pyio_raw_buffer"))),
+                    if_stmt(
+                        op(BinOp::GtEq, ident("size"), i(0)),
+                        vec![assign(
+                            ident("__pyio_end"),
+                            op(BinOp::Add, ident("__pyio_start"), ident("size")),
+                        )],
+                    ),
+                    assign(
+                        ident("__pyio_raw"),
+                        slice_range(
+                            ident("__pyio_raw_buffer"),
+                            ident("__pyio_start"),
+                            ident("__pyio_end"),
+                        ),
+                    ),
+                    assign(member(this_field("buffer"), "_pos"), ident("__pyio_end")),
+                    assign(
+                        ident("__text"),
+                        call_global("__py_io_utf8_decode", vec![ident("__pyio_raw")]),
+                    ),
+                    if_stmt(
+                        is_none(this_field("newline")),
+                        vec![
+                            assign(
+                                ident("__text"),
+                                call(
+                                    member(ident("__text"), "replace"),
+                                    vec![str_lit("\r\n"), str_lit("\n")],
+                                ),
+                            ),
+                            assign(
+                                ident("__text"),
+                                call(
+                                    member(ident("__text"), "replace"),
+                                    vec![str_lit("\r"), str_lit("\n")],
+                                ),
+                            ),
+                        ],
+                    ),
+                    ret(ident("__text")),
+                ],
+            ),
+            method(
+                "write",
+                vec![param("s", Some(str_lit("")))],
+                vec![ret(call(
+                    dyn_method(this_field("buffer"), "write"),
+                    vec![call_global(
+                        "bytes",
+                        vec![ident("s"), this_field("encoding")],
+                    )],
+                ))],
+            ),
+            method(
+                "flush",
+                vec![],
+                vec![ret(dyn_call(this_field("buffer"), "flush", vec![]))],
+            ),
+            method("close", vec![], vec![set_this("closed", bool_lit(true))]),
+            method("readable", vec![], vec![ret(bool_lit(true))]),
+            method("writable", vec![], vec![ret(bool_lit(true))]),
+        ],
+    )
+}
+
+pub(super) fn incremental_newline_decoder() -> Statement {
+    class(
+        "IncrementalNewlineDecoder",
+        vec![
+            init(
+                vec![
+                    param("decoder", Some(null())),
+                    param("translate", Some(bool_lit(true))),
+                ],
+                vec![
+                    set_this("decoder", ident("decoder")),
+                    set_this("translate", ident("translate")),
+                    set_this("newlines", null()),
+                ],
+            ),
+            method(
+                "decode",
+                vec![
+                    param("input", Some(str_lit(""))),
+                    param("final", Some(bool_lit(false))),
+                ],
+                vec![
+                    assign(
+                        ident("__text"),
+                        call_global("__py_io_text", vec![ident("input")]),
+                    ),
+                    if_stmt(
+                        this_field("translate"),
+                        vec![
+                            assign(
+                                ident("__text"),
+                                call(
+                                    member(ident("__text"), "replace"),
+                                    vec![str_lit("\r\n"), str_lit("\n")],
+                                ),
+                            ),
+                            assign(
+                                ident("__text"),
+                                call(
+                                    member(ident("__text"), "replace"),
+                                    vec![str_lit("\r"), str_lit("\n")],
+                                ),
+                            ),
+                        ],
+                    ),
+                    ret(ident("__text")),
+                ],
+            ),
+            method("reset", vec![], vec![set_this("newlines", null())]),
+        ],
+    )
+}
+
+pub(super) fn unsupported_operation() -> Statement {
+    class_extending("UnsupportedOperation", &["OSError"], vec![])
+}
+
 pub(super) fn module_functions() -> Vec<Statement> {
     vec![
+        global_assign("DEFAULT_BUFFER_SIZE", i(8192)),
+        function(
+            "__py_io_utf8_decode",
+            vec![param("raw", Some(str_lit("")))],
+            vec![
+                assign(ident("__out"), str_lit("")),
+                assign(ident("__i"), i(0)),
+                while_stmt(
+                    op(BinOp::Lt, ident("__i"), len_of(ident("raw"))),
+                    vec![
+                        assign(
+                            ident("__b"),
+                            call_global("ord", vec![index(ident("raw"), ident("__i"))]),
+                        ),
+                        assign(ident("__code"), ident("__b")),
+                        assign(ident("__step"), i(1)),
+                        if_stmt(
+                            op(BinOp::GtEq, ident("__b"), i(192)),
+                            vec![
+                                assign(
+                                    ident("__b2"),
+                                    call_global(
+                                        "ord",
+                                        vec![index(
+                                            ident("raw"),
+                                            op(BinOp::Add, ident("__i"), i(1)),
+                                        )],
+                                    ),
+                                ),
+                                assign(
+                                    ident("__code"),
+                                    op(
+                                        BinOp::Add,
+                                        op(BinOp::Mul, op(BinOp::Sub, ident("__b"), i(192)), i(64)),
+                                        op(BinOp::Sub, ident("__b2"), i(128)),
+                                    ),
+                                ),
+                                assign(ident("__step"), i(2)),
+                            ],
+                        ),
+                        if_stmt(
+                            op(BinOp::GtEq, ident("__b"), i(224)),
+                            vec![
+                                assign(
+                                    ident("__b2"),
+                                    call_global(
+                                        "ord",
+                                        vec![index(
+                                            ident("raw"),
+                                            op(BinOp::Add, ident("__i"), i(1)),
+                                        )],
+                                    ),
+                                ),
+                                assign(
+                                    ident("__b3"),
+                                    call_global(
+                                        "ord",
+                                        vec![index(
+                                            ident("raw"),
+                                            op(BinOp::Add, ident("__i"), i(2)),
+                                        )],
+                                    ),
+                                ),
+                                assign(
+                                    ident("__code"),
+                                    op(
+                                        BinOp::Add,
+                                        op(
+                                            BinOp::Add,
+                                            op(
+                                                BinOp::Mul,
+                                                op(BinOp::Sub, ident("__b"), i(224)),
+                                                i(4096),
+                                            ),
+                                            op(
+                                                BinOp::Mul,
+                                                op(BinOp::Sub, ident("__b2"), i(128)),
+                                                i(64),
+                                            ),
+                                        ),
+                                        op(BinOp::Sub, ident("__b3"), i(128)),
+                                    ),
+                                ),
+                                assign(ident("__step"), i(3)),
+                            ],
+                        ),
+                        assign(
+                            ident("__out"),
+                            op(
+                                BinOp::Add,
+                                ident("__out"),
+                                call_global("chr", vec![ident("__code")]),
+                            ),
+                        ),
+                        assign(ident("__i"), op(BinOp::Add, ident("__i"), ident("__step"))),
+                    ],
+                ),
+                ret(ident("__out")),
+            ],
+        ),
         // Bytes reach the buffer as text so one representation serves both
         // streams; a str passes through unchanged.
         //

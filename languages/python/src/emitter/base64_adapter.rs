@@ -65,6 +65,76 @@ fn replace_all_stack(
     call_import(chunks, current, "ecma:string", "replaceAll", 3, line);
 }
 
+fn filter_base64_lenient(chunks: &mut [Chunk], current: usize, text_slot: u16, line: u32) {
+    let out = chunks[current].alloc_scratch(1);
+    let i = chunks[current].alloc_scratch(1);
+    let len = chunks[current].alloc_scratch(1);
+    let code = chunks[current].alloc_scratch(1);
+    let ok = chunks[current].alloc_scratch(1);
+
+    chunks[current].emit_string_const("", line);
+    lset(&mut chunks[current], out, line);
+    chunks[current].emit_i32_const(0, line);
+    lset(&mut chunks[current], i, line);
+    lget(&mut chunks[current], text_slot, line);
+    call_import(chunks, current, "wasm:js-string", "length", 1, line);
+    lset(&mut chunks[current], len, line);
+
+    let loop_state = loops::emit_loop_start(chunks, current, line);
+    lget(&mut chunks[current], i, line);
+    lget(&mut chunks[current], len, line);
+    chunks[current].emit_op(Op::I32_LT_S, line);
+    loops::emit_loop_cond(chunks, current, line);
+
+    lget(&mut chunks[current], text_slot, line);
+    lget(&mut chunks[current], i, line);
+    call_import(chunks, current, "wasm:js-string", "charCodeAt", 2, line);
+    call_import(chunks, current, "wasm:js-number", "toI32", 1, line);
+    lset(&mut chunks[current], code, line);
+
+    chunks[current].emit_i32_const(0, line);
+    lset(&mut chunks[current], ok, line);
+    for (lo, hi) in [(65, 90), (97, 122), (48, 57)] {
+        lget(&mut chunks[current], code, line);
+        chunks[current].emit_i32_const(lo, line);
+        chunks[current].emit_op(Op::I32_GE_S, line);
+        lget(&mut chunks[current], code, line);
+        chunks[current].emit_i32_const(hi, line);
+        chunks[current].emit_op(Op::I32_LE_S, line);
+        chunks[current].emit_op(Op::I32_AND, line);
+        chunks[current].emit_if(line);
+        chunks[current].emit_i32_const(1, line);
+        lset(&mut chunks[current], ok, line);
+        chunks[current].emit_end(line);
+    }
+    for codepoint in [43, 47, 61] {
+        lget(&mut chunks[current], code, line);
+        chunks[current].emit_i32_const(codepoint, line);
+        chunks[current].emit_op(Op::I32_EQ, line);
+        chunks[current].emit_if(line);
+        chunks[current].emit_i32_const(1, line);
+        lset(&mut chunks[current], ok, line);
+        chunks[current].emit_end(line);
+    }
+
+    lget(&mut chunks[current], ok, line);
+    chunks[current].emit_if(line);
+    lget(&mut chunks[current], out, line);
+    lget(&mut chunks[current], code, line);
+    call_import(chunks, current, "wasm:js-string", "fromCharCode", 1, line);
+    strings::emit_concat(&mut chunks[current], 2, line);
+    lset(&mut chunks[current], out, line);
+    chunks[current].emit_end(line);
+
+    lget(&mut chunks[current], i, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    lset(&mut chunks[current], i, line);
+    loops::emit_loop_end(chunks, current, loop_state, line);
+
+    lget(&mut chunks[current], out, line);
+}
+
 fn ascii_string_to_bytes(chunks: &mut [Chunk], current: usize, line: u32) {
     base64::emit_binary_string_to_byte_array(chunks, current, line);
     call_import(chunks, current, "ecma:uint8array", "new", 1, line);
@@ -489,12 +559,23 @@ fn decode_common(chunks: &mut [Chunk], current: usize, argc: u8, urlsafe: bool, 
     replace_all_stack(chunks, current, " ", "", line);
     let text = chunks[current].alloc_scratch(1);
     lset(&mut chunks[current], text, line);
+    filter_base64_lenient(chunks, current, text, line);
+    lset(&mut chunks[current], text, line);
+    lget(&mut chunks[current], text, line);
+    strings::emit_length(&mut chunks[current], line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op(Op::I32_EQ, line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_string_const("", line);
+    ascii_string_to_bytes(chunks, current, line);
+    chunks[current].emit_else(line);
     normalize_decode_padding(chunks, current, text, line);
     lget(&mut chunks[current], text, line);
     // CPython's default decoder ignores ASCII whitespace; `atob` does too in
     // web-compatible implementations, and the shared primitive keeps that core.
     base64::emit_decode_binary_string(chunks, current, line);
     ascii_string_to_bytes(chunks, current, line);
+    chunks[current].emit_end(line);
 }
 
 pub fn emit_b64encode(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {

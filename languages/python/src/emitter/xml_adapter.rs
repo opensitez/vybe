@@ -100,14 +100,7 @@ fn tag_matches(chunks: &mut [Chunk], current: usize, elem: u16, tag: u16, line: 
     chunks[current].emit_end(line);
 }
 
-fn push_if_matches(
-    chunks: &mut [Chunk],
-    current: usize,
-    out: u16,
-    elem: u16,
-    tag: u16,
-    line: u32,
-) {
+fn push_if_matches(chunks: &mut [Chunk], current: usize, out: u16, elem: u16, tag: u16, line: u32) {
     tag_matches(chunks, current, elem, tag, line);
     chunks[current].emit_if(line);
     {

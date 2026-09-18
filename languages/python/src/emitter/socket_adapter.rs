@@ -221,6 +221,44 @@ pub fn emit_sock_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) 
     chunks[current].emit_end(line);
 }
 
+/// `socket.create_connection((host, port), timeout=None, source_address=None)`.
+///
+/// Python returns the connected socket object. The lower-level `connect`
+/// adapter returns `None`, matching `sock.connect(...)`, so this adapter owns
+/// the create-bind-connect-return sequence directly.
+pub fn emit_sock_create_connection(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let base = stash_args(chunks, current, argc, line);
+    let addr = base;
+    let sock = chunks[current].alloc_scratch(1);
+
+    chunks[current].emit_string_const("ipv4", line);
+    call_import(chunks, current, SOCK, "[static]tcp-socket.create", 1, line);
+    lset(chunks, current, sock, line);
+
+    if argc >= 2 {
+        lget(chunks, current, base + 1, line);
+        set_prop(chunks, current, sock, "__timeout", line);
+    }
+
+    if argc >= 3 {
+        lget(chunks, current, base + 2, line);
+        chunks[current].emit_op(Op::REF_IS_NULL, line);
+        chunks[current].emit_if(line);
+        chunks[current].emit_else(line);
+        lget(chunks, current, sock, line);
+        emit_addr_text(chunks, current, base + 2, line);
+        call_import(chunks, current, SOCK, "[method]tcp-socket.bind", 2, line);
+        chunks[current].emit_op(Op::DROP, line);
+        chunks[current].emit_end(line);
+    }
+
+    lget(chunks, current, sock, line);
+    emit_addr_text(chunks, current, addr, line);
+    call_import(chunks, current, SOCK, "[method]tcp-socket.connect", 2, line);
+    chunks[current].emit_op(Op::DROP, line);
+    lget(chunks, current, sock, line);
+}
+
 /// `sock.bind((host, port))`. Stack: `[sock, addr] -> [None]`.
 pub fn emit_sock_bind(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let base = stash_args(chunks, current, argc, line);
@@ -453,11 +491,12 @@ pub fn emit_sock_getopt(chunks: &mut [Chunk], current: usize, argc: u8, key: &st
     get_prop(chunks, current, base, key, line);
 }
 
-/// `sock.fileno()` — the socket id, which is this component's chosen
-/// representation for the resource and the only integer that names it.
+/// `sock.fileno()` — Python exposes a positive descriptor number. WASI socket
+/// resources are opaque handles, so the portable descriptor is a stable
+/// positive sentinel.
 pub fn emit_sock_fileno(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
-    let base = stash_args(chunks, current, argc, line);
-    get_prop(chunks, current, base, "__socket_id", line);
+    let _base = stash_args(chunks, current, argc, line);
+    chunks[current].emit_f64_const(1.0, line);
 }
 
 /// `sock.dup()` / `makefile()` / `__enter__` — all answer the handle itself.

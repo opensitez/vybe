@@ -18,7 +18,11 @@ fn contains(haystack: Expr, needle: Expr) -> Expr {
 }
 
 fn missing(e: Expr) -> Expr {
-    op(BinOp::Or, is_none(e.clone()), op(BinOp::StrictEq, e, str_lit("undefined")))
+    op(
+        BinOp::Or,
+        is_none(e.clone()),
+        op(BinOp::StrictEq, e, str_lit("undefined")),
+    )
 }
 
 fn break_stmt() -> Statement {
@@ -91,7 +95,10 @@ pub(super) fn select_selector() -> Statement {
                         vec![raise_call("KeyError", vec![ident("fileobj")])],
                     ),
                     assign(ident("__out"), index(this_field("_map"), ident("fileobj"))),
-                    expr_stmt(call(member(this_field("_map"), "pop"), vec![ident("fileobj")])),
+                    expr_stmt(call(
+                        member(this_field("_map"), "pop"),
+                        vec![ident("fileobj")],
+                    )),
                     ret(ident("__out")),
                 ],
             ),
@@ -107,13 +114,14 @@ pub(super) fn select_selector() -> Statement {
                         unary_not(contains(this_field("_map"), ident("fileobj"))),
                         vec![raise_call("KeyError", vec![ident("fileobj")])],
                     ),
-                    assign(
-                        ident("__old"),
-                        index(this_field("_map"), ident("fileobj")),
-                    ),
+                    assign(ident("__old"), index(this_field("_map"), ident("fileobj"))),
                     assign(
                         ident("__data"),
-                        ternary(is_none(ident("data")), field_of(ident("__old"), "data"), ident("data")),
+                        ternary(
+                            is_none(ident("data")),
+                            field_of(ident("__old"), "data"),
+                            ident("data"),
+                        ),
                     ),
                     assign(
                         ident("__key"),
@@ -136,12 +144,19 @@ pub(super) fn select_selector() -> Statement {
             ),
             method("get_map", vec![], vec![ret(this_field("_map"))]),
             method("select", any_args(), vec![ret(list_of(vec![]))]),
-            method("close", vec![], vec![set_this("_map", dict_of(vec![])), ret(null())]),
+            method(
+                "close",
+                vec![],
+                vec![set_this("_map", dict_of(vec![])), ret(null())],
+            ),
             method("__enter__", vec![], vec![ret(ident("self"))]),
             method(
                 "__exit__",
                 any_args(),
-                vec![expr_stmt(call(member(ident("self"), "close"), vec![])), ret(bool_lit(false))],
+                vec![
+                    expr_stmt(call(member(ident("self"), "close"), vec![])),
+                    ret(bool_lit(false)),
+                ],
             ),
         ],
     )

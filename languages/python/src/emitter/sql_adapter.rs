@@ -27,7 +27,7 @@ use vybe_runtime::{Chunk, Value};
 use vybe_compiler::primitives::class_slots::{
     self, ClassSlot, Dest, ObjSource, PlainNames, ValueSource,
 };
-use vybe_compiler::primitives::{collections, tuples};
+use vybe_compiler::primitives::{collections, dict, strings, tuples};
 
 // ── local emit helpers (mirror pdo_adapter conventions) ──────────────────────
 
@@ -81,6 +81,10 @@ fn stash_args(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) -> u16 
 
 fn empty_array(chunks: &mut [Chunk], current: usize, line: u32) {
     collections::emit_array_new(chunks, current, 0, line);
+}
+
+fn null_value(chunks: &mut [Chunk], current: usize, line: u32) {
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 // ── row → tagged tuple ───────────────────────────────────────────────────────
@@ -157,6 +161,165 @@ fn emit_row_to_tuple(chunks: &mut [Chunk], current: usize, row_slot: u16, line: 
     tuples::emit_tag(chunks, current, line);
 }
 
+/// Build a named row object from the host row. This is the `sqlite3.Row` shape:
+/// `row["name"]` works and `row.keys()` sees only column names.
+fn emit_row_to_named_object(chunks: &mut [Chunk], current: usize, row_slot: u16, line: u32) {
+    let names = alloc(&mut chunks[current]);
+    let obj = alloc(&mut chunks[current]);
+    let n = alloc(&mut chunks[current]);
+    let i = alloc(&mut chunks[current]);
+    let name = alloc(&mut chunks[current]);
+    let val = alloc(&mut chunks[current]);
+
+    lget(&mut chunks[current], row_slot, line);
+    struct_get_key(
+        &mut chunks[current],
+        &ClassSlot::internal("__col_names"),
+        line,
+    );
+    lset(&mut chunks[current], names, line);
+
+    call_import(chunks, current, "ecma:object", "new", 0, line);
+    lset(&mut chunks[current], obj, line);
+
+    lget(&mut chunks[current], names, line);
+    chunks[current].emit_op(Op::ARRAY_LENGTH, line);
+    lset(&mut chunks[current], n, line);
+    chunks[current].emit_i32_const(0, line);
+    lset(&mut chunks[current], i, line);
+
+    let block = chunks[current].emit_block(line);
+    let (lp, _) = chunks[current].emit_loop_s(line);
+    lget(&mut chunks[current], i, line);
+    lget(&mut chunks[current], n, line);
+    chunks[current].emit_op(Op::I32_GE_S, line);
+    chunks[current].emit_br_if(1, line);
+
+    lget(&mut chunks[current], names, line);
+    lget(&mut chunks[current], i, line);
+    chunks[current].emit_op(Op::ARRAY_GET, line);
+    lset(&mut chunks[current], name, line);
+
+    lget(&mut chunks[current], row_slot, line);
+    lget(&mut chunks[current], name, line);
+    call_import(chunks, current, "ecma:object", "get", 2, line);
+    lset(&mut chunks[current], val, line);
+
+    lget(&mut chunks[current], obj, line);
+    lget(&mut chunks[current], name, line);
+    lget(&mut chunks[current], val, line);
+    call_import(chunks, current, "ecma:object", "set", 3, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    lget(&mut chunks[current], i, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    lset(&mut chunks[current], i, line);
+
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(lp);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(block);
+
+    lget(&mut chunks[current], obj, line);
+}
+
+fn emit_names_to_description(chunks: &mut [Chunk], current: usize, names_slot: u16, line: u32) {
+    let desc = alloc(&mut chunks[current]);
+    let n = alloc(&mut chunks[current]);
+    let i = alloc(&mut chunks[current]);
+    let item = alloc(&mut chunks[current]);
+
+    empty_array(chunks, current, line);
+    lset(&mut chunks[current], desc, line);
+    lget(&mut chunks[current], names_slot, line);
+    chunks[current].emit_op(Op::ARRAY_LENGTH, line);
+    lset(&mut chunks[current], n, line);
+    chunks[current].emit_i32_const(0, line);
+    lset(&mut chunks[current], i, line);
+
+    let block = chunks[current].emit_block(line);
+    let (lp, _) = chunks[current].emit_loop_s(line);
+    lget(&mut chunks[current], i, line);
+    lget(&mut chunks[current], n, line);
+    chunks[current].emit_op(Op::I32_GE_S, line);
+    chunks[current].emit_br_if(1, line);
+
+    empty_array(chunks, current, line);
+    lset(&mut chunks[current], item, line);
+    lget(&mut chunks[current], item, line);
+    lget(&mut chunks[current], names_slot, line);
+    lget(&mut chunks[current], i, line);
+    chunks[current].emit_op(Op::ARRAY_GET, line);
+    collections::emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    lget(&mut chunks[current], item, line);
+    tuples::emit_tag(chunks, current, line);
+    lset(&mut chunks[current], item, line);
+
+    lget(&mut chunks[current], desc, line);
+    lget(&mut chunks[current], item, line);
+    collections::emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    lget(&mut chunks[current], i, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    lset(&mut chunks[current], i, line);
+
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(lp);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(block);
+
+    lget(&mut chunks[current], desc, line);
+}
+
+fn emit_store_description_from_rows(
+    chunks: &mut [Chunk],
+    current: usize,
+    cursor: u16,
+    rows: u16,
+    line: u32,
+) {
+    let n = alloc(&mut chunks[current]);
+    let row = alloc(&mut chunks[current]);
+    let names = alloc(&mut chunks[current]);
+    let desc = alloc(&mut chunks[current]);
+
+    lget(&mut chunks[current], rows, line);
+    chunks[current].emit_op(Op::ARRAY_LENGTH, line);
+    lset(&mut chunks[current], n, line);
+
+    lget(&mut chunks[current], n, line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op(Op::I32_GT_S, line);
+    chunks[current].emit_if(line);
+    lget(&mut chunks[current], rows, line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op(Op::ARRAY_GET, line);
+    lset(&mut chunks[current], row, line);
+    lget(&mut chunks[current], row, line);
+    struct_get_key(
+        &mut chunks[current],
+        &ClassSlot::internal("__col_names"),
+        line,
+    );
+    lset(&mut chunks[current], names, line);
+    emit_names_to_description(chunks, current, names, line);
+    lset(&mut chunks[current], desc, line);
+    chunks[current].emit_else(line);
+    empty_array(chunks, current, line);
+    lset(&mut chunks[current], desc, line);
+    chunks[current].emit_end(line);
+
+    lget(&mut chunks[current], cursor, line);
+    lget(&mut chunks[current], desc, line);
+    struct_set_key(&mut chunks[current], &ClassSlot::internal("description"), line);
+}
+
 /// Compute `use_raw = truthy(cursor.__conn.row_factory)` into `flag_slot` — set
 /// when the connection's `row_factory` is `sqlite3.Row`, so fetch returns the
 /// raw column-keyed row (named + positional access) instead of a tuple.
@@ -182,7 +345,7 @@ fn emit_row_factory_flag(
 fn emit_row_result(chunks: &mut [Chunk], current: usize, row_slot: u16, raw_flag: u16, line: u32) {
     lget(&mut chunks[current], raw_flag, line);
     chunks[current].emit_if_value(line);
-    lget(&mut chunks[current], row_slot, line);
+    emit_row_to_named_object(chunks, current, row_slot, line);
     chunks[current].emit_else(line);
     emit_row_to_tuple(chunks, current, row_slot, line);
     chunks[current].emit_end(line);
@@ -237,9 +400,20 @@ pub fn emit_connect(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     // Python `Connection.isolation_level` defaults to "" (deferred BEGIN).
     lget(&mut chunks[current], conn, line);
     push_str(&mut chunks[current], "", line);
+    if argc >= 2 {
+        chunks[current].emit_op(Op::DROP, line);
+        lget(&mut chunks[current], base + 1, line);
+    }
     struct_set_key(
         &mut chunks[current],
         &ClassSlot::internal("isolation_level"),
+        line,
+    );
+    lget(&mut chunks[current], conn, line);
+    chunks[current].emit_i32_const(0, line);
+    struct_set_key(
+        &mut chunks[current],
+        &ClassSlot::internal("total_changes"),
         line,
     );
     lget(&mut chunks[current], conn, line);
@@ -290,7 +464,87 @@ pub fn emit_cursor(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     struct_set_key(&mut chunks[current], &ClassSlot::internal("rowcount"), line);
 
     lget(&mut chunks[current], cur, line);
+    empty_array(chunks, current, line);
+    struct_set_key(&mut chunks[current], &ClassSlot::internal("description"), line);
+
+    lget(&mut chunks[current], cur, line);
     // result: cursor
+}
+
+fn emit_prepare_params(
+    chunks: &mut [Chunk],
+    current: usize,
+    sql_slot: u16,
+    params_slot: u16,
+    line: u32,
+) {
+    let keys = alloc(&mut chunks[current]);
+    let arr = alloc(&mut chunks[current]);
+    let n = alloc(&mut chunks[current]);
+    let i = alloc(&mut chunks[current]);
+    let key = alloc(&mut chunks[current]);
+    let needle = alloc(&mut chunks[current]);
+
+    lget(&mut chunks[current], params_slot, line);
+    call_import(chunks, current, "ecma:array", "isArray", 1, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_else(line);
+
+    lget(&mut chunks[current], params_slot, line);
+    call_import(chunks, current, "ecma:object", "keys", 1, line);
+    lset(&mut chunks[current], keys, line);
+    empty_array(chunks, current, line);
+    lset(&mut chunks[current], arr, line);
+    lget(&mut chunks[current], keys, line);
+    chunks[current].emit_op(Op::ARRAY_LENGTH, line);
+    lset(&mut chunks[current], n, line);
+    chunks[current].emit_i32_const(0, line);
+    lset(&mut chunks[current], i, line);
+
+    let block = chunks[current].emit_block(line);
+    let (lp, _) = chunks[current].emit_loop_s(line);
+    lget(&mut chunks[current], i, line);
+    lget(&mut chunks[current], n, line);
+    chunks[current].emit_op(Op::I32_GE_S, line);
+    chunks[current].emit_br_if(1, line);
+
+    lget(&mut chunks[current], keys, line);
+    lget(&mut chunks[current], i, line);
+    chunks[current].emit_op(Op::ARRAY_GET, line);
+    lset(&mut chunks[current], key, line);
+
+    push_str(&mut chunks[current], ":", line);
+    lget(&mut chunks[current], key, line);
+    strings::emit_concat(&mut chunks[current], 2, line);
+    lset(&mut chunks[current], needle, line);
+
+    lget(&mut chunks[current], sql_slot, line);
+    lget(&mut chunks[current], needle, line);
+    push_str(&mut chunks[current], "?", line);
+    call_import(chunks, current, "ecma:string", "replaceAll", 3, line);
+    lset(&mut chunks[current], sql_slot, line);
+
+    lget(&mut chunks[current], arr, line);
+    lget(&mut chunks[current], params_slot, line);
+    lget(&mut chunks[current], key, line);
+    dict::emit_get(chunks, current, line);
+    collections::emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    lget(&mut chunks[current], i, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    lset(&mut chunks[current], i, line);
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(lp);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(block);
+
+    lget(&mut chunks[current], arr, line);
+    lset(&mut chunks[current], params_slot, line);
+    chunks[current].emit_end(line);
 }
 
 /// `__sql_execute(cursor, sql[, params])` → the cursor (Python returns it).
@@ -307,6 +561,9 @@ pub fn emit_execute(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     lset(&mut chunks[current], conn, line);
 
     let flag = alloc(&mut chunks[current]);
+    if has_params {
+        emit_prepare_params(chunks, current, sql, params, line);
+    }
     emit_is_query_flag(chunks, current, sql, flag, line);
 
     lget(&mut chunks[current], flag, line);
@@ -330,6 +587,7 @@ pub fn emit_execute(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         lget(&mut chunks[current], cursor, line);
         chunks[current].emit_i32_const(0, line);
         struct_set_key(&mut chunks[current], &ClassSlot::internal("__cursor"), line);
+        emit_store_description_from_rows(chunks, current, cursor, rows, line);
     }
     chunks[current].emit_else(line);
     {
@@ -355,6 +613,24 @@ pub fn emit_execute(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         lget(&mut chunks[current], cursor, line);
         chunks[current].emit_i32_const(0, line);
         struct_set_key(&mut chunks[current], &ClassSlot::internal("__cursor"), line);
+        lget(&mut chunks[current], cursor, line);
+        empty_array(chunks, current, line);
+        struct_set_key(&mut chunks[current], &ClassSlot::internal("description"), line);
+
+        lget(&mut chunks[current], conn, line);
+        lget(&mut chunks[current], conn, line);
+        struct_get_key(
+            &mut chunks[current],
+            &ClassSlot::internal("total_changes"),
+            line,
+        );
+        lget(&mut chunks[current], count, line);
+        chunks[current].emit_op(Op::I32_ADD, line);
+        struct_set_key(
+            &mut chunks[current],
+            &ClassSlot::internal("total_changes"),
+            line,
+        );
 
         // lastrowid = scalar("SELECT last_insert_rowid()")
         let lastid = alloc(&mut chunks[current]);
@@ -374,6 +650,76 @@ pub fn emit_execute(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
 
     lget(&mut chunks[current], cursor, line);
     // result: cursor
+}
+
+/// `__sql_executescript(cursor, script)` → cursor. Splits a DB-API script on
+/// semicolons and executes non-empty statements through `wasi:sql.execute`.
+pub fn emit_executescript(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let base = stash_args(chunks, current, argc, line);
+    let cursor = base;
+    let script = base + 1;
+
+    let conn = alloc(&mut chunks[current]);
+    let parts = alloc(&mut chunks[current]);
+    let n = alloc(&mut chunks[current]);
+    let i = alloc(&mut chunks[current]);
+    let stmt = alloc(&mut chunks[current]);
+
+    lget(&mut chunks[current], cursor, line);
+    struct_get_key(&mut chunks[current], &ClassSlot::internal("__conn"), line);
+    lset(&mut chunks[current], conn, line);
+
+    lget(&mut chunks[current], script, line);
+    push_str(&mut chunks[current], ";", line);
+    call_import(chunks, current, "ecma:string", "split", 2, line);
+    lset(&mut chunks[current], parts, line);
+    lget(&mut chunks[current], parts, line);
+    chunks[current].emit_op(Op::ARRAY_LENGTH, line);
+    lset(&mut chunks[current], n, line);
+    chunks[current].emit_i32_const(0, line);
+    lset(&mut chunks[current], i, line);
+
+    let block = chunks[current].emit_block(line);
+    let (lp, _) = chunks[current].emit_loop_s(line);
+    lget(&mut chunks[current], i, line);
+    lget(&mut chunks[current], n, line);
+    chunks[current].emit_op(Op::I32_GE_S, line);
+    chunks[current].emit_br_if(1, line);
+
+    lget(&mut chunks[current], parts, line);
+    lget(&mut chunks[current], i, line);
+    chunks[current].emit_op(Op::ARRAY_GET, line);
+    call_import(chunks, current, "ecma:string", "trim", 1, line);
+    lset(&mut chunks[current], stmt, line);
+
+    lget(&mut chunks[current], stmt, line);
+    strings::emit_length(&mut chunks[current], line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op(Op::I32_GT_S, line);
+    chunks[current].emit_if(line);
+    lget(&mut chunks[current], conn, line);
+    lget(&mut chunks[current], stmt, line);
+    call_import(chunks, current, "wasi:sql", "execute", 2, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_end(line);
+
+    lget(&mut chunks[current], i, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    lset(&mut chunks[current], i, line);
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(lp);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(block);
+
+    lget(&mut chunks[current], cursor, line);
+    empty_array(chunks, current, line);
+    struct_set_key(&mut chunks[current], &ClassSlot::internal("__rows"), line);
+    lget(&mut chunks[current], cursor, line);
+    chunks[current].emit_i32_const(0, line);
+    struct_set_key(&mut chunks[current], &ClassSlot::internal("__cursor"), line);
+    lget(&mut chunks[current], cursor, line);
 }
 
 /// `__sql_executemany(cursor, sql, seq)` → the cursor. Runs `sql` once per
@@ -501,6 +847,79 @@ pub fn emit_fetchall(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) 
     // result: list of tuples
 }
 
+/// `__sql_fetchmany(cursor, size)` → list of up to `size` rows.
+pub fn emit_fetchmany(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let base = stash_args(chunks, current, argc, line);
+    let cursor = base;
+    let size = base + 1;
+
+    let rows = alloc(&mut chunks[current]);
+    let res = alloc(&mut chunks[current]);
+    let n = alloc(&mut chunks[current]);
+    let i = alloc(&mut chunks[current]);
+    let limit = alloc(&mut chunks[current]);
+    let row = alloc(&mut chunks[current]);
+    let item = alloc(&mut chunks[current]);
+    let raw = alloc(&mut chunks[current]);
+    emit_row_factory_flag(chunks, current, cursor, raw, line);
+
+    lget(&mut chunks[current], cursor, line);
+    struct_get_key(&mut chunks[current], &ClassSlot::internal("__rows"), line);
+    lset(&mut chunks[current], rows, line);
+    empty_array(chunks, current, line);
+    lset(&mut chunks[current], res, line);
+    lget(&mut chunks[current], rows, line);
+    chunks[current].emit_op(Op::ARRAY_LENGTH, line);
+    lset(&mut chunks[current], n, line);
+    lget(&mut chunks[current], cursor, line);
+    struct_get_key(&mut chunks[current], &ClassSlot::internal("__cursor"), line);
+    lset(&mut chunks[current], i, line);
+    lget(&mut chunks[current], i, line);
+    lget(&mut chunks[current], size, line);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    lset(&mut chunks[current], limit, line);
+    lget(&mut chunks[current], limit, line);
+    lget(&mut chunks[current], n, line);
+    chunks[current].emit_op(Op::I32_GT_S, line);
+    chunks[current].emit_if(line);
+    lget(&mut chunks[current], n, line);
+    lset(&mut chunks[current], limit, line);
+    chunks[current].emit_end(line);
+
+    let block = chunks[current].emit_block(line);
+    let (lp, _) = chunks[current].emit_loop_s(line);
+    lget(&mut chunks[current], i, line);
+    lget(&mut chunks[current], limit, line);
+    chunks[current].emit_op(Op::I32_GE_S, line);
+    chunks[current].emit_br_if(1, line);
+
+    lget(&mut chunks[current], rows, line);
+    lget(&mut chunks[current], i, line);
+    chunks[current].emit_op(Op::ARRAY_GET, line);
+    lset(&mut chunks[current], row, line);
+    emit_row_result(chunks, current, row, raw, line);
+    lset(&mut chunks[current], item, line);
+    lget(&mut chunks[current], res, line);
+    lget(&mut chunks[current], item, line);
+    collections::emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    lget(&mut chunks[current], i, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    lset(&mut chunks[current], i, line);
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(lp);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(block);
+
+    lget(&mut chunks[current], cursor, line);
+    lget(&mut chunks[current], i, line);
+    struct_set_key(&mut chunks[current], &ClassSlot::internal("__cursor"), line);
+    lget(&mut chunks[current], res, line);
+}
+
 /// `__sql_fetchone(cursor)` → next row as a tagged tuple, or `None`.
 pub fn emit_fetchone(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let base = stash_args(chunks, current, argc, line);
@@ -545,7 +964,7 @@ pub fn emit_fetchone(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) 
     }
     chunks[current].emit_else(line);
     {
-        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+        null_value(chunks, current, line);
     }
     chunks[current].emit_end(line);
     // result: tuple or null

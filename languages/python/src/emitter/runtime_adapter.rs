@@ -4,6 +4,7 @@
 //! Keep Python-specific call shapes here instead of sending them through
 //! the old runtime-helper function table.
 
+use vybe_ast::ProtocolSlot;
 use vybe_compiler::primitives::class_slots::{
     self, ClassSlot, Dest, ObjSource, PlainNames, ValueSource,
 };
@@ -325,6 +326,20 @@ fn build_value_eq_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     c.emit_end(line);
 
     // ── legs 3 and 4 ────────────────────────────────────────────────────
+    c.emit_op_u16(Op::LOCAL_GET, a, line);
+    c.emit_op(Op::REF_IS_NULL, line);
+    c.emit_op_u16(Op::LOCAL_GET, b, line);
+    c.emit_op(Op::REF_IS_NULL, line);
+    c.emit_op(Op::I32_OR, line);
+    c.emit_if(line);
+    c.emit_op_u16(Op::LOCAL_GET, a, line);
+    c.emit_op(Op::REF_IS_NULL, line);
+    c.emit_op_u16(Op::LOCAL_GET, b, line);
+    c.emit_op(Op::REF_IS_NULL, line);
+    c.emit_op(Op::I32_AND, line);
+    c.emit_op(Op::RETURN, line);
+    c.emit_end(line);
+
     emit_structural_or_identity(&mut c, a, b, line);
     c.emit_op(Op::RETURN, line);
 
@@ -630,6 +645,12 @@ fn emit_slot_as_number_f64(chunk: &mut Chunk, slot: u16, line: u32) {
     chunk.emit_call(to_f64, 1, line);
 }
 
+fn emit_slot_is_string(chunk: &mut Chunk, slot: u16, line: u32) {
+    chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
+    let is_string = chunk.add_import("wasm:js-string", "test");
+    chunk.emit_call(is_string, 1, line);
+}
+
 fn emit_py_bigint_aware_numeric(
     chunk: &mut Chunk,
     bigint_op: &str,
@@ -665,6 +686,33 @@ fn emit_py_bigint_aware_numeric(
 }
 
 fn emit_py_add_numeric(chunk: &mut Chunk, line: u32) {
+    let b_slot = chunk.alloc_scratch(1);
+    let a_slot = chunk.alloc_scratch(1);
+    chunk.emit_op_u16(Op::LOCAL_SET, b_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, a_slot, line);
+
+    emit_slot_is_string(chunk, a_slot, line);
+    emit_slot_is_string(chunk, b_slot, line);
+    chunk.emit_op(Op::I32_OR, line);
+    chunk.emit_if_value(line);
+    emit_slot_is_string(chunk, a_slot, line);
+    emit_slot_is_string(chunk, b_slot, line);
+    chunk.emit_op(Op::I32_AND, line);
+    chunk.emit_if_value(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, a_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, b_slot, line);
+    vybe_compiler::primitives::strings::emit_concat(chunk, 2, line);
+    chunk.emit_else(line);
+    emit_throw_python_exception(
+        chunk,
+        "TypeError",
+        "can only concatenate str (not non-str) to str",
+        line,
+    );
+    chunk.emit_end(line);
+    chunk.emit_else(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, a_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, b_slot, line);
     emit_py_bigint_aware_numeric(
         chunk,
         "add",
@@ -672,6 +720,7 @@ fn emit_py_add_numeric(chunk: &mut Chunk, line: u32) {
         Op::F64_ADD,
         line,
     );
+    chunk.emit_end(line);
 }
 
 fn emit_py_sub_numeric(chunk: &mut Chunk, line: u32) {
@@ -1108,6 +1157,10 @@ fn reflected_dunder(dunder: &str) -> Option<&'static str> {
         "__and__" => Some("__rand__"),
         "__or__" => Some("__ror__"),
         "__xor__" => Some("__rxor__"),
+        "__lt__" => Some("__gt__"),
+        "__gt__" => Some("__lt__"),
+        "__le__" => Some("__ge__"),
+        "__ge__" => Some("__le__"),
         _ => None,
     }
 }
@@ -1205,6 +1258,7 @@ fn emit_py_repr(
     let is_array = chunk.add_import("ecma:array", "isArray");
     let is_view = chunk.add_import("ecma:arraybuffer", "isView");
     let test_undef = chunk.add_import("wasm:js-undefined", "test");
+    let typeof_fn = chunk.add_import("ecma:value", "typeof");
     let scratch = chunk.alloc_scratch(1);
     chunk.emit_op_u16(Op::LOCAL_SET, scratch, line);
 
@@ -1213,27 +1267,53 @@ fn emit_py_repr(
     // method lookup returns undefined for primitives, so `print(5)` etc. fall
     // straight through to the default formatting below.
     let str_method = chunk.alloc_scratch(1);
-    vybe_compiler::primitives::globals::emit_read(chunk, "__vybe_js_get_method", line);
     chunk.emit_op_u16(Op::LOCAL_GET, scratch, line);
-    chunk.emit_string_const("__str__", line);
-    vybe_compiler::primitives::callable::emit_direct_invoke_chunk(chunk, 2, line);
-    chunk.emit_op_u16(Op::LOCAL_SET, str_method, line);
-    // fall back to __repr__ when __str__ is absent (statement-if: side effect
-    // only, produces no stack value)
-    chunk.emit_op_u16(Op::LOCAL_GET, str_method, line);
-    chunk.emit_call(test_undef, 1, line);
+    chunk.emit_call(typeof_fn, 1, line);
+    chunk.emit_string_const("object", line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
     chunk.emit_if(line);
-    vybe_compiler::primitives::globals::emit_read(chunk, "__vybe_js_get_method", line);
-    chunk.emit_op_u16(Op::LOCAL_GET, scratch, line);
-    chunk.emit_string_const("__repr__", line);
-    vybe_compiler::primitives::callable::emit_direct_invoke_chunk(chunk, 2, line);
-    chunk.emit_op_u16(Op::LOCAL_SET, str_method, line);
+    {
+        let str_key = class_slots::resolve_interned(
+            chunk,
+            &ClassSlot::Slot(ProtocolSlot::ToString),
+            &PlainNames,
+        );
+        chunk.emit_op_u16(Op::LOCAL_GET, scratch, line);
+        class_slots::emit_class_get(chunk, ObjSource::Stack, &str_key, Dest::Stack, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, str_method, line);
+        emit_slot_is_null_or_undefined(chunk, str_method, line);
+        chunk.emit_if(line);
+        let repr_key =
+            class_slots::resolve_interned(chunk, &ClassSlot::Slot(ProtocolSlot::Repr), &PlainNames);
+        chunk.emit_op_u16(Op::LOCAL_GET, scratch, line);
+        class_slots::emit_class_get(chunk, ObjSource::Stack, &repr_key, Dest::Stack, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, str_method, line);
+        chunk.emit_end(line);
+    }
+    chunk.emit_else(line);
+    {
+        vybe_compiler::primitives::globals::emit_read(chunk, "__vybe_js_get_method", line);
+        chunk.emit_op_u16(Op::LOCAL_GET, scratch, line);
+        chunk.emit_string_const("__str__", line);
+        vybe_compiler::primitives::callable::emit_direct_invoke_chunk(chunk, 2, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, str_method, line);
+        // fall back to __repr__ when __str__ is absent (statement-if: side effect
+        // only, produces no stack value)
+        chunk.emit_op_u16(Op::LOCAL_GET, str_method, line);
+        chunk.emit_call(test_undef, 1, line);
+        chunk.emit_if(line);
+        vybe_compiler::primitives::globals::emit_read(chunk, "__vybe_js_get_method", line);
+        chunk.emit_op_u16(Op::LOCAL_GET, scratch, line);
+        chunk.emit_string_const("__repr__", line);
+        vybe_compiler::primitives::callable::emit_direct_invoke_chunk(chunk, 2, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, str_method, line);
+        chunk.emit_end(line);
+    }
     chunk.emit_end(line);
     // Default formatting when there's no usable dunder OR the value is an array
     // (arrays return a non-function from the method lookup and must use the
     // list formatter below). Otherwise call the dunder with the receiver.
-    chunk.emit_op_u16(Op::LOCAL_GET, str_method, line);
-    chunk.emit_call(test_undef, 1, line); // i32: 1 if undefined
+    emit_slot_is_null_or_undefined(chunk, str_method, line);
     chunk.emit_op_u16(Op::LOCAL_GET, scratch, line);
     chunk.emit_call(is_array, 1, line);
     chunk.emit_call(cast_bool, 1, line); // i32: 1 if array
@@ -1856,21 +1936,36 @@ fn emit_bytearray_pop_slots(
     chunks[current].emit_i32_const(0, line);
     chunks[current].emit_op(Op::I32_EQ, line);
     chunks[current].emit_if(line);
-    emit_throw_python_exception(&mut chunks[current], "IndexError", "pop from empty bytearray", line);
+    emit_throw_python_exception(
+        &mut chunks[current],
+        "IndexError",
+        "pop from empty bytearray",
+        line,
+    );
     chunks[current].emit_end(line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, idx, line);
     chunks[current].emit_i32_const(0, line);
     chunks[current].emit_op(Op::I32_LT_S, line);
     chunks[current].emit_if(line);
-    emit_throw_python_exception(&mut chunks[current], "IndexError", "pop index out of range", line);
+    emit_throw_python_exception(
+        &mut chunks[current],
+        "IndexError",
+        "pop index out of range",
+        line,
+    );
     chunks[current].emit_end(line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, idx, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, len_slot, line);
     chunks[current].emit_op(Op::I32_GE_S, line);
     chunks[current].emit_if(line);
-    emit_throw_python_exception(&mut chunks[current], "IndexError", "pop index out of range", line);
+    emit_throw_python_exception(
+        &mut chunks[current],
+        "IndexError",
+        "pop index out of range",
+        line,
+    );
     chunks[current].emit_end(line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, arr, line);
@@ -2137,7 +2232,14 @@ pub fn emit_pymatmul(chunks: &mut [Chunk], current: usize, line: u32) {
     let a_slot = chunk.alloc_scratch(1);
     chunk.emit_op_u16(Op::LOCAL_SET, b_slot, line);
     chunk.emit_op_u16(Op::LOCAL_SET, a_slot, line);
-    emit_object_binop_or(chunk, a_slot, b_slot, "__matmul__", emit_unsupported_matmul, line);
+    emit_object_binop_or(
+        chunk,
+        a_slot,
+        b_slot,
+        "__matmul__",
+        emit_unsupported_matmul,
+        line,
+    );
 }
 
 pub fn emit_py_notimplemented(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -2255,7 +2357,12 @@ fn emit_py_mod(chunk: &mut Chunk, line: u32) {
     vybe_compiler::primitives::math::emit_python_floor_mod(chunk, line);
 }
 
-fn emit_throw_python_exception(chunk: &mut Chunk, exc_name: &str, message: &str, line: u32) {
+pub(crate) fn emit_throw_python_exception(
+    chunk: &mut Chunk,
+    exc_name: &str,
+    message: &str,
+    line: u32,
+) {
     class_slots::emit_class_alloc(chunk, line);
     chunk.emit_dup(line);
     chunk.emit_string_const(message, line);
@@ -2457,6 +2564,21 @@ pub fn emit_py_type(chunks: &mut [Chunk], current: usize, line: u32) {
         class_slots::emit_class_set(chunk, ObjSource::Stack, &cs_slot, ValueSource::Stack, line);
         chunk.emit_else(line);
 
+        // Tuples share the array backing store with lists and carry an
+        // explicit Python tag. Preserve that before falling back to JS Array.
+        chunk.emit_op_u16(Op::LOCAL_GET, v, line);
+        chunk.emit_string_const("__tuple", line);
+        reflection::emit_has_own_in_chunk(chunk, line);
+        chunk.emit_call(cast_bool, 1, line);
+        chunk.emit_if_value(line);
+        class_slots::emit_class_alloc(chunk, line);
+        chunk.emit_dup(line);
+        chunk.emit_string_const("tuple", line);
+        let cs_slot =
+            class_slots::resolve(&ClassSlot::Internal(("__name__").to_string()), &PlainNames);
+        class_slots::emit_class_set(chunk, ObjSource::Stack, &cs_slot, ValueSource::Stack, line);
+        chunk.emit_else(line);
+
         // Shared class instances are also stamped with `__type`; use it when
         // the optional `__class__` link is absent (for inherited/builtin-base
         // constructor paths).
@@ -2477,6 +2599,7 @@ pub fn emit_py_type(chunks: &mut [Chunk], current: usize, line: u32) {
 
         chunk.emit_op_u16(Op::LOCAL_GET, v, line);
         reflection::emit_typeof_in_chunk(chunk, line);
+        chunk.emit_end(line);
         chunk.emit_end(line);
         chunk.emit_end(line);
         chunk.emit_end(line);
@@ -2876,15 +2999,52 @@ fn emit_hash_guarded(chunks: &mut [Chunk], current: usize, line: u32) {
         chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     }
     chunk.emit_else(line);
-    chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
-    let _ = chunk;
-    vybe_compiler::primitives::collections::emit_runtime_helper_call(
-        chunks,
-        current,
-        "__vybe_hash",
-        1,
-        line,
-    );
+    let typeof_fn = chunks[current].add_import("ecma:value", "typeof");
+    let method_slot = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
+    chunks[current].emit_call(typeof_fn, 1, line);
+    chunks[current].emit_string_const("object", line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    {
+        let hash_key = class_slots::resolve_interned(
+            &mut chunks[current],
+            &ClassSlot::Slot(ProtocolSlot::Hash),
+            &PlainNames,
+        );
+        chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
+        class_slots::emit_class_get(
+            &mut chunks[current],
+            ObjSource::Stack,
+            &hash_key,
+            Dest::Stack,
+            line,
+        );
+        chunks[current].emit_op_u16(Op::LOCAL_SET, method_slot, line);
+        emit_slot_is_null_or_undefined(&mut chunks[current], method_slot, line);
+        chunks[current].emit_if_value(line);
+        {
+            chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
+            vybe_compiler::primitives::object::emit_hash_code(&mut chunks[current], line);
+        }
+        chunks[current].emit_else(line);
+        {
+            chunks[current].emit_op_u16(Op::LOCAL_GET, method_slot, line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
+            vybe_compiler::primitives::callable::emit_direct_invoke_chunk(
+                &mut chunks[current],
+                1,
+                line,
+            );
+        }
+        chunks[current].emit_end(line);
+    }
+    chunks[current].emit_else(line);
+    {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
+        vybe_compiler::primitives::object::emit_hash_code(&mut chunks[current], line);
+    }
+    chunks[current].emit_end(line);
     chunks[current].emit_end(line);
     chunks[current].emit_end(line);
 }

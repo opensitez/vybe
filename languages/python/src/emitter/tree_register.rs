@@ -200,7 +200,10 @@ fn dataclasses_subtree() -> Subtree {
         ("astuple", "python.dataclass_astuple"),
         ("fields", "python.dataclass_fields"),
     ] {
-        root.insert(name.to_string(), NamespaceNode::CommonEmit(emit.to_string()));
+        root.insert(
+            name.to_string(),
+            NamespaceNode::CommonEmit(emit.to_string()),
+        );
     }
     root.insert(
         "MISSING".to_string(),
@@ -406,7 +409,10 @@ fn pydoc_subtree() -> Subtree {
             simple_python_type(
                 name,
                 &format!("python.pydoc_{name}_new"),
-                &[("document", "python.pydoc_document"), ("render_doc", "python.pydoc_render_doc")],
+                &[
+                    ("document", "python.pydoc_document"),
+                    ("render_doc", "python.pydoc_render_doc"),
+                ],
             ),
         );
     }
@@ -420,7 +426,10 @@ fn pydoc_subtree() -> Subtree {
         ("render_doc", "python.pydoc_render_doc"),
         ("allmethods", "python.pydoc_allmethods"),
     ] {
-        root.insert(name.to_string(), NamespaceNode::CommonEmit(emit.to_string()));
+        root.insert(
+            name.to_string(),
+            NamespaceNode::CommonEmit(emit.to_string()),
+        );
     }
     root
 }
@@ -438,7 +447,10 @@ fn dis_subtree() -> Subtree {
         ("findlinestarts", "python.dis_findlinestarts"),
         ("stack_effect", "python.dis_stack_effect"),
     ] {
-        root.insert(name.to_string(), NamespaceNode::CommonEmit(emit.to_string()));
+        root.insert(
+            name.to_string(),
+            NamespaceNode::CommonEmit(emit.to_string()),
+        );
     }
     root.insert(
         "Instruction".to_string(),
@@ -460,9 +472,7 @@ fn dis_subtree() -> Subtree {
     );
     root.insert(
         "cmp_op".to_string(),
-        NamespaceNode::Const(Value::String(std::sync::Arc::from(
-            "< <= == != > >=",
-        ))),
+        NamespaceNode::Const(Value::String(std::sync::Arc::from("< <= == != > >="))),
     );
     root.insert(
         "hasconst".to_string(),
@@ -599,9 +609,15 @@ fn email_subtree() -> Subtree {
         ("parseaddr", "python.email_parseaddr"),
         ("formataddr", "python.email_formataddr"),
         ("formatdate", "python.email_formatdate"),
-        ("parsedate_to_datetime", "python.email_parsedate_to_datetime"),
+        (
+            "parsedate_to_datetime",
+            "python.email_parsedate_to_datetime",
+        ),
     ] {
-        utils.insert(name.to_string(), NamespaceNode::CommonEmit(emit.to_string()));
+        utils.insert(
+            name.to_string(),
+            NamespaceNode::CommonEmit(emit.to_string()),
+        );
     }
     root.insert("utils".to_string(), NamespaceNode::Namespace(utils));
 

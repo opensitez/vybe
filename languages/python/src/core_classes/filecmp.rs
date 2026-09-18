@@ -17,6 +17,14 @@ fn contains(haystack: Expr, needle: Expr) -> Expr {
     call_global("__py_contains__", vec![haystack, needle])
 }
 
+fn bool_from(cond: Expr) -> Expr {
+    Expression::new(vybe_ast::ExprKind::Ternary {
+        cond: Box::new(cond),
+        then: Box::new(bool_lit(true)),
+        else_: Box::new(bool_lit(false)),
+    })
+}
+
 fn path_join(left: Expr, name: Expr) -> Expr {
     call_global("__py_filecmp_join", vec![left, name])
 }
@@ -206,11 +214,13 @@ pub(super) fn module_functions() -> Vec<Statement> {
                     unary_not(call_global("__py_fs_exists", vec![ident("f2")])),
                     vec![ret(bool_lit(false))],
                 ),
-                ret(op(
-                    BinOp::Eq,
-                    call_global("__py_fs_read_bytes", vec![ident("f1")]),
-                    call_global("__py_fs_read_bytes", vec![ident("f2")]),
-                )),
+                ret(bool_from(call_global(
+                    "__py_value_eq",
+                    vec![
+                        call_global("__py_fs_read_bytes", vec![ident("f1")]),
+                        call_global("__py_fs_read_bytes", vec![ident("f2")]),
+                    ],
+                ))),
             ],
         ),
         function(

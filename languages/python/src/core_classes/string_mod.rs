@@ -35,12 +35,20 @@ pub(super) fn formatter() -> Statement {
             init(vec![], vec![]),
             method(
                 "format",
-                vec![param("fmt", None), rest_param("args"), kwargs_param("kwargs")],
+                vec![
+                    param("fmt", None),
+                    rest_param("args"),
+                    kwargs_param("kwargs"),
+                ],
                 vec![ret(null())],
             ),
             method(
                 "vformat",
-                vec![param("fmt", None), param("args", None), param("kwargs", None)],
+                vec![
+                    param("fmt", None),
+                    param("args", None),
+                    param("kwargs", None),
+                ],
                 vec![ret(null())],
             ),
         ],

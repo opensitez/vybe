@@ -1,4 +1,4 @@
-//! `tempfile.NamedTemporaryFile` / `TemporaryFile` — a real file OBJECT.
+//! `tempfile.NamedTemporaryFile` / `TemporaryFile` / `TemporaryDirectory`.
 //!
 //! ⛔ The adapter used to build this with `class_slots::emit_class_alloc` plus
 //! stamped fields. That is the hand-rolled construction `core_classes/mod.rs`
@@ -39,6 +39,7 @@ pub(super) fn named_temp_file() -> Statement {
                     param("prefix", Some(str_lit(""))),
                     param("dir", Some(str_lit(""))),
                     param("delete", Some(bool_lit(true))),
+                    param("delete_on_close", Some(null())),
                 ],
                 vec![
                     set_this(
@@ -52,9 +53,14 @@ pub(super) fn named_temp_file() -> Statement {
                     set_this("__fmode", ident("mode")),
                     set_this("mode", ident("mode")),
                     set_this("delete", ident("delete")),
+                    if_stmt(
+                        is_not_none(ident("delete_on_close")),
+                        vec![set_this("delete", ident("delete_on_close"))],
+                    ),
                     set_this("__fdata", str_lit("")),
                     set_this("closed", bool_lit(false)),
                     set_this("_pos", i(0)),
+                    expr_stmt(call_global("__py_fs_write_text", vec![path(), str_lit("")])),
                 ],
             ),
             method(
@@ -94,7 +100,24 @@ pub(super) fn named_temp_file() -> Statement {
             method(
                 "read",
                 vec![param("size", Some(i(-1)))],
-                vec![ret(call_global("__py_fs_read_text", vec![path()]))],
+                vec![
+                    assign(
+                        ident("__data"),
+                        call_global("__py_fs_read_text", vec![path()]),
+                    ),
+                    if_stmt(
+                        op(
+                            BinOp::GtEq,
+                            call(member(this_field("mode"), "find"), vec![str_lit("b")]),
+                            i(0),
+                        ),
+                        vec![ret(call_global(
+                            "bytes",
+                            vec![ident("__data"), str_lit("utf-8")],
+                        ))],
+                    ),
+                    ret(ident("__data")),
+                ],
             ),
             method(
                 "readline",
@@ -152,6 +175,180 @@ pub(super) fn named_temp_file() -> Statement {
             method("seekable", vec![], vec![ret(bool_lit(true))]),
             // ⛔ `delete=True` removes the file on close, which is what the
             // corpus checks with `os.path.exists` afterwards.
+            method(
+                "close",
+                vec![],
+                vec![
+                    if_stmt(
+                        unary_not(this_field("closed")),
+                        vec![
+                            set_this("closed", bool_lit(true)),
+                            if_stmt(
+                                is_true(this_field("delete")),
+                                vec![expr_stmt(call_global("__py_fs_unlink", vec![path()]))],
+                            ),
+                        ],
+                    ),
+                    ret(null()),
+                ],
+            ),
+            method("__enter__", vec![], vec![ret(ident("self"))]),
+            method(
+                "__exit__",
+                any_args(),
+                vec![
+                    expr_stmt(call(member(ident("self"), "close"), vec![])),
+                    ret(bool_lit(false)),
+                ],
+            ),
+        ],
+    )
+}
+
+pub(super) fn temporary_directory() -> Statement {
+    class(
+        "__PyTemporaryDirectory",
+        vec![
+            init(
+                vec![
+                    param("suffix", Some(str_lit(""))),
+                    param("prefix", Some(str_lit(""))),
+                    param("dir", Some(str_lit(""))),
+                    param("ignore_cleanup_errors", Some(bool_lit(false))),
+                    param("delete", Some(bool_lit(true))),
+                ],
+                vec![
+                    set_this(
+                        "name",
+                        call_global(
+                            "tempfile.mkdtemp",
+                            vec![ident("suffix"), ident("prefix"), ident("dir")],
+                        ),
+                    ),
+                    set_this("ignore_cleanup_errors", ident("ignore_cleanup_errors")),
+                    set_this("delete", ident("delete")),
+                    set_this("__closed", bool_lit(false)),
+                ],
+            ),
+            method(
+                "cleanup",
+                vec![],
+                vec![
+                    if_stmt(
+                        unary_not(this_field("__closed")),
+                        vec![
+                            set_this("__closed", bool_lit(true)),
+                            expr_stmt(call_global("shutil.rmtree", vec![this_field("name")])),
+                        ],
+                    ),
+                    ret(null()),
+                ],
+            ),
+            method("__enter__", vec![], vec![ret(this_field("name"))]),
+            method(
+                "__exit__",
+                any_args(),
+                vec![
+                    if_stmt(
+                        is_true(this_field("delete")),
+                        vec![expr_stmt(call(member(ident("self"), "cleanup"), vec![]))],
+                    ),
+                    ret(bool_lit(false)),
+                ],
+            ),
+        ],
+    )
+}
+
+pub(super) fn spooled_temp_file() -> Statement {
+    class(
+        "__PySpooledTempFile",
+        vec![
+            init(
+                vec![
+                    param("max_size", Some(i(0))),
+                    param("mode", Some(str_lit("w+b"))),
+                    param("buffering", Some(i(-1))),
+                    param("encoding", Some(null())),
+                    param("newline", Some(null())),
+                    param("suffix", Some(str_lit(""))),
+                    param("prefix", Some(str_lit(""))),
+                    param("dir", Some(str_lit(""))),
+                    param("delete", Some(bool_lit(true))),
+                ],
+                vec![
+                    set_this(
+                        "name",
+                        call_global(
+                            "__py_temp_path",
+                            vec![ident("prefix"), ident("suffix"), ident("dir")],
+                        ),
+                    ),
+                    set_this("__fpath", this_field("name")),
+                    set_this("__fmode", ident("mode")),
+                    set_this("mode", ident("mode")),
+                    set_this("delete", ident("delete")),
+                    set_this("__fdata", str_lit("")),
+                    set_this("closed", bool_lit(false)),
+                    set_this("_pos", i(0)),
+                    set_this("max_size", ident("max_size")),
+                    set_this("_rolled", bool_lit(false)),
+                ],
+            ),
+            method(
+                "write",
+                vec![param("data", Some(str_lit("")))],
+                vec![
+                    assign(
+                        ident("__s"),
+                        call_global("__py_tmp_text", vec![ident("data")]),
+                    ),
+                    expr_stmt(call_global(
+                        "__py_fs_write_text",
+                        vec![
+                            path(),
+                            op(
+                                BinOp::Add,
+                                call_global("__py_fs_read_text", vec![path()]),
+                                ident("__s"),
+                            ),
+                        ],
+                    )),
+                    if_stmt(
+                        op(
+                            BinOp::Gt,
+                            call_global(
+                                "len",
+                                vec![call_global("__py_fs_read_text", vec![path()])],
+                            ),
+                            this_field("max_size"),
+                        ),
+                        vec![set_this("_rolled", bool_lit(true))],
+                    ),
+                    ret(call_global("len", vec![ident("__s")])),
+                ],
+            ),
+            method(
+                "read",
+                vec![param("size", Some(i(-1)))],
+                vec![ret(call_global("__py_fs_read_text", vec![path()]))],
+            ),
+            method(
+                "seek",
+                vec![param("pos", Some(i(0)))],
+                vec![set_this("_pos", ident("pos"))],
+            ),
+            method(
+                "rollover",
+                vec![],
+                vec![set_this("_rolled", bool_lit(true))],
+            ),
+            method("tell", vec![], vec![ret(this_field("_pos"))]),
+            method("flush", vec![], vec![ret(null())]),
+            method("fileno", vec![], vec![ret(i(3))]),
+            method("readable", vec![], vec![ret(bool_lit(true))]),
+            method("writable", vec![], vec![ret(bool_lit(true))]),
+            method("seekable", vec![], vec![ret(bool_lit(true))]),
             method(
                 "close",
                 vec![],

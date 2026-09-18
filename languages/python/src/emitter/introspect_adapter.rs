@@ -153,6 +153,28 @@ pub fn emit_glob_escape(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
     }
 }
 
+/// `glob.has_magic(pathname)` — true if the pattern contains glob syntax.
+pub fn emit_glob_has_magic(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let base = stash_exact(chunks, current, argc, 1, line);
+    lget(&mut chunks[current], base, line);
+    call_import(chunks, current, "ecma:string", "String", 1, line);
+    for needle in ["*", "?", "["] {
+        chunks[current].emit_dup(line);
+        chunks[current].emit_string_const(needle, line);
+        call_import(chunks, current, "ecma:string", "includes", 2, line);
+        ops::emit_dyn_to_bool(&mut chunks[current], line);
+        chunks[current].emit_if_value(line);
+        chunks[current].emit_op(Op::DROP, line);
+        chunks[current].emit_bool_const(true, line);
+        chunks[current].emit_else(line);
+    }
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_bool_const(false, line);
+    for _ in ["*", "?", "["] {
+        chunks[current].emit_end(line);
+    }
+}
+
 /// `linecache.getline(path, lineno)` — the 1-based line WITH its terminator,
 /// or `""` when the line does not exist (CPython never raises here).
 pub fn emit_getline(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {

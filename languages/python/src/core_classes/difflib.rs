@@ -117,8 +117,14 @@ pub(super) fn sequence_matcher() -> Statement {
                     param("bhi", Some(null())),
                 ],
                 vec![
-                    if_stmt(is_none(ident("ahi")), vec![assign(ident("ahi"), len_of(this_field("a")))]),
-                    if_stmt(is_none(ident("bhi")), vec![assign(ident("bhi"), len_of(this_field("b")))]),
+                    if_stmt(
+                        is_none(ident("ahi")),
+                        vec![assign(ident("ahi"), len_of(this_field("a")))],
+                    ),
+                    if_stmt(
+                        is_none(ident("bhi")),
+                        vec![assign(ident("bhi"), len_of(this_field("b")))],
+                    ),
                     assign(ident("__best_i"), ident("alo")),
                     assign(ident("__best_j"), ident("blo")),
                     assign(ident("__best_size"), i(0)),
@@ -136,16 +142,33 @@ pub(super) fn sequence_matcher() -> Statement {
                                             BinOp::And,
                                             op(
                                                 BinOp::And,
-                                                op(BinOp::Lt, op(BinOp::Add, ident("__i"), ident("__k")), ident("ahi")),
-                                                op(BinOp::Lt, op(BinOp::Add, ident("__j"), ident("__k")), ident("bhi")),
+                                                op(
+                                                    BinOp::Lt,
+                                                    op(BinOp::Add, ident("__i"), ident("__k")),
+                                                    ident("ahi"),
+                                                ),
+                                                op(
+                                                    BinOp::Lt,
+                                                    op(BinOp::Add, ident("__j"), ident("__k")),
+                                                    ident("bhi"),
+                                                ),
                                             ),
                                             op(
                                                 BinOp::Eq,
-                                                index(this_field("a"), op(BinOp::Add, ident("__i"), ident("__k"))),
-                                                index(this_field("b"), op(BinOp::Add, ident("__j"), ident("__k"))),
+                                                index(
+                                                    this_field("a"),
+                                                    op(BinOp::Add, ident("__i"), ident("__k")),
+                                                ),
+                                                index(
+                                                    this_field("b"),
+                                                    op(BinOp::Add, ident("__j"), ident("__k")),
+                                                ),
                                             ),
                                         ),
-                                        vec![assign(ident("__k"), op(BinOp::Add, ident("__k"), i(1)))],
+                                        vec![assign(
+                                            ident("__k"),
+                                            op(BinOp::Add, ident("__k"), i(1)),
+                                        )],
                                     ),
                                     if_stmt(
                                         op(BinOp::Gt, ident("__k"), ident("__best_size")),
@@ -175,7 +198,10 @@ pub(super) fn sequence_matcher() -> Statement {
                         member(ident("self"), "find_longest_match"),
                         vec![i(0), len_of(this_field("a")), i(0), len_of(this_field("b"))],
                     ),
-                    new("__PyDiffMatch", vec![len_of(this_field("a")), len_of(this_field("b")), i(0)]),
+                    new(
+                        "__PyDiffMatch",
+                        vec![len_of(this_field("a")), len_of(this_field("b")), i(0)],
+                    ),
                 ]))],
             ),
             method(
@@ -228,16 +254,28 @@ pub(super) fn differ() -> Statement {
                                     ),
                                     vec![append(
                                         ident("__out"),
-                                        op(BinOp::Add, str_lit("  "), index(ident("a"), ident("__i"))),
+                                        op(
+                                            BinOp::Add,
+                                            str_lit("  "),
+                                            index(ident("a"), ident("__i")),
+                                        ),
                                     )],
                                     vec![
                                         append(
                                             ident("__out"),
-                                            op(BinOp::Add, str_lit("- "), index(ident("a"), ident("__i"))),
+                                            op(
+                                                BinOp::Add,
+                                                str_lit("- "),
+                                                index(ident("a"), ident("__i")),
+                                            ),
                                         ),
                                         append(
                                             ident("__out"),
-                                            op(BinOp::Add, str_lit("+ "), index(ident("b"), ident("__i"))),
+                                            op(
+                                                BinOp::Add,
+                                                str_lit("+ "),
+                                                index(ident("b"), ident("__i")),
+                                            ),
                                         ),
                                     ],
                                 )],
@@ -279,8 +317,16 @@ pub(super) fn html_diff() -> Statement {
         "HtmlDiff",
         vec![
             init(vec![], vec![]),
-            method("make_table", any_args(), vec![ret(str_lit("<table></table>"))]),
-            method("make_file", any_args(), vec![ret(str_lit("<html><table></table></html>"))]),
+            method(
+                "make_table",
+                any_args(),
+                vec![ret(str_lit("<table></table>"))],
+            ),
+            method(
+                "make_file",
+                any_args(),
+                vec![ret(str_lit("<html><table></table></html>"))],
+            ),
         ],
     )
 }
@@ -366,8 +412,16 @@ pub(super) fn module_functions() -> Vec<Statement> {
                 param("tofile", Some(str_lit(""))),
             ],
             vec![ret(list_of(vec![
-                op(BinOp::Add, op(BinOp::Add, str_lit("--- "), ident("fromfile")), str_lit("\n")),
-                op(BinOp::Add, op(BinOp::Add, str_lit("+++ "), ident("tofile")), str_lit("\n")),
+                op(
+                    BinOp::Add,
+                    op(BinOp::Add, str_lit("--- "), ident("fromfile")),
+                    str_lit("\n"),
+                ),
+                op(
+                    BinOp::Add,
+                    op(BinOp::Add, str_lit("+++ "), ident("tofile")),
+                    str_lit("\n"),
+                ),
             ]))],
         ),
         function(

@@ -6,7 +6,28 @@
 //! context-manager-specific.
 
 use super::builders::*;
-use vybe_ast::{BinOp, Statement};
+use vybe_ast::{BinOp, Expression, Statement};
+
+type Expr = Expression;
+
+fn len_of(value: Expr) -> Expr {
+    call_global("len", vec![value])
+}
+
+fn push(target: Expr, value: Expr) -> Statement {
+    expr_stmt(call(member(target, "append"), vec![value]))
+}
+
+fn pop(target: Expr) -> Expr {
+    call(member(target, "pop"), vec![])
+}
+
+fn attr_call(object: Expr, name: &str, args: Vec<Expr>) -> Expr {
+    call(
+        call_global("__py_attr_read", vec![object, str_lit(name)]),
+        args,
+    )
+}
 
 pub(super) fn null_context() -> Statement {
     class(
@@ -35,9 +56,96 @@ pub(super) fn closing() -> Statement {
                 "__exit__",
                 any_args(),
                 vec![
-                    expr_stmt(call(member(this_field("thing"), "close"), vec![])),
+                    expr_stmt(attr_call(this_field("thing"), "close", vec![])),
                     ret(bool_lit(false)),
                 ],
+            ),
+        ],
+    )
+}
+
+pub(super) fn exit_stack() -> Statement {
+    class(
+        "__ExitStack",
+        vec![
+            init(
+                vec![],
+                vec![
+                    set_this("_contexts", list_of(vec![])),
+                    set_this("_callbacks", list_of(vec![])),
+                ],
+            ),
+            method("__enter__", vec![], vec![ret(ident("self"))]),
+            method(
+                "enter_context",
+                vec![param("cm", None)],
+                vec![
+                    push(this_field("_contexts"), ident("cm")),
+                    ret(attr_call(ident("cm"), "__enter__", vec![])),
+                ],
+            ),
+            method(
+                "callback",
+                vec![param("func", None), rest_param("a")],
+                vec![
+                    push(
+                        this_field("_callbacks"),
+                        list_of(vec![ident("func"), ident("a")]),
+                    ),
+                    ret(ident("func")),
+                ],
+            ),
+            method(
+                "__exit__",
+                any_args(),
+                vec![
+                    while_stmt(
+                        binary(
+                            BinOp::Gt,
+                            len_of(this_field("_callbacks")),
+                            Expression::int(0),
+                        ),
+                        vec![
+                            assign(ident("__cb"), pop(this_field("_callbacks"))),
+                            assign(ident("__args"), index(ident("__cb"), Expression::int(1))),
+                            if_stmt(
+                                binary(BinOp::Eq, len_of(ident("__args")), Expression::int(0)),
+                                vec![expr_stmt(call(
+                                    index(ident("__cb"), Expression::int(0)),
+                                    vec![],
+                                ))],
+                            ),
+                            if_stmt(
+                                binary(BinOp::Gt, len_of(ident("__args")), Expression::int(0)),
+                                vec![expr_stmt(call(
+                                    index(ident("__cb"), Expression::int(0)),
+                                    vec![index(ident("__args"), Expression::int(0))],
+                                ))],
+                            ),
+                        ],
+                    ),
+                    while_stmt(
+                        binary(
+                            BinOp::Gt,
+                            len_of(this_field("_contexts")),
+                            Expression::int(0),
+                        ),
+                        vec![
+                            assign(ident("__cm"), pop(this_field("_contexts"))),
+                            expr_stmt(attr_call(
+                                ident("__cm"),
+                                "__exit__",
+                                vec![null(), null(), null()],
+                            )),
+                        ],
+                    ),
+                    ret(bool_lit(false)),
+                ],
+            ),
+            method(
+                "close",
+                vec![],
+                vec![ret(attr_call(ident("self"), "__exit__", vec![]))],
             ),
         ],
     )
@@ -82,12 +190,37 @@ pub(super) fn gen_cm() -> Statement {
             method(
                 "__enter__",
                 vec![],
-                vec![ret(call_global("next", vec![this_field("gen")]))],
+                vec![try_except(
+                    vec![ret(call_global("next", vec![this_field("gen")]))],
+                    "StopIteration",
+                    vec![raise_call(
+                        "RuntimeError",
+                        vec![str_lit("generator didn't yield")],
+                    )],
+                )],
             ),
             method(
                 "__exit__",
-                any_args(),
                 vec![
+                    param("exc_type", Some(null())),
+                    param("exc", Some(null())),
+                    param("tb", Some(null())),
+                ],
+                vec![
+                    if_stmt(
+                        is_not_none(ident("exc_type")),
+                        vec![
+                            try_except(
+                                vec![expr_stmt(call_global(
+                                    "__py_gen_throw",
+                                    vec![this_field("gen"), ident("exc")],
+                                ))],
+                                "StopIteration",
+                                vec![ret(bool_lit(true))],
+                            ),
+                            ret(bool_lit(true)),
+                        ],
+                    ),
                     try_except(
                         vec![expr_stmt(call_global("next", vec![this_field("gen")]))],
                         "StopIteration",
@@ -121,7 +254,10 @@ pub(super) fn async_gen_cm() -> Statement {
                 any_args(),
                 vec![
                     try_except(
-                        vec![expr_stmt(call(member(this_field("gen"), "__anext__"), vec![]))],
+                        vec![expr_stmt(call(
+                            member(this_field("gen"), "__anext__"),
+                            vec![],
+                        ))],
                         "StopAsyncIteration",
                         vec![],
                     ),
@@ -158,6 +294,7 @@ pub(super) fn module_functions() -> Vec<Statement> {
             vec![param("thing", None)],
             vec![ret(new("__Closing", vec![ident("thing")]))],
         ),
+        function("ExitStack", vec![], vec![ret(new("__ExitStack", vec![]))]),
         function(
             "redirect_stdout",
             vec![param("target", None)],

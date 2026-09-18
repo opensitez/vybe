@@ -54,14 +54,20 @@ pub(super) fn module_functions() -> Vec<Statement> {
                         assign(
                             ident("parts"),
                             add(
-                                add(add(add(ident("parts"), ident("sep")), ident("k")), str_lit("=")),
+                                add(
+                                    add(add(ident("parts"), ident("sep")), ident("k")),
+                                    str_lit("="),
+                                ),
                                 call_global("repr", vec![index(ident("ns"), ident("k"))]),
                             ),
                         ),
                         assign(ident("sep"), str_lit(", ")),
                     ],
                 ),
-                ret(add(add(str_lit("namespace("), ident("parts")), str_lit(")"))),
+                ret(add(
+                    add(str_lit("namespace("), ident("parts")),
+                    str_lit(")"),
+                )),
             ],
         ),
         function(

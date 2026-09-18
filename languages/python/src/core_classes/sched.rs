@@ -31,9 +31,17 @@ fn event_priority(event: Expr) -> Expr {
 
 fn event_before(left: Expr, right: Expr) -> Expr {
     or(
-        op(BinOp::Lt, event_time(left.clone()), event_time(right.clone())),
+        op(
+            BinOp::Lt,
+            event_time(left.clone()),
+            event_time(right.clone()),
+        ),
         and(
-            op(BinOp::Eq, event_time(left.clone()), event_time(right.clone())),
+            op(
+                BinOp::Eq,
+                event_time(left.clone()),
+                event_time(right.clone()),
+            ),
             op(BinOp::Lt, event_priority(left), event_priority(right)),
         ),
     )
@@ -64,7 +72,11 @@ fn event_compare(opcode: BinOp) -> Vec<Statement> {
         BinOp::LtEq | BinOp::GtEq => vec![ret(or(
             time_cmp,
             and(
-                op(BinOp::Eq, event_time(self_event.clone()), event_time(other_event.clone())),
+                op(
+                    BinOp::Eq,
+                    event_time(self_event.clone()),
+                    event_time(other_event.clone()),
+                ),
                 op(
                     opcode,
                     event_priority(self_event),
@@ -74,7 +86,11 @@ fn event_compare(opcode: BinOp) -> Vec<Statement> {
         ))],
         BinOp::Eq => vec![ret(and(
             op(BinOp::Eq, event_time(self_event), event_time(other_event)),
-            op(BinOp::Eq, event_priority(ident("self")), event_priority(ident("other"))),
+            op(
+                BinOp::Eq,
+                event_priority(ident("self")),
+                event_priority(ident("other")),
+            ),
         ))],
         _ => vec![ret(bool_lit(false))],
     }
@@ -127,7 +143,10 @@ fn cancel_event(event: Expr) -> Vec<Statement> {
                     vec![assign(ident("__found"), bool_lit(true))],
                 ),
                 if_stmt(
-                    call_global("__py_is_not__", vec![ident("__queued_event"), event.clone()]),
+                    call_global(
+                        "__py_is_not__",
+                        vec![ident("__queued_event"), event.clone()],
+                    ),
                     vec![append_to(ident("__new_queue"), ident("__queued_event"))],
                 ),
             ],
@@ -237,11 +256,31 @@ pub(super) fn event() -> Statement {
                     set_this("kwargs", ident("kwargs")),
                 ],
             ),
-            method("__lt__", vec![param("other", None)], event_compare(BinOp::Lt)),
-            method("__le__", vec![param("other", None)], event_compare(BinOp::LtEq)),
-            method("__gt__", vec![param("other", None)], event_compare(BinOp::Gt)),
-            method("__ge__", vec![param("other", None)], event_compare(BinOp::GtEq)),
-            method("__eq__", vec![param("other", None)], event_compare(BinOp::Eq)),
+            method(
+                "__lt__",
+                vec![param("other", None)],
+                event_compare(BinOp::Lt),
+            ),
+            method(
+                "__le__",
+                vec![param("other", None)],
+                event_compare(BinOp::LtEq),
+            ),
+            method(
+                "__gt__",
+                vec![param("other", None)],
+                event_compare(BinOp::Gt),
+            ),
+            method(
+                "__ge__",
+                vec![param("other", None)],
+                event_compare(BinOp::GtEq),
+            ),
+            method(
+                "__eq__",
+                vec![param("other", None)],
+                event_compare(BinOp::Eq),
+            ),
         ],
     )
 }
@@ -325,7 +364,11 @@ pub(super) fn scheduler() -> Statement {
                 vec![ret(call(
                     member(ident("self"), "enterabs"),
                     vec![
-                        op(BinOp::Add, call(self_attr("timefunc"), vec![]), ident("delay")),
+                        op(
+                            BinOp::Add,
+                            call(self_attr("timefunc"), vec![]),
+                            ident("delay"),
+                        ),
                         ident("priority"),
                         ident("action"),
                         ident("argument"),
@@ -393,7 +436,11 @@ pub(super) fn module_functions() -> Vec<Statement> {
         ],
         vec![
             if_stmt(
-                op(BinOp::Eq, call_global("len", vec![ident("kwargs")]), num(0.0)),
+                op(
+                    BinOp::Eq,
+                    call_global("len", vec![ident("kwargs")]),
+                    num(0.0),
+                ),
                 vec![ret(sched_apply(ident("action"), ident("argument")))],
             ),
             if_stmt(

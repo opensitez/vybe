@@ -288,6 +288,22 @@ pub(super) fn if_stmt(cond: Expression, then: Vec<Statement>) -> Statement {
     )
 }
 
+pub(super) fn if_else(
+    cond: Expression,
+    then: Vec<Statement>,
+    else_body: Vec<Statement>,
+) -> Statement {
+    Statement::with_span(
+        StmtKind::If {
+            cond,
+            then_body: then,
+            elifs: vec![],
+            else_body: Some(else_body),
+        },
+        span(),
+    )
+}
+
 pub(super) fn while_stmt(cond: Expression, body: Vec<Statement>) -> Statement {
     Statement::with_span(
         StmtKind::While {

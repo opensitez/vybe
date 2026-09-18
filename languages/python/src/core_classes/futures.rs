@@ -16,6 +16,8 @@ pub(super) fn future() -> Statement {
                 vec![
                     set_this("_result", ident("result")),
                     set_this("_done", bool_lit(true)),
+                    set_this("_callbacks", list_of(vec![])),
+                    set_this("_result_append_sinks", list_of(vec![])),
                 ],
             ),
             method(
@@ -26,6 +28,56 @@ pub(super) fn future() -> Statement {
             method("done", vec![], vec![ret(this_field("_done"))]),
             method("cancelled", vec![], vec![ret(bool_lit(false))]),
             method("cancel", vec![], vec![ret(bool_lit(false))]),
+            method(
+                "set_result",
+                vec![param("result", None)],
+                vec![
+                    set_this("_result", ident("result")),
+                    set_this("_done", bool_lit(true)),
+                    for_in(
+                        "__cb",
+                        this_field("_callbacks"),
+                        vec![expr_stmt(call(ident("__cb"), vec![ident("self")]))],
+                    ),
+                    assign(ident("__sinks"), this_field("_result_append_sinks")),
+                    for_in(
+                        "__sink",
+                        ident("__sinks"),
+                        vec![expr_stmt(call(
+                            member(ident("__sink"), "append"),
+                            vec![ident("result")],
+                        ))],
+                    ),
+                ],
+            ),
+            method(
+                "add_done_callback",
+                vec![param("fn", None)],
+                vec![
+                    if_stmt(
+                        this_field("_done"),
+                        vec![expr_stmt(call(ident("fn"), vec![ident("self")]))],
+                    ),
+                    if_stmt(
+                        unary_not(this_field("_done")),
+                        vec![expr_stmt(call(
+                            member(this_field("_callbacks"), "append"),
+                            vec![ident("fn")],
+                        ))],
+                    ),
+                ],
+            ),
+            method(
+                "__py_add_result_append_sink",
+                vec![param("sink", None)],
+                vec![
+                    assign(ident("__sinks"), this_field("_result_append_sinks")),
+                    expr_stmt(call(
+                        member(ident("__sinks"), "append"),
+                        vec![ident("sink")],
+                    )),
+                ],
+            ),
         ],
     )
 }

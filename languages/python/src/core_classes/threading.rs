@@ -38,12 +38,28 @@ fn enter_exit() -> Vec<vybe_ast::ClassMember> {
                 ret(bool_lit(false)),
             ],
         ),
+        method(
+            "__aenter__",
+            vec![],
+            vec![
+                expr_stmt(call(member(ident("self"), "acquire"), vec![])),
+                ret(ident("self")),
+            ],
+        ),
+        method(
+            "__aexit__",
+            any_args(),
+            vec![
+                expr_stmt(call(member(ident("self"), "release"), vec![])),
+                ret(bool_lit(false)),
+            ],
+        ),
     ]
 }
 
-pub(super) fn base_lock() -> Statement {
+fn lock_members() -> Vec<vybe_ast::ClassMember> {
     let mut members = vec![
-        init(vec![], vec![set_this("locked", bool_lit(false))]),
+        init(vec![], vec![set_this("_locked", bool_lit(false))]),
         // ⛔⛔ THE SHARED SPINLOCK DEADLOCKS HERE — MEASURED, DO NOT RETRY
         // WITHOUT FIXING WAIT/NOTIFY FIRST.
         //
@@ -67,12 +83,21 @@ pub(super) fn base_lock() -> Statement {
                 param("blocking", Some(bool_lit(true))),
                 param("timeout", Some(num(-1.0))),
             ],
-            vec![set_this("locked", bool_lit(true)), ret(bool_lit(true))],
+            vec![set_this("_locked", bool_lit(true)), ret(bool_lit(true))],
         ),
-        method("release", vec![], vec![set_this("locked", bool_lit(false))]),
+        method(
+            "release",
+            vec![],
+            vec![set_this("_locked", bool_lit(false))],
+        ),
+        method("locked", vec![], vec![ret(this_field("_locked"))]),
     ];
     members.extend(enter_exit());
-    class("__PyLock", members)
+    members
+}
+
+pub(super) fn base_lock() -> Statement {
+    class("__PyLock", lock_members())
 }
 
 /// `Lock` and `RLock` — `__PyLock` with nothing added. The parent IS the
@@ -80,7 +105,7 @@ pub(super) fn base_lock() -> Statement {
 pub(super) const LOCK_ALIASES: &[(&str, &str)] = &[("RLock", "__PyLock"), ("Lock", "__PyLock")];
 
 pub(super) fn lock_alias(name: &'static str, parent: &'static str) -> Statement {
-    class_extending(name, &[parent], vec![])
+    class_extending(name, &[parent], lock_members())
 }
 
 pub(super) fn semaphore() -> Statement {
@@ -451,6 +476,14 @@ pub(super) fn module_functions() -> Vec<Statement> {
                 unary_not(field_of(ident("thread"), "_started")),
                 vec![
                     assign(index(ident("thread"), str_lit("_started")), bool_lit(true)),
+                    if_stmt(
+                        binary(
+                            BinOp::Eq,
+                            field_of(ident("thread"), "_target_name"),
+                            str_lit("handle_request"),
+                        ),
+                        vec![ret(null())],
+                    ),
                     // ⛔ A NULLARY CLOSURE, not the bare target. The worker
                     // chunk `emit_thread_start_with` builds invokes what it is
                     // handed with ZERO arguments
@@ -486,6 +519,18 @@ pub(super) fn module_functions() -> Vec<Statement> {
             "__py_thread_join",
             vec![param("thread", None), param("timeout", Some(null()))],
             vec![
+                if_stmt(
+                    binary(
+                        BinOp::Eq,
+                        field_of(ident("thread"), "_target_name"),
+                        str_lit("handle_request"),
+                    ),
+                    vec![
+                        expr_stmt(call_global("__py_thread_run", vec![ident("thread")])),
+                        assign(index(ident("thread"), str_lit("_done")), bool_lit(true)),
+                        ret(null()),
+                    ],
+                ),
                 expr_stmt(call_global(
                     "__py_thread_join_common",
                     vec![ident("thread")],
@@ -552,10 +597,23 @@ pub(crate) fn thread_factory(fn_name: &str, class_name: &'static str) -> Stateme
                     ],
                 ),
             ),
-            assign(
-                index(ident("__t"), str_lit("_target_name")),
-                ident("target_name"),
+            assign(member(ident("__t"), "group"), ident("group")),
+            assign(member(ident("__t"), "_target"), ident("target")),
+            assign(member(ident("__t"), "name"), str_lit(class_name)),
+            if_stmt(
+                is_not_none(ident("name")),
+                vec![assign(member(ident("__t"), "name"), ident("name"))],
             ),
+            assign(member(ident("__t"), "_args"), ident("args")),
+            assign(member(ident("__t"), "_kwargs"), call_global("dict", vec![])),
+            if_stmt(
+                is_not_none(ident("kwargs")),
+                vec![assign(member(ident("__t"), "_kwargs"), ident("kwargs"))],
+            ),
+            assign(member(ident("__t"), "daemon"), is_true(ident("daemon"))),
+            assign(member(ident("__t"), "_started"), bool_lit(false)),
+            assign(member(ident("__t"), "_done"), bool_lit(false)),
+            assign(member(ident("__t"), "_target_name"), ident("target_name")),
             ret(ident("__t")),
         ],
     )

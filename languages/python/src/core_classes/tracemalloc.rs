@@ -17,10 +17,7 @@ fn stat_list() -> Expression {
 }
 
 fn frame_object() -> Expression {
-    obj(vec![
-        ("filename", str_lit("<vybe>")),
-        ("lineno", i(1)),
-    ])
+    obj(vec![("filename", str_lit("<vybe>")), ("lineno", i(1))])
 }
 
 fn traceback_list() -> Expression {
@@ -118,7 +115,10 @@ pub(super) fn statistic() -> Statement {
             method(
                 "__str__",
                 vec![],
-                vec![ret(add(str_lit("<Statistic size="), call_global("str", vec![this_field("size")])) )],
+                vec![ret(add(
+                    str_lit("<Statistic size="),
+                    call_global("str", vec![this_field("size")]),
+                ))],
             ),
         ],
     )

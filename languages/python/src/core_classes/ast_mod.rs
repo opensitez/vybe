@@ -44,7 +44,10 @@ pub(super) fn expression_node() -> Statement {
                 set_this("__source", ident("source")),
                 set_this("__mode", str_lit("eval")),
                 set_this("body", new("Constant", vec![ident("source")])),
-                set_this("_nodes", list_of(vec![new("Constant", vec![ident("source")])])),
+                set_this(
+                    "_nodes",
+                    list_of(vec![new("Constant", vec![ident("source")])]),
+                ),
             ],
         )],
     )
@@ -55,7 +58,10 @@ pub(super) fn constant_node() -> Statement {
         "Constant",
         vec![init(
             vec![param("value", Some(null()))],
-            vec![set_this("value", ident("value")), set_this("_nodes", list_of(vec![]))],
+            vec![
+                set_this("value", ident("value")),
+                set_this("_nodes", list_of(vec![])),
+            ],
         )],
     )
 }
@@ -65,7 +71,10 @@ pub(super) fn simple_node(name: &str) -> Statement {
         name,
         vec![init(
             vec![param("value", Some(null()))],
-            vec![set_this("value", ident("value")), set_this("_nodes", list_of(vec![]))],
+            vec![
+                set_this("value", ident("value")),
+                set_this("_nodes", list_of(vec![])),
+            ],
         )],
     )
 }
@@ -92,7 +101,10 @@ pub(super) fn node_visitor() -> Statement {
                                         op(
                                             BinOp::Add,
                                             str_lit("visit_"),
-                                            field_of(call_global("type", vec![ident("__node")]), "__name__"),
+                                            field_of(
+                                                call_global("type", vec![ident("__node")]),
+                                                "__name__",
+                                            ),
                                         ),
                                         null(),
                                     ],
@@ -104,14 +116,21 @@ pub(super) fn node_visitor() -> Statement {
                             ),
                             if_stmt(
                                 is_none(ident("__method")),
-                                vec![expr_stmt(call(member(ident("self"), "generic_visit"), vec![ident("__node")]))],
+                                vec![expr_stmt(call(
+                                    member(ident("self"), "generic_visit"),
+                                    vec![ident("__node")],
+                                ))],
                             ),
                         ],
                     ),
                     ret(null()),
                 ],
             ),
-            method("generic_visit", vec![param("node", None)], vec![ret(null())]),
+            method(
+                "generic_visit",
+                vec![param("node", None)],
+                vec![ret(null())],
+            ),
         ],
     )
 }
@@ -137,7 +156,10 @@ pub(super) fn node_transformer() -> Statement {
                                     op(
                                         BinOp::Add,
                                         str_lit("visit_"),
-                                        field_of(call_global("type", vec![ident("__node")]), "__name__"),
+                                        field_of(
+                                            call_global("type", vec![ident("__node")]),
+                                            "__name__",
+                                        ),
                                     ),
                                     null(),
                                 ],
@@ -175,8 +197,16 @@ pub(super) fn module_functions() -> Vec<Statement> {
                 str_lit("(body=[Assign(targets=[Name], value=Constant)])"),
             ))],
         ),
-        function("unparse", vec![param("node", None)], vec![ret(field_of(ident("node"), "__source"))]),
-        function("fix_missing_locations", vec![param("node", None)], vec![ret(ident("node"))]),
+        function(
+            "unparse",
+            vec![param("node", None)],
+            vec![ret(field_of(ident("node"), "__source"))],
+        ),
+        function(
+            "fix_missing_locations",
+            vec![param("node", None)],
+            vec![ret(ident("node"))],
+        ),
         function(
             "walk",
             vec![param("node", None)],
@@ -194,13 +224,19 @@ pub(super) fn module_functions() -> Vec<Statement> {
         function(
             "iter_fields",
             vec![param("node", None)],
-            vec![ret(list_of(vec![tuple_of(vec![str_lit("body"), field_of(ident("node"), "body")])]))],
+            vec![ret(list_of(vec![tuple_of(vec![
+                str_lit("body"),
+                field_of(ident("node"), "body"),
+            ])]))],
         ),
         function(
             "get_docstring",
             vec![param("node", None)],
             vec![ret(ternary(
-                contains(field_of(ident("node"), "__source"), str_lit("\"\"\"doc\"\"\"")),
+                contains(
+                    field_of(ident("node"), "__source"),
+                    str_lit("\"\"\"doc\"\"\""),
+                ),
                 str_lit("doc"),
                 null(),
             ))],
@@ -221,11 +257,14 @@ pub(super) fn module_functions() -> Vec<Statement> {
         function(
             "literal_eval",
             vec![param("source", None)],
-            vec![ret(call_global("__vybe_eval", vec![
-                ident("source"),
-                str_lit("python"),
-                dict_str(vec![("completion_value", bool_lit(true))]),
-            ]))],
+            vec![ret(call_global(
+                "__vybe_eval",
+                vec![
+                    ident("source"),
+                    str_lit("python"),
+                    dict_str(vec![("completion_value", bool_lit(true))]),
+                ],
+            ))],
         ),
     ]
 }

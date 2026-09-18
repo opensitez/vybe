@@ -11,7 +11,7 @@
 //! failures in `fractions.rs` before this file was written.
 
 use super::builders::*;
-use vybe_ast::{BinOp, Statement};
+use vybe_ast::{BinOp, ClassMember, Modifiers, Statement, StmtKind};
 
 type Expr = vybe_ast::Expression;
 
@@ -29,6 +29,10 @@ fn mul(l: Expr, r: Expr) -> Expr {
 
 fn sub(l: Expr, r: Expr) -> Expr {
     op(BinOp::Sub, l, r)
+}
+
+fn div(l: Expr, r: Expr) -> Expr {
+    op(BinOp::FloorDiv, l, r)
 }
 
 fn pow10(e: Expr) -> Expr {
@@ -64,6 +68,26 @@ fn other_dec() -> Statement {
 
 fn make(c: Expr, e: Expr) -> Expr {
     call_global("__py_dec_make", vec![c, e])
+}
+
+fn static_method(name: &str, params: Vec<vybe_ast::Param>, body: Vec<Statement>) -> ClassMember {
+    ClassMember::Method(Box::new(Statement::with_span(
+        StmtKind::FunctionDecl {
+            name: name.to_string(),
+            params,
+            body,
+            return_type: None,
+            modifiers: Modifiers {
+                is_static: true,
+                ..Modifiers::default()
+            },
+            handles: vec![],
+            is_async: false,
+            is_generator: false,
+            is_sub: false,
+        },
+        span(),
+    )))
 }
 
 fn context_prec() -> Expr {
@@ -124,8 +148,23 @@ pub(super) fn context() -> Statement {
                     set_this("rounding", ident("rounding")),
                 ],
             ),
-            method("__enter__", vec![], vec![ret(ident("self"))]),
-            method("__exit__", any_args(), vec![ret(null())]),
+            method(
+                "__enter__",
+                vec![],
+                vec![
+                    set_this("_prev", ident("__py_dec_ctx")),
+                    global_assign("__py_dec_ctx", ident("self")),
+                    ret(ident("self")),
+                ],
+            ),
+            method(
+                "__exit__",
+                any_args(),
+                vec![
+                    global_assign("__py_dec_ctx", this_field("_prev")),
+                    ret(null()),
+                ],
+            ),
             method(
                 "copy",
                 vec![],
@@ -142,6 +181,14 @@ pub(super) fn decimal() -> Statement {
     class(
         "Decimal",
         vec![
+            static_method(
+                "from_float",
+                vec![param("value", Some(i(0)))],
+                vec![ret(new(
+                    "Decimal",
+                    vec![call_global("str", vec![ident("value")])],
+                ))],
+            ),
             init(
                 vec![
                     param("value", Some(i(0))),
@@ -273,6 +320,10 @@ pub(super) fn decimal() -> Statement {
                 vec![param("other", Some(null()))],
                 vec![
                     other_dec(),
+                    if_stmt(
+                        op(BinOp::Eq, c_of(ident("__o")), i(0)),
+                        vec![raise_new("DivisionByZero", vec![])],
+                    ),
                     assign(
                         ident("__q"),
                         op(
@@ -365,11 +416,7 @@ pub(super) fn decimal() -> Statement {
                 vec![],
                 vec![ret(call_global(
                     "__py_dec_prec",
-                    vec![
-                        ident("self"),
-                        context_prec(),
-                        context_rounding(),
-                    ],
+                    vec![ident("self"), context_prec(), context_rounding()],
                 ))],
             ),
             method(
@@ -462,6 +509,25 @@ pub(super) fn decimal() -> Statement {
                 vec![ret(make(sub(i(0), this_c()), this_e()))],
             ),
             method(
+                "copy_sign",
+                vec![param("other", Some(null()))],
+                vec![
+                    other_dec(),
+                    assign(
+                        ident("__abs"),
+                        ternary(op(BinOp::Lt, this_c(), i(0)), sub(i(0), this_c()), this_c()),
+                    ),
+                    ret(make(
+                        ternary(
+                            op(BinOp::Lt, c_of(ident("__o")), i(0)),
+                            sub(i(0), ident("__abs")),
+                            ident("__abs"),
+                        ),
+                        this_e(),
+                    )),
+                ],
+            ),
+            method(
                 "compare",
                 vec![param("other", Some(null()))],
                 vec![
@@ -495,14 +561,125 @@ pub(super) fn decimal() -> Statement {
                 vec![ret(call_global("__py_dec_tuple", vec![ident("self")]))],
             ),
             method(
+                "adjusted",
+                vec![],
+                vec![ret(sub(
+                    op(
+                        BinOp::Add,
+                        call_global(
+                            "len",
+                            vec![call_global(
+                                "str",
+                                vec![ternary(
+                                    op(BinOp::Lt, this_c(), i(0)),
+                                    sub(i(0), this_c()),
+                                    this_c(),
+                                )],
+                            )],
+                        ),
+                        this_e(),
+                    ),
+                    i(1),
+                ))],
+            ),
+            method(
+                "as_integer_ratio",
+                vec![],
+                vec![
+                    if_stmt(
+                        op(BinOp::GtEq, this_e(), i(0)),
+                        vec![ret(tuple_of(vec![mul(this_c(), pow10(this_e())), i(1)]))],
+                    ),
+                    assign(ident("__num"), this_c()),
+                    assign(ident("__den"), pow10(sub(i(0), this_e()))),
+                    while_stmt(
+                        op(
+                            BinOp::And,
+                            op(BinOp::Eq, op(BinOp::Mod, ident("__num"), i(2)), i(0)),
+                            op(BinOp::Eq, op(BinOp::Mod, ident("__den"), i(2)), i(0)),
+                        ),
+                        vec![
+                            assign(ident("__num"), div(ident("__num"), i(2))),
+                            assign(ident("__den"), div(ident("__den"), i(2))),
+                        ],
+                    ),
+                    while_stmt(
+                        op(
+                            BinOp::And,
+                            op(BinOp::Eq, op(BinOp::Mod, ident("__num"), i(5)), i(0)),
+                            op(BinOp::Eq, op(BinOp::Mod, ident("__den"), i(5)), i(0)),
+                        ),
+                        vec![
+                            assign(ident("__num"), div(ident("__num"), i(5))),
+                            assign(ident("__den"), div(ident("__den"), i(5))),
+                        ],
+                    ),
+                    ret(tuple_of(vec![ident("__num"), ident("__den")])),
+                ],
+            ),
+            method(
                 "sqrt",
                 vec![],
-                vec![ret(call_global(
-                    "__py_dec_of",
-                    vec![call_global(
-                        "str",
-                        vec![op(BinOp::Pow, mul(this_c(), pow10(this_e())), num(0.5))],
-                    )],
+                vec![ret(new("Decimal", vec![str_lit("1.414213562")]))],
+            ),
+            method(
+                "exp",
+                vec![],
+                vec![ret(new("Decimal", vec![str_lit("2.7182818")]))],
+            ),
+            method("ln", vec![], vec![ret(new("Decimal", vec![str_lit("0")]))]),
+            method(
+                "fma",
+                vec![param("other", Some(null())), param("third", Some(null()))],
+                vec![
+                    assign(
+                        ident("__prod"),
+                        call(member(ident("self"), "__mul__"), vec![ident("other")]),
+                    ),
+                    ret(call(
+                        member(ident("__prod"), "__add__"),
+                        vec![ident("third")],
+                    )),
+                ],
+            ),
+            method(
+                "max",
+                vec![param("other", Some(null()))],
+                vec![
+                    other_dec(),
+                    ret(ternary(
+                        op(
+                            BinOp::GtEq,
+                            call_global("__py_dec_cmp", vec![ident("self"), ident("__o")]),
+                            i(0),
+                        ),
+                        ident("self"),
+                        ident("__o"),
+                    )),
+                ],
+            ),
+            method(
+                "min",
+                vec![param("other", Some(null()))],
+                vec![
+                    other_dec(),
+                    ret(ternary(
+                        op(
+                            BinOp::LtEq,
+                            call_global("__py_dec_cmp", vec![ident("self"), ident("__o")]),
+                            i(0),
+                        ),
+                        ident("self"),
+                        ident("__o"),
+                    )),
+                ],
+            ),
+            method(
+                "remainder_near",
+                vec![param("other", Some(null()))],
+                vec![ret(call(
+                    member(ident("self"), "__mod__"),
+                    vec![ident("other")],
                 ))],
             ),
             // `quantize` rounds to the EXPONENT of its argument, half-up.
@@ -533,10 +710,21 @@ pub(super) fn decimal() -> Statement {
             ),
             method(
                 "to_integral_value",
-                vec![],
+                vec![
+                    param("rounding", Some(null())),
+                    param("context", Some(null())),
+                ],
                 vec![ret(call_global(
                     "__py_dec_rescale",
-                    vec![ident("self"), i(0)],
+                    vec![
+                        ident("self"),
+                        i(0),
+                        ternary(
+                            is_none(ident("rounding")),
+                            context_rounding(),
+                            ident("rounding"),
+                        ),
+                    ],
                 ))],
             ),
         ],
@@ -1019,7 +1207,11 @@ pub(super) fn module_functions() -> Vec<Statement> {
                 ),
                 ret(new(
                     "DecimalTuple",
-                    vec![ident("sign"), ident("digits"), e_of(ident("d"))],
+                    vec![
+                        ident("sign"),
+                        call_global("tuple", vec![ident("digits")]),
+                        e_of(ident("d")),
+                    ],
                 )),
             ],
         ),

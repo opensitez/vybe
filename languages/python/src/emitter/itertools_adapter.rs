@@ -8,10 +8,8 @@
 //!
 //! No new host fns.
 
+use vybe_compiler::primitives::class_slots::{self, ClassSlot, ObjSource, PlainNames, ValueSource};
 use vybe_compiler::primitives::instructions::core_wasm;
-use vybe_compiler::primitives::class_slots::{
-    self, ClassSlot, ObjSource, PlainNames, ValueSource,
-};
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
 
@@ -1228,11 +1226,7 @@ pub fn emit_starmap(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) 
     chunks[current].emit_if_value(line);
     let recv =
         vybe_compiler::primitives::callable::push_callback_from_slot(chunks, current, func, line);
-    vybe_compiler::primitives::callable::emit_direct_invoke_chunk(
-        &mut chunks[current],
-        recv,
-        line,
-    );
+    vybe_compiler::primitives::callable::emit_direct_invoke_chunk(&mut chunks[current], recv, line);
     chunks[current].emit_else(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, row_len, line);
     core_wasm::i32_const(&mut chunks[current], line, 1);
@@ -1348,8 +1342,9 @@ pub fn emit_groupby(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     chunks[current].emit_if_value(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, item, line);
     chunks[current].emit_else(line);
-    let recv =
-        vybe_compiler::primitives::callable::push_callback_from_slot(chunks, current, key_func, line);
+    let recv = vybe_compiler::primitives::callable::push_callback_from_slot(
+        chunks, current, key_func, line,
+    );
     chunks[current].emit_op_u16(Op::LOCAL_GET, item, line);
     vybe_compiler::primitives::callable::emit_direct_invoke_chunk(
         &mut chunks[current],

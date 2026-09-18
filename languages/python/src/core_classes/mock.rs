@@ -55,7 +55,11 @@ pub(super) fn any() -> Statement {
         "__PyMockAny",
         vec![
             method("__repr__", vec![], vec![ret(str_lit("<ANY>"))]),
-            method("__eq__", vec![param("other", Some(null()))], vec![ret(bool_lit(true))]),
+            method(
+                "__eq__",
+                vec![param("other", Some(null()))],
+                vec![ret(bool_lit(true))],
+            ),
         ],
     )
 }
@@ -187,10 +191,7 @@ pub(super) fn call_factory() -> Statement {
             method(
                 "__getattr__",
                 vec![param("name", None)],
-                vec![ret(new(
-                    "__PyMockNamedCallFactory",
-                    vec![ident("name")],
-                ))],
+                vec![ret(new("__PyMockNamedCallFactory", vec![ident("name")]))],
             ),
         ],
     )
@@ -200,7 +201,10 @@ pub(super) fn named_call_factory() -> Statement {
     class(
         "__PyMockNamedCallFactory",
         vec![
-            init(vec![param("name", None)], vec![set_this("name", ident("name"))]),
+            init(
+                vec![param("name", None)],
+                vec![set_this("name", ident("name"))],
+            ),
             method(
                 "__call__",
                 vec![rest_param("a"), kwargs_param("k")],
@@ -251,8 +255,14 @@ pub(super) fn mock() -> Statement {
                 "__mock_call__",
                 vec![param("a", Some(null())), param("k", Some(null()))],
                 vec![
-                    if_stmt(is_none(ident("a")), vec![assign(ident("a"), list_of(vec![]))]),
-                    if_stmt(is_none(ident("k")), vec![assign(ident("k"), dict_of(vec![]))]),
+                    if_stmt(
+                        is_none(ident("a")),
+                        vec![assign(ident("a"), list_of(vec![]))],
+                    ),
+                    if_stmt(
+                        is_none(ident("k")),
+                        vec![assign(ident("k"), dict_of(vec![]))],
+                    ),
                     assign(
                         ident("__call"),
                         new("__PyMockCall", vec![str_lit(""), ident("a"), ident("k")]),
@@ -286,8 +296,14 @@ pub(super) fn mock() -> Statement {
                                 )],
                             ),
                             if_stmt(
-                                call_global("hasattr", vec![this_field("side_effect"), str_lit("pop")]),
-                                vec![ret(call(member(this_field("side_effect"), "pop"), vec![i(0)]))],
+                                call_global(
+                                    "hasattr",
+                                    vec![this_field("side_effect"), str_lit("pop")],
+                                ),
+                                vec![ret(call(
+                                    member(this_field("side_effect"), "pop"),
+                                    vec![i(0)],
+                                ))],
                             ),
                             throw_expr(this_field("side_effect")),
                         ],
@@ -298,7 +314,10 @@ pub(super) fn mock() -> Statement {
             method(
                 "__call__",
                 vec![rest_param("a"), kwargs_param("k")],
-                vec![ret(call(member(ident("self"), "__mock_call__"), vec![ident("a"), ident("k")]))],
+                vec![ret(call(
+                    member(ident("self"), "__mock_call__"),
+                    vec![ident("a"), ident("k")],
+                ))],
             ),
             method(
                 "__getattr__",
@@ -325,7 +344,10 @@ pub(super) fn mock() -> Statement {
                     assign(ident("__child"), new("Mock", vec![])),
                     assign(read_attr(ident("__child"), "_parent"), ident("self")),
                     assign(read_attr(ident("__child"), "_parent_name"), ident("name")),
-                    assign(index(this_field("_children"), ident("name")), ident("__child")),
+                    assign(
+                        index(this_field("_children"), ident("name")),
+                        ident("__child"),
+                    ),
                     ret(ident("__child")),
                 ],
             ),
@@ -333,9 +355,18 @@ pub(super) fn mock() -> Statement {
                 "__mock_assert_called_with__",
                 vec![param("a", Some(null())), param("k", Some(null()))],
                 vec![
-                    if_stmt(is_none(ident("a")), vec![assign(ident("a"), list_of(vec![]))]),
-                    if_stmt(is_none(ident("k")), vec![assign(ident("k"), dict_of(vec![]))]),
-                    if_stmt(unary_not(this_field("called")), vec![raise_call("AssertionError", vec![])]),
+                    if_stmt(
+                        is_none(ident("a")),
+                        vec![assign(ident("a"), list_of(vec![]))],
+                    ),
+                    if_stmt(
+                        is_none(ident("k")),
+                        vec![assign(ident("k"), dict_of(vec![]))],
+                    ),
+                    if_stmt(
+                        unary_not(this_field("called")),
+                        vec![raise_call("AssertionError", vec![])],
+                    ),
                     if_stmt(
                         unary_not(call_global(
                             "__py_mock_args_match",
@@ -349,8 +380,14 @@ pub(super) fn mock() -> Statement {
                 "__mock_assert_called_once_with__",
                 vec![param("a", Some(null())), param("k", Some(null()))],
                 vec![
-                    if_stmt(is_none(ident("a")), vec![assign(ident("a"), list_of(vec![]))]),
-                    if_stmt(is_none(ident("k")), vec![assign(ident("k"), dict_of(vec![]))]),
+                    if_stmt(
+                        is_none(ident("a")),
+                        vec![assign(ident("a"), list_of(vec![]))],
+                    ),
+                    if_stmt(
+                        is_none(ident("k")),
+                        vec![assign(ident("k"), dict_of(vec![]))],
+                    ),
                     if_stmt(
                         op(BinOp::NotEq, this_field("call_count"), i(1)),
                         vec![raise_call("AssertionError", vec![])],
@@ -382,15 +419,19 @@ pub(super) fn mock() -> Statement {
             ),
             method(
                 "assert_has_calls",
-                vec![param("calls", None), param("any_order", Some(bool_lit(false)))],
                 vec![
-                    if_stmt(
-                        ident("any_order"),
-                        vec![ret(null())],
-                    ),
+                    param("calls", None),
+                    param("any_order", Some(bool_lit(false))),
+                ],
+                vec![
+                    if_stmt(ident("any_order"), vec![ret(null())]),
                     assign(ident("__i"), i(0)),
                     while_stmt(
-                        op(BinOp::Lt, ident("__i"), call_global("len", vec![ident("calls")])),
+                        op(
+                            BinOp::Lt,
+                            ident("__i"),
+                            call_global("len", vec![ident("calls")]),
+                        ),
                         vec![
                             if_stmt(
                                 unary_not(op(
@@ -422,7 +463,10 @@ pub(super) fn mock() -> Statement {
                 vec![
                     assign(read_attr(ident("mock"), "_parent"), ident("self")),
                     assign(read_attr(ident("mock"), "_parent_name"), ident("attribute")),
-                    assign(index(this_field("_children"), ident("attribute")), ident("mock")),
+                    assign(
+                        index(this_field("_children"), ident("attribute")),
+                        ident("mock"),
+                    ),
                 ],
             ),
         ],
@@ -434,23 +478,26 @@ pub(super) fn magic_mock() -> Statement {
         "MagicMock",
         &["Mock"],
         vec![
-            init(any_args(), vec![
-                set_this("return_value", null()),
-                set_this("side_effect", null()),
-                set_this("call_count", i(0)),
-                set_this("called", bool_lit(false)),
-                set_this("call_args", null()),
-                set_this("call_args_list", list_of(vec![])),
-                set_this("mock_calls", list_of(vec![])),
-                set_this("_children", dict_of(vec![])),
-                set_this("_parent", null()),
-                set_this("_parent_name", str_lit("")),
-                set_this("_sealed", bool_lit(false)),
-                set_this("_spec", null()),
-                set_this("_spec_attrs", null()),
-                set_this("_mock_str", new("Mock", vec![str_lit("custom_str")])),
-                set_this("_mock_len", new("Mock", vec![i(0)])),
-            ]),
+            init(
+                any_args(),
+                vec![
+                    set_this("return_value", null()),
+                    set_this("side_effect", null()),
+                    set_this("call_count", i(0)),
+                    set_this("called", bool_lit(false)),
+                    set_this("call_args", null()),
+                    set_this("call_args_list", list_of(vec![])),
+                    set_this("mock_calls", list_of(vec![])),
+                    set_this("_children", dict_of(vec![])),
+                    set_this("_parent", null()),
+                    set_this("_parent_name", str_lit("")),
+                    set_this("_sealed", bool_lit(false)),
+                    set_this("_spec", null()),
+                    set_this("_spec_attrs", null()),
+                    set_this("_mock_str", new("Mock", vec![str_lit("custom_str")])),
+                    set_this("_mock_len", new("Mock", vec![i(0)])),
+                ],
+            ),
             method(
                 "__str__",
                 vec![],
@@ -465,8 +512,14 @@ pub(super) fn magic_mock() -> Statement {
                 "__getattr__",
                 vec![param("name", None)],
                 vec![
-                    if_stmt(op(BinOp::Eq, ident("name"), str_lit("__str__")), vec![ret(this_field("_mock_str"))]),
-                    if_stmt(op(BinOp::Eq, ident("name"), str_lit("__len__")), vec![ret(this_field("_mock_len"))]),
+                    if_stmt(
+                        op(BinOp::Eq, ident("name"), str_lit("__str__")),
+                        vec![ret(this_field("_mock_str"))],
+                    ),
+                    if_stmt(
+                        op(BinOp::Eq, ident("name"), str_lit("__len__")),
+                        vec![ret(this_field("_mock_len"))],
+                    ),
                     if_stmt(
                         contains(this_field("_children"), ident("name")),
                         vec![ret(index(this_field("_children"), ident("name")))],
@@ -474,7 +527,10 @@ pub(super) fn magic_mock() -> Statement {
                     assign(ident("__child"), new("Mock", vec![])),
                     assign(read_attr(ident("__child"), "_parent"), ident("self")),
                     assign(read_attr(ident("__child"), "_parent_name"), ident("name")),
-                    assign(index(this_field("_children"), ident("name")), ident("__child")),
+                    assign(
+                        index(this_field("_children"), ident("name")),
+                        ident("__child"),
+                    ),
                     ret(ident("__child")),
                 ],
             ),
@@ -483,21 +539,28 @@ pub(super) fn magic_mock() -> Statement {
 }
 
 pub(super) fn property_mock() -> Statement {
-    class_extending("PropertyMock", &["Mock"], vec![init(any_args(), vec![
-        set_this("return_value", null()),
-        set_this("side_effect", null()),
-        set_this("call_count", i(0)),
-        set_this("called", bool_lit(false)),
-        set_this("call_args", null()),
-        set_this("call_args_list", list_of(vec![])),
-        set_this("mock_calls", list_of(vec![])),
-        set_this("_children", dict_of(vec![])),
-        set_this("_parent", null()),
-        set_this("_parent_name", str_lit("")),
-        set_this("_sealed", bool_lit(false)),
-        set_this("_spec", null()),
-        set_this("_spec_attrs", null()),
-    ])])
+    class_extending(
+        "PropertyMock",
+        &["Mock"],
+        vec![init(
+            any_args(),
+            vec![
+                set_this("return_value", null()),
+                set_this("side_effect", null()),
+                set_this("call_count", i(0)),
+                set_this("called", bool_lit(false)),
+                set_this("call_args", null()),
+                set_this("call_args_list", list_of(vec![])),
+                set_this("mock_calls", list_of(vec![])),
+                set_this("_children", dict_of(vec![])),
+                set_this("_parent", null()),
+                set_this("_parent_name", str_lit("")),
+                set_this("_sealed", bool_lit(false)),
+                set_this("_spec", null()),
+                set_this("_spec_attrs", null()),
+            ],
+        )],
+    )
 }
 
 pub(super) fn patch_context() -> Statement {
@@ -551,7 +614,10 @@ pub(super) fn patch_context() -> Statement {
                         "__py_patch_wrapped",
                         any_args(),
                         vec![
-                            assign(ident("__mock"), call(member(ident("self"), "__enter__"), vec![])),
+                            assign(
+                                ident("__mock"),
+                                call(member(ident("self"), "__enter__"), vec![]),
+                            ),
                             ret(call(ident("func"), vec![ident("__mock")])),
                         ],
                     ),
@@ -574,7 +640,10 @@ pub(super) fn patch_dict_context() -> Statement {
                 ],
                 vec![
                     set_this("target", ident("target")),
-                    set_this("values", ternary(is_none(ident("values")), dict_of(vec![]), ident("values"))),
+                    set_this(
+                        "values",
+                        ternary(is_none(ident("values")), dict_of(vec![]), ident("values")),
+                    ),
                     set_this("clear", ident("clear")),
                     set_this("old", dict_of(vec![])),
                 ],
@@ -648,7 +717,10 @@ pub(super) fn patch_factory() -> Statement {
                 vec![
                     if_stmt(
                         op(BinOp::Eq, ident("target"), str_lit("sys.platform")),
-                        vec![ret(new("__PyPatch", vec![ident("sys"), str_lit("platform"), ident("new")]))],
+                        vec![ret(new(
+                            "__PyPatch",
+                            vec![ident("sys"), str_lit("platform"), ident("new")],
+                        ))],
                     ),
                     if_stmt(
                         op(BinOp::Eq, ident("target"), str_lit("os.getcwd")),
@@ -687,7 +759,10 @@ pub(super) fn patch_factory() -> Statement {
                             ),
                         ),
                     ),
-                    ret(new("__PyPatch", vec![ident("target"), ident("attribute"), ident("__new")])),
+                    ret(new(
+                        "__PyPatch",
+                        vec![ident("target"), ident("attribute"), ident("__new")],
+                    )),
                 ],
             ),
             method(
@@ -726,12 +801,20 @@ pub(super) fn module_functions() -> Vec<Statement> {
             vec![
                 if_stmt(is_none(ident("record")), vec![ret(bool_lit(false))]),
                 if_stmt(
-                    op(BinOp::NotEq, call_global("len", vec![read_attr(ident("record"), "args")]), call_global("len", vec![ident("args")])),
+                    op(
+                        BinOp::NotEq,
+                        call_global("len", vec![read_attr(ident("record"), "args")]),
+                        call_global("len", vec![ident("args")]),
+                    ),
                     vec![ret(bool_lit(false))],
                 ),
                 assign(ident("__i"), i(0)),
                 while_stmt(
-                    op(BinOp::Lt, ident("__i"), call_global("len", vec![ident("args")])),
+                    op(
+                        BinOp::Lt,
+                        ident("__i"),
+                        call_global("len", vec![ident("args")]),
+                    ),
                     vec![
                         if_stmt(
                             op(
@@ -751,7 +834,11 @@ pub(super) fn module_functions() -> Vec<Statement> {
                         assign(ident("__i"), op(BinOp::Add, ident("__i"), i(1))),
                     ],
                 ),
-                ret(op(BinOp::Eq, read_attr(ident("record"), "kwargs"), ident("kwargs"))),
+                ret(op(
+                    BinOp::Eq,
+                    read_attr(ident("record"), "kwargs"),
+                    ident("kwargs"),
+                )),
             ],
         ),
         function(
@@ -759,12 +846,19 @@ pub(super) fn module_functions() -> Vec<Statement> {
             vec![param("left", None), param("right", None)],
             vec![
                 if_stmt(
-                    unary_not(call_global("hasattr", vec![ident("right"), str_lit("args")])),
+                    unary_not(call_global(
+                        "hasattr",
+                        vec![ident("right"), str_lit("args")],
+                    )),
                     vec![ret(bool_lit(false))],
                 ),
                 ret(call_global(
                     "__py_mock_args_match",
-                    vec![ident("left"), read_attr(ident("right"), "args"), read_attr(ident("right"), "kwargs")],
+                    vec![
+                        ident("left"),
+                        read_attr(ident("right"), "args"),
+                        read_attr(ident("right"), "kwargs"),
+                    ],
                 )),
             ],
         ),

@@ -149,10 +149,7 @@ fn catalog_lookup_body() -> Vec<Statement> {
 fn catalog_plural_body() -> Vec<Statement> {
     vec![
         assign(ident("__plural"), this_field("plural")),
-        assign(
-            ident("__idx"),
-            call(ident("__plural"), vec![ident("n")]),
-        ),
+        assign(ident("__idx"), call(ident("__plural"), vec![ident("n")])),
         assign(
             ident("__key"),
             add(

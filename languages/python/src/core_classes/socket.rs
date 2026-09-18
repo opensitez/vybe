@@ -172,20 +172,14 @@ pub(super) fn socket_impl() -> Statement {
             method(
                 "getsockname",
                 vec![],
-                vec![ret(call_global(
-                    "__py_sock_addr",
-                    vec![call_global("_wasi_local_addr", vec![res()])],
-                ))],
+                vec![ret(call_global("__sock_getsockname", vec![res()]))],
             ),
             method(
                 "getpeername",
                 vec![],
-                vec![ret(call_global(
-                    "__py_sock_addr",
-                    vec![call_global("_wasi_remote_addr", vec![res()])],
-                ))],
+                vec![ret(call_global("__sock_getpeername", vec![res()]))],
             ),
-            method("fileno", vec![], vec![ret(i(0))]),
+            method("fileno", vec![], vec![ret(i(1))]),
             method(
                 "accept",
                 vec![],
@@ -244,6 +238,14 @@ pub(super) fn socket_impl() -> Statement {
                 ],
             ),
             method(
+                "connect_ex",
+                vec![param("address", Some(null()))],
+                vec![ret(call_global(
+                    "__py_sock_connect_ex",
+                    vec![ident("self"), ident("address")],
+                ))],
+            ),
+            method(
                 "send",
                 vec![param("data", Some(null()))],
                 vec![
@@ -295,6 +297,28 @@ pub(super) fn socket_impl() -> Statement {
                     )),
                 ],
             ),
+            method(
+                "read",
+                vec![param("size", Some(i(1024)))],
+                vec![ret(call(
+                    member(ident("self"), "recv"),
+                    vec![ident("size")],
+                ))],
+            ),
+            method(
+                "readline",
+                vec![],
+                vec![ret(call(member(ident("self"), "recv"), vec![i(1024)]))],
+            ),
+            method(
+                "write",
+                vec![param("data", None)],
+                vec![
+                    expr_stmt(call(member(ident("self"), "sendall"), vec![ident("data")])),
+                    ret(call_global("len", vec![ident("data")])),
+                ],
+            ),
+            method("flush", vec![], vec![ret(null())]),
             method(
                 "shutdown",
                 vec![param("how", Some(i(2)))],
@@ -435,6 +459,21 @@ pub(super) fn module_functions() -> Vec<Statement> {
                     call_global("int", vec![index(ident("record"), str_lit("port"))]),
                 ])),
             ],
+        ),
+        function(
+            "__py_sock_connect_ex",
+            vec![param("sock", Some(null())), param("address", Some(null()))],
+            vec![try_except(
+                vec![
+                    expr_stmt(call_global(
+                        "__sock_connect",
+                        vec![ident("sock"), ident("address")],
+                    )),
+                    ret(i(0)),
+                ],
+                "Exception",
+                vec![ret(i(111))],
+            )],
         ),
         function(
             "create_connection",

@@ -99,7 +99,10 @@ pub(super) fn shlex_class() -> Statement {
                     if_else(
                         is_none(ident("instream")),
                         vec![set_this("text", str_lit(""))],
-                        vec![set_this("text", call_global("str", vec![ident("instream")]))],
+                        vec![set_this(
+                            "text",
+                            call_global("str", vec![ident("instream")]),
+                        )],
                     ),
                     set_this("posix", ident("posix")),
                     set_this("whitespace_split", bool_lit(false)),
@@ -137,7 +140,9 @@ pub(super) fn module_functions() -> Vec<Statement> {
                 if_stmt(eq(ident("s"), str_lit("")), vec![ret(bool_lit(true))]),
                 assign(
                     ident("safe"),
-                    str_lit("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_@%+=:,./-"),
+                    str_lit(
+                        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_@%+=:,./-",
+                    ),
                 ),
                 for_in(
                     "ch",
@@ -188,7 +193,10 @@ pub(super) fn module_functions() -> Vec<Statement> {
                     ident("s"),
                     vec![if_else(
                         ident("esc"),
-                        vec![add_assign("cur", ident("ch")), assign(ident("esc"), bool_lit(false))],
+                        vec![
+                            add_assign("cur", ident("ch")),
+                            assign(ident("esc"), bool_lit(false)),
+                        ],
                         vec![if_else(
                             ne(ident("quote"), str_lit("")),
                             vec![if_else(
@@ -196,7 +204,10 @@ pub(super) fn module_functions() -> Vec<Statement> {
                                 vec![if_else(
                                     ident("posix"),
                                     vec![assign(ident("quote"), str_lit(""))],
-                                    vec![add_assign("cur", ident("ch")), assign(ident("quote"), str_lit(""))],
+                                    vec![
+                                        add_assign("cur", ident("ch")),
+                                        assign(ident("quote"), str_lit("")),
+                                    ],
                                 )],
                                 vec![add_assign("cur", ident("ch"))],
                             )],
@@ -204,7 +215,10 @@ pub(super) fn module_functions() -> Vec<Statement> {
                                 and(eq(ident("ch"), str_lit("\\")), ident("posix")),
                                 vec![assign(ident("esc"), bool_lit(true))],
                                 vec![if_else(
-                                    or_expr(eq(ident("ch"), str_lit("'")), eq(ident("ch"), str_lit("\""))),
+                                    or_expr(
+                                        eq(ident("ch"), str_lit("'")),
+                                        eq(ident("ch"), str_lit("\"")),
+                                    ),
                                     vec![if_else(
                                         ident("posix"),
                                         vec![assign(ident("quote"), ident("ch"))],
@@ -241,7 +255,10 @@ pub(super) fn module_functions() -> Vec<Statement> {
                 ),
                 if_stmt(
                     ne(ident("quote"), str_lit("")),
-                    vec![raise_call("ValueError", vec![str_lit("No closing quotation")])],
+                    vec![raise_call(
+                        "ValueError",
+                        vec![str_lit("No closing quotation")],
+                    )],
                 ),
                 if_stmt(
                     ne(ident("cur"), str_lit("")),
@@ -260,7 +277,10 @@ pub(super) fn module_functions() -> Vec<Statement> {
                     "p",
                     ident("parts"),
                     vec![
-                        assign(ident("q"), call_global("__py_shlex_quote", vec![ident("p")])),
+                        assign(
+                            ident("q"),
+                            call_global("__py_shlex_quote", vec![ident("p")]),
+                        ),
                         if_else(
                             ident("first"),
                             vec![
@@ -288,7 +308,11 @@ pub(super) fn module_functions() -> Vec<Statement> {
                 ),
                 ret(call_global(
                     "__py_shlex_split",
-                    vec![ident("text"), bool_lit(false), py_attr(ident("obj"), "posix")],
+                    vec![
+                        ident("text"),
+                        bool_lit(false),
+                        py_attr(ident("obj"), "posix"),
+                    ],
                 )),
             ],
         ),

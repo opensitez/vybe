@@ -12,6 +12,10 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         return true;
     }
     if let Some(exc_name) = name.strip_prefix("python.exc.") {
+        if exc_name == "JSONDecodeError" {
+            crate::emitter::json_adapter::emit_json_decode_error(chunks, current, argc, line);
+            return true;
+        }
         crate::emitter::runtime_adapter::emit_py_exception(chunks, current, argc, exc_name, line);
         return true;
     }
@@ -38,13 +42,58 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             crate::emitter::hash_adapter::emit_sha512(chunks, current, argc, line)
         }
         "python.hash_sha1" => crate::emitter::hash_adapter::emit_sha1(chunks, current, argc, line),
+        "python.hash_sha224" => {
+            crate::emitter::hash_adapter::emit_sha224(chunks, current, argc, line)
+        }
+        "python.hash_sha384" => {
+            crate::emitter::hash_adapter::emit_sha384(chunks, current, argc, line)
+        }
+        "python.hash_sha3_224" => {
+            crate::emitter::hash_adapter::emit_sha3_224(chunks, current, argc, line)
+        }
+        "python.hash_sha3_256" => {
+            crate::emitter::hash_adapter::emit_sha3_256(chunks, current, argc, line)
+        }
+        "python.hash_sha3_384" => {
+            crate::emitter::hash_adapter::emit_sha3_384(chunks, current, argc, line)
+        }
+        "python.hash_sha3_512" => {
+            crate::emitter::hash_adapter::emit_sha3_512(chunks, current, argc, line)
+        }
+        "python.hash_shake_128" => {
+            crate::emitter::hash_adapter::emit_shake_128(chunks, current, argc, line)
+        }
+        "python.hash_shake_256" => {
+            crate::emitter::hash_adapter::emit_shake_256(chunks, current, argc, line)
+        }
+        "python.hash_blake2b" => {
+            crate::emitter::hash_adapter::emit_blake2b(chunks, current, argc, line)
+        }
+        "python.hash_blake2s" => {
+            crate::emitter::hash_adapter::emit_blake2s(chunks, current, argc, line)
+        }
+        "python.hash_blake2b_opts" => {
+            crate::emitter::hash_adapter::emit_blake2b_opts(chunks, current, argc, line)
+        }
+        "python.hash_blake2s_opts" => {
+            crate::emitter::hash_adapter::emit_blake2s_opts(chunks, current, argc, line)
+        }
         "python.hash_md5" => crate::emitter::hash_adapter::emit_md5(chunks, current, argc, line),
         "python.hash_new" => crate::emitter::hash_adapter::emit_new(chunks, current, argc, line),
+        "python.hash_pbkdf2_hmac" => {
+            crate::emitter::hash_adapter::emit_pbkdf2_hmac(chunks, current, argc, line)
+        }
+        "python.hash_scrypt" => {
+            crate::emitter::hash_adapter::emit_scrypt(chunks, current, argc, line)
+        }
         "python.hash_hexdigest" => {
             crate::emitter::hash_adapter::emit_hexdigest(chunks, current, argc, line)
         }
         "python.hash_digest" => {
             crate::emitter::hash_adapter::emit_digest(chunks, current, argc, line)
+        }
+        "python.hash_code" => {
+            vybe_compiler::primitives::object::emit_hash_code(&mut chunks[current], line)
         }
         "python.hmac_new" => {
             crate::emitter::hash_adapter::emit_hmac_new(chunks, current, argc, line)
@@ -138,6 +187,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "python.glob_escape" => {
             crate::emitter::introspect_adapter::emit_glob_escape(chunks, current, argc, line)
         }
+        "python.glob_has_magic" => {
+            crate::emitter::introspect_adapter::emit_glob_has_magic(chunks, current, argc, line)
+        }
         "python.linecache_getline" => {
             crate::emitter::introspect_adapter::emit_getline(chunks, current, argc, line)
         }
@@ -189,6 +241,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             "_is_runtime_protocol",
             line,
         ),
+        "python.typing_identity_decorator" => {
+            crate::emitter::typing_adapter::emit_identity(chunks, current, argc, line)
+        }
         "python.typing_typevar" => {
             crate::emitter::typing_adapter::emit_type_marker(chunks, current, argc, "TypeVar", line)
         }
@@ -211,6 +266,18 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "python.typing_get_type_hints" => {
             crate::emitter::typing_adapter::emit_get_type_hints(chunks, current, argc, line)
+        }
+        "python.typing_get_origin" => {
+            crate::emitter::typing_adapter::emit_get_origin(chunks, current, argc, line)
+        }
+        "python.typing_get_args" => {
+            crate::emitter::typing_adapter::emit_get_args(chunks, current, argc, line)
+        }
+        "python.typing_typed_dict" => {
+            crate::emitter::typing_adapter::emit_typed_dict(chunks, current, argc, line)
+        }
+        "python.typing_is_typeddict" => {
+            crate::emitter::typing_adapter::emit_is_typeddict(chunks, current, argc, line)
         }
         "python.weakref_ref" => {
             crate::emitter::weakref_gc_adapter::emit_ref(chunks, current, argc, line)
@@ -418,6 +485,15 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "python.json_dumps" => {
             crate::emitter::json_adapter::emit_json_dumps(chunks, current, argc, line);
         }
+        "python.json_loads" => {
+            crate::emitter::json_adapter::emit_json_loads(chunks, current, argc, line);
+        }
+        "python.json_roundtrip" => {
+            crate::emitter::json_adapter::emit_json_roundtrip(chunks, current, argc, line);
+        }
+        "python.raise.JSONDecodeError" => {
+            crate::emitter::json_adapter::emit_json_decode_error_raise(chunks, current, argc, line);
+        }
         "python.pickle_dumps" => {
             crate::emitter::pickle_adapter::emit_pickle_dumps(chunks, current, argc, line);
         }
@@ -450,6 +526,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "python.copy_deepcopy" => {
             crate::emitter::pickle_adapter::emit_copy_deepcopy(chunks, current, argc, line);
+        }
+        "python.copy_deepcopy_dict" => {
+            crate::emitter::pickle_adapter::emit_copy_deepcopy_dict(chunks, current, argc, line);
         }
         "python.copy_deepcopy_fields" => {
             crate::emitter::pickle_adapter::emit_copy_deepcopy_fields(chunks, current, argc, line);
@@ -519,12 +598,12 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
                 chunks, current, argc, line,
             )
         }
-        "python.is_tuple" => vybe_compiler::primitives::tuples::emit_is_tuple(
-            chunks, current, line,
-        ),
-        "python.is_array" => crate::emitter::runtime_adapter::emit_py_is_array(
-            chunks, current, line,
-        ),
+        "python.is_tuple" => {
+            vybe_compiler::primitives::tuples::emit_is_tuple(chunks, current, line)
+        }
+        "python.is_array" => {
+            crate::emitter::runtime_adapter::emit_py_is_array(chunks, current, line)
+        }
         "python.enumerate" => {
             crate::emitter::collections_adapter::emit_enumerate(chunks, current, argc, line)
         }
@@ -543,11 +622,17 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "python.sql_executemany" => {
             crate::emitter::sql_adapter::emit_executemany(chunks, current, argc, line)
         }
+        "python.sql_executescript" => {
+            crate::emitter::sql_adapter::emit_executescript(chunks, current, argc, line)
+        }
         "python.sql_fetchall" => {
             crate::emitter::sql_adapter::emit_fetchall(chunks, current, argc, line)
         }
         "python.sql_fetchone" => {
             crate::emitter::sql_adapter::emit_fetchone(chunks, current, argc, line)
+        }
+        "python.sql_fetchmany" => {
+            crate::emitter::sql_adapter::emit_fetchmany(chunks, current, argc, line)
         }
         "python.sql_commit" => {
             crate::emitter::sql_adapter::emit_commit(chunks, current, argc, line)
@@ -636,18 +721,18 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "python.counter_merge" => {
             crate::emitter::collections_adapter::emit_counter_merge(chunks, current, argc, line)
         }
-        "python.counter_most_common" => crate::emitter::collections_adapter::emit_counter_most_common(
-            chunks, current, argc, line,
-        ),
+        "python.counter_most_common" => {
+            crate::emitter::collections_adapter::emit_counter_most_common(
+                chunks, current, argc, line,
+            )
+        }
         "python.counter_op" => {
             crate::emitter::collections_adapter::emit_counter_op(chunks, current, argc, line)
         }
         "python.counter_fromkeys" => {
             crate::emitter::collections_adapter::emit_counter_fromkeys(chunks, current, argc, line)
         }
-        "python.random_r" => {
-            crate::emitter::random_adapter::emit_r(chunks, current, argc, line)
-        }
+        "python.random_r" => crate::emitter::random_adapter::emit_r(chunks, current, argc, line),
         "python.random_uniform" => {
             crate::emitter::random_adapter::emit_uniform(chunks, current, argc, line)
         }
@@ -721,6 +806,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "python.file_seek" => crate::emitter::file_adapter::emit_seek(chunks, current, argc, line),
         "python.file_tell" => crate::emitter::file_adapter::emit_tell(chunks, current, argc, line),
+        "python.file_fileno" => {
+            crate::emitter::file_adapter::emit_fileno(chunks, current, argc, line)
+        }
         "python.tmp_gettempdir" => {
             crate::emitter::file_adapter::emit_gettempdir(chunks, current, argc, line)
         }
@@ -785,10 +873,15 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             crate::emitter::os_adapter::emit_exc_info(chunks, current, argc, line)
         }
         "python.os_getcwd" => crate::emitter::os_adapter::emit_getcwd(chunks, current, argc, line),
-        "python.os_environ" => crate::emitter::os_adapter::emit_environ(chunks, current, argc, line),
+        "python.os_chdir" => crate::emitter::os_adapter::emit_chdir(chunks, current, argc, line),
+        "python.os_environ" => {
+            crate::emitter::os_adapter::emit_environ(chunks, current, argc, line)
+        }
         "python.os_getenv" => crate::emitter::os_adapter::emit_getenv(chunks, current, argc, line),
         "python.os_setenv" => crate::emitter::os_adapter::emit_setenv(chunks, current, argc, line),
-        "python.os_unsetenv" => crate::emitter::os_adapter::emit_unsetenv(chunks, current, argc, line),
+        "python.os_unsetenv" => {
+            crate::emitter::os_adapter::emit_unsetenv(chunks, current, argc, line)
+        }
         "python.os_stat" => crate::emitter::os_adapter::emit_stat(chunks, current, argc, line),
         "python.os_entry_stat" => {
             crate::emitter::os_adapter::emit_entry_stat(chunks, current, argc, line)
@@ -801,9 +894,20 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             crate::emitter::os_adapter::emit_cpu_count(chunks, current, argc, line)
         }
         "python.os_getpid" => crate::emitter::os_adapter::emit_getpid(chunks, current, argc, line),
+        "python.os_getppid" => {
+            crate::emitter::os_adapter::emit_getppid(chunks, current, argc, line)
+        }
         "python.os_fspath" => crate::emitter::os_adapter::emit_fspath(chunks, current, argc, line),
+        "python.os_dup" => crate::emitter::os_adapter::emit_dup(chunks, current, argc, line),
+        "python.os_pipe" => crate::emitter::os_adapter::emit_pipe(chunks, current, argc, line),
+        "python.os_read" => crate::emitter::os_adapter::emit_read(chunks, current, argc, line),
+        "python.os_write" => crate::emitter::os_adapter::emit_write(chunks, current, argc, line),
+        "python.os_lseek" => crate::emitter::os_adapter::emit_lseek(chunks, current, argc, line),
         "python.os_strerror" => {
             crate::emitter::os_adapter::emit_strerror(chunks, current, argc, line)
+        }
+        "python.os_symlink" => {
+            crate::emitter::os_adapter::emit_symlink_unavailable(chunks, current, argc, line)
         }
         "python.os_is_file" => {
             crate::emitter::os_adapter::emit_entry_flag(chunks, current, "__is_file", line)
@@ -811,8 +915,23 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "python.os_is_dir" => {
             crate::emitter::os_adapter::emit_entry_flag(chunks, current, "__is_dir", line)
         }
+        "python.signal_getsignal" => {
+            crate::emitter::signal_adapter::emit_getsignal(chunks, current, argc, line)
+        }
+        "python.signal_signal" => {
+            crate::emitter::signal_adapter::emit_signal(chunks, current, argc, line)
+        }
+        "python.signal_alarm" => {
+            crate::emitter::signal_adapter::emit_alarm(chunks, current, argc, line)
+        }
+        "python.signal_pause" => {
+            crate::emitter::signal_adapter::emit_pause(chunks, current, argc, line)
+        }
+        "python.signal_strsignal" => {
+            crate::emitter::signal_adapter::emit_strsignal(chunks, current, argc, line)
+        }
         "python.os_is_symlink" => {
-            crate::emitter::os_adapter::emit_entry_flag(chunks, current, "__is_link", line)
+            crate::emitter::os_adapter::emit_entry_bool_field(chunks, current, "__is_link", line)
         }
         "python.os_inode" => crate::emitter::os_adapter::emit_entry_zero(chunks, current, line),
         "python.iter_array" => {
@@ -821,11 +940,15 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "python.dict_ior" => {
             crate::emitter::dict_adapter::emit_dict_ior(chunks, current, argc, line)
         }
-        "python.dict_or" => {
-            crate::emitter::dict_adapter::emit_dict_or(chunks, current, argc, line)
-        }
+        "python.dict_or" => crate::emitter::dict_adapter::emit_dict_or(chunks, current, argc, line),
         "python.dict_update" => {
             crate::emitter::dict_adapter::emit_dict_update(chunks, current, argc, line)
+        }
+        "python.dict_subclass_init" => {
+            crate::emitter::dict_adapter::emit_dict_subclass_init(chunks, current, argc, line)
+        }
+        "python.functools_update_wrapper" => {
+            crate::emitter::functools_adapter::emit_update_wrapper(chunks, current, argc, line)
         }
         "python.list_iadd" => {
             crate::emitter::list_adapter::emit_list_iadd(chunks, current, argc, line)
@@ -848,8 +971,14 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "python.attr_read" => {
             crate::emitter::collections_adapter::emit_attr_read(chunks, current, line)
         }
+        "python.data_descriptor_read" => {
+            crate::emitter::collections_adapter::emit_data_descriptor_read(chunks, current, line)
+        }
         "python.attr_write" => {
             crate::emitter::collections_adapter::emit_attr_write(chunks, current, line)
+        }
+        "python.attr_raw_read" => {
+            crate::emitter::collections_adapter::emit_attr_raw_read(chunks, current, line)
         }
         "python.attr_raw_write" => {
             crate::emitter::collections_adapter::emit_attr_raw_write(chunks, current, line)
@@ -857,6 +986,19 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "python.attr_delete" => {
             crate::emitter::collections_adapter::emit_attr_delete(chunks, current, line)
         }
+        "python.cached_property_read" => {
+            crate::emitter::collections_adapter::emit_cached_property_read(chunks, current, line)
+        }
+        "python.obj_own_entries" => {
+            crate::emitter::collections_adapter::emit_obj_own_entries(chunks, current, line)
+        }
+        "python.instance_dict_pop" => {
+            crate::emitter::collections_adapter::emit_instance_dict_pop(chunks, current, argc, line)
+        }
+        "python.deleted_name" => {
+            crate::emitter::name_adapter::emit_deleted_name(chunks, current, line)
+        }
+        "python.name_read" => crate::emitter::name_adapter::emit_name_read(chunks, current, line),
         "python.getitem" => {
             crate::emitter::collections_adapter::emit_getitem(chunks, current, line)
         }
@@ -1218,11 +1360,17 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "python.stamp_float_fields" => {
             crate::emitter::float_adapter::emit_stamp_float_fields(chunks, current, argc, line)
         }
+        "python.stamp_float_items" => {
+            crate::emitter::float_adapter::emit_stamp_float_items(chunks, current, argc, line)
+        }
         "python.float_field_str" => {
             crate::emitter::float_adapter::emit_float_field_str(chunks, current, argc, line)
         }
         "python.gen_send" => {
             crate::emitter::collections_adapter::emit_gen_send(chunks, current, argc, line)
+        }
+        "python.async_gen_send" => {
+            crate::emitter::collections_adapter::emit_async_gen_send(chunks, current, argc, line)
         }
         "python.gen_throw" => {
             crate::emitter::collections_adapter::emit_gen_throw(chunks, current, argc, line)
@@ -1399,6 +1547,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "python.str" => crate::emitter::runtime_adapter::emit_str(chunks, current, argc, line),
         "python.repr" => crate::emitter::runtime_adapter::emit_repr(chunks, current, argc, line),
+        "python.ascii" => crate::emitter::ascii_adapter::emit_ascii(chunks, current, argc, line),
         "python.issubclass" => {
             crate::emitter::runtime_adapter::emit_issubclass(chunks, current, line)
         }
@@ -1440,6 +1589,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         // `__sock_m(<handle>, ...)` — see `rewrite_socket_call`.
         "python.sock_new" => {
             crate::emitter::socket_adapter::emit_sock_new(chunks, current, argc, line)
+        }
+        "python.sock_create_connection" => {
+            crate::emitter::socket_adapter::emit_sock_create_connection(chunks, current, argc, line)
         }
         "python.sock_bind" => {
             crate::emitter::socket_adapter::emit_sock_bind(chunks, current, argc, line)
@@ -1707,8 +1859,20 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "python.struct_pack" => {
             crate::emitter::struct_adapter::emit_struct_pack(chunks, current, argc, line)
         }
+        "python.struct_pack_float" => {
+            crate::emitter::struct_adapter::emit_struct_pack_float(chunks, current, argc, line)
+        }
+        "python.struct_pack_half" => {
+            crate::emitter::struct_adapter::emit_struct_pack_half(chunks, current, argc, line)
+        }
         "python.struct_unpack" => {
             crate::emitter::struct_adapter::emit_struct_unpack(chunks, current, argc, line)
+        }
+        "python.struct_unpack_float" => {
+            crate::emitter::struct_adapter::emit_struct_unpack_float(chunks, current, argc, line)
+        }
+        "python.struct_unpack_half" => {
+            crate::emitter::struct_adapter::emit_struct_unpack_half(chunks, current, argc, line)
         }
         "python.struct_calcsize" => {
             crate::emitter::struct_adapter::emit_struct_calcsize(chunks, current, argc, line)
@@ -1736,9 +1900,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "python.notimplemented" => {
             crate::emitter::runtime_adapter::emit_py_notimplemented(chunks, current, line)
         }
-        "python.pymatmul" => {
-            crate::emitter::runtime_adapter::emit_pymatmul(chunks, current, line)
-        }
+        "python.pymatmul" => crate::emitter::runtime_adapter::emit_pymatmul(chunks, current, line),
         "python.pybitand" => crate::emitter::runtime_adapter::emit_pybitand(chunks, current, line),
         "python.pybitor" => crate::emitter::runtime_adapter::emit_pybitor(chunks, current, line),
         "python.pybitxor" => crate::emitter::runtime_adapter::emit_pybitxor(chunks, current, line),

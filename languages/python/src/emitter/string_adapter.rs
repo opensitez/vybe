@@ -290,7 +290,7 @@ pub fn emit_startswith(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
         chunks[current].emit_i32_const(0x7FFF_FFFF, line);
     }
     strings::emit_substring(&mut chunks[current], line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, prefix, line);
+    emit_string_or_bytes_as_string(chunks, current, prefix, line);
     call_import(chunks, current, "ecma:string", "startsWith", 2, line);
 }
 
@@ -313,8 +313,19 @@ pub fn emit_endswith(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) 
         chunks[current].emit_i32_const(0x7FFF_FFFF, line);
     }
     strings::emit_substring(&mut chunks[current], line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, suffix, line);
+    emit_string_or_bytes_as_string(chunks, current, suffix, line);
     call_import(chunks, current, "ecma:string", "endsWith", 2, line);
+}
+
+fn emit_string_or_bytes_as_string(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
+    chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
+    call_import(chunks, current, "wasm:js-string", "test", 1, line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
+    crate::emitter::runtime_adapter::emit_bytes_decode(chunks, current, 1, line);
+    chunks[current].emit_end(line);
 }
 
 /// Python `s.count(sub)` — number of non-overlapping occurrences, via

@@ -16,7 +16,7 @@
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
 
-use vybe_compiler::primitives::dict;
+use vybe_compiler::primitives::{collections, dict};
 
 use super::adapter_util::{lget, lset, new_tagged, set_call_slot, stash_exact, struct_set};
 use vybe_compiler::primitives::class_slots::ClassSlot;
@@ -25,6 +25,11 @@ use vybe_compiler::primitives::class_slots::ClassSlot;
 pub fn emit_cast(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let base = stash_exact(chunks, current, argc, 2, line);
     lget(&mut chunks[current], base + 1, line);
+}
+
+pub fn emit_identity(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let base = stash_exact(chunks, current, argc, 1, line);
+    lget(&mut chunks[current], base, line);
 }
 
 /// `typing.final(x)` / `no_type_check(x)` / `runtime_checkable(x)` — returns
@@ -113,4 +118,84 @@ pub fn emit_get_type_hints(chunks: &mut [Chunk], current: usize, argc: u8, line:
     chunks[current].emit_else(line);
     dict::emit_new(chunks, current, line);
     chunks[current].emit_end(line);
+}
+
+fn emit_empty_tuple(chunks: &mut [Chunk], current: usize, line: u32) {
+    collections::emit_array_new(chunks, current, 0, line);
+    chunks[current].emit_dup(line);
+    chunks[current].emit_bool_const(true, line);
+    struct_set(&mut chunks[current], &ClassSlot::internal("__tuple"), line);
+}
+
+fn emit_property_or(
+    chunks: &mut [Chunk],
+    current: usize,
+    argc: u8,
+    key: &str,
+    fallback: impl FnOnce(&mut [Chunk], usize),
+    line: u32,
+) {
+    let base = stash_exact(chunks, current, argc, 1, line);
+    let found = chunks[current].alloc_scratch(1);
+    lget(&mut chunks[current], base, line);
+    chunks[current].emit_string_const(key, line);
+    let get_idx = chunks[current].add_import("ecma:object", "get");
+    chunks[current].emit_call(get_idx, 2, line);
+    lset(&mut chunks[current], found, line);
+
+    lget(&mut chunks[current], found, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_if_value(line);
+    lget(&mut chunks[current], found, line);
+    chunks[current].emit_else(line);
+    fallback(chunks, current);
+    chunks[current].emit_end(line);
+}
+
+/// `typing.get_origin(GenericAlias)` → alias.__origin__, else None.
+pub fn emit_get_origin(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    emit_property_or(
+        chunks,
+        current,
+        argc,
+        "__origin__",
+        |chunks, current| {
+            chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+        },
+        line,
+    );
+}
+
+/// `typing.get_args(GenericAlias)` → alias.__args__, else ().
+pub fn emit_get_args(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    emit_property_or(
+        chunks,
+        current,
+        argc,
+        "__args__",
+        |chunks, current| emit_empty_tuple(chunks, current, line),
+        line,
+    );
+}
+
+/// Runtime `TypedDict("Name", fields, ...)`: a marker type object. Static
+/// annotations are erased by the walker; this gives `typing.is_typeddict` and
+/// functional syntax a real value to carry around.
+pub fn emit_typed_dict(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let base = stash_exact(chunks, current, argc, 1, line);
+    let chunk = &mut chunks[current];
+    new_tagged(chunk, "TypedDict", &[("__name__", base)], line);
+    chunk.emit_dup(line);
+    chunk.emit_bool_const(true, line);
+    struct_set(chunk, &ClassSlot::internal("__is_typeddict__"), line);
+}
+
+pub fn emit_is_typeddict(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let base = stash_exact(chunks, current, argc, 1, line);
+    let chunk = &mut chunks[current];
+    lget(chunk, base, line);
+    chunk.emit_string_const("__is_typeddict__", line);
+    let has_own = chunk.add_import("ecma:object", "hasOwn");
+    chunk.emit_call(has_own, 2, line);
 }

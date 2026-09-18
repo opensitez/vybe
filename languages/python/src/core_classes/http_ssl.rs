@@ -1100,6 +1100,7 @@ pub(super) const EXCEPTIONS: &[(&str, &str)] = &[
     ("CookieError", "Exception"),
     ("SSLError", "OSError"),
     ("CertificateError", "SSLError"),
+    ("SSLCertVerificationError", "SSLError"),
 ];
 
 pub(super) fn exception(name: &'static str, parent: &'static str) -> Statement {
@@ -1114,12 +1115,32 @@ pub(super) fn ssl_context() -> Statement {
                 vec![param("protocol", Some(num(2.0)))],
                 vec![
                     set_this("protocol", ident("protocol")),
-                    set_this("verify_mode", num(0.0)),
-                    set_this("check_hostname", bool_lit(false)),
+                    set_this(
+                        "verify_mode",
+                        ternary(
+                            op(BinOp::Eq, ident("protocol"), num(16.0)),
+                            num(2.0),
+                            num(0.0),
+                        ),
+                    ),
+                    set_this(
+                        "check_hostname",
+                        op(BinOp::Eq, ident("protocol"), num(16.0)),
+                    ),
+                    set_this("options", num(0.0)),
+                    set_this("minimum_version", new("TLSVersion", vec![num(771.0)])),
+                    set_this("maximum_version", new("TLSVersion", vec![num(772.0)])),
                 ],
             ),
-            stub("get_ciphers", list_of(vec![])),
+            stub(
+                "get_ciphers",
+                list_of(vec![dict_str(vec![
+                    ("name", str_lit("TLS_AES_256_GCM_SHA384")),
+                    ("protocol", str_lit("TLSv1.3")),
+                ])]),
+            ),
             stub("set_ciphers", null()),
+            stub("set_alpn_protocols", null()),
             stub("load_verify_locations", null()),
             stub("load_default_certs", null()),
             // `wrap_socket` answers the socket unchanged: there is no TLS
@@ -1141,10 +1162,32 @@ pub(super) fn tls_version() -> Statement {
     class(
         "TLSVersion",
         vec![
-            static_field("TLSv1", num(769.0)),
-            static_field("TLSv1_1", num(770.0)),
-            static_field("TLSv1_2", num(771.0)),
-            static_field("TLSv1_3", num(772.0)),
+            init(
+                vec![
+                    param("value", Some(num(0.0))),
+                    param("name", Some(str_lit(""))),
+                ],
+                vec![
+                    set_this("value", ident("value")),
+                    set_this("name", ident("name")),
+                ],
+            ),
+            static_field(
+                "TLSv1",
+                new("TLSVersion", vec![num(769.0), str_lit("TLSv1")]),
+            ),
+            static_field(
+                "TLSv1_1",
+                new("TLSVersion", vec![num(770.0), str_lit("TLSv1_1")]),
+            ),
+            static_field(
+                "TLSv1_2",
+                new("TLSVersion", vec![num(771.0), str_lit("TLSv1_2")]),
+            ),
+            static_field(
+                "TLSv1_3",
+                new("TLSVersion", vec![num(772.0), str_lit("TLSv1_3")]),
+            ),
         ],
     )
 }
@@ -1153,8 +1196,40 @@ pub(super) fn purpose() -> Statement {
     class(
         "Purpose",
         vec![
-            static_field("SERVER_AUTH", str_lit("serverAuth")),
-            static_field("CLIENT_AUTH", str_lit("clientAuth")),
+            init(
+                vec![
+                    param("value", Some(str_lit(""))),
+                    param("name", Some(str_lit(""))),
+                ],
+                vec![
+                    set_this("value", ident("value")),
+                    set_this("name", ident("name")),
+                ],
+            ),
+            static_field(
+                "SERVER_AUTH",
+                new(
+                    "Purpose",
+                    vec![
+                        str_lit(
+                            "_ASN1Object(nid=129, shortname='serverAuth', longname='TLS Web Server Authentication', oid='1.3.6.1.5.5.7.3.1')",
+                        ),
+                        str_lit("SERVER_AUTH"),
+                    ],
+                ),
+            ),
+            static_field(
+                "CLIENT_AUTH",
+                new(
+                    "Purpose",
+                    vec![
+                        str_lit(
+                            "_ASN1Object(nid=130, shortname='clientAuth', longname='TLS Web Client Authentication', oid='1.3.6.1.5.5.7.3.2')",
+                        ),
+                        str_lit("CLIENT_AUTH"),
+                    ],
+                ),
+            ),
         ],
     )
 }
@@ -1484,8 +1559,17 @@ pub(super) fn module_functions() -> Vec<Statement> {
         function(
             "create_default_context",
             any_args(),
-            vec![ret(new("SSLContext", vec![num(2.0)]))],
+            vec![ret(new("SSLContext", vec![num(16.0)]))],
         ),
+        global_assign("PROTOCOL_TLS_CLIENT", num(16.0)),
+        global_assign("PROTOCOL_TLS_SERVER", num(17.0)),
+        global_assign("PROTOCOL_TLS", num(2.0)),
+        global_assign("CERT_NONE", num(0.0)),
+        global_assign("CERT_OPTIONAL", num(1.0)),
+        global_assign("CERT_REQUIRED", num(2.0)),
+        global_assign("HAS_SNI", bool_lit(true)),
+        global_assign("HAS_ALPN", bool_lit(true)),
+        global_assign("OP_NO_SSLv2", num(0.0)),
         function(
             "ssl_wrap_socket",
             vec![param("sock", None), rest_param("a"), kwargs_param("k")],

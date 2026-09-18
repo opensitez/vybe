@@ -4,7 +4,7 @@
 //! state; parsing itself uses ordinary maps, arrays, loops and exceptions.
 
 use super::builders::*;
-use vybe_ast::{BinOp, Statement};
+use vybe_ast::{BinOp, ExprKind, LambdaBody, Statement};
 
 type Expr = vybe_ast::Expression;
 
@@ -25,7 +25,11 @@ fn contains(haystack: Expr, needle: Expr) -> Expr {
 }
 
 fn missing(e: Expr) -> Expr {
-    op(BinOp::Or, is_none(e.clone()), op(BinOp::StrictEq, e, str_lit("undefined")))
+    op(
+        BinOp::Or,
+        is_none(e.clone()),
+        op(BinOp::StrictEq, e, str_lit("undefined")),
+    )
 }
 
 fn dict_get(dict: Expr, key: &str, default: Expr) -> Expr {
@@ -66,16 +70,34 @@ fn dest_from_flags(flags: Expr) -> Expr {
         member(
             ternary(
                 starts_with(
-                    index(flags.clone(), op(BinOp::Sub, len_of(flags.clone()), num(1.0))),
+                    index(
+                        flags.clone(),
+                        op(BinOp::Sub, len_of(flags.clone()), num(1.0)),
+                    ),
                     str_lit("--"),
                 ),
-                slice_from(index(flags.clone(), op(BinOp::Sub, len_of(flags.clone()), num(1.0))), num(2.0)),
+                slice_from(
+                    index(
+                        flags.clone(),
+                        op(BinOp::Sub, len_of(flags.clone()), num(1.0)),
+                    ),
+                    num(2.0),
+                ),
                 ternary(
                     starts_with(
-                        index(flags.clone(), op(BinOp::Sub, len_of(flags.clone()), num(1.0))),
+                        index(
+                            flags.clone(),
+                            op(BinOp::Sub, len_of(flags.clone()), num(1.0)),
+                        ),
                         str_lit("-"),
                     ),
-                    slice_from(index(flags.clone(), op(BinOp::Sub, len_of(flags.clone()), num(1.0))), num(1.0)),
+                    slice_from(
+                        index(
+                            flags.clone(),
+                            op(BinOp::Sub, len_of(flags.clone()), num(1.0)),
+                        ),
+                        num(1.0),
+                    ),
                     index(flags.clone(), op(BinOp::Sub, len_of(flags), num(1.0))),
                 ),
             ),
@@ -155,13 +177,34 @@ fn convert_value_body() -> Vec<Statement> {
     );
     vec![
         assign(ident("__converted"), ident("value")),
-        if_stmt(is_int, vec![assign(ident("__converted"), call_global("int", vec![ident("value")]))]),
-        if_stmt(is_float, vec![assign(ident("__converted"), call_global("float", vec![ident("value")]))]),
-        if_stmt(is_str, vec![assign(ident("__converted"), call_global("str", vec![ident("value")]))]),
+        if_stmt(
+            is_int,
+            vec![assign(
+                ident("__converted"),
+                call_global("int", vec![ident("value")]),
+            )],
+        ),
+        if_stmt(
+            is_float,
+            vec![assign(
+                ident("__converted"),
+                call_global("float", vec![ident("value")]),
+            )],
+        ),
+        if_stmt(
+            is_str,
+            vec![assign(
+                ident("__converted"),
+                call_global("str", vec![ident("value")]),
+            )],
+        ),
         if_stmt(
             is_custom,
             vec![try_except(
-                vec![assign(ident("__converted"), call(ident("typ"), vec![ident("value")]))],
+                vec![assign(
+                    ident("__converted"),
+                    call(ident("typ"), vec![ident("value")]),
+                )],
                 "ValueError",
                 vec![system_exit()],
             )],
@@ -180,10 +223,17 @@ fn convert_value_body() -> Vec<Statement> {
 fn add_spec_to(target: Expr, also: Option<Expr>) -> Vec<Statement> {
     let mut body = vec![
         assign(ident("__flags"), list_of(vec![ident("flag")])),
-        for_in("__alias", ident("aliases"), vec![append(ident("__flags"), ident("__alias"))]),
+        for_in(
+            "__alias",
+            ident("aliases"),
+            vec![append(ident("__flags"), ident("__alias"))],
+        ),
         assign(
             ident("__spec"),
-            call_global("__py_argparse_make_spec", vec![ident("__flags"), ident("kwargs")]),
+            call_global(
+                "__py_argparse_make_spec",
+                vec![ident("__flags"), ident("kwargs")],
+            ),
         ),
         append(target.clone(), ident("__spec")),
     ];
@@ -208,7 +258,14 @@ fn add_argument_params() -> Vec<vybe_ast::Param> {
 
 fn initialize_defaults_body() -> Vec<Statement> {
     vec![
-        assign(ident("__ns"), ternary(is_none(ident("namespace")), new("Namespace", vec![]), ident("namespace"))),
+        assign(
+            ident("__ns"),
+            ternary(
+                is_none(ident("namespace")),
+                new("Namespace", vec![]),
+                ident("namespace"),
+            ),
+        ),
         for_in(
             "__key",
             this_field("_defaults"),
@@ -237,7 +294,11 @@ fn initialize_defaults_body() -> Vec<Statement> {
                                 ternary(
                                     eq(ident("__action"), str_lit("count")),
                                     num(0.0),
-                                    ternary(missing(ident("__default")), null(), ident("__default")),
+                                    ternary(
+                                        missing(ident("__default")),
+                                        null(),
+                                        ident("__default"),
+                                    ),
                                 ),
                             ),
                         ),
@@ -301,15 +362,24 @@ fn option_action_body() -> Vec<Statement> {
             eq(ident("__action"), str_lit("append")),
             vec![
                 assign(ident("__i"), op(BinOp::Add, ident("__i"), num(1.0))),
-                if_stmt(op(BinOp::GtEq, ident("__i"), len_of(ident("args"))), vec![system_exit()]),
-                if_stmt(missing(ns_get(ident("__dest"))), vec![ns_set(ident("__dest"), list_of(vec![]))]),
+                if_stmt(
+                    op(BinOp::GtEq, ident("__i"), len_of(ident("args"))),
+                    vec![system_exit()],
+                ),
+                if_stmt(
+                    missing(ns_get(ident("__dest"))),
+                    vec![ns_set(ident("__dest"), list_of(vec![]))],
+                ),
                 append(
                     ns_get(ident("__dest")),
-                    call_global("__py_argparse_convert", vec![
-                        index(ident("args"), ident("__i")),
-                        spec_field("typ"),
-                        spec_field("choices"),
-                    ]),
+                    call_global(
+                        "__py_argparse_convert",
+                        vec![
+                            index(ident("args"), ident("__i")),
+                            spec_field("typ"),
+                            spec_field("choices"),
+                        ],
+                    ),
                 ),
             ],
         ),
@@ -319,42 +389,57 @@ fn option_action_body() -> Vec<Statement> {
                 eq(ident("__action"), str_lit("store")),
                 eq(spec_field("nargs"), str_lit("?")),
             ),
-            vec![
-                if_stmt(
+            vec![if_stmt(
+                op(
+                    BinOp::And,
                     op(
-                        BinOp::And,
-                        op(BinOp::Lt, op(BinOp::Add, ident("__i"), num(1.0)), len_of(ident("args"))),
-                        unary_not(starts_with(
-                            index(ident("args"), op(BinOp::Add, ident("__i"), num(1.0))),
-                            str_lit("-"),
-                        )),
+                        BinOp::Lt,
+                        op(BinOp::Add, ident("__i"), num(1.0)),
+                        len_of(ident("args")),
                     ),
-                    vec![
-                        assign(ident("__i"), op(BinOp::Add, ident("__i"), num(1.0))),
-                        ns_set(
-                            ident("__dest"),
-                            call_global("__py_argparse_convert", vec![
+                    unary_not(starts_with(
+                        index(ident("args"), op(BinOp::Add, ident("__i"), num(1.0))),
+                        str_lit("-"),
+                    )),
+                ),
+                vec![
+                    assign(ident("__i"), op(BinOp::Add, ident("__i"), num(1.0))),
+                    ns_set(
+                        ident("__dest"),
+                        call_global(
+                            "__py_argparse_convert",
+                            vec![
                                 index(ident("args"), ident("__i")),
                                 spec_field("typ"),
                                 spec_field("choices"),
-                            ]),
+                            ],
                         ),
-                    ],
-                ),
-            ],
+                    ),
+                ],
+            )],
         ),
         if_stmt(
-                op(BinOp::And, eq(ident("__action"), str_lit("store")), is_none(spec_field("nargs"))),
+            op(
+                BinOp::And,
+                eq(ident("__action"), str_lit("store")),
+                is_none(spec_field("nargs")),
+            ),
             vec![
                 assign(ident("__i"), op(BinOp::Add, ident("__i"), num(1.0))),
-                if_stmt(op(BinOp::GtEq, ident("__i"), len_of(ident("args"))), vec![system_exit()]),
+                if_stmt(
+                    op(BinOp::GtEq, ident("__i"), len_of(ident("args"))),
+                    vec![system_exit()],
+                ),
                 ns_set(
                     ident("__dest"),
-                    call_global("__py_argparse_convert", vec![
-                        index(ident("args"), ident("__i")),
-                        spec_field("typ"),
-                        spec_field("choices"),
-                    ]),
+                    call_global(
+                        "__py_argparse_convert",
+                        vec![
+                            index(ident("args"), ident("__i")),
+                            spec_field("typ"),
+                            spec_field("choices"),
+                        ],
+                    ),
                 ),
             ],
         ),
@@ -373,23 +458,37 @@ fn option_action_body() -> Vec<Statement> {
                 while_stmt(
                     op(
                         BinOp::And,
-                        op(BinOp::Lt, op(BinOp::Add, ident("__i"), num(1.0)), len_of(ident("args"))),
-                        unary_not(starts_with(index(ident("args"), op(BinOp::Add, ident("__i"), num(1.0))), str_lit("-"))),
+                        op(
+                            BinOp::Lt,
+                            op(BinOp::Add, ident("__i"), num(1.0)),
+                            len_of(ident("args")),
+                        ),
+                        unary_not(starts_with(
+                            index(ident("args"), op(BinOp::Add, ident("__i"), num(1.0))),
+                            str_lit("-"),
+                        )),
                     ),
                     vec![
                         assign(ident("__i"), op(BinOp::Add, ident("__i"), num(1.0))),
                         append(
                             ident("__vals"),
-                            call_global("__py_argparse_convert", vec![
-                                index(ident("args"), ident("__i")),
-                                spec_field("typ"),
-                                spec_field("choices"),
-                            ]),
+                            call_global(
+                                "__py_argparse_convert",
+                                vec![
+                                    index(ident("args"), ident("__i")),
+                                    spec_field("typ"),
+                                    spec_field("choices"),
+                                ],
+                            ),
                         ),
                     ],
                 ),
                 if_stmt(
-                    op(BinOp::And, eq(spec_field("nargs"), str_lit("+")), eq(len_of(ident("__vals")), num(0.0))),
+                    op(
+                        BinOp::And,
+                        eq(spec_field("nargs"), str_lit("+")),
+                        eq(len_of(ident("__vals")), num(0.0)),
+                    ),
                     vec![system_exit()],
                 ),
                 ns_set(ident("__dest"), ident("__vals")),
@@ -401,7 +500,10 @@ fn option_action_body() -> Vec<Statement> {
 fn parse_args_body() -> Vec<Statement> {
     let mut body = initialize_defaults_body();
     body.extend(vec![
-        if_stmt(is_none(ident("args")), vec![assign(ident("args"), list_of(vec![]))]),
+        if_stmt(
+            is_none(ident("args")),
+            vec![assign(ident("args"), list_of(vec![]))],
+        ),
         assign(ident("__i"), num(0.0)),
         assign(ident("__pos"), num(0.0)),
         while_stmt(
@@ -416,7 +518,11 @@ fn parse_args_body() -> Vec<Statement> {
                             "__spec",
                             this_field("_options"),
                             vec![if_stmt(
-                                op(BinOp::And, unary_not(ident("__handled")), unary_not(spec_field("positional"))),
+                                op(
+                                    BinOp::And,
+                                    unary_not(ident("__handled")),
+                                    unary_not(spec_field("positional")),
+                                ),
                                 vec![
                                     assign(ident("__action"), spec_field("action")),
                                     assign(ident("__dest"), spec_field("dest")),
@@ -434,7 +540,10 @@ fn parse_args_body() -> Vec<Statement> {
                                                 ),
                                             ),
                                             {
-                                                let mut stmts = vec![assign(ident("__handled"), bool_lit(true))];
+                                                let mut stmts = vec![assign(
+                                                    ident("__handled"),
+                                                    bool_lit(true),
+                                                )];
                                                 stmts.extend(option_action_body());
                                                 stmts
                                             },
@@ -450,7 +559,11 @@ fn parse_args_body() -> Vec<Statement> {
                     unary_not(starts_with(ident("__arg"), str_lit("-"))),
                     vec![
                         if_stmt(
-                            op(BinOp::And, op(BinOp::Gt, len_of(this_field("_subparsers")), num(0.0)), contains(this_field("_subparsers"), ident("__arg"))),
+                            op(
+                                BinOp::And,
+                                op(BinOp::Gt, len_of(this_field("_subparsers")), num(0.0)),
+                                contains(this_field("_subparsers"), ident("__arg")),
+                            ),
                             vec![
                                 ns_set(this_field("_subparser_dest"), ident("__arg")),
                                 assign(
@@ -462,7 +575,10 @@ fn parse_args_body() -> Vec<Statement> {
                                     ident("__child_ns"),
                                     call(
                                         member(ident("__child_parser"), "parse_args"),
-                                        vec![slice_from(ident("args"), op(BinOp::Add, ident("__i"), num(1.0)))],
+                                        vec![slice_from(
+                                            ident("args"),
+                                            op(BinOp::Add, ident("__i"), num(1.0)),
+                                        )],
                                     ),
                                 ),
                                 assign(ident("__ns"), ident("__parent_ns")),
@@ -470,17 +586,28 @@ fn parse_args_body() -> Vec<Statement> {
                                     "__child_spec",
                                     field_of(ident("__child_parser"), "_options"),
                                     vec![
-                                        assign(ident("__child_dest"), index(ident("__child_spec"), str_lit("dest"))),
+                                        assign(
+                                            ident("__child_dest"),
+                                            index(ident("__child_spec"), str_lit("dest")),
+                                        ),
                                         if_stmt(
                                             unary_not(missing(call_global(
                                                 "getattr",
-                                                vec![ident("__child_ns"), ident("__child_dest"), null()],
+                                                vec![
+                                                    ident("__child_ns"),
+                                                    ident("__child_dest"),
+                                                    null(),
+                                                ],
                                             ))),
                                             vec![ns_set(
                                                 ident("__child_dest"),
                                                 call_global(
                                                     "getattr",
-                                                    vec![ident("__child_ns"), ident("__child_dest"), null()],
+                                                    vec![
+                                                        ident("__child_ns"),
+                                                        ident("__child_dest"),
+                                                        null(),
+                                                    ],
                                                 ),
                                             )],
                                         ),
@@ -490,17 +617,28 @@ fn parse_args_body() -> Vec<Statement> {
                                     "__child_spec",
                                     field_of(ident("__child_parser"), "_positionals"),
                                     vec![
-                                        assign(ident("__child_dest"), index(ident("__child_spec"), str_lit("dest"))),
+                                        assign(
+                                            ident("__child_dest"),
+                                            index(ident("__child_spec"), str_lit("dest")),
+                                        ),
                                         if_stmt(
                                             unary_not(missing(call_global(
                                                 "getattr",
-                                                vec![ident("__child_ns"), ident("__child_dest"), null()],
+                                                vec![
+                                                    ident("__child_ns"),
+                                                    ident("__child_dest"),
+                                                    null(),
+                                                ],
                                             ))),
                                             vec![ns_set(
                                                 ident("__child_dest"),
                                                 call_global(
                                                     "getattr",
-                                                    vec![ident("__child_ns"), ident("__child_dest"), null()],
+                                                    vec![
+                                                        ident("__child_ns"),
+                                                        ident("__child_dest"),
+                                                        null(),
+                                                    ],
                                                 ),
                                             )],
                                         ),
@@ -513,18 +651,24 @@ fn parse_args_body() -> Vec<Statement> {
                         if_stmt(
                             unary_not(ident("__handled")),
                             vec![
-                                assign(ident("__spec"), index(this_field("_positionals"), ident("__pos"))),
+                                assign(
+                                    ident("__spec"),
+                                    index(this_field("_positionals"), ident("__pos")),
+                                ),
                                 if_stmt(missing(ident("__spec")), vec![system_exit()]),
                                 assign(ident("__dest"), spec_field("dest")),
                                 if_stmt(
                                     eq(spec_field("nargs"), str_lit("?")),
                                     vec![ns_set(
                                         ident("__dest"),
-                                        call_global("__py_argparse_convert", vec![
-                                            ident("__arg"),
-                                            spec_field("typ"),
-                                            spec_field("choices"),
-                                        ]),
+                                        call_global(
+                                            "__py_argparse_convert",
+                                            vec![
+                                                ident("__arg"),
+                                                spec_field("typ"),
+                                                spec_field("choices"),
+                                            ],
+                                        ),
                                     )],
                                 ),
                                 if_stmt(
@@ -534,25 +678,48 @@ fn parse_args_body() -> Vec<Statement> {
                                         op(BinOp::NotEq, spec_field("nargs"), str_lit("?")),
                                     ),
                                     vec![
-                                        assign(ident("__vals"), list_of(vec![call_global(
-                                            "__py_argparse_convert",
-                                            vec![ident("__arg"), spec_field("typ"), spec_field("choices")],
-                                        )])),
+                                        assign(
+                                            ident("__vals"),
+                                            list_of(vec![call_global(
+                                                "__py_argparse_convert",
+                                                vec![
+                                                    ident("__arg"),
+                                                    spec_field("typ"),
+                                                    spec_field("choices"),
+                                                ],
+                                            )]),
+                                        ),
                                         while_stmt(
                                             op(
                                                 BinOp::And,
-                                                op(BinOp::Lt, op(BinOp::Add, ident("__i"), num(1.0)), len_of(ident("args"))),
-                                                unary_not(starts_with(index(ident("args"), op(BinOp::Add, ident("__i"), num(1.0))), str_lit("-"))),
+                                                op(
+                                                    BinOp::Lt,
+                                                    op(BinOp::Add, ident("__i"), num(1.0)),
+                                                    len_of(ident("args")),
+                                                ),
+                                                unary_not(starts_with(
+                                                    index(
+                                                        ident("args"),
+                                                        op(BinOp::Add, ident("__i"), num(1.0)),
+                                                    ),
+                                                    str_lit("-"),
+                                                )),
                                             ),
                                             vec![
-                                                assign(ident("__i"), op(BinOp::Add, ident("__i"), num(1.0))),
+                                                assign(
+                                                    ident("__i"),
+                                                    op(BinOp::Add, ident("__i"), num(1.0)),
+                                                ),
                                                 append(
                                                     ident("__vals"),
-                                                    call_global("__py_argparse_convert", vec![
-                                                        index(ident("args"), ident("__i")),
-                                                        spec_field("typ"),
-                                                        spec_field("choices"),
-                                                    ]),
+                                                    call_global(
+                                                        "__py_argparse_convert",
+                                                        vec![
+                                                            index(ident("args"), ident("__i")),
+                                                            spec_field("typ"),
+                                                            spec_field("choices"),
+                                                        ],
+                                                    ),
                                                 ),
                                             ],
                                         ),
@@ -567,11 +734,14 @@ fn parse_args_body() -> Vec<Statement> {
                                     ),
                                     vec![ns_set(
                                         ident("__dest"),
-                                        call_global("__py_argparse_convert", vec![
-                                            ident("__arg"),
-                                            spec_field("typ"),
-                                            spec_field("choices"),
-                                        ]),
+                                        call_global(
+                                            "__py_argparse_convert",
+                                            vec![
+                                                ident("__arg"),
+                                                spec_field("typ"),
+                                                spec_field("choices"),
+                                            ],
+                                        ),
                                     )],
                                 ),
                                 assign(ident("__pos"), op(BinOp::Add, ident("__pos"), num(1.0))),
@@ -586,7 +756,11 @@ fn parse_args_body() -> Vec<Statement> {
             "__spec",
             this_field("_options"),
             vec![if_stmt(
-                op(BinOp::And, spec_field("required"), missing(ns_get(spec_field("dest")))),
+                op(
+                    BinOp::And,
+                    spec_field("required"),
+                    missing(ns_get(spec_field("dest"))),
+                ),
                 vec![system_exit()],
             )],
         ),
@@ -600,11 +774,24 @@ fn parse_args_body() -> Vec<Statement> {
                     field_of(ident("__group"), "_members"),
                     vec![if_stmt(
                         ns_get(spec_field("dest")),
-                        vec![assign(ident("__seen"), op(BinOp::Add, ident("__seen"), num(1.0)))],
+                        vec![assign(
+                            ident("__seen"),
+                            op(BinOp::Add, ident("__seen"), num(1.0)),
+                        )],
                     )],
                 ),
-                if_stmt(op(BinOp::Gt, ident("__seen"), num(1.0)), vec![system_exit()]),
-                if_stmt(op(BinOp::And, field_of(ident("__group"), "required"), eq(ident("__seen"), num(0.0))), vec![system_exit()]),
+                if_stmt(
+                    op(BinOp::Gt, ident("__seen"), num(1.0)),
+                    vec![system_exit()],
+                ),
+                if_stmt(
+                    op(
+                        BinOp::And,
+                        field_of(ident("__group"), "required"),
+                        eq(ident("__seen"), num(0.0)),
+                    ),
+                    vec![system_exit()],
+                ),
             ],
         ),
         ret(ident("__ns")),
@@ -613,7 +800,18 @@ fn parse_args_body() -> Vec<Statement> {
 }
 
 pub(super) fn namespace() -> Statement {
-    class("Namespace", vec![init(any_args(), vec![])])
+    class(
+        "Namespace",
+        vec![
+            init(any_args(), vec![]),
+            method("__repr__", vec![], vec![ret(str_lit("Namespace()"))]),
+            method(
+                "__str__",
+                vec![],
+                vec![ret(call(member(ident("self"), "__repr__"), vec![]))],
+            ),
+        ],
+    )
 }
 
 pub(super) fn argument_parser() -> Statement {
@@ -639,13 +837,25 @@ pub(super) fn argument_parser() -> Statement {
             method(
                 "add_argument_group",
                 any_args(),
-                vec![ret(new("__ArgparseGroup", vec![ident("self"), bool_lit(false)]))],
+                vec![ret(new(
+                    "__ArgparseGroup",
+                    vec![ident("self"), bool_lit(false)],
+                ))],
             ),
             method(
                 "add_mutually_exclusive_group",
                 vec![kwargs_param("k")],
                 vec![
-                    assign(ident("__g"), new("__ArgparseGroup", vec![ident("self"), dict_get(ident("k"), "required", bool_lit(false))])),
+                    assign(
+                        ident("__g"),
+                        new(
+                            "__ArgparseGroup",
+                            vec![
+                                ident("self"),
+                                dict_get(ident("k"), "required", bool_lit(false)),
+                            ],
+                        ),
+                    ),
                     append(this_field("_mutex_groups"), ident("__g")),
                     ret(ident("__g")),
                 ],
@@ -654,22 +864,38 @@ pub(super) fn argument_parser() -> Statement {
                 "add_subparsers",
                 vec![kwargs_param("k")],
                 vec![
-                    assign(ident("__dest"), dict_get(ident("k"), "dest", str_lit("subcommand"))),
+                    assign(
+                        ident("__dest"),
+                        dict_get(ident("k"), "dest", str_lit("subcommand")),
+                    ),
                     assign(this_slot("_subparser_dest"), ident("__dest")),
-                    ret(new("__ArgparseSubparsers", vec![ident("self"), ident("__dest")])),
+                    ret(new(
+                        "__ArgparseSubparsers",
+                        vec![ident("self"), ident("__dest")],
+                    )),
                 ],
             ),
             method(
                 "set_defaults",
                 vec![kwargs_param("k")],
                 vec![
-                    for_in("__key", ident("k"), vec![assign(index(this_field("_defaults"), ident("__key")), index(ident("k"), ident("__key")))]),
+                    for_in(
+                        "__key",
+                        ident("k"),
+                        vec![assign(
+                            index(this_field("_defaults"), ident("__key")),
+                            index(ident("k"), ident("__key")),
+                        )],
+                    ),
                     ret(null()),
                 ],
             ),
             method(
                 "parse_args",
-                vec![param("args", Some(null())), param("namespace", Some(null()))],
+                vec![
+                    param("args", Some(null())),
+                    param("namespace", Some(null())),
+                ],
                 parse_args_body(),
             ),
         ],
@@ -681,7 +907,10 @@ pub(super) fn argparse_group() -> Statement {
         "__ArgparseGroup",
         vec![
             init(
-                vec![param("parser", None), param("required", Some(bool_lit(false)))],
+                vec![
+                    param("parser", None),
+                    param("required", Some(bool_lit(false))),
+                ],
                 vec![
                     set_this("parser", ident("parser")),
                     set_this("required", ident("required")),
@@ -691,7 +920,10 @@ pub(super) fn argparse_group() -> Statement {
             method(
                 "add_argument",
                 add_argument_params(),
-                add_spec_to(field_of(this_field("parser"), "_options"), Some(this_field("_members"))),
+                add_spec_to(
+                    field_of(this_field("parser"), "_options"),
+                    Some(this_field("_members")),
+                ),
             ),
         ],
     )
@@ -702,15 +934,27 @@ pub(super) fn argparse_subparsers() -> Statement {
         "__ArgparseSubparsers",
         vec![
             init(
-                vec![param("parser", None), param("dest", Some(str_lit("subcommand")))],
-                vec![set_this("parser", ident("parser")), set_this("dest", ident("dest"))],
+                vec![
+                    param("parser", None),
+                    param("dest", Some(str_lit("subcommand"))),
+                ],
+                vec![
+                    set_this("parser", ident("parser")),
+                    set_this("dest", ident("dest")),
+                ],
             ),
             method(
                 "add_parser",
                 vec![param("name", None)],
                 vec![
-                    assign(ident("__argparse_child_parser"), new("ArgumentParser", vec![])),
-                    assign(index(field_of(this_field("parser"), "_subparsers"), ident("name")), ident("__argparse_child_parser")),
+                    assign(
+                        ident("__argparse_child_parser"),
+                        new("ArgumentParser", vec![]),
+                    ),
+                    assign(
+                        index(field_of(this_field("parser"), "_subparsers"), ident("name")),
+                        ident("__argparse_child_parser"),
+                    ),
                     ret(ident("__argparse_child_parser")),
                 ],
             ),
@@ -720,6 +964,24 @@ pub(super) fn argparse_subparsers() -> Statement {
 
 pub(super) fn module_functions() -> Vec<Statement> {
     vec![
+        function(
+            "FileType",
+            vec![
+                param("mode", Some(str_lit("r"))),
+                param("bufsize", Some(num(-1.0))),
+                param("encoding", Some(null())),
+                param("errors", Some(null())),
+            ],
+            vec![ret(Expr::new(ExprKind::Lambda {
+                params: vec![param("filename", None)],
+                body: LambdaBody::Expr(Box::new(call_global(
+                    "open",
+                    vec![ident("filename"), ident("mode")],
+                ))),
+                is_async: false,
+                captures: vec![],
+            }))],
+        ),
         function(
             "__py_argparse_make_spec",
             vec![param("flags", None), param("kwargs", None)],

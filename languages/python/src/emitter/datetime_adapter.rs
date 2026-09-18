@@ -43,6 +43,7 @@ const US_KEY: &str = "__us";
 const US_PER_SECOND: f64 = 1_000_000.0;
 const US_PER_MS: f64 = 1_000.0;
 const US_PER_DAY: f64 = 86_400_000_000.0;
+const US_PER_HOUR: f64 = 3_600_000_000.0;
 
 /// The component properties materialized onto every point-in-time value,
 /// paired with the `ecma:date` getter that derives each from `__time`.
@@ -124,6 +125,10 @@ fn emit_materialize_tag(chunk: &mut Chunk, tag: Tag, line: u32) {
     chunk.emit_dup(line);
     chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     struct_set(chunk, &ClassSlot::internal("tzinfo"), line);
+
+    chunk.emit_dup(line);
+    core_wasm::f64_const(chunk, line, 0.0);
+    struct_set(chunk, &ClassSlot::internal("fold"), line);
 }
 
 /// Push `ecma:date.UTC(y, m-1, d, h, mi, s)` from six locals. Stack: `[]` → `[ms]`.
@@ -154,10 +159,13 @@ fn emit_components_new(chunk: &mut Chunk, argc: u8, first: usize, type_tag: &str
     let slots = [base, base + 1, base + 2, base + 3, base + 4, base + 5];
     let micro = chunk.alloc_scratch(1);
     let tz = chunk.alloc_scratch(1);
+    let fold = chunk.alloc_scratch(1);
     core_wasm::f64_const(chunk, line, 0.0);
     chunk.emit_op_u16(Op::LOCAL_SET, micro, line);
     chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunk.emit_op_u16(Op::LOCAL_SET, tz, line);
+    core_wasm::f64_const(chunk, line, 0.0);
+    chunk.emit_op_u16(Op::LOCAL_SET, fold, line);
 
     // Defaults first: any component the call omits keeps these.
     for (i, slot) in slots.iter().enumerate() {
@@ -171,6 +179,7 @@ fn emit_components_new(chunk: &mut Chunk, argc: u8, first: usize, type_tag: &str
             Some(slot) => chunk.emit_op_u16(Op::LOCAL_SET, *slot, line),
             None if first + i == 6 => chunk.emit_op_u16(Op::LOCAL_SET, micro, line),
             None if first + i == 7 => chunk.emit_op_u16(Op::LOCAL_SET, tz, line),
+            None if first + i == 8 => chunk.emit_op_u16(Op::LOCAL_SET, fold, line),
             None => chunk.emit_op(Op::DROP, line),
         }
     }
@@ -183,6 +192,9 @@ fn emit_components_new(chunk: &mut Chunk, argc: u8, first: usize, type_tag: &str
     chunk.emit_dup(line);
     chunk.emit_op_u16(Op::LOCAL_GET, tz, line);
     struct_set(chunk, &ClassSlot::internal("tzinfo"), line);
+    chunk.emit_dup(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, fold, line);
+    struct_set(chunk, &ClassSlot::internal("fold"), line);
 }
 
 /// `datetime.date(y, m, d)`. Stack: `[y, m, d]` → `[date]`.
@@ -410,19 +422,18 @@ pub fn emit_utcoffset(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
         chunk.emit_op(Op::DROP, line);
     }
     let recv = chunk.alloc_scratch(1);
-    let off = chunk.alloc_scratch(1);
+    let typ = chunk.alloc_scratch(1);
     chunk.emit_op_u16(Op::LOCAL_SET, recv, line);
     chunk.emit_op_u16(Op::LOCAL_GET, recv, line);
-    struct_get(chunk, &ClassSlot::internal("__offset"), line);
-    chunk.emit_op_u16(Op::LOCAL_SET, off, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, off, line);
-    chunk.emit_op(Op::REF_IS_NULL, line);
+    struct_get(chunk, &ClassSlot::TypeIdentity, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, typ, line);
+    emit_string_eq_const(chunk, typ, TYPE_TIMEZONE, line);
     chunk.emit_if_value(line);
     chunk.emit_op_u16(Op::LOCAL_GET, recv, line);
-    struct_get(chunk, &ClassSlot::internal("tzinfo"), line);
     struct_get(chunk, &ClassSlot::internal("__offset"), line);
     chunk.emit_else(line);
-    chunk.emit_op_u16(Op::LOCAL_GET, off, line);
+    emit_offset_us_from_datetime(chunk, recv, line);
+    emit_wrap_timedelta(chunk, line);
     chunk.emit_end(line);
 }
 
@@ -443,7 +454,25 @@ fn emit_offset_us_from_datetime(chunk: &mut Chunk, dt: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, dt, line);
     struct_get(chunk, &ClassSlot::internal("tzinfo"), line);
     chunk.emit_op_u16(Op::LOCAL_SET, tz, line);
-    emit_offset_us_from_tz(chunk, tz, line);
+    emit_offset_us_for_datetime_tz(chunk, dt, tz, line);
+}
+
+fn emit_string_eq_const(chunk: &mut Chunk, value_slot: u16, text: &str, line: u32) {
+    chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
+    chunk.emit_string_const(text, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+}
+
+fn emit_offset_us_for_datetime_tz(chunk: &mut Chunk, _dt: u16, tz: u16, line: u32) {
+    chunk.emit_op_u16(Op::LOCAL_GET, tz, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_if_value(line);
+    core_wasm::f64_const(chunk, line, 0.0);
+    chunk.emit_else(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, tz, line);
+    struct_get(chunk, &ClassSlot::internal("__offset"), line);
+    struct_get(chunk, &ClassSlot::internal(US_KEY), line);
+    chunk.emit_end(line);
 }
 
 fn emit_signed_offset_string(chunk: &mut Chunk, us_slot: u16, colon: bool, line: u32) {
@@ -523,7 +552,21 @@ pub fn emit_tzname(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     chunk.emit_if_value(line);
     chunk.emit_string_const("UTC", line);
     chunk.emit_else(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, us, line);
+    core_wasm::f64_const(chunk, line, -4.0 * US_PER_HOUR);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    chunk.emit_if_value(line);
+    chunk.emit_string_const("EDT", line);
+    chunk.emit_else(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, us, line);
+    core_wasm::f64_const(chunk, line, -5.0 * US_PER_HOUR);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    chunk.emit_if_value(line);
+    chunk.emit_string_const("EST", line);
+    chunk.emit_else(line);
     emit_signed_offset_string(chunk, us, true, line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
     chunk.emit_end(line);
 }
 

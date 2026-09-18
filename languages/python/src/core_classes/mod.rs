@@ -31,9 +31,10 @@
 //!
 //! Mirrors `languages/dart/src/core_classes/`.
 
-mod builders;
 mod argparse;
 mod ast_mod;
+mod asyncio_mod;
+mod builders;
 mod builtins;
 mod bytes;
 mod collections;
@@ -54,9 +55,11 @@ mod html_parser;
 mod http_ssl;
 mod io;
 mod ipaddress;
+mod iterator;
 mod json_mod;
 mod linecache;
 mod logging;
+mod mmap_mod;
 mod mock;
 mod multiprocessing;
 mod object_class;
@@ -72,6 +75,7 @@ mod shlex;
 mod shutil;
 mod site;
 mod socket;
+mod socketserver;
 mod string_mod;
 mod struct_mod;
 mod subprocess;
@@ -85,9 +89,11 @@ mod tokenize;
 mod tomllib;
 mod traceback;
 mod tracemalloc;
-mod types_mod;
 mod typeobj;
+mod types_mod;
 mod warnings;
+mod weakref_mod;
+mod zoneinfo;
 
 use vybe_ast::Statement;
 
@@ -100,19 +106,27 @@ use vybe_ast::Statement;
 pub const CORE_CLASSES: &[(&str, fn() -> Statement)] = &[
     ("ellipsis", builtins::ellipsis_type),
     ("IPv4Address", ipaddress::ipv4_address),
+    ("IPv6Address", ipaddress::ipv6_address),
     ("IPv4Network", ipaddress::ipv4_network),
     ("IPv4Interface", ipaddress::ipv4_interface),
     ("__WarningRecord", warnings::warning_record),
+    ("Struct", struct_mod::struct_class),
+    ("__PyIteratorStep", iterator::iterator_step),
+    ("__PyIteratorAdapter", iterator::iterator_adapter),
     ("__CatchWarnings", warnings::catch_warnings),
-    ("LogRecord", logging::log_record),
+    ("__PyLogRecord", logging::log_record),
     ("Formatter", logging::formatter),
     ("Filter", logging::filter_class),
     ("Handler", logging::handler),
     ("StreamHandler", logging::stream_handler),
     ("FileHandler", logging::file_handler),
+    ("NullHandler", logging::null_handler),
+    ("MemoryHandler", logging::memory_handler),
     ("Logger", logging::logger),
+    ("LoggerAdapter", logging::logger_adapter),
     ("__NullContext", contextlib::null_context),
     ("__Closing", contextlib::closing),
+    ("__ExitStack", contextlib::exit_stack),
     ("__Suppress", contextlib::suppress),
     ("__GenCM", contextlib::gen_cm),
     ("__AsyncGenCM", contextlib::async_gen_cm),
@@ -132,6 +146,8 @@ pub const CORE_CLASSES: &[(&str, fn() -> Statement)] = &[
     ("Return", || ast_mod::simple_node("Return")),
     ("NodeVisitor", ast_mod::node_visitor),
     ("NodeTransformer", ast_mod::node_transformer),
+    ("JSONDecodeError", json_mod::json_decode_error),
+    ("ZoneInfoNotFoundError", zoneinfo::zoneinfo_not_found_error),
     ("JSONDecoder", json_mod::json_decoder),
     ("JSONEncoder", json_mod::json_encoder),
     ("SelectorKey", selectors::selector_key),
@@ -185,6 +201,10 @@ pub const CORE_CLASSES: &[(&str, fn() -> Statement)] = &[
     ("PriorityQueue", queue::priority_queue),
     ("SimpleQueue", queue::simple_queue),
     ("Future", futures::future),
+    ("Task", asyncio_mod::task),
+    ("__PyAsyncEventLoop", asyncio_mod::event_loop),
+    ("TaskGroup", asyncio_mod::task_group),
+    ("Timeout", asyncio_mod::timeout),
     ("Process", multiprocessing::process),
     ("Pool", multiprocessing::pool),
     ("__PyValue", multiprocessing::shared_value),
@@ -211,6 +231,8 @@ pub const CORE_CLASSES: &[(&str, fn() -> Statement)] = &[
     ("PurePath", pathlib::pure_path),
     ("Path", pathlib::path),
     ("__PyNamedTempFile", tempfile::named_temp_file),
+    ("__PySpooledTempFile", tempfile::spooled_temp_file),
+    ("__PyTemporaryDirectory", tempfile::temporary_directory),
     ("TopologicalSorter", graphlib::topological_sorter),
     ("__pprint_PrettyPrinter", pprint::pretty_printer),
     ("__py_shlex_class", shlex::shlex_class),
@@ -218,6 +240,15 @@ pub const CORE_CLASSES: &[(&str, fn() -> Statement)] = &[
     ("__string_Template", string_mod::template),
     ("__string_Formatter", string_mod::formatter),
     ("VybeSocketImpl", socket::socket_impl),
+    ("BaseRequestHandler", socketserver::base_request_handler),
+    ("StreamRequestHandler", socketserver::stream_request_handler),
+    (
+        "DatagramRequestHandler",
+        socketserver::datagram_request_handler,
+    ),
+    ("TCPServer", socketserver::tcp_server),
+    ("UDPServer", socketserver::udp_server),
+    ("ThreadingMixIn", socketserver::threading_mixin),
     ("ConfigParser", configparser::config_parser),
     ("RawConfigParser", configparser::raw_config_parser),
     ("BasicInterpolation", configparser::basic_interpolation),
@@ -227,6 +258,14 @@ pub const CORE_CLASSES: &[(&str, fn() -> Statement)] = &[
     ),
     ("StringIO", io::string_io),
     ("BytesIO", io::bytes_io),
+    ("IOBase", io::io_base),
+    ("RawIOBase", io::raw_io_base),
+    ("BufferedReader", io::buffered_reader),
+    ("BufferedWriter", io::buffered_writer),
+    ("TextIOWrapper", io::text_io_wrapper),
+    ("IncrementalNewlineDecoder", io::incremental_newline_decoder),
+    ("mmap", mmap_mod::mmap_class),
+    ("UnsupportedOperation", io::unsupported_operation),
     ("__PyDiskUsage", shutil::disk_usage_result),
     ("__PyTerminalSize", shutil::terminal_size),
     ("Context", decimal::context),
@@ -250,6 +289,9 @@ pub const CORE_CLASSES: &[(&str, fn() -> Statement)] = &[
     ("Fraction", fractions::fraction),
     ("__py_type_obj", typeobj::type_obj),
     ("__py_SystemRandom", random_mod::system_random),
+    ("WeakKeyDictionary", weakref_mod::weak_key_dictionary),
+    ("WeakValueDictionary", weakref_mod::weak_value_dictionary),
+    ("WeakSet", weakref_mod::weak_set),
 ];
 
 /// Classes generated from a table rather than a builder each — the warning
@@ -296,6 +338,10 @@ fn generated_classes(module: &str) -> Vec<Statement> {
             .iter()
             .map(|(name, parent)| threading::lock_alias(name, parent))
             .collect(),
+        "asyncio" => threading::LOCK_ALIASES
+            .iter()
+            .map(|(name, parent)| threading::lock_alias(name, parent))
+            .collect(),
         "contextvars" => vec![contextvars::context()],
         "configparser" => configparser::EXCEPTIONS
             .iter()
@@ -325,6 +371,7 @@ const MODULE_FUNCTIONS: &[(&str, fn() -> Vec<Statement>)] = &[
     ("ssl", http_ssl::module_functions),
     ("csv", csv::module_functions),
     ("threading", threading::module_functions),
+    ("asyncio", asyncio_mod::module_functions),
     ("concurrent", futures::module_functions),
     ("multiprocessing", multiprocessing::module_functions),
     ("subprocess", subprocess::module_functions),
@@ -347,15 +394,18 @@ const MODULE_FUNCTIONS: &[(&str, fn() -> Vec<Statement>)] = &[
     ("shutil", shutil::module_functions),
     ("site", site::module_functions),
     ("io", io::module_functions),
+    ("mmap", mmap_mod::module_functions),
     ("collections", collections_functions),
     ("fnmatch", fnmatch::module_functions),
     ("socket", socket::module_functions),
+    ("socketserver", socketserver::module_functions),
     ("pprint", pprint::module_functions),
     ("shlex", shlex::module_functions),
     ("tempfile", tempfile::module_functions),
     ("struct", struct_mod::module_functions),
     ("sysconfig", sysconfig::module_functions),
     ("types", types_mod::module_functions),
+    ("zoneinfo", zoneinfo::module_functions),
 ];
 
 /// The MODULE SURFACE: which `<module>.<name>` reads resolve to a declaration
@@ -378,7 +428,6 @@ pub const MODULE_SURFACE: &[(&str, &str, &str)] = &[
     ("shutil", "move", "move"),
     ("shutil", "rmtree", "rmtree"),
     ("shutil", "copytree", "copytree"),
-    ("shutil", "which", "which"),
     ("shutil", "disk_usage", "disk_usage"),
     ("shutil", "get_terminal_size", "get_terminal_size"),
     ("shutil", "get_archive_formats", "get_archive_formats"),
@@ -388,7 +437,12 @@ pub const MODULE_SURFACE: &[(&str, &str, &str)] = &[
     ("shutil", "ignore_patterns", "ignore_patterns"),
     ("struct", "pack", "__py_struct_pack"),
     ("struct", "unpack", "__py_struct_unpack"),
+    ("struct", "pack_into", "__py_struct_pack_into"),
+    ("struct", "unpack_from", "__py_struct_unpack_from"),
     ("struct", "calcsize", "__py_struct_calcsize"),
+    ("struct", "iter_unpack", "__py_struct_iter_unpack"),
+    ("struct", "Struct", "Struct"),
+    ("struct", "error", "Exception"),
     ("timeit", "timeit", "timeit"),
     ("timeit", "repeat", "repeat"),
     ("timeit", "default_timer", "default_timer"),
@@ -455,10 +509,12 @@ pub const MODULE_SURFACE: &[(&str, &str, &str)] = &[
         "RotatingFileHandler",
         "RotatingFileHandler",
     ),
+    ("logging.handlers", "MemoryHandler", "MemoryHandler"),
     ("warnings", "showwarning", "showwarning"),
     ("warnings", "warn_explicit", "warn_explicit"),
     ("warnings", "_filters_mutated", "_filters_mutated"),
     ("warnings", "onceregistry", "__py_warnings_onceregistry"),
+    ("warnings", "filters", "__py_warnings_filters"),
     ("tokenize", "generate_tokens", "generate_tokens"),
     ("tokenize", "tokenize", "tokenize"),
     ("tokenize", "untokenize", "untokenize"),
@@ -467,6 +523,8 @@ pub const MODULE_SURFACE: &[(&str, &str, &str)] = &[
     ("tokenize", "TokenError", "TokenError"),
     ("tempfile", "NamedTemporaryFile", "__PyNamedTempFile"),
     ("tempfile", "TemporaryFile", "__PyNamedTempFile"),
+    ("tempfile", "TemporaryDirectory", "__PyTemporaryDirectory"),
+    ("tempfile", "SpooledTemporaryFile", "__PySpooledTempFile"),
     ("graphlib", "TopologicalSorter", "TopologicalSorter"),
     ("graphlib", "CycleError", "CycleError"),
     ("pprint", "pprint", "__pprint_pprint"),
@@ -483,9 +541,9 @@ pub const MODULE_SURFACE: &[(&str, &str, &str)] = &[
     ("textwrap", "TextWrapper", "__py_TextWrapper"),
     ("string", "Template", "__string_Template"),
     ("string", "Formatter", "__string_Formatter"),
-    ("socket", "socket", "VybeSocketImpl"),
     ("socket", "timeout", "VybeSocketTimeout"),
     ("socket", "gaierror", "VybeSocketGaiError"),
+    ("socket", "socket", "VybeSocketImpl"),
     ("socket", "create_connection", "create_connection"),
     ("socket", "inet_pton", "inet_pton"),
     ("socket", "inet_ntop", "inet_ntop"),
@@ -495,17 +553,29 @@ pub const MODULE_SURFACE: &[(&str, &str, &str)] = &[
     ("socket", "htons", "htons"),
     ("socket", "getdefaulttimeout", "getdefaulttimeout"),
     ("socket", "setdefaulttimeout", "setdefaulttimeout"),
+    ("socketserver", "BaseRequestHandler", "BaseRequestHandler"),
+    (
+        "socketserver",
+        "StreamRequestHandler",
+        "StreamRequestHandler",
+    ),
+    (
+        "socketserver",
+        "DatagramRequestHandler",
+        "DatagramRequestHandler",
+    ),
+    ("socketserver", "TCPServer", "TCPServer"),
+    ("socketserver", "UDPServer", "UDPServer"),
+    ("socketserver", "ThreadingMixIn", "ThreadingMixIn"),
+    ("socketserver", "ThreadingTCPServer", "TCPServer"),
+    ("socketserver", "ThreadingUDPServer", "UDPServer"),
     ("fnmatch", "fnmatch", "__py_fnmatch_match"),
     ("fnmatch", "fnmatchcase", "__py_fnmatch_match"),
     ("fnmatch", "filter", "__py_fnmatch_filter"),
     ("fnmatch", "translate", "__fn_translate"),
     ("configparser", "ConfigParser", "ConfigParser"),
     ("configparser", "RawConfigParser", "RawConfigParser"),
-    (
-        "configparser",
-        "BasicInterpolation",
-        "BasicInterpolation",
-    ),
+    ("configparser", "BasicInterpolation", "BasicInterpolation"),
     (
         "configparser",
         "ExtendedInterpolation",
@@ -521,6 +591,19 @@ pub const MODULE_SURFACE: &[(&str, &str, &str)] = &[
     ("configparser", "NoOptionError", "NoOptionError"),
     ("io", "StringIO", "StringIO"),
     ("io", "BytesIO", "BytesIO"),
+    ("io", "IOBase", "IOBase"),
+    ("io", "RawIOBase", "RawIOBase"),
+    ("io", "UnsupportedOperation", "UnsupportedOperation"),
+    ("io", "BufferedReader", "BufferedReader"),
+    ("io", "BufferedWriter", "BufferedWriter"),
+    ("io", "TextIOWrapper", "TextIOWrapper"),
+    (
+        "io",
+        "IncrementalNewlineDecoder",
+        "IncrementalNewlineDecoder",
+    ),
+    ("io", "open", "open"),
+    ("mmap", "mmap", "mmap"),
     ("decimal", "Decimal", "Decimal"),
     ("decimal", "Context", "Context"),
     ("decimal", "DecimalTuple", "DecimalTuple"),
@@ -539,6 +622,7 @@ pub const MODULE_SURFACE: &[(&str, &str, &str)] = &[
     ("ipaddress", "ip_interface", "IPv4Interface"),
     ("ipaddress", "collapse_addresses", "collapse_addresses"),
     ("ipaddress", "IPv4Address", "IPv4Address"),
+    ("ipaddress", "IPv6Address", "IPv6Address"),
     ("ipaddress", "IPv4Network", "IPv4Network"),
     ("ipaddress", "IPv4Interface", "IPv4Interface"),
     ("warnings", "warn", "warn"),
@@ -557,15 +641,22 @@ pub const MODULE_SURFACE: &[(&str, &str, &str)] = &[
     ("logging", "error", "error"),
     ("logging", "critical", "critical"),
     ("logging", "log", "log"),
+    ("logging", "exception", "exception"),
+    ("logging", "shutdown", "shutdown"),
+    ("logging", "disable", "disable"),
     ("logging", "LogRecord", "LogRecord"),
     ("logging", "Formatter", "Formatter"),
     ("logging", "Filter", "Filter"),
     ("logging", "Handler", "Handler"),
     ("logging", "StreamHandler", "StreamHandler"),
     ("logging", "FileHandler", "FileHandler"),
+    ("logging", "NullHandler", "NullHandler"),
+    ("logging", "MemoryHandler", "MemoryHandler"),
     ("logging", "Logger", "Logger"),
+    ("logging", "LoggerAdapter", "LoggerAdapter"),
     ("contextlib", "nullcontext", "nullcontext"),
     ("contextlib", "closing", "closing"),
+    ("contextlib", "ExitStack", "ExitStack"),
     ("contextlib", "redirect_stdout", "redirect_stdout"),
     ("contextlib", "redirect_stderr", "redirect_stderr"),
     ("contextlib", "suppress", "suppress"),
@@ -573,6 +664,7 @@ pub const MODULE_SURFACE: &[(&str, &str, &str)] = &[
     ("contextlib", "asynccontextmanager", "asynccontextmanager"),
     ("argparse", "ArgumentParser", "ArgumentParser"),
     ("argparse", "Namespace", "Namespace"),
+    ("argparse", "FileType", "FileType"),
     ("ast", "parse", "parse"),
     ("ast", "dump", "dump"),
     ("ast", "unparse", "unparse"),
@@ -595,6 +687,7 @@ pub const MODULE_SURFACE: &[(&str, &str, &str)] = &[
     ("ast", "NodeTransformer", "NodeTransformer"),
     ("plistlib", "dumps", "dumps"),
     ("plistlib", "loads", "loads"),
+    ("json", "JSONDecodeError", "JSONDecodeError"),
     ("json", "JSONDecoder", "JSONDecoder"),
     ("json", "JSONEncoder", "JSONEncoder"),
     ("selectors", "DefaultSelector", "SelectSelector"),
@@ -627,12 +720,26 @@ pub const MODULE_SURFACE: &[(&str, &str, &str)] = &[
     ("ssl", "SSLContext", "SSLContext"),
     ("ssl", "SSLError", "SSLError"),
     ("ssl", "CertificateError", "CertificateError"),
+    (
+        "ssl",
+        "SSLCertVerificationError",
+        "SSLCertVerificationError",
+    ),
     ("ssl", "TLSVersion", "TLSVersion"),
     ("ssl", "Purpose", "Purpose"),
     ("ssl", "create_default_context", "create_default_context"),
     ("ssl", "match_hostname", "match_hostname"),
     ("ssl", "enum_certificates", "enum_certificates"),
     ("ssl", "wrap_socket", "ssl_wrap_socket"),
+    ("ssl", "PROTOCOL_TLS", "PROTOCOL_TLS"),
+    ("ssl", "PROTOCOL_TLS_CLIENT", "PROTOCOL_TLS_CLIENT"),
+    ("ssl", "PROTOCOL_TLS_SERVER", "PROTOCOL_TLS_SERVER"),
+    ("ssl", "CERT_NONE", "CERT_NONE"),
+    ("ssl", "CERT_OPTIONAL", "CERT_OPTIONAL"),
+    ("ssl", "CERT_REQUIRED", "CERT_REQUIRED"),
+    ("ssl", "HAS_SNI", "HAS_SNI"),
+    ("ssl", "HAS_ALPN", "HAS_ALPN"),
+    ("ssl", "OP_NO_SSLv2", "OP_NO_SSLv2"),
     ("csv", "reader", "reader"),
     ("csv", "writer", "writer"),
     ("csv", "DictReader", "DictReader"),
@@ -678,6 +785,49 @@ pub const MODULE_SURFACE: &[(&str, &str, &str)] = &[
     ),
     ("concurrent.futures", "as_completed", "as_completed"),
     ("concurrent.futures", "wait", "wait"),
+    ("asyncio", "Future", "Future"),
+    ("asyncio", "Task", "Task"),
+    ("asyncio", "TaskGroup", "TaskGroup"),
+    ("asyncio", "Timeout", "Timeout"),
+    ("asyncio", "EventLoop", "__PyAsyncEventLoop"),
+    ("asyncio", "Queue", "Queue"),
+    ("asyncio", "LifoQueue", "LifoQueue"),
+    ("asyncio", "PriorityQueue", "PriorityQueue"),
+    ("asyncio", "Lock", "Lock"),
+    ("asyncio", "Semaphore", "Semaphore"),
+    ("asyncio", "BoundedSemaphore", "BoundedSemaphore"),
+    ("asyncio", "Event", "Event"),
+    ("asyncio", "Condition", "Condition"),
+    ("asyncio", "run", "run"),
+    ("asyncio", "sleep", "sleep"),
+    ("asyncio", "gather", "gather"),
+    ("asyncio", "create_task", "create_task"),
+    ("asyncio", "ensure_future", "ensure_future"),
+    ("asyncio", "current_task", "current_task"),
+    ("asyncio", "all_tasks", "all_tasks"),
+    ("asyncio", "get_running_loop", "get_running_loop"),
+    ("asyncio", "get_event_loop", "get_event_loop"),
+    ("asyncio", "new_event_loop", "new_event_loop"),
+    ("asyncio", "set_event_loop", "set_event_loop"),
+    ("asyncio", "get_event_loop_policy", "get_event_loop_policy"),
+    ("asyncio", "wait_for", "wait_for"),
+    ("asyncio", "shield", "shield"),
+    ("asyncio", "wait", "wait"),
+    ("asyncio", "as_completed", "as_completed"),
+    ("asyncio", "to_thread", "to_thread"),
+    (
+        "asyncio",
+        "run_coroutine_threadsafe",
+        "run_coroutine_threadsafe",
+    ),
+    ("asyncio", "timeout", "timeout"),
+    ("asyncio", "iscoroutine", "iscoroutine"),
+    ("asyncio", "iscoroutinefunction", "iscoroutinefunction"),
+    ("asyncio", "CancelledError", "CancelledError"),
+    ("asyncio", "TimeoutError", "TimeoutError"),
+    ("asyncio", "FIRST_COMPLETED", "FIRST_COMPLETED"),
+    ("asyncio", "FIRST_EXCEPTION", "FIRST_EXCEPTION"),
+    ("asyncio", "ALL_COMPLETED", "ALL_COMPLETED"),
     ("multiprocessing", "Process", "Process"),
     ("multiprocessing", "Pool", "Pool"),
     ("multiprocessing", "Manager", "Manager"),
@@ -695,6 +845,7 @@ pub const MODULE_SURFACE: &[(&str, &str, &str)] = &[
     ("subprocess", "call", "call"),
     ("subprocess", "check_output", "check_output"),
     ("subprocess", "check_call", "check_call"),
+    ("subprocess", "list2cmdline", "list2cmdline"),
     ("threading", "current_thread", "current_thread"),
     ("threading", "main_thread", "main_thread"),
     ("threading", "enumerate", "enumerate"),
@@ -743,6 +894,7 @@ pub const MODULE_SURFACE: &[(&str, &str, &str)] = &[
     ),
     ("traceback", "format_tb", "format_tb"),
     ("traceback", "format_stack", "format_stack"),
+    ("traceback", "format_list", "format_list"),
     ("traceback", "extract_tb", "extract_tb"),
     ("traceback", "extract_stack", "extract_stack"),
     ("traceback", "print_exc", "print_exc"),
@@ -760,13 +912,24 @@ pub const MODULE_SURFACE: &[(&str, &str, &str)] = &[
     ("tracemalloc", "is_tracing", "is_tracing"),
     ("tracemalloc", "take_snapshot", "take_snapshot"),
     ("tracemalloc", "get_traced_memory", "get_traced_memory"),
-    ("tracemalloc", "get_tracemalloc_memory", "get_tracemalloc_memory"),
+    (
+        "tracemalloc",
+        "get_tracemalloc_memory",
+        "get_tracemalloc_memory",
+    ),
     ("tracemalloc", "reset_peak", "reset_peak"),
-    ("tracemalloc", "get_object_traceback", "get_object_traceback"),
+    (
+        "tracemalloc",
+        "get_object_traceback",
+        "get_object_traceback",
+    ),
     ("tracemalloc", "Snapshot", "Snapshot"),
     ("tracemalloc", "Filter", "Filter"),
     ("types", "SimpleNamespace", "SimpleNamespace"),
     ("types", "MappingProxyType", "MappingProxyType"),
+    ("weakref", "WeakKeyDictionary", "WeakKeyDictionary"),
+    ("weakref", "WeakValueDictionary", "WeakValueDictionary"),
+    ("weakref", "WeakSet", "WeakSet"),
     ("types", "MethodType", "MethodType"),
     ("types", "FunctionType", "FunctionType"),
     ("types", "LambdaType", "LambdaType"),
@@ -820,6 +983,7 @@ pub const CLASS_WRITABLE_PROPERTIES: &[(&str, &[&str])] = &[
 ];
 
 pub const CLASS_MODULES: &[(&str, &str)] = &[
+    ("JSONDecodeError", "json.decoder"),
     ("JSONDecoder", "json.decoder"),
     ("JSONEncoder", "json.encoder"),
     ("SequenceMatcher", "difflib"),
@@ -892,8 +1056,63 @@ pub fn needed_classes(source: &str) -> Vec<&'static str> {
 pub const CLASS_ATTRS: &[(&str, &[&str])] = &[
     ("ellipsis", &["__repr__"]),
     (
+        "Struct",
+        &["format", "size", "pack", "unpack", "unpack_from"],
+    ),
+    ("__PyIteratorStep", &["value", "done"]),
+    ("__PyIteratorAdapter", &["it", "next"]),
+    (
         "__py_SystemRandom",
         &["random", "randint", "getrandbits", "randbytes"],
+    ),
+    (
+        "WeakKeyDictionary",
+        &[
+            "_pairs",
+            "__setitem__",
+            "__getitem__",
+            "__contains__",
+            "__delitem__",
+            "__len__",
+            "__iter__",
+            "keys",
+            "values",
+            "items",
+            "copy",
+        ],
+    ),
+    (
+        "WeakValueDictionary",
+        &[
+            "_pairs",
+            "__setitem__",
+            "__getitem__",
+            "__contains__",
+            "__delitem__",
+            "__len__",
+            "__iter__",
+            "keys",
+            "values",
+            "items",
+            "copy",
+        ],
+    ),
+    (
+        "WeakSet",
+        &[
+            "_items",
+            "add",
+            "discard",
+            "__contains__",
+            "__len__",
+            "__iter__",
+        ],
+    ),
+    ("FrameSummary", &["filename", "lineno", "name", "line"]),
+    ("StackSummary", &["extract", "format"]),
+    (
+        "TracebackException",
+        &["exc_type", "_message", "from_exception", "format"],
     ),
     (
         "IPv4Address",
@@ -904,6 +1123,25 @@ pub const CLASS_ATTRS: &[(&str, &[&str])] = &[
             "compressed",
             "exploded",
             "packed",
+            "is_private",
+            "is_loopback",
+            "is_multicast",
+            "is_global",
+            "__str__",
+            "__repr__",
+            "__int__",
+            "__eq__",
+            "__add__",
+            "__sub__",
+        ],
+    ),
+    (
+        "IPv6Address",
+        &[
+            "version",
+            "_text",
+            "compressed",
+            "exploded",
             "is_private",
             "is_loopback",
             "is_multicast",
@@ -921,6 +1159,10 @@ pub const CLASS_ATTRS: &[(&str, &[&str])] = &[
             "netmask",
             "hostmask",
             "broadcast_address",
+            "hosts",
+            "subnets",
+            "supernet",
+            "overlaps",
         ],
     ),
     ("IPv4Interface", &["version", "prefixlen", "ip", "network"]),
@@ -934,6 +1176,7 @@ pub const CLASS_ATTRS: &[(&str, &[&str])] = &[
             "_c",
             "_e",
             "_kind",
+            "from_float",
             "__str__",
             "__repr__",
             "__add__",
@@ -962,10 +1205,19 @@ pub const CLASS_ATTRS: &[(&str, &[&str])] = &[
             "is_zero",
             "copy_abs",
             "copy_negate",
+            "copy_sign",
             "compare",
             "compare_total",
             "as_tuple",
+            "adjusted",
+            "as_integer_ratio",
             "sqrt",
+            "exp",
+            "ln",
+            "fma",
+            "max",
+            "min",
+            "remainder_near",
             "quantize",
             "normalize",
             "to_integral_value",
@@ -1075,8 +1327,22 @@ pub const CLASS_ATTRS: &[(&str, &[&str])] = &[
             "__mock_call__",
         ],
     ),
-    ("__PyPatch", &["target", "name", "new", "old", "__enter__", "__exit__", "__call__"]),
-    ("__PyPatchDict", &["target", "values", "clear", "old", "__enter__", "__exit__"]),
+    (
+        "__PyPatch",
+        &[
+            "target",
+            "name",
+            "new",
+            "old",
+            "__enter__",
+            "__exit__",
+            "__call__",
+        ],
+    ),
+    (
+        "__PyPatchDict",
+        &["target", "values", "clear", "old", "__enter__", "__exit__"],
+    ),
     ("__PyPatchFactory", &["__call__", "object", "dict"]),
     (
         "PurePath",
@@ -1205,11 +1471,120 @@ pub const CLASS_ATTRS: &[(&str, &[&str])] = &[
         ],
     ),
     (
+        "Logger",
+        &[
+            "name",
+            "level",
+            "handlers",
+            "propagate",
+            "parent",
+            "setLevel",
+            "addHandler",
+            "removeHandler",
+            "hasHandlers",
+            "isEnabledFor",
+            "_log",
+            "_handle_record",
+            "debug",
+            "info",
+            "warning",
+            "error",
+            "critical",
+            "exception",
+            "log",
+        ],
+    ),
+    (
+        "__PyLogRecord",
+        &[
+            "name",
+            "levelno",
+            "levelname",
+            "pathname",
+            "lineno",
+            "msg",
+            "args",
+            "exc_info",
+            "message",
+            "getMessage",
+        ],
+    ),
+    ("Formatter", &["fmt", "datefmt", "format"]),
+    ("Filter", &["name", "filter"]),
+    (
+        "Handler",
+        &[
+            "level",
+            "stream",
+            "formatter",
+            "filters",
+            "setLevel",
+            "setFormatter",
+            "addFilter",
+            "filter",
+            "format",
+            "handle",
+            "emit",
+            "flush",
+            "close",
+        ],
+    ),
+    (
+        "StreamHandler",
+        &[
+            "level",
+            "stream",
+            "formatter",
+            "filters",
+            "setLevel",
+            "setFormatter",
+            "addFilter",
+            "filter",
+            "format",
+            "handle",
+            "emit",
+            "flush",
+            "close",
+        ],
+    ),
+    (
+        "FileHandler",
+        &[
+            "level",
+            "stream",
+            "formatter",
+            "filters",
+            "setLevel",
+            "setFormatter",
+            "addFilter",
+            "filter",
+            "format",
+            "handle",
+            "emit",
+            "flush",
+            "close",
+        ],
+    ),
+    ("NullHandler", &["handle", "emit"]),
+    (
+        "MemoryHandler",
+        &[
+            "capacity",
+            "flushLevel",
+            "target",
+            "buffer",
+            "handle",
+            "flush",
+        ],
+    ),
+    ("LoggerAdapter", &["logger", "extra", "info"]),
+    (
         "StringIO",
         &[
             "_buf",
             "_pos",
             "closed",
+            "line_buffering",
             "write",
             "writelines",
             "getvalue",
@@ -1254,6 +1629,92 @@ pub const CLASS_ATTRS: &[(&str, &[&str])] = &[
             "seekable",
             "flush",
             "detach",
+            "close",
+            "__enter__",
+            "__exit__",
+        ],
+    ),
+    (
+        "IOBase",
+        &[
+            "closed",
+            "close",
+            "flush",
+            "readable",
+            "writable",
+            "seekable",
+            "__enter__",
+            "__exit__",
+        ],
+    ),
+    (
+        "RawIOBase",
+        &["closed", "close", "readable", "writable", "seekable"],
+    ),
+    (
+        "BufferedReader",
+        &[
+            "raw",
+            "buffer_size",
+            "closed",
+            "read",
+            "read1",
+            "readline",
+            "readable",
+            "writable",
+            "seek",
+            "tell",
+            "flush",
+            "close",
+        ],
+    ),
+    (
+        "BufferedWriter",
+        &[
+            "raw",
+            "buffer_size",
+            "closed",
+            "write",
+            "flush",
+            "readable",
+            "writable",
+            "close",
+        ],
+    ),
+    (
+        "TextIOWrapper",
+        &[
+            "buffer", "encoding", "errors", "newline", "closed", "read", "write", "flush", "close",
+            "readable", "writable",
+        ],
+    ),
+    (
+        "IncrementalNewlineDecoder",
+        &["decoder", "translate", "newlines", "decode", "reset"],
+    ),
+    (
+        "mmap",
+        &[
+            "_fd",
+            "_access",
+            "_pos",
+            "_buf",
+            "closed",
+            "__len__",
+            "__getitem__",
+            "__setitem__",
+            "__getslice__",
+            "__setslice__",
+            "read",
+            "readline",
+            "write",
+            "seek",
+            "tell",
+            "size",
+            "find",
+            "rfind",
+            "move",
+            "flush",
             "close",
             "__enter__",
             "__exit__",
@@ -1371,7 +1832,15 @@ pub const CLASS_ATTRS: &[(&str, &[&str])] = &[
     ),
     (
         "TokenInfo",
-        &["type", "string", "start", "end", "line", "exact_type", "__iter__"],
+        &[
+            "type",
+            "string",
+            "start",
+            "end",
+            "line",
+            "exact_type",
+            "__iter__",
+        ],
     ),
     (
         "__PyTraceback",
@@ -1473,6 +1942,7 @@ pub const CLASS_ATTRS: &[(&str, &[&str])] = &[
             "fileno",
             "accept",
             "connect",
+            "connect_ex",
             "send",
             "sendall",
             "recv",
@@ -1481,10 +1951,99 @@ pub const CLASS_ATTRS: &[(&str, &[&str])] = &[
             "dup",
             "detach",
             "makefile",
+            "read",
+            "readline",
+            "write",
+            "flush",
             "__enter__",
             "__exit__",
         ],
     ),
+    (
+        "TCPServer",
+        &[
+            "allow_reuse_address",
+            "request_queue_size",
+            "timeout",
+            "server_address",
+            "RequestHandlerClass",
+            "socket",
+            "server_bind",
+            "server_activate",
+            "fileno",
+            "server_close",
+            "close_request",
+            "shutdown_request",
+            "shutdown",
+            "serve_forever",
+            "handle_timeout",
+            "verify_request",
+            "finish_request",
+            "handle_request",
+        ],
+    ),
+    (
+        "UDPServer",
+        &[
+            "allow_reuse_address",
+            "request_queue_size",
+            "timeout",
+            "server_address",
+            "RequestHandlerClass",
+            "socket",
+            "max_packet_size",
+            "server_bind",
+            "server_activate",
+            "fileno",
+            "server_close",
+            "close_request",
+            "shutdown_request",
+            "shutdown",
+            "serve_forever",
+            "handle_timeout",
+            "verify_request",
+            "finish_request",
+            "handle_request",
+        ],
+    ),
+    (
+        "BaseRequestHandler",
+        &[
+            "request",
+            "client_address",
+            "server",
+            "setup",
+            "handle",
+            "finish",
+        ],
+    ),
+    (
+        "StreamRequestHandler",
+        &[
+            "request",
+            "client_address",
+            "server",
+            "rfile",
+            "wfile",
+            "setup",
+            "handle",
+            "finish",
+        ],
+    ),
+    (
+        "DatagramRequestHandler",
+        &[
+            "request",
+            "client_address",
+            "server",
+            "rfile",
+            "wfile",
+            "setup",
+            "handle",
+            "finish",
+        ],
+    ),
+    ("ThreadingMixIn", &["daemon_threads", "process_request"]),
     (
         "HTTPStatus",
         &[
@@ -1577,6 +2136,25 @@ pub const CLASS_ATTRS: &[(&str, &[&str])] = &[
         ],
     ),
     (
+        "SSLContext",
+        &[
+            "protocol",
+            "verify_mode",
+            "check_hostname",
+            "options",
+            "minimum_version",
+            "maximum_version",
+            "get_ciphers",
+            "set_ciphers",
+            "set_alpn_protocols",
+            "load_verify_locations",
+            "load_default_certs",
+            "wrap_socket",
+        ],
+    ),
+    ("TLSVersion", &["value", "name"]),
+    ("Purpose", &["value", "name"]),
+    (
         "SimpleCookie",
         &[
             "_cookies",
@@ -1596,7 +2174,23 @@ pub const CLASS_ATTRS: &[(&str, &[&str])] = &[
         &["_cookies", "filename", "__iter__", "save", "load"],
     ),
     ("Request", &["full_url", "data", "headers"]),
-    ("HTMLParser", &["feed"]),
+    (
+        "HTMLParser",
+        &[
+            "_line",
+            "_col",
+            "feed",
+            "reset",
+            "getpos",
+            "handle_starttag",
+            "handle_startendtag",
+            "handle_endtag",
+            "handle_data",
+            "handle_comment",
+            "handle_decl",
+            "handle_pi",
+        ],
+    ),
     (
         "__pprint_PrettyPrinter",
         &[
@@ -1654,6 +2248,42 @@ pub const CLASS_ATTRS: &[(&str, &[&str])] = &[
             "writable",
             "seekable",
             "close",
+            "__enter__",
+            "__exit__",
+        ],
+    ),
+    (
+        "__PySpooledTempFile",
+        &[
+            "name",
+            "mode",
+            "delete",
+            "closed",
+            "_pos",
+            "max_size",
+            "_rolled",
+            "write",
+            "read",
+            "seek",
+            "rollover",
+            "tell",
+            "flush",
+            "fileno",
+            "readable",
+            "writable",
+            "seekable",
+            "close",
+            "__enter__",
+            "__exit__",
+        ],
+    ),
+    (
+        "__PyTemporaryDirectory",
+        &[
+            "name",
+            "ignore_cleanup_errors",
+            "delete",
+            "cleanup",
             "__enter__",
             "__exit__",
         ],
@@ -1723,16 +2353,8 @@ pub const CLASS_ATTRS: &[(&str, &[&str])] = &[
     (
         "SchedEvent",
         &[
-            "time",
-            "priority",
-            "action",
-            "argument",
-            "kwargs",
-            "__lt__",
-            "__le__",
-            "__gt__",
-            "__ge__",
-            "__eq__",
+            "time", "priority", "action", "argument", "kwargs", "__lt__", "__le__", "__gt__",
+            "__ge__", "__eq__",
         ],
     ),
     (
@@ -1749,8 +2371,158 @@ pub const CLASS_ATTRS: &[(&str, &[&str])] = &[
             "run",
         ],
     ),
+    (
+        "__PyLock",
+        &[
+            "locked",
+            "acquire",
+            "release",
+            "__enter__",
+            "__exit__",
+            "__aenter__",
+            "__aexit__",
+        ],
+    ),
+    (
+        "Lock",
+        &[
+            "locked",
+            "acquire",
+            "release",
+            "__enter__",
+            "__exit__",
+            "__aenter__",
+            "__aexit__",
+        ],
+    ),
+    (
+        "RLock",
+        &[
+            "locked",
+            "acquire",
+            "release",
+            "__enter__",
+            "__exit__",
+            "__aenter__",
+            "__aexit__",
+        ],
+    ),
+    (
+        "Semaphore",
+        &[
+            "_value",
+            "_initial_value",
+            "acquire",
+            "release",
+            "__enter__",
+            "__exit__",
+            "__aenter__",
+            "__aexit__",
+        ],
+    ),
+    (
+        "BoundedSemaphore",
+        &[
+            "_value",
+            "_initial_value",
+            "acquire",
+            "release",
+            "__enter__",
+            "__exit__",
+            "__aenter__",
+            "__aexit__",
+        ],
+    ),
+    ("Event", &["_flag", "is_set", "set", "clear", "wait"]),
+    (
+        "Condition",
+        &[
+            "_lock",
+            "acquire",
+            "release",
+            "wait",
+            "notify",
+            "notify_all",
+            "__enter__",
+            "__exit__",
+            "__aenter__",
+            "__aexit__",
+        ],
+    ),
+    (
+        "Barrier",
+        &["parties", "n_waiting", "broken", "wait", "reset", "abort"],
+    ),
+    (
+        "Thread",
+        &[
+            "group",
+            "_target",
+            "name",
+            "_args",
+            "_kwargs",
+            "daemon",
+            "_started",
+            "_done",
+            "_target_name",
+            "start",
+            "run",
+            "join",
+            "is_alive",
+        ],
+    ),
+    (
+        "Process",
+        &[
+            "group",
+            "_target",
+            "name",
+            "_args",
+            "_kwargs",
+            "daemon",
+            "_started",
+            "_done",
+            "_target_name",
+            "start",
+            "run",
+            "join",
+            "is_alive",
+        ],
+    ),
+    (
+        "Pool",
+        &[
+            "processes",
+            "map",
+            "starmap",
+            "apply",
+            "close",
+            "join",
+            "terminate",
+            "__enter__",
+            "__exit__",
+        ],
+    ),
+    (
+        "Timer",
+        &[
+            "interval",
+            "_target",
+            "name",
+            "_args",
+            "_kwargs",
+            "daemon",
+            "_started",
+            "_done",
+            "_target_name",
+            "start",
+            "run",
+            "join",
+            "is_alive",
+        ],
+    ),
     ("__AsyncGenCM", &["gen", "__aenter__", "__aexit__"]),
-    ("Namespace", &[]),
+    ("Namespace", &["__repr__", "__str__"]),
     (
         "ArgumentParser",
         &[
@@ -1772,10 +2544,7 @@ pub const CLASS_ATTRS: &[(&str, &[&str])] = &[
         "__ArgparseGroup",
         &["parser", "required", "_members", "add_argument"],
     ),
-    (
-        "__ArgparseSubparsers",
-        &["parser", "dest", "add_parser"],
-    ),
+    ("__ArgparseSubparsers", &["parser", "dest", "add_parser"]),
     ("Module", &["__source", "__mode", "_nodes", "body"]),
     ("Expression", &["__source", "__mode", "_nodes", "body"]),
     ("Constant", &["value", "_nodes"]),
@@ -1787,6 +2556,10 @@ pub const CLASS_ATTRS: &[(&str, &[&str])] = &[
     ("Return", &["value", "_nodes"]),
     ("NodeVisitor", &["visit", "generic_visit"]),
     ("NodeTransformer", &["visit", "generic_visit"]),
+    (
+        "JSONDecodeError",
+        &["msg", "doc", "pos", "lineno", "colno", "__str__"],
+    ),
     ("JSONDecoder", &["decode", "raw_decode"]),
     ("JSONEncoder", &["default", "encode"]),
     ("SelectorKey", &["fileobj", "fd", "events", "data"]),
@@ -1870,179 +2643,307 @@ pub const CLASS_ATTRS: &[(&str, &[&str])] = &[
 /// Instance data attributes for AST-built core classes. User classes collect
 /// these while walking `self.x = ...`; core classes bypass that walk, so the
 /// same lowering metadata has to be seeded explicitly.
-pub const CLASS_DATA_ATTRS: &[(&str, &[&str])] = &[(
-    "TokenInfo",
-    &["type", "string", "start", "end", "line", "exact_type"],
-), (
-    "Token",
-    &["var", "old_value", "_used"],
-), (
-    "ContextVar",
-    &["name", "_default", "_has_value", "_value"],
-), (
-    "Context",
-    &["_items"],
-), (
-    "Queue",
-    &["maxsize", "_items", "_unfinished_tasks"],
-), (
-    "LifoQueue",
-    &["maxsize", "_items", "_unfinished_tasks"],
-), (
-    "PriorityQueue",
-    &["maxsize", "_items", "_unfinished_tasks"],
-), (
-    "SimpleQueue",
-    &["maxsize", "_items", "_unfinished_tasks"],
-), (
-    "__PyTraceFrame",
-    &["filename", "lineno"],
-), (
-    "__PyTraceback",
-    &["_frames"],
-), (
-    "__PyTraceStat",
-    &["size", "count", "traceback"],
-), (
-    "__PyTraceStatDiff",
-    &["size", "count", "size_diff", "count_diff", "traceback"],
-), (
-    "Snapshot",
-    &["_stats"],
-), (
-    "Filter",
-    &["inclusive", "filename_pattern", "lineno", "all_frames", "domain"],
-), (
-    "SchedEvent",
-    &["time", "priority", "action", "argument", "kwargs"],
-), (
-    "scheduler",
-    &["timefunc", "delayfunc", "_queue", "queue"],
-), (
-    "OptionParser",
-    &["_options"],
-), (
-    "OptionGroup",
-    &["parser", "title", "description", "_options"],
-), (
-    "NullTranslations",
-    &["_info", "_charset", "_fallback"],
-), (
-    "GNUTranslations",
-    &["_info", "_charset", "_fallback", "_catalog", "plural"],
-), (
-    "Logger",
-    &["name", "level", "handlers"],
-), (
-    "Handler",
-    &["level"],
-), (
-    "StreamHandler",
-    &["level"],
-), (
-    "FileHandler",
-    &["level"],
-), (
-    "__WarningRecord",
-    &["message", "category"],
-), (
-    "__CatchWarnings",
-    &["record", "entries"],
-), (
-    "__py_shlex_class",
-    &["text", "posix", "whitespace_split", "commenters"],
-), (
-    "__py_TextWrapper",
-    &[
-        "width",
-        "initial_indent",
-        "subsequent_indent",
-        "break_long_words",
-        "break_on_hyphens",
-        "expand_tabs",
-        "replace_whitespace",
-        "drop_whitespace",
-        "max_lines",
-        "placeholder",
-    ],
-), (
-    "__string_Template",
-    &[
-        "delimiter",
-        "template",
-        "substitute",
-        "safe_substitute",
-        "get_identifiers",
-        "is_valid",
-    ],
-), (
-    "__string_Formatter",
-    &["format", "vformat"],
-), (
-    "__AsyncGenCM",
-    &["gen"],
-), (
-    "ArgumentParser",
-    &[
-        "_options",
-        "_positionals",
-        "_defaults",
-        "_mutex_groups",
-        "_subparsers",
-        "_subparser_dest",
-    ],
-), (
-    "__ArgparseGroup",
-    &["parser", "required", "_members"],
-), (
-    "__ArgparseSubparsers",
-    &["parser", "dest"],
-), (
-    "Module",
-    &["__source", "__mode", "_nodes", "body"],
-), (
-    "Expression",
-    &["__source", "__mode", "_nodes", "body"],
-), (
-    "Constant",
-    &["value", "_nodes"],
-), (
-    "Assign",
-    &["value", "_nodes"],
-), (
-    "Name",
-    &["value", "_nodes"],
-), (
-    "BinOp",
-    &["value", "_nodes"],
-), (
-    "Add",
-    &["value", "_nodes"],
-), (
-    "FunctionDef",
-    &["value", "_nodes"],
-), (
-    "Return",
-    &["value", "_nodes"],
-), (
-    "SelectorKey",
-    &["fileobj", "fd", "events", "data"],
-), (
-    "SelectSelector",
-    &["_map"],
-), (
-    "EpollSelector",
-    &["_map"],
-), (
-    "KqueueSelector",
-    &["_map"],
-), (
-    "PollSelector",
-    &["_map"],
-), (
-    "DevpollSelector",
-    &["_map"],
-)];
+pub const CLASS_DATA_ATTRS: &[(&str, &[&str])] = &[
+    ("__PyIteratorStep", &["value", "done"]),
+    ("__PyIteratorAdapter", &["it"]),
+    ("Struct", &["format", "size"]),
+    (
+        "IPv4Address",
+        &[
+            "version",
+            "_int",
+            "_text",
+            "compressed",
+            "exploded",
+            "packed",
+            "is_private",
+            "is_loopback",
+            "is_multicast",
+            "is_global",
+        ],
+    ),
+    (
+        "IPv6Address",
+        &["version", "_text", "compressed", "exploded", "packed"],
+    ),
+    (
+        "IPv4Network",
+        &[
+            "version",
+            "prefixlen",
+            "num_addresses",
+            "_base",
+            "network_address",
+            "netmask",
+            "hostmask",
+            "broadcast_address",
+        ],
+    ),
+    ("IPv4Interface", &["version", "prefixlen", "ip", "network"]),
+    (
+        "TokenInfo",
+        &["type", "string", "start", "end", "line", "exact_type"],
+    ),
+    ("Token", &["var", "old_value", "_used"]),
+    ("ContextVar", &["name", "_default", "_has_value", "_value"]),
+    ("Context", &["_items"]),
+    ("Queue", &["maxsize", "_items", "_unfinished_tasks"]),
+    ("LifoQueue", &["maxsize", "_items", "_unfinished_tasks"]),
+    ("PriorityQueue", &["maxsize", "_items", "_unfinished_tasks"]),
+    ("SimpleQueue", &["maxsize", "_items", "_unfinished_tasks"]),
+    (
+        "Future",
+        &[
+            "_result",
+            "_done",
+            "_callbacks",
+            "_result_append_sinks",
+            "result",
+            "done",
+            "cancelled",
+            "cancel",
+            "set_result",
+            "add_done_callback",
+            "__py_add_result_append_sink",
+        ],
+    ),
+    (
+        "Task",
+        &[
+            "_result",
+            "_done",
+            "_cancelled",
+            "_callbacks",
+            "_result_append_sinks",
+            "_name",
+            "result",
+            "done",
+            "cancelled",
+            "cancel",
+            "set_result",
+            "add_done_callback",
+            "__py_add_result_append_sink",
+            "get_name",
+            "set_name",
+        ],
+    ),
+    (
+        "CompletedProcess",
+        &["args", "returncode", "stdout", "stderr", "check_returncode"],
+    ),
+    (
+        "CalledProcessError",
+        &["returncode", "cmd", "output", "stderr"],
+    ),
+    ("TimeoutExpired", &["cmd", "timeout", "output", "stderr"]),
+    (
+        "Popen",
+        &[
+            "args",
+            "_text",
+            "_cwd",
+            "_env",
+            "_stdout_mode",
+            "_stderr_mode",
+            "returncode",
+            "stdout",
+            "stderr",
+            "pid",
+            "communicate",
+            "poll",
+            "wait",
+            "kill",
+            "terminate",
+            "__enter__",
+            "__exit__",
+        ],
+    ),
+    (
+        "__PyAsyncEventLoop",
+        &[
+            "time",
+            "is_running",
+            "is_closed",
+            "close",
+            "create_future",
+            "call_soon_threadsafe",
+            "run_until_complete",
+        ],
+    ),
+    ("TaskGroup", &["_tasks", "create_task"]),
+    ("Timeout", &["delay"]),
+    (
+        "Thread",
+        &[
+            "group",
+            "_target",
+            "name",
+            "_args",
+            "_kwargs",
+            "daemon",
+            "_started",
+            "_done",
+            "_target_name",
+        ],
+    ),
+    (
+        "Timer",
+        &[
+            "interval",
+            "_target",
+            "name",
+            "_args",
+            "_kwargs",
+            "daemon",
+            "_started",
+            "_done",
+            "_target_name",
+        ],
+    ),
+    ("__PyTraceFrame", &["filename", "lineno"]),
+    ("__PyTraceback", &["_frames"]),
+    ("__PyTraceStat", &["size", "count", "traceback"]),
+    (
+        "__PyTraceStatDiff",
+        &["size", "count", "size_diff", "count_diff", "traceback"],
+    ),
+    ("Snapshot", &["_stats"]),
+    (
+        "Filter",
+        &[
+            "inclusive",
+            "filename_pattern",
+            "lineno",
+            "all_frames",
+            "domain",
+        ],
+    ),
+    (
+        "SchedEvent",
+        &["time", "priority", "action", "argument", "kwargs"],
+    ),
+    ("scheduler", &["timefunc", "delayfunc", "_queue", "queue"]),
+    ("OptionParser", &["_options"]),
+    (
+        "OptionGroup",
+        &["parser", "title", "description", "_options"],
+    ),
+    ("NullTranslations", &["_info", "_charset", "_fallback"]),
+    (
+        "GNUTranslations",
+        &["_info", "_charset", "_fallback", "_catalog", "plural"],
+    ),
+    ("__WarningRecord", &["message", "category"]),
+    ("__CatchWarnings", &["record", "entries"]),
+    (
+        "__py_shlex_class",
+        &["text", "posix", "whitespace_split", "commenters"],
+    ),
+    (
+        "__py_TextWrapper",
+        &[
+            "width",
+            "initial_indent",
+            "subsequent_indent",
+            "break_long_words",
+            "break_on_hyphens",
+            "expand_tabs",
+            "replace_whitespace",
+            "drop_whitespace",
+            "max_lines",
+            "placeholder",
+        ],
+    ),
+    (
+        "__string_Template",
+        &[
+            "delimiter",
+            "template",
+            "substitute",
+            "safe_substitute",
+            "get_identifiers",
+            "is_valid",
+        ],
+    ),
+    ("__string_Formatter", &["format", "vformat"]),
+    ("__AsyncGenCM", &["gen"]),
+    (
+        "ArgumentParser",
+        &[
+            "_options",
+            "_positionals",
+            "_defaults",
+            "_mutex_groups",
+            "_subparsers",
+            "_subparser_dest",
+        ],
+    ),
+    ("__ArgparseGroup", &["parser", "required", "_members"]),
+    ("__ArgparseSubparsers", &["parser", "dest"]),
+    ("Module", &["__source", "__mode", "_nodes", "body"]),
+    ("Expression", &["__source", "__mode", "_nodes", "body"]),
+    ("Constant", &["value", "_nodes"]),
+    ("Assign", &["value", "_nodes"]),
+    ("Name", &["value", "_nodes"]),
+    ("BinOp", &["value", "_nodes"]),
+    ("Add", &["value", "_nodes"]),
+    ("FunctionDef", &["value", "_nodes"]),
+    ("Return", &["value", "_nodes"]),
+    ("SelectorKey", &["fileobj", "fd", "events", "data"]),
+    ("SelectSelector", &["_map"]),
+    ("EpollSelector", &["_map"]),
+    ("KqueueSelector", &["_map"]),
+    ("PollSelector", &["_map"]),
+    ("DevpollSelector", &["_map"]),
+    (
+        "TCPServer",
+        &[
+            "allow_reuse_address",
+            "request_queue_size",
+            "timeout",
+            "server_address",
+            "RequestHandlerClass",
+            "socket",
+        ],
+    ),
+    (
+        "UDPServer",
+        &[
+            "allow_reuse_address",
+            "request_queue_size",
+            "timeout",
+            "server_address",
+            "RequestHandlerClass",
+            "socket",
+            "max_packet_size",
+        ],
+    ),
+    (
+        "BaseRequestHandler",
+        &["request", "client_address", "server"],
+    ),
+    (
+        "StreamRequestHandler",
+        &["request", "client_address", "server", "rfile", "wfile"],
+    ),
+    (
+        "DatagramRequestHandler",
+        &["request", "client_address", "server", "rfile", "wfile"],
+    ),
+    ("ThreadingMixIn", &["daemon_threads"]),
+];
+
+pub const CLASS_ARITH_RETURN_CLASSES: &[(&str, &str, &str)] = &[
+    ("IPv4Address", "__add__", "IPv4Address"),
+    ("IPv4Address", "__sub__", "IPv4Address"),
+    ("Decimal", "__add__", "Decimal"),
+    ("Decimal", "__sub__", "Decimal"),
+    ("Decimal", "__mul__", "Decimal"),
+    ("Decimal", "__truediv__", "Decimal"),
+    ("Decimal", "__floordiv__", "Decimal"),
+    ("Decimal", "__mod__", "Decimal"),
+    ("Decimal", "__pow__", "Decimal"),
+];
 
 /// The bytes helper surface. Not a module: the gate is `source_uses_bytes`,
 /// the same one the prelude carried, so the walker asks for it directly rather
@@ -2104,6 +3005,14 @@ pub fn exception_group_declarations() -> Vec<Statement> {
 
 /// The global a `<module>.<name>` read denotes, if this module declares it.
 pub fn module_member(module: &str, name: &str) -> Option<&'static str> {
+    if module == "decimal" {
+        if let Some((class_name, _)) = decimal::EXCEPTIONS
+            .iter()
+            .find(|(class_name, _)| *class_name == name)
+        {
+            return Some(*class_name);
+        }
+    }
     MODULE_SURFACE
         .iter()
         .find(|(m, n, _)| *m == module && *n == name)
@@ -2129,6 +3038,9 @@ pub fn core_class_parents(name: &str) -> Vec<&'static str> {
     if name == "GNUTranslations" {
         out.push("NullTranslations");
     }
+    if name == "ZoneInfoNotFoundError" {
+        out.push("KeyError");
+    }
     for (child, parent) in warnings::CATEGORIES
         .iter()
         .chain(decimal::EXCEPTIONS.iter())
@@ -2150,19 +3062,22 @@ pub fn core_class_parents(name: &str) -> Vec<&'static str> {
 const MODULE_CLASSES: &[(&str, &[&str])] = &[
     (
         "ipaddress",
-        &["IPv4Address", "IPv4Network", "IPv4Interface"],
+        &["IPv4Address", "IPv6Address", "IPv4Network", "IPv4Interface"],
     ),
     ("warnings", &["__WarningRecord", "__CatchWarnings"]),
     (
         "logging",
         &[
-            "LogRecord",
+            "__PyLogRecord",
             "Formatter",
             "Filter",
             "Handler",
             "StreamHandler",
             "FileHandler",
+            "NullHandler",
+            "MemoryHandler",
             "Logger",
+            "LoggerAdapter",
         ],
     ),
     (
@@ -2170,6 +3085,7 @@ const MODULE_CLASSES: &[(&str, &[&str])] = &[
         &[
             "__NullContext",
             "__Closing",
+            "__ExitStack",
             "__Suppress",
             "__GenCM",
             "__AsyncGenCM",
@@ -2209,9 +3125,20 @@ const MODULE_CLASSES: &[(&str, &[&str])] = &[
     ),
     ("http.cookies", &["Morsel", "SimpleCookie", "CookieError"]),
     ("http.cookiejar", &["CookieJar", "LWPCookieJar"]),
+    ("zoneinfo", &["ZoneInfoNotFoundError"]),
     ("urllib.request", &["Request"]),
     ("html.parser", &["HTMLParser"]),
-    ("ssl", &["SSLContext", "TLSVersion", "Purpose"]),
+    (
+        "ssl",
+        &[
+            "SSLContext",
+            "TLSVersion",
+            "Purpose",
+            "SSLError",
+            "CertificateError",
+            "SSLCertVerificationError",
+        ],
+    ),
     (
         "csv",
         &[
@@ -2244,6 +3171,25 @@ const MODULE_CLASSES: &[(&str, &[&str])] = &[
         &["Queue", "LifoQueue", "PriorityQueue", "SimpleQueue"],
     ),
     ("concurrent", &["Future"]),
+    (
+        "asyncio",
+        &[
+            "Future",
+            "Task",
+            "__PyAsyncEventLoop",
+            "TaskGroup",
+            "Timeout",
+            "Queue",
+            "LifoQueue",
+            "PriorityQueue",
+            "Semaphore",
+            "BoundedSemaphore",
+            "Event",
+            "Condition",
+            "Lock",
+            "RLock",
+        ],
+    ),
     (
         "multiprocessing",
         &[
@@ -2346,14 +3292,28 @@ const MODULE_CLASSES: &[(&str, &[&str])] = &[
             "DevpollSelector",
         ],
     ),
-    ("json", &["JSONDecoder", "JSONEncoder"]),
+    ("json", &["JSONDecodeError", "JSONDecoder", "JSONEncoder"]),
     ("sched", &["SchedEvent", "scheduler"]),
     ("contextvars", &["Token", "ContextVar"]),
     ("tomllib", &["TOMLDecodeError"]),
     ("shutil", &["__PyDiskUsage", "__PyTerminalSize"]),
     // No classes — the entry exists so `site`'s module FUNCTIONS splice.
     ("site", &[]),
-    ("io", &["StringIO", "BytesIO"]),
+    (
+        "io",
+        &[
+            "StringIO",
+            "BytesIO",
+            "IOBase",
+            "RawIOBase",
+            "UnsupportedOperation",
+            "BufferedReader",
+            "BufferedWriter",
+            "TextIOWrapper",
+            "IncrementalNewlineDecoder",
+        ],
+    ),
+    ("mmap", &["mmap"]),
     // ⛔ NO class names. Seeding `UserList` into `py_defined_classes` before
     // the walk turns `UserList([1])` into a `New`, which fights the walker's
     // own `UserList` -> `__py_userlist` rewrite. The prelude declared the
@@ -2373,11 +3333,28 @@ const MODULE_CLASSES: &[(&str, &[&str])] = &[
         ],
     ),
     ("socket", &["VybeSocketImpl"]),
+    (
+        "socketserver",
+        &[
+            "BaseRequestHandler",
+            "StreamRequestHandler",
+            "DatagramRequestHandler",
+            "TCPServer",
+            "UDPServer",
+            "ThreadingMixIn",
+        ],
+    ),
     ("pprint", &["__pprint_PrettyPrinter"]),
     ("graphlib", &["TopologicalSorter"]),
-    ("tempfile", &["__PyNamedTempFile"]),
-    // No classes — the entry exists so `struct`'s module FUNCTIONS splice.
-    ("struct", &[]),
+    (
+        "tempfile",
+        &[
+            "__PyNamedTempFile",
+            "__PySpooledTempFile",
+            "__PyTemporaryDirectory",
+        ],
+    ),
+    ("struct", &["Struct"]),
     // No classes — the entry exists so `sysconfig`'s module FUNCTIONS splice.
     ("sysconfig", &[]),
     // No classes — the entry exists so `fnmatch`'s module FUNCTIONS splice.
@@ -2388,6 +3365,10 @@ const MODULE_CLASSES: &[(&str, &[&str])] = &[
     ("random", &["__py_SystemRandom"]),
     // No classes — these are module-level values/functions only.
     ("types", &[]),
+    (
+        "weakref",
+        &["WeakKeyDictionary", "WeakValueDictionary", "WeakSet"],
+    ),
     // `dataclasses.fields()` materializes annotation objects in field
     // descriptors, so dataclass users need the existing type-object class even
     // if they never spell `__annotations__`.
@@ -2396,6 +3377,7 @@ const MODULE_CLASSES: &[(&str, &[&str])] = &[
     ("__annotations__", &["__py_type_obj"]),
     ("__mro__", &["__py_type_obj"]),
     ("__bases__", &["__py_type_obj"]),
+    ("__iter__", &["__PyIteratorStep", "__PyIteratorAdapter"]),
     // `typing.List[int]` and friends normalize to a GenericAlias carrying
     // runtime type objects.
     ("typing", &["__py_type_obj"]),

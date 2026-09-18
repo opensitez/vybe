@@ -13,7 +13,9 @@ use vybe_compiler::primitives::class_slots::{
 };
 use vybe_compiler::primitives::{base64, collections};
 
-use super::adapter_util::{call_import, lget, lset, new_object, stash_exact, struct_get, struct_set};
+use super::adapter_util::{
+    call_import, lget, lset, new_object, stash_exact, struct_get, struct_set,
+};
 
 /// A length-`n` array of random bytes on the stack, `n` taken from `slot`.
 fn push_random_array(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
@@ -36,14 +38,14 @@ fn size_slot(chunks: &mut [Chunk], current: usize, argc: u8, default_len: i32, l
 pub fn emit_token_bytes(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let n = size_slot(chunks, current, argc, 32, line);
     push_random_array(chunks, current, n, line);
-    call_import(chunks, current, "ecma:uint8array", "new", 1, line);
+    call_import(chunks, current, "ecma:uint8array", "from", 1, line);
 }
 
 /// `secrets.token_hex(n=32)` → `2n` hex characters.
 pub fn emit_token_hex(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let n = size_slot(chunks, current, argc, 32, line);
     push_random_array(chunks, current, n, line);
-    call_import(chunks, current, "ecma:uint8array", "new", 1, line);
+    call_import(chunks, current, "ecma:uint8array", "from", 1, line);
     call_import(chunks, current, "ecma:uint8array", "toHex", 1, line);
 }
 
@@ -337,7 +339,13 @@ pub fn emit_uuid_new(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u3
     wrap_uuid(chunks, current, line);
 }
 
-fn emit_uuid_name_based(chunks: &mut Vec<Chunk>, current: usize, argc: u8, version: i32, line: u32) {
+fn emit_uuid_name_based(
+    chunks: &mut Vec<Chunk>,
+    current: usize,
+    argc: u8,
+    version: i32,
+    line: u32,
+) {
     let base = stash_exact(chunks, current, argc, 2, line);
     let h = chunks[current].alloc_scratch(1);
     let data = chunks[current].alloc_scratch(1);

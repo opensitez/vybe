@@ -65,7 +65,7 @@ fn main() {
 
     let language = vybe_compiler::languages::find_by_name("python").expect("python language");
     let mut runtime = vybe_compiler::dynamic::RuntimeCompilerService::new(&mut vm);
-    match runtime.compile_and_run_source(&src, language, "snippet.py") {
+    match runtime.compile_and_run_source(&src, language, path) {
         Ok(_) => {
             let joined: String = output.lock().unwrap().concat();
             print!("{joined}");

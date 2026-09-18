@@ -258,6 +258,49 @@ pub fn emit_copy_deepcopy(chunks: &mut Vec<Chunk>, current: usize, argc: u8, lin
     chunks[current].emit_end(line);
 }
 
+pub fn emit_copy_deepcopy_dict(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
+    let base = stash_exact(chunks, current, argc, 2, line);
+    let value = base;
+    let memo = base + 1;
+    let out = chunks[current].alloc_scratch(1);
+    let keys = chunks[current].alloc_scratch(1);
+    let i_slot = chunks[current].alloc_scratch(1);
+    let key = chunks[current].alloc_scratch(1);
+    let item = chunks[current].alloc_scratch(1);
+    let copied = chunks[current].alloc_scratch(1);
+
+    lget(&mut chunks[current], memo, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_if(line);
+    dict::emit_new(chunks, current, line);
+    lset(&mut chunks[current], memo, line);
+    chunks[current].emit_end(line);
+
+    call_import(chunks, current, "ecma:map", "new", 0, line);
+    lset(&mut chunks[current], out, line);
+    lget(&mut chunks[current], value, line);
+    call_import(chunks, current, "ecma:map", "keys", 1, line);
+    call_import(chunks, current, "ecma:array", "from", 1, line);
+    lset(&mut chunks[current], keys, line);
+
+    let map_loop = loops::emit_for_in_start(chunks, current, keys, i_slot, line);
+    lset(&mut chunks[current], key, line);
+    lget(&mut chunks[current], value, line);
+    lget(&mut chunks[current], key, line);
+    call_import(chunks, current, "ecma:map", "get", 2, line);
+    lset(&mut chunks[current], item, line);
+    emit_python_deepcopy_slot(chunks, current, item, memo, line);
+    lset(&mut chunks[current], copied, line);
+    lget(&mut chunks[current], out, line);
+    lget(&mut chunks[current], key, line);
+    lget(&mut chunks[current], copied, line);
+    call_import(chunks, current, "ecma:map", "set", 3, line);
+    chunks[current].emit_op(Op::DROP, line);
+    loops::emit_for_in_end(chunks, current, i_slot, map_loop, line);
+
+    lget(&mut chunks[current], out, line);
+}
+
 pub fn emit_copy_deepcopy_fields(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
     let base = stash_exact(chunks, current, argc, 3, line);
     let value = base;
@@ -895,7 +938,13 @@ fn emit_store_object(chunks: &mut [Chunk], current: usize, global: u16, store: u
     emit_named_store_object(chunks, current, STORE_KEY, global, store, line);
 }
 
-fn emit_file_store_object(chunks: &mut [Chunk], current: usize, global: u16, store: u16, line: u32) {
+fn emit_file_store_object(
+    chunks: &mut [Chunk],
+    current: usize,
+    global: u16,
+    store: u16,
+    line: u32,
+) {
     emit_named_store_object(chunks, current, FILE_STORE_KEY, global, store, line);
 }
 
@@ -979,7 +1028,12 @@ fn load_file_value(chunks: &mut [Chunk], current: usize, path_slot: u16, line: u
     call_import(chunks, current, "ecma:object", "get", 2, line);
 }
 
-fn store_current_pickle_for_stream(chunks: &mut [Chunk], current: usize, stream_slot: u16, line: u32) {
+fn store_current_pickle_for_stream(
+    chunks: &mut [Chunk],
+    current: usize,
+    stream_slot: u16,
+    line: u32,
+) {
     let global = chunks[current].alloc_scratch(1);
     let store = chunks[current].alloc_scratch(1);
     let stream_store = chunks[current].alloc_scratch(1);
@@ -1199,6 +1253,15 @@ fn if_not_object_return_original(chunk: &mut Chunk, value: u16, line: u32) {
         line,
     );
     chunk.emit_op(Op::I32_OR, line);
+    for tag in ["[object Map]", "[object Set]", "[object Uint8Array]"] {
+        lget(chunk, value, line);
+        let tag_idx = chunk.add_import("ecma:object", "toStringTag");
+        chunk.emit_call(tag_idx, 1, line);
+        chunk.emit_string_const(tag, line);
+        let eq_idx = chunk.add_import("wasm:js-string", "equals");
+        chunk.emit_call(eq_idx, 2, line);
+        chunk.emit_op(Op::I32_OR, line);
+    }
     chunk.emit_op(Op::I32_EQZ, line);
     chunk.emit_if(line);
     lget(chunk, value, line);

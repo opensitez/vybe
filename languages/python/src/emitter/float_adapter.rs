@@ -6,15 +6,16 @@
 //! floats (float literals, `/` true division, `float()`, float-returning math)
 //! — never a blanket cast of every number.
 
-use vybe_compiler::primitives::instructions::core_wasm;
 use vybe_compiler::primitives::class_slots::{
     self, ClassSlot, Dest, ObjSource, PlainNames, ValueSource,
 };
+use vybe_compiler::primitives::instructions::core_wasm;
 use vybe_compiler::primitives::ops;
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
 
 const FLOAT_FIELDS_KEY: &str = "__py_float_fields";
+const FLOAT_ITEMS_KEY: &str = "__py_float_items";
 
 fn lget(chunk: &mut Chunk, slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
@@ -138,6 +139,24 @@ pub fn emit_stamp_float_fields(chunks: &mut [Chunk], current: usize, argc: u8, l
     lget(&mut chunks[current], obj, line);
     lget(&mut chunks[current], fields, line);
     let slot = class_slots::resolve(&ClassSlot::internal(FLOAT_FIELDS_KEY), &PlainNames);
+    class_slots::emit_class_set(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &slot,
+        ValueSource::Stack,
+        line,
+    );
+    lget(&mut chunks[current], obj, line);
+}
+
+/// Stamp a tuple-like value whose positional items should use Python float
+/// display. Stack: `[tuple]` -> `[tuple]`.
+pub fn emit_stamp_float_items(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let base = stash_exact(chunks, current, argc, 1, line);
+    let obj = base;
+    lget(&mut chunks[current], obj, line);
+    chunks[current].emit_bool_const(true, line);
+    let slot = class_slots::resolve(&ClassSlot::internal(FLOAT_ITEMS_KEY), &PlainNames);
     class_slots::emit_class_set(
         &mut chunks[current],
         ObjSource::Stack,

@@ -169,7 +169,10 @@ fn config_parser_class(name: &str, raw: bool) -> Statement {
                         is_not_none(optionxform()),
                         vec![ret(call(optionxform(), vec![ident("key")]))],
                     ),
-                    if_stmt(is_none(optionxform()), vec![ret(method_call(ident("key"), "lower", vec![]))]),
+                    if_stmt(
+                        is_none(optionxform()),
+                        vec![ret(method_call(ident("key"), "lower", vec![]))],
+                    ),
                     ret(ident("key")),
                 ],
             ),
@@ -182,7 +185,10 @@ fn config_parser_class(name: &str, raw: bool) -> Statement {
                         "__cfg_raw",
                         method_call(ident("text"), "split", vec![str_lit("\n")]),
                         vec![
-                            assign(ident("__cfg_line"), method_call(ident("__cfg_raw"), "strip", vec![])),
+                            assign(
+                                ident("__cfg_line"),
+                                method_call(ident("__cfg_raw"), "strip", vec![]),
+                            ),
                             if_stmt(
                                 and(
                                     and(
@@ -193,7 +199,11 @@ fn config_parser_class(name: &str, raw: bool) -> Statement {
                                 ),
                                 vec![
                                     if_stmt(
-                                        op(BinOp::Eq, first_char(ident("__cfg_line")), str_lit("[")),
+                                        op(
+                                            BinOp::Eq,
+                                            first_char(ident("__cfg_line")),
+                                            str_lit("["),
+                                        ),
                                         vec![
                                             assign(
                                                 ident("__cfg_end"),
@@ -232,7 +242,10 @@ fn config_parser_class(name: &str, raw: bool) -> Statement {
                                         and(
                                             is_not_none(ident("__cfg_cur")),
                                             and(
-                                                not_eq(first_char(ident("__cfg_line")), str_lit("[")),
+                                                not_eq(
+                                                    first_char(ident("__cfg_line")),
+                                                    str_lit("["),
+                                                ),
                                                 and(
                                                     op(
                                                         BinOp::Lt,
@@ -418,7 +431,10 @@ fn config_parser_class(name: &str, raw: bool) -> Statement {
                                                     assign(
                                                         ident("__cfg_last"),
                                                         call(
-                                                            member(ident("self"), "_normalize_option"),
+                                                            member(
+                                                                ident("self"),
+                                                                "_normalize_option",
+                                                            ),
                                                             vec![method_call(
                                                                 slice_range(
                                                                     ident("__cfg_line"),
@@ -540,11 +556,7 @@ fn config_parser_class(name: &str, raw: bool) -> Statement {
                     if_stmt(
                         contains(sec_of(ident("sec")), ident("opt")),
                         vec![
-                            expr_stmt(method_call(
-                                sec_of(ident("sec")),
-                                "pop",
-                                vec![ident("opt")],
-                            )),
+                            expr_stmt(method_call(sec_of(ident("sec")), "pop", vec![ident("opt")])),
                             ret(bool_lit(true)),
                         ],
                     ),
@@ -636,10 +648,7 @@ fn config_parser_class(name: &str, raw: bool) -> Statement {
                             contains(sec_of(ident("sec")), ident("opt")),
                             vec![ret(call(
                                 member(ident("self"), "_interpolate"),
-                                vec![
-                                    ident("sec"),
-                                    index(sec_of(ident("sec")), ident("opt")),
-                                ],
+                                vec![ident("sec"), index(sec_of(ident("sec")), ident("opt"))],
                             ))],
                         )],
                     ),
@@ -727,10 +736,7 @@ fn config_parser_class(name: &str, raw: bool) -> Statement {
                                     member(ident("result"), "replace"),
                                     vec![
                                         add(
-                                            add(
-                                                add(str_lit("${"), ident("section")),
-                                                str_lit(":"),
-                                            ),
+                                            add(add(str_lit("${"), ident("section")), str_lit(":")),
                                             add(ident("key"), str_lit("}")),
                                         ),
                                         index(sec_of(ident("section")), ident("key")),

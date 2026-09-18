@@ -211,6 +211,26 @@ pub(super) fn module_functions() -> Vec<Statement> {
             vec![ret(new("Pool", vec![ident("processes")]))],
         ),
         function(
+            "__py_executor_map",
+            vec![
+                param("_executor", None),
+                param("fn", None),
+                param("iterable", None),
+            ],
+            vec![
+                assign(ident("__out"), call_global("list", vec![])),
+                for_in(
+                    "__item",
+                    ident("iterable"),
+                    vec![expr_stmt(call(
+                        member(ident("__out"), "append"),
+                        vec![call(ident("fn"), vec![ident("__item")])],
+                    ))],
+                ),
+                ret(ident("__out")),
+            ],
+        ),
+        function(
             "Pipe",
             vec![param("duplex", Some(bool_lit(true)))],
             vec![ret(tuple_of(vec![

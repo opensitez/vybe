@@ -38,6 +38,32 @@ fn emit_concat(chunks: &mut [Chunk], current: usize, line: u32) {
     vybe_compiler::primitives::strings::emit_str_concat(&mut chunks[current], line);
 }
 
+fn emit_bool_byte_from_slot(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
+    lget(&mut chunks[current], slot, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_string_const("\x01", line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_string_const("\0", line);
+    chunks[current].emit_end(line);
+}
+
+fn emit_byte_bool_from_top(chunks: &mut [Chunk], current: usize, line: u32) {
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op(Op::I32_NE, line);
+    vybe_compiler::primitives::ops::emit_i32_to_bool(&mut chunks[current], line);
+}
+
+fn emit_little_endian_flag_from_big_slot(chunk: &mut Chunk, big_slot: u16, line: u32) {
+    lget(chunk, big_slot, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if_value(line);
+    chunk.emit_i32_const(0, line);
+    chunk.emit_else(line);
+    chunk.emit_i32_const(1, line);
+    chunk.emit_end(line);
+}
+
 fn emit_dynamic_byte_at_const(
     chunks: &mut [Chunk],
     current: usize,
@@ -265,7 +291,14 @@ pub fn emit_struct_pack(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line:
 
     emit_slot_eq_str(&mut chunks[current], fmt, "?", line);
     chunks[current].emit_if_value(line);
-    chunks[current].emit_string_const("\x01", line);
+    emit_bool_byte_from_slot(chunks, current, first, line);
+    chunks[current].emit_else(line);
+
+    emit_slot_eq_str(&mut chunks[current], fmt, ">??", line);
+    chunks[current].emit_if_value(line);
+    emit_bool_byte_from_slot(chunks, current, first, line);
+    emit_bool_byte_from_slot(chunks, current, first + 1, line);
+    emit_concat(chunks, current, line);
     chunks[current].emit_else(line);
 
     emit_slot_eq_str(&mut chunks[current], fmt, "c", line);
@@ -300,9 +333,214 @@ pub fn emit_struct_pack(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line:
 
     chunks[current].emit_string_const("", line);
 
-    for _ in 0..12 {
+    for _ in 0..13 {
         chunks[current].emit_end(line);
     }
+}
+
+/// `struct.pack("f"/"d", value)` float payload.
+///
+/// Stack in: `[value, size, big]`; out: `[Uint8Array]`.
+pub fn emit_struct_pack_float(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    if argc < 3 {
+        vybe_compiler::primitives::collections::emit_array_new(chunks, current, 0, line);
+        call_import(chunks, current, "ecma:uint8array", "new", 1, line);
+        return;
+    }
+
+    let base = chunks[current].alloc_scratch(argc as u16);
+    for i in (0..argc).rev() {
+        lset(&mut chunks[current], base + i as u16, line);
+    }
+    let value = base;
+    let size = base + 1;
+    let big = base + 2;
+    let buf = chunks[current].alloc_scratch(1);
+    let view = chunks[current].alloc_scratch(1);
+
+    lget(&mut chunks[current], size, line);
+    chunks[current].emit_op(Op::I32_TRUNC_F64_U, line);
+    call_import(chunks, current, "ecma:arraybuffer", "new", 1, line);
+    lset(&mut chunks[current], buf, line);
+
+    lget(&mut chunks[current], buf, line);
+    chunks[current].emit_i32_const(-1, line);
+    chunks[current].emit_i32_const(-1, line);
+    call_import(chunks, current, "ecma:dataview", "new", 3, line);
+    lset(&mut chunks[current], view, line);
+
+    lget(&mut chunks[current], size, line);
+    chunks[current].emit_f64_const(4.0, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    lget(&mut chunks[current], view, line);
+    chunks[current].emit_i32_const(0, line);
+    lget(&mut chunks[current], value, line);
+    chunks[current].emit_op(Op::F32_DEMOTE_F64, line);
+    emit_little_endian_flag_from_big_slot(&mut chunks[current], big, line);
+    call_import(chunks, current, "ecma:dataview", "setFloat32", 4, line);
+    chunks[current].emit_else(line);
+    lget(&mut chunks[current], view, line);
+    chunks[current].emit_i32_const(0, line);
+    lget(&mut chunks[current], value, line);
+    emit_little_endian_flag_from_big_slot(&mut chunks[current], big, line);
+    call_import(chunks, current, "ecma:dataview", "setFloat64", 4, line);
+    chunks[current].emit_end(line);
+
+    lget(&mut chunks[current], buf, line);
+    chunks[current].emit_i32_const(0, line);
+    lget(&mut chunks[current], size, line);
+    chunks[current].emit_op(Op::I32_TRUNC_F64_U, line);
+    call_import(chunks, current, "ecma:uint8array", "newFromBuffer", 3, line);
+}
+
+/// Python `struct` binary16 (`e`) packing.
+///
+/// Stack in: `[value, big]`; out: `[Uint8Array]`.
+pub fn emit_struct_pack_half(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    if argc < 2 {
+        vybe_compiler::primitives::collections::emit_array_new(chunks, current, 0, line);
+        call_import(chunks, current, "ecma:uint8array", "new", 1, line);
+        return;
+    }
+
+    let base = chunks[current].alloc_scratch(argc as u16);
+    for i in (0..argc).rev() {
+        lset(&mut chunks[current], base + i as u16, line);
+    }
+    let value = base;
+    let big = base + 1;
+    let sign = chunks[current].alloc_scratch(1);
+    let abs_v = chunks[current].alloc_scratch(1);
+    let exp = chunks[current].alloc_scratch(1);
+    let mant = chunks[current].alloc_scratch(1);
+    let bits = chunks[current].alloc_scratch(1);
+    let hi = chunks[current].alloc_scratch(1);
+    let lo = chunks[current].alloc_scratch(1);
+
+    lget(&mut chunks[current], value, line);
+    chunks[current].emit_f64_const(0.0, line);
+    chunks[current].emit_op(Op::F64_LT, line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_end(line);
+    lset(&mut chunks[current], sign, line);
+
+    lget(&mut chunks[current], value, line);
+    chunks[current].emit_op(Op::F64_ABS, line);
+    lset(&mut chunks[current], abs_v, line);
+
+    lget(&mut chunks[current], sign, line);
+    chunks[current].emit_i32_const(15, line);
+    chunks[current].emit_op(Op::I32_SHL, line);
+    lset(&mut chunks[current], bits, line);
+
+    lget(&mut chunks[current], abs_v, line);
+    chunks[current].emit_f64_const(0.0, line);
+    chunks[current].emit_op(Op::F64_EQ, line);
+    chunks[current].emit_if(line);
+    lget(&mut chunks[current], bits, line);
+    chunks[current].emit_else(line);
+
+    lget(&mut chunks[current], abs_v, line);
+    chunks[current].emit_f64_const(65504.0, line);
+    chunks[current].emit_op(Op::F64_GT, line);
+    chunks[current].emit_if(line);
+    lget(&mut chunks[current], bits, line);
+    chunks[current].emit_i32_const(0x7c00, line);
+    chunks[current].emit_op(Op::I32_OR, line);
+    chunks[current].emit_else(line);
+
+    lget(&mut chunks[current], abs_v, line);
+    chunks[current].emit_f64_const(0.00006103515625, line);
+    chunks[current].emit_op(Op::F64_LT, line);
+    chunks[current].emit_if(line);
+    lget(&mut chunks[current], abs_v, line);
+    chunks[current].emit_f64_const(16_777_216.0, line);
+    chunks[current].emit_op(Op::F64_MUL, line);
+    call_import(chunks, current, "ecma:math", "round", 1, line);
+    chunks[current].emit_op(Op::I32_TRUNC_F64_U, line);
+    lset(&mut chunks[current], mant, line);
+    lget(&mut chunks[current], bits, line);
+    lget(&mut chunks[current], mant, line);
+    chunks[current].emit_i32_const(0x03ff, line);
+    chunks[current].emit_op(Op::I32_AND, line);
+    chunks[current].emit_op(Op::I32_OR, line);
+    chunks[current].emit_else(line);
+
+    lget(&mut chunks[current], abs_v, line);
+    call_import(chunks, current, "ecma:math", "log2", 1, line);
+    chunks[current].emit_op(Op::F64_FLOOR, line);
+    lset(&mut chunks[current], exp, line);
+
+    lget(&mut chunks[current], abs_v, line);
+    chunks[current].emit_f64_const(2.0, line);
+    lget(&mut chunks[current], exp, line);
+    call_import(chunks, current, "ecma:math", "pow", 2, line);
+    chunks[current].emit_op(Op::F64_DIV, line);
+    chunks[current].emit_f64_const(1.0, line);
+    chunks[current].emit_op(Op::F64_SUB, line);
+    chunks[current].emit_f64_const(1024.0, line);
+    chunks[current].emit_op(Op::F64_MUL, line);
+    call_import(chunks, current, "ecma:math", "round", 1, line);
+    chunks[current].emit_op(Op::I32_TRUNC_F64_U, line);
+    lset(&mut chunks[current], mant, line);
+
+    lget(&mut chunks[current], mant, line);
+    chunks[current].emit_i32_const(1024, line);
+    chunks[current].emit_op(Op::I32_EQ, line);
+    chunks[current].emit_if(line);
+    lget(&mut chunks[current], exp, line);
+    chunks[current].emit_f64_const(1.0, line);
+    chunks[current].emit_op(Op::F64_ADD, line);
+    lset(&mut chunks[current], exp, line);
+    chunks[current].emit_i32_const(0, line);
+    lset(&mut chunks[current], mant, line);
+    chunks[current].emit_end(line);
+
+    lget(&mut chunks[current], bits, line);
+    lget(&mut chunks[current], exp, line);
+    chunks[current].emit_f64_const(15.0, line);
+    chunks[current].emit_op(Op::F64_ADD, line);
+    chunks[current].emit_op(Op::I32_TRUNC_F64_U, line);
+    chunks[current].emit_i32_const(10, line);
+    chunks[current].emit_op(Op::I32_SHL, line);
+    chunks[current].emit_op(Op::I32_OR, line);
+    lget(&mut chunks[current], mant, line);
+    chunks[current].emit_i32_const(0x03ff, line);
+    chunks[current].emit_op(Op::I32_AND, line);
+    chunks[current].emit_op(Op::I32_OR, line);
+
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+    lset(&mut chunks[current], bits, line);
+
+    lget(&mut chunks[current], bits, line);
+    chunks[current].emit_i32_const(8, line);
+    chunks[current].emit_op(Op::I32_SHR_U, line);
+    chunks[current].emit_i32_const(0xff, line);
+    chunks[current].emit_op(Op::I32_AND, line);
+    lset(&mut chunks[current], hi, line);
+    lget(&mut chunks[current], bits, line);
+    chunks[current].emit_i32_const(0xff, line);
+    chunks[current].emit_op(Op::I32_AND, line);
+    lset(&mut chunks[current], lo, line);
+
+    lget(&mut chunks[current], big, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    lget(&mut chunks[current], hi, line);
+    lget(&mut chunks[current], lo, line);
+    chunks[current].emit_else(line);
+    lget(&mut chunks[current], lo, line);
+    lget(&mut chunks[current], hi, line);
+    chunks[current].emit_end(line);
+    vybe_compiler::primitives::collections::emit_array_new(chunks, current, 2, line);
+    call_import(chunks, current, "ecma:uint8array", "new", 1, line);
 }
 
 pub fn emit_struct_unpack(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
@@ -389,8 +627,18 @@ pub fn emit_struct_unpack(chunks: &mut Vec<Chunk>, current: usize, argc: u8, lin
 
     emit_slot_eq_str(&mut chunks[current], fmt, "?", line);
     chunks[current].emit_if_value(line);
-    chunks[current].emit_bool_const(true, line);
+    emit_dynamic_byte_at_const(chunks, current, data, 0, line);
+    emit_byte_bool_from_top(chunks, current, line);
     emit_tuple_from_top(chunks, current, 1, line);
+    chunks[current].emit_else(line);
+
+    emit_slot_eq_str(&mut chunks[current], fmt, ">??", line);
+    chunks[current].emit_if_value(line);
+    emit_dynamic_byte_at_const(chunks, current, data, 0, line);
+    emit_byte_bool_from_top(chunks, current, line);
+    emit_dynamic_byte_at_const(chunks, current, data, 1, line);
+    emit_byte_bool_from_top(chunks, current, line);
+    emit_tuple_from_top(chunks, current, 2, line);
     chunks[current].emit_else(line);
 
     emit_slot_eq_str(&mut chunks[current], fmt, "c", line);
@@ -412,9 +660,174 @@ pub fn emit_struct_unpack(chunks: &mut Vec<Chunk>, current: usize, argc: u8, lin
 
     emit_tuple_from_top(chunks, current, 0, line);
 
-    for _ in 0..9 {
+    for _ in 0..10 {
         chunks[current].emit_end(line);
     }
+}
+
+/// `struct.unpack("f"/"d", data)` float payload.
+///
+/// Stack in: `[data, offset, size, big]`; out: `[number]`.
+pub fn emit_struct_unpack_float(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    if argc < 4 {
+        chunks[current].emit_f64_const(0.0, line);
+        return;
+    }
+
+    let base = chunks[current].alloc_scratch(argc as u16);
+    for i in (0..argc).rev() {
+        lset(&mut chunks[current], base + i as u16, line);
+    }
+    let data = base;
+    let offset = base + 1;
+    let size = base + 2;
+    let big = base + 3;
+    let buffer = chunks[current].alloc_scratch(1);
+    let byte_offset = chunks[current].alloc_scratch(1);
+    let byte_len = chunks[current].alloc_scratch(1);
+    let view = chunks[current].alloc_scratch(1);
+
+    lget(&mut chunks[current], data, line);
+    call_import(chunks, current, "ecma:uint8array", "buffer", 1, line);
+    lset(&mut chunks[current], buffer, line);
+    lget(&mut chunks[current], data, line);
+    call_import(chunks, current, "ecma:uint8array", "byteOffset", 1, line);
+    lset(&mut chunks[current], byte_offset, line);
+    lget(&mut chunks[current], data, line);
+    call_import(chunks, current, "ecma:uint8array", "byteLength", 1, line);
+    lset(&mut chunks[current], byte_len, line);
+
+    lget(&mut chunks[current], buffer, line);
+    lget(&mut chunks[current], byte_offset, line);
+    lget(&mut chunks[current], byte_len, line);
+    call_import(chunks, current, "ecma:dataview", "new", 3, line);
+    lset(&mut chunks[current], view, line);
+
+    lget(&mut chunks[current], size, line);
+    chunks[current].emit_f64_const(4.0, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    lget(&mut chunks[current], view, line);
+    lget(&mut chunks[current], offset, line);
+    chunks[current].emit_op(Op::I32_TRUNC_F64_U, line);
+    emit_little_endian_flag_from_big_slot(&mut chunks[current], big, line);
+    call_import(chunks, current, "ecma:dataview", "getFloat32", 3, line);
+    chunks[current].emit_op(Op::F64_PROMOTE_F32, line);
+    chunks[current].emit_else(line);
+    lget(&mut chunks[current], view, line);
+    lget(&mut chunks[current], offset, line);
+    chunks[current].emit_op(Op::I32_TRUNC_F64_U, line);
+    emit_little_endian_flag_from_big_slot(&mut chunks[current], big, line);
+    call_import(chunks, current, "ecma:dataview", "getFloat64", 3, line);
+    chunks[current].emit_end(line);
+}
+
+/// Python `struct` binary16 (`e`) unpacking.
+///
+/// Stack in: `[data, offset, big]`; out: `[number]`.
+pub fn emit_struct_unpack_half(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    if argc < 3 {
+        chunks[current].emit_f64_const(0.0, line);
+        return;
+    }
+
+    let base = chunks[current].alloc_scratch(argc as u16);
+    for i in (0..argc).rev() {
+        lset(&mut chunks[current], base + i as u16, line);
+    }
+    let data = base;
+    let offset = base + 1;
+    let big = base + 2;
+    let high = chunks[current].alloc_scratch(1);
+    let low = chunks[current].alloc_scratch(1);
+    let bits = chunks[current].alloc_scratch(1);
+    let exp = chunks[current].alloc_scratch(1);
+    let mant = chunks[current].alloc_scratch(1);
+    let sign = chunks[current].alloc_scratch(1);
+    let value = chunks[current].alloc_scratch(1);
+
+    lget(&mut chunks[current], big, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    emit_dynamic_byte_at_offset_const(chunks, current, data, offset, 0.0, line);
+    lset(&mut chunks[current], high, line);
+    emit_dynamic_byte_at_offset_const(chunks, current, data, offset, 1.0, line);
+    lset(&mut chunks[current], low, line);
+    chunks[current].emit_else(line);
+    emit_dynamic_byte_at_offset_const(chunks, current, data, offset, 1.0, line);
+    lset(&mut chunks[current], high, line);
+    emit_dynamic_byte_at_offset_const(chunks, current, data, offset, 0.0, line);
+    lset(&mut chunks[current], low, line);
+    chunks[current].emit_end(line);
+
+    lget(&mut chunks[current], high, line);
+    chunks[current].emit_i32_const(8, line);
+    chunks[current].emit_op(Op::I32_SHL, line);
+    lget(&mut chunks[current], low, line);
+    chunks[current].emit_op(Op::I32_OR, line);
+    lset(&mut chunks[current], bits, line);
+
+    lget(&mut chunks[current], bits, line);
+    chunks[current].emit_i32_const(0x8000, line);
+    chunks[current].emit_op(Op::I32_AND, line);
+    lset(&mut chunks[current], sign, line);
+    lget(&mut chunks[current], bits, line);
+    chunks[current].emit_i32_const(10, line);
+    chunks[current].emit_op(Op::I32_SHR_U, line);
+    chunks[current].emit_i32_const(0x1f, line);
+    chunks[current].emit_op(Op::I32_AND, line);
+    lset(&mut chunks[current], exp, line);
+    lget(&mut chunks[current], bits, line);
+    chunks[current].emit_i32_const(0x03ff, line);
+    chunks[current].emit_op(Op::I32_AND, line);
+    lset(&mut chunks[current], mant, line);
+
+    lget(&mut chunks[current], exp, line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op(Op::I32_EQ, line);
+    chunks[current].emit_if(line);
+    lget(&mut chunks[current], mant, line);
+    chunks[current].emit_op(Op::F64_CONVERT_I32_U, line);
+    chunks[current].emit_f64_const(0.000000059604644775390625, line);
+    chunks[current].emit_op(Op::F64_MUL, line);
+    chunks[current].emit_else(line);
+
+    lget(&mut chunks[current], exp, line);
+    chunks[current].emit_i32_const(31, line);
+    chunks[current].emit_op(Op::I32_EQ, line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_f64_const(f64::INFINITY, line);
+    chunks[current].emit_else(line);
+
+    chunks[current].emit_f64_const(1.0, line);
+    lget(&mut chunks[current], mant, line);
+    chunks[current].emit_op(Op::F64_CONVERT_I32_U, line);
+    chunks[current].emit_f64_const(1024.0, line);
+    chunks[current].emit_op(Op::F64_DIV, line);
+    chunks[current].emit_op(Op::F64_ADD, line);
+    chunks[current].emit_f64_const(2.0, line);
+    lget(&mut chunks[current], exp, line);
+    chunks[current].emit_op(Op::F64_CONVERT_I32_U, line);
+    chunks[current].emit_f64_const(15.0, line);
+    chunks[current].emit_op(Op::F64_SUB, line);
+    call_import(chunks, current, "ecma:math", "pow", 2, line);
+    chunks[current].emit_op(Op::F64_MUL, line);
+
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+    lset(&mut chunks[current], value, line);
+
+    lget(&mut chunks[current], sign, line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op(Op::I32_NE, line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_f64_const(0.0, line);
+    lget(&mut chunks[current], value, line);
+    chunks[current].emit_op(Op::F64_SUB, line);
+    chunks[current].emit_else(line);
+    lget(&mut chunks[current], value, line);
+    chunks[current].emit_end(line);
 }
 
 pub fn emit_struct_calcsize(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {

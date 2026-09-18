@@ -85,8 +85,8 @@ pub(super) fn module_functions() -> Vec<Statement> {
                     ],
                 ),
                 ret(add(
-                    add(str_lit("(?s:"), ident("res")),
-                    add(call_global("chr", vec![i(92)]), str_lit("Z)")),
+                    add(add(str_lit("(?s:"), ident("res")), str_lit(")")),
+                    add(call_global("chr", vec![i(92)]), str_lit("z")),
                 )),
             ],
         ),

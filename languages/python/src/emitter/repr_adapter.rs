@@ -23,6 +23,7 @@ use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
 
 const REPR_CHUNK: &str = "__py_repr";
+const FLOAT_FIELDS_TAG: &str = "__py_float_fields";
 const FLOAT_ITEMS_TAG: &str = "__py_float_items";
 
 fn lget(chunk: &mut Chunk, slot: u16, line: u32) {
@@ -346,6 +347,11 @@ fn build_py_repr_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
             lget(&mut c, value, line);
             struct_get(&mut c, &ClassSlot::internal(FIELDS_TAG), line);
             lset(&mut c, fields, line);
+            let float_items = c.alloc_scratch(1);
+            lget(&mut c, value, line);
+            struct_get(&mut c, &ClassSlot::internal(FLOAT_ITEMS_TAG), line);
+            vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut c, line);
+            lset(&mut c, float_items, line);
             emit_i32_zero(&mut c, i, line);
             let lp = loop_start(&mut c, line);
             loop_break_if_ge(&mut c, i, n, line);
@@ -361,7 +367,12 @@ fn build_py_repr_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
             lget(&mut c, value, line);
             lget(&mut c, i, line);
             c.emit_op(Op::ARRAY_GET, line);
+            lget(&mut c, float_items, line);
+            c.emit_if_value(line);
+            float_repr_from_stack(&mut c, line);
+            c.emit_else(line);
             recurse(&mut c, self_idx, line);
+            c.emit_end(line);
             concat(&mut c, line);
             lset(&mut c, out, line);
             bump(&mut c, i, line);
@@ -420,7 +431,13 @@ fn build_py_repr_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     {
         let marker = class_slots::resolve(&ClassSlot::internal("__py_module_name"), &PlainNames);
         let module_name = c.alloc_scratch(1);
-        class_slots::emit_class_get(&mut c, ObjSource::Local(value), &marker, Dest::Local(module_name), line);
+        class_slots::emit_class_get(
+            &mut c,
+            ObjSource::Local(value),
+            &marker,
+            Dest::Local(module_name),
+            line,
+        );
         lget(&mut c, module_name, line);
         c.emit_op(Op::REF_IS_NULL, line);
         c.emit_op(Op::I32_EQZ, line);
@@ -704,6 +721,9 @@ fn build_py_repr_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
         c.emit_call(idx, 1, line);
     }
     lset(&mut c, keys, line);
+    lget(&mut c, value, line);
+    struct_get(&mut c, &ClassSlot::internal(FLOAT_FIELDS_TAG), line);
+    lset(&mut c, fields, line);
     lget(&mut c, keys, line);
     c.emit_op(Op::ARRAY_LENGTH, line);
     lset(&mut c, n, line);
@@ -729,7 +749,27 @@ fn build_py_repr_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     lget(&mut c, key, line);
     c.emit_i32_const(1, line);
     c.emit_op(Op::ARRAY_GET, line);
+    lget(&mut c, fields, line);
+    c.emit_op(Op::REF_IS_NULL, line);
+    c.emit_op(Op::I32_EQZ, line);
+    c.emit_if_value(line);
+    lget(&mut c, fields, line);
+    lget(&mut c, key, line);
+    c.emit_i32_const(0, line);
+    c.emit_op(Op::ARRAY_GET, line);
+    {
+        let includes = c.add_import("ecma:array", "includes");
+        c.emit_call(includes, 2, line);
+    }
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut c, line);
+    c.emit_if_value(line);
+    float_repr_from_stack(&mut c, line);
+    c.emit_else(line);
     recurse(&mut c, self_idx, line);
+    c.emit_end(line);
+    c.emit_else(line);
+    recurse(&mut c, self_idx, line);
+    c.emit_end(line);
     concat(&mut c, line);
     lset(&mut c, out, line);
     bump(&mut c, i, line);

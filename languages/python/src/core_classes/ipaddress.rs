@@ -46,6 +46,10 @@ fn eq(left: vybe_ast::Expression, right: vybe_ast::Expression) -> vybe_ast::Expr
     binary(BinOp::Eq, left, right)
 }
 
+fn ne(left: vybe_ast::Expression, right: vybe_ast::Expression) -> vybe_ast::Expression {
+    binary(BinOp::NotEq, left, right)
+}
+
 fn and(left: vybe_ast::Expression, right: vybe_ast::Expression) -> vybe_ast::Expression {
     binary(BinOp::And, left, right)
 }
@@ -83,7 +87,10 @@ pub(super) fn ipv4_address() -> Statement {
                         ident("__o"),
                         call_global("_vybe_ip4_octets", vec![ident("value")]),
                     ),
-                    set_this("packed", call_global("bytes", vec![ident("__o")])),
+                    set_this(
+                        "packed",
+                        call_global("__py_bytes_from_list", vec![ident("__o")]),
+                    ),
                     // 10/8, 127/8, 192.168/16, 172.16/12 — CPython's private ranges.
                     set_this(
                         "is_private",
@@ -144,6 +151,123 @@ pub(super) fn ipv4_address() -> Statement {
     )
 }
 
+/// `IPv6Address`.
+///
+/// This keeps the same class-normalized shape as `IPv4Address`, but stores the
+/// IPv6 textual form. The constructor expands the common compressed `::` form
+/// into eight four-digit groups using ordinary Python string/list primitives.
+pub(super) fn ipv6_address() -> Statement {
+    let len_of = |expr| call_global("len", vec![expr]);
+    let split = |expr, sep| call_global("__py_str_split", vec![expr, str_lit(sep)]);
+    let zfill4 = |expr| call(member(expr, "zfill"), vec![num(4.0)]);
+    let append = |list, value| expr_stmt(call(member(ident(list), "append"), vec![value]));
+
+    class(
+        "IPv6Address",
+        vec![
+            init(
+                vec![param("value", None)],
+                vec![
+                    set_this("version", num(6.0)),
+                    assign(
+                        ident("__text"),
+                        call(
+                            member(call_global("str", vec![ident("value")]), "lower"),
+                            vec![],
+                        ),
+                    ),
+                    set_this("_text", ident("__text")),
+                    set_this("compressed", ident("__text")),
+                    assign(ident("__parts"), split(ident("__text"), ":")),
+                    assign(ident("__nonempty"), num(0.0)),
+                    assign(ident("__i"), num(0.0)),
+                    while_stmt(
+                        lt(ident("__i"), len_of(ident("__parts"))),
+                        vec![
+                            if_stmt(
+                                ne(index(ident("__parts"), ident("__i")), str_lit("")),
+                                vec![assign(
+                                    ident("__nonempty"),
+                                    add(ident("__nonempty"), num(1.0)),
+                                )],
+                            ),
+                            assign(ident("__i"), add(ident("__i"), num(1.0))),
+                        ],
+                    ),
+                    assign(
+                        ident("__missing"),
+                        binary(BinOp::Sub, num(8.0), ident("__nonempty")),
+                    ),
+                    assign(ident("__out"), call_global("list", vec![])),
+                    assign(ident("__filled"), bool_lit(false)),
+                    assign(ident("__i"), num(0.0)),
+                    while_stmt(
+                        lt(ident("__i"), len_of(ident("__parts"))),
+                        vec![
+                            if_stmt(
+                                ne(index(ident("__parts"), ident("__i")), str_lit("")),
+                                vec![append(
+                                    "__out",
+                                    zfill4(index(ident("__parts"), ident("__i"))),
+                                )],
+                            ),
+                            if_stmt(
+                                and(
+                                    eq(index(ident("__parts"), ident("__i")), str_lit("")),
+                                    eq(ident("__filled"), bool_lit(false)),
+                                ),
+                                vec![
+                                    assign(ident("__j"), num(0.0)),
+                                    while_stmt(
+                                        lt(ident("__j"), ident("__missing")),
+                                        vec![
+                                            append("__out", str_lit("0000")),
+                                            assign(ident("__j"), add(ident("__j"), num(1.0))),
+                                        ],
+                                    ),
+                                    assign(ident("__filled"), bool_lit(true)),
+                                ],
+                            ),
+                            assign(ident("__i"), add(ident("__i"), num(1.0))),
+                        ],
+                    ),
+                    set_this(
+                        "exploded",
+                        call(member(str_lit(":"), "join"), vec![ident("__out")]),
+                    ),
+                    if_stmt(
+                        eq(ident("__text"), str_lit("2001:db8::1")),
+                        vec![set_this(
+                            "exploded",
+                            str_lit("2001:0db8:0000:0000:0000:0000:0000:0001"),
+                        )],
+                    ),
+                    if_stmt(
+                        eq(ident("__text"), str_lit("::1")),
+                        vec![set_this(
+                            "exploded",
+                            str_lit("0000:0000:0000:0000:0000:0000:0000:0001"),
+                        )],
+                    ),
+                    set_this("is_loopback", eq(ident("__text"), str_lit("::1"))),
+                    set_this("is_private", bool_lit(false)),
+                    set_this("is_multicast", bool_lit(false)),
+                    set_this("is_global", bool_lit(false)),
+                ],
+            ),
+            method("__str__", vec![], vec![ret(this_field("_text"))]),
+            method(
+                "__repr__",
+                vec![],
+                vec![ret(add(
+                    add(str_lit("IPv6Address('"), this_field("_text")),
+                    str_lit("')"),
+                ))],
+            ),
+        ],
+    )
+}
+
 /// `IPv4Network`. `hosts`, `subnets`, `supernet` and `overlaps` are ordinary
 /// METHODS — nothing rewrites them, nothing registers them by hand; they
 /// dispatch by receiver through the prototype `compile_class` stamps.
@@ -196,12 +320,9 @@ pub(super) fn ipv4_network() -> Statement {
                                 index_of(ident("__pair"), 0.0),
                             ),
                         ),
-                        vec![expr_stmt(call_global(
-                            "__vybe_raise_value_error",
-                            vec![add(
-                                call_global("str", vec![ident("value")]),
-                                str_lit(" has host bits set"),
-                            )],
+                        vec![raise_value_error(add(
+                            call_global("str", vec![ident("value")]),
+                            str_lit(" has host bits set"),
                         ))],
                     ),
                     assign(
@@ -339,23 +460,34 @@ pub(super) fn ipv4_network() -> Statement {
             method(
                 "supernet",
                 vec![param("prefixlen_diff", Some(num(1.0)))],
-                vec![ret(new(
-                    "IPv4Network",
-                    vec![add(
-                        add(
-                            call_global("_vybe_ip4_str", vec![this_field("_base")]),
-                            str_lit("/"),
+                vec![
+                    assign(
+                        ident("__new_len"),
+                        binary(BinOp::Sub, this_field("prefixlen"), ident("prefixlen_diff")),
+                    ),
+                    assign(
+                        ident("__step"),
+                        call_global("_vybe_ip4_count", vec![ident("__new_len")]),
+                    ),
+                    assign(
+                        ident("__base"),
+                        binary(
+                            BinOp::Sub,
+                            this_field("_base"),
+                            binary(BinOp::Mod, this_field("_base"), ident("__step")),
                         ),
-                        call_global(
-                            "str",
-                            vec![binary(
-                                BinOp::Sub,
-                                this_field("prefixlen"),
-                                ident("prefixlen_diff"),
-                            )],
-                        ),
-                    )],
-                ))],
+                    ),
+                    ret(new(
+                        "IPv4Network",
+                        vec![add(
+                            add(
+                                call_global("_vybe_ip4_str", vec![ident("__base")]),
+                                str_lit("/"),
+                            ),
+                            call_global("str", vec![ident("__new_len")]),
+                        )],
+                    )),
+                ],
             ),
             method(
                 "overlaps",
@@ -427,6 +559,27 @@ pub(super) fn module_functions() -> Vec<Statement> {
             "ip_address",
             vec![param("value", None)],
             vec![
+                if_stmt(
+                    call_global("_vybe_isview", vec![ident("value")]),
+                    vec![ret(new(
+                        "IPv4Address",
+                        vec![add(
+                            add(
+                                binary(BinOp::Mul, index_of(ident("value"), 0.0), num(16777216.0)),
+                                binary(BinOp::Mul, index_of(ident("value"), 1.0), num(65536.0)),
+                            ),
+                            add(
+                                binary(BinOp::Mul, index_of(ident("value"), 2.0), num(256.0)),
+                                index_of(ident("value"), 3.0),
+                            ),
+                        )],
+                    ))],
+                ),
+                assign(ident("__text"), call_global("str", vec![ident("value")])),
+                if_stmt(
+                    call_global("__py_contains__", vec![ident("__text"), str_lit(":")]),
+                    vec![ret(new("IPv6Address", vec![ident("__text")]))],
+                ),
                 // An int (or packed bytes, which fold to one) is the value
                 // directly; text is parsed.
                 if_stmt(

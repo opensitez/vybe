@@ -90,6 +90,8 @@ fn algo_sizes(algo: &str) -> Option<(i32, i32)> {
         "sha3_256" => (32, 136),
         "sha3_384" => (48, 104),
         "sha3_512" => (64, 72),
+        "shake_128" => (16, 168),
+        "shake_256" => (32, 136),
         "blake2b" => (64, 128),
         "blake2s" => (32, 64),
         _ => return None,
@@ -123,6 +125,35 @@ fn stamp_attrs(chunks: &mut [Chunk], current: usize, slot: u16, name: &str, algo
     struct_set_key(&mut chunks[current], &ClassSlot::internal("name"), line);
     lget(&mut chunks[current], slot, line);
     chunks[current].emit_i32_const(digest_size, line);
+    struct_set_key(
+        &mut chunks[current],
+        &ClassSlot::internal("digest_size"),
+        line,
+    );
+    lget(&mut chunks[current], slot, line);
+    chunks[current].emit_i32_const(block_size, line);
+    struct_set_key(
+        &mut chunks[current],
+        &ClassSlot::internal("block_size"),
+        line,
+    );
+}
+
+fn stamp_attrs_with_digest_size(
+    chunks: &mut [Chunk],
+    current: usize,
+    slot: u16,
+    name: &str,
+    algo: &str,
+    digest_size_slot: u16,
+    line: u32,
+) {
+    let (_, block_size) = algo_sizes(algo).unwrap_or((32, 64));
+    lget(&mut chunks[current], slot, line);
+    chunks[current].emit_string_const(name, line);
+    struct_set_key(&mut chunks[current], &ClassSlot::internal("name"), line);
+    lget(&mut chunks[current], slot, line);
+    lget(&mut chunks[current], digest_size_slot, line);
     struct_set_key(
         &mut chunks[current],
         &ClassSlot::internal("digest_size"),
@@ -185,6 +216,77 @@ pub fn emit_sha1(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
     emit_new_for_algo(chunks, current, "sha1", argc, line);
 }
 
+pub fn emit_sha224(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
+    emit_new_for_algo(chunks, current, "sha224", argc, line);
+}
+
+pub fn emit_sha384(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
+    emit_new_for_algo(chunks, current, "sha384", argc, line);
+}
+
+pub fn emit_sha3_224(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
+    emit_new_for_algo(chunks, current, "sha3_224", argc, line);
+}
+
+pub fn emit_sha3_256(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
+    emit_new_for_algo(chunks, current, "sha3_256", argc, line);
+}
+
+pub fn emit_sha3_384(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
+    emit_new_for_algo(chunks, current, "sha3_384", argc, line);
+}
+
+pub fn emit_sha3_512(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
+    emit_new_for_algo(chunks, current, "sha3_512", argc, line);
+}
+
+pub fn emit_shake_128(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
+    emit_new_for_algo(chunks, current, "shake_128", argc, line);
+}
+
+pub fn emit_shake_256(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
+    emit_new_for_algo(chunks, current, "shake_256", argc, line);
+}
+
+pub fn emit_blake2b(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
+    emit_new_for_algo(chunks, current, "blake2b", argc, line);
+}
+
+pub fn emit_blake2s(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
+    emit_new_for_algo(chunks, current, "blake2s", argc, line);
+}
+
+fn emit_new_blake_opts(chunks: &mut [Chunk], current: usize, algo: &str, argc: u8, line: u32) {
+    let base = stash_args(chunks, current, argc, line);
+    let h = chunks[current].alloc_scratch(1);
+
+    chunks[current].emit_string_const(algo, line);
+    call_import(chunks, current, CRYPTO, "createHash", 1, line);
+    lset(&mut chunks[current], h, line);
+
+    for option in [base + 2, base + 3, base + 4] {
+        lget(&mut chunks[current], h, line);
+        push_widened(chunks, current, option, line);
+        call_import(chunks, current, CRYPTO, "_hashUpdate", 2, line);
+        chunks[current].emit_op(Op::DROP, line);
+    }
+    lget(&mut chunks[current], h, line);
+    push_widened(chunks, current, base, line);
+    call_import(chunks, current, CRYPTO, "_hashUpdate", 2, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    stamp_attrs_with_digest_size(chunks, current, h, algo, algo, base + 1, line);
+    lget(&mut chunks[current], h, line);
+}
+
+pub fn emit_blake2b_opts(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
+    emit_new_blake_opts(chunks, current, "blake2b", argc, line);
+}
+
+pub fn emit_blake2s_opts(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
+    emit_new_blake_opts(chunks, current, "blake2s", argc, line);
+}
+
 pub fn emit_md5(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
     emit_new_for_algo(chunks, current, "md5", argc, line);
 }
@@ -223,9 +325,13 @@ pub fn emit_new(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
                 ("sha384", 48),
                 ("sha512", 64),
                 ("sha3_224", 28),
+                ("sha3_256", 32),
                 ("sha3_384", 48),
                 ("sha3_512", 64),
+                ("shake_128", 16),
+                ("shake_256", 32),
                 ("blake2b", 64),
+                ("blake2s", 32),
             ],
             32,
         ),
@@ -238,9 +344,13 @@ pub fn emit_new(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
                 ("sha384", 128),
                 ("sha512", 128),
                 ("sha3_224", 144),
+                ("sha3_256", 136),
                 ("sha3_384", 104),
                 ("sha3_512", 72),
+                ("shake_128", 168),
+                ("shake_256", 136),
                 ("blake2b", 128),
+                ("blake2s", 64),
             ],
             64,
         ),
@@ -262,6 +372,70 @@ pub fn emit_new(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
         struct_set_key(&mut chunks[current], &ClassSlot::internal(key), line);
     }
     lget(&mut chunks[current], h, line);
+}
+
+fn push_digest_size_for_algo_slot(chunks: &mut [Chunk], current: usize, algo: u16, line: u32) {
+    for (name, size) in [
+        ("md5", 16),
+        ("sha1", 20),
+        ("sha224", 28),
+        ("sha256", 32),
+        ("sha384", 48),
+        ("sha512", 64),
+        ("sha3_224", 28),
+        ("sha3_256", 32),
+        ("sha3_384", 48),
+        ("sha3_512", 64),
+        ("shake_128", 16),
+        ("shake_256", 32),
+        ("blake2b", 64),
+        ("blake2s", 32),
+    ] {
+        lget(&mut chunks[current], algo, line);
+        chunks[current].emit_string_const(name, line);
+        ops::emit_dyn_eq(&mut chunks[current], line);
+        ops::emit_dyn_to_bool(&mut chunks[current], line);
+        chunks[current].emit_if_value(line);
+        chunks[current].emit_i32_const(size, line);
+        chunks[current].emit_else(line);
+    }
+    chunks[current].emit_i32_const(32, line);
+    for _ in 0..14 {
+        chunks[current].emit_end(line);
+    }
+}
+
+pub fn emit_pbkdf2_hmac(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
+    let base = stash_args(chunks, current, argc, line);
+    let algo = base;
+    let password = base + 1;
+    let salt = base + 2;
+    let iterations = base + 3;
+
+    push_widened(chunks, current, password, line);
+    push_widened(chunks, current, salt, line);
+    lget(&mut chunks[current], iterations, line);
+    if argc >= 5 {
+        lget(&mut chunks[current], base + 4, line);
+    } else {
+        push_digest_size_for_algo_slot(chunks, current, algo, line);
+    }
+    lget(&mut chunks[current], algo, line);
+    call_import(chunks, current, CRYPTO, "pbkdf2Sync", 5, line);
+    call_import(chunks, current, "ecma:uint8array", "new", 1, line);
+}
+
+pub fn emit_scrypt(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
+    let base = stash_args(chunks, current, argc, line);
+    let password = base;
+    let salt = base + 1;
+    let dklen = base + 2;
+
+    push_widened(chunks, current, password, line);
+    push_widened(chunks, current, salt, line);
+    lget(&mut chunks[current], dklen, line);
+    call_import(chunks, current, CRYPTO, "scryptSync", 3, line);
+    call_import(chunks, current, "ecma:uint8array", "new", 1, line);
 }
 
 /// Push i32 1 when `slot` holds a `node:crypto` digest object — only
@@ -328,9 +502,32 @@ fn hmac_or_hash(
 /// `h.hexdigest()` — lowercase hex string.
 pub fn emit_hexdigest(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
     let base = stash_args(chunks, current, argc, line);
+    let out = chunks[current].alloc_scratch(1);
+    let end = chunks[current].alloc_scratch(1);
     lget(&mut chunks[current], base, line);
     chunks[current].emit_string_const("hex", line);
     hmac_or_hash(chunks, current, base, "_hmacDigest", "_hashDigest", line);
+    lset(&mut chunks[current], out, line);
+    if argc >= 2 {
+        lget(&mut chunks[current], base + 1, line);
+    } else {
+        lget(&mut chunks[current], base, line);
+        struct_get_key(&mut chunks[current], &ClassSlot::internal("digest_size"), line);
+    }
+    chunks[current].emit_i32_const(2, line);
+    chunks[current].emit_op(Op::I32_MUL, line);
+    lset(&mut chunks[current], end, line);
+    if argc >= 2 {
+        lget(&mut chunks[current], out, line);
+        lget(&mut chunks[current], end, line);
+        chunks[current].emit_string_const("0", line);
+        call_import(chunks, current, "ecma:string", "padEnd", 3, line);
+    } else {
+        lget(&mut chunks[current], out, line);
+    }
+    chunks[current].emit_i32_const(0, line);
+    lget(&mut chunks[current], end, line);
+    call_import(chunks, current, "ecma:string", "substring", 3, line);
 }
 
 /// `h.digest()` — the same digest as raw bytes, via `bytes.fromhex`.
@@ -373,7 +570,6 @@ pub fn emit_compare_digest(chunks: &mut Vec<Chunk>, current: usize, argc: u8, li
     let base = stash_args(chunks, current, argc, line);
     lget(&mut chunks[current], base, line);
     lget(&mut chunks[current], base + 1, line);
-    ops::emit_dyn_eq(&mut chunks[current], line);
-    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    crate::emitter::runtime_adapter::emit_py_value_eq(chunks, current, line);
     ops::emit_i32_to_bool(&mut chunks[current], line);
 }

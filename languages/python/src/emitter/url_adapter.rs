@@ -315,12 +315,7 @@ fn emit_netloc_hostpart_to_slot(
     lset(chunks, current, hostpart, line);
 }
 
-fn emit_hostname_from_hostpart(
-    chunks: &mut [Chunk],
-    current: usize,
-    hostpart: u16,
-    line: u32,
-) {
+fn emit_hostname_from_hostpart(chunks: &mut [Chunk], current: usize, hostpart: u16, line: u32) {
     let colon = chunks[current].alloc_scratch(1);
     let close = chunks[current].alloc_scratch(1);
 

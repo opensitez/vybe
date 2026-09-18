@@ -114,10 +114,15 @@ __py_op_setitem   = { emit = "common:python.op_setitem",     min_args = 3, max_a
 # `o.attr` read — distinct from `d[k]`: a miss consults the GetAttr role and
 # then raises AttributeError, where a subscript miss raises KeyError.
 __py_attr_read    = { emit = "common:python.attr_read",      min_args = 2, max_args = 2 }
+__py_data_descriptor_read = { emit = "common:python.data_descriptor_read", min_args = 2, max_args = 2 }
 __py_reflect_apply = { emit = "common:reflection.apply",     min_args = 3, max_args = 3 }
 __py_attr_write   = { emit = "common:python.attr_write",     min_args = 3, max_args = 3 }
+__py_attr_raw_read = { emit = "common:python.attr_raw_read", min_args = 2, max_args = 2 }
 __py_attr_raw_write = { emit = "common:python.attr_raw_write", min_args = 3, max_args = 3 }
 __py_attr_delete  = { emit = "common:python.attr_delete",    min_args = 2, max_args = 2 }
+__py_instance_dict_pop = { emit = "common:python.instance_dict_pop", min_args = 2, max_args = 3 }
+__py_deleted_name = { emit = "common:python.deleted_name",   min_args = 0, max_args = 0 }
+__py_name_read    = { emit = "common:python.name_read",      min_args = 1, max_args = 1 }
 BaseException     = { emit = "common:python.exc.BaseException",     min_args = 0, max_args = 16 }
 Exception         = { emit = "common:python.exc.Exception",         min_args = 0, max_args = 16 }
 ArithmeticError   = { emit = "common:python.exc.ArithmeticError",   min_args = 0, max_args = 16 }
@@ -177,6 +182,8 @@ __py_exc_UnicodeError      = { emit = "common:python.exc.UnicodeError",      min
 __py_exc_UnicodeDecodeError = { emit = "common:python.exc.UnicodeDecodeError", min_args = 0, max_args = 16 }
 __py_exc_ValueError        = { emit = "common:python.exc.ValueError",        min_args = 0, max_args = 16 }
 __py_exc_ZeroDivisionError = { emit = "common:python.exc.ZeroDivisionError", min_args = 0, max_args = 16 }
+JSONDecodeError           = { emit = "common:python.exc.JSONDecodeError",    min_args = 0, max_args = 5 }
+__py_exc_JSONDecodeError  = { emit = "common:python.exc.JSONDecodeError",    min_args = 0, max_args = 5 }
 __py_raise_AttributeError    = { emit = "common:python.raise.AttributeError",    min_args = 0, max_args = 1 }
 __py_raise_AssertionError    = { emit = "common:python.raise.AssertionError",    min_args = 0, max_args = 1 }
 __py_raise_ArithmeticError   = { emit = "common:python.raise.ArithmeticError",   min_args = 0, max_args = 1 }
@@ -230,6 +237,7 @@ __py_fs_unlink      = { emit = "common:filesystem.unlink",          min_args = 1
 __py_fs_rename      = { emit = "common:filesystem.rename",          min_args = 2, max_args = 2 }
 __py_fs_list_dir    = { emit = "common:filesystem.list_dir",        min_args = 1, max_args = 1 }
 __py_str_splitlines = { emit = "common:python.str_splitlines",      min_args = 1, max_args = 2 }
+__py_str_split      = { emit = "common:python.str_split",           min_args = 1, max_args = 3 }
 __py_str_startswith = { emit = "common:python.str_startswith",      min_args = 2, max_args = 4 }
 __py_str_endswith   = { emit = "common:python.str_endswith",        min_args = 2, max_args = 4 }
 __py_str_strip      = { emit = "common:str_trim_chars",             min_args = 1, max_args = 2 }
@@ -266,6 +274,7 @@ __py_fmt_fixed  = { emit = "common:python.fmt_fixed",        min_args = 2, max_a
 __py_fmt_sci    = { emit = "common:python.fmt_sci",          min_args = 2, max_args = 2 }
 __py_fmt_group  = { emit = "common:python.fmt_group",        min_args = 1, max_args = 1 }
 __py_obj_entries__     = { emit = "host:ecma:object:entries",    min_args = 1, max_args = 1 }
+__py_obj_own_entries__ = { emit = "common:python.obj_own_entries", min_args = 1, max_args = 1 }
 __py_obj_get__         = { emit = "host:ecma:object:get",        min_args = 2, max_args = 2 }
 __py_obj_delete__      = { emit = "host:ecma:object:delete",     min_args = 2, max_args = 2 }
 __py_map_from_entries__ = { emit = "host:ecma:map:fromEntries",  min_args = 1, max_args = 1 }
@@ -280,8 +289,10 @@ __py_from_end__ = { emit = "common:python.from_end",         min_args = 2, max_a
 # statically known to be floats — see `expr_is_python_float`.
 __py_float_repr__ = { emit = "common:python.float_repr",     min_args = 1, max_args = 1 }
 __py_stamp_float_fields = { emit = "common:python.stamp_float_fields", min_args = 2, max_args = 2 }
+__py_stamp_float_items = { emit = "common:python.stamp_float_items", min_args = 1, max_args = 1 }
 __py_float_field_str = { emit = "common:python.float_field_str", min_args = 2, max_args = 2 }
 __py_bytes_eq    = { emit = "common:python.bytes_eq",        min_args = 2, max_args = 2 }
+__py_value_eq    = { emit = "common:python.value_eq",        min_args = 2, max_args = 2 }
 # Polymorphic membership (`x in y`): string substring / array element / dict key.
 # Set literals are normalized to `.has()` upstream; this covers the rest and
 # routes around the buggy shared `BinOp::In` array-classification for objects.
@@ -352,8 +363,23 @@ __py_hmac_digest__ = { emit = "host:node:crypto:_hmacDigest", min_args = 2, max_
 "hashlib.sha256"       = { emit = "common:python.hash_sha256", min_args = 0, max_args = 1 }
 "hashlib.sha512"       = { emit = "common:python.hash_sha512", min_args = 0, max_args = 1 }
 "hashlib.sha1"         = { emit = "common:python.hash_sha1",   min_args = 0, max_args = 1 }
+"hashlib.sha224"       = { emit = "common:python.hash_sha224", min_args = 0, max_args = 1 }
+"hashlib.sha384"       = { emit = "common:python.hash_sha384", min_args = 0, max_args = 1 }
+"hashlib.sha3_224"     = { emit = "common:python.hash_sha3_224", min_args = 0, max_args = 1 }
+"hashlib.sha3_256"     = { emit = "common:python.hash_sha3_256", min_args = 0, max_args = 1 }
+"hashlib.sha3_384"     = { emit = "common:python.hash_sha3_384", min_args = 0, max_args = 1 }
+"hashlib.sha3_512"     = { emit = "common:python.hash_sha3_512", min_args = 0, max_args = 1 }
+"hashlib.shake_128"    = { emit = "common:python.hash_shake_128", min_args = 0, max_args = 1 }
+"hashlib.shake_256"    = { emit = "common:python.hash_shake_256", min_args = 0, max_args = 1 }
+"hashlib.blake2b"      = { emit = "common:python.hash_blake2b", min_args = 0, max_args = 1 }
+"hashlib.blake2s"      = { emit = "common:python.hash_blake2s", min_args = 0, max_args = 1 }
 "hashlib.md5"          = { emit = "common:python.hash_md5",    min_args = 0, max_args = 1 }
 "hashlib.new"          = { emit = "common:python.hash_new",    min_args = 1, max_args = 2 }
+"hashlib.pbkdf2_hmac"  = { emit = "common:python.hash_pbkdf2_hmac", min_args = 4, max_args = 5 }
+"hashlib.scrypt"       = { emit = "common:python.hash_scrypt", min_args = 1, max_args = 7 }
+__py_hash_blake2b_opts = { emit = "common:python.hash_blake2b_opts", min_args = 5, max_args = 5 }
+__py_hash_blake2s_opts = { emit = "common:python.hash_blake2s_opts", min_args = 5, max_args = 5 }
+__py_hash_scrypt       = { emit = "common:python.hash_scrypt", min_args = 3, max_args = 3 }
 "hmac.new"             = { emit = "common:python.hmac_new",    min_args = 1, max_args = 3 }
 "hmac.compare_digest"  = { emit = "common:python.hmac_compare_digest", min_args = 2, max_args = 2 }
 
@@ -361,12 +387,14 @@ __py_hmac_digest__ = { emit = "host:node:crypto:_hmacDigest", min_args = 2, max_
 # Collision-free internal builtins: the walker only emits these for variables it
 # has tracked back to `sqlite3.connect(...)`/`.cursor()`, so generic `.close()`/
 # `.execute()` on files/sockets are never intercepted.
-__sql_connect     = { emit = "common:python.sql_connect",     min_args = 1, max_args = 1 }
+__sql_connect     = { emit = "common:python.sql_connect",     min_args = 1, max_args = 2 }
 __sql_cursor      = { emit = "common:python.sql_cursor",      min_args = 1, max_args = 1 }
 __sql_execute     = { emit = "common:python.sql_execute",     min_args = 2, max_args = 3 }
 __sql_executemany = { emit = "common:python.sql_executemany", min_args = 3, max_args = 3 }
+__sql_executescript = { emit = "common:python.sql_executescript", min_args = 2, max_args = 2 }
 __sql_fetchall    = { emit = "common:python.sql_fetchall",    min_args = 1, max_args = 1 }
 __sql_fetchone    = { emit = "common:python.sql_fetchone",    min_args = 1, max_args = 1 }
+__sql_fetchmany   = { emit = "common:python.sql_fetchmany",   min_args = 2, max_args = 2 }
 __sql_commit      = { emit = "common:python.sql_commit",      min_args = 1, max_args = 1 }
 __sql_rollback    = { emit = "common:python.sql_rollback",    min_args = 1, max_args = 1 }
 __sql_close       = { emit = "common:python.sql_close",       min_args = 1, max_args = 1 }
@@ -396,6 +424,7 @@ hex             = { emit = "common:python.hex",                  min_args = 1, m
 oct             = { emit = "common:python.oct",                  min_args = 1, max_args = 1 }
 bin             = { emit = "common:python.bin",                  min_args = 1, max_args = 1 }
 repr            = { emit = "common:python.repr",             min_args = 1, max_args = 1, slot = "to_string" }
+ascii           = { emit = "common:python.ascii",            min_args = 1, max_args = 1 }
 bytes           = { emit = "common:python.bytes",     min_args = 0, max_args = 3 }
 # `bytearray` was declared as a TYPE NAME (`[builtin_types] bytes`) but never as
 # a CALLABLE, so `bytearray()` was `undefined is not callable` while
@@ -446,6 +475,8 @@ __py_getslice_obj = { emit = "common:python.getslice_obj", min_args = 2, max_arg
 __py_dict_ior = { emit = "common:python.dict_ior", min_args = 2, max_args = 2 }
 __py_dict_or = { emit = "common:python.dict_or", min_args = 2, max_args = 2 }
 __py_dict_update = { emit = "common:python.dict_update", min_args = 3, max_args = 3 }
+__py_dict_subclass_init = { emit = "common:python.dict_subclass_init", min_args = 2, max_args = 2 }
+__py_get = { emit = "common:python.get", min_args = 2, max_args = 3 }
 __py_list_iadd = { emit = "common:python.list_iadd", min_args = 2, max_args = 2 }
 __py_str_isdigit = { emit = "common:str_is_digit", slot = "is_digit", min_args = 1, max_args = 1 }
 __py_str_isalpha = { emit = "common:str_is_alpha", slot = "is_alpha", min_args = 1, max_args = 1 }
@@ -791,15 +822,17 @@ __py_tz_offset_str        = { emit = "common:python.tz_offset_str",     min_args
 # `operator.contains(a, b)` is `b in a` — same argument order as the lowering.
 "operator.contains" = { emit = "common:python.contains",    min_args = 2, max_args = 2 }
 
-"struct.unpack_from" = { emit = "common:python.struct_unpack_from", min_args = 2, max_args = 3 }
-"struct.pack_into"   = { emit = "common:python.struct_pack_into",   min_args = 4, max_args = 255 }
-"struct.iter_unpack" = { emit = "common:python.struct_iter_unpack", min_args = 2, max_args = 2 }
-"struct.Struct"      = { emit = "common:python.struct_new",         min_args = 1, max_args = 1 }
+__py_struct_pack_float = { emit = "common:python.struct_pack_float", min_args = 3, max_args = 3 }
+__py_struct_unpack_float = { emit = "common:python.struct_unpack_float", min_args = 4, max_args = 4 }
+__py_struct_pack_half = { emit = "common:python.struct_pack_half", min_args = 2, max_args = 2 }
+__py_struct_unpack_half = { emit = "common:python.struct_unpack_half", min_args = 3, max_args = 3 }
 
 # `functools.reduce(f, xs[, init])` IS Array.prototype.reduce.
 # `functools.reduce(f, xs)` IS Array.prototype.reduce, but Python puts the
 # function first — the adapter swaps them.
 "functools.reduce"  = { emit = "common:python.it_reduce", min_args = 2, max_args = 3 }
+"functools.update_wrapper" = { emit = "common:python.functools_update_wrapper", min_args = 2, max_args = 2 }
+__py_update_wrapper = { emit = "common:python.functools_update_wrapper", min_args = 2, max_args = 2 }
 "itertools.filterfalse" = { emit = "common:python.it_filterfalse", min_args = 2, max_args = 2 }
 "itertools.takewhile"   = { emit = "common:python.it_takewhile",   min_args = 2, max_args = 2 }
 "itertools.dropwhile"   = { emit = "common:python.it_dropwhile",   min_args = 2, max_args = 2 }
@@ -918,8 +951,10 @@ hasattr         = { emit = "common:python.hasattr",         min_args = 2, max_ar
 getattr         = { emit = "common:python.getattr",         min_args = 2, max_args = 3 }
 setattr         = { emit = "common:python.setattr",         min_args = 3, max_args = 3 }
 delattr         = { emit = "common:python.delattr",         min_args = 2, max_args = 2 }
+__py_cached_property_read = { emit = "common:python.cached_property_read", min_args = 3, max_args = 3 }
 id              = { emit = "common:python.id",            min_args = 1, max_args = 1 }
 hash            = { emit = "common:python.hash",          min_args = 1, max_args = 1 }
+__py_hash_code  = { emit = "common:python.hash_code",     min_args = 1, max_args = 1 }
 vars            = { emit = "common:python.vars",              min_args = 0, max_args = 1 }
 dir             = { emit = "common:python.dir",               min_args = 0, max_args = 1 }
 
@@ -960,8 +995,11 @@ _vybe_ip4_net_parts = { emit = "common:python.ip4_net_parts", min_args = 1, max_
 # `sock.method(...)` into `__sock_method(sock, ...)` the same way it rewrites
 # sqlite3 cursors, so these are ordinary calls by the time they reach here.
 "socket.socket"    = { emit = "common:python.sock_new",        min_args = 0, max_args = 4 }
+"socket.create_connection" = { emit = "common:python.sock_create_connection", min_args = 1, max_args = 3 }
+__sock_new         = { emit = "common:python.sock_new",        min_args = 0, max_args = 4 }
 __sock_bind        = { emit = "common:python.sock_bind",       min_args = 2, max_args = 2 }
 __sock_connect     = { emit = "common:python.sock_connect",    min_args = 2, max_args = 2 }
+__sock_create_connection = { emit = "common:python.sock_create_connection", min_args = 1, max_args = 3 }
 __sock_getsockname = { emit = "common:python.sock_getsockname", min_args = 1, max_args = 1 }
 __sock_getpeername = { emit = "common:python.sock_getpeername", min_args = 1, max_args = 1 }
 __sock_listen      = { emit = "common:python.sock_listen",     min_args = 1, max_args = 2 }
@@ -1103,6 +1141,7 @@ __py_counter_most_common = { emit = "common:python.counter_most_common", min_arg
 __py_counter_op          = { emit = "common:python.counter_op",          min_args = 3, max_args = 3 }
 __py_counter_fromkeys    = { emit = "common:python.counter_fromkeys",    min_args = 1, max_args = 2 }
 "os.getcwd"         = { emit = "common:python.os_getcwd",             min_args = 0, max_args = 0 }
+"os.chdir"          = { emit = "common:python.os_chdir",              min_args = 1, max_args = 1 }
 "os.getpid"         = { emit = "common:python.os_getpid",             min_args = 0, max_args = 0 }
 # shutil — the wasi shim already does the heavy lifting: `mkdir` is
 # create_dir_all, `remove` is remove_dir_all for directories, `copy` is a file
@@ -1114,12 +1153,12 @@ __py_counter_fromkeys    = { emit = "common:python.counter_fromkeys",    min_arg
 "shutil.move"       = { emit = "common:filesystem.rename", min_args = 2, max_args = 3 }
 "shutil.copytree"   = { emit = "common:python.shutil_copytree",       min_args = 2, max_args = 8 }
 "shutil.which"      = { emit = "common:python.shutil_which",          min_args = 1, max_args = 3 }
-"tempfile.TemporaryDirectory" = { emit = "common:python.tmp_mkdtemp", min_args = 0, max_args = 3 }
 "tempfile.gettempprefix"      = { emit = "common:python.tmp_prefix",  min_args = 0, max_args = 0 }
 "tempfile.mkstemp"            = { emit = "common:python.tmp_mkstemp", min_args = 0, max_args = 4 }
 "os.path.samefile"            = { emit = "common:python.ospath_samefile", min_args = 2, max_args = 2 }
 "tempfile.gettempdir"        = { emit = "common:python.tmp_gettempdir", min_args = 0, max_args = 0 }
 "tempfile.mkdtemp"           = { emit = "common:python.tmp_mkdtemp",    min_args = 0, max_args = 3 }
+"tempfile.mktemp"            = { emit = "common:python.tmp_path",       min_args = 0, max_args = 3 }
 __py_temp_path              = { emit = "common:python.tmp_path",       min_args = 0, max_args = 3 }
 __py_file_read              = { emit = "common:python.file_read",      min_args = 1, max_args = 2 }
 __py_file_write             = { emit = "common:python.file_write",     min_args = 2, max_args = 2 }
@@ -1128,25 +1167,32 @@ __py_file_writelines        = { emit = "common:python.file_writelines", min_args
 __py_file_seek              = { emit = "common:python.file_seek",      min_args = 2, max_args = 3 }
 __py_file_tell              = { emit = "common:python.file_tell",      min_args = 1, max_args = 1 }
 __py_file_readlines         = { emit = "common:python.file_readlines", min_args = 1, max_args = 1 }
+__py_file_fileno            = { emit = "common:python.file_fileno",    min_args = 1, max_args = 1 }
 __py_bytes_from_list        = { emit = "common:python.bytes_from_list", min_args = 1, max_args = 1 }
 "tempfile.NamedTemporaryFile" = { emit = "common:python.tmp_named",     min_args = 0, max_args = 6 }
 "tempfile.TemporaryFile"     = { emit = "common:python.tmp_named",      min_args = 0, max_args = 6 }
 "os.stat"           = { emit = "common:python.os_stat",               min_args = 1, max_args = 1 }
 "os.lstat"          = { emit = "common:python.os_stat",               min_args = 1, max_args = 1 }
 "os.scandir"        = { emit = "common:python.os_scandir",            min_args = 0, max_args = 1 }
-"os.walk"           = { emit = "common:python.os_walk",               min_args = 1, max_args = 3 }
+"os.walk"           = { emit = "common:python.os_walk",               min_args = 1, max_args = 4 }
 "os.cpu_count"      = { emit = "common:python.os_cpu_count",          min_args = 0, max_args = 0 }
 "os.fspath"         = { emit = "common:python.os_fspath",             min_args = 1, max_args = 1 }
+"os.dup"            = { emit = "common:python.os_dup",                min_args = 1, max_args = 1 }
+"os.pipe"           = { emit = "common:python.os_pipe",               min_args = 0, max_args = 0 }
+"os.read"           = { emit = "common:python.os_read",               min_args = 2, max_args = 2 }
+"os.write"          = { emit = "common:python.os_write",              min_args = 2, max_args = 2 }
+"os.lseek"          = { emit = "common:python.os_lseek",              min_args = 3, max_args = 3 }
 "os.strerror"       = { emit = "common:python.os_strerror",           min_args = 1, max_args = 1 }
-"os.getppid"        = { emit = "host:node:process:ppid",              min_args = 0, max_args = 0 }
+"os.getppid"        = { emit = "common:python.os_getppid",            min_args = 0, max_args = 0 }
 # `replace` is rename with silent overwrite — the wasi shim already overwrites.
 "os.replace"        = { emit = "common:filesystem.rename", min_args = 2, max_args = 2 }
+"os.close"          = { emit = "common:python.noop_none", min_args = 1, max_args = 1 }
+"os.symlink"        = { emit = "common:python.os_symlink", min_args = 2, max_args = 3 }
 "os.rmdir"          = { emit = "common:filesystem.rmdir", min_args = 1, max_args = 1 }
 "os.removedirs"     = { emit = "common:filesystem.rmdir", min_args = 1, max_args = 1 }
 "os.truncate"       = { emit = "host:node:fs:truncateSync",           min_args = 2, max_args = 2 }
 "os.isatty"         = { emit = "host:node:tty:isatty",                min_args = 1, max_args = 1 }
-# NOTE the namespace is `wasi:random/random`, not `wasi:random`.
-"os.urandom"        = { emit = "host:wasi:random/random:get-random-bytes", min_args = 1, max_args = 1 }
+"os.urandom"        = { emit = "common:python.secrets_token_bytes", min_args = 1, max_args = 1 }
 "os.device_encoding" = { emit = "common:python.os_device_encoding",   min_args = 1, max_args = 1 }
 "os.get_terminal_size" = { emit = "common:python.os_term_size",       min_args = 0, max_args = 1 }
 "os.listdir"        = { emit = "common:filesystem.list_dir",          min_args = 0, max_args = 1 }
@@ -1211,12 +1257,14 @@ __py_os_unsetenv    = { emit = "common:python.os_unsetenv",            min_args 
 # `JSON.stringify` renders as `{}`. The adapter normalizes first, so the target
 # is self-sufficient and a bound name behaves like `json.dumps(...)`.
 "json.dumps"     = { emit = "common:python.json_dumps",       min_args = 1, max_args = 6 }
-"json.loads"     = { emit = "host:ecma:json:parse",           min_args = 1, max_args = 1 }
+"json.loads"     = { emit = "common:python.json_loads",       min_args = 1, max_args = 1 }
 # Walker reshapes `json.dumps(obj, cls=…, sort_keys=…, indent=…, …)` into this
 # fixed positional form so the adapter gets Python semantics (encoder hook +
 # `", "` / `": "` separators) that bare `ecma:json.stringify` can't provide.
 "__py_json_dumps" = { emit = "common:python.json_dumps",      min_args = 6, max_args = 6 }
-__py_json_loads   = { emit = "host:ecma:json:parse",          min_args = 1, max_args = 1 }
+__py_json_loads   = { emit = "common:python.json_loads",      min_args = 1, max_args = 1 }
+__py_json_roundtrip = { emit = "common:python.json_roundtrip", min_args = 1, max_args = 1 }
+__py_raise_JSONDecodeError = { emit = "common:python.raise.JSONDecodeError", min_args = 5, max_args = 5 }
 __py_value_deepcopy = { emit = "common:python.value_deepcopy", min_args = 1, max_args = 1 }
 
 # ── pickle / marshal / copy modules ─────────────────────────────────────────
@@ -1242,6 +1290,7 @@ __py_marshal_dump  = { emit = "common:python.marshal_dump",   min_args = 2, max_
 __py_marshal_load  = { emit = "common:python.marshal_load",   min_args = 1, max_args = 1 }
 __py_copy_copy     = { emit = "common:python.copy_copy",      min_args = 1, max_args = 1 }
 __py_copy_deepcopy = { emit = "common:python.copy_deepcopy",  min_args = 1, max_args = 2 }
+__py_copy_deepcopy_dict = { emit = "common:python.copy_deepcopy_dict", min_args = 1, max_args = 2 }
 __py_copy_deepcopy_fields = { emit = "common:python.copy_deepcopy_fields", min_args = 3, max_args = 3 }
 __py_copy_stamp_fields = { emit = "common:python.copy_stamp_fields", min_args = 2, max_args = 2 }
 __py_copyreg_pickle = { emit = "common:python.noop_none",     min_args = 2, max_args = 3 }
@@ -1311,6 +1360,7 @@ __PyPickler = { emit = "common:python.pickle_pickler",        min_args = 0, max_
 "glob.glob"            = { emit = "common:python.glob_glob",           min_args = 1, max_args = 4 }
 "glob.iglob"           = { emit = "common:python.glob_glob",           min_args = 1, max_args = 4 }
 "glob.escape"          = { emit = "common:python.glob_escape",         min_args = 1, max_args = 1 }
+"glob.has_magic"       = { emit = "common:python.glob_has_magic",      min_args = 1, max_args = 1 }
 "inspect.isclass"      = { emit = "common:python.inspect_isclass",     min_args = 1, max_args = 1 }
 "inspect.isfunction"   = { emit = "common:python.inspect_isfunction",  min_args = 1, max_args = 1 }
 "inspect.isroutine"    = { emit = "common:python.inspect_iscallable",  min_args = 1, max_args = 1 }
@@ -1383,11 +1433,17 @@ __PyPickler = { emit = "common:python.pickle_pickler",        min_args = 0, max_
 "typing.final"             = { emit = "common:python.typing_final",             min_args = 1, max_args = 1 }
 "typing.no_type_check"     = { emit = "common:python.typing_no_type_check",     min_args = 1, max_args = 1 }
 "typing.runtime_checkable" = { emit = "common:python.typing_runtime_checkable", min_args = 1, max_args = 1 }
+"typing.overload"          = { emit = "common:python.typing_identity_decorator", min_args = 1, max_args = 1 }
+"typing.override"          = { emit = "common:python.typing_identity_decorator", min_args = 1, max_args = 1 }
 "typing.TypeVar"           = { emit = "common:python.typing_typevar",           min_args = 1, max_args = 9 }
 "typing.ParamSpec"         = { emit = "common:python.typing_paramspec",         min_args = 1, max_args = 4 }
 "typing.TypeVarTuple"      = { emit = "common:python.typing_typevartuple",      min_args = 1, max_args = 2 }
 "typing.NewType"           = { emit = "common:python.typing_newtype",           min_args = 2, max_args = 2 }
 "typing.get_type_hints"    = { emit = "common:python.typing_get_type_hints",    min_args = 1, max_args = 3 }
+"typing.get_origin"        = { emit = "common:python.typing_get_origin",        min_args = 1, max_args = 1 }
+"typing.get_args"          = { emit = "common:python.typing_get_args",          min_args = 1, max_args = 1 }
+"typing.TypedDict"         = { emit = "common:python.typing_typed_dict",        min_args = 1, max_args = 4 }
+"typing.is_typeddict"      = { emit = "common:python.typing_is_typeddict",      min_args = 1, max_args = 1 }
 
 # ── weakref / gc ────────────────────────────────────────────────────────────
 "weakref.ref"              = { emit = "common:python.weakref_ref",              min_args = 1, max_args = 2 }
@@ -1490,6 +1546,55 @@ __py_unicodedata_normalize    = { emit = "common:python.unicodedata_normalize", 
 # ── time module ──────────────────────────────────────────────────────────────
 
 "time.time"      = { emit = "host:ecma:date:now",              min_args = 0, max_args = 0 }
+
+# signal numbers — POSIX, as CPython reports them on the ground-truth
+# runtime. WASI delivers no signals, so these are readable constants (what
+# `signal.SIGTERM` IS) and adapter calls are deterministic unless normalized
+# by the walker for an in-process handler pattern.
+"signal.SIGHUP"           = 1
+"signal.SIGINT"           = 2
+"signal.SIGQUIT"          = 3
+"signal.SIGILL"           = 4
+"signal.SIGTRAP"          = 5
+"signal.SIGABRT"          = 6
+"signal.SIGEMT"           = 7
+"signal.SIGFPE"           = 8
+"signal.SIGKILL"          = 9
+"signal.SIGBUS"           = 10
+"signal.SIGSEGV"          = 11
+"signal.SIGSYS"           = 12
+"signal.SIGPIPE"          = 13
+"signal.SIGALRM"          = 14
+"signal.SIGTERM"          = 15
+"signal.SIGURG"           = 16
+"signal.SIGSTOP"          = 17
+"signal.SIGTSTP"          = 18
+"signal.SIGCONT"          = 19
+"signal.SIGCHLD"          = 20
+"signal.SIGTTIN"          = 21
+"signal.SIGTTOU"          = 22
+"signal.SIGIO"            = 23
+"signal.SIGXCPU"          = 24
+"signal.SIGXFSZ"          = 25
+"signal.SIGVTALRM"        = 26
+"signal.SIGPROF"          = 27
+"signal.SIGWINCH"         = 28
+"signal.SIGINFO"          = 29
+"signal.SIGUSR1"          = 30
+"signal.SIGUSR2"          = 31
+"signal.SIG_DFL"          = 0
+"signal.SIG_IGN"          = 1
+"signal.default_int_handler" = 0
+"signal.getsignal"        = { emit = "common:python.signal_getsignal",   min_args = 1, max_args = 1 }
+"signal.signal"           = { emit = "common:python.signal_signal",      min_args = 2, max_args = 2 }
+"signal.alarm"            = { emit = "common:python.signal_alarm",       min_args = 1, max_args = 1 }
+"signal.pause"            = { emit = "common:python.signal_pause",       min_args = 0, max_args = 0 }
+"signal.strsignal"        = { emit = "common:python.signal_strsignal",   min_args = 1, max_args = 1 }
+"__py_signal_getsignal"   = { emit = "common:python.signal_getsignal",   min_args = 1, max_args = 1 }
+"__py_signal_signal"      = { emit = "common:python.signal_signal",      min_args = 2, max_args = 2 }
+"__py_signal_alarm"       = { emit = "common:python.signal_alarm",       min_args = 1, max_args = 1 }
+"__py_signal_pause"       = { emit = "common:python.signal_pause",       min_args = 0, max_args = 0 }
+"__py_signal_strsignal"   = { emit = "common:python.signal_strsignal",   min_args = 1, max_args = 1 }
 # ────────────────────────────────────────────────────────────────────────────
 # VALUE METHODS — instance .method() calls
 # ────────────────────────────────────────────────────────────────────────────
@@ -1545,6 +1650,7 @@ is_file         = { emit = "common:python.os_is_file",       min_args = 0, max_a
 is_dir          = { emit = "common:python.os_is_dir",        min_args = 0, max_args = 0 }
 is_symlink      = { emit = "common:python.os_is_symlink",    min_args = 0, max_args = 0 }
 inode           = { emit = "common:python.os_inode",         min_args = 0, max_args = 0 }
+stat            = { emit = "common:python.os_entry_stat",    min_args = 0, max_args = 0 }
 translate       = { emit = "common:python.str_translate",    min_args = 1, max_args = 1 }
 add_note        = { emit = "common:python.exception_add_note", min_args = 1, max_args = 1 }
 istitle         = { emit = "common:python.str_istitle",      min_args = 0, max_args = 0 }
@@ -1584,18 +1690,18 @@ throw           = { emit = "common:python.gen_throw",         min_args = 0, max_
 # An async generator is the SAME continuation object — the VM attaches the
 # §27.6 async driver (`__vybe_async_generator_next`) to it — so Python's async
 # spellings are the same three operations, not a second implementation.
-asend           = { emit = "common:python.gen_send",          min_args = 0, max_args = 1 }
+asend           = { emit = "common:python.async_gen_send",    min_args = 0, max_args = 1 }
 athrow          = { emit = "common:python.gen_throw",         min_args = 0, max_args = 3 }
 aclose          = { emit = "common:python.gen_close",         min_args = 0, max_args = 0 }
-__anext__       = { emit = "common:python.gen_send",          min_args = 0, max_args = 0 }
+__anext__       = { emit = "common:python.async_gen_send",    min_args = 0, max_args = 0 }
 sort            = { emit = "host:ecma:array:sort",            min_args = 0, max_args = 2 }
 reverse         = { emit = "common:collections.reverse",      min_args = 0, max_args = 0 }
 copy            = { emit = "common:python.copy",            min_args = 0, max_args = 0 }
 # hashlib/hmac digest objects (hash_adapter.rs). `hexdigest`/`digest` are
 # unique to them; `update`/`copy` above stay dict/set-first and branch on the
 # receiver inside the shared adapter.
-hexdigest       = { emit = "common:python.hash_hexdigest",  min_args = 0, max_args = 0 }
-digest          = { emit = "common:python.hash_digest",     min_args = 0, max_args = 0 }
+hexdigest       = { emit = "common:python.hash_hexdigest",  min_args = 0, max_args = 1 }
+digest          = { emit = "common:python.hash_digest",     min_args = 0, max_args = 1 }
 
 # Dict instance methods. Polymorphic iteration shares ecma:object.*
 # with PHP array_keys/values and JS Object.keys/values/entries —
@@ -1634,6 +1740,7 @@ seek            = { emit = "common:python.file_seek",         min_args = 1, max_
 tell            = { emit = "common:python.file_tell",         min_args = 0, max_args = 0 }
 readlines       = { emit = "common:python.file_readlines",    min_args = 0, max_args = 0 }
 close           = { emit = "common:python.file_close",        min_args = 0, max_args = 0 }
+fileno          = { emit = "common:python.file_fileno",       min_args = 0, max_args = 0 }
 
 # datetime instance methods. `value_methods` are keyed by method name
 # alone, so any name shared by several datetime types dispatches on the
@@ -1707,6 +1814,23 @@ __debug__ = true
 "socket.SHUT_RD"      = 0
 "socket.SHUT_WR"      = 1
 "socket.SHUT_RDWR"    = 2
+"ssl.PROTOCOL_TLS" = 2
+"ssl.PROTOCOL_TLS_CLIENT" = 16
+"ssl.PROTOCOL_TLS_SERVER" = 17
+"ssl.CERT_NONE" = 0
+"ssl.CERT_OPTIONAL" = 1
+"ssl.CERT_REQUIRED" = 2
+"ssl.HAS_SNI" = true
+"ssl.HAS_ALPN" = true
+"ssl.OP_NO_SSLv2" = 0
+"mmap.ACCESS_DEFAULT" = 0
+"mmap.ACCESS_READ" = 1
+"mmap.ACCESS_WRITE" = 2
+"mmap.ACCESS_COPY" = 3
+"mmap.MAP_SHARED" = 1
+"mmap.MAP_PRIVATE" = 2
+"mmap.PROT_READ" = 1
+"mmap.PROT_WRITE" = 2
 "http.client.CONTINUE" = 100
 "http.client.SWITCHING_PROTOCOLS" = 101
 "http.client.OK" = 200
@@ -1837,43 +1961,6 @@ __debug__ = true
 "errno.EUSERS"                 = 68
 "errno.EXDEV"                  = 18
 
-# signal numbers — POSIX, as CPython reports them on the ground-truth
-# runtime. WASI delivers no signals, so these are readable constants (what
-# `signal.SIGTERM` IS) and nothing here installs a handler.
-"signal.SIGHUP"           = 1
-"signal.SIGINT"           = 2
-"signal.SIGQUIT"          = 3
-"signal.SIGILL"           = 4
-"signal.SIGTRAP"          = 5
-"signal.SIGABRT"          = 6
-"signal.SIGEMT"           = 7
-"signal.SIGFPE"           = 8
-"signal.SIGKILL"          = 9
-"signal.SIGBUS"           = 10
-"signal.SIGSEGV"          = 11
-"signal.SIGSYS"           = 12
-"signal.SIGPIPE"          = 13
-"signal.SIGALRM"          = 14
-"signal.SIGTERM"          = 15
-"signal.SIGURG"           = 16
-"signal.SIGSTOP"          = 17
-"signal.SIGTSTP"          = 18
-"signal.SIGCONT"          = 19
-"signal.SIGCHLD"          = 20
-"signal.SIGTTIN"          = 21
-"signal.SIGTTOU"          = 22
-"signal.SIGIO"            = 23
-"signal.SIGXCPU"          = 24
-"signal.SIGXFSZ"          = 25
-"signal.SIGVTALRM"        = 26
-"signal.SIGPROF"          = 27
-"signal.SIGWINCH"         = 28
-"signal.SIGINFO"          = 29
-"signal.SIGUSR1"          = 30
-"signal.SIGUSR2"          = 31
-"signal.SIG_DFL"      = 0
-"signal.SIG_IGN"      = 1
-
 # token/tokenize constants (CPython 3.x stable values used by token.py)
 "token.ENDMARKER"             = 0
 "token.NAME"                  = 1
@@ -1961,6 +2048,11 @@ __debug__ = true
 kind = "tree-mount"
 prefix = "array"
 path = "python.array"
+
+[[esm_default]]
+kind = "tree-mount"
+prefix = "argparse"
+path = "python.argparse"
 
 [[esm_default]]
 kind = "tree-mount"

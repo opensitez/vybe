@@ -24,7 +24,10 @@ pub(super) fn system_random() -> Statement {
             method(
                 "getrandbits",
                 vec![param("k", None)],
-                vec![ret(call_global("__py_random_getrandbits", vec![ident("k")]))],
+                vec![ret(call_global(
+                    "__py_random_getrandbits",
+                    vec![ident("k")],
+                ))],
             ),
             method(
                 "randbytes",
