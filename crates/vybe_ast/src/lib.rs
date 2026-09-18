@@ -4754,6 +4754,44 @@ pub struct Directives {
     /// language but the protocol ones wants.
     pub truthiness: Option<Truthiness>,
 
+    /// How aggressively ordinary variable/field type facts are trusted.
+    ///
+    /// Static languages bind declared storage to a compile-time type wherever
+    /// the frontend can state one. Dynamic languages may still infer a literal,
+    /// but an ordinary name read cannot be assumed to keep its initial shape.
+    /// Hybrid languages can use declared facts while still falling back to
+    /// runtime semantics for untyped values.
+    pub type_resolution: Option<TypeResolution>,
+
+    /// How binary/unary operators dispatch when builtin static slots do not
+    /// decide the operation.
+    ///
+    /// This replaces negative inference such as "not ECMA and not PHP means
+    /// rich operators". Static C should not emit a protocol probe for `x < y`;
+    /// Python/Ruby/Dart/C#/VB/Kotlin/Lua can, because their normalized classes
+    /// publish protocol/operator slots. JavaScript is its own ECMA abstract
+    /// operation path.
+    pub operator_dispatch: Option<OperatorDispatch>,
+
+    /// How this region evaluates `==` / `!=` when static type resolution
+    /// cannot select a built-in or user slot.
+    ///
+    /// Static vs dynamic is deliberately NOT encoded here. If the operands are
+    /// statically known, the compiler reads their [`ProtocolSlot::Eq`] /
+    /// [`ProtocolSlot::Ne`] binding and emits that target directly. This field
+    /// only answers the fallback question for unknown operands: exact value
+    /// equality, ECMA abstract equality, or a language-provided loose/protocol
+    /// target.
+    pub equality_fallback: Option<EqualityFallback>,
+
+    /// How `switch`/`case` labels compare against the switch subject.
+    ///
+    /// Most languages use their ordinary equality operator. JavaScript is the
+    /// notable exception: ECMA-262 `switch` uses Strict Equality Comparison
+    /// (`===`), not `==`. This is a statement-level equality policy, so it
+    /// lives beside [`Self::equality_fallback`] instead of in a profile flag.
+    pub switch_case_equality: Option<SwitchCaseEquality>,
+
     /// What a shift or rotate count outside `[0, width)` does in this region.
     ///
     /// Genuinely lexical policy: the operand's declared type does NOT
@@ -5098,6 +5136,18 @@ impl Directives {
         if other.set_semantics.is_some() {
             self.set_semantics = other.set_semantics;
         }
+        if other.type_resolution.is_some() {
+            self.type_resolution = other.type_resolution;
+        }
+        if other.operator_dispatch.is_some() {
+            self.operator_dispatch = other.operator_dispatch;
+        }
+        if other.equality_fallback.is_some() {
+            self.equality_fallback = other.equality_fallback;
+        }
+        if other.switch_case_equality.is_some() {
+            self.switch_case_equality = other.switch_case_equality;
+        }
         if other.receiver_binding.is_some() {
             self.receiver_binding = other.receiver_binding;
         }
@@ -5153,6 +5203,58 @@ impl Directives {
             self.functions_are_objects = other.functions_are_objects;
         }
     }
+}
+
+/// Equality algorithm for `==` / `!=` after static slot resolution fails.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum EqualityFallback {
+    /// Exact primitive/reference equality.
+    #[default]
+    Exact,
+    /// ECMA-262 abstract equality (`==`) / inequality (`!=`).
+    EcmaAbstract,
+    /// A language-provided `Eq`/`Ne` builtin-slot target handles the fallback.
+    /// PHP's loose equality lives here: the target is declared in the language
+    /// slot table, not selected by a language-name check.
+    Slot,
+}
+
+/// How a unit treats declared/static type facts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TypeResolution {
+    /// Declared storage and parameters are statically typed unless explicitly
+    /// erased. C, Go, Java, C#, Kotlin.
+    #[default]
+    Static,
+    /// Declared annotations are useful, but untyped values stay dynamic.
+    /// Python/PHP/Ruby-style frontends live here.
+    Hybrid,
+    /// Ordinary names are dynamic. Literal facts can still be folded locally.
+    Dynamic,
+}
+
+/// How a unit dispatches source operators after builtin static slots miss.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum OperatorDispatch {
+    /// Builtin/direct opcode lowering only. No runtime protocol probe for an
+    /// unknown object.
+    #[default]
+    StaticBuiltin,
+    /// Runtime protocol/dunder/operator-slot probing is valid.
+    RuntimeProtocol,
+    /// ECMAScript abstract operations (`ToPrimitive`, `ToNumber`, abstract
+    /// equality/relational comparison) own the fallback.
+    Ecma,
+}
+
+/// Equality algorithm for `switch`/`case` matching.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SwitchCaseEquality {
+    /// Use the language's ordinary equality operator.
+    #[default]
+    Eq,
+    /// Use strict equality (`===` semantics).
+    StrictEq,
 }
 
 /// What a shift or rotate count outside `[0, width)` does — see

@@ -21,7 +21,7 @@ use crate::{
 /// syntax, Java from conformance. Recovering it afterwards from the method's
 /// spelling is what made the name the identity. Re-exported under its original
 /// name so existing consumers are unaffected.
-pub use crate::{ProtocolSlot, ProtocolSlot as SpecialMethodKind, PROTOCOL_SLOT_TABLE};
+pub use crate::{PROTOCOL_SLOT_TABLE, ProtocolSlot, ProtocolSlot as SpecialMethodKind};
 
 /// Platform/type-construction metadata attached to a normalized class whose
 /// parent resolves to a registered platform type rather than a user class.
