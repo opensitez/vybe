@@ -1,5 +1,0 @@
-# vybe-test: python/stdlib_compile_extended/netrc_netrc
-# origin: languages/python/tests/python/test_stdlib_compile_extended.rs
-
-import netrc
-netrc.netrc

@@ -1,6 +1,0 @@
-# vybe-test: python/slicing_unpacking_spec/dict_literal_star_compile
-# origin: languages/python/tests/python/test_slicing_unpacking_spec.rs
-
-a = {'x': 1}
-b = {'y': 2}
-c = {**a, **b}
