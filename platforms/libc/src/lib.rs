@@ -36,8 +36,12 @@ impl vybe_runtime::Plugin for Plugin {
     fn name(&self) -> &'static str {
         "libc"
     }
-    fn init(&self, _fw: &mut vybe_runtime::Framework<'_>) {
+    fn init(&self, fw: &mut vybe_runtime::Framework<'_>) {
         register();
+        if let Some(vm) = fw.vm.as_deref_mut() {
+            emitter::sdl_runtime::register(vm);
+            emitter::string_host_runtime::register(vm);
+        }
     }
 }
 

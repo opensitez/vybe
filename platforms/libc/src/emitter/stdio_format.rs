@@ -344,10 +344,7 @@ pub fn build_sprintf(_imports: &mut Chunk) -> Chunk {
             // If arg is already a string, take its first character.
             // Otherwise coerce to char code and convert via fromCharCode.
             lg(&mut c, ARG);
-            {
-                let idx = c.add_import("wasm:js-string", "test");
-                c.emit_call(idx, 1, 0);
-            }
+            hc(&mut c, str_test, 1);
             let line = 0;
             c.emit_if(line);
             lg(&mut c, ARG);

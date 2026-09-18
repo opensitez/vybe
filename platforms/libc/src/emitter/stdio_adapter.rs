@@ -28,6 +28,14 @@ fn member(object: Expression, field: &str) -> Expression {
     })
 }
 
+fn index_expr(object: Expression, index: Expression) -> Expression {
+    e(ExprKind::Index {
+        object: Box::new(object),
+        index: Box::new(index),
+        null_safe: false,
+    })
+}
+
 fn call_member(object: Expression, field: &str, args: Vec<Expression>) -> Expression {
     call(member(object, field), args)
 }
@@ -527,7 +535,7 @@ pub fn puts_to_c_fputs(text: Expression) -> Expression {
         ident("__c_fputs_h"),
         vec![
             e(ExprKind::Binary {
-                op: vybe_ast::BinOp::Add,
+                op: vybe_ast::BinOp::Concat,
                 left: Box::new(text),
                 right: Box::new(lit_str("\n")),
             }),
@@ -1073,8 +1081,8 @@ pub fn stdin_runtime_helpers() -> Vec<Statement> {
                                 Some(vec![expr_stmt(assign_expr(
                                     stdin_buf(),
                                     bin(
-                                        BinOp::Add,
-                                        bin(BinOp::Add, stdin_buf(), ident("line")),
+                                        BinOp::Concat,
+                                        bin(BinOp::Concat, stdin_buf(), ident("line")),
                                         lit_str(" "),
                                     ),
                                 ))]),
@@ -1129,7 +1137,7 @@ pub fn stdin_runtime_helpers() -> Vec<Statement> {
                         vec![expr_stmt(assign_expr(stdin_eof(), lit_int(1)))],
                         Some(vec![expr_stmt(assign_expr(
                             stdin_buf(),
-                            bin(BinOp::Add, ident("line"), lit_str("\n")),
+                            bin(BinOp::Concat, ident("line"), lit_str("\n")),
                         ))]),
                     ),
                 ],
@@ -1260,7 +1268,7 @@ pub fn char_to_str_runtime_helper() -> Statement {
                     expr_stmt(assign_expr(
                         ident("out"),
                         bin(
-                            BinOp::Add,
+                            BinOp::Concat,
                             ident("out"),
                             ternary(
                                 bin(
@@ -1283,6 +1291,66 @@ pub fn char_to_str_runtime_helper() -> Statement {
                 ],
             ),
             ret(ident("out")),
+        ],
+    )
+}
+
+/// `strncpy` into a carray-backed C destination.
+///
+/// Destination is `{__ref_kind:"carray", __base:Array, __idx:i32}`; source may
+/// be a JS string or another C char pointer. Copies exactly `n` char codes and
+/// pads with NUL when the source is shorter, matching C `strncpy`.
+pub fn strncpy_carray_runtime_helper() -> Statement {
+    function(
+        "__libc_strncpy_carray",
+        vec!["dest", "src", "n"],
+        vec![
+            var_decl("text", call(ident("__libc_char_to_str"), vec![ident("src")])),
+            var_decl(
+                "take",
+                ternary(
+                    bin(BinOp::Lt, member(ident("text"), "length"), ident("n")),
+                    member(ident("text"), "length"),
+                    ident("n"),
+                ),
+            ),
+            var_decl(
+                "chars",
+                call_member(
+                    call_member(ident("text"), "substring", vec![lit_int(0), ident("take")]),
+                    "split",
+                    vec![lit_str("")],
+                ),
+            ),
+            var_decl(
+                "prefix",
+                call_member(
+                    member(ident("dest"), "__base"),
+                    "slice",
+                    vec![lit_int(0), member(ident("dest"), "__idx")],
+                ),
+            ),
+            var_decl(
+                "suffix",
+                call_member(
+                    member(ident("dest"), "__base"),
+                    "slice",
+                    vec![bin(
+                        BinOp::Add,
+                        member(ident("dest"), "__idx"),
+                        member(ident("chars"), "length"),
+                    )],
+                ),
+            ),
+            expr_stmt(assign_expr(
+                member(ident("dest"), "__base"),
+                call_member(
+                    call_member(ident("prefix"), "concat", vec![ident("chars")]),
+                    "concat",
+                    vec![ident("suffix")],
+                ),
+            )),
+            ret(ident("dest")),
         ],
     )
 }
@@ -1370,6 +1438,152 @@ pub fn scanf(fmt: &str, targets: Vec<Expression>, tmp_id: u32) -> Expression {
         };
         seq.push(ternary(
             bin(BinOp::Gt, member(ident(&tok_var), "length"), lit_int(0)),
+            e(ExprKind::Sequence(vec![
+                assign_expr(target, converted),
+                assign_expr(ident(&n_var), bin(BinOp::Add, ident(&n_var), lit_int(1))),
+            ])),
+            assign_expr(ident(&ok_var), lit_int(0)),
+        ));
+    }
+
+    seq.push(ident(&n_var));
+    e(ExprKind::Sequence(seq))
+}
+
+/// Lower `fscanf(stream, fmt, t1, ...)` for literal formats into a sequence that
+/// consumes the remaining file content and assigns whitespace-delimited fields.
+pub fn fscanf(fmt: &str, handle: Expression, targets: Vec<Expression>, tmp_id: u32) -> Expression {
+    let mut specs: Vec<char> = Vec::new();
+    let chars: Vec<char> = fmt.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] != '%' {
+            i += 1;
+            continue;
+        }
+        i += 1;
+        if i < chars.len() && chars[i] == '%' {
+            i += 1;
+            continue;
+        }
+        while i < chars.len() && chars[i].is_ascii_digit() {
+            i += 1;
+        }
+        while i < chars.len() && matches!(chars[i], 'l' | 'h' | 'L' | 'z' | 'j' | 't') {
+            i += 1;
+        }
+        if i < chars.len() {
+            specs.push(chars[i]);
+            i += 1;
+        }
+    }
+
+    let src_var = format!("__fsc_src{tmp_id}");
+    let n_var = format!("__fsc_n{tmp_id}");
+    let ok_var = format!("__fsc_ok{tmp_id}");
+    let handle_var = format!("__fsc_h{tmp_id}");
+
+    let remaining = bin(
+        BinOp::Sub,
+        member(
+            index_expr(ident("__c_file_content"), ident(&handle_var)),
+            "length",
+        ),
+        index_expr(ident("__c_file_pos"), ident(&handle_var)),
+    );
+
+    let mut seq: Vec<Expression> = vec![
+        assign_expr(ident(&handle_var), handle),
+        assign_expr(
+            ident(&src_var),
+            call(ident("__c_fread_h"), vec![ident(&handle_var), remaining]),
+        ),
+        assign_expr(
+            ident(&src_var),
+            call_member(ident(&src_var), "trim", vec![]),
+        ),
+        assign_expr(ident(&n_var), lit_int(0)),
+        assign_expr(ident(&ok_var), lit_int(1)),
+    ];
+
+    for (idx, spec) in specs.iter().enumerate() {
+        let Some(target) = targets.get(idx).cloned() else {
+            break;
+        };
+        let tok_var = format!("__fsc_tok{tmp_id}_{idx}");
+        let sp_var = format!("__fsc_sp{tmp_id}_{idx}");
+        if idx + 1 < specs.len() {
+            seq.push(assign_expr(
+                ident(&sp_var),
+                call_member(ident(&src_var), "indexOf", vec![lit_str(" ")]),
+            ));
+            seq.push(assign_expr(
+                ident(&tok_var),
+                ternary(
+                    bin(BinOp::Lt, ident(&sp_var), lit_int(0)),
+                    ident(&src_var),
+                    call_member(
+                        ident(&src_var),
+                        "substring",
+                        vec![lit_int(0), ident(&sp_var)],
+                    ),
+                ),
+            ));
+            seq.push(assign_expr(
+                ident(&src_var),
+                ternary(
+                    bin(BinOp::Lt, ident(&sp_var), lit_int(0)),
+                    lit_str(""),
+                    call_member(
+                        call_member(
+                            ident(&src_var),
+                            "substring",
+                            vec![bin(BinOp::Add, ident(&sp_var), lit_int(1))],
+                        ),
+                        "trim",
+                        vec![],
+                    ),
+                ),
+            ));
+        } else {
+            seq.push(assign_expr(ident(&tok_var), ident(&src_var)));
+        }
+
+        let converted = match spec {
+            'd' | 'u' => bin(
+                BinOp::Or,
+                call(ident("parseInt"), vec![ident(&tok_var), lit_int(10)]),
+                lit_int(0),
+            ),
+            'i' => bin(
+                BinOp::Or,
+                call(ident("parseInt"), vec![ident(&tok_var)]),
+                lit_int(0),
+            ),
+            'x' | 'X' => bin(
+                BinOp::Or,
+                call(ident("parseInt"), vec![ident(&tok_var), lit_int(16)]),
+                lit_int(0),
+            ),
+            'o' => bin(
+                BinOp::Or,
+                call(ident("parseInt"), vec![ident(&tok_var), lit_int(8)]),
+                lit_int(0),
+            ),
+            'f' | 'e' | 'g' | 'F' | 'E' | 'G' | 'a' => bin(
+                BinOp::Or,
+                call(ident("parseFloat"), vec![ident(&tok_var)]),
+                lit_float(0.0),
+            ),
+            _ => ident(&tok_var),
+        };
+
+        seq.push(ternary(
+            bin(
+                BinOp::And,
+                ident(&ok_var),
+                bin(BinOp::Gt, member(ident(&tok_var), "length"), lit_int(0)),
+            ),
             e(ExprKind::Sequence(vec![
                 assign_expr(target, converted),
                 assign_expr(ident(&n_var), bin(BinOp::Add, ident(&n_var), lit_int(1))),

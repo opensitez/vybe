@@ -95,6 +95,19 @@ pub fn var_decl_stmt(name: &str, init: Expression) -> Statement {
     })
 }
 
+pub fn typed_var_decl_stmt(name: &str, type_hint: &str, init: Expression) -> Statement {
+    stmt(StmtKind::VarDecl {
+        declarations: vec![VarDeclarator {
+            pattern: BindingPattern::Ident(name.to_string()),
+            type_hint: Some(type_hint.to_string().into()),
+            init: Some(init),
+            array_bounds: None,
+            with_events: false,
+        }],
+        kind: VarDeclKind::Var,
+    })
+}
+
 pub fn if_stmt(
     cond: Expression,
     then_body: Vec<Statement>,

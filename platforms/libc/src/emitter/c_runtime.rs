@@ -1,28 +1,571 @@
-//! libc runtime prelude — the FILE/stdio model, math.h series helpers, and the
-//! rand / signal / locale / strtok runtime, emitted as common AST. This is the
-//! libc surface shared by any libc-targeting front-end; the C walker injects it
-//! via `prelude()`. Builders come from `build`; math series helpers from
-//! `math_runtime`; the stdin / char-decode / wide-char / domain-error helpers
-//! are composed from their own adapters.
+//! libc runtime helpers for the FILE/stdio model, math.h series helpers, and
+//! the rand / signal / locale / strtok runtime, emitted as common AST while
+//! those surfaces are migrated behind adapter emitters.
 
 use crate::emitter::build::*;
 use crate::emitter::math_runtime::{
     build_math_helper_fn, ecma_math_call, poly_erf, stirling_approx,
 };
+use std::collections::{BTreeSet, HashMap, HashSet};
+use std::sync::OnceLock;
 use vybe_ast::{
-    Argument, ArrayElement, BinOp, BindingPattern, ExprKind, Literal, ObjectProperty, Statement,
-    StmtKind, VarDeclKind, VarDeclarator,
+    Argument, ArrayElement, BinOp, BindingPattern, ExprKind, Expression, Literal, ObjectProperty,
+    Statement, StmtKind, VarDeclKind, VarDeclarator,
 };
 
-/// The libc runtime prelude is identical for every program, so build it once
-/// and hand out clones — the same OnceLock caching the JS/PHP front-ends use.
-pub fn prelude() -> Vec<Statement> {
-    use std::sync::OnceLock;
-    static CACHE: OnceLock<Vec<Statement>> = OnceLock::new();
-    CACHE.get_or_init(build_prelude).clone()
+fn float_lit(value: f64) -> Expression {
+    expr(ExprKind::Lit(Literal::Float(value)))
 }
 
-fn build_prelude() -> Vec<Statement> {
+/// Return only the legacy AST helpers reachable from the already-normalized C
+/// module body.
+///
+/// This is deliberately smaller than `prelude()`: adapter-backed libc leaves
+/// compile through `common:libc.*` dispatch, and files that do not reference the
+/// old `__c_*` helper substrate should not pay to compile it.
+pub fn runtime_support_for(body: &[Statement]) -> Vec<Statement> {
+    static CACHE: OnceLock<RuntimeSupport> = OnceLock::new();
+    let support = CACHE.get_or_init(|| {
+        let prelude = build_legacy_runtime_support();
+        let index = RuntimeIndex::new(&prelude);
+        RuntimeSupport { prelude, index }
+    });
+
+    if support.index.definitions.is_empty() {
+        return Vec::new();
+    }
+
+    let mut selected = BTreeSet::new();
+    let mut seen = HashSet::new();
+    let mut work = Vec::new();
+    collect_stmt_refs(body, &mut work);
+
+    while let Some(name) = work.pop() {
+        if !seen.insert(name.clone()) {
+            continue;
+        }
+        let Some(indices) = support.index.definitions.get(&name) else {
+            continue;
+        };
+        for idx in indices {
+            if selected.insert(*idx) {
+                collect_stmt_refs(&support.prelude[*idx..=*idx], &mut work);
+            }
+        }
+    }
+
+    selected
+        .into_iter()
+        .map(|idx| support.prelude[idx].clone())
+        .collect()
+}
+
+struct RuntimeSupport {
+    prelude: Vec<Statement>,
+    index: RuntimeIndex,
+}
+
+struct RuntimeIndex {
+    definitions: HashMap<String, Vec<usize>>,
+}
+
+impl RuntimeIndex {
+    fn new(prelude: &[Statement]) -> Self {
+        let mut definitions: HashMap<String, Vec<usize>> = HashMap::new();
+        for (idx, stmt) in prelude.iter().enumerate() {
+            for name in stmt_defined_names(stmt) {
+                definitions.entry(name).or_default().push(idx);
+            }
+        }
+        Self { definitions }
+    }
+}
+
+fn stmt_defined_names(stmt: &Statement) -> Vec<String> {
+    match &stmt.kind {
+        StmtKind::FunctionDecl { name, .. } => vec![name.clone()],
+        StmtKind::VarDecl { declarations, .. } => declarations
+            .iter()
+            .filter_map(|decl| match &decl.pattern {
+                BindingPattern::Ident(name) => Some(name.clone()),
+                _ => None,
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn collect_stmt_refs(stmts: &[Statement], out: &mut Vec<String>) {
+    for stmt in stmts {
+        collect_stmt_ref(stmt, out);
+    }
+}
+
+fn collect_stmt_ref(stmt: &Statement, out: &mut Vec<String>) {
+    match &stmt.kind {
+        StmtKind::Expr(expr) => collect_expr_refs(expr, out),
+        StmtKind::Block(body) | StmtKind::NamespaceDecl { body, .. } => {
+            collect_stmt_refs(body, out)
+        }
+        StmtKind::Select { arms, default } => {
+            for arm in arms {
+                for child in arm.comm.children() {
+                    collect_expr_refs(child, out);
+                }
+                collect_stmt_refs(&arm.body, out);
+            }
+            if let Some(default) = default {
+                collect_stmt_refs(default, out);
+            }
+        }
+        StmtKind::VarDecl { declarations, .. } => {
+            for decl in declarations {
+                if let Some(init) = &decl.init {
+                    collect_expr_refs(init, out);
+                }
+            }
+        }
+        StmtKind::FunctionDecl { params, body, .. } => {
+            for param in params {
+                if let Some(default) = &param.default {
+                    collect_expr_refs(default, out);
+                }
+            }
+            collect_stmt_refs(body, out);
+        }
+        StmtKind::ClassDecl { members, .. }
+        | StmtKind::StructDecl { members, .. }
+        | StmtKind::ModuleDecl { members, .. } => {
+            for member in members {
+                collect_class_member_refs(member, out);
+            }
+        }
+        StmtKind::EnumDecl { body_members, .. } => {
+            for member in body_members {
+                collect_class_member_refs(member, out);
+            }
+        }
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => {
+            collect_expr_refs(cond, out);
+            collect_stmt_refs(then_body, out);
+            for (cond, body) in elifs {
+                collect_expr_refs(cond, out);
+                collect_stmt_refs(body, out);
+            }
+            if let Some(body) = else_body {
+                collect_stmt_refs(body, out);
+            }
+        }
+        StmtKind::For {
+            init,
+            cond,
+            update,
+            body,
+        } => {
+            if let Some(init) = init {
+                collect_stmt_ref(init, out);
+            }
+            if let Some(cond) = cond {
+                collect_expr_refs(cond, out);
+            }
+            if let Some(update) = update {
+                collect_expr_refs(update, out);
+            }
+            collect_stmt_refs(body, out);
+        }
+        StmtKind::ForIn {
+            iter,
+            body,
+            else_body,
+            ..
+        } => {
+            collect_expr_refs(iter, out);
+            collect_stmt_refs(body, out);
+            if let Some(body) = else_body {
+                collect_stmt_refs(body, out);
+            }
+        }
+        StmtKind::While {
+            cond,
+            body,
+            else_body,
+        } => {
+            collect_expr_refs(cond, out);
+            collect_stmt_refs(body, out);
+            if let Some(body) = else_body {
+                collect_stmt_refs(body, out);
+            }
+        }
+        StmtKind::DoWhile { body, cond, .. } => {
+            collect_stmt_refs(body, out);
+            collect_expr_refs(cond, out);
+        }
+        StmtKind::Switch {
+            expr,
+            cases,
+            default,
+        } => {
+            collect_expr_refs(expr, out);
+            for case in cases {
+                collect_stmt_refs(&case.body, out);
+            }
+            if let Some(default) = default {
+                collect_stmt_refs(default, out);
+            }
+        }
+        StmtKind::Try {
+            body,
+            catches,
+            else_body,
+            finally,
+        } => {
+            collect_stmt_refs(body, out);
+            for catch in catches {
+                if let Some(when) = &catch.when_clause {
+                    collect_expr_refs(when, out);
+                }
+                collect_stmt_refs(&catch.body, out);
+            }
+            if let Some(body) = else_body {
+                collect_stmt_refs(body, out);
+            }
+            if let Some(body) = finally {
+                collect_stmt_refs(body, out);
+            }
+        }
+        StmtKind::With { items, body, .. } => {
+            for item in items {
+                collect_expr_refs(&item.expr, out);
+            }
+            collect_stmt_refs(body, out);
+        }
+        StmtKind::Using { resource, body, .. } => {
+            collect_expr_refs(resource, out);
+            collect_stmt_refs(body, out);
+        }
+        StmtKind::Lock { expr, body } => {
+            collect_expr_refs(expr, out);
+            collect_stmt_refs(body, out);
+        }
+        StmtKind::Return(expr) => {
+            if let Some(expr) = expr {
+                collect_expr_refs(expr, out);
+            }
+        }
+        StmtKind::Throw { expr, cause } => {
+            if let Some(expr) = expr {
+                collect_expr_refs(expr, out);
+            }
+            if let Some(cause) = cause {
+                collect_expr_refs(cause, out);
+            }
+        }
+        StmtKind::Assign { targets, value, .. } => {
+            for target in targets {
+                collect_expr_refs(target, out);
+            }
+            collect_expr_refs(value, out);
+        }
+        StmtKind::CompoundAssign { target, value, .. } => {
+            collect_expr_refs(target, out);
+            collect_expr_refs(value, out);
+        }
+        StmtKind::RaiseEvent { args, .. } | StmtKind::Delete(args) | StmtKind::Echo(args) => {
+            for arg in args {
+                collect_expr_refs(arg, out);
+            }
+        }
+        StmtKind::AddHandler {
+            control, handler, ..
+        }
+        | StmtKind::RemoveHandler {
+            control, handler, ..
+        } => {
+            collect_expr_refs(control, out);
+            collect_expr_refs(handler, out);
+        }
+        StmtKind::Assert { test, msg } => {
+            collect_expr_refs(test, out);
+            if let Some(msg) = msg {
+                collect_expr_refs(msg, out);
+            }
+        }
+        StmtKind::Exit { status } => {
+            if let Some(status) = status {
+                collect_expr_refs(status, out);
+            }
+        }
+        StmtKind::Export {
+            declaration,
+            default,
+            ..
+        } => {
+            if let Some(declaration) = declaration {
+                collect_stmt_ref(declaration, out);
+            }
+            if let Some(default) = default {
+                collect_expr_refs(default, out);
+            }
+        }
+        StmtKind::Labeled { body, .. } => collect_stmt_ref(body, out),
+        _ => {}
+    }
+}
+
+fn collect_class_member_refs(member: &vybe_ast::ClassMember, out: &mut Vec<String>) {
+    match member {
+        vybe_ast::ClassMember::Field { init, .. } => {
+            if let Some(init) = init {
+                collect_expr_refs(init, out);
+            }
+        }
+        vybe_ast::ClassMember::Method(decl) | vybe_ast::ClassMember::NestedType(decl) => {
+            collect_stmt_ref(decl, out);
+        }
+        vybe_ast::ClassMember::Constructor { body, .. } => collect_stmt_refs(body, out),
+        vybe_ast::ClassMember::Property { getter, setter, .. } => {
+            if let Some(getter) = getter {
+                collect_stmt_refs(getter, out);
+            }
+            if let Some(setter) = setter {
+                collect_stmt_refs(&setter.body, out);
+            }
+        }
+        vybe_ast::ClassMember::Const { value, .. } => collect_expr_refs(value, out),
+        _ => {}
+    }
+}
+
+fn collect_expr_refs(expr: &Expression, out: &mut Vec<String>) {
+    match &expr.kind {
+        ExprKind::Ident(name) => out.push(name.clone()),
+        ExprKind::Unary { expr, .. }
+        | ExprKind::IsType { expr, .. }
+        | ExprKind::Cast { expr, .. }
+        | ExprKind::TypeOf(expr)
+        | ExprKind::Spread(expr)
+        | ExprKind::Await(expr)
+        | ExprKind::YieldFrom(expr)
+        | ExprKind::RefLoad(expr)
+        | ExprKind::Void(expr)
+        | ExprKind::Delete(expr) => collect_expr_refs(expr, out),
+        ExprKind::Yield(expr) => {
+            if let Some(expr) = expr {
+                collect_expr_refs(expr, out);
+            }
+        }
+        ExprKind::RefOf(place) => collect_place_refs(place.as_ref(), out),
+        ExprKind::Async(op) => {
+            for child in op.children() {
+                collect_expr_refs(child, out);
+            }
+        }
+        ExprKind::Chan(op) => {
+            for child in op.children() {
+                collect_expr_refs(child, out);
+            }
+        }
+        ExprKind::Atomic(op) => {
+            for child in op.children() {
+                collect_expr_refs(child, out);
+            }
+        }
+        ExprKind::Binary { left, right, .. }
+        | ExprKind::NullCoalesce { left, right }
+        | ExprKind::Assign {
+            target: left,
+            value: right,
+        }
+        | ExprKind::Walrus {
+            target: left,
+            value: right,
+        }
+        | ExprKind::Range {
+            start: left,
+            end: right,
+            ..
+        } => {
+            collect_expr_refs(left, out);
+            collect_expr_refs(right, out);
+        }
+        ExprKind::StaticAccess { class, member } => {
+            collect_expr_refs(class, out);
+            collect_expr_refs(member, out);
+        }
+        ExprKind::Ternary { cond, then, else_ } => {
+            collect_expr_refs(cond, out);
+            collect_expr_refs(then, out);
+            collect_expr_refs(else_, out);
+        }
+        ExprKind::Member { object, .. } => collect_expr_refs(object, out),
+        ExprKind::CallableRef {
+            target,
+            receiver,
+            adapter,
+            ..
+        } => {
+            collect_expr_refs(target, out);
+            if let Some(receiver) = receiver {
+                collect_expr_refs(receiver, out);
+            }
+            if let Some(adapter) = adapter {
+                match adapter {
+                    vybe_ast::CallableAdapter::Expr { body, .. } => collect_expr_refs(body, out),
+                }
+            }
+        }
+        ExprKind::Index { object, index, .. } => {
+            collect_expr_refs(object, out);
+            collect_expr_refs(index, out);
+        }
+        ExprKind::Call { callee, args, .. } => {
+            collect_expr_refs(callee, out);
+            for arg in args {
+                collect_expr_refs(&arg.value, out);
+            }
+        }
+        ExprKind::New { class, args } => {
+            collect_expr_refs(class, out);
+            for arg in args {
+                collect_expr_refs(&arg.value, out);
+            }
+        }
+        ExprKind::SuperCall { args, .. } => {
+            for arg in args {
+                collect_expr_refs(&arg.value, out);
+            }
+        }
+        ExprKind::Array(items) => {
+            for item in items {
+                if let Some(key) = &item.key {
+                    collect_expr_refs(key, out);
+                }
+                collect_expr_refs(&item.value, out);
+            }
+        }
+        ExprKind::Tuple(items)
+        | ExprKind::Set(items)
+        | ExprKind::Sequence(items)
+        | ExprKind::Zip {
+            iterables: items, ..
+        } => {
+            for item in items {
+                collect_expr_refs(item, out);
+            }
+        }
+        ExprKind::NamedTuple { fields, .. } => {
+            for (_, value) in fields {
+                collect_expr_refs(value, out);
+            }
+        }
+        ExprKind::Map(entries) => {
+            for (key, value) in entries {
+                collect_expr_refs(key, out);
+                collect_expr_refs(value, out);
+            }
+        }
+        ExprKind::Object(props) => {
+            for prop in props {
+                match prop {
+                    ObjectProperty::KeyValue { key, value }
+                    | ObjectProperty::Computed { key, value } => {
+                        collect_expr_refs(key, out);
+                        collect_expr_refs(value, out);
+                    }
+                    ObjectProperty::Spread(expr) => collect_expr_refs(expr, out),
+                    _ => {}
+                }
+            }
+        }
+        ExprKind::ArrayMap { array, body, .. } => {
+            collect_expr_refs(array, out);
+            collect_expr_refs(body, out);
+        }
+        ExprKind::ArrayTransform { args, .. } => {
+            for arg in args {
+                collect_expr_refs(arg, out);
+            }
+        }
+        ExprKind::Interpolation(parts) => {
+            for part in parts {
+                match part {
+                    vybe_ast::InterpolPart::Expr(expr)
+                    | vybe_ast::InterpolPart::Formatted(expr, _) => collect_expr_refs(expr, out),
+                    vybe_ast::InterpolPart::Text(_) => {}
+                }
+            }
+        }
+        ExprKind::Comprehension {
+            element,
+            generators,
+            ..
+        } => {
+            collect_expr_refs(element, out);
+            for generator in generators {
+                collect_expr_refs(&generator.target, out);
+                collect_expr_refs(&generator.iter, out);
+                for cond in &generator.conditions {
+                    collect_expr_refs(cond, out);
+                }
+            }
+        }
+        ExprKind::Slice { lower, upper, step } => {
+            for expr in [lower, upper, step].into_iter().flatten() {
+                collect_expr_refs(expr, out);
+            }
+        }
+        ExprKind::Lambda { body, .. } => match body {
+            vybe_ast::LambdaBody::Expr(expr) => collect_expr_refs(expr, out),
+            vybe_ast::LambdaBody::Block(body) => collect_stmt_refs(body.as_slice(), out),
+        },
+        ExprKind::FunctionExpr(decl) => collect_stmt_ref(decl.as_ref(), out),
+        ExprKind::ClassExpr {
+            parent, members, ..
+        } => {
+            if let Some(parent) = parent {
+                collect_expr_refs(parent, out);
+            }
+            for member in members {
+                collect_class_member_refs(&member, out);
+            }
+        }
+        ExprKind::Proxy { target, handler } => {
+            collect_expr_refs(target, out);
+            collect_expr_refs(handler, out);
+        }
+        ExprKind::Match { subject, arms } => {
+            collect_expr_refs(subject, out);
+            for arm in arms {
+                if let Some(conditions) = &arm.conditions {
+                    for cond in conditions {
+                        collect_expr_refs(cond, out);
+                    }
+                }
+                collect_expr_refs(&arm.body, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_place_refs(place: &vybe_ast::PlaceExpr, out: &mut Vec<String>) {
+    match place {
+        vybe_ast::PlaceExpr::Ident(name) => out.push(name.clone()),
+        vybe_ast::PlaceExpr::Member { object, .. } => collect_expr_refs(object, out),
+        vybe_ast::PlaceExpr::Index { object, index, .. } => {
+            collect_expr_refs(object, out);
+            collect_expr_refs(index, out);
+        }
+        vybe_ast::PlaceExpr::Deref(expr) => collect_expr_refs(expr, out),
+    }
+}
+
+fn build_legacy_runtime_support() -> Vec<Statement> {
     let stdout_name = "__c_stdout_file";
     let buffer_name = "__c_stdout_buffer";
     let store_name = "__c_file_store";
@@ -1268,7 +1811,7 @@ fn build_prelude() -> Vec<Statement> {
                 int_lit(1),
             ))),
             var_decl_stmt("pairs", call_expr(ident("__c_get_environment"), vec![])),
-            var_decl_stmt("i", int_lit(0)),
+            var_decl_stmt("i", float_lit(0.0)),
             stmt(StmtKind::While {
                 cond: expr(ExprKind::Binary {
                     op: BinOp::Lt,
@@ -1288,7 +1831,7 @@ fn build_prelude() -> Vec<Statement> {
                         expr(ExprKind::Binary {
                             op: BinOp::Add,
                             left: Box::new(ident("i")),
-                            right: Box::new(int_lit(1)),
+                            right: Box::new(float_lit(1.0)),
                         }),
                     ))),
                 ],
@@ -1833,7 +2376,7 @@ fn build_prelude() -> Vec<Statement> {
                     ident("__c_fopen_h"),
                     vec![
                         expr(ExprKind::Binary {
-                            op: BinOp::Add,
+                            op: BinOp::Concat,
                             left: Box::new(str_lit("__c_popen_")),
                             right: Box::new(ident("__c_popen_seq")),
                         }),
@@ -2110,7 +2653,7 @@ fn build_prelude() -> Vec<Statement> {
                     stmt(StmtKind::Expr(call_expr(
                         ident("__c_write_stdout"),
                         vec![expr(ExprKind::Binary {
-                            op: BinOp::Add,
+                            op: BinOp::Concat,
                             left: Box::new(ident(buffer_name)),
                             right: Box::new(ident("piece")),
                         })],
@@ -2120,7 +2663,7 @@ fn build_prelude() -> Vec<Statement> {
                 Some(vec![stmt(StmtKind::Expr(assign_expr(
                     ident(buffer_name),
                     expr(ExprKind::Binary {
-                        op: BinOp::Add,
+                        op: BinOp::Concat,
                         left: Box::new(ident(buffer_name)),
                         right: Box::new(ident("piece")),
                     }),
@@ -2147,7 +2690,18 @@ fn build_prelude() -> Vec<Statement> {
                         cond: Box::new(call_expr(ident("__c_fs_exists"), vec![ident("path")])),
                         then: Box::new(call_expr(
                             ident("__c_fs_read"),
-                            vec![ident("path"), str_lit("utf8")],
+                            vec![
+                                ident("path"),
+                                expr(ExprKind::Ternary {
+                                    cond: Box::new(expr(ExprKind::Binary {
+                                        op: BinOp::NotEq,
+                                        left: Box::new(ident("binary_mode")),
+                                        right: Box::new(int_lit(0)),
+                                    })),
+                                    then: Box::new(null_lit()),
+                                    else_: Box::new(str_lit("utf8")),
+                                }),
+                            ],
                         )),
                         else_: Box::new(null_lit()),
                     })),
@@ -2198,6 +2752,46 @@ fn build_prelude() -> Vec<Statement> {
                         then: Box::new(int_lit(1)),
                         else_: Box::new(int_lit(0)),
                     })),
+                    else_: Box::new(int_lit(0)),
+                }),
+            ),
+            var_decl_stmt(
+                "append_mode",
+                expr(ExprKind::Ternary {
+                    cond: Box::new(expr(ExprKind::Binary {
+                        op: BinOp::GtEq,
+                        left: Box::new(call_member(ident("mode"), "indexOf", vec![str_lit("a")])),
+                        right: Box::new(int_lit(0)),
+                    })),
+                    then: Box::new(int_lit(1)),
+                    else_: Box::new(int_lit(0)),
+                }),
+            ),
+            var_decl_stmt(
+                "readonly_mode",
+                expr(ExprKind::Ternary {
+                    cond: Box::new(expr(ExprKind::Binary {
+                        op: BinOp::And,
+                        left: Box::new(expr(ExprKind::Binary {
+                            op: BinOp::Eq,
+                            left: Box::new(call_member(
+                                ident("mode"),
+                                "indexOf",
+                                vec![str_lit("w")],
+                            )),
+                            right: Box::new(int_lit(-1)),
+                        })),
+                        right: Box::new(expr(ExprKind::Binary {
+                            op: BinOp::Eq,
+                            left: Box::new(call_member(
+                                ident("mode"),
+                                "indexOf",
+                                vec![str_lit("a")],
+                            )),
+                            right: Box::new(int_lit(-1)),
+                        })),
+                    })),
+                    then: Box::new(int_lit(1)),
                     else_: Box::new(int_lit(0)),
                 }),
             ),
@@ -2374,7 +2968,7 @@ fn build_prelude() -> Vec<Statement> {
                 Some(vec![stmt(StmtKind::Expr(assign_expr(
                     file_slot(ident("file"), CFILE_CONTENT),
                     expr(ExprKind::Binary {
-                        op: BinOp::Add,
+                        op: BinOp::Concat,
                         left: Box::new(file_slot(ident("file"), CFILE_CONTENT)),
                         right: Box::new(ident("text")),
                     }),
@@ -2448,13 +3042,24 @@ fn build_prelude() -> Vec<Statement> {
             ),
             var_decl_stmt(
                 "ch",
-                call_expr(
-                    ident("__c_char_code_at"),
-                    vec![
+                expr(ExprKind::Ternary {
+                    cond: Box::new(expr(ExprKind::Binary {
+                        op: BinOp::NotEq,
+                        left: Box::new(member(ident("file"), "binary")),
+                        right: Box::new(int_lit(0)),
+                    })),
+                    then: Box::new(index_expr(
                         file_slot(ident("file"), CFILE_CONTENT),
                         file_slot(ident("file"), CFILE_POS),
-                    ],
-                ),
+                    )),
+                    else_: Box::new(call_expr(
+                        ident("__c_char_code_at"),
+                        vec![
+                            file_slot(ident("file"), CFILE_CONTENT),
+                            file_slot(ident("file"), CFILE_POS),
+                        ],
+                    )),
+                }),
             ),
             stmt(StmtKind::Expr(assign_expr(
                 file_slot(ident("file"), CFILE_POS),
@@ -2808,16 +3413,35 @@ fn build_prelude() -> Vec<Statement> {
                         })),
                         then: Box::new(call_expr(
                             ident("__c_fs_read"),
-                            vec![ident("path"), str_lit("utf8")],
+                            vec![
+                                ident("path"),
+                                expr(ExprKind::Ternary {
+                                    cond: Box::new(expr(ExprKind::Binary {
+                                        op: BinOp::NotEq,
+                                        left: Box::new(ident("binary_mode")),
+                                        right: Box::new(int_lit(0)),
+                                    })),
+                                    then: Box::new(null_lit()),
+                                    else_: Box::new(str_lit("utf8")),
+                                }),
+                            ],
                         )),
                         else_: Box::new(expr(ExprKind::Ternary {
                             cond: Box::new(expr(ExprKind::Binary {
                                 op: BinOp::NotEq,
-                                left: Box::new(ident("binary_mode")),
+                                left: Box::new(ident("write_mode")),
                                 right: Box::new(int_lit(0)),
                             })),
-                            then: Box::new(expr(ExprKind::Array(vec![]))),
-                            else_: Box::new(str_lit("")),
+                            then: Box::new(expr(ExprKind::Ternary {
+                                cond: Box::new(expr(ExprKind::Binary {
+                                    op: BinOp::NotEq,
+                                    left: Box::new(ident("binary_mode")),
+                                    right: Box::new(int_lit(0)),
+                                })),
+                                then: Box::new(expr(ExprKind::Array(vec![]))),
+                                else_: Box::new(str_lit("")),
+                            })),
+                            else_: Box::new(null_lit()),
                         })),
                     }),
                 )))],
@@ -2841,6 +3465,31 @@ fn build_prelude() -> Vec<Statement> {
                         else_: Box::new(str_lit("")),
                     }),
                 )))],
+                None,
+            ),
+            if_stmt(
+                expr(ExprKind::Binary {
+                    op: BinOp::And,
+                    left: Box::new(expr(ExprKind::Binary {
+                        op: BinOp::NotEq,
+                        left: Box::new(ident("readonly_mode")),
+                        right: Box::new(int_lit(0)),
+                    })),
+                    right: Box::new(expr(ExprKind::Binary {
+                        op: BinOp::Or,
+                        left: Box::new(expr(ExprKind::Binary {
+                            op: BinOp::Eq,
+                            left: Box::new(ident("content")),
+                            right: Box::new(null_lit()),
+                        })),
+                        right: Box::new(expr(ExprKind::Binary {
+                            op: BinOp::Eq,
+                            left: Box::new(ident("content")),
+                            right: Box::new(expr(ExprKind::Lit(Literal::Undefined))),
+                        })),
+                    })),
+                }),
+                vec![stmt(StmtKind::Return(Some(null_lit())))],
                 None,
             ),
             stmt(StmtKind::Expr(assign_expr(
@@ -2993,46 +3642,17 @@ fn build_prelude() -> Vec<Statement> {
         "__c_write_carray_string",
         vec!["ptr", "text"],
         vec![
-            var_decl_stmt("i", int_lit(0)),
-            stmt(StmtKind::While {
-                cond: expr(ExprKind::Binary {
-                    op: BinOp::Lt,
-                    left: Box::new(ident("i")),
-                    right: Box::new(member(ident("text"), "length")),
-                }),
-                body: vec![
-                    stmt(StmtKind::Expr(assign_expr(
-                        index_expr(
-                            member(ident("ptr"), "__base"),
-                            expr(ExprKind::Binary {
-                                op: BinOp::Add,
-                                left: Box::new(member(ident("ptr"), "__idx")),
-                                right: Box::new(ident("i")),
-                            }),
-                        ),
-                        call_expr(ident("__c_char_code_at"), vec![ident("text"), ident("i")]),
-                    ))),
-                    stmt(StmtKind::Expr(assign_expr(
-                        ident("i"),
-                        expr(ExprKind::Binary {
-                            op: BinOp::Add,
-                            left: Box::new(ident("i")),
-                            right: Box::new(int_lit(1)),
-                        }),
-                    ))),
-                ],
-                else_body: None,
-            }),
-            stmt(StmtKind::Expr(assign_expr(
-                index_expr(
-                    member(ident("ptr"), "__base"),
+            stmt(StmtKind::Expr(call_expr(
+                ident("__libc_strncpy_carray"),
+                vec![
+                    ident("ptr"),
+                    ident("text"),
                     expr(ExprKind::Binary {
                         op: BinOp::Add,
-                        left: Box::new(member(ident("ptr"), "__idx")),
-                        right: Box::new(ident("i")),
+                        left: Box::new(member(ident("text"), "length")),
+                        right: Box::new(int_lit(1)),
                     }),
-                ),
-                int_lit(0),
+                ],
             ))),
             stmt(StmtKind::Return(Some(member(ident("text"), "length")))),
         ],
@@ -3105,7 +3725,7 @@ fn build_prelude() -> Vec<Statement> {
                 vec![stmt(StmtKind::Expr(assign_expr(
                     ident("content"),
                     expr(ExprKind::Binary {
-                        op: BinOp::Add,
+                        op: BinOp::Concat,
                         left: Box::new(ident("content")),
                         right: Box::new(call_member(
                             str_lit("\0"),
@@ -3129,7 +3749,7 @@ fn build_prelude() -> Vec<Statement> {
                 vec![stmt(StmtKind::Expr(assign_expr(
                     index_expr(ident("__c_file_content"), ident("handle")),
                     expr(ExprKind::Binary {
-                        op: BinOp::Add,
+                        op: BinOp::Concat,
                         left: Box::new(ident("content")),
                         right: Box::new(ident("text")),
                     }),
@@ -3137,14 +3757,14 @@ fn build_prelude() -> Vec<Statement> {
                 Some(vec![stmt(StmtKind::Expr(assign_expr(
                     index_expr(ident("__c_file_content"), ident("handle")),
                     expr(ExprKind::Binary {
-                        op: BinOp::Add,
+                        op: BinOp::Concat,
                         left: Box::new(call_member(
                             ident("content"),
                             "substring",
                             vec![int_lit(0), ident("pos")],
                         )),
                         right: Box::new(expr(ExprKind::Binary {
-                            op: BinOp::Add,
+                            op: BinOp::Concat,
                             left: Box::new(ident("text")),
                             right: Box::new(call_member(
                                 ident("content"),
@@ -3234,13 +3854,24 @@ fn build_prelude() -> Vec<Statement> {
             ),
             var_decl_stmt(
                 "ch",
-                call_expr(
-                    ident("__c_char_code_at"),
-                    vec![
+                expr(ExprKind::Ternary {
+                    cond: Box::new(expr(ExprKind::Binary {
+                        op: BinOp::NotEq,
+                        left: Box::new(index_expr(ident("__c_file_binary"), ident("handle"))),
+                        right: Box::new(int_lit(0)),
+                    })),
+                    then: Box::new(index_expr(
                         index_expr(ident("__c_file_content"), ident("handle")),
                         index_expr(ident("__c_file_pos"), ident("handle")),
-                    ],
-                ),
+                    )),
+                    else_: Box::new(call_expr(
+                        ident("__c_char_code_at"),
+                        vec![
+                            index_expr(ident("__c_file_content"), ident("handle")),
+                            index_expr(ident("__c_file_pos"), ident("handle")),
+                        ],
+                    )),
+                }),
             ),
             stmt(StmtKind::Expr(assign_expr(
                 index_expr(ident("__c_file_pos"), ident("handle")),
@@ -3312,7 +3943,7 @@ fn build_prelude() -> Vec<Statement> {
                         "length",
                     )),
                 }),
-                vec![stmt(StmtKind::Return(Some(str_lit(""))))],
+                vec![stmt(StmtKind::Return(Some(null_lit())))],
                 None,
             ),
             var_decl_stmt(
@@ -3395,8 +4026,6 @@ fn build_prelude() -> Vec<Statement> {
     // platform adapter so any libc-targeting language shares it. Under the
     // hood it composes wasi:cli/stdin + wasi:io/streams via intrinsic:readline.
     out.extend(crate::emitter::stdio_adapter::stdin_runtime_helpers());
-    // char[] → string decoder for `%s`/`puts` (string / carray / code-point array).
-    out.push(crate::emitter::stdio_adapter::char_to_str_runtime_helper());
     out.extend(crate::emitter::string_adapter::strtok_runtime_helpers());
     // wide-char boundary helpers (code-point array ↔ string) for wchar.h.
     out.extend(crate::emitter::wchar_adapter::runtime_helpers());
@@ -3561,7 +4190,105 @@ fn build_prelude() -> Vec<Statement> {
         "__c_fread_h",
         vec!["handle", "count"],
         vec![
-            var_decl_stmt("out", str_lit("")),
+            var_decl_stmt(
+                "ungot",
+                index_expr(ident("__c_file_ungot"), ident("handle")),
+            ),
+            if_stmt(
+                expr(ExprKind::Binary {
+                    op: BinOp::Eq,
+                    left: Box::new(member(ident("ungot"), "length")),
+                    right: Box::new(int_lit(0)),
+                }),
+                vec![
+                    var_decl_stmt(
+                        "content",
+                        index_expr(ident("__c_file_content"), ident("handle")),
+                    ),
+                    var_decl_stmt("pos", index_expr(ident("__c_file_pos"), ident("handle"))),
+                    var_decl_stmt("len", member(ident("content"), "length")),
+                    var_decl_stmt(
+                        "end",
+                        expr(ExprKind::Binary {
+                            op: BinOp::Add,
+                            left: Box::new(ident("pos")),
+                            right: Box::new(ident("count")),
+                        }),
+                    ),
+                    if_stmt(
+                        expr(ExprKind::Binary {
+                            op: BinOp::Gt,
+                            left: Box::new(ident("end")),
+                            right: Box::new(ident("len")),
+                        }),
+                        vec![stmt(StmtKind::Expr(assign_expr(
+                            ident("end"),
+                            ident("len"),
+                        )))],
+                        None,
+                    ),
+                    if_stmt(
+                        expr(ExprKind::Binary {
+                            op: BinOp::LtEq,
+                            left: Box::new(ident("end")),
+                            right: Box::new(ident("pos")),
+                        }),
+                        vec![
+                            stmt(StmtKind::Expr(assign_expr(
+                                index_expr(ident("__c_file_eof"), ident("handle")),
+                                int_lit(1),
+                            ))),
+                            stmt(StmtKind::Return(Some(expr(ExprKind::Ternary {
+                                cond: Box::new(expr(ExprKind::Binary {
+                                    op: BinOp::NotEq,
+                                    left: Box::new(index_expr(
+                                        ident("__c_file_binary"),
+                                        ident("handle"),
+                                    )),
+                                    right: Box::new(int_lit(0)),
+                                })),
+                                then: Box::new(expr(ExprKind::Array(vec![]))),
+                                else_: Box::new(str_lit("")),
+                            })))),
+                        ],
+                        None,
+                    ),
+                    var_decl_stmt(
+                        "out",
+                        call_member(ident("content"), "slice", vec![ident("pos"), ident("end")]),
+                    ),
+                    stmt(StmtKind::Expr(assign_expr(
+                        index_expr(ident("__c_file_pos"), ident("handle")),
+                        ident("end"),
+                    ))),
+                    stmt(StmtKind::Expr(assign_expr(
+                        index_expr(ident("__c_file_eof"), ident("handle")),
+                        expr(ExprKind::Ternary {
+                            cond: Box::new(expr(ExprKind::Binary {
+                                op: BinOp::GtEq,
+                                left: Box::new(ident("end")),
+                                right: Box::new(ident("len")),
+                            })),
+                            then: Box::new(int_lit(1)),
+                            else_: Box::new(int_lit(0)),
+                        }),
+                    ))),
+                    stmt(StmtKind::Return(Some(ident("out")))),
+                ],
+                None,
+            ),
+            var_decl_stmt(
+                "out",
+                expr(ExprKind::Ternary {
+                    cond: Box::new(expr(ExprKind::Binary {
+                        op: BinOp::NotEq,
+                        left: Box::new(index_expr(ident("__c_file_binary"), ident("handle"))),
+                        right: Box::new(int_lit(0)),
+                    })),
+                    then: Box::new(expr(ExprKind::Array(vec![]))),
+                    else_: Box::new(str_lit("")),
+                }),
+            ),
             var_decl_stmt("i", int_lit(0)),
             stmt(StmtKind::While {
                 cond: expr(ExprKind::Binary {
@@ -3580,18 +4307,30 @@ fn build_prelude() -> Vec<Statement> {
                         vec![stmt(StmtKind::Break(vybe_ast::BreakTarget::Implicit))],
                         None,
                     ),
-                    stmt(StmtKind::Expr(assign_expr(
-                        ident("out"),
+                    if_stmt(
                         expr(ExprKind::Binary {
-                            op: BinOp::Add,
-                            left: Box::new(ident("out")),
-                            right: Box::new(call_member(
-                                ident("String"),
-                                "fromCharCode",
-                                vec![ident("ch")],
-                            )),
+                            op: BinOp::NotEq,
+                            left: Box::new(index_expr(ident("__c_file_binary"), ident("handle"))),
+                            right: Box::new(int_lit(0)),
                         }),
-                    ))),
+                        vec![stmt(StmtKind::Expr(call_member(
+                            ident("out"),
+                            "push",
+                            vec![ident("ch")],
+                        )))],
+                        Some(vec![stmt(StmtKind::Expr(assign_expr(
+                            ident("out"),
+                            expr(ExprKind::Binary {
+                                op: BinOp::Concat,
+                                left: Box::new(ident("out")),
+                                right: Box::new(call_member(
+                                    ident("String"),
+                                    "fromCharCode",
+                                    vec![ident("ch")],
+                                )),
+                            }),
+                        )))]),
+                    ),
                     stmt(StmtKind::Expr(assign_expr(
                         ident("i"),
                         expr(ExprKind::Binary {
@@ -3604,6 +4343,541 @@ fn build_prelude() -> Vec<Statement> {
                 else_body: None,
             }),
             stmt(StmtKind::Return(Some(ident("out")))),
+        ],
+    ));
+
+    out.push(function_stmt(
+        "__c_fread_into_h",
+        vec!["ptr", "size", "count", "handle"],
+        vec![
+            if_stmt(
+                expr(ExprKind::Binary {
+                    op: BinOp::Or,
+                    left: Box::new(expr(ExprKind::Binary {
+                        op: BinOp::LtEq,
+                        left: Box::new(ident("size")),
+                        right: Box::new(int_lit(0)),
+                    })),
+                    right: Box::new(expr(ExprKind::Binary {
+                        op: BinOp::LtEq,
+                        left: Box::new(ident("count")),
+                        right: Box::new(int_lit(0)),
+                    })),
+                }),
+                vec![stmt(StmtKind::Return(Some(int_lit(0))))],
+                None,
+            ),
+            var_decl_stmt(
+                "data",
+                call_expr(
+                    ident("__c_fread_h"),
+                    vec![
+                        ident("handle"),
+                        expr(ExprKind::Binary {
+                            op: BinOp::Mul,
+                            left: Box::new(ident("size")),
+                            right: Box::new(ident("count")),
+                        }),
+                    ],
+                ),
+            ),
+            var_decl_stmt("dst_base", ident("ptr")),
+            var_decl_stmt("dst_idx", float_lit(0.0)),
+            if_stmt(
+                expr(ExprKind::Binary {
+                    op: BinOp::Eq,
+                    left: Box::new(member(ident("ptr"), "__ref_kind")),
+                    right: Box::new(str_lit("carray")),
+                }),
+                vec![
+                    stmt(StmtKind::Expr(assign_expr(
+                        ident("dst_base"),
+                        member(ident("ptr"), "__base"),
+                    ))),
+                    stmt(StmtKind::Expr(assign_expr(
+                        ident("dst_idx"),
+                        member(ident("ptr"), "__idx"),
+                    ))),
+                ],
+                None,
+            ),
+            if_stmt(
+                expr(ExprKind::Binary {
+                    op: BinOp::Eq,
+                    left: Box::new(member(ident("ptr"), "__ref_kind")),
+                    right: Box::new(str_lit("cstruct")),
+                }),
+                vec![
+                    stmt(StmtKind::Expr(assign_expr(
+                        ident("dst_base"),
+                        member(ident("ptr"), "__base"),
+                    ))),
+                    var_decl_stmt("__c_struct_write", member(ident("ptr"), "__write")),
+                    if_stmt(
+                        expr(ExprKind::Binary {
+                            op: BinOp::NotEq,
+                            left: Box::new(expr(ExprKind::Unary {
+                                op: vybe_ast::UnaryOp::Typeof,
+                                expr: Box::new(ident("__c_struct_write")),
+                            })),
+                            right: Box::new(str_lit("undefined")),
+                        }),
+                        vec![stmt(StmtKind::Expr(call_expr(
+                            ident("__c_struct_write"),
+                            vec![ident("data")],
+                        )))],
+                        None,
+                    ),
+                    stmt(StmtKind::Return(Some(expr(ExprKind::Binary {
+                        op: BinOp::Div,
+                        left: Box::new(member(ident("data"), "length")),
+                        right: Box::new(ident("size")),
+                    })))),
+                ],
+                None,
+            ),
+            var_decl_stmt("i", float_lit(0.0)),
+            if_stmt(
+                expr(ExprKind::Binary {
+                    op: BinOp::NotEq,
+                    left: Box::new(expr(ExprKind::Unary {
+                        op: vybe_ast::UnaryOp::Typeof,
+                        expr: Box::new(member(ident("dst_base"), "length")),
+                    })),
+                    right: Box::new(str_lit("undefined")),
+                }),
+                vec![stmt(StmtKind::While {
+                    cond: expr(ExprKind::Binary {
+                        op: BinOp::Lt,
+                        left: Box::new(ident("i")),
+                        right: Box::new(member(ident("data"), "length")),
+                    }),
+                    body: vec![
+                        stmt(StmtKind::Expr(assign_expr(
+                            index_expr(
+                                ident("dst_base"),
+                                expr(ExprKind::Binary {
+                                    op: BinOp::Add,
+                                    left: Box::new(ident("dst_idx")),
+                                    right: Box::new(ident("i")),
+                                }),
+                            ),
+                            expr(ExprKind::Ternary {
+                                cond: Box::new(expr(ExprKind::Binary {
+                                    op: BinOp::Eq,
+                                    left: Box::new(expr(ExprKind::Unary {
+                                        op: vybe_ast::UnaryOp::Typeof,
+                                        expr: Box::new(ident("data")),
+                                    })),
+                                    right: Box::new(str_lit("string")),
+                                })),
+                                then: Box::new(call_expr(
+                                    ident("__c_char_code_at"),
+                                    vec![ident("data"), ident("i")],
+                                )),
+                                else_: Box::new(index_expr(ident("data"), ident("i"))),
+                            }),
+                        ))),
+                        stmt(StmtKind::Expr(assign_expr(
+                            ident("i"),
+                            expr(ExprKind::Binary {
+                                op: BinOp::Add,
+                                left: Box::new(ident("i")),
+                                right: Box::new(float_lit(1.0)),
+                            }),
+                        ))),
+                    ],
+                    else_body: None,
+                })],
+                None,
+            ),
+            stmt(StmtKind::Return(Some(expr(ExprKind::Binary {
+                op: BinOp::Div,
+                left: Box::new(member(ident("data"), "length")),
+                right: Box::new(ident("size")),
+            })))),
+        ],
+    ));
+
+    out.push(function_stmt(
+        "__c_fread_into_array_h",
+        vec!["dst_base", "dst_idx", "size", "count", "handle"],
+        vec![
+            if_stmt(
+                expr(ExprKind::Binary {
+                    op: BinOp::Or,
+                    left: Box::new(expr(ExprKind::Binary {
+                        op: BinOp::LtEq,
+                        left: Box::new(ident("size")),
+                        right: Box::new(int_lit(0)),
+                    })),
+                    right: Box::new(expr(ExprKind::Binary {
+                        op: BinOp::LtEq,
+                        left: Box::new(ident("count")),
+                        right: Box::new(int_lit(0)),
+                    })),
+                }),
+                vec![stmt(StmtKind::Return(Some(int_lit(0))))],
+                None,
+            ),
+            var_decl_stmt(
+                "data",
+                call_expr(
+                    ident("__c_fread_h"),
+                    vec![
+                        ident("handle"),
+                        expr(ExprKind::Binary {
+                            op: BinOp::Mul,
+                            left: Box::new(ident("size")),
+                            right: Box::new(ident("count")),
+                        }),
+                    ],
+                ),
+            ),
+            var_decl_stmt("i", float_lit(0.0)),
+            stmt(StmtKind::While {
+                cond: expr(ExprKind::Binary {
+                    op: BinOp::Lt,
+                    left: Box::new(ident("i")),
+                    right: Box::new(member(ident("data"), "length")),
+                }),
+                body: vec![
+                    stmt(StmtKind::Expr(assign_expr(
+                        index_expr(
+                            ident("dst_base"),
+                            expr(ExprKind::Binary {
+                                op: BinOp::Add,
+                                left: Box::new(ident("dst_idx")),
+                                right: Box::new(ident("i")),
+                            }),
+                        ),
+                        expr(ExprKind::Ternary {
+                            cond: Box::new(expr(ExprKind::Binary {
+                                op: BinOp::Eq,
+                                left: Box::new(expr(ExprKind::Unary {
+                                    op: vybe_ast::UnaryOp::Typeof,
+                                    expr: Box::new(ident("data")),
+                                })),
+                                right: Box::new(str_lit("string")),
+                            })),
+                            then: Box::new(call_expr(
+                                ident("__c_char_code_at"),
+                                vec![ident("data"), ident("i")],
+                            )),
+                            else_: Box::new(index_expr(ident("data"), ident("i"))),
+                        }),
+                    ))),
+                    stmt(StmtKind::Expr(assign_expr(
+                        ident("i"),
+                        expr(ExprKind::Binary {
+                            op: BinOp::Add,
+                            left: Box::new(ident("i")),
+                            right: Box::new(float_lit(1.0)),
+                        }),
+                    ))),
+                ],
+                else_body: None,
+            }),
+            stmt(StmtKind::Return(Some(expr(ExprKind::Binary {
+                op: BinOp::Div,
+                left: Box::new(member(ident("data"), "length")),
+                right: Box::new(ident("size")),
+            })))),
+        ],
+    ));
+
+    out.push(function_stmt(
+        "__c_fread_into_struct_array_h",
+        vec!["dst_base", "dst_idx", "size", "count", "handle", "fields"],
+        vec![
+            if_stmt(
+                expr(ExprKind::Binary {
+                    op: BinOp::Or,
+                    left: Box::new(expr(ExprKind::Binary {
+                        op: BinOp::LtEq,
+                        left: Box::new(ident("size")),
+                        right: Box::new(int_lit(0)),
+                    })),
+                    right: Box::new(expr(ExprKind::Binary {
+                        op: BinOp::LtEq,
+                        left: Box::new(ident("count")),
+                        right: Box::new(int_lit(0)),
+                    })),
+                }),
+                vec![stmt(StmtKind::Return(Some(int_lit(0))))],
+                None,
+            ),
+            var_decl_stmt(
+                "data",
+                call_expr(
+                    ident("__c_fread_h"),
+                    vec![
+                        ident("handle"),
+                        expr(ExprKind::Binary {
+                            op: BinOp::Mul,
+                            left: Box::new(ident("size")),
+                            right: Box::new(ident("count")),
+                        }),
+                    ],
+                ),
+            ),
+            var_decl_stmt("record", float_lit(0.0)),
+            stmt(StmtKind::While {
+                cond: expr(ExprKind::Binary {
+                    op: BinOp::And,
+                    left: Box::new(expr(ExprKind::Binary {
+                        op: BinOp::Lt,
+                        left: Box::new(ident("record")),
+                        right: Box::new(ident("count")),
+                    })),
+                    right: Box::new(expr(ExprKind::Binary {
+                        op: BinOp::Lt,
+                        left: Box::new(expr(ExprKind::Binary {
+                            op: BinOp::Mul,
+                            left: Box::new(ident("record")),
+                            right: Box::new(ident("size")),
+                        })),
+                        right: Box::new(member(ident("data"), "length")),
+                    })),
+                }),
+                body: vec![
+                    var_decl_stmt(
+                        "obj",
+                        index_expr(
+                            ident("dst_base"),
+                            expr(ExprKind::Binary {
+                                op: BinOp::Add,
+                                left: Box::new(ident("dst_idx")),
+                                right: Box::new(ident("record")),
+                            }),
+                        ),
+                    ),
+                    var_decl_stmt("field_index", float_lit(0.0)),
+                    stmt(StmtKind::While {
+                        cond: expr(ExprKind::Binary {
+                            op: BinOp::Lt,
+                            left: Box::new(ident("field_index")),
+                            right: Box::new(member(ident("fields"), "length")),
+                        }),
+                        body: vec![
+                            var_decl_stmt("spec", index_expr(ident("fields"), ident("field_index"))),
+                            var_decl_stmt("field_name", index_expr(ident("spec"), int_lit(0))),
+                            var_decl_stmt("field_kind", index_expr(ident("spec"), int_lit(1))),
+                            var_decl_stmt(
+                                "field_offset",
+                                expr(ExprKind::Binary {
+                                    op: BinOp::Add,
+                                    left: Box::new(expr(ExprKind::Binary {
+                                        op: BinOp::Mul,
+                                        left: Box::new(ident("record")),
+                                        right: Box::new(ident("size")),
+                                    })),
+                                    right: Box::new(index_expr(ident("spec"), int_lit(2))),
+                                }),
+                            ),
+                            var_decl_stmt("field_width", index_expr(ident("spec"), int_lit(3))),
+                            var_decl_stmt("field_count", index_expr(ident("spec"), int_lit(4))),
+                            if_stmt(
+                                expr(ExprKind::Binary {
+                                    op: BinOp::Eq,
+                                    left: Box::new(ident("field_kind")),
+                                    right: Box::new(str_lit("char_array")),
+                                }),
+                                vec![
+                                    var_decl_stmt("chars", expr(ExprKind::Array(Vec::new()))),
+                                    var_decl_stmt("byte_index", float_lit(0.0)),
+                                    stmt(StmtKind::While {
+                                        cond: expr(ExprKind::Binary {
+                                            op: BinOp::And,
+                                            left: Box::new(expr(ExprKind::Binary {
+                                                op: BinOp::Lt,
+                                                left: Box::new(ident("byte_index")),
+                                                right: Box::new(ident("field_count")),
+                                            })),
+                                            right: Box::new(expr(ExprKind::Binary {
+                                                op: BinOp::Lt,
+                                                left: Box::new(expr(ExprKind::Binary {
+                                                    op: BinOp::Add,
+                                                    left: Box::new(ident("field_offset")),
+                                                    right: Box::new(ident("byte_index")),
+                                                })),
+                                                right: Box::new(member(ident("data"), "length")),
+                                            })),
+                                        }),
+                                        body: vec![
+                                            stmt(StmtKind::Expr(assign_expr(
+                                                index_expr(ident("chars"), ident("byte_index")),
+                                                expr(ExprKind::Ternary {
+                                                    cond: Box::new(expr(ExprKind::Binary {
+                                                        op: BinOp::Eq,
+                                                        left: Box::new(expr(ExprKind::Unary {
+                                                            op: vybe_ast::UnaryOp::Typeof,
+                                                            expr: Box::new(ident("data")),
+                                                        })),
+                                                        right: Box::new(str_lit("string")),
+                                                    })),
+                                                    then: Box::new(call_expr(
+                                                        ident("__c_char_code_at"),
+                                                        vec![
+                                                            ident("data"),
+                                                            expr(ExprKind::Binary {
+                                                                op: BinOp::Add,
+                                                                left: Box::new(ident("field_offset")),
+                                                                right: Box::new(ident("byte_index")),
+                                                            }),
+                                                        ],
+                                                    )),
+                                                    else_: Box::new(index_expr(
+                                                        ident("data"),
+                                                        expr(ExprKind::Binary {
+                                                            op: BinOp::Add,
+                                                            left: Box::new(ident("field_offset")),
+                                                            right: Box::new(ident("byte_index")),
+                                                        }),
+                                                    )),
+                                                }),
+                                            ))),
+                                            stmt(StmtKind::Expr(assign_expr(
+                                                ident("byte_index"),
+                                                expr(ExprKind::Binary {
+                                                    op: BinOp::Add,
+                                                    left: Box::new(ident("byte_index")),
+                                                    right: Box::new(float_lit(1.0)),
+                                                }),
+                                            ))),
+                                        ],
+                                        else_body: None,
+                                    }),
+                                    stmt(StmtKind::Expr(assign_expr(
+                                        index_expr(ident("obj"), ident("field_name")),
+                                        ident("chars"),
+                                    ))),
+                                ],
+                                Some(vec![
+                                    var_decl_stmt("value", int_lit(0)),
+                                    var_decl_stmt("byte_index", float_lit(0.0)),
+                                    stmt(StmtKind::While {
+                                        cond: expr(ExprKind::Binary {
+                                            op: BinOp::And,
+                                            left: Box::new(expr(ExprKind::Binary {
+                                                op: BinOp::Lt,
+                                                left: Box::new(ident("byte_index")),
+                                                right: Box::new(ident("field_width")),
+                                            })),
+                                            right: Box::new(expr(ExprKind::Binary {
+                                                op: BinOp::Lt,
+                                                left: Box::new(expr(ExprKind::Binary {
+                                                    op: BinOp::Add,
+                                                    left: Box::new(ident("field_offset")),
+                                                    right: Box::new(ident("byte_index")),
+                                                })),
+                                                right: Box::new(member(ident("data"), "length")),
+                                            })),
+                                        }),
+                                        body: vec![
+                                            var_decl_stmt(
+                                                "byte",
+                                                expr(ExprKind::Ternary {
+                                                    cond: Box::new(expr(ExprKind::Binary {
+                                                        op: BinOp::Eq,
+                                                        left: Box::new(expr(ExprKind::Unary {
+                                                            op: vybe_ast::UnaryOp::Typeof,
+                                                            expr: Box::new(ident("data")),
+                                                        })),
+                                                        right: Box::new(str_lit("string")),
+                                                    })),
+                                                    then: Box::new(call_expr(
+                                                        ident("__c_char_code_at"),
+                                                        vec![
+                                                            ident("data"),
+                                                            expr(ExprKind::Binary {
+                                                                op: BinOp::Add,
+                                                                left: Box::new(ident("field_offset")),
+                                                                right: Box::new(ident("byte_index")),
+                                                            }),
+                                                        ],
+                                                    )),
+                                                    else_: Box::new(index_expr(
+                                                        ident("data"),
+                                                        expr(ExprKind::Binary {
+                                                            op: BinOp::Add,
+                                                            left: Box::new(ident("field_offset")),
+                                                            right: Box::new(ident("byte_index")),
+                                                        }),
+                                                    )),
+                                                }),
+                                            ),
+                                            stmt(StmtKind::Expr(assign_expr(
+                                                ident("value"),
+                                                expr(ExprKind::Binary {
+                                                    op: BinOp::BitOr,
+                                                    left: Box::new(ident("value")),
+                                                    right: Box::new(expr(ExprKind::Binary {
+                                                        op: BinOp::Shl,
+                                                        left: Box::new(ident("byte")),
+                                                        right: Box::new(expr(ExprKind::Binary {
+                                                            op: BinOp::Mul,
+                                                            left: Box::new(ident("byte_index")),
+                                                            right: Box::new(int_lit(8)),
+                                                        })),
+                                                    })),
+                                                }),
+                                            ))),
+                                            stmt(StmtKind::Expr(assign_expr(
+                                                ident("byte_index"),
+                                                expr(ExprKind::Binary {
+                                                    op: BinOp::Add,
+                                                    left: Box::new(ident("byte_index")),
+                                                    right: Box::new(float_lit(1.0)),
+                                                }),
+                                            ))),
+                                        ],
+                                        else_body: None,
+                                    }),
+                                    stmt(StmtKind::Expr(assign_expr(
+                                        index_expr(ident("obj"), ident("field_name")),
+                                        ident("value"),
+                                    ))),
+                                ]),
+                            ),
+                            stmt(StmtKind::Expr(assign_expr(
+                                ident("field_index"),
+                                expr(ExprKind::Binary {
+                                    op: BinOp::Add,
+                                    left: Box::new(ident("field_index")),
+                                    right: Box::new(float_lit(1.0)),
+                                }),
+                            ))),
+                        ],
+                        else_body: None,
+                    }),
+                    stmt(StmtKind::Expr(assign_expr(
+                        index_expr(
+                            ident("dst_base"),
+                            expr(ExprKind::Binary {
+                                op: BinOp::Add,
+                                left: Box::new(ident("dst_idx")),
+                                right: Box::new(ident("record")),
+                            }),
+                        ),
+                        ident("obj"),
+                    ))),
+                    stmt(StmtKind::Expr(assign_expr(
+                        ident("record"),
+                        expr(ExprKind::Binary {
+                            op: BinOp::Add,
+                            left: Box::new(ident("record")),
+                            right: Box::new(float_lit(1.0)),
+                        }),
+                    ))),
+                ],
+                else_body: None,
+            }),
+            stmt(StmtKind::Return(Some(expr(ExprKind::Binary {
+                op: BinOp::Div,
+                left: Box::new(member(ident("data"), "length")),
+                right: Box::new(ident("size")),
+            })))),
         ],
     ));
 

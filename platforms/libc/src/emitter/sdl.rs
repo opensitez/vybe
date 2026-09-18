@@ -1,9 +1,9 @@
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
 
-use vybe_ast::{ExprKind, Expression, Literal, ObjectProperty};
+use vybe_ast::{BinOp, ExprKind, Expression, Literal, ObjectProperty};
 
-use super::build::{expr, str_lit};
+use super::build::{call_expr, expr, ident, str_lit};
 
 fn kv(key: &str, value: Expression) -> ObjectProperty {
     ObjectProperty::KeyValue {
@@ -20,6 +20,10 @@ fn int(value: i64) -> Expression {
     expr(ExprKind::Lit(Literal::Int(value)))
 }
 
+fn byte_array_with_length(len: Expression) -> Expression {
+    call_expr(ident("__c_u8array_new"), vec![len])
+}
+
 /// `SDL_CreateRGBSurface(flags, w, h, depth, rmask, gmask, bmask, amask)`
 /// → an offscreen surface the GUEST owns.
 ///
@@ -30,25 +34,29 @@ fn int(value: i64) -> Expression {
 /// Shape mirrors the fields a software renderer touches:
 ///
 /// ```text
-/// { w, h, depth, pixels: [], pitch, format: { palette: [] } }
+/// { w, h, depth, pixels: Uint8Array(w * h), pitch, format: { palette: [] } }
 /// ```
 ///
-/// `pixels` starts EMPTY and grows as the renderer writes — Doom rewrites every
-/// pixel each frame, and a runtime-sized zero-fill would need a length the
-/// declaration cannot see. Reads of never-written pixels degrade to palette
-/// entry 0 at the host rather than faulting.
+/// `pixels` is byte storage up front. Doom writes through `surface->pixels`
+/// by byte index, so growing a generic array in the inner loop is the wrong
+/// storage model and blocks the shared bytes slot fast path.
 pub fn create_rgb_surface(
     w: Expression,
     h: Expression,
     depth: Expression,
     pitch: Expression,
 ) -> Expression {
+    let pixel_len = expr(ExprKind::Binary {
+        op: BinOp::Mul,
+        left: Box::new(w.clone()),
+        right: Box::new(h.clone()),
+    });
     expr(ExprKind::Object(vec![
         kv("w", w),
         kv("h", h),
         kv("depth", depth),
         kv("pitch", pitch),
-        kv("pixels", empty_array()),
+        kv("pixels", byte_array_with_length(pixel_len)),
         kv(
             "format",
             expr(ExprKind::Object(vec![
@@ -101,21 +109,47 @@ pub fn create_texture(
     w: Expression,
     h: Expression,
 ) -> Expression {
+    let pitch = expr(ExprKind::Binary {
+        op: BinOp::Mul,
+        left: Box::new(w.clone()),
+        right: Box::new(int(4)),
+    });
+    let pixel_len = expr(ExprKind::Binary {
+        op: BinOp::Mul,
+        left: Box::new(w.clone()),
+        right: Box::new(expr(ExprKind::Binary {
+            op: BinOp::Mul,
+            left: Box::new(h.clone()),
+            right: Box::new(int(4)),
+        })),
+    });
     expr(ExprKind::Object(vec![
         kv("renderer", renderer),
         kv("format", format),
         kv("access", access),
         kv("w", w.clone()),
         kv("h", h.clone()),
-        kv(
-            "pitch",
-            expr(ExprKind::Binary {
-                op: vybe_ast::BinOp::Mul,
-                left: Box::new(w),
-                right: Box::new(int(4)),
-            }),
-        ),
-        kv("pixels", empty_array()),
+        kv("pitch", pitch),
+        kv("pixels", byte_array_with_length(pixel_len)),
+    ]))
+}
+
+pub fn create_texture_from_surface(renderer: Expression, surface: Expression) -> Expression {
+    let surface_member = |field: &str| {
+        expr(ExprKind::Member {
+            object: Box::new(surface.clone()),
+            field: field.to_string(),
+            null_safe: false,
+        })
+    };
+    expr(ExprKind::Object(vec![
+        kv("renderer", renderer),
+        kv("format", surface_member("format")),
+        kv("access", int(0)),
+        kv("w", surface_member("w")),
+        kv("h", surface_member("h")),
+        kv("pitch", surface_member("pitch")),
+        kv("pixels", surface_member("pixels")),
     ]))
 }
 
@@ -159,11 +193,17 @@ fn emit_body(chunks: &mut [Chunk], current: usize, line: u32) {
 }
 
 /// Call a `web:canvas` op. SDL's drawing is an ADAPTER over WHATWG
-/// `CanvasRenderingContext2D`: `SDL_FillRect` IS `fillRect` plus a rect
-/// struct, `SDL_BlitPaletted` IS `drawImagePaletted`. No canvas surface of
-/// our own — a browser host serves these imports with a real canvas element.
+/// `CanvasRenderingContext2D`: `SDL_FillRect` is `fillRect` plus a rect struct,
+/// and frame blits route through `ImageData`/`putImageData`/`drawImage`.
+/// No canvas surface of our own — a browser host serves these imports with a
+/// real canvas element.
 fn emit_canvas_call(chunks: &mut [Chunk], current: usize, func: &str, argc: u8, line: u32) {
     let idx = chunks[current].add_import("web:canvas", func);
+    chunks[current].emit_call(idx, argc, line);
+}
+
+fn emit_libc_sdl_call(chunks: &mut [Chunk], current: usize, func: &str, argc: u8, line: u32) {
+    let idx = chunks[current].add_import("libc:sdl", func);
     chunks[current].emit_call(idx, argc, line);
 }
 
@@ -264,6 +304,11 @@ fn emit_zero_i32(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_i32_const(0, line);
 }
 
+fn emit_object_new(chunks: &mut [Chunk], current: usize, line: u32) {
+    let idx = chunks[current].add_import("ecma:object", "new");
+    chunks[current].emit_call(idx, 0, line);
+}
+
 fn emit_set_local(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_SET, slot, line);
 }
@@ -330,6 +375,106 @@ fn emit_load_f64_from_struct(
 ) {
     emit_get_local(chunks, current, ptr_slot, line);
     emit_stack_field(chunks, current, field, line);
+}
+
+fn emit_sdl_present_image_data(
+    chunks: &mut [Chunk],
+    current: usize,
+    surface: u16,
+    image_data: u16,
+    w: u16,
+    h: u16,
+    dst_w: u16,
+    dst_h: u16,
+    line: u32,
+) {
+    let source_canvas = chunks[current].alloc_scratch(1);
+    let source_ctx = chunks[current].alloc_scratch(1);
+    let dest_ctx = chunks[current].alloc_scratch(1);
+    let tmp = chunks[current].alloc_scratch(1);
+
+    emit_document(chunks, current, line);
+    chunks[current].emit_string_const("canvas", line);
+    chunks[current].emit_string_const("", line);
+    emit_dom_call(chunks, current, "createElement", 3, line);
+    emit_set_local(chunks, current, source_canvas, line);
+    emit_set_attribute(chunks, current, source_canvas, "width", w, line);
+    emit_set_attribute(chunks, current, source_canvas, "height", h, line);
+    emit_get_local(chunks, current, w, line);
+    emit_store_field(chunks, current, source_canvas, "width", tmp, line);
+    emit_get_local(chunks, current, h, line);
+    emit_store_field(chunks, current, source_canvas, "height", tmp, line);
+
+    emit_get_local(chunks, current, source_canvas, line);
+    chunks[current].emit_string_const("2d", line);
+    emit_canvas_call(chunks, current, "getContext", 2, line);
+    emit_set_local(chunks, current, source_ctx, line);
+
+    emit_get_local(chunks, current, source_ctx, line);
+    emit_get_local(chunks, current, image_data, line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_i32_const(0, line);
+    emit_canvas_call(chunks, current, "putImageData", 4, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    emit_get_local(chunks, current, surface, line);
+    chunks[current].emit_string_const("2d", line);
+    emit_canvas_call(chunks, current, "getContext", 2, line);
+    emit_set_local(chunks, current, dest_ctx, line);
+    emit_get_local(chunks, current, dest_ctx, line);
+    emit_get_local(chunks, current, source_canvas, line);
+    chunks[current].emit_f64_const(0.0, line);
+    chunks[current].emit_f64_const(0.0, line);
+    emit_get_local(chunks, current, dst_w, line);
+    emit_get_local(chunks, current, dst_h, line);
+    emit_canvas_call(chunks, current, "drawImage", 6, line);
+    chunks[current].emit_op(Op::DROP, line);
+}
+
+fn emit_sdl_put_rgba_image_data(
+    chunks: &mut [Chunk],
+    current: usize,
+    surface: u16,
+    pixels: u16,
+    w: u16,
+    h: u16,
+    dst_w: u16,
+    dst_h: u16,
+    line: u32,
+) {
+    let image_data = chunks[current].alloc_scratch(1);
+    emit_get_local(chunks, current, pixels, line);
+    emit_get_local(chunks, current, w, line);
+    emit_get_local(chunks, current, h, line);
+    emit_libc_sdl_call(chunks, current, "rgbaImageData", 3, line);
+    emit_set_local(chunks, current, image_data, line);
+    emit_sdl_present_image_data(
+        chunks, current, surface, image_data, w, h, dst_w, dst_h, line,
+    );
+}
+
+fn emit_sdl_put_paletted_image_data(
+    chunks: &mut [Chunk],
+    current: usize,
+    surface: u16,
+    pixels: u16,
+    palette: u16,
+    w: u16,
+    h: u16,
+    dst_w: u16,
+    dst_h: u16,
+    line: u32,
+) {
+    let image_data = chunks[current].alloc_scratch(1);
+    emit_get_local(chunks, current, pixels, line);
+    emit_get_local(chunks, current, palette, line);
+    emit_get_local(chunks, current, w, line);
+    emit_get_local(chunks, current, h, line);
+    emit_libc_sdl_call(chunks, current, "palettedImageData", 4, line);
+    emit_set_local(chunks, current, image_data, line);
+    emit_sdl_present_image_data(
+        chunks, current, surface, image_data, w, h, dst_w, dst_h, line,
+    );
 }
 
 fn emit_cstring_to_text(
@@ -531,24 +676,48 @@ pub fn emit_sdl_get_window_surface(chunks: &mut [Chunk], current: usize, _argc: 
 ///
 /// The whole graphics requirement of a software renderer. The GUEST owns the
 /// pixel buffer — Doom writes straight into `screenbuffer->pixels` — so this
-/// forwards it as-is and the host does the palette expansion natively.
+/// expands it into `ImageData` in the SDL adapter, then presents through the
+/// standard canvas `putImageData` / `drawImage` path.
 /// Trailing destination size is optional; the host defaults it to the source
 /// size, so the 5-argument form is a 1:1 blit.
 pub fn emit_sdl_blit_paletted(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
-    let slots: Vec<u16> = (0..argc)
-        .map(|_| chunks[current].alloc_scratch(1))
-        .collect();
-    // Arguments arrive on the stack in order, so pop them back to front.
-    for &slot in slots.iter().rev() {
-        emit_set_local(chunks, current, slot, line);
+    let surface = chunks[current].alloc_scratch(1);
+    let pixels = chunks[current].alloc_scratch(1);
+    let w = chunks[current].alloc_scratch(1);
+    let h = chunks[current].alloc_scratch(1);
+    let palette = chunks[current].alloc_scratch(1);
+    let dst_w = chunks[current].alloc_scratch(1);
+    let dst_h = chunks[current].alloc_scratch(1);
+
+    let has_explicit_size = argc == 7;
+    match argc {
+        7 => {
+            emit_set_local(chunks, current, dst_h, line);
+            emit_set_local(chunks, current, dst_w, line);
+        }
+        5 => {}
+        _ => {
+            emit_drop(chunks, current, argc, line);
+            emit_zero_i32(chunks, current, line);
+            return;
+        }
     }
-    for &slot in slots.iter() {
-        emit_get_local(chunks, current, slot, line);
+    emit_set_local(chunks, current, palette, line);
+    emit_set_local(chunks, current, h, line);
+    emit_set_local(chunks, current, w, line);
+    emit_set_local(chunks, current, pixels, line);
+    emit_set_local(chunks, current, surface, line);
+    emit_deref_cell(chunks, current, surface, line);
+    if !has_explicit_size {
+        emit_get_local(chunks, current, h, line);
+        emit_set_local(chunks, current, dst_h, line);
+        emit_get_local(chunks, current, w, line);
+        emit_set_local(chunks, current, dst_w, line);
     }
-    // `drawImagePaletted` — the canvas op for palette-era pixels. The
-    // guest keeps its 8-bit buffer; the engine expands through the palette.
-    emit_canvas_call(chunks, current, "drawImagePaletted", argc, line);
-    chunks[current].emit_op(Op::DROP, line);
+
+    emit_sdl_put_paletted_image_data(
+        chunks, current, surface, pixels, palette, w, h, dst_w, dst_h, line,
+    );
     emit_zero_i32(chunks, current, line);
 }
 
@@ -747,10 +916,10 @@ pub fn emit_sdl_delay(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32
     chunks[current].emit_f64_const(1_000_000.0, line);
     chunks[current].emit_op(Op::F64_MUL, line);
     chunks[current].emit_call(wait_for_idx, 1, line);
-    // The future stays on the stack, exactly where `pollable.block`'s null
-    // used to sit. One host call replaced two, and each pushes one result, so
-    // the depth is unchanged — deliberately, since correcting the leftover is
-    // a separate question from which interface does the sleeping.
+    // WASI's wait result is an implementation detail of the sleep operation.
+    // SDL_Delay's public C shape is an int success code, so consume the wait
+    // result here and leave only SDL's `0` for callers to use or drop.
+    chunks[current].emit_op(Op::DROP, line);
     emit_zero_i32(chunks, current, line);
 }
 
@@ -1312,6 +1481,12 @@ pub fn emit_sdl_get_error(chunks: &mut [Chunk], current: usize, argc: u8, line: 
     emit_string_drop(chunks, current, argc, "", line);
 }
 
+pub fn emit_sdl_get_pref_path(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    // Browser/virtual-FS SDL surface: expose a stable writable preference
+    // directory and keep SDL's trailing-separator contract.
+    emit_string_drop(chunks, current, argc, "./vybe/", line);
+}
+
 pub fn emit_sdl_set_hint(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     emit_success_drop(chunks, current, argc, 1, line);
 }
@@ -1514,6 +1689,15 @@ pub fn emit_sdl_render_copy(chunks: &mut [Chunk], current: usize, _argc: u8, lin
     let texture = chunks[current].alloc_scratch(1);
     let _srcrect = chunks[current].alloc_scratch(1);
     let _dstrect = chunks[current].alloc_scratch(1);
+    let pixels = chunks[current].alloc_scratch(1);
+    let indices = chunks[current].alloc_scratch(1);
+    let palette = chunks[current].alloc_scratch(1);
+    let source_w = chunks[current].alloc_scratch(1);
+    let source_h = chunks[current].alloc_scratch(1);
+    let dest_w = chunks[current].alloc_scratch(1);
+    let dest_h = chunks[current].alloc_scratch(1);
+    let target = chunks[current].alloc_scratch(1);
+    let tmp = chunks[current].alloc_scratch(1);
 
     emit_set_local(chunks, current, _dstrect, line);
     emit_set_local(chunks, current, _srcrect, line);
@@ -1522,18 +1706,73 @@ pub fn emit_sdl_render_copy(chunks: &mut [Chunk], current: usize, _argc: u8, lin
     emit_deref_cell(chunks, current, renderer, line);
     emit_deref_cell(chunks, current, texture, line);
 
-    emit_get_local(chunks, current, renderer, line);
-    emit_stack_field(chunks, current, "window", line);
     emit_get_local(chunks, current, texture, line);
     emit_stack_field(chunks, current, "pixels", line);
+    emit_set_local(chunks, current, pixels, line);
+    emit_get_local(chunks, current, pixels, line);
+    emit_stack_field(chunks, current, "__sdl_indices", line);
+    emit_set_local(chunks, current, indices, line);
+
+    emit_get_local(chunks, current, renderer, line);
+    emit_stack_field(chunks, current, "target", line);
+    emit_set_local(chunks, current, target, line);
+    emit_get_local(chunks, current, target, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_if(line);
+
+    emit_get_local(chunks, current, indices, line);
+    let undef = chunks[current].add_import("wasm:js-undefined", "test");
+    chunks[current].emit_call(undef, 1, line);
+    chunks[current].emit_if(line);
+
     emit_load_f64_from_struct(chunks, current, texture, "w", line);
-    emit_load_f64_from_struct(chunks, current, texture, "h", line);
-    chunks[current].emit_f64_const(0.0, line);
-    chunks[current].emit_f64_const(0.0, line);
+    emit_set_local(chunks, current, source_w, line);
     emit_load_f64_from_struct(chunks, current, texture, "w", line);
+    emit_set_local(chunks, current, dest_w, line);
     emit_load_f64_from_struct(chunks, current, texture, "h", line);
-    emit_canvas_call(chunks, current, "drawImage", 8, line);
-    chunks[current].emit_op(Op::DROP, line);
+    emit_set_local(chunks, current, source_h, line);
+    emit_load_f64_from_struct(chunks, current, texture, "h", line);
+    emit_set_local(chunks, current, dest_h, line);
+    emit_get_local(chunks, current, renderer, line);
+    emit_stack_field(chunks, current, "window", line);
+    emit_set_local(chunks, current, target, line);
+    emit_sdl_put_rgba_image_data(
+        chunks, current, target, pixels, source_w, source_h, dest_w, dest_h, line,
+    );
+    chunks[current].emit_else(line);
+
+    emit_get_local(chunks, current, pixels, line);
+    emit_stack_field(chunks, current, "__sdl_palette", line);
+    emit_set_local(chunks, current, palette, line);
+    emit_get_local(chunks, current, pixels, line);
+    emit_stack_field(chunks, current, "__sdl_w", line);
+    emit_set_local(chunks, current, source_w, line);
+    emit_get_local(chunks, current, pixels, line);
+    emit_stack_field(chunks, current, "__sdl_h", line);
+    emit_set_local(chunks, current, source_h, line);
+    emit_load_f64_from_struct(chunks, current, texture, "w", line);
+    emit_set_local(chunks, current, dest_w, line);
+    emit_load_f64_from_struct(chunks, current, texture, "h", line);
+    emit_set_local(chunks, current, dest_h, line);
+    emit_get_local(chunks, current, renderer, line);
+    emit_stack_field(chunks, current, "window", line);
+    emit_set_local(chunks, current, target, line);
+    emit_sdl_put_paletted_image_data(
+        chunks, current, target, indices, palette, source_w, source_h, dest_w, dest_h, line,
+    );
+    chunks[current].emit_end(line);
+    chunks[current].emit_else(line);
+
+    emit_get_local(chunks, current, pixels, line);
+    emit_store_field(chunks, current, target, "pixels", tmp, line);
+    emit_get_local(chunks, current, texture, line);
+    emit_stack_field(chunks, current, "format", line);
+    emit_store_field(chunks, current, target, "format", tmp, line);
+    emit_load_f64_from_struct(chunks, current, texture, "w", line);
+    emit_store_field(chunks, current, pixels, "__sdl_w", tmp, line);
+    emit_load_f64_from_struct(chunks, current, texture, "h", line);
+    emit_store_field(chunks, current, pixels, "__sdl_h", tmp, line);
+    chunks[current].emit_end(line);
     emit_zero_i32(chunks, current, line);
 }
 
@@ -1555,6 +1794,145 @@ pub fn emit_sdl_set_render_target(chunks: &mut [Chunk], current: usize, _argc: u
 
 pub fn emit_sdl_texture_noop(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     emit_success_drop(chunks, current, argc, 0, line);
+}
+
+pub fn emit_sdl_create_texture_from_surface(
+    chunks: &mut [Chunk],
+    current: usize,
+    _argc: u8,
+    line: u32,
+) {
+    let renderer = chunks[current].alloc_scratch(1);
+    let surface = chunks[current].alloc_scratch(1);
+    let texture = chunks[current].alloc_scratch(1);
+    let pixels = chunks[current].alloc_scratch(1);
+    let tmp = chunks[current].alloc_scratch(1);
+
+    emit_set_local(chunks, current, surface, line);
+    emit_set_local(chunks, current, renderer, line);
+    emit_deref_cell(chunks, current, renderer, line);
+    emit_deref_cell(chunks, current, surface, line);
+
+    emit_object_new(chunks, current, line);
+    emit_set_local(chunks, current, texture, line);
+
+    emit_get_local(chunks, current, renderer, line);
+    emit_store_field(chunks, current, texture, "renderer", tmp, line);
+    emit_get_local(chunks, current, surface, line);
+    emit_stack_field(chunks, current, "format", line);
+    emit_store_field(chunks, current, texture, "format", tmp, line);
+    chunks[current].emit_i32_const(0, line);
+    emit_store_field(chunks, current, texture, "access", tmp, line);
+    emit_load_f64_from_struct(chunks, current, surface, "w", line);
+    emit_store_field(chunks, current, texture, "w", tmp, line);
+    emit_load_f64_from_struct(chunks, current, surface, "h", line);
+    emit_store_field(chunks, current, texture, "h", tmp, line);
+    emit_load_f64_from_struct(chunks, current, surface, "pitch", line);
+    emit_store_field(chunks, current, texture, "pitch", tmp, line);
+    emit_get_local(chunks, current, surface, line);
+    emit_stack_field(chunks, current, "pixels", line);
+    emit_set_local(chunks, current, pixels, line);
+    emit_get_local(chunks, current, pixels, line);
+    emit_store_field(chunks, current, texture, "pixels", tmp, line);
+    emit_load_f64_from_struct(chunks, current, surface, "w", line);
+    emit_store_field(chunks, current, pixels, "__sdl_w", tmp, line);
+    emit_load_f64_from_struct(chunks, current, surface, "h", line);
+    emit_store_field(chunks, current, pixels, "__sdl_h", tmp, line);
+    emit_get_local(chunks, current, surface, line);
+    emit_stack_field(chunks, current, "format", line);
+    emit_stack_field(chunks, current, "palette", line);
+    emit_store_field(chunks, current, pixels, "__sdl_palette", tmp, line);
+
+    emit_get_local(chunks, current, texture, line);
+}
+
+pub fn emit_sdl_set_palette_colors(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    let palette = chunks[current].alloc_scratch(1);
+    let colors = chunks[current].alloc_scratch(1);
+    let first = chunks[current].alloc_scratch(1);
+    let count = chunks[current].alloc_scratch(1);
+    let tmp = chunks[current].alloc_scratch(1);
+
+    emit_set_local(chunks, current, count, line);
+    emit_set_local(chunks, current, first, line);
+    emit_set_local(chunks, current, colors, line);
+    emit_set_local(chunks, current, palette, line);
+    emit_deref_cell(chunks, current, palette, line);
+
+    emit_get_local(chunks, current, colors, line);
+    emit_store_field(chunks, current, palette, "__sdl_colors", tmp, line);
+    emit_get_local(chunks, current, first, line);
+    emit_store_field(chunks, current, palette, "__sdl_first", tmp, line);
+    emit_get_local(chunks, current, count, line);
+    emit_store_field(chunks, current, palette, "__sdl_count", tmp, line);
+    emit_zero_i32(chunks, current, line);
+}
+
+pub fn emit_sdl_lower_blit(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    let src = chunks[current].alloc_scratch(1);
+    let _src_rect = chunks[current].alloc_scratch(1);
+    let dst = chunks[current].alloc_scratch(1);
+    let _dst_rect = chunks[current].alloc_scratch(1);
+    let dst_pixels = chunks[current].alloc_scratch(1);
+    let tmp = chunks[current].alloc_scratch(1);
+
+    emit_set_local(chunks, current, _dst_rect, line);
+    emit_set_local(chunks, current, dst, line);
+    emit_set_local(chunks, current, _src_rect, line);
+    emit_set_local(chunks, current, src, line);
+    emit_deref_cell(chunks, current, src, line);
+    emit_deref_cell(chunks, current, dst, line);
+
+    emit_get_local(chunks, current, dst, line);
+    emit_stack_field(chunks, current, "pixels", line);
+    emit_set_local(chunks, current, dst_pixels, line);
+
+    emit_get_local(chunks, current, src, line);
+    emit_stack_field(chunks, current, "pixels", line);
+    emit_store_field(chunks, current, dst_pixels, "__sdl_indices", tmp, line);
+
+    emit_get_local(chunks, current, src, line);
+    emit_stack_field(chunks, current, "format", line);
+    emit_stack_field(chunks, current, "palette", line);
+    emit_store_field(chunks, current, dst_pixels, "__sdl_palette", tmp, line);
+
+    emit_load_f64_from_struct(chunks, current, src, "w", line);
+    emit_store_field(chunks, current, dst_pixels, "__sdl_w", tmp, line);
+    emit_load_f64_from_struct(chunks, current, src, "h", line);
+    emit_store_field(chunks, current, dst_pixels, "__sdl_h", tmp, line);
+    emit_zero_i32(chunks, current, line);
+}
+
+pub fn emit_sdl_blit_surface(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    let src = chunks[current].alloc_scratch(1);
+    let _src_rect = chunks[current].alloc_scratch(1);
+    let dst = chunks[current].alloc_scratch(1);
+    let _dst_rect = chunks[current].alloc_scratch(1);
+    let pixels = chunks[current].alloc_scratch(1);
+    let palette = chunks[current].alloc_scratch(1);
+    let w = chunks[current].alloc_scratch(1);
+    let h = chunks[current].alloc_scratch(1);
+
+    emit_set_local(chunks, current, _dst_rect, line);
+    emit_set_local(chunks, current, dst, line);
+    emit_set_local(chunks, current, _src_rect, line);
+    emit_set_local(chunks, current, src, line);
+    emit_deref_cell(chunks, current, src, line);
+    emit_deref_cell(chunks, current, dst, line);
+
+    emit_get_local(chunks, current, src, line);
+    emit_stack_field(chunks, current, "pixels", line);
+    emit_set_local(chunks, current, pixels, line);
+    emit_get_local(chunks, current, src, line);
+    emit_stack_field(chunks, current, "format", line);
+    emit_stack_field(chunks, current, "palette", line);
+    emit_set_local(chunks, current, palette, line);
+    emit_load_f64_from_struct(chunks, current, src, "w", line);
+    emit_set_local(chunks, current, w, line);
+    emit_load_f64_from_struct(chunks, current, src, "h", line);
+    emit_set_local(chunks, current, h, line);
+    emit_sdl_put_paletted_image_data(chunks, current, dst, pixels, palette, w, h, w, h, line);
+    emit_zero_i32(chunks, current, line);
 }
 
 pub fn emit_sdl_lock_texture(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
@@ -1673,6 +2051,7 @@ pub fn emit_sdl(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, line
             | "SDL_GameControllerName"
             | "SDL_JoystickName"
             | "SDL_JoystickNameForIndex"
+            | "SDL_GetKeyName"
             | "SDL_GameControllerMappingForGUID"
     ) {
         emit_string_drop(chunks, current, argc, "", line);
@@ -1687,9 +2066,12 @@ pub fn emit_sdl(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, line
             | "SDL_CreateThread"
             | "SDLNet_UDP_Open"
             | "SDLNet_AllocPacket"
-            | "SDL_GetPrefPath"
     ) {
         emit_null_drop(chunks, current, argc, line);
+        return true;
+    }
+    if leaf == "SDL_GetPrefPath" {
+        emit_sdl_get_pref_path(chunks, current, argc, line);
         return true;
     }
     if leaf.starts_with("Mix_")
@@ -1719,7 +2101,6 @@ pub fn emit_sdl(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, line
                 | "SDL_WaitThread"
                 | "SDL_WaitEvent"
                 | "SDL_UpdateWindowSurfaceRects"
-                | "SDL_CreateTextureFromSurface"
         )
     {
         emit_success_drop(chunks, current, argc, 0, line);
@@ -1838,6 +2219,10 @@ pub fn emit_sdl(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, line
             emit_sdl_get_error(chunks, current, argc, line);
             true
         }
+        "sdl.SDL_GetPrefPath" | "libc.sdl.SDL_GetPrefPath" => {
+            emit_sdl_get_pref_path(chunks, current, argc, line);
+            true
+        }
         "sdl.SDL_SetHint"
         | "libc.sdl.SDL_SetHint"
         | "sdl.SDL_SetHintWithPriority"
@@ -1846,6 +2231,8 @@ pub fn emit_sdl(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, line
             true
         }
         "sdl.SDL_FreeSurface"
+        | "libc.sdl.SDL_free"
+        | "sdl.SDL_free"
         | "libc.sdl.SDL_FreeSurface"
         | "sdl.SDL_DestroyRenderer"
         | "libc.sdl.SDL_DestroyRenderer"
@@ -1951,6 +2338,10 @@ pub fn emit_sdl(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, line
             emit_sdl_set_render_target(chunks, current, argc, line);
             true
         }
+        "sdl.SDL_CreateTextureFromSurface" | "libc.sdl.SDL_CreateTextureFromSurface" => {
+            emit_sdl_create_texture_from_surface(chunks, current, argc, line);
+            true
+        }
         "sdl.SDL_RenderSetLogicalSize"
         | "libc.sdl.SDL_RenderSetLogicalSize"
         | "sdl.SDL_RenderSetIntegerScale"
@@ -1964,13 +2355,16 @@ pub fn emit_sdl(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, line
             emit_sdl_texture_noop(chunks, current, argc, line);
             true
         }
-        "sdl.SDL_SetPaletteColors"
-        | "libc.sdl.SDL_SetPaletteColors"
-        | "sdl.SDL_LowerBlit"
-        | "libc.sdl.SDL_LowerBlit"
-        | "sdl.SDL_BlitSurface"
-        | "libc.sdl.SDL_BlitSurface" => {
-            emit_sdl_texture_noop(chunks, current, argc, line);
+        "sdl.SDL_SetPaletteColors" | "libc.sdl.SDL_SetPaletteColors" => {
+            emit_sdl_set_palette_colors(chunks, current, argc, line);
+            true
+        }
+        "sdl.SDL_LowerBlit" | "libc.sdl.SDL_LowerBlit" => {
+            emit_sdl_lower_blit(chunks, current, argc, line);
+            true
+        }
+        "sdl.SDL_BlitSurface" | "libc.sdl.SDL_BlitSurface" => {
+            emit_sdl_blit_surface(chunks, current, argc, line);
             true
         }
         "sdl.SDL_LockTexture" | "libc.sdl.SDL_LockTexture" => {

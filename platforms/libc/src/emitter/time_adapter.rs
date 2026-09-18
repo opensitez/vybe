@@ -136,6 +136,10 @@ fn tm_field(name: &str) -> Expression {
     member(ident("tm"), name)
 }
 
+fn tm_field_of(tm: &Expression, name: &str) -> Expression {
+    member(tm.clone(), name)
+}
+
 fn zero_if_missing(value: Expression) -> Expression {
     ternary(
         eq(
@@ -210,7 +214,15 @@ fn space_padded(value: Expression, width: i64) -> Expression {
     call_name("__c_pad_int_h", vec![value, int_lit(width), str_lit(" ")])
 }
 
+fn c_string_len(value: Expression) -> Expression {
+    call_name("__libc_strlen_cstring", vec![value])
+}
+
 fn month_name(full: bool) -> Expression {
+    month_name_for(&ident("tm"), full)
+}
+
+fn month_name_for(tm: &Expression, full: bool) -> Expression {
     index_expr(
         if full {
             array(&[
@@ -232,11 +244,15 @@ fn month_name(full: bool) -> Expression {
                 "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
             ])
         },
-        tm_field("tm_mon"),
+        tm_field_of(tm, "tm_mon"),
     )
 }
 
 fn weekday_name(full: bool) -> Expression {
+    weekday_name_for(&ident("tm"), full)
+}
+
+fn weekday_name_for(tm: &Expression, full: bool) -> Expression {
     index_expr(
         if full {
             array(&[
@@ -251,111 +267,177 @@ fn weekday_name(full: bool) -> Expression {
         } else {
             array(&["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"])
         },
-        tm_field("tm_wday"),
+        tm_field_of(tm, "tm_wday"),
     )
 }
 
 fn year_full() -> Expression {
-    add(tm_field("tm_year"), int_lit(1900))
+    year_full_for(&ident("tm"))
+}
+
+fn year_full_for(tm: &Expression) -> Expression {
+    add(tm_field_of(tm, "tm_year"), int_lit(1900))
 }
 
 fn hour12() -> Expression {
+    hour12_for(&ident("tm"))
+}
+
+fn hour12_for(tm: &Expression) -> Expression {
     ternary(
-        eq(modulo(tm_field("tm_hour"), int_lit(12)), int_lit(0)),
+        eq(modulo(tm_field_of(tm, "tm_hour"), int_lit(12)), int_lit(0)),
         int_lit(12),
-        modulo(tm_field("tm_hour"), int_lit(12)),
+        modulo(tm_field_of(tm, "tm_hour"), int_lit(12)),
     )
 }
 
 fn computed_yday() -> Expression {
+    computed_yday_for(&ident("tm"))
+}
+
+fn computed_yday_for(tm: &Expression) -> Expression {
     call_name(
         "__c_yday_h",
-        vec![year_full(), tm_field("tm_mon"), tm_field("tm_mday")],
+        vec![
+            year_full_for(tm),
+            tm_field_of(tm, "tm_mon"),
+            tm_field_of(tm, "tm_mday"),
+        ],
     )
 }
 
 fn sunday_week_number() -> Expression {
+    sunday_week_number_for(&ident("tm"))
+}
+
+fn sunday_week_number_for(tm: &Expression) -> Expression {
     div(
-        add(sub(computed_yday(), tm_field("tm_wday")), int_lit(7)),
+        add(
+            sub(computed_yday_for(tm), tm_field_of(tm, "tm_wday")),
+            int_lit(7),
+        ),
         int_lit(7),
     )
 }
 
 fn monday_week_number() -> Expression {
-    let monday_zero_wday = modulo(add(tm_field("tm_wday"), int_lit(6)), int_lit(7));
+    monday_week_number_for(&ident("tm"))
+}
+
+fn monday_week_number_for(tm: &Expression) -> Expression {
+    let monday_zero_wday = modulo(add(tm_field_of(tm, "tm_wday"), int_lit(6)), int_lit(7));
     div(
-        add(sub(computed_yday(), monday_zero_wday), int_lit(7)),
+        add(sub(computed_yday_for(tm), monday_zero_wday), int_lit(7)),
         int_lit(7),
     )
 }
 
 fn strftime_value_for_code(code: &str) -> Expression {
+    strftime_value_for_code_for(code, &ident("tm"))
+}
+
+fn strftime_value_for_code_for(code: &str, tm: &Expression) -> Expression {
     match code {
-        "%Y" => call_name("__c_to_string_h", vec![year_full()]),
-        "%y" => zero_padded(modulo(year_full(), int_lit(100)), 2),
-        "%m" => zero_padded(add(tm_field("tm_mon"), int_lit(1)), 2),
-        "%d" => zero_padded(tm_field("tm_mday"), 2),
-        "%H" => zero_padded(tm_field("tm_hour"), 2),
-        "%M" => zero_padded(tm_field("tm_min"), 2),
-        "%S" => zero_padded(tm_field("tm_sec"), 2),
-        "%A" => weekday_name(true),
-        "%a" => weekday_name(false),
-        "%B" => month_name(true),
-        "%b" | "%h" => month_name(false),
+        "%Y" => call_name("__c_to_string_h", vec![year_full_for(tm)]),
+        "%y" => zero_padded(modulo(year_full_for(tm), int_lit(100)), 2),
+        "%m" => zero_padded(add(tm_field_of(tm, "tm_mon"), int_lit(1)), 2),
+        "%d" => zero_padded(tm_field_of(tm, "tm_mday"), 2),
+        "%H" => zero_padded(tm_field_of(tm, "tm_hour"), 2),
+        "%M" => zero_padded(tm_field_of(tm, "tm_min"), 2),
+        "%S" => zero_padded(tm_field_of(tm, "tm_sec"), 2),
+        "%A" => weekday_name_for(tm, true),
+        "%a" => weekday_name_for(tm, false),
+        "%B" => month_name_for(tm, true),
+        "%b" | "%h" => month_name_for(tm, false),
         "%p" => ternary(
-            gte(tm_field("tm_hour"), int_lit(12)),
+            gte(tm_field_of(tm, "tm_hour"), int_lit(12)),
             str_lit("PM"),
             str_lit("AM"),
         ),
-        "%I" => zero_padded(hour12(), 2),
-        "%j" => zero_padded(add(tm_field("tm_yday"), int_lit(1)), 3),
-        "%w" => call_name("__c_to_string_h", vec![tm_field("tm_wday")]),
+        "%I" => zero_padded(hour12_for(tm), 2),
+        "%j" => zero_padded(add(tm_field_of(tm, "tm_yday"), int_lit(1)), 3),
+        "%w" => call_name("__c_to_string_h", vec![tm_field_of(tm, "tm_wday")]),
         "%u" => call_name(
             "__c_to_string_h",
             vec![ternary(
-                eq(tm_field("tm_wday"), int_lit(0)),
+                eq(tm_field_of(tm, "tm_wday"), int_lit(0)),
                 int_lit(7),
-                tm_field("tm_wday"),
+                tm_field_of(tm, "tm_wday"),
             )],
         ),
-        "%C" => zero_padded(div(year_full(), int_lit(100)), 2),
+        "%C" => zero_padded(div(year_full_for(tm), int_lit(100)), 2),
         "%F" => cat(
             cat(
-                cat(strftime_value_for_code("%Y"), str_lit("-")),
-                strftime_value_for_code("%m"),
+                cat(strftime_value_for_code_for("%Y", tm), str_lit("-")),
+                strftime_value_for_code_for("%m", tm),
             ),
-            cat(str_lit("-"), strftime_value_for_code("%d")),
+            cat(str_lit("-"), strftime_value_for_code_for("%d", tm)),
         ),
         "%D" => cat(
             cat(
-                cat(strftime_value_for_code("%m"), str_lit("/")),
-                strftime_value_for_code("%d"),
+                cat(strftime_value_for_code_for("%m", tm), str_lit("/")),
+                strftime_value_for_code_for("%d", tm),
             ),
-            cat(str_lit("/"), strftime_value_for_code("%y")),
+            cat(str_lit("/"), strftime_value_for_code_for("%y", tm)),
         ),
         "%R" => cat(
-            cat(strftime_value_for_code("%H"), str_lit(":")),
-            strftime_value_for_code("%M"),
+            cat(strftime_value_for_code_for("%H", tm), str_lit(":")),
+            strftime_value_for_code_for("%M", tm),
         ),
         "%T" => cat(
             cat(
-                cat(strftime_value_for_code("%H"), str_lit(":")),
-                strftime_value_for_code("%M"),
+                cat(strftime_value_for_code_for("%H", tm), str_lit(":")),
+                strftime_value_for_code_for("%M", tm),
             ),
-            cat(str_lit(":"), strftime_value_for_code("%S")),
+            cat(str_lit(":"), strftime_value_for_code_for("%S", tm)),
         ),
-        "%e" => space_padded(tm_field("tm_mday"), 2),
-        "%l" => space_padded(hour12(), 2),
-        "%k" => space_padded(tm_field("tm_hour"), 2),
+        "%e" => space_padded(tm_field_of(tm, "tm_mday"), 2),
+        "%l" => space_padded(hour12_for(tm), 2),
+        "%k" => space_padded(tm_field_of(tm, "tm_hour"), 2),
         "%%" => str_lit("%"),
-        "%U" => zero_padded(sunday_week_number(), 2),
-        "%W" | "%V" => zero_padded(monday_week_number(), 2),
-        "%G" => strftime_value_for_code("%Y"),
-        "%g" => strftime_value_for_code("%y"),
+        "%U" => zero_padded(sunday_week_number_for(tm), 2),
+        "%W" | "%V" => zero_padded(monday_week_number_for(tm), 2),
+        "%G" => strftime_value_for_code_for("%Y", tm),
+        "%g" => strftime_value_for_code_for("%y", tm),
         "%n" => str_lit("\n"),
         "%t" => str_lit("\t"),
         _ => str_lit(""),
     }
+}
+
+pub fn strftime_literal_output(format: &str, tm: Expression) -> Option<Expression> {
+    let tm = value_from_address_arg(tm);
+    Some(match format {
+        "%Y" | "%y" | "%m" | "%d" | "%H" | "%M" | "%S" | "%A" | "%a" | "%B" | "%b"
+        | "%h" | "%p" | "%I" | "%j" | "%w" | "%u" | "%C" | "%F" | "%D" | "%R" | "%T"
+        | "%e" | "%l" | "%k" | "%%" | "%U" | "%W" | "%V" | "%G" | "%g" | "%n" | "%t" => {
+            strftime_value_for_code_for(format, &tm)
+        }
+        "%Y-%m-%d" => strftime_value_for_code_for("%F", &tm),
+        "%H:%M:%S" => strftime_value_for_code_for("%T", &tm),
+        "%I %p" => cat(
+            cat(strftime_value_for_code_for("%I", &tm), str_lit(" ")),
+            strftime_value_for_code_for("%p", &tm),
+        ),
+        "%Y%m%d%H%M%S" => cat(
+            cat(
+                cat(
+                    strftime_value_for_code_for("%Y", &tm),
+                    strftime_value_for_code_for("%m", &tm),
+                ),
+                strftime_value_for_code_for("%d", &tm),
+            ),
+            cat(
+                cat(
+                    strftime_value_for_code_for("%H", &tm),
+                    strftime_value_for_code_for("%M", &tm),
+                ),
+                strftime_value_for_code_for("%S", &tm),
+            ),
+        ),
+        "" => str_lit(""),
+        _ => return None,
+    })
 }
 
 fn strftime_return(format: &str, value: Expression) -> Statement {
@@ -714,6 +796,16 @@ fn strftime_body() -> Vec<Statement> {
     body
 }
 
+fn strftime_function() -> Statement {
+    let mut decl = function_stmt("__c_strftime_format_h", vec!["fmt", "tm"], strftime_body());
+    if let StmtKind::FunctionDecl { params, .. } = &mut decl.kind {
+        if let Some(param) = params.get_mut(1) {
+            param.type_hint = Some("struct tm".to_string().into());
+        }
+    }
+    decl
+}
+
 fn asctime_body() -> Vec<Statement> {
     vec![ret(cat(
         cat(
@@ -774,12 +866,12 @@ pub fn runtime_helpers() -> Vec<Statement> {
             vec![
                 var_decl_stmt("s", call_name("__c_to_string_h", vec![ident("n")])),
                 while_stmt(
-                    lt(member(ident("s"), "length"), ident("width")),
+                    lt(c_string_len(ident("s")), ident("width")),
                     vec![assign_stmt(ident("s"), cat(ident("pad"), ident("s")))],
                 ),
                 ret(ident("s")),
             ],
         ),
-        function_stmt("__c_strftime_format_h", vec!["fmt", "tm"], strftime_body()),
+        strftime_function(),
     ]
 }

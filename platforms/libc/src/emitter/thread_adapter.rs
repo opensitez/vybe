@@ -552,7 +552,8 @@ fn sem_target(sem: Expression) -> Expression {
 }
 
 /// The prelude half of the thread model — the three functions a spawned
-/// thread and its joiner run. Emitted once by `c_runtime::prelude`.
+/// thread and its joiner run. Emitted by the C runtime demand-loader only when
+/// pthread helpers are referenced.
 pub fn runtime_functions() -> Vec<Statement> {
     vec![thread_entry_fn(), thread_join_fn(), barrier_wait_fn()]
 }
