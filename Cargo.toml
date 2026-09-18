@@ -25,6 +25,7 @@ members = [
     "languages/go",
     "languages/kotlin",
     "languages/powershell",
+    "languages/washm",
     "platforms/dotnet",
     "platforms/ecma",
     "platforms/flutter",
@@ -142,6 +143,7 @@ vybe_language_lua = { path = "languages/lua" }
 vybe_language_go = { path = "languages/go" }
 vybe_language_kotlin = { path = "languages/kotlin" }
 vybe_language_powershell = { path = "languages/powershell" }
+vybe_language_washm = { path = "languages/washm" }
 vybe_platform_wasm = { path = "platforms/wasm" }
 vybe_platform_ecma = { path = "platforms/ecma" }
 vybe_platform_web = { path = "platforms/web" }
@@ -154,6 +156,6 @@ vybe_platform_jvm = { path = "platforms/jvm" }
 vybe_platform_plib = { path = "platforms/plib" }
 widgets = "0.2.0"
 # The HTML/CSS engine behind `web:*` when the `engine-webcore` feature is on.
-webcore = "0.2.0"
+webcore = "0.3.1"
 vybe_compiler = { path = "crates/vybe_compiler" }
 vybex = { path = "crates/vybex" }
