@@ -434,7 +434,6 @@ fn nonmatching_typed_clause_falls_through_to_enclosing_catch_all() {
     assert_eq!(r.as_i32(), 77);
 }
 
-
 // ── WRITER: the STANDARD sections, not the `vybe` custom one ──────────────
 //
 // Everything above exercises the READER. Nothing exercised the writer's spec

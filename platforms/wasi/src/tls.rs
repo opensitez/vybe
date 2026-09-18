@@ -42,8 +42,7 @@ const KIND_ERROR: &str = "error";
 ///
 /// A specific sentence, not "unsupported": a caller that logs this should be
 /// able to act on it without reading this file.
-const NO_SERVER_NAME: &str =
-    "wasi:tls/client.connect: server-name is required — a TLS handshake cannot \
+const NO_SERVER_NAME: &str = "wasi:tls/client.connect: server-name is required — a TLS handshake cannot \
      verify a certificate without the name it is being presented for";
 
 static NEXT_ID: AtomicU32 = AtomicU32::new(1);
@@ -124,9 +123,9 @@ pub fn register(vm: &mut VM) {
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let recorded = resource_id(args.first(), KIND_ERROR)
                 .and_then(|id| state().lock().unwrap().errors.get(&id).cloned());
-            Value::String(Arc::from(
-                recorded.unwrap_or_else(|| "wasi:tls: no error recorded for this connector".to_string()),
-            ))
+            Value::String(Arc::from(recorded.unwrap_or_else(|| {
+                "wasi:tls: no error recorded for this connector".to_string()
+            })))
         }),
     );
 
@@ -191,9 +190,9 @@ pub fn register(vm: &mut VM) {
                     std::net::TcpStream::connect((server.as_str(), 443u16))
                         .map_err(|error| format!("connect to {server}:443 failed: {error}"))
                         .and_then(|tcp| {
-                            connector
-                                .connect(&server, tcp)
-                                .map_err(|error| format!("TLS handshake with {server} failed: {error}"))
+                            connector.connect(&server, tcp).map_err(|error| {
+                                format!("TLS handshake with {server} failed: {error}")
+                            })
                         })
                 });
             match outcome {

@@ -546,10 +546,7 @@ fn client_send_rejects_invalid_request_handle() {
 fn outgoing_request_set_method_rejects_blank_methods() {
     let headers = types("[constructor]fields", vec![]);
     let request = types("[static]request.new", vec![headers]);
-    let result = types(
-        "[method]request.set-method",
-        vec![request, s("   ")],
-    );
+    let result = types("[method]request.set-method", vec![request, s("   ")]);
     assert_eq!(
         is_error(&result).as_deref(),
         Some("HTTP-request-method-invalid")
@@ -675,7 +672,6 @@ fn null_path_uses_default_slash() {
 // invent a subject: the closest 0.3.1 behaviour, "a response can be read more
 // than once", is a DIFFERENT claim and is covered where response accessors are.
 
-
 #[test]
 fn incoming_response_status_rejects_invalid_handle() {
     let result = types(
@@ -687,10 +683,7 @@ fn incoming_response_status_rejects_invalid_handle() {
 
 #[test]
 fn incoming_response_headers_rejects_invalid_handle() {
-    let result = types(
-        "[method]response.get-headers",
-        vec![s("not-a-response")],
-    );
+    let result = types("[method]response.get-headers", vec![s("not-a-response")]);
     assert_eq!(is_error(&result).as_deref(), Some("invalid-argument"));
 }
 

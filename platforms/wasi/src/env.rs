@@ -2,7 +2,7 @@ use std::cell::RefCell;
 use std::sync::Arc;
 use vybe_runtime::value::Object;
 use vybe_runtime::vm::HostFnDecl;
-use vybe_runtime::{FuncSig, Param, HostContext, VM, ValType, Value};
+use vybe_runtime::{FuncSig, HostContext, Param, VM, ValType, Value};
 
 // `register_dotnet_net` retired — `Dns.GetHostName()` lowers to
 // `node:os.hostname()` via `emitter::dotnet::core::sockets_adapter`.

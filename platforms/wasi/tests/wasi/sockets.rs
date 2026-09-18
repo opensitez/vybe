@@ -454,12 +454,7 @@ fn keep_alive_timings_and_count_are_settable_and_readable() {
         let socket = create_tcp(&mut vm);
 
         assert_ok(
-            &call_on(
-                &mut vm,
-                "wasi:sockets/types",
-                getter,
-                vec![socket.clone()],
-            ),
+            &call_on(&mut vm, "wasi:sockets/types", getter, vec![socket.clone()]),
             getter,
         );
         assert_ok(
@@ -471,12 +466,7 @@ fn keep_alive_timings_and_count_are_settable_and_readable() {
             ),
             setter,
         );
-        let after = call_on(
-            &mut vm,
-            "wasi:sockets/types",
-            getter,
-            vec![socket],
-        );
+        let after = call_on(&mut vm, "wasi:sockets/types", getter, vec![socket]);
         assert_ok(&after, getter);
         // Whatever the kernel settled on, it must be a POSITIVE number — a
         // getter that answered 0 or a non-number would pass `assert_ok` while
@@ -485,7 +475,11 @@ fn keep_alive_timings_and_count_are_settable_and_readable() {
         assert!(
             n > 0.0,
             "{getter} answered {n}, which is not a usable {}",
-            if setter.ends_with("count") { "count" } else { "duration" }
+            if setter.ends_with("count") {
+                "count"
+            } else {
+                "duration"
+            }
         );
     }
 }

@@ -7,4 +7,5 @@ license.workspace = true
 
 [dependencies]
 inventory = { workspace = true }
+indexmap = { workspace = true }
 vybe_runtime = { workspace = true }

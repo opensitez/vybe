@@ -13,11 +13,11 @@ fn scratch_dir(label: &str) -> PathBuf {
         .expect("cwd is the `.` preopen")
         .join("target/wasi-fs-tests")
         .join(format!(
-        "vybe-wasi-fs-paths-test-{}-{}-{}",
-        std::process::id(),
-        label,
-        id
-    ));
+            "vybe-wasi-fs-paths-test-{}-{}-{}",
+            std::process::id(),
+            label,
+            id
+        ));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("scratch dir mkdir");
     dir

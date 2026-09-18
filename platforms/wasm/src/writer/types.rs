@@ -87,6 +87,15 @@ pub struct WasmTypeContext {
     /// in `call $length` is "expected externref, got i32". The call site has to
     /// box, so it has to know; this is how it knows.
     pub raw_result_funcs: std::collections::HashMap<u32, u8>,
+    /// Declared result arity by absolute WASM function index.
+    ///
+    /// The dynamic VM value ABI historically treated host calls as producing a
+    /// value, and bytecode commonly follows effect-only calls with `DROP`.
+    /// Once proposal/host imports are typed truthfully, a `() -> ()` import
+    /// followed by spec `drop` is invalid. The code writer uses this arity map
+    /// to consume that legacy bytecode drop only for functions that really
+    /// return nothing.
+    pub func_result_arity: std::collections::HashMap<u32, u8>,
 
     /// Declared PARAM valtypes for imports that take a raw numeric operand.
     ///
@@ -99,6 +108,10 @@ pub struct WasmTypeContext {
     /// externref and the module was invalid at every single call site.
     /// Only imports with at least one non-externref param appear here.
     pub raw_param_funcs: std::collections::HashMap<u32, Vec<u8>>,
+    /// Declared PARAM valtypes for imports. Dynamic VM calls may omit trailing
+    /// optional args; wasm imports cannot, so the code writer pads that missing
+    /// tail before emitting `call`.
+    pub import_param_funcs: std::collections::HashMap<u32, Vec<u8>>,
     /// String-constant text → its GLOBAL index. Needed to put a property NAME
     /// on the stack for a dynamic (typeidx 0) property access, which lowers to
     /// a host call rather than a struct op. Computed here from the chunks so no
@@ -111,6 +124,11 @@ pub struct WasmTypeContext {
     /// (which must match the callee's functype exactly, result count
     /// included — first-seen-arity lookup is not exact).
     pub block_type_by_results: std::collections::HashMap<(u8, u8), u32>,
+    /// `externref^M -> i32` functype indices for raw i32-result blocks that
+    /// also take params. `(0 -> i32)` uses the one-byte blocktype shorthand;
+    /// parametric forms need a real type index distinct from
+    /// `block_type_by_results[(M, 1)]`, whose result is externref.
+    pub block_i32_type_by_params: std::collections::HashMap<u8, u32>,
     /// Type index for `(externref) -> ()` — the shape required by the
     /// tag section's exception tag (exception-handling proposal).
     pub exception_type_idx: u32,
@@ -283,8 +301,41 @@ fn write_proposal_signature(out: &mut Vec<u8>, module: &str, name: &str) -> bool
         crate::writer::builtins::canon_builtins::write_signature(out, name)
     } else if module == crate::writer::builtins::js_string_builtins::MODULE {
         crate::writer::builtins::js_string_builtins::write_signature(out, name)
+    } else if module == crate::writer::builtins::js_array_builtins::MODULE {
+        crate::writer::builtins::js_array_builtins::write_signature(out, name)
     } else if module == crate::writer::builtins::js_object_builtins::MODULE {
         crate::writer::builtins::js_object_builtins::write_signature(out, name)
+    } else if module == crate::writer::builtins::js_map_builtins::MODULE {
+        crate::writer::builtins::js_map_builtins::write_signature(out, name)
+    } else if module == crate::writer::builtins::js_set_builtins::MODULE {
+        crate::writer::builtins::js_set_builtins::write_signature(out, name)
+    } else if module == crate::writer::builtins::js_json_builtins::MODULE {
+        crate::writer::builtins::js_json_builtins::write_signature(out, name)
+    } else if module == crate::writer::builtins::js_fixedarray_builtins::MODULE {
+        crate::writer::builtins::js_fixedarray_builtins::write_signature(out, name)
+    } else if module == crate::writer::builtins::js_structured_clone::MODULE {
+        crate::writer::builtins::js_structured_clone::write_signature(out, name)
+    } else if module == crate::writer::builtins::js_arraybuffer_builtins::ARRAYBUFFER_MODULE {
+        crate::writer::builtins::js_arraybuffer_builtins::write_arraybuffer_signature(out, name)
+    } else if module == crate::writer::builtins::js_arraybuffer_builtins::SHAREDARRAYBUFFER_MODULE {
+        crate::writer::builtins::js_arraybuffer_builtins::write_sharedarraybuffer_signature(
+            out, name,
+        )
+    } else if module == crate::writer::builtins::js_arraybuffer_builtins::DATAVIEW_MODULE {
+        crate::writer::builtins::js_arraybuffer_builtins::write_dataview_signature(out, name)
+    } else if module == crate::writer::builtins::js_weakmap_builtins::WEAKMAP_MODULE {
+        crate::writer::builtins::js_weakmap_builtins::write_weakmap_signature(out, name)
+    } else if module == crate::writer::builtins::js_weakmap_builtins::WEAKSET_MODULE {
+        crate::writer::builtins::js_weakmap_builtins::write_weakset_signature(out, name)
+    } else if let Some(variant) =
+        crate::writer::builtins::js_typedarray_builtins::VARIANTS
+            .iter()
+            .copied()
+            .find(|variant| variant.module() == module)
+    {
+        crate::writer::builtins::js_typedarray_builtins::write_signature(out, variant, name)
+    } else if crate::writer::builtins::web_builtins::write_signature(out, module, name) {
+        true
     } else {
         crate::writer::builtins::js_primitive_builtins::write_signature(out, module, name)
     }
@@ -297,7 +348,9 @@ fn signature_params(out: &[u8], start: usize) -> Vec<u8> {
     let mut count = 0u32;
     let mut shift = 0u32;
     loop {
-        let Some(&b) = out.get(i) else { return Vec::new() };
+        let Some(&b) = out.get(i) else {
+            return Vec::new();
+        };
         i += 1;
         count |= ((b & 0x7f) as u32) << shift;
         if b & 0x80 == 0 {
@@ -312,6 +365,55 @@ fn signature_params(out: &[u8], start: usize) -> Vec<u8> {
     out[i..end].to_vec()
 }
 
+fn read_leb_u32_from(out: &[u8], i: &mut usize) -> Option<u32> {
+    let mut value = 0u32;
+    let mut shift = 0u32;
+    loop {
+        let b = *out.get(*i)?;
+        *i += 1;
+        value |= ((b & 0x7f) as u32) << shift;
+        if b & 0x80 == 0 {
+            return Some(value);
+        }
+        shift += 7;
+        if shift >= 35 {
+            return None;
+        }
+    }
+}
+
+/// Decode the result valtypes of the functype just appended at `start`
+/// (the byte after the `TYPE_FUNC` tag).
+fn signature_results(out: &[u8], start: usize) -> Vec<u8> {
+    let mut i = start;
+    let Some(param_count) = read_leb_u32_from(out, &mut i) else {
+        return Vec::new();
+    };
+    i = i.saturating_add(param_count as usize);
+    if i > out.len() {
+        return Vec::new();
+    }
+    let Some(result_count) = read_leb_u32_from(out, &mut i) else {
+        return Vec::new();
+    };
+    let end = i + result_count as usize;
+    if end > out.len() {
+        return Vec::new();
+    }
+    out[i..end].to_vec()
+}
+
+fn record_result_signature(ctx: &mut WasmTypeContext, func_idx: u32, out: &[u8], sig_start: usize) {
+    let results = signature_results(out, sig_start);
+    ctx.func_result_arity.insert(func_idx, results.len() as u8);
+    if results.len() == 1 {
+        let vt = results[0];
+        if vt == TYPE_I32 || vt == TYPE_F64 {
+            ctx.raw_result_funcs.insert(func_idx, vt);
+        }
+    }
+}
+
 /// Record an import whose declared params are not all `externref`, so the
 /// `call` site can unbox them. i64 params are DELIBERATELY not recorded:
 /// there is no i64 unbox — our value ABI is externref and js-primitive-builtins
@@ -321,6 +423,7 @@ fn signature_params(out: &[u8], start: usize) -> Vec<u8> {
 /// two, and no emitter in the tree calls either.
 fn record_raw_params(ctx: &mut WasmTypeContext, func_idx: u32, out: &[u8], sig_start: usize) {
     let params = signature_params(out, sig_start);
+    ctx.import_param_funcs.insert(func_idx, params.clone());
     if params.iter().any(|&t| t == TYPE_I64) {
         return;
     }
@@ -360,9 +463,12 @@ pub fn build_type_context(
         func_type_by_arity: std::collections::HashMap::new(),
         func_type_by_signature: std::collections::HashMap::new(),
         raw_result_funcs: std::collections::HashMap::new(),
+        func_result_arity: std::collections::HashMap::new(),
         raw_param_funcs: std::collections::HashMap::new(),
+        import_param_funcs: std::collections::HashMap::new(),
         string_const_global,
         block_type_by_results: std::collections::HashMap::new(),
+        block_i32_type_by_params: std::collections::HashMap::new(),
         exception_type_idx: 0,
         suspend_tag_type_idx: 0,
         continuation_type_idx: 0,
@@ -411,6 +517,8 @@ pub fn build_type_context(
     // typeidx blocktype at emission.
     let mut block_result_counts: std::collections::BTreeSet<(u8, u8)> =
         std::collections::BTreeSet::new();
+    let mut block_i32_param_counts: std::collections::BTreeSet<u8> =
+        std::collections::BTreeSet::new();
     // A tag's type is `externref^arity -> ()`, the same shape a blocktype of
     // (arity, 0) has — so declaring one here gives the tag section a typeidx to
     // point at. Without this every tag had to borrow the single one-param
@@ -437,6 +545,9 @@ pub fn build_type_context(
                         let results = code[bip + 5];
                         if params > 0 || results >= 2 {
                             block_result_counts.insert((params, results));
+                        }
+                        if results == 1 && params > 0 && chunk.block_i32_results.contains(&bip) {
+                            block_i32_param_counts.insert(params);
                         }
                     }
                 } else if op == vybe_runtime::opcode::Op::CALL_INDIRECT
@@ -467,7 +578,8 @@ pub fn build_type_context(
             }
         }
     }
-    let block_type_count = block_result_counts.len() as u32;
+    let block_type_count =
+        block_result_counts.len() as u32 + block_i32_param_counts.len() as u32;
 
     // Pre-scan for stack-switching usage. Any CONT_NEW/SUSPEND/RESUME/
     // SWITCH opcode triggers the emission of:
@@ -735,8 +847,7 @@ pub fn build_type_context(
                 te.methods
                     .iter()
                     .map(|(_, chunk_idx)| {
-                        (*chunk_idx < chunks.len())
-                            .then(|| (import_count + *chunk_idx) as u32)
+                        (*chunk_idx < chunks.len()).then(|| (import_count + *chunk_idx) as u32)
                     })
                     .collect(),
             );
@@ -808,13 +919,7 @@ pub fn build_type_context(
         };
         let sig_start = out.len();
         if write_proposal_signature(&mut out, module, name) {
-            // Single-result signatures throughout, so the last byte written IS
-            // the result valtype.
-            if let Some(&vt) = out.last()
-                && (vt == TYPE_I32 || vt == TYPE_F64)
-            {
-                ctx.raw_result_funcs.insert(i as u32, vt);
-            }
+            record_result_signature(&mut ctx, i as u32, &out, sig_start);
             record_raw_params(&mut ctx, i as u32, &out, sig_start);
         } else {
             let argc = host_arity[i];
@@ -824,6 +929,9 @@ pub fn build_type_context(
             }
             write_leb128_u32(&mut out, 1);
             out.push(TYPE_EXTERNREF);
+            ctx.func_result_arity.insert(i as u32, 1);
+            ctx.import_param_funcs
+                .insert(i as u32, vec![TYPE_EXTERNREF; argc as usize]);
         }
     }
     // Runtime imports: each proposal module owns the signatures for
@@ -834,11 +942,7 @@ pub fn build_type_context(
         out.push(TYPE_FUNC);
         let sig_start = out.len();
         if write_proposal_signature(&mut out, module, name) {
-            if let Some(&vt) = out.last()
-                && (vt == TYPE_I32 || vt == TYPE_F64)
-            {
-                ctx.raw_result_funcs.insert(func_idx, vt);
-            }
+            record_result_signature(&mut ctx, func_idx, &out, sig_start);
             record_raw_params(&mut ctx, func_idx, &out, sig_start);
         } else {
             // ⛔ THE DEFAULT IS `() -> externref` — ZERO PARAMETERS. Anything
@@ -849,6 +953,8 @@ pub fn build_type_context(
             write_leb128_u32(&mut out, 0);
             write_leb128_u32(&mut out, 1);
             out.push(TYPE_EXTERNREF);
+            ctx.func_result_arity.insert(func_idx, 1);
+            ctx.import_param_funcs.insert(func_idx, Vec::new());
         }
     }
 
@@ -893,6 +999,8 @@ pub fn build_type_context(
                 for t in results {
                     out.push(val_type_byte(t));
                 }
+                ctx.func_result_arity
+                    .insert(import_count as u32 + i as u32, results.len() as u8);
             }
             None => {
                 // WASM convention: arity params (slot 0 = first arg, no reserved callee slot).
@@ -907,6 +1015,8 @@ pub fn build_type_context(
                 for _ in 0..result_count {
                     out.push(TYPE_EXTERNREF);
                 }
+                ctx.func_result_arity
+                    .insert(import_count as u32 + i as u32, result_count as u8);
             }
         }
         // Record first type index seen for each arity (for call_ref/call_indirect dispatch)
@@ -930,8 +1040,10 @@ pub fn build_type_context(
     // `ctx.block_type_by_results` for the code emitter to look up when
     // writing an s33 typeidx blocktype.
     let block_type_base = ctx.func_type_base + import_count as u32 + chunks.len() as u32;
-    for (i, &(params, results)) in block_result_counts.iter().enumerate() {
-        let tidx = block_type_base + i as u32;
+    let mut block_type_offset = 0u32;
+    for &(params, results) in block_result_counts.iter() {
+        let tidx = block_type_base + block_type_offset;
+        block_type_offset += 1;
         ctx.block_type_by_results.insert((params, results), tidx);
         out.push(TYPE_FUNC);
         write_leb128_u32(&mut out, params as u32);
@@ -942,6 +1054,18 @@ pub fn build_type_context(
         for _ in 0..results {
             out.push(TYPE_EXTERNREF);
         }
+    }
+    for &params in block_i32_param_counts.iter() {
+        let tidx = block_type_base + block_type_offset;
+        block_type_offset += 1;
+        ctx.block_i32_type_by_params.insert(params, tidx);
+        out.push(TYPE_FUNC);
+        write_leb128_u32(&mut out, params as u32);
+        for _ in 0..params {
+            out.push(TYPE_EXTERNREF);
+        }
+        write_leb128_u32(&mut out, 1);
+        out.push(TYPE_I32);
     }
 
     // Stack-switching: suspend/resume tag func type + continuation type.

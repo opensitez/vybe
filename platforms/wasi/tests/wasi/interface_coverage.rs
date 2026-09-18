@@ -313,8 +313,7 @@ const PACKAGES: &[(&str, &[(&str, &[&str])])] = &[
 /// (`proposals/wasi-tls/wit-0.3.0-draft/`) and its surface IS checked, by
 /// `tls.rs`, against the five functions that draft declares. It appears here
 /// only because it is not one of the six — not because nothing verifies it.
-const SEPARATE_PROPOSALS: &[&str] =
-    &["wasi:crypto", "wasi:sql", "wasi:logging", "wasi:tls"];
+const SEPARATE_PROPOSALS: &[&str] = &["wasi:crypto", "wasi:sql", "wasi:logging", "wasi:tls"];
 
 /// Packages 0.3.1 DELETED that this tree still registers.
 ///

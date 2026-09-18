@@ -717,7 +717,7 @@ fn array_init_data_copies_into_array() {
         implements: Vec::new(),
         constructor_chunk: None,
         field_descriptors: std::collections::HashMap::new(),
-            ..Default::default()
+        ..Default::default()
     });
     let i8_array_type = 1u16;
     {
@@ -1314,7 +1314,7 @@ fn emit_three_element_array(c: &mut Chunk) {
         implements: Vec::new(),
         constructor_chunk: None,
         field_descriptors: std::collections::HashMap::new(),
-            ..Default::default()
+        ..Default::default()
     });
     c.emit_i32_const(0, 0); // fill value
     c.emit_i32_const(3, 0); // length

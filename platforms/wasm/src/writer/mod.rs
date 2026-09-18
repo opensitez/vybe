@@ -24,13 +24,23 @@ use vybe_runtime::Chunk;
 
 // ── Writer ──────────────────────────────────────────────────────────────
 
+#[derive(Clone, Copy, Debug, Default)]
+pub struct WasmWriteOptions {
+    pub include_vybe_metadata: bool,
+}
+
 pub fn write_wasm(chunks: &[Chunk]) -> Vec<u8> {
+    write_wasm_with_options(chunks, WasmWriteOptions::default())
+}
+
+pub fn write_wasm_with_options(chunks: &[Chunk], options: WasmWriteOptions) -> Vec<u8> {
     let mut out = Vec::new();
     out.extend_from_slice(&WASM_MAGIC);
     out.extend_from_slice(&WASM_VERSION);
 
-    // Custom section: Vybe metadata for round-trip
-    write_section(&mut out, SECTION_CUSTOM, &encode_custom_section(chunks));
+    if options.include_vybe_metadata {
+        write_section(&mut out, SECTION_CUSTOM, &encode_custom_section(chunks));
+    }
 
     // Collect imports — total_imports = host imports + wasm:js-* builtins
     let rt_imports = sections::collect_rt_imports(chunks);
@@ -56,12 +66,9 @@ pub fn write_wasm(chunks: &[Chunk]) -> Vec<u8> {
     // nothing the compiler already numbered moves. See
     // `encode_global_section_with_descriptors`.
     if type_ctx.descriptor_global_count() > 0 {
-        let imported_globals = vybe_runtime::chunk::global_index_space(
-            &string_constants,
-            &host_globals,
-            &[],
-        )
-        .len() as u32;
+        let imported_globals =
+            vybe_runtime::chunk::global_index_space(&string_constants, &host_globals, &[]).len()
+                as u32;
         type_ctx.desc_global_base = Some(imported_globals + globals.len() as u32);
     }
     let type_ctx = type_ctx;
@@ -116,8 +123,8 @@ pub fn write_wasm(chunks: &[Chunk]) -> Vec<u8> {
     // The module's OWN tags follow the fixed prefix (exception tag, then the
     // stack-switching ones), so `VYBE_EXCEPTION_TAG` and the continuation tag
     // indices keep the values everything else already assumes.
-    let reserved = 1 + u32::from(suspend_idx.is_some())
-        + type_ctx.continuation_tag_type_indices.len() as u32;
+    let reserved =
+        1 + u32::from(suspend_idx.is_some()) + type_ctx.continuation_tag_type_indices.len() as u32;
     let tag_plan = exception_handling::plan_module_tags(chunks, reserved);
     if emit_exception_tag || type_ctx.uses_stack_switching {
         // Each declared tag needs a functype of its own arity; `(arity, 0)` is
@@ -169,6 +176,15 @@ pub fn write_wasm(chunks: &[Chunk]) -> Vec<u8> {
         &sections::encode_element_section(chunks, total_imports),
     );
 
+    let data_segments = sections::collect_data_segments(chunks);
+    if !data_segments.is_empty() {
+        write_section(
+            &mut out,
+            SECTION_DATA_COUNT,
+            &sections::encode_data_count_section(&data_segments),
+        );
+    }
+
     // branch_hint custom section — spec §branch-hinting requires this to
     // appear BEFORE the code section (not as a trailing custom section).
     if let Some(bh_payload) =
@@ -186,6 +202,14 @@ pub fn write_wasm(chunks: &[Chunk]) -> Vec<u8> {
         SECTION_CODE,
         &code::encode_code_section(chunks, &rt_imports, &type_ctx, &tag_plan),
     );
+
+    if !data_segments.is_empty() {
+        write_section(
+            &mut out,
+            SECTION_DATA,
+            &sections::encode_data_section(&data_segments),
+        );
+    }
 
     // ── Trailing custom sections ─────────────────────────────────────
     // The standard `"name"` custom section (extended-name-section proposal) —
@@ -242,11 +266,32 @@ fn encode_custom_section(chunks: &[Chunk]) -> Vec<u8> {
     write_name(&mut out, "vybe");
 
     // Version
-    out.push(3); // Version 3: adds exception TAG declarations (v2: type info + descriptors)
+    out.push(7); // Version 7: module global tables are serialized once.
 
     // Number of chunks
     write_leb128_u32(&mut out, chunks.len() as u32);
 
+    // Global imports and the normalized global table are module-wide metadata.
+    // Chunks share this table through an Arc; serializing it per chunk multiplies
+    // large C programs by the function count in debug/round-trip builds.
+    let module_global_imports = chunks
+        .first()
+        .map(|chunk| chunk.global_imports.as_slice())
+        .unwrap_or(&[]);
+    write_leb128_u32(&mut out, module_global_imports.len() as u32);
+    for gi in module_global_imports {
+        write_name(&mut out, &gi.module);
+        write_name(&mut out, &gi.name);
+    }
+
+    let module_globals = chunks.first().map(|chunk| chunk.globals.clone());
+    let module_globals_slice = module_globals.as_deref().map(|g| &**g).unwrap_or(&[]);
+    write_leb128_u32(&mut out, module_globals_slice.len() as u32);
+    for name in module_globals_slice {
+        write_name(&mut out, name);
+    }
+
+    let mut value_ctx = ValueEncodeContext::default();
     for chunk in chunks {
         // Chunk metadata
         write_name(&mut out, &chunk.name);
@@ -256,7 +301,7 @@ fn encode_custom_section(chunks: &[Chunk]) -> Vec<u8> {
         // Constants
         write_leb128_u32(&mut out, chunk.constants.len() as u32);
         for c in &chunk.constants {
-            encode_value(&mut out, c);
+            encode_value_with_context(&mut out, c, &mut value_ctx);
         }
 
         // Imports (only on chunk 0)
@@ -327,17 +372,6 @@ fn encode_custom_section(chunks: &[Chunk]) -> Vec<u8> {
             } else {
                 out.push(0);
             }
-        }
-
-        // Global imports (v3+): string constants are imported GLOBALS whose
-        // key is interned in the constants table — the VM binds
-        // `vm.globals[key]` from THIS list at instantiation. Without it, a
-        // reloaded chunk's GLOBAL_GET finds nothing and every string
-        // literal evaluates to undefined.
-        write_leb128_u32(&mut out, chunk.global_imports.len() as u32);
-        for gi in &chunk.global_imports {
-            write_name(&mut out, &gi.module);
-            write_name(&mut out, &gi.name);
         }
 
         // Exception tags (v3+). Without these, a reloaded module's

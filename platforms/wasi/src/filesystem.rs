@@ -19,8 +19,8 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
-use vybe_runtime::value::Object;
 use vybe_runtime::component::ValType;
+use vybe_runtime::value::Object;
 use vybe_runtime::{HostContext, VM, Value};
 
 // ── Resource registry ─────────────────────────────────────────────
@@ -1302,8 +1302,6 @@ fn path_of(kind: &DescriptorKind) -> PathBuf {
         DescriptorKind::File(p) | DescriptorKind::Directory(p) => p.clone(),
     }
 }
-
-
 
 // ── No test-only helpers ──────────────────────────────────────────
 //

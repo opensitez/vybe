@@ -49,7 +49,10 @@ pub struct WasmError {
 impl WasmError {
     /// A VALIDATION failure: the bytes decoded, the module is ill-typed.
     pub fn invalid(message: impl Into<String>) -> Self {
-        WasmError { phase: Phase::Invalid, message: message.into() }
+        WasmError {
+            phase: Phase::Invalid,
+            message: message.into(),
+        }
     }
 }
 
@@ -58,13 +61,19 @@ impl WasmError {
 // the validity sites have to say so explicitly.
 impl From<String> for WasmError {
     fn from(message: String) -> Self {
-        WasmError { phase: Phase::Malformed, message }
+        WasmError {
+            phase: Phase::Malformed,
+            message,
+        }
     }
 }
 
 impl From<&str> for WasmError {
     fn from(message: &str) -> Self {
-        WasmError { phase: Phase::Malformed, message: message.to_string() }
+        WasmError {
+            phase: Phase::Malformed,
+            message: message.to_string(),
+        }
     }
 }
 
@@ -248,7 +257,9 @@ fn validate_standard_sections(sections: &StandardSections) -> Result<(), WasmErr
     let imports = parse_import_details(&sections.import_section)?;
     for import in &imports {
         if import.kind == 0 && import.type_index as usize >= types.len() {
-            return Err(WasmError::invalid("import function type index out of range"));
+            return Err(WasmError::invalid(
+                "import function type index out of range",
+            ));
         }
     }
 
@@ -365,7 +376,7 @@ fn skip_import_descriptor(data: &[u8], pos: &mut usize, kind: u8) {
             let _ = read_limits_min(data, pos);
         }
         3 => {
-            skip_leb128(data, pos); // valtype
+            read_value_type(data, pos); // valtype
             *pos = (*pos).saturating_add(1).min(data.len()); // mutability
         }
         // A tag is an attribute byte followed by its `typeidx`. Consuming
@@ -535,7 +546,9 @@ fn validate_memory_section(data: &[u8]) -> Result<(), WasmError> {
             };
             pos += read;
             if min > max {
-                return Err(WasmError::invalid("size minimum must not be greater than maximum"));
+                return Err(WasmError::invalid(
+                    "size minimum must not be greater than maximum",
+                ));
             }
         }
     }
@@ -556,7 +569,7 @@ fn parse_global_mutability(
         if pos + 2 > data.len() {
             return Err("Invalid WASM: malformed global section".into());
         }
-        pos += 1; // valtype
+        read_value_type(data, &mut pos);
         // A global's mutability is `0x00` or `0x01` and nothing else — the
         // same one-byte field a struct field carries, so it is read by the
         // same validator rather than by a truthiness test.
@@ -1144,7 +1157,12 @@ fn validate_code_bodies(
             has_data_count_section,
             uses_memory64,
             uses_table64,
-        )?;
+        )
+        .map_err(|err| {
+            WasmError::invalid(format!(
+                "{err} in function_body_index {func_idx} type_index {type_idx} code_section_range {pos}..{body_end}"
+            ))
+        })?;
         pos = body_end;
     }
     if pos != code_sec.len() {
@@ -1163,6 +1181,7 @@ struct CtrlFrame {
     param_arity: usize,
     result_arity: usize,
     is_loop: bool,
+    else_allowed: bool,
     unreachable: bool,
 }
 
@@ -1180,6 +1199,7 @@ impl ArityStack {
                 param_arity: 0,
                 result_arity,
                 is_loop: false,
+                else_allowed: false,
                 unreachable: false,
             }],
         }
@@ -1220,6 +1240,7 @@ impl ArityStack {
         param_arity: usize,
         result_arity: usize,
         is_loop: bool,
+        else_allowed: bool,
         context: &str,
     ) -> Result<(), WasmError> {
         self.pop(param_arity, context)?;
@@ -1228,6 +1249,7 @@ impl ArityStack {
             param_arity,
             result_arity,
             is_loop,
+            else_allowed,
             unreachable: false,
         });
         self.push(param_arity);
@@ -1312,7 +1334,7 @@ fn decode_blocktype(
         // (ref ht) / (ref null ht) shorthands carry a heaptype immediate,
         // which may be `(exact $x)` — two lebs, not one.
         if b == 0x63 || b == 0x64 {
-            skip_heaptype(code, pos);
+            skip_heaptype_immediate(code, pos);
         }
         return Ok((0, 1));
     }
@@ -1341,6 +1363,7 @@ fn validate_instruction_stream(
 ) -> Result<(), WasmError> {
     let mut pos = 0;
     let mut st = ArityStack::new(result_arity);
+    let mut recent: std::collections::VecDeque<String> = std::collections::VecDeque::new();
     // Pop a typed call's params and push its results.
     fn apply_sig(
         st: &mut ArityStack,
@@ -1354,23 +1377,65 @@ fn validate_instruction_stream(
         Ok(())
     }
     while pos < code.len() {
+        let op_offset = pos;
         let op = code[pos];
         pos += 1;
+        if recent.len() == 64 {
+            recent.pop_front();
+        }
+        recent.push_back(format!("@{op_offset}:0x{op:02X}:h{}", st.height));
         match op {
             0x00 => st.set_unreachable(),
             0x01 => {}
             0x02 | 0x03 => {
                 let (params, results) = decode_blocktype(code, &mut pos, types)?;
-                st.push_frame(params, results, op == 0x03, "block")?;
+                st.push_frame(params, results, op == 0x03, false, "block")?;
             }
             0x04 => {
                 st.pop(1, "if condition")?;
                 let (params, results) = decode_blocktype(code, &mut pos, types)?;
-                st.push_frame(params, results, false, "if")?;
+                st.push_frame(params, results, false, true, "if")?;
             }
             0x05 => {
-                let f = st.pop_frame("else")?;
-                st.push_frame(f.param_arity, f.result_arity, false, "else")?;
+                let else_offset = pos.saturating_sub(1);
+                if !st.frames.last().is_some_and(|f| f.else_allowed) {
+                    return Err(WasmError::invalid(format!(
+                        "Invalid WASM: unexpected else at byte offset {else_offset}"
+                    )));
+                }
+                let frame_note = st
+                    .frames
+                    .last()
+                    .map(|f| {
+                        format!(
+                            " frame_start {} frame_params {} frame_results {} frame_unreachable {}",
+                            f.start_height, f.param_arity, f.result_arity, f.unreachable
+                        )
+                    })
+                    .unwrap_or_default();
+                let f = st.pop_frame("else").map_err(|err| {
+                    let trail = recent.iter().cloned().collect::<Vec<_>>().join(" ");
+                    WasmError::invalid(format!(
+                        "{err} at byte offset {else_offset} before else; height {} frame_count {}{} recent [{}]",
+                        st.height,
+                        st.frames.len(),
+                        frame_note,
+                        trail
+                    ))
+                })?;
+                // `if` block parameters are consumed once at the `if` and are
+                // available to whichever arm executes. Entering `else` must
+                // reset to the original block base and re-expose those params;
+                // it must not pop them from the already-validated then result.
+                st.frames.push(CtrlFrame {
+                    start_height: f.start_height,
+                    param_arity: f.param_arity,
+                    result_arity: f.result_arity,
+                    is_loop: false,
+                    else_allowed: false,
+                    unreachable: false,
+                });
+                st.push(f.param_arity);
             }
             0x08 => {
                 // throw: tag arity isn't tracked here — the frame goes
@@ -1386,13 +1451,40 @@ fn validate_instruction_stream(
                 st.set_unreachable();
             }
             0x0B => {
-                let f = st.pop_frame("end")?;
+                let end_offset = pos.saturating_sub(1);
+                let frame_note = st
+                    .frames
+                    .last()
+                    .map(|f| {
+                        format!(
+                            " frame_start {} frame_params {} frame_results {} frame_unreachable {}",
+                            f.start_height, f.param_arity, f.result_arity, f.unreachable
+                        )
+                    })
+                    .unwrap_or_default();
+                let f = st.pop_frame("end").map_err(|err| {
+                    let trail = recent.iter().cloned().collect::<Vec<_>>().join(" ");
+                    WasmError::invalid(format!(
+                        "{err} at byte offset {end_offset} before end; height {} frame_count {}{} recent [{}]",
+                        st.height,
+                        st.frames.len(),
+                        frame_note,
+                        trail
+                    ))
+                })?;
                 st.push(f.result_arity);
             }
             0x0C | 0x0D => {
                 let (depth, read) = read_leb128_u32(&code[pos..]);
                 pos += read;
-                let arity = st.label_arity(depth)?;
+                let arity = st.label_arity(depth).map_err(|_| {
+                    WasmError::invalid(format!(
+                        "unknown label: branch depth out of range at byte offset {} opcode 0x{op:02X} depth {} frame_count {}",
+                        pos.saturating_sub(1 + read),
+                        depth,
+                        st.frames.len()
+                    ))
+                })?;
                 if op == 0x0D {
                     st.pop(1, "br_if condition")?;
                     st.pop(arity, "br_if")?;
@@ -1409,11 +1501,25 @@ fn validate_instruction_stream(
                 for _ in 0..count {
                     let (depth, read) = read_leb128_u32(&code[pos..]);
                     pos += read;
-                    st.label_arity(depth)?;
+                    st.label_arity(depth).map_err(|_| {
+                        WasmError::invalid(format!(
+                            "unknown label: branch depth out of range at byte offset {} opcode 0x0E depth {} frame_count {}",
+                            pos.saturating_sub(read),
+                            depth,
+                            st.frames.len()
+                        ))
+                    })?;
                 }
                 let (default_depth, read) = read_leb128_u32(&code[pos..]);
                 pos += read;
-                let arity = st.label_arity(default_depth)?;
+                let arity = st.label_arity(default_depth).map_err(|_| {
+                    WasmError::invalid(format!(
+                        "unknown label: branch depth out of range at byte offset {} opcode 0x0E default depth {} frame_count {}",
+                        pos.saturating_sub(read),
+                        default_depth,
+                        st.frames.len()
+                    ))
+                })?;
                 st.pop(arity, "br_table")?;
                 st.set_unreachable();
             }
@@ -1422,6 +1528,7 @@ fn validate_instruction_stream(
                 st.set_unreachable();
             }
             0x10 | 0x12 => {
+                let call_offset = pos.saturating_sub(1);
                 let (idx, read) = read_leb128_u32(&code[pos..]);
                 pos += read;
                 apply_sig(
@@ -1429,12 +1536,22 @@ fn validate_instruction_stream(
                     func_sigs.get(idx as usize),
                     "call",
                     "Invalid WASM: call function index out of range",
-                )?;
+                )
+                .map_err(|err| {
+                    let trail = recent.iter().cloned().collect::<Vec<_>>().join(" ");
+                    WasmError::invalid(format!(
+                        "{err} at byte offset {call_offset} for call function_index {idx}; height {} frame_count {} recent [{}]",
+                        st.height,
+                        st.frames.len(),
+                        trail
+                    ))
+                })?;
                 if op == 0x12 {
                     st.set_unreachable(); // return_call
                 }
             }
             0x11 | 0x13 => {
+                let call_offset = pos.saturating_sub(1);
                 let (type_idx, read) = read_leb128_u32(&code[pos..]);
                 pos += read;
                 skip_leb128(code, &mut pos); // table index
@@ -1447,13 +1564,21 @@ fn validate_instruction_stream(
                     sig.as_ref(),
                     "call_indirect",
                     "Invalid WASM: call_indirect type index out of range",
-                )?;
+                )
+                .map_err(|err| {
+                    WasmError::invalid(format!(
+                        "{err} at byte offset {call_offset} for call_indirect type_index {type_idx}; height {} frame_count {}",
+                        st.height,
+                        st.frames.len()
+                    ))
+                })?;
                 if op == 0x13 {
                     st.set_unreachable(); // return_call_indirect
                 }
             }
             0x14 | 0x15 => {
                 // call_ref / return_call_ref (function-references)
+                let call_offset = pos.saturating_sub(1);
                 let (type_idx, read) = read_leb128_u32(&code[pos..]);
                 pos += read;
                 st.pop(1, "call_ref funcref")?;
@@ -1465,14 +1590,31 @@ fn validate_instruction_stream(
                     sig.as_ref(),
                     "call_ref",
                     "Invalid WASM: call_ref type index out of range",
-                )?;
+                )
+                .map_err(|err| {
+                    WasmError::invalid(format!(
+                        "{err} at byte offset {call_offset} for call_ref type_index {type_idx}; height {} frame_count {}",
+                        st.height,
+                        st.frames.len()
+                    ))
+                })?;
                 if op == 0x15 {
                     st.set_unreachable();
                 }
             }
             // Legacy `delegate` — not supported (see LEGACY_EH_UNSUPPORTED).
             0x18 => return Err(LEGACY_EH_UNSUPPORTED.into()),
-            0x1A => st.pop(1, "drop")?,
+            0x1A => {
+                let drop_offset = pos.saturating_sub(1);
+                st.pop(1, "drop").map_err(|err| {
+                    WasmError::invalid(format!(
+                        "{err} at byte offset {drop_offset}; height {} frame_count {} recent [{}]",
+                        st.height,
+                        st.frames.len(),
+                        recent.iter().cloned().collect::<Vec<_>>().join(" ")
+                    ))
+                })?;
+            }
             0x1B => {
                 st.pop(3, "select")?;
                 st.push(1);
@@ -1497,7 +1639,7 @@ fn validate_instruction_stream(
                     }
                     skip_leb128(code, &mut pos); // label index
                 }
-                st.push_frame(params, results, false, "try_table")?;
+                st.push_frame(params, results, false, false, "try_table")?;
             }
             0x20 | 0x21 | 0x22 => {
                 let (idx, read) = read_leb128_u32(&code[pos..]);
@@ -1625,7 +1767,7 @@ fn validate_instruction_stream(
                 st.push(1);
             }
             0xD0 => {
-                skip_leb128(code, &mut pos); // heaptype
+                skip_heaptype_immediate(code, &mut pos);
                 st.push(1);
             }
             0xD1 => {
@@ -1723,55 +1865,215 @@ fn validate_instruction_stream(
                 let (sub, read) = read_leb128_u32(&code[pos..]);
                 pos += read;
                 match sub {
-                    // One typeidx: struct.new/new_default, array.new/new_default.
-                    0x00..=0x01 | 0x06..=0x07 => {
+                    // struct.new/default and array.new/default each carry one
+                    // typeidx. This validator tracks arity, not precise GC
+                    // field types, so struct.new's field pops are intentionally
+                    // conservative; malformed stack shapes still fail when
+                    // real consumers pop too much.
+                    0x00 => {
                         skip_leb128(code, &mut pos);
+                        st.push(1);
+                    }
+                    0x01 => {
+                        skip_leb128(code, &mut pos);
+                        st.push(1);
+                    }
+                    0x06 => {
+                        skip_leb128(code, &mut pos);
+                        st.pop(2, "array.new")?;
+                        st.push(1);
+                    }
+                    0x07 => {
+                        skip_leb128(code, &mut pos);
+                        st.pop(1, "array.new_default")?;
+                        st.push(1);
                     }
                     // array.new_fixed is typeidx + N, not one immediate — the
                     // same two-leb shape the decoder reads.
                     0x08 => {
                         skip_leb128(code, &mut pos);
-                        skip_leb128(code, &mut pos);
+                        let (count, read) = read_leb128_u32(&code[pos..]);
+                        pos += read;
+                        st.pop(count as usize, "array.new_fixed")?;
+                        st.push(1);
                     }
-                    // typeidx + fieldidx / dataidx / elemidx.
-                    0x02..=0x05 | 0x09..=0x0A | 0x12..=0x13 => {
+                    // struct.get/get_s/get_u/set: typeidx + fieldidx.
+                    0x02..=0x04 => {
                         skip_leb128(code, &mut pos);
                         skip_leb128(code, &mut pos);
+                        st.pop(1, "struct.get")?;
+                        st.push(1);
+                    }
+                    0x05 => {
+                        skip_leb128(code, &mut pos);
+                        skip_leb128(code, &mut pos);
+                        st.pop(2, "struct.set")?;
+                    }
+                    // array.new_data/new_elem: typeidx + segmentidx.
+                    0x09..=0x0A => {
+                        skip_leb128(code, &mut pos);
+                        skip_leb128(code, &mut pos);
+                        st.pop(2, "array.new_segment")?;
+                        st.push(1);
+                    }
+                    // array.get/get_s/get_u: typeidx.
+                    0x0B..=0x0D => {
+                        skip_leb128(code, &mut pos);
+                        st.pop(2, "array.get")?;
+                        st.push(1);
+                    }
+                    // array.set: typeidx.
+                    0x0E => {
+                        skip_leb128(code, &mut pos);
+                        st.pop(3, "array.set")?;
+                    }
+                    0x0F => {
+                        st.pop(1, "array.len")?;
+                        st.push(1);
+                    }
+                    // array.fill: typeidx.
+                    0x10 => {
+                        skip_leb128(code, &mut pos);
+                        st.pop(4, "array.fill")?;
+                    }
+                    // array.copy: dst typeidx + src typeidx.
+                    0x11 => {
+                        skip_leb128(code, &mut pos);
+                        skip_leb128(code, &mut pos);
+                        st.pop(5, "array.copy")?;
+                    }
+                    // array.init_data/init_elem: typeidx + segmentidx.
+                    0x12..=0x13 => {
+                        skip_leb128(code, &mut pos);
+                        skip_leb128(code, &mut pos);
+                        st.pop(4, "array.init_segment")?;
                     }
                     // ref.test / ref.cast take a heaptype, which is two lebs
                     // when it is `(exact $x)`.
                     0x14..=0x17 => {
-                        skip_heaptype(code, &mut pos);
+                        skip_heaptype_immediate(code, &mut pos);
+                        st.pop(1, "ref.test/cast")?;
+                        st.push(1);
                     }
                     // br_on_cast / br_on_cast_fail: castflags, labelidx, and
                     // TWO heaptypes — not a single immediate.
                     0x18..=0x19 => {
                         pos = pos.saturating_add(1).min(code.len()); // castflags
                         skip_leb128(code, &mut pos); // labelidx
-                        skip_heaptype(code, &mut pos);
-                        skip_heaptype(code, &mut pos);
+                        skip_heaptype_immediate(code, &mut pos);
+                        skip_heaptype_immediate(code, &mut pos);
+                    }
+                    0x1A..=0x1B => {
+                        st.pop(1, "extern/any conversion")?;
+                        st.push(1);
                     }
                     0x1C => {
                         st.pop(1, "ref.i31")?;
                         st.push(1);
                     }
+                    0x1D..=0x1E => {
+                        st.pop(1, "i31.get")?;
+                        st.push(1);
+                    }
                     // Custom Descriptors: struct.new_desc, struct.new_default_desc
                     // and ref.get_desc each take a typeidx.
-                    0x20..=0x22 => {
+                    0x20 => {
                         skip_leb128(code, &mut pos);
+                        st.push(1);
+                    }
+                    0x21..=0x22 => {
+                        skip_leb128(code, &mut pos);
+                        st.pop(1, "descriptor op")?;
+                        st.push(1);
                     }
                     // ref.cast_desc_eq, in its non-null and nullable forms.
                     0x23..=0x24 => {
-                        skip_heaptype(code, &mut pos);
+                        skip_heaptype_immediate(code, &mut pos);
                     }
                     // br_on_cast_desc_eq / _fail — same shape as br_on_cast.
                     0x25..=0x26 => {
                         pos = pos.saturating_add(1).min(code.len()); // castflags
                         skip_leb128(code, &mut pos); // labelidx
-                        skip_heaptype(code, &mut pos);
-                        skip_heaptype(code, &mut pos);
+                        skip_heaptype_immediate(code, &mut pos);
+                        skip_heaptype_immediate(code, &mut pos);
                     }
-                    _ => {}
+                    0x80 | 0x81 | 0x8B | 0x8C => {
+                        skip_leb128(code, &mut pos); // memidx
+                        st.pop(2, "string.new")?;
+                        st.push(1);
+                    }
+                    0x82 => {
+                        skip_leb128(code, &mut pos); // string literal index
+                        st.push(1);
+                    }
+                    0x83..=0x85 => {
+                        st.pop(1, "string.measure")?;
+                        st.push(1);
+                    }
+                    0x86 | 0x87 | 0x8D | 0x8E => {
+                        skip_leb128(code, &mut pos); // memidx
+                        st.pop(2, "string.encode")?;
+                        st.push(1);
+                    }
+                    0x88..=0x89 => {
+                        st.pop(2, "string binary op")?;
+                        st.push(1);
+                    }
+                    0x8A => {
+                        st.pop(1, "string.is_usv_sequence")?;
+                        st.push(1);
+                    }
+                    0x90 | 0x98 | 0xA0 => {
+                        st.pop(1, "string view")?;
+                        st.push(1);
+                    }
+                    0x91 => {
+                        st.pop(3, "stringview_wtf8.advance")?;
+                        st.push(1);
+                    }
+                    0xA2..=0xA4 => {
+                        st.pop(2, "string view cursor op")?;
+                        st.push(1);
+                    }
+                    0x92 => {
+                        skip_leb128(code, &mut pos); // memidx
+                        st.pop(4, "stringview_wtf8.encode")?;
+                        st.push(2);
+                    }
+                    0x9B => {
+                        skip_leb128(code, &mut pos); // memidx
+                        st.pop(4, "stringview_wtf16.encode")?;
+                        st.push(1);
+                    }
+                    0x93 | 0x9C => {
+                        st.pop(3, "string view slice")?;
+                        st.push(1);
+                    }
+                    0x99 => {
+                        st.pop(1, "stringview_wtf16.length")?;
+                        st.push(1);
+                    }
+                    0x9A => {
+                        st.pop(2, "stringview_wtf16.get_codeunit")?;
+                        st.push(1);
+                    }
+                    0xA1 => {
+                        st.pop(1, "stringview_iter.next")?;
+                        st.push(1);
+                    }
+                    0xB0..=0xB1 | 0xB4..=0xB5 => {
+                        st.pop(3, "string.new_array")?;
+                        st.push(1);
+                    }
+                    0xB2..=0xB3 | 0xB6..=0xB7 => {
+                        st.pop(3, "string.encode_array")?;
+                        st.push(1);
+                    }
+                    other => {
+                        return Err(
+                            format!("Invalid WASM: unknown 0xFB sub-opcode 0x{other:02X}").into(),
+                        );
+                    }
                 }
             }
             0xFC => {
@@ -1870,9 +2172,9 @@ fn validate_instruction_stream(
                     // Accepting it silently let the translate pass skip the
                     // instruction and desync from its operand bytes.
                     other => {
-                        return Err(format!(
-                            "Invalid WASM: unknown 0xFC sub-opcode 0x{other:02X}"
-                        ).into());
+                        return Err(
+                            format!("Invalid WASM: unknown 0xFC sub-opcode 0x{other:02X}").into(),
+                        );
                     }
                 }
             }
@@ -1950,9 +2252,9 @@ fn validate_instruction_stream(
                     // Spec: unknown atomic sub-opcodes are malformed, not
                     // skippable — silent acceptance desyncs the operand walk.
                     other => {
-                        return Err(format!(
-                            "Invalid WASM: unknown 0xFE sub-opcode 0x{other:02X}"
-                        ).into());
+                        return Err(
+                            format!("Invalid WASM: unknown 0xFE sub-opcode 0x{other:02X}").into(),
+                        );
                     }
                 }
             }
@@ -2379,10 +2681,8 @@ fn translate_wasm_to_chunk(
                 // its results; the instruction itself must carry them too, so a
                 // `br` to the try_table's label keeps its values.
                 chunk.emit_try_table_clauses(0, result_count, &triples, 0);
-                let clauses: Vec<EhClause> = labels
-                    .into_iter()
-                    .map(|label| EhClause { label })
-                    .collect();
+                let clauses: Vec<EhClause> =
+                    labels.into_iter().map(|label| EhClause { label }).collect();
                 label_stack.push(LabelInfo {
                     // `$skip` + one block per clause + the `try_table` itself.
                     // Every one of those is open while the body is decoded, so
@@ -3337,7 +3637,7 @@ fn emit_gc_prefixed(chunk: &mut Chunk, sub: u32, wasm: &[u8], pos: &mut usize) {
             // The heaptype survives now. It used to be read and thrown away,
             // replaced with the string `"__wasm_heaptype"` — which made every
             // decoded cast a test against a type that does not exist.
-            let ht = read_heaptype(wasm, pos);
+            let ht = read_heaptype_immediate(wasm, pos);
             chunk.emit_ref_type_op(op, ht, 0);
         }
         _ if op == Op::BR_ON_CAST
@@ -3349,8 +3649,8 @@ fn emit_gc_prefixed(chunk: &mut Chunk, sub: u32, wasm: &[u8], pos: &mut usize) {
             *pos += fread;
             let (depth, read) = read_leb128_u32(&wasm[*pos..]);
             *pos += read;
-            skip_heaptype(wasm, pos);
-            skip_heaptype(wasm, pos);
+            skip_heaptype_immediate(wasm, pos);
+            skip_heaptype_immediate(wasm, pos);
             // ⚠ The heaptypes themselves are still DISCARDED — a round trip
             // loses the declared types and rebuilds a placeholder. What is now
             // preserved is their NULLABILITY, which castflags carries (bit 0 =
@@ -3370,8 +3670,10 @@ fn emit_gc_prefixed(chunk: &mut Chunk, sub: u32, wasm: &[u8], pos: &mut usize) {
             // `opcode/gc.rs` declares for `U16_U16_U8`.
             // `BR_ON_CAST`'s immediates are still 16-bit. Narrowing is
             // checked so a pool past 65535 cannot resolve to the wrong name.
-            let to_idx = u16::try_from(to_idx).expect("heaptype-name constant exceeds a u16 immediate");
-            let from_idx = u16::try_from(from_idx).expect("heaptype-name constant exceeds a u16 immediate");
+            let to_idx =
+                u16::try_from(to_idx).expect("heaptype-name constant exceeds a u16 immediate");
+            let from_idx =
+                u16::try_from(from_idx).expect("heaptype-name constant exceeds a u16 immediate");
             chunk.emit_op_u16(op, to_idx, 0);
             chunk.emit((from_idx >> 8) as u8, 0);
             chunk.emit((from_idx & 0xFF) as u8, 0);
@@ -3400,12 +3702,40 @@ fn emit_gc_prefixed(chunk: &mut Chunk, sub: u32, wasm: &[u8], pos: &mut usize) {
             chunk.emit_op_u16_u16(op, type_idx as u16, 0, 0);
         }
         _ if op == Op::REF_CAST_DESC_EQ || op == Op::REF_CAST_DESC_EQ_NULL => {
-            skip_heaptype(wasm, pos);
+            skip_heaptype_immediate(wasm, pos);
             let idx = chunk.add_constant(Value::String(Arc::from("__wasm_heaptype")));
             let idx = u16::try_from(idx).expect("heaptype-name constant exceeds a u16 immediate");
             chunk.emit_op_u16(op, idx, 0);
         }
+        _ if emit_stringref_prefixed(chunk, op, wasm, pos) => {}
         _ => chunk.emit_op(op, 0),
+    }
+}
+
+fn emit_stringref_prefixed(chunk: &mut Chunk, op: Op, wasm: &[u8], pos: &mut usize) -> bool {
+    let sub = op.sub() as u32;
+    match sub {
+        0x80 | 0x81 | 0x86 | 0x87 | 0x8B | 0x8C | 0x8D | 0x8E | 0x92 | 0x9B => {
+            skip_leb128(wasm, pos); // memidx; VM stringref ops use memory 0 internally.
+            chunk.emit_op(op, 0);
+            true
+        }
+        0x82 => {
+            skip_leb128(wasm, pos); // string literal index; not representable in current chunk form.
+            chunk.emit_op(Op::UNREACHABLE, 0);
+            true
+        }
+        0x83..=0x8A
+        | 0x90
+        | 0x91
+        | 0x93
+        | 0x98..=0x9C
+        | 0xA0..=0xA4
+        | 0xB0..=0xB7 => {
+            chunk.emit_op(op, 0);
+            true
+        }
+        _ => false,
     }
 }
 
@@ -4016,7 +4346,7 @@ fn read_value_type(data: &[u8], pos: &mut usize) -> Option<u8> {
     *pos += 1;
     if byte == 0x63 || byte == 0x64 {
         // The heaptype may itself be `(exact $x)`, which is two lebs.
-        skip_heaptype(data, pos);
+        skip_heaptype_immediate(data, pos);
     }
     Some(byte)
 }
@@ -4469,16 +4799,6 @@ fn parse_export_section(data: &[u8]) -> Vec<(String, usize)> {
     exports
 }
 
-fn skip_leb128(data: &[u8], pos: &mut usize) {
-    while *pos < data.len() {
-        let byte = data[*pos];
-        *pos += 1;
-        if byte & 0x80 == 0 {
-            break;
-        }
-    }
-}
-
 fn read_stack_switch_handlers(data: &[u8], pos: &mut usize) -> Vec<StackSwitchHandler> {
     let (handler_count, read) = read_leb128_u32(&data[*pos..]);
     *pos += read;
@@ -4519,12 +4839,37 @@ fn skip_const_expr(data: &[u8], pos: &mut usize) -> Result<(), WasmError> {
             0x23 | 0xD2 => leb_u32_fits(data, pos)?,
             0x43 => *pos += 4,
             0x44 => *pos += 8,
-            0xD0 => *pos += 1,
+            0xD0 => skip_heaptype_immediate(data, pos),
+            0xFB => {
+                let sub_start = *pos;
+                leb_u32_fits(data, pos)?;
+                let (sub, _) = read_leb128_u32(&data[sub_start..]);
+                match sub {
+                    // struct.new/default, array.new/default/fill,
+                    // struct.new_desc/default_desc, ref.get_desc.
+                    0x00 | 0x01 | 0x06 | 0x07 | 0x10 | 0x20 | 0x21 | 0x22 => {
+                        leb_u32_fits(data, pos)?
+                    }
+                    // array.new_fixed and array.copy.
+                    0x08 | 0x11 => {
+                        leb_u32_fits(data, pos)?;
+                        leb_u32_fits(data, pos)?;
+                    }
+                    // array.len.
+                    0x0F => {}
+                    _ => {
+                        return Err(format!(
+                            "Invalid WASM: unsupported GC const expr opcode 0xfb {sub:#x}"
+                        )
+                        .into());
+                    }
+                }
+            }
             0xFC => skip_leb128(data, pos),
             _ => {
-                return Err(format!(
-                    "Invalid WASM: unsupported const expr opcode 0x{op:02x}"
-                ).into());
+                return Err(
+                    format!("Invalid WASM: unsupported const expr opcode 0x{op:02x}").into(),
+                );
             }
         }
         if *pos > data.len() {
@@ -4578,9 +4923,9 @@ fn read_ref_const_expr(data: &[u8], pos: &mut usize) -> Result<Value, WasmError>
             Value::Null
         }
         _ => {
-            return Err(format!(
-                "Invalid WASM: unsupported element expression opcode 0x{op:02x}"
-            ).into());
+            return Err(
+                format!("Invalid WASM: unsupported element expression opcode 0x{op:02x}").into(),
+            );
         }
     };
     if data.get(*pos).copied() != Some(0x0B) {
@@ -4835,27 +5180,6 @@ fn skip_memarg_for_memory_width(data: &[u8], pos: &mut usize, _is_memory64: bool
 /// abstract types and non-negative is a type index. `(exact $t)` — Custom
 /// Descriptors — narrows to the same index; exactness is a property of the
 /// cast, not of the type it names.
-fn read_heaptype(data: &[u8], pos: &mut usize) -> vybe_runtime::opcode::heaptype::HeapType {
-    if data.get(*pos) == Some(&HEAPTYPE_EXACT) {
-        *pos += 1;
-        let (index, read) = read_leb128_u32(&data[*pos..]);
-        *pos += read;
-        return vybe_runtime::opcode::heaptype::HeapType::Concrete(index);
-    }
-    let (value, read) = read_leb128_i32(&data[*pos..]);
-    *pos += read;
-    vybe_runtime::opcode::heaptype::HeapType::from_sleb(value)
-}
-
-fn skip_heaptype(data: &[u8], pos: &mut usize) {
-    if data.get(*pos) == Some(&HEAPTYPE_EXACT) {
-        *pos += 1;
-        skip_leb128(data, pos); // u32 typeidx
-        return;
-    }
-    skip_leb128(data, pos);
-}
-
 /// Translate-side blocktype decode: same spec decode as the validator's
 /// `decode_blocktype` (0x40 empty / valtype shorthand incl. ref-heaptype
 /// forms / s33 typeidx with full params+results), clamped to the internal
@@ -4866,28 +5190,6 @@ fn read_blocktype_counts(data: &[u8], pos: &mut usize, types: &[(Vec<u8>, Vec<u8
         Ok((params, results)) => (params.min(255) as u8, results.min(255) as u8),
         Err(_) => (0, 1),
     }
-}
-
-fn read_leb128_i32(data: &[u8]) -> (i32, usize) {
-    let mut result = 0i32;
-    let mut shift = 0;
-    let mut pos = 0;
-    loop {
-        if pos >= data.len() {
-            break;
-        }
-        let byte = data[pos];
-        pos += 1;
-        result |= ((byte & 0x7F) as i32) << shift;
-        shift += 7;
-        if byte & 0x80 == 0 {
-            if shift < 32 && (byte & 0x40 != 0) {
-                result |= !0 << shift;
-            }
-            break;
-        }
-    }
-    (result, pos)
 }
 
 fn decode_vybe_section(data: &[u8]) -> Result<Vec<Chunk>, WasmError> {
@@ -4904,7 +5206,44 @@ fn decode_vybe_section(data: &[u8]) -> Result<Vec<Chunk>, WasmError> {
     let (count, read) = read_leb128_u32(&data[pos..]);
     pos += read;
 
+    let mut module_global_imports = Vec::new();
+    let mut module_globals = Arc::new(Vec::new());
+    if version >= 7 {
+        let (gi_count, read) = read_leb128_u32(&data[pos..]);
+        pos += read;
+        for _ in 0..gi_count {
+            let (mlen, read) = read_leb128_u32(&data[pos..]);
+            pos += read;
+            let module = std::str::from_utf8(&data[pos..pos + mlen as usize])
+                .unwrap_or("")
+                .to_string();
+            pos += mlen as usize;
+            let (nlen, read) = read_leb128_u32(&data[pos..]);
+            pos += read;
+            let name = std::str::from_utf8(&data[pos..pos + nlen as usize])
+                .unwrap_or("")
+                .to_string();
+            pos += nlen as usize;
+            module_global_imports.push(vybe_runtime::chunk::Import { module, name });
+        }
+
+        let (global_count, read) = read_leb128_u32(&data[pos..]);
+        pos += read;
+        let mut globals = Vec::with_capacity(global_count as usize);
+        for _ in 0..global_count {
+            let (nlen, read) = read_leb128_u32(&data[pos..]);
+            pos += read;
+            let global_name = std::str::from_utf8(&data[pos..pos + nlen as usize])
+                .unwrap_or("")
+                .to_string();
+            pos += nlen as usize;
+            globals.push(global_name);
+        }
+        module_globals = Arc::new(globals);
+    }
+
     let mut chunks = Vec::new();
+    let mut section_value_ctx = ValueDecodeContext::default();
     for _ in 0..count {
         let (nlen, read) = read_leb128_u32(&data[pos..]);
         pos += read;
@@ -4921,8 +5260,14 @@ fn decode_vybe_section(data: &[u8]) -> Result<Vec<Chunk>, WasmError> {
         let (cc, read) = read_leb128_u32(&data[pos..]);
         pos += read;
         let mut constants = Vec::new();
+        let mut chunk_value_ctx = ValueDecodeContext::default();
         for _ in 0..cc {
-            constants.push(decode_value(data, &mut pos));
+            let value = if version >= 6 {
+                decode_value_with_context(data, &mut pos, &mut section_value_ctx)
+            } else {
+                decode_value_with_context(data, &mut pos, &mut chunk_value_ctx)
+            };
+            constants.push(value);
         }
 
         // Imports
@@ -5062,7 +5407,7 @@ fn decode_vybe_section(data: &[u8]) -> Result<Vec<Chunk>, WasmError> {
                     implements,
                     constructor_chunk,
                     field_descriptors,
-                                    ..Default::default()
+                    ..Default::default()
                 });
             }
         }
@@ -5070,7 +5415,9 @@ fn decode_vybe_section(data: &[u8]) -> Result<Vec<Chunk>, WasmError> {
         // Global imports (v3+): rebind string-constant (and other) global
         // imports so GLOBAL_GET keys resolve after reload.
         let mut global_imports = Vec::new();
-        if version >= 3 {
+        if version >= 7 {
+            global_imports = module_global_imports.clone();
+        } else if version >= 3 {
             let (gi_count, read) = read_leb128_u32(&data[pos..]);
             pos += read;
             for _ in 0..gi_count {
@@ -5087,6 +5434,28 @@ fn decode_vybe_section(data: &[u8]) -> Result<Vec<Chunk>, WasmError> {
                     .to_string();
                 pos += nlen as usize;
                 global_imports.push(vybe_runtime::chunk::Import { module, name });
+            }
+        }
+
+        // Global table (v4+): GLOBAL_GET/SET operands in Vybe bytecode are
+        // already normalized globalidx values. Preserve the index->name table
+        // so VM::merge_global_table can remap those numeric operands into the
+        // live VM instead of falling back to the pre-normalization constant-
+        // pool-name path.
+        let mut globals = Vec::new();
+        if version >= 7 {
+            globals = (*module_globals).clone();
+        } else if version >= 4 {
+            let (global_count, read) = read_leb128_u32(&data[pos..]);
+            pos += read;
+            for _ in 0..global_count {
+                let (nlen, read) = read_leb128_u32(&data[pos..]);
+                pos += read;
+                let global_name = std::str::from_utf8(&data[pos..pos + nlen as usize])
+                    .unwrap_or("")
+                    .to_string();
+                pos += nlen as usize;
+                globals.push(global_name);
             }
         }
 
@@ -5126,6 +5495,11 @@ fn decode_vybe_section(data: &[u8]) -> Result<Vec<Chunk>, WasmError> {
         chunk.types = types;
         chunk.tags = tags;
         chunk.global_imports = global_imports;
+        chunk.globals = if version >= 7 {
+            module_globals.clone()
+        } else {
+            Arc::new(globals)
+        };
         chunks.push(chunk);
     }
     Ok(chunks)
@@ -5230,8 +5604,18 @@ mod custom_descriptor_encoding_tests {
             (0x0F, &[]),           // array.len — NO immediate
             (0x10, &[0x03]),       // array.fill $t
             (0x11, &[0x03, 0x04]), // array.copy $t1 $t2
+            (0x17, &[0xE2, 0x00]), // ref.cast null $98 — signed heaptype
+            (0x17, &[0x62, 0x03]), // ref.cast null exact $3
             (0x20, &[0x03]),       // struct.new_desc $t
             (0x22, &[0x03]),       // ref.get_desc $t
+            (0x80, &[0x00]),       // string.new_utf8 $mem
+            (0x82, &[0x05]),       // string.const $idx
+            (0x83, &[]),           // string.measure_utf8 — no immediate
+            (0x86, &[0x00]),       // string.encode_utf8 $mem
+            (0x92, &[0x00]),       // stringview_wtf8.encode_utf8 $mem
+            (0x9B, &[0x00]),       // stringview_wtf16.encode $mem
+            (0xB0, &[]),           // string.new_utf8_array — no typeidx immediate
+            (0xB2, &[]),           // string.encode_utf8_array — no typeidx immediate
         ];
         for (sub, immediates) in cases {
             // A trailing sentinel byte that must NOT be consumed.
@@ -5282,7 +5666,7 @@ mod custom_descriptor_encoding_tests {
         section.push(0x00);
 
         let err = validate_exports(&section, 1).expect_err("0x20 must be rejected");
-        assert!(err.contains("exact function type"), "got: {err}");
+        assert!(err.message.contains("exact function type"), "got: {err}");
 
         // The ordinary function export at the same index still validates.
         let mut ok = vec![0x01];

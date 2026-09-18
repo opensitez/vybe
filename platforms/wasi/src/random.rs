@@ -46,7 +46,7 @@
 
 use vybe_runtime::value::Object;
 use vybe_runtime::vm::HostFnDecl;
-use vybe_runtime::{FuncSig, Param, HostContext, VM, ValType, Value};
+use vybe_runtime::{FuncSig, HostContext, Param, VM, ValType, Value};
 
 /// OS entropy for the CSPRNG-grade interface. `None` when the platform has
 /// no entropy source — callers must surface that rather than silently
@@ -249,5 +249,4 @@ pub fn register(vm: &mut VM) {
     // `random` and `randomInt` had no caller in the tree at all. `uuid` had
     // exactly one — Python's `tempfile` name — and it never needed a canonical
     // UUID, only a unique token; it composes one from `get-random-u64`.
-
 }

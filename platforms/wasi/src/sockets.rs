@@ -12,21 +12,18 @@
 //! file-level `#![allow(dead_code)]`; .NET reaches sockets through
 //! `platforms/dotnet`, not through a WASI host.
 
-
 use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::net::{
-    IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener, TcpStream, UdpSocket,
-};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener, TcpStream, UdpSocket};
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicU64, Ordering},
 };
 use std::thread;
 use std::time::{Duration, Instant};
+use vybe_runtime::component::ValType;
 use vybe_runtime::typedef::{Method, TypeDef};
 use vybe_runtime::value::Object;
-use vybe_runtime::component::ValType;
 use vybe_runtime::{HostContext, VM, Value};
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
@@ -88,20 +85,6 @@ pub fn reset() {
         s.recv_streams.clear();
     }
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 pub fn register(vm: &mut VM) {
     // WASI 0.3.1 collapsed `network`, `instance-network`, `tcp`,
@@ -1583,18 +1566,6 @@ pub fn register_wasi_sockets_0_3(vm: &mut VM) {
     );
 }
 
-
-
-
-
-
-
-
-
-
-
-
-
 fn resolve_name_socket_addrs(host: &str) -> Vec<SocketAddr> {
     match std::net::ToSocketAddrs::to_socket_addrs(&format!("{}:0", host)) {
         Ok(addrs) => addrs.collect(),
@@ -1610,13 +1581,6 @@ pub fn make_pollable(target: Arc<Mutex<Object>>) -> Value {
         .insert("__target".into(), Value::Object(target));
     Value::Object(vybe_runtime::heap::alloc(obj))
 }
-
-
-
-
-
-
-
 
 fn socket_arg(args: &[Value]) -> Option<Arc<Mutex<Object>>> {
     match args.first() {
@@ -1641,9 +1605,6 @@ fn method_arg<'a>(args: &'a [Value], index: usize) -> Option<&'a Value> {
     let offset = usize::from(socket_arg(args).is_some());
     args.get(offset + index)
 }
-
-
-
 
 fn as_object_value(value: &Value) -> Option<Arc<Mutex<Object>>> {
     match value {
@@ -1802,7 +1763,6 @@ pub fn array_len(array: &Arc<Mutex<Object>>) -> usize {
     }
 }
 
-
 pub fn pollable_ready(pollable: &Arc<Mutex<Object>>) -> bool {
     let target = {
         let pollable = pollable.lock().unwrap();
@@ -1911,7 +1871,6 @@ fn tcp_socket_ready(socket: &Arc<Mutex<Object>>) -> bool {
 
     false
 }
-
 
 fn parse_ip_socket_address(value: &Value) -> Option<(String, u16, String)> {
     match value {
@@ -2037,4 +1996,3 @@ fn value_array_inner(elements: Vec<Value>) -> Value {
 // Each existing flat registration (e.g. `wasi:sockets/tcp`, `start-bind`) is
 // mirrored as `wasi:sockets/tcp`, `[method]tcp-socket.start-bind`. Both forms
 // stay registered so existing callers are not broken.
-

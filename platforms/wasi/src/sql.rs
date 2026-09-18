@@ -50,7 +50,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 use vybe_runtime::value::{Object, ObjectKind};
 use vybe_runtime::vm::HostFnDecl;
-use vybe_runtime::{FuncSig, Param, HostContext, VM, ValType, Value};
+use vybe_runtime::{FuncSig, HostContext, Param, VM, ValType, Value};
 
 // ── Shared scalar parser (used by postgres.rs and mysql.rs) ──────────────────
 

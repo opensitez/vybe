@@ -29,10 +29,11 @@ pub fn write_signature(out: &mut Vec<u8>, name: &str) -> bool {
             out.push(TYPE_EXTERNREF);
         }
         "parse" => {
-            // (text: externref_string, reviver: externref_or_null)
-            //   → externref_value
-            write_leb128_u32(out, 2);
-            out.push(TYPE_EXTERNREF);
+            // (text: externref_string) -> externref_value.
+            // Reviver-bearing uses are routed through parseWithReviver /
+            // language adapters; the ambient `parse` import is called as the
+            // ordinary one-argument JSON.parse surface across the tree.
+            write_leb128_u32(out, 1);
             out.push(TYPE_EXTERNREF);
             write_leb128_u32(out, 1);
             out.push(TYPE_EXTERNREF);

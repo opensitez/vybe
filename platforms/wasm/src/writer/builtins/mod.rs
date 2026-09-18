@@ -16,3 +16,4 @@ pub mod js_string_builtins;
 pub mod js_structured_clone;
 pub mod js_typedarray_builtins;
 pub mod js_weakmap_builtins;
+pub mod web_builtins;

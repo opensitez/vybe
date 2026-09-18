@@ -234,7 +234,10 @@ fn response_get_headers_returns_a_usable_fields_resource() {
         }
         _ => 0,
     };
-    assert_eq!(entries, 1, "the header set must be readable back, got {all:?}");
+    assert_eq!(
+        entries, 1,
+        "the header set must be readable back, got {all:?}"
+    );
 }
 
 // ── fields, 0.3 additions ───────────────────────────────────────────────────

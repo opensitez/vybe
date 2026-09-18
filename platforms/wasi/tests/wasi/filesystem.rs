@@ -988,7 +988,10 @@ fn read_via_stream_returns_a_two_element_tuple() {
         "[method]descriptor.read-via-stream",
         vec![descriptor, Value::F64(0.0)],
     );
-    assert!(is_error(&result).is_none(), "read-via-stream should succeed");
+    assert!(
+        is_error(&result).is_none(),
+        "read-via-stream should succeed"
+    );
     let Value::Object(object) = &result else {
         panic!("read-via-stream returns a tuple, got {result:?}");
     };

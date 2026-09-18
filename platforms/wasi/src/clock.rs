@@ -2,7 +2,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 use vybe_runtime::value::Object;
 use vybe_runtime::vm::HostFnDecl;
-use vybe_runtime::{FuncSig, Param, HostContext, VM, ValType, Value};
+use vybe_runtime::{FuncSig, HostContext, Param, VM, ValType, Value};
 
 /// Declare a `wasi:clocks/*` function.
 ///

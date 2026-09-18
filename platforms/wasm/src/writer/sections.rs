@@ -526,6 +526,30 @@ pub fn encode_element_section(chunks: &[Chunk], import_count: usize) -> Vec<u8> 
     out
 }
 
+pub fn collect_data_segments(chunks: &[Chunk]) -> Vec<Vec<u8>> {
+    chunks
+        .first()
+        .map(|chunk| chunk.data_segments.clone())
+        .unwrap_or_default()
+}
+
+pub fn encode_data_count_section(data_segments: &[Vec<u8>]) -> Vec<u8> {
+    let mut out = Vec::new();
+    write_leb128_u32(&mut out, data_segments.len() as u32);
+    out
+}
+
+pub fn encode_data_section(data_segments: &[Vec<u8>]) -> Vec<u8> {
+    let mut out = Vec::new();
+    write_leb128_u32(&mut out, data_segments.len() as u32);
+    for bytes in data_segments {
+        out.push(0x01); // passive data segment; code uses memory.init/data.drop.
+        write_leb128_u32(&mut out, bytes.len() as u32);
+        out.extend_from_slice(bytes);
+    }
+    out
+}
+
 /// Emit a call to an imported function by (module, name) key.
 pub fn emit_import_call(
     body: &mut Vec<u8>,

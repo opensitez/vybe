@@ -75,7 +75,6 @@ struct RequestOptionsResource {
     between_bytes_timeout_ns: Option<u64>,
 }
 
-
 #[derive(Debug, Clone)]
 struct OutgoingResponseResource {
     status: u16,
@@ -123,7 +122,6 @@ struct IncomingResponseResource {
     headers_id: u32,
     body: String,
 }
-
 
 #[derive(Default)]
 struct Registry {
@@ -455,12 +453,6 @@ fn register_types(vm: &mut VM, type_ids: HttpTypeIds) {
         }),
     );
 
-
-
-
-
-
-
     vm.register_host_fn(
         "wasi:http/types",
         "[constructor]request-options",
@@ -478,9 +470,6 @@ fn register_types(vm: &mut VM, type_ids: HttpTypeIds) {
             make_resource(KIND_REQUEST_OPTIONS, id, type_ids.request_options)
         }),
     );
-
-
-
 
     // future-incoming-response.subscribe → pollable (always ready in sync model)
 
@@ -647,9 +636,6 @@ fn register_types(vm: &mut VM, type_ids: HttpTypeIds) {
 
     // outgoing-request getters
 
-
-
-
     // [method]outgoing-request.body → result<outgoing-body, error-code>
 
     // request-options timeout getters/setters (durations in nanoseconds)
@@ -671,7 +657,6 @@ fn register_types(vm: &mut VM, type_ids: HttpTypeIds) {
         }),
     );
 
-
     vm.register_host_fn(
         "wasi:http/types",
         "[method]request-options.set-first-byte-timeout",
@@ -688,7 +673,6 @@ fn register_types(vm: &mut VM, type_ids: HttpTypeIds) {
             Value::Null
         }),
     );
-
 
     vm.register_host_fn(
         "wasi:http/types",
@@ -721,9 +705,6 @@ fn register_types(vm: &mut VM, type_ids: HttpTypeIds) {
 
     // [constructor]outgoing-response(fields) → outgoing-response
 
-
-
-
     // [method]outgoing-response.body → result<outgoing-body, error-code>
 
     // [method]outgoing-body.write → result<output-stream, error-code>
@@ -740,12 +721,8 @@ fn register_types(vm: &mut VM, type_ids: HttpTypeIds) {
     // through these accessors. Previously all six returned `Value::Null` as
     // link padding.
 
-
     // `path-with-query`, `scheme` and `authority` are `option<...>` in the WIT:
     // absent is null, not an error.
-
-
-
 
     // §incoming-request.consume: succeeds at most ONCE; later calls are errors.
 
@@ -794,7 +771,6 @@ pub fn push_incoming_request(
     id
 }
 
-
 /// Create the `response` a served request will answer with, host-side.
 ///
 /// 0.2 handed the guest a `response-outparam` to write INTO. 0.3.1 has no such
@@ -809,9 +785,12 @@ pub fn push_incoming_request(
 pub fn push_response() -> u32 {
     let mut registry = registry().lock().unwrap();
     let headers_id = alloc_id();
-    registry
-        .headers
-        .insert(headers_id, HeadersResource { entries: Vec::new() });
+    registry.headers.insert(
+        headers_id,
+        HeadersResource {
+            entries: Vec::new(),
+        },
+    );
     let id = alloc_id();
     registry.outgoing_responses.insert(
         id,
@@ -847,9 +826,7 @@ pub type ResponseParts = (u16, Vec<(String, Vec<u8>)>, Vec<u8>);
 
 pub fn take_response(value: &Value) -> Option<ResponseParts> {
     let registry = registry().lock().unwrap();
-    let (status, headers_id, body) = if let Some(id) =
-        resource_id(value, KIND_RESPONSE)
-    {
+    let (status, headers_id, body) = if let Some(id) = resource_id(value, KIND_RESPONSE) {
         let response = registry.outgoing_responses.get(&id)?;
         let body = response
             .body_id
@@ -881,7 +858,6 @@ pub fn incoming_request_value(vm: &VM, request_id: u32) -> Option<Value> {
     let type_id = vm.type_registry.get_id("HttpRequest")?;
     Some(make_resource(KIND_REQUEST, request_id, type_id))
 }
-
 
 // `wasi:http/outgoing-handler.handle` USED TO BE REGISTERED HERE.
 //
@@ -1316,11 +1292,7 @@ fn register_wasi3_handler(vm: &mut VM, type_ids: HttpTypeIds) {
                             },
                         );
                         drop(registry);
-                        make_resource(
-                            KIND_RESPONSE,
-                            response_id,
-                            type_ids.response,
-                        )
+                        make_resource(KIND_RESPONSE, response_id, type_ids.response)
                     }
                     Err(message) => err(map_transport_error(&message)),
                 }
@@ -1404,15 +1376,15 @@ fn register_wasi3(vm: &mut VM, type_ids: HttpTypeIds) {
     vm.register_host_fn(
         "wasi:http/types",
         "[static]request.consume-body",
-        Box::new(move |ctx: &mut HostContext, args: &[Value]| {
-            match consume_body_bytes(&args[0]) {
+        Box::new(
+            move |ctx: &mut HostContext, args: &[Value]| match consume_body_bytes(&args[0]) {
                 Some(bytes) => {
                     let trailers = body_trailers(&args[0]);
                     body_stream_tuple(ctx, bytes, trailers, type_ids.headers)
                 }
                 None => err("invalid-argument"),
-            }
-        }),
+            },
+        ),
     );
 
     // [static]response.new — WASI 0.3 constructor alongside [constructor]outgoing-response.
@@ -1480,15 +1452,15 @@ fn register_wasi3(vm: &mut VM, type_ids: HttpTypeIds) {
     vm.register_host_fn(
         "wasi:http/types",
         "[static]response.consume-body",
-        Box::new(move |ctx: &mut HostContext, args: &[Value]| {
-            match consume_body_bytes(&args[0]) {
+        Box::new(
+            move |ctx: &mut HostContext, args: &[Value]| match consume_body_bytes(&args[0]) {
                 Some(bytes) => {
                     let trailers = body_trailers(&args[0]);
                     body_stream_tuple(ctx, bytes, trailers, type_ids.headers)
                 }
                 None => err("invalid-argument"),
-            }
-        }),
+            },
+        ),
     );
 }
 

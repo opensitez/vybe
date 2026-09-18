@@ -31,14 +31,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 /// The six packages `@0.3.1` comprises.
-const PACKAGES: &[&str] = &[
-    "cli",
-    "clocks",
-    "filesystem",
-    "http",
-    "random",
-    "sockets",
-];
+const PACKAGES: &[&str] = &["cli", "clocks", "filesystem", "http", "random", "sockets"];
 
 fn proposals_root() -> PathBuf {
     // CARGO_MANIFEST_DIR is `platforms/wasi`; the proposals are vendored at the
@@ -86,9 +79,15 @@ fn free_functions(body: &str) -> Vec<(String, bool)> {
     let mut out = Vec::new();
     for line in body.lines() {
         let line = line.trim();
-        let Some(colon) = line.find(':') else { continue };
+        let Some(colon) = line.find(':') else {
+            continue;
+        };
         let name = line[..colon].trim();
-        if name.is_empty() || !name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-') {
+        if name.is_empty()
+            || !name
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        {
             continue;
         }
         let rest = line[colon + 1..].trim();
@@ -106,8 +105,8 @@ fn free_functions(body: &str) -> Vec<(String, bool)> {
 pub fn declared_surface(package: &str) -> BTreeMap<String, BTreeSet<String>> {
     let dir = proposals_root().join(package).join("wit");
     let mut out: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-    let entries = std::fs::read_dir(&dir)
-        .unwrap_or_else(|e| panic!("cannot read {}: {e}", dir.display()));
+    let entries =
+        std::fs::read_dir(&dir).unwrap_or_else(|e| panic!("cannot read {}: {e}", dir.display()));
     for entry in entries.flatten() {
         let path = entry.path();
         if path.extension().and_then(|e| e.to_str()) != Some("wit") {
@@ -122,7 +121,9 @@ pub fn declared_surface(package: &str) -> BTreeMap<String, BTreeSet<String>> {
                 .map(|i| start + i)
                 .unwrap_or(src.len());
             let iface = src[start..name_end].trim().to_string();
-            let Some(brace_rel) = src[name_end..].find('{') else { break };
+            let Some(brace_rel) = src[name_end..].find('{') else {
+                break;
+            };
             let (b0, b1) = block_at(&src, name_end + brace_rel);
             let mut body = src[b0..b1].to_string();
             cursor = b1;
@@ -139,7 +140,9 @@ pub fn declared_surface(package: &str) -> BTreeMap<String, BTreeSet<String>> {
                     .map(|i| rstart + i)
                     .unwrap_or(body.len());
                 let rname = body[rstart..rname_end].trim().to_string();
-                let Some(rbrace_rel) = body[rname_end..].find('{') else { break };
+                let Some(rbrace_rel) = body[rname_end..].find('{') else {
+                    break;
+                };
                 let (r0, r1) = block_at(&body, rname_end + rbrace_rel);
                 let rbody = body[r0..r1].to_string();
 
@@ -156,7 +159,10 @@ pub fn declared_surface(package: &str) -> BTreeMap<String, BTreeSet<String>> {
 
                 let blanked: String = std::iter::repeat(' ').take(r1 - scan.max(0)).collect();
                 let _ = blanked;
-                body.replace_range(rstart - "resource ".len()..=r1, &" ".repeat(r1 + 1 - (rstart - "resource ".len())));
+                body.replace_range(
+                    rstart - "resource ".len()..=r1,
+                    &" ".repeat(r1 + 1 - (rstart - "resource ".len())),
+                );
                 scan = r1;
             }
 

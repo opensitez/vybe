@@ -27,8 +27,8 @@ mod interface_coverage;
 // `canon stream.read`, which is what `input-stream.read` became, and
 // `sockets` + `sockets_contracts` cover the 0.3.1 socket surface.
 mod random;
-mod stream_drain;
-mod surface_from_wit;
 mod sockets;
 mod sockets_contracts;
+mod stream_drain;
+mod surface_from_wit;
 mod tls;

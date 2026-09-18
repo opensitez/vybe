@@ -9,7 +9,9 @@
 //! to save TOS while unboxing the second operand.
 
 use crate::encoding::*;
-use crate::writer::sections::{emit_box_f64, emit_box_i32, emit_unbox_f64, emit_unbox_i32};
+use crate::writer::sections::{
+    JS_GLOBAL_UNDEFINED, emit_box_f64, emit_box_i32, emit_unbox_f64, emit_unbox_i32,
+};
 use crate::writer::types::WasmTypeContext;
 use vybe_runtime::opcode::{OperandFormat, read_leb_u32};
 use vybe_runtime::value::Value;
@@ -136,9 +138,12 @@ fn count_temp_locals(chunk: &Chunk) -> u32 {
                 // stack: the object has to exist before any of them can be
                 // stored, so each pair is unstacked through temps.
                 need = need.max(3);
-            } else if memory_store_shape(op).is_some() {
+            } else if memory_store_shape(op).is_some() || atomic_is_i32_two_operand(op) {
                 // One temp to lift the value off the address underneath it.
                 need = need.max(1);
+            } else if atomic_is_i32_cmpxchg(op) {
+                // expected + replacement sit above the address.
+                need = need.max(2);
             } else if op == Op::CALL {
                 // Spill temps for `emit_unbox_raw_params` — an import with
                 // a raw param under another argument. Reserved for every
@@ -371,7 +376,10 @@ fn wasm_struct_field_by_typeidx(
     // and none is needed: the compiler derived the index from `position()` over
     // that very field list, so it is in range by construction.
     let _ = chunk;
-    Some((type_ctx.struct_type_by_index(typeidx as u32)?, field_name_idx as u32))
+    Some((
+        type_ctx.struct_type_by_index(typeidx as u32)?,
+        field_name_idx as u32,
+    ))
 }
 
 fn wasm_struct_field_for_name(
@@ -434,7 +442,11 @@ fn write_blocktype(body: &mut Vec<u8>, params: u8, results: u8, type_ctx: &WasmT
         Some(&tidx) => write_leb128_i32(body, tidx as i32),
         // Unreachable for bytecode this writer scanned; degrade to the closest
         // shorthand rather than emitting a dangling typeidx.
-        None => body.push(if results == 0 { TYPE_VOID } else { TYPE_EXTERNREF }),
+        None => body.push(if results == 0 {
+            TYPE_VOID
+        } else {
+            TYPE_EXTERNREF
+        }),
     }
 }
 
@@ -491,6 +503,11 @@ pub fn encode_code_section(
         // Translate opcodes
         let mut ip = 0;
         let mut i32_block_stack: Vec<bool> = Vec::new();
+        let mut block_result_stack: Vec<u8> = Vec::new();
+        let mut pending_i32_box_after_end = false;
+        let mut pending_externref_spilled_after_end = false;
+        let mut pending_externref_on_stack = false;
+        let mut drop_carried_after_bytecode_drop: Option<usize> = None;
         while ip < chunk.code.len() {
             if ip + 3 >= chunk.code.len() {
                 break;
@@ -505,6 +522,47 @@ pub fn encode_code_section(
                     continue;
                 }
             };
+            if pending_externref_spilled_after_end
+                && (op != Op::END || block_result_stack.last().copied().unwrap_or(0) != 0)
+            {
+                body.push(0x20); // local.get $temp
+                write_leb128_u32(&mut body, temp_local_idx);
+                pending_externref_spilled_after_end = false;
+                pending_externref_on_stack = true;
+            }
+            if pending_externref_on_stack
+                && op == Op::END
+                && block_result_stack.last().copied().unwrap_or(0) == 0
+            {
+                body.push(0x21); // local.set $temp
+                write_leb128_u32(&mut body, temp_local_idx);
+                pending_externref_on_stack = false;
+                pending_externref_spilled_after_end = true;
+            }
+            if pending_i32_box_after_end
+                && op == Op::END
+                && !i32_block_stack.last().copied().unwrap_or(false)
+            {
+                emit_box_i32(&mut body, &rt_idx);
+                if block_result_stack.last().copied().unwrap_or(0) == 0 {
+                    body.push(0x21); // local.set $temp
+                    write_leb128_u32(&mut body, temp_local_idx);
+                    pending_externref_spilled_after_end = true;
+                    pending_externref_on_stack = false;
+                } else {
+                    pending_externref_on_stack = true;
+                }
+                pending_i32_box_after_end = false;
+            } else if pending_i32_box_after_end && op != Op::END {
+                box_i32_unless_condition(
+                    &mut body,
+                    &rt_idx,
+                    chunk,
+                    ip,
+                    i32_block_stack.last().copied().unwrap_or(false),
+                );
+                pending_i32_box_after_end = false;
+            }
 
             // TRY_TABLE → a real spec try_table, clause for clause.
             //
@@ -561,6 +619,59 @@ pub fn encode_code_section(
             // blocks it was branching past; the compiler emits the real depth.
             let op_start = ip;
             ip += 4;
+            if op == Op::LOCAL_TEE {
+                let slot = read_u16_at(&chunk.code, ip);
+                if block_result_stack.last().copied().unwrap_or(0) == 0 {
+                    drop_carried_after_bytecode_drop =
+                        key_registration_drop_before_void_boundary(chunk, ip + 2, slot)
+                            .or(drop_carried_after_bytecode_drop);
+                }
+            }
+            if let Some((trace_start, trace_end)) = std::env::var("VYBE_WASM_TRACE_BODY")
+                .ok()
+                .and_then(|raw| {
+                    let (start, end) = raw.split_once(':')?;
+                    Some((start.parse::<usize>().ok()?, end.parse::<usize>().ok()?))
+                })
+            {
+                let body_at = body.len();
+                let chunk_matches = std::env::var("VYBE_WASM_TRACE_CHUNK")
+                    .map(|name| name == chunk.name)
+                    .unwrap_or(true);
+                if chunk_matches && (trace_start..=trace_end).contains(&body_at) {
+                    if op == Op::CALL {
+                        let funcidx = read_u16_at(&chunk.code, ip);
+                        let argc = chunk.code.get(ip + 2).copied().unwrap_or(0);
+                        let import = chunks
+                            .first()
+                            .and_then(|root| root.imports.get(funcidx as usize))
+                            .map(|imp| format!("{}:{}", imp.module, imp.name))
+                            .unwrap_or_else(|| "<unknown>".to_string());
+                        eprintln!(
+                            "[wasm-body] body_index={} chunk={} ip={} body={} op={:?} func={} argc={} import={} raw_result={:?} params={:?}",
+                            ci,
+                            chunk.name,
+                            op_start,
+                            body_at,
+                            op,
+                            funcidx,
+                            argc,
+                            import,
+                            type_ctx.raw_result_funcs.get(&(funcidx as u32)),
+                            type_ctx.import_param_funcs.get(&(funcidx as u32))
+                        );
+                    } else {
+                        eprintln!(
+                            "[wasm-body] body_index={} chunk={} ip={} body={} op={:?}",
+                            ci,
+                            chunk.name,
+                            op_start,
+                            body_at,
+                            op
+                        );
+                    }
+                }
+            }
 
             // ⛔ RAW-REGION TRACKING, NOT A TYPE CHECKER. `block_i32_results`
             // is the compiler naming the blocks whose result is a bare i32 —
@@ -568,9 +679,11 @@ pub fn encode_code_section(
             // "is the value I am about to emit an arm result of one of those",
             // so the i32 producers inside a ladder are left unboxed.
             let in_i32_block = i32_block_stack.last().copied().unwrap_or(false);
+            let current_block_results = block_result_stack.last().copied().unwrap_or(0);
             let mut closed_i32_region = false;
             if op == Op::BLOCK || op == Op::IF || op == Op::LOOP {
                 i32_block_stack.push(chunk.block_i32_results.contains(&op_start));
+                block_result_stack.push(chunk.code.get(op_start + 5).copied().unwrap_or(0));
             } else if op == Op::END {
                 // ⛔ THE RAW REGION HAS TO REJOIN THE VALUE ABI. A truthiness
                 // ladder is a bare i32 throughout — that is what
@@ -580,11 +693,12 @@ pub fn encode_code_section(
                 // those are externref, and the i32 was reaching a `local.set`
                 // on an externref local.
                 //
-                // Only the outermost `end` boxes. An inner one is still inside
-                // the ladder, and a result feeding `if`/`br_if` is wanted raw —
-                // the same question `box_i32_unless_condition` answers.
+                // Every closed i32-result block must rejoin the value ABI
+                // unless its result is immediately consumed by another raw
+                // i32 op or carried as an arm result of an enclosing i32 block.
                 let closed = i32_block_stack.pop().unwrap_or(false);
-                closed_i32_region = closed && !i32_block_stack.last().copied().unwrap_or(false);
+                block_result_stack.pop();
+                closed_i32_region = closed;
             }
 
             if op.group() == 0x00 && !op.is_vm_internal() {
@@ -602,7 +716,12 @@ pub fn encode_code_section(
                     host_import_count,
                     tag_plan,
                     in_i32_block,
+                    current_block_results,
                 );
+                if op == Op::DROP && drop_carried_after_bytecode_drop == Some(op_start) {
+                    body.push(0x1A);
+                    drop_carried_after_bytecode_drop = None;
+                }
             } else if op.group() == 0xFB {
                 emit_gc_op(
                     &mut body,
@@ -663,8 +782,16 @@ pub fn encode_code_section(
                         let table_idx = read_leb_u32(&chunk.code, &mut ip);
                         write_leb128_u32(&mut body, table_idx);
                     }
+                    _ if (0x00..=0x07).contains(&(op.sub() as u32)) => {
+                        // nontrapping float-to-int conversions have no trailing
+                        // immediates in the standard 0xFC space.
+                    }
                     _ => {
-                        ip += op.operand_format().size_in(&chunk.code, ip);
+                        panic!(
+                            "unsupported 0xFC opcode in WASM writer: {:#x} {:#x}",
+                            op.group(),
+                            op.sub()
+                        );
                     }
                 }
             } else if op.group() == 0xFD {
@@ -676,15 +803,50 @@ pub fn encode_code_section(
                     chunk,
                     &mut ip,
                     &rt_idx,
+                    temp_local_idx,
                     in_i32_block,
                 );
             } else {
                 emit_vm_internal_op(&mut body, op, chunk, &mut ip);
             }
 
-            if closed_i32_region {
-                box_i32_unless_condition(&mut body, &rt_idx, chunk, ip, false);
+            if closed_i32_region && !matches!(next_op(chunk, ip), Some(next) if next == Op::ELSE) {
+                if matches!(next_op(chunk, ip), Some(next) if next == Op::END)
+                    && i32_block_stack.last().copied().unwrap_or(false)
+                {
+                    pending_i32_box_after_end = true;
+                } else {
+                    pending_i32_box_after_end = false;
+                    box_i32_unless_condition(
+                        &mut body,
+                        &rt_idx,
+                        chunk,
+                        ip,
+                        i32_block_stack.last().copied().unwrap_or(false),
+                    );
+                    if matches!(next_op(chunk, ip), Some(next) if next == Op::END) {
+                        if block_result_stack.last().copied().unwrap_or(0) == 0 {
+                            body.push(0x21); // local.set $temp
+                            write_leb128_u32(&mut body, temp_local_idx);
+                            pending_externref_spilled_after_end = true;
+                            pending_externref_on_stack = false;
+                        } else {
+                            pending_externref_on_stack = true;
+                        }
+                    }
+                }
             }
+            if op != Op::END {
+                pending_externref_on_stack = false;
+            }
+        }
+
+        if pending_externref_spilled_after_end {
+            body.push(0x20); // local.get $temp
+            write_leb128_u32(&mut body, temp_local_idx);
+        }
+        if pending_i32_box_after_end {
+            emit_box_i32(&mut body, &rt_idx);
         }
 
         body.push(0x0B); // end function
@@ -712,6 +874,7 @@ fn emit_core_op(
     _host_import_count: usize,
     tag_plan: &crate::writer::proposals::exception_handling::ModuleTagPlan,
     in_i32_block: bool,
+    current_block_results: u8,
 ) {
     match op {
         _ if op == Op::LOCAL_GET => {
@@ -749,8 +912,20 @@ fn emit_core_op(
         // one really is `local.tee`. See the arm above for why `LOCAL_SET` is
         // not.
         _ if op == Op::LOCAL_TEE => {
+            let slot = read_u16(&chunk.code, ip) as u32;
+            if current_block_results == 0
+                && let Some(consumed) = dup_drop_before_void_boundary(chunk, *ip, slot as u16)
+            {
+                // Bytecode `dup; drop` leaves the original value on the VM
+                // stack. If the very next structured boundary is void, that
+                // carried value is dead and invalid in spec Wasm. Drop the
+                // original and consume the duplicate/drop pair.
+                body.push(0x1A);
+                *ip += consumed;
+                return;
+            }
             body.push(0x22);
-            write_leb128_u32(body, read_u16(&chunk.code, ip) as u32);
+            write_leb128_u32(body, slot);
         }
         // Spec `call`: u16 funcidx + VM-internal u8 argc. The argc byte is
         // dropped — the .wasm binary carries only LEB(funcidx). Imports
@@ -760,6 +935,7 @@ fn emit_core_op(
             let funcidx = read_u16(&chunk.code, ip);
             let argc = chunk.code[*ip];
             *ip += 1;
+            let argc = emit_missing_import_args(body, rt_idx, type_ctx, funcidx as u32, argc);
             emit_unbox_raw_params(body, rt_idx, type_ctx, funcidx as u32, argc, temp_idx);
             body.push(0x10);
             write_leb128_u32(body, funcidx as u32);
@@ -781,6 +957,9 @@ fn emit_core_op(
                 // unboxes its operands anyway.
                 Some(&crate::encoding::TYPE_F64) => emit_box_f64(body, rt_idx),
                 _ => {}
+            }
+            if matches!(type_ctx.func_result_arity.get(&(funcidx as u32)), Some(0)) {
+                consume_next_drop(chunk, ip);
             }
         }
         // `call_ref`: one `u8` argc, callee on the stack, lowered to
@@ -850,6 +1029,15 @@ fn emit_core_op(
                 body.push(0xD0);
                 body.push(0x6F);
             }
+            if op == Op::CALL_REF
+                && results > 0
+                && current_block_results == 0
+                && matches!(next_op(chunk, *ip), Some(next) if next == Op::ELSE || next == Op::END)
+            {
+                for _ in 0..results {
+                    body.push(0x1A);
+                }
+            }
         }
         _ if op == Op::CALL_INDIRECT || op == Op::RETURN_CALL_INDIRECT => {
             let spec_byte: u8 = if op == Op::CALL_INDIRECT { 0x11 } else { 0x13 };
@@ -882,6 +1070,15 @@ fn emit_core_op(
                 body.push(0xD0);
                 body.push(0x6F);
             }
+            if op == Op::CALL_INDIRECT
+                && results > 0
+                && current_block_results == 0
+                && matches!(next_op(chunk, *ip), Some(next) if next == Op::ELSE || next == Op::END)
+            {
+                for _ in 0..results {
+                    body.push(0x1A);
+                }
+            }
         }
         _ if op == Op::BR => {
             let depth = read_leb_u32(&chunk.code, ip);
@@ -903,6 +1100,12 @@ fn emit_core_op(
             }
             let default_depth = read_leb_u32(&chunk.code, ip);
             write_leb128_u32(body, default_depth);
+        }
+        // `return` is a core control opcode with no immediate. The bytecode
+        // stream uses fixed-width opcode headers, but the wasm binary writes
+        // only the single spec opcode byte here.
+        _ if op == Op::RETURN => {
+            body.push(0x0F);
         }
         // END pops a label from the structured CF stack
         _ if op == Op::END => {
@@ -932,10 +1135,15 @@ fn emit_core_op(
             let opcode_offset = ip.saturating_sub(2).saturating_sub(4);
             match (param_count, result_count) {
                 (0, 0) => body.push(TYPE_VOID),
-                (0, 1) if chunk.block_i32_results.contains(&opcode_offset) => {
-                    body.push(TYPE_I32)
-                }
+                (0, 1) if chunk.block_i32_results.contains(&opcode_offset) => body.push(TYPE_I32),
                 (0, 1) => body.push(TYPE_EXTERNREF),
+                (params, 1) if chunk.block_i32_results.contains(&opcode_offset) => {
+                    let tidx = *type_ctx
+                        .block_i32_type_by_params
+                        .get(&params)
+                        .expect("i32 block functype was not pre-registered");
+                    write_leb128_i32(body, tidx as i32);
+                }
                 key => {
                     let tidx = *type_ctx
                         .block_type_by_results
@@ -1376,7 +1584,6 @@ fn emit_core_op(
             // want. The remaining half — an i64 STORED INTO A LOCAL, which
             // this writer declares externref — is not fixable from this arm
             // and is not fixed here.
-
         }
         _ if op == Op::F32_CONST => {
             let sz = op.operand_format().size_in(&chunk.code, *ip);
@@ -1442,6 +1649,41 @@ fn atomic_is_i32_address_only_load(op: Op) -> bool {
     op == Op::I32_ATOMIC_LOAD || op == Op::I32_ATOMIC_LOAD8_U || op == Op::I32_ATOMIC_LOAD16_U
 }
 
+fn atomic_is_i32_store(op: Op) -> bool {
+    op == Op::I32_ATOMIC_STORE || op == Op::I32_ATOMIC_STORE8 || op == Op::I32_ATOMIC_STORE16
+}
+
+fn atomic_is_i32_rmw(op: Op) -> bool {
+    op == Op::I32_ATOMIC_RMW_ADD
+        || op == Op::I32_ATOMIC_RMW8_ADD_U
+        || op == Op::I32_ATOMIC_RMW16_ADD_U
+        || op == Op::I32_ATOMIC_RMW_SUB
+        || op == Op::I32_ATOMIC_RMW8_SUB_U
+        || op == Op::I32_ATOMIC_RMW16_SUB_U
+        || op == Op::I32_ATOMIC_RMW_AND
+        || op == Op::I32_ATOMIC_RMW8_AND_U
+        || op == Op::I32_ATOMIC_RMW16_AND_U
+        || op == Op::I32_ATOMIC_RMW_OR
+        || op == Op::I32_ATOMIC_RMW8_OR_U
+        || op == Op::I32_ATOMIC_RMW16_OR_U
+        || op == Op::I32_ATOMIC_RMW_XOR
+        || op == Op::I32_ATOMIC_RMW8_XOR_U
+        || op == Op::I32_ATOMIC_RMW16_XOR_U
+        || op == Op::I32_ATOMIC_RMW_XCHG
+        || op == Op::I32_ATOMIC_RMW8_XCHG_U
+        || op == Op::I32_ATOMIC_RMW16_XCHG_U
+}
+
+fn atomic_is_i32_two_operand(op: Op) -> bool {
+    atomic_is_i32_store(op) || atomic_is_i32_rmw(op)
+}
+
+fn atomic_is_i32_cmpxchg(op: Op) -> bool {
+    op == Op::I32_ATOMIC_RMW_CMPXCHG
+        || op == Op::I32_ATOMIC_RMW8_CMPXCHG_U
+        || op == Op::I32_ATOMIC_RMW16_CMPXCHG_U
+}
+
 /// ⛔ AN ATOMIC IS A REAL WASM INSTRUCTION, NOT A DYNAMIC OPERATION.
 ///
 /// The VM hides this: `pop_atomic_addr` (`threads.rs:263`) does
@@ -1470,15 +1712,12 @@ fn emit_thread_prefixed_op(
     chunk: &Chunk,
     ip: &mut usize,
     rt_idx: &std::collections::HashMap<(&str, &str), usize>,
+    temp_idx: u32,
     in_i32_block: bool,
 ) {
-    let address_only_load = atomic_is_i32_address_only_load(op);
-    if address_only_load {
-        emit_unbox_i32(body, rt_idx); // externref addr → i32
-    }
-    body.push(0xFE);
-    write_leb128_u32(body, op.sub() as u32);
     if op == Op::ATOMIC_FENCE {
+        body.push(0xFE);
+        write_leb128_u32(body, op.sub() as u32);
         let immediate = chunk.code.get(*ip).copied().unwrap_or(0);
         *ip = (*ip).saturating_add(1).min(chunk.code.len());
         body.push(immediate);
@@ -1502,22 +1741,63 @@ fn emit_thread_prefixed_op(
     } else {
         None
     };
-    write_leb128_u32(body, spec_align);
-    if is_memory64 {
-        write_leb128_u64(body, offset);
-    } else {
-        write_leb128_u32(body, offset as u32);
-    }
-    if let Some(memidx) = memidx {
-        write_leb128_u32(body, memidx);
-    }
-    if address_only_load {
+    let mut write_op = |body: &mut Vec<u8>| {
+        body.push(0xFE);
+        write_leb128_u32(body, op.sub() as u32);
+        write_leb128_u32(body, spec_align);
+        if is_memory64 {
+            write_leb128_u64(body, offset);
+        } else {
+            write_leb128_u32(body, offset as u32);
+        }
+        if let Some(memidx) = memidx {
+            write_leb128_u32(body, memidx);
+        }
+    };
+
+    if atomic_is_i32_address_only_load(op) {
+        emit_unbox_i32(body, rt_idx); // externref addr → i32
+        write_op(body);
         // i32 result → back onto the externref value ABI, unless the consumer
         // is a raw-i32 region. `box_i32_unless_condition`, not a bare box: an
         // atomic feeding an `if` directly must stay raw, exactly as for every
         // other i32 producer in this writer.
         box_i32_unless_condition(body, rt_idx, chunk, *ip, in_i32_block);
+        return;
     }
+
+    if atomic_is_i32_two_operand(op) {
+        body.push(0x21); // local.set $temp (save value)
+        write_leb128_u32(body, temp_idx);
+        emit_unbox_i32(body, rt_idx); // externref addr → i32
+        body.push(0x20); // local.get $temp (restore value)
+        write_leb128_u32(body, temp_idx);
+        emit_unbox_i32(body, rt_idx); // externref value → i32
+        write_op(body);
+        if atomic_is_i32_rmw(op) {
+            box_i32_unless_condition(body, rt_idx, chunk, *ip, in_i32_block);
+        }
+        return;
+    }
+
+    if atomic_is_i32_cmpxchg(op) {
+        body.push(0x21); // local.set $temp+1 (replacement)
+        write_leb128_u32(body, temp_idx + 1);
+        body.push(0x21); // local.set $temp (expected)
+        write_leb128_u32(body, temp_idx);
+        emit_unbox_i32(body, rt_idx); // externref addr → i32
+        body.push(0x20); // local.get $temp (expected)
+        write_leb128_u32(body, temp_idx);
+        emit_unbox_i32(body, rt_idx);
+        body.push(0x20); // local.get $temp+1 (replacement)
+        write_leb128_u32(body, temp_idx + 1);
+        emit_unbox_i32(body, rt_idx);
+        write_op(body);
+        box_i32_unless_condition(body, rt_idx, chunk, *ip, in_i32_block);
+        return;
+    }
+
+    write_op(body);
 }
 
 fn emit_simd_prefixed_op(body: &mut Vec<u8>, op: Op, chunk: &Chunk, ip: &mut usize) {
@@ -1715,6 +1995,25 @@ fn i32_condition_follows(chunk: &Chunk, ip: usize) -> bool {
     matches!(next_op(chunk, ip), Some(next) if next == Op::IF || next == Op::BR_IF)
 }
 
+/// True when the NEXT bytecode instruction can consume a raw i32 operand at
+/// the bytecode boundary.
+///
+/// Keep this deliberately narrow. Internal `I32_*` arithmetic/comparison ops
+/// are emitted by helpers that first unbox their operands from the externref
+/// value ABI; treating them as raw consumers leaves plain `i32.const` values on
+/// the stack and the helper immediately spills them into externref temps. Spec
+/// branches are consumers that really do take the raw i32 directly. `drop` is
+/// the other legal boundary consumer: Wasm `drop` is type-polymorphic, and
+/// boxing a raw host result only so the next instruction can discard it is both
+/// wasteful and, for call sites that already emitted an explicit drop, can
+/// leave the real drop with nothing to consume.
+fn i32_raw_consumer_follows(chunk: &Chunk, ip: usize) -> bool {
+    matches!(
+        next_op(chunk, ip),
+        Some(next) if next == Op::IF || next == Op::BR_IF || next == Op::DROP
+    )
+}
+
 /// Decode the instruction at `ip` without consuming it. Bounded like the arity
 /// scanner: a producer at the very end of a chunk has no successor to read.
 fn next_op(chunk: &Chunk, ip: usize) -> Option<Op> {
@@ -1726,6 +2025,79 @@ fn next_op(chunk: &Chunk, ip: usize) -> Option<Op> {
     Op::decode(g, sub)
 }
 
+fn consume_next_drop(chunk: &Chunk, ip: &mut usize) -> bool {
+    if matches!(next_op(chunk, *ip), Some(next) if next == Op::DROP) {
+        *ip += opcode_size(Op::DROP, &chunk.code, *ip);
+        true
+    } else {
+        false
+    }
+}
+
+fn consume_next_drop_before_void_boundary(chunk: &Chunk, ip: &mut usize) -> bool {
+    if !matches!(next_op(chunk, *ip), Some(next) if next == Op::DROP) {
+        return false;
+    }
+    let after_drop = *ip + opcode_size(Op::DROP, &chunk.code, *ip);
+    if matches!(next_op(chunk, after_drop), Some(next) if next == Op::END || next == Op::ELSE) {
+        *ip = after_drop;
+        true
+    } else {
+        false
+    }
+}
+
+fn dup_drop_before_void_boundary(chunk: &Chunk, ip: usize, slot: u16) -> Option<usize> {
+    if !matches!(next_op(chunk, ip), Some(next) if next == Op::LOCAL_GET) {
+        return None;
+    }
+    if read_u16_at(&chunk.code, ip + 4) != slot {
+        return None;
+    }
+    let after_get = ip + opcode_size(Op::LOCAL_GET, &chunk.code, ip);
+    if !matches!(next_op(chunk, after_get), Some(next) if next == Op::DROP) {
+        return None;
+    }
+    let after_drop = after_get + opcode_size(Op::DROP, &chunk.code, after_get);
+    if matches!(next_op(chunk, after_drop), Some(next) if next == Op::END || next == Op::ELSE) {
+        Some(after_drop - ip)
+    } else {
+        None
+    }
+}
+
+fn key_registration_drop_before_void_boundary(chunk: &Chunk, ip: usize, slot: u16) -> Option<usize> {
+    if !matches!(next_op(chunk, ip), Some(next) if next == Op::LOCAL_GET) {
+        return None;
+    }
+    if read_u16_at(&chunk.code, ip + 4) != slot {
+        return None;
+    }
+    let after_get = ip + opcode_size(Op::LOCAL_GET, &chunk.code, ip);
+    if !matches!(next_op(chunk, after_get), Some(next) if next == Op::STRUCT_GET) {
+        return None;
+    }
+    let after_struct_get = after_get + opcode_size(Op::STRUCT_GET, &chunk.code, after_get);
+    if !matches!(next_op(chunk, after_struct_get), Some(next) if next == Op::GLOBAL_GET) {
+        return None;
+    }
+    let after_global_get =
+        after_struct_get + opcode_size(Op::GLOBAL_GET, &chunk.code, after_struct_get);
+    if !matches!(next_op(chunk, after_global_get), Some(next) if next == Op::CALL) {
+        return None;
+    }
+    let after_call = after_global_get + opcode_size(Op::CALL, &chunk.code, after_global_get);
+    if !matches!(next_op(chunk, after_call), Some(next) if next == Op::DROP) {
+        return None;
+    }
+    let after_drop = after_call + opcode_size(Op::DROP, &chunk.code, after_call);
+    if matches!(next_op(chunk, after_drop), Some(next) if next == Op::END || next == Op::ELSE) {
+        Some(after_call)
+    } else {
+        None
+    }
+}
+
 /// Is the value about to be emitted the RESULT of an arm of an i32-typed
 /// block — the last thing pushed before its `else` or `end`?
 ///
@@ -1735,8 +2107,7 @@ fn next_op(chunk: &Chunk, ip: usize) -> Option<Op> {
 /// bare i32 in an externref temp. Only the arm's RESULT is the block's i32;
 /// everything else inside is an ordinary boxed value.
 fn is_i32_block_result(chunk: &Chunk, ip: usize, in_i32_block: bool) -> bool {
-    in_i32_block
-        && matches!(next_op(chunk, ip), Some(next) if next == Op::ELSE || next == Op::END)
+    in_i32_block && matches!(next_op(chunk, ip), Some(next) if next == Op::ELSE || next == Op::END)
 }
 
 /// Box an i32 to the externref value ABI unless the very next instruction is
@@ -1753,10 +2124,58 @@ fn box_i32_unless_condition(
     // value" — that is what the whole truthiness ladder is built from, and
     // every arm of it ends in an i32 producer. Boxing those made each arm
     // yield an externref out of a block declared `(result i32)`.
-    if is_i32_block_result(chunk, ip, in_i32_block) || i32_condition_follows(chunk, ip) {
+    if is_i32_block_result(chunk, ip, in_i32_block) || i32_raw_consumer_follows(chunk, ip) {
         return;
     }
     emit_box_i32(body, rt_idx);
+}
+
+fn emit_missing_import_args(
+    body: &mut Vec<u8>,
+    rt_idx: &std::collections::HashMap<(&str, &str), usize>,
+    type_ctx: &WasmTypeContext,
+    funcidx: u32,
+    argc: u8,
+) -> u8 {
+    let Some(params) = type_ctx.import_param_funcs.get(&funcidx) else {
+        return argc;
+    };
+    let declared = params.len();
+    let supplied = argc as usize;
+    if supplied >= declared {
+        return argc;
+    }
+    for &param in &params[supplied..] {
+        match param {
+            crate::encoding::TYPE_I32 => {
+                body.push(0x41);
+                write_leb128_i32(body, 0);
+                emit_box_i32(body, rt_idx);
+            }
+            crate::encoding::TYPE_I64 => {
+                body.push(0x42);
+                write_leb128_i64(body, 0);
+            }
+            crate::encoding::TYPE_F32 => {
+                body.push(0x43);
+                body.extend_from_slice(&0f32.to_le_bytes());
+            }
+            crate::encoding::TYPE_F64 => {
+                body.push(0x44);
+                body.extend_from_slice(&0f64.to_le_bytes());
+                emit_box_f64(body, rt_idx);
+            }
+            crate::encoding::TYPE_EXTERNREF => {
+                body.push(0x23);
+                write_leb128_u32(body, JS_GLOBAL_UNDEFINED);
+            }
+            _ => {
+                body.push(0xD0);
+                body.push(crate::encoding::HT_EXTERN);
+            }
+        }
+    }
+    declared as u8
 }
 
 /// Unbox the arguments of a `call` to an import declared with raw numeric
@@ -1795,7 +2214,9 @@ fn emit_unbox_raw_params(
     if argc as usize != params.len() {
         return;
     }
-    let Some(deepest_raw) = params.iter().position(|&t| t != crate::encoding::TYPE_EXTERNREF)
+    let Some(deepest_raw) = params
+        .iter()
+        .position(|&t| t != crate::encoding::TYPE_EXTERNREF)
     else {
         return;
     };
@@ -1986,9 +2407,7 @@ fn emit_gc_op(
             }
             let (typeidx, fieldidx) =
                 wasm_struct_field_by_typeidx(chunk, type_ctx, named_type, field_name_idx)
-                    .unwrap_or_else(|| {
-                        wasm_struct_field_for_name(chunk, type_ctx, field_name_idx)
-                    });
+                    .unwrap_or_else(|| wasm_struct_field_for_name(chunk, type_ctx, field_name_idx));
             emit_internalize(body); // externref → anyref
             emit_ref_cast(body, typeidx); // anyref → (ref $struct)
             body.push(0xFB);
@@ -2015,17 +2434,19 @@ fn emit_gc_op(
                 write_leb128_u32(body, temp_idx);
                 body.push(0x10); // call ecma:object.set(obj, name, val)
                 write_leb128_u32(body, fidx as u32);
-                // `[[Set]]` answers a Boolean (§10.1.9) and this lowering is a
-                // STATEMENT — discard the flag. Declared `-> boolean` now, so
-                // omitting this leaves a value the enclosing block never took.
+                // `[[Set]]` answers a Boolean (§10.1.9), but Vybe's
+                // `STRUCT_SET` bytecode has spec `struct.set` shape: it pushes
+                // nothing. Discard only the host flag introduced by this
+                // lowering. A following bytecode `DROP` is a real instruction
+                // for some value already on the VM stack (for example a
+                // carried `local.tee` receiver) and must be preserved.
                 body.push(0x1A); // drop
+                consume_next_drop_before_void_boundary(chunk, ip);
                 return;
             }
             let (typeidx, fieldidx) =
                 wasm_struct_field_by_typeidx(chunk, type_ctx, named_type, field_name_idx)
-                    .unwrap_or_else(|| {
-                        wasm_struct_field_for_name(chunk, type_ctx, field_name_idx)
-                    });
+                    .unwrap_or_else(|| wasm_struct_field_for_name(chunk, type_ctx, field_name_idx));
             // Stack: [externref_obj, externref_val]. struct.set expects
             // [(ref $struct), externref_val] and pushes NOTHING — the VM's
             // internal op now has the same spec shape, so no compensation:
@@ -2504,13 +2925,46 @@ fn emit_gc_op(
             write_leb128_u32(body, op.sub() as u32);
             box_i32_unless_condition(body, rt_idx, chunk, *ip, in_i32_block);
         }
+        _ if emit_stringref_gc_op(body, op) => {}
         _ => {
-            // Other GC ops: emit directly
-            body.push(0xFB);
-            write_leb128_u32(body, op.sub() as u32);
-            *ip += op.operand_format().size_in(&chunk.code, *ip);
+            panic!(
+                "unsupported 0xFB opcode in WASM writer: {:#x} {:#x}",
+                op.group(),
+                op.sub()
+            );
         }
     }
+}
+
+fn emit_stringref_gc_op(body: &mut Vec<u8>, op: Op) -> bool {
+    let sub = op.sub() as u32;
+    let is_mem_op = matches!(
+        sub,
+        0x80 | 0x81 | 0x86 | 0x87 | 0x8B | 0x8C | 0x8D | 0x8E | 0x92 | 0x9B
+    );
+    let is_no_immediate_op = matches!(
+        sub,
+        0x83..=0x8A | 0x90 | 0x91 | 0x93 | 0x98..=0x9C | 0xA0..=0xA4 | 0xB0..=0xB7
+    );
+
+    if is_mem_op {
+        body.push(0xFB);
+        write_leb128_u32(body, sub);
+        write_leb128_u32(body, 0);
+        return true;
+    }
+
+    if is_no_immediate_op {
+        body.push(0xFB);
+        write_leb128_u32(body, sub);
+        return true;
+    }
+
+    if sub == 0x82 {
+        panic!("string.const requires a stringref literal section; writer has no internal operand");
+    }
+
+    false
 }
 
 /// Emit inline dyn_add: type check both operands, f64 arithmetic if numbers, string concat if not.
@@ -2575,9 +3029,7 @@ fn resolve_heaptype_from_name(
 ) -> Vec<u8> {
     if let Some(Value::String(s)) = chunk.constants.get(name_idx) {
         if let Some(idx) = type_ctx.struct_type(s) {
-            let mut buf = Vec::new();
-            write_leb128_i32(&mut buf, idx as i32);
-            return buf;
+            return encode_concrete_heaptype(idx);
         }
     }
     vec![HT_ANY]
@@ -2614,10 +3066,7 @@ fn read_exact_heaptype_operand(
         vybe_runtime::opcode::heaptype::HeapType::Abstract(byte) => buf.push(byte),
         vybe_runtime::opcode::heaptype::HeapType::Concrete(index) => {
             match type_ctx.struct_type_by_index(index) {
-                Some(wasm_idx) => {
-                    buf.push(0x62); // exact
-                    write_leb128_u32(&mut buf, wasm_idx);
-                }
+                Some(wasm_idx) => write_exact_heaptype(&mut buf, wasm_idx),
                 None => buf.push(HT_ANY),
             }
         }
@@ -2674,18 +3123,13 @@ fn resolve_heaptype_nullable(
             Some(ht) => (ht.trim(), true),
             None => (rest.trim(), false),
         },
-        None => (
-            spelled,
-            HeapType::from_spec_reftype_name(spelled).is_some(),
-        ),
+        None => (spelled, HeapType::from_spec_reftype_name(spelled).is_some()),
     };
     // A user type wins over an abstract spelling: a module may legitimately
     // declare a type called `any`, and the type table is the authority on
     // what this module actually emitted.
     if let Some(idx) = type_ctx.struct_type(bare) {
-        let mut buf = Vec::new();
-        write_leb128_i32(&mut buf, idx as i32);
-        return (buf, nullable);
+        return (encode_concrete_heaptype(idx), nullable);
     }
     let abstract_ht = HeapType::from_spec_reftype_name(bare)
         .and_then(|(heap, _)| HeapType::from_spec_name(heap))
@@ -2704,7 +3148,7 @@ fn read_heaptype_operand(chunk: &Chunk, ip: &mut usize, type_ctx: &WasmTypeConte
         vybe_runtime::opcode::heaptype::HeapType::Abstract(byte) => buf.push(byte),
         vybe_runtime::opcode::heaptype::HeapType::Concrete(index) => {
             match type_ctx.struct_type_by_index(index) {
-                Some(wasm_idx) => write_leb128_i32(&mut buf, wasm_idx as i32),
+                Some(wasm_idx) => write_concrete_heaptype(&mut buf, wasm_idx),
                 None => buf.push(HT_ANY),
             }
         }
@@ -2742,7 +3186,10 @@ fn emit_externalize(body: &mut Vec<u8>) {
 fn emit_ref_cast(body: &mut Vec<u8>, type_idx: u32) {
     body.push(0xFB);
     write_leb128_u32(body, 0x17); // ref.cast null (nullable variant)
-    write_leb128_u32(body, type_idx); // heaptype = type index
+    // Heaptype immediates are signed LEBs. Writing a concrete typeidx as
+    // unsigned LEB makes values such as 98 serialize as one byte `0x62`, which
+    // is the Custom Descriptors exact-heaptype marker rather than type 98.
+    write_concrete_heaptype(body, type_idx);
 }
 
 /// Emit `ref.cast (ref null $arr_typeidx)` for array refs
@@ -2796,4 +3243,21 @@ fn emit_vm_internal_op(body: &mut Vec<u8>, op: Op, chunk: &Chunk, ip: &mut usize
 pub fn opcode_size(op: Op, code: &[u8], ip: usize) -> usize {
     let base = 4;
     base + op.operand_format().size_in(code, ip + base)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ref_cast_heaptype_uses_signed_leb_for_concrete_typeidx() {
+        let mut body = Vec::new();
+        emit_ref_cast(&mut body, 98);
+
+        assert_eq!(
+            body,
+            vec![0xFB, 0x17, 0xE2, 0x00],
+            "concrete heaptype 98 must be signed LEB, not unsigned 0x62"
+        );
+    }
 }

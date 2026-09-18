@@ -150,7 +150,11 @@ fn tcp_socket() -> Value {
         "[static]tcp-socket.create",
         vec![s("ipv4")],
     );
-    assert!(is_ok(&socket), "create must succeed: {:?}", err_code(&socket));
+    assert!(
+        is_ok(&socket),
+        "create must succeed: {:?}",
+        err_code(&socket)
+    );
     socket
 }
 
@@ -160,7 +164,11 @@ fn udp_socket() -> Value {
         "[static]udp-socket.create",
         vec![s("ipv4")],
     );
-    assert!(is_ok(&socket), "create must succeed: {:?}", err_code(&socket));
+    assert!(
+        is_ok(&socket),
+        "create must succeed: {:?}",
+        err_code(&socket)
+    );
     socket
 }
 

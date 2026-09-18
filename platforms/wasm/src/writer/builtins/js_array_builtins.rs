@@ -99,13 +99,22 @@ pub fn write_signature(out: &mut Vec<u8>, name: &str) -> bool {
             write_leb128_u32(out, 1);
             out.push(TYPE_EXTERNREF);
         }
-        "of" | "from" | "fromAsync" => {
-            // `of(...values)` / `from(iterable, mapFn?)` — the handler
-            // reads variadic args off the WASM stack using a
+        "of" => {
+            // `of(...values)` — the handler reads variadic args from a
             // caller-supplied count + array of externrefs.
             // Signature: (count: i32, args_array: externref) -> externref
             write_leb128_u32(out, 2);
             out.push(TYPE_I32);
+            out.push(TYPE_EXTERNREF);
+            write_leb128_u32(out, 1);
+            out.push(TYPE_EXTERNREF);
+        }
+        "from" | "fromAsync" => {
+            // `from(iterable)` / `fromAsync(asyncIterable)` — adapters in the
+            // tree call these as ordinary host functions. Mapper-bearing forms
+            // lower through dedicated helpers instead of the packed variadic
+            // `Array.of` convention above.
+            write_leb128_u32(out, 1);
             out.push(TYPE_EXTERNREF);
             write_leb128_u32(out, 1);
             out.push(TYPE_EXTERNREF);

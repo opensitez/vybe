@@ -208,10 +208,9 @@ fn abs_heap_type(b: u8) -> Option<&'static str> {
 
 /// A heap type: one abstract byte, or a type index as a non-negative s33.
 fn heap_type(r: &mut Reader) -> Result<String, WasmError> {
-    let b = *r
-        .d
-        .get(r.p)
-        .ok_or_else(|| WasmError::from("unexpected end of heap type"))?;
+    let b =
+        *r.d.get(r.p)
+            .ok_or_else(|| WasmError::from("unexpected end of heap type"))?;
     if let Some(name) = abs_heap_type(b) {
         r.p += 1;
         return Ok(name.to_string());
@@ -241,10 +240,9 @@ fn ref_type(r: &mut Reader) -> Result<String, WasmError> {
 
 /// A value type: a number type, `v128`, or a reference type.
 fn val_type(r: &mut Reader) -> Result<String, WasmError> {
-    let b = *r
-        .d
-        .get(r.p)
-        .ok_or_else(|| WasmError::from("unexpected end of value type"))?;
+    let b =
+        *r.d.get(r.p)
+            .ok_or_else(|| WasmError::from("unexpected end of value type"))?;
     match b {
         0x7F => {
             r.p += 1;
@@ -556,10 +554,9 @@ fn idx_suffix(idx: u32) -> String {
 
 /// A block type: nothing, a single result, or a type index.
 fn block_type(r: &mut Reader) -> Result<String, WasmError> {
-    let b = *r
-        .d
-        .get(r.p)
-        .ok_or_else(|| WasmError::from("unexpected end of block type"))?;
+    let b =
+        *r.d.get(r.p)
+            .ok_or_else(|| WasmError::from("unexpected end of block type"))?;
     if b == 0x40 {
         r.p += 1;
         return Ok(String::new());
@@ -670,7 +667,11 @@ fn instr(r: &mut Reader, out: &mut String, depth: &mut usize) -> Result<bool, Wa
         }
         0x23 | 0x24 => {
             let x = r.u32()?;
-            let name = if op == 0x23 { "global.get" } else { "global.set" };
+            let name = if op == 0x23 {
+                "global.get"
+            } else {
+                "global.set"
+            };
             let _ = writeln!(out, "{pad}{name} {x}");
         }
         0x25 | 0x26 => {
@@ -680,7 +681,11 @@ fn instr(r: &mut Reader, out: &mut String, depth: &mut usize) -> Result<bool, Wa
         }
         0x3F | 0x40 => {
             let m = r.u32()?;
-            let name = if op == 0x3F { "memory.size" } else { "memory.grow" };
+            let name = if op == 0x3F {
+                "memory.size"
+            } else {
+                "memory.grow"
+            };
             let _ = writeln!(out, "{pad}{name}{}", idx_suffix(m));
         }
         0x41 => {
@@ -925,11 +930,7 @@ pub fn wat_from_binary(data: &[u8]) -> Result<String, WasmError> {
                         0x04 => "tag",
                         _ => return Err(format!("cannot render export kind {kind}").into()),
                     };
-                    let _ = writeln!(
-                        s_exports,
-                        "  (export {} ({what} {idx}))",
-                        wat_string(&name)
-                    );
+                    let _ = writeln!(s_exports, "  (export {} ({what} {idx}))", wat_string(&name));
                 }
             }
             8 => {

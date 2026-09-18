@@ -20,7 +20,7 @@ pub mod writer;
 
 pub use disassembler::{wat_from_binary, write_wat};
 pub use reader::{Phase, WasmError, read_wasm, read_wasm_classified};
-pub use writer::write_wasm;
+pub use writer::{WasmWriteOptions, write_wasm, write_wasm_with_options};
 
 /// Register this platform's binary loaders with the VM's module
 /// resolver, so `ModuleResolver` can load `.wasm` files without
