@@ -286,10 +286,7 @@ fn terminal(
             spec: ctor.clone(),
         }),
         NamespaceNode::Fn {
-            module,
-            func,
-            sig,
-            ..
+            module, func, sig, ..
         } => Some(ResolutionTarget::HostCall {
             module: module.clone(),
             func: func.clone(),
@@ -315,12 +312,10 @@ fn terminal(
         // of a user class goes through the class machinery keyed on
         // `identity`, and answering `Ctor` here would also make a declared
         // FUNCTION look constructible.
-        NamespaceNode::UserGlobal { identity, kind, .. } => {
-            Some(ResolutionTarget::UserGlobal {
-                identity: identity.clone(),
-                kind: *kind,
-            })
-        }
+        NamespaceNode::UserGlobal { identity, kind, .. } => Some(ResolutionTarget::UserGlobal {
+            identity: identity.clone(),
+            kind: *kind,
+        }),
         NamespaceNode::Alias(target) => {
             let segs: Vec<&str> = target.split('.').collect();
             resolve_segments(forest, &segs, alias_depth + 1, fold)
@@ -331,8 +326,8 @@ fn terminal(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
     use crate::primitives::namespaces::*;
+    use std::sync::Mutex;
 
     // The registry is process-global; serialize tests that touch it.
     static LOCK: Mutex<()> = Mutex::new(());
@@ -365,7 +360,10 @@ mod tests {
     fn resolves_direct_host_leaf() {
         let _g = LOCK.lock().unwrap();
         seed();
-        match resolve_path(&["ecma", "json", "stringify"], crate::primitives::namespaces::FOLD_ASCII) {
+        match resolve_path(
+            &["ecma", "json", "stringify"],
+            crate::primitives::namespaces::FOLD_ASCII,
+        ) {
             Some(ResolutionTarget::HostCall { module, func, .. }) => {
                 assert_eq!(module, "ecma:json");
                 assert_eq!(func, "stringify");
@@ -378,7 +376,10 @@ mod tests {
     fn resolves_alias_to_canonical_leaf() {
         let _g = LOCK.lock().unwrap();
         seed();
-        match resolve_path(&["python", "json", "dumps"], crate::primitives::namespaces::FOLD_ASCII) {
+        match resolve_path(
+            &["python", "json", "dumps"],
+            crate::primitives::namespaces::FOLD_ASCII,
+        ) {
             Some(ResolutionTarget::HostCall { module, func, .. }) => {
                 assert_eq!(module, "ecma:json");
                 assert_eq!(func, "stringify");
@@ -405,7 +406,10 @@ mod tests {
         register_namespace_tree("python", {
             namespace(vec![("js_like", NamespaceNode::Alias("ecma".into()))])
         });
-        match resolve_path(&["python", "js_like", "json", "parse"], crate::primitives::namespaces::FOLD_ASCII) {
+        match resolve_path(
+            &["python", "js_like", "json", "parse"],
+            crate::primitives::namespaces::FOLD_ASCII,
+        ) {
             Some(ResolutionTarget::HostCall { func, .. }) => assert_eq!(func, "parse"),
             other => panic!("expected HostCall through interior alias, got {:?}", other),
         }
@@ -438,8 +442,20 @@ mod tests {
                 namespace(vec![("max", host_fn("ecma:math", "max"))]),
             )]),
         );
-        assert!(resolve_path(&["ecma", "json", "parse"], crate::primitives::namespaces::FOLD_ASCII).is_some());
-        assert!(resolve_path(&["ecma", "math", "max"], crate::primitives::namespaces::FOLD_ASCII).is_some());
+        assert!(
+            resolve_path(
+                &["ecma", "json", "parse"],
+                crate::primitives::namespaces::FOLD_ASCII
+            )
+            .is_some()
+        );
+        assert!(
+            resolve_path(
+                &["ecma", "math", "max"],
+                crate::primitives::namespaces::FOLD_ASCII
+            )
+            .is_some()
+        );
     }
 
     #[test]
@@ -465,11 +481,17 @@ mod tests {
             )]),
         );
         assert!(matches!(
-            resolve_path(&["dotnet", "system", "console"], crate::primitives::namespaces::FOLD_ASCII),
+            resolve_path(
+                &["dotnet", "system", "console"],
+                crate::primitives::namespaces::FOLD_ASCII
+            ),
             Some(ResolutionTarget::Ctor { .. })
         ));
         assert!(matches!(
-            resolve_path(&["dotnet", "system", "console", "writeline"], crate::primitives::namespaces::FOLD_ASCII),
+            resolve_path(
+                &["dotnet", "system", "console", "writeline"],
+                crate::primitives::namespaces::FOLD_ASCII
+            ),
             Some(ResolutionTarget::HostCall { .. })
         ));
     }
@@ -479,14 +501,21 @@ mod tests {
         let _g = LOCK.lock().unwrap();
         seed();
         assert!(resolve_path(&["nope"], crate::primitives::namespaces::FOLD_ASCII).is_none());
-        assert!(resolve_path(&["ecma", "nope"], crate::primitives::namespaces::FOLD_ASCII).is_none());
+        assert!(
+            resolve_path(&["ecma", "nope"], crate::primitives::namespaces::FOLD_ASCII).is_none()
+        );
         // Leaf with trailing segments is not a namespace path.
-        assert!(resolve_path(&["ecma", "json", "stringify", "extra"], crate::primitives::namespaces::FOLD_ASCII).is_none());
+        assert!(
+            resolve_path(
+                &["ecma", "json", "stringify", "extra"],
+                crate::primitives::namespaces::FOLD_ASCII
+            )
+            .is_none()
+        );
     }
 }
 
 // ── Registry ───────────────────────────────────────────────────────────────
-
 
 /// A dot-separated canonical path into the tree (`"ecma.json.stringify"`).
 pub type Path = String;
@@ -931,9 +960,10 @@ fn find_type_node(scope: &[String], class_name: &str, fold: Fold) -> Option<(Sub
                 }
             };
         }
-        if ok && let NamespaceNode::Type {
-            statics, methods, ..
-        } = node
+        if ok
+            && let NamespaceNode::Type {
+                statics, methods, ..
+            } = node
         {
             return Some((statics.clone(), methods.clone()));
         }
@@ -966,7 +996,10 @@ fn find_type_node(scope: &[String], class_name: &str, fold: Fold) -> Option<(Sub
             } => {
                 let this_leaf = path.rsplit('.').next().unwrap_or(path);
                 if seg_eq(this_leaf, leaf, fold)
-                    && (seg_eq(wanted, leaf, fold) || path.to_ascii_lowercase().ends_with(&wanted.to_ascii_lowercase()))
+                    && (seg_eq(wanted, leaf, fold)
+                        || path
+                            .to_ascii_lowercase()
+                            .ends_with(&wanted.to_ascii_lowercase()))
                 {
                     *out = Some((statics.clone(), methods.clone()));
                 }
@@ -1139,7 +1172,13 @@ pub fn lookup_type_member_return(
     fold: Fold,
 ) -> Option<String> {
     let guard = registry().read().unwrap();
-    fn walk(node: &NamespaceNode, leaf: &str, member: &str, path: &str, fold: Fold) -> Option<String> {
+    fn walk(
+        node: &NamespaceNode,
+        leaf: &str,
+        member: &str,
+        path: &str,
+        fold: Fold,
+    ) -> Option<String> {
         match node {
             NamespaceNode::Namespace(children) => children.iter().find_map(|(k, v)| {
                 let next = if path.is_empty() {
@@ -1163,8 +1202,9 @@ pub fn lookup_type_member_return(
         .next()
         .unwrap_or(class_name)
         .to_string();
-    scope.iter()
-        .find_map(|root| fold_get(&guard.tree, root, fold).and_then(|v| walk(v, &leaf, member, root, fold)))
+    scope.iter().find_map(|root| {
+        fold_get(&guard.tree, root, fold).and_then(|v| walk(v, &leaf, member, root, fold))
+    })
 }
 
 /// True when a type registered UNDER `scope` declares `member` at `arity`.
@@ -1179,7 +1219,9 @@ pub fn scope_declares_member_arity(scope: &[&str], member: &str, arity: u8, fold
     let guard = registry().read().unwrap();
     fn walk(node: &NamespaceNode, member: &str, arity: u8, fold: Fold) -> bool {
         match node {
-            NamespaceNode::Namespace(children) => children.values().any(|v| walk(v, member, arity, fold)),
+            NamespaceNode::Namespace(children) => {
+                children.values().any(|v| walk(v, member, arity, fold))
+            }
             // ⛔ `fold_get`, not `.get`. The query is no longer lowercased before
             // it arrives, so an exact lookup here misses every key a registrar
             // wrote in a different case — which is what a plain `.get` did the
@@ -1233,10 +1275,7 @@ pub fn lookup_type_instance_target(
     };
     match select_overload(&declared, argc)?.clone() {
         NamespaceNode::Fn {
-            module,
-            func,
-            sig,
-            ..
+            module, func, sig, ..
         } => Some(crate::component_classes::InstanceMethodTarget::Host {
             module,
             func,
@@ -1347,7 +1386,59 @@ fn find_type_ctor_call(scope: &[String], class_name: &str, fold: Fold) -> Option
     let leaf = wanted.rsplit('.').next().unwrap_or(&wanted).to_string();
     let guard = registry().read().unwrap();
 
-    fn walk(node: &NamespaceNode, leaf: &str, wanted: &str, path: &str, fold: Fold) -> Option<NamespaceNode> {
+    for root in scope {
+        let mut direct: Vec<&str> = Vec::new();
+        let wanted_lc = wanted.to_ascii_lowercase();
+        let root_lc = root.to_ascii_lowercase();
+        if wanted_lc == root_lc || wanted_lc.starts_with(&format!("{root_lc}.")) {
+            direct.extend(wanted.split('.').filter(|s| !s.is_empty()));
+        } else {
+            direct.extend(root.split('.').filter(|s| !s.is_empty()));
+            direct.extend(wanted.split('.').filter(|s| !s.is_empty()));
+        }
+        if direct.is_empty() {
+            continue;
+        }
+        let Some(mut node) = fold_get(&guard.tree, direct[0], fold) else {
+            continue;
+        };
+        let mut ok = true;
+        for seg in &direct[1..] {
+            node = match node {
+                NamespaceNode::Namespace(children) => match fold_get(children, seg, fold) {
+                    Some(next) => next,
+                    None => {
+                        ok = false;
+                        break;
+                    }
+                },
+                NamespaceNode::Type { statics, .. } => match fold_get(statics, seg, fold) {
+                    Some(next) => next,
+                    None => {
+                        ok = false;
+                        break;
+                    }
+                },
+                _ => {
+                    ok = false;
+                    break;
+                }
+            };
+        }
+        if ok && let NamespaceNode::Type { ctor_call, .. } = node {
+            if let Some(ctor_call) = ctor_call.as_deref().cloned() {
+                return Some(ctor_call);
+            }
+        }
+    }
+
+    fn walk(
+        node: &NamespaceNode,
+        leaf: &str,
+        wanted: &str,
+        path: &str,
+        fold: Fold,
+    ) -> Option<NamespaceNode> {
         match node {
             NamespaceNode::Namespace(children) => children.iter().find_map(|(k, v)| {
                 let next = if path.is_empty() {
@@ -1364,15 +1455,16 @@ fn find_type_ctor_call(scope: &[String], class_name: &str, fold: Fold) -> Option
                         || path
                             .to_ascii_lowercase()
                             .ends_with(&wanted.to_ascii_lowercase())))
-                    .then(|| ctor_call.as_deref().cloned())
-                    .flatten()
+                .then(|| ctor_call.as_deref().cloned())
+                .flatten()
             }
             _ => None,
         }
     }
 
-    scope.iter()
-        .find_map(|root| fold_get(&guard.tree, root, fold).and_then(|v| walk(v, &leaf, &wanted, root, fold)))
+    scope.iter().find_map(|root| {
+        fold_get(&guard.tree, root, fold).and_then(|v| walk(v, &leaf, &wanted, root, fold))
+    })
 }
 
 /// The construction SPEC a platform declared for `class_name`, if the name is a
@@ -1416,15 +1508,16 @@ fn find_type_spec(scope: &[String], class_name: &str, fold: Fold) -> Option<Ctor
                         || path
                             .to_ascii_lowercase()
                             .ends_with(&wanted.to_ascii_lowercase())))
-                    .then(|| ctor.clone())
-                    .flatten()
+                .then(|| ctor.clone())
+                .flatten()
             }
             _ => None,
         }
     }
 
-    scope.iter()
-        .find_map(|root| fold_get(&guard.tree, root, fold).and_then(|v| walk(v, &leaf, &wanted, root, fold)))
+    scope.iter().find_map(|root| {
+        fold_get(&guard.tree, root, fold).and_then(|v| walk(v, &leaf, &wanted, root, fold))
+    })
 }
 
 /// The CONSTRUCTOR target for `class_name`, from its registered `Type` node.

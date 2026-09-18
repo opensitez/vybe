@@ -50,7 +50,11 @@ fn push(c: &mut Chunk, v: Value) {
                 TEST_GLOBAL_SEQ.fetch_add(1, Ordering::Relaxed)
             );
             let ci = c.intern_string_constant(&name);
-            c.emit_op_u16(Op::GLOBAL_GET, ci, 0);
+            c.emit_op_u16(
+                Op::GLOBAL_GET,
+                ci.try_into().expect("test constant index fits u16"),
+                0,
+            );
             PENDING_GLOBALS.with(|p| p.borrow_mut().push((name, other)));
         }
     }

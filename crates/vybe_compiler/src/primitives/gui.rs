@@ -27,9 +27,9 @@
 //! Switching the host's GUI backend (or running on a non-Vybe VM with a
 //! different GUI binding) requires no compiler changes.
 
-use crate::primitives::class_slots;
 use super::Compiler;
 use super::{collections, ops, strings};
+use crate::primitives::class_slots;
 use std::sync::Arc;
 use vybe_ast::Expression;
 use vybe_runtime::opcode::Op;
@@ -199,7 +199,6 @@ pub use crate::primitives::namespaces::DOM_ELEMENT_TYPE;
 // The live statement of what a control IS lives below, in the emit helpers and
 // the property-role tables. Those emit to `web:*`.
 
-
 // ─── Emit helpers ────────────────────────────────────────────────────────────
 //
 // Canonical patterns. Every language frontend uses these directly or via a
@@ -285,7 +284,6 @@ pub const SET_ITEM_TEXT_EMIT: &str = "gui.set_item_text";
 /// declared leaf that answers "nothing" is what stops each of them inventing a
 /// private answer.
 pub const APP_RUN_EMIT: &str = "gui.app.run";
-
 
 /// `Application.Terminate` — closes the browsing context.
 pub const APP_EXIT_EMIT: &str = "gui.app.exit";
@@ -1539,7 +1537,10 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_SET, font);
                     for (field, css) in [("italic", "italic "), ("bold", "bold ")] {
                         self.emit_u16(Op::LOCAL_GET, font);
-                        self.class_get(class_slots::ObjSource::Stack, &class_slots::ClassSlot::internal(field));
+                        self.class_get(
+                            class_slots::ObjSource::Stack,
+                            &class_slots::ClassSlot::internal(field),
+                        );
                         ops::emit_dyn_to_bool(self.chunk(), line);
                         self.chunk().emit_if_value(line);
                         emit_string_const(self.chunk(), css, line);
@@ -1549,13 +1550,19 @@ impl Compiler {
                     }
                     ops::emit_dyn_add(self.chunk(), line);
                     self.emit_u16(Op::LOCAL_GET, font);
-                    self.class_get(class_slots::ObjSource::Stack, &class_slots::ClassSlot::internal("size"));
+                    self.class_get(
+                        class_slots::ObjSource::Stack,
+                        &class_slots::ClassSlot::internal("size"),
+                    );
                     strings::emit_to_string(self.chunk(), line);
                     ops::emit_dyn_add(self.chunk(), line);
                     emit_string_const(self.chunk(), "px ", line);
                     ops::emit_dyn_add(self.chunk(), line);
                     self.emit_u16(Op::LOCAL_GET, font);
-                    self.class_get(class_slots::ObjSource::Stack, &class_slots::ClassSlot::internal("name"));
+                    self.class_get(
+                        class_slots::ObjSource::Stack,
+                        &class_slots::ClassSlot::internal("name"),
+                    );
                     ops::emit_dyn_add(self.chunk(), line);
                     let idx = self.import(module, func);
                     self.emit_host_call(idx, 4);
@@ -1853,9 +1860,7 @@ impl Compiler {
         // stayed null. One lookup, one fold, on both sides of the guard.
         let user_owns_spelling = self.user_owns_type_spelling(type_name);
         if !user_owns_spelling {
-            if let Some(element) =
-                registered_control_element(self, type_name)
-            {
+            if let Some(element) = registered_control_element(self, type_name) {
                 return Some(element);
             }
         }
@@ -1863,9 +1868,7 @@ impl Compiler {
         // in it would already have broken construction long before here.
         let mut current = self.pending_class_parent(type_name);
         while let Some(parent) = current {
-            if let Some(element) =
-                registered_control_element(self, &parent)
-            {
+            if let Some(element) = registered_control_element(self, &parent) {
                 return Some(element);
             }
             current = self.pending_class_parent(&parent);
@@ -1949,8 +1952,7 @@ impl Compiler {
         if self.shadows_builtin_type(last) || self.defined_functions.contains(&canon_last) {
             return None;
         }
-        self.tree_is_registered_type(last)
-            .then_some(canon_last)
+        self.tree_is_registered_type(last).then_some(canon_last)
     }
 
     /// The ROLE a class declares for one of its properties.
@@ -2079,17 +2081,11 @@ impl Compiler {
                     && self
                         .resolve_pending_class_name_for_type_hint(&class_name)
                         .is_none()
-                    && self
-                        .tree_property_target(&class_name, field)
-                        .is_none()
+                    && self.tree_property_target(&class_name, field).is_none()
                     && self
                         .tree_property_setter_target(&class_name, field)
                         .is_none()
-                    && self.tree_instance_member(
-                        &class_name,
-                        field,
-                    )
-                    .is_none()
+                    && self.tree_instance_member(&class_name, field).is_none()
                     && !self.is_declared_instance_field(&class_name, field)
             }
         }
@@ -2125,14 +2121,18 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_SET, obj_tmp);
 
         self.emit_u16(Op::LOCAL_GET, obj_tmp);
-        self.class_get(class_slots::ObjSource::Stack, &class_slots::ClassSlot::internal(CONTROL_TYPE_FIELD));
+        self.class_get(
+            class_slots::ObjSource::Stack,
+            &class_slots::ClassSlot::internal(CONTROL_TYPE_FIELD),
+        );
         let undef_idx = self.import("wasm:js-undefined", "test");
         self.emit_host_call(undef_idx, 1);
         self.chunk().emit_if(line);
         // Not a control — the ordinary object property, exactly as before.
         self.emit_u16(Op::LOCAL_GET, obj_tmp);
         self.emit_u16(Op::LOCAL_GET, value_tmp);
-        let prop_key = self.resolve_slot_interned(&class_slots::ClassSlot::internal(&self.canon(prop)));
+        let prop_key =
+            self.resolve_slot_interned(&class_slots::ClassSlot::internal(&self.canon(prop)));
         self.class_set_resolved(
             class_slots::ObjSource::Stack,
             &prop_key,
@@ -2168,12 +2168,18 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_SET, obj_tmp);
 
         self.emit_u16(Op::LOCAL_GET, obj_tmp);
-        self.class_get(class_slots::ObjSource::Stack, &class_slots::ClassSlot::internal(CONTROL_TYPE_FIELD));
+        self.class_get(
+            class_slots::ObjSource::Stack,
+            &class_slots::ClassSlot::internal(CONTROL_TYPE_FIELD),
+        );
         let undef_idx = self.import("wasm:js-undefined", "test");
         self.emit_host_call(undef_idx, 1);
         self.chunk().emit_if_value(line);
         self.emit_u16(Op::LOCAL_GET, obj_tmp);
-        self.class_get(class_slots::ObjSource::Stack, &class_slots::ClassSlot::internal(&self.canon(prop)));
+        self.class_get(
+            class_slots::ObjSource::Stack,
+            &class_slots::ClassSlot::internal(&self.canon(prop)),
+        );
         self.chunk().emit_else(line);
         self.emit_u16(Op::LOCAL_GET, obj_tmp);
         self.emit_gui_property_get(&prop.to_ascii_lowercase(), line);
@@ -2216,7 +2222,7 @@ impl Compiler {
         // behaviour by declaring chrome and nothing has to be kept in step.
         if matches!(role.as_str(), "text" | "caption")
             && registered_control_element(self, type_name)
-            .is_some_and(|element| element.inner_html.is_some())
+                .is_some_and(|element| element.inner_html.is_some())
         {
             role = "unpaintedtext".to_string();
         }
@@ -2231,10 +2237,9 @@ impl Compiler {
         // form-control submission key that `form.elements[…]` and
         // serialization read. A control that set only `id` would look right
         // and submit nothing, so set both.
-        let form_associated =
-            registered_control_element(self, type_name)
-                .map(|e| e.is_form_associated())
-                .unwrap_or(false);
+        let form_associated = registered_control_element(self, type_name)
+            .map(|e| e.is_form_associated())
+            .unwrap_or(false);
         if prop == "name" && form_associated {
             let doc_idx = self.import(DOCUMENT_MODULE, HOST_FN_ACTIVE_DOCUMENT);
             self.chunk().emit_call(doc_idx, 0, line);
@@ -2565,7 +2570,6 @@ pub fn emit_get_control_type(chunk: &mut Chunk, line: u32) {
         line,
     );
 }
-
 
 // ── Linkable chunk builders ──────────────────────────────────────────────────
 //

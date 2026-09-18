@@ -39,8 +39,8 @@
 //! against CPython, `read_string` stores the raw text. Putting it here would
 //! bake one language's default into the shared format.
 
-use vybe_runtime::opcode::Op;
 use vybe_runtime::Chunk;
+use vybe_runtime::opcode::Op;
 
 fn get(chunk: &mut Chunk, slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
@@ -197,8 +197,7 @@ pub fn emit_parse(chunks: &mut [Chunk], current: usize, line: u32) {
             chunks[current].emit_if(line);
             {
                 let scratch = chunks[current].alloc_scratch(4);
-                let (eq_at, colon_at, at, key) =
-                    (scratch, scratch + 1, scratch + 2, scratch + 3);
+                let (eq_at, colon_at, at, key) = (scratch, scratch + 1, scratch + 2, scratch + 3);
 
                 get(&mut chunks[current], t, line);
                 chunks[current].emit_string_const("=", line);

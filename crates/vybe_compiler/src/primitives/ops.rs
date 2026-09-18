@@ -1641,7 +1641,6 @@ pub fn emit_dyn_neg_into(_imports: &mut Chunk, code: &mut Chunk, line: u32) {
     code.emit_end(line);
 }
 
-
 // ── Linkable chunk builders ──────────────────────────────────────────────────
 //
 // Linkable chunk builders — the standalone-chunk packaging of what the

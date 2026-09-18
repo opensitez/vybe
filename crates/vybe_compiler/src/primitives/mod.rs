@@ -23,15 +23,16 @@ pub mod base64;
 pub mod bigint;
 pub mod bits;
 pub mod builtin_slots;
-pub mod canon_marshal;
 pub mod bundle;
 pub mod callable;
+pub mod canon;
+pub mod canon_marshal;
 pub mod clone; // what it means to COPY a value — records, collections, arguments
 pub mod codepoints;
 pub mod collections;
 pub mod complex;
-pub mod convert;
 pub mod config;
+pub mod convert;
 pub mod csv;
 pub mod datetime;
 pub mod delegates;
@@ -45,7 +46,6 @@ pub mod fs_path;
 pub mod functions;
 pub mod generators;
 pub mod generics;
-pub mod canon;
 pub mod globals;
 pub mod gui;
 pub mod heap;
@@ -57,10 +57,10 @@ pub mod loops;
 pub mod math;
 pub mod memory;
 pub mod multivalue;
-pub mod paths;
 pub mod object;
 pub mod ops;
 pub mod packing;
+pub mod paths;
 pub mod platforms;
 pub mod pointers;
 pub mod polyfills;
@@ -118,8 +118,8 @@ mod class_augmentation;
 // The shared bind has to be reachable from where receivers are actually
 // bound, or a frontend re-invents a channel of its own.
 pub mod class_context;
-pub mod class_slots;
 pub mod class_normalize; // cross-language class normalisation (was crate::common::classes)
+pub mod class_slots;
 pub mod classes;
 pub mod closures;
 pub mod components;
@@ -647,6 +647,14 @@ pub struct Compiler {
     /// Kept apart from `classes_with_indexer` — a class may define either
     /// half on its own.
     pub(crate) classes_with_index_setter: HashSet<String>,
+    /// Protocol slots published by any class/struct normalized in this program.
+    ///
+    /// Rich operator dispatch is not a language-name property and it is not the
+    /// default for a static program. If no compiled type publishes `Eq`, `Lt`,
+    /// `Add`, etc., probing every unknown operator site for those roles is dead
+    /// code. Recording the roles during the declaration pass lets operator
+    /// lowering ask the program's actual surface.
+    pub(crate) program_protocol_slots: HashSet<vybe_ast::ProtocolSlot>,
     /// Any class in this program binds the `GetAttr` role (Python
     /// `__getattr__`, PHP `__get`, JS Proxy get) — the attribute-miss
     /// interceptor.
@@ -2990,6 +2998,7 @@ impl Compiler {
             classes_with_cooperative_super: HashSet::new(),
             classes_with_indexer: HashSet::new(),
             classes_with_index_setter: HashSet::new(),
+            program_protocol_slots: HashSet::new(),
             program_has_getattr: false,
             program_has_setattr: false,
             program_has_callmissing: false,
@@ -3119,13 +3128,6 @@ impl Compiler {
         Some((binding.args_slot, slot, index))
     }
 
-
-
-
-
-
-
-
     /// Pre-populate the module-exports snapshot. Called by the Bundle
     /// before `compile_with_imports` so the Linker can resolve
     /// Adapter-module re-exports during Phase A.
@@ -3166,10 +3168,7 @@ impl Compiler {
         for name in names {
             let pc = &self.pending_classes[name];
             println!("{name}");
-            println!(
-                "  parent:  {}",
-                pc.parent.as_deref().unwrap_or("-")
-            );
+            println!("  parent:  {}", pc.parent.as_deref().unwrap_or("-"));
             let mut fields: Vec<String> = pc
                 .instance_field_types
                 .iter()
@@ -3195,7 +3194,11 @@ impl Compiler {
                 .map(|t| &t.fields);
             match emitted {
                 Some(f) if !f.is_empty() => {
-                    println!("  emitted: {} (TypeEntry.fields, {} slot(s))", f.join(", "), f.len())
+                    println!(
+                        "  emitted: {} (TypeEntry.fields, {} slot(s))",
+                        f.join(", "),
+                        f.len()
+                    )
                 }
                 Some(_) => println!("  emitted: (none) — TypeEntry.fields is EMPTY"),
                 None => println!("  emitted: (no TypeEntry registered)"),
@@ -3465,6 +3468,7 @@ impl Compiler {
 
         self.predeclare_type_names(&merged_body, None);
         self.collect_module_variable_names(&merged_body);
+        self.predeclare_module_variable_type_hints(&merged_body);
         self.collect_reflection_metadata(&merged_body);
 
         // Multi-value pre-scan: any function whose every explicit `Return`
@@ -3580,7 +3584,10 @@ impl Compiler {
                     .map(|(name, _)| name.clone());
                 if let Some(class_name) = host_class {
                     self.emit_var_get(&class_name);
-                    self.class_get(class_slots::ObjSource::Stack, &class_slots::ClassSlot::internal(&ep_canon));
+                    self.class_get(
+                        class_slots::ObjSource::Stack,
+                        &class_slots::ClassSlot::internal(&ep_canon),
+                    );
                     self.emit_direct_callable_invoke(0);
                     self.emit(Op::DROP);
                 }

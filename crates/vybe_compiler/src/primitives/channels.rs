@@ -36,7 +36,6 @@ use crate::primitives::errors;
 use crate::primitives::instructions::core_wasm;
 use crate::primitives::ops;
 
-
 /// TOS: [maybe-cell] → [value]. A go pointer / the queue field wraps its
 /// target in `{__ref_kind: "cell", __value}`; unwrap if present. Imports
 /// register on `imports` (chunks[0]) — helper-chunk convention.

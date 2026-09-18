@@ -65,7 +65,10 @@ pub enum ValueSource {
     /// the class model rather than a corner of it, and `Value` has no function
     /// variant to carry it as a constant. 12 sites (crates 2 · languages 10),
     /// including all six of php's `finish_*_instance` constructors.
-    FuncRef { idx: u16, upvalues: u8 },
+    FuncRef {
+        idx: u16,
+        upvalues: u8,
+    },
 }
 
 /// Where a read result goes.
@@ -90,7 +93,10 @@ pub struct MethodRef {
 
 impl MethodRef {
     pub fn new(name: impl Into<String>, argc: u8) -> Self {
-        Self { name: name.into(), argc }
+        Self {
+            name: name.into(),
+            argc,
+        }
     }
 }
 
@@ -102,15 +108,24 @@ pub enum ClassSlot {
     /// `class` is REQUIRED: the private-mangled answer depends on the DECLARING
     /// class, and reading the compiler's `current_class` instead is wrong for
     /// any receiver that is not `self`.
-    InstanceField { class: Option<String>, field: String },
+    InstanceField {
+        class: Option<String>,
+        field: String,
+    },
 
     /// A static field. A SEPARATE index space from instance fields — they
     /// cannot fold together without colliding once both become field indices.
-    StaticField { class: Option<String>, field: String },
+    StaticField {
+        class: Option<String>,
+        field: String,
+    },
 
     /// A private field, whose storage name is mangled against its declaring
     /// class.
-    PrivateField { class: String, field: String },
+    PrivateField {
+        class: String,
+        field: String,
+    },
 
     /// An accessor pair. Built with `format!("__get_{key}")` at
     /// `emit_helpers.rs:335-336`, `object.rs:399/412` and `dispatch.rs:4180`,
@@ -159,11 +174,17 @@ impl ClassSlot {
     /// An instance field with no declaring class known — the plain canonical
     /// name. Prefer `instance_of` wherever the declaring class IS known.
     pub fn instance(field: impl Into<String>) -> Self {
-        ClassSlot::InstanceField { class: None, field: field.into() }
+        ClassSlot::InstanceField {
+            class: None,
+            field: field.into(),
+        }
     }
 
     pub fn instance_of(class: impl Into<String>, field: impl Into<String>) -> Self {
-        ClassSlot::InstanceField { class: Some(class.into()), field: field.into() }
+        ClassSlot::InstanceField {
+            class: Some(class.into()),
+            field: field.into(),
+        }
     }
 
     pub fn internal(key: impl Into<String>) -> Self {
@@ -249,14 +270,20 @@ pub enum ResolvedSlot {
 /// above its emit sites. Interning once preserves both the constant-pool
 /// CONTENTS and its ORDER; resolving lazily at each emit would append a
 /// duplicate entry per use, because `add_constant` does not de-duplicate.
-pub fn resolve_interned(chunk: &mut Chunk, slot: &ClassSlot, names: &dyn SlotNames) -> ResolvedSlot {
+pub fn resolve_interned(
+    chunk: &mut Chunk,
+    slot: &ClassSlot,
+    names: &dyn SlotNames,
+) -> ResolvedSlot {
     match storage_key(slot, names) {
         Some(key) => {
             let idx = chunk.add_constant(Value::String(Arc::from(key.as_str())));
             ResolvedSlot::Interned(idx)
         }
         None => {
-            let ClassSlot::Dynamic(src) = slot else { unreachable!() };
+            let ClassSlot::Dynamic(src) = slot else {
+                unreachable!()
+            };
             ResolvedSlot::Dynamic(src.clone())
         }
     }
@@ -267,7 +294,9 @@ pub fn resolve(slot: &ClassSlot, names: &dyn SlotNames) -> ResolvedSlot {
     match storage_key(slot, names) {
         Some(key) => ResolvedSlot::Key(key),
         None => {
-            let ClassSlot::Dynamic(src) = slot else { unreachable!() };
+            let ClassSlot::Dynamic(src) = slot else {
+                unreachable!()
+            };
             ResolvedSlot::Dynamic(src.clone())
         }
     }
@@ -297,13 +326,10 @@ pub fn setter_name(key: impl AsRef<str>) -> String {
 /// place a slot becomes a field INDEX, and no caller changes.
 pub fn storage_key(slot: &ClassSlot, names: &dyn SlotNames) -> Option<String> {
     Some(match slot {
-        ClassSlot::InstanceField { class, field }
-        | ClassSlot::StaticField { class, field } => {
+        ClassSlot::InstanceField { class, field } | ClassSlot::StaticField { class, field } => {
             names.storage_name(class.as_deref(), field)
         }
-        ClassSlot::PrivateField { class, field } => {
-            names.storage_name(Some(class), field)
-        }
+        ClassSlot::PrivateField { class, field } => names.storage_name(Some(class), field),
         ClassSlot::Getter(key) => getter_name(key),
         ClassSlot::Setter(key) => setter_name(key),
         ClassSlot::Prototype => "prototype".to_string(),
@@ -354,9 +380,7 @@ fn push_value(chunk: &mut Chunk, val: &ValueSource, line: u32) {
         ValueSource::ConstI64(v) => chunk.emit_i64_const(*v, line),
         ValueSource::ConstF64(v) => chunk.emit_f64_const(*v, line),
         ValueSource::ConstBool(v) => chunk.emit_bool_const(*v, line),
-        ValueSource::Null => {
-            chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line)
-        }
+        ValueSource::Null => chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line),
         ValueSource::FuncRef { idx, upvalues } => {
             chunk.emit_op_u16(Op::REF_FUNC, *idx, line);
             chunk.emit(*upvalues, line);
@@ -626,11 +650,7 @@ pub fn emit_class_construct(
     // The type stamp. `TypeIdentity` is a slot like any other, so it converts
     // with the rest rather than staying a bare string.
     chunk.emit_dup(line);
-    let type_key = push_key(
-        chunk,
-        &ResolvedSlot::Key("__type".to_string()),
-        line,
-    );
+    let type_key = push_key(chunk, &ResolvedSlot::Key("__type".to_string()), line);
     chunk.emit_string_const(ty, line);
     emit_set_op(chunk, type_key, line);
 }
@@ -687,7 +707,6 @@ pub fn emit_class_has(
     finish_dest(chunk, dest, line);
 }
 
-
 // ── The compiler-side facade ────────────────────────────────────────────
 //
 // The free functions above take a `&mut Chunk` because that is the shape the
@@ -705,7 +724,13 @@ impl crate::Compiler {
             return;
         }
         let slot = self.resolve_slot(slot);
-        emit_class_get(&mut self.chunks[self.current], obj, &slot, Dest::Stack, line);
+        emit_class_get(
+            &mut self.chunks[self.current],
+            obj,
+            &slot,
+            Dest::Stack,
+            line,
+        );
     }
 
     /// Read a slot into a local.
@@ -750,10 +775,18 @@ impl crate::Compiler {
         dest: Dest,
         line: u32,
     ) -> bool {
-        let ClassSlot::InstanceField { class: Some(class), field } = slot else {
+        let ClassSlot::InstanceField {
+            class: Some(class),
+            field,
+        } = slot
+        else {
             return false;
         };
-        let ResolvedSlot::Indexed { typeidx, field: fieldidx } = self.resolve_slot(slot) else {
+        let ResolvedSlot::Indexed {
+            typeidx,
+            field: fieldidx,
+        } = self.resolve_slot(slot)
+        else {
             return false;
         };
         let class = class.clone();
@@ -806,10 +839,18 @@ impl crate::Compiler {
         val: &ValueSource,
         line: u32,
     ) -> bool {
-        let ClassSlot::InstanceField { class: Some(class), field } = slot else {
+        let ClassSlot::InstanceField {
+            class: Some(class),
+            field,
+        } = slot
+        else {
             return false;
         };
-        let ResolvedSlot::Indexed { typeidx, field: fieldidx } = self.resolve_slot(slot) else {
+        let ResolvedSlot::Indexed {
+            typeidx,
+            field: fieldidx,
+        } = self.resolve_slot(slot)
+        else {
             return false;
         };
         let class = class.clone();
@@ -868,12 +909,7 @@ impl crate::Compiler {
     /// instance or a platform value reaches the same site with dynamic
     /// storage. Tests first, exactly as the read does, and falls back to the
     /// string key on a miss.
-    pub(crate) fn class_set_checked(
-        &mut self,
-        obj: ObjSource,
-        slot: &ClassSlot,
-        val: ValueSource,
-    ) {
+    pub(crate) fn class_set_checked(&mut self, obj: ObjSource, slot: &ClassSlot, val: ValueSource) {
         let line = self.line;
         if self.emit_guarded_indexed_set(obj, slot, &val, line) {
             return;
@@ -902,8 +938,8 @@ impl crate::Compiler {
         let resolved = self.resolve_slot(slot);
         match resolved {
             ResolvedSlot::Key(name) => {
-                let idx = self.chunks[self.current]
-                    .add_constant(Value::String(Arc::from(name.as_str())));
+                let idx =
+                    self.chunks[self.current].add_constant(Value::String(Arc::from(name.as_str())));
                 ResolvedSlot::Interned(idx)
             }
             other => other,
@@ -1013,7 +1049,6 @@ impl crate::Compiler {
         found.map(str::to_string)
     }
 
-
     pub(crate) fn resolve_slot(&self, slot: &ClassSlot) -> ResolvedSlot {
         // ▶▶ SEAM 3.
         //
@@ -1039,7 +1074,11 @@ impl crate::Compiler {
         // when a read the type clearly declares is still string-keyed.
         // `indexed_field` resolves BY NAME and returns `None` for anything the
         // type does not declare, which is what keeps dynamic objects there.
-        if let ClassSlot::InstanceField { class: Some(class), field } = slot {
+        if let ClassSlot::InstanceField {
+            class: Some(class),
+            field,
+        } = slot
+        {
             if let Some(indexed) = self.indexed_field(class, field) {
                 return indexed;
             }

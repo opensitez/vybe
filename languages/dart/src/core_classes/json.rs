@@ -57,7 +57,11 @@ pub(super) fn json_encoder() -> Statement {
                     ),
                     ret(call_builtin(
                         "__dart_json_stringify3",
-                        vec![ident("value"), Expression::null(), this_field("_vybeIndent")],
+                        vec![
+                            ident("value"),
+                            Expression::null(),
+                            this_field("_vybeIndent"),
+                        ],
                     )),
                 ],
             ),

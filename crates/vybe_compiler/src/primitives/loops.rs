@@ -350,7 +350,8 @@ pub fn emit_filter(
     // §10.2.1: the callback's receiver is argument 0 — see
     // `callable::emit_callback_receiver`.
     chunks[current].emit_op_u16(Op::LOCAL_GET, fn_slot, line);
-    let __recv = crate::primitives::callable::emit_callback_receiver(&mut chunks[current], abi, line);
+    let __recv =
+        crate::primitives::callable::emit_callback_receiver(&mut chunks[current], abi, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, elem_slot, line);
     crate::primitives::callable::emit_direct_invoke_chunk(&mut chunks[current], 1 + __recv, line);
     crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
@@ -390,7 +391,8 @@ pub fn emit_foreach(
     // `callable::emit_callback_receiver`.
     let __abi = crate::primitives::class_context::module_receiver_abi(chunks);
     chunks[current].emit_op_u16(Op::LOCAL_GET, fn_slot, line);
-    let __recv = crate::primitives::callable::emit_callback_receiver(&mut chunks[current], __abi, line);
+    let __recv =
+        crate::primitives::callable::emit_callback_receiver(&mut chunks[current], __abi, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
     crate::primitives::collections::emit_get(chunks, current, line);
@@ -524,7 +526,8 @@ pub fn emit_any_every(
     // `callable::emit_callback_receiver`.
     let __abi = crate::primitives::class_context::module_receiver_abi(chunks);
     chunks[current].emit_op_u16(Op::LOCAL_GET, fn_slot, line);
-    let __recv = crate::primitives::callable::emit_callback_receiver(&mut chunks[current], __abi, line);
+    let __recv =
+        crate::primitives::callable::emit_callback_receiver(&mut chunks[current], __abi, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
     crate::primitives::collections::emit_get(chunks, current, line);

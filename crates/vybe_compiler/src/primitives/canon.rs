@@ -196,14 +196,14 @@ pub fn lower_valspec(v: &ValSpec, types: &[TypeDecl]) -> Result<ValType, String>
                 "`(stream)` with no element type — `ValType::Stream` has nowhere to \
                  record the absence, and a stand-in element would feed `elem_size`"
                     .to_string(),
-            )
+            );
         }
         ValSpec::Future(None) => {
             return Err(
                 "`(future)` with no element type — `ValType::Future` has nowhere to \
                  record the absence, and a stand-in element would feed `elem_size`"
                     .to_string(),
-            )
+            );
         }
         // ── Specialized types: DESPECIALIZED, not represented ────────────────
         //
@@ -290,21 +290,23 @@ pub fn lower_valspec(v: &ValSpec, types: &[TypeDecl]) -> Result<ValType, String>
                 return Err(format!(
                     "`(type {i})` names a RESOURCE used directly as a value type; a \
                      resource travels as `(own {i})` or `(borrow {i})`, never bare"
-                ))
+                ));
             }
             Some(TypeDecl::Func { .. }) => {
                 return Err(format!(
                     "`(type {i})` names a FUNCTION type used as a value type"
-                ))
+                ));
             }
             Some(TypeDecl::Opaque(k)) => {
-                return Err(format!("`(type {i})` names a `{k}`, which is not a value type"))
+                return Err(format!(
+                    "`(type {i})` names a `{k}`, which is not a value type"
+                ));
             }
             None => {
                 return Err(format!(
                     "`(type {i})` is not in the component type space (have {})",
                     types.len()
-                ))
+                ));
             }
         },
     })
@@ -332,9 +334,10 @@ pub fn lower_types(
             TypeDecl::Func { params, result } => {
                 let mut ps = Vec::with_capacity(params.len());
                 for (n, v) in params {
-                    ps.push(lower_valspec(v, types).map_err(|e| {
-                        format!("component type {i}: param \"{n}\": {e}")
-                    })?);
+                    ps.push(
+                        lower_valspec(v, types)
+                            .map_err(|e| format!("component type {i}: param \"{n}\": {e}"))?,
+                    );
                 }
                 let r = match result {
                     Some(v) => Some(
@@ -452,9 +455,9 @@ pub fn resolve_core_export_callees(
                     }
                 )
             })?;
-        let def = defs.get_mut(i).ok_or_else(|| {
-            format!("canon {}: canonidx {i} has no lowered row", d.builtin)
-        })?;
+        let def = defs
+            .get_mut(i)
+            .ok_or_else(|| format!("canon {}: canonidx {i} has no lowered row", d.builtin))?;
         def.callee = Some(vybe_runtime::canon_def::CalleeRef::Core(ci as u32));
     }
     Ok(())

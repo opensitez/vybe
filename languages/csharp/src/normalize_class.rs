@@ -94,7 +94,8 @@ pub fn normalize_class(
                 // spelling: `operator ==` knows it fills `Eq` from the
                 // declaration form, while the name it carries (`op_Equality`)
                 // is the CLR ABI spelling and means nothing to the name table.
-                let special_kind = resolve_special_kind(m.protocol_slot, name_kind, &declared_slots);
+                let special_kind =
+                    resolve_special_kind(m.protocol_slot, name_kind, &declared_slots);
                 let access = Access::from(m.visibility);
                 let Some(method) = from_method_stmt(span.clone(), stmt, &canonical, access) else {
                     continue;

@@ -9,9 +9,9 @@
 //! each frontend inventing its own "almost a QName" object.
 
 use crate::primitives::collections;
+use crate::primitives::namespaces::{self, NamespaceNode, Subtree};
 use crate::primitives::ops;
 use vybe_runtime::Chunk;
-use crate::primitives::namespaces::{self, NamespaceNode, Subtree};
 use vybe_runtime::opcode::Op;
 
 pub const XML_NAME_TYPE: &str = "XmlName";

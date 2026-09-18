@@ -22,9 +22,7 @@
 //!   - `call` → callable protocol.
 
 use vybe_ast::class_normalize::{NormalMembers, build_normal_method, from_method_stmt, types::*};
-use vybe_ast::{
-    ClassMember, ClassModifiers, Modifiers, PropertySetter, Span, StmtKind,
-};
+use vybe_ast::{ClassMember, ClassModifiers, Modifiers, PropertySetter, Span, StmtKind};
 
 pub fn normalize_class(
     span: Span,

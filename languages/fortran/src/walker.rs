@@ -191,7 +191,6 @@ pub fn parse(source: &str) -> Result<Module, String> {
             // `class_body_declarations_before_procedures` profile flag — whose
             // "class" was a misnomer; its only reader is in
             // `compile_function_decl`. Fortran was the only language that set it.
-            
             body_declarations_first: Some(true),
             // A type-bound procedure is the raw procedure off the derived
             // type; the CALL supplies the passed-object dummy argument.
@@ -212,6 +211,8 @@ pub fn parse(source: &str) -> Result<Module, String> {
             variable_case: Some(vybe_ast::CaseMatch::Folded),
             callable_case: Some(vybe_ast::CaseMatch::Folded),
             case_alphabet: Some(vybe_ast::CaseAlphabet::Ascii),
+            type_resolution: Some(vybe_ast::TypeResolution::Static),
+            operator_dispatch: Some(vybe_ast::OperatorDispatch::StaticBuiltin),
             ..Default::default()
         },
     })
@@ -382,8 +383,8 @@ fn walk_stmt_inner(pair: Pair<Rule>) -> Result<Option<Statement>, String> {
         // RESULT type, not a variable — but the declaration was emitted as one,
         // so `f()` called the number 0. The names travel as a marker the pass
         // below consumes.
-        Rule::external_statement => Ok(Some(Statement::new(StmtKind::Expr(
-            Expression::new(ExprKind::Call {
+        Rule::external_statement => Ok(Some(Statement::new(StmtKind::Expr(Expression::new(
+            ExprKind::Call {
                 callee: Box::new(Expression::ident(FORTRAN_EXTERNAL_MARKER)),
                 args: pair
                     .into_inner()
@@ -391,8 +392,8 @@ fn walk_stmt_inner(pair: Pair<Rule>) -> Result<Option<Statement>, String> {
                     .map(|p| Argument::positional(Expression::string(p.as_str())))
                     .collect(),
                 optional: false,
-            }),
-        )))),
+            },
+        ))))),
         Rule::labeled_do_statement => walk_labeled_do(pair).map(Some),
         Rule::select_case_statement => walk_select(pair).map(Some),
         Rule::select_type_statement => walk_select_type(pair).map(Some),
@@ -679,9 +680,7 @@ struct FortranDimensionSpecs {
     lower_bounds: Vec<Option<Expression>>,
 }
 
-fn parse_fortran_dimension_spec_list(
-    pair: Pair<Rule>,
-) -> Result<FortranDimensionSpecs, String> {
+fn parse_fortran_dimension_spec_list(pair: Pair<Rule>) -> Result<FortranDimensionSpecs, String> {
     let mut dim_bounds = Vec::new();
     let mut lower_bounds = Vec::new();
     for spec in pair.into_inner().filter(|p| meaningful(p)) {
@@ -1129,7 +1128,11 @@ fn rewrite_fortran_bounds_in_expr(expr: &mut Expression, env: &FortranBoundsEnv)
                 rewrite_fortran_bounds_in_expr(part, env);
             }
         }
-        ExprKind::Call { callee, args, .. } | ExprKind::New { class: callee, args } => {
+        ExprKind::Call { callee, args, .. }
+        | ExprKind::New {
+            class: callee,
+            args,
+        } => {
             // `allocate(v(-4:1))` spells bounds, not subscripts — its arguments
             // describe the array being made and must survive untouched.
             if matches!(&callee.kind, ExprKind::Ident(name)
@@ -1360,10 +1363,7 @@ fn fortran_section_call_dim_extent(
         }
         section_dim += 1;
         if section_dim == wanted_dim {
-            return fortran_raw_slice_extent(
-                &arg.value,
-                env.extent(&base_expr, source_dim + 1),
-            );
+            return fortran_raw_slice_extent(&arg.value, env.extent(&base_expr, source_dim + 1));
         }
     }
     None
@@ -1588,9 +1588,7 @@ fn walk_var_decl(pair: Pair<Rule>) -> Result<Statement, String> {
                                 // exist, so the DECLARATION died on "undefined
                                 // is not callable" before any C call ran.
                                 init = Some(
-                                    if type_hint
-                                        .as_deref()
-                                        .is_some_and(is_fortran_opaque_c_handle)
+                                    if type_hint.as_deref().is_some_and(is_fortran_opaque_c_handle)
                                     {
                                         Expression::new(ExprKind::Lit(Literal::Null))
                                     } else {
@@ -1644,8 +1642,7 @@ fn walk_var_decl(pair: Pair<Rule>) -> Result<Statement, String> {
                     // it in the array descriptor, so declare it as one — a companion
                     // vector of per-dimension lower bounds, in the same scope, which
                     // `lbound`/`ubound`/`size(a, dim)` and subscripting read back.
-                    let declared_hint =
-                        fortran_pointer_type_hint(type_hint.as_deref(), is_pointer);
+                    let declared_hint = fortran_pointer_type_hint(type_hint.as_deref(), is_pointer);
                     if let Some(origin) = fortran_origin_declarator(&nm, &dim_lower_bounds) {
                         declarations.push(VarDeclarator {
                             pattern: BindingPattern::Ident(nm.clone()),
@@ -1995,7 +1992,10 @@ fn walk_where(pair: Pair<Rule>) -> Result<Statement, String> {
 
     for p in inner {
         if p.as_rule() == Rule::kw_elsewhere {
-            clauses.push((current_mask.take().unwrap_or(None), std::mem::take(&mut current_body)));
+            clauses.push((
+                current_mask.take().unwrap_or(None),
+                std::mem::take(&mut current_body),
+            ));
             current_mask = Some(None);
             continue;
         }
@@ -2073,11 +2073,7 @@ fn fortran_where_effective_mask(
     // A bare ELSEWHERE has no mask of its own, so the FIRST earlier clause
     // supplies both the shape to walk and the first exclusion.
     let (driver, mut condition, already_excluded) = match mask {
-        Some(mask) => (
-            mask,
-            fortran_expr_is_true(Expression::ident(item_name)),
-            0,
-        ),
+        Some(mask) => (mask, fortran_expr_is_true(Expression::ident(item_name)), 0),
         None => (
             preceding.first()?.clone(),
             not_true(Expression::ident(item_name)),
@@ -2098,11 +2094,7 @@ fn fortran_where_effective_mask(
     }
 
     Some(build_fortran_array_map(
-        driver,
-        condition,
-        true,
-        item_name,
-        index_name,
+        driver, condition, true, item_name, index_name,
     ))
 }
 
@@ -2736,7 +2728,10 @@ fn restructure_fortran_goto_body(body: &mut Vec<Statement>, next_id: &mut usize)
         for statement in statements.iter_mut() {
             rewrite_fortran_goto_markers(statement, &segment_of, &dispatch_label, &dispatch_state);
         }
-        statements.push(fortran_dispatch_state_assignment(&dispatch_state, segment + 1));
+        statements.push(fortran_dispatch_state_assignment(
+            &dispatch_state,
+            segment + 1,
+        ));
         statements.push(Statement::new(StmtKind::Continue(ContinueTarget::Label(
             dispatch_label.clone(),
         ))));
@@ -3277,8 +3272,7 @@ fn rewrite_fortran_internal_reads(body: &mut Vec<Statement>, declared: &HashMap<
         if let StmtKind::Block(stmts) = &mut statement.kind {
             if let Some(format_spec) = fortran_take_read_format_marker(stmts) {
                 for inner in stmts.iter_mut() {
-                    let Some((buffer, variables)) =
-                        fortran_internal_read_target(inner, declared)
+                    let Some((buffer, variables)) = fortran_internal_read_target(inner, declared)
                     else {
                         continue;
                     };
@@ -3501,10 +3495,7 @@ fn fortran_internal_read_tokens(buffer: Expression) -> Expression {
     };
     let split = intrinsic(
         "str_split",
-        vec![
-            intrinsic("trim", vec![buffer]),
-            Expression::string(" "),
-        ],
+        vec![intrinsic("trim", vec![buffer]), Expression::string(" ")],
     );
     Expression::new(ExprKind::Call {
         callee: Box::new(Expression::new(ExprKind::Member {
@@ -4070,10 +4061,7 @@ fn collect_fortran_procedure_decls(body: &[Statement], out: &mut HashMap<String,
     }
 }
 
-fn attach_fortran_slot_methods(
-    body: &mut [Statement],
-    methods: &HashMap<String, Vec<Statement>>,
-) {
+fn attach_fortran_slot_methods(body: &mut [Statement], methods: &HashMap<String, Vec<Statement>>) {
     for statement in body.iter_mut() {
         if let StmtKind::ClassDecl { name, members, .. } = &mut statement.kind {
             if let Some(slots) = methods.get(&name.to_ascii_lowercase()) {
@@ -4112,10 +4100,7 @@ fn attach_fortran_slot_methods(
 /// turns it into a 1-based `Index` like any other.
 fn walk_data_statement(pair: Pair<Rule>) -> Result<Statement, String> {
     let mut body = Vec::new();
-    for set in pair
-        .into_inner()
-        .filter(|p| p.as_rule() == Rule::data_set)
-    {
+    for set in pair.into_inner().filter(|p| p.as_rule() == Rule::data_set) {
         let mut targets = Vec::new();
         let mut values = Vec::new();
         let mut loop_form = None;
@@ -4184,10 +4169,7 @@ fn collect_fortran_data_targets(
     out: &mut Vec<Expression>,
 ) -> Result<Option<FortranDataLoop>, String> {
     let inner: Vec<Pair<Rule>> = var.into_inner().filter(|p| meaningful(p)).collect();
-    if let Some(implied) = inner
-        .iter()
-        .find(|p| p.as_rule() == Rule::data_implied_do)
-    {
+    if let Some(implied) = inner.iter().find(|p| p.as_rule() == Rule::data_implied_do) {
         return expand_fortran_data_implied_do(implied.clone(), out);
     }
     out.push(build_fortran_data_target(&inner)?);
@@ -4291,10 +4273,7 @@ fn build_fortran_data_target(parts: &[Pair<Rule>]) -> Result<Expression, String>
         .ok_or("missing name in data target")?
         .as_str();
     let mut args = Vec::new();
-    for list in parts
-        .iter()
-        .filter(|p| p.as_rule() == Rule::argument_list)
-    {
+    for list in parts.iter().filter(|p| p.as_rule() == Rule::argument_list) {
         for a in list.clone().into_inner() {
             if a.as_rule() == Rule::argument {
                 let (name, value) = walk_argument_expr(a)?;
@@ -4331,9 +4310,11 @@ fn expand_fortran_data_implied_do(
     let mut bounds = Vec::new();
     for part in implied.into_inner().filter(|p| meaningful(p)) {
         match part.as_rule() {
-            Rule::data_var_simple => {
-                vars.push(part.into_inner().filter(|p| meaningful(p)).collect::<Vec<_>>())
-            }
+            Rule::data_var_simple => vars.push(
+                part.into_inner()
+                    .filter(|p| meaningful(p))
+                    .collect::<Vec<_>>(),
+            ),
             Rule::identifier if index_name.is_none() => {
                 index_name = Some(part.as_str().to_string())
             }
@@ -4420,10 +4401,7 @@ fn fortran_data_const_int(expr: &Expression) -> Option<i64> {
 }
 
 /// One `data_value`, which is `expr` or the repeat form `count * expr`.
-fn collect_fortran_data_values(
-    value: Pair<Rule>,
-    out: &mut Vec<Expression>,
-) -> Result<(), String> {
+fn collect_fortran_data_values(value: Pair<Rule>, out: &mut Vec<Expression>) -> Result<(), String> {
     let parts: Vec<Pair<Rule>> = value.into_inner().filter(|p| meaningful(p)).collect();
     let first = walk_expr(parts.first().cloned().ok_or("empty data value")?)?;
     let Some(second) = parts.get(1) else {
@@ -4480,7 +4458,11 @@ fn walk_forall(pair: Pair<Rule>) -> Result<Statement, String> {
     let mut headers = Vec::with_capacity(triplets.len());
     for triplet in triplets {
         let parts: Vec<Pair<Rule>> = triplet.into_inner().filter(|p| meaningful(p)).collect();
-        let name = parts.first().ok_or("missing forall index")?.as_str().to_string();
+        let name = parts
+            .first()
+            .ok_or("missing forall index")?
+            .as_str()
+            .to_string();
         let lower = walk_expr(parts.get(1).ok_or("missing forall lower bound")?.clone())?;
         let upper = walk_expr(parts.get(2).ok_or("missing forall upper bound")?.clone())?;
         let step = match parts.get(3) {
@@ -4542,12 +4524,24 @@ fn walk_labeled_do(pair: Pair<Rule>) -> Result<Statement, String> {
     }
     let terminator = terminator.ok_or("missing labeled do terminator")?;
     let var = var.ok_or("missing labeled do index")?;
-    let lower = bounds.first().cloned().ok_or("missing labeled do lower bound")?;
-    let upper = bounds.get(1).cloned().ok_or("missing labeled do upper bound")?;
+    let lower = bounds
+        .first()
+        .cloned()
+        .ok_or("missing labeled do lower bound")?;
+    let upper = bounds
+        .get(1)
+        .cloned()
+        .ok_or("missing labeled do upper bound")?;
     let step = bounds.get(2).cloned().unwrap_or_else(|| Expression::int(1));
     Ok(Statement::new(StmtKind::Labeled {
         label: format!("{FORTRAN_LABELED_DO_PREFIX}{terminator}"),
-        body: Box::new(build_fortran_counted_loop(&var, lower, upper, step, Vec::new())),
+        body: Box::new(build_fortran_counted_loop(
+            &var,
+            lower,
+            upper,
+            step,
+            Vec::new(),
+        )),
     }))
 }
 
@@ -4583,11 +4577,17 @@ fn lower_fortran_labeled_do(body: &mut Vec<Statement>) {
             continue;
         };
         let collected: Vec<Statement> = body.drain(index + 1..=end).collect();
-        let StmtKind::Labeled { body: loop_stmt, .. } = &mut body[index].kind else {
+        let StmtKind::Labeled {
+            body: loop_stmt, ..
+        } = &mut body[index].kind
+        else {
             index += 1;
             continue;
         };
-        if let StmtKind::For { body: loop_body, .. } = &mut loop_stmt.kind {
+        if let StmtKind::For {
+            body: loop_body, ..
+        } = &mut loop_stmt.kind
+        {
             *loop_body = collected;
             // A nested labelled DO was a SIBLING until this moment — the inner
             // `do 100` and its `100 continue` were both swept into the outer
@@ -4816,9 +4816,7 @@ fn walk_select(pair: Pair<Rule>) -> Result<Statement, String> {
                             let expr_end = first.as_span().end() - cv_start;
                             let colon = cv_text
                                 .char_indices()
-                                .find(|(i, ch)| {
-                                    *ch == ':' && (*i < expr_start || *i >= expr_end)
-                                })
+                                .find(|(i, ch)| *ch == ':' && (*i < expr_start || *i >= expr_end))
                                 .map(|(i, _)| i);
                             let value = walk_expr(first)?;
                             conds.push(match colon {
@@ -4939,8 +4937,8 @@ fn walk_select_rank(pair: Pair<Rule>) -> Result<Statement, String> {
             default_body = Some(body);
             continue;
         }
-        let rank_value = parse_fortran_expression_text(rank_text.trim())
-            .unwrap_or_else(|_| Expression::int(0));
+        let rank_value =
+            parse_fortran_expression_text(rank_text.trim()).unwrap_or_else(|_| Expression::int(0));
         branches.push((
             Expression::new(ExprKind::Binary {
                 op: BinOp::StrictEq,
@@ -5000,9 +4998,15 @@ fn fortran_canonical_select_type_name(type_name: &str) -> String {
         "string".to_string()
     } else if lower.starts_with("complex") {
         "object".to_string()
-    } else if let Some(inner) = lower.strip_prefix("type(").and_then(|s| s.strip_suffix(')')) {
+    } else if let Some(inner) = lower
+        .strip_prefix("type(")
+        .and_then(|s| s.strip_suffix(')'))
+    {
         inner.to_string()
-    } else if let Some(inner) = lower.strip_prefix("class(").and_then(|s| s.strip_suffix(')')) {
+    } else if let Some(inner) = lower
+        .strip_prefix("class(")
+        .and_then(|s| s.strip_suffix(')'))
+    {
         inner.to_string()
     } else {
         type_name.trim().to_string()
@@ -5185,7 +5189,6 @@ fn fold_fortran_select_type_by_alloc(
     )))
 }
 
-
 fn collect_fortran_type_parents(body: &[Statement], out: &mut HashMap<String, Vec<String>>) {
     for statement in body {
         if let StmtKind::ClassDecl { name, parents, .. } = &statement.kind {
@@ -5295,14 +5298,8 @@ fn rewrite_fortran_select_type_chains(
     }
 }
 
-fn apply_fortran_select_type_rules(
-    chain: &mut Statement,
-    parents: &HashMap<String, Vec<String>>,
-) {
-    let StmtKind::If {
-        cond, elifs, ..
-    } = &mut chain.kind
-    else {
+fn apply_fortran_select_type_rules(chain: &mut Statement, parents: &HashMap<String, Vec<String>>) {
+    let StmtKind::If { cond, elifs, .. } = &mut chain.kind else {
         return;
     };
     // Every type named in this chain — a `class is` only has to beat the
@@ -5324,7 +5321,11 @@ fn apply_fortran_select_type_rules(
     }
 
     let refine = |expr: &mut Expression| {
-        let ExprKind::IsType { expr: selector, type_name } = &expr.kind else {
+        let ExprKind::IsType {
+            expr: selector,
+            type_name,
+        } = &expr.kind
+        else {
             return;
         };
         let exact = type_name.starts_with(FORTRAN_EXACT_TYPE_PREFIX);
@@ -6618,11 +6619,7 @@ fn walk_deallocate_stmt(pair: Pair<Rule>) -> Result<Statement, String> {
 /// (`character(len=5)`, `integer`) names no constructor and is not one.
 fn fortran_derived_type_spec_name(spec: &str) -> Option<String> {
     let spec = spec.trim();
-    if !spec
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '_')
-        || spec.is_empty()
-    {
+    if !spec.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') || spec.is_empty() {
         return None;
     }
     let lower = spec.to_ascii_lowercase();
@@ -6866,7 +6863,7 @@ fn walk_allocate_stmt_from_text(text: &str) -> Result<Statement, String> {
             .iter()
             .cloned()
             .map(Argument::positional)
-        .collect::<Vec<_>>(),
+            .collect::<Vec<_>>(),
         optional: false,
     })));
 
@@ -6916,13 +6913,18 @@ fn walk_allocate_stmt_from_text(text: &str) -> Result<Statement, String> {
     Ok(Statement::new(StmtKind::Block(statements)))
 }
 
-fn walk_allocator_stmt_text_fallback(text: &str, intrinsic_name: &str) -> Result<Statement, String> {
+fn walk_allocator_stmt_text_fallback(
+    text: &str,
+    intrinsic_name: &str,
+) -> Result<Statement, String> {
     let _ = text;
-    Ok(Statement::new(StmtKind::Expr(Expression::new(ExprKind::Call {
-        callee: Box::new(Expression::ident(intrinsic_name)),
-        args: Vec::new(),
-        optional: false,
-    }))))
+    Ok(Statement::new(StmtKind::Expr(Expression::new(
+        ExprKind::Call {
+            callee: Box::new(Expression::ident(intrinsic_name)),
+            args: Vec::new(),
+            optional: false,
+        },
+    ))))
 }
 
 fn walk_allocator_stmt(pair: Pair<Rule>, intrinsic_name: &str) -> Result<Statement, String> {
@@ -6996,7 +6998,8 @@ fn walk_dimension_spec_origin(pair: Pair<Rule>) -> Result<Option<Expression>, St
     let exprs: Vec<Pair<Rule>> = pair
         .into_inner()
         .filter(|child| {
-            meaningful(child) && (is_expr_rule(child.as_rule()) || child.as_rule() == Rule::expression)
+            meaningful(child)
+                && (is_expr_rule(child.as_rule()) || child.as_rule() == Rule::expression)
         })
         .collect();
     if exprs.len() < 2 {
@@ -8037,11 +8040,9 @@ fn walk_expr(pair: Pair<Rule>) -> Result<Expression, String> {
                     })
                     .map(|a| a.value.clone())
                     .or_else(|| args.get(2).map(|a| a.value.clone()));
-                if let Some(folded) = build_fortran_out_of_range_expr(
-                    args[0].value.clone(),
-                    &arg_texts[1],
-                    round,
-                ) {
+                if let Some(folded) =
+                    build_fortran_out_of_range_expr(args[0].value.clone(), &arg_texts[1], round)
+                {
                     return Ok(folded);
                 }
             }
@@ -9078,7 +9079,10 @@ fn strip_fortran_value_dummy_markers(body: &mut Vec<Statement>) {
                 }
             }
         }
-        for_each_fortran_nested_vec_mut(&mut statement.kind, &mut strip_fortran_value_dummy_markers);
+        for_each_fortran_nested_vec_mut(
+            &mut statement.kind,
+            &mut strip_fortran_value_dummy_markers,
+        );
     }
     body.retain(|statement| {
         let StmtKind::Expr(expr) = &statement.kind else {
@@ -9933,7 +9937,10 @@ fn rewrite_remaining_fortran_array_calls_in_expr(
                 && !*optional
                 && !is_known_fortran_callable(callee, callables)
                 && (is_known_fortran_array(callee, arrays, array_fields)
-                    || matches!(&callee.kind, ExprKind::Index { .. } | ExprKind::ArrayMap { .. }))
+                    || matches!(
+                        &callee.kind,
+                        ExprKind::Index { .. } | ExprKind::ArrayMap { .. }
+                    ))
             {
                 expr.kind = build_fortran_index_chain(callee.as_ref().clone(), args);
             }
@@ -10003,12 +10010,7 @@ fn rewrite_remaining_fortran_array_calls_in_expr(
         }
         ExprKind::ArrayTransform { args, .. } => {
             for arg in args {
-                rewrite_remaining_fortran_array_calls_in_expr(
-                    arg,
-                    arrays,
-                    callables,
-                    array_fields,
-                );
+                rewrite_remaining_fortran_array_calls_in_expr(arg, arrays, callables, array_fields);
             }
         }
         ExprKind::Interpolation(parts) => {
@@ -11134,7 +11136,8 @@ fn resolve_fortran_array_expr_size(
                         null_safe: false,
                     }))
                 })?;
-            if let Some(inner) = resolve_fortran_array_expr_size(body, array_sizes, array_field_sizes)
+            if let Some(inner) =
+                resolve_fortran_array_expr_size(body, array_sizes, array_field_sizes)
             {
                 Some(Expression::new(ExprKind::Binary {
                     left: Box::new(outer),
@@ -11197,12 +11200,7 @@ fn resolve_fortran_array_expr_dim_size(
                     },
                 )
             } else {
-                resolve_fortran_array_expr_dim_size(
-                    body,
-                    dim - 1,
-                    array_sizes,
-                    array_field_sizes,
-                )
+                resolve_fortran_array_expr_dim_size(body, dim - 1, array_sizes, array_field_sizes)
             }
         }
         ExprKind::Array(items) => {
@@ -11977,9 +11975,9 @@ fn lower_fortran_array_assignment_target(
     match &target.kind {
         ExprKind::Index {
             object,
-        index,
-        null_safe,
-    } => match &index.kind {
+            index,
+            null_safe,
+        } => match &index.kind {
             ExprKind::Slice { lower, step, .. } => {
                 let base_index = lower
                     .as_deref()
@@ -12187,8 +12185,10 @@ fn lower_fortran_array_assignment_value(
         | ExprKind::Array(_)
         | ExprKind::ArrayTransform { .. }
         | ExprKind::Call { .. } => {
-            if matches!(expr.kind, ExprKind::Array(_) | ExprKind::ArrayTransform { .. })
-                || matches!(&expr.kind, ExprKind::Member { field, .. } if array_fields.contains(&field.to_ascii_lowercase()))
+            if matches!(
+                expr.kind,
+                ExprKind::Array(_) | ExprKind::ArrayTransform { .. }
+            ) || matches!(&expr.kind, ExprKind::Member { field, .. } if array_fields.contains(&field.to_ascii_lowercase()))
                 || matches!(&expr.kind, ExprKind::Ident(name) if arrays.contains(&name.to_ascii_lowercase()))
                 || expr_is_known_fortran_array(
                     expr,
@@ -13184,7 +13184,9 @@ fn rewrite_fortran_scalar_array_assignment(
 ) {
     match &mut statement.kind {
         StmtKind::Assign { targets, value, .. } => {
-            if let Some(rank) = resolve_fortran_array_expr_rank(value, array_ranks, array_field_ranks) {
+            if let Some(rank) =
+                resolve_fortran_array_expr_rank(value, array_ranks, array_field_ranks)
+            {
                 for target in targets.iter() {
                     if let Some(key) = fortran_array_target_key(target) {
                         array_ranks.insert(key, rank);
@@ -13336,8 +13338,9 @@ fn expr_is_known_fortran_array(
             _ => false,
         },
         ExprKind::ArrayMap { .. } => true,
-        ExprKind::Index { .. } => fortran_index_section_result_rank(expr)
-            .is_some_and(|rank| rank > 0),
+        ExprKind::Index { .. } => {
+            fortran_index_section_result_rank(expr).is_some_and(|rank| rank > 0)
+        }
         ExprKind::Slice { .. } => true,
         _ => false,
     }
@@ -14831,16 +14834,15 @@ fn lower_fortran_array_intrinsic_expr(
         }
         "size" => Some(if args.len() == 1 {
             resolve_fortran_array_expr_size(array_expr, array_sizes, array_field_sizes)
-                .unwrap_or_else(|| build_fortran_nested_array_size_expr(array_expr.clone(), rank, 0))
+                .unwrap_or_else(|| {
+                    build_fortran_nested_array_size_expr(array_expr.clone(), rank, 0)
+                })
         } else {
             let dim = fortran_literal_dim(&args[1..])?;
-            resolve_fortran_array_expr_dim_size(
-                array_expr,
-                dim,
-                array_sizes,
-                array_field_sizes,
-            )
-            .unwrap_or_else(|| build_fortran_nested_array_dim_size_expr(array_expr.clone(), dim))
+            resolve_fortran_array_expr_dim_size(array_expr, dim, array_sizes, array_field_sizes)
+                .unwrap_or_else(|| {
+                    build_fortran_nested_array_dim_size_expr(array_expr.clone(), dim)
+                })
         }),
         "lbound" => {
             if args.len() == 1 {
@@ -14863,24 +14865,19 @@ fn lower_fortran_array_intrinsic_expr(
             if args.len() == 1 {
                 Some(Expression::new(ExprKind::Array(
                     (1..=rank)
-                        .map(|dim| {
-                            ArrayElement {
-                                key: None,
-                                value: resolve_fortran_array_expr_dim_size(
-                                    array_expr,
-                                    dim,
-                                    array_sizes,
-                                    array_field_sizes,
-                                )
-                                .unwrap_or_else(|| {
-                                    build_fortran_nested_array_dim_size_expr(
-                                        array_expr.clone(),
-                                        dim,
-                                    )
-                                }),
-                                spread: false,
-                                by_ref: false,
-                            }
+                        .map(|dim| ArrayElement {
+                            key: None,
+                            value: resolve_fortran_array_expr_dim_size(
+                                array_expr,
+                                dim,
+                                array_sizes,
+                                array_field_sizes,
+                            )
+                            .unwrap_or_else(|| {
+                                build_fortran_nested_array_dim_size_expr(array_expr.clone(), dim)
+                            }),
+                            spread: false,
+                            by_ref: false,
                         })
                         .collect(),
                 )))
@@ -15466,10 +15463,7 @@ fn build_fortran_reduce_call(
     };
     let body = fortran_call(
         function,
-        vec![
-            Expression::ident(acc_name),
-            Expression::ident(item_name),
-        ],
+        vec![Expression::ident(acc_name), Expression::ident(item_name)],
     );
     let mut args = vec![Argument::positional(Expression::new(ExprKind::Lambda {
         params: vec![param(acc_name), param(item_name)],
@@ -15694,7 +15688,9 @@ fn resolve_fortran_array_expr_rank(
             resolve_fortran_array_expr_rank(body, array_ranks, array_field_ranks).unwrap_or(0) + 1,
         ),
         ExprKind::Slice { .. } => Some(1),
-        ExprKind::Index { object, index: _, .. } => {
+        ExprKind::Index {
+            object, index: _, ..
+        } => {
             if let Some(section_rank) = fortran_index_section_result_rank(expr) {
                 return (section_rank > 0).then_some(section_rank);
             }
@@ -16015,7 +16011,9 @@ fn rewrite_array_subscripts_in_expr(
                 }
             }
 
-            *index = Box::new(normalize_fortran_array_index_operand(index.as_ref().clone()));
+            *index = Box::new(normalize_fortran_array_index_operand(
+                index.as_ref().clone(),
+            ));
         }
         ExprKind::Slice { lower, upper, step } => {
             if let Some(lower) = lower.as_mut() {
@@ -16047,7 +16045,10 @@ fn rewrite_array_subscripts_in_expr(
                 && !*optional
                 && !is_known_fortran_callable(callee, callables)
                 && (is_known_fortran_array(callee, arrays, array_fields)
-                    || matches!(&callee.kind, ExprKind::Index { .. } | ExprKind::ArrayMap { .. }))
+                    || matches!(
+                        &callee.kind,
+                        ExprKind::Index { .. } | ExprKind::ArrayMap { .. }
+                    ))
             {
                 expr.kind = build_fortran_index_chain(callee.as_ref().clone(), args);
             }
@@ -16167,12 +16168,7 @@ fn rewrite_array_subscripts_in_expr(
 fn normalize_fortran_array_index_operand(index: Expression) -> Expression {
     let normalized = normalize_array_index_operand(index, FORTRAN_ARRAY_INDEXING);
     let span = normalized.span;
-    let ExprKind::Slice {
-        lower,
-        upper,
-        step,
-    } = normalized.kind
-    else {
+    let ExprKind::Slice { lower, upper, step } = normalized.kind else {
         return normalized;
     };
 
@@ -16652,7 +16648,9 @@ fn lower_fortran_transfer_markers_in_statement(
         StmtKind::While { cond, .. } | StmtKind::DoWhile { cond, .. } => {
             lower_fortran_transfer_markers_in_expr(cond, type_env)
         }
-        StmtKind::For { init, cond, update, .. } => {
+        StmtKind::For {
+            init, cond, update, ..
+        } => {
             if let Some(init) = init {
                 lower_fortran_transfer_markers_in_statement(init, type_env);
             }
@@ -17246,7 +17244,10 @@ fn rewrite_fortran_complex_expressions_in_expr(
         // way `a + b` arrives here as a plain `Binary`. On a complex operand a
         // numeric cast is not what either one means: both take the REAL PART,
         // and `int` truncates it afterwards.
-        ExprKind::Cast { expr: inner, type_name } => {
+        ExprKind::Cast {
+            expr: inner,
+            type_name,
+        } => {
             rewrite_fortran_complex_expressions_in_expr(inner, type_env);
             if !expr_is_fortran_complex_scalar(inner, type_env) {
                 return;
@@ -17934,7 +17935,11 @@ fn lower_intrinsic_expr_call(callee: &Expression, args: &[Argument]) -> Option<E
             if let ExprKind::Ident(function) = &positional_args[1].kind {
                 let named = |key: &str| {
                     args.iter()
-                        .find(|a| a.name.as_deref().is_some_and(|n| n.eq_ignore_ascii_case(key)))
+                        .find(|a| {
+                            a.name
+                                .as_deref()
+                                .is_some_and(|n| n.eq_ignore_ascii_case(key))
+                        })
                         .map(|a| a.value.clone())
                 };
                 // `DIM` reduces along one axis and needs the ranked machinery;
@@ -17958,11 +17963,15 @@ fn lower_intrinsic_expr_call(callee: &Expression, args: &[Argument]) -> Option<E
                 _ => return None,
             };
             let mut forwarded = vec![Argument::positional(positional_args[0].clone())];
-            forwarded.extend(args.iter().filter(|arg| {
-                arg.name
-                    .as_deref()
-                    .is_some_and(|name| name.eq_ignore_ascii_case("dim") || name.eq_ignore_ascii_case("mask"))
-            }).cloned());
+            forwarded.extend(
+                args.iter()
+                    .filter(|arg| {
+                        arg.name.as_deref().is_some_and(|name| {
+                            name.eq_ignore_ascii_case("dim") || name.eq_ignore_ascii_case("mask")
+                        })
+                    })
+                    .cloned(),
+            );
             Some(Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::ident(folded)),
                 args: forwarded,
@@ -18032,12 +18041,10 @@ fn lower_intrinsic_expr_call(callee: &Expression, args: &[Argument]) -> Option<E
         "int" if positional_args.len() > 1 || args.len() > positional_args.len() => {
             Some(fortran_call("int", vec![positional_args.first()?.clone()]))
         }
-        "real" | "dble" if !positional_args.is_empty() => {
-            Some(Expression::new(ExprKind::Cast {
-                expr: Box::new(positional_args[0].clone()),
-                type_name: "number".to_string(),
-            }))
-        }
+        "real" | "dble" if !positional_args.is_empty() => Some(Expression::new(ExprKind::Cast {
+            expr: Box::new(positional_args[0].clone()),
+            type_name: "number".to_string(),
+        })),
         "aint" if args.len() == 1 => Some(Expression::new(ExprKind::Call {
             callee: Box::new(Expression::ident("trunc")),
             args: vec![Argument::positional(args[0].value.clone())],
@@ -18238,8 +18245,7 @@ fn lower_intrinsic_expr_call(callee: &Expression, args: &[Argument]) -> Option<E
         // `"C"`; the identity is Fortran's own element order and the full
         // reversal is C's, which are the two the shared node names.
         "reshape" if positional_args.len() >= 2 => {
-            let mut transform_args =
-                vec![positional_args[0].clone(), positional_args[1].clone()];
+            let mut transform_args = vec![positional_args[0].clone(), positional_args[1].clone()];
             if let Some(pad) = fortran_argument("pad", 2, args, &positional_args) {
                 transform_args.push(pad);
             }
@@ -18266,21 +18272,17 @@ fn lower_intrinsic_expr_call(callee: &Expression, args: &[Argument]) -> Option<E
         // than one value. It is the same shape as an implied-do array
         // constructor, so it lowers to exactly that: `[(bessel_jn(i, x),
         // i = n1, n2)]`. No new machinery, and the scalar form stays untouched.
-        "bessel_jn" | "bessel_yn" if args.len() == 3 => {
-            Some(build_fortran_bessel_series_expr(
-                &lowered,
-                args[0].value.clone(),
-                args[1].value.clone(),
-                args[2].value.clone(),
-            ))
-        }
+        "bessel_jn" | "bessel_yn" if args.len() == 3 => Some(build_fortran_bessel_series_expr(
+            &lowered,
+            args[0].value.clone(),
+            args[1].value.clone(),
+            args[2].value.clone(),
+        )),
         // F2008 `norm2(a)` is the Euclidean norm — `sqrt(sum(a*a))`. Both
         // halves already exist, so this is a spelling, not a new primitive.
         // `norm2(a, dim)` folds along one dimension and passes `dim` straight
         // through to the same `sum`.
-        "norm2" if !args.is_empty() && args.len() <= 2 => {
-            Some(build_fortran_norm2_expr(&args))
-        }
+        "norm2" if !args.is_empty() && args.len() <= 2 => Some(build_fortran_norm2_expr(&args)),
         "mod" if args.len() == 2 => Some(Expression::new(ExprKind::Binary {
             op: BinOp::Mod,
             left: Box::new(args[0].value.clone()),
@@ -18417,7 +18419,9 @@ fn lower_intrinsic_expr_call(callee: &Expression, args: &[Argument]) -> Option<E
                 Some(arg) => fortran_const_int(arg)?,
                 None => 0,
             };
-            Some(Expression::int(fortran_selected_real_kind(precision, range)))
+            Some(Expression::int(fortran_selected_real_kind(
+                precision, range,
+            )))
         }
         "kind" if args.len() == 1 => {
             fold_fortran_type_inquiry("kind", &positional_args[0], &HashMap::new(), None)
@@ -18475,11 +18479,7 @@ fn lower_intrinsic_expr_call(callee: &Expression, args: &[Argument]) -> Option<E
             args[1].value.clone(),
         )),
         "ieee_rem" if args.len() == 2 => {
-            let quotient = fortran_bin(
-                BinOp::Div,
-                args[0].value.clone(),
-                args[1].value.clone(),
-            );
+            let quotient = fortran_bin(BinOp::Div, args[0].value.clone(), args[1].value.clone());
             Some(fortran_bin(
                 BinOp::Sub,
                 args[0].value.clone(),
@@ -18698,7 +18698,6 @@ fn fortran_bit_not(expr: Expression) -> Expression {
     })
 }
 
-
 fn fortran_call(name: &str, args: Vec<Expression>) -> Expression {
     Expression::new(ExprKind::Call {
         callee: Box::new(Expression::ident(name)),
@@ -18868,11 +18867,7 @@ fn build_fortran_btest_expr(value: Expression, pos: Expression) -> Expression {
 /// `1 << 0 - 1` being 0 already.
 fn build_fortran_maskr_expr(bits: Expression) -> Expression {
     fortran_ternary(
-        fortran_bin(
-            BinOp::GtEq,
-            bits.clone(),
-            Expression::int(FORTRAN_BIT_SIZE),
-        ),
+        fortran_bin(BinOp::GtEq, bits.clone(), Expression::int(FORTRAN_BIT_SIZE)),
         Expression::int(-1),
         fortran_bin(
             BinOp::Sub,
@@ -18905,11 +18900,7 @@ fn build_fortran_maskl_expr(bits: Expression) -> Expression {
 /// dividend's sign, so `mod(-2, 4)` is `-2` and a right rotate would come out
 /// as a negative shift count. `modulo(-2, 4)` is 2 — the equivalent left
 /// rotate, which is what a rotation by a negative amount means.
-fn build_fortran_ishftc_expr(
-    value: Expression,
-    shift: Expression,
-    size: Expression,
-) -> Expression {
+fn build_fortran_ishftc_expr(value: Expression, shift: Expression, size: Expression) -> Expression {
     // A full-width rotation IS `i32.rotl` — one instruction, and immune to this
     // region's `ShiftOverflow::Zero`, which the mask-and-shift lowering below is
     // not: it leans on `field >>> 32` being `field`, and under Fortran's own
@@ -18956,11 +18947,7 @@ fn build_fortran_dshiftl_expr(i: Expression, j: Expression, shift: Expression) -
         fortran_bin(
             BinOp::UShr,
             j.clone(),
-            fortran_bin(
-                BinOp::Sub,
-                Expression::int(FORTRAN_BIT_SIZE),
-                shift.clone(),
-            ),
+            fortran_bin(BinOp::Sub, Expression::int(FORTRAN_BIT_SIZE), shift.clone()),
         ),
     );
     fortran_ternary(
@@ -18982,11 +18969,7 @@ fn build_fortran_dshiftr_expr(i: Expression, j: Expression, shift: Expression) -
         fortran_bin(
             BinOp::Shl,
             i.clone(),
-            fortran_bin(
-                BinOp::Sub,
-                Expression::int(FORTRAN_BIT_SIZE),
-                shift.clone(),
-            ),
+            fortran_bin(BinOp::Sub, Expression::int(FORTRAN_BIT_SIZE), shift.clone()),
         ),
         fortran_bin(BinOp::UShr, j.clone(), shift.clone()),
     );
@@ -19003,11 +18986,7 @@ fn build_fortran_dshiftr_expr(i: Expression, j: Expression, shift: Expression) -
 
 /// `merge_bits(i, j, mask)` — bits of `i` where the mask is set, bits of `j`
 /// where it is clear.
-fn build_fortran_merge_bits_expr(
-    i: Expression,
-    j: Expression,
-    mask: Expression,
-) -> Expression {
+fn build_fortran_merge_bits_expr(i: Expression, j: Expression, mask: Expression) -> Expression {
     fortran_bin(
         BinOp::BitOr,
         fortran_bin(BinOp::BitAnd, i, mask.clone()),
@@ -19032,7 +19011,6 @@ fn build_fortran_bit_compare_expr(op: BinOp, i: Expression, j: Expression) -> Ex
         fortran_bin(BinOp::BitXor, j, sign_bit()),
     )
 }
-
 
 /// `norm2(a[, dim])` → `sqrt(sum(a * a[, dim]))`.
 fn build_fortran_norm2_expr(args: &[Argument]) -> Expression {
@@ -19124,7 +19102,8 @@ fn build_fortran_transfer_expr_with_hint(
     if fortran_type_hint_is_array(target_hint) {
         return build_fortran_transfer_array_expr(source, size, source_hint, target_hint);
     }
-    if source_hint.is_some_and(is_fortran_complex_type_hint) && !fortran_type_hint_is_array(target_hint)
+    if source_hint.is_some_and(is_fortran_complex_type_hint)
+        && !fortran_type_hint_is_array(target_hint)
     {
         return build_fortran_complex_expr_from_array(source);
     }
@@ -19283,9 +19262,9 @@ fn build_fortran_transfer_array_expr(
             || expr_is_fortran_complex_literalish(&source) =>
         {
             fortran_array_expr(vec![
-            fortran_complex_real_part(&source),
-            fortran_complex_imag_part(&source),
-        ])
+                fortran_complex_real_part(&source),
+                fortran_complex_imag_part(&source),
+            ])
         }
         _ if source_hint.is_some_and(fortran_type_hint_is_rank_gt_one) => {
             Expression::new(ExprKind::Call {
@@ -19612,11 +19591,7 @@ fn build_fortran_char_bytes_to_int_expr(source: Expression, len: usize) -> Expre
 
 /// The integer holding the 4 bytes starting at `offset`; storage past `len`
 /// reads as zero.
-fn build_fortran_char_bytes_to_int_at(
-    source: Expression,
-    len: usize,
-    offset: usize,
-) -> Expression {
+fn build_fortran_char_bytes_to_int_at(source: Expression, len: usize, offset: usize) -> Expression {
     let mut result = Expression::int(0);
     for idx in 0..len.saturating_sub(offset).min(4) {
         let code = build_fortran_char_code_at_expr(source.clone(), (offset + idx) as i64);
@@ -20323,9 +20298,10 @@ fn fortran_literal_kind_from_text(text: &str) -> Option<i64> {
         // `1.0_dp` names a kind PARAMETER whose value is not known here.
         return None;
     }
-    if !lowered.chars().all(|c| {
-        c.is_ascii_digit() || matches!(c, '.' | '+' | '-' | 'e' | 'd')
-    }) {
+    if !lowered
+        .chars()
+        .all(|c| c.is_ascii_digit() || matches!(c, '.' | '+' | '-' | 'e' | 'd'))
+    {
         return None;
     }
     // `1.0d0` is DOUBLE precision — that `d` is the whole difference.
@@ -20577,11 +20553,7 @@ fn fold_fortran_type_inquiry(
                 128 => (16384, -16381),
                 _ => (128, -125),
             };
-            if name == "maxexponent" {
-                max
-            } else {
-                min
-            }
+            if name == "maxexponent" { max } else { min }
         }
         _ => return None,
     };
@@ -20689,8 +20661,7 @@ fn lower_fortran_type_inquiry_in_expr(expr: &mut Expression, type_env: &HashMap<
                             let polymorphic = arg.trim().to_ascii_lowercase().starts_with("class(")
                                 || mold.trim().to_ascii_lowercase().starts_with("class(");
                             if !polymorphic {
-                                let same =
-                                    fortran_canonical_select_type_name(&arg) == mold_name;
+                                let same = fortran_canonical_select_type_name(&arg) == mold_name;
                                 *expr = Expression::new(ExprKind::Lit(Literal::Bool(same)));
                             }
                         }

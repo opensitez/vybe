@@ -301,10 +301,9 @@ impl Compiler {
             return self.canon(inner);
         }
 
-        if let Some(ty) = vybe_ast::builtin_types::classify_with(
-            &self.profile.builtin_type_spellings,
-            trimmed,
-        ) {
+        if let Some(ty) =
+            vybe_ast::builtin_types::classify_with(&self.profile.builtin_type_spellings, trimmed)
+        {
             return format!("builtin:{ty:?}");
         }
 

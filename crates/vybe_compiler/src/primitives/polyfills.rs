@@ -358,7 +358,9 @@ pub fn build_runtime_helpers(imports: &mut Chunk) -> RuntimeHelpers {
     }
     chunks.push(crate::primitives::collections::build_sort_in_place(imports));
     exports.push("__stdlib_sort_in_place");
-    chunks.push(crate::primitives::collections::build_sort_with_comparator(imports));
+    chunks.push(crate::primitives::collections::build_sort_with_comparator(
+        imports,
+    ));
     exports.push("__stdlib_sort_with_comparator");
     // `__stdlib_reversed` removed — `reversed()` inlines its polymorphic loop
     // in `crate::primitives::collections::emit_reversed`.
@@ -394,7 +396,9 @@ pub fn build_runtime_helpers(imports: &mut Chunk) -> RuntimeHelpers {
     // `__stdlib_tostring` removed — `str()` / `toString` route to
     // `ecma:string.String` directly (Python via `emit_helper`, others via
     // `emit_to_string`).
-    chunks.push(crate::primitives::strings::build_string_is_null_or_empty(imports));
+    chunks.push(crate::primitives::strings::build_string_is_null_or_empty(
+        imports,
+    ));
     exports.push("__stdlib_string_is_null_or_empty");
     chunks.push(crate::primitives::strings::build_string_is_null_or_whitespace(imports));
     exports.push("__stdlib_string_is_null_or_whitespace");
@@ -410,15 +414,21 @@ pub fn build_runtime_helpers(imports: &mut Chunk) -> RuntimeHelpers {
     exports.push("__stdlib_pascal_set_exclude");
     chunks.push(crate::primitives::sets::build_pascal_set_union(imports));
     exports.push("__stdlib_pascal_set_union");
-    chunks.push(crate::primitives::sets::build_pascal_set_intersection(imports));
+    chunks.push(crate::primitives::sets::build_pascal_set_intersection(
+        imports,
+    ));
     exports.push("__stdlib_pascal_set_intersection");
-    chunks.push(crate::primitives::sets::build_pascal_set_difference(imports));
+    chunks.push(crate::primitives::sets::build_pascal_set_difference(
+        imports,
+    ));
     exports.push("__stdlib_pascal_set_difference");
     chunks.push(crate::primitives::sets::build_pascal_set_contains(imports));
     exports.push("__stdlib_pascal_set_contains");
     chunks.push(crate::primitives::strings::build_pascal_str_insert(imports));
     exports.push("__stdlib_pascal_str_insert");
-    chunks.push(crate::primitives::strings::build_pascal_str_remove_range(imports));
+    chunks.push(crate::primitives::strings::build_pascal_str_remove_range(
+        imports,
+    ));
     exports.push("__stdlib_pascal_str_remove_range");
     chunks.push(crate::primitives::convert::build_is_numeric(imports));
     exports.push("__stdlib_isnumeric");
@@ -436,7 +446,9 @@ pub fn build_runtime_helpers(imports: &mut Chunk) -> RuntimeHelpers {
     exports.push("__stdlib_vartype");
     chunks.push(crate::primitives::strings::build_newline(imports));
     exports.push("__stdlib_newline");
-    chunks.push(crate::primitives::dict::build_dict_values_from_entries(imports));
+    chunks.push(crate::primitives::dict::build_dict_values_from_entries(
+        imports,
+    ));
     exports.push("__stdlib_dict_values_from_entries");
     chunks.push(crate::primitives::dict::build_setdefault(imports));
     exports.push("__stdlib_setdefault");
@@ -457,11 +469,26 @@ pub fn build_runtime_helpers(imports: &mut Chunk) -> RuntimeHelpers {
     // rather than going through bundled stdlib/polyfill helpers.
     chunks.push(crate::primitives::strings::build_format_map(imports));
     exports.push("__stdlib_format_map");
-    chunks.push(crate::primitives::convert::build_pyradix(imports, "__stdlib_pyhex", "0x", 16));
+    chunks.push(crate::primitives::convert::build_pyradix(
+        imports,
+        "__stdlib_pyhex",
+        "0x",
+        16,
+    ));
     exports.push("__stdlib_pyhex");
-    chunks.push(crate::primitives::convert::build_pyradix(imports, "__stdlib_pyoct", "0o", 8));
+    chunks.push(crate::primitives::convert::build_pyradix(
+        imports,
+        "__stdlib_pyoct",
+        "0o",
+        8,
+    ));
     exports.push("__stdlib_pyoct");
-    chunks.push(crate::primitives::convert::build_pyradix(imports, "__stdlib_pybin", "0b", 2));
+    chunks.push(crate::primitives::convert::build_pyradix(
+        imports,
+        "__stdlib_pybin",
+        "0b",
+        2,
+    ));
     exports.push("__stdlib_pybin");
     chunks.push(crate::primitives::math::build_isinf(imports));
     exports.push("__stdlib_isinf");
@@ -488,9 +515,13 @@ pub fn build_runtime_helpers(imports: &mut Chunk) -> RuntimeHelpers {
     exports.push("__stdlib_array_insert_range");
     chunks.push(crate::primitives::arrays::build_array_set_range(imports));
     exports.push("__stdlib_array_set_range");
-    chunks.push(crate::primitives::arrays::build_array_binary_search(imports));
+    chunks.push(crate::primitives::arrays::build_array_binary_search(
+        imports,
+    ));
     exports.push("__stdlib_array_binary_search");
-    chunks.push(crate::primitives::arrays::build_array_reverse_range(imports));
+    chunks.push(crate::primitives::arrays::build_array_reverse_range(
+        imports,
+    ));
     exports.push("__stdlib_array_reverse_range");
     // The receiver ABI is a MODULE property and rides on the module chunk —
     // which `imports` IS. Read it before the `&mut` borrows below.
@@ -519,11 +550,17 @@ pub fn build_runtime_helpers(imports: &mut Chunk) -> RuntimeHelpers {
     // Regex adapters: pattern-first (PHP `preg_*`, Python `re.*`) →
     // ECMA string-first. Same Layer-3 shape as the `String.Format`
     // dotnet adapter.
-    chunks.push(crate::primitives::regex::build_regex_replace_pat_first(imports));
+    chunks.push(crate::primitives::regex::build_regex_replace_pat_first(
+        imports,
+    ));
     exports.push("__stdlib_regex_replace_pat_first");
-    chunks.push(crate::primitives::regex::build_regex_split_pat_first(imports));
+    chunks.push(crate::primitives::regex::build_regex_split_pat_first(
+        imports,
+    ));
     exports.push("__stdlib_regex_split_pat_first");
-    chunks.push(crate::primitives::regex::build_regex_match_all_pat_first(imports));
+    chunks.push(crate::primitives::regex::build_regex_match_all_pat_first(
+        imports,
+    ));
     exports.push("__stdlib_regex_match_all_pat_first");
 
     RuntimeHelpers { chunks, exports }
@@ -575,7 +612,9 @@ fn build_runtime_helper_export(imports: &mut Chunk, name: &str) -> Option<Chunk>
         "__stdlib_task_new" => crate::primitives::channels::build_task_new(imports),
         "__stdlib_task_wait" => crate::primitives::channels::build_task_wait(imports),
         "__stdlib_sort_in_place" => crate::primitives::collections::build_sort_in_place(imports),
-        "__stdlib_sort_with_comparator" => crate::primitives::collections::build_sort_with_comparator(imports),
+        "__stdlib_sort_with_comparator" => {
+            crate::primitives::collections::build_sort_with_comparator(imports)
+        }
         "__stdlib_enumerate" => crate::primitives::collections::build_enumerate(imports),
         "__stdlib_sum" => crate::primitives::collections::build_sum(imports),
         "__stdlib_min" => crate::primitives::collections::build_min(imports),
@@ -590,19 +629,33 @@ fn build_runtime_helper_export(imports: &mut Chunk, name: &str) -> Option<Chunk>
         "__stdlib_pynext" => crate::primitives::collections::build_pynext(imports),
         "__stdlib_array_copy" => crate::primitives::arrays::build_array_copy(imports),
         "__stdlib_tostring" => crate::primitives::strings::build_to_string(imports),
-        "__stdlib_string_is_null_or_empty" => crate::primitives::strings::build_string_is_null_or_empty(imports),
-        "__stdlib_string_is_null_or_whitespace" => crate::primitives::strings::build_string_is_null_or_whitespace(imports),
+        "__stdlib_string_is_null_or_empty" => {
+            crate::primitives::strings::build_string_is_null_or_empty(imports)
+        }
+        "__stdlib_string_is_null_or_whitespace" => {
+            crate::primitives::strings::build_string_is_null_or_whitespace(imports)
+        }
         "__stdlib_str_insert" => crate::primitives::strings::build_str_insert(imports),
         "__stdlib_str_remove_start" => crate::primitives::strings::build_str_remove_start(imports),
         "__stdlib_str_remove_range" => crate::primitives::strings::build_str_remove_range(imports),
         "__stdlib_pascal_set_include" => crate::primitives::sets::build_pascal_set_include(imports),
         "__stdlib_pascal_set_exclude" => crate::primitives::sets::build_pascal_set_exclude(imports),
         "__stdlib_pascal_set_union" => crate::primitives::sets::build_pascal_set_union(imports),
-        "__stdlib_pascal_set_intersection" => crate::primitives::sets::build_pascal_set_intersection(imports),
-        "__stdlib_pascal_set_difference" => crate::primitives::sets::build_pascal_set_difference(imports),
-        "__stdlib_pascal_set_contains" => crate::primitives::sets::build_pascal_set_contains(imports),
-        "__stdlib_pascal_str_insert" => crate::primitives::strings::build_pascal_str_insert(imports),
-        "__stdlib_pascal_str_remove_range" => crate::primitives::strings::build_pascal_str_remove_range(imports),
+        "__stdlib_pascal_set_intersection" => {
+            crate::primitives::sets::build_pascal_set_intersection(imports)
+        }
+        "__stdlib_pascal_set_difference" => {
+            crate::primitives::sets::build_pascal_set_difference(imports)
+        }
+        "__stdlib_pascal_set_contains" => {
+            crate::primitives::sets::build_pascal_set_contains(imports)
+        }
+        "__stdlib_pascal_str_insert" => {
+            crate::primitives::strings::build_pascal_str_insert(imports)
+        }
+        "__stdlib_pascal_str_remove_range" => {
+            crate::primitives::strings::build_pascal_str_remove_range(imports)
+        }
         "__stdlib_isnumeric" => crate::primitives::convert::build_is_numeric(imports),
         "__stdlib_val" => crate::primitives::convert::build_val(imports),
         "__stdlib_iif" => crate::primitives::control_flow::build_iif(imports),
@@ -611,7 +664,9 @@ fn build_runtime_helper_export(imports: &mut Chunk, name: &str) -> Option<Chunk>
         "__stdlib_isdate" => crate::primitives::reflection::build_isdate(imports),
         "__stdlib_vartype" => crate::primitives::reflection::build_vartype(imports),
         "__stdlib_newline" => crate::primitives::strings::build_newline(imports),
-        "__stdlib_dict_values_from_entries" => crate::primitives::dict::build_dict_values_from_entries(imports),
+        "__stdlib_dict_values_from_entries" => {
+            crate::primitives::dict::build_dict_values_from_entries(imports)
+        }
         "__stdlib_setdefault" => crate::primitives::dict::build_setdefault(imports),
         "__stdlib_to_bytes" => crate::primitives::convert::build_to_bytes(imports),
         "__stdlib_id" => crate::primitives::reflection::build_id(imports),
@@ -622,9 +677,15 @@ fn build_runtime_helper_export(imports: &mut Chunk, name: &str) -> Option<Chunk>
                 .expect("no platform registered a numeric-format helper")(imports)
         }
         "__stdlib_format_map" => crate::primitives::strings::build_format_map(imports),
-        "__stdlib_pyhex" => crate::primitives::convert::build_pyradix(imports, "__stdlib_pyhex", "0x", 16),
-        "__stdlib_pyoct" => crate::primitives::convert::build_pyradix(imports, "__stdlib_pyoct", "0o", 8),
-        "__stdlib_pybin" => crate::primitives::convert::build_pyradix(imports, "__stdlib_pybin", "0b", 2),
+        "__stdlib_pyhex" => {
+            crate::primitives::convert::build_pyradix(imports, "__stdlib_pyhex", "0x", 16)
+        }
+        "__stdlib_pyoct" => {
+            crate::primitives::convert::build_pyradix(imports, "__stdlib_pyoct", "0o", 8)
+        }
+        "__stdlib_pybin" => {
+            crate::primitives::convert::build_pyradix(imports, "__stdlib_pybin", "0b", 2)
+        }
         "__stdlib_isinf" => crate::primitives::math::build_isinf(imports),
         "__stdlib_splice" => crate::primitives::slices::build_splice(imports),
         "__stdlib_slice" => crate::primitives::slices::build_slice(imports),
@@ -635,11 +696,19 @@ fn build_runtime_helper_export(imports: &mut Chunk, name: &str) -> Option<Chunk>
         "__stdlib_fmod" => crate::primitives::math::build_fmod(imports),
         "__stdlib_array_insert" => crate::primitives::arrays::build_array_insert(imports),
         "__stdlib_array_remove_at" => crate::primitives::arrays::build_array_remove_at(imports),
-        "__stdlib_array_remove_value" => crate::primitives::arrays::build_array_remove_value(imports),
-        "__stdlib_array_insert_range" => crate::primitives::arrays::build_array_insert_range(imports),
+        "__stdlib_array_remove_value" => {
+            crate::primitives::arrays::build_array_remove_value(imports)
+        }
+        "__stdlib_array_insert_range" => {
+            crate::primitives::arrays::build_array_insert_range(imports)
+        }
         "__stdlib_array_set_range" => crate::primitives::arrays::build_array_set_range(imports),
-        "__stdlib_array_binary_search" => crate::primitives::arrays::build_array_binary_search(imports),
-        "__stdlib_array_reverse_range" => crate::primitives::arrays::build_array_reverse_range(imports),
+        "__stdlib_array_binary_search" => {
+            crate::primitives::arrays::build_array_binary_search(imports)
+        }
+        "__stdlib_array_reverse_range" => {
+            crate::primitives::arrays::build_array_reverse_range(imports)
+        }
         "__stdlib_generator_next" => {
             let abi = imports.module_receiver_abi;
             build_generator_next(imports)
@@ -648,9 +717,7 @@ fn build_runtime_helper_export(imports: &mut Chunk, name: &str) -> Option<Chunk>
             let abi = imports.module_receiver_abi;
             build_async_generator_next(imports)
         }
-        "__stdlib_generator_self" => {
-            crate::primitives::generators::build_generator_self()
-        }
+        "__stdlib_generator_self" => crate::primitives::generators::build_generator_self(),
         "__stdlib_iter_drain" => {
             let abi = imports.module_receiver_abi;
             crate::primitives::generators::build_iter_drain(imports)

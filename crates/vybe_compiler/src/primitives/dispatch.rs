@@ -20,15 +20,15 @@
 //! `false` if the name is unknown — letting the caller fall through to its
 //! own dispatch for language-specific common ops.
 
-use vybe_runtime::Chunk;
 use vybe_ast::{BitLane, FloatLane, MidpointPolicy, NumericRepr};
+use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
 
 use crate::primitives::threading as thread_adapter;
 use crate::primitives::{
     base64, collections, config, csv, dict, fs_path, heap, http_cookie, http_form,
-    http_request_env, http_session,
-    io, object, ops, paths, reflection, sets, strings, threading, url, xml,
+    http_request_env, http_session, io, object, ops, paths, reflection, sets, strings, threading,
+    url, xml,
 };
 
 /// Handle common ops that need only a chunk and line.
@@ -572,6 +572,12 @@ pub fn emit_common(
         "collections.rank" => collections::emit_rank(chunks, current, line),
         "collections.get" => collections::emit_get(chunks, current, line),
         "collections.set" => collections::emit_set(chunks, current, line),
+        "memory.bytes_get_item" => {
+            crate::primitives::memory::emit_bytes_get_item(chunks, current, line)
+        }
+        "memory.bytes_set_item" => {
+            crate::primitives::memory::emit_bytes_set_item(chunks, current, line)
+        }
         "collections.contains" => collections::emit_contains(chunks, current, line),
         "tuple.value_eq" => {
             crate::primitives::tuples::emit_tuple_value_eq(&mut chunks[current], line)
@@ -733,9 +739,11 @@ pub fn emit_common(
         // three ways and each row says which one it means.
         "math.min_num" => crate::primitives::math::emit_min_num(&mut chunks[current], line),
         "math.max_num" => crate::primitives::math::emit_max_num(&mut chunks[current], line),
-        "math.round_half_even" => {
-            crate::primitives::math::emit_round(&mut chunks[current], MidpointPolicy::HalfEven, line)
-        }
+        "math.round_half_even" => crate::primitives::math::emit_round(
+            &mut chunks[current],
+            MidpointPolicy::HalfEven,
+            line,
+        ),
         "math.round_half_away" => crate::primitives::math::emit_round(
             &mut chunks[current],
             MidpointPolicy::HalfAwayFromZero,
@@ -744,18 +752,30 @@ pub fn emit_common(
         "math.round_half_up" => {
             crate::primitives::math::emit_round(&mut chunks[current], MidpointPolicy::HalfUp, line)
         }
-        "math.next_up32" => {
-            crate::primitives::math::emit_next_toward(&mut chunks[current], true, FloatLane::F32, line)
-        }
-        "math.next_up64" => {
-            crate::primitives::math::emit_next_toward(&mut chunks[current], true, FloatLane::F64, line)
-        }
-        "math.next_down32" => {
-            crate::primitives::math::emit_next_toward(&mut chunks[current], false, FloatLane::F32, line)
-        }
-        "math.next_down64" => {
-            crate::primitives::math::emit_next_toward(&mut chunks[current], false, FloatLane::F64, line)
-        }
+        "math.next_up32" => crate::primitives::math::emit_next_toward(
+            &mut chunks[current],
+            true,
+            FloatLane::F32,
+            line,
+        ),
+        "math.next_up64" => crate::primitives::math::emit_next_toward(
+            &mut chunks[current],
+            true,
+            FloatLane::F64,
+            line,
+        ),
+        "math.next_down32" => crate::primitives::math::emit_next_toward(
+            &mut chunks[current],
+            false,
+            FloatLane::F32,
+            line,
+        ),
+        "math.next_down64" => crate::primitives::math::emit_next_toward(
+            &mut chunks[current],
+            false,
+            FloatLane::F64,
+            line,
+        ),
         "math.next_after32" => {
             crate::primitives::math::emit_next_after(&mut chunks[current], FloatLane::F32, line)
         }

@@ -7,11 +7,11 @@
 //! primitives.
 
 use std::sync::Arc;
-use vybe_runtime::opcode::Op;
-use vybe_runtime::{Chunk, Value};
 use vybe_compiler::primitives::class_slots::{
     self, ClassSlot, Dest, ObjSource, PlainNames, ValueSource,
 };
+use vybe_runtime::opcode::Op;
+use vybe_runtime::{Chunk, Value};
 
 fn call1(chunk: &mut Chunk, import_idx: u16, line: u32) {
     chunk.emit_call(import_idx, 1, line);
@@ -182,8 +182,18 @@ fn emit_lua_assoc_map(
         save(&mut chunks[current], assoc_slot, line);
         load(&mut chunks[current], table_slot, line);
         load(&mut chunks[current], assoc_slot, line);
-        let key_idx = class_slots::resolve_interned(&mut chunks[current], &ClassSlot::internal("__lua_assoc"), &PlainNames);
-        class_slots::emit_class_set(&mut chunks[current], ObjSource::Stack, &key_idx, ValueSource::Stack, line);
+        let key_idx = class_slots::resolve_interned(
+            &mut chunks[current],
+            &ClassSlot::internal("__lua_assoc"),
+            &PlainNames,
+        );
+        class_slots::emit_class_set(
+            &mut chunks[current],
+            ObjSource::Stack,
+            &key_idx,
+            ValueSource::Stack,
+            line,
+        );
         load(&mut chunks[current], assoc_slot, line);
     } else {
         chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
@@ -439,8 +449,10 @@ pub fn emit_lua_table_from_pairs(chunks: &mut Vec<Chunk>, current: usize, argc: 
 fn emit_lua_tagged_handle(chunk: &mut Chunk, lua_type: &str, name: &str, line: u32) {
     let object = chunk.alloc_scratch(1);
     let object_new = chunk.add_import("ecma:object", "new");
-    let type_key = class_slots::resolve_interned(chunk, &ClassSlot::internal("__lua_type"), &PlainNames);
-    let name_key = class_slots::resolve_interned(chunk, &ClassSlot::internal("__lua_name"), &PlainNames);
+    let type_key =
+        class_slots::resolve_interned(chunk, &ClassSlot::internal("__lua_type"), &PlainNames);
+    let name_key =
+        class_slots::resolve_interned(chunk, &ClassSlot::internal("__lua_name"), &PlainNames);
 
     chunk.emit_call(object_new, 0, line);
     save(chunk, object, line);
@@ -487,22 +499,52 @@ pub fn emit_lua_coroutine_create(chunks: &mut Vec<Chunk>, current: usize, argc: 
     let func = chunks[current].alloc_scratch(1);
     let co = chunks[current].alloc_scratch(1);
     let object_new = chunks[current].add_import("ecma:object", "new");
-    let type_key = class_slots::resolve_interned(&mut chunks[current], &ClassSlot::internal("__lua_type"), &PlainNames);
-    let state_key = class_slots::resolve_interned(&mut chunks[current], &ClassSlot::internal("__lua_state"), &PlainNames);
-    let fn_key = class_slots::resolve_interned(&mut chunks[current], &ClassSlot::internal("__lua_fn"), &PlainNames);
+    let type_key = class_slots::resolve_interned(
+        &mut chunks[current],
+        &ClassSlot::internal("__lua_type"),
+        &PlainNames,
+    );
+    let state_key = class_slots::resolve_interned(
+        &mut chunks[current],
+        &ClassSlot::internal("__lua_state"),
+        &PlainNames,
+    );
+    let fn_key = class_slots::resolve_interned(
+        &mut chunks[current],
+        &ClassSlot::internal("__lua_fn"),
+        &PlainNames,
+    );
 
     save(&mut chunks[current], func, line);
     chunks[current].emit_call(object_new, 0, line);
     save(&mut chunks[current], co, line);
     load(&mut chunks[current], co, line);
     chunks[current].emit_string_const("thread", line);
-    class_slots::emit_class_set(&mut chunks[current], ObjSource::Stack, &type_key, ValueSource::Stack, line);
+    class_slots::emit_class_set(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &type_key,
+        ValueSource::Stack,
+        line,
+    );
     load(&mut chunks[current], co, line);
     chunks[current].emit_string_const("suspended", line);
-    class_slots::emit_class_set(&mut chunks[current], ObjSource::Stack, &state_key, ValueSource::Stack, line);
+    class_slots::emit_class_set(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &state_key,
+        ValueSource::Stack,
+        line,
+    );
     load(&mut chunks[current], co, line);
     load(&mut chunks[current], func, line);
-    class_slots::emit_class_set(&mut chunks[current], ObjSource::Stack, &fn_key, ValueSource::Stack, line);
+    class_slots::emit_class_set(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &fn_key,
+        ValueSource::Stack,
+        line,
+    );
     load(&mut chunks[current], co, line);
 }
 
@@ -1542,16 +1584,36 @@ fn emit_lua_main_thread(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     emit_is_missing_value(&mut chunks[current], main_slot, line);
     chunks[current].emit_if(line);
     let object_new = chunks[current].add_import("ecma:object", "new");
-    let type_key = class_slots::resolve_interned(&mut chunks[current], &ClassSlot::internal("__lua_type"), &PlainNames);
-    let state_key = class_slots::resolve_interned(&mut chunks[current], &ClassSlot::internal("__lua_state"), &PlainNames);
+    let type_key = class_slots::resolve_interned(
+        &mut chunks[current],
+        &ClassSlot::internal("__lua_type"),
+        &PlainNames,
+    );
+    let state_key = class_slots::resolve_interned(
+        &mut chunks[current],
+        &ClassSlot::internal("__lua_state"),
+        &PlainNames,
+    );
     chunks[current].emit_call(object_new, 0, line);
     save(&mut chunks[current], main_slot, line);
     load(&mut chunks[current], main_slot, line);
     chunks[current].emit_string_const("thread", line);
-    class_slots::emit_class_set(&mut chunks[current], ObjSource::Stack, &type_key, ValueSource::Stack, line);
+    class_slots::emit_class_set(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &type_key,
+        ValueSource::Stack,
+        line,
+    );
     load(&mut chunks[current], main_slot, line);
     chunks[current].emit_string_const("running", line);
-    class_slots::emit_class_set(&mut chunks[current], ObjSource::Stack, &state_key, ValueSource::Stack, line);
+    class_slots::emit_class_set(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &state_key,
+        ValueSource::Stack,
+        line,
+    );
     load(&mut chunks[current], main_slot, line);
     emit_lua_global_set(&mut chunks[current], "__lua_main_coroutine", line);
     chunks[current].emit_end(line);
@@ -1811,7 +1873,11 @@ fn emit_lua_set_metatable_for_value(
 ) {
     let type_of = chunks[current].add_import("ecma:value", "typeof");
     let str_compare = chunks[current].add_import("wasm:js-string", "compare");
-    let mt_key = class_slots::resolve_interned(&mut chunks[current], &ClassSlot::internal("__lua_metatable"), &PlainNames);
+    let mt_key = class_slots::resolve_interned(
+        &mut chunks[current],
+        &ClassSlot::internal("__lua_metatable"),
+        &PlainNames,
+    );
 
     emit_is_missing_value(&mut chunks[current], value_slot, line);
     chunks[current].emit_if(line);
@@ -1860,7 +1926,13 @@ fn emit_lua_set_metatable_for_value(
 
     load(&mut chunks[current], value_slot, line);
     load(&mut chunks[current], mt_slot, line);
-    class_slots::emit_class_set(&mut chunks[current], ObjSource::Stack, &mt_key, ValueSource::Stack, line);
+    class_slots::emit_class_set(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &mt_key,
+        ValueSource::Stack,
+        line,
+    );
 
     chunks[current].emit_end(line);
     chunks[current].emit_end(line);
@@ -2963,7 +3035,11 @@ pub fn emit_metamethod_newindex(chunks: &mut Vec<Chunk>, current: usize, argc: u
         let done_slot = chunks[current].alloc_scratch(1);
         let type_of = chunks[current].add_import("ecma:value", "typeof");
         let str_compare = chunks[current].add_import("wasm:js-string", "compare");
-        let active_key = class_slots::resolve_interned(&mut chunks[current], &ClassSlot::internal("__lua_newindex_active"), &PlainNames);
+        let active_key = class_slots::resolve_interned(
+            &mut chunks[current],
+            &ClassSlot::internal("__lua_newindex_active"),
+            &PlainNames,
+        );
 
         save(&mut chunks[current], value_slot, line);
         save(&mut chunks[current], key_slot, line);
@@ -3045,7 +3121,13 @@ pub fn emit_metamethod_newindex(chunks: &mut Vec<Chunk>, current: usize, argc: u
         chunks[current].emit_if(line);
         load(&mut chunks[current], current_slot, line);
         load(&mut chunks[current], key_slot, line);
-        class_slots::emit_class_set(&mut chunks[current], ObjSource::Stack, &active_key, ValueSource::Stack, line);
+        class_slots::emit_class_set(
+            &mut chunks[current],
+            ObjSource::Stack,
+            &active_key,
+            ValueSource::Stack,
+            line,
+        );
         load(&mut chunks[current], method_slot, line);
         load(&mut chunks[current], current_slot, line);
         load(&mut chunks[current], key_slot, line);
@@ -3054,7 +3136,13 @@ pub fn emit_metamethod_newindex(chunks: &mut Vec<Chunk>, current: usize, argc: u
         chunks[current].emit_op(Op::DROP, line);
         load(&mut chunks[current], current_slot, line);
         chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
-        class_slots::emit_class_set(&mut chunks[current], ObjSource::Stack, &active_key, ValueSource::Stack, line);
+        class_slots::emit_class_set(
+            &mut chunks[current],
+            ObjSource::Stack,
+            &active_key,
+            ValueSource::Stack,
+            line,
+        );
         i32_const(&mut chunks[current], 1, line);
         save(&mut chunks[current], done_slot, line);
         chunks[current].emit_else(line);
@@ -3265,7 +3353,15 @@ pub fn emit_lua_pcall(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u
     emit_lua_call_fixed(chunks, current, base, argc, Receiver::Absent, line);
     save(&mut chunks[current], value_slot, line);
     chunks[current].emit_else(line);
-    emit_lua_call_rest_dispatch(chunks, current, base, argc, rest_arity, Receiver::Absent, line);
+    emit_lua_call_rest_dispatch(
+        chunks,
+        current,
+        base,
+        argc,
+        rest_arity,
+        Receiver::Absent,
+        line,
+    );
     save(&mut chunks[current], value_slot, line);
     chunks[current].emit_end(line);
     vybe_compiler::primitives::errors::emit_try_end(&mut chunks[current], line);
@@ -3410,7 +3506,15 @@ pub fn emit_lua_xpcall(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: 
     emit_lua_call_fixed(chunks, current, call_base, argc - 1, Receiver::Absent, line);
     save(&mut chunks[current], value_slot, line);
     chunks[current].emit_else(line);
-    emit_lua_call_rest_dispatch(chunks, current, call_base, argc - 1, rest_arity, Receiver::Absent, line);
+    emit_lua_call_rest_dispatch(
+        chunks,
+        current,
+        call_base,
+        argc - 1,
+        rest_arity,
+        Receiver::Absent,
+        line,
+    );
     save(&mut chunks[current], value_slot, line);
     chunks[current].emit_end(line);
     vybe_compiler::primitives::errors::emit_try_end(&mut chunks[current], line);

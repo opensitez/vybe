@@ -58,7 +58,11 @@ pub fn emit_cell_new_from_local(chunks: &mut [Chunk], current: usize, local_slot
 /// store through it (an atomic store), and an atomic RMW asks for `__addr`.
 pub fn emit_shared_word_new(chunks: &mut [Chunk], current: usize, value_slot: u16, line: u32) {
     let addr_slot = chunks[current].alloc_scratch(1);
-    crate::primitives::bundle::emit_call_push_func(&mut chunks[current], "__vybe_futex_alloc16", line);
+    crate::primitives::bundle::emit_call_push_func(
+        &mut chunks[current],
+        "__vybe_futex_alloc16",
+        line,
+    );
     crate::primitives::bundle::emit_call_invoke(&mut chunks[current], 0, line);
     chunks[current].emit_op_u16(Op::LOCAL_TEE, addr_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);

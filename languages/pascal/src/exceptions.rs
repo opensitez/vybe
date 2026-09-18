@@ -69,7 +69,9 @@ pub fn is_tree_root_class(name: &str) -> bool {
     let name = name.trim();
     name.eq_ignore_ascii_case("TObject")
         || name.eq_ignore_ascii_case("TInterfacedObject")
-        || EXCEPTION_TYPES.iter().any(|(spelling, _)| spelling.eq_ignore_ascii_case(name))
+        || EXCEPTION_TYPES
+            .iter()
+            .any(|(spelling, _)| spelling.eq_ignore_ascii_case(name))
 }
 
 /// The root classes' supertype chains, leaf first.

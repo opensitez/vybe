@@ -4,9 +4,9 @@
 //! Enum handling → `primitives/enums.rs`; reflection → `primitives/reflection.rs`;
 //! TryParse/TryGetValue are walker desugars.
 
-use crate::primitives::class_slots;
 use super::*;
 use crate::primitives::calls::resolve_receiver_type_hint;
+use crate::primitives::class_slots;
 
 impl Compiler {
     pub(super) fn try_compile_dotnet_case_insensitive_collection_call(
@@ -45,7 +45,8 @@ impl Compiler {
                     self.emit_host_call(idx, 3);
                     self.emit(Op::DROP);
 
-                    let keys_key = self.resolve_slot_interned(&class_slots::ClassSlot::internal("__keys"));
+                    let keys_key =
+                        self.resolve_slot_interned(&class_slots::ClassSlot::internal("__keys"));
                     self.emit_u16(Op::LOCAL_GET, obj_slot);
                     self.class_get_resolved(class_slots::ObjSource::Stack, &keys_key);
                     self.emit_u16(Op::LOCAL_SET, keys_slot);

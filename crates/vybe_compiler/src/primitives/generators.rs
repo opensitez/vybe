@@ -1340,23 +1340,15 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, obj_slot);
         self.emit_generator_yield_value(value_slot);
         {
-
             let line = self.line;
 
             class_slots::emit_class_set(
-
                 self.chunk(),
-
                 class_slots::ObjSource::Stack,
-
                 &current_key,
-
                 class_slots::ValueSource::Stack,
-
                 line,
-
             );
-
         }
     }
 
@@ -1372,23 +1364,15 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, obj_slot);
         self.emit_u16(Op::LOCAL_GET, value_slot);
         {
-
             let line = self.line;
 
             class_slots::emit_class_set(
-
                 self.chunk(),
-
                 class_slots::ObjSource::Stack,
-
                 &return_key,
-
                 class_slots::ValueSource::Stack,
-
                 line,
-
             );
-
         }
         self.emit_buffered_generator_set_bool_property(obj_slot, current_key, false);
     }
@@ -1558,10 +1542,14 @@ impl Compiler {
         has_more_slot: u16,
         value_slot: u16,
     ) {
-        let started_key = self.resolve_slot_interned(&class_slots::ClassSlot::internal("__php_gen_started"));
-        let current_key = self.resolve_slot_interned(&class_slots::ClassSlot::internal("__php_gen_current"));
-        let done_key = self.resolve_slot_interned(&class_slots::ClassSlot::internal("__php_gen_done"));
-        let return_key = self.resolve_slot_interned(&class_slots::ClassSlot::internal("__php_gen_return"));
+        let started_key =
+            self.resolve_slot_interned(&class_slots::ClassSlot::internal("__php_gen_started"));
+        let current_key =
+            self.resolve_slot_interned(&class_slots::ClassSlot::internal("__php_gen_current"));
+        let done_key =
+            self.resolve_slot_interned(&class_slots::ClassSlot::internal("__php_gen_done"));
+        let return_key =
+            self.resolve_slot_interned(&class_slots::ClassSlot::internal("__php_gen_return"));
 
         self.emit_u16(Op::LOCAL_GET, cont_slot);
         self.emit_const(Value::Bool(true));
@@ -1687,46 +1675,30 @@ impl Compiler {
             "getReturn" => {
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
                 {
-
                     let line = self.line;
 
                     class_slots::emit_class_get(
-
                         self.chunk(),
-
                         class_slots::ObjSource::Stack,
-
                         &return_key,
-
                         class_slots::Dest::Stack,
-
                         line,
-
                     );
-
                 }
                 self.emit_u16(Op::LOCAL_SET, result_slot);
             }
             "valid" => {
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
                 {
-
                     let line = self.line;
 
                     class_slots::emit_class_get(
-
                         self.chunk(),
-
                         class_slots::ObjSource::Stack,
-
                         &started_key,
-
                         class_slots::Dest::Stack,
-
                         line,
-
                     );
-
                 }
                 {
                     let line = self.line;
@@ -1737,23 +1709,15 @@ impl Compiler {
 
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
                 {
-
                     let line = self.line;
 
                     class_slots::emit_class_get(
-
                         self.chunk(),
-
                         class_slots::ObjSource::Stack,
-
                         &done_key,
-
                         class_slots::Dest::Stack,
-
                         line,
-
                     );
-
                 }
                 {
                     let line = self.line;
@@ -1780,23 +1744,15 @@ impl Compiler {
             "current" => {
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
                 {
-
                     let line = self.line;
 
                     class_slots::emit_class_get(
-
                         self.chunk(),
-
                         class_slots::ObjSource::Stack,
-
                         &started_key,
-
                         class_slots::Dest::Stack,
-
                         line,
-
                     );
-
                 }
                 {
                     let line = self.line;
@@ -1807,23 +1763,15 @@ impl Compiler {
 
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
                 {
-
                     let line = self.line;
 
                     class_slots::emit_class_get(
-
                         self.chunk(),
-
                         class_slots::ObjSource::Stack,
-
                         &done_key,
-
                         class_slots::Dest::Stack,
-
                         line,
-
                     );
-
                 }
                 {
                     let line = self.line;
@@ -1836,23 +1784,15 @@ impl Compiler {
                 self.chunk().emit_else(line);
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
                 {
-
                     let line = self.line;
 
                     class_slots::emit_class_get(
-
                         self.chunk(),
-
                         class_slots::ObjSource::Stack,
-
                         &current_key,
-
                         class_slots::Dest::Stack,
-
                         line,
-
                     );
-
                 }
                 self.emit_u16(Op::LOCAL_SET, result_slot);
 
@@ -1872,23 +1812,15 @@ impl Compiler {
             "send" | "next" => {
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
                 {
-
                     let line = self.line;
 
                     class_slots::emit_class_get(
-
                         self.chunk(),
-
                         class_slots::ObjSource::Stack,
-
                         &started_key,
-
                         class_slots::Dest::Stack,
-
                         line,
-
                     );
-
                 }
                 {
                     let line = self.line;
@@ -1899,23 +1831,15 @@ impl Compiler {
 
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
                 {
-
                     let line = self.line;
 
                     class_slots::emit_class_get(
-
                         self.chunk(),
-
                         class_slots::ObjSource::Stack,
-
                         &done_key,
-
                         class_slots::Dest::Stack,
-
                         line,
-
                     );
-
                 }
                 {
                     let line = self.line;
@@ -1958,7 +1882,8 @@ impl Compiler {
                 );
                 self.chunk().emit_end(line);
                 // Mark as moved for rewind() check
-                let moved_key = self.resolve_slot_interned(&class_slots::ClassSlot::internal("__php_gen_moved"));
+                let moved_key = self
+                    .resolve_slot_interned(&class_slots::ClassSlot::internal("__php_gen_moved"));
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
                 self.emit_const(Value::Bool(true));
                 self.class_set_resolved(
@@ -1970,23 +1895,15 @@ impl Compiler {
             "throw" => {
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
                 {
-
                     let line = self.line;
 
                     class_slots::emit_class_get(
-
                         self.chunk(),
-
                         class_slots::ObjSource::Stack,
-
                         &started_key,
-
                         class_slots::Dest::Stack,
-
                         line,
-
                     );
-
                 }
                 {
                     let line = self.line;
@@ -1997,23 +1914,15 @@ impl Compiler {
 
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
                 {
-
                     let line = self.line;
 
                     class_slots::emit_class_get(
-
                         self.chunk(),
-
                         class_slots::ObjSource::Stack,
-
                         &done_key,
-
                         class_slots::Dest::Stack,
-
                         line,
-
                     );
-
                 }
                 {
                     let line = self.line;
@@ -2052,23 +1961,15 @@ impl Compiler {
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
                 self.emit_const(Value::Bool(true));
                 {
-
                     let line = self.line;
 
                     class_slots::emit_class_set(
-
                         self.chunk(),
-
                         class_slots::ObjSource::Stack,
-
                         &started_key,
-
                         class_slots::ValueSource::Stack,
-
                         line,
-
                     );
-
                 }
 
                 self.emit_u16(Op::LOCAL_GET, has_more_slot);
@@ -2114,7 +2015,10 @@ impl Compiler {
             "rewind" => {
                 // PHP Generator::rewind() throws if the generator has
                 // been advanced past the initial yield (via next/send).
-                self.class_get(class_slots::ObjSource::Local(obj_tmp), &class_slots::ClassSlot::internal("__php_gen_moved"));
+                self.class_get(
+                    class_slots::ObjSource::Local(obj_tmp),
+                    &class_slots::ClassSlot::internal("__php_gen_moved"),
+                );
                 {
                     let line = self.line;
                     crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
@@ -2154,12 +2058,18 @@ impl Compiler {
         self.chunk().emit_if(line);
 
         self.emit_u16(Op::LOCAL_GET, gen_slot);
-        self.class_get(class_slots::ObjSource::Stack, &class_slots::ClassSlot::internal("__php_gen_started"));
+        self.class_get(
+            class_slots::ObjSource::Stack,
+            &class_slots::ClassSlot::internal("__php_gen_started"),
+        );
         crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
         self.chunk().emit_if(line);
 
         self.emit_u16(Op::LOCAL_GET, gen_slot);
-        self.class_get(class_slots::ObjSource::Stack, &class_slots::ClassSlot::internal("__php_gen_done"));
+        self.class_get(
+            class_slots::ObjSource::Stack,
+            &class_slots::ClassSlot::internal("__php_gen_done"),
+        );
         crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
         self.emit(Op::I32_EQZ);
         self.chunk().emit_if(line);
@@ -2182,7 +2092,6 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, result_slot as u16);
     }
 }
-
 
 // ── Linkable chunk builders ──────────────────────────────────────────────────
 //

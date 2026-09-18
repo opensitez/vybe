@@ -8,9 +8,7 @@
 //!   (stub: trimStart for now; full adjustl needs declared length).
 //! - `adjustr(s)` — symmetric.
 
-use vybe_compiler::primitives::class_slots::{
-    self, ClassSlot, Dest, ObjSource, PlainNames,
-};
+use vybe_compiler::primitives::class_slots::{self, ClassSlot, Dest, ObjSource, PlainNames};
 use vybe_compiler::primitives::instructions::host;
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;

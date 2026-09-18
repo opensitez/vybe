@@ -433,8 +433,7 @@ pub fn emit_add_mode(chunks: &mut [Chunk], current: usize, semantics: SetSemanti
             SetMutationResult::Void => {
                 emit_add_snapshot(chunks, current, line);
                 chunks[current].emit_op(Op::DROP, line);
-                chunks[current]
-                    .emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+                chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
             }
         }
         return;
@@ -514,8 +513,7 @@ pub fn emit_delete_mode(chunks: &mut [Chunk], current: usize, semantics: SetSema
             SetMutationResult::Void => {
                 emit_delete_snapshot(chunks, current, line);
                 chunks[current].emit_op(Op::DROP, line);
-                chunks[current]
-                    .emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+                chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
             }
         }
         return;
@@ -935,7 +933,6 @@ pub fn emit_disjoint_mode(
 pub fn emit_values_array(chunks: &mut [Chunk], current: usize, line: u32) {
     crate::primitives::collections::emit_iter_for_of(chunks, current, line);
 }
-
 
 // ── Linkable chunk builders ──────────────────────────────────────────────────
 //

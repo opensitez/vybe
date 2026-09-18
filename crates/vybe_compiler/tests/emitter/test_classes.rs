@@ -342,9 +342,21 @@ fn free_globals_are_declared_as_host_imports() {
     let mut chunk = Chunk::new("<script>");
     let read_only = chunk.add_constant(Value::String(std::sync::Arc::from("globalThis")));
     let written = chunk.add_constant(Value::String(std::sync::Arc::from("myVar")));
-    chunk.emit_op_u16(Op::GLOBAL_GET, read_only, 0);
-    chunk.emit_op_u16(Op::GLOBAL_SET, written, 0);
-    chunk.emit_op_u16(Op::GLOBAL_GET, written, 0);
+    chunk.emit_op_u16(
+        Op::GLOBAL_GET,
+        read_only.try_into().expect("test constant index fits u16"),
+        0,
+    );
+    chunk.emit_op_u16(
+        Op::GLOBAL_SET,
+        written.try_into().expect("test constant index fits u16"),
+        0,
+    );
+    chunk.emit_op_u16(
+        Op::GLOBAL_GET,
+        written.try_into().expect("test constant index fits u16"),
+        0,
+    );
     chunk.emit_op(Op::RETURN, 0);
 
     let mut chunks = vec![chunk];

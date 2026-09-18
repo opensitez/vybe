@@ -6,8 +6,8 @@
 //! host imports, so adapters can share the same core instead of each spelling
 //! reaching directly for `btoa`/`atob`.
 
-use vybe_runtime::opcode::Op;
 use vybe_runtime::Chunk;
+use vybe_runtime::opcode::Op;
 
 use crate::primitives::instructions::host;
 use crate::primitives::{collections, loops, strings};

@@ -60,20 +60,16 @@ pub fn heap_zeroed_array(count: usize) -> Expression {
 /// `calloc(w * h, 1)` is how chocolate-doom allocates its screens, so this sat
 /// directly on the Doom path.
 ///
-/// Lowered as `new Array(count).fill(0)` — the same shape the VM already builds
-/// for every other language, verified byte-identical to node's.
+/// Lowered as the common primitive `Array(count, 0)`.
+///
+/// The builtin compiler recognizes this narrow call shape and emits
+/// `newWithLength + fill` directly. Keeping the primitive as a call marker avoids
+/// routing C-sized allocations through JS constructor/member dispatch
+/// (`new Array(n).fill(0)`), which is both slower and far larger in bytecode.
 pub fn heap_zeroed_array_sized(count: Expression) -> Expression {
-    let allocation = Expression::new(ExprKind::New {
-        class: Box::new(Expression::new(ExprKind::Ident("Array".to_string()))),
-        args: vec![Argument::positional(count)],
-    });
     Expression::new(ExprKind::Call {
-        callee: Box::new(Expression::new(ExprKind::Member {
-            object: Box::new(allocation),
-            field: "fill".to_string(),
-            null_safe: false,
-        })),
-        args: vec![Argument::positional(Expression::int(0))],
+        callee: Box::new(Expression::new(ExprKind::Ident("Array".to_string()))),
+        args: vec![Argument::positional(count), Argument::positional(Expression::int(0))],
         optional: false,
     })
 }
@@ -103,21 +99,12 @@ pub fn heap_allocation_count(expr: &Expression) -> Option<&Expression> {
         ExprKind::New { class, args } if matches!(&class.kind, ExprKind::Ident(name) if name == "Uint8Array") => {
             args.first().map(|a| &a.value)
         }
-        // `heap_zeroed_array_sized` — `new Array(n).fill(0)`.
-        ExprKind::Call { callee, .. } => {
-            let ExprKind::Member { object, field, .. } = &callee.kind else {
-                return None;
-            };
-            if field != "fill" {
-                return None;
+        // `heap_zeroed_array_sized` — `Array(n, 0)`.
+        ExprKind::Call { callee, args, .. } => {
+            if matches!(&callee.kind, ExprKind::Ident(name) if name == "Array") {
+                return args.first().map(|a| &a.value);
             }
-            let ExprKind::New { class, args } = &object.kind else {
-                return None;
-            };
-            if !matches!(&class.kind, ExprKind::Ident(name) if name == "Array") {
-                return None;
-            }
-            args.first().map(|a| &a.value)
+            None
         }
         _ => None,
     }
@@ -158,6 +145,26 @@ pub fn retype_heap_allocation_as_bytes(expr: Expression) -> Expression {
     heap_zeroed_bytes_sized(count)
 }
 
+/// Packed byte read. Stack: [bytes, index] -> [integer byte].
+///
+/// Typed arrays are handled directly by `ARRAY_GET`; keeping this in the
+/// memory primitive avoids routing C byte loads through ECMA host calls.
+pub fn emit_bytes_get_item(chunks: &mut [vybe_runtime::Chunk], current: usize, line: u32) {
+    chunks[current].emit_op(vybe_runtime::opcode::Op::ARRAY_GET, line);
+}
+
+/// Packed byte write. Stack: [bytes, index, value] -> [null].
+///
+/// This deliberately uses the VM opcode instead of `ecma:uint8array.set`.
+/// `ObjectKind::TypedArray` is already handled directly by `ARRAY_SET`, so a
+/// statically-known byte buffer does not cross the host boundary for every
+/// element write. The trailing null preserves the common `SetItem` call
+/// contract for assignment sites that drop the returned value.
+pub fn emit_bytes_set_item(chunks: &mut [vybe_runtime::Chunk], current: usize, line: u32) {
+    chunks[current].emit_op(vybe_runtime::opcode::Op::ARRAY_SET, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+}
+
 /// Does `expr` allocate array-backed storage through this module?
 ///
 /// Callers classify a declaration by the SHAPE of its initializer — "is this
@@ -174,12 +181,9 @@ pub fn is_heap_allocation(expr: &Expression) -> bool {
         ExprKind::New { class, .. } => {
             matches!(&class.kind, ExprKind::Ident(name) if name == "Uint8Array")
         }
-        // `heap_zeroed_array_sized` — `new Array(n).fill(0)`.
+        // `heap_zeroed_array_sized` — `Array(n, 0)`.
         ExprKind::Call { callee, .. } => match &callee.kind {
-            ExprKind::Member { object, field, .. } if field == "fill" => {
-                matches!(&object.kind, ExprKind::New { class, .. }
-                    if matches!(&class.kind, ExprKind::Ident(name) if name == "Array"))
-            }
+            ExprKind::Ident(name) if name == "Array" => true,
             _ => false,
         },
         _ => false,

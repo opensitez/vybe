@@ -200,11 +200,7 @@ fn emit_ecma_flags(chunk: &mut Chunk, bits: u16, line: u32) {
     // not observable to a Kotlin program — nothing here exposes the ECMA flags
     // string — so it costs a little work per match and buys a correct range.
     chunk.emit_string_const("d", line);
-    for (mask, letter) in [
-        (CASE_INSENSITIVE, "i"),
-        (MULTILINE, "m"),
-        (DOTALL, "s"),
-    ] {
+    for (mask, letter) in [(CASE_INSENSITIVE, "i"), (MULTILINE, "m"), (DOTALL, "s")] {
         emit_flag_test(chunk, bits, mask, line);
         chunk.emit_if_value(line);
         chunk.emit_string_const(letter, line);
@@ -451,13 +447,7 @@ pub fn emit_regex_new(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u
     get(&mut chunks[current], caught, line);
     chunks[current].emit_string_const("message", line);
     host::emit(&mut chunks[current], "ecma:object", "get", 2, line);
-    crate::emitter::nullability::emit_exception(
-        chunks,
-        current,
-        1,
-        "PatternSyntaxException",
-        line,
-    );
+    crate::emitter::nullability::emit_exception(chunks, current, 1, "PatternSyntaxException", line);
     vybe_compiler::primitives::errors::emit_throw(&mut chunks[current], line);
     chunks[current].emit_end(line);
 
@@ -642,7 +632,13 @@ fn dict_put(chunks: &mut [Chunk], current: usize, dict: u16, key_slot: u16, line
     chunks[current].emit_op(Op::ARRAY_SET, line);
     get(&mut chunks[current], dict, line);
     let cs_slot = class_slots::resolve(&ClassSlot::Internal(("__keys").to_string()), &PlainNames);
-    class_slots::emit_class_get(&mut chunks[current], ObjSource::Stack, &cs_slot, Dest::Stack, line);
+    class_slots::emit_class_get(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &cs_slot,
+        Dest::Stack,
+        line,
+    );
     get(&mut chunks[current], key_slot, line);
     collections::emit_push(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
@@ -884,7 +880,13 @@ fn new_dict(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     chunks[current].emit_dup(line);
     collections::emit_array_new(chunks, current, 0, line);
     let cs_slot = class_slots::resolve(&ClassSlot::Internal(("__keys").to_string()), &PlainNames);
-    class_slots::emit_class_set(&mut chunks[current], ObjSource::Stack, &cs_slot, ValueSource::Stack, line);
+    class_slots::emit_class_set(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &cs_slot,
+        ValueSource::Stack,
+        line,
+    );
 }
 
 // ── Searching ──────────────────────────────────────────────────────────────
@@ -939,12 +941,24 @@ fn pop_search_args(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) ->
 /// `find(input, input.length)` is legal and answers null, `input.length + 1`
 /// throws. Verified against the Kotlin compiler, not assumed — the corpus
 /// contains a test asserting the opposite, and the oracle settled it.
-fn emit_guard_start_index(chunks: &mut Vec<Chunk>, current: usize, input: u16, start: u16, line: u32) {
+fn emit_guard_start_index(
+    chunks: &mut Vec<Chunk>,
+    current: usize,
+    input: u16,
+    start: u16,
+    line: u32,
+) {
     emit_length_of(&mut chunks[current], input, line);
     get(&mut chunks[current], start, line);
     ops::emit_dyn_lt(&mut chunks[current], line);
     chunks[current].emit_if(line);
-    emit_throw(chunks, current, "IndexOutOfBoundsException", "Illegal start index", line);
+    emit_throw(
+        chunks,
+        current,
+        "IndexOutOfBoundsException",
+        "Illegal start index",
+        line,
+    );
     chunks[current].emit_end(line);
 }
 
@@ -1154,7 +1168,13 @@ pub fn emit_split(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) 
     get(&mut chunks[current], limit, line);
     ops::emit_dyn_gt(&mut chunks[current], line);
     chunks[current].emit_if(line);
-    emit_throw(chunks, current, "IllegalArgumentException", "Limit must be non-negative", line);
+    emit_throw(
+        chunks,
+        current,
+        "IllegalArgumentException",
+        "Limit must be non-negative",
+        line,
+    );
     chunks[current].emit_end(line);
 
     let out = chunks[current].alloc_scratch(1);

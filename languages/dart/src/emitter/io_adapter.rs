@@ -63,7 +63,13 @@ fn take_receiver_path(
     let path_slot = slot(&mut chunks[current]);
     let cs_slot = class_slots::resolve(&ClassSlot::Internal(("path").to_string()), &PlainNames);
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv_slot, line);
-    class_slots::emit_class_get(&mut chunks[current], ObjSource::Stack, &cs_slot, Dest::Stack, line);
+    class_slots::emit_class_get(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &cs_slot,
+        Dest::Stack,
+        line,
+    );
     chunks[current].emit_op_u16(Op::LOCAL_SET, path_slot, line);
 
     (path_slot, arg_slots)
@@ -98,11 +104,23 @@ fn call_node_path(chunks: &mut [Chunk], current: usize, name: &str, argc: u8, li
 
 fn get_field_to_slot(chunk: &mut Chunk, obj_slot: u16, key: &ClassSlot, out_slot: u16, line: u32) {
     let slot = class_slots::resolve(key, &PlainNames);
-    class_slots::emit_class_get(chunk, ObjSource::Local(obj_slot), &slot, Dest::Local(out_slot), line);
+    class_slots::emit_class_get(
+        chunk,
+        ObjSource::Local(obj_slot),
+        &slot,
+        Dest::Local(out_slot),
+        line,
+    );
 }
 
 fn set_field_from_slot(chunk: &mut Chunk, obj_slot: u16, key: &str, value_slot: u16, line: u32) {
-    set_slot(chunk, obj_slot, &ClassSlot::internal(key), ValueSource::Local(value_slot), line);
+    set_slot(
+        chunk,
+        obj_slot,
+        &ClassSlot::internal(key),
+        ValueSource::Local(value_slot),
+        line,
+    );
 }
 
 fn object_get_to_slot(
@@ -135,19 +153,43 @@ fn object_set_from_slot(
 }
 
 fn set_field_string(chunk: &mut Chunk, obj_slot: u16, key: &str, value: &str, line: u32) {
-    set_slot(chunk, obj_slot, &ClassSlot::internal(key), ValueSource::ConstStr(value.to_string()), line);
+    set_slot(
+        chunk,
+        obj_slot,
+        &ClassSlot::internal(key),
+        ValueSource::ConstStr(value.to_string()),
+        line,
+    );
 }
 
 fn set_field_bool(chunk: &mut Chunk, obj_slot: u16, key: &str, value: bool, line: u32) {
-    set_slot(chunk, obj_slot, &ClassSlot::internal(key), ValueSource::ConstBool(value), line);
+    set_slot(
+        chunk,
+        obj_slot,
+        &ClassSlot::internal(key),
+        ValueSource::ConstBool(value),
+        line,
+    );
 }
 
 fn set_field_f64(chunk: &mut Chunk, obj_slot: u16, key: &str, value: f64, line: u32) {
-    set_slot(chunk, obj_slot, &ClassSlot::internal(key), ValueSource::ConstF64(value), line);
+    set_slot(
+        chunk,
+        obj_slot,
+        &ClassSlot::internal(key),
+        ValueSource::ConstF64(value),
+        line,
+    );
 }
 
 fn set_field_i32(chunk: &mut Chunk, obj_slot: u16, key: &str, value: i32, line: u32) {
-    set_slot(chunk, obj_slot, &ClassSlot::internal(key), ValueSource::ConstI32(value), line);
+    set_slot(
+        chunk,
+        obj_slot,
+        &ClassSlot::internal(key),
+        ValueSource::ConstI32(value),
+        line,
+    );
 }
 
 fn new_object_slot(chunk: &mut Chunk, line: u32) -> u16 {
@@ -170,7 +212,14 @@ fn emit_types_array(chunks: &mut [Chunk], current: usize, types: &[&str], line: 
     out
 }
 
-fn stamp_type(chunks: &mut [Chunk], current: usize, obj_slot: u16, ty: &str, types: &[&str], line: u32) {
+fn stamp_type(
+    chunks: &mut [Chunk],
+    current: usize,
+    obj_slot: u16,
+    ty: &str,
+    types: &[&str],
+    line: u32,
+) {
     let cs_id = class_slots::resolve(&ClassSlot::TypeIdentity, &PlainNames);
     class_slots::emit_class_set(
         &mut chunks[current],
@@ -272,7 +321,13 @@ fn stat_type_to_slot(
 ) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, stat_slot, line);
     let cs_slot = class_slots::resolve(&ClassSlot::Internal(("__type").to_string()), &PlainNames);
-    class_slots::emit_class_get(&mut chunks[current], ObjSource::Stack, &cs_slot, Dest::Stack, line);
+    class_slots::emit_class_get(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &cs_slot,
+        Dest::Stack,
+        line,
+    );
     chunks[current].emit_op_u16(Op::LOCAL_SET, out_slot, line);
 }
 
@@ -282,13 +337,26 @@ fn is_stat_type(chunks: &mut [Chunk], current: usize, stat_type_slot: u16, tag: 
     ops::emit_dyn_eq(&mut chunks[current], line);
 }
 
-fn make_date_slot(chunks: &mut [Chunk], current: usize, year: i32, month: i32, day: i32, line: u32) -> u16 {
+fn make_date_slot(
+    chunks: &mut [Chunk],
+    current: usize,
+    year: i32,
+    month: i32,
+    day: i32,
+    line: u32,
+) -> u16 {
     let out = new_object_slot(&mut chunks[current], line);
     stamp_type(chunks, current, out, "DateTime", &["DateTime"], line);
     set_field_i32(&mut chunks[current], out, "year", year, line);
     set_field_i32(&mut chunks[current], out, "month", month, line);
     set_field_i32(&mut chunks[current], out, "day", day, line);
-    set_field_f64(&mut chunks[current], out, "millisecondsSinceEpoch", 1_893_456_000_000.0, line);
+    set_field_f64(
+        &mut chunks[current],
+        out,
+        "millisecondsSinceEpoch",
+        1_893_456_000_000.0,
+        line,
+    );
     set_field_bool(&mut chunks[current], out, "isUtc", false, line);
     out
 }
@@ -332,7 +400,13 @@ fn make_file_stat_from_stat_slot(
     chunks[current].emit_end(line);
 
     let size_slot = slot(&mut chunks[current]);
-    get_field_to_slot(&mut chunks[current], stat_slot, &ClassSlot::internal("size"), size_slot, line);
+    get_field_to_slot(
+        &mut chunks[current],
+        stat_slot,
+        &ClassSlot::internal("size"),
+        size_slot,
+        line,
+    );
     set_field_from_slot(&mut chunks[current], out, "size", size_slot, line);
     set_field_f64(&mut chunks[current], out, "mode", 420.0, line);
     chunks[current].emit_end(line);
@@ -345,7 +419,6 @@ fn make_file_stat_from_stat_slot(
     set_field_from_slot(&mut chunks[current], out, "accessed", accessed, line);
     out
 }
-
 
 fn emit_range_throw(chunks: &mut Vec<Chunk>, current: usize, message: &str, line: u32) {
     chunks[current].emit_string_const(message, line);
@@ -375,19 +448,37 @@ fn emit_argument_throw(chunks: &mut [Chunk], current: usize, message: &str, line
 
 fn raf_path_slot(chunk: &mut Chunk, recv_slot: u16, line: u32) -> u16 {
     let path_slot = slot(chunk);
-    get_field_to_slot(chunk, recv_slot, &ClassSlot::internal("path"), path_slot, line);
+    get_field_to_slot(
+        chunk,
+        recv_slot,
+        &ClassSlot::internal("path"),
+        path_slot,
+        line,
+    );
     path_slot
 }
 
 fn raf_position_slot(chunk: &mut Chunk, recv_slot: u16, line: u32) -> u16 {
     let pos_slot = slot(chunk);
-    get_field_to_slot(chunk, recv_slot, &ClassSlot::internal("position"), pos_slot, line);
+    get_field_to_slot(
+        chunk,
+        recv_slot,
+        &ClassSlot::internal("position"),
+        pos_slot,
+        line,
+    );
     pos_slot
 }
 
 fn ensure_raf_open(chunks: &mut Vec<Chunk>, current: usize, recv_slot: u16, line: u32) {
     let closed_slot = slot(&mut chunks[current]);
-    get_field_to_slot(&mut chunks[current], recv_slot, &ClassSlot::internal("closed"), closed_slot, line);
+    get_field_to_slot(
+        &mut chunks[current],
+        recv_slot,
+        &ClassSlot::internal("closed"),
+        closed_slot,
+        line,
+    );
     chunks[current].emit_op_u16(Op::LOCAL_GET, closed_slot, line);
     ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
@@ -415,7 +506,13 @@ fn add_raf_position_from_slot(
     chunks[current].emit_op_u16(Op::LOCAL_GET, pos_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, delta_slot, line);
     ops::emit_dyn_add(&mut chunks[current], line);
-    class_slots::emit_class_set(&mut chunks[current], ObjSource::Stack, &cs_slot, ValueSource::Stack, line);
+    class_slots::emit_class_set(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &cs_slot,
+        ValueSource::Stack,
+        line,
+    );
 }
 
 fn filled_byte_buffer(chunks: &mut Vec<Chunk>, current: usize, len_slot: u16, line: u32) -> u16 {
@@ -569,13 +666,7 @@ fn throw_if_empty_path(
     chunks[current].emit_end(line);
 }
 
-fn throw_if_dir(
-    chunks: &mut [Chunk],
-    current: usize,
-    path_slot: u16,
-    message: &str,
-    line: u32,
-) {
+fn throw_if_dir(chunks: &mut [Chunk], current: usize, path_slot: u16, message: &str, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, path_slot, line);
     call_fs(chunks, current, "isDir", 1, line);
     ops::emit_dyn_to_bool(&mut chunks[current], line);
@@ -617,7 +708,13 @@ pub fn emit_read_as_latin1_string_sync(chunks: &mut [Chunk], current: usize, arg
     chunks[current].emit_i32_const(0, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, bytes_slot, line);
     host::emit(&mut chunks[current], "ecma:array", "length", 1, line);
-    host::emit(&mut chunks[current], "wasm:js-string", "fromCharCodeArray", 3, line);
+    host::emit(
+        &mut chunks[current],
+        "wasm:js-string",
+        "fromCharCodeArray",
+        3,
+        line,
+    );
 }
 
 /// `file.readAsBytesSync()`
@@ -798,14 +895,29 @@ pub fn emit_exists_sync(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
 
     let path_key = string_key(&mut chunks[current], "path");
     let kind_key = string_key(&mut chunks[current], DART_IO_KIND_KEY);
-    let cs_slot = class_slots::resolve(&ClassSlot::Internal((DART_IO_KIND_KEY).to_string()), &PlainNames);
+    let cs_slot = class_slots::resolve(
+        &ClassSlot::Internal((DART_IO_KIND_KEY).to_string()),
+        &PlainNames,
+    );
     let path_slot = slot(&mut chunks[current]);
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv_slot, line);
-    class_slots::emit_class_get(&mut chunks[current], ObjSource::Stack, &path_key, Dest::Stack, line);
+    class_slots::emit_class_get(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &path_key,
+        Dest::Stack,
+        line,
+    );
     chunks[current].emit_op_u16(Op::LOCAL_SET, path_slot, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv_slot, line);
-    class_slots::emit_class_get(&mut chunks[current], ObjSource::Stack, &cs_slot, Dest::Stack, line);
+    class_slots::emit_class_get(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &cs_slot,
+        Dest::Stack,
+        line,
+    );
     chunks[current].emit_string_const("directory", line);
     chunks[current].emit_op(Op::STRING_EQ, line);
     chunks[current].emit_if_value(line);
@@ -813,7 +925,13 @@ pub fn emit_exists_sync(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
     call_fs(chunks, current, "isDir", 1, line);
     chunks[current].emit_else(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv_slot, line);
-    class_slots::emit_class_get(&mut chunks[current], ObjSource::Stack, &kind_key, Dest::Stack, line);
+    class_slots::emit_class_get(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &kind_key,
+        Dest::Stack,
+        line,
+    );
     chunks[current].emit_string_const("link", line);
     chunks[current].emit_op(Op::STRING_EQ, line);
     chunks[current].emit_if_value(line);
@@ -846,9 +964,21 @@ pub fn emit_delete_sync(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
     let recv_slot = slot(&mut chunks[current]);
     chunks[current].emit_op_u16(Op::LOCAL_SET, recv_slot, line);
     let path_slot = slot(&mut chunks[current]);
-    get_field_to_slot(&mut chunks[current], recv_slot, &ClassSlot::internal("path"), path_slot, line);
+    get_field_to_slot(
+        &mut chunks[current],
+        recv_slot,
+        &ClassSlot::internal("path"),
+        path_slot,
+        line,
+    );
     let kind_slot = slot(&mut chunks[current]);
-    get_field_to_slot(&mut chunks[current], recv_slot, &ClassSlot::internal(DART_IO_KIND_KEY), kind_slot, line);
+    get_field_to_slot(
+        &mut chunks[current],
+        recv_slot,
+        &ClassSlot::internal(DART_IO_KIND_KEY),
+        kind_slot,
+        line,
+    );
     let recursive_slot = default_bool_arg(chunks, current, &arg_slots, 0, false, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, path_slot, line);
@@ -919,9 +1049,21 @@ pub fn emit_create_sync(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
     chunks[current].emit_op_u16(Op::LOCAL_SET, recv_slot, line);
 
     let path_slot = slot(&mut chunks[current]);
-    get_field_to_slot(&mut chunks[current], recv_slot, &ClassSlot::internal("path"), path_slot, line);
+    get_field_to_slot(
+        &mut chunks[current],
+        recv_slot,
+        &ClassSlot::internal("path"),
+        path_slot,
+        line,
+    );
     let kind_slot = slot(&mut chunks[current]);
-    get_field_to_slot(&mut chunks[current], recv_slot, &ClassSlot::internal(DART_IO_KIND_KEY), kind_slot, line);
+    get_field_to_slot(
+        &mut chunks[current],
+        recv_slot,
+        &ClassSlot::internal(DART_IO_KIND_KEY),
+        kind_slot,
+        line,
+    );
     let recursive_slot = default_bool_arg(chunks, current, &arg_slots, 1, false, line);
     let non_link_recursive_slot = default_bool_arg(chunks, current, &arg_slots, 0, false, line);
 
@@ -956,7 +1098,13 @@ pub fn emit_create_sync(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
     chunks[current].emit_end(line);
     chunks[current].emit_end(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, path_slot, line);
-    let opts = make_bool_options_from_condition(chunks, current, "recursive", non_link_recursive_slot, line);
+    let opts = make_bool_options_from_condition(
+        chunks,
+        current,
+        "recursive",
+        non_link_recursive_slot,
+        line,
+    );
     chunks[current].emit_op_u16(Op::LOCAL_GET, opts, line);
     call_node_fs(chunks, current, "mkdirSync", 2, line);
     chunks[current].emit_op(Op::DROP, line);
@@ -979,7 +1127,8 @@ pub fn emit_create_sync(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
     let parent_slot = slot(&mut chunks[current]);
     chunks[current].emit_op_u16(Op::LOCAL_SET, parent_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, parent_slot, line);
-    let rec_opts = make_bool_options_from_condition(chunks, current, "recursive", recursive_slot, line);
+    let rec_opts =
+        make_bool_options_from_condition(chunks, current, "recursive", recursive_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, rec_opts, line);
     call_node_fs(chunks, current, "mkdirSync", 2, line);
     chunks[current].emit_op(Op::DROP, line);
@@ -1009,7 +1158,13 @@ pub fn emit_create_sync(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
     let parent_slot = slot(&mut chunks[current]);
     chunks[current].emit_op_u16(Op::LOCAL_SET, parent_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, parent_slot, line);
-    let rec_opts = make_bool_options_from_condition(chunks, current, "recursive", non_link_recursive_slot, line);
+    let rec_opts = make_bool_options_from_condition(
+        chunks,
+        current,
+        "recursive",
+        non_link_recursive_slot,
+        line,
+    );
     chunks[current].emit_op_u16(Op::LOCAL_GET, rec_opts, line);
     call_node_fs(chunks, current, "mkdirSync", 2, line);
     chunks[current].emit_op(Op::DROP, line);
@@ -1049,7 +1204,13 @@ fn emit_relocate(chunks: &mut [Chunk], current: usize, argc: u8, host_fn: &str, 
     let kind_key = string_key(&mut chunks[current], DART_IO_KIND_KEY);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv_slot, line);
-    class_slots::emit_class_get(&mut chunks[current], ObjSource::Stack, &path_key, Dest::Stack, line);
+    class_slots::emit_class_get(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &path_key,
+        Dest::Stack,
+        line,
+    );
     let source_slot = slot(&mut chunks[current]);
     chunks[current].emit_op_u16(Op::LOCAL_SET, source_slot, line);
     if host_fn == "rename" {
@@ -1119,27 +1280,78 @@ fn emit_relocate(chunks: &mut [Chunk], current: usize, argc: u8, host_fn: &str, 
         Some(dest) => chunks[current].emit_op_u16(Op::LOCAL_GET, *dest, line),
         None => chunks[current].emit_string_const("", line),
     }
-    class_slots::emit_class_set(&mut chunks[current], ObjSource::Stack, &path_key, ValueSource::Stack, line);
+    class_slots::emit_class_set(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &path_key,
+        ValueSource::Stack,
+        line,
+    );
     chunks[current].emit_op_u16(Op::LOCAL_GET, out_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv_slot, line);
-    class_slots::emit_class_get(&mut chunks[current], ObjSource::Stack, &kind_key, Dest::Stack, line);
-    class_slots::emit_class_set(&mut chunks[current], ObjSource::Stack, &kind_key, ValueSource::Stack, line);
+    class_slots::emit_class_get(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &kind_key,
+        Dest::Stack,
+        line,
+    );
+    class_slots::emit_class_set(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &kind_key,
+        ValueSource::Stack,
+        line,
+    );
     chunks[current].emit_op_u16(Op::LOCAL_GET, out_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv_slot, line);
-    class_slots::emit_class_get(&mut chunks[current], ObjSource::Stack, &kind_key, Dest::Stack, line);
+    class_slots::emit_class_get(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &kind_key,
+        Dest::Stack,
+        line,
+    );
     chunks[current].emit_string_const("directory", line);
     chunks[current].emit_op(Op::STRING_EQ, line);
     chunks[current].emit_if(line);
-    stamp_type(chunks, current, out_slot, "Directory", &["Directory", "FileSystemEntity"], line);
+    stamp_type(
+        chunks,
+        current,
+        out_slot,
+        "Directory",
+        &["Directory", "FileSystemEntity"],
+        line,
+    );
     chunks[current].emit_else(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv_slot, line);
-    class_slots::emit_class_get(&mut chunks[current], ObjSource::Stack, &kind_key, Dest::Stack, line);
+    class_slots::emit_class_get(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &kind_key,
+        Dest::Stack,
+        line,
+    );
     chunks[current].emit_string_const("link", line);
     chunks[current].emit_op(Op::STRING_EQ, line);
     chunks[current].emit_if(line);
-    stamp_type(chunks, current, out_slot, "Link", &["Link", "FileSystemEntity"], line);
+    stamp_type(
+        chunks,
+        current,
+        out_slot,
+        "Link",
+        &["Link", "FileSystemEntity"],
+        line,
+    );
     chunks[current].emit_else(line);
-    stamp_type(chunks, current, out_slot, "File", &["File", "FileSystemEntity"], line);
+    stamp_type(
+        chunks,
+        current,
+        out_slot,
+        "File",
+        &["File", "FileSystemEntity"],
+        line,
+    );
     chunks[current].emit_end(line);
     chunks[current].emit_end(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, out_slot, line);
@@ -1279,7 +1491,13 @@ pub fn emit_list_sync(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
     chunks[current].emit_op_u16(Op::LOCAL_GET, root_abs_slot, line);
     ops::emit_dyn_eq(&mut chunks[current], line);
     chunks[current].emit_if(line);
-    emit_filesystem_throw(chunks, current, full_slot, "Directory listing failed, path = ", line);
+    emit_filesystem_throw(
+        chunks,
+        current,
+        full_slot,
+        "Directory listing failed, path = ",
+        line,
+    );
     chunks[current].emit_end(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, full_slot, line);
     call_node_fs(chunks, current, "statSync", 1, line);
@@ -1387,7 +1605,13 @@ pub fn emit_resolve_symbolic_links_sync(chunks: &mut [Chunk], current: usize, ar
     chunks[current].emit_op_u16(Op::LOCAL_GET, real_slot, line);
     chunks[current].emit_op(Op::REF_IS_NULL, line);
     chunks[current].emit_if(line);
-    emit_filesystem_throw(chunks, current, path_slot, "Cannot resolve symbolic link, path = ", line);
+    emit_filesystem_throw(
+        chunks,
+        current,
+        path_slot,
+        "Cannot resolve symbolic link, path = ",
+        line,
+    );
     chunks[current].emit_end(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, real_slot, line);
 }
@@ -1401,7 +1625,13 @@ pub fn emit_target_sync(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
     chunks[current].emit_op_u16(Op::LOCAL_GET, target_slot, line);
     chunks[current].emit_op(Op::REF_IS_NULL, line);
     chunks[current].emit_if(line);
-    emit_filesystem_throw(chunks, current, path_slot, "Cannot read link, path = ", line);
+    emit_filesystem_throw(
+        chunks,
+        current,
+        path_slot,
+        "Cannot read link, path = ",
+        line,
+    );
     chunks[current].emit_end(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, target_slot, line);
 }
@@ -1415,7 +1645,13 @@ pub fn emit_update_sync(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
     chunks[current].emit_op_u16(Op::LOCAL_GET, old_target, line);
     chunks[current].emit_op(Op::REF_IS_NULL, line);
     chunks[current].emit_if(line);
-    emit_filesystem_throw(chunks, current, path_slot, "Cannot update link, path = ", line);
+    emit_filesystem_throw(
+        chunks,
+        current,
+        path_slot,
+        "Cannot update link, path = ",
+        line,
+    );
     chunks[current].emit_end(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, path_slot, line);
     let opts = new_object_slot(&mut chunks[current], line);
@@ -1462,13 +1698,25 @@ pub fn emit_watch(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_SET, recv_slot, line);
 
     let recv_type_slot = slot(&mut chunks[current]);
-    get_field_to_slot(&mut chunks[current], recv_slot, &ClassSlot::TypeIdentity, recv_type_slot, line);
+    get_field_to_slot(
+        &mut chunks[current],
+        recv_slot,
+        &ClassSlot::TypeIdentity,
+        recv_type_slot,
+        line,
+    );
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv_type_slot, line);
     chunks[current].emit_string_const("ProcessSignal", line);
     ops::emit_dyn_eq(&mut chunks[current], line);
     chunks[current].emit_if(line);
     let signal_name_slot = slot(&mut chunks[current]);
-    get_field_to_slot(&mut chunks[current], recv_slot, &ClassSlot::internal("name"), signal_name_slot, line);
+    get_field_to_slot(
+        &mut chunks[current],
+        recv_slot,
+        &ClassSlot::internal("name"),
+        signal_name_slot,
+        line,
+    );
     chunks[current].emit_op_u16(Op::LOCAL_GET, signal_name_slot, line);
     chunks[current].emit_string_const("SIGKILL", line);
     ops::emit_dyn_eq(&mut chunks[current], line);
@@ -1492,11 +1740,23 @@ pub fn emit_watch(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let stream = slot(&mut chunks[current]);
     chunks[current].emit_op_u16(Op::LOCAL_SET, stream, line);
     stamp_type(chunks, current, stream, "Stream", &["Stream"], line);
-    set_field_bool(&mut chunks[current], stream, "__dart_single_subscription", false, line);
+    set_field_bool(
+        &mut chunks[current],
+        stream,
+        "__dart_single_subscription",
+        false,
+        line,
+    );
     chunks[current].emit_op_u16(Op::LOCAL_GET, stream, line);
     chunks[current].emit_else(line);
     let path_slot = slot(&mut chunks[current]);
-    get_field_to_slot(&mut chunks[current], recv_slot, &ClassSlot::internal("path"), path_slot, line);
+    get_field_to_slot(
+        &mut chunks[current],
+        recv_slot,
+        &ClassSlot::internal("path"),
+        path_slot,
+        line,
+    );
     chunks[current].emit_op_u16(Op::LOCAL_GET, path_slot, line);
     call_node_fs(chunks, current, "watch", 1, line);
     chunks[current].emit_op(Op::DROP, line);
@@ -1504,7 +1764,13 @@ pub fn emit_watch(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let stream = slot(&mut chunks[current]);
     chunks[current].emit_op_u16(Op::LOCAL_SET, stream, line);
     stamp_type(chunks, current, stream, "Stream", &["Stream"], line);
-    set_field_bool(&mut chunks[current], stream, "__dart_single_subscription", true, line);
+    set_field_bool(
+        &mut chunks[current],
+        stream,
+        "__dart_single_subscription",
+        true,
+        line,
+    );
     set_field_bool(&mut chunks[current], stream, "__dart_listened", false, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, stream, line);
     chunks[current].emit_end(line);
@@ -1525,9 +1791,21 @@ pub fn emit_absolute_handle(chunks: &mut [Chunk], current: usize, argc: u8, line
         s
     });
     let path_slot = slot(&mut chunks[current]);
-    get_field_to_slot(&mut chunks[current], recv_slot, &ClassSlot::internal("path"), path_slot, line);
+    get_field_to_slot(
+        &mut chunks[current],
+        recv_slot,
+        &ClassSlot::internal("path"),
+        path_slot,
+        line,
+    );
     let kind_slot = slot(&mut chunks[current]);
-    get_field_to_slot(&mut chunks[current], recv_slot, &ClassSlot::internal(DART_IO_KIND_KEY), kind_slot, line);
+    get_field_to_slot(
+        &mut chunks[current],
+        recv_slot,
+        &ClassSlot::internal(DART_IO_KIND_KEY),
+        kind_slot,
+        line,
+    );
     chunks[current].emit_op_u16(Op::LOCAL_GET, path_slot, line);
     call_node_path(chunks, current, "resolve", 1, line);
     let abs_slot = slot(&mut chunks[current]);
@@ -1539,15 +1817,36 @@ pub fn emit_absolute_handle(chunks: &mut [Chunk], current: usize, argc: u8, line
     chunks[current].emit_string_const("directory", line);
     chunks[current].emit_op(Op::STRING_EQ, line);
     chunks[current].emit_if(line);
-    stamp_type(chunks, current, out, "Directory", &["Directory", "FileSystemEntity"], line);
+    stamp_type(
+        chunks,
+        current,
+        out,
+        "Directory",
+        &["Directory", "FileSystemEntity"],
+        line,
+    );
     chunks[current].emit_else(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, kind_slot, line);
     chunks[current].emit_string_const("link", line);
     chunks[current].emit_op(Op::STRING_EQ, line);
     chunks[current].emit_if(line);
-    stamp_type(chunks, current, out, "Link", &["Link", "FileSystemEntity"], line);
+    stamp_type(
+        chunks,
+        current,
+        out,
+        "Link",
+        &["Link", "FileSystemEntity"],
+        line,
+    );
     chunks[current].emit_else(line);
-    stamp_type(chunks, current, out, "File", &["File", "FileSystemEntity"], line);
+    stamp_type(
+        chunks,
+        current,
+        out,
+        "File",
+        &["File", "FileSystemEntity"],
+        line,
+    );
     chunks[current].emit_end(line);
     chunks[current].emit_end(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
@@ -1616,15 +1915,33 @@ pub fn emit_handle_is_absolute(chunks: &mut [Chunk], current: usize, argc: u8, l
         s
     });
     let uri_marker = slot(&mut chunks[current]);
-    get_field_to_slot(&mut chunks[current], recv_slot, &ClassSlot::internal("__dart_uri_marker"), uri_marker, line);
+    get_field_to_slot(
+        &mut chunks[current],
+        recv_slot,
+        &ClassSlot::internal("__dart_uri_marker"),
+        uri_marker,
+        line,
+    );
     chunks[current].emit_op_u16(Op::LOCAL_GET, uri_marker, line);
     ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
-    get_field_to_slot(&mut chunks[current], recv_slot, &ClassSlot::internal("isAbsolute"), uri_marker, line);
+    get_field_to_slot(
+        &mut chunks[current],
+        recv_slot,
+        &ClassSlot::internal("isAbsolute"),
+        uri_marker,
+        line,
+    );
     chunks[current].emit_op_u16(Op::LOCAL_GET, uri_marker, line);
     chunks[current].emit_else(line);
     let path_slot = slot(&mut chunks[current]);
-    get_field_to_slot(&mut chunks[current], recv_slot, &ClassSlot::internal("path"), path_slot, line);
+    get_field_to_slot(
+        &mut chunks[current],
+        recv_slot,
+        &ClassSlot::internal("path"),
+        path_slot,
+        line,
+    );
     chunks[current].emit_op_u16(Op::LOCAL_GET, path_slot, line);
     call_node_path(chunks, current, "isAbsolute", 1, line);
     chunks[current].emit_end(line);
@@ -1702,12 +2019,24 @@ pub fn emit_identical_sync(chunks: &mut [Chunk], current: usize, argc: u8, line:
     chunks[current].emit_op_u16(Op::LOCAL_GET, a, line);
     chunks[current].emit_op(Op::REF_IS_NULL, line);
     chunks[current].emit_if(line);
-    emit_filesystem_throw(chunks, current, first, "Cannot compare paths, path = ", line);
+    emit_filesystem_throw(
+        chunks,
+        current,
+        first,
+        "Cannot compare paths, path = ",
+        line,
+    );
     chunks[current].emit_end(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, b, line);
     chunks[current].emit_op(Op::REF_IS_NULL, line);
     chunks[current].emit_if(line);
-    emit_filesystem_throw(chunks, current, second, "Cannot compare paths, path = ", line);
+    emit_filesystem_throw(
+        chunks,
+        current,
+        second,
+        "Cannot compare paths, path = ",
+        line,
+    );
     chunks[current].emit_end(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, a, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, b, line);
@@ -1725,7 +2054,13 @@ pub fn emit_set_current_dir(chunks: &mut [Chunk], current: usize, argc: u8, line
     arg_slots.reverse();
     if let Some(dir) = arg_slots.first() {
         let path_slot = slot(&mut chunks[current]);
-        get_field_to_slot(&mut chunks[current], *dir, &ClassSlot::internal("path"), path_slot, line);
+        get_field_to_slot(
+            &mut chunks[current],
+            *dir,
+            &ClassSlot::internal("path"),
+            path_slot,
+            line,
+        );
         chunks[current].emit_op_u16(Op::LOCAL_GET, path_slot, line);
     } else {
         chunks[current].emit_string_const(".", line);
@@ -1818,7 +2153,13 @@ fn emit_subset_encode(chunks: &mut Vec<Chunk>, current: usize, argc: u8, max: i3
     let cu_slot = slot(&mut chunks[current]);
     chunks[current].emit_op_u16(Op::LOCAL_GET, input_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, i_slot, line);
-    host::emit(&mut chunks[current], "wasm:js-string", "charCodeAt", 2, line);
+    host::emit(
+        &mut chunks[current],
+        "wasm:js-string",
+        "charCodeAt",
+        2,
+        line,
+    );
     chunks[current].emit_op_u16(Op::LOCAL_SET, cu_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, cu_slot, line);
     host::emit(&mut chunks[current], "wasm:js-number", "toF64", 1, line);
@@ -1878,11 +2219,27 @@ pub fn emit_utf8_decode(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line:
         // the BOXED Bool values. The bare struct.new + raw-bool shape this
         // replaces was never readable by the host's `option_bool` — the
         // decoder's `ignoreBOM` had silently never worked.
-        let cs_slot_1 = class_slots::resolve_interned(&mut chunks[current], &ClassSlot::Internal(("__keys").to_string()), &PlainNames);
+        let cs_slot_1 = class_slots::resolve_interned(
+            &mut chunks[current],
+            &ClassSlot::Internal(("__keys").to_string()),
+            &PlainNames,
+        );
         core_wasm::dup(&mut chunks[current], line);
         chunks[current].emit_i32_const(0, line);
-        host::emit(&mut chunks[current], "vybe:js-array", "newWithLength", 1, line);
-        class_slots::emit_class_set(&mut chunks[current], ObjSource::Stack, &cs_slot_1, ValueSource::Stack, line);
+        host::emit(
+            &mut chunks[current],
+            "vybe:js-array",
+            "newWithLength",
+            1,
+            line,
+        );
+        class_slots::emit_class_set(
+            &mut chunks[current],
+            ObjSource::Stack,
+            &cs_slot_1,
+            ValueSource::Stack,
+            line,
+        );
         // No `ignoreBOM`: WHATWG's flag means KEEP the BOM when true, and
         // dart's utf8.decode STRIPS it (measured against dart 3.10.4) — the
         // spec default is already dart's behavior.
@@ -1890,7 +2247,11 @@ pub fn emit_utf8_decode(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line:
             if !wanted {
                 continue;
             }
-            let cs_slot_2 = class_slots::resolve_interned(&mut chunks[current], &ClassSlot::Internal((name).to_string()), &PlainNames);
+            let cs_slot_2 = class_slots::resolve_interned(
+                &mut chunks[current],
+                &ClassSlot::Internal((name).to_string()),
+                &PlainNames,
+            );
             core_wasm::dup(&mut chunks[current], line);
             chunks[current].emit_string_const(name, line);
             host::emit(&mut chunks[current], "ecma:object", "trackKey", 2, line);
@@ -1898,7 +2259,13 @@ pub fn emit_utf8_decode(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line:
             core_wasm::dup(&mut chunks[current], line);
             chunks[current].emit_i32_const(1, line);
             host::emit(&mut chunks[current], "wasm:js-boolean", "fromI32", 1, line);
-            class_slots::emit_class_set(&mut chunks[current], ObjSource::Stack, &cs_slot_2, ValueSource::Stack, line);
+            class_slots::emit_class_set(
+                &mut chunks[current],
+                ObjSource::Stack,
+                &cs_slot_2,
+                ValueSource::Stack,
+                line,
+            );
         }
         host::emit(&mut chunks[current], "web:encoding", "decoderNew", 2, line);
         chunks[current].emit_op_u16(Op::LOCAL_GET, bytes_slot, line);
@@ -2091,7 +2458,13 @@ pub fn emit_process_run_sync(chunks: &mut Vec<Chunk>, current: usize, argc: u8, 
     chunks[current].emit_op_u16(Op::LOCAL_SET, raw_slot, line);
 
     let err_slot = slot(&mut chunks[current]);
-    get_field_to_slot(&mut chunks[current], raw_slot, &ClassSlot::internal("error"), err_slot, line);
+    get_field_to_slot(
+        &mut chunks[current],
+        raw_slot,
+        &ClassSlot::internal("error"),
+        err_slot,
+        line,
+    );
     chunks[current].emit_op_u16(Op::LOCAL_GET, err_slot, line);
     chunks[current].emit_op(Op::REF_IS_NULL, line);
     chunks[current].emit_op(Op::I32_EQZ, line);
@@ -2121,11 +2494,23 @@ pub fn emit_process_run_sync(chunks: &mut Vec<Chunk>, current: usize, argc: u8, 
     let out_slot = new_object_slot(&mut chunks[current], line);
     for (from, to) in [("stderr", "stderr"), ("status", "exitCode"), ("pid", "pid")] {
         let tmp = slot(&mut chunks[current]);
-        get_field_to_slot(&mut chunks[current], raw_slot, &ClassSlot::internal(from), tmp, line);
+        get_field_to_slot(
+            &mut chunks[current],
+            raw_slot,
+            &ClassSlot::internal(from),
+            tmp,
+            line,
+        );
         set_field_from_slot(&mut chunks[current], out_slot, to, tmp, line);
     }
     let stdout_slot = slot(&mut chunks[current]);
-    get_field_to_slot(&mut chunks[current], raw_slot, &ClassSlot::internal("stdout"), stdout_slot, line);
+    get_field_to_slot(
+        &mut chunks[current],
+        raw_slot,
+        &ClassSlot::internal("stdout"),
+        stdout_slot,
+        line,
+    );
     if let Some(stdout_encoding) = stdout_encoding {
         chunks[current].emit_op_u16(Op::LOCAL_GET, stdout_encoding, line);
         chunks[current].emit_op(Op::REF_IS_NULL, line);
@@ -2170,8 +2555,20 @@ fn make_stream_from_optional_slot(
         chunks[current].emit_op(Op::DROP, line);
     }
     stamp_type(chunks, current, stream_slot, "Stream", &["Stream"], line);
-    set_field_bool(&mut chunks[current], stream_slot, "__dart_single_subscription", false, line);
-    set_field_bool(&mut chunks[current], stream_slot, "__dart_listened", false, line);
+    set_field_bool(
+        &mut chunks[current],
+        stream_slot,
+        "__dart_single_subscription",
+        false,
+        line,
+    );
+    set_field_bool(
+        &mut chunks[current],
+        stream_slot,
+        "__dart_listened",
+        false,
+        line,
+    );
     stream_slot
 }
 
@@ -2285,7 +2682,13 @@ pub fn emit_process_start(chunks: &mut Vec<Chunk>, current: usize, argc: u8, lin
     chunks[current].emit_end(line);
 
     let err_slot = slot(&mut chunks[current]);
-    get_field_to_slot(&mut chunks[current], raw_slot, &ClassSlot::internal("error"), err_slot, line);
+    get_field_to_slot(
+        &mut chunks[current],
+        raw_slot,
+        &ClassSlot::internal("error"),
+        err_slot,
+        line,
+    );
     chunks[current].emit_op_u16(Op::LOCAL_GET, err_slot, line);
     chunks[current].emit_op(Op::REF_IS_NULL, line);
     chunks[current].emit_op(Op::I32_EQZ, line);
@@ -2297,14 +2700,32 @@ pub fn emit_process_start(chunks: &mut Vec<Chunk>, current: usize, argc: u8, lin
     stamp_type(chunks, current, out_slot, "Process", &["Process"], line);
     for (from, to) in [("status", "exitCode"), ("pid", "pid")] {
         let tmp = slot(&mut chunks[current]);
-        get_field_to_slot(&mut chunks[current], raw_slot, &ClassSlot::internal(from), tmp, line);
+        get_field_to_slot(
+            &mut chunks[current],
+            raw_slot,
+            &ClassSlot::internal(from),
+            tmp,
+            line,
+        );
         set_field_from_slot(&mut chunks[current], out_slot, to, tmp, line);
     }
 
     let stdout_raw = slot(&mut chunks[current]);
-    get_field_to_slot(&mut chunks[current], raw_slot, &ClassSlot::internal("stdout"), stdout_raw, line);
+    get_field_to_slot(
+        &mut chunks[current],
+        raw_slot,
+        &ClassSlot::internal("stdout"),
+        stdout_raw,
+        line,
+    );
     let stderr_raw = slot(&mut chunks[current]);
-    get_field_to_slot(&mut chunks[current], raw_slot, &ClassSlot::internal("stderr"), stderr_raw, line);
+    get_field_to_slot(
+        &mut chunks[current],
+        raw_slot,
+        &ClassSlot::internal("stderr"),
+        stderr_raw,
+        line,
+    );
     let stdout_stream = make_stream_from_optional_slot(chunks, current, Some(stdout_raw), line);
     let stderr_stream = make_stream_from_optional_slot(chunks, current, Some(stderr_raw), line);
     if let Some(mode) = mode {
@@ -2318,17 +2739,47 @@ pub fn emit_process_start(chunks: &mut Vec<Chunk>, current: usize, argc: u8, lin
         set_field_from_slot(&mut chunks[current], out_slot, "stdout", null_stdout, line);
         set_field_from_slot(&mut chunks[current], out_slot, "stderr", null_stdout, line);
         chunks[current].emit_else(line);
-        set_field_from_slot(&mut chunks[current], out_slot, "stdout", stdout_stream, line);
-        set_field_from_slot(&mut chunks[current], out_slot, "stderr", stderr_stream, line);
+        set_field_from_slot(
+            &mut chunks[current],
+            out_slot,
+            "stdout",
+            stdout_stream,
+            line,
+        );
+        set_field_from_slot(
+            &mut chunks[current],
+            out_slot,
+            "stderr",
+            stderr_stream,
+            line,
+        );
         chunks[current].emit_end(line);
     } else {
-        set_field_from_slot(&mut chunks[current], out_slot, "stdout", stdout_stream, line);
-        set_field_from_slot(&mut chunks[current], out_slot, "stderr", stderr_stream, line);
+        set_field_from_slot(
+            &mut chunks[current],
+            out_slot,
+            "stdout",
+            stdout_stream,
+            line,
+        );
+        set_field_from_slot(
+            &mut chunks[current],
+            out_slot,
+            "stderr",
+            stderr_stream,
+            line,
+        );
     }
 
     let sink_slot = new_object_slot(&mut chunks[current], line);
     stamp_type(chunks, current, sink_slot, "IOSink", &["IOSink"], line);
-    set_field_from_slot(&mut chunks[current], sink_slot, "stdoutStream", stdout_stream, line);
+    set_field_from_slot(
+        &mut chunks[current],
+        sink_slot,
+        "stdoutStream",
+        stdout_stream,
+        line,
+    );
     set_field_bool(&mut chunks[current], sink_slot, "closed", false, line);
     set_field_from_slot(&mut chunks[current], out_slot, "stdin", sink_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, out_slot, line);
@@ -2342,7 +2793,13 @@ fn process_stdin_push_text_slot(
     line: u32,
 ) {
     let stream_slot = slot(&mut chunks[current]);
-    get_field_to_slot(&mut chunks[current], sink_slot, &ClassSlot::internal("stdoutStream"), stream_slot, line);
+    get_field_to_slot(
+        &mut chunks[current],
+        sink_slot,
+        &ClassSlot::internal("stdoutStream"),
+        stream_slot,
+        line,
+    );
     chunks[current].emit_op_u16(Op::LOCAL_GET, stream_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, text_slot, line);
     collections::emit_push(chunks, current, line);
@@ -2455,7 +2912,13 @@ pub fn emit_open_sync(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u
     set_field_from_slot(&mut chunks[current], out_slot, "modeFlag", flag_slot, line);
     set_field_f64(&mut chunks[current], out_slot, "position", 0.0, line);
     set_field_bool(&mut chunks[current], out_slot, "closed", false, line);
-    set_field_string(&mut chunks[current], out_slot, DART_IO_KIND_KEY, "raf", line);
+    set_field_string(
+        &mut chunks[current],
+        out_slot,
+        DART_IO_KIND_KEY,
+        "raf",
+        line,
+    );
     chunks[current].emit_op_u16(Op::LOCAL_GET, flag_slot, line);
     chunks[current].emit_string_const("a+", line);
     chunks[current].emit_op(Op::STRING_EQ, line);
@@ -2596,15 +3059,33 @@ fn emit_raf_lock_conflict_checks(
 
     let state = loops::emit_for_in_start(chunks, current, locks_slot, idx_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, lock_slot, line);
-    get_field_to_slot(&mut chunks[current], lock_slot, &ClassSlot::internal("fd"), lock_fd_slot, line);
+    get_field_to_slot(
+        &mut chunks[current],
+        lock_slot,
+        &ClassSlot::internal("fd"),
+        lock_fd_slot,
+        line,
+    );
     chunks[current].emit_op_u16(Op::LOCAL_GET, lock_fd_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, fd_slot, line);
     ops::emit_dyn_eq(&mut chunks[current], line);
     chunks[current].emit_op(Op::I32_EQZ, line);
     chunks[current].emit_if(line);
 
-    get_field_to_slot(&mut chunks[current], lock_slot, &ClassSlot::internal("start"), lock_start_slot, line);
-    get_field_to_slot(&mut chunks[current], lock_slot, &ClassSlot::internal("end"), lock_end_slot, line);
+    get_field_to_slot(
+        &mut chunks[current],
+        lock_slot,
+        &ClassSlot::internal("start"),
+        lock_start_slot,
+        line,
+    );
+    get_field_to_slot(
+        &mut chunks[current],
+        lock_slot,
+        &ClassSlot::internal("end"),
+        lock_end_slot,
+        line,
+    );
     chunks[current].emit_op_u16(Op::LOCAL_GET, lock_end_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, start_slot, line);
     chunks[current].emit_op(Op::I32_GT_S, line);
@@ -2614,10 +3095,21 @@ fn emit_raf_lock_conflict_checks(
     chunks[current].emit_op(Op::I32_AND, line);
     chunks[current].emit_if(line);
 
-    get_field_to_slot(&mut chunks[current], lock_slot, &ClassSlot::internal("mode"), lock_mode_slot, line);
+    get_field_to_slot(
+        &mut chunks[current],
+        lock_slot,
+        &ClassSlot::internal("mode"),
+        lock_mode_slot,
+        line,
+    );
     chunks[current].emit_op_u16(Op::LOCAL_GET, is_exclusive_slot, line);
     emit_file_lock_name_eq(&mut chunks[current], lock_mode_slot, "exclusive", line);
-    emit_file_lock_name_eq(&mut chunks[current], lock_mode_slot, "blockingExclusive", line);
+    emit_file_lock_name_eq(
+        &mut chunks[current],
+        lock_mode_slot,
+        "blockingExclusive",
+        line,
+    );
     chunks[current].emit_op(Op::I32_OR, line);
     chunks[current].emit_op(Op::I32_OR, line);
     chunks[current].emit_if(line);
@@ -2667,7 +3159,13 @@ fn emit_raf_clear_registered_locks(
     let lock_fd_slot = slot(&mut chunks[current]);
     let state = loops::emit_for_in_start(chunks, current, locks_slot, idx_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, lock_slot, line);
-    get_field_to_slot(&mut chunks[current], lock_slot, &ClassSlot::internal("fd"), lock_fd_slot, line);
+    get_field_to_slot(
+        &mut chunks[current],
+        lock_slot,
+        &ClassSlot::internal("fd"),
+        lock_fd_slot,
+        line,
+    );
     chunks[current].emit_op_u16(Op::LOCAL_GET, lock_fd_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, fd_slot, line);
     ops::emit_dyn_eq(&mut chunks[current], line);
@@ -2731,7 +3229,13 @@ pub fn emit_raf_lock_sync(chunks: &mut Vec<Chunk>, current: usize, argc: u8, lin
 
     let kind_slot = slot(&mut chunks[current]);
     if let Some(kind) = args.first() {
-        get_field_to_slot(&mut chunks[current], *kind, &ClassSlot::internal("name"), kind_slot, line);
+        get_field_to_slot(
+            &mut chunks[current],
+            *kind,
+            &ClassSlot::internal("name"),
+            kind_slot,
+            line,
+        );
     } else {
         chunks[current].emit_string_const("exclusive", line);
         chunks[current].emit_op_u16(Op::LOCAL_SET, kind_slot, line);
@@ -2742,7 +3246,13 @@ pub fn emit_raf_lock_sync(chunks: &mut Vec<Chunk>, current: usize, argc: u8, lin
     emit_lock_end_to_slot(chunks, current, start_slot, length_slot, end_slot, line);
 
     let flag_slot = slot(&mut chunks[current]);
-    get_field_to_slot(&mut chunks[current], recv_slot, &ClassSlot::internal("modeFlag"), flag_slot, line);
+    get_field_to_slot(
+        &mut chunks[current],
+        recv_slot,
+        &ClassSlot::internal("modeFlag"),
+        flag_slot,
+        line,
+    );
     chunks[current].emit_op_u16(Op::LOCAL_GET, kind_slot, line);
     chunks[current].emit_string_const("exclusive", line);
     ops::emit_dyn_eq(&mut chunks[current], line);
@@ -2762,19 +3272,17 @@ pub fn emit_raf_lock_sync(chunks: &mut Vec<Chunk>, current: usize, argc: u8, lin
     let registry_slot = emit_ensure_raf_lock_registry(chunks, current, line);
     let locks_slot = emit_raf_lock_array_for_path(chunks, current, registry_slot, path_slot, line);
     emit_raf_lock_conflict_checks(
-        chunks,
-        current,
-        locks_slot,
-        recv_slot,
-        path_slot,
-        start_slot,
-        end_slot,
-        kind_slot,
-        line,
+        chunks, current, locks_slot, recv_slot, path_slot, start_slot, end_slot, kind_slot, line,
     );
 
     let existing_slot = slot(&mut chunks[current]);
-    get_field_to_slot(&mut chunks[current], recv_slot, &ClassSlot::internal("__dart_lock_mode"), existing_slot, line);
+    get_field_to_slot(
+        &mut chunks[current],
+        recv_slot,
+        &ClassSlot::internal("__dart_lock_mode"),
+        existing_slot,
+        line,
+    );
     chunks[current].emit_op_u16(Op::LOCAL_GET, existing_slot, line);
     vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
@@ -2787,18 +3295,29 @@ pub fn emit_raf_lock_sync(chunks: &mut Vec<Chunk>, current: usize, argc: u8, lin
     chunks[current].emit_end(line);
     chunks[current].emit_end(line);
 
-    set_field_from_slot(&mut chunks[current], recv_slot, "__dart_lock_mode", kind_slot, line);
-    set_field_from_slot(&mut chunks[current], recv_slot, "__dart_lock_start", start_slot, line);
-    set_field_from_slot(&mut chunks[current], recv_slot, "__dart_lock_length", length_slot, line);
-    emit_raf_register_lock(
-        chunks,
-        current,
-        locks_slot,
+    set_field_from_slot(
+        &mut chunks[current],
         recv_slot,
-        start_slot,
-        end_slot,
+        "__dart_lock_mode",
         kind_slot,
         line,
+    );
+    set_field_from_slot(
+        &mut chunks[current],
+        recv_slot,
+        "__dart_lock_start",
+        start_slot,
+        line,
+    );
+    set_field_from_slot(
+        &mut chunks[current],
+        recv_slot,
+        "__dart_lock_length",
+        length_slot,
+        line,
+    );
+    emit_raf_register_lock(
+        chunks, current, locks_slot, recv_slot, start_slot, end_slot, kind_slot, line,
     );
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv_slot, line);
 }
@@ -2817,7 +3336,13 @@ pub fn emit_raf_unlock_sync(chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
     }
 
     emit_raf_clear_registered_locks(chunks, current, recv_slot, line);
-    set_field_string(&mut chunks[current], recv_slot, "__dart_lock_mode", "", line);
+    set_field_string(
+        &mut chunks[current],
+        recv_slot,
+        "__dart_lock_mode",
+        "",
+        line,
+    );
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv_slot, line);
 }
 
@@ -2831,7 +3356,13 @@ pub fn emit_raf_length_sync(chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
     chunks[current].emit_op_u16(Op::LOCAL_SET, stat_slot, line);
     let cs_slot = class_slots::resolve(&ClassSlot::Internal(("size").to_string()), &PlainNames);
     chunks[current].emit_op_u16(Op::LOCAL_GET, stat_slot, line);
-    class_slots::emit_class_get(&mut chunks[current], ObjSource::Stack, &cs_slot, Dest::Stack, line);
+    class_slots::emit_class_get(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &cs_slot,
+        Dest::Stack,
+        line,
+    );
 }
 
 pub fn emit_raf_truncate_sync(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
@@ -3068,7 +3599,13 @@ pub fn emit_raf_position_sync(chunks: &mut Vec<Chunk>, current: usize, argc: u8,
     let (recv_slot, _) = take_raf(chunks, current, argc, line);
     let cs_slot = class_slots::resolve(&ClassSlot::Internal(("position").to_string()), &PlainNames);
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv_slot, line);
-    class_slots::emit_class_get(&mut chunks[current], ObjSource::Stack, &cs_slot, Dest::Stack, line);
+    class_slots::emit_class_get(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &cs_slot,
+        Dest::Stack,
+        line,
+    );
 }
 
 pub fn emit_raf_set_position_sync(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {

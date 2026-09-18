@@ -42,8 +42,8 @@ use super::{DartParser, Rule};
 use pest::Parser;
 use pest::iterators::Pair;
 use std::collections::{HashMap, HashSet};
-use vybe_ast::*;
 use vybe_ast::datetime::{EpochPrecision, MonthIndexing};
+use vybe_ast::*;
 use vybe_compiler::primitives::generics as common_generics;
 
 const DART_USER_ADD_METHOD: &str = "__dart_user_add";
@@ -134,7 +134,6 @@ pub(crate) struct DartWalker {
     dart_generic_return_from_arg_functions: HashSet<String>,
 }
 
-
 /// Cheap source pre-scan for declared type names, so [`dart_flutter_named_ctor`]
 /// can respect user shadowing. A declaration is a line starting with
 /// `class`/`enum`/`mixin`/`extension` (with the usual `abstract`/`sealed`/… )
@@ -191,7 +190,10 @@ pub(crate) fn is_dart_mixin(__w: &mut DartWalker, name: &str) -> bool {
 
 /// The mixins `class_name` declared with `with`, in source order.
 pub(crate) fn dart_class_mixins(__w: &mut DartWalker, class_name: &str) -> Vec<String> {
-    __w.dart_class_mixins.get(class_name).cloned().unwrap_or_default()
+    __w.dart_class_mixins
+        .get(class_name)
+        .cloned()
+        .unwrap_or_default()
 }
 
 fn is_user_declared_class(__w: &DartWalker, name: &str) -> bool {
@@ -682,7 +684,9 @@ fn dart_is_typed_data_type(name: &str) -> bool {
 fn dart_unmodifiable_typed_view_inner(name: &str) -> Option<&'static str> {
     name.strip_prefix("Unmodifiable")
         .and_then(|rest| rest.strip_suffix("View"))
-        .and_then(|rest| dart_typed_view_alias(rest).or_else(|| dart_simd_list_element(rest).map(|_| "Array")))
+        .and_then(|rest| {
+            dart_typed_view_alias(rest).or_else(|| dart_simd_list_element(rest).map(|_| "Array"))
+        })
 }
 
 fn dart_simd_lanes(name: &str) -> Option<&'static [&'static str]> {
@@ -775,7 +779,12 @@ fn dart_simd_lane(expr: &Expression, lane: &str) -> Expression {
     })
 }
 
-fn dart_simd_binary(type_name: &str, op: &BinOp, left: &Expression, right: &Expression) -> Option<Expression> {
+fn dart_simd_binary(
+    type_name: &str,
+    op: &BinOp,
+    left: &Expression,
+    right: &Expression,
+) -> Option<Expression> {
     let lanes = dart_simd_lanes(type_name)?;
     let mut props = Vec::with_capacity(lanes.len() + 1);
     props.push(obj_prop("__dart_simd_type", Expression::string(type_name)));
@@ -883,10 +892,7 @@ fn dart_i64_list_from_list(list_type: &str, args: &[Argument]) -> Option<Express
         return None;
     }
     Some(dart_type_stamp(
-        dart_call_expr(
-            Expression::ident("List.from"),
-            vec![args[0].value.clone()],
-        ),
+        dart_call_expr(Expression::ident("List.from"), vec![args[0].value.clone()]),
         list_type,
     ))
 }
@@ -900,10 +906,7 @@ fn dart_simd_list_from_list(list_type: &str, args: &[Argument]) -> Option<Expres
         return None;
     }
     Some(dart_type_stamp(
-        dart_call_expr(
-            Expression::ident("List.from"),
-            vec![args[0].value.clone()],
-        ),
+        dart_call_expr(Expression::ident("List.from"), vec![args[0].value.clone()]),
         list_type,
     ))
 }
@@ -929,7 +932,10 @@ fn dart_simd_view_lane(
             right: Box::new(Expression::int(byte_offset)),
         })
     };
-    dart_call_expr(dart_member(data_view.clone(), getter), vec![offset, Expression::bool(true)])
+    dart_call_expr(
+        dart_member(data_view.clone(), getter),
+        vec![offset, Expression::bool(true)],
+    )
 }
 
 fn dart_simd_from_view(list_type: &str, data_view: &Expression, index: &str) -> Option<Expression> {
@@ -944,13 +950,8 @@ fn dart_simd_from_view(list_type: &str, data_view: &Expression, index: &str) -> 
         .iter()
         .enumerate()
         .map(|(i, _)| {
-            let lane = dart_simd_view_lane(
-                data_view,
-                getter,
-                index,
-                stride,
-                (i as i64) * lane_size,
-            );
+            let lane =
+                dart_simd_view_lane(data_view, getter, index, stride, (i as i64) * lane_size);
             Argument::positional(if elem_type == "Int32x4" {
                 lane
             } else {
@@ -981,10 +982,7 @@ fn dart_simd_list_view(list_type: &str, args: &[Argument]) -> Option<Expression>
         captures: Vec::new(),
     });
     Some(dart_type_stamp(
-        dart_call_expr(
-            Expression::ident("List.generate"),
-            vec![length, mapper],
-        ),
+        dart_call_expr(Expression::ident("List.generate"), vec![length, mapper]),
         list_type,
     ))
 }
@@ -1120,7 +1118,11 @@ fn inject_flutter_defaults(__w: &mut DartWalker, class_name: &str, args: &mut Ve
 /// equality, a captured field prints as Dart prints it, and a catalog default
 /// (`Column().direction == Axis.vertical`) compares equal. Returns `None` for
 /// anything that is not a catalog enum, and for a user-declared shadow.
-fn dart_flutter_enum_constant(__w: &mut DartWalker, enum_name: &str, value: &str) -> Option<ExprKind> {
+fn dart_flutter_enum_constant(
+    __w: &mut DartWalker,
+    enum_name: &str,
+    value: &str,
+) -> Option<ExprKind> {
     if __w.user_declared_types.contains(enum_name) {
         return None;
     }
@@ -1145,7 +1147,12 @@ fn dart_flutter_enum_member(expr: &Expression, field: &str) -> Option<ExprKind> 
     })
 }
 
-fn dart_flutter_named_ctor(__w: &mut DartWalker, type_name: &str, ctor: &str, args: &[Argument]) -> Option<ExprKind> {
+fn dart_flutter_named_ctor(
+    __w: &mut DartWalker,
+    type_name: &str,
+    ctor: &str,
+    args: &[Argument],
+) -> Option<ExprKind> {
     if __w.user_declared_types.contains(type_name) {
         return None;
     }
@@ -1730,9 +1737,10 @@ pub fn parse(source: &str) -> Result<Module, String> {
     // that replaces behaviour living in the `runtime.dart` prelude — a Flutter
     // class is a class, walked like every other one.
     if source.contains("package:flutter/") {
-        let flutter_classes = vybe_platform_flutter::core_classes::declarations_for(&source, |name| {
-            is_user_declared_class(__w, name)
-        });
+        let flutter_classes =
+            vybe_platform_flutter::core_classes::declarations_for(&source, |name| {
+                is_user_declared_class(__w, name)
+            });
         if !flutter_classes.is_empty() {
             body.splice(0..0, flutter_classes);
         }
@@ -1793,6 +1801,8 @@ pub fn parse(source: &str) -> Result<Module, String> {
         // literally, which is also the only shape expressible as a functype.
         directives: vybe_ast::Directives {
             receiver_binding: Some(vybe_ast::ReceiverBinding::UniversalParameter),
+            type_resolution: Some(vybe_ast::TypeResolution::Hybrid),
+            operator_dispatch: Some(vybe_ast::OperatorDispatch::RuntimeProtocol),
             // Prototype dispatch, as js — the callable carries its own
             // receiver. Replaces the profile string `class_method_dispatch`.
             method_receiver: Some(vybe_ast::MethodReceiver::Prototype),
@@ -1871,13 +1881,11 @@ fn rewrite_async_entry_main(body: &mut Vec<Statement>) {
         .iter()
         .map(|p| Argument::positional(Expression::ident(&p.name)))
         .collect();
-    let await_call = Expression::new(ExprKind::Await(Box::new(Expression::new(
-        ExprKind::Call {
-            callee: Box::new(Expression::ident("__dart_async_main")),
-            args,
-            optional: false,
-        },
-    ))));
+    let await_call = Expression::new(ExprKind::Await(Box::new(Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::ident("__dart_async_main")),
+        args,
+        optional: false,
+    }))));
     body.insert(
         idx + 1,
         Statement::new(StmtKind::FunctionDecl {
@@ -2107,14 +2115,10 @@ fn dart_ternary_of(cond: Expression, then: Expression, else_: Expression) -> Exp
 ///   newline, and splits — "A\nB" → [A, B], "A\n" → [A], "" → [].
 /// The stream expression is bound once through an immediately-applied lambda
 /// so it is never evaluated twice.
-fn dart_stream_transform_expr(
-    alias: DartBase64Alias,
-    stream: Expression,
-) -> Option<Expression> {
+fn dart_stream_transform_expr(alias: DartBase64Alias, stream: Expression) -> Option<Expression> {
     use DartBase64Alias as A;
     let s = || Expression::ident("__s");
-    let is_empty =
-        |e: Expression| dart_call_of(Expression::ident("__dart_is_empty"), vec![e]);
+    let is_empty = |e: Expression| dart_call_of(Expression::ident("__dart_is_empty"), vec![e]);
     let flat = |e: Expression| {
         dart_member_call_of(
             dart_member_call_of(
@@ -2142,7 +2146,10 @@ fn dart_stream_transform_expr(
             dart_member_call_of(
                 stream,
                 "map",
-                vec![dart_lambda1_of("__e", call1(builtin, Expression::ident("__e")))],
+                vec![dart_lambda1_of(
+                    "__e",
+                    call1(builtin, Expression::ident("__e")),
+                )],
             ),
             "toList",
             vec![],
@@ -2309,12 +2316,13 @@ fn dart_sink_method_expr(
     let sv = || Expression::ident(var);
     let acc = || dart_index_of(sv(), 1);
     let cb = || dart_index_of(sv(), 0);
-    let joined_acc =
-        || dart_member_call_of(acc(), "join", vec![Expression::string("")]);
+    let joined_acc = || dart_member_call_of(acc(), "join", vec![Expression::string("")]);
     match (kind, method) {
-        (A::SinkChunked | A::SinkStr, "add") if args.len() == 1 => {
-            Some(dart_member_call_of(acc(), "add", vec![args[0].value.clone()]))
-        }
+        (A::SinkChunked | A::SinkStr, "add") if args.len() == 1 => Some(dart_member_call_of(
+            acc(),
+            "add",
+            vec![args[0].value.clone()],
+        )),
         (A::SinkBytes | A::SinkUtf8DecodeStr, "add") if args.len() == 1 => Some(
             dart_member_call_of(acc(), "addAll", vec![args[0].value.clone()]),
         ),
@@ -2348,8 +2356,7 @@ fn dart_sink_method_expr(
         (A::SinkUtf8DecodeStr, "close") => {
             let target = || dart_index_of(sv(), 0);
             let target_acc = || dart_index_of(target(), 1);
-            let decoded =
-                dart_call_of(Expression::ident("__dart_utf8_decode"), vec![acc()]);
+            let decoded = dart_call_of(Expression::ident("__dart_utf8_decode"), vec![acc()]);
             Some(dart_arr(vec![
                 dart_member_call_of(target_acc(), "add", vec![decoded]),
                 dart_call_of(
@@ -2497,10 +2504,7 @@ fn rewrite_base64_codec_alias_stmts(
                 rewrite_base64_codec_alias_expr(cond, aliases);
             }
             StmtKind::Labeled { body, .. } => {
-                rewrite_base64_codec_alias_stmts(
-                    std::slice::from_mut(body),
-                    &mut aliases.clone(),
-                );
+                rewrite_base64_codec_alias_stmts(std::slice::from_mut(body), &mut aliases.clone());
             }
             _ => {}
         }
@@ -2656,7 +2660,10 @@ fn rewrite_base64_codec_alias_expr(
                 }
             }
         }
-        ExprKind::IsType { expr: inner, type_name } => {
+        ExprKind::IsType {
+            expr: inner,
+            type_name,
+        } => {
             rewrite_base64_codec_alias_expr(inner, aliases);
             let base_type = type_name
                 .trim()
@@ -3032,7 +3039,11 @@ fn normalize_runtime_type_generic_literals(source: &str) -> String {
 /// strip the mixin names out of the class's parent list. Mixins
 /// themselves stay in the body — they're harmless ClassDecls and
 /// some user code may reference them by name.
-fn apply_mixins(__w: &mut DartWalker, body: &mut Vec<Statement>, mixin_names: &std::collections::HashSet<String>) {
+fn apply_mixins(
+    __w: &mut DartWalker,
+    body: &mut Vec<Statement>,
+    mixin_names: &std::collections::HashSet<String>,
+) {
     if mixin_names.is_empty() {
         return;
     }
@@ -3550,7 +3561,11 @@ fn rewrite_this_to_dart_extension_receiver_expr(expr: &mut Expression) {
             rewrite_this_to_dart_extension_receiver_expr(object);
             rewrite_this_to_dart_extension_receiver_expr(index);
         }
-        ExprKind::Call { callee, args, .. } | ExprKind::New { class: callee, args } => {
+        ExprKind::Call { callee, args, .. }
+        | ExprKind::New {
+            class: callee,
+            args,
+        } => {
             rewrite_this_to_dart_extension_receiver_expr(callee);
             for arg in args {
                 rewrite_this_to_dart_extension_receiver_expr(&mut arg.value);
@@ -3586,7 +3601,9 @@ fn rewrite_this_to_dart_extension_receiver_expr(expr: &mut Expression) {
                         rewrite_this_to_dart_extension_receiver_expr(key);
                         rewrite_this_to_dart_extension_receiver_expr(value);
                     }
-                    ObjectProperty::Spread(value) => rewrite_this_to_dart_extension_receiver_expr(value),
+                    ObjectProperty::Spread(value) => {
+                        rewrite_this_to_dart_extension_receiver_expr(value)
+                    }
                     _ => {}
                 }
             }
@@ -4503,9 +4520,7 @@ fn rewrite_user_add_methods(__w: &mut DartWalker, body: &mut Vec<Statement>) {
                 let inherited: Vec<((String, String), Option<String>)> = operator_return_types
                     .iter()
                     .filter(|((owner, _), _)| owner == parent)
-                    .map(|((_, member), ty)| {
-                        ((class_name.clone(), member.clone()), ty.clone())
-                    })
+                    .map(|((_, member), ty)| ((class_name.clone(), member.clone()), ty.clone()))
                     .collect();
                 for (key, ty) in inherited {
                     if !operator_return_types.contains_key(&key)
@@ -4558,9 +4573,7 @@ fn rewrite_user_add_methods(__w: &mut DartWalker, body: &mut Vec<Statement>) {
                 operator_return_types
                     .iter()
                     .filter(move |((owner, _), _)| owner == source)
-                    .map(move |((_, member), ty)| {
-                        ((target.clone(), member.clone()), ty.clone())
-                    })
+                    .map(move |((_, member), ty)| ((target.clone(), member.clone()), ty.clone()))
             })
             .collect();
         let before = operator_return_types.len();
@@ -4589,7 +4602,8 @@ fn rewrite_user_add_methods(__w: &mut DartWalker, body: &mut Vec<Statement>) {
     }
 
     let mut env = HashMap::new();
-    rewrite_user_add_calls_in_stmts(__w, 
+    rewrite_user_add_calls_in_stmts(
+        __w,
         body,
         &mut env,
         None,
@@ -4598,7 +4612,8 @@ fn rewrite_user_add_methods(__w: &mut DartWalker, body: &mut Vec<Statement>) {
     );
 }
 
-fn rewrite_user_add_calls_in_stmts(__w: &mut DartWalker, 
+fn rewrite_user_add_calls_in_stmts(
+    __w: &mut DartWalker,
     stmts: &mut [Statement],
     env: &mut HashMap<String, String>,
     current_class: Option<&str>,
@@ -4608,7 +4623,8 @@ fn rewrite_user_add_calls_in_stmts(__w: &mut DartWalker,
     for stmt in stmts {
         match &mut stmt.kind {
             StmtKind::Expr(expr) => {
-                rewrite_user_add_calls_in_expr(__w, 
+                rewrite_user_add_calls_in_expr(
+                    __w,
                     expr,
                     env,
                     current_class,
@@ -4618,7 +4634,8 @@ fn rewrite_user_add_calls_in_stmts(__w: &mut DartWalker,
             }
             StmtKind::Block(body) => {
                 let mut block_env = env.clone();
-                rewrite_user_add_calls_in_stmts(__w, 
+                rewrite_user_add_calls_in_stmts(
+                    __w,
                     body,
                     &mut block_env,
                     current_class,
@@ -4629,7 +4646,8 @@ fn rewrite_user_add_calls_in_stmts(__w: &mut DartWalker,
             StmtKind::VarDecl { declarations, .. } => {
                 for decl in declarations {
                     if let Some(init) = &mut decl.init {
-                        rewrite_user_add_calls_in_expr(__w, 
+                        rewrite_user_add_calls_in_expr(
+                            __w,
                             init,
                             env,
                             current_class,
@@ -4689,7 +4707,8 @@ fn rewrite_user_add_calls_in_stmts(__w: &mut DartWalker,
             }
             StmtKind::FunctionDecl { body, .. } => {
                 let mut fn_env = HashMap::new();
-                rewrite_user_add_calls_in_stmts(__w, 
+                rewrite_user_add_calls_in_stmts(
+                    __w,
                     body,
                     &mut fn_env,
                     current_class,
@@ -4705,10 +4724,14 @@ fn rewrite_user_add_calls_in_stmts(__w: &mut DartWalker,
                                 let mut method_env = HashMap::new();
                                 for param in params.iter() {
                                     if let Some(type_hint) = &param.type_hint {
-                                        method_env.insert(param.name.clone(), type_hint.spelling().to_string());
+                                        method_env.insert(
+                                            param.name.clone(),
+                                            type_hint.spelling().to_string(),
+                                        );
                                     }
                                 }
-                                rewrite_user_add_calls_in_stmts(__w, 
+                                rewrite_user_add_calls_in_stmts(
+                                    __w,
                                     body,
                                     &mut method_env,
                                     Some(name),
@@ -4719,7 +4742,8 @@ fn rewrite_user_add_calls_in_stmts(__w: &mut DartWalker,
                         }
                         ClassMember::Constructor { body, .. } => {
                             let mut ctor_env = HashMap::new();
-                            rewrite_user_add_calls_in_stmts(__w, 
+                            rewrite_user_add_calls_in_stmts(
+                                __w,
                                 body,
                                 &mut ctor_env,
                                 Some(name),
@@ -4730,7 +4754,8 @@ fn rewrite_user_add_calls_in_stmts(__w: &mut DartWalker,
                         ClassMember::Property { getter, setter, .. } => {
                             if let Some(body) = getter {
                                 let mut prop_env = HashMap::new();
-                                rewrite_user_add_calls_in_stmts(__w, 
+                                rewrite_user_add_calls_in_stmts(
+                                    __w,
                                     body,
                                     &mut prop_env,
                                     Some(name),
@@ -4740,7 +4765,8 @@ fn rewrite_user_add_calls_in_stmts(__w: &mut DartWalker,
                             }
                             if let Some(setter) = setter {
                                 let mut prop_env = HashMap::new();
-                                rewrite_user_add_calls_in_stmts(__w, 
+                                rewrite_user_add_calls_in_stmts(
+                                    __w,
                                     &mut setter.body,
                                     &mut prop_env,
                                     Some(name),
@@ -4759,7 +4785,8 @@ fn rewrite_user_add_calls_in_stmts(__w: &mut DartWalker,
                 elifs,
                 else_body,
             } => {
-                rewrite_user_add_calls_in_expr(__w, 
+                rewrite_user_add_calls_in_expr(
+                    __w,
                     cond,
                     env,
                     current_class,
@@ -4767,7 +4794,8 @@ fn rewrite_user_add_calls_in_stmts(__w: &mut DartWalker,
                     operator_return_types,
                 );
                 let mut then_env = env.clone();
-                rewrite_user_add_calls_in_stmts(__w, 
+                rewrite_user_add_calls_in_stmts(
+                    __w,
                     then_body,
                     &mut then_env,
                     current_class,
@@ -4775,7 +4803,8 @@ fn rewrite_user_add_calls_in_stmts(__w: &mut DartWalker,
                     operator_return_types,
                 );
                 for (elif_cond, elif_body) in elifs {
-                    rewrite_user_add_calls_in_expr(__w, 
+                    rewrite_user_add_calls_in_expr(
+                        __w,
                         elif_cond,
                         env,
                         current_class,
@@ -4783,7 +4812,8 @@ fn rewrite_user_add_calls_in_stmts(__w: &mut DartWalker,
                         operator_return_types,
                     );
                     let mut elif_env = env.clone();
-                    rewrite_user_add_calls_in_stmts(__w, 
+                    rewrite_user_add_calls_in_stmts(
+                        __w,
                         elif_body,
                         &mut elif_env,
                         current_class,
@@ -4793,7 +4823,8 @@ fn rewrite_user_add_calls_in_stmts(__w: &mut DartWalker,
                 }
                 if let Some(body) = else_body {
                     let mut else_env = env.clone();
-                    rewrite_user_add_calls_in_stmts(__w, 
+                    rewrite_user_add_calls_in_stmts(
+                        __w,
                         body,
                         &mut else_env,
                         current_class,
@@ -4810,7 +4841,8 @@ fn rewrite_user_add_calls_in_stmts(__w: &mut DartWalker,
             } => {
                 let mut loop_env = env.clone();
                 if let Some(init) = init {
-                    rewrite_user_add_calls_in_stmts(__w, 
+                    rewrite_user_add_calls_in_stmts(
+                        __w,
                         std::slice::from_mut(init),
                         &mut loop_env,
                         current_class,
@@ -4819,7 +4851,8 @@ fn rewrite_user_add_calls_in_stmts(__w: &mut DartWalker,
                     );
                 }
                 if let Some(cond) = cond {
-                    rewrite_user_add_calls_in_expr(__w, 
+                    rewrite_user_add_calls_in_expr(
+                        __w,
                         cond,
                         &mut loop_env,
                         current_class,
@@ -4828,7 +4861,8 @@ fn rewrite_user_add_calls_in_stmts(__w: &mut DartWalker,
                     );
                 }
                 if let Some(update) = update {
-                    rewrite_user_add_calls_in_expr(__w, 
+                    rewrite_user_add_calls_in_expr(
+                        __w,
                         update,
                         &mut loop_env,
                         current_class,
@@ -4836,7 +4870,8 @@ fn rewrite_user_add_calls_in_stmts(__w: &mut DartWalker,
                         operator_return_types,
                     );
                 }
-                rewrite_user_add_calls_in_stmts(__w, 
+                rewrite_user_add_calls_in_stmts(
+                    __w,
                     body,
                     &mut loop_env,
                     current_class,
@@ -4845,7 +4880,8 @@ fn rewrite_user_add_calls_in_stmts(__w: &mut DartWalker,
                 );
             }
             StmtKind::ForIn { iter, body, .. } => {
-                rewrite_user_add_calls_in_expr(__w, 
+                rewrite_user_add_calls_in_expr(
+                    __w,
                     iter,
                     env,
                     current_class,
@@ -4853,7 +4889,8 @@ fn rewrite_user_add_calls_in_stmts(__w: &mut DartWalker,
                     operator_return_types,
                 );
                 let mut loop_env = env.clone();
-                rewrite_user_add_calls_in_stmts(__w, 
+                rewrite_user_add_calls_in_stmts(
+                    __w,
                     body,
                     &mut loop_env,
                     current_class,
@@ -4862,7 +4899,8 @@ fn rewrite_user_add_calls_in_stmts(__w: &mut DartWalker,
                 );
             }
             StmtKind::While { cond, body, .. } | StmtKind::DoWhile { cond, body, .. } => {
-                rewrite_user_add_calls_in_expr(__w, 
+                rewrite_user_add_calls_in_expr(
+                    __w,
                     cond,
                     env,
                     current_class,
@@ -4870,7 +4908,8 @@ fn rewrite_user_add_calls_in_stmts(__w: &mut DartWalker,
                     operator_return_types,
                 );
                 let mut loop_env = env.clone();
-                rewrite_user_add_calls_in_stmts(__w, 
+                rewrite_user_add_calls_in_stmts(
+                    __w,
                     body,
                     &mut loop_env,
                     current_class,
@@ -4880,7 +4919,8 @@ fn rewrite_user_add_calls_in_stmts(__w: &mut DartWalker,
             }
             StmtKind::Return(expr) | StmtKind::Throw { expr, .. } => {
                 if let Some(expr) = expr {
-                    rewrite_user_add_calls_in_expr(__w, 
+                    rewrite_user_add_calls_in_expr(
+                        __w,
                         expr,
                         env,
                         current_class,
@@ -4891,7 +4931,8 @@ fn rewrite_user_add_calls_in_stmts(__w: &mut DartWalker,
             }
             StmtKind::Assign { targets, value, .. } => {
                 if targets.len() == 1 {
-                    if let Some(call) = dart_user_index_set_call(__w, 
+                    if let Some(call) = dart_user_index_set_call(
+                        __w,
                         &targets[0],
                         value.clone(),
                         env,
@@ -4919,7 +4960,8 @@ fn rewrite_user_add_calls_in_stmts(__w: &mut DartWalker,
                     }
                 }
                 for target in targets {
-                    rewrite_user_add_calls_in_expr(__w, 
+                    rewrite_user_add_calls_in_expr(
+                        __w,
                         target,
                         env,
                         current_class,
@@ -4927,7 +4969,8 @@ fn rewrite_user_add_calls_in_stmts(__w: &mut DartWalker,
                         operator_return_types,
                     );
                 }
-                rewrite_user_add_calls_in_expr(__w, 
+                rewrite_user_add_calls_in_expr(
+                    __w,
                     value,
                     env,
                     current_class,
@@ -4936,14 +4979,16 @@ fn rewrite_user_add_calls_in_stmts(__w: &mut DartWalker,
                 );
             }
             StmtKind::CompoundAssign { target, value, .. } => {
-                rewrite_user_add_calls_in_expr(__w, 
+                rewrite_user_add_calls_in_expr(
+                    __w,
                     target,
                     env,
                     current_class,
                     add_return_types,
                     operator_return_types,
                 );
-                rewrite_user_add_calls_in_expr(__w, 
+                rewrite_user_add_calls_in_expr(
+                    __w,
                     value,
                     env,
                     current_class,
@@ -4956,7 +5001,8 @@ fn rewrite_user_add_calls_in_stmts(__w: &mut DartWalker,
                 cases,
                 default,
             } => {
-                rewrite_user_add_calls_in_expr(__w, 
+                rewrite_user_add_calls_in_expr(
+                    __w,
                     expr,
                     env,
                     current_class,
@@ -4968,7 +5014,8 @@ fn rewrite_user_add_calls_in_stmts(__w: &mut DartWalker,
                         match cond {
                             CaseCondition::Value(value)
                             | CaseCondition::Comparison { expr: value, .. } => {
-                                rewrite_user_add_calls_in_expr(__w, 
+                                rewrite_user_add_calls_in_expr(
+                                    __w,
                                     value,
                                     env,
                                     current_class,
@@ -4977,14 +5024,16 @@ fn rewrite_user_add_calls_in_stmts(__w: &mut DartWalker,
                                 );
                             }
                             CaseCondition::Range { from, to } => {
-                                rewrite_user_add_calls_in_expr(__w, 
+                                rewrite_user_add_calls_in_expr(
+                                    __w,
                                     from,
                                     env,
                                     current_class,
                                     add_return_types,
                                     operator_return_types,
                                 );
-                                rewrite_user_add_calls_in_expr(__w, 
+                                rewrite_user_add_calls_in_expr(
+                                    __w,
                                     to,
                                     env,
                                     current_class,
@@ -4995,7 +5044,8 @@ fn rewrite_user_add_calls_in_stmts(__w: &mut DartWalker,
                         }
                     }
                     let mut case_env = env.clone();
-                    rewrite_user_add_calls_in_stmts(__w, 
+                    rewrite_user_add_calls_in_stmts(
+                        __w,
                         &mut case.body,
                         &mut case_env,
                         current_class,
@@ -5005,7 +5055,8 @@ fn rewrite_user_add_calls_in_stmts(__w: &mut DartWalker,
                 }
                 if let Some(body) = default {
                     let mut default_env = env.clone();
-                    rewrite_user_add_calls_in_stmts(__w, 
+                    rewrite_user_add_calls_in_stmts(
+                        __w,
                         body,
                         &mut default_env,
                         current_class,
@@ -5021,7 +5072,8 @@ fn rewrite_user_add_calls_in_stmts(__w: &mut DartWalker,
                 finally,
             } => {
                 let mut try_env = env.clone();
-                rewrite_user_add_calls_in_stmts(__w, 
+                rewrite_user_add_calls_in_stmts(
+                    __w,
                     body,
                     &mut try_env,
                     current_class,
@@ -5030,7 +5082,8 @@ fn rewrite_user_add_calls_in_stmts(__w: &mut DartWalker,
                 );
                 for catch in catches {
                     let mut catch_env = env.clone();
-                    rewrite_user_add_calls_in_stmts(__w, 
+                    rewrite_user_add_calls_in_stmts(
+                        __w,
                         &mut catch.body,
                         &mut catch_env,
                         current_class,
@@ -5040,7 +5093,8 @@ fn rewrite_user_add_calls_in_stmts(__w: &mut DartWalker,
                 }
                 if let Some(body) = else_body {
                     let mut else_env = env.clone();
-                    rewrite_user_add_calls_in_stmts(__w, 
+                    rewrite_user_add_calls_in_stmts(
+                        __w,
                         body,
                         &mut else_env,
                         current_class,
@@ -5050,7 +5104,8 @@ fn rewrite_user_add_calls_in_stmts(__w: &mut DartWalker,
                 }
                 if let Some(body) = finally {
                     let mut finally_env = env.clone();
-                    rewrite_user_add_calls_in_stmts(__w, 
+                    rewrite_user_add_calls_in_stmts(
+                        __w,
                         body,
                         &mut finally_env,
                         current_class,
@@ -5089,23 +5144,17 @@ fn dart_static_member_name(expr: &Expression) -> Option<(&str, &str)> {
 fn dart_math_returns_double(name: &str) -> bool {
     matches!(
         name,
-        "sqrt"
-            | "sin"
-            | "cos"
-            | "tan"
-            | "asin"
-            | "acos"
-            | "atan"
-            | "atan2"
-            | "exp"
-            | "log"
+        "sqrt" | "sin" | "cos" | "tan" | "asin" | "acos" | "atan" | "atan2" | "exp" | "log"
     )
 }
 
 fn dart_expr_is_nullable_double(expr: &Expression) -> bool {
     match &expr.kind {
         ExprKind::Call { callee, .. } => {
-            matches!(dart_static_member_name(callee), Some(("double", "tryParse")))
+            matches!(
+                dart_static_member_name(callee),
+                Some(("double", "tryParse"))
+            )
         }
         _ => false,
     }
@@ -5161,7 +5210,10 @@ fn dart_expr_is_double_like(
                     if operator_return_types
                         .contains_key(&("__dart_generic_function".to_string(), name.clone())) =>
                 {
-                    if matches!(name.as_str(), "__dart_eq" | "__dart_ne" | "__dart_compare_to") {
+                    if matches!(
+                        name.as_str(),
+                        "__dart_eq" | "__dart_ne" | "__dart_compare_to"
+                    ) {
                         return false;
                     }
                     if let ExprKind::Call { args, .. } = &expr.kind {
@@ -5195,7 +5247,9 @@ fn dart_expr_is_double_like(
                                     operator_return_types,
                                 )
                                 .as_deref(),
-                                Some("Float32Array" | "Float64Array" | "Float32List" | "Float64List")
+                                Some(
+                                    "Float32Array" | "Float64Array" | "Float32List" | "Float64List"
+                                )
                             )
                         })
                     } else {
@@ -5284,7 +5338,8 @@ fn dart_double_string_helper_for_expr(
     }
 }
 
-fn rewrite_user_add_calls_in_expr(__w: &mut DartWalker, 
+fn rewrite_user_add_calls_in_expr(
+    __w: &mut DartWalker,
     expr: &mut Expression,
     env: &HashMap<String, String>,
     current_class: Option<&str>,
@@ -5293,14 +5348,16 @@ fn rewrite_user_add_calls_in_expr(__w: &mut DartWalker,
 ) {
     match &mut expr.kind {
         ExprKind::Member { object, field, .. } => {
-            rewrite_user_add_calls_in_expr(__w, 
+            rewrite_user_add_calls_in_expr(
+                __w,
                 object,
                 env,
                 current_class,
                 add_return_types,
                 operator_return_types,
             );
-            if let Some(rewrite) = dart_extension_rewrite_for(__w, 
+            if let Some(rewrite) = dart_extension_rewrite_for(
+                __w,
                 object,
                 field,
                 true,
@@ -5357,7 +5414,9 @@ fn rewrite_user_add_calls_in_expr(__w: &mut DartWalker,
                 });
                 if matches!(
                     receiver_type.as_deref(),
-                    Some("String" | "List" | "Map" | "Set" | "Iterable" | "IterableBase" | "Stream")
+                    Some(
+                        "String" | "List" | "Map" | "Set" | "Iterable" | "IterableBase" | "Stream"
+                    )
                 ) || has_declared_length
                 {
                     let receiver = (**object).clone();
@@ -5419,7 +5478,8 @@ fn rewrite_user_add_calls_in_expr(__w: &mut DartWalker,
                     ExprKind::Member { field, .. } if is_dart_zero_arg_getter(field)
                 );
             if !already_zero_arg_getter {
-                rewrite_user_add_calls_in_expr(__w, 
+                rewrite_user_add_calls_in_expr(
+                    __w,
                     callee,
                     env,
                     current_class,
@@ -5432,7 +5492,8 @@ fn rewrite_user_add_calls_in_expr(__w: &mut DartWalker,
                 return;
             }
             for arg in &mut *args {
-                rewrite_user_add_calls_in_expr(__w, 
+                rewrite_user_add_calls_in_expr(
+                    __w,
                     &mut arg.value,
                     env,
                     current_class,
@@ -5476,7 +5537,8 @@ fn rewrite_user_add_calls_in_expr(__w: &mut DartWalker,
                 }
             }
             if let ExprKind::Member { object, field, .. } = &callee.kind {
-                let extension_rewrite = dart_extension_rewrite_for(__w, 
+                let extension_rewrite = dart_extension_rewrite_for(
+                    __w,
                     object,
                     field,
                     false,
@@ -5487,7 +5549,8 @@ fn rewrite_user_add_calls_in_expr(__w: &mut DartWalker,
                 )
                 .or_else(|| {
                     if args.is_empty() {
-                        dart_extension_rewrite_for(__w, 
+                        dart_extension_rewrite_for(
+                            __w,
                             object,
                             field,
                             true,
@@ -5643,7 +5706,8 @@ fn rewrite_user_add_calls_in_expr(__w: &mut DartWalker,
                             dart_iter_element_type(&type_name, operator_return_types)
                         {
                             if let Some(arg) = args.get_mut(0) {
-                                rewrite_lambda_with_param_type(__w, 
+                                rewrite_lambda_with_param_type(
+                                    __w,
                                     &mut arg.value,
                                     &element_type,
                                     env,
@@ -5780,7 +5844,8 @@ fn rewrite_user_add_calls_in_expr(__w: &mut DartWalker,
         }
         ExprKind::New { args, .. } => {
             for arg in args {
-                rewrite_user_add_calls_in_expr(__w, 
+                rewrite_user_add_calls_in_expr(
+                    __w,
                     &mut arg.value,
                     env,
                     current_class,
@@ -5790,14 +5855,16 @@ fn rewrite_user_add_calls_in_expr(__w: &mut DartWalker,
             }
         }
         ExprKind::Binary { left, right, .. } => {
-            rewrite_user_add_calls_in_expr(__w, 
+            rewrite_user_add_calls_in_expr(
+                __w,
                 left,
                 env,
                 current_class,
                 add_return_types,
                 operator_return_types,
             );
-            rewrite_user_add_calls_in_expr(__w, 
+            rewrite_user_add_calls_in_expr(
+                __w,
                 right,
                 env,
                 current_class,
@@ -5952,7 +6019,8 @@ fn rewrite_user_add_calls_in_expr(__w: &mut DartWalker,
             }
         }
         ExprKind::Unary { op, expr: inner } => {
-            rewrite_user_add_calls_in_expr(__w, 
+            rewrite_user_add_calls_in_expr(
+                __w,
                 inner,
                 env,
                 current_class,
@@ -5989,7 +6057,8 @@ fn rewrite_user_add_calls_in_expr(__w: &mut DartWalker,
         | ExprKind::TypeOf(inner)
         | ExprKind::Void(inner)
         | ExprKind::Delete(inner) => {
-            rewrite_user_add_calls_in_expr(__w, 
+            rewrite_user_add_calls_in_expr(
+                __w,
                 inner,
                 env,
                 current_class,
@@ -5998,21 +6067,24 @@ fn rewrite_user_add_calls_in_expr(__w: &mut DartWalker,
             );
         }
         ExprKind::Ternary { cond, then, else_ } => {
-            rewrite_user_add_calls_in_expr(__w, 
+            rewrite_user_add_calls_in_expr(
+                __w,
                 cond,
                 env,
                 current_class,
                 add_return_types,
                 operator_return_types,
             );
-            rewrite_user_add_calls_in_expr(__w, 
+            rewrite_user_add_calls_in_expr(
+                __w,
                 then,
                 env,
                 current_class,
                 add_return_types,
                 operator_return_types,
             );
-            rewrite_user_add_calls_in_expr(__w, 
+            rewrite_user_add_calls_in_expr(
+                __w,
                 else_,
                 env,
                 current_class,
@@ -6021,14 +6093,16 @@ fn rewrite_user_add_calls_in_expr(__w: &mut DartWalker,
             );
         }
         ExprKind::Index { object, index, .. } => {
-            rewrite_user_add_calls_in_expr(__w, 
+            rewrite_user_add_calls_in_expr(
+                __w,
                 object,
                 env,
                 current_class,
                 add_return_types,
                 operator_return_types,
             );
-            rewrite_user_add_calls_in_expr(__w, 
+            rewrite_user_add_calls_in_expr(
+                __w,
                 index,
                 env,
                 current_class,
@@ -6069,14 +6143,16 @@ fn rewrite_user_add_calls_in_expr(__w: &mut DartWalker,
             }
         }
         ExprKind::Assign { target, value } => {
-            rewrite_user_add_calls_in_expr(__w, 
+            rewrite_user_add_calls_in_expr(
+                __w,
                 value,
                 env,
                 current_class,
                 add_return_types,
                 operator_return_types,
             );
-            if let Some(call) = dart_user_index_set_call(__w, 
+            if let Some(call) = dart_user_index_set_call(
+                __w,
                 target,
                 (**value).clone(),
                 env,
@@ -6099,7 +6175,8 @@ fn rewrite_user_add_calls_in_expr(__w: &mut DartWalker,
                 *expr = call;
                 return;
             } else {
-                rewrite_user_add_calls_in_expr(__w, 
+                rewrite_user_add_calls_in_expr(
+                    __w,
                     target,
                     env,
                     current_class,
@@ -6111,7 +6188,8 @@ fn rewrite_user_add_calls_in_expr(__w: &mut DartWalker,
         ExprKind::Array(elems) => {
             for elem in elems {
                 if let Some(key) = &mut elem.key {
-                    rewrite_user_add_calls_in_expr(__w, 
+                    rewrite_user_add_calls_in_expr(
+                        __w,
                         key,
                         env,
                         current_class,
@@ -6119,7 +6197,8 @@ fn rewrite_user_add_calls_in_expr(__w: &mut DartWalker,
                         operator_return_types,
                     );
                 }
-                rewrite_user_add_calls_in_expr(__w, 
+                rewrite_user_add_calls_in_expr(
+                    __w,
                     &mut elem.value,
                     env,
                     current_class,
@@ -6130,7 +6209,8 @@ fn rewrite_user_add_calls_in_expr(__w: &mut DartWalker,
         }
         ExprKind::Tuple(items) | ExprKind::Set(items) | ExprKind::Sequence(items) => {
             for item in items {
-                rewrite_user_add_calls_in_expr(__w, 
+                rewrite_user_add_calls_in_expr(
+                    __w,
                     item,
                     env,
                     current_class,
@@ -6141,7 +6221,8 @@ fn rewrite_user_add_calls_in_expr(__w: &mut DartWalker,
         }
         ExprKind::NamedTuple { fields, .. } => {
             for (_, value) in fields {
-                rewrite_user_add_calls_in_expr(__w, 
+                rewrite_user_add_calls_in_expr(
+                    __w,
                     value,
                     env,
                     current_class,
@@ -6153,7 +6234,8 @@ fn rewrite_user_add_calls_in_expr(__w: &mut DartWalker,
         ExprKind::Object(props) => {
             for prop in props {
                 if let ObjectProperty::KeyValue { value, .. } = prop {
-                    rewrite_user_add_calls_in_expr(__w, 
+                    rewrite_user_add_calls_in_expr(
+                        __w,
                         value,
                         env,
                         current_class,
@@ -6182,7 +6264,8 @@ fn rewrite_user_add_calls_in_expr(__w: &mut DartWalker,
                             .as_deref(),
                             Some("double")
                         );
-                        rewrite_user_add_calls_in_expr(__w, 
+                        rewrite_user_add_calls_in_expr(
+                            __w,
                             value,
                             env,
                             current_class,
@@ -6199,7 +6282,8 @@ fn rewrite_user_add_calls_in_expr(__w: &mut DartWalker,
                         }
                     }
                     InterpolPart::Formatted(value, _) => {
-                        rewrite_user_add_calls_in_expr(__w, 
+                        rewrite_user_add_calls_in_expr(
+                            __w,
                             value,
                             env,
                             current_class,
@@ -6213,7 +6297,8 @@ fn rewrite_user_add_calls_in_expr(__w: &mut DartWalker,
         }
         ExprKind::Lambda { body, .. } => match body {
             LambdaBody::Expr(value) => {
-                rewrite_user_add_calls_in_expr(__w, 
+                rewrite_user_add_calls_in_expr(
+                    __w,
                     value,
                     env,
                     current_class,
@@ -6223,7 +6308,8 @@ fn rewrite_user_add_calls_in_expr(__w: &mut DartWalker,
             }
             LambdaBody::Block(stmts) => {
                 let mut lambda_env = env.clone();
-                rewrite_user_add_calls_in_stmts(__w, 
+                rewrite_user_add_calls_in_stmts(
+                    __w,
                     stmts,
                     &mut lambda_env,
                     current_class,
@@ -6233,7 +6319,8 @@ fn rewrite_user_add_calls_in_expr(__w: &mut DartWalker,
             }
         },
         ExprKind::IsType { expr: inner, .. } | ExprKind::Cast { expr: inner, .. } => {
-            rewrite_user_add_calls_in_expr(__w, 
+            rewrite_user_add_calls_in_expr(
+                __w,
                 inner,
                 env,
                 current_class,
@@ -6242,14 +6329,16 @@ fn rewrite_user_add_calls_in_expr(__w: &mut DartWalker,
             );
         }
         ExprKind::NullCoalesce { left, right } => {
-            rewrite_user_add_calls_in_expr(__w, 
+            rewrite_user_add_calls_in_expr(
+                __w,
                 left,
                 env,
                 current_class,
                 add_return_types,
                 operator_return_types,
             );
-            rewrite_user_add_calls_in_expr(__w, 
+            rewrite_user_add_calls_in_expr(
+                __w,
                 right,
                 env,
                 current_class,
@@ -6258,7 +6347,8 @@ fn rewrite_user_add_calls_in_expr(__w: &mut DartWalker,
             );
         }
         ExprKind::Match { subject, arms } => {
-            rewrite_user_add_calls_in_expr(__w, 
+            rewrite_user_add_calls_in_expr(
+                __w,
                 subject,
                 env,
                 current_class,
@@ -6268,7 +6358,8 @@ fn rewrite_user_add_calls_in_expr(__w: &mut DartWalker,
             for arm in arms {
                 if let Some(conditions) = &mut arm.conditions {
                     for condition in conditions {
-                        rewrite_user_add_calls_in_expr(__w, 
+                        rewrite_user_add_calls_in_expr(
+                            __w,
                             condition,
                             env,
                             current_class,
@@ -6277,7 +6368,8 @@ fn rewrite_user_add_calls_in_expr(__w: &mut DartWalker,
                         );
                     }
                 }
-                rewrite_user_add_calls_in_expr(__w, 
+                rewrite_user_add_calls_in_expr(
+                    __w,
                     &mut arm.body,
                     env,
                     current_class,
@@ -6412,7 +6504,9 @@ fn dart_file_lock(name: &str) -> Expression {
 fn dart_process_run_args(args: Vec<Argument>) -> Vec<Argument> {
     fn normalize_encoding_arg(expr: Expression) -> Expression {
         match expr.kind {
-            ExprKind::Ident(name) if matches!(name.as_str(), "utf8" | "systemEncoding" | "latin1") => {
+            ExprKind::Ident(name)
+                if matches!(name.as_str(), "utf8" | "systemEncoding" | "latin1") =>
+            {
                 Expression::string("__dart_string_encoding")
             }
             _ => expr,
@@ -6434,8 +6528,12 @@ fn dart_process_run_args(args: Vec<Argument>) -> Vec<Argument> {
             Some("workingDirectory") => out[2] = Argument::positional(arg.value),
             Some("environment") => out[3] = Argument::positional(arg.value),
             Some("runInShell") => out[4] = Argument::positional(arg.value),
-            Some("stdoutEncoding") => out[5] = Argument::positional(normalize_encoding_arg(arg.value)),
-            Some("stderrEncoding") => out[6] = Argument::positional(normalize_encoding_arg(arg.value)),
+            Some("stdoutEncoding") => {
+                out[5] = Argument::positional(normalize_encoding_arg(arg.value))
+            }
+            Some("stderrEncoding") => {
+                out[6] = Argument::positional(normalize_encoding_arg(arg.value))
+            }
             Some("includeParentEnvironment") | Some("mode") => {}
             _ => {
                 if positional < 2 {
@@ -6452,14 +6550,10 @@ fn dart_process_start_mode(expr: Expression) -> Expression {
     match expr.kind {
         ExprKind::Lit(Literal::Str(text)) => Expression::string(&text),
         ExprKind::Ident(name) if name.starts_with("ProcessStartMode.") => Expression::string(&name),
-        ExprKind::Member { object, field, .. }
-            if matches!(&object.kind, ExprKind::Ident(name) if name == "ProcessStartMode") =>
-        {
+        ExprKind::Member { object, field, .. } if matches!(&object.kind, ExprKind::Ident(name) if name == "ProcessStartMode") => {
             Expression::string(&format!("ProcessStartMode.{field}"))
         }
-        ExprKind::StaticAccess { class, member }
-            if matches!(&class.kind, ExprKind::Ident(name) if name == "ProcessStartMode") =>
-        {
+        ExprKind::StaticAccess { class, member } if matches!(&class.kind, ExprKind::Ident(name) if name == "ProcessStartMode") => {
             match member.kind {
                 ExprKind::Ident(field) => Expression::string(&format!("ProcessStartMode.{field}")),
                 _ => Expression::string("ProcessStartMode.normal"),
@@ -6471,7 +6565,9 @@ fn dart_process_start_mode(expr: Expression) -> Expression {
 
 fn dart_process_start_args(args: Vec<Argument>) -> Vec<Argument> {
     let mut out = dart_process_run_args(Vec::new());
-    out.push(Argument::positional(Expression::string("ProcessStartMode.normal")));
+    out.push(Argument::positional(Expression::string(
+        "ProcessStartMode.normal",
+    )));
     out.push(Argument::positional(Expression::bool(true)));
     let mut positional = 0usize;
     for arg in args {
@@ -6501,7 +6597,11 @@ fn dart_is_process_stdin_expr(expr: &Expression) -> bool {
     )
 }
 
-fn dart_process_stdin_call(name: &str, receiver: Expression, args: Vec<Argument>) -> Option<Expression> {
+fn dart_process_stdin_call(
+    name: &str,
+    receiver: Expression,
+    args: Vec<Argument>,
+) -> Option<Expression> {
     let helper = match name {
         "writeln" => "__dart_process_stdin_writeln",
         "add" => "__dart_process_stdin_add",
@@ -6620,7 +6720,8 @@ fn dart_filesystem_type_static(name: &str) -> Option<Expression> {
 /// `(t = receiver, t == null ? null : <use(t)>)` — evaluates the receiver once
 /// and performs the access only when it is non-null. Dart's `?.`/`?[]` short-
 /// circuit the WHOLE access, so the guard has to wrap the use, not just mark it.
-fn dart_null_guarded(__w: &mut DartWalker, 
+fn dart_null_guarded(
+    __w: &mut DartWalker,
     receiver: Expression,
     use_receiver: impl FnOnce(Expression) -> Expression,
 ) -> Expression {
@@ -6749,11 +6850,13 @@ fn dart_typed_index_get_call(
         args: vec![Argument::positional(index.clone())],
         optional: false,
     });
-    Some(if matches!(type_name.as_str(), "Float32List" | "Float64List") {
-        dart_type_stamp(get, "double")
-    } else {
-        get
-    })
+    Some(
+        if matches!(type_name.as_str(), "Float32List" | "Float64List") {
+            dart_type_stamp(get, "double")
+        } else {
+            get
+        },
+    )
 }
 
 fn dart_typed_index_set_call(
@@ -6777,8 +6880,8 @@ fn dart_typed_index_set_call(
     if dart_unmodifiable_typed_view_inner(&type_name).is_some() {
         return Some(dart_unsupported_mutation_call());
     }
-    let ecma = dart_typed_view_alias(&type_name)
-        .or_else(|| dart_typed_data_source_type(&type_name))?;
+    let ecma =
+        dart_typed_view_alias(&type_name).or_else(|| dart_typed_data_source_type(&type_name))?;
     if ecma == "DataView" || dart_i64_typed_list(&type_name) {
         return None;
     }
@@ -6804,7 +6907,8 @@ fn dart_typed_index_set_call(
     }))
 }
 
-fn dart_user_index_set_call(__w: &mut DartWalker, 
+fn dart_user_index_set_call(
+    __w: &mut DartWalker,
     target: &Expression,
     value: Expression,
     env: &HashMap<String, String>,
@@ -6827,14 +6931,16 @@ fn dart_user_index_set_call(__w: &mut DartWalker,
     }
     let mut object = (**object).clone();
     let mut index = (**index).clone();
-    rewrite_user_add_calls_in_expr(__w, 
+    rewrite_user_add_calls_in_expr(
+        __w,
         &mut object,
         env,
         current_class,
         add_return_types,
         operator_return_types,
     );
-    rewrite_user_add_calls_in_expr(__w, 
+    rewrite_user_add_calls_in_expr(
+        __w,
         &mut index,
         env,
         current_class,
@@ -6965,7 +7071,9 @@ fn dart_static_expr_type(
         ExprKind::Call { callee, .. } => match &callee.kind {
             ExprKind::Ident(name) if dart_bool_return_helper(name) => Some("bool".to_string()),
             ExprKind::Ident(name) if name == "__dart_bigint_from" => Some("bigint".to_string()),
-            ExprKind::Ident(name) if name == "__dart_platform_environment" => Some("Map".to_string()),
+            ExprKind::Ident(name) if name == "__dart_platform_environment" => {
+                Some("Map".to_string())
+            }
             ExprKind::Ident(name) => env
                 .get(name)
                 .and_then(|hint| dart_callable_return_type_hint(hint))
@@ -7030,7 +7138,12 @@ fn dart_collection_constructor_type(expr: &Expression) -> Option<String> {
         ExprKind::Ident(name)
             if matches!(
                 name.as_str(),
-                "List" | "List.filled" | "List.generate" | "List.from" | "List.of" | "List.unmodifiable"
+                "List"
+                    | "List.filled"
+                    | "List.generate"
+                    | "List.from"
+                    | "List.of"
+                    | "List.unmodifiable"
             ) =>
         {
             Some("List".to_string())
@@ -7048,19 +7161,31 @@ fn dart_collection_constructor_type(expr: &Expression) -> Option<String> {
                 ExprKind::Ident(name) => name.as_str(),
                 _ => return None,
             };
-            if dart_is_typed_data_type(owner)
-                && matches!(field.as_str(), "from" | "of" | "view")
-            {
+            if dart_is_typed_data_type(owner) && matches!(field.as_str(), "from" | "of" | "view") {
                 return dart_typed_data_source_type(owner)
                     .or_else(|| Some(owner))
                     .map(str::to_string);
             }
             match owner {
-                "Map" if matches!(
-                    field.as_str(),
-                    "from" | "of" | "unmodifiable" | "fromEntries" | "fromIterables" | "identity"
-                ) => Some("Map".to_string()),
-                "List" if matches!(field.as_str(), "filled" | "generate" | "from" | "of" | "unmodifiable") => {
+                "Map"
+                    if matches!(
+                        field.as_str(),
+                        "from"
+                            | "of"
+                            | "unmodifiable"
+                            | "fromEntries"
+                            | "fromIterables"
+                            | "identity"
+                    ) =>
+                {
+                    Some("Map".to_string())
+                }
+                "List"
+                    if matches!(
+                        field.as_str(),
+                        "filled" | "generate" | "from" | "of" | "unmodifiable"
+                    ) =>
+                {
                     Some("List".to_string())
                 }
                 "Set" if matches!(field.as_str(), "from" | "of" | "unmodifiable" | "identity") => {
@@ -7073,7 +7198,8 @@ fn dart_collection_constructor_type(expr: &Expression) -> Option<String> {
     }
 }
 
-fn dart_extension_rewrite_for(__w: &mut DartWalker, 
+fn dart_extension_rewrite_for(
+    __w: &mut DartWalker,
     receiver: &Expression,
     member: &str,
     is_getter: bool,
@@ -7166,11 +7292,7 @@ fn dart_constructor_expr_type(expr: &Expression) -> Option<String> {
             // folded `{1, 2}.toString()` into "Instance of
             // '__dart_set_from'"). This generalizes the previous
             // `__dart_bigint_from` special case into the actual rule.
-            ExprKind::Ident(name)
-                if !name.chars().next().is_some_and(char::is_uppercase) =>
-            {
-                None
-            }
+            ExprKind::Ident(name) if !name.chars().next().is_some_and(char::is_uppercase) => None,
             ExprKind::Ident(name) => Some(name.clone()),
             ExprKind::Member { field, .. } => Some(field.clone()),
             _ => None,
@@ -7184,7 +7306,8 @@ fn dart_constructor_expr_type(expr: &Expression) -> Option<String> {
     }
 }
 
-fn rewrite_lambda_with_param_type(__w: &mut DartWalker, 
+fn rewrite_lambda_with_param_type(
+    __w: &mut DartWalker,
     expr: &mut Expression,
     param_type: &str,
     env: &HashMap<String, String>,
@@ -7201,14 +7324,16 @@ fn rewrite_lambda_with_param_type(__w: &mut DartWalker,
     let mut lambda_env = env.clone();
     lambda_env.insert(param.name.clone(), param_type.to_string());
     match body {
-        LambdaBody::Expr(value) => rewrite_user_add_calls_in_expr(__w, 
+        LambdaBody::Expr(value) => rewrite_user_add_calls_in_expr(
+            __w,
             value,
             &lambda_env,
             current_class,
             add_return_types,
             operator_return_types,
         ),
-        LambdaBody::Block(stmts) => rewrite_user_add_calls_in_stmts(__w, 
+        LambdaBody::Block(stmts) => rewrite_user_add_calls_in_stmts(
+            __w,
             stmts,
             &mut lambda_env,
             current_class,
@@ -7828,7 +7953,10 @@ fn walk_statement(__w: &mut DartWalker, pair: Pair<Rule>) -> Result<Option<State
     Ok(Some(Statement::with_span(kind, span)))
 }
 
-fn walk_statement_into_body(__w: &mut DartWalker, pair: Pair<Rule>) -> Result<Vec<Statement>, String> {
+fn walk_statement_into_body(
+    __w: &mut DartWalker,
+    pair: Pair<Rule>,
+) -> Result<Vec<Statement>, String> {
     if matches!(
         pair.as_rule(),
         Rule::block_statement | Rule::function_body_block
@@ -7886,7 +8014,8 @@ fn walk_var_decl_stmt(__w: &mut DartWalker, pair: Pair<Rule>) -> Result<StmtKind
                 declarations.push(decl);
             }
             Rule::var_declarator => {
-                if let Some(block) = lower_destructuring_var_declarator(__w, 
+                if let Some(block) = lower_destructuring_var_declarator(
+                    __w,
                     p.clone(),
                     var_kind.clone(),
                     declarations.len(),
@@ -7915,7 +8044,8 @@ fn walk_var_decl_stmt(__w: &mut DartWalker, pair: Pair<Rule>) -> Result<StmtKind
     })
 }
 
-fn walk_var_declarator(__w: &mut DartWalker, 
+fn walk_var_declarator(
+    __w: &mut DartWalker,
     pair: Pair<Rule>,
     type_hint: Option<String>,
     type_is_nullable: bool,
@@ -7939,7 +8069,8 @@ fn walk_var_declarator(__w: &mut DartWalker,
         init = Some(Expression::null());
     }
 
-    let inferred_type_hint = type_hint.or_else(|| init.as_ref().and_then(dart_inferred_collection_type_hint));
+    let inferred_type_hint =
+        type_hint.or_else(|| init.as_ref().and_then(dart_inferred_collection_type_hint));
 
     Ok(VarDeclarator {
         pattern: BindingPattern::Ident(name),
@@ -7962,7 +8093,8 @@ fn dart_inferred_collection_type_hint(expr: &Expression) -> Option<String> {
     }
 }
 
-fn lower_destructuring_var_declarator(__w: &mut DartWalker, 
+fn lower_destructuring_var_declarator(
+    __w: &mut DartWalker,
     pair: Pair<Rule>,
     kind: VarDeclKind,
     ordinal: usize,
@@ -8014,7 +8146,8 @@ fn lower_destructuring_var_declarator(__w: &mut DartWalker,
     Ok(Some(body))
 }
 
-fn lower_for_in_header_parts(__w: &mut DartWalker, 
+fn lower_for_in_header_parts(
+    __w: &mut DartWalker,
     header_inner: Pair<Rule>,
     mut body: Vec<Statement>,
 ) -> Result<(String, Expression, Vec<Statement>), String> {
@@ -8064,7 +8197,8 @@ fn lower_for_in_header_parts(__w: &mut DartWalker,
     Ok((var_name, iter, body))
 }
 
-fn dart_decl_pattern_bindings(__w: &mut DartWalker, 
+fn dart_decl_pattern_bindings(
+    __w: &mut DartWalker,
     pair: Pair<Rule>,
     subject: &Expression,
 ) -> Result<Vec<(String, Expression)>, String> {
@@ -8263,7 +8397,8 @@ fn walk_function_decl(__w: &mut DartWalker, pair: Pair<Rule>) -> Result<StmtKind
                     .is_some_and(|hint| hint.spelling().trim() == ret)
             })
         {
-            __w.dart_generic_return_from_arg_functions.insert(name.clone());
+            __w.dart_generic_return_from_arg_functions
+                .insert(name.clone());
         }
     }
 
@@ -8367,7 +8502,9 @@ fn walk_lambda_param_pair(__w: &mut DartWalker, lparam: Pair<Rule>) -> Result<Pa
                 for ti in inner.into_inner() {
                     match ti.as_rule() {
                         Rule::ident_name => name = ti.as_str().to_string(),
-                        Rule::type_annotation => type_hint = Some(dart_type_hint_from_annotation(__w, &ti)),
+                        Rule::type_annotation => {
+                            type_hint = Some(dart_type_hint_from_annotation(__w, &ti))
+                        }
                         Rule::param_default => {
                             if let Some(ep) = ti
                                 .into_inner()
@@ -8403,7 +8540,8 @@ fn walk_param(__w: &mut DartWalker, pair: Pair<Rule>) -> Result<Param, String> {
     let mut is_this_param = false;
     let mut is_super_param = false;
 
-    fn handle(__w: &mut DartWalker, 
+    fn handle(
+        __w: &mut DartWalker,
         p: Pair<Rule>,
         name: &mut String,
         type_hint: &mut Option<String>,
@@ -8441,7 +8579,8 @@ fn walk_param(__w: &mut DartWalker, pair: Pair<Rule>) -> Result<Param, String> {
         Ok(())
     }
     for p in pair.into_inner() {
-        handle(__w, 
+        handle(
+            __w,
             p,
             &mut name,
             &mut type_hint,
@@ -8469,14 +8608,18 @@ fn walk_param(__w: &mut DartWalker, pair: Pair<Rule>) -> Result<Param, String> {
 }
 
 /// Walk a param and also return whether it was a `this.x` or `super.x` param.
-fn walk_param_with_this(__w: &mut DartWalker, pair: Pair<Rule>) -> Result<(Param, bool, bool), String> {
+fn walk_param_with_this(
+    __w: &mut DartWalker,
+    pair: Pair<Rule>,
+) -> Result<(Param, bool, bool), String> {
     let mut name = String::new();
     let mut type_hint: Option<String> = None;
     let mut default: Option<Expression> = None;
     let mut is_this_param = false;
     let mut is_super_param = false;
 
-    fn handle(__w: &mut DartWalker, 
+    fn handle(
+        __w: &mut DartWalker,
         p: Pair<Rule>,
         name: &mut String,
         type_hint: &mut Option<String>,
@@ -8513,7 +8656,8 @@ fn walk_param_with_this(__w: &mut DartWalker, pair: Pair<Rule>) -> Result<(Param
         Ok(())
     }
     for p in pair.into_inner() {
-        handle(__w, 
+        handle(
+            __w,
             p,
             &mut name,
             &mut type_hint,
@@ -9296,7 +9440,12 @@ fn nsm_typeof_is(expr: Expression, type_name: &str) -> Expression {
 }
 
 /// `(t = obj, typeof t.m === "function" ? t.m(args) : t.noSuchMethod(inv))`
-fn nsm_call_rewrite(__w: &mut DartWalker, object: Expression, field: &str, args: Vec<Argument>) -> Expression {
+fn nsm_call_rewrite(
+    __w: &mut DartWalker,
+    object: Expression,
+    field: &str,
+    args: Vec<Argument>,
+) -> Expression {
     let tmp = nsm_tmp(__w, "recv");
     let receiver = || Expression::ident(&tmp);
     let save = Expression::new(ExprKind::Assign {
@@ -9342,7 +9491,12 @@ fn nsm_get_rewrite(__w: &mut DartWalker, object: Expression, field: &str) -> Exp
 ///
 /// The value goes into its own temp so it is evaluated exactly once and in
 /// source order, before the branch that decides where it lands.
-fn nsm_set_rewrite(__w: &mut DartWalker, object: Expression, field: &str, value: Expression) -> Expression {
+fn nsm_set_rewrite(
+    __w: &mut DartWalker,
+    object: Expression,
+    field: &str,
+    value: Expression,
+) -> Expression {
     let recv_tmp = nsm_tmp(__w, "recv");
     let value_tmp = nsm_tmp(__w, "val");
     let receiver = || Expression::ident(&recv_tmp);
@@ -9374,7 +9528,11 @@ fn nsm_set_rewrite(__w: &mut DartWalker, object: Expression, field: &str, value:
     ]))
 }
 
-fn nsm_rewrite_stmts(__w: &mut DartWalker, stmts: &mut [Statement], dynamic_vars: &mut HashSet<String>) {
+fn nsm_rewrite_stmts(
+    __w: &mut DartWalker,
+    stmts: &mut [Statement],
+    dynamic_vars: &mut HashSet<String>,
+) {
     for stmt in stmts.iter_mut() {
         nsm_rewrite_stmt(__w, stmt, dynamic_vars);
     }
@@ -9382,7 +9540,12 @@ fn nsm_rewrite_stmts(__w: &mut DartWalker, stmts: &mut [Statement], dynamic_vars
 
 /// A nested body gets its own copy of the dynamic set: a `dynamic` local in one
 /// function must not make a same-named local in another function dynamic.
-fn nsm_rewrite_body(__w: &mut DartWalker, body: &mut [Statement], params: &[Param], dynamic_vars: &HashSet<String>) {
+fn nsm_rewrite_body(
+    __w: &mut DartWalker,
+    body: &mut [Statement],
+    params: &[Param],
+    dynamic_vars: &HashSet<String>,
+) {
     let mut inner = dynamic_vars.clone();
     for param in params {
         if param.type_hint.as_deref() == Some("dynamic") {
@@ -9392,9 +9555,15 @@ fn nsm_rewrite_body(__w: &mut DartWalker, body: &mut [Statement], params: &[Para
     nsm_rewrite_stmts(__w, body, &mut inner);
 }
 
-fn nsm_rewrite_stmt(__w: &mut DartWalker, stmt: &mut Statement, dynamic_vars: &mut HashSet<String>) {
+fn nsm_rewrite_stmt(
+    __w: &mut DartWalker,
+    stmt: &mut Statement,
+    dynamic_vars: &mut HashSet<String>,
+) {
     match &mut stmt.kind {
-        StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) => nsm_rewrite_expr(__w, expr, dynamic_vars),
+        StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) => {
+            nsm_rewrite_expr(__w, expr, dynamic_vars)
+        }
         StmtKind::Throw { expr, cause } => {
             for e in expr.iter_mut().chain(cause.iter_mut()) {
                 nsm_rewrite_expr(__w, e, dynamic_vars);
@@ -9430,7 +9599,8 @@ fn nsm_rewrite_stmt(__w: &mut DartWalker, stmt: &mut Statement, dynamic_vars: &m
                     if nsm_is_dynamic(object, dynamic_vars) {
                         let mut receiver = (**object).clone();
                         nsm_rewrite_expr(__w, &mut receiver, dynamic_vars);
-                        stmt.kind = StmtKind::Expr(nsm_set_rewrite(__w, receiver, field, value.clone()));
+                        stmt.kind =
+                            StmtKind::Expr(nsm_set_rewrite(__w, receiver, field, value.clone()));
                         return;
                     }
                 }
@@ -9514,7 +9684,9 @@ fn nsm_rewrite_stmt(__w: &mut DartWalker, stmt: &mut Statement, dynamic_vars: &m
             }
         }
         StmtKind::Block(body) => nsm_rewrite_stmts(__w, body, dynamic_vars),
-        StmtKind::FunctionDecl { params, body, .. } => nsm_rewrite_body(__w, body, params, dynamic_vars),
+        StmtKind::FunctionDecl { params, body, .. } => {
+            nsm_rewrite_body(__w, body, params, dynamic_vars)
+        }
         StmtKind::ClassDecl { members, .. } => {
             for member in members.iter_mut() {
                 match member {
@@ -9530,7 +9702,9 @@ fn nsm_rewrite_stmt(__w: &mut DartWalker, stmt: &mut Statement, dynamic_vars: &m
                             nsm_rewrite_body(__w, &mut setter.body, &[], dynamic_vars);
                         }
                     }
-                    ClassMember::Field { init: Some(e), .. } => nsm_rewrite_expr(__w, e, dynamic_vars),
+                    ClassMember::Field { init: Some(e), .. } => {
+                        nsm_rewrite_expr(__w, e, dynamic_vars)
+                    }
                     _ => {}
                 }
             }
@@ -9828,7 +10002,9 @@ fn rewrite_top_level_accessor_expr(
                 rewrite_top_level_accessor_expr(&mut arg.value, getters, setters);
             }
         }
-        ExprKind::Member { object, .. } => rewrite_top_level_accessor_expr(object, getters, setters),
+        ExprKind::Member { object, .. } => {
+            rewrite_top_level_accessor_expr(object, getters, setters)
+        }
         ExprKind::Index { object, index, .. } => {
             rewrite_top_level_accessor_expr(object, getters, setters);
             rewrite_top_level_accessor_expr(index, getters, setters);
@@ -10064,7 +10240,6 @@ fn walk_extension_decl(__w: &mut DartWalker, pair: Pair<Rule>) -> Result<StmtKin
         name = "__extension__".to_string();
     }
 
-
     Ok(StmtKind::ClassDecl {
         name,
         parents,
@@ -10282,27 +10457,29 @@ fn walk_enum_decl(__w: &mut DartWalker, pair: Pair<Rule>) -> Result<StmtKind, St
             if matches!(&m.kind, StmtKind::FunctionDecl { name, .. } if name == "toString"))
     });
     if !declares_to_string {
-        body_members.push(ClassMember::Method(Box::new(Statement::new(StmtKind::FunctionDecl {
-            name: "toString".to_string(),
-            params: vec![],
-            return_type: Some("String".to_string()),
-            body: vec![Statement::new(StmtKind::Return(Some(Expression::new(
-                ExprKind::Binary {
-                    op: BinOp::Add,
-                    left: Box::new(Expression::string(&format!("{name}."))),
-                    right: Box::new(Expression::new(ExprKind::Member {
-                        object: Box::new(Expression::new(ExprKind::This)),
-                        field: "name".to_string(),
-                        null_safe: false,
-                    })),
-                },
-            ))))],
-            modifiers: Modifiers::default(),
-            handles: vec![],
-            is_async: false,
-            is_generator: false,
-            is_sub: false,
-        }))));
+        body_members.push(ClassMember::Method(Box::new(Statement::new(
+            StmtKind::FunctionDecl {
+                name: "toString".to_string(),
+                params: vec![],
+                return_type: Some("String".to_string()),
+                body: vec![Statement::new(StmtKind::Return(Some(Expression::new(
+                    ExprKind::Binary {
+                        op: BinOp::Add,
+                        left: Box::new(Expression::string(&format!("{name}."))),
+                        right: Box::new(Expression::new(ExprKind::Member {
+                            object: Box::new(Expression::new(ExprKind::This)),
+                            field: "name".to_string(),
+                            null_safe: false,
+                        })),
+                    },
+                ))))],
+                modifiers: Modifiers::default(),
+                handles: vec![],
+                is_async: false,
+                is_generator: false,
+                is_sub: false,
+            },
+        ))));
     }
 
     // Dart enum constants are singletons with `index`, `name`, and a static
@@ -10436,8 +10613,13 @@ fn walk_enum_decl(__w: &mut DartWalker, pair: Pair<Rule>) -> Result<StmtKind, St
         array_bounds: None,
         storage: None,
     });
-    if let Some(ClassMember::Field { init: Some(values_expr), .. }) = class_members.last() {
-        __w.dart_enum_values.insert(name.clone(), values_expr.clone());
+    if let Some(ClassMember::Field {
+        init: Some(values_expr),
+        ..
+    }) = class_members.last()
+    {
+        __w.dart_enum_values
+            .insert(name.clone(), values_expr.clone());
     }
 
     Ok(StmtKind::ClassDecl {
@@ -10457,7 +10639,11 @@ fn walk_enum_decl(__w: &mut DartWalker, pair: Pair<Rule>) -> Result<StmtKind, St
 // Class members
 // ════════════════════════════════════════════════════════════════════════════
 
-fn walk_class_member(__w: &mut DartWalker, pair: Pair<Rule>, class_name: &str) -> Result<Option<ClassMember>, String> {
+fn walk_class_member(
+    __w: &mut DartWalker,
+    pair: Pair<Rule>,
+    class_name: &str,
+) -> Result<Option<ClassMember>, String> {
     match pair.as_rule() {
         Rule::constructor_declaration => Ok(Some(walk_constructor(__w, pair, class_name)?)),
         Rule::method_declaration => Ok(Some(walk_method(__w, pair)?)),
@@ -10488,7 +10674,11 @@ fn walk_member_modifiers(pair: &Pair<Rule>) -> Modifiers {
     m
 }
 
-fn walk_constructor(__w: &mut DartWalker, pair: Pair<Rule>, class_name: &str) -> Result<ClassMember, String> {
+fn walk_constructor(
+    __w: &mut DartWalker,
+    pair: Pair<Rule>,
+    class_name: &str,
+) -> Result<ClassMember, String> {
     let mut params = Vec::new();
     let mut body = Vec::new();
     let mut base_args: Option<Vec<Expression>> = None;
@@ -11130,7 +11320,8 @@ fn walk_if(__w: &mut DartWalker, pair: Pair<Rule>) -> Result<StmtKind, String> {
     let cond = if cond_pair.as_rule() == Rule::if_case_condition {
         let mut parts = cond_pair.into_inner();
         let subject = walk_expression(__w, parts.next().ok_or("if-case: missing subject")?)?;
-        let mut analysis = analyze_dart_pattern(__w, 
+        let mut analysis = analyze_dart_pattern(
+            __w,
             parts
                 .find(|p| p.as_rule() == Rule::pattern)
                 .ok_or("if-case: missing pattern")?,
@@ -11377,7 +11568,10 @@ fn dart_positional_field_index(name: &str) -> Option<i64> {
 /// Lower a list comprehension `[for (...) elem]` / `[if (...) elem]` to
 /// an IIFE that builds the array imperatively. Walker-only normalization;
 /// the compiler sees a regular Call(Lambda, []) on the way out.
-fn lower_list_comprehension(__w: &mut DartWalker, elements: Vec<Pair<Rule>>) -> Result<ExprKind, String> {
+fn lower_list_comprehension(
+    __w: &mut DartWalker,
+    elements: Vec<Pair<Rule>>,
+) -> Result<ExprKind, String> {
     let acc = "__compr_acc";
     let mut body: Vec<Statement> = Vec::new();
     // var __compr_acc = [];
@@ -11410,7 +11604,11 @@ fn lower_list_comprehension(__w: &mut DartWalker, elements: Vec<Pair<Rule>>) -> 
     Ok(dart_type_stamp(call, "List").kind)
 }
 
-fn lower_list_element(__w: &mut DartWalker, el: Pair<Rule>, acc: &str) -> Result<Statement, String> {
+fn lower_list_element(
+    __w: &mut DartWalker,
+    el: Pair<Rule>,
+    acc: &str,
+) -> Result<Statement, String> {
     let src = el.as_str().trim_start().to_string();
     let spread = src.starts_with("...");
     let null_aware_spread = src.starts_with("...?");
@@ -11451,7 +11649,8 @@ fn lower_list_element(__w: &mut DartWalker, el: Pair<Rule>, acc: &str) -> Result
                 }
             }
             let cond = cond.ok_or("collection_if: missing cond")?;
-            let then_stmt = lower_list_element(__w, then_el.ok_or("collection_if: missing then")?, acc)?;
+            let then_stmt =
+                lower_list_element(__w, then_el.ok_or("collection_if: missing then")?, acc)?;
             let else_stmt = match else_el {
                 Some(el) => Some(vec![lower_list_element(__w, el, acc)?]),
                 None => None,
@@ -11482,7 +11681,10 @@ fn lower_list_element(__w: &mut DartWalker, el: Pair<Rule>, acc: &str) -> Result
     }
 }
 
-fn lower_set_comprehension(__w: &mut DartWalker, elements: Vec<Pair<Rule>>) -> Result<ExprKind, String> {
+fn lower_set_comprehension(
+    __w: &mut DartWalker,
+    elements: Vec<Pair<Rule>>,
+) -> Result<ExprKind, String> {
     let acc = "__set_compr_acc";
     let mut body: Vec<Statement> = Vec::new();
     body.push(Statement::new(StmtKind::VarDecl {
@@ -11584,7 +11786,10 @@ fn lower_set_element(__w: &mut DartWalker, el: Pair<Rule>, acc: &str) -> Result<
     }
 }
 
-fn lower_map_comprehension(__w: &mut DartWalker, elements: Vec<Pair<Rule>>) -> Result<ExprKind, String> {
+fn lower_map_comprehension(
+    __w: &mut DartWalker,
+    elements: Vec<Pair<Rule>>,
+) -> Result<ExprKind, String> {
     let acc = "__map_compr_acc";
     let mut body: Vec<Statement> = Vec::new();
     body.push(Statement::new(StmtKind::VarDecl {
@@ -11668,7 +11873,8 @@ fn lower_map_element(__w: &mut DartWalker, el: Pair<Rule>, acc: &str) -> Result<
         Rule::map_entry => {
             let mut parts = inner.into_inner();
             let key = walk_expression(__w, parts.next().ok_or("map comprehension: missing key")?)?;
-            let value = walk_expression(__w, parts.next().ok_or("map comprehension: missing value")?)?;
+            let value =
+                walk_expression(__w, parts.next().ok_or("map comprehension: missing value")?)?;
             Ok(Statement::new(StmtKind::Expr(Expression::new(
                 ExprKind::Assign {
                     target: Box::new(Expression::new(ExprKind::Index {
@@ -11687,7 +11893,11 @@ fn lower_map_element(__w: &mut DartWalker, el: Pair<Rule>, acc: &str) -> Result<
     }
 }
 
-fn build_for_with_body(__w: &mut DartWalker, header_pair: Pair<Rule>, body: Vec<Statement>) -> Result<Statement, String> {
+fn build_for_with_body(
+    __w: &mut DartWalker,
+    header_pair: Pair<Rule>,
+    body: Vec<Statement>,
+) -> Result<Statement, String> {
     let header_inner = header_pair.into_inner().next().ok_or("for: empty header")?;
     match header_inner.as_rule() {
         Rule::for_in_header => {
@@ -11727,8 +11937,10 @@ fn build_for_with_body(__w: &mut DartWalker, header_pair: Pair<Rule>, body: Vec<
                         }
                     }
                     Rule::for_c_update => {
-                        let exprs: Result<Vec<Expression>, String> =
-                            p.into_inner().map(|__p| walk_expression(__w, __p)).collect();
+                        let exprs: Result<Vec<Expression>, String> = p
+                            .into_inner()
+                            .map(|__p| walk_expression(__w, __p))
+                            .collect();
                         let exprs = exprs?;
                         update = Some(if exprs.len() == 1 {
                             exprs.into_iter().next().unwrap()
@@ -11810,8 +12022,10 @@ fn walk_for(__w: &mut DartWalker, pair: Pair<Rule>) -> Result<StmtKind, String> 
                         }
                     }
                     Rule::for_c_update => {
-                        let exprs: Result<Vec<Expression>, String> =
-                            p.into_inner().map(|__p| walk_expression(__w, __p)).collect();
+                        let exprs: Result<Vec<Expression>, String> = p
+                            .into_inner()
+                            .map(|__p| walk_expression(__w, __p))
+                            .collect();
                         let exprs = exprs?;
                         update = Some(if exprs.len() == 1 {
                             exprs.into_iter().next().unwrap()
@@ -12010,7 +12224,10 @@ fn walk_switch(__w: &mut DartWalker, pair: Pair<Rule>) -> Result<StmtKind, Strin
     Ok(StmtKind::Block(block))
 }
 
-fn simple_switch_pattern_expr(__w: &mut DartWalker, pair: Pair<Rule>) -> Result<Option<Expression>, String> {
+fn simple_switch_pattern_expr(
+    __w: &mut DartWalker,
+    pair: Pair<Rule>,
+) -> Result<Option<Expression>, String> {
     match pair.as_rule() {
         Rule::pattern => {
             let children: Vec<Pair<Rule>> = pair.into_inner().collect();
@@ -12902,8 +13119,8 @@ fn walk_expr_kind(__w: &mut DartWalker, pair: Pair<Rule>) -> Result<ExprKind, St
                                                 for inner in item.into_inner() {
                                                     match inner.as_rule() {
                                                         Rule::lambda_param => {
-                                                            params.push(walk_lambda_param_pair(__w, 
-                                                                inner,
+                                                            params.push(walk_lambda_param_pair(
+                                                                __w, inner,
                                                             )?);
                                                         }
                                                         Rule::named_lambda_params => {
@@ -12912,8 +13129,8 @@ fn walk_expr_kind(__w: &mut DartWalker, pair: Pair<Rule>) -> Result<ExprKind, St
                                                                     == Rule::lambda_param
                                                                 {
                                                                     let mut param =
-                                                                        walk_lambda_param_pair(__w, 
-                                                                            named,
+                                                                        walk_lambda_param_pair(
+                                                                            __w, named,
                                                                         )?;
                                                                     param.is_optional = true;
                                                                     params.push(param);
@@ -12984,7 +13201,9 @@ fn walk_expr_kind(__w: &mut DartWalker, pair: Pair<Rule>) -> Result<ExprKind, St
         // parses through (grammar: `cascade_rhs`). Same inner shape, so the
         // same arm walks both — the difference is only which chain rule the
         // parser could descend into, never what the pairs mean.
-        Rule::cascade_rhs => walk_expr_kind(__w, pair.into_inner().next().ok_or("empty cascade rhs")?),
+        Rule::cascade_rhs => {
+            walk_expr_kind(__w, pair.into_inner().next().ok_or("empty cascade rhs")?)
+        }
         Rule::conditional_expression | Rule::conditional_expression_nc => {
             let mut inner: Vec<Pair<Rule>> = pair.into_inner().collect();
             if inner.len() == 1 {
@@ -13178,8 +13397,12 @@ fn walk_expr_kind(__w: &mut DartWalker, pair: Pair<Rule>) -> Result<ExprKind, St
             // pass has run, so a pooled codec would never gain its marker and
             // every transform over it would miss. Codecs are stateless — the
             // canonicalization the pool exists for buys nothing here.
-            if let ExprKind::New { class, args } | ExprKind::Call { callee: class, args, .. } =
-                &lowered.kind
+            if let ExprKind::New { class, args }
+            | ExprKind::Call {
+                callee: class,
+                args,
+                ..
+            } = &lowered.kind
             {
                 if args.is_empty() {
                     if let ExprKind::Ident(name) = &class.kind {
@@ -13201,7 +13424,8 @@ fn walk_expr_kind(__w: &mut DartWalker, pair: Pair<Rule>) -> Result<ExprKind, St
         // ── Switch expression (Dart 3) ──────────────────────────────────
         Rule::switch_expression => {
             let mut inner = pair.into_inner();
-            let subject = walk_expression(__w, inner.next().ok_or("switch expr: missing subject")?)?;
+            let subject =
+                walk_expression(__w, inner.next().ok_or("switch expr: missing subject")?)?;
             let mut arms: Vec<(Expression, Expression)> = Vec::new();
             for p in inner {
                 if p.as_rule() == Rule::switch_expr_case {
@@ -13269,7 +13493,8 @@ fn walk_expr_kind(__w: &mut DartWalker, pair: Pair<Rule>) -> Result<ExprKind, St
                     let field_children: Vec<Pair<Rule>> =
                         fields.into_iter().next().unwrap().into_inner().collect();
                     if field_children.len() == 1 {
-                        let value = walk_expression(__w, field_children.into_iter().next().unwrap())?;
+                        let value =
+                            walk_expression(__w, field_children.into_iter().next().unwrap())?;
                         // `(x,)` is a one-element record; `(x)` is just grouping.
                         return Ok(if single_field_record {
                             ExprKind::Tuple(vec![value])
@@ -13280,7 +13505,8 @@ fn walk_expr_kind(__w: &mut DartWalker, pair: Pair<Rule>) -> Result<ExprKind, St
                         // Single named field record `(name: value)` — the shared
                         // canonical named-tuple shape (array-backed + by-name key).
                         let name = field_children[0].as_str().to_string();
-                        let value = walk_expression(__w, field_children.into_iter().nth(1).unwrap())?;
+                        let value =
+                            walk_expression(__w, field_children.into_iter().nth(1).unwrap())?;
                         return Ok(vybe_compiler::primitives::tuples::build_named_tuple(vec![
                             (Some(name), value),
                         ]));
@@ -13356,7 +13582,8 @@ fn walk_expr_kind(__w: &mut DartWalker, pair: Pair<Rule>) -> Result<ExprKind, St
                     .ok_or("empty list element".to_string())?;
                 let mut value = walk_expression(__w, inner)?;
                 if null_aware_spread {
-                    value = dart_null_coalesce_of(value, Expression::new(ExprKind::Array(Vec::new())));
+                    value =
+                        dart_null_coalesce_of(value, Expression::new(ExprKind::Array(Vec::new())));
                 }
                 out.push(ArrayElement {
                     key: None,
@@ -13375,7 +13602,8 @@ fn walk_expr_kind(__w: &mut DartWalker, pair: Pair<Rule>) -> Result<ExprKind, St
             let mut is_map = false;
             let mut elements = Vec::new();
 
-            fn walk_one(__w: &mut DartWalker, 
+            fn walk_one(
+                __w: &mut DartWalker,
                 elem: Pair<Rule>,
                 props: &mut Vec<ObjectProperty>,
                 is_map: &mut bool,
@@ -13516,9 +13744,7 @@ fn walk_expr_kind(__w: &mut DartWalker, pair: Pair<Rule>) -> Result<ExprKind, St
                 })
             } else if !is_map
                 && !props.is_empty()
-                && props
-                    .iter()
-                    .all(|p| matches!(p, ObjectProperty::Spread(_)))
+                && props.iter().all(|p| matches!(p, ObjectProperty::Spread(_)))
             {
                 // `{...a, ...b}` — SPREAD-ONLY, so nothing syntactic says set
                 // or map; dart decides from the operands' static type. Both
@@ -13624,7 +13850,8 @@ fn lower_switch_expr_arms(arms: Vec<(Expression, Expression)>) -> Expression {
     fallback
 }
 
-fn analyze_dart_pattern(__w: &mut DartWalker, 
+fn analyze_dart_pattern(
+    __w: &mut DartWalker,
     pair: Pair<Rule>,
     subject: &Expression,
 ) -> Result<DartPatternAnalysis, String> {
@@ -13726,7 +13953,8 @@ fn analyze_dart_pattern(__w: &mut DartWalker,
     }
 }
 
-fn analyze_constant_pattern(__w: &mut DartWalker, 
+fn analyze_constant_pattern(
+    __w: &mut DartWalker,
     pair: Pair<Rule>,
     subject: &Expression,
 ) -> Result<DartPatternAnalysis, String> {
@@ -13781,7 +14009,8 @@ fn analyze_constant_pattern(__w: &mut DartWalker,
     Ok(pattern_cond(eq_expr(subject.clone(), value)))
 }
 
-fn analyze_list_pattern(__w: &mut DartWalker, 
+fn analyze_list_pattern(
+    __w: &mut DartWalker,
     pair: Pair<Rule>,
     subject: &Expression,
 ) -> Result<DartPatternAnalysis, String> {
@@ -13842,7 +14071,8 @@ fn analyze_list_pattern(__w: &mut DartWalker,
     Ok(out)
 }
 
-fn analyze_map_pattern(__w: &mut DartWalker, 
+fn analyze_map_pattern(
+    __w: &mut DartWalker,
     pair: Pair<Rule>,
     subject: &Expression,
 ) -> Result<DartPatternAnalysis, String> {
@@ -13870,7 +14100,8 @@ fn analyze_map_pattern(__w: &mut DartWalker,
     Ok(out)
 }
 
-fn analyze_record_pattern(__w: &mut DartWalker, 
+fn analyze_record_pattern(
+    __w: &mut DartWalker,
     pair: Pair<Rule>,
     subject: &Expression,
 ) -> Result<DartPatternAnalysis, String> {
@@ -13914,7 +14145,8 @@ fn analyze_record_pattern(__w: &mut DartWalker,
     Ok(out)
 }
 
-fn analyze_object_pattern(__w: &mut DartWalker, 
+fn analyze_object_pattern(
+    __w: &mut DartWalker,
     pair: Pair<Rule>,
     subject: &Expression,
 ) -> Result<DartPatternAnalysis, String> {
@@ -14305,7 +14537,11 @@ fn dart_future_async_op(name: &str, mut args: Vec<Argument>) -> Option<AsyncOp> 
     }
 }
 
-fn dart_future_member_async_op(source: Expression, name: &str, args: Vec<Argument>) -> Option<AsyncOp> {
+fn dart_future_member_async_op(
+    source: Expression,
+    name: &str,
+    args: Vec<Argument>,
+) -> Option<AsyncOp> {
     let positional: Vec<Expression> = args
         .into_iter()
         .filter(|arg| arg.name.is_none() && !arg.spread)
@@ -14317,15 +14553,21 @@ fn dart_future_member_async_op(source: Expression, name: &str, args: Vec<Argumen
             on_fulfilled: positional.first().cloned().map(Box::new),
             on_rejected: positional.get(1).cloned().map(Box::new),
         }),
-        "catch" => positional.first().cloned().map(|on_rejected| AsyncOp::Continue {
-            source: Box::new(source),
-            on_fulfilled: None,
-            on_rejected: Some(Box::new(on_rejected)),
-        }),
-        "finally" => positional.first().cloned().map(|on_settled| AsyncOp::Cleanup {
-            source: Box::new(source),
-            on_settled: Box::new(on_settled),
-        }),
+        "catch" => positional
+            .first()
+            .cloned()
+            .map(|on_rejected| AsyncOp::Continue {
+                source: Box::new(source),
+                on_fulfilled: None,
+                on_rejected: Some(Box::new(on_rejected)),
+            }),
+        "finally" => positional
+            .first()
+            .cloned()
+            .map(|on_settled| AsyncOp::Cleanup {
+                source: Box::new(source),
+                on_settled: Box::new(on_settled),
+            }),
         _ => None,
     }
 }
@@ -14436,22 +14678,16 @@ fn normalize_dart_print_args(__w: &DartWalker, mut args: Vec<Argument>) -> Vec<A
 
 fn dart_generic_call_prints_as_double(__w: &DartWalker, expr: &Expression) -> bool {
     match &expr.kind {
-        ExprKind::Call { callee, .. }
-            if matches!(&callee.kind, ExprKind::Ident(name) if dart_bool_return_helper(name)) =>
-        {
+        ExprKind::Call { callee, .. } if matches!(&callee.kind, ExprKind::Ident(name) if dart_bool_return_helper(name)) => {
             false
         }
-        ExprKind::Call { callee, args, .. }
-            if matches!(&callee.kind, ExprKind::Ident(name) if __w.dart_generic_return_from_arg_functions.contains(name)) =>
-        {
+        ExprKind::Call { callee, args, .. } if matches!(&callee.kind, ExprKind::Ident(name) if __w.dart_generic_return_from_arg_functions.contains(name)) => {
             args.iter().any(|arg| {
                 dart_expr_prints_as_double(&arg.value)
                     || dart_generic_call_prints_as_double(__w, &arg.value)
             })
         }
-        ExprKind::Call { callee, args, .. }
-            if matches!(&callee.kind, ExprKind::Ident(name) if dart_is_function_like_ident(name)) =>
-        {
+        ExprKind::Call { callee, args, .. } if matches!(&callee.kind, ExprKind::Ident(name) if dart_is_function_like_ident(name)) => {
             args.iter().any(|arg| {
                 dart_expr_prints_as_double(&arg.value)
                     || dart_generic_call_prints_as_double(__w, &arg.value)
@@ -14581,7 +14817,10 @@ fn normalize_dart_call_args(callee: &Expression, args: &mut Vec<Argument>) {
             }
         }
     }
-    if matches!(dart_member_field(callee), Some("update" | "updateWithAbsent")) {
+    if matches!(
+        dart_member_field(callee),
+        Some("update" | "updateWithAbsent")
+    ) {
         if let Some(pos) = args
             .iter()
             .position(|arg| arg.name.as_deref() == Some("ifAbsent"))
@@ -14731,20 +14970,20 @@ fn dart_fold_try_parse(callee: &Expression, args: &[Argument]) -> Option<Express
             trimmed,
             "Infinity" | "+Infinity" | "inf" | "+inf" | "INF" | "+INF"
         ) {
-            return Some(Expression::new(ExprKind::Lit(Literal::Float(f64::INFINITY))));
+            return Some(Expression::new(ExprKind::Lit(Literal::Float(
+                f64::INFINITY,
+            ))));
         }
         if matches!(trimmed, "-Infinity" | "-inf" | "-INF") {
-            return Some(Expression::new(ExprKind::Lit(Literal::Float(f64::NEG_INFINITY))));
+            return Some(Expression::new(ExprKind::Lit(Literal::Float(
+                f64::NEG_INFINITY,
+            ))));
         }
         let valid_number = !trimmed.is_empty()
             && trimmed.parse::<f64>().is_ok()
-            && trimmed
-                .chars()
-                .any(|ch| ch.is_ascii_digit());
+            && trimmed.chars().any(|ch| ch.is_ascii_digit());
         return Some(if valid_number {
-            Expression::new(ExprKind::Lit(Literal::Float(
-                trimmed.parse::<f64>().ok()?,
-            )))
+            Expression::new(ExprKind::Lit(Literal::Float(trimmed.parse::<f64>().ok()?)))
         } else {
             Expression::new(ExprKind::Lit(Literal::Null))
         });
@@ -15476,15 +15715,18 @@ fn walk_call_chain(__w: &mut DartWalker, pair: Pair<Rule>) -> Result<ExprKind, S
                             continue;
                         }
                         if let Some(ecma) = dart_typed_list_alias(type_name) {
-                            expr = dart_type_stamp(Expression::new(ExprKind::Call {
-                                callee: Box::new(Expression::new(ExprKind::Member {
-                                    object: Box::new(Expression::ident(ecma)),
-                                    field: "from".to_string(),
-                                    null_safe: false,
-                                })),
-                                args: cargs.clone(),
-                                optional: false,
-                            }), type_name);
+                            expr = dart_type_stamp(
+                                Expression::new(ExprKind::Call {
+                                    callee: Box::new(Expression::new(ExprKind::Member {
+                                        object: Box::new(Expression::ident(ecma)),
+                                        field: "from".to_string(),
+                                        null_safe: false,
+                                    })),
+                                    args: cargs.clone(),
+                                    optional: false,
+                                }),
+                                type_name,
+                            );
                             continue;
                         }
                     }
@@ -15506,13 +15748,12 @@ fn walk_call_chain(__w: &mut DartWalker, pair: Pair<Rule>) -> Result<ExprKind, S
                                     .find(|a| a.name.as_deref() == Some(wanted))
                                     .map(|a| a.value.clone())
                             };
-                            let invoke = Statement::new(StmtKind::Expr(Expression::new(
-                                ExprKind::Call {
+                            let invoke =
+                                Statement::new(StmtKind::Expr(Expression::new(ExprKind::Call {
                                     callee: Box::new(entry),
                                     args: vec![Argument::positional(message)],
                                     optional: false,
-                                },
-                            )));
+                                })));
                             // `onError:` — an uncaught throw in the entry sends
                             // `[errorString, stackString]` to that port;
                             // `onExit:` — the port gets null once the entry is
@@ -15535,8 +15776,8 @@ fn walk_call_chain(__w: &mut DartWalker, pair: Pair<Rule>) -> Result<ExprKind, S
                                                         null_safe: false,
                                                     },
                                                 )),
-                                                args: vec![Argument::positional(
-                                                    Expression::new(ExprKind::Array(vec![
+                                                args: vec![Argument::positional(Expression::new(
+                                                    ExprKind::Array(vec![
                                                         ArrayElement {
                                                             key: None,
                                                             value: Expression::new(
@@ -15565,8 +15806,8 @@ fn walk_call_chain(__w: &mut DartWalker, pair: Pair<Rule>) -> Result<ExprKind, S
                                                             spread: false,
                                                             by_ref: false,
                                                         },
-                                                    ])),
-                                                )],
+                                                    ]),
+                                                ))],
                                                 optional: false,
                                             }),
                                         ))],
@@ -15669,10 +15910,7 @@ fn walk_call_chain(__w: &mut DartWalker, pair: Pair<Rule>) -> Result<ExprKind, S
                                     }),
                                 ),
                                 ("__type", Expression::string("Flow")),
-                                (
-                                    "__types",
-                                    dart_array_expr(vec![Expression::string("Flow")]),
-                                ),
+                                ("__types", dart_array_expr(vec![Expression::string("Flow")])),
                             ]);
                             continue;
                         }
@@ -15731,15 +15969,20 @@ fn walk_call_chain(__w: &mut DartWalker, pair: Pair<Rule>) -> Result<ExprKind, S
                     }
                     if name == "view" {
                         if type_name == "ByteData" {
-                            expr = dart_type_stamp(Expression::new(ExprKind::Call {
-                                callee: Box::new(Expression::ident("__dart_byte_data_view")),
-                                args: cargs.clone(),
-                                optional: false,
-                            }), type_name);
+                            expr = dart_type_stamp(
+                                Expression::new(ExprKind::Call {
+                                    callee: Box::new(Expression::ident("__dart_byte_data_view")),
+                                    args: cargs.clone(),
+                                    optional: false,
+                                }),
+                                type_name,
+                            );
                             continue;
                         }
-                        if let Some(bytes_per_element) = dart_typed_list_bytes_per_element(type_name)
-                            && let Some(offset) = cargs.get(1).and_then(|arg| literal_i64(&arg.value))
+                        if let Some(bytes_per_element) =
+                            dart_typed_list_bytes_per_element(type_name)
+                            && let Some(offset) =
+                                cargs.get(1).and_then(|arg| literal_i64(&arg.value))
                             && offset % bytes_per_element != 0
                         {
                             expr = dart_call_expr(
@@ -16037,9 +16280,7 @@ fn walk_call_chain(__w: &mut DartWalker, pair: Pair<Rule>) -> Result<ExprKind, S
                         ExprKind::Call { callee, .. }
                             if matches!(&callee.kind,
                                 ExprKind::Ident(n) if n == "__dart_set_from"));
-                    if call_args
-                        .as_ref()
-                        .map_or(has_call, |args| args.is_empty())
+                    if call_args.as_ref().map_or(has_call, |args| args.is_empty())
                         && (literal_collection || dart_object_has_type(&expr, "ProcessSignal"))
                     {
                         expr = Expression::new(ExprKind::Call {
@@ -16078,16 +16319,20 @@ fn walk_call_chain(__w: &mut DartWalker, pair: Pair<Rule>) -> Result<ExprKind, S
                         let mut flag = None;
                         args.retain(|arg| {
                             if arg.name.as_deref() == Some("mode") {
-                                flag = Some(if dart_expr_mentions_file_mode(&arg.value, "append") {
-                                    "a+"
-                                } else if dart_expr_mentions_file_mode(&arg.value, "write")
-                                    || dart_expr_mentions_file_mode(&arg.value, "writeOnly")
-                                    || dart_expr_mentions_file_mode(&arg.value, "writeOnlyAppend")
-                                {
-                                    "w+"
-                                } else {
-                                    "r"
-                                });
+                                flag =
+                                    Some(if dart_expr_mentions_file_mode(&arg.value, "append") {
+                                        "a+"
+                                    } else if dart_expr_mentions_file_mode(&arg.value, "write")
+                                        || dart_expr_mentions_file_mode(&arg.value, "writeOnly")
+                                        || dart_expr_mentions_file_mode(
+                                            &arg.value,
+                                            "writeOnlyAppend",
+                                        )
+                                    {
+                                        "w+"
+                                    } else {
+                                        "r"
+                                    });
                                 false
                             } else {
                                 true
@@ -16109,7 +16354,9 @@ fn walk_call_chain(__w: &mut DartWalker, pair: Pair<Rule>) -> Result<ExprKind, S
                 if name == "update"
                     && call_args.as_ref().is_some_and(|args| {
                         args.len() == 3
-                            || args.iter().any(|arg| arg.name.as_deref() == Some("ifAbsent"))
+                            || args
+                                .iter()
+                                .any(|arg| arg.name.as_deref() == Some("ifAbsent"))
                     })
                 {
                     name = "updateWithAbsent".to_string();
@@ -16189,15 +16436,18 @@ fn walk_call_chain(__w: &mut DartWalker, pair: Pair<Rule>) -> Result<ExprKind, S
                         continue;
                     }
                     if matches!(name.as_str(), "codeUnits" | "runes") {
-                        expr = dart_type_stamp(Expression::new(ExprKind::Call {
-                            callee: Box::new(Expression::ident(if name == "codeUnits" {
-                                "__dart_string_code_units"
-                            } else {
-                                "__dart_string_runes"
-                            })),
-                            args: vec![Argument::positional(expr)],
-                            optional: false,
-                        }), "List");
+                        expr = dart_type_stamp(
+                            Expression::new(ExprKind::Call {
+                                callee: Box::new(Expression::ident(if name == "codeUnits" {
+                                    "__dart_string_code_units"
+                                } else {
+                                    "__dart_string_runes"
+                                })),
+                                args: vec![Argument::positional(expr)],
+                                optional: false,
+                            }),
+                            "List",
+                        );
                         continue;
                     }
                 }
@@ -16224,9 +16474,13 @@ fn walk_call_chain(__w: &mut DartWalker, pair: Pair<Rule>) -> Result<ExprKind, S
                     ) {
                         if class_name == "Process" {
                             if matches!(name.as_str(), "runSync" | "run") {
-                                if let Some(args) = call_args.clone().or_else(|| has_call.then(Vec::new)) {
+                                if let Some(args) =
+                                    call_args.clone().or_else(|| has_call.then(Vec::new))
+                                {
                                     expr = Expression::new(ExprKind::Call {
-                                        callee: Box::new(Expression::ident("__dart_process_run_sync")),
+                                        callee: Box::new(Expression::ident(
+                                            "__dart_process_run_sync",
+                                        )),
                                         args: dart_process_run_args(args),
                                         optional: false,
                                     });
@@ -16234,7 +16488,9 @@ fn walk_call_chain(__w: &mut DartWalker, pair: Pair<Rule>) -> Result<ExprKind, S
                                 }
                             }
                             if name == "start" {
-                                if let Some(args) = call_args.clone().or_else(|| has_call.then(Vec::new)) {
+                                if let Some(args) =
+                                    call_args.clone().or_else(|| has_call.then(Vec::new))
+                                {
                                     expr = Expression::new(ExprKind::Call {
                                         callee: Box::new(Expression::ident("__dart_process_start")),
                                         args: dart_process_start_args(args),
@@ -16250,7 +16506,9 @@ fn walk_call_chain(__w: &mut DartWalker, pair: Pair<Rule>) -> Result<ExprKind, S
                         }
                         if class_name == "FileSystemEntity" {
                             if name == "typeSync" {
-                                if let Some(args) = call_args.clone().or_else(|| has_call.then(Vec::new)) {
+                                if let Some(args) =
+                                    call_args.clone().or_else(|| has_call.then(Vec::new))
+                                {
                                     expr = Expression::new(ExprKind::Call {
                                         callee: Box::new(Expression::ident("__dart_io_type_sync")),
                                         args,
@@ -16260,9 +16518,13 @@ fn walk_call_chain(__w: &mut DartWalker, pair: Pair<Rule>) -> Result<ExprKind, S
                                 }
                             }
                             if name == "identicalSync" {
-                                if let Some(args) = call_args.clone().or_else(|| has_call.then(Vec::new)) {
+                                if let Some(args) =
+                                    call_args.clone().or_else(|| has_call.then(Vec::new))
+                                {
                                     expr = Expression::new(ExprKind::Call {
-                                        callee: Box::new(Expression::ident("__dart_io_identical_sync")),
+                                        callee: Box::new(Expression::ident(
+                                            "__dart_io_identical_sync",
+                                        )),
                                         args,
                                         optional: false,
                                     });
@@ -16270,9 +16532,13 @@ fn walk_call_chain(__w: &mut DartWalker, pair: Pair<Rule>) -> Result<ExprKind, S
                                 }
                             }
                             if name == "isAbsolute" {
-                                if let Some(args) = call_args.clone().or_else(|| has_call.then(Vec::new)) {
+                                if let Some(args) =
+                                    call_args.clone().or_else(|| has_call.then(Vec::new))
+                                {
                                     expr = Expression::new(ExprKind::Call {
-                                        callee: Box::new(Expression::ident("__dart_io_is_absolute")),
+                                        callee: Box::new(Expression::ident(
+                                            "__dart_io_is_absolute",
+                                        )),
                                         args,
                                         optional: false,
                                     });
@@ -16281,7 +16547,9 @@ fn walk_call_chain(__w: &mut DartWalker, pair: Pair<Rule>) -> Result<ExprKind, S
                             }
                         }
                         if class_name == "FileStat" && name == "statSync" {
-                            if let Some(args) = call_args.clone().or_else(|| has_call.then(Vec::new)) {
+                            if let Some(args) =
+                                call_args.clone().or_else(|| has_call.then(Vec::new))
+                            {
                                 expr = Expression::new(ExprKind::Call {
                                     callee: Box::new(Expression::ident("__dart_io_stat_path")),
                                     args,
@@ -16387,7 +16655,10 @@ fn walk_call_chain(__w: &mut DartWalker, pair: Pair<Rule>) -> Result<ExprKind, S
                             {
                                 expr = Expression::new(kind);
                                 continue;
-                            } else if matches!(static_name.as_str(), "int.tryParse" | "double.tryParse") {
+                            } else if matches!(
+                                static_name.as_str(),
+                                "int.tryParse" | "double.tryParse"
+                            ) {
                                 normalize_dart_call_args(&expr, &mut args);
                                 if let Some(folded) = dart_fold_try_parse(&expr, &args) {
                                     expr = folded;
@@ -16611,7 +16882,10 @@ fn walk_call_chain(__w: &mut DartWalker, pair: Pair<Rule>) -> Result<ExprKind, S
                     }
                     if class_name == "ByteData" {
                         if args.len() == 1 && args[0].name.is_none() {
-                            expr = dart_type_stamp(dart_byte_data_new(args[0].value.clone()), &class_name);
+                            expr = dart_type_stamp(
+                                dart_byte_data_new(args[0].value.clone()),
+                                &class_name,
+                            );
                             continue;
                         }
                     }
@@ -17096,11 +17370,7 @@ fn normalize_datetime_args(args: Vec<Argument>, is_utc: bool) -> Vec<Argument> {
             .map(|a| a.value.clone())
             .unwrap_or_else(|| Expression::float(default))
     };
-    let month = month_index_expr(
-        part(1, 1.0),
-        DART_MONTH_INDEXING,
-        MonthIndexing::ZeroBased,
-    );
+    let month = month_index_expr(part(1, 1.0), DART_MONTH_INDEXING, MonthIndexing::ZeroBased);
     let ms = Expression::new(ExprKind::Call {
         callee: Box::new(Expression::ident("__dart_date_utc")),
         args: vec![
@@ -17202,7 +17472,11 @@ fn query_string_from_expr(expr: &Expression) -> Option<String> {
 /// Desugar `obj..method()..field = val` into a sequence on the same object.
 /// We create a block expression pattern by wrapping the cascade into
 /// assignments on the receiver.
-fn walk_cascade(__w: &mut DartWalker, receiver: Expression, chain_inner: Vec<Pair<Rule>>) -> Result<Expression, String> {
+fn walk_cascade(
+    __w: &mut DartWalker,
+    receiver: Expression,
+    chain_inner: Vec<Pair<Rule>>,
+) -> Result<Expression, String> {
     let cascade_chain = chain_inner.into_iter().next().ok_or("cascade: empty")?;
     let mut sections = Vec::new();
 
@@ -17290,10 +17564,7 @@ fn walk_cascade(__w: &mut DartWalker, receiver: Expression, chain_inner: Vec<Pai
             .is_some_and(|p| p.as_rule() == Rule::cascade_suffix)
         {
             let suffix = sec_inner.next().expect("peeked");
-            let link = suffix
-                .into_inner()
-                .next()
-                .ok_or("cascade suffix: empty")?;
+            let link = suffix.into_inner().next().ok_or("cascade suffix: empty")?;
             path = match link.as_rule() {
                 Rule::member_access => walk_cascade_member_suffix(__w, path, link)?,
                 Rule::index_access => Expression::new(ExprKind::Index {
@@ -17319,10 +17590,8 @@ fn walk_cascade(__w: &mut DartWalker, receiver: Expression, chain_inner: Vec<Pai
         match sec_inner.next() {
             Some(op_pair) => {
                 let op_str = op_pair.as_str().trim().to_string();
-                let value = walk_expression(
-                    __w,
-                    sec_inner.next().ok_or("cascade assignment: no value")?,
-                )?;
+                let value =
+                    walk_expression(__w, sec_inner.next().ok_or("cascade assignment: no value")?)?;
                 ops.push(dart_assign_or_compound(path, &op_str, value));
             }
             None => ops.push(path),
@@ -17352,7 +17621,11 @@ fn walk_cascade_member_suffix(
 ) -> Result<Expression, String> {
     let src = link.as_str();
     let mut parts = link.into_inner();
-    let name = parts.next().ok_or("cascade member: no name")?.as_str().to_string();
+    let name = parts
+        .next()
+        .ok_or("cascade member: no name")?
+        .as_str()
+        .to_string();
     let member = Expression::new(ExprKind::Member {
         object: Box::new(object),
         field: name,
@@ -17452,7 +17725,8 @@ fn is_dart_stopwatch_constructor(expr: &Expression) -> bool {
     }
 }
 
-fn fold_string_buffer_cascade(__w: &mut DartWalker, 
+fn fold_string_buffer_cascade(
+    __w: &mut DartWalker,
     receiver: &Expression,
     sections: &[Pair<Rule>],
 ) -> Result<Option<Expression>, String> {
@@ -17721,8 +17995,8 @@ fn walk_string_literal_source(__w: &mut DartWalker, source: &str) -> Result<Expr
             let close = find_interpolation_close(body, i + 2)
                 .ok_or_else(|| "unterminated string interpolation".to_string())?;
             let expr_src = &body[i + 2..close];
-            parts.push(InterpolPart::Expr(parse_interpolation_expression(__w, 
-                expr_src,
+            parts.push(InterpolPart::Expr(parse_interpolation_expression(
+                __w, expr_src,
             )?));
             has_interp = true;
             i = close + 1;
@@ -17764,7 +18038,10 @@ fn walk_string_literal_source(__w: &mut DartWalker, source: &str) -> Result<Expr
     }
 }
 
-fn parse_interpolation_expression(__w: &mut DartWalker, source: &str) -> Result<Expression, String> {
+fn parse_interpolation_expression(
+    __w: &mut DartWalker,
+    source: &str,
+) -> Result<Expression, String> {
     let _line_index = vybe_ast::line_index::LineIndex::install(source);
     let mut pairs = DartParser::parse(Rule::expression, source)
         .map_err(|e| format!("Dart interpolation parse error: {}", e))?;

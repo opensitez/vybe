@@ -259,7 +259,12 @@ impl ComponentDescriptor {
     }
 
     /// Add a function import.
-    pub fn add_import_fn(&mut self, interface: &str, name: &str, sig: vybe_runtime::component::FuncSig) {
+    pub fn add_import_fn(
+        &mut self,
+        interface: &str,
+        name: &str,
+        sig: vybe_runtime::component::FuncSig,
+    ) {
         self.imports.push(ComponentImport {
             interface: interface.into(),
             name: name.into(),
@@ -286,7 +291,12 @@ impl ComponentDescriptor {
     }
 
     /// Add a function export.
-    pub fn add_export_fn(&mut self, interface: &str, name: &str, sig: vybe_runtime::component::FuncSig) {
+    pub fn add_export_fn(
+        &mut self,
+        interface: &str,
+        name: &str,
+        sig: vybe_runtime::component::FuncSig,
+    ) {
         self.exports.push(ComponentExport {
             interface: interface.into(),
             name: name.into(),
@@ -618,10 +628,9 @@ impl ResourceMethod {
 mod tests {
     use super::*;
 
-
     #[test]
     fn test_component_descriptor() {
-        use crate::component::{FuncSig, Param, ValType};
+        use vybe_runtime::component::{FuncSig, Param, ValType};
 
         let mut comp = ComponentDescriptor::new("my-component");
 
@@ -692,11 +701,7 @@ mod tests {
             },
         );
 
-        comp.add_import_class(
-            "my:ui/widgets",
-            "Button",
-            button_class.clone(),
-        );
+        comp.add_import_class("my:ui/widgets", "Button", button_class.clone());
         comp.add_export_class("my:ui/widgets", "Button", button_class);
 
         assert_eq!(comp.imports.len(), 2);

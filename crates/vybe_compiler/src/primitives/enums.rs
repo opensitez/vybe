@@ -17,11 +17,11 @@
 //! no language has to hand-roll compile-time ordinal tables. Any language
 //! whose enums use this shape (C#, VB, …) shares this one emitter.
 
-use crate::primitives::class_slots;
 use super::*;
 use crate::primitives::calls::{
     extract_generic_type_name, resolve_receiver_type_hint, strip_generic_suffix, terminal_type_name,
 };
+use crate::primitives::class_slots;
 use crate::primitives::instructions::host;
 
 impl Compiler {
@@ -627,7 +627,12 @@ impl Compiler {
         let line = self.line;
         // `ref.test` already yields an i32; `Op::IF` consumes it directly.
         self.chunk().emit_if_value(line);
-        self.class_get(class_slots::ObjSource::Local(value_slot), &class_slots::ClassSlot::internal(&vybe_ast::protocol_slot_key(vybe_ast::ProtocolSlot::Int)));
+        self.class_get(
+            class_slots::ObjSource::Local(value_slot),
+            &class_slots::ClassSlot::internal(&vybe_ast::protocol_slot_key(
+                vybe_ast::ProtocolSlot::Int,
+            )),
+        );
         self.emit_u16(Op::LOCAL_GET, value_slot);
         self.emit_direct_callable_invoke(1);
         self.chunk().emit_else(line);

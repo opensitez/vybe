@@ -100,11 +100,7 @@ pub fn emit_dart_service_extension_response_result(
     chunks[current].emit_op_u16(Op::LOCAL_GET, obj_slot, line);
 }
 
-pub fn emit_dart_service_extension_response_error(
-    chunks: &mut [Chunk],
-    current: usize,
-    line: u32,
-) {
+pub fn emit_dart_service_extension_response_error(chunks: &mut [Chunk], current: usize, line: u32) {
     let detail_slot = reserve_slot(&mut chunks[current]);
     let code_slot = reserve_slot(&mut chunks[current]);
     chunks[current].emit_op_u16(Op::LOCAL_SET, detail_slot, line);
@@ -114,7 +110,13 @@ pub fn emit_dart_service_extension_response_error(
     chunks[current].emit_op_u16(Op::LOCAL_SET, obj_slot, line);
     stamp_service_extension_response(&mut chunks[current], obj_slot, line);
     set_field_from_local(&mut chunks[current], obj_slot, "errorCode", code_slot, line);
-    set_field_from_local(&mut chunks[current], obj_slot, "errorDetail", detail_slot, line);
+    set_field_from_local(
+        &mut chunks[current],
+        obj_slot,
+        "errorDetail",
+        detail_slot,
+        line,
+    );
     chunks[current].emit_op_u16(Op::LOCAL_GET, obj_slot, line);
 }
 

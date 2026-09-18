@@ -2,8 +2,8 @@
 //!
 //! Extracted from `primitives/calls.rs` (`impl Compiler`).
 
-use crate::primitives::class_slots;
 use super::*;
+use crate::primitives::class_slots;
 
 impl Compiler {
     pub(super) fn split_explicit_capture(capture: &str) -> (bool, &str) {
@@ -81,7 +81,8 @@ impl Compiler {
             capture_bindings.len() as u8,
         );
         self.chunks.push(factory);
-        self.scopes.push(Scope::new_function(self.directives().variable_fold()));
+        self.scopes
+            .push(Scope::new_function(self.directives().variable_fold()));
         let saved = self.current;
         self.current = factory_idx;
 
@@ -155,8 +156,7 @@ impl Compiler {
         }
         for capture in captures {
             let (by_ref, capture_name) = Self::split_explicit_capture(capture);
-            if !by_ref {
-            }
+            if !by_ref {}
         }
         self.emit_direct_callable_invoke(capture_bindings.len() as u8);
         Ok(())
@@ -229,10 +229,8 @@ impl Compiler {
         // the one place that knows whether a receiver local is about to be
         // created, so no caller has to reason about the ABI.
         let self_kw_for_params = self.profile.self_keyword.clone();
-        let receiver_already_a_param = universal_receiver
-            && params
-                .first()
-                .is_some_and(|p| p.name == self_kw_for_params);
+        let receiver_already_a_param =
+            universal_receiver && params.first().is_some_and(|p| p.name == self_kw_for_params);
         let declares_own_receiver = universal_receiver && !receiver_already_a_param;
         let arity = params.len() as u8 + u8::from(declares_own_receiver);
         let ci = self.chunks.len();
@@ -250,8 +248,10 @@ impl Compiler {
         // A closure resolves names the way the body containing it does — a PHP
         // closure sees no more of the module than the function it sits in.
         let enclosing = self.scope().resolution;
-        self.scopes
-            .push(Scope::new_function_like(enclosing, self.directives().variable_fold()));
+        self.scopes.push(Scope::new_function_like(
+            enclosing,
+            self.directives().variable_fold(),
+        ));
         let saved = self.current;
         self.current = ci;
         let saved_fn = self.current_func_name.replace("<lambda>".into());
@@ -435,7 +435,10 @@ impl Compiler {
         // its promise surface is the attached `.next()` driver.
         let async_try = if is_async && !is_generator && self.async_wraps_body_in_try() {
             let line = self.line;
-            { common::functions::emit_async_body_start(&mut self.chunks[self.current], line); Some(()) }
+            {
+                common::functions::emit_async_body_start(&mut self.chunks[self.current], line);
+                Some(())
+            }
         } else {
             None
         };
@@ -462,7 +465,8 @@ impl Compiler {
         }
 
         if async_try.is_some() {
-            self.frame_cf_mut().active_async_try_depth = self.frame_cf().active_async_try_depth.saturating_sub(1);
+            self.frame_cf_mut().active_async_try_depth =
+                self.frame_cf().active_async_try_depth.saturating_sub(1);
         }
 
         if async_try.is_some() {

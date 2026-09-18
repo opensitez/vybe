@@ -58,7 +58,8 @@ fn gen_tmp_name(__w: &mut KtWalker) -> String {
 pub(crate) struct KtWalker {
     next_tmp_id: usize,
     user_member_names: std::collections::HashSet<(String, usize)>,
-    user_method_overloads: std::collections::HashMap<String, std::collections::HashMap<usize, Vec<Vec<String>>>>,
+    user_method_overloads:
+        std::collections::HashMap<String, std::collections::HashMap<usize, Vec<Vec<String>>>>,
     kotlin_type_aliases: std::collections::HashMap<String, String>,
     kotlin_type_alias_shapes: std::collections::HashMap<String, String>,
     kotlin_declared_type_shapes: std::collections::HashMap<String, String>,
@@ -72,8 +73,10 @@ pub(crate) struct KtWalker {
     enclosing_locals: Vec<std::collections::HashSet<String>>,
     kotlin_top_fn_params: std::collections::HashMap<String, Vec<Param>>,
     kotlin_reflection_class_decorators: std::collections::HashMap<String, Vec<Expression>>,
-    kotlin_reflection_methods: std::collections::HashMap<(String, String), KotlinReflectionMethodMeta>,
-    kotlin_reflection_fields: std::collections::HashMap<(String, String), KotlinReflectionFieldMeta>,
+    kotlin_reflection_methods:
+        std::collections::HashMap<(String, String), KotlinReflectionMethodMeta>,
+    kotlin_reflection_fields:
+        std::collections::HashMap<(String, String), KotlinReflectionFieldMeta>,
     kotlin_fn_raw_param_types: std::collections::HashMap<String, Vec<Vec<String>>>,
     local_class_captures: std::collections::HashMap<String, Vec<String>>,
     current_class_parent: Vec<Option<String>>,
@@ -102,7 +105,8 @@ pub(crate) struct KtWalker {
     kotlin_tuple_locals: std::collections::HashSet<String>,
     kotlin_keyed_collection_types: std::collections::HashMap<String, String>,
     kotlin_array_family_locals: std::collections::HashMap<String, String>,
-    kotlin_data_class_property_index: std::collections::HashMap<String, std::collections::HashMap<String, usize>>,
+    kotlin_data_class_property_index:
+        std::collections::HashMap<String, std::collections::HashMap<String, usize>>,
     kotlin_class_primary_ctors: std::collections::HashMap<String, Vec<Param>>,
     kotlin_class_ctors: std::collections::HashMap<String, Vec<Vec<Param>>>,
     kotlin_class_ctor_shapes: std::collections::HashMap<String, Vec<KotlinConstructorShape>>,
@@ -120,7 +124,6 @@ pub(crate) struct KtWalker {
     kotlin_class_field_aliases: Vec<std::collections::HashMap<String, String>>,
 }
 
-
 fn outer_this(depth: usize) -> Expression {
     let mut expr = Expression::new(ExprKind::This);
     for _ in 0..depth {
@@ -134,7 +137,9 @@ fn outer_this(depth: usize) -> Expression {
 }
 
 fn current_local_has(__w: &mut KtWalker, name: &str) -> bool {
-    __w.enclosing_locals.last().is_some_and(|s| s.contains(name))
+    __w.enclosing_locals
+        .last()
+        .is_some_and(|s| s.contains(name))
 }
 
 fn inner_outer_read(__w: &mut KtWalker, name: &str) -> Option<Expression> {
@@ -163,7 +168,9 @@ fn qualified_inner_class(__w: &mut KtWalker, name: &str) -> Option<String> {
 }
 
 fn is_qualified_inner_class_path(__w: &mut KtWalker, path: &str) -> bool {
-    __w.inner_class_qualified.values().any(|qualified| qualified == path)
+    __w.inner_class_qualified
+        .values()
+        .any(|qualified| qualified == path)
 }
 
 fn qualified_type_expr(path: &str) -> Expression {
@@ -221,8 +228,7 @@ fn extension_receiver_read(__w: &mut KtWalker, name: &str) -> Option<Expression>
 
 /// Push the receiver's member set for the duration of an extension body.
 fn push_ext_receiver(__w: &mut KtWalker, receiver: &str) {
-    let members = __w.class_members.get(receiver).cloned()
-        .unwrap_or_default();
+    let members = __w.class_members.get(receiver).cloned().unwrap_or_default();
     __w.ext_receiver_members.push(members);
 }
 
@@ -307,7 +313,8 @@ fn read_names(pair: &Pair<Rule>) -> std::collections::HashSet<String> {
 /// A member declared by a class in this program always wins, which is Kotlin's
 /// own rule (a member beats an extension). Anything else keeps the rewrite.
 fn collect_user_member_names(__w: &mut KtWalker, root: &Pair<Rule>) {
-    fn walk_members(__w: &mut KtWalker, 
+    fn walk_members(
+        __w: &mut KtWalker,
         pair: Pair<Rule>,
         out: &mut std::collections::HashSet<(String, usize)>,
         overloads: &mut std::collections::HashMap<
@@ -471,10 +478,12 @@ fn collect_user_member_names(__w: &mut KtWalker, root: &Pair<Rule>) {
                         .unwrap_or(0);
                     __w.extension_functions.insert(id.as_str().to_string());
                     {
-                        __w.extension_function_arities.insert(id.as_str().to_string(), arity);
+                        __w.extension_function_arities
+                            .insert(id.as_str().to_string(), arity);
                     };
                     if in_class {
-                        __w.member_extension_functions.insert(id.as_str().to_string());
+                        __w.member_extension_functions
+                            .insert(id.as_str().to_string());
                     }
                     // `Factory.Companion.` — the call site is the CLASS name.
                     let recv_text = recv.as_str().trim_end_matches('.');
@@ -497,7 +506,8 @@ fn collect_user_member_names(__w: &mut KtWalker, root: &Pair<Rule>) {
                             && p.clone().into_inner().any(|q| q.as_rule() == Rule::set_kw)
                     });
                     if has_setter {
-                        __w.extension_property_setters.insert(id.as_str().to_string());
+                        __w.extension_property_setters
+                            .insert(id.as_str().to_string());
                     }
                 }
             }
@@ -593,7 +603,11 @@ fn has_nullable_constructor_param(__w: &mut KtWalker, name: &str) -> bool {
     __w.kotlin_nullable_ctor_classes.contains(name)
 }
 
-fn kotlin_user_constructor_call(__w: &mut KtWalker, name: &str, args: &[Argument]) -> Option<Expression> {
+fn kotlin_user_constructor_call(
+    __w: &mut KtWalker,
+    name: &str,
+    args: &[Argument],
+) -> Option<Expression> {
     if !is_user_class_name(__w, name)
         || !has_nullable_constructor_param(__w, name)
         || args.iter().any(|arg| arg.name.is_some())
@@ -619,7 +633,10 @@ fn kotlin_simple_type_name(hint: &str) -> &str {
 }
 
 fn kotlin_ctor_arg_matches_param(arg: &Expression, param: &Param) -> bool {
-    let Some(hint) = param.type_hint.as_ref().map(|hint| kotlin_simple_type_name(hint.spelling()))
+    let Some(hint) = param
+        .type_hint
+        .as_ref()
+        .map(|hint| kotlin_simple_type_name(hint.spelling()))
     else {
         return true;
     };
@@ -630,7 +647,9 @@ fn kotlin_ctor_arg_matches_param(arg: &Expression, param: &Param) -> bool {
             "Byte" | "Short" | "Int" | "Long" | "Float" | "Double" | "Number"
         ),
         ExprKind::Lit(Literal::Float(_)) => matches!(hint, "Float" | "Double" | "Number"),
-        ExprKind::Lit(Literal::Str(_)) => hint == "String" || hint == "CharSequence" || hint == "Any",
+        ExprKind::Lit(Literal::Str(_)) => {
+            hint == "String" || hint == "CharSequence" || hint == "Any"
+        }
         ExprKind::Array(_) => matches!(
             hint,
             "Array"
@@ -647,7 +666,11 @@ fn kotlin_ctor_arg_matches_param(arg: &Expression, param: &Param) -> bool {
     }
 }
 
-fn kotlin_pack_constructor_vararg_args(__w: &mut KtWalker, name: &str, args: &[Argument]) -> Vec<Argument> {
+fn kotlin_pack_constructor_vararg_args(
+    __w: &mut KtWalker,
+    name: &str,
+    args: &[Argument],
+) -> Vec<Argument> {
     if args.iter().any(|arg| arg.name.is_some() || arg.spread) {
         return args.to_vec();
     }
@@ -657,7 +680,10 @@ fn kotlin_pack_constructor_vararg_args(__w: &mut KtWalker, name: &str, args: &[A
     };
     let exact = shapes.iter().find(|shape| {
         shape.source_params.len() == args.len()
-            && !shape.source_params.last().is_some_and(|param| param.is_rest)
+            && !shape
+                .source_params
+                .last()
+                .is_some_and(|param| param.is_rest)
             && args
                 .iter()
                 .zip(shape.source_params.iter())
@@ -671,7 +697,10 @@ fn kotlin_pack_constructor_vararg_args(__w: &mut KtWalker, name: &str, args: &[A
         return out;
     }
     let Some(shape) = shapes.iter().find(|shape| {
-        shape.source_params.last().is_some_and(|param| param.is_rest)
+        shape
+            .source_params
+            .last()
+            .is_some_and(|param| param.is_rest)
             && args.len() >= shape.source_params.len().saturating_sub(1)
             && args
                 .iter()
@@ -695,10 +724,7 @@ fn kotlin_pack_constructor_vararg_args(__w: &mut KtWalker, name: &str, args: &[A
     }
     let fixed = params.len().saturating_sub(1);
     let mut out: Vec<Argument> = args[..fixed].to_vec();
-    let tail = args[fixed..]
-        .iter()
-        .map(|arg| arg.value.clone())
-        .collect();
+    let tail = args[fixed..].iter().map(|arg| arg.value.clone()).collect();
     out.push(Argument::positional(kotlin_array_expr(tail)));
     for idx in 0..shape.tag_count {
         out.push(Argument::positional(Expression::int(idx as i64)));
@@ -706,7 +732,11 @@ fn kotlin_pack_constructor_vararg_args(__w: &mut KtWalker, name: &str, args: &[A
     out
 }
 
-fn kotlin_normalized_constructor_args(__w: &mut KtWalker, name: &str, args: &[Argument]) -> Vec<Argument> {
+fn kotlin_normalized_constructor_args(
+    __w: &mut KtWalker,
+    name: &str,
+    args: &[Argument],
+) -> Vec<Argument> {
     if args.is_empty() || args.iter().any(|arg| arg.spread) {
         return kotlin_pack_constructor_vararg_args(__w, name, args);
     }
@@ -742,7 +772,11 @@ fn kotlin_normalized_constructor_args(__w: &mut KtWalker, name: &str, args: &[Ar
 /// NAMED arguments on a top-level `fun` call — reorder against the declared
 /// parameter list, filling skipped middles with their defaults (the shared
 /// call path only fills TRAILING defaults positionally).
-fn kotlin_normalized_fn_args(__w: &mut KtWalker, name: &str, args: &[Argument]) -> Option<Vec<Argument>> {
+fn kotlin_normalized_fn_args(
+    __w: &mut KtWalker,
+    name: &str,
+    args: &[Argument],
+) -> Option<Vec<Argument>> {
     if args.iter().all(|arg| arg.name.is_none()) || args.iter().any(|arg| arg.spread) {
         return None;
     }
@@ -780,7 +814,11 @@ fn kotlin_normalize_object_singleton_args(__w: &mut KtWalker, name: &str, args: 
         return;
     };
     for (arg, param) in args.iter_mut().zip(params.iter()) {
-        let Some(hint) = param.type_hint.as_ref().map(|h| type_hint_text(__w, h.spelling())) else {
+        let Some(hint) = param
+            .type_hint
+            .as_ref()
+            .map(|h| type_hint_text(__w, h.spelling()))
+        else {
             continue;
         };
         if kotlin_type_is_function_like(&hint) {
@@ -805,7 +843,11 @@ fn overloaded_storage_name(__w: &mut KtWalker, name: &str, arity: usize) -> Opti
     overloaded_storage_name_for_args(__w, name, arity, &[])
 }
 
-fn overloaded_storage_name_for_params(__w: &mut KtWalker, name: &str, params: &[Param]) -> Option<String> {
+fn overloaded_storage_name_for_params(
+    __w: &mut KtWalker,
+    name: &str,
+    params: &[Param],
+) -> Option<String> {
     {
         let map_b = &__w.user_method_overloads;
         map_b.get(name)?.get(&params.len())?;
@@ -831,7 +873,12 @@ fn overloaded_storage_name_for_params(__w: &mut KtWalker, name: &str, params: &[
 /// Pick the method-overload signature for a call. One signature per arity is
 /// unambiguous; SAME-arity overloads (`eval(Int)` vs `eval(String)`) resolve
 /// by classifying the literal/lambda arguments.
-fn overloaded_storage_name_for_args(__w: &mut KtWalker, name: &str, arity: usize, args: &[Argument]) -> Option<String> {
+fn overloaded_storage_name_for_args(
+    __w: &mut KtWalker,
+    name: &str,
+    arity: usize,
+    args: &[Argument],
+) -> Option<String> {
     {
         // Cloned so the map's borrow ends before `ovl_arg_ty` takes `&mut __w`.
         let signatures = __w.user_method_overloads.get(name)?.get(&arity)?.clone();
@@ -839,7 +886,8 @@ fn overloaded_storage_name_for_args(__w: &mut KtWalker, name: &str, arity: usize
         let param_types = if signatures.len() == 1 {
             &signatures[0]
         } else {
-            let arg_tys: Vec<Option<OvlTy>> = args.iter().map(|a| ovl_arg_ty(__w, &a.value)).collect();
+            let arg_tys: Vec<Option<OvlTy>> =
+                args.iter().map(|a| ovl_arg_ty(__w, &a.value)).collect();
             if args.len() != arity || arg_tys.iter().all(Option::is_none) {
                 return None;
             }
@@ -966,8 +1014,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
                     && let ExprKind::Lit(Literal::Str(target)) = &value.kind
                 {
                     let target = target.to_string();
-                    *e = if __w.kotlin_top_fn_params.contains_key(target.as_str())
-                    {
+                    *e = if __w.kotlin_top_fn_params.contains_key(target.as_str()) {
                         Expression::new(ExprKind::FuncRef(target))
                     } else {
                         callable_ref_lambda(__w, Expression::ident(&target))
@@ -1095,6 +1142,8 @@ fn language_directives() -> Directives {
         // methods — ECMA-262 §10.2.1 `[[Call]](thisArgument, argumentsList)`.
         // A plain `f()` passes `undefined` (§10.2.1.1).
         receiver_binding: Some(vybe_ast::ReceiverBinding::UniversalParameter),
+        type_resolution: Some(vybe_ast::TypeResolution::Static),
+        operator_dispatch: Some(vybe_ast::OperatorDispatch::RuntimeProtocol),
         ..Default::default()
     }
 }
@@ -1252,7 +1301,11 @@ fn kt_ret(value: Expression) -> Statement {
     kt_stmt(StmtKind::Return(Some(value)))
 }
 
-fn kt_if(cond: Expression, then_body: Vec<Statement>, else_body: Option<Vec<Statement>>) -> Statement {
+fn kt_if(
+    cond: Expression,
+    then_body: Vec<Statement>,
+    else_body: Option<Vec<Statement>>,
+) -> Statement {
     kt_stmt(StmtKind::If {
         cond,
         then_body,
@@ -1311,13 +1364,20 @@ fn kt_thread_runtime_fns() -> Vec<Statement> {
             vec![
                 kt_if(
                     kt_binary(BinOp::Gt, fld("l", "count"), int_lit(0)),
-                    vec![kt_assign(fld("l", "count"), kt_binary(BinOp::Sub, fld("l", "count"), int_lit(1)))],
+                    vec![kt_assign(
+                        fld("l", "count"),
+                        kt_binary(BinOp::Sub, fld("l", "count"), int_lit(1)),
+                    )],
                     None,
                 ),
                 kt_ret(null()),
             ],
         ),
-        kt_fn("__kt_latch_get_count", vec!["l"], vec![kt_ret(fld("l", "count"))]),
+        kt_fn(
+            "__kt_latch_get_count",
+            vec!["l"],
+            vec![kt_ret(fld("l", "count"))],
+        ),
         kt_fn(
             "__kt_latch_await",
             vec!["l"],
@@ -1346,9 +1406,16 @@ fn kt_thread_runtime_fns() -> Vec<Statement> {
             vec!["local", "value"],
             vec![
                 kt_if(
-                    kt_binary(BinOp::Eq, fld("__kt_current_thread", "name"), str_lit("main")),
+                    kt_binary(
+                        BinOp::Eq,
+                        fld("__kt_current_thread", "name"),
+                        str_lit("main"),
+                    ),
                     vec![kt_assign(fld("local", "__main"), id("value"))],
-                    Some(vec![kt_assign(kt_member(id("local"), "__worker"), id("value"))]),
+                    Some(vec![kt_assign(
+                        kt_member(id("local"), "__worker"),
+                        id("value"),
+                    )]),
                 ),
                 kt_ret(null()),
             ],
@@ -1357,7 +1424,11 @@ fn kt_thread_runtime_fns() -> Vec<Statement> {
             "__kt_thread_local_get",
             vec!["local"],
             vec![kt_if(
-                kt_binary(BinOp::Eq, fld("__kt_current_thread", "name"), str_lit("main")),
+                kt_binary(
+                    BinOp::Eq,
+                    fld("__kt_current_thread", "name"),
+                    str_lit("main"),
+                ),
                 vec![kt_ret(fld("local", "__main"))],
                 Some(vec![kt_ret(fld("local", "__worker"))]),
             )],
@@ -1367,10 +1438,22 @@ fn kt_thread_runtime_fns() -> Vec<Statement> {
             vec!["t", "ex"],
             vec![
                 kt_var("handled", kt_obj(Vec::new())),
-                kt_assign(kt_member(id("handled"), "message"), fld("t", "__kt_exception_message")),
-                kt_assign(kt_member(id("handled"), "__typename"), fld("t", "__kt_exception_type")),
-                kt_assign(kt_member(id("handled"), "__type"), fld("t", "__kt_exception_type")),
-                kt_assign(kt_member(id("handled"), "name"), fld("t", "__kt_exception_type")),
+                kt_assign(
+                    kt_member(id("handled"), "message"),
+                    fld("t", "__kt_exception_message"),
+                ),
+                kt_assign(
+                    kt_member(id("handled"), "__typename"),
+                    fld("t", "__kt_exception_type"),
+                ),
+                kt_assign(
+                    kt_member(id("handled"), "__type"),
+                    fld("t", "__kt_exception_type"),
+                ),
+                kt_assign(
+                    kt_member(id("handled"), "name"),
+                    fld("t", "__kt_exception_type"),
+                ),
                 kt_ret(id("handled")),
             ],
         ),
@@ -1380,9 +1463,16 @@ fn kt_thread_runtime_fns() -> Vec<Statement> {
             vec!["ms"],
             vec![
                 kt_if(
-                    kt_binary(BinOp::Eq, fld("__kt_current_thread", "isInterrupted"), bool_lit(true)),
+                    kt_binary(
+                        BinOp::Eq,
+                        fld("__kt_current_thread", "isInterrupted"),
+                        bool_lit(true),
+                    ),
                     vec![kt_stmt(StmtKind::Throw {
-                        expr: Some(kt_call("InterruptedException", vec![str_lit("interrupted")])),
+                        expr: Some(kt_call(
+                            "InterruptedException",
+                            vec![str_lit("interrupted")],
+                        )),
                         cause: None,
                     })],
                     None,
@@ -1391,7 +1481,11 @@ fn kt_thread_runtime_fns() -> Vec<Statement> {
                     kt_binary(
                         BinOp::And,
                         kt_binary(BinOp::Gt, id("ms"), int_lit(0)),
-                        kt_binary(BinOp::NotEq, fld("__kt_current_thread", "name"), str_lit("main")),
+                        kt_binary(
+                            BinOp::NotEq,
+                            fld("__kt_current_thread", "name"),
+                            str_lit("main"),
+                        ),
                     ),
                     vec![
                         kt_assign(fld("__kt_current_thread", "__kt_waiting"), bool_lit(true)),
@@ -1431,13 +1525,26 @@ fn kt_thread_runtime_fns() -> Vec<Statement> {
                 kt_if(
                     kt_binary(BinOp::Eq, id("name"), null()),
                     vec![
-                        kt_assign(id("name"), kt_binary(BinOp::Add, str_lit("Thread-"), kt_call("__kt_tostring", vec![id("__kt_thread_seq")]))),
-                        kt_assign(id("__kt_thread_seq"), kt_binary(BinOp::Add, id("__kt_thread_seq"), int_lit(1))),
+                        kt_assign(
+                            id("name"),
+                            kt_binary(
+                                BinOp::Add,
+                                str_lit("Thread-"),
+                                kt_call("__kt_tostring", vec![id("__kt_thread_seq")]),
+                            ),
+                        ),
+                        kt_assign(
+                            id("__kt_thread_seq"),
+                            kt_binary(BinOp::Add, id("__kt_thread_seq"), int_lit(1)),
+                        ),
                     ],
                     None,
                 ),
                 kt_assign(fld("t", "name"), id("name")),
-                kt_assign(fld("t", "id"), kt_binary(BinOp::Add, id("__kt_thread_seq"), int_lit(2))),
+                kt_assign(
+                    fld("t", "id"),
+                    kt_binary(BinOp::Add, id("__kt_thread_seq"), int_lit(2)),
+                ),
                 kt_assign(fld("t", "isDaemon"), id("isDaemon")),
                 kt_assign(fld("t", "priority"), id("priority")),
                 kt_assign(fld("t", "__target"), id("target")),
@@ -1449,8 +1556,18 @@ fn kt_thread_runtime_fns() -> Vec<Statement> {
                 kt_assign(fld("t", "isInterrupted"), bool_lit(false)),
                 kt_assign(fld("t", "__kt_waiting"), bool_lit(false)),
                 kt_assign(fld("t", "state"), state_obj("NEW")),
-                kt_assign(fld("t", "threadGroup"), kt_obj(vec![("name", str_lit("main"))])),
-                kt_if(id("start"), vec![kt_stmt(StmtKind::Expr(kt_call("__kt_thread_start", vec![id("t")])) )], None),
+                kt_assign(
+                    fld("t", "threadGroup"),
+                    kt_obj(vec![("name", str_lit("main"))]),
+                ),
+                kt_if(
+                    id("start"),
+                    vec![kt_stmt(StmtKind::Expr(kt_call(
+                        "__kt_thread_start",
+                        vec![id("t")],
+                    )))],
+                    None,
+                ),
                 kt_ret(id("t")),
             ],
         ),
@@ -1461,7 +1578,10 @@ fn kt_thread_runtime_fns() -> Vec<Statement> {
                 kt_if(
                     fld("t", "__started"),
                     vec![kt_stmt(StmtKind::Throw {
-                        expr: Some(kt_call("IllegalStateException", vec![str_lit("Thread already started")])),
+                        expr: Some(kt_call(
+                            "IllegalStateException",
+                            vec![str_lit("Thread already started")],
+                        )),
                         cause: None,
                     })],
                     None,
@@ -1472,19 +1592,32 @@ fn kt_thread_runtime_fns() -> Vec<Statement> {
                 kt_var("prev", current()),
                 kt_assign(id("__kt_current_thread"), id("t")),
                 kt_stmt(StmtKind::Try {
-                    body: vec![kt_stmt(StmtKind::Expr(kt_call_expr(fld("t", "__target"), Vec::new())))],
+                    body: vec![kt_stmt(StmtKind::Expr(kt_call_expr(
+                        fld("t", "__target"),
+                        Vec::new(),
+                    )))],
                     catches: vec![CatchClause {
                         types: vec!["Exception".to_string(), "Throwable".to_string()],
                         var_name: Some("ex".to_string()),
                         stack_var: None,
                         body: vec![kt_if(
-                            kt_binary(BinOp::Eq, kt_member(id("ex"), "message"), str_lit("__kt_wait")),
+                            kt_binary(
+                                BinOp::Eq,
+                                kt_member(id("ex"), "message"),
+                                str_lit("__kt_wait"),
+                            ),
                             vec![kt_assign(fld("t", "__kt_waiting"), bool_lit(true))],
                             Some(vec![kt_if(
                                 kt_binary(BinOp::NotEq, fld("t", "__handler"), null()),
                                 vec![kt_stmt(StmtKind::Expr(kt_call_expr(
                                     fld("t", "__handler"),
-                                    vec![id("t"), kt_call("__kt_thread_handler_exception", vec![id("t"), id("ex")])],
+                                    vec![
+                                        id("t"),
+                                        kt_call(
+                                            "__kt_thread_handler_exception",
+                                            vec![id("t"), id("ex")],
+                                        ),
+                                    ],
                                 )))],
                                 None,
                             )]),
@@ -1517,7 +1650,10 @@ fn kt_thread_runtime_fns() -> Vec<Statement> {
                         kt_var("prev", current()),
                         kt_assign(id("__kt_current_thread"), id("t")),
                         kt_stmt(StmtKind::Try {
-                            body: vec![kt_stmt(StmtKind::Expr(kt_call_expr(fld("t", "__target"), Vec::new())))],
+                            body: vec![kt_stmt(StmtKind::Expr(kt_call_expr(
+                                fld("t", "__target"),
+                                Vec::new(),
+                            )))],
                             catches: vec![CatchClause {
                                 types: vec!["Exception".to_string(), "Throwable".to_string()],
                                 var_name: Some("ex".to_string()),
@@ -1526,7 +1662,13 @@ fn kt_thread_runtime_fns() -> Vec<Statement> {
                                     kt_binary(BinOp::NotEq, fld("t", "__handler"), null()),
                                     vec![kt_stmt(StmtKind::Expr(kt_call_expr(
                                         fld("t", "__handler"),
-                                        vec![id("t"), kt_call("__kt_thread_handler_exception", vec![id("t"), id("ex")])],
+                                        vec![
+                                            id("t"),
+                                            kt_call(
+                                                "__kt_thread_handler_exception",
+                                                vec![id("t"), id("ex")],
+                                            ),
+                                        ],
                                     )))],
                                     None,
                                 )],
@@ -1561,7 +1703,10 @@ fn kt_thread_runtime_fns() -> Vec<Statement> {
         kt_fn(
             "__kt_thread_set_handler",
             vec!["t", "handler"],
-            vec![kt_assign(fld("t", "__handler"), id("handler")), kt_ret(null())],
+            vec![
+                kt_assign(fld("t", "__handler"), id("handler")),
+                kt_ret(null()),
+            ],
         ),
     ]
 }
@@ -1608,7 +1753,8 @@ fn kotlin_expr_is_thread_new(expr: &Expression) -> bool {
     )
 }
 
-fn kotlin_expr_is_thread_like(__w: &mut KtWalker, 
+fn kotlin_expr_is_thread_like(
+    __w: &mut KtWalker,
     expr: &Expression,
     locals: &KotlinLocalTypes,
     operators: &KotlinOperatorTable,
@@ -1617,10 +1763,12 @@ fn kotlin_expr_is_thread_like(__w: &mut KtWalker,
         return true;
     }
     match &expr.kind {
-        ExprKind::Ident(name) => __w.kotlin_thread_locals.contains(name)
-            || locals
-                .get(name)
-                .is_some_and(|ty| ty.rsplit('.').next().unwrap_or(ty) == "Thread"),
+        ExprKind::Ident(name) => {
+            __w.kotlin_thread_locals.contains(name)
+                || locals
+                    .get(name)
+                    .is_some_and(|ty| ty.rsplit('.').next().unwrap_or(ty) == "Thread")
+        }
         ExprKind::Call { callee, .. } => {
             if matches!(&callee.kind, ExprKind::Ident(name) if name == "__kt_thread_current") {
                 return true;
@@ -1704,7 +1852,8 @@ fn kotlin_type_leaf(ty: &str) -> &str {
         .unwrap_or(ty)
 }
 
-fn kotlin_expr_type_leaf<'a>(__w: &mut KtWalker, 
+fn kotlin_expr_type_leaf<'a>(
+    __w: &mut KtWalker,
     expr: &'a Expression,
     locals: &'a KotlinLocalTypes,
     operators: &'a KotlinOperatorTable,
@@ -1754,26 +1903,37 @@ fn kotlin_thread_call_args(__w: &mut KtWalker, args: &[Argument]) -> Vec<Argumen
         exception_type,
         exception_message,
     ]
-        .into_iter()
-        .map(Argument::positional)
-        .collect()
+    .into_iter()
+    .map(Argument::positional)
+    .collect()
 }
 
-fn kotlin_thread_lambda_exception_type(__w: &mut KtWalker, expr: &Expression) -> Option<&'static str> {
+fn kotlin_thread_lambda_exception_type(
+    __w: &mut KtWalker,
+    expr: &Expression,
+) -> Option<&'static str> {
     let ExprKind::Lambda { body, .. } = &expr.kind else {
         return None;
     };
     match body {
         LambdaBody::Expr(expr) => kotlin_thread_expr_exception_type(__w, expr),
-        LambdaBody::Block(stmts) => stmts.iter().find_map(|__x| kotlin_thread_stmt_exception_type(__w, __x)),
+        LambdaBody::Block(stmts) => stmts
+            .iter()
+            .find_map(|__x| kotlin_thread_stmt_exception_type(__w, __x)),
     }
 }
 
 fn kotlin_thread_stmt_exception_type(__w: &mut KtWalker, stmt: &Statement) -> Option<&'static str> {
     match &stmt.kind {
-        StmtKind::Throw { expr: Some(expr), .. } => kotlin_thread_expr_exception_type(__w, expr),
-        StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) => kotlin_thread_expr_exception_type(__w, expr),
-        StmtKind::Block(stmts) => stmts.iter().find_map(|__x| kotlin_thread_stmt_exception_type(__w, __x)),
+        StmtKind::Throw {
+            expr: Some(expr), ..
+        } => kotlin_thread_expr_exception_type(__w, expr),
+        StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) => {
+            kotlin_thread_expr_exception_type(__w, expr)
+        }
+        StmtKind::Block(stmts) => stmts
+            .iter()
+            .find_map(|__x| kotlin_thread_stmt_exception_type(__w, __x)),
         StmtKind::If {
             then_body,
             elifs,
@@ -1789,9 +1949,10 @@ fn kotlin_thread_stmt_exception_type(__w: &mut KtWalker, stmt: &Statement) -> Op
                     .find_map(|__x| kotlin_thread_stmt_exception_type(__w, __x))
             })
             .or_else(|| {
-                else_body
-                    .as_ref()
-                    .and_then(|body| body.iter().find_map(|__x| kotlin_thread_stmt_exception_type(__w, __x)))
+                else_body.as_ref().and_then(|body| {
+                    body.iter()
+                        .find_map(|__x| kotlin_thread_stmt_exception_type(__w, __x))
+                })
             }),
         StmtKind::Try {
             body,
@@ -1808,22 +1969,31 @@ fn kotlin_thread_stmt_exception_type(__w: &mut KtWalker, stmt: &Statement) -> Op
                     .find_map(|__x| kotlin_thread_stmt_exception_type(__w, __x))
             })
             .or_else(|| {
-                else_body
-                    .as_ref()
-                    .and_then(|body| body.iter().find_map(|__x| kotlin_thread_stmt_exception_type(__w, __x)))
+                else_body.as_ref().and_then(|body| {
+                    body.iter()
+                        .find_map(|__x| kotlin_thread_stmt_exception_type(__w, __x))
+                })
             })
             .or_else(|| {
-                finally
-                    .as_ref()
-                    .and_then(|body| body.iter().find_map(|__x| kotlin_thread_stmt_exception_type(__w, __x)))
+                finally.as_ref().and_then(|body| {
+                    body.iter()
+                        .find_map(|__x| kotlin_thread_stmt_exception_type(__w, __x))
+                })
             }),
         _ => None,
     }
 }
 
-fn kotlin_thread_expr_exception_type(__w: &mut KtWalker, expr: &Expression) -> Option<&'static str> {
+fn kotlin_thread_expr_exception_type(
+    __w: &mut KtWalker,
+    expr: &Expression,
+) -> Option<&'static str> {
     match &expr.kind {
-        ExprKind::Call { callee, args, .. } | ExprKind::New { class: callee, args } => {
+        ExprKind::Call { callee, args, .. }
+        | ExprKind::New {
+            class: callee,
+            args,
+        } => {
             let name = dotted_expr_path(callee)?;
             let leaf = name.rsplit('.').next().unwrap_or(&name);
             if kotlin_is_builtin_exception_callee(__w, &name) {
@@ -1852,29 +2022,43 @@ fn kotlin_thread_expr_exception_type(__w: &mut KtWalker, expr: &Expression) -> O
             .or_else(|| kotlin_thread_expr_exception_type(__w, else_)),
         ExprKind::Lambda { body, .. } => match body {
             LambdaBody::Expr(expr) => kotlin_thread_expr_exception_type(__w, expr),
-            LambdaBody::Block(stmts) => stmts.iter().find_map(|__x| kotlin_thread_stmt_exception_type(__w, __x)),
+            LambdaBody::Block(stmts) => stmts
+                .iter()
+                .find_map(|__x| kotlin_thread_stmt_exception_type(__w, __x)),
         },
         _ => None,
     }
 }
 
-fn kotlin_thread_lambda_exception_message(__w: &mut KtWalker, expr: &Expression) -> Option<Expression> {
+fn kotlin_thread_lambda_exception_message(
+    __w: &mut KtWalker,
+    expr: &Expression,
+) -> Option<Expression> {
     let ExprKind::Lambda { body, .. } = &expr.kind else {
         return None;
     };
     match body {
         LambdaBody::Expr(expr) => kotlin_thread_expr_exception_message(__w, expr),
-        LambdaBody::Block(stmts) => stmts.iter().find_map(|__x| kotlin_thread_stmt_exception_message(__w, __x)),
+        LambdaBody::Block(stmts) => stmts
+            .iter()
+            .find_map(|__x| kotlin_thread_stmt_exception_message(__w, __x)),
     }
 }
 
-fn kotlin_thread_stmt_exception_message(__w: &mut KtWalker, stmt: &Statement) -> Option<Expression> {
+fn kotlin_thread_stmt_exception_message(
+    __w: &mut KtWalker,
+    stmt: &Statement,
+) -> Option<Expression> {
     match &stmt.kind {
-        StmtKind::Throw { expr: Some(expr), .. } => kotlin_thread_expr_exception_message(__w, expr),
+        StmtKind::Throw {
+            expr: Some(expr), ..
+        } => kotlin_thread_expr_exception_message(__w, expr),
         StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) => {
             kotlin_thread_expr_exception_message(__w, expr)
         }
-        StmtKind::Block(stmts) => stmts.iter().find_map(|__x| kotlin_thread_stmt_exception_message(__w, __x)),
+        StmtKind::Block(stmts) => stmts
+            .iter()
+            .find_map(|__x| kotlin_thread_stmt_exception_message(__w, __x)),
         StmtKind::If {
             then_body,
             elifs,
@@ -1890,9 +2074,10 @@ fn kotlin_thread_stmt_exception_message(__w: &mut KtWalker, stmt: &Statement) ->
                     .find_map(|__x| kotlin_thread_stmt_exception_message(__w, __x))
             })
             .or_else(|| {
-                else_body
-                    .as_ref()
-                    .and_then(|body| body.iter().find_map(|__x| kotlin_thread_stmt_exception_message(__w, __x)))
+                else_body.as_ref().and_then(|body| {
+                    body.iter()
+                        .find_map(|__x| kotlin_thread_stmt_exception_message(__w, __x))
+                })
             }),
         StmtKind::Try {
             body,
@@ -1909,22 +2094,31 @@ fn kotlin_thread_stmt_exception_message(__w: &mut KtWalker, stmt: &Statement) ->
                     .find_map(|__x| kotlin_thread_stmt_exception_message(__w, __x))
             })
             .or_else(|| {
-                else_body
-                    .as_ref()
-                    .and_then(|body| body.iter().find_map(|__x| kotlin_thread_stmt_exception_message(__w, __x)))
+                else_body.as_ref().and_then(|body| {
+                    body.iter()
+                        .find_map(|__x| kotlin_thread_stmt_exception_message(__w, __x))
+                })
             })
             .or_else(|| {
-                finally
-                    .as_ref()
-                    .and_then(|body| body.iter().find_map(|__x| kotlin_thread_stmt_exception_message(__w, __x)))
+                finally.as_ref().and_then(|body| {
+                    body.iter()
+                        .find_map(|__x| kotlin_thread_stmt_exception_message(__w, __x))
+                })
             }),
         _ => None,
     }
 }
 
-fn kotlin_thread_expr_exception_message(__w: &mut KtWalker, expr: &Expression) -> Option<Expression> {
+fn kotlin_thread_expr_exception_message(
+    __w: &mut KtWalker,
+    expr: &Expression,
+) -> Option<Expression> {
     match &expr.kind {
-        ExprKind::Call { callee, args, .. } | ExprKind::New { class: callee, args } => {
+        ExprKind::Call { callee, args, .. }
+        | ExprKind::New {
+            class: callee,
+            args,
+        } => {
             let name = dotted_expr_path(callee)?;
             let _leaf = name.rsplit('.').next().unwrap_or(&name);
             if kotlin_is_builtin_exception_callee(__w, &name) {
@@ -1941,7 +2135,9 @@ fn kotlin_thread_expr_exception_message(__w: &mut KtWalker, expr: &Expression) -
             .or_else(|| kotlin_thread_expr_exception_message(__w, else_)),
         ExprKind::Lambda { body, .. } => match body {
             LambdaBody::Expr(expr) => kotlin_thread_expr_exception_message(__w, expr),
-            LambdaBody::Block(stmts) => stmts.iter().find_map(|__x| kotlin_thread_stmt_exception_message(__w, __x)),
+            LambdaBody::Block(stmts) => stmts
+                .iter()
+                .find_map(|__x| kotlin_thread_stmt_exception_message(__w, __x)),
         },
         _ => None,
     }
@@ -2006,7 +2202,8 @@ fn kotlin_static_thread_value(path: &str) -> Option<Expression> {
     })
 }
 
-fn kotlin_rewrite_thread_member_read(__w: &mut KtWalker, 
+fn kotlin_rewrite_thread_member_read(
+    __w: &mut KtWalker,
     expr: &mut Expression,
     locals: &KotlinLocalTypes,
     operators: &KotlinOperatorTable,
@@ -2020,8 +2217,15 @@ fn kotlin_rewrite_thread_member_read(__w: &mut KtWalker,
     let mut object = (**object).clone();
     normalize_kotlin_operator_expr(__w, &mut object, operators, locals);
     match field.as_str() {
-        "isAlive" | "isInterrupted" | "name" | "priority" | "isDaemon" | "id" | "state"
-        | "threadGroup" | "uncaughtExceptionHandler" => {
+        "isAlive"
+        | "isInterrupted"
+        | "name"
+        | "priority"
+        | "isDaemon"
+        | "id"
+        | "state"
+        | "threadGroup"
+        | "uncaughtExceptionHandler" => {
             *expr = kt_member(object, field);
             true
         }
@@ -2029,7 +2233,8 @@ fn kotlin_rewrite_thread_member_read(__w: &mut KtWalker,
     }
 }
 
-fn kotlin_rewrite_thread_member_call(__w: &mut KtWalker, 
+fn kotlin_rewrite_thread_member_call(
+    __w: &mut KtWalker,
     expr: &mut Expression,
     locals: &KotlinLocalTypes,
     operators: &KotlinOperatorTable,
@@ -2048,7 +2253,11 @@ fn kotlin_rewrite_thread_member_call(__w: &mut KtWalker,
                 kotlin_mark_threads_needed(__w);
                 *expr = kt_call(
                     "__kt_thread_sleep",
-                    vec![args.first().map(|a| a.value.clone()).unwrap_or_else(|| Expression::int(0))],
+                    vec![
+                        args.first()
+                            .map(|a| a.value.clone())
+                            .unwrap_or_else(|| Expression::int(0)),
+                    ],
                 );
                 return true;
             }
@@ -2078,15 +2287,13 @@ fn kotlin_rewrite_thread_member_call(__w: &mut KtWalker,
         "interrupt" if args.is_empty() => kt_call("__kt_thread_interrupt", vec![receiver]),
         "isAlive" if args.is_empty() => kt_member(receiver, "isAlive"),
         "isInterrupted" if args.is_empty() => kt_member(receiver, "isInterrupted"),
-        "setUncaughtExceptionHandler" if args.len() == 1 => {
-            kt_call(
-                "__kt_thread_set_handler",
-                vec![
-                    receiver,
-                    kotlin_thread_handler_bridge_expr(args[0].value.clone()),
-                ],
-            )
-        }
+        "setUncaughtExceptionHandler" if args.len() == 1 => kt_call(
+            "__kt_thread_set_handler",
+            vec![
+                receiver,
+                kotlin_thread_handler_bridge_expr(args[0].value.clone()),
+            ],
+        ),
         _ => return false,
     };
     kotlin_mark_threads_needed(__w);
@@ -2119,7 +2326,8 @@ fn kotlin_java_io_tostring_helper(ty: &str) -> Option<&'static str> {
     }
 }
 
-fn kotlin_java_io_stream_type(__w: &mut KtWalker, 
+fn kotlin_java_io_stream_type(
+    __w: &mut KtWalker,
     expr: &Expression,
     locals: &KotlinLocalTypes,
     operators: &KotlinOperatorTable,
@@ -2770,7 +2978,8 @@ fn kotlin_if_stmt_to_ternary(stmt: Statement) -> Expression {
 /// Hoist local fns declared inside CLASS METHODS. A local fn that reads
 /// `this` would be stranded by hoisting — materialize the receiver as
 /// `__kt_self` and let the normal capture threading carry it.
-fn kotlin_hoist_in_class(__w: &mut KtWalker, 
+fn kotlin_hoist_in_class(
+    __w: &mut KtWalker,
     members: &mut [ClassMember],
     enclosing: &HashSet<String>,
     top_fn_names: &HashSet<String>,
@@ -2841,7 +3050,8 @@ fn kotlin_hoist_local_fns(__w: &mut KtWalker, body: &mut Vec<Statement>) {
             } => {
                 let mut enclosing: HashSet<String> =
                     params.iter().map(|p| p.name.clone()).collect();
-                kotlin_hoist_in_block(__w, 
+                kotlin_hoist_in_block(
+                    __w,
                     fn_body,
                     &mut enclosing,
                     &top_fn_names,
@@ -2851,7 +3061,8 @@ fn kotlin_hoist_local_fns(__w: &mut KtWalker, body: &mut Vec<Statement>) {
             }
             StmtKind::ClassDecl { members, .. } => {
                 let enclosing = HashSet::new();
-                kotlin_hoist_in_class(__w, 
+                kotlin_hoist_in_class(
+                    __w,
                     members,
                     &enclosing,
                     &top_fn_names,
@@ -2949,7 +3160,8 @@ fn kotlin_local_binding_names(stmts: &[Statement], out: &mut HashSet<String>) {
     }
 }
 
-fn kotlin_hoist_in_block(__w: &mut KtWalker, 
+fn kotlin_hoist_in_block(
+    __w: &mut KtWalker,
     stmts: &mut Vec<Statement>,
     enclosing: &mut HashSet<String>,
     top_fn_names: &HashSet<String>,
@@ -3026,7 +3238,14 @@ fn kotlin_hoist_in_block(__w: &mut KtWalker,
                 // and bare value references.
                 for s in stmts[i..].iter_mut() {
                     s.walk_exprs_mut(&mut |e| {
-                        kotlin_rewrite_hoisted_ref(__w, e, &fn_name, &sig, other_candidates, &captured);
+                        kotlin_rewrite_hoisted_ref(
+                            __w,
+                            e,
+                            &fn_name,
+                            &sig,
+                            other_candidates,
+                            &captured,
+                        );
                     });
                 }
                 // The hoisted fn's OWN body may declare local fns too
@@ -3100,7 +3319,14 @@ fn kotlin_hoist_in_block(__w: &mut KtWalker,
                         for p in params.iter() {
                             inner.insert(p.name.clone());
                         }
-                        kotlin_hoist_in_block(__w, body, &mut inner, top_fn_names, hoisted, counter);
+                        kotlin_hoist_in_block(
+                            __w,
+                            body,
+                            &mut inner,
+                            top_fn_names,
+                            hoisted,
+                            counter,
+                        );
                     }
                 }
             }
@@ -3109,7 +3335,8 @@ fn kotlin_hoist_in_block(__w: &mut KtWalker,
     }
 }
 
-fn kotlin_rewrite_hoisted_ref(__w: &mut KtWalker, 
+fn kotlin_rewrite_hoisted_ref(
+    __w: &mut KtWalker,
     expr: &mut Expression,
     old: &str,
     sig: &OvlSig,
@@ -3148,7 +3375,8 @@ fn kotlin_rewrite_hoisted_ref(__w: &mut KtWalker,
 
 /// `ovl_sig_accepts` with the first `skip` parameters (threaded captures)
 /// exempt from checking.
-fn ovl_sig_accepts_offset(__w: &mut KtWalker, 
+fn ovl_sig_accepts_offset(
+    __w: &mut KtWalker,
     sig: &OvlSig,
     args: &[Argument],
     arg_tys: &[Option<OvlTy>],
@@ -3405,7 +3633,10 @@ fn kotlin_resolve_function_overloads(__w: &mut KtWalker, body: &mut Vec<Statemen
                     .collect();
                 // Generic arguments only survive in the RAW recording — the
                 // TypeHint spelling is stripped to the bare head.
-                let raw = __w.kotlin_fn_raw_param_types.get(&name).and_then(|v| v.get(k).cloned());
+                let raw = __w
+                    .kotlin_fn_raw_param_types
+                    .get(&name)
+                    .and_then(|v| v.get(k).cloned());
                 let param_pair_first = (0..params.len())
                     .map(|pi| {
                         raw.as_ref()
@@ -3480,7 +3711,8 @@ fn ovl_sig_of_params(name: &str, params: &[Param]) -> OvlSig {
     }
 }
 
-fn ovl_sig_accepts(__w: &mut KtWalker, 
+fn ovl_sig_accepts(
+    __w: &mut KtWalker,
     sig: &OvlSig,
     args: &[Argument],
     arg_tys: &[Option<OvlTy>],
@@ -3534,7 +3766,11 @@ fn ovl_sig_accepts(__w: &mut KtWalker,
     })
 }
 
-fn kotlin_pick_overload<'t>(__w: &mut KtWalker, sigs: &'t [OvlSig], args: &[Argument]) -> Option<&'t OvlSig> {
+fn kotlin_pick_overload<'t>(
+    __w: &mut KtWalker,
+    sigs: &'t [OvlSig],
+    args: &[Argument],
+) -> Option<&'t OvlSig> {
     let argc = args.len();
     let by_arity: Vec<&OvlSig> = sigs
         .iter()
@@ -3544,7 +3780,8 @@ fn kotlin_pick_overload<'t>(__w: &mut KtWalker, sigs: &'t [OvlSig], args: &[Argu
         0 => sigs.first(),
         1 => Some(by_arity[0]),
         _ => {
-            let arg_tys: Vec<Option<OvlTy>> = args.iter().map(|a| ovl_arg_ty(__w, &a.value)).collect();
+            let arg_tys: Vec<Option<OvlTy>> =
+                args.iter().map(|a| ovl_arg_ty(__w, &a.value)).collect();
             // Kotlin's preference order: exact classes without defaults or
             // varargs first, then with defaults, then widening, varargs last.
             let passes: [(bool, bool, bool); 4] = [
@@ -3567,7 +3804,8 @@ fn kotlin_pick_overload<'t>(__w: &mut KtWalker, sigs: &'t [OvlSig], args: &[Argu
     }
 }
 
-fn kotlin_rewrite_overload_calls_stmt(__w: &mut KtWalker, 
+fn kotlin_rewrite_overload_calls_stmt(
+    __w: &mut KtWalker,
     stmt: &mut Statement,
     table: &HashMap<String, Vec<OvlSig>>,
     shadowed: &mut HashMap<String, OvlSig>,
@@ -3624,7 +3862,8 @@ fn kotlin_rewrite_overload_calls_stmt(__w: &mut KtWalker,
     });
 }
 
-fn kotlin_rewrite_overload_calls_expr(__w: &mut KtWalker, 
+fn kotlin_rewrite_overload_calls_expr(
+    __w: &mut KtWalker,
     expr: &mut Expression,
     table: &HashMap<String, Vec<OvlSig>>,
     shadowed: &HashMap<String, OvlSig>,
@@ -3634,7 +3873,8 @@ fn kotlin_rewrite_overload_calls_expr(__w: &mut KtWalker,
         && let Some(sigs) = table.get(name.as_str())
     {
         if let Some(local) = shadowed.get(name.as_str()) {
-            let arg_tys: Vec<Option<OvlTy>> = args.iter().map(|a| ovl_arg_ty(__w, &a.value)).collect();
+            let arg_tys: Vec<Option<OvlTy>> =
+                args.iter().map(|a| ovl_arg_ty(__w, &a.value)).collect();
             let argc = args.len();
             if local.min_args <= argc
                 && argc <= local.max_args
@@ -3711,7 +3951,11 @@ fn kotlin_import_leaf_is_constant(path: &str) -> bool {
             .all(|ch| ch.is_ascii_uppercase())
 }
 
-fn rewrite_import_aliases_in_stmts(__w: &mut KtWalker, stmts: &mut [Statement], aliases: &HashMap<String, String>) {
+fn rewrite_import_aliases_in_stmts(
+    __w: &mut KtWalker,
+    stmts: &mut [Statement],
+    aliases: &HashMap<String, String>,
+) {
     let mut scope = HashSet::new();
     for stmt in stmts.iter() {
         collect_declared_names(stmt, &mut scope);
@@ -3780,7 +4024,8 @@ fn collect_binding_names(pattern: &BindingPattern, names: &mut HashSet<String>) 
     }
 }
 
-fn rewrite_import_aliases_in_stmt(__w: &mut KtWalker, 
+fn rewrite_import_aliases_in_stmt(
+    __w: &mut KtWalker,
     stmt: &mut Statement,
     aliases: &HashMap<String, String>,
     scope: &mut HashSet<String>,
@@ -3836,7 +4081,12 @@ fn rewrite_import_aliases_in_stmt(__w: &mut KtWalker,
                         for param in params {
                             ctor_scope.insert(param.name.clone());
                         }
-                        rewrite_import_aliases_in_stmts_with_scope(__w, body, aliases, &mut ctor_scope);
+                        rewrite_import_aliases_in_stmts_with_scope(
+                            __w,
+                            body,
+                            aliases,
+                            &mut ctor_scope,
+                        );
                     }
                     _ => {}
                 }
@@ -3867,10 +4117,20 @@ fn rewrite_import_aliases_in_stmt(__w: &mut KtWalker,
             rewrite_import_aliases_in_stmts_with_scope(__w, then_body, aliases, &mut scope.clone());
             for (elif_cond, elif_body) in elifs {
                 rewrite_import_aliases_in_expr(__w, elif_cond, aliases, scope);
-                rewrite_import_aliases_in_stmts_with_scope(__w, elif_body, aliases, &mut scope.clone());
+                rewrite_import_aliases_in_stmts_with_scope(
+                    __w,
+                    elif_body,
+                    aliases,
+                    &mut scope.clone(),
+                );
             }
             if let Some(else_body) = else_body {
-                rewrite_import_aliases_in_stmts_with_scope(__w, else_body, aliases, &mut scope.clone());
+                rewrite_import_aliases_in_stmts_with_scope(
+                    __w,
+                    else_body,
+                    aliases,
+                    &mut scope.clone(),
+                );
             }
         }
         StmtKind::While {
@@ -3881,7 +4141,12 @@ fn rewrite_import_aliases_in_stmt(__w: &mut KtWalker,
             rewrite_import_aliases_in_expr(__w, cond, aliases, scope);
             rewrite_import_aliases_in_stmts_with_scope(__w, body, aliases, &mut scope.clone());
             if let Some(else_body) = else_body {
-                rewrite_import_aliases_in_stmts_with_scope(__w, else_body, aliases, &mut scope.clone());
+                rewrite_import_aliases_in_stmts_with_scope(
+                    __w,
+                    else_body,
+                    aliases,
+                    &mut scope.clone(),
+                );
             }
         }
         StmtKind::For {
@@ -3917,7 +4182,12 @@ fn rewrite_import_aliases_in_stmt(__w: &mut KtWalker,
             }
             rewrite_import_aliases_in_stmts_with_scope(__w, body, aliases, &mut loop_scope);
             if let Some(else_body) = else_body {
-                rewrite_import_aliases_in_stmts_with_scope(__w, else_body, aliases, &mut scope.clone());
+                rewrite_import_aliases_in_stmts_with_scope(
+                    __w,
+                    else_body,
+                    aliases,
+                    &mut scope.clone(),
+                );
             }
         }
         StmtKind::Try {
@@ -3938,24 +4208,36 @@ fn rewrite_import_aliases_in_stmt(__w: &mut KtWalker,
                 if let Some(when_clause) = &mut catch.when_clause {
                     rewrite_import_aliases_in_expr(__w, when_clause, aliases, &catch_scope);
                 }
-                rewrite_import_aliases_in_stmts_with_scope(__w, 
+                rewrite_import_aliases_in_stmts_with_scope(
+                    __w,
                     &mut catch.body,
                     aliases,
                     &mut catch_scope,
                 );
             }
             if let Some(else_body) = else_body {
-                rewrite_import_aliases_in_stmts_with_scope(__w, else_body, aliases, &mut scope.clone());
+                rewrite_import_aliases_in_stmts_with_scope(
+                    __w,
+                    else_body,
+                    aliases,
+                    &mut scope.clone(),
+                );
             }
             if let Some(finally) = finally {
-                rewrite_import_aliases_in_stmts_with_scope(__w, finally, aliases, &mut scope.clone());
+                rewrite_import_aliases_in_stmts_with_scope(
+                    __w,
+                    finally,
+                    aliases,
+                    &mut scope.clone(),
+                );
             }
         }
         _ => {}
     }
 }
 
-fn rewrite_import_aliases_in_stmts_with_scope(__w: &mut KtWalker, 
+fn rewrite_import_aliases_in_stmts_with_scope(
+    __w: &mut KtWalker,
     stmts: &mut [Statement],
     aliases: &HashMap<String, String>,
     scope: &mut HashSet<String>,
@@ -3968,7 +4250,8 @@ fn rewrite_import_aliases_in_stmts_with_scope(__w: &mut KtWalker,
     }
 }
 
-fn rewrite_import_aliases_in_expr(__w: &mut KtWalker, 
+fn rewrite_import_aliases_in_expr(
+    __w: &mut KtWalker,
     expr: &mut Expression,
     aliases: &HashMap<String, String>,
     scope: &HashSet<String>,
@@ -4066,7 +4349,12 @@ fn rewrite_import_aliases_in_expr(__w: &mut KtWalker,
                     rewrite_import_aliases_in_expr(__w, expr, aliases, &lambda_scope);
                 }
                 LambdaBody::Block(stmts) => {
-                    rewrite_import_aliases_in_stmts_with_scope(__w, stmts, aliases, &mut lambda_scope);
+                    rewrite_import_aliases_in_stmts_with_scope(
+                        __w,
+                        stmts,
+                        aliases,
+                        &mut lambda_scope,
+                    );
                 }
             }
         }
@@ -4082,9 +4370,7 @@ fn post_alias_kotlin_lowering(__w: &mut KtWalker, expr: &Expression) -> Option<E
         // `x.absoluteValue` and `x.ulp` are extension PROPERTIES: a `Member`,
         // not a call, so a `[builtins]` row alone never fires. Rewriting to a
         // call is what lets the row apply.
-        ExprKind::Member { object, field, .. }
-            if field == "absoluteValue" || field == "ulp" =>
-        {
+        ExprKind::Member { object, field, .. } if field == "absoluteValue" || field == "ulp" => {
             Some(Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::ident(field)),
                 args: vec![Argument::positional(*object.clone())],
@@ -4279,7 +4565,8 @@ fn post_alias_kotlin_lowering(__w: &mut KtWalker, expr: &Expression) -> Option<E
                     && matches!(args[0].value.kind, ExprKind::Lambda { .. })
                     && !is_user_member_name(__w, field, 1) =>
             {
-                kotlin_receiver_scope_iife(__w, 
+                kotlin_receiver_scope_iife(
+                    __w,
                     (**object).clone(),
                     &args[0].value,
                     /*returns_receiver:*/ field == "apply",
@@ -4291,7 +4578,8 @@ fn post_alias_kotlin_lowering(__w: &mut KtWalker, expr: &Expression) -> Option<E
                     && args.len() == 2
                     && matches!(args[1].value.kind, ExprKind::Lambda { .. }) =>
             {
-                kotlin_receiver_scope_iife(__w, 
+                kotlin_receiver_scope_iife(
+                    __w,
                     args[0].value.clone(),
                     &args[1].value,
                     /*returns_receiver:*/ false,
@@ -4414,7 +4702,8 @@ fn kotlin_it_scope_iife(recv: Expression, lambda: Expression, kind: &str) -> Exp
 /// `x.apply { body }` / `x.run { body }` — RECEIVER lambdas: bare property
 /// reads/writes and bare method calls bind to the receiver, `this` IS the
 /// receiver. Lowered to an IIFE whose parameter takes the receiver's place.
-fn kotlin_receiver_scope_iife(__w: &mut KtWalker, 
+fn kotlin_receiver_scope_iife(
+    __w: &mut KtWalker,
     recv: Expression,
     lambda: &Expression,
     returns_receiver: bool,
@@ -4481,7 +4770,12 @@ fn kotlin_receiver_scope_iife(__w: &mut KtWalker,
 /// PROPERTY → `recv.prop`; a bare call of a source-declared METHOD →
 /// `recv.method(…)`. Everything else (locals, top-level functions) passes
 /// through untouched.
-fn kotlin_rewrite_receiver_refs_stmt(__w: &mut KtWalker, stmt: &mut Statement, recv: &str, skip: &HashSet<String>) {
+fn kotlin_rewrite_receiver_refs_stmt(
+    __w: &mut KtWalker,
+    stmt: &mut Statement,
+    recv: &str,
+    skip: &HashSet<String>,
+) {
     match &mut stmt.kind {
         StmtKind::Expr(e) | StmtKind::Return(Some(e)) | StmtKind::Throw { expr: Some(e), .. } => {
             kotlin_rewrite_receiver_refs_expr(__w, e, recv, skip)
@@ -4531,7 +4825,12 @@ fn kotlin_rewrite_receiver_refs_stmt(__w: &mut KtWalker, stmt: &mut Statement, r
     }
 }
 
-fn kotlin_rewrite_receiver_refs_expr(__w: &mut KtWalker, expr: &mut Expression, recv: &str, skip: &HashSet<String>) {
+fn kotlin_rewrite_receiver_refs_expr(
+    __w: &mut KtWalker,
+    expr: &mut Expression,
+    recv: &str,
+    skip: &HashSet<String>,
+) {
     match &mut expr.kind {
         ExprKind::This => {
             *expr = Expression::ident(recv);
@@ -5342,7 +5641,8 @@ fn kotlin_then_by_lambda(base: Expression, selector: Expression, descending: boo
     })
 }
 
-fn kotlin_generate_sequence_take(__w: &mut KtWalker, 
+fn kotlin_generate_sequence_take(
+    __w: &mut KtWalker,
     sequence: &Expression,
     take_count: &Expression,
 ) -> Option<Expression> {
@@ -5362,9 +5662,7 @@ fn kotlin_sequence_source(__w: &mut KtWalker, expr: &Expression) -> Option<Expre
 
 fn kotlin_is_sequence_expr(__w: &mut KtWalker, expr: &Expression) -> bool {
     match &expr.kind {
-        ExprKind::Ident(name) => {
-            __w.kotlin_sequence_sources.contains_key(name)
-        }
+        ExprKind::Ident(name) => __w.kotlin_sequence_sources.contains_key(name),
         ExprKind::Call { callee, .. } => matches!(
             &callee.kind,
             ExprKind::Ident(name)
@@ -5393,7 +5691,8 @@ fn kotlin_sequence_receiver_expr(__w: &mut KtWalker, expr: &Expression) -> Optio
     }
 }
 
-fn kotlin_sequence_receiver_expr_typed(__w: &mut KtWalker, 
+fn kotlin_sequence_receiver_expr_typed(
+    __w: &mut KtWalker,
     expr: &Expression,
     locals: &KotlinLocalTypes,
     operators: &KotlinOperatorTable,
@@ -5417,7 +5716,10 @@ fn kotlin_materialize_sequence_value(__w: &mut KtWalker, expr: Expression) -> Ex
     }
 }
 
-fn kotlin_materialize_sequence_lambda_result(__w: &mut KtWalker, lambda: &Expression) -> Expression {
+fn kotlin_materialize_sequence_lambda_result(
+    __w: &mut KtWalker,
+    lambda: &Expression,
+) -> Expression {
     let ExprKind::Lambda {
         params,
         body,
@@ -5428,7 +5730,8 @@ fn kotlin_materialize_sequence_lambda_result(__w: &mut KtWalker, lambda: &Expres
         return lambda.clone();
     };
     let body = match body {
-        LambdaBody::Expr(expr) => LambdaBody::Expr(Box::new(kotlin_materialize_sequence_value(__w, 
+        LambdaBody::Expr(expr) => LambdaBody::Expr(Box::new(kotlin_materialize_sequence_value(
+            __w,
             (**expr).clone(),
         ))),
         LambdaBody::Block(stmts) => {
@@ -5453,14 +5756,20 @@ fn kotlin_materialize_sequence_lambda_result(__w: &mut KtWalker, lambda: &Expres
     })
 }
 
-fn kotlin_collection_view_source(__w: &mut KtWalker, expr: &Expression) -> Option<(String, Expression)> {
+fn kotlin_collection_view_source(
+    __w: &mut KtWalker,
+    expr: &Expression,
+) -> Option<(String, Expression)> {
     let ExprKind::Ident(name) = &expr.kind else {
         return None;
     };
     __w.kotlin_collection_view_aliases.get(name).cloned()
 }
 
-fn kotlin_sublist_source(__w: &mut KtWalker, expr: &Expression) -> Option<(Expression, Expression, Expression)> {
+fn kotlin_sublist_source(
+    __w: &mut KtWalker,
+    expr: &Expression,
+) -> Option<(Expression, Expression, Expression)> {
     let ExprKind::Ident(name) = &expr.kind else {
         return None;
     };
@@ -5620,7 +5929,8 @@ fn kotlin_is_sequence_source(__w: &mut KtWalker, expr: &Expression) -> bool {
     kotlin_is_sequence_expr(__w, expr)
 }
 
-fn kotlin_generate_sequence_take_while(__w: &mut KtWalker, 
+fn kotlin_generate_sequence_take_while(
+    __w: &mut KtWalker,
     sequence: &Expression,
     predicate: &Expression,
 ) -> Option<Expression> {
@@ -5646,7 +5956,8 @@ enum KotlinSeqValue {
     Null,
 }
 
-fn kotlin_materialize_generate_sequence(__w: &mut KtWalker, 
+fn kotlin_materialize_generate_sequence(
+    __w: &mut KtWalker,
     sequence: &Expression,
     limit: Option<usize>,
 ) -> Option<Expression> {
@@ -5658,7 +5969,8 @@ fn kotlin_materialize_generate_sequence(__w: &mut KtWalker,
     Some(kotlin_array_expr(values))
 }
 
-fn kotlin_generate_sequence_values(__w: &mut KtWalker, 
+fn kotlin_generate_sequence_values(
+    __w: &mut KtWalker,
     sequence: &Expression,
     limit: Option<usize>,
     allow_infinite_prefix: bool,
@@ -5709,7 +6021,11 @@ fn kotlin_array_expr(values: Vec<Expression>) -> Expression {
     ))
 }
 
-fn kotlin_pack_secondary_constructor_delegations(__w: &mut KtWalker, class_name: &str, members: &mut [ClassMember]) {
+fn kotlin_pack_secondary_constructor_delegations(
+    __w: &mut KtWalker,
+    class_name: &str,
+    members: &mut [ClassMember],
+) {
     for member in members {
         let ClassMember::Constructor {
             base_args: Some(args),
@@ -5722,9 +6038,14 @@ fn kotlin_pack_secondary_constructor_delegations(__w: &mut KtWalker, class_name:
         if *initializer_target != ConstructorInitializerTarget::This {
             continue;
         }
-        *args = kotlin_pack_constructor_vararg_args(__w,
+        *args = kotlin_pack_constructor_vararg_args(
+            __w,
             class_name,
-            &args.iter().cloned().map(Argument::positional).collect::<Vec<_>>(),
+            &args
+                .iter()
+                .cloned()
+                .map(Argument::positional)
+                .collect::<Vec<_>>(),
         )
         .into_iter()
         .map(|arg| arg.value)
@@ -5829,7 +6150,7 @@ fn kotlin_static_array_items(__w: &mut KtWalker, expr: &Expression) -> Option<Ve
         ExprKind::Ident(name) => {
             let value = __w.kotlin_static_values.get(name).cloned()?;
             kotlin_static_array_items(__w, &value)
-        },
+        }
         ExprKind::Array(items) => Some(items.iter().map(|item| item.value.clone()).collect()),
         ExprKind::Range {
             start,
@@ -6085,7 +6406,8 @@ fn kotlin_sum_static_items(items: &[Expression]) -> Option<Expression> {
     Some(Expression::int(sum))
 }
 
-fn kotlin_eval_sequence_lambda(__w: &mut KtWalker, 
+fn kotlin_eval_sequence_lambda(
+    __w: &mut KtWalker,
     body: &LambdaBody,
     param: &str,
     current: &KotlinSeqValue,
@@ -6096,7 +6418,8 @@ fn kotlin_eval_sequence_lambda(__w: &mut KtWalker,
     }
 }
 
-fn kotlin_eval_sequence_stmts(__w: &mut KtWalker, 
+fn kotlin_eval_sequence_stmts(
+    __w: &mut KtWalker,
     stmts: &[Statement],
     param: &str,
     current: &KotlinSeqValue,
@@ -6129,7 +6452,8 @@ fn kotlin_eval_sequence_stmts(__w: &mut KtWalker,
     }
 }
 
-fn kotlin_eval_sequence_bool_from_value(__w: &mut KtWalker, 
+fn kotlin_eval_sequence_bool_from_value(
+    __w: &mut KtWalker,
     body: &LambdaBody,
     param: &str,
     current: &KotlinSeqValue,
@@ -6165,7 +6489,8 @@ fn kotlin_seq_value_expr(value: &KotlinSeqValue) -> Option<Expression> {
     }
 }
 
-fn kotlin_eval_sequence_expr(__w: &mut KtWalker, 
+fn kotlin_eval_sequence_expr(
+    __w: &mut KtWalker,
     expr: &Expression,
     param: &str,
     current: &KotlinSeqValue,
@@ -6226,7 +6551,8 @@ fn kotlin_eval_sequence_expr(__w: &mut KtWalker,
     }
 }
 
-fn kotlin_eval_sequence_bool(__w: &mut KtWalker, 
+fn kotlin_eval_sequence_bool(
+    __w: &mut KtWalker,
     expr: &Expression,
     param: &str,
     current: &KotlinSeqValue,
@@ -6249,7 +6575,8 @@ fn kotlin_eval_sequence_bool(__w: &mut KtWalker,
     }
 }
 
-fn kotlin_eval_sequence_comparable(__w: &mut KtWalker, 
+fn kotlin_eval_sequence_comparable(
+    __w: &mut KtWalker,
     expr: &Expression,
     param: &str,
     current: &KotlinSeqValue,
@@ -6401,7 +6728,8 @@ fn collect_kotlin_operator_table(stmts: &[Statement]) -> KotlinOperatorTable {
     out
 }
 
-fn normalize_kotlin_operator_stmts(__w: &mut KtWalker, 
+fn normalize_kotlin_operator_stmts(
+    __w: &mut KtWalker,
     stmts: &mut [Statement],
     operators: &KotlinOperatorTable,
     locals: &mut KotlinLocalTypes,
@@ -7107,7 +7435,8 @@ fn collect_kotlin_free_locals_in_expr(
     }
 }
 
-fn normalize_kotlin_operator_stmt(__w: &mut KtWalker, 
+fn normalize_kotlin_operator_stmt(
+    __w: &mut KtWalker,
     stmt: &mut Statement,
     operators: &KotlinOperatorTable,
     locals: &mut KotlinLocalTypes,
@@ -7199,10 +7528,7 @@ fn normalize_kotlin_operator_stmt(__w: &mut KtWalker,
                 // Type from the PRE-normalize init: rewrites erase the
                 // spelling (`FloatArray(2)` becomes `__kt_array_init(2)`),
                 // and the element type drives Double rendering.
-                let duration_init = decl
-                    .init
-                    .as_ref()
-                    .is_some_and(kotlin_expr_is_duration_init);
+                let duration_init = decl.init.as_ref().is_some_and(kotlin_expr_is_duration_init);
                 let pre_normalize_ty = decl
                     .init
                     .as_ref()
@@ -7210,7 +7536,9 @@ fn normalize_kotlin_operator_stmt(__w: &mut KtWalker,
                 if let Some(init) = &mut decl.init {
                     normalize_kotlin_operator_expr(__w, init, operators, locals);
                     let original_init = init.clone();
-                    if let Some(materialized) = kotlin_materialize_generate_sequence(__w, init, None) {
+                    if let Some(materialized) =
+                        kotlin_materialize_generate_sequence(__w, init, None)
+                    {
                         *init = materialized;
                         if let BindingPattern::Ident(name) = &decl.pattern {
                             {
@@ -7220,15 +7548,18 @@ fn normalize_kotlin_operator_stmt(__w: &mut KtWalker,
                     } else if let BindingPattern::Ident(name) = &decl.pattern {
                         if kotlin_is_sequence_source(__w, &original_init) {
                             {
-                                __w.kotlin_sequence_sources.insert(name.clone(), original_init);
+                                __w.kotlin_sequence_sources
+                                    .insert(name.clone(), original_init);
                             };
                         }
                         if let Some(params) = kotlin_expr_function_signature(__w, init) {
                             {
-                                __w.kotlin_function_signature_locals.insert(name.clone(), params.clone());
+                                __w.kotlin_function_signature_locals
+                                    .insert(name.clone(), params.clone());
                             };
                             {
-                                __w.kotlin_function_arity_locals.insert(name.clone(), params.len());
+                                __w.kotlin_function_arity_locals
+                                    .insert(name.clone(), params.len());
                             };
                         } else if let Some(arity) = kotlin_expr_function_arity(__w, init) {
                             {
@@ -7245,20 +7576,23 @@ fn normalize_kotlin_operator_stmt(__w: &mut KtWalker,
                             && kotlin_type_is_array_family(__w, pre_ty)
                         {
                             {
-                                __w.kotlin_array_family_locals.insert(name.clone(), pre_ty.clone());
+                                __w.kotlin_array_family_locals
+                                    .insert(name.clone(), pre_ty.clone());
                             };
                         }
                         if let Some(pre_ty) = &pre_normalize_ty {
                             let leaf = type_hint_text(__w, pre_ty);
                             if matches!(leaf.as_str(), "List" | "MutableList") {
                                 {
-                                    __w.kotlin_keyed_collection_types.insert(name.clone(), pre_ty.clone());
+                                    __w.kotlin_keyed_collection_types
+                                        .insert(name.clone(), pre_ty.clone());
                                 };
                             }
                         }
                         if let Some(view) = kotlin_view_alias_from_init(init) {
                             {
-                                __w.kotlin_collection_view_aliases.insert(name.clone(), view);
+                                __w.kotlin_collection_view_aliases
+                                    .insert(name.clone(), view);
                             };
                         }
                         if let Some(view) = kotlin_sublist_alias_from_init(init) {
@@ -7268,7 +7602,8 @@ fn normalize_kotlin_operator_stmt(__w: &mut KtWalker,
                         }
                         if let Some(source) = kotlin_reversed_view_from_init(init) {
                             {
-                                __w.kotlin_reversed_view_aliases.insert(name.clone(), source.clone());
+                                __w.kotlin_reversed_view_aliases
+                                    .insert(name.clone(), source.clone());
                             };
                             *init = source;
                         }
@@ -7287,11 +7622,17 @@ fn normalize_kotlin_operator_stmt(__w: &mut KtWalker,
                         if let Some(ty) = kotlin_expr_type(__w, init, locals, operators) {
                             if matches!(
                                 kotlin_type_leaf(&ty),
-                                "Thread" | "AtomicInteger" | "AtomicLong" | "AtomicBoolean"
-                                    | "AtomicReference" | "CountDownLatch" | "ThreadLocal"
+                                "Thread"
+                                    | "AtomicInteger"
+                                    | "AtomicLong"
+                                    | "AtomicBoolean"
+                                    | "AtomicReference"
+                                    | "CountDownLatch"
+                                    | "ThreadLocal"
                             ) {
                                 {
-                                    __w.kotlin_concurrency_locals.insert(name.clone(), ty.clone());
+                                    __w.kotlin_concurrency_locals
+                                        .insert(name.clone(), ty.clone());
                                 };
                             }
                         }
@@ -7303,16 +7644,13 @@ fn normalize_kotlin_operator_stmt(__w: &mut KtWalker,
                     }
                 }
                 if let BindingPattern::Ident(name) = &decl.pattern {
-                    let declared_shape =
-                        __w.kotlin_declared_type_shapes.get(name).cloned();
+                    let declared_shape = __w.kotlin_declared_type_shapes.get(name).cloned();
                     let init_ty_for_reflection = decl
                         .init
                         .as_ref()
                         .and_then(|e| kotlin_expr_type(__w, e, locals, operators));
                     let inferred = declared_shape
-                        .or_else(|| decl.type_hint
-                        .as_deref()
-                        .map(str::to_string))
+                        .or_else(|| decl.type_hint.as_deref().map(str::to_string))
                         .or_else(|| duration_init.then(|| "Duration".to_string()))
                         .or_else(|| {
                             init_ty_for_reflection
@@ -7330,28 +7668,32 @@ fn normalize_kotlin_operator_stmt(__w: &mut KtWalker,
                             .as_deref()
                             .is_some_and(kotlin_type_is_function_like);
                         let companion_callable_owner = if declared_is_function {
-                            decl.init.as_ref().and_then(|__x| kotlin_companion_owner_expr(__w, __x))
+                            decl.init
+                                .as_ref()
+                                .and_then(|__x| kotlin_companion_owner_expr(__w, __x))
                         } else {
                             None
                         };
                         let local_ty = if let Some(owner) = companion_callable_owner {
                             format!("__kt_companion_callable:{owner}")
-                        } else if let Some(params) =
-                            decl.init.as_ref().and_then(|__x| kotlin_expr_function_signature(__w, __x))
+                        } else if let Some(params) = decl
+                            .init
+                            .as_ref()
+                            .and_then(|__x| kotlin_expr_function_signature(__w, __x))
                         {
                             format!("__kt_function_sig:{}:{}", params.len(), params.join(","))
-                        } else if let Some(arity) =
-                            decl.init.as_ref().and_then(|__x| kotlin_expr_function_arity(__w, __x))
+                        } else if let Some(arity) = decl
+                            .init
+                            .as_ref()
+                            .and_then(|__x| kotlin_expr_function_arity(__w, __x))
                         {
                             format!("__kt_function_arity:{arity}")
                         } else if declared_is_function
-                            && init_ty_for_reflection
-                                .as_ref()
-                                .is_some_and(|init_ty| {
-                                    operators
-                                        .get(init_ty)
-                                        .is_some_and(|info| info.has("invoke"))
-                                })
+                            && init_ty_for_reflection.as_ref().is_some_and(|init_ty| {
+                                operators
+                                    .get(init_ty)
+                                    .is_some_and(|info| info.has("invoke"))
+                            })
                         {
                             init_ty_for_reflection.unwrap_or_else(|| ty.clone())
                         } else if ty.trim().trim_end_matches('?') == "Any" {
@@ -7365,7 +7707,8 @@ fn normalize_kotlin_operator_stmt(__w: &mut KtWalker,
                         locals.insert(name.clone(), local_ty);
                     }
                     if let Some(init) = &decl.init
-                        && (kotlin_class_token_name(init).is_some() || kotlin_is_class_of_call(init))
+                        && (kotlin_class_token_name(init).is_some()
+                            || kotlin_is_class_of_call(init))
                     {
                         {
                             __w.kotlin_static_values.insert(name.clone(), init.clone());
@@ -7469,7 +7812,8 @@ fn normalize_kotlin_operator_stmt(__w: &mut KtWalker,
                                                 if class_props.contains(n.as_str())
                                                     && !shadowed.contains(n.as_str())
                                                     && !{
-                                                        __w.kotlin_top_fn_params.contains_key(n.as_str())
+                                                        __w.kotlin_top_fn_params
+                                                            .contains_key(n.as_str())
                                                     } =>
                                             {
                                                 Some(n.clone())
@@ -7669,7 +8013,12 @@ fn normalize_kotlin_operator_stmt(__w: &mut KtWalker,
                         }
                     }
                 }
-                normalize_kotlin_operator_stmts(__w, &mut case.body, operators, &mut locals.clone());
+                normalize_kotlin_operator_stmts(
+                    __w,
+                    &mut case.body,
+                    operators,
+                    &mut locals.clone(),
+                );
             }
             if let Some(default) = default {
                 normalize_kotlin_operator_stmts(__w, default, operators, &mut locals.clone());
@@ -7686,7 +8035,12 @@ fn normalize_kotlin_operator_stmt(__w: &mut KtWalker,
                 if let Some(when_clause) = &mut catch.when_clause {
                     normalize_kotlin_operator_expr(__w, when_clause, operators, locals);
                 }
-                normalize_kotlin_operator_stmts(__w, &mut catch.body, operators, &mut locals.clone());
+                normalize_kotlin_operator_stmts(
+                    __w,
+                    &mut catch.body,
+                    operators,
+                    &mut locals.clone(),
+                );
             }
             if let Some(else_body) = else_body {
                 normalize_kotlin_operator_stmts(__w, else_body, operators, &mut locals.clone());
@@ -7708,7 +8062,8 @@ fn normalize_kotlin_operator_stmt(__w: &mut KtWalker,
 // then wrapped that Member again, giving `result.value()()`. The AST dump named
 // it immediately; reading the two arms did not, because neither is wrong alone.
 
-fn normalize_kotlin_operator_expr(__w: &mut KtWalker, 
+fn normalize_kotlin_operator_expr(
+    __w: &mut KtWalker,
     expr: &mut Expression,
     operators: &KotlinOperatorTable,
     locals: &KotlinLocalTypes,
@@ -7828,7 +8183,10 @@ fn normalize_kotlin_operator_expr(__w: &mut KtWalker,
             if let Some(path) = dotted_expr_path(object)
                 && let Some(kind) = kotlin_delegated_collection_kind(__w, &path)
                 && let Some(delegate_field) = kotlin_delegated_collection_field(__w, &path)
-                && matches!(kind.rsplit('.').next().unwrap_or(&kind), "Map" | "MutableMap")
+                && matches!(
+                    kind.rsplit('.').next().unwrap_or(&kind),
+                    "Map" | "MutableMap"
+                )
             {
                 *expr = Expression::new(ExprKind::Call {
                     callee: Box::new(Expression::ident("__dict_get")),
@@ -7845,7 +8203,8 @@ fn normalize_kotlin_operator_expr(__w: &mut KtWalker,
                 return;
             }
             // `sb[i]` — a StringBuilder indexes its BUFFER, not its properties.
-            if kotlin_expr_type(__w, object, locals, operators).as_deref() == Some("StringBuilder") {
+            if kotlin_expr_type(__w, object, locals, operators).as_deref() == Some("StringBuilder")
+            {
                 *expr = Expression::new(ExprKind::Call {
                     callee: Box::new(Expression::new(ExprKind::Member {
                         object: object.clone(),
@@ -7913,7 +8272,8 @@ fn normalize_kotlin_operator_expr(__w: &mut KtWalker,
             }
             if let ExprKind::Member { object, field, .. } = &expr.kind
                 && field == "next"
-                && let Some(index) = kotlin_data_class_property_index(__w, object, field, locals, operators)
+                && let Some(index) =
+                    kotlin_data_class_property_index(__w, object, field, locals, operators)
             {
                 *expr = Expression::new(ExprKind::Index {
                     object: object.clone(),
@@ -7982,7 +8342,8 @@ fn normalize_kotlin_operator_expr(__w: &mut KtWalker,
                     ..
                 } = &java_object.kind
                 && java_field == "java"
-                && let Some(class_name) = kotlin_class_token_name_with_locals(__w, class_object, locals)
+                && let Some(class_name) =
+                    kotlin_class_token_name_with_locals(__w, class_object, locals)
             {
                 let (simple, _) = kotlin_class_names(__w, &class_name);
                 *expr = Expression::string(&format!(
@@ -8127,7 +8488,8 @@ fn normalize_kotlin_operator_expr(__w: &mut KtWalker,
                 // slot when the STATIC type is the shadowing class (a cast
                 // to the base keeps the base's).
                 if let Some(ty) = kotlin_expr_type(__w, obj2, locals, operators)
-                    && let Some(mangled) = __w.kotlin_shadowed_props.get(&(ty, field.clone())).cloned()
+                    && let Some(mangled) =
+                        __w.kotlin_shadowed_props.get(&(ty, field.clone())).cloned()
                 {
                     let object = (**obj2).clone();
                     *expr = Expression::new(ExprKind::Member {
@@ -8226,8 +8588,7 @@ fn normalize_kotlin_operator_expr(__w: &mut KtWalker,
                     )) = vybe_compiler::primitives::namespaces::resolve_path(
                         &segments,
                         kotlin_tree_fold(),
-                    )
-                    {
+                    ) {
                         use vybe_runtime::Value;
                         let lit = match value {
                             Value::String(s) => Some(Literal::Str(s.to_string().into())),
@@ -8315,7 +8676,10 @@ fn normalize_kotlin_operator_expr(__w: &mut KtWalker,
                 return;
             }
             if let Some(path) = dotted_expr_path(callee)
-                && matches!(path.as_str(), "kotlin.concurrent.thread" | "concurrent.thread")
+                && matches!(
+                    path.as_str(),
+                    "kotlin.concurrent.thread" | "concurrent.thread"
+                )
             {
                 for arg in args.iter_mut() {
                     normalize_kotlin_operator_expr(__w, &mut arg.value, operators, locals);
@@ -8677,49 +9041,41 @@ fn normalize_kotlin_operator_expr(__w: &mut KtWalker,
             for arg in &mut *args {
                 normalize_kotlin_operator_expr(__w, &mut arg.value, operators, locals);
             }
-            let array_init_captures =
-                if matches!(&callee.kind, ExprKind::Ident(name) if name == "__kt_array_init")
-                    && args.len() >= 2
-                {
-                    if let ExprKind::Lambda {
-                        params,
-                        body,
-                        ..
-                    } = &mut args[1].value.kind
-                    {
-                        let mut bound: HashSet<String> =
-                            params.iter().map(|p| p.name.clone()).collect();
-                        let mut free = HashSet::new();
-                        match body {
-                            LambdaBody::Expr(expr) => {
-                                collect_kotlin_free_locals_in_expr(expr, locals, &bound, &mut free);
-                            }
-                            LambdaBody::Block(stmts) => {
-                                collect_kotlin_free_locals_in_stmts(
-                                    stmts, locals, &mut bound, &mut free,
-                                );
-                            }
+            let array_init_captures = if matches!(&callee.kind, ExprKind::Ident(name) if name == "__kt_array_init")
+                && args.len() >= 2
+            {
+                if let ExprKind::Lambda { params, body, .. } = &mut args[1].value.kind {
+                    let mut bound: HashSet<String> =
+                        params.iter().map(|p| p.name.clone()).collect();
+                    let mut free = HashSet::new();
+                    match body {
+                        LambdaBody::Expr(expr) => {
+                            collect_kotlin_free_locals_in_expr(expr, locals, &bound, &mut free);
                         }
-                        if free.is_empty() {
-                            None
-                        } else {
-                            let mut names: Vec<String> = free.into_iter().collect();
-                            names.sort();
-                            for name in &names {
-                                if !params.iter().any(|param| param.name == *name) {
-                                    params.push(
-                                        kotlin_local_capture_params(&[name.clone()]).remove(0),
-                                    );
-                                }
-                            }
-                            Some(names)
+                        LambdaBody::Block(stmts) => {
+                            collect_kotlin_free_locals_in_stmts(
+                                stmts, locals, &mut bound, &mut free,
+                            );
                         }
-                    } else {
+                    }
+                    if free.is_empty() {
                         None
+                    } else {
+                        let mut names: Vec<String> = free.into_iter().collect();
+                        names.sort();
+                        for name in &names {
+                            if !params.iter().any(|param| param.name == *name) {
+                                params.push(kotlin_local_capture_params(&[name.clone()]).remove(0));
+                            }
+                        }
+                        Some(names)
                     }
                 } else {
                     None
-                };
+                }
+            } else {
+                None
+            };
             if let Some(names) = array_init_captures {
                 args.extend(
                     names
@@ -8743,7 +9099,8 @@ fn normalize_kotlin_operator_expr(__w: &mut KtWalker,
                 }
                 if field == "take"
                     && args.len() == 1
-                    && let Some(seq) = kotlin_sequence_receiver_expr_typed(__w, object, locals, operators)
+                    && let Some(seq) =
+                        kotlin_sequence_receiver_expr_typed(__w, object, locals, operators)
                 {
                     *expr = Expression::new(ExprKind::Call {
                         callee: Box::new(Expression::ident("__kt_seq_take")),
@@ -8754,7 +9111,8 @@ fn normalize_kotlin_operator_expr(__w: &mut KtWalker,
                 }
                 if field == "joinToString"
                     && (args.is_empty() || args.len() == 1)
-                    && let Some(seq) = kotlin_sequence_receiver_expr_typed(__w, object, locals, operators)
+                    && let Some(seq) =
+                        kotlin_sequence_receiver_expr_typed(__w, object, locals, operators)
                 {
                     let sep = args
                         .first()
@@ -8823,7 +9181,8 @@ fn normalize_kotlin_operator_expr(__w: &mut KtWalker,
                 match name.as_str() {
                     "__coll_slice"
                         if args.len() == 3
-                            && kotlin_sequence_receiver_expr_typed(__w, 
+                            && kotlin_sequence_receiver_expr_typed(
+                                __w,
                                 &args[0].value,
                                 locals,
                                 operators,
@@ -8843,7 +9202,8 @@ fn normalize_kotlin_operator_expr(__w: &mut KtWalker,
                     }
                     "__coll_slice"
                         if args.len() == 3
-                            && kotlin_sequence_receiver_expr_typed(__w, 
+                            && kotlin_sequence_receiver_expr_typed(
+                                __w,
                                 &args[0].value,
                                 locals,
                                 operators,
@@ -8858,7 +9218,8 @@ fn normalize_kotlin_operator_expr(__w: &mut KtWalker,
                     }
                     "__kt_map_entry_list"
                         if args.len() == 1
-                            && kotlin_sequence_receiver_expr_typed(__w, 
+                            && kotlin_sequence_receiver_expr_typed(
+                                __w,
                                 &args[0].value,
                                 locals,
                                 operators,
@@ -8874,7 +9235,8 @@ fn normalize_kotlin_operator_expr(__w: &mut KtWalker,
                     }
                     "__coll_join"
                         if args.len() >= 2
-                            && kotlin_sequence_receiver_expr_typed(__w, 
+                            && kotlin_sequence_receiver_expr_typed(
+                                __w,
                                 &args[0].value,
                                 locals,
                                 operators,
@@ -8889,7 +9251,8 @@ fn normalize_kotlin_operator_expr(__w: &mut KtWalker,
                     }
                     "__kt_map_hof"
                         if args.len() == 2
-                            && kotlin_sequence_receiver_expr_typed(__w, 
+                            && kotlin_sequence_receiver_expr_typed(
+                                __w,
                                 &args[0].value,
                                 locals,
                                 operators,
@@ -8905,7 +9268,8 @@ fn normalize_kotlin_operator_expr(__w: &mut KtWalker,
                     }
                     "__kt_first" | "__kt_first_or_null"
                         if args.len() == 1
-                            && kotlin_sequence_receiver_expr_typed(__w, 
+                            && kotlin_sequence_receiver_expr_typed(
+                                __w,
                                 &args[0].value,
                                 locals,
                                 operators,
@@ -8937,7 +9301,8 @@ fn normalize_kotlin_operator_expr(__w: &mut KtWalker,
                     | "__coll_reverse" | "__coll_length" | "__kt_last" | "__kt_last_or_null"
                     | "__kt_find" | "__kt_find_last"
                         if !args.is_empty()
-                            && kotlin_sequence_receiver_expr_typed(__w, 
+                            && kotlin_sequence_receiver_expr_typed(
+                                __w,
                                 &args[0].value,
                                 locals,
                                 operators,
@@ -8956,7 +9321,8 @@ fn normalize_kotlin_operator_expr(__w: &mut KtWalker,
             if let ExprKind::Member { object, field, .. } = &callee.kind
                 && field == "zip"
                 && (args.len() == 1 || args.len() == 2)
-                && let Some(seq) = kotlin_sequence_receiver_expr_typed(__w, object, locals, operators)
+                && let Some(seq) =
+                    kotlin_sequence_receiver_expr_typed(__w, object, locals, operators)
             {
                 let mut call_args = vec![Argument::positional(seq)];
                 call_args.extend(args.clone());
@@ -9003,7 +9369,8 @@ fn normalize_kotlin_operator_expr(__w: &mut KtWalker,
             if let ExprKind::Member { object, field, .. } = &callee.kind
                 && field == "takeWhile"
                 && args.len() == 1
-                && let Some(seq) = kotlin_sequence_receiver_expr_typed(__w, object, locals, operators)
+                && let Some(seq) =
+                    kotlin_sequence_receiver_expr_typed(__w, object, locals, operators)
             {
                 *expr = Expression::new(ExprKind::Call {
                     callee: Box::new(Expression::ident("__kt_seq_take_while")),
@@ -9019,7 +9386,8 @@ fn normalize_kotlin_operator_expr(__w: &mut KtWalker,
                     ("removeAt", 1) => {
                         if let ExprKind::Ident(alias) = &object.kind {
                             {
-                                if let Some((_, _, end)) = __w.kotlin_sublist_aliases.get_mut(alias) {
+                                if let Some((_, _, end)) = __w.kotlin_sublist_aliases.get_mut(alias)
+                                {
                                     *end = Expression::new(ExprKind::Binary {
                                         op: BinOp::Sub,
                                         left: Box::new(end.clone()),
@@ -9044,7 +9412,9 @@ fn normalize_kotlin_operator_expr(__w: &mut KtWalker,
                     ("clear", 0) => {
                         if let ExprKind::Ident(alias) = &object.kind {
                             {
-                                if let Some((_, start, end)) = __w.kotlin_sublist_aliases.get_mut(alias) {
+                                if let Some((_, start, end)) =
+                                    __w.kotlin_sublist_aliases.get_mut(alias)
+                                {
                                     *end = start.clone();
                                 }
                             };
@@ -9273,7 +9643,8 @@ fn normalize_kotlin_operator_expr(__w: &mut KtWalker,
                     ("__coll_removeAt", 2) => {
                         if let ExprKind::Ident(alias) = &args[0].value.kind {
                             {
-                                if let Some((_, _, end)) = __w.kotlin_sublist_aliases.get_mut(alias) {
+                                if let Some((_, _, end)) = __w.kotlin_sublist_aliases.get_mut(alias)
+                                {
                                     *end = Expression::new(ExprKind::Binary {
                                         op: BinOp::Sub,
                                         left: Box::new(end.clone()),
@@ -9298,7 +9669,9 @@ fn normalize_kotlin_operator_expr(__w: &mut KtWalker,
                     ("__dict_clear", 1) => {
                         if let ExprKind::Ident(alias) = &args[0].value.kind {
                             {
-                                if let Some((_, start, end)) = __w.kotlin_sublist_aliases.get_mut(alias) {
+                                if let Some((_, start, end)) =
+                                    __w.kotlin_sublist_aliases.get_mut(alias)
+                                {
                                     *end = start.clone();
                                 }
                             };
@@ -9584,12 +9957,14 @@ fn normalize_kotlin_operator_expr(__w: &mut KtWalker,
                 && is_user_class_name(__w, name)
             {
                 let normalized_args = kotlin_normalized_constructor_args(__w, name, args);
-                *expr = kotlin_user_constructor_call(__w, name, &normalized_args).unwrap_or_else(|| {
-                    Expression::new(ExprKind::New {
-                        class: Box::new(Expression::ident(name)),
-                        args: normalized_args,
-                    })
-                });
+                *expr = kotlin_user_constructor_call(__w, name, &normalized_args).unwrap_or_else(
+                    || {
+                        Expression::new(ExprKind::New {
+                            class: Box::new(Expression::ident(name)),
+                            args: normalized_args,
+                        })
+                    },
+                );
                 return;
             }
             if args.is_empty()
@@ -10172,7 +10547,8 @@ fn normalize_kotlin_operator_expr(__w: &mut KtWalker,
                         )
                         && recv_args.len() == 1
                         && matches!(
-                            kotlin_expr_type(__w, &recv_args[0].value, locals, operators).as_deref(),
+                            kotlin_expr_type(__w, &recv_args[0].value, locals, operators)
+                                .as_deref(),
                             Some("Duration") | Some("kotlin.time.Duration")
                         )
                     {
@@ -10568,10 +10944,7 @@ fn normalize_kotlin_operator_expr(__w: &mut KtWalker,
                     && kotlin_is_builtin_exception_name(leaf)
                 {
                     *expr = Expression::new(ExprKind::Call {
-                        callee: Box::new(Expression::ident(&format!(
-                            "{path}$arity{}",
-                            args.len()
-                        ))),
+                        callee: Box::new(Expression::ident(&format!("{path}$arity{}", args.len()))),
                         args: args.clone(),
                         optional: false,
                     });
@@ -10703,9 +11076,11 @@ fn normalize_kotlin_operator_expr(__w: &mut KtWalker,
             normalize_kotlin_operator_expr(__w, start, operators, locals);
             normalize_kotlin_operator_expr(__w, end, operators, locals);
         }
-        ExprKind::IsType { expr: subject, type_name }
-            if type_name.starts_with("__kt_function_arity:")
-                || type_name.starts_with("__kt_function_sig:") =>
+        ExprKind::IsType {
+            expr: subject,
+            type_name,
+        } if type_name.starts_with("__kt_function_arity:")
+            || type_name.starts_with("__kt_function_sig:") =>
         {
             normalize_kotlin_operator_expr(__w, subject, operators, locals);
             let want_sig = kotlin_function_type_param_names(__w, type_name);
@@ -10750,7 +11125,10 @@ fn normalize_kotlin_operator_expr(__w: &mut KtWalker,
                 }
             }
         }
-        ExprKind::IsType { expr: subject, type_name } => {
+        ExprKind::IsType {
+            expr: subject,
+            type_name,
+        } => {
             normalize_kotlin_operator_expr(__w, subject, operators, locals);
             let bare = type_hint_text(__w, type_name)
                 .to_lowercase()
@@ -10763,7 +11141,9 @@ fn normalize_kotlin_operator_expr(__w: &mut KtWalker,
             if matches!(bare.as_str(), "__kt_list" | "__kt_mutablelist")
                 && {
                     let subject_ty = kotlin_expr_type(__w, subject, locals, operators);
-                    subject_ty.as_deref().is_some_and(|__x| kotlin_type_is_array_family(__w, __x))
+                    subject_ty
+                        .as_deref()
+                        .is_some_and(|__x| kotlin_type_is_array_family(__w, __x))
                         || matches!(
                             &subject.kind,
                             ExprKind::Ident(name)
@@ -10787,11 +11167,7 @@ fn normalize_kotlin_operator_expr(__w: &mut KtWalker,
                 *type_name = "array".to_string();
             }
         }
-        ExprKind::Lambda {
-            params,
-            body,
-            ..
-        } => {
+        ExprKind::Lambda { params, body, .. } => {
             let mut lambda_locals = locals.clone();
             for param in params.iter_mut() {
                 if let Some(ty) = &param.type_hint {
@@ -10820,7 +11196,8 @@ fn normalize_kotlin_operator_expr(__w: &mut KtWalker,
     }
 }
 
-fn kotlin_operator_rewrite(__w: &mut KtWalker, 
+fn kotlin_operator_rewrite(
+    __w: &mut KtWalker,
     expr: &Expression,
     operators: &KotlinOperatorTable,
     locals: &KotlinLocalTypes,
@@ -10994,7 +11371,8 @@ fn kotlin_operator_rewrite(__w: &mut KtWalker,
             // the Int bit op — the shared BitXor answered `1`, not `true`.
             if *op == BinOp::BitXor
                 && (kotlin_expr_type(__w, left, locals, operators).as_deref() == Some("Boolean")
-                    || kotlin_expr_type(__w, right, locals, operators).as_deref() == Some("Boolean"))
+                    || kotlin_expr_type(__w, right, locals, operators).as_deref()
+                        == Some("Boolean"))
             {
                 return Some(Expression::new(ExprKind::Binary {
                     op: BinOp::NotEq,
@@ -11316,7 +11694,9 @@ fn kotlin_operator_rewrite(__w: &mut KtWalker,
                     }));
                 }
                 // `sb[i] = c` — StringBuilder index writes are `setCharAt`.
-                if kotlin_expr_type(__w, object, locals, operators).as_deref() == Some("StringBuilder") {
+                if kotlin_expr_type(__w, object, locals, operators).as_deref()
+                    == Some("StringBuilder")
+                {
                     return Some(Expression::new(ExprKind::Call {
                         callee: Box::new(Expression::new(ExprKind::Member {
                             object: object.clone(),
@@ -11749,7 +12129,8 @@ fn kotlin_operator_rewrite(__w: &mut KtWalker,
                 && matches!(name.as_str(), "__kt_step_asc" | "__kt_step_desc")
                 && args.iter().any(|a| {
                     matches!(a.value.kind, ExprKind::Lit(Literal::BigInt(_)))
-                        || kotlin_expr_type(__w, &a.value, locals, operators).as_deref() == Some("Long")
+                        || kotlin_expr_type(__w, &a.value, locals, operators).as_deref()
+                            == Some("Long")
                 })
             {
                 let demoted = args
@@ -11786,9 +12167,7 @@ fn kotlin_operator_rewrite(__w: &mut KtWalker,
                 && operators.get(&ty).is_some_and(|info| info.has("invoke"))
             {
                 let field = overloaded_storage_name_for_args(__w, "invoke", args.len(), args)
-                    .unwrap_or_else(|| {
-                        vybe_ast::protocol_slot_key(vybe_ast::ProtocolSlot::Call)
-                    });
+                    .unwrap_or_else(|| vybe_ast::protocol_slot_key(vybe_ast::ProtocolSlot::Call));
                 return Some(Expression::new(ExprKind::Call {
                     callee: Box::new(Expression::new(ExprKind::Member {
                         object: callee.clone(),
@@ -11800,8 +12179,11 @@ fn kotlin_operator_rewrite(__w: &mut KtWalker,
                 }));
             }
             if !matches!(callee.kind, ExprKind::Member { .. })
-                && let Some(owner) = kotlin_expr_type(__w, callee, locals, operators)
-                    .and_then(|ty| ty.strip_prefix("__kt_companion_callable:").map(str::to_string))
+                && let Some(owner) =
+                    kotlin_expr_type(__w, callee, locals, operators).and_then(|ty| {
+                        ty.strip_prefix("__kt_companion_callable:")
+                            .map(str::to_string)
+                    })
             {
                 return Some(Expression::new(ExprKind::Call {
                     callee: Box::new(Expression::new(ExprKind::Member {
@@ -11872,7 +12254,9 @@ fn kotlin_operator_rewrite(__w: &mut KtWalker,
             // call taking the class object as its receiver.
             if let ExprKind::Member { object, field, .. } = &callee.kind
                 && let ExprKind::Ident(class) = &object.kind
-                && __w.companion_ext_fns.contains(&(class.clone(), field.clone()))
+                && __w
+                    .companion_ext_fns
+                    .contains(&(class.clone(), field.clone()))
             {
                 let mut new_args = vec![Argument::positional((**object).clone())];
                 new_args.extend(args.iter().cloned());
@@ -11993,7 +12377,8 @@ fn kotlin_operator_rewrite(__w: &mut KtWalker,
                     .as_deref()
                     .is_some_and(kotlin_type_is_result)
             {
-                return kotlin_operator_rewrite(__w, 
+                return kotlin_operator_rewrite(
+                    __w,
                     &Expression::new(ExprKind::Call {
                         callee: Box::new(Expression::new(ExprKind::Member {
                             object: Box::new(args[0].value.clone()),
@@ -12240,7 +12625,8 @@ fn kotlin_operator_rewrite(__w: &mut KtWalker,
                 // `toString()` on a kotlin.time Duration formats components.
                 if field == "toString"
                     && args.is_empty()
-                    && kotlin_expr_type(__w, object, locals, operators).as_deref() == Some("Duration")
+                    && kotlin_expr_type(__w, object, locals, operators).as_deref()
+                        == Some("Duration")
                 {
                     return Some(Expression::new(ExprKind::Call {
                         callee: Box::new(Expression::ident("__kt_duration_str")),
@@ -12602,7 +12988,8 @@ fn kotlin_generated_dict_items_source(expr: &Expression) -> Option<Expression> {
     Some(cond_args[0].value.clone())
 }
 
-fn kotlin_data_class_property_index(__w: &mut KtWalker, 
+fn kotlin_data_class_property_index(
+    __w: &mut KtWalker,
     object: &Expression,
     field: &str,
     locals: &KotlinLocalTypes,
@@ -12779,7 +13166,8 @@ fn kotlin_tree_fold() -> vybe_compiler::primitives::namespaces::Fold {
     language_directives().callable_fold()
 }
 
-fn kotlin_expr_type(__w: &mut KtWalker, 
+fn kotlin_expr_type(
+    __w: &mut KtWalker,
     expr: &Expression,
     locals: &KotlinLocalTypes,
     operators: &KotlinOperatorTable,
@@ -12803,7 +13191,10 @@ fn kotlin_expr_type(__w: &mut KtWalker,
         ExprKind::Call { callee, .. } if matches!(&callee.kind, ExprKind::Ident(name) if name == "__kt_set_literal") => {
             Some("Set".to_string())
         }
-        ExprKind::Ident(name) => __w.kotlin_keyed_collection_types.get(name).cloned()
+        ExprKind::Ident(name) => __w
+            .kotlin_keyed_collection_types
+            .get(name)
+            .cloned()
             .or_else(|| __w.kotlin_array_family_locals.get(name).cloned())
             .or_else(|| __w.kotlin_concurrency_locals.get(name).cloned())
             .or_else(|| {
@@ -12893,8 +13284,7 @@ fn kotlin_expr_type(__w: &mut KtWalker,
                 return Some("Thread".to_string());
             }
             if let ExprKind::Ident(name) = &callee.kind
-                && let Some(shape) =
-                    __w.kotlin_function_return_shapes.get(name).cloned()
+                && let Some(shape) = __w.kotlin_function_return_shapes.get(name).cloned()
             {
                 return Some(shape);
             }
@@ -13038,9 +13428,7 @@ fn kotlin_expr_type(__w: &mut KtWalker,
                         "toPattern" => Some("java.util.regex.Pattern".to_string()),
                         "split" | "splitToSequence" => Some("Array".to_string()),
                         "pattern" => Some("String".to_string()),
-                        "matches" | "matchesAt" | "containsMatchIn" => {
-                            Some("Boolean".to_string())
-                        }
+                        "matches" | "matchesAt" | "containsMatchIn" => Some("Boolean".to_string()),
                         _ => None,
                     };
                 }
@@ -13065,12 +13453,13 @@ fn kotlin_expr_type(__w: &mut KtWalker,
                 // jvm platform says so), same resolver as dispatch.
                 if let Some(recv) = kotlin_expr_type(__w, object, locals, operators)
                     && (recv.starts_with("java.") || recv.starts_with("kotlin."))
-                    && let Some(ret) = vybe_compiler::primitives::namespaces::lookup_type_member_return(
-                        &["jvm".to_string(), "kotlin".to_string()],
-                        &recv,
-                        field,
-                        kotlin_tree_fold(),
-                    )
+                    && let Some(ret) =
+                        vybe_compiler::primitives::namespaces::lookup_type_member_return(
+                            &["jvm".to_string(), "kotlin".to_string()],
+                            &recv,
+                            field,
+                            kotlin_tree_fold(),
+                        )
                 {
                     return Some(ret);
                 }
@@ -13179,8 +13568,7 @@ fn kotlin_expr_type(__w: &mut KtWalker,
                 if matches!(
                     name.as_str(),
                     "__coll_get" | "__kt_get_throwing" | "__dict_get"
-                )
-                    && let ExprKind::Call { args, .. } = &expr.kind
+                ) && let ExprKind::Call { args, .. } = &expr.kind
                     && let Some(elem) = args
                         .first()
                         .and_then(|a| kotlin_expr_type(__w, &a.value, locals, operators))
@@ -13284,12 +13672,13 @@ fn kotlin_expr_type(__w: &mut KtWalker,
                 // to KOTLIN shapes — `List`, `Map` — for this walker's own
                 // rewrites, not to the java type the tree declares.)
                 if let Some((class_path, member)) = path.rsplit_once('.')
-                    && let Some(ret) = vybe_compiler::primitives::namespaces::lookup_type_member_return(
-                        &["jvm".to_string(), "kotlin".to_string()],
-                        class_path,
-                        member,
-                        kotlin_tree_fold(),
-                    )
+                    && let Some(ret) =
+                        vybe_compiler::primitives::namespaces::lookup_type_member_return(
+                            &["jvm".to_string(), "kotlin".to_string()],
+                            class_path,
+                            member,
+                            kotlin_tree_fold(),
+                        )
                 {
                     return Some(ret);
                 }
@@ -13707,7 +14096,9 @@ fn kotlin_reflection_runtime_query_name(__w: &mut KtWalker, name: &str) -> Strin
 
 fn kotlin_class_token_name(expr: &Expression) -> Option<String> {
     match &expr.kind {
-        ExprKind::Member { object, field, .. } if field == "java" => kotlin_class_token_name(object),
+        ExprKind::Member { object, field, .. } if field == "java" => {
+            kotlin_class_token_name(object)
+        }
         ExprKind::Object(props) => props.iter().find_map(|prop| {
             let ObjectProperty::KeyValue { key, value } = prop else {
                 return None;
@@ -13727,7 +14118,8 @@ fn kotlin_class_token_name(expr: &Expression) -> Option<String> {
     }
 }
 
-fn kotlin_class_token_name_with_locals(__w: &mut KtWalker, 
+fn kotlin_class_token_name_with_locals(
+    __w: &mut KtWalker,
     expr: &Expression,
     locals: &HashMap<String, String>,
 ) -> Option<String> {
@@ -13738,7 +14130,7 @@ fn kotlin_class_token_name_with_locals(__w: &mut KtWalker,
         ExprKind::Ident(name) => {
             let value = __w.kotlin_static_values.get(name).cloned()?;
             kotlin_class_token_name_with_locals(__w, &value, locals)
-        },
+        }
         ExprKind::Member { object, field, .. } if field == "java" => {
             kotlin_class_token_name_with_locals(__w, object, locals)
         }
@@ -13763,7 +14155,8 @@ fn kotlin_is_class_of_call(expr: &Expression) -> bool {
     )
 }
 
-fn kotlin_kclass_identity_expr(__w: &mut KtWalker, 
+fn kotlin_kclass_identity_expr(
+    __w: &mut KtWalker,
     expr: &Expression,
     locals: &HashMap<String, String>,
 ) -> Option<Expression> {
@@ -13775,19 +14168,20 @@ fn kotlin_kclass_identity_expr(__w: &mut KtWalker,
         ExprKind::Ident(name) => {
             let value = __w.kotlin_static_values.get(name).cloned()?;
             kotlin_kclass_identity_expr(__w, &value, locals)
-        },
-        ExprKind::Call { .. } if kotlin_is_class_of_call(expr) => Some(Expression::new(
-            ExprKind::Member {
+        }
+        ExprKind::Call { .. } if kotlin_is_class_of_call(expr) => {
+            Some(Expression::new(ExprKind::Member {
                 object: Box::new(expr.clone()),
                 field: "qualifiedName".to_string(),
                 null_safe: false,
-            },
-        )),
+            }))
+        }
         _ => None,
     }
 }
 
-fn kotlin_reflection_class_method_for_name(__w: &mut KtWalker, 
+fn kotlin_reflection_class_method_for_name(
+    __w: &mut KtWalker,
     class_name: &str,
     method: &str,
     args: &[Argument],
@@ -13803,12 +14197,19 @@ fn kotlin_reflection_class_method_for_name(__w: &mut KtWalker,
             Some(Expression::string(&format!("class {simple} (KClass)")))
         }
         "getAnnotation" if args.len() == 1 => {
-            let decorators = __w.kotlin_reflection_class_decorators.get(class_name).cloned().unwrap_or_default();
+            let decorators = __w
+                .kotlin_reflection_class_decorators
+                .get(class_name)
+                .cloned()
+                .unwrap_or_default();
             Some(kotlin_annotation_result(&decorators))
         }
         "getDeclaredMethod" | "getMethod" if !args.is_empty() => {
             let name = kotlin_string_literal(&args[0].value)?;
-            let meta = __w.kotlin_reflection_methods.get(&(class_name.to_string(), name.clone())).cloned()
+            let meta = __w
+                .kotlin_reflection_methods
+                .get(&(class_name.to_string(), name.clone()))
+                .cloned()
                 .unwrap_or_default();
             let params = meta
                 .param_types
@@ -13833,7 +14234,10 @@ fn kotlin_reflection_class_method_for_name(__w: &mut KtWalker,
         }
         "getDeclaredField" | "getField" if args.len() == 1 => {
             let name = kotlin_string_literal(&args[0].value)?;
-            let meta = __w.kotlin_reflection_fields.get(&(class_name.to_string(), name.clone())).cloned()
+            let meta = __w
+                .kotlin_reflection_fields
+                .get(&(class_name.to_string(), name.clone()))
+                .cloned()
                 .unwrap_or_default();
             Some(kotlin_reflection_member_object(
                 &name,
@@ -13853,7 +14257,8 @@ fn kotlin_string_literal(expr: &Expression) -> Option<String> {
     }
 }
 
-fn kotlin_reflection_class_method(__w: &mut KtWalker, 
+fn kotlin_reflection_class_method(
+    __w: &mut KtWalker,
     receiver: &Expression,
     method: &str,
     args: &[Argument],
@@ -14011,11 +14416,12 @@ fn kotlin_extension_ref_lambda(__w: &mut KtWalker, name: &str) -> Option<Express
     if !__w.extension_functions.contains(name) {
         return None;
     }
-    let arity = __w.kotlin_top_fn_params.get(name).map(Vec::len)
+    let arity = __w
+        .kotlin_top_fn_params
+        .get(name)
+        .map(Vec::len)
         .or_else(|| __w.extension_function_arities.get(name).copied())?;
-    let arg_names: Vec<String> = (0..arity)
-        .map(|i| format!("__kt_ext_arg_{i}"))
-        .collect();
+    let arg_names: Vec<String> = (0..arity).map(|i| format!("__kt_ext_arg_{i}")).collect();
     Some(Expression::new(ExprKind::Lambda {
         params: arg_names.iter().map(|arg| kt_param(arg)).collect(),
         body: LambdaBody::Expr(Box::new(Expression::new(ExprKind::Call {
@@ -14327,12 +14733,7 @@ fn walk_callable_ref(__w: &mut KtWalker, pair: Pair<Rule>) -> Expression {
                 captures: Vec::new(),
             });
         }
-        if name == "get"
-            && matches!(
-                kotlin_ref_qualifier_head(qualifier),
-                "Map" | "MutableMap"
-            )
-        {
+        if name == "get" && matches!(kotlin_ref_qualifier_head(qualifier), "Map" | "MutableMap") {
             let key_name = "__kt_ref_key".to_string();
             return Expression::new(ExprKind::Lambda {
                 params: vec![kt_param(&arg_name), kt_param(&key_name)],
@@ -14510,7 +14911,10 @@ fn walk_statement(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
                 .into_inner()
                 .find(|p| p.as_rule() == Rule::expr)
                 .map(|__x| walk_expr(__w, __x));
-            Some(Statement::with_span(StmtKind::Throw { expr, cause: None }, __span))
+            Some(Statement::with_span(
+                StmtKind::Throw { expr, cause: None },
+                __span,
+            ))
         }
         Rule::for_stmt => walk_for_stmt(__w, inner_pair),
         Rule::while_stmt => walk_while_stmt(__w, inner_pair),
@@ -14554,7 +14958,10 @@ fn walk_statement(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
                     return Some(kotlin_error_throw_stmt(args));
                 }
             }
-            Some(repeat_to_for_in(&expr).unwrap_or_else(|| Statement::with_span(StmtKind::Expr(expr), __span)))
+            Some(
+                repeat_to_for_in(&expr)
+                    .unwrap_or_else(|| Statement::with_span(StmtKind::Expr(expr), __span)),
+            )
         }
         Rule::expr => {
             let expr = walk_expr(__w, inner_pair);
@@ -14564,10 +14971,13 @@ fn walk_statement(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
     };
 
     match (stmt, label_name) {
-        (Some(s), Some(lbl)) => Some(Statement::with_span(StmtKind::Labeled {
-            label: lbl,
-            body: Box::new(s),
-        }, __span)),
+        (Some(s), Some(lbl)) => Some(Statement::with_span(
+            StmtKind::Labeled {
+                label: lbl,
+                body: Box::new(s),
+            },
+            __span,
+        )),
         (other, _) => other,
     }
 }
@@ -14685,13 +15095,15 @@ fn walk_interface_decl(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement
                                         {
                                             for decl in declarations {
                                                 if let BindingPattern::Ident(pname) = decl.pattern {
-                                                    members.extend(kt_interface_property_accessors(
-                                                        pname,
-                                                        decl.type_hint
-                                                            .as_deref()
-                                                            .map(str::to_string),
-                                                        kind == VarDeclKind::Const,
-                                                    ));
+                                                    members.extend(
+                                                        kt_interface_property_accessors(
+                                                            pname,
+                                                            decl.type_hint
+                                                                .as_deref()
+                                                                .map(str::to_string),
+                                                            kind == VarDeclKind::Const,
+                                                        ),
+                                                    );
                                                 }
                                             }
                                         }
@@ -14712,20 +15124,23 @@ fn walk_interface_decl(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement
     // `ClassKind` exists for. As a `StmtKind::InterfaceDecl` it never entered
     // `normalized_classes`, so `class W(d: I) : I by d` could not find `I`'s
     // members to promote and delegation resolved to nothing.
-    Some(Statement::with_span(StmtKind::ClassDecl {
-        name,
-        parents: Vec::new(),
-        // A Kotlin interface's supertypes are other interfaces, never a
-        // superclass — so they are the interface list, not `parents`.
-        interfaces: parents,
-        members,
-        modifiers: ClassModifiers {
-            is_abstract: true,
-            kind: ClassKind::Interface,
-            ..Default::default()
+    Some(Statement::with_span(
+        StmtKind::ClassDecl {
+            name,
+            parents: Vec::new(),
+            // A Kotlin interface's supertypes are other interfaces, never a
+            // superclass — so they are the interface list, not `parents`.
+            interfaces: parents,
+            members,
+            modifiers: ClassModifiers {
+                is_abstract: true,
+                kind: ClassKind::Interface,
+                ..Default::default()
+            },
+            decorators,
         },
-        decorators,
-    }, __span))
+        __span,
+    ))
 }
 
 fn walk_enum_decl(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
@@ -14813,16 +15228,17 @@ fn walk_enum_decl(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
                             array_bounds: None,
                             storage: None,
                         });
-                        ctor_body.push(Statement::with_span(StmtKind::Expr(Expression::new(
-                            ExprKind::Assign {
+                        ctor_body.push(Statement::with_span(
+                            StmtKind::Expr(Expression::new(ExprKind::Assign {
                                 target: Box::new(Expression::new(ExprKind::Member {
                                     object: Box::new(Expression::new(ExprKind::This)),
                                     field: pname.clone(),
                                     null_safe: false,
                                 })),
                                 value: Box::new(Expression::ident(&pname)),
-                            },
-                        )), __span));
+                            })),
+                            __span,
+                        ));
                     }
                 }
                 if !ctor_params.is_empty() {
@@ -14981,8 +15397,8 @@ fn walk_enum_decl(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
                             is_nullable: false,
                         },
                     );
-                    attach.push(Statement::with_span(StmtKind::Expr(Expression::new(
-                        ExprKind::Assign {
+                    attach.push(Statement::with_span(
+                        StmtKind::Expr(Expression::new(ExprKind::Assign {
                             target: Box::new(Expression::new(ExprKind::Member {
                                 object: Box::new(Expression::new(ExprKind::Member {
                                     object: Box::new(Expression::ident(&name)),
@@ -14998,8 +15414,9 @@ fn walk_enum_decl(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
                                 captures: Vec::new(),
                                 is_async: false,
                             })),
-                        },
-                    )), __span));
+                        })),
+                        __span,
+                    ));
                 }
             }
         }
@@ -15018,14 +15435,17 @@ fn walk_enum_decl(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
         }
     }
 
-    Some(Statement::with_span(StmtKind::ClassDecl {
-        name,
-        parents: vec![],
-        interfaces: vec![],
-        members: body_members,
-        modifiers: ClassModifiers::default(),
-        decorators,
-    }, __span))
+    Some(Statement::with_span(
+        StmtKind::ClassDecl {
+            name,
+            parents: vec![],
+            interfaces: vec![],
+            members: body_members,
+            modifiers: ClassModifiers::default(),
+            decorators,
+        },
+        __span,
+    ))
 }
 
 fn walk_destructuring_decl(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
@@ -15059,16 +15479,19 @@ fn walk_destructuring_decl(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<State
             VarDeclKind::Var
         };
 
-        let mut stmts = vec![Statement::with_span(StmtKind::VarDecl {
-            declarations: vec![VarDeclarator {
-                pattern: BindingPattern::Ident(tmp_name.clone()),
-                type_hint: None,
-                init: Some(init_expr),
-                array_bounds: None,
-                with_events: false,
-            }],
-            kind: decl_kind.clone(),
-        }, __span)];
+        let mut stmts = vec![Statement::with_span(
+            StmtKind::VarDecl {
+                declarations: vec![VarDeclarator {
+                    pattern: BindingPattern::Ident(tmp_name.clone()),
+                    type_hint: None,
+                    init: Some(init_expr),
+                    array_bounds: None,
+                    with_events: false,
+                }],
+                kind: decl_kind.clone(),
+            },
+            __span,
+        )];
 
         for (idx, name) in names.into_iter().enumerate() {
             let read_expr = Expression::new(ExprKind::Index {
@@ -15076,16 +15499,19 @@ fn walk_destructuring_decl(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<State
                 index: Box::new(Expression::int(idx as i64)),
                 null_safe: false,
             });
-            stmts.push(Statement::with_span(StmtKind::VarDecl {
-                declarations: vec![VarDeclarator {
-                    pattern: BindingPattern::Ident(name),
-                    type_hint: None,
-                    init: Some(read_expr),
-                    array_bounds: None,
-                    with_events: false,
-                }],
-                kind: decl_kind.clone(),
-            }, __span));
+            stmts.push(Statement::with_span(
+                StmtKind::VarDecl {
+                    declarations: vec![VarDeclarator {
+                        pattern: BindingPattern::Ident(name),
+                        type_hint: None,
+                        init: Some(read_expr),
+                        array_bounds: None,
+                        with_events: false,
+                    }],
+                    kind: decl_kind.clone(),
+                },
+                __span,
+            ));
         }
 
         Some(Statement::with_span(StmtKind::Block(stmts), __span))
@@ -15094,20 +15520,23 @@ fn walk_destructuring_decl(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<State
             .into_iter()
             .map(|n| ArrayPatternElem::Pattern(BindingPattern::Ident(n), None))
             .collect();
-        Some(Statement::with_span(StmtKind::VarDecl {
-            declarations: vec![VarDeclarator {
-                pattern: BindingPattern::Array(elems),
-                type_hint: None,
-                init: None,
-                array_bounds: None,
-                with_events: false,
-            }],
-            kind: if is_readonly {
-                VarDeclKind::Const
-            } else {
-                VarDeclKind::Var
+        Some(Statement::with_span(
+            StmtKind::VarDecl {
+                declarations: vec![VarDeclarator {
+                    pattern: BindingPattern::Array(elems),
+                    type_hint: None,
+                    init: None,
+                    array_bounds: None,
+                    with_events: false,
+                }],
+                kind: if is_readonly {
+                    VarDeclKind::Const
+                } else {
+                    VarDeclKind::Var
+                },
             },
-        }, __span))
+            __span,
+        ))
     }
 }
 
@@ -15131,7 +15560,9 @@ fn walk_try_stmt(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
                 for csub in inner.into_inner() {
                     match csub.as_rule() {
                         Rule::identifier => param_name = csub.as_str().to_string(),
-                        Rule::type_ref => type_hint = kotlin_nullable_type_hint(__w, csub.as_str()).0,
+                        Rule::type_ref => {
+                            type_hint = kotlin_nullable_type_hint(__w, csub.as_str()).0
+                        }
                         Rule::block => catch_block_stmts = walk_block_statements(__w, csub),
                         _ => {}
                     }
@@ -15164,12 +15595,15 @@ fn walk_try_stmt(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
         }
     }
 
-    Some(Statement::with_span(StmtKind::Try {
-        body,
-        catches,
-        else_body: None,
-        finally,
-    }, __span))
+    Some(Statement::with_span(
+        StmtKind::Try {
+            body,
+            catches,
+            else_body: None,
+            finally,
+        },
+        __span,
+    ))
 }
 
 fn kotlin_block_statements_as_expr(mut stmts: Vec<Statement>) -> Expression {
@@ -15290,7 +15724,8 @@ fn walk_function_decl_body(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<State
                     })
                     .collect();
                 raw_param_types = Some(raw_tys);
-                let (parsed_params, parsed_decorators) = walk_parameter_list_with_decorators(__w, inner);
+                let (parsed_params, parsed_decorators) =
+                    walk_parameter_list_with_decorators(__w, inner);
                 params = parsed_params;
                 param_decorators = parsed_decorators;
             }
@@ -15351,41 +15786,51 @@ fn walk_function_decl_body(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<State
     // overload resolution needs `Pair<Int,…>` vs `Pair<String,…>`.
     if let Some(raw) = raw_param_types.take() {
         {
-            __w.kotlin_fn_raw_param_types.entry(name.clone()).or_default().push(raw);
+            __w.kotlin_fn_raw_param_types
+                .entry(name.clone())
+                .or_default()
+                .push(raw);
         };
     }
     if let Some(shape) = return_shape {
         {
-            __w.kotlin_function_return_shapes.insert(name.clone(), shape);
+            __w.kotlin_function_return_shapes
+                .insert(name.clone(), shape);
         };
     }
 
-    Some(Statement::with_span(StmtKind::FunctionDecl {
-        name,
-        params,
-        return_type,
-        body,
-        modifiers: Modifiers {
-            visibility,
-            is_abstract,
-            decorators: {
-                decorators.extend(param_decorators);
-                decorators
+    Some(Statement::with_span(
+        StmtKind::FunctionDecl {
+            name,
+            params,
+            return_type,
+            body,
+            modifiers: Modifiers {
+                visibility,
+                is_abstract,
+                decorators: {
+                    decorators.extend(param_decorators);
+                    decorators
+                },
+                ..Default::default()
             },
-            ..Default::default()
+            handles: vec![],
+            is_async: false,
+            is_generator: false,
+            is_sub: false,
         },
-        handles: vec![],
-        is_async: false,
-        is_generator: false,
-        is_sub: false,
-    }, __span))
+        __span,
+    ))
 }
 
 fn walk_parameter_list(__w: &mut KtWalker, pair: Pair<Rule>) -> Vec<Param> {
     walk_parameter_list_with_decorators(__w, pair).0
 }
 
-fn walk_parameter_list_with_decorators(__w: &mut KtWalker, pair: Pair<Rule>) -> (Vec<Param>, Vec<Expression>) {
+fn walk_parameter_list_with_decorators(
+    __w: &mut KtWalker,
+    pair: Pair<Rule>,
+) -> (Vec<Param>, Vec<Expression>) {
     let mut params = Vec::new();
     let mut decorators = Vec::new();
     for (index, inner) in pair
@@ -15472,7 +15917,8 @@ fn walk_var_decl(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
             Rule::identifier => name = inner.as_str().to_string(),
             Rule::type_ref => {
                 let raw = inner.as_str();
-                let nullable = type_ref_is_nullable(raw) || decl_type_ref_is_nullable(&decl_src, raw);
+                let nullable =
+                    type_ref_is_nullable(raw) || decl_type_ref_is_nullable(&decl_src, raw);
                 type_hint = if nullable {
                     None
                 } else {
@@ -15573,24 +16019,27 @@ fn walk_var_decl(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
         __w.kotlin_local_lazy_pending.push(name.clone());
     }
 
-    Some(Statement::with_span(StmtKind::VarDecl {
-        declarations: vec![VarDeclarator {
-            pattern: BindingPattern::Ident(name),
-            // Checked, not Descriptive: kotlin never coerces at the store,
-            // but kotlinc REJECTS a program that assigns another type here —
-            // the runtime value is guaranteed, which is what lets the shared
-            // provably-numeric operator fold fire on `var i: Int`.
-            type_hint: type_hint.map(TypeHint::checked),
-            init,
-            array_bounds: None,
-            with_events: false,
-        }],
-        kind: if is_const || is_readonly {
-            VarDeclKind::Const
-        } else {
-            VarDeclKind::Var
+    Some(Statement::with_span(
+        StmtKind::VarDecl {
+            declarations: vec![VarDeclarator {
+                pattern: BindingPattern::Ident(name),
+                // Checked, not Descriptive: kotlin never coerces at the store,
+                // but kotlinc REJECTS a program that assigns another type here —
+                // the runtime value is guaranteed, which is what lets the shared
+                // provably-numeric operator fold fire on `var i: Int`.
+                type_hint: type_hint.map(TypeHint::checked),
+                init,
+                array_bounds: None,
+                with_events: false,
+            }],
+            kind: if is_const || is_readonly {
+                VarDeclKind::Const
+            } else {
+                VarDeclKind::Var
+            },
         },
-    }, __span))
+        __span,
+    ))
 }
 
 fn kt_expr_is_lazy_call(expr: &Expression) -> bool {
@@ -15600,10 +16049,7 @@ fn kt_expr_is_lazy_call(expr: &Expression) -> bool {
     matches!(&callee.kind, ExprKind::Ident(n) if n == "lazy")
         && !args.is_empty()
         && args.len() <= 2
-        && matches!(
-            args[args.len() - 1].value.kind,
-            ExprKind::Lambda { .. }
-        )
+        && matches!(args[args.len() - 1].value.kind, ExprKind::Lambda { .. })
 }
 
 /// Lower a drained local `val <name> by lazy { … }` inside `stmts`: the
@@ -15656,11 +16102,7 @@ fn kt_lower_local_lazy(stmts: &mut Vec<Statement>, name: &str) {
         params: Vec::new(),
         body: LambdaBody::Block(vec![
             kt_if(
-                kt_binary(
-                    BinOp::Eq,
-                    Expression::ident(&done),
-                    Expression::bool(false),
-                ),
+                kt_binary(BinOp::Eq, Expression::ident(&done), Expression::bool(false)),
                 run_body,
                 None,
             ),
@@ -15858,7 +16300,11 @@ fn leave_kotlin_field_aliases(__w: &mut KtWalker, pushed: bool) {
     }
 }
 
-fn kotlin_static_field_alias(__w: &mut KtWalker, object: &Expression, field: &str) -> Option<String> {
+fn kotlin_static_field_alias(
+    __w: &mut KtWalker,
+    object: &Expression,
+    field: &str,
+) -> Option<String> {
     let path = dotted_expr_path(object)?;
     {
         __w.kotlin_static_field_aliases
@@ -15917,10 +16363,13 @@ fn walk_extension_property(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<State
                         Rule::function_body_expr => {
                             if let Some(e) = kotlin_walk_body_expr(__w, part) {
                                 if is_get {
-                                    body =
-                                        vec![Statement::with_span(StmtKind::Return(Some(e)), __span)];
+                                    body = vec![Statement::with_span(
+                                        StmtKind::Return(Some(e)),
+                                        __span,
+                                    )];
                                 } else {
-                                    set_body = vec![Statement::with_span(StmtKind::Expr(e), __span)];
+                                    set_body =
+                                        vec![Statement::with_span(StmtKind::Expr(e), __span)];
                                 }
                             }
                         }
@@ -15936,7 +16385,10 @@ fn walk_extension_property(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<State
                 }
             }
             Rule::expr if body.is_empty() => {
-                body = vec![Statement::with_span(StmtKind::Return(Some(walk_expr(__w, p.clone()))), __span)];
+                body = vec![Statement::with_span(
+                    StmtKind::Return(Some(walk_expr(__w, p.clone()))),
+                    __span,
+                )];
             }
             _ => {}
         }
@@ -15965,8 +16417,8 @@ fn walk_extension_property(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<State
         value_param.name = set_param;
         value_param.type_hint = None;
         {
-            __w.pending_top_level_fns
-                .push(Statement::with_span(StmtKind::FunctionDecl {
+            __w.pending_top_level_fns.push(Statement::with_span(
+                StmtKind::FunctionDecl {
                     name: format!("{name}__ext_set"),
                     params: vec![this_param(&receiver), value_param],
                     return_type: None,
@@ -15980,7 +16432,9 @@ fn walk_extension_property(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<State
                     is_async: false,
                     is_generator: false,
                     is_sub: false,
-                }, __span));
+                },
+                __span,
+            ));
         };
     }
 
@@ -15996,30 +16450,33 @@ fn walk_extension_property(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<State
         }
     }
 
-    Some(Statement::with_span(StmtKind::FunctionDecl {
-        name,
-        params: vec![Param {
-            name: "this".to_string(),
-            type_hint: Some(receiver.into()),
-            default: None,
-            pass_by: PassBy::Value,
-            is_rest: false,
-            is_kwargs: false,
-            is_optional: false,
-            is_nullable: false,
-        }],
-        return_type: None,
-        body,
-        modifiers: Modifiers {
-            visibility: Visibility::Public,
-            is_extension: true,
-            ..Default::default()
+    Some(Statement::with_span(
+        StmtKind::FunctionDecl {
+            name,
+            params: vec![Param {
+                name: "this".to_string(),
+                type_hint: Some(receiver.into()),
+                default: None,
+                pass_by: PassBy::Value,
+                is_rest: false,
+                is_kwargs: false,
+                is_optional: false,
+                is_nullable: false,
+            }],
+            return_type: None,
+            body,
+            modifiers: Modifiers {
+                visibility: Visibility::Public,
+                is_extension: true,
+                ..Default::default()
+            },
+            handles: vec![],
+            is_async: false,
+            is_generator: false,
+            is_sub: false,
         },
-        handles: vec![],
-        is_async: false,
-        is_generator: false,
-        is_sub: false,
-    }, __span))
+        __span,
+    ))
 }
 
 /// `val x by lazy { … }` — the delegate is DECLARED as a memoizing getter
@@ -16146,7 +16603,11 @@ fn kt_match_delegates_call(
             if args.len() != 2 || !matches!(args[1].value.kind, ExprKind::Lambda { .. }) {
                 return None;
             }
-            Some((kind, Some(args[0].value.clone()), Some(args[1].value.clone())))
+            Some((
+                kind,
+                Some(args[0].value.clone()),
+                Some(args[1].value.clone()),
+            ))
         }
     }
 }
@@ -16157,7 +16618,12 @@ fn kt_match_delegates_call(
 /// a value, so it needs no property object for its first parameter.
 fn kt_delegate_handler_parts(
     handler: &Expression,
-) -> (Option<String>, Option<String>, Vec<Statement>, Option<Expression>) {
+) -> (
+    Option<String>,
+    Option<String>,
+    Vec<Statement>,
+    Option<Expression>,
+) {
     let ExprKind::Lambda { params, body, .. } = &handler.kind else {
         return (None, None, Vec::new(), None);
     };
@@ -16393,10 +16859,7 @@ fn kt_lower_local_delegates(stmts: &mut Vec<Statement>, name: &str) {
     });
     let is_not_null = matches!(kind, KtDelegateKind::NotNull);
     let mut replacement = vec![
-        kt_var(
-            &backing,
-            initial.unwrap_or_else(Expression::null),
-        ),
+        kt_var(&backing, initial.unwrap_or_else(Expression::null)),
         kt_var(&setter, set_closure),
     ];
     if is_not_null {
@@ -16404,11 +16867,7 @@ fn kt_lower_local_delegates(stmts: &mut Vec<Statement>, name: &str) {
             params: Vec::new(),
             body: LambdaBody::Block(vec![
                 kt_if(
-                    kt_binary(
-                        BinOp::Eq,
-                        Expression::ident(&backing),
-                        Expression::null(),
-                    ),
+                    kt_binary(BinOp::Eq, Expression::ident(&backing), Expression::null()),
                     vec![kt_stmt(StmtKind::Throw {
                         expr: Some(kt_call(
                             "IllegalStateException",
@@ -16433,36 +16892,34 @@ fn kt_lower_local_delegates(stmts: &mut Vec<Statement>, name: &str) {
     // BEFORE its enclosing Assign is visited, so the Assign arm keys on the
     // substituted shape to route the write through the set closure.
     for stmt in stmts.iter_mut().skip(decl_index + inserted) {
-        stmt.walk_exprs_mut(&mut |expr| {
-            match &mut expr.kind {
-                ExprKind::Ident(n) if n.as_str() == name => {
-                    if is_not_null {
-                        *expr = Expression::new(ExprKind::Call {
-                            callee: Box::new(Expression::ident(&getter)),
-                            args: Vec::new(),
-                            optional: false,
-                        });
-                    } else {
-                        *expr = Expression::ident(&backing);
-                    }
+        stmt.walk_exprs_mut(&mut |expr| match &mut expr.kind {
+            ExprKind::Ident(n) if n.as_str() == name => {
+                if is_not_null {
+                    *expr = Expression::new(ExprKind::Call {
+                        callee: Box::new(Expression::ident(&getter)),
+                        args: Vec::new(),
+                        optional: false,
+                    });
+                } else {
+                    *expr = Expression::ident(&backing);
                 }
-                ExprKind::Assign { target, value } => {
-                    let target_is_read = if is_not_null {
-                        matches!(&target.kind, ExprKind::Call { callee, .. }
-                            if matches!(&callee.kind, ExprKind::Ident(n) if n.as_str() == getter))
-                    } else {
-                        matches!(&target.kind, ExprKind::Ident(n) if n.as_str() == backing)
-                    };
-                    if target_is_read {
-                        *expr = Expression::new(ExprKind::Call {
-                            callee: Box::new(Expression::ident(&setter)),
-                            args: vec![Argument::positional((**value).clone())],
-                            optional: false,
-                        });
-                    }
-                }
-                _ => {}
             }
+            ExprKind::Assign { target, value } => {
+                let target_is_read = if is_not_null {
+                    matches!(&target.kind, ExprKind::Call { callee, .. }
+                            if matches!(&callee.kind, ExprKind::Ident(n) if n.as_str() == getter))
+                } else {
+                    matches!(&target.kind, ExprKind::Ident(n) if n.as_str() == backing)
+                };
+                if target_is_read {
+                    *expr = Expression::new(ExprKind::Call {
+                        callee: Box::new(Expression::ident(&setter)),
+                        args: vec![Argument::positional((**value).clone())],
+                        optional: false,
+                    });
+                }
+            }
+            _ => {}
         });
     }
 }
@@ -16907,10 +17364,7 @@ fn kotlin_builtin_collection_interfaces(body: &[Statement]) -> Vec<Statement> {
                 "toString",
                 Vec::new(),
                 Some("String"),
-                kt_return_call(
-                    "__kt_tostring",
-                    vec![Expression::new(ExprKind::This)],
-                ),
+                kt_return_call("__kt_tostring", vec![Expression::new(ExprKind::This)]),
             )],
         ));
     }
@@ -16946,11 +17400,8 @@ fn kotlin_builtin_collection_interfaces(body: &[Statement]) -> Vec<Statement> {
     }
 
     if implemented.contains("Collection") && !declared.contains("Collection") {
-        let mut members = kt_interface_property_accessors(
-            "size".to_string(),
-            Some("Int".to_string()),
-            true,
-        );
+        let mut members =
+            kt_interface_property_accessors("size".to_string(), Some("Int".to_string()), true);
         if let Some(ClassMember::Method(getter)) = members.iter_mut().find(|member| {
             matches!(
                 member,
@@ -16983,15 +17434,16 @@ fn kotlin_builtin_collection_interfaces(body: &[Statement]) -> Vec<Statement> {
             Some("Iterator"),
             kt_return_call("__jvm_list_iterator", vec![Expression::new(ExprKind::This)]),
         ));
-        out.push(kt_builtin_interface("Collection", vec!["Iterable"], members));
+        out.push(kt_builtin_interface(
+            "Collection",
+            vec!["Iterable"],
+            members,
+        ));
     }
 
     if implemented.contains("List") && !declared.contains("List") {
-        let mut members = kt_interface_property_accessors(
-            "size".to_string(),
-            Some("Int".to_string()),
-            true,
-        );
+        let mut members =
+            kt_interface_property_accessors("size".to_string(), Some("Int".to_string()), true);
         if let Some(ClassMember::Method(getter)) = members.iter_mut().find(|member| {
             matches!(
                 member,
@@ -17043,11 +17495,8 @@ fn kotlin_builtin_collection_interfaces(body: &[Statement]) -> Vec<Statement> {
     }
 
     if implemented.contains("Set") && !declared.contains("Set") {
-        let mut members = kt_interface_property_accessors(
-            "size".to_string(),
-            Some("Int".to_string()),
-            true,
-        );
+        let mut members =
+            kt_interface_property_accessors("size".to_string(), Some("Int".to_string()), true);
         if let Some(ClassMember::Method(getter)) = members.iter_mut().find(|member| {
             matches!(
                 member,
@@ -17084,11 +17533,8 @@ fn kotlin_builtin_collection_interfaces(body: &[Statement]) -> Vec<Statement> {
     }
 
     if implemented.contains("Map") && !declared.contains("Map") {
-        let mut members = kt_interface_property_accessors(
-            "size".to_string(),
-            Some("Int".to_string()),
-            true,
-        );
+        let mut members =
+            kt_interface_property_accessors("size".to_string(), Some("Int".to_string()), true);
         if let Some(ClassMember::Method(getter)) = members.iter_mut().find(|member| {
             matches!(
                 member,
@@ -17210,7 +17656,8 @@ fn walk_class_property(__w: &mut KtWalker, pair: Pair<Rule>) -> Vec<ClassMember>
                         // result.
                         Rule::function_body_expr => {
                             if let Some(e) = kotlin_walk_body_expr(__w, part) {
-                                body = vec![Statement::with_span(StmtKind::Return(Some(e)), __span)];
+                                body =
+                                    vec![Statement::with_span(StmtKind::Return(Some(e)), __span)];
                             }
                         }
                         Rule::block => body = walk_block_statements(__w, part),
@@ -17529,7 +17976,8 @@ fn append_kotlin_collection_delegate_members(
 }
 
 #[allow(dead_code)]
-fn append_kotlin_delegate_members(__w: &mut KtWalker, 
+fn append_kotlin_delegate_members(
+    __w: &mut KtWalker,
     members: &mut Vec<ClassMember>,
     delegations: &[(String, String)],
 ) {
@@ -17560,7 +18008,11 @@ fn append_kotlin_delegate_members(__w: &mut KtWalker,
 
 fn walk_delegate_expr(__w: &mut KtWalker, pair: Pair<Rule>) -> Expression {
     let source = pair.as_str();
-    let expr_source = source.split_once('{').map(|(head, _)| head).unwrap_or(source).trim();
+    let expr_source = source
+        .split_once('{')
+        .map(|(head, _)| head)
+        .unwrap_or(source)
+        .trim();
     // ⛔ The fragment's index is scoped to the fragment's OWN walk. Installed
     // for the whole function it would still be in place on the fall-through
     // below, numbering the ORIGINAL pair against this expression's text.
@@ -17717,7 +18169,8 @@ fn walk_class_decl(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
                                 }
                             }
                             Rule::delegate_expr => {
-                                by_expr = Some((sub.as_str().to_string(), walk_delegate_expr(__w, sub)))
+                                by_expr =
+                                    Some((sub.as_str().to_string(), walk_delegate_expr(__w, sub)))
                             }
                             _ => {}
                         }
@@ -17833,7 +18286,8 @@ fn walk_class_decl(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
                                 }
                                 Rule::identifier => pname = p.as_str().to_string(),
                                 Rule::type_ref => {
-                                    let (hint, nullable) = kotlin_nullable_type_hint(__w, p.as_str());
+                                    let (hint, nullable) =
+                                        kotlin_nullable_type_hint(__w, p.as_str());
                                     is_nullable = nullable;
                                     constructor_has_nullable_param |= nullable;
                                     type_hint = hint;
@@ -17897,31 +18351,32 @@ fn walk_class_decl(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
                                             ..Default::default()
                                         },
                                     });
-                                    stored_property_backings
-                                        .insert(pname.clone(), pname.clone());
+                                    stored_property_backings.insert(pname.clone(), pname.clone());
                                     pname.clone()
                                 };
-                                ctor_body.push(Statement::with_span(StmtKind::Expr(Expression::new(
-                                    ExprKind::Assign {
+                                ctor_body.push(Statement::with_span(
+                                    StmtKind::Expr(Expression::new(ExprKind::Assign {
                                         target: Box::new(Expression::new(ExprKind::Member {
                                             object: Box::new(Expression::new(ExprKind::This)),
                                             field: write_target,
                                             null_safe: false,
                                         })),
                                         value: Box::new(Expression::ident(&pname)),
-                                    },
-                                )), __span));
+                                    })),
+                                    __span,
+                                ));
                                 let prop_idx = (primary_prop_names.len() - 1) as i64;
-                                ctor_body.push(Statement::with_span(StmtKind::Expr(Expression::new(
-                                    ExprKind::Assign {
+                                ctor_body.push(Statement::with_span(
+                                    StmtKind::Expr(Expression::new(ExprKind::Assign {
                                         target: Box::new(Expression::new(ExprKind::Index {
                                             object: Box::new(Expression::new(ExprKind::This)),
                                             index: Box::new(Expression::int(prop_idx)),
                                             null_safe: false,
                                         })),
                                         value: Box::new(Expression::ident(&pname)),
-                                    },
-                                )), __span));
+                                    })),
+                                    __span,
+                                ));
                             }
                         }
                     }
@@ -17929,7 +18384,8 @@ fn walk_class_decl(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
 
                 primary_ctor_index = Some(members.len());
                 {
-                    __w.kotlin_class_primary_ctors.insert(name.clone(), ctor_params.clone());
+                    __w.kotlin_class_primary_ctors
+                        .insert(name.clone(), ctor_params.clone());
                 };
                 members.push(ClassMember::Constructor {
                     name: None,
@@ -17947,13 +18403,13 @@ fn walk_class_decl(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
                             match inner_member.as_rule() {
                                 Rule::init_block => {
                                     if let Some(block_pair) = inner_member.into_inner().next() {
-                                        let stmts =
-                                            {
-                                                let __p = enter_kotlin_field_aliases(__w, &field_aliases);
-                                                let __r = walk_block_statements(__w, block_pair);
-                                                leave_kotlin_field_aliases(__w, __p);
-                                                __r
-                                            };
+                                        let stmts = {
+                                            let __p =
+                                                enter_kotlin_field_aliases(__w, &field_aliases);
+                                            let __r = walk_block_statements(__w, block_pair);
+                                            leave_kotlin_field_aliases(__w, __p);
+                                            __r
+                                        };
                                         init_stmts.extend(stmts);
                                     }
                                 }
@@ -17988,7 +18444,10 @@ fn walk_class_decl(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
                                             }
                                             Rule::block => {
                                                 s_body = {
-                                                    let __p = enter_kotlin_field_aliases(__w, &field_aliases);
+                                                    let __p = enter_kotlin_field_aliases(
+                                                        __w,
+                                                        &field_aliases,
+                                                    );
                                                     let __r = walk_block_statements(__w, sc);
                                                     leave_kotlin_field_aliases(__w, __p);
                                                     __r
@@ -18020,14 +18479,12 @@ fn walk_class_decl(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
                                     }
                                 }
                                 Rule::function_decl => {
-                                    if let Some(stmt) =
-                                        {
-                                            let __p = enter_kotlin_field_aliases(__w, &field_aliases);
-                                            let __r = walk_function_decl(__w, inner_member);
-                                            leave_kotlin_field_aliases(__w, __p);
-                                            __r
-                                        }
-                                    {
+                                    if let Some(stmt) = {
+                                        let __p = enter_kotlin_field_aliases(__w, &field_aliases);
+                                        let __r = walk_function_decl(__w, inner_member);
+                                        leave_kotlin_field_aliases(__w, __p);
+                                        __r
+                                    } {
                                         members.push(ClassMember::Method(Box::new(stmt)));
                                     }
                                 }
@@ -18068,10 +18525,11 @@ fn walk_class_decl(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
                                         .clone()
                                         .into_inner()
                                         .any(|p| p.as_rule() == Rule::val_kw);
-                                    let is_lateinit_var = inner_member.clone().into_inner().any(|p| {
-                                        p.as_rule() == Rule::modifier
-                                            && p.as_str().trim() == "lateinit"
-                                    });
+                                    let is_lateinit_var =
+                                        inner_member.clone().into_inner().any(|p| {
+                                            p.as_rule() == Rule::modifier
+                                                && p.as_str().trim() == "lateinit"
+                                        });
                                     let has_by_delegate = inner_member
                                         .clone()
                                         .into_inner()
@@ -18094,14 +18552,12 @@ fn walk_class_decl(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
                                             }
                                         }
                                     }
-                                    if let Some(stmt) =
-                                        {
-                                            let __p = enter_kotlin_field_aliases(__w, &field_aliases);
-                                            let __r = walk_var_decl(__w, inner_member);
-                                            leave_kotlin_field_aliases(__w, __p);
-                                            __r
-                                        }
-                                    {
+                                    if let Some(stmt) = {
+                                        let __p = enter_kotlin_field_aliases(__w, &field_aliases);
+                                        let __r = walk_var_decl(__w, inner_member);
+                                        leave_kotlin_field_aliases(__w, __p);
+                                        __r
+                                    } {
                                         if let StmtKind::VarDecl { declarations, .. } = stmt.kind {
                                             for decl in declarations {
                                                 if let BindingPattern::Ident(fname) = decl.pattern {
@@ -18181,18 +18637,20 @@ fn walk_class_decl(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
                                                             || property_modifiers.is_virtual
                                                             || field_aliases.contains_key(&fname)
                                                         {
-                                                            let (mut property_members, backing_name) =
-                                                                kt_stored_property_members(
-                                                                    field_name,
-                                                                    decl.type_hint
-                                                                        .as_deref()
-                                                                        .map(str::to_string),
-                                                                    None,
-                                                                    is_readonly_val,
-                                                                    is_lateinit_var,
-                                                                    field_decorators.clone(),
-                                                                    property_modifiers.clone(),
-                                                                );
+                                                            let (
+                                                                mut property_members,
+                                                                backing_name,
+                                                            ) = kt_stored_property_members(
+                                                                field_name,
+                                                                decl.type_hint
+                                                                    .as_deref()
+                                                                    .map(str::to_string),
+                                                                None,
+                                                                is_readonly_val,
+                                                                is_lateinit_var,
+                                                                field_decorators.clone(),
+                                                                property_modifiers.clone(),
+                                                            );
                                                             stored_property_backings.insert(
                                                                 fname.clone(),
                                                                 backing_name.clone(),
@@ -18212,8 +18670,7 @@ fn walk_class_decl(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
                                                                 modifiers: {
                                                                     let mut m =
                                                                         property_modifiers.clone();
-                                                                    m.is_readonly =
-                                                                        is_readonly_val;
+                                                                    m.is_readonly = is_readonly_val;
                                                                     m.decorators =
                                                                         field_decorators.clone();
                                                                     // The property surface
@@ -18281,7 +18738,8 @@ fn walk_class_decl(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
                                                     interfaces.push(iface);
                                                 }
                                             }
-                                            let mut companion_aliases = vec!["Companion".to_string()];
+                                            let mut companion_aliases =
+                                                vec!["Companion".to_string()];
                                             if comp_name != "Companion" {
                                                 companion_aliases.push(comp_name);
                                             }
@@ -18307,7 +18765,8 @@ fn walk_class_decl(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
                                                     .filter_map(|member| match member {
                                                         ClassMember::Method(stmt) => {
                                                             if let StmtKind::FunctionDecl {
-                                                                name, ..
+                                                                name,
+                                                                ..
                                                             } = &stmt.kind
                                                             {
                                                                 Some(name.clone())
@@ -18325,7 +18784,8 @@ fn walk_class_decl(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
                                                         ClassMember::Field { name, .. }
                                                         | ClassMember::Const { name, .. }
                                                         | ClassMember::Property { name, .. }
-                                                            if companion_method_names.contains(name) =>
+                                                            if companion_method_names
+                                                                .contains(name) =>
                                                         {
                                                             Some((
                                                                 name.clone(),
@@ -18365,8 +18825,9 @@ fn walk_class_decl(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
                                                     .collect();
                                             if !companion_field_names.is_empty() {
                                                 {
-                                                    __w.user_property_names
-                                                        .extend(companion_field_names.iter().cloned());
+                                                    __w.user_property_names.extend(
+                                                        companion_field_names.iter().cloned(),
+                                                    );
                                                 };
                                             }
                                             for mut cm in comp_members {
@@ -18397,8 +18858,10 @@ fn walk_class_decl(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
                                                             leave_kotlin_field_aliases(__w, __p);
                                                         }
                                                         if let Some(storage_name) =
-                                                            overloaded_storage_name_for_params(__w, 
-                                                                method_name, params,
+                                                            overloaded_storage_name_for_params(
+                                                                __w,
+                                                                method_name,
+                                                                params,
                                                             )
                                                         {
                                                             *method_name = storage_name;
@@ -18444,8 +18907,7 @@ fn walk_class_decl(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
     // augmentation. `bound_names` in the shared fold binds a renamed member
     // under both its own name and the alias, so the class keeps its own `m`
     // and still reaches the interface default.
-    let super_uses = __w.super_qualified_uses.pop()
-        .unwrap_or_default();
+    let super_uses = __w.super_qualified_uses.pop().unwrap_or_default();
     for (from, member) in super_uses {
         for m in &mut members {
             if let ClassMember::Augment(decl) = m {
@@ -18469,7 +18931,8 @@ fn walk_class_decl(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
     // parameter each, and the assignment that binds them. The construction site
     // passes them (see `LOCAL_CLASS_CAPTURES` at the `New` site).
     if !captures.is_empty() && !name.is_empty() {
-        __w.local_class_captures.insert(name.clone(), captures.clone());
+        __w.local_class_captures
+            .insert(name.clone(), captures.clone());
         for cap in &captures {
             members.push(ClassMember::Field {
                 name: cap.clone(),
@@ -18501,14 +18964,17 @@ fn walk_class_decl(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
         let capture_assigns: Vec<Statement> = captures
             .iter()
             .map(|cap| {
-                Statement::with_span(StmtKind::Expr(Expression::new(ExprKind::Assign {
-                    target: Box::new(Expression::new(ExprKind::Member {
-                        object: Box::new(Expression::new(ExprKind::This)),
-                        field: cap.clone(),
-                        null_safe: false,
+                Statement::with_span(
+                    StmtKind::Expr(Expression::new(ExprKind::Assign {
+                        target: Box::new(Expression::new(ExprKind::Member {
+                            object: Box::new(Expression::new(ExprKind::This)),
+                            field: cap.clone(),
+                            null_safe: false,
+                        })),
+                        value: Box::new(Expression::ident(cap)),
                     })),
-                    value: Box::new(Expression::ident(cap)),
-                })), __span)
+                    __span,
+                )
             })
             .collect();
         if !members
@@ -18581,14 +19047,17 @@ fn walk_class_decl(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
                 params.insert(0, outer_param.clone());
                 body.insert(
                     0,
-                    Statement::with_span(StmtKind::Expr(Expression::new(ExprKind::Assign {
-                        target: Box::new(Expression::new(ExprKind::Member {
-                            object: Box::new(Expression::new(ExprKind::This)),
-                            field: "__kt_outer".to_string(),
-                            null_safe: false,
+                    Statement::with_span(
+                        StmtKind::Expr(Expression::new(ExprKind::Assign {
+                            target: Box::new(Expression::new(ExprKind::Member {
+                                object: Box::new(Expression::new(ExprKind::This)),
+                                field: "__kt_outer".to_string(),
+                                null_safe: false,
+                            })),
+                            value: Box::new(Expression::ident("__kt_outer")),
                         })),
-                        value: Box::new(Expression::ident("__kt_outer")),
-                    })), __span),
+                        __span,
+                    ),
                 );
             }
         }
@@ -18671,16 +19140,17 @@ fn walk_class_decl(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
             storage: None,
         });
         if from_ctor_param {
-            init_stmts.push(Statement::with_span(StmtKind::Expr(Expression::new(
-                ExprKind::Assign {
+            init_stmts.push(Statement::with_span(
+                StmtKind::Expr(Expression::new(ExprKind::Assign {
                     target: Box::new(Expression::new(ExprKind::Member {
                         object: Box::new(Expression::new(ExprKind::This)),
                         field: field.clone(),
                         null_safe: false,
                     })),
                     value: Box::new(Expression::ident(field)),
-                },
-            )), __span));
+                })),
+                __span,
+            ));
         }
     }
 
@@ -18777,14 +19247,14 @@ fn walk_class_decl(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
     };
     if !name.is_empty() && !ctor_shapes.is_empty() {
         {
-            __w.kotlin_class_ctor_shapes.insert(name.clone(), ctor_shapes);
+            __w.kotlin_class_ctor_shapes
+                .insert(name.clone(), ctor_shapes);
         };
     }
     if !stored_property_backings.is_empty() {
         for member in &mut members {
             if let ClassMember::Constructor { body, params, .. } = member {
-                let mut skip: HashSet<String> =
-                    params.iter().map(|p| p.name.clone()).collect();
+                let mut skip: HashSet<String> = params.iter().map(|p| p.name.clone()).collect();
                 for stmt in body.iter() {
                     if let StmtKind::VarDecl { declarations, .. } = &stmt.kind {
                         for decl in declarations {
@@ -18839,23 +19309,25 @@ fn walk_class_decl(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
                 && let Some(bargs) = base_args
                 && let Some(first) = bargs.first()
             {
-                body.push(Statement::with_span(StmtKind::Expr(Expression::new(
-                    ExprKind::Assign {
+                body.push(Statement::with_span(
+                    StmtKind::Expr(Expression::new(ExprKind::Assign {
                         target: Box::new(Expression::new(ExprKind::Member {
                             object: Box::new(Expression::new(ExprKind::This)),
                             field: "message".to_string(),
                             null_safe: false,
                         })),
                         value: Box::new(first.clone()),
-                    },
-                )), __span));
+                    })),
+                    __span,
+                ));
             }
         }
     }
 
     if !name.is_empty() {
         {
-            __w.kotlin_reflection_class_decorators.insert(name.clone(), decorators.clone());
+            __w.kotlin_reflection_class_decorators
+                .insert(name.clone(), decorators.clone());
         };
         {
             let map_b = &mut __w.kotlin_reflection_methods;
@@ -18924,48 +19396,51 @@ fn walk_class_decl(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
         };
     }
 
-    Some(Statement::with_span(StmtKind::ClassDecl {
-        name,
-        parents,
-        interfaces,
-        members,
-        modifiers: ClassModifiers {
-            is_abstract: is_abstract || is_interface,
-            is_sealed,
-            // What this declaration DECLARES. `emit_class_from_ast` copies it
-            // into `NormalClass.declared_kind` and the compiler stamps it on
-            // the class object — which is what answers `interface_exists` and
-            // keeps an interface from being treated as an instantiable class.
-            // Left at the `Class` default, every Kotlin `interface` claimed to
-            // be one.
-            kind: if is_interface {
-                ClassKind::Interface
-            } else if is_data {
-                // `data` is a DECLARED KIND, not a walker instruction. Stating
-                // it here is the whole of the frontend's job; normalization
-                // derives the members.
-                ClassKind::Record
-            } else {
-                ClassKind::Class
-            },
-            // Storage stays Reference — a `data class` aliases on assignment
-            // like any other class. What it gains is VALUE equality, from the
-            // `equals` normalization derives. `kind` says WHAT was declared;
-            // `semantics` says how it BEHAVES, and the two are independent:
-            // a Pascal record copies and has no `equals`, a `data class` has
-            // `equals` and does not copy.
-            semantics: ValueSemantics {
-                equality: if is_data {
-                    ValueEquality::Structural
+    Some(Statement::with_span(
+        StmtKind::ClassDecl {
+            name,
+            parents,
+            interfaces,
+            members,
+            modifiers: ClassModifiers {
+                is_abstract: is_abstract || is_interface,
+                is_sealed,
+                // What this declaration DECLARES. `emit_class_from_ast` copies it
+                // into `NormalClass.declared_kind` and the compiler stamps it on
+                // the class object — which is what answers `interface_exists` and
+                // keeps an interface from being treated as an instantiable class.
+                // Left at the `Class` default, every Kotlin `interface` claimed to
+                // be one.
+                kind: if is_interface {
+                    ClassKind::Interface
+                } else if is_data {
+                    // `data` is a DECLARED KIND, not a walker instruction. Stating
+                    // it here is the whole of the frontend's job; normalization
+                    // derives the members.
+                    ClassKind::Record
                 } else {
-                    ValueEquality::Identity
+                    ClassKind::Class
+                },
+                // Storage stays Reference — a `data class` aliases on assignment
+                // like any other class. What it gains is VALUE equality, from the
+                // `equals` normalization derives. `kind` says WHAT was declared;
+                // `semantics` says how it BEHAVES, and the two are independent:
+                // a Pascal record copies and has no `equals`, a `data class` has
+                // `equals` and does not copy.
+                semantics: ValueSemantics {
+                    equality: if is_data {
+                        ValueEquality::Structural
+                    } else {
+                        ValueEquality::Identity
+                    },
+                    ..Default::default()
                 },
                 ..Default::default()
             },
-            ..Default::default()
+            decorators,
         },
-        decorators,
-    }, __span))
+        __span,
+    ))
 }
 
 /// The members of a `class_body` that belongs to an OBJECT — a named `object`,
@@ -18978,7 +19453,11 @@ fn walk_class_decl(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
 ///
 /// `statics` — a named object and a companion are SINGLETONS, so their storage
 /// is static; an anonymous object is an ordinary instance.
-fn walk_object_body_members(__w: &mut KtWalker, class_body: Pair<Rule>, statics: bool) -> Vec<ClassMember> {
+fn walk_object_body_members(
+    __w: &mut KtWalker,
+    class_body: Pair<Rule>,
+    statics: bool,
+) -> Vec<ClassMember> {
     let __span = to_span(&class_body);
     let mut members = Vec::new();
     let mut init_stmts = Vec::new();
@@ -19099,7 +19578,8 @@ fn walk_object_body_members(__w: &mut KtWalker, class_body: Pair<Rule>, statics:
                     is_generator: false,
                     is_sub: false,
                 },
-            __span))));
+                __span,
+            ))));
         } else {
             members.push(ClassMember::Constructor {
                 name: None,
@@ -19146,7 +19626,8 @@ fn walk_object_decl(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
                                 }
                             }
                             Rule::delegate_expr => {
-                                by_expr = Some((sub.as_str().to_string(), walk_delegate_expr(__w, sub)));
+                                by_expr =
+                                    Some((sub.as_str().to_string(), walk_delegate_expr(__w, sub)));
                             }
                             _ => {}
                         }
@@ -19274,7 +19755,8 @@ fn walk_object_decl(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
         .collect();
     if !object_field_names.is_empty() {
         {
-            __w.user_property_names.extend(object_field_names.iter().cloned());
+            __w.user_property_names
+                .extend(object_field_names.iter().cloned());
         };
     }
     for (interface_name, delegate_field) in &delegations {
@@ -19319,7 +19801,9 @@ fn walk_object_decl(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
                     }
                 }
             }
-            ClassMember::Field { init: Some(init), .. } => {
+            ClassMember::Field {
+                init: Some(init), ..
+            } => {
                 let skip = HashSet::new();
                 {
                     let __p = enter_kotlin_field_aliases(__w, &object_field_aliases);
@@ -19395,14 +19879,17 @@ fn walk_object_decl(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
         members.extend(instance_methods);
     }
 
-    Some(Statement::with_span(StmtKind::ClassDecl {
-        name,
-        parents,
-        interfaces,
-        members,
-        modifiers: ClassModifiers::default(),
-        decorators: vec![],
-    }, __span))
+    Some(Statement::with_span(
+        StmtKind::ClassDecl {
+            name,
+            parents,
+            interfaces,
+            members,
+            modifiers: ClassModifiers::default(),
+            decorators: vec![],
+        },
+        __span,
+    ))
 }
 
 fn walk_block_statements(__w: &mut KtWalker, pair: Pair<Rule>) -> Vec<Statement> {
@@ -19460,12 +19947,15 @@ fn walk_if_stmt(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
         }
     }
 
-    Some(Statement::with_span(StmtKind::If {
-        cond,
-        then_body,
-        elifs: vec![],
-        else_body,
-    }, __span))
+    Some(Statement::with_span(
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs: vec![],
+            else_body,
+        },
+        __span,
+    ))
 }
 
 /// Whether this `when` condition is a PREDICATE rather than a value to compare
@@ -19615,11 +20105,10 @@ fn kotlin_function_type_arity(__w: &mut KtWalker, hint: &str) -> Option<usize> {
 fn kotlin_expr_function_arity(__w: &mut KtWalker, expr: &Expression) -> Option<usize> {
     match &expr.kind {
         ExprKind::Lambda { params, .. } => Some(params.len()),
-        ExprKind::Ident(name) => {
-            __w.kotlin_simple_functions
-                .get(name)
-                .map(|(params, _)| params.len())
-        },
+        ExprKind::Ident(name) => __w
+            .kotlin_simple_functions
+            .get(name)
+            .map(|(params, _)| params.len()),
         _ => None,
     }
 }
@@ -19644,11 +20133,7 @@ fn kotlin_expr_function_signature(__w: &mut KtWalker, expr: &Expression) -> Opti
 fn kotlin_companion_owner_expr(__w: &mut KtWalker, expr: &Expression) -> Option<String> {
     match &expr.kind {
         ExprKind::Member { object, field, .. } if field == "Companion" => dotted_expr_path(object),
-        ExprKind::Ident(name)
-            if __w.kotlin_object_singletons.contains(name) =>
-        {
-            Some(name.clone())
-        }
+        ExprKind::Ident(name) if __w.kotlin_object_singletons.contains(name) => Some(name.clone()),
         ExprKind::Ident(path) => path.strip_suffix(".Companion").map(str::to_string),
         _ => None,
     }
@@ -19925,7 +20410,11 @@ fn kotlin_is_type_test(__w: &mut KtWalker, expr: Expression, type_name: String) 
     })
 }
 
-fn kotlin_is_type_test_from_hint(__w: &mut KtWalker, expr: Expression, raw_hint: &str) -> Expression {
+fn kotlin_is_type_test_from_hint(
+    __w: &mut KtWalker,
+    expr: Expression,
+    raw_hint: &str,
+) -> Expression {
     let nullable = raw_hint.trim().ends_with('?');
     let type_name = type_hint_text(__w, raw_hint);
     if __w.kotlin_object_singletons.contains(&type_name) {
@@ -20004,7 +20493,11 @@ fn kotlin_checked_cast_expr(__w: &mut KtWalker, value: Expression, raw_hint: &st
     })
 }
 
-fn when_condition_predicate(__w: &mut KtWalker, pair: Pair<Rule>, subject: &Expression) -> Option<Expression> {
+fn when_condition_predicate(
+    __w: &mut KtWalker,
+    pair: Pair<Rule>,
+    subject: &Expression,
+) -> Option<Expression> {
     let mut prefix: Option<Rule> = None;
     let mut out: Option<Expression> = None;
 
@@ -20210,11 +20703,14 @@ fn walk_when_stmt(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
     } else {
         subject
     };
-    Some(Statement::with_span(StmtKind::Switch {
-        expr: discriminator,
-        cases,
-        default,
-    }, __span))
+    Some(Statement::with_span(
+        StmtKind::Switch {
+            expr: discriminator,
+            cases,
+            default,
+        },
+        __span,
+    ))
 }
 
 fn walk_for_stmt(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
@@ -20254,16 +20750,19 @@ fn walk_for_stmt(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
                 index: Box::new(Expression::int(idx as i64)),
                 null_safe: false,
             });
-            prepended_stmts.push(Statement::with_span(StmtKind::VarDecl {
-                declarations: vec![VarDeclarator {
-                    pattern: BindingPattern::Ident(name),
-                    type_hint: None,
-                    init: Some(read_expr),
-                    array_bounds: None,
-                    with_events: false,
-                }],
-                kind: VarDeclKind::Const,
-            }, __span));
+            prepended_stmts.push(Statement::with_span(
+                StmtKind::VarDecl {
+                    declarations: vec![VarDeclarator {
+                        pattern: BindingPattern::Ident(name),
+                        type_hint: None,
+                        init: Some(read_expr),
+                        array_bounds: None,
+                        with_events: false,
+                    }],
+                    kind: VarDeclKind::Const,
+                },
+                __span,
+            ));
         }
         prepended_stmts.extend(body);
         body = prepended_stmts;
@@ -20288,15 +20787,18 @@ fn walk_for_stmt(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
         iter_expr
     };
 
-    Some(Statement::with_span(StmtKind::ForIn {
-        var: var_id,
-        key: None,
-        iter: final_iter,
-        body,
-        of: true,
-        else_body: None,
-        is_async: false,
-    }, __span))
+    Some(Statement::with_span(
+        StmtKind::ForIn {
+            var: var_id,
+            key: None,
+            iter: final_iter,
+            body,
+            of: true,
+            else_body: None,
+            is_async: false,
+        },
+        __span,
+    ))
 }
 
 fn walk_while_stmt(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
@@ -20317,11 +20819,14 @@ fn walk_while_stmt(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
         }
     }
 
-    Some(Statement::with_span(StmtKind::While {
-        cond,
-        body,
-        else_body: None,
-    }, __span))
+    Some(Statement::with_span(
+        StmtKind::While {
+            cond,
+            body,
+            else_body: None,
+        },
+        __span,
+    ))
 }
 
 fn walk_do_while_stmt(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement> {
@@ -20342,11 +20847,14 @@ fn walk_do_while_stmt(__w: &mut KtWalker, pair: Pair<Rule>) -> Option<Statement>
         }
     }
 
-    Some(Statement::with_span(StmtKind::DoWhile {
-        body,
-        cond,
-        until: false,
-    }, __span))
+    Some(Statement::with_span(
+        StmtKind::DoWhile {
+            body,
+            cond,
+            until: false,
+        },
+        __span,
+    ))
 }
 
 fn walk_lambda(__w: &mut KtWalker, pair: Pair<Rule>) -> Expression {
@@ -20375,7 +20883,8 @@ fn walk_lambda(__w: &mut KtWalker, pair: Pair<Rule>) -> Expression {
                                     }
                                 }
                                 Rule::type_ref => {
-                                    let (hint, nullable) = kotlin_nullable_type_hint(__w, lsub.as_str());
+                                    let (hint, nullable) =
+                                        kotlin_nullable_type_hint(__w, lsub.as_str());
                                     lambda_param_nullable = nullable;
                                     type_hint = hint;
                                 }
@@ -20395,20 +20904,23 @@ fn walk_lambda(__w: &mut KtWalker, pair: Pair<Rule>) -> Expression {
                                 is_nullable: false,
                             });
                             for (idx, dname) in destruct_names.into_iter().enumerate() {
-                                prefix_stmts.push(Statement::with_span(StmtKind::VarDecl {
-                                    declarations: vec![VarDeclarator {
-                                        pattern: BindingPattern::Ident(dname),
-                                        type_hint: None,
-                                        init: Some(Expression::new(ExprKind::Index {
-                                            object: Box::new(Expression::ident(&tmp_param)),
-                                            index: Box::new(Expression::int(idx as i64)),
-                                            null_safe: false,
-                                        })),
-                                        array_bounds: None,
-                                        with_events: false,
-                                    }],
-                                    kind: VarDeclKind::Const,
-                                }, __span));
+                                prefix_stmts.push(Statement::with_span(
+                                    StmtKind::VarDecl {
+                                        declarations: vec![VarDeclarator {
+                                            pattern: BindingPattern::Ident(dname),
+                                            type_hint: None,
+                                            init: Some(Expression::new(ExprKind::Index {
+                                                object: Box::new(Expression::ident(&tmp_param)),
+                                                index: Box::new(Expression::int(idx as i64)),
+                                                null_safe: false,
+                                            })),
+                                            array_bounds: None,
+                                            with_events: false,
+                                        }],
+                                        kind: VarDeclKind::Const,
+                                    },
+                                    __span,
+                                ));
                             }
                         } else if !name.is_empty() {
                             params.push(Param {
@@ -20883,7 +21395,11 @@ fn walk_expr(__w: &mut KtWalker, pair: Pair<Rule>) -> Expression {
                     // never a coerced value (`"abc" as? Int` was NaN).
                     // Same runtime test the `is` operator uses.
                     current = Expression::new(ExprKind::Ternary {
-                        cond: Box::new(kotlin_is_type_test_from_hint(__w, current.clone(), &target_type)),
+                        cond: Box::new(kotlin_is_type_test_from_hint(
+                            __w,
+                            current.clone(),
+                            &target_type,
+                        )),
                         then: Box::new(current),
                         else_: Box::new(Expression::null()),
                     });
@@ -21302,7 +21818,8 @@ fn walk_expr(__w: &mut KtWalker, pair: Pair<Rule>) -> Expression {
                                 "put"
                                     if args.len() == 2
                                         && !dotted_expr_path(&object).is_some_and(|path| {
-                                            is_user_class_name(__w, 
+                                            is_user_class_name(
+                                                __w,
                                                 path.rsplit('.').next().unwrap_or(&path),
                                             ) && is_user_member_name(__w, field, args.len())
                                         }) =>
@@ -21348,14 +21865,13 @@ fn walk_expr(__w: &mut KtWalker, pair: Pair<Rule>) -> Expression {
                                     });
                                     continue;
                                 }
-                                name
-                                    if args.is_empty()
-                                        && name.starts_with("component")
-                                        && !is_user_member_name(__w, name, 0)
-                                        && name["component".len()..]
-                                            .parse::<i64>()
-                                            .ok()
-                                            .is_some_and(|n| n >= 1) =>
+                                name if args.is_empty()
+                                    && name.starts_with("component")
+                                    && !is_user_member_name(__w, name, 0)
+                                    && name["component".len()..]
+                                        .parse::<i64>()
+                                        .ok()
+                                        .is_some_and(|n| n >= 1) =>
                                 {
                                     let idx = name["component".len()..].parse::<i64>().unwrap() - 1;
                                     current = Expression::new(ExprKind::Index {
@@ -21446,7 +21962,10 @@ fn walk_expr(__w: &mut KtWalker, pair: Pair<Rule>) -> Expression {
                                 }
                                 "find" | "findLast"
                                     if args.len() == 1
-                                        && matches!(args[0].value.kind, ExprKind::Lambda { .. }) =>
+                                        && matches!(
+                                            args[0].value.kind,
+                                            ExprKind::Lambda { .. }
+                                        ) =>
                                 {
                                     let target = if field == "find" {
                                         "__kt_find"
@@ -21509,7 +22028,10 @@ fn walk_expr(__w: &mut KtWalker, pair: Pair<Rule>) -> Expression {
                                 }
                                 "find" | "findLast"
                                     if args.len() == 1
-                                        && matches!(args[0].value.kind, ExprKind::Lambda { .. }) =>
+                                        && matches!(
+                                            args[0].value.kind,
+                                            ExprKind::Lambda { .. }
+                                        ) =>
                                 {
                                     let target = if field == "find" {
                                         "__kt_find"
@@ -21563,7 +22085,9 @@ fn walk_expr(__w: &mut KtWalker, pair: Pair<Rule>) -> Expression {
                                 // Member block below via __coll_push, which works uniformly
                                 // for both list (array.push) and set (set semantics via
                                 // array.push on the keys array). Do NOT intercept it here.
-                                "remove" if args.len() == 1 && kotlin_expr_is_set_like(__w, &object) => {
+                                "remove"
+                                    if args.len() == 1 && kotlin_expr_is_set_like(__w, &object) =>
+                                {
                                     current = Expression::new(ExprKind::Call {
                                         callee: Box::new(Expression::ident("__kt_remove")),
                                         args: vec![
@@ -21662,7 +22186,9 @@ fn walk_expr(__w: &mut KtWalker, pair: Pair<Rule>) -> Expression {
                         };
 
                         if let Some(ref fn_name) = func_name {
-                            if fn_name == "Pair" && args.len() == 2 && !is_user_class_name(__w, fn_name)
+                            if fn_name == "Pair"
+                                && args.len() == 2
+                                && !is_user_class_name(__w, fn_name)
                             {
                                 current =
                                     create_pair_expr(args[0].value.clone(), args[1].value.clone());
@@ -21999,7 +22525,8 @@ fn walk_expr(__w: &mut KtWalker, pair: Pair<Rule>) -> Expression {
                                 "put"
                                     if args.len() == 2
                                         && !dotted_expr_path(&object).is_some_and(|path| {
-                                            is_user_class_name(__w, 
+                                            is_user_class_name(
+                                                __w,
                                                 path.rsplit('.').next().unwrap_or(&path),
                                             ) && is_user_member_name(__w, field, args.len())
                                         }) =>
@@ -22127,7 +22654,10 @@ fn walk_expr(__w: &mut KtWalker, pair: Pair<Rule>) -> Expression {
                                 }
                                 "find" | "findLast"
                                     if args.len() == 1
-                                        && matches!(args[0].value.kind, ExprKind::Lambda { .. }) =>
+                                        && matches!(
+                                            args[0].value.kind,
+                                            ExprKind::Lambda { .. }
+                                        ) =>
                                 {
                                     let target = if field == "find" {
                                         "__kt_find"
@@ -22190,7 +22720,10 @@ fn walk_expr(__w: &mut KtWalker, pair: Pair<Rule>) -> Expression {
                                 }
                                 "find" | "findLast"
                                     if args.len() == 1
-                                        && matches!(args[0].value.kind, ExprKind::Lambda { .. }) =>
+                                        && matches!(
+                                            args[0].value.kind,
+                                            ExprKind::Lambda { .. }
+                                        ) =>
                                 {
                                     let target = if field == "find" {
                                         "__kt_find"
@@ -22291,7 +22824,9 @@ fn walk_expr(__w: &mut KtWalker, pair: Pair<Rule>) -> Expression {
                                     });
                                     continue;
                                 }
-                                "remove" if args.len() == 1 && kotlin_expr_is_set_like(__w, &object) => {
+                                "remove"
+                                    if args.len() == 1 && kotlin_expr_is_set_like(__w, &object) =>
+                                {
                                     current = Expression::new(ExprKind::Call {
                                         callee: Box::new(Expression::ident("__kt_remove")),
                                         args: vec![
@@ -22857,7 +23392,10 @@ fn walk_expr(__w: &mut KtWalker, pair: Pair<Rule>) -> Expression {
                                 }
                                 "find" | "findLast"
                                     if args.len() == 1
-                                        && matches!(args[0].value.kind, ExprKind::Lambda { .. }) =>
+                                        && matches!(
+                                            args[0].value.kind,
+                                            ExprKind::Lambda { .. }
+                                        ) =>
                                 {
                                     let target = if field == "find" {
                                         "__kt_find"
@@ -22946,7 +23484,10 @@ fn walk_expr(__w: &mut KtWalker, pair: Pair<Rule>) -> Expression {
                                 }
                                 "find" | "findLast"
                                     if args.len() == 1
-                                        && matches!(args[0].value.kind, ExprKind::Lambda { .. }) =>
+                                        && matches!(
+                                            args[0].value.kind,
+                                            ExprKind::Lambda { .. }
+                                        ) =>
                                 {
                                     let target = if field == "find" {
                                         "__kt_find"
@@ -23142,9 +23683,11 @@ fn walk_expr(__w: &mut KtWalker, pair: Pair<Rule>) -> Expression {
                                     }
                                     let source = kotlin_sequence_source(__w, object)
                                         .unwrap_or_else(|| *object.clone());
-                                    if let Some(materialized) =
-                                        kotlin_generate_sequence_take_while(__w, &source, &args[0].value)
-                                    {
+                                    if let Some(materialized) = kotlin_generate_sequence_take_while(
+                                        __w,
+                                        &source,
+                                        &args[0].value,
+                                    ) {
                                         current = materialized;
                                         continue;
                                     }
@@ -23190,16 +23733,19 @@ fn walk_expr(__w: &mut KtWalker, pair: Pair<Rule>) -> Expression {
                                     // pairs (`Map.toList()` is `List<Pair>`;
                                     // the identity fallback answered the map
                                     // itself).
-                                    current = kotlin_materialize_generate_sequence(__w, &source, None)
-                                        .unwrap_or_else(|| {
-                                            Expression::new(ExprKind::Call {
-                                                callee: Box::new(Expression::ident(
-                                                    "__kt_map_entry_list",
-                                                )),
-                                                args: vec![Argument::positional(*object.clone())],
-                                                optional: false,
-                                            })
-                                        });
+                                    current =
+                                        kotlin_materialize_generate_sequence(__w, &source, None)
+                                            .unwrap_or_else(|| {
+                                                Expression::new(ExprKind::Call {
+                                                    callee: Box::new(Expression::ident(
+                                                        "__kt_map_entry_list",
+                                                    )),
+                                                    args: vec![Argument::positional(
+                                                        *object.clone(),
+                                                    )],
+                                                    optional: false,
+                                                })
+                                            });
                                     continue;
                                 }
                                 "windowed" if args.len() == 1 => {
@@ -23218,7 +23764,8 @@ fn walk_expr(__w: &mut KtWalker, pair: Pair<Rule>) -> Expression {
                                                 .unwrap_or_else(|| *object.clone())
                                         });
                                     if let ExprKind::Lit(Literal::Int(size)) = args[0].value.kind {
-                                        if let Some(items) = kotlin_static_array_items(__w, &source) {
+                                        if let Some(items) = kotlin_static_array_items(__w, &source)
+                                        {
                                             if let Some(windowed) =
                                                 kotlin_window_static(&items, size as usize)
                                             {
@@ -23244,7 +23791,8 @@ fn walk_expr(__w: &mut KtWalker, pair: Pair<Rule>) -> Expression {
                                                 .unwrap_or_else(|| *object.clone())
                                         });
                                     if let ExprKind::Lit(Literal::Int(size)) = args[0].value.kind {
-                                        if let Some(items) = kotlin_static_array_items(__w, &source) {
+                                        if let Some(items) = kotlin_static_array_items(__w, &source)
+                                        {
                                             if args.len() == 2
                                                 && kotlin_lambda_is_collection_sum(&args[1].value)
                                             {
@@ -23374,7 +23922,8 @@ fn walk_expr(__w: &mut KtWalker, pair: Pair<Rule>) -> Expression {
                                                 null_safe: false,
                                             })),
                                             args: vec![Argument::positional(
-                                                kotlin_materialize_sequence_lambda_result(__w, 
+                                                kotlin_materialize_sequence_lambda_result(
+                                                    __w,
                                                     &args[0].value,
                                                 ),
                                             )],
@@ -23395,7 +23944,8 @@ fn walk_expr(__w: &mut KtWalker, pair: Pair<Rule>) -> Expression {
                                 }
                                 "filter" | "filterNot" | "map" | "forEach" if args.len() == 1 => {
                                     if field == "map"
-                                        && let Some(seq) = kotlin_sequence_receiver_expr(__w, object)
+                                        && let Some(seq) =
+                                            kotlin_sequence_receiver_expr(__w, object)
                                     {
                                         current = Expression::new(ExprKind::Call {
                                             callee: Box::new(Expression::ident("__kt_seq_map")),
@@ -23404,7 +23954,8 @@ fn walk_expr(__w: &mut KtWalker, pair: Pair<Rule>) -> Expression {
                                         });
                                         continue;
                                     }
-                                    let receiver_is_collection = kotlin_expr_type(__w, 
+                                    let receiver_is_collection = kotlin_expr_type(
+                                        __w,
                                         object,
                                         &KotlinLocalTypes::new(),
                                         &KotlinOperatorTable::new(),
@@ -23473,7 +24024,8 @@ fn walk_expr(__w: &mut KtWalker, pair: Pair<Rule>) -> Expression {
                             |name: &str| name.chars().next().is_some_and(char::is_uppercase);
                         let is_class_name = match &current.kind {
                             ExprKind::Ident(name) => {
-                                is_type_spelling(name) && !kotlin_is_builtin_exception_callee(__w, name)
+                                is_type_spelling(name)
+                                    && !kotlin_is_builtin_exception_callee(__w, name)
                             }
                             ExprKind::Member { field, .. }
                                 if qualified_inner_class(__w, field).is_some() =>
@@ -23484,12 +24036,13 @@ fn walk_expr(__w: &mut KtWalker, pair: Pair<Rule>) -> Expression {
                             // name; `expr.Foo()` is a method call on a value.
                             ExprKind::Member { object, field, .. } => {
                                 let path = dotted_expr_path(&current);
-                                path.as_deref().is_some_and(|__x| is_user_class_name(__w, __x))
+                                path.as_deref()
+                                    .is_some_and(|__x| is_user_class_name(__w, __x))
                                     || is_type_spelling(field)
                                         && is_ident_chain(object)
-                                        && !path
-                                            .as_deref()
-                                            .is_some_and(|__x| kotlin_is_builtin_exception_callee(__w, __x))
+                                        && !path.as_deref().is_some_and(|__x| {
+                                            kotlin_is_builtin_exception_callee(__w, __x)
+                                        })
                             }
                             _ => false,
                         };
@@ -23521,8 +24074,8 @@ fn walk_expr(__w: &mut KtWalker, pair: Pair<Rule>) -> Expression {
                                     args = with_outer;
                                     current = qualified_type_expr(&qualified);
                                 } else {
-                                    let source_declared_dotted_type =
-                                        dotted_expr_path(&current).filter(|path| {
+                                    let source_declared_dotted_type = dotted_expr_path(&current)
+                                        .filter(|path| {
                                             path.contains('.')
                                                 && path
                                                     .rsplit('.')
@@ -23556,7 +24109,10 @@ fn walk_expr(__w: &mut KtWalker, pair: Pair<Rule>) -> Expression {
                             // A local class receives what it captured, ahead of
                             // whatever the source passes.
                             if let ExprKind::Ident(ref cname) = current.kind {
-                                let caps = __w.local_class_captures.get(cname).cloned()
+                                let caps = __w
+                                    .local_class_captures
+                                    .get(cname)
+                                    .cloned()
                                     .unwrap_or_default();
                                 if !caps.is_empty() {
                                     let mut with_caps: Vec<Argument> = caps
@@ -23593,7 +24149,8 @@ fn walk_expr(__w: &mut KtWalker, pair: Pair<Rule>) -> Expression {
                                                 null_safe: false,
                                             })),
                                             args: vec![Argument::positional(
-                                                kotlin_materialize_sequence_lambda_result(__w, 
+                                                kotlin_materialize_sequence_lambda_result(
+                                                    __w,
                                                     &args[0].value,
                                                 ),
                                             )],
@@ -23618,7 +24175,8 @@ fn walk_expr(__w: &mut KtWalker, pair: Pair<Rule>) -> Expression {
                                 ) && args.len() == 1
                                 {
                                     if field == "map"
-                                        && let Some(seq) = kotlin_sequence_receiver_expr(__w, object)
+                                        && let Some(seq) =
+                                            kotlin_sequence_receiver_expr(__w, object)
                                     {
                                         current = Expression::new(ExprKind::Call {
                                             callee: Box::new(Expression::ident("__kt_seq_map")),
@@ -23627,7 +24185,8 @@ fn walk_expr(__w: &mut KtWalker, pair: Pair<Rule>) -> Expression {
                                         });
                                         continue;
                                     }
-                                    let receiver_is_collection = kotlin_expr_type(__w, 
+                                    let receiver_is_collection = kotlin_expr_type(
+                                        __w,
                                         object,
                                         &KotlinLocalTypes::new(),
                                         &KotlinOperatorTable::new(),
@@ -23787,7 +24346,8 @@ fn walk_expr(__w: &mut KtWalker, pair: Pair<Rule>) -> Expression {
                         } else if !next_is_call
                             && let Some(path) = dotted_expr_path(&current)
                             && let Some(kind) = kotlin_delegated_collection_kind(__w, &path)
-                            && let Some(delegate_field) = kotlin_delegated_collection_field(__w, &path)
+                            && let Some(delegate_field) =
+                                kotlin_delegated_collection_field(__w, &path)
                             && matches!(
                                 kind.rsplit('.').next().unwrap_or(&kind),
                                 "Map" | "MutableMap"
@@ -23815,7 +24375,8 @@ fn walk_expr(__w: &mut KtWalker, pair: Pair<Rule>) -> Expression {
                             });
                         } else if !next_is_call
                             && matches!(field_id.as_str(), "size" | "length")
-                            && kotlin_expr_type(__w, 
+                            && kotlin_expr_type(
+                                __w,
                                 &current,
                                 &KotlinLocalTypes::new(),
                                 &KotlinOperatorTable::new(),
@@ -24075,7 +24636,8 @@ fn walk_expr(__w: &mut KtWalker, pair: Pair<Rule>) -> Expression {
                     }
                     Rule::index_suffix => {
                         let index_pair = suffix_inner.into_inner().next().unwrap();
-                        let idx_expr = walk_expr(__w, 
+                        let idx_expr = walk_expr(
+                            __w,
                             index_pair
                                 .into_inner()
                                 .next()
@@ -24104,11 +24666,14 @@ fn walk_expr(__w: &mut KtWalker, pair: Pair<Rule>) -> Expression {
                                 optional: false,
                             });
                         } else if let Some(name) = target {
-                            current = callable_ref_lambda(__w, Expression::new(ExprKind::Member {
-                                object: Box::new(current),
-                                field: name,
-                                null_safe: false,
-                            }));
+                            current = callable_ref_lambda(
+                                __w,
+                                Expression::new(ExprKind::Member {
+                                    object: Box::new(current),
+                                    field: name,
+                                    null_safe: false,
+                                }),
+                            );
                         }
                     }
                     Rule::null_assert_suffix => {
@@ -24203,8 +24768,10 @@ fn walk_expr(__w: &mut KtWalker, pair: Pair<Rule>) -> Expression {
                             Rule::parameter_list => params = walk_parameter_list(__w, part),
                             Rule::function_body_expr => {
                                 if let Some(e) = kotlin_walk_body_expr(__w, part) {
-                                    body =
-                                        vec![Statement::with_span(StmtKind::Return(Some(e)), __span)];
+                                    body = vec![Statement::with_span(
+                                        StmtKind::Return(Some(e)),
+                                        __span,
+                                    )];
                                 }
                             }
                             Rule::block => body = walk_block_statements(__w, part),
@@ -24330,8 +24897,8 @@ fn walk_expr(__w: &mut KtWalker, pair: Pair<Rule>) -> Expression {
                                     } = m
                                     {
                                         if let Some(value) = field_init.take() {
-                                            inits.push(Statement::with_span(StmtKind::Expr(
-                                                Expression::new(ExprKind::Assign {
+                                            inits.push(Statement::with_span(
+                                                StmtKind::Expr(Expression::new(ExprKind::Assign {
                                                     target: Box::new(Expression::new(
                                                         ExprKind::Member {
                                                             object: Box::new(Expression::new(
@@ -24342,8 +24909,9 @@ fn walk_expr(__w: &mut KtWalker, pair: Pair<Rule>) -> Expression {
                                                         },
                                                     )),
                                                     value: Box::new(value),
-                                                }),
-                                            ), __span));
+                                                })),
+                                                __span,
+                                            ));
                                         }
                                     }
                                 }
@@ -24473,7 +25041,9 @@ fn walk_expr(__w: &mut KtWalker, pair: Pair<Rule>) -> Expression {
                                             // value here (`in 90..100 ->
                                             // if (…) "A" else "A+"`).
                                             kind @ StmtKind::If { .. } => {
-                                                kotlin_if_stmt_to_ternary(Statement::with_span(kind, __span))
+                                                kotlin_if_stmt_to_ternary(Statement::with_span(
+                                                    kind, __span,
+                                                ))
                                             }
                                             StmtKind::Switch {
                                                 expr,
@@ -24500,9 +25070,7 @@ fn walk_expr(__w: &mut KtWalker, pair: Pair<Rule>) -> Expression {
                                                 if let Some(body) = default {
                                                     arms.push(MatchArm {
                                                         conditions: None,
-                                                        body: kotlin_block_statements_as_expr(
-                                                            body,
-                                                        ),
+                                                        body: kotlin_block_statements_as_expr(body),
                                                     });
                                                 }
                                                 Expression::new(ExprKind::Match {
@@ -24641,8 +25209,7 @@ fn type_hint_text(__w: &mut KtWalker, raw: &str) -> String {
         }
     }
     let text = out.trim().to_string();
-    let text = __w.kotlin_type_aliases.get(&text).cloned()
-        .unwrap_or(text);
+    let text = __w.kotlin_type_aliases.get(&text).cloned().unwrap_or(text);
     if !text.contains('.') {
         // Candidates built first: the closure would otherwise hold the stack
         // borrowed while `is_user_class_name` needs `&mut __w`.
@@ -25043,11 +25610,10 @@ fn create_kotlin_set_expr(elems: Vec<Expression>) -> Expression {
 
 fn kotlin_expr_is_set_like(__w: &mut KtWalker, expr: &Expression) -> bool {
     match &expr.kind {
-        ExprKind::Ident(name) => {
-            __w.kotlin_keyed_collection_types
-                .get(name)
-                .is_some_and(|ty| kotlin_type_is_set_like(ty))
-        },
+        ExprKind::Ident(name) => __w
+            .kotlin_keyed_collection_types
+            .get(name)
+            .is_some_and(|ty| kotlin_type_is_set_like(ty)),
         ExprKind::Call { callee, .. } => match &callee.kind {
             ExprKind::Ident(name) => matches!(
                 name.as_str(),

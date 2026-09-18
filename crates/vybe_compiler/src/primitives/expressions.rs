@@ -28,13 +28,7 @@ impl Compiler {
             vybe_runtime::profile::BuiltinEmit::Invoke(method_name) => {
                 let line = self.line;
                 let name = method_name.clone();
-                common::invoke::emit_invoke_method(
-                    &mut self.chunks,
-                    self.current,
-                    &name,
-                    0,
-                    line,
-                );
+                common::invoke::emit_invoke_method(&mut self.chunks, self.current, &name, 0, line);
             }
             vybe_runtime::profile::BuiltinEmit::Intrinsic(_)
             | vybe_runtime::profile::BuiltinEmit::MutateVar(_)
@@ -225,10 +219,17 @@ impl Compiler {
                 self.emit_struct_new(typeidx, 0);
                 let typed_slot = self.define_local("__tree_ctor_typed");
                 self.emit_u16(Op::LOCAL_SET, typed_slot);
-                for key in ["__node", "__document", crate::primitives::gui::CONTROL_TYPE_FIELD] {
+                for key in [
+                    "__node",
+                    "__document",
+                    crate::primitives::gui::CONTROL_TYPE_FIELD,
+                ] {
                     self.emit_u16(Op::LOCAL_GET, typed_slot);
                     self.emit_u16(Op::LOCAL_GET, element_slot);
-                    self.class_get(class_slots::ObjSource::Stack, &class_slots::ClassSlot::internal(key));
+                    self.class_get(
+                        class_slots::ObjSource::Stack,
+                        &class_slots::ClassSlot::internal(key),
+                    );
                     self.class_set(
                         class_slots::ObjSource::Stack,
                         &class_slots::ClassSlot::internal(key),
@@ -580,7 +581,10 @@ impl Compiler {
         self.chunk().emit_if(line);
 
         self.emit_u16(Op::LOCAL_GET, control_slot);
-        self.class_get(class_slots::ObjSource::Stack, &class_slots::ClassSlot::internal("__vybe_generator_control"));
+        self.class_get(
+            class_slots::ObjSource::Stack,
+            &class_slots::ClassSlot::internal("__vybe_generator_control"),
+        );
         {
             let l = self.line;
             crate::primitives::ops::emit_dyn_to_bool(self.chunk(), l);
@@ -666,7 +670,10 @@ impl Compiler {
         self.chunk().emit_if(line);
 
         self.emit_u16(Op::LOCAL_GET, resume_slot);
-        self.class_get(class_slots::ObjSource::Stack, &class_slots::ClassSlot::internal("__vybe_generator_control"));
+        self.class_get(
+            class_slots::ObjSource::Stack,
+            &class_slots::ClassSlot::internal("__vybe_generator_control"),
+        );
         {
             let l = self.line;
             crate::primitives::ops::emit_dyn_to_bool(self.chunk(), l);
@@ -817,12 +824,18 @@ impl Compiler {
         self.chunk().emit_if_value(line);
 
         self.emit_u16(Op::LOCAL_GET, yielded_slot);
-        self.class_get(class_slots::ObjSource::Stack, &class_slots::ClassSlot::internal("__vybe_generator_yield"));
+        self.class_get(
+            class_slots::ObjSource::Stack,
+            &class_slots::ClassSlot::internal("__vybe_generator_yield"),
+        );
         crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
         self.chunk().emit_if_value(line);
 
         self.emit_u16(Op::LOCAL_GET, yielded_slot);
-        self.class_get(class_slots::ObjSource::Stack, &class_slots::ClassSlot::internal("payload_id"));
+        self.class_get(
+            class_slots::ObjSource::Stack,
+            &class_slots::ClassSlot::internal("payload_id"),
+        );
         let payload_id_slot = self.define_local("__yield_payload_id");
         self.emit_u16(Op::LOCAL_SET, payload_id_slot);
 
@@ -830,7 +843,10 @@ impl Compiler {
         self.emit(Op::REF_IS_NULL);
         self.chunk().emit_if_value(line);
         self.emit_u16(Op::LOCAL_GET, yielded_slot);
-        self.class_get(class_slots::ObjSource::Stack, &class_slots::ClassSlot::internal("value"));
+        self.class_get(
+            class_slots::ObjSource::Stack,
+            &class_slots::ClassSlot::internal("value"),
+        );
         self.chunk().emit_else(line);
 
         self.emit_generator_payload_store();
@@ -858,12 +874,18 @@ impl Compiler {
         self.chunk().emit_if_value(line);
 
         self.emit_u16(Op::LOCAL_GET, yielded_slot);
-        self.class_get(class_slots::ObjSource::Stack, &class_slots::ClassSlot::internal("__vybe_generator_yield"));
+        self.class_get(
+            class_slots::ObjSource::Stack,
+            &class_slots::ClassSlot::internal("__vybe_generator_yield"),
+        );
         crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
         self.chunk().emit_if_value(line);
 
         self.emit_u16(Op::LOCAL_GET, yielded_slot);
-        self.class_get(class_slots::ObjSource::Stack, &class_slots::ClassSlot::internal("key"));
+        self.class_get(
+            class_slots::ObjSource::Stack,
+            &class_slots::ClassSlot::internal("key"),
+        );
 
         self.chunk().emit_else(line);
         if let Some(slot) = fallback_slot {
@@ -1067,7 +1089,10 @@ impl Compiler {
                     let canon_name = self.canon(name);
                     if let Some(enum_type) = self.enum_members.get(&canon_name).cloned() {
                         self.emit_global_read(&enum_type);
-                        self.class_get(class_slots::ObjSource::Stack, &class_slots::ClassSlot::internal(&canon_name));
+                        self.class_get(
+                            class_slots::ObjSource::Stack,
+                            &class_slots::ClassSlot::internal(&canon_name),
+                        );
                         return Ok(());
                     }
                 }
@@ -1486,10 +1511,7 @@ impl Compiler {
                                 // and printed `1` / `0` instead of `true` /
                                 // `false`. Branch conditions accept both, which
                                 // is why the brand check above needs no wrapper.
-                                crate::primitives::ops::emit_i32_to_bool(
-                                    self.chunk(),
-                                    line,
-                                );
+                                crate::primitives::ops::emit_i32_to_bool(self.chunk(), line);
                                 return Ok(());
                             }
                             self.emit_const(Value::String(Arc::from(storage_name.as_str())));
@@ -2008,7 +2030,11 @@ impl Compiler {
                             }
                             UnaryOp::TrailingZeros(lane) => {
                                 let l = self.line;
-                                crate::primitives::bits::emit_trailing_zeros(self.chunk(), *lane, l);
+                                crate::primitives::bits::emit_trailing_zeros(
+                                    self.chunk(),
+                                    *lane,
+                                    l,
+                                );
                             }
                             UnaryOp::BitNot => {
                                 let l = self.line;
@@ -2101,8 +2127,7 @@ impl Compiler {
 
             // ── Ternary ─────────────────────────────────────────────────
             ExprKind::Ternary { cond, then, else_ } => {
-                self.compile_expr(cond)?;
-                self.emit_condition_truthiness_from_stack();
+                self.compile_condition_to_i32(cond)?;
                 let line = self.line;
                 self.chunk().emit_if_value(line);
                 self.compile_expr(then)?;
@@ -2236,17 +2261,17 @@ impl Compiler {
                     .infer_expr_type_hint(object)
                     .map(|hint| self.resolve_source_type_alias(&hint))
                     .map(|hint| Self::tree_type_key(&hint))
-                    .is_some_and(|hint| {
-                        self.tree_instance_member(&hint, "Result")
-                        .is_some()
-                    });
+                    .is_some_and(|hint| self.tree_instance_member(&hint, "Result").is_some());
                 if receiver_declares_result && self.canon(field) == self.canon("Result") {
                     let obj_slot = self.define_local("__dotnet_task_result_obj");
                     let value_slot = self.define_local("__dotnet_task_result_value");
                     self.compile_expr(object)?;
                     self.emit_u16(Op::LOCAL_SET, obj_slot);
                     self.emit_u16(Op::LOCAL_GET, obj_slot);
-                    self.class_get(class_slots::ObjSource::Stack, &class_slots::ClassSlot::internal("Result"));
+                    self.class_get(
+                        class_slots::ObjSource::Stack,
+                        &class_slots::ClassSlot::internal("Result"),
+                    );
                     self.emit_u16(Op::LOCAL_SET, value_slot);
                     self.emit_u16(Op::LOCAL_GET, value_slot);
                     let undef_idx = self.import("wasm:js-undefined", "test");
@@ -2298,7 +2323,10 @@ impl Compiler {
                                     self.line,
                                 );
                             } else {
-                                self.class_get(class_slots::ObjSource::Stack, &class_slots::ClassSlot::internal(&part));
+                                self.class_get(
+                                    class_slots::ObjSource::Stack,
+                                    &class_slots::ClassSlot::internal(&part),
+                                );
                             }
                         }
                         return Ok(());
@@ -2751,7 +2779,10 @@ impl Compiler {
                             if zero_arg_static {
                                 self.emit_global_read(&canon_obj);
                                 inst!(self, core_wasm::dup);
-                                self.class_get(class_slots::ObjSource::Stack, &class_slots::ClassSlot::internal(&method_name));
+                                self.class_get(
+                                    class_slots::ObjSource::Stack,
+                                    &class_slots::ClassSlot::internal(&method_name),
+                                );
                                 let fn_tmp = self
                                     .scope()
                                     .resolve("__pascal_static_fn")
@@ -2885,7 +2916,9 @@ impl Compiler {
                                         );
                                         continue;
                                     }
-                                    let idx = self.resolve_slot_interned(&class_slots::ClassSlot::internal(&part));
+                                    let idx = self.resolve_slot_interned(
+                                        &class_slots::ClassSlot::internal(&part),
+                                    );
                                     self.class_get_resolved(class_slots::ObjSource::Stack, &idx);
                                 }
                                 return Ok(());
@@ -2918,7 +2951,10 @@ impl Compiler {
                                                 .emit_const(Value::String(Arc::from(s.as_str()))),
                                         }
                                         for part in &ns_parts[const_end..] {
-                                            self.class_get(class_slots::ObjSource::Stack, &class_slots::ClassSlot::internal(part));
+                                            self.class_get(
+                                                class_slots::ObjSource::Stack,
+                                                &class_slots::ClassSlot::internal(part),
+                                            );
                                         }
                                         return Ok(());
                                     }
@@ -2944,7 +2980,9 @@ impl Compiler {
                             self.bind_receiver_from_stack(saved_this);
                         }
 
-                        let getter_key = self.resolve_slot_interned(&class_slots::ClassSlot::internal(&format!("__get_{}", field)));
+                        let getter_key = self.resolve_slot_interned(
+                            &class_slots::ClassSlot::internal(&format!("__get_{}", field)),
+                        );
                         self.emit_js_super_home_base();
                         self.class_get_resolved(class_slots::ObjSource::Stack, &getter_key);
                         let getter_slot = self.define_local("__js_super_prop_getter");
@@ -2954,7 +2992,10 @@ impl Compiler {
                         let line = self.line;
                         self.chunk().emit_if_value(line);
                         self.emit_js_super_home_base();
-                        self.class_get(class_slots::ObjSource::Stack, &class_slots::ClassSlot::internal(field));
+                        self.class_get(
+                            class_slots::ObjSource::Stack,
+                            &class_slots::ClassSlot::internal(field),
+                        );
                         self.chunk().emit_else(line);
                         self.emit_u16(Op::LOCAL_GET, getter_slot);
                         self.emit_js_current_this_value();
@@ -3009,7 +3050,10 @@ impl Compiler {
                     self.chunk().emit_if_value(line);
 
                     self.emit_u16(Op::LOCAL_GET, obj_slot);
-                    self.class_get(class_slots::ObjSource::Stack, &class_slots::ClassSlot::internal(&getter_name));
+                    self.class_get(
+                        class_slots::ObjSource::Stack,
+                        &class_slots::ClassSlot::internal(&getter_name),
+                    );
                     let getter_slot = self.define_local("__js_private_getter");
                     self.emit_u16(Op::LOCAL_SET, getter_slot);
                     let saved_this = self.begin_receiver_bind("__js_prev_this_private_get");
@@ -3029,7 +3073,8 @@ impl Compiler {
 
                     self.emit_js_private_brand_check(obj_slot, &field_name)?;
                     self.emit_u16(Op::LOCAL_GET, obj_slot);
-                    let prop = self.resolve_slot_interned(&class_slots::ClassSlot::internal(&field_name));
+                    let prop =
+                        self.resolve_slot_interned(&class_slots::ClassSlot::internal(&field_name));
                     self.class_get_resolved(class_slots::ObjSource::Stack, &prop);
 
                     self.chunk().emit_end(line);
@@ -3130,7 +3175,10 @@ impl Compiler {
                         }
                         if field == "length" {
                             self.emit_u16(Op::LOCAL_GET, obj_slot);
-                            self.class_get(class_slots::ObjSource::Stack, &class_slots::ClassSlot::internal("length"));
+                            self.class_get(
+                                class_slots::ObjSource::Stack,
+                                &class_slots::ClassSlot::internal("length"),
+                            );
                             // §10.1.8.1 OrdinaryGet: a missing own
                             // `length` walks the prototype chain like any
                             // other key (e.g. AsyncFunction.prototype
@@ -3247,7 +3295,10 @@ impl Compiler {
                                 .resolve("__pascal_member_obj")
                                 .unwrap_or_else(|| self.define_local("__pascal_member_obj"));
                             self.emit_u16(Op::LOCAL_SET, obj_slot);
-                            self.class_get(class_slots::ObjSource::Local(obj_slot), &class_slots::ClassSlot::internal(&member_name));
+                            self.class_get(
+                                class_slots::ObjSource::Local(obj_slot),
+                                &class_slots::ClassSlot::internal(&member_name),
+                            );
                             let fn_slot = self
                                 .scope()
                                 .resolve("__pascal_member_fn")
@@ -3388,8 +3439,7 @@ impl Compiler {
                         // registered it. This is what retires the hardcoded
                         // .NET name list that used to live here — a
                         // per-language table inside a twelve-language crate.
-                        if self.tree_instance_member(type_hint, "Count").is_some()
-                        {
+                        if self.tree_instance_member(type_hint, "Count").is_some() {
                             return true;
                         }
                         let normalized = Self::normalize_type_hint(type_hint);
@@ -3499,7 +3549,10 @@ impl Compiler {
                 if !*null_safe && matches!(&object.kind, ExprKind::Super) {
                     if let Some(field_name) = self.field_storage_name_for_receiver(object, field) {
                         if self.emit_self_ref() {
-                            self.class_get(class_slots::ObjSource::Stack, &class_slots::ClassSlot::internal(&field_name));
+                            self.class_get(
+                                class_slots::ObjSource::Stack,
+                                &class_slots::ClassSlot::internal(&field_name),
+                            );
                             return Ok(());
                         }
                     }
@@ -3535,14 +3588,22 @@ impl Compiler {
                         if let Some(def) = len_value_method.as_ref() {
                             self.emit_len_value_method(def)?;
                         } else {
-                            common::collections::emit_len(&mut self.chunks, self.current, self.line);
+                            common::collections::emit_len(
+                                &mut self.chunks,
+                                self.current,
+                                self.line,
+                            );
                         }
                         self.chunk().emit_end(line);
                     } else {
                         if let Some(def) = len_value_method.as_ref() {
                             self.emit_len_value_method(def)?;
                         } else {
-                            common::collections::emit_len(&mut self.chunks, self.current, self.line);
+                            common::collections::emit_len(
+                                &mut self.chunks,
+                                self.current,
+                                self.line,
+                            );
                         }
                     }
                     return Ok(());
@@ -3636,7 +3697,17 @@ impl Compiler {
                     return Ok(());
                 } else {
                     self.compile_expr(object)?;
-                    if !Self::is_pointer_runtime_field(field) {
+                    let static_class_receiver_needs_no_autoderef = receiver_type_hint
+                        .as_deref()
+                        .filter(|type_hint| !type_hint.trim().ends_with('*'))
+                        .and_then(|type_hint| {
+                            self.resolve_pending_class_name_for_type_hint(type_hint)
+                        })
+                        .is_some()
+                        && self.type_resolution() == vybe_ast::TypeResolution::Static;
+                    if !Self::is_pointer_runtime_field(field)
+                        && !static_class_receiver_needs_no_autoderef
+                    {
                         self.emit_autoderef_pointer_cell();
                     }
                 }
@@ -3656,10 +3727,8 @@ impl Compiler {
                     };
 
                 if let Some(target) = namespace_tree_zero_arg_method {
-                    if let crate::component_classes::InstanceMethodTarget::Common {
-                        emit,
-                        ..
-                    } = &target
+                    if let crate::component_classes::InstanceMethodTarget::Common { emit, .. } =
+                        &target
                     {
                         let line = self.line;
                         self.compile_expr(object)?;
@@ -3715,10 +3784,7 @@ impl Compiler {
                             let idx = self.import(&module, &func);
                             self.emit_host_call(idx, 1);
                         }
-                        crate::component_classes::InstanceMethodTarget::Common {
-                            emit,
-                            ..
-                        } => {
+                        crate::component_classes::InstanceMethodTarget::Common { emit, .. } => {
                             let line = self.line;
                             self.emit_common(&emit, 1, line);
                         }
@@ -3737,7 +3803,10 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_SET, obj_slot);
 
                     let field_name = self.canon(field);
-                    self.class_get(class_slots::ObjSource::Local(obj_slot), &class_slots::ClassSlot::internal(&field_name));
+                    self.class_get(
+                        class_slots::ObjSource::Local(obj_slot),
+                        &class_slots::ClassSlot::internal(&field_name),
+                    );
                     let value_slot = self.define_local("__count_value");
                     self.emit_u16(Op::LOCAL_SET, value_slot);
 
@@ -3798,7 +3867,8 @@ impl Compiler {
                 // whose static owner is known but instance value may be absent.
                 if let Some(type_name) = static_field_owner {
                     let field_name = self.canon(field);
-                    let idx = self.resolve_slot_interned(&class_slots::ClassSlot::internal(&field_name));
+                    let idx =
+                        self.resolve_slot_interned(&class_slots::ClassSlot::internal(&field_name));
                     let obj_slot = self.define_local("__member_static_fallback_obj");
                     self.emit_u16(Op::LOCAL_SET, obj_slot);
 
@@ -3847,7 +3917,8 @@ impl Compiler {
                     let field_name = self
                         .field_storage_name_for_receiver(object, field)
                         .unwrap_or_else(|| self.canon(field));
-                    let idx = self.resolve_slot_interned(&class_slots::ClassSlot::internal(&field_name));
+                    let idx =
+                        self.resolve_slot_interned(&class_slots::ClassSlot::internal(&field_name));
                     self.class_get_resolved(class_slots::ObjSource::Stack, &idx);
                     self.chunk().emit_else(line);
                     self.emit_null();
@@ -3863,7 +3934,10 @@ impl Compiler {
                         let obj_slot = self.define_local("__dotnet_member_obj");
                         self.emit_u16(Op::LOCAL_SET, obj_slot);
 
-                        self.class_get(class_slots::ObjSource::Local(obj_slot), &class_slots::ClassSlot::internal(&field_name));
+                        self.class_get(
+                            class_slots::ObjSource::Local(obj_slot),
+                            &class_slots::ClassSlot::internal(&field_name),
+                        );
                         let value_slot = self.define_local("__dotnet_member_value");
                         self.emit_u16(Op::LOCAL_SET, value_slot);
 
@@ -3872,7 +3946,10 @@ impl Compiler {
                         let line = self.line;
                         self.chunk().emit_if_value(line);
 
-                        self.class_get(class_slots::ObjSource::Local(obj_slot), &class_slots::ClassSlot::internal(field));
+                        self.class_get(
+                            class_slots::ObjSource::Local(obj_slot),
+                            &class_slots::ClassSlot::internal(field),
+                        );
                         self.chunk().emit_else(line);
                         self.emit_u16(Op::LOCAL_GET, value_slot);
                         self.chunk().emit_end(line);
@@ -4366,6 +4443,22 @@ impl Compiler {
                 // through the accessor that type declared. The WRITE side in
                 // `statements.rs` asks the same question of the same tree
                 // entry, so the two directions cannot drift.
+                } else if !matches!(index.kind, ExprKind::Range { .. } | ExprKind::Slice { .. })
+                    && self.builtin_type_of(object)
+                        == Some(vybe_ast::builtin_slots::BuiltinType::Bytes)
+                    && self
+                        .builtin_slot_target(object, vybe_ast::ProtocolSlot::GetItem)
+                        .is_some()
+                {
+                    let target = self
+                        .builtin_slot_target(object, vybe_ast::ProtocolSlot::GetItem)
+                        .unwrap()
+                        .to_string();
+                    self.compile_expr(object)?;
+                    self.compile_array_index_operand_for_owner(object, index)?;
+                    let line = self.line;
+                    self.emit_slot_target(&target, 2, line, "bytes get_item");
+                    return Ok(());
                 } else if let Some((get_emit, _)) = self.declared_indexer_emits(object) {
                     self.compile_expr(object)?;
                     self.compile_collection_key(object, index)?;
@@ -4400,7 +4493,10 @@ impl Compiler {
                     };
 
                     self.emit_u16(Op::LOCAL_GET, obj_slot);
-                    self.class_get(class_slots::ObjSource::Stack, &class_slots::ClassSlot::internal("__get___index__"));
+                    self.class_get(
+                        class_slots::ObjSource::Stack,
+                        &class_slots::ClassSlot::internal("__get___index__"),
+                    );
                     let getter_slot = self.define_local("__index_getter");
                     self.emit_u16(Op::LOCAL_SET, getter_slot);
 
@@ -4596,12 +4692,15 @@ impl Compiler {
                         self.emit_u16(Op::LOCAL_GET, obj_tmp);
                         inst!(self, recipes::is_object);
                         let line = self.line;
-                        self.chunk().emit_if(line);
+                        self.chunk().emit_if_value(line);
 
-                        self.class_get(class_slots::ObjSource::Local(obj_tmp), &class_slots::ClassSlot::internal("__ref_kind"));
+                        self.class_get(
+                            class_slots::ObjSource::Local(obj_tmp),
+                            &class_slots::ClassSlot::internal("__ref_kind"),
+                        );
                         self.emit_string_eq_literal("cell");
                         let line = self.line;
-                        self.chunk().emit_if(line);
+                        self.chunk().emit_if_value(line);
 
                         self.emit_u16(Op::LOCAL_GET, obj_tmp);
                         crate::primitives::references::emit_cell_load(
@@ -4777,10 +4876,7 @@ impl Compiler {
                             line,
                         );
                         crate::primitives::errors::emit_exception_new_finalize_linked(
-                            chunk,
-                            "Error",
-                            line,
-                            ecma_shape,
+                            chunk, "Error", line, ecma_shape,
                         );
                         crate::primitives::errors::emit_throw(chunk, line);
                         return Ok(());
@@ -4869,9 +4965,7 @@ impl Compiler {
                         self.restore_js_new_target(saved_nt);
                         return Ok(());
                     }
-                    if self.ecma_new_dispatch()
-                        && self.defined_functions.contains(&canon_type)
-                    {
+                    if self.ecma_new_dispatch() && self.defined_functions.contains(&canon_type) {
                         self.emit_global_read(&canon_type);
                         let ctor_slot = self.define_local("__js_ctor");
                         self.emit_u16(Op::LOCAL_SET, ctor_slot);
@@ -5150,24 +5244,28 @@ impl Compiler {
                     // `lookup_known_type` at the fallback further down, so the
                     // only behaviour change is that registered types now carry
                     // their declared ancestry.
-                    let dotnet_constructor = self.tree_ctor_target(bare_src_str);
+                    let dotnet_constructor = if type_name.contains('.') {
+                        self.tree_ctor_target(type_name)
+                            .or_else(|| self.tree_ctor_target(bare_src_str))
+                    } else {
+                        self.tree_ctor_target(bare_src_str)
+                    };
                     if let Some(target) = dotnet_constructor.clone() {
                         for a in args {
                             self.compile_expr(&a.value)?;
                         }
+                        let tree_identity_name = if type_name.contains('.')
+                            && self.tree_is_registered_type(type_name)
+                        {
+                            bare_src
+                        } else {
+                            bare_src_str
+                        };
                         // Proper-case class name (preserve from source) for
                         // the __type stamp. Some host fns (e.g.
                         // `vybe:types/collectionPeek`) compare __type with
                         // exact case, so a lowercase stamp would clobber.
-                        let proper_name: String = type_name
-                            .split('(')
-                            .next()
-                            .unwrap_or(type_name)
-                            .trim()
-                            .rsplit('.')
-                            .next()
-                            .unwrap_or(type_name)
-                            .to_string();
+                        let proper_name: String = tree_identity_name.to_string();
                         match target {
                             crate::component_classes::ConstructorTarget::Host(target) => {
                                 let idx = self.import(&target.module, &target.name);
@@ -5210,7 +5308,7 @@ impl Compiler {
                         // carried a hardcoded ~30-name list plus a
                         // `__java_class_is_instance` helper for exactly this.
                         // The ancestry is data the platform already declares.
-                        self.emit_tree_ancestry_stamp(bare_src_str);
+                        self.emit_tree_ancestry_stamp(tree_identity_name);
 
                         // .NET List / ArrayList instance calls like `list.Sort()`
                         // should stay on the shared compare-aware frontend path
@@ -5222,7 +5320,8 @@ impl Compiler {
                             .map(str::trim)
                             .unwrap_or(proper_name.as_str());
                         if matches!(bare_proper_name, "List" | "ArrayList") {
-                            let sort_key = self.resolve_slot_interned(&class_slots::ClassSlot::internal("sort"));
+                            let sort_key = self
+                                .resolve_slot_interned(&class_slots::ClassSlot::internal("sort"));
                             inst!(self, core_wasm::dup);
                             self.emit_global_read("__vybe_sort_in_place");
                             self.class_set_resolved(
@@ -5231,7 +5330,8 @@ impl Compiler {
                                 class_slots::ValueSource::Stack,
                             );
 
-                            let sort_pascal_key = self.resolve_slot_interned(&class_slots::ClassSlot::internal("Sort"));
+                            let sort_pascal_key = self
+                                .resolve_slot_interned(&class_slots::ClassSlot::internal("Sort"));
                             inst!(self, core_wasm::dup);
                             self.emit_global_read("__vybe_sort_in_place");
                             self.class_set_resolved(
@@ -5325,7 +5425,8 @@ impl Compiler {
                         if bare_str.eq_ignore_ascii_case("list")
                             || bare_str.eq_ignore_ascii_case("arraylist")
                         {
-                            let sort_key = self.resolve_slot_interned(&class_slots::ClassSlot::internal("sort"));
+                            let sort_key = self
+                                .resolve_slot_interned(&class_slots::ClassSlot::internal("sort"));
                             inst!(self, core_wasm::dup);
                             self.emit_global_read("__vybe_sort_in_place");
                             self.class_set_resolved(
@@ -5334,7 +5435,8 @@ impl Compiler {
                                 class_slots::ValueSource::Stack,
                             );
 
-                            let sort_pascal_key = self.resolve_slot_interned(&class_slots::ClassSlot::internal("Sort"));
+                            let sort_pascal_key = self
+                                .resolve_slot_interned(&class_slots::ClassSlot::internal("Sort"));
                             inst!(self, core_wasm::dup);
                             self.emit_global_read("__vybe_sort_in_place");
                             self.class_set_resolved(
@@ -5457,8 +5559,10 @@ impl Compiler {
                     return Ok(());
                 }
                 self.compile_expr(value)?;
-                inst!(self, core_wasm::dup);
+                let assigned_value = self.define_local("__assign_expr_value");
+                self.emit_u16(Op::LOCAL_TEE, assigned_value);
                 self.compile_assign_target_valued(target, Some(value))?;
+                self.emit_u16(Op::LOCAL_GET, assigned_value);
                 // A language that STORES the reference still needs the target
                 // marked, so later reads deref it — that is what makes c's
                 // `p = &v; *p` and go's `pp := &p` work. Only the BINDING half
@@ -5954,16 +6058,22 @@ impl Compiler {
                     && let Some(hint) = self.infer_expr_type_hint(recv)
                     && let Some(class) = self.resolve_pending_class_name_for_type_hint(&hint)
                     && self.pending_classes.contains_key(&class)
-                    && props[1..].iter().all(|p| matches!(p, ObjectProperty::KeyValue { .. }))
+                    && props[1..]
+                        .iter()
+                        .all(|p| matches!(p, ObjectProperty::KeyValue { .. }))
                 {
                     self.compile_expr(recv)?;
                     self.emit_user_value_type_clone_from_stack(&class);
                     let copy = self.define_local("__with_copy");
                     self.emit_u16(Op::LOCAL_SET, copy);
                     for prop in &props[1..] {
-                        let ObjectProperty::KeyValue { key, value } = prop else { unreachable!() };
+                        let ObjectProperty::KeyValue { key, value } = prop else {
+                            unreachable!()
+                        };
                         let ExprKind::Lit(Literal::Str(field)) = &key.kind else {
-                            return Err("copy-with-overrides: member key must be a name".to_string());
+                            return Err(
+                                "copy-with-overrides: member key must be a name".to_string()
+                            );
                         };
                         let field_name = self
                             .field_storage_name_for_class(&class, field)
@@ -6054,8 +6164,13 @@ impl Compiler {
                                 // tracked it via the deduping `trackKey` above).
                                 if !self.profile.ecma_object_literals {
                                     inst!(self, core_wasm::dup);
-                                    let keys_key = self.resolve_slot_interned(&class_slots::ClassSlot::internal("__keys"));
-                                    self.class_get_resolved(class_slots::ObjSource::Stack, &keys_key);
+                                    let keys_key = self.resolve_slot_interned(
+                                        &class_slots::ClassSlot::internal("__keys"),
+                                    );
+                                    self.class_get_resolved(
+                                        class_slots::ObjSource::Stack,
+                                        &keys_key,
+                                    );
                                     self.emit_const(Value::String(Arc::from(key_name.as_str())));
                                     let l = self.line;
                                     common::collections::emit_push(
@@ -6085,7 +6200,9 @@ impl Compiler {
                                 self.emit(Op::DROP); // drop returned null
                                 // Track dynamic key in __keys (stringified)
                                 inst!(self, core_wasm::dup);
-                                let keys_key = self.resolve_slot_interned(&class_slots::ClassSlot::internal("__keys"));
+                                let keys_key = self.resolve_slot_interned(
+                                    &class_slots::ClassSlot::internal("__keys"),
+                                );
                                 self.class_get_resolved(class_slots::ObjSource::Stack, &keys_key);
                                 self.emit_u16(Op::LOCAL_GET, key_tmp);
                                 let l = self.line;
@@ -6096,7 +6213,8 @@ impl Compiler {
                         ObjectProperty::Shorthand(name) => {
                             inst!(self, core_wasm::dup);
                             self.emit_var_get(name);
-                            let idx = self.resolve_slot_interned(&class_slots::ClassSlot::internal(name));
+                            let idx =
+                                self.resolve_slot_interned(&class_slots::ClassSlot::internal(name));
                             self.class_set_resolved(
                                 class_slots::ObjSource::Stack,
                                 &idx,
@@ -6104,7 +6222,10 @@ impl Compiler {
                             );
                             // Track key in __keys
                             inst!(self, core_wasm::dup);
-                            self.class_get(class_slots::ObjSource::Stack, &class_slots::ClassSlot::internal("__keys"));
+                            self.class_get(
+                                class_slots::ObjSource::Stack,
+                                &class_slots::ClassSlot::internal("__keys"),
+                            );
                             self.emit_const(Value::String(Arc::from(name.as_str())));
                             let l = self.line;
                             common::collections::emit_push(&mut self.chunks, self.current, l);
@@ -6411,8 +6532,7 @@ impl Compiler {
                         // boxed 42 has no type stamp and the answer was False.
                         "number" | "float" | "double" | "int" | "integer" | "long" | "single"
                         | "decimal" | "int16" | "int32" | "int64" | "uint16" | "uint32"
-                        | "uint64" | "byte" | "sbyte" | "short" | "ushort" | "uint"
-                        | "ulong" => {
+                        | "uint64" | "byte" | "sbyte" | "short" | "ushort" | "uint" | "ulong" => {
                             self.emit_u16(Op::LOCAL_GET, obj_slot);
                             fn_call!(self, "wasm:js-number", "test", 1);
                             crate::primitives::ops::emit_i32_to_bool(self.chunk(), line);
@@ -6544,7 +6664,8 @@ impl Compiler {
                 }
                 for candidate in type_name_candidates {
                     self.emit_u16(Op::LOCAL_GET, obj_slot);
-                    let type_key = self.resolve_slot_interned(&class_slots::ClassSlot::TypeIdentity);
+                    let type_key =
+                        self.resolve_slot_interned(&class_slots::ClassSlot::TypeIdentity);
                     self.class_get_resolved(class_slots::ObjSource::Stack, &type_key);
                     self.emit_const(Value::String(Arc::from(candidate.as_str())));
                     {
@@ -6582,7 +6703,10 @@ impl Compiler {
                     self.chunk().emit_end(line);
 
                     self.emit_u16(Op::LOCAL_GET, obj_slot);
-                    self.class_get(class_slots::ObjSource::Stack, &class_slots::ClassSlot::TypeIdentity);
+                    self.class_get(
+                        class_slots::ObjSource::Stack,
+                        &class_slots::ClassSlot::TypeIdentity,
+                    );
                     self.emit_const(Value::String(Arc::from(candidate.as_str())));
                     {
                         let line = self.line;
@@ -6620,7 +6744,10 @@ impl Compiler {
 
                     for key_name in ["length", "count"] {
                         self.emit_u16(Op::LOCAL_GET, obj_slot);
-                        self.class_get(class_slots::ObjSource::Stack, &class_slots::ClassSlot::internal(key_name));
+                        self.class_get(
+                            class_slots::ObjSource::Stack,
+                            &class_slots::ClassSlot::internal(key_name),
+                        );
                         self.emit(Op::REF_IS_NULL);
                         self.emit(Op::I32_EQZ);
                         self.chunk().emit_if(line);
@@ -6641,7 +6768,10 @@ impl Compiler {
                 }
 
                 self.emit_u16(Op::LOCAL_GET, obj_slot);
-                self.class_get(class_slots::ObjSource::Stack, &class_slots::ClassSlot::internal("__types"));
+                self.class_get(
+                    class_slots::ObjSource::Stack,
+                    &class_slots::ClassSlot::internal("__types"),
+                );
                 inst!(self, core_wasm::dup);
                 self.emit(Op::REF_IS_NULL);
                 self.emit(Op::I32_EQZ);
@@ -7001,7 +7131,10 @@ impl Compiler {
                                         self.emit_u16(Op::LOCAL_SET, match_slot);
                                         for expected in &expected_names {
                                             self.emit_u16(Op::LOCAL_GET, value_slot);
-                                            self.class_get(class_slots::ObjSource::Stack, &class_slots::ClassSlot::TypeIdentity);
+                                            self.class_get(
+                                                class_slots::ObjSource::Stack,
+                                                &class_slots::ClassSlot::TypeIdentity,
+                                            );
                                             self.emit_const(Value::String(Arc::from(
                                                 expected.as_str(),
                                             )));
@@ -7023,7 +7156,10 @@ impl Compiler {
                                         }
                                         for expected in &expected_names {
                                             self.emit_u16(Op::LOCAL_GET, value_slot);
-                                            self.class_get(class_slots::ObjSource::Stack, &class_slots::ClassSlot::internal("__types"));
+                                            self.class_get(
+                                                class_slots::ObjSource::Stack,
+                                                &class_slots::ClassSlot::internal("__types"),
+                                            );
                                             inst!(self, core_wasm::dup);
                                             self.emit(Op::REF_IS_NULL);
                                             self.emit(Op::I32_EQZ);
@@ -7101,9 +7237,14 @@ impl Compiler {
                             {
                                 for field_name in fields {
                                     let member_slot = self.define_local("__cast_struct_member");
-                                    let field_idx = self.resolve_slot_interned(&class_slots::ClassSlot::internal(&field_name));
+                                    let field_idx = self.resolve_slot_interned(
+                                        &class_slots::ClassSlot::internal(&field_name),
+                                    );
                                     self.emit_u16(Op::LOCAL_GET, source_slot);
-                                    self.class_get_resolved(class_slots::ObjSource::Stack, &field_idx);
+                                    self.class_get_resolved(
+                                        class_slots::ObjSource::Stack,
+                                        &field_idx,
+                                    );
                                     self.emit_u16(Op::LOCAL_SET, member_slot);
 
                                     self.emit_u16(Op::LOCAL_GET, member_slot);
@@ -7233,7 +7374,7 @@ impl Compiler {
                 inst!(self, core_wasm::dup);
                 self.emit(Op::REF_IS_NULL);
                 let line = self.line;
-                self.chunk().emit_if_value(line);
+                self.chunk().emit_if_params(line, 1, 1);
                 self.emit(Op::DROP);
                 self.compile_expr(right)?;
                 self.chunk().emit_else(line);
@@ -7550,7 +7691,9 @@ impl Compiler {
                 if let Some(method_parts) = bound_parts {
                     if self.emit_self_ref() {
                         for part in method_parts {
-                            let idx = self.resolve_slot_interned(&class_slots::ClassSlot::internal(&self.canon(part)));
+                            let idx = self.resolve_slot_interned(
+                                &class_slots::ClassSlot::internal(&self.canon(part)),
+                            );
                             self.class_get_resolved(class_slots::ObjSource::Stack, &idx);
                         }
                         return Ok(());
@@ -7559,7 +7702,10 @@ impl Compiler {
 
                 self.emit_var_get(parts[0]);
                 for part in &parts[1..] {
-                    self.class_get(class_slots::ObjSource::Stack, &class_slots::ClassSlot::internal(&self.canon(part)));
+                    self.class_get(
+                        class_slots::ObjSource::Stack,
+                        &class_slots::ClassSlot::internal(&self.canon(part)),
+                    );
                 }
             }
 
@@ -7632,7 +7778,8 @@ impl Compiler {
                             .and_then(|cn| self.nearest_declaring_ancestor(&cn, mname))
                             .unwrap_or_else(|| parent_name.clone());
                         let parent_canon = self.canon(&target);
-                        let method_idx = self.resolve_slot_interned(&class_slots::ClassSlot::internal(&method_name));
+                        let method_idx = self
+                            .resolve_slot_interned(&class_slots::ClassSlot::internal(&method_name));
                         self.emit_var_get(&parent_canon);
                         self.class_get_resolved(class_slots::ObjSource::Stack, &method_idx);
 
@@ -7651,9 +7798,7 @@ impl Compiler {
                         for arg in args.iter() {
                             self.compile_expr(&arg.value)?;
                         }
-                        self.emit_direct_callable_invoke(
-                            (args.len() as u8).saturating_add(1),
-                        );
+                        self.emit_direct_callable_invoke((args.len() as u8).saturating_add(1));
                     } else {
                         self.emit_null();
                     }
@@ -7810,7 +7955,10 @@ impl Compiler {
                             // a Map tracks insertion order internally, so skip it.
                             if !dict_as_map {
                                 self.emit_u16(Op::LOCAL_GET, result_slot);
-                                self.class_get(class_slots::ObjSource::Stack, &class_slots::ClassSlot::internal("__keys"));
+                                self.class_get(
+                                    class_slots::ObjSource::Stack,
+                                    &class_slots::ClassSlot::internal("__keys"),
+                                );
                                 self.emit_u16(Op::LOCAL_GET, key_slot);
                                 let l = self.line;
                                 common::collections::emit_push(&mut self.chunks, self.current, l);
@@ -8011,11 +8159,13 @@ impl Compiler {
 
             // ── Sequence (JS comma operator) ────────────────────────────
             ExprKind::Sequence(exprs) => {
-                for (i, e) in exprs.iter().enumerate() {
-                    self.compile_expr(e)?;
-                    if i < exprs.len() - 1 {
-                        self.emit(Op::DROP);
+                if let Some((last, prefix)) = exprs.split_last() {
+                    for e in prefix {
+                        self.compile_expr_stmt(e)?;
                     }
+                    self.compile_expr(last)?;
+                } else {
+                    self.emit_null();
                 }
             }
 
@@ -8204,19 +8354,26 @@ impl Compiler {
                         self.chunk().emit_if_value(line);
 
                         self.emit_u16(Op::LOCAL_GET, class_slot);
-                        self.class_get(class_slots::ObjSource::Stack, &class_slots::ClassSlot::internal(&getter_name));
+                        self.class_get(
+                            class_slots::ObjSource::Stack,
+                            &class_slots::ClassSlot::internal(&getter_name),
+                        );
                         self.emit_u16(Op::LOCAL_GET, class_slot);
                         self.emit_direct_callable_invoke(1);
 
                         self.chunk().emit_else(line);
                         self.emit_js_private_brand_check(class_slot, &field_name)?;
                         self.emit_u16(Op::LOCAL_GET, class_slot);
-                        let idx = self.resolve_slot_interned(&class_slots::ClassSlot::internal(&field_name));
+                        let idx = self
+                            .resolve_slot_interned(&class_slots::ClassSlot::internal(&field_name));
                         self.class_get_resolved(class_slots::ObjSource::Stack, &idx);
                         self.chunk().emit_end(line);
                     } else {
                         self.emit_u16(Op::LOCAL_GET, class_slot);
-                        self.class_get(class_slots::ObjSource::Stack, &class_slots::ClassSlot::internal(&field_name));
+                        self.class_get(
+                            class_slots::ObjSource::Stack,
+                            &class_slots::ClassSlot::internal(&field_name),
+                        );
                     }
                 } else {
                     self.compile_expr(member)?;
@@ -8551,9 +8708,7 @@ impl Compiler {
         // Registering one of those names elsewhere BREAKS that, and the fix
         // then is to declare the operators as members and read the emit out of
         // the tree, the way the StringBuilder indexer does.
-        if !self.tree_is_registered_type(&left_type)
-            || !self.tree_is_registered_type(&right_type)
-        {
+        if !self.tree_is_registered_type(&left_type) || !self.tree_is_registered_type(&right_type) {
             return Ok(false);
         }
 
@@ -8640,12 +8795,13 @@ impl Compiler {
     }
 
     fn emit_c_unsigned_wrap(&mut self, modulus: f64) {
+        let line = self.line;
         self.emit_const(Value::F64(modulus));
-        self.compile_binop(&BinOp::Mod);
+        common::math::emit_c_fmod(self.chunk(), line);
         self.emit_const(Value::F64(modulus));
         self.emit(Op::F64_ADD);
         self.emit_const(Value::F64(modulus));
-        self.compile_binop(&BinOp::Mod);
+        common::math::emit_c_fmod(self.chunk(), line);
     }
 
     fn emit_c_signed_wrap_from_unsigned(&mut self, threshold: f64, modulus: f64) {
@@ -8653,7 +8809,7 @@ impl Compiler {
         self.emit_const(Value::F64(threshold));
         self.emit(Op::F64_GE);
         let line = self.line;
-        self.chunk().emit_if_value(line);
+        self.chunk().emit_if_params(line, 1, 1);
         self.emit_const(Value::F64(modulus));
         self.emit(Op::F64_SUB);
         self.chunk().emit_else(line);
@@ -9041,7 +9197,9 @@ pub fn emit_rich_to_string(chunk: &mut Chunk, obj_slot: u16, line: u32) {
     // it (`__str__`, `to_s`, `toString`, `__toString`), so this reaches a
     // user's string conversion regardless of where the class came from.
     let key = class_slots::resolve(
-        &class_slots::ClassSlot::internal(vybe_ast::protocol_slot_key(vybe_ast::ProtocolSlot::ToString).as_str()),
+        &class_slots::ClassSlot::internal(
+            vybe_ast::protocol_slot_key(vybe_ast::ProtocolSlot::ToString).as_str(),
+        ),
         &class_slots::PlainNames,
     );
     class_slots::emit_class_get(
@@ -9347,7 +9505,9 @@ pub fn emit_smart_length(chunk: &mut Chunk, obj_slot: u16, line: u32) {
     // declared the class.
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
     let slot_key = class_slots::resolve(
-        &class_slots::ClassSlot::internal(vybe_ast::protocol_slot_key(vybe_ast::ProtocolSlot::Len).as_str()),
+        &class_slots::ClassSlot::internal(
+            vybe_ast::protocol_slot_key(vybe_ast::ProtocolSlot::Len).as_str(),
+        ),
         &class_slots::PlainNames,
     );
     class_slots::emit_class_get(

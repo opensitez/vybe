@@ -81,8 +81,7 @@ impl PascalCompilationUnit {
 fn assemble_pascal_compilation_units(
     units: Vec<PascalCompilationUnit>,
 ) -> (Vec<Statement>, String, bool) {
-    let real: Vec<PascalCompilationUnit> =
-        units.into_iter().filter(|u| !u.is_empty()).collect();
+    let real: Vec<PascalCompilationUnit> = units.into_iter().filter(|u| !u.is_empty()).collect();
 
     if real.len() <= 1 {
         let Some(unit) = real.into_iter().next() else {
@@ -138,9 +137,9 @@ fn assemble_pascal_compilation_units(
         let exported: Vec<Statement> = unit
             .interface_decls
             .iter()
-            .filter(|stmt| {
-                matches!(&stmt.kind, StmtKind::FunctionDecl { body, .. } if body.is_empty())
-            })
+            .filter(
+                |stmt| matches!(&stmt.kind, StmtKind::FunctionDecl { body, .. } if body.is_empty()),
+            )
             .cloned()
             .collect();
 
@@ -542,8 +541,13 @@ pub fn parse(source: &str) -> Result<Module, String> {
         // program that declared its own `TPair` — which the token scan had
         // just matched on — still parsed all 335 lines to throw every class
         // away one statement later.
-        const COLLECTION_CLASSES: [&str; 5] =
-            ["tpair", "tcomparer", "tequalitycomparer", "tstack", "tqueue"];
+        const COLLECTION_CLASSES: [&str; 5] = [
+            "tpair",
+            "tcomparer",
+            "tequalitycomparer",
+            "tstack",
+            "tqueue",
+        ];
         let collections_missing_any = COLLECTION_CLASSES
             .iter()
             .any(|name| !existing_classes.contains(*name));
@@ -4988,13 +4992,7 @@ fn rewrite_pascal_overload_stmt(
         }
         StmtKind::Labeled { body, .. } => {
             let mut scoped = scope.clone();
-            rewrite_pascal_overload_stmt(
-                body,
-                overloads,
-                return_types,
-                enum_members,
-                &mut scoped,
-            );
+            rewrite_pascal_overload_stmt(body, overloads, return_types, enum_members, &mut scoped);
         }
         StmtKind::ClassDecl { members, .. } | StmtKind::StructDecl { members, .. } => {
             for member in members {
@@ -5423,7 +5421,7 @@ fn pascal_member_expr_type(
         field,
         pascal_tree_fold(),
     )
-        .map(|ty| bare_type_name(&ty).to_lowercase())
+    .map(|ty| bare_type_name(&ty).to_lowercase())
 }
 
 /// What Pascal declares about itself.
@@ -5446,6 +5444,8 @@ fn language_directives() -> vybe_ast::Directives {
         // methods — ECMA-262 §10.2.1 `[[Call]](thisArgument, argumentsList)`.
         // A plain `f()` passes `undefined` (§10.2.1.1).
         receiver_binding: Some(vybe_ast::ReceiverBinding::UniversalParameter),
+        type_resolution: Some(vybe_ast::TypeResolution::Static),
+        operator_dispatch: Some(vybe_ast::OperatorDispatch::RuntimeProtocol),
         ..Default::default()
     }
 }
@@ -6850,7 +6850,8 @@ fn collect_pascal_method_pointer_info(body: &[Statement]) -> PascalMethodPointer
                     if let (BindingPattern::Ident(name), Some(type_hint)) =
                         (&decl.pattern, &decl.type_hint)
                     {
-                        info.aliases.insert(name.to_lowercase(), type_hint.to_string());
+                        info.aliases
+                            .insert(name.to_lowercase(), type_hint.to_string());
                     }
                 }
             }
@@ -6949,7 +6950,9 @@ fn lower_pascal_method_pointer_stmt(
         }
         StmtKind::Assign { targets, value, .. } if targets.len() == 1 => {
             lower_pascal_method_pointer_expr(value, info, var_types);
-            if let Some(target_type) = pascal_method_pointer_target_type(&targets[0], info, var_types) {
+            if let Some(target_type) =
+                pascal_method_pointer_target_type(&targets[0], info, var_types)
+            {
                 if is_pascal_procedural_type(&target_type, info)
                     && let Some(func_ref) = pascal_procedural_value_ref(value, info)
                 {
@@ -7073,9 +7076,13 @@ fn lower_pascal_method_pointer_expr(
             }
             for (idx, arg) in args.iter_mut().enumerate() {
                 lower_pascal_method_pointer_expr(&mut arg.value, info, var_types);
-                if params.as_ref().and_then(|params| params.get(idx)).is_some_and(|param| {
-                    matches!(param.pass_by, PassBy::Ref | PassBy::Alias | PassBy::Out)
-                }) {
+                if params
+                    .as_ref()
+                    .and_then(|params| params.get(idx))
+                    .is_some_and(|param| {
+                        matches!(param.pass_by, PassBy::Ref | PassBy::Alias | PassBy::Out)
+                    })
+                {
                     arg.by_ref = true;
                 }
                 if params
@@ -7213,12 +7220,10 @@ fn pascal_method_pointer_call_params(
                     .get(&name.to_lowercase())
                     .and_then(|ty| pascal_procedural_params_for_type(ty, info))
             }),
-        ExprKind::Member { .. } | ExprKind::Index { .. } => pascal_method_pointer_target_type(
-            callee,
-            info,
-            var_types,
-        )
-        .and_then(|ty| pascal_procedural_params_for_type(&ty, info)),
+        ExprKind::Member { .. } | ExprKind::Index { .. } => {
+            pascal_method_pointer_target_type(callee, info, var_types)
+                .and_then(|ty| pascal_procedural_params_for_type(&ty, info))
+        }
         _ => None,
     }
 }
@@ -7409,7 +7414,9 @@ fn lower_pascal_procedure_pointer_call_aliases_stmt(
         StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) => {
             lower_pascal_procedure_pointer_call_aliases_expr(expr, aliases);
         }
-        StmtKind::FunctionDecl { body, .. } | StmtKind::Block(body) | StmtKind::NamespaceDecl { body, .. } => {
+        StmtKind::FunctionDecl { body, .. }
+        | StmtKind::Block(body)
+        | StmtKind::NamespaceDecl { body, .. } => {
             let mut scoped = aliases.clone();
             lower_pascal_procedure_pointer_call_aliases_body(body, &mut scoped);
         }
@@ -7432,7 +7439,11 @@ fn lower_pascal_procedure_pointer_call_aliases_stmt(
                 lower_pascal_procedure_pointer_call_aliases_body(body, &mut scoped);
             }
         }
-        StmtKind::While { cond, body, else_body } => {
+        StmtKind::While {
+            cond,
+            body,
+            else_body,
+        } => {
             lower_pascal_procedure_pointer_call_aliases_expr(cond, aliases);
             let mut scoped = aliases.clone();
             lower_pascal_procedure_pointer_call_aliases_body(body, &mut scoped);
@@ -7446,7 +7457,12 @@ fn lower_pascal_procedure_pointer_call_aliases_stmt(
             lower_pascal_procedure_pointer_call_aliases_body(body, &mut scoped);
             lower_pascal_procedure_pointer_call_aliases_expr(cond, &scoped);
         }
-        StmtKind::For { init, cond, update, body } => {
+        StmtKind::For {
+            init,
+            cond,
+            update,
+            body,
+        } => {
             let mut scoped = aliases.clone();
             if let Some(init) = init {
                 lower_pascal_procedure_pointer_call_aliases_stmt(init, &mut scoped);
@@ -7459,7 +7475,12 @@ fn lower_pascal_procedure_pointer_call_aliases_stmt(
             }
             lower_pascal_procedure_pointer_call_aliases_body(body, &mut scoped);
         }
-        StmtKind::ForIn { iter, body, else_body, .. } => {
+        StmtKind::ForIn {
+            iter,
+            body,
+            else_body,
+            ..
+        } => {
             lower_pascal_procedure_pointer_call_aliases_expr(iter, aliases);
             let mut scoped = aliases.clone();
             lower_pascal_procedure_pointer_call_aliases_body(body, &mut scoped);
@@ -7475,7 +7496,12 @@ fn lower_pascal_procedure_pointer_call_aliases_stmt(
                 lower_pascal_procedure_pointer_call_aliases_member(member);
             }
         }
-        StmtKind::Try { body, catches, else_body, finally } => {
+        StmtKind::Try {
+            body,
+            catches,
+            else_body,
+            finally,
+        } => {
             let mut scoped = aliases.clone();
             lower_pascal_procedure_pointer_call_aliases_body(body, &mut scoped);
             for catch in catches {
@@ -7497,7 +7523,9 @@ fn lower_pascal_procedure_pointer_call_aliases_stmt(
 
 fn lower_pascal_procedure_pointer_call_aliases_member(member: &mut ClassMember) {
     match member {
-        ClassMember::Field { init: Some(expr), .. }
+        ClassMember::Field {
+            init: Some(expr), ..
+        }
         | ClassMember::Const { value: expr, .. } => {
             lower_pascal_procedure_pointer_call_aliases_expr(
                 expr,
@@ -7561,7 +7589,9 @@ fn lower_pascal_procedure_pointer_call_aliases_expr(
         | ExprKind::Yield(Some(expr))
         | ExprKind::Spread(expr)
         | ExprKind::YieldFrom(expr)
-        | ExprKind::RefLoad(expr) => lower_pascal_procedure_pointer_call_aliases_expr(expr, aliases),
+        | ExprKind::RefLoad(expr) => {
+            lower_pascal_procedure_pointer_call_aliases_expr(expr, aliases)
+        }
         ExprKind::Ternary { cond, then, else_ } => {
             lower_pascal_procedure_pointer_call_aliases_expr(cond, aliases);
             lower_pascal_procedure_pointer_call_aliases_expr(then, aliases);
@@ -7610,16 +7640,22 @@ fn lower_pascal_procedure_pointer_call_aliases_expr(
 fn pascal_procedure_pointer_alias_key(expr: &Expression) -> Option<String> {
     match &expr.kind {
         ExprKind::Ident(name) => Some(name.to_lowercase()),
-        ExprKind::Member { object, field, .. } => {
-            Some(format!("{}.{}", pascal_procedure_pointer_alias_key(object)?, field.to_lowercase()))
-        }
+        ExprKind::Member { object, field, .. } => Some(format!(
+            "{}.{}",
+            pascal_procedure_pointer_alias_key(object)?,
+            field.to_lowercase()
+        )),
         ExprKind::Index { object, index, .. } => {
             let idx = match &index.kind {
                 ExprKind::Lit(Literal::Int(n)) => n.to_string(),
                 ExprKind::Lit(Literal::Str(s)) => s.clone(),
                 _ => return None,
             };
-            Some(format!("{}[{}]", pascal_procedure_pointer_alias_key(object)?, idx))
+            Some(format!(
+                "{}[{}]",
+                pascal_procedure_pointer_alias_key(object)?,
+                idx
+            ))
         }
         _ => None,
     }
@@ -11156,14 +11192,13 @@ fn rewrite_pascal_stringbuilder_expr(
                         *expr = rewritten;
                         return;
                     }
-                if let Some(rewritten) =
-                    pascal_tstringlist_property_expr(object, field, var_types)
-                {
-                    *expr = rewritten;
-                    return;
-                }
                     if let Some(rewritten) =
-                        pascal_tprocess_property_expr(object, field, var_types)
+                        pascal_tstringlist_property_expr(object, field, var_types)
+                    {
+                        *expr = rewritten;
+                        return;
+                    }
+                    if let Some(rewritten) = pascal_tprocess_property_expr(object, field, var_types)
                     {
                         *expr = rewritten;
                         return;
@@ -11193,8 +11228,7 @@ fn rewrite_pascal_stringbuilder_expr(
                     *expr = rewritten;
                     return;
                 }
-                if let Some(rewritten) =
-                    pascal_tprocess_method_call(object, field, args, var_types)
+                if let Some(rewritten) = pascal_tprocess_method_call(object, field, args, var_types)
                 {
                     *expr = rewritten;
                     return;
@@ -11307,8 +11341,7 @@ fn rewrite_pascal_stringbuilder_expr(
                 pascal_tstringlist_property_expr(object, field, var_types)
             {
                 *expr = rewritten;
-            } else if let Some(rewritten) =
-                pascal_tprocess_property_expr(object, field, var_types)
+            } else if let Some(rewritten) = pascal_tprocess_property_expr(object, field, var_types)
             {
                 *expr = rewritten;
             }
@@ -12163,12 +12196,24 @@ fn pascal_tprocess_create_expr() -> Expression {
         pascal_obj_prop("ExitCode", int_expr(0)),
         pascal_obj_prop("Handle", int_expr(0)),
         pascal_obj_prop("Running", Expression::bool(false)),
-        pascal_obj_prop("Output", pascal_tstringstream_object_expr(str_expr(""), int_expr(0))),
-        pascal_obj_prop("Stderr", pascal_tstringstream_object_expr(str_expr(""), int_expr(0))),
-        pascal_obj_prop("Input", pascal_tstringstream_object_expr(str_expr(""), int_expr(0))),
+        pascal_obj_prop(
+            "Output",
+            pascal_tstringstream_object_expr(str_expr(""), int_expr(0)),
+        ),
+        pascal_obj_prop(
+            "Stderr",
+            pascal_tstringstream_object_expr(str_expr(""), int_expr(0)),
+        ),
+        pascal_obj_prop(
+            "Input",
+            pascal_tstringstream_object_expr(str_expr(""), int_expr(0)),
+        ),
         pascal_obj_prop("PipeBufferSize", int_expr(0)),
         pascal_obj_prop("Priority", str_expr("ppNormal")),
-        pascal_obj_prop("StartupOptions", Expression::new(ExprKind::Array(Vec::new()))),
+        pascal_obj_prop(
+            "StartupOptions",
+            Expression::new(ExprKind::Array(Vec::new())),
+        ),
         pascal_obj_prop("ShowWindow", str_expr("swoDefault")),
     ]))
 }
@@ -12190,8 +12235,8 @@ fn pascal_expr_is_tprocess(
 
 fn pascal_process_constant_expr(name: &str) -> Option<Expression> {
     match name.to_ascii_lowercase().as_str() {
-        "ponone" | "powaitonexit" | "pousepipes" | "postderrtooutput" | "ppnormal"
-        | "pphigh" | "suouseshowwindow" | "swohide" | "swodefault" => Some(str_expr(name)),
+        "ponone" | "powaitonexit" | "pousepipes" | "postderrtooutput" | "ppnormal" | "pphigh"
+        | "suouseshowwindow" | "swohide" | "swodefault" => Some(str_expr(name)),
         "faanyfile" => Some(int_expr(0)),
         _ => None,
     }
@@ -12223,7 +12268,10 @@ fn pascal_tprocess_property_expr(
     match process_field.to_ascii_lowercase().as_str() {
         "parameters" | "environment" => Some(call_expr(
             "__len__",
-            vec![pascal_tprocess_field_expr((**receiver).clone(), process_field)],
+            vec![pascal_tprocess_field_expr(
+                (**receiver).clone(),
+                process_field,
+            )],
         )),
         _ => None,
     }
@@ -13357,7 +13405,9 @@ fn pascal_strutils_builtin_rewrite(name: &str, args: &[Argument]) -> Option<Expr
                     Some(pascal_string_method_call(
                         args[0].value.clone(),
                         "endsWith",
-                        vec![Expression::new(ExprKind::Lit(Literal::Str(suffix.to_string())))],
+                        vec![Expression::new(ExprKind::Lit(Literal::Str(
+                            suffix.to_string(),
+                        )))],
                     ))
                 } else {
                     Some(bin_expr(
@@ -21039,9 +21089,10 @@ fn rewrite_pascal_fixed_array_bounds_stmt(stmt: &mut Statement, env: &mut Pascal
                     // Through the alias: `var a: TArr` is the same declaration
                     // as `var a: array[1..3] of Integer`, and only the second
                     // spelling used to be rebased.
-                    if let Some(bounds) = pascal_const_array_bounds(
-                        pascal_resolve_array_type_hint(type_hint, &env.type_aliases),
-                    ) {
+                    if let Some(bounds) = pascal_const_array_bounds(pascal_resolve_array_type_hint(
+                        type_hint,
+                        &env.type_aliases,
+                    )) {
                         env.vars.insert(name.to_lowercase(), bounds);
                     }
                 }
@@ -21073,9 +21124,10 @@ fn rewrite_pascal_fixed_array_bounds_stmt(stmt: &mut Statement, env: &mut Pascal
             let mut scoped = env.clone();
             for param in params {
                 if let Some(type_hint) = &param.type_hint {
-                    if let Some(bounds) = pascal_const_array_bounds(
-                        pascal_resolve_array_type_hint(type_hint, &scoped.type_aliases),
-                    ) {
+                    if let Some(bounds) = pascal_const_array_bounds(pascal_resolve_array_type_hint(
+                        type_hint,
+                        &scoped.type_aliases,
+                    )) {
                         scoped.vars.insert(param.name.to_lowercase(), bounds);
                     }
                     scoped.var_types.insert(
@@ -21197,9 +21249,10 @@ fn rewrite_pascal_fixed_array_bounds_member(
             seed_pascal_fixed_array_self_fields(&mut scoped, class_name);
             for param in params {
                 if let Some(type_hint) = &param.type_hint {
-                    if let Some(bounds) = pascal_const_array_bounds(
-                        pascal_resolve_array_type_hint(type_hint, &scoped.type_aliases),
-                    ) {
+                    if let Some(bounds) = pascal_const_array_bounds(pascal_resolve_array_type_hint(
+                        type_hint,
+                        &scoped.type_aliases,
+                    )) {
                         scoped.vars.insert(param.name.to_lowercase(), bounds);
                     }
                     scoped.var_types.insert(
@@ -26333,9 +26386,21 @@ fn pascal_assign_ident(name: &str, value: Expression) -> Statement {
 /// module globals behind builtin getters and setters; the walker spells the
 /// access, the emitter owns the storage.
 const PASCAL_STATE_VARS: [(&str, &str, &str); 3] = [
-    ("exceptobject", "__pascal_get_exceptobject", "__pascal_set_exceptobject"),
-    ("exceptaddr", "__pascal_get_exceptaddr", "__pascal_set_exceptaddr"),
-    ("asserterrorproc", "__pascal_get_asserterrorproc", "__pascal_set_asserterrorproc"),
+    (
+        "exceptobject",
+        "__pascal_get_exceptobject",
+        "__pascal_set_exceptobject",
+    ),
+    (
+        "exceptaddr",
+        "__pascal_get_exceptaddr",
+        "__pascal_set_exceptaddr",
+    ),
+    (
+        "asserterrorproc",
+        "__pascal_get_asserterrorproc",
+        "__pascal_set_asserterrorproc",
+    ),
 ];
 
 fn pascal_state_var_getter(name: &str) -> Option<&'static str> {
@@ -26360,10 +26425,12 @@ fn pascal_state_var_assign_to_setter(kind: StmtKind) -> StmtKind {
             value,
             by_ref,
         } => {
-            if let [Expression {
-                kind: ExprKind::Ident(name),
-                ..
-            }] = targets.as_slice()
+            if let [
+                Expression {
+                    kind: ExprKind::Ident(name),
+                    ..
+                },
+            ] = targets.as_slice()
             {
                 if let Some(setter) = pascal_state_var_setter(name) {
                     return StmtKind::Expr(pascal_call(setter, vec![value]));
@@ -28065,7 +28132,8 @@ fn pascal_pointer_return_alias_from_body(body: &[Statement]) -> Option<PlaceExpr
                 });
             }
             StmtKind::Assign { targets, value, .. } if targets.len() == 1 => {
-                if matches!(&targets[0].kind, ExprKind::Ident(name) if name.eq_ignore_ascii_case("Result")) {
+                if matches!(&targets[0].kind, ExprKind::Ident(name) if name.eq_ignore_ascii_case("Result"))
+                {
                     result_alias = pascal_pointer_place_alias_from_value(
                         value,
                         &std::collections::HashMap::new(),
@@ -28099,7 +28167,9 @@ fn pascal_expr_root_name(expr: &Expression) -> Option<&str> {
         ExprKind::Member { object, .. } | ExprKind::Index { object, .. } => {
             pascal_expr_root_name(object)
         }
-        ExprKind::RefLoad(inner) | ExprKind::Cast { expr: inner, .. } => pascal_expr_root_name(inner),
+        ExprKind::RefLoad(inner) | ExprKind::Cast { expr: inner, .. } => {
+            pascal_expr_root_name(inner)
+        }
         _ => None,
     }
 }
@@ -28156,9 +28226,11 @@ fn lower_pascal_pointer_place_aliases_stmt(
                 if let Some(init) = &mut decl.init {
                     lower_pascal_pointer_place_aliases_expr(init, aliases);
                     if let Some(key) = pointer_key {
-                        if let Some(place) =
-                            pascal_pointer_place_alias_from_value(init, aliases, pointer_return_aliases)
-                        {
+                        if let Some(place) = pascal_pointer_place_alias_from_value(
+                            init,
+                            aliases,
+                            pointer_return_aliases,
+                        ) {
                             aliases.insert(key, place);
                         } else {
                             aliases.remove(&key);
@@ -28172,9 +28244,11 @@ fn lower_pascal_pointer_place_aliases_stmt(
             if let ExprKind::Ident(name) = &targets[0].kind {
                 let key = name.to_lowercase();
                 if pointer_vars.contains(&key) {
-                    if let Some(place) =
-                        pascal_pointer_place_alias_from_value(value, aliases, pointer_return_aliases)
-                    {
+                    if let Some(place) = pascal_pointer_place_alias_from_value(
+                        value,
+                        aliases,
+                        pointer_return_aliases,
+                    ) {
                         if let Some(static_place) =
                             pascal_pointer_static_return_alias_value(value, pointer_return_aliases)
                         {
@@ -28451,7 +28525,10 @@ fn lower_pascal_pointer_place_aliases_expr(
                     let same = pascal_place_expr_same_place(&left_place, &right_place);
                     if *op == BinOp::Sub && same {
                         *expr = Expression::int(0);
-                    } else if matches!(op, BinOp::Eq | BinOp::StrictEq | BinOp::NotEq | BinOp::StrictNotEq) {
+                    } else if matches!(
+                        op,
+                        BinOp::Eq | BinOp::StrictEq | BinOp::NotEq | BinOp::StrictNotEq
+                    ) {
                         *expr = Expression::bool(matches!(op, BinOp::Eq | BinOp::StrictEq) == same);
                     }
                 }
@@ -28524,7 +28601,9 @@ fn lower_pascal_pointer_place_aliases_place(
 ) {
     match place {
         PlaceExpr::Ident(_) => {}
-        PlaceExpr::Member { object, .. } => lower_pascal_pointer_place_aliases_expr(object, aliases),
+        PlaceExpr::Member { object, .. } => {
+            lower_pascal_pointer_place_aliases_expr(object, aliases)
+        }
         PlaceExpr::Index { object, index, .. } => {
             lower_pascal_pointer_place_aliases_expr(object, aliases);
             lower_pascal_pointer_place_aliases_expr(index, aliases);
@@ -28557,10 +28636,8 @@ fn pascal_pointer_place_alias_from_value(
             .get(&name.to_lowercase())
             .cloned()
             .or_else(|| pointer_return_aliases.get(&name.to_lowercase()).cloned()),
-        ExprKind::Call { callee, args, .. } if args.is_empty() => {
-            pascal_expr_ident_name(callee)
-                .and_then(|name| pointer_return_aliases.get(&name.to_lowercase()).cloned())
-        }
+        ExprKind::Call { callee, args, .. } if args.is_empty() => pascal_expr_ident_name(callee)
+            .and_then(|name| pointer_return_aliases.get(&name.to_lowercase()).cloned()),
         _ => None,
     }
 }
@@ -43477,7 +43554,12 @@ fn lower_pascal_file_io_stmt(
             for catch in catches {
                 let mut catch_scope = scope.clone();
                 let mut catch_aliases = aliases.clone();
-                lower_pascal_file_io_body(&mut catch.body, next_handle, &mut catch_scope, &mut catch_aliases);
+                lower_pascal_file_io_body(
+                    &mut catch.body,
+                    next_handle,
+                    &mut catch_scope,
+                    &mut catch_aliases,
+                );
             }
             if let Some(body) = else_body {
                 let mut else_scope = scope.clone();
@@ -43487,7 +43569,12 @@ fn lower_pascal_file_io_stmt(
             if let Some(body) = finally {
                 let mut finally_scope = scope.clone();
                 let mut finally_aliases = aliases.clone();
-                lower_pascal_file_io_body(body, next_handle, &mut finally_scope, &mut finally_aliases);
+                lower_pascal_file_io_body(
+                    body,
+                    next_handle,
+                    &mut finally_scope,
+                    &mut finally_aliases,
+                );
             }
             None
         }
@@ -43715,12 +43802,10 @@ fn lower_pascal_file_io_call_stmt(
                 .map(|arg| arg.value.clone())
                 .unwrap_or_else(|| int_expr(128));
             let path = pascal_file_path_expr_or_handle(&info, &file_expr);
-            let mut stmts = vec![
-                Statement::new(StmtKind::Expr(call_expr(
-                    "__PascalSetFileRecSize",
-                    vec![file_expr.clone(), rec_size],
-                ))),
-            ];
+            let mut stmts = vec![Statement::new(StmtKind::Expr(call_expr(
+                "__PascalSetFileRecSize",
+                vec![file_expr.clone(), rec_size],
+            )))];
             if lowered == "rewrite" {
                 stmts.push(Statement::new(StmtKind::Expr(call_expr(
                     "__PascalFileTruncate",
@@ -43760,9 +43845,9 @@ fn lower_pascal_file_io_call_stmt(
                 "__PascalBlockRead"
             };
             let mut helper_args = vec![
-                    pascal_file_path_expr(&info)?,
-                    Expression::ident(pos_var),
-                    Expression::ident(rec_size_var),
+                pascal_file_path_expr(&info)?,
+                Expression::ident(pos_var),
+                Expression::ident(rec_size_var),
             ];
             if helper == "__PascalBlockWriteByte" {
                 helper_args.push(args[1].value.clone());
@@ -43775,27 +43860,26 @@ fn lower_pascal_file_io_call_stmt(
             // The count-out is a `var` parameter, so it is a PLACE when the
             // program supplies one and simply dropped when it does not.
             let mut stmts = Vec::new();
-            if lowered == "blockread"
-                && matches!(args[1].value.kind, ExprKind::Ident(_))
-            {
-                let value = if pascal_int_literal_value(&args[2].value).is_some_and(|value| value == 1) {
-                    call_expr(
-                        "__PascalBlockPeekByte",
-                        vec![
-                            pascal_file_path_expr_or_handle(&info, &file_expr),
-                            Expression::ident(pos_var),
-                            Expression::ident(rec_size_var),
-                        ],
-                    )
-                } else {
-                    call_expr(
-                        "__PascalBlockReadValue",
-                        vec![
-                            pascal_file_path_expr_or_handle(&info, &file_expr),
-                            Expression::ident(pos_var),
-                        ],
-                    )
-                };
+            if lowered == "blockread" && matches!(args[1].value.kind, ExprKind::Ident(_)) {
+                let value =
+                    if pascal_int_literal_value(&args[2].value).is_some_and(|value| value == 1) {
+                        call_expr(
+                            "__PascalBlockPeekByte",
+                            vec![
+                                pascal_file_path_expr_or_handle(&info, &file_expr),
+                                Expression::ident(pos_var),
+                                Expression::ident(rec_size_var),
+                            ],
+                        )
+                    } else {
+                        call_expr(
+                            "__PascalBlockReadValue",
+                            vec![
+                                pascal_file_path_expr_or_handle(&info, &file_expr),
+                                Expression::ident(pos_var),
+                            ],
+                        )
+                    };
                 stmts.push(Statement::new(StmtKind::Assign {
                     targets: vec![args[1].value.clone()],
                     value,
@@ -43886,7 +43970,11 @@ fn lower_pascal_file_io_call_stmt(
                 "__PascalSetFilePos",
                 vec![
                     file_expr.clone(),
-                    bin_expr(BinOp::Add, call_expr("__PascalGetFilePos", vec![file_expr.clone()]), out),
+                    bin_expr(
+                        BinOp::Add,
+                        call_expr("__PascalGetFilePos", vec![file_expr.clone()]),
+                        out,
+                    ),
                 ],
             ))));
             Some(StmtKind::Block(stmts))
@@ -44112,11 +44200,9 @@ fn lower_pascal_file_io_expr(
             // byte count both answer here.
             if let ExprKind::Ident(name) = &callee.kind {
                 let lowered = name.to_ascii_lowercase();
-                if matches!(lowered.as_str(), "filepos" | "filesize" | "eof")
-                    && args.len() == 1
-                {
-                    if let Some(info) =
-                        pascal_file_info_for_expr(&args[0].value, scope).filter(|i| i.pos_var.is_some())
+                if matches!(lowered.as_str(), "filepos" | "filesize" | "eof") && args.len() == 1 {
+                    if let Some(info) = pascal_file_info_for_expr(&args[0].value, scope)
+                        .filter(|i| i.pos_var.is_some())
                     {
                         let pos_var = info.pos_var.clone().unwrap();
                         let path = pascal_file_path_expr_or_handle(&info, &args[0].value);
@@ -44133,11 +44219,7 @@ fn lower_pascal_file_io_expr(
                                 "filepos" => Expression::ident(&pos_var),
                                 "filesize" => size,
                                 // `Eof` is the cursor having reached the end.
-                                _ => bin_expr(
-                                    BinOp::GtEq,
-                                    Expression::ident(&pos_var),
-                                    size,
-                                ),
+                                _ => bin_expr(BinOp::GtEq, Expression::ident(&pos_var), size),
                             };
                             return;
                         }
@@ -44206,8 +44288,6 @@ fn cv_first(pair: Pair<Rule>) -> Result<Pair<Rule>, String> {
         .next()
         .ok_or_else(|| "Expected inner pair".to_string())
 }
-
-
 
 // ── Nested routine names, in canonical form ────────────────────────────────
 
@@ -44308,7 +44388,6 @@ fn rename_pascal_nested_routine_refs_stmt(
     rewrite_pascal_generic_types_stmt(stmt, renames);
 }
 
-
 // ── Delphi RTTI attribute API → the shared reflection surface ──────────────
 
 /// `ctx.GetType(T)` → `TypeOf(T)`, and `x.GetAttributes` →
@@ -44395,7 +44474,6 @@ fn lower_pascal_rtti_attribute_api_stmt(stmt: &mut Statement) {
     });
 }
 
-
 // ── System.IOUtils statics → wasi:filesystem ───────────────────────────────
 
 /// `TPath.Combine`, `TFile.ReadAllText`/`WriteAllText`/`Delete`,
@@ -44434,13 +44512,9 @@ fn lower_pascal_ioutils_statics_stmt(stmt: &mut Statement) {
             ("tdirectory", "delete") => "__pascal_file_remove",
             _ => return,
         };
-        *expr = call_expr(
-            target,
-            args.iter().map(|arg| arg.value.clone()).collect(),
-        );
+        *expr = call_expr(target, args.iter().map(|arg| arg.value.clone()).collect());
     });
 }
-
 
 /// `Buf[Start]` → `(Buf, Start)`; a bare `Buf` → `(Buf, 0)`.
 ///
@@ -44452,7 +44526,6 @@ fn pascal_block_buffer_and_start(expr: &Expression) -> (Expression, Expression) 
         _ => (expr.clone(), int_expr(0)),
     }
 }
-
 
 // ── ExceptProc — the unhandled-exception hook ──────────────────────────────
 
@@ -44505,10 +44578,7 @@ fn install_pascal_except_proc(body: &mut Vec<Statement>, source: &str) {
     })));
     let handler = vec![
         Statement::new(StmtKind::If {
-            cond: call_expr(
-                "Assigned",
-                vec![Expression::ident("ExceptProc")],
-            ),
+            cond: call_expr("Assigned", vec![Expression::ident("ExceptProc")]),
             then_body: vec![call_hook],
             elifs: Vec::new(),
             else_body: None,

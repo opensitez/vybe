@@ -3,8 +3,8 @@
 //! Extracted from `primitives/mod.rs` (`impl Compiler`) — conductor pattern,
 //! same as `statements.rs`/`builtins.rs`.
 
-use crate::primitives::class_slots;
 use super::*;
+use crate::primitives::class_slots;
 
 impl Compiler {
     /// Is `field` a declared INSTANCE FIELD of this class (or an ancestor)?
@@ -155,6 +155,14 @@ impl Compiler {
     /// the constructor's name as the type, so the receiver comes back untyped
     /// and every member access on it stays string-keyed.
     pub(super) fn new_constructed_type_name(&self, class: &Expression) -> Option<String> {
+        if let Some(name) = Self::expr_dotted_type_name(class) {
+            let resolved = self.resolve_source_type_alias(&name);
+            if resolved.contains('.')
+                && self.tree_is_registered_type(&Self::tree_type_key(&resolved))
+            {
+                return Some(resolved);
+            }
+        }
         if let ExprKind::Member { object, .. } = &class.kind
             && let Some(owner) = Self::expr_terminal_type_name(object)
         {
@@ -164,6 +172,16 @@ impl Compiler {
             }
         }
         Self::expr_terminal_type_name(class)
+    }
+
+    fn expr_dotted_type_name(expr: &Expression) -> Option<String> {
+        match &expr.kind {
+            ExprKind::Ident(name) => Some(name.clone()),
+            ExprKind::Member { object, field, .. } => {
+                Self::expr_dotted_type_name(object).map(|prefix| format!("{prefix}.{field}"))
+            }
+            _ => None,
+        }
     }
 
     pub(super) fn expr_terminal_type_name(expr: &Expression) -> Option<String> {
@@ -435,8 +453,14 @@ impl Compiler {
             // over it fell to the property-bag copy.
             ExprKind::Call { callee, args, .. }
                 if args.is_empty()
-                    && let ExprKind::Lambda { body: LambdaBody::Block(stmts), .. } = &callee.kind
-                    && let Some(Statement { kind: StmtKind::Return(Some(ret)), .. }) = stmts.last()
+                    && let ExprKind::Lambda {
+                        body: LambdaBody::Block(stmts),
+                        ..
+                    } = &callee.kind
+                    && let Some(Statement {
+                        kind: StmtKind::Return(Some(ret)),
+                        ..
+                    }) = stmts.last()
                     && let ExprKind::Ident(ret_name) = &ret.kind =>
             {
                 stmts.iter().find_map(|st| {
@@ -611,9 +635,7 @@ impl Compiler {
                             .is_none()
                         {
                             let class_name = Self::tree_type_key(&receiver_type);
-                            if let Some(return_type) =
-                                self.tree_member_return(&class_name, field)
-                            {
+                            if let Some(return_type) = self.tree_member_return(&class_name, field) {
                                 return Some(return_type);
                             }
                         }
@@ -631,6 +653,8 @@ impl Compiler {
                         | BinOp::Sub
                         | BinOp::Mul
                         | BinOp::Div
+                        | BinOp::IDiv
+                        | BinOp::FloorDiv
                         | BinOp::Mod
                         | BinOp::Pow
                         | BinOp::BitAnd
@@ -650,6 +674,8 @@ impl Compiler {
                 let right_bigint = self.hint_is_bigint(self.infer_expr_type_hint(right).as_deref());
                 if left_bigint || right_bigint {
                     Some("bigint".into())
+                } else if let Some(ty) = self.static_builtin_operator_type(op, left, right) {
+                    Some(ty.as_key().to_string())
                 } else {
                     None
                 }
@@ -1291,7 +1317,8 @@ impl Compiler {
         );
 
         for member_name in fields.iter().chain(instance_member_names.iter()) {
-            let member_key = self.resolve_slot_interned(&class_slots::ClassSlot::internal(member_name));
+            let member_key =
+                self.resolve_slot_interned(&class_slots::ClassSlot::internal(member_name));
             // Resolved in the declaration pass, keyed by the same storage name
             // this loop iterates. Nothing is derived from a spelling here — a
             // method member simply has no entry.

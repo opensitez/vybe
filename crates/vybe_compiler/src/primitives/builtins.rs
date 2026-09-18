@@ -4,9 +4,9 @@
 //! file navigable — same pattern as `calls.rs`/`classes.rs`. Methods are
 //! private-by-convention, called from the core compile paths in `mod.rs`.
 
+use super::*;
 use crate::primitives::class_slots;
 use vybe_runtime::chunk::ConstExpr;
-use super::*;
 
 /// Split a wast-mangled opcode name into its base name, memarg `offset=`, and
 /// multi-memory selectors.
@@ -160,9 +160,11 @@ fn wasm_heap_type_ref_exact(expr: Option<&Expression>) -> (String, bool, bool) {
     // `ref.test funcref` came out as a test against an unrelated type index
     // and could never be true.
     match vybe_runtime::opcode::heaptype::HeapType::from_spec_reftype_name(&name) {
-        Some((heap, abbreviation_is_nullable)) => {
-            (heap.to_string(), nullable || abbreviation_is_nullable, exact)
-        }
+        Some((heap, abbreviation_is_nullable)) => (
+            heap.to_string(),
+            nullable || abbreviation_is_nullable,
+            exact,
+        ),
         None => (name, nullable, exact),
     }
 }
@@ -748,7 +750,10 @@ impl Compiler {
                         self.emit_const(Value::String(Arc::from("length")));
                         self.emit_proxy_get()?;
                     } else {
-                        self.class_get(class_slots::ObjSource::Stack, &class_slots::ClassSlot::internal("length"));
+                        self.class_get(
+                            class_slots::ObjSource::Stack,
+                            &class_slots::ClassSlot::internal("length"),
+                        );
                     }
                     // §10.1.8.1 OrdinaryGet: a missing own `length` walks
                     // the prototype chain like any other key (e.g.
@@ -811,7 +816,8 @@ impl Compiler {
                     let normalized = Self::normalize_type_hint(&type_hint);
                     if normalized == "datetime" || normalized.ends_with(".datetime") {
                         self.compile_expr(&args[0])?;
-                        let idx = self.resolve_slot_interned(&class_slots::ClassSlot::internal(&field_name));
+                        let idx = self
+                            .resolve_slot_interned(&class_slots::ClassSlot::internal(&field_name));
                         self.class_get_resolved(class_slots::ObjSource::Stack, &idx);
                         return Ok(true);
                     }
@@ -1231,20 +1237,18 @@ impl Compiler {
                     let rec_shape = expr_str_lit(args.get(4).copied());
                     if !name.is_empty() {
                         if !rec_shape.is_empty() {
-                            self.chunks[0].type_rec_shape.insert(name.clone(), rec_shape);
+                            self.chunks[0]
+                                .type_rec_shape
+                                .insert(name.clone(), rec_shape);
                         }
                         let parent_idx = if parent.is_empty() {
                             0u16
                         } else {
-                            crate::primitives::classes::reserve_type_slot(
-                                &mut self.chunks,
-                                &parent,
-                            )
+                            crate::primitives::classes::reserve_type_slot(&mut self.chunks, &parent)
                         };
-                        let idx = crate::primitives::classes::reserve_type_slot(
-                            &mut self.chunks,
-                            &name,
-                        ) as usize;
+                        let idx =
+                            crate::primitives::classes::reserve_type_slot(&mut self.chunks, &name)
+                                as usize;
                         if idx > 0 {
                             let entry = &mut self.chunks[0].types[idx - 1];
                             entry.kind = vybe_runtime::chunk::CompositeKind::Func;
@@ -1271,7 +1275,11 @@ impl Compiler {
                     // which class it just emitted, so it says.
                     let class = {
                         let c = expr_str_lit(args.get(3).copied());
-                        if c.is_empty() { "__wasm_module".to_string() } else { c }
+                        if c.is_empty() {
+                            "__wasm_module".to_string()
+                        } else {
+                            c
+                        }
                     };
                     let declared = expr_str_lit(args.get(4).copied());
                     if let Some(ci) =
@@ -1329,10 +1337,8 @@ impl Compiler {
                     // module's class rather than this one's — the walker sends
                     // it as `__elem_func(owner, method)`. Everything else is
                     // the walked expression itself.
-                    let items: Vec<ConstExpr> = args[1..]
-                        .iter()
-                        .map(|a| self.elem_const_expr(a))
-                        .collect();
+                    let items: Vec<ConstExpr> =
+                        args[1..].iter().map(|a| self.elem_const_expr(a)).collect();
                     if self.chunks[0].passive_elem_items.len() <= seg_index {
                         self.chunks[0]
                             .passive_elem_items
@@ -1589,8 +1595,10 @@ impl Compiler {
                 // gets a separate opcode per nullability — so the spelling is
                 // the only place the null flags can ride. The writer peels it
                 // back apart into castflags plus a heap type.
-                "br_on_cast_desc_eq" | "br_on_cast_desc_eq_fail"
-                | "br.on_cast_desc_eq" | "br.on_cast_desc_eq_fail" => {
+                "br_on_cast_desc_eq"
+                | "br_on_cast_desc_eq_fail"
+                | "br.on_cast_desc_eq"
+                | "br.on_cast_desc_eq_fail" => {
                     let label = match args.first().map(|a| &a.kind) {
                         Some(ExprKind::Lit(Literal::Str(s))) => s.to_string(),
                         Some(ExprKind::Ident(n)) => n.clone(),
@@ -1723,7 +1731,10 @@ impl Compiler {
                         let len = arg(1)
                             .map(|a| self.elem_const_expr(a))
                             .unwrap_or(ConstExpr::Value(Value::I32(0)));
-                        ConstExpr::ArrayNewDefault { typeidx, len: Box::new(len) }
+                        ConstExpr::ArrayNewDefault {
+                            typeidx,
+                            len: Box::new(len),
+                        }
                     }
                     // The walker rewrites `array.new_default $t n` to
                     // `array.new $t <default> n` whenever `$t`'s element type
@@ -2363,12 +2374,20 @@ impl Compiler {
                     self.emit_host_call(number, 1);
                     self.emit_u16(Op::LOCAL_GET, scale_slot);
                     self.emit(Op::F64_MUL);
-                    common::math::emit_round(self.chunk(), vybe_ast::MidpointPolicy::HalfEven, line);
+                    common::math::emit_round(
+                        self.chunk(),
+                        vybe_ast::MidpointPolicy::HalfEven,
+                        line,
+                    );
                     self.emit_u16(Op::LOCAL_GET, scale_slot);
                     self.emit(Op::F64_DIV);
                 } else {
                     self.compile_expr(args[0])?;
-                    common::math::emit_round(self.chunk(), vybe_ast::MidpointPolicy::HalfEven, line);
+                    common::math::emit_round(
+                        self.chunk(),
+                        vybe_ast::MidpointPolicy::HalfEven,
+                        line,
+                    );
                 }
             }
             "trunc" => {
@@ -3349,7 +3368,9 @@ impl Compiler {
                 // binds a slot, it never names it.
                 let tostring_key = crate::primitives::class_slots::resolve_interned(
                     self.chunk(),
-                    &crate::primitives::class_slots::ClassSlot::Slot(vybe_ast::ProtocolSlot::ToString),
+                    &crate::primitives::class_slots::ClassSlot::Slot(
+                        vybe_ast::ProtocolSlot::ToString,
+                    ),
                     &crate::primitives::class_slots::PlainNames,
                 );
                 let method_slot = self.define_local("__vb_cstr_tostring");
@@ -5569,7 +5590,10 @@ impl Compiler {
             "classname" => {
                 // ClassName(obj) → obj.__type
                 self.compile_expr(args[0])?;
-                self.class_get(class_slots::ObjSource::Stack, &class_slots::ClassSlot::TypeIdentity);
+                self.class_get(
+                    class_slots::ObjSource::Stack,
+                    &class_slots::ClassSlot::TypeIdentity,
+                );
             }
             "pos" => {
                 // Pos(substr, s) → IndexOf(s, substr) + 1 (Pascal 1-based)

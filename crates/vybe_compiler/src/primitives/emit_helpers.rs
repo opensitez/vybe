@@ -3,8 +3,8 @@
 //! Extracted from `primitives/mod.rs` (`impl Compiler`) — conductor pattern,
 //! same as `statements.rs`/`builtins.rs`.
 
-use crate::primitives::class_slots;
 use super::*;
+use crate::primitives::class_slots;
 
 impl Compiler {
     #[allow(dead_code)]
@@ -41,7 +41,11 @@ impl Compiler {
         // the same type. It cannot capture a struct: the key is only ever
         // created by the array registration path.
         let array_key = format!("__wast_array::{name}");
-        if let Some(idx) = self.chunks[0].types.iter().position(|t| t.name == array_key) {
+        if let Some(idx) = self.chunks[0]
+            .types
+            .iter()
+            .position(|t| t.name == array_key)
+        {
             let ht = vybe_runtime::opcode::heaptype::HeapType::Concrete(idx as u32 + 1);
             self.chunks[self.current].emit_ref_type_op(op, ht, line);
             return;
@@ -332,9 +336,8 @@ impl Compiler {
         receiver: &Expression,
         field: &str,
     ) -> bool {
-        let Some(type_hint) =
-            crate::primitives::calls::resolve_receiver_type_hint(self, receiver)
-                .or_else(|| self.infer_expr_type_hint(receiver))
+        let Some(type_hint) = crate::primitives::calls::resolve_receiver_type_hint(self, receiver)
+            .or_else(|| self.infer_expr_type_hint(receiver))
         else {
             return false;
         };

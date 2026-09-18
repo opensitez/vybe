@@ -886,7 +886,10 @@ pub fn emit_write_descriptor_slot(
     str_slot: u16,
     line: u32,
 ) {
-    let write_idx = chunk.add_import("wasi:filesystem/types", "[method]descriptor.write-via-stream");
+    let write_idx = chunk.add_import(
+        "wasi:filesystem/types",
+        "[method]descriptor.write-via-stream",
+    );
     let rd_slot = chunk.alloc_scratch(1);
     let wr_slot = chunk.alloc_scratch(1);
     emit_write_via_stream(
@@ -1167,7 +1170,10 @@ pub fn emit_ob_flush(chunks: &mut [Chunk], current: usize, line: u32) {
         emit_write_or_buffer(chunks, current, line);
         chunks[current].emit_else(line);
         let recv = crate::primitives::callable::push_callback_from_slot(
-            chunks, current, handler_slot, line,
+            chunks,
+            current,
+            handler_slot,
+            line,
         );
         chunks[current].emit_op_u16(Op::LOCAL_GET, contents_slot, line);
         crate::primitives::callable::emit_direct_invoke_chunk(&mut chunks[current], 1 + recv, line);
@@ -1443,7 +1449,10 @@ pub fn emit_ob_get_clean(chunks: &mut [Chunk], current: usize, line: u32) {
         chunks[current].emit_op_u16(Op::LOCAL_SET, out_slot, line);
         chunks[current].emit_else(line);
         let recv = crate::primitives::callable::push_callback_from_slot(
-            chunks, current, handler_slot, line,
+            chunks,
+            current,
+            handler_slot,
+            line,
         );
         chunks[current].emit_op_u16(Op::LOCAL_GET, raw_slot, line);
         crate::primitives::callable::emit_direct_invoke_chunk(&mut chunks[current], 1 + recv, line);
@@ -1460,7 +1469,6 @@ pub fn emit_ob_get_flush(chunks: &mut [Chunk], current: usize, line: u32) {
         emit_ob_pop_and_flush(chunks, current, line);
     });
 }
-
 
 // ── Linkable chunk builders ──────────────────────────────────────────────────
 //

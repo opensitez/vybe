@@ -8,8 +8,8 @@
 //! source spelling.
 
 use crate::primitives::class_slots;
-use vybe_runtime::opcode::Op;
 use vybe_runtime::Chunk;
+use vybe_runtime::opcode::Op;
 
 use super::*;
 
@@ -225,8 +225,7 @@ pub fn emit_resolver_stack_invoke(
             // §10.2.1: a resolver is an ordinary callable, so where the region
             // declares a receiver it takes one at argument 0 and the symbol
             // name is argument 1.
-            let recv =
-                crate::primitives::callable::emit_callback_receiver(chunk, abi, line);
+            let recv = crate::primitives::callable::emit_callback_receiver(chunk, abi, line);
             chunk.emit_op_u16(Op::LOCAL_GET, name_slot, line);
             crate::primitives::callable::emit_direct_invoke_chunk(chunk, 1 + recv, line);
             chunk.emit_op(Op::DROP, line);

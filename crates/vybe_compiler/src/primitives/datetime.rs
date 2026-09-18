@@ -130,6 +130,30 @@ pub fn emit_zone_canonicalize(chunk: &mut Chunk, line: u32) {
     chunk.emit_call(import, 1, line);
 }
 
+/// All available primary tzdb identifiers.
+///
+/// Stack: `[]` -> `[array<string>]`.
+pub fn emit_zone_identifiers(chunk: &mut Chunk, line: u32) {
+    let import = chunk.add_import(TZ_MODULE, "identifiers");
+    chunk.emit_call(import, 0, line);
+}
+
+/// Available primary tzdb identifiers under an area prefix such as `Europe/`.
+///
+/// Stack: `[prefix]` -> `[array<string>]`.
+pub fn emit_zone_identifiers_with_prefix(chunk: &mut Chunk, line: u32) {
+    let import = chunk.add_import(TZ_MODULE, "identifiersWithPrefix");
+    chunk.emit_call(import, 1, line);
+}
+
+/// Available primary tzdb identifiers for an ISO-3166 alpha-2 country code.
+///
+/// Stack: `[country]` -> `[array<string>]`.
+pub fn emit_zone_identifiers_for_country(chunk: &mut Chunk, line: u32) {
+    let import = chunk.add_import(TZ_MODULE, "identifiersForCountry");
+    chunk.emit_call(import, 1, line);
+}
+
 /// Is `year` a leap year — proleptic Gregorian, the ONE rule every language
 /// agrees on, which is why it takes no policy and why four copies of it was
 /// four chances to get it wrong.

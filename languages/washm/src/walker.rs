@@ -171,6 +171,9 @@ pub fn parse(source: &str) -> Result<Module, String> {
         imports: Vec::new(),
         directives: Directives {
             spread_arguments: Some(SpreadArguments::Positional),
+            equality_fallback: Some(vybe_ast::EqualityFallback::EcmaAbstract),
+            type_resolution: Some(vybe_ast::TypeResolution::Dynamic),
+            operator_dispatch: Some(vybe_ast::OperatorDispatch::Ecma),
             ..Default::default()
         },
     })
@@ -598,7 +601,10 @@ fn funcname_pop_exprs() -> Vec<Expression> {
             index(ident(BASH_FUNCNAME), int(i + 1)),
         ));
     }
-    out.push(assign_expr(index(ident(BASH_FUNCNAME), int(31)), undefined()));
+    out.push(assign_expr(
+        index(ident(BASH_FUNCNAME), int(31)),
+        undefined(),
+    ));
     out
 }
 fn declarator(name: &str, init: Option<Expression>) -> VarDeclarator {
@@ -1833,7 +1839,10 @@ impl Walker {
             if parts[i].as_rule() == Rule::and_or {
                 let line = parts[i].as_span().start_pos().line_col().0;
                 if current_line != Some(line) {
-                    out.push(assign_stmt(ident("__bash_abort_line"), Expression::bool(false)));
+                    out.push(assign_stmt(
+                        ident("__bash_abort_line"),
+                        Expression::bool(false),
+                    ));
                     current_line = Some(line);
                 }
                 let background = parts
@@ -2228,8 +2237,9 @@ impl Walker {
                 if pair.as_rule() == Rule::test_single_bracket {
                     if let Some(expr) = self.single_bracket_one_arg_expr(&pair)? {
                         Lowered::value(Cmd::boolean(expr))
-                    } else if let Some(expr) = single_bracket_raw_arith_error_status_expr(pair.as_str(), "[")
-                        .or_else(|| single_bracket_pair_arith_error_status_expr(&pair, "["))
+                    } else if let Some(expr) =
+                        single_bracket_raw_arith_error_status_expr(pair.as_str(), "[")
+                            .or_else(|| single_bracket_pair_arith_error_status_expr(&pair, "["))
                     {
                         Lowered::value(Cmd::status(expr))
                     } else if let Some(argv) = self.single_bracket_runtime_argv(&pair)? {
@@ -3125,10 +3135,10 @@ impl Walker {
         {
             return Ok(None);
         }
-        if !nested_call && self
-            .functions
-            .keys()
-            .any(|function_name| function_name != name && source_has_command_word(&source, function_name))
+        if !nested_call
+            && self.functions.keys().any(|function_name| {
+                function_name != name && source_has_command_word(&source, function_name)
+            })
         {
             return Ok(None);
         }
@@ -3257,7 +3267,7 @@ impl Walker {
                 return Ok(Some(Lowered::value(Cmd::status(bash_c_syntax_error_expr(
                     &source,
                     "syntax error",
-                )))))
+                )))));
             }
         };
         if noexec {
@@ -3637,10 +3647,7 @@ impl Walker {
         Ok(None)
     }
 
-    fn triggered_assign_default_error(
-        &self,
-        pair: &Pair<Rule>,
-    ) -> Option<(String, Expression)> {
+    fn triggered_assign_default_error(&self, pair: &Pair<Rule>) -> Option<(String, Expression)> {
         let base = pair
             .clone()
             .into_inner()
@@ -4484,7 +4491,11 @@ impl Walker {
                             _ => None,
                         };
                         if let Some(flag) = flag {
-                            if enable { self.shell_flags.insert(flag); } else { self.shell_flags.remove(&flag); }
+                            if enable {
+                                self.shell_flags.insert(flag);
+                            } else {
+                                self.shell_flags.remove(&flag);
+                            }
                         }
                     }
                 }
@@ -4745,7 +4756,11 @@ impl Walker {
                 fmt = lit(s);
             }
             let shell_args = self.words_shell_args(it.collect())?;
-            return Ok(Some(self.bash_printf_expr(fmt, fmt_text.as_deref(), shell_args)));
+            return Ok(Some(self.bash_printf_expr(
+                fmt,
+                fmt_text.as_deref(),
+                shell_args,
+            )));
         }
         Ok(Some(lit("")))
     }
@@ -4825,12 +4840,14 @@ impl Walker {
         let provided = shell_args.len();
         let mut args = shell_args;
         if !has_spread {
-            args.extend(printf_missing_default_args(fmt_text, provided).into_iter().map(
-                |value| ShellArg {
-                    value,
-                    spread: false,
-                },
-            ));
+            args.extend(
+                printf_missing_default_args(fmt_text, provided)
+                    .into_iter()
+                    .map(|value| ShellArg {
+                        value,
+                        spread: false,
+                    }),
+            );
         }
         bash_sprintf_array(common_fmt, args)
     }
@@ -5141,8 +5158,10 @@ impl Walker {
         for item in items {
             match item.as_rule() {
                 Rule::assignment_word => {
-                    let (target, op, value) = self
-                        .assignment_parts_with_array_kind(item.clone(), flag_enabled(&flags, 'A'))?;
+                    let (target, op, value) = self.assignment_parts_with_array_kind(
+                        item.clone(),
+                        flag_enabled(&flags, 'A'),
+                    )?;
                     match target {
                         AssignTarget::Name(n) => {
                             let mut value = value;
@@ -5436,7 +5455,10 @@ impl Walker {
         if !declarations.is_empty() && self.function_depth == 0 {
             for decl in declarations {
                 if let BindingPattern::Ident(name) = decl.pattern {
-                    extra.insert(0, assign_stmt(ident(&name), decl.init.unwrap_or_else(undefined)));
+                    extra.insert(
+                        0,
+                        assign_stmt(ident(&name), decl.init.unwrap_or_else(undefined)),
+                    );
                 }
             }
         } else if !declarations.is_empty() {
@@ -6515,17 +6537,19 @@ impl Walker {
                     value = Some(self.array_literal_expr(p, as_assoc)?);
                 }
                 Rule::word | Rule::assignment_value_word => {
-                    value = Some(if pair_has_command_substitution(p.clone())
-                        || (self.function_depth > 0 && !self.inline_call_context)
-                        || self.dynamic_arith
-                    {
-                        self.assignment_word_value_expr(p)?
-                    } else {
-                        match self.static_word_text(&p) {
-                            Some(text) => lit(&text),
-                            None => self.assignment_word_value_expr(p)?,
-                        }
-                    });
+                    value = Some(
+                        if pair_has_command_substitution(p.clone())
+                            || (self.function_depth > 0 && !self.inline_call_context)
+                            || self.dynamic_arith
+                        {
+                            self.assignment_word_value_expr(p)?
+                        } else {
+                            match self.static_word_text(&p) {
+                                Some(text) => lit(&text),
+                                None => self.assignment_word_value_expr(p)?,
+                            }
+                        },
+                    );
                 }
                 _ => {}
             }
@@ -6734,7 +6758,9 @@ impl Walker {
         // last command.
         if !matches!(body.last().map(|s| &s.kind), Some(StmtKind::Return(_))) {
             body.extend(funcname_pop_exprs().into_iter().map(expr_stmt));
-            body.push(Statement::new(StmtKind::Return(Some(ident("__bash_status")))));
+            body.push(Statement::new(StmtKind::Return(Some(ident(
+                "__bash_status",
+            )))));
         }
         for stmt in funcname_push_stmts(&name).into_iter().rev() {
             body.insert(0, stmt);
@@ -6862,9 +6888,8 @@ impl Walker {
                     let Some(fi_pos) = find_control_keyword(rest, "fi") else {
                         return Ok(None);
                     };
-                    else_body = Some(self.walk_list_from_source(trim_shell_fragment(
-                        &rest[..fi_pos],
-                    ))?);
+                    else_body =
+                        Some(self.walk_list_from_source(trim_shell_fragment(&rest[..fi_pos]))?);
                     break;
                 }
                 "fi" => {
@@ -6888,8 +6913,8 @@ impl Walker {
     }
 
     fn walk_list_from_source(&mut self, source: &str) -> R<Vec<Statement>> {
-        let mut pairs = WashmParser::parse(Rule::list, source)
-            .map_err(|e| format!("if list fragment: {e}"))?;
+        let mut pairs =
+            WashmParser::parse(Rule::list, source).map_err(|e| format!("if list fragment: {e}"))?;
         let pair = pairs.next().ok_or("empty if list fragment")?;
         self.walk_list(pair)
     }
@@ -8510,17 +8535,17 @@ impl Walker {
                             for value in expanded {
                                 out.extend(self.expanded_unquoted_word_shell_args(value));
                             }
-                    }
-                } else if let Some(args) = self.static_mixed_word_shell_args(&w)? {
-                    out.extend(args);
-                } else if let Some(value) = self.path_glob_word(&w) {
-                    out.push(ShellArg {
-                        value,
-                        spread: true,
-                    });
-                } else if let Some(text) = self.static_word_text(&w) {
-                    out.push(ShellArg {
-                        value: lit(&text),
+                        }
+                    } else if let Some(args) = self.static_mixed_word_shell_args(&w)? {
+                        out.extend(args);
+                    } else if let Some(value) = self.path_glob_word(&w) {
+                        out.push(ShellArg {
+                            value,
+                            spread: true,
+                        });
+                    } else if let Some(text) = self.static_word_text(&w) {
+                        out.push(ShellArg {
+                            value: lit(&text),
                             spread: false,
                         });
                     } else if let Some(value) = self.exact_scalar_split_word(&w)? {
@@ -8538,9 +8563,9 @@ impl Walker {
                             value: split_bash_words(self.word_expr(w)?),
                             spread: true,
                         });
-                } else {
-                    out.extend(self.expand_word(w)?.into_iter().map(|value| ShellArg {
-                        value,
+                    } else {
+                        out.extend(self.expand_word(w)?.into_iter().map(|value| ShellArg {
+                            value,
                             spread: false,
                         }));
                     }
@@ -8723,9 +8748,9 @@ impl Walker {
             .resolve_nameref_text(name)
             .unwrap_or_else(|| name.to_string());
         if let Some(value) = self.variable_values.get(&target).cloned() {
-            return Ok(Some(shell_args_array(self.static_split_glob_shell_args(
-                &value,
-            ))));
+            return Ok(Some(shell_args_array(
+                self.static_split_glob_shell_args(&value),
+            )));
         }
         let target = self.name_or_element_target(name)?;
         Ok(Some(self.split_and_glob_words_expr(param_value(target))))
@@ -8908,8 +8933,9 @@ impl Walker {
                 .ok()
                 .and_then(|n| n.checked_sub(1))
                 .and_then(|n| self.positional_values.get(n).cloned()),
-            Rule::special_param => literal_string(&special_param_value(inner.as_str()))
-                .map(str::to_string),
+            Rule::special_param => {
+                literal_string(&special_param_value(inner.as_str())).map(str::to_string)
+            }
             _ => None,
         })
     }
@@ -9011,7 +9037,11 @@ impl Walker {
                 UnaryOp::Not,
                 regex_test_expr(regexp(lit("[*?]"), ""), ident(&raw)),
             ),
-            binary(BinOp::GtEq, method(ident(&raw), "indexOf", vec![lit("/")]), int(0)),
+            binary(
+                BinOp::GtEq,
+                method(ident(&raw), "indexOf", vec![lit("/")]),
+                int(0),
+            ),
         );
         let no_match_value = if self.nullglob_enabled {
             ident(&matches)
@@ -9025,7 +9055,10 @@ impl Walker {
         lambda_block_with_params(
             vec![param_named(field)],
             vec![
-                let_stmt(&raw, call_named("__bash_string", vec![param_value(ident(field))])),
+                let_stmt(
+                    &raw,
+                    call_named("__bash_string", vec![param_value(ident(field))]),
+                ),
                 Statement::new(StmtKind::If {
                     cond: no_dynamic_glob,
                     then_body: vec![Statement::new(StmtKind::Return(Some(array(vec![ident(
@@ -9154,10 +9187,7 @@ impl Walker {
                 dir_cond,
                 array_spread(vec![
                     (
-                        parts_to_expr(vec![
-                            Part::Expr(ident(child)),
-                            Part::Text("/".to_string()),
-                        ]),
+                        parts_to_expr(vec![Part::Expr(ident(child)), Part::Text("/".to_string())]),
                         false,
                     ),
                     (descend, true),
@@ -9175,26 +9205,24 @@ impl Walker {
             &walk,
             lambda_block_with_params(
                 vec![param_named(path), param_named(cwd)],
-                vec![
-                    Statement::new(StmtKind::Return(Some(method(
-                        call_named(
-                            "__bash_list_dir",
-                            vec![bash_path_with_cwd(ident(path), ident(cwd))],
-                        ),
-                        "flatMap",
-                        vec![lambda_block_with_params(
-                            vec![param_named(name)],
-                            vec![
-                                let_stmt(child, child_expr),
-                                Statement::new(StmtKind::Return(Some(ternary(
-                                    visible,
-                                    item_result,
-                                    array(Vec::new()),
-                                )))),
-                            ],
-                        )],
-                    )))),
-                ],
+                vec![Statement::new(StmtKind::Return(Some(method(
+                    call_named(
+                        "__bash_list_dir",
+                        vec![bash_path_with_cwd(ident(path), ident(cwd))],
+                    ),
+                    "flatMap",
+                    vec![lambda_block_with_params(
+                        vec![param_named(name)],
+                        vec![
+                            let_stmt(child, child_expr),
+                            Statement::new(StmtKind::Return(Some(ternary(
+                                visible,
+                                item_result,
+                                array(Vec::new()),
+                            )))),
+                        ],
+                    )],
+                ))))],
             ),
         );
         let mut matches = call_named(&walk, vec![lit("."), ident("PWD")]);
@@ -10656,7 +10684,8 @@ impl Walker {
                 let target = target.ok_or("${} without parameter")?;
                 let word = word.unwrap_or_else(|| lit(""));
                 // `:` forms treat empty like unset; plain forms test only unset.
-                let cond = param_base_test_condition(&base_text, target.clone(), op.starts_with(':'));
+                let cond =
+                    param_base_test_condition(&base_text, target.clone(), op.starts_with(':'));
                 Ok(match kind {
                     Rule::default_value => ternary(cond, target, word),
                     Rule::alternative_value => ternary(cond, word, lit("")),
@@ -10665,8 +10694,11 @@ impl Walker {
                     }
                     _ => {
                         let value = self.fresh("__bash_param_value");
-                        let cond =
-                            param_base_test_condition(&base_text, ident(&value), op.starts_with(':'));
+                        let cond = param_base_test_condition(
+                            &base_text,
+                            ident(&value),
+                            op.starts_with(':'),
+                        );
                         iife(vec![
                             let_stmt(&value, target.clone()),
                             Statement::new(StmtKind::If {
@@ -11012,7 +11044,9 @@ fn arith_lvalue_text(pair: &Pair<Rule>) -> Option<String> {
 }
 
 fn arith_assignment_lhs(text: &str) -> Option<String> {
-    for op in ["<<=", ">>=", "+=", "-=", "*=", "/=", "%=", "&=", "^=", "|=", "="] {
+    for op in [
+        "<<=", ">>=", "+=", "-=", "*=", "/=", "%=", "&=", "^=", "|=", "=",
+    ] {
         if let Some((lhs, _)) = text.split_once(op) {
             let lhs = lhs.trim();
             if is_name(lhs) || (lhs.contains('[') && lhs.ends_with(']')) {
@@ -11581,7 +11615,10 @@ fn single_bracket_literal_arith_args(pair: &Pair<Rule>) -> Option<Vec<Expression
     Some(words.into_iter().map(lit).collect())
 }
 
-fn single_bracket_arith_error_status_expr(words: &[Pair<Rule>], command: &str) -> Option<Expression> {
+fn single_bracket_arith_error_status_expr(
+    words: &[Pair<Rule>],
+    command: &str,
+) -> Option<Expression> {
     if words.len() != 3 {
         return None;
     }
@@ -11609,7 +11646,10 @@ fn single_bracket_raw_arith_error_status_expr(raw: &str, command: &str) -> Optio
     if tokens.len() != 3 {
         return None;
     }
-    if !matches!(tokens[1].as_str(), "-eq" | "-ne" | "-lt" | "-le" | "-gt" | "-ge") {
+    if !matches!(
+        tokens[1].as_str(),
+        "-eq" | "-ne" | "-lt" | "-le" | "-gt" | "-ge"
+    ) {
         return None;
     }
     for token in [&tokens[0], &tokens[2]] {
@@ -12287,7 +12327,11 @@ fn special_param(s: &str) -> Expression {
     }
 }
 
-fn param_base_test_condition(base: &str, value: Expression, empty_counts_unset: bool) -> Expression {
+fn param_base_test_condition(
+    base: &str,
+    value: Expression,
+    empty_counts_unset: bool,
+) -> Expression {
     if base == "#" {
         return if empty_counts_unset {
             binary(BinOp::Gt, member(ident(BASH_ARGS), "length"), int(0))
@@ -12612,9 +12656,7 @@ fn printf_common_format(fmt: &str) -> String {
 
 fn printf_default_for_conversion(conv: char) -> Expression {
     match conv {
-        'd' | 'i' | 'o' | 'u' | 'x' | 'X' | 'f' | 'F' | 'e' | 'E' | 'g' | 'G' | 'a' | 'A' => {
-            int(0)
-        }
+        'd' | 'i' | 'o' | 'u' | 'x' | 'X' | 'f' | 'F' | 'e' | 'E' | 'g' | 'G' | 'a' | 'A' => int(0),
         _ => lit(""),
     }
 }
@@ -12709,11 +12751,7 @@ fn eval_const_arith(input: &str) -> Option<i64> {
                     return None;
                 }
                 let token = self.chars[start..self.pos].iter().collect::<String>();
-                let token = if sign < 0 {
-                    format!("-{token}")
-                } else {
-                    token
-                };
+                let token = if sign < 0 { format!("-{token}") } else { token };
                 parse_bash_integer(&token)
             }
         }

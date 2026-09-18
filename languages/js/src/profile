@@ -23,11 +23,9 @@ supports_dynamic_import = true        # ECMAScript import()
 # `ecma:bigint`, and `1n` literals walk to `Literal::BigInt`; the shared
 # compiler derives the capability from either.
 ecma_strict_mode = true               # "use strict"
-ecma_switch_strict_equality = true    # switch uses ===
 ecma_lexical_declarations = true      # const/let/var lexical rules
 has_ecma_globals = true               # Object/Array/Math/JSON globals
 ecma_operator_coercion = true         # ToPrimitive/ToNumber operator coercion
-abstract_equality = true              # == via ecma:value.abstractEq
 has_arguments_object = true           # arguments object (ECMA 10.4.4)
 relaxed_call_arity = true             # missing->undefined, extra ignored
 ecma_new_dispatch = true               # new = [[Construct]] model

@@ -1701,8 +1701,18 @@ fn emit_pair_with_props(chunks: &mut Vec<Chunk>, current: usize, a: u16, b: u16,
     for (prop, slot) in [("first", a), ("second", b)] {
         chunks[current].emit_dup(line);
         get(chunks, current, slot, line);
-        let k = class_slots::resolve_interned(&mut chunks[current], &ClassSlot::internal(prop), &PlainNames);
-        class_slots::emit_class_set(&mut chunks[current], ObjSource::Stack, &k, ValueSource::Stack, line);
+        let k = class_slots::resolve_interned(
+            &mut chunks[current],
+            &ClassSlot::internal(prop),
+            &PlainNames,
+        );
+        class_slots::emit_class_set(
+            &mut chunks[current],
+            ObjSource::Stack,
+            &k,
+            ValueSource::Stack,
+            line,
+        );
     }
 }
 
@@ -1869,8 +1879,18 @@ pub fn emit_with_index(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line:
         for (prop, slot) in [("index", idx), ("value", elem)] {
             chunks[current].emit_dup(line);
             get(chunks, current, slot, line);
-            let k = class_slots::resolve_interned(&mut chunks[current], &ClassSlot::internal(prop), &PlainNames);
-            class_slots::emit_class_set(&mut chunks[current], ObjSource::Stack, &k, ValueSource::Stack, line);
+            let k = class_slots::resolve_interned(
+                &mut chunks[current],
+                &ClassSlot::internal(prop),
+                &PlainNames,
+            );
+            class_slots::emit_class_set(
+                &mut chunks[current],
+                ObjSource::Stack,
+                &k,
+                ValueSource::Stack,
+                line,
+            );
         }
         collections::emit_push(chunks, current, line);
         chunks[current].emit_op(Op::DROP, line);
@@ -2100,7 +2120,13 @@ pub fn emit_size_any(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     // buffer's, not a key count.
     get(chunks, current, v, line);
     let cs_slot = class_slots::resolve(&ClassSlot::Internal(("__buffer").to_string()), &PlainNames);
-    class_slots::emit_class_get(&mut chunks[current], ObjSource::Stack, &cs_slot, Dest::Stack, line);
+    class_slots::emit_class_get(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &cs_slot,
+        Dest::Stack,
+        line,
+    );
     let buf = chunks[current].alloc_scratch(1);
     set(chunks, current, buf, line);
     get(chunks, current, buf, line);
@@ -2144,8 +2170,18 @@ pub fn emit_grouping_by(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line
     for (prop, slot) in [(GROUPING_SRC, arr), (GROUPING_FN, f)] {
         chunks[current].emit_dup(line);
         get(chunks, current, slot, line);
-        let k = class_slots::resolve_interned(&mut chunks[current], &ClassSlot::internal(prop), &PlainNames);
-        class_slots::emit_class_set(&mut chunks[current], ObjSource::Stack, &k, ValueSource::Stack, line);
+        let k = class_slots::resolve_interned(
+            &mut chunks[current],
+            &ClassSlot::internal(prop),
+            &PlainNames,
+        );
+        class_slots::emit_class_set(
+            &mut chunks[current],
+            ObjSource::Stack,
+            &k,
+            ValueSource::Stack,
+            line,
+        );
     }
 }
 
@@ -2157,8 +2193,18 @@ fn pop_grouping(chunks: &mut Vec<Chunk>, current: usize, line: u32) -> (u16, u16
     set(chunks, current, g, line);
     for (prop, slot) in [(GROUPING_SRC, src), (GROUPING_FN, f)] {
         get(chunks, current, g, line);
-        let k = class_slots::resolve_interned(&mut chunks[current], &ClassSlot::internal(prop), &PlainNames);
-        class_slots::emit_class_get(&mut chunks[current], ObjSource::Stack, &k, Dest::Stack, line);
+        let k = class_slots::resolve_interned(
+            &mut chunks[current],
+            &ClassSlot::internal(prop),
+            &PlainNames,
+        );
+        class_slots::emit_class_get(
+            &mut chunks[current],
+            ObjSource::Stack,
+            &k,
+            Dest::Stack,
+            line,
+        );
         set(chunks, current, slot, line);
     }
     (src, f)
@@ -2441,8 +2487,18 @@ pub fn emit_sorted_map_of(chunks: &mut Vec<Chunk>, current: usize, argc: u8, lin
 /// Push i32 `1` when the value in `slot` carries the Kotlin Set marker.
 fn is_set_marked(chunks: &mut Vec<Chunk>, current: usize, slot: u16, line: u32) {
     get(chunks, current, slot, line);
-    let k = class_slots::resolve_interned(&mut chunks[current], &ClassSlot::internal(crate::emitter::tostring::SET_MARKER), &PlainNames);
-    class_slots::emit_class_get(&mut chunks[current], ObjSource::Stack, &k, Dest::Stack, line);
+    let k = class_slots::resolve_interned(
+        &mut chunks[current],
+        &ClassSlot::internal(crate::emitter::tostring::SET_MARKER),
+        &PlainNames,
+    );
+    class_slots::emit_class_get(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &k,
+        Dest::Stack,
+        line,
+    );
     chunks[current].emit_op(Op::REF_IS_NULL, line);
     chunks[current].emit_op(Op::I32_EQZ, line);
 }

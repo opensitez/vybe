@@ -20,7 +20,6 @@ string_indexing  = "zero_based"
 uses_common_resolver = true
 has_ecma_globals = true
 has_undefined_value = true
-abstract_equality = true
 dynamic_add = true
 dynamic_numeric_dispatch = true
 dynamic_member_access = true

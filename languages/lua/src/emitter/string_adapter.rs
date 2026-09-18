@@ -12,11 +12,9 @@
 //! No new host fns; no polyfills.  Pure bytecode over ecma:regexp.*.
 
 use std::sync::Arc;
+use vybe_compiler::primitives::class_slots::{self, ClassSlot, Dest, ObjSource, PlainNames};
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
-use vybe_compiler::primitives::class_slots::{
-    self, ClassSlot, Dest, ObjSource, PlainNames,
-};
 
 // ── helpers ─────────────────────────────────────────────────────────
 
@@ -203,9 +201,19 @@ fn emit_lua_gsub_manual_replace(
     lset(&mut chunks[current], match_slot, line);
 
     {
-        let index_key = class_slots::resolve_interned(&mut chunks[current], &ClassSlot::internal("index"), &PlainNames);
+        let index_key = class_slots::resolve_interned(
+            &mut chunks[current],
+            &ClassSlot::internal("index"),
+            &PlainNames,
+        );
         lget(&mut chunks[current], item_slot, line);
-        class_slots::emit_class_get(&mut chunks[current], ObjSource::Stack, &index_key, Dest::Stack, line);
+        class_slots::emit_class_get(
+            &mut chunks[current],
+            ObjSource::Stack,
+            &index_key,
+            Dest::Stack,
+            line,
+        );
         lset(&mut chunks[current], start_slot, line);
     }
 

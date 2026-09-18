@@ -7,8 +7,8 @@
 
 use vybe_runtime::Chunk;
 
-use crate::primitives::class_slots;
 use super::Compiler;
+use crate::primitives::class_slots;
 
 /// Callable invocation flavor. The argument count excludes the callable value
 /// already on the stack, matching `CALL_REF` and ordinary language syntax.
@@ -110,7 +110,13 @@ pub fn push_callback_from_slot(
 /// argument 0, which is not expressible once the argument is already stacked,
 /// so an emitter that writes these four instructions itself cannot be given one
 /// later. Call this rather than emitting the invoke.
-pub fn emit_callback_on(chunks: &mut [Chunk], current: usize, fn_slot: u16, arg_slot: u16, line: u32) {
+pub fn emit_callback_on(
+    chunks: &mut [Chunk],
+    current: usize,
+    fn_slot: u16,
+    arg_slot: u16,
+    line: u32,
+) {
     let recv = push_callback_from_slot(chunks, current, fn_slot, line);
     chunks[current].emit_op_u16(vybe_runtime::opcode::Op::LOCAL_GET, arg_slot, line);
     emit_direct_invoke_chunk(&mut chunks[current], 1 + recv, line);

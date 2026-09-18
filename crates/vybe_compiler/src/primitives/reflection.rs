@@ -2,16 +2,20 @@
 //! Parameter reflection, custom attributes, and Invoke. Compile-time
 //! resolution against class/attribute metadata. Moved out of the former dotnet_calls.rs.
 
-use crate::primitives::class_slots;
 use super::*;
 use crate::primitives::calls::{strip_generic_suffix, terminal_type_name};
+use crate::primitives::class_slots;
 
 impl Compiler {
     fn reflection_normalize_open_generic_arity_name(type_name: &str) -> String {
         let trimmed = type_name.trim();
         if let Some((base, arity)) = trimmed.rsplit_once("``") {
             if arity.parse::<usize>().is_ok() {
-                return format!("{}<{}>", base.trim(), vec!["_"; arity.parse::<usize>().unwrap_or(0)].join(", "));
+                return format!(
+                    "{}<{}>",
+                    base.trim(),
+                    vec!["_"; arity.parse::<usize>().unwrap_or(0)].join(", ")
+                );
             }
         }
         trimmed.to_string()
@@ -496,7 +500,9 @@ impl Compiler {
             },
             ObjectProperty::KeyValue {
                 key: Expression::string("IsGenericType"),
-                value: Expression::bool(!common::generics::generic_argument_display_names(type_name).is_empty()),
+                value: Expression::bool(
+                    !common::generics::generic_argument_display_names(type_name).is_empty(),
+                ),
             },
             ObjectProperty::KeyValue {
                 key: Expression::string("IsValueType"),
@@ -1284,7 +1290,10 @@ impl Compiler {
                     },
                 ])))?;
             }
-            ReflectionBinding::Property { type_name: owner, property_name } => {
+            ReflectionBinding::Property {
+                type_name: owner,
+                property_name,
+            } => {
                 let (declaring_type, member) = if let ReflectionBinding::Property {
                     type_name,
                     property_name,
@@ -1328,7 +1337,10 @@ impl Compiler {
                 ])))?;
             }
 
-            ReflectionBinding::Field { type_name: owner, field_name } => {
+            ReflectionBinding::Field {
+                type_name: owner,
+                field_name,
+            } => {
                 let (declaring_type, member) = if let ReflectionBinding::Field {
                     type_name,
                     field_name,
@@ -1680,11 +1692,14 @@ impl Compiler {
             let attribute_type = args
                 .get(1)
                 .and_then(|a| self.resolve_reflection_type_arg(&a.value));
-            let inherit = args
-                .get(2)
-                .map_or(true, |a| matches!(a.value.kind, ExprKind::Lit(Literal::Bool(true))));
-            let attrs =
-                self.reflection_attributes_for_binding(&provider, attribute_type.as_deref(), inherit);
+            let inherit = args.get(2).map_or(true, |a| {
+                matches!(a.value.kind, ExprKind::Lit(Literal::Bool(true)))
+            });
+            let attrs = self.reflection_attributes_for_binding(
+                &provider,
+                attribute_type.as_deref(),
+                inherit,
+            );
             self.compile_reflection_attribute_array(&attrs)?;
             return Ok(true);
         }
@@ -1928,9 +1943,9 @@ impl Compiler {
                 let params: Vec<_> = params
                     .into_iter()
                     .map(|mut param| {
-                        param.type_name = param
-                            .type_name
-                            .map(|declared| self.reflection_substitute_type_argument(&owner, &declared));
+                        param.type_name = param.type_name.map(|declared| {
+                            self.reflection_substitute_type_argument(&owner, &declared)
+                        });
                         param
                     })
                     .collect();
@@ -1941,15 +1956,17 @@ impl Compiler {
             // Only the static `Attribute.IsDefined(provider, type)` was handled,
             // so the instance spelling fell to run time and answered null.
             "IsDefined" if !args.is_empty() => {
-                let Some(attribute_type) = self.resolve_reflection_type_arg(&args[0].value)
-                else {
+                let Some(attribute_type) = self.resolve_reflection_type_arg(&args[0].value) else {
                     return Ok(false);
                 };
                 let inherit = args
                     .get(1)
                     .is_some_and(|a| matches!(a.value.kind, ExprKind::Lit(Literal::Bool(true))));
-                let attrs =
-                    self.reflection_attributes_for_binding(&provider, Some(&attribute_type), inherit);
+                let attrs = self.reflection_attributes_for_binding(
+                    &provider,
+                    Some(&attribute_type),
+                    inherit,
+                );
                 inst!(self, core_wasm::bool_const, !attrs.is_empty());
                 Ok(true)
             }
@@ -2123,11 +2140,12 @@ impl Compiler {
                     // `Nothing.Method(…)` answered null. The receiver is the
                     // declaring CLASS, exactly as `GetValue` does for a static
                     // property.
-                    let receiver = if matches!(instance_arg.value.kind, ExprKind::Lit(Literal::Null)) {
-                        self.reflection_class_expr(&type_name)
-                    } else {
-                        instance_arg.value.clone()
-                    };
+                    let receiver =
+                        if matches!(instance_arg.value.kind, ExprKind::Lit(Literal::Null)) {
+                            self.reflection_class_expr(&type_name)
+                        } else {
+                            instance_arg.value.clone()
+                        };
                     self.compile_expr(&Expression::new(ExprKind::Call {
                         callee: Box::new(Expression::new(ExprKind::Member {
                             object: Box::new(receiver),
@@ -2687,7 +2705,10 @@ fn convert_change_type_method(target_type: &str) -> Option<&'static str> {
 /// `InvalidCastException` for a value type.
 fn convert_change_type_target_is_reference(target_type: &str) -> bool {
     let leaf = target_type.rsplit('.').next().unwrap_or(target_type);
-    matches!(leaf.trim().to_ascii_lowercase().as_str(), "string" | "object")
+    matches!(
+        leaf.trim().to_ascii_lowercase().as_str(),
+        "string" | "object"
+    )
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -2726,7 +2747,6 @@ impl ReflectOp {
         }
     }
 }
-
 
 /// Stack: `[value] -> [ecma_type_string]`.
 pub fn emit_typeof(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -3436,18 +3456,15 @@ fn emit_import_call_in_chunk(chunk: &mut Chunk, module: &str, name: &str, argc: 
 /// Bytecode stack trace:
 /// ```text
 /// local_get this          // [this]
-/// dup                     // [this, this]
-/// struct_get "__types"    // [this, types_or_null]
-/// dup                     // [this, types_or_null, types_or_null]
-/// ref_is_null             // [this, types_or_null, i32]
-/// i32.eqz; br_if 0        // [this, types_or_null]
-/// drop                    // [this]
-/// array_new 0             // [this, []]
-/// skip:                   // [this, array]
-/// const "class_name"      // [this, array, "class_name"]
-/// array_push              // [this, array_with_name]
-/// struct_set "__types"    // [] (stored on this)
-/// drop                    // []
+/// struct_get "__types"    // [types_or_null]
+/// local_tee types         // [types_or_null]
+/// ref_is_null             // [i32]
+/// if value                // [array]
+/// dup; const class_name   // [array, array, "class_name"]
+/// array_push; drop        // [array]
+/// local_tee out; drop     // []
+/// local_get this/out      // [this, array]
+/// struct_set "__types"    // []
 /// ```
 ///
 /// Stack: unchanged
@@ -3464,28 +3481,23 @@ pub fn emit_instanceof_chain(
         &class_slots::PlainNames,
     );
 
-    // Stack: []
-    chunks[current].emit_op_u16(Op::LOCAL_GET, this_slot, line); // [this]
-    chunks[current].emit_dup(line); // [this, this]
+    let types_slot = chunks[current].alloc_scratch(1);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, this_slot, line);
     class_slots::emit_class_get(
         &mut chunks[current],
         class_slots::ObjSource::Stack,
         &types_key,
         class_slots::Dest::Stack,
         line,
-    ); // [this, types_or_null]
-    chunks[current].emit_dup(line); // [this, tn, tn]
-    chunks[current].emit_op(Op::REF_IS_NULL, line); // [this, tn, bool]
-    // `[this, tn, bool]` in, `[this, array]` out — two params, one result.
-    // See the note on the twin site in `object.rs`: the VM tolerates `(0, 0)`
-    // because its blocks share one operand stack; wasm blocks do not.
-    let init_block = chunks[current].emit_block_params(line, 2, 1);
-    chunks[current].emit_op(Op::I32_EQZ, line);
-    chunks[current].emit_br_if(0, line);
-    chunks[current].emit_op(Op::DROP, line); // [this] (drop the null)
-    crate::primitives::collections::emit_array_new(chunks, current, 0, line); // [this, []]
+    );
+    chunks[current].emit_op_u16(Op::LOCAL_TEE, types_slot, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_if_value(line);
+    crate::primitives::collections::emit_array_new(chunks, current, 0, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, types_slot, line);
     chunks[current].emit_end(line);
-    chunks[current].patch_block(init_block); // skip lands here; [this, array]
 
     // Push class_name onto array while preserving array on stack.
     // ecma:array.push is [arr, val] → [new_length], so DUP the array
@@ -3510,15 +3522,13 @@ pub fn emit_instanceof_chain(
     // position. `php/array_adapter.rs:1792` calls this INSIDE an `if`, where
     // a leak unbalances the branch.
     //
-    // ⛔ THE `alloc_scratch` STAYS, deliberately, even though nothing reads
-    // `out_slot` any more. Removing it would renumber every SUBSEQUENT
-    // `alloc_scratch` in the same chunk, and `alloc_scratch` aliases named
-    // locals — so dropping one changes which named locals get aliased
-    // downstream. That is a slot-numbering change riding along with a
-    // stack-balance fix, and the two must not be gated together. Retiring the
-    // slot is a separate, separately-measured edit.
+    // Keep the array in a scratch local while `struct.set` consumes
+    // `[this, array]`; the helper itself remains stack-neutral for callers.
     let out_slot = chunks[current].alloc_scratch(1);
-    chunks[current].emit_op_u16(Op::LOCAL_TEE, out_slot, line); // [this, array]
+    chunks[current].emit_op_u16(Op::LOCAL_TEE, out_slot, line); // [array]
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, this_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, out_slot, line);
     class_slots::emit_class_set(
         &mut chunks[current],
         class_slots::ObjSource::Stack,
@@ -3527,7 +3537,6 @@ pub fn emit_instanceof_chain(
         line,
     ); // []
 }
-
 
 // ── Linkable chunk builders ──────────────────────────────────────────────────
 //

@@ -249,7 +249,8 @@ impl Compiler {
         }
         self.emit(Op::I32_OR);
         self.chunk().emit_if_value(line);
-        self.chunk().emit_op_u16(Op::REF_FUNC, sentinel as u16, line);
+        self.chunk()
+            .emit_op_u16(Op::REF_FUNC, sentinel as u16, line);
         self.chunk().emit(0, line);
         self.chunk().emit_else(line);
         self.emit_u16(Op::LOCAL_GET, callee_slot);

@@ -37,12 +37,18 @@ fn string_key(chunk: &mut Chunk, key: &str) -> ResolvedSlot {
 }
 
 fn emit_sb_buffer_get(chunk: &mut Chunk, line: u32) {
-    let cs_slot = class_slots::resolve(&ClassSlot::Internal((SB_BUFFER_KEY).to_string()), &PlainNames);
+    let cs_slot = class_slots::resolve(
+        &ClassSlot::Internal((SB_BUFFER_KEY).to_string()),
+        &PlainNames,
+    );
     class_slots::emit_class_get(chunk, ObjSource::Stack, &cs_slot, Dest::Stack, line);
 }
 
 fn emit_sb_marker_test(chunk: &mut Chunk, line: u32) {
-    let cs_slot = class_slots::resolve(&ClassSlot::Internal((SB_MARKER_KEY).to_string()), &PlainNames);
+    let cs_slot = class_slots::resolve(
+        &ClassSlot::Internal((SB_MARKER_KEY).to_string()),
+        &PlainNames,
+    );
     core_wasm::dup(chunk, line);
     class_slots::emit_class_get(chunk, ObjSource::Stack, &cs_slot, Dest::Stack, line);
     vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
@@ -116,7 +122,12 @@ fn stamp_runtime_type(
 ) {
     emit_string_field(chunk, &ClassSlot::TypeIdentity, dart_name, line);
     emit_string_field(chunk, &ClassSlot::repr("__typename"), dart_name, line);
-    emit_string_field(chunk, &ClassSlot::internal(reflection::FIELD_KIND), kind.as_str(), line);
+    emit_string_field(
+        chunk,
+        &ClassSlot::internal(reflection::FIELD_KIND),
+        kind.as_str(),
+        line,
+    );
 }
 
 /// Shared by every Dart exception emit, including `io_adapter`'s — one place
@@ -143,7 +154,12 @@ pub(crate) fn emit_dart_exception_new(
     chunk.emit_op_u16(Op::LOCAL_GET, msg_slot, line);
     errors::emit_exception_new_finalize(chunk, dart_name, line);
     stamp_runtime_type(chunk, dart_name, reflection::ReflectKind::Exception, line);
-    emit_string_field(chunk, &ClassSlot::internal("__exception_type"), dart_name, line);
+    emit_string_field(
+        chunk,
+        &ClassSlot::internal("__exception_type"),
+        dart_name,
+        line,
+    );
     emit_string_field(chunk, &ClassSlot::internal("name"), dart_name, line);
     let obj_slot = reserve_slot(chunk);
     chunk.emit_op_u16(Op::LOCAL_SET, obj_slot, line);
@@ -196,7 +212,13 @@ fn emit_dart_sb_append_value(chunks: &mut [Chunk], current: usize, value_slot: u
     class_slots::emit_class_get(chunk, ObjSource::Stack, &buffer_key, Dest::Stack, line);
     chunk.emit_op_u16(Op::LOCAL_GET, text_slot, line);
     vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
-    class_slots::emit_class_set(chunk, ObjSource::Stack, &buffer_key, ValueSource::Stack, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &buffer_key,
+        ValueSource::Stack,
+        line,
+    );
     chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
 }
 
@@ -340,15 +362,29 @@ pub fn emit_dart_sb_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
         chunk.emit_string_const("", line);
     }
     chunk.emit_op_u16(Op::LOCAL_SET, content_slot, line);
-    let cs_k1 = class_slots::resolve_interned(chunk, &ClassSlot::Internal((SB_BUFFER_KEY).to_string()), &PlainNames);
-    let cs_slot_1 = class_slots::resolve_interned(chunk, &ClassSlot::Internal((SB_MARKER_KEY).to_string()), &PlainNames);
+    let cs_k1 = class_slots::resolve_interned(
+        chunk,
+        &ClassSlot::Internal((SB_BUFFER_KEY).to_string()),
+        &PlainNames,
+    );
+    let cs_slot_1 = class_slots::resolve_interned(
+        chunk,
+        &ClassSlot::Internal((SB_MARKER_KEY).to_string()),
+        &PlainNames,
+    );
     class_slots::emit_class_alloc(chunk, line);
     core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, content_slot, line);
     class_slots::emit_class_set(chunk, ObjSource::Stack, &cs_k1, ValueSource::Stack, line);
     core_wasm::dup(chunk, line);
     chunk.emit_bool_const(true, line);
-    class_slots::emit_class_set(chunk, ObjSource::Stack, &cs_slot_1, ValueSource::Stack, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &cs_slot_1,
+        ValueSource::Stack,
+        line,
+    );
 }
 
 /// Dart `buf.write(value)` — append stringified value, return receiver.
@@ -415,16 +451,32 @@ pub fn emit_dart_sb_clear(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_SET, sb_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
     chunk.emit_string_const("", line);
-    class_slots::emit_class_set(chunk, ObjSource::Stack, &buffer_key, ValueSource::Stack, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &buffer_key,
+        ValueSource::Stack,
+        line,
+    );
     chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
 }
 
 fn emit_dart_sb_class_clear(chunks: &mut [Chunk], current: usize, receiver_slot: u16, line: u32) {
     let chunk = &mut chunks[current];
-    let cs_slot_2 = class_slots::resolve_interned(chunk, &ClassSlot::Internal((SB_CLASS_BUFFER_KEY).to_string()), &PlainNames);
+    let cs_slot_2 = class_slots::resolve_interned(
+        chunk,
+        &ClassSlot::Internal((SB_CLASS_BUFFER_KEY).to_string()),
+        &PlainNames,
+    );
     chunk.emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
     chunk.emit_string_const("", line);
-    class_slots::emit_class_set(chunk, ObjSource::Stack, &cs_slot_2, ValueSource::Stack, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &cs_slot_2,
+        ValueSource::Stack,
+        line,
+    );
     chunk.emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
 }
 
@@ -490,7 +542,10 @@ pub fn emit_dart_regexp_new(chunks: &mut [Chunk], current: usize, argc: u8, line
     chunk.emit_op_u16(Op::LOCAL_SET, re_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, re_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, pattern_slot, line);
-    let cs_slot = class_slots::resolve(&ClassSlot::Internal((REGEXP_PATTERN_KEY).to_string()), &PlainNames);
+    let cs_slot = class_slots::resolve(
+        &ClassSlot::Internal((REGEXP_PATTERN_KEY).to_string()),
+        &PlainNames,
+    );
     class_slots::emit_class_set(chunk, ObjSource::Stack, &cs_slot, ValueSource::Stack, line);
     chunk.emit_op_u16(Op::LOCAL_GET, re_slot, line);
 }
@@ -533,13 +588,27 @@ pub fn emit_dart_regexp_first_match(chunks: &mut [Chunk], current: usize, line: 
 fn emit_dart_match_stamp(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
     let chunk = &mut chunks[current];
     let index_key = string_key(chunk, "index");
-    let cs_slot_3 = class_slots::resolve_interned(chunk, &ClassSlot::Internal(("start").to_string()), &PlainNames);
-    let cs_slot_4 = class_slots::resolve_interned(chunk, &ClassSlot::Internal(("end").to_string()), &PlainNames);
+    let cs_slot_3 = class_slots::resolve_interned(
+        chunk,
+        &ClassSlot::Internal(("start").to_string()),
+        &PlainNames,
+    );
+    let cs_slot_4 = class_slots::resolve_interned(
+        chunk,
+        &ClassSlot::Internal(("end").to_string()),
+        &PlainNames,
+    );
 
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
     class_slots::emit_class_get(chunk, ObjSource::Stack, &index_key, Dest::Stack, line);
-    class_slots::emit_class_set(chunk, ObjSource::Stack, &cs_slot_3, ValueSource::Stack, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &cs_slot_3,
+        ValueSource::Stack,
+        line,
+    );
 
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
@@ -551,7 +620,13 @@ fn emit_dart_match_stamp(chunks: &mut [Chunk], current: usize, slot: u16, line: 
     // the code units `substring` indexes by.
     host::emit(&mut chunks[current], "ecma:string", "length", 1, line);
     vybe_compiler::primitives::ops::emit_dyn_add(&mut chunks[current], line);
-    class_slots::emit_class_set(&mut chunks[current], ObjSource::Stack, &cs_slot_4, ValueSource::Stack, line);
+    class_slots::emit_class_set(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &cs_slot_4,
+        ValueSource::Stack,
+        line,
+    );
 }
 
 /// Dart `re.allMatches(input)` -> iterable of matches.
@@ -632,7 +707,10 @@ pub fn emit_dart_regexp_all_matches(chunks: &mut [Chunk], current: usize, line: 
 /// itself is the answer: `extract_pattern` reads `source` off it, which is one
 /// escaping round too many but still better than compiling `null`.
 fn emit_regexp_source_pattern(chunk: &mut Chunk, re_slot: u16, line: u32) {
-    let cs_slot = class_slots::resolve(&ClassSlot::Internal((REGEXP_PATTERN_KEY).to_string()), &PlainNames);
+    let cs_slot = class_slots::resolve(
+        &ClassSlot::Internal((REGEXP_PATTERN_KEY).to_string()),
+        &PlainNames,
+    );
     chunk.emit_op_u16(Op::LOCAL_GET, re_slot, line);
     class_slots::emit_class_get(chunk, ObjSource::Stack, &cs_slot, Dest::Stack, line);
     let pattern_slot = reserve_slot(chunk);
@@ -673,7 +751,12 @@ pub fn emit_dart_stack_trace(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_SET, _error_slot, line);
     class_slots::emit_class_alloc(chunk, line);
     stamp_runtime_type(chunk, "StackTrace", reflection::ReflectKind::Object, line);
-    emit_string_field(chunk, &ClassSlot::internal("__exception_type"), "StackTrace", line);
+    emit_string_field(
+        chunk,
+        &ClassSlot::internal("__exception_type"),
+        "StackTrace",
+        line,
+    );
     emit_string_field(chunk, &ClassSlot::internal("name"), "StackTrace", line);
     emit_string_field(chunk, &ClassSlot::internal("message"), "StackTrace", line);
     let obj_slot = reserve_slot(chunk);
@@ -700,11 +783,17 @@ fn emit_dart_format_exception_throw(chunks: &mut [Chunk], current: usize, line: 
         line,
     );
     emit_string_field(
-        &mut chunks[current], &ClassSlot::internal("__exception_type"),
+        &mut chunks[current],
+        &ClassSlot::internal("__exception_type"),
         "FormatException",
         line,
     );
-    emit_string_field(&mut chunks[current], &ClassSlot::internal("name"), "FormatException", line);
+    emit_string_field(
+        &mut chunks[current],
+        &ClassSlot::internal("name"),
+        "FormatException",
+        line,
+    );
     let exc_slot = reserve_slot(&mut chunks[current]);
     chunks[current].emit_op_u16(Op::LOCAL_SET, exc_slot, line);
     vybe_compiler::primitives::reflection::emit_instanceof_chain(
@@ -858,8 +947,18 @@ pub(crate) fn emit_dart_named_exception_throw(
         reflection::ReflectKind::Exception,
         line,
     );
-    emit_string_field(&mut chunks[current], &ClassSlot::internal("__exception_type"), exc_name, line);
-    emit_string_field(&mut chunks[current], &ClassSlot::internal("name"), exc_name, line);
+    emit_string_field(
+        &mut chunks[current],
+        &ClassSlot::internal("__exception_type"),
+        exc_name,
+        line,
+    );
+    emit_string_field(
+        &mut chunks[current],
+        &ClassSlot::internal("name"),
+        exc_name,
+        line,
+    );
     let exc_slot = reserve_slot(&mut chunks[current]);
     chunks[current].emit_op_u16(Op::LOCAL_SET, exc_slot, line);
     vybe_compiler::primitives::reflection::emit_instanceof_chain(
@@ -1570,9 +1669,24 @@ pub fn emit_dart_stream_error(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_SET, stream_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, stream_slot, line);
     chunks[current].emit_bool_const(true, line);
-    let cs_slot = class_slots::resolve(&ClassSlot::Internal(("__dart_stream_error").to_string()), &PlainNames);
-    class_slots::emit_class_set(&mut chunks[current], ObjSource::Stack, &cs_slot, ValueSource::Stack, line);
-    emit_set_string_field_from_slot(&mut chunks[current], stream_slot, &ClassSlot::internal("error"), error_slot, line);
+    let cs_slot = class_slots::resolve(
+        &ClassSlot::Internal(("__dart_stream_error").to_string()),
+        &PlainNames,
+    );
+    class_slots::emit_class_set(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &cs_slot,
+        ValueSource::Stack,
+        line,
+    );
+    emit_set_string_field_from_slot(
+        &mut chunks[current],
+        stream_slot,
+        &ClassSlot::internal("error"),
+        error_slot,
+        line,
+    );
     chunks[current].emit_op_u16(Op::LOCAL_GET, stream_slot, line);
 }
 
@@ -1584,7 +1698,13 @@ fn emit_get_string_field_to_slot(
     line: u32,
 ) {
     let cs = class_slots::resolve(key, &PlainNames);
-    class_slots::emit_class_get(chunk, ObjSource::Local(obj_slot), &cs, Dest::Local(dst_slot), line);
+    class_slots::emit_class_get(
+        chunk,
+        ObjSource::Local(obj_slot),
+        &cs,
+        Dest::Local(dst_slot),
+        line,
+    );
 }
 
 fn emit_set_bool_field(chunk: &mut Chunk, obj_slot: u16, key: &ClassSlot, value: bool, line: u32) {
@@ -1619,7 +1739,8 @@ pub fn emit_dart_stream_listen(chunks: &mut [Chunk], current: usize, argc: u8, l
     chunks[current].emit_op_u16(Op::LOCAL_SET, stream_slot, line);
     let single_slot = reserve_slot(&mut chunks[current]);
     emit_get_string_field_to_slot(
-        &mut chunks[current], stream_slot,
+        &mut chunks[current],
+        stream_slot,
         &ClassSlot::internal("__dart_single_subscription"),
         single_slot,
         line,
@@ -1629,7 +1750,8 @@ pub fn emit_dart_stream_listen(chunks: &mut [Chunk], current: usize, argc: u8, l
     chunks[current].emit_if(line);
     let listened_slot = reserve_slot(&mut chunks[current]);
     emit_get_string_field_to_slot(
-        &mut chunks[current], stream_slot,
+        &mut chunks[current],
+        stream_slot,
         &ClassSlot::internal("__dart_listened"),
         listened_slot,
         line,
@@ -1648,21 +1770,52 @@ pub fn emit_dart_stream_listen(chunks: &mut [Chunk], current: usize, argc: u8, l
     );
     errors::emit_throw(&mut chunks[current], line);
     chunks[current].emit_end(line);
-    emit_set_bool_field(&mut chunks[current], stream_slot, &ClassSlot::internal("__dart_listened"), true, line);
+    emit_set_bool_field(
+        &mut chunks[current],
+        stream_slot,
+        &ClassSlot::internal("__dart_listened"),
+        true,
+        line,
+    );
     chunks[current].emit_end(line);
     class_slots::emit_class_alloc(&mut chunks[current], line);
     let sub_slot = reserve_slot(&mut chunks[current]);
     chunks[current].emit_op_u16(Op::LOCAL_SET, sub_slot, line);
-    emit_set_string_field_from_slot(&mut chunks[current], sub_slot, &ClassSlot::internal("stream"), stream_slot, line);
-    emit_set_string_field_from_slot(&mut chunks[current], sub_slot, &ClassSlot::internal("onData"), on_data_slot, line);
     emit_set_string_field_from_slot(
-        &mut chunks[current], sub_slot,
+        &mut chunks[current],
+        sub_slot,
+        &ClassSlot::internal("stream"),
+        stream_slot,
+        line,
+    );
+    emit_set_string_field_from_slot(
+        &mut chunks[current],
+        sub_slot,
+        &ClassSlot::internal("onData"),
+        on_data_slot,
+        line,
+    );
+    emit_set_string_field_from_slot(
+        &mut chunks[current],
+        sub_slot,
         &ClassSlot::internal("errorOrDone"),
         error_or_done_slot,
         line,
     );
-    emit_set_string_field_from_slot(&mut chunks[current], sub_slot, &ClassSlot::internal("onDone"), done_slot, line);
-    emit_set_bool_field(&mut chunks[current], sub_slot, &ClassSlot::internal("cancelled"), false, line);
+    emit_set_string_field_from_slot(
+        &mut chunks[current],
+        sub_slot,
+        &ClassSlot::internal("onDone"),
+        done_slot,
+        line,
+    );
+    emit_set_bool_field(
+        &mut chunks[current],
+        sub_slot,
+        &ClassSlot::internal("cancelled"),
+        false,
+        line,
+    );
     chunks[current].emit_op_u16(Op::LOCAL_GET, sub_slot, line);
 }
 
@@ -1670,7 +1823,8 @@ pub fn emit_dart_stream_as_broadcast(chunks: &mut [Chunk], current: usize, line:
     let stream_slot = reserve_slot(&mut chunks[current]);
     chunks[current].emit_op_u16(Op::LOCAL_SET, stream_slot, line);
     emit_set_bool_field(
-        &mut chunks[current], stream_slot,
+        &mut chunks[current],
+        stream_slot,
         &ClassSlot::internal("__dart_single_subscription"),
         false,
         line,
@@ -1681,7 +1835,13 @@ pub fn emit_dart_stream_as_broadcast(chunks: &mut [Chunk], current: usize, line:
 pub fn emit_dart_stream_cancel(chunks: &mut [Chunk], current: usize, line: u32) {
     let sub_slot = reserve_slot(&mut chunks[current]);
     chunks[current].emit_op_u16(Op::LOCAL_SET, sub_slot, line);
-    emit_set_bool_field(&mut chunks[current], sub_slot, &ClassSlot::internal("cancelled"), true, line);
+    emit_set_bool_field(
+        &mut chunks[current],
+        sub_slot,
+        &ClassSlot::internal("cancelled"),
+        true,
+        line,
+    );
     chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
@@ -1692,23 +1852,57 @@ pub fn emit_dart_stream_as_future(chunks: &mut [Chunk], current: usize, line: u3
     let error_or_done_slot = reserve_slot(&mut chunks[current]);
     let done_slot = reserve_slot(&mut chunks[current]);
     chunks[current].emit_op_u16(Op::LOCAL_SET, sub_slot, line);
-    emit_get_string_field_to_slot(&mut chunks[current], sub_slot, &ClassSlot::internal("stream"), stream_slot, line);
-    emit_get_string_field_to_slot(&mut chunks[current], sub_slot, &ClassSlot::internal("onData"), on_data_slot, line);
     emit_get_string_field_to_slot(
-        &mut chunks[current], sub_slot,
+        &mut chunks[current],
+        sub_slot,
+        &ClassSlot::internal("stream"),
+        stream_slot,
+        line,
+    );
+    emit_get_string_field_to_slot(
+        &mut chunks[current],
+        sub_slot,
+        &ClassSlot::internal("onData"),
+        on_data_slot,
+        line,
+    );
+    emit_get_string_field_to_slot(
+        &mut chunks[current],
+        sub_slot,
         &ClassSlot::internal("errorOrDone"),
         error_or_done_slot,
         line,
     );
-    emit_get_string_field_to_slot(&mut chunks[current], sub_slot, &ClassSlot::internal("onDone"), done_slot, line);
+    emit_get_string_field_to_slot(
+        &mut chunks[current],
+        sub_slot,
+        &ClassSlot::internal("onDone"),
+        done_slot,
+        line,
+    );
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, stream_slot, line);
-    let cs_slot = class_slots::resolve(&ClassSlot::Internal(("__dart_stream_error").to_string()), &PlainNames);
-    class_slots::emit_class_get(&mut chunks[current], ObjSource::Stack, &cs_slot, Dest::Stack, line);
+    let cs_slot = class_slots::resolve(
+        &ClassSlot::Internal(("__dart_stream_error").to_string()),
+        &PlainNames,
+    );
+    class_slots::emit_class_get(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &cs_slot,
+        Dest::Stack,
+        line,
+    );
     vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
     let err_slot = reserve_slot(&mut chunks[current]);
-    emit_get_string_field_to_slot(&mut chunks[current], stream_slot, &ClassSlot::internal("error"), err_slot, line);
+    emit_get_string_field_to_slot(
+        &mut chunks[current],
+        stream_slot,
+        &ClassSlot::internal("error"),
+        err_slot,
+        line,
+    );
     chunks[current].emit_op_u16(Op::LOCAL_GET, error_or_done_slot, line);
     chunks[current].emit_op(Op::REF_IS_NULL, line);
     chunks[current].emit_op(Op::I32_EQZ, line);
@@ -1727,8 +1921,15 @@ pub fn emit_dart_stream_as_future(chunks: &mut [Chunk], current: usize, line: u3
     let state = loops::emit_for_in_start(chunks, current, arr_slot, idx_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, elem_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, sub_slot, line);
-    let cs_slot = class_slots::resolve(&ClassSlot::Internal(("cancelled").to_string()), &PlainNames);
-    class_slots::emit_class_get(&mut chunks[current], ObjSource::Stack, &cs_slot, Dest::Stack, line);
+    let cs_slot =
+        class_slots::resolve(&ClassSlot::Internal(("cancelled").to_string()), &PlainNames);
+    class_slots::emit_class_get(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &cs_slot,
+        Dest::Stack,
+        line,
+    );
     vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_op(Op::I32_EQZ, line);
     chunks[current].emit_if(line);
@@ -1830,11 +2031,17 @@ pub fn emit_dart_stopwatch_new(chunks: &mut [Chunk], current: usize, line: u32) 
     class_slots::emit_class_alloc(chunk, line);
     core_wasm::dup(chunk, line);
     chunk.emit_bool_const(true, line);
-    let cs_slot = class_slots::resolve(&ClassSlot::Internal((STOPWATCH_MARKER_KEY).to_string()), &PlainNames);
+    let cs_slot = class_slots::resolve(
+        &ClassSlot::Internal((STOPWATCH_MARKER_KEY).to_string()),
+        &PlainNames,
+    );
     class_slots::emit_class_set(chunk, ObjSource::Stack, &cs_slot, ValueSource::Stack, line);
     core_wasm::dup(chunk, line);
     chunk.emit_bool_const(false, line);
-    let cs_slot = class_slots::resolve(&ClassSlot::Internal((STOPWATCH_RUNNING_KEY).to_string()), &PlainNames);
+    let cs_slot = class_slots::resolve(
+        &ClassSlot::Internal((STOPWATCH_RUNNING_KEY).to_string()),
+        &PlainNames,
+    );
     class_slots::emit_class_set(chunk, ObjSource::Stack, &cs_slot, ValueSource::Stack, line);
 }
 
@@ -1843,8 +2050,17 @@ fn emit_dart_stopwatch_set_running(chunks: &mut [Chunk], current: usize, running
     chunks[current].emit_op_u16(Op::LOCAL_SET, sw_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, sw_slot, line);
     chunks[current].emit_bool_const(running, line);
-    let cs_slot = class_slots::resolve(&ClassSlot::Internal((STOPWATCH_RUNNING_KEY).to_string()), &PlainNames);
-    class_slots::emit_class_set(&mut chunks[current], ObjSource::Stack, &cs_slot, ValueSource::Stack, line);
+    let cs_slot = class_slots::resolve(
+        &ClassSlot::Internal((STOPWATCH_RUNNING_KEY).to_string()),
+        &PlainNames,
+    );
+    class_slots::emit_class_set(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &cs_slot,
+        ValueSource::Stack,
+        line,
+    );
     chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
@@ -1861,8 +2077,17 @@ pub fn emit_dart_stopwatch_reset(chunks: &mut [Chunk], current: usize, line: u32
 }
 
 pub fn emit_dart_stopwatch_is_running(chunks: &mut [Chunk], current: usize, line: u32) {
-    let cs_slot = class_slots::resolve(&ClassSlot::Internal((STOPWATCH_RUNNING_KEY).to_string()), &PlainNames);
-    class_slots::emit_class_get(&mut chunks[current], ObjSource::Stack, &cs_slot, Dest::Stack, line);
+    let cs_slot = class_slots::resolve(
+        &ClassSlot::Internal((STOPWATCH_RUNNING_KEY).to_string()),
+        &PlainNames,
+    );
+    class_slots::emit_class_get(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &cs_slot,
+        Dest::Stack,
+        line,
+    );
 }
 
 pub fn emit_dart_stopwatch_elapsed(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -1927,12 +2152,7 @@ pub fn emit_dart_index_get(chunks: &mut [Chunk], current: usize, line: u32) {
 }
 
 /// `[cond]` — is the receiver an `Expando` record (`__type == "Expando"`)?
-fn emit_expando_receiver_test(
-    chunks: &mut [Chunk],
-    current: usize,
-    receiver_slot: u16,
-    line: u32,
-) {
+fn emit_expando_receiver_test(chunks: &mut [Chunk], current: usize, receiver_slot: u16, line: u32) {
     let type_slot = reserve_slot(&mut chunks[current]);
     emit_get_field_or_null_to_slot(
         &mut chunks[current],
@@ -1951,7 +2171,13 @@ fn emit_expando_receiver_test(
 fn emit_expando_wm_to_stack(chunks: &mut [Chunk], current: usize, receiver_slot: u16, line: u32) {
     let cs_slot = class_slots::resolve(&ClassSlot::Internal(("__wm").to_string()), &PlainNames);
     chunks[current].emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
-    class_slots::emit_class_get(&mut chunks[current], ObjSource::Stack, &cs_slot, Dest::Stack, line);
+    class_slots::emit_class_get(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &cs_slot,
+        Dest::Stack,
+        line,
+    );
 }
 
 /// A null Expando key throws (dart: `Expando` rejects null keys).
@@ -1979,8 +2205,16 @@ pub fn emit_dart_print(chunks: &mut [Chunk], current: usize, _argc: u8, line: u3
 /// Dart `value.toString()` — route through ECMA string coercion.
 /// Stack: [value] → [string].
 pub fn emit_dart_to_string(chunks: &mut [Chunk], current: usize, line: u32) {
-    let cs_slot_5 = class_slots::resolve_interned(&mut chunks[current], &ClassSlot::Internal((URI_HREF_KEY).to_string()), &PlainNames);
-    let cs_slot_6 = class_slots::resolve_interned(&mut chunks[current], &ClassSlot::Internal((URI_MARKER_KEY).to_string()), &PlainNames);
+    let cs_slot_5 = class_slots::resolve_interned(
+        &mut chunks[current],
+        &ClassSlot::Internal((URI_HREF_KEY).to_string()),
+        &PlainNames,
+    );
+    let cs_slot_6 = class_slots::resolve_interned(
+        &mut chunks[current],
+        &ClassSlot::Internal((URI_MARKER_KEY).to_string()),
+        &PlainNames,
+    );
     let value_slot = reserve_slot(&mut chunks[current]);
     chunks[current].emit_op_u16(Op::LOCAL_SET, value_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
@@ -2022,10 +2256,22 @@ pub fn emit_dart_to_string(chunks: &mut [Chunk], current: usize, line: u32) {
     host::emit(&mut chunks[current], "ecma:bigint", "toString", 1, line);
     chunks[current].emit_else(line);
     core_wasm::dup(&mut chunks[current], line);
-    class_slots::emit_class_get(&mut chunks[current], ObjSource::Stack, &cs_slot_5, Dest::Stack, line);
+    class_slots::emit_class_get(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &cs_slot_5,
+        Dest::Stack,
+        line,
+    );
     vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
-    class_slots::emit_class_get(&mut chunks[current], ObjSource::Stack, &cs_slot_6, Dest::Stack, line);
+    class_slots::emit_class_get(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &cs_slot_6,
+        Dest::Stack,
+        line,
+    );
     chunks[current].emit_else(line);
     emit_sb_marker_test(&mut chunks[current], line);
     chunks[current].emit_if(line);
@@ -2035,7 +2281,13 @@ pub fn emit_dart_to_string(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_dart_process_signal_like_to_string(&mut chunks[current], line);
     chunks[current].emit_if(line);
     let cs_slot = class_slots::resolve(&ClassSlot::Internal(("name").to_string()), &PlainNames);
-    class_slots::emit_class_get(&mut chunks[current], ObjSource::Stack, &cs_slot, Dest::Stack, line);
+    class_slots::emit_class_get(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &cs_slot,
+        Dest::Stack,
+        line,
+    );
     chunks[current].emit_else(line);
     core_wasm::dup(&mut chunks[current], line);
     emit_dart_enum_like_to_string(chunks, current, line);
@@ -2071,12 +2323,24 @@ fn emit_dart_enum_like_to_string(chunks: &mut [Chunk], current: usize, line: u32
     chunks[current].emit_op_u16(Op::LOCAL_SET, value_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
     let cs_slot = class_slots::resolve(&ClassSlot::TypeIdentity, &PlainNames);
-    class_slots::emit_class_get(&mut chunks[current], ObjSource::Stack, &cs_slot, Dest::Stack, line);
+    class_slots::emit_class_get(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &cs_slot,
+        Dest::Stack,
+        line,
+    );
     chunks[current].emit_op(Op::REF_IS_NULL, line);
     chunks[current].emit_op(Op::I32_EQZ, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
     let cs_slot = class_slots::resolve(&ClassSlot::Internal(("name").to_string()), &PlainNames);
-    class_slots::emit_class_get(&mut chunks[current], ObjSource::Stack, &cs_slot, Dest::Stack, line);
+    class_slots::emit_class_get(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &cs_slot,
+        Dest::Stack,
+        line,
+    );
     chunks[current].emit_op(Op::REF_IS_NULL, line);
     chunks[current].emit_op(Op::I32_EQZ, line);
     chunks[current].emit_op(Op::I32_AND, line);
@@ -2087,11 +2351,23 @@ fn emit_dart_enum_to_string(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_SET, value_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
     let cs_slot = class_slots::resolve(&ClassSlot::TypeIdentity, &PlainNames);
-    class_slots::emit_class_get(&mut chunks[current], ObjSource::Stack, &cs_slot, Dest::Stack, line);
+    class_slots::emit_class_get(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &cs_slot,
+        Dest::Stack,
+        line,
+    );
     chunks[current].emit_string_const(".", line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
     let cs_slot = class_slots::resolve(&ClassSlot::Internal(("name").to_string()), &PlainNames);
-    class_slots::emit_class_get(&mut chunks[current], ObjSource::Stack, &cs_slot, Dest::Stack, line);
+    class_slots::emit_class_get(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &cs_slot,
+        Dest::Stack,
+        line,
+    );
     strings::emit_concat(&mut chunks[current], 3, line);
 }
 
@@ -2232,7 +2508,13 @@ pub fn emit_dart_list_first(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_else(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
     let cs_slot = class_slots::resolve(&ClassSlot::Internal(("first").to_string()), &PlainNames);
-    class_slots::emit_class_get(&mut chunks[current], ObjSource::Stack, &cs_slot, Dest::Stack, line);
+    class_slots::emit_class_get(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &cs_slot,
+        Dest::Stack,
+        line,
+    );
     chunks[current].emit_end(line);
     chunks[current].emit_end(line);
     chunks[current].emit_end(line);
@@ -2283,7 +2565,13 @@ pub fn emit_dart_list_last(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_else(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
     let cs_slot = class_slots::resolve(&ClassSlot::Internal(("last").to_string()), &PlainNames);
-    class_slots::emit_class_get(&mut chunks[current], ObjSource::Stack, &cs_slot, Dest::Stack, line);
+    class_slots::emit_class_get(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &cs_slot,
+        Dest::Stack,
+        line,
+    );
     chunks[current].emit_end(line);
     chunks[current].emit_end(line);
     chunks[current].emit_end(line);
@@ -2313,8 +2601,17 @@ fn emit_slot_or(
 ) {
     let method_slot = reserve_slot(&mut chunks[current]);
     chunks[current].emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
-    let cs_slot = class_slots::resolve(&ClassSlot::Internal((&vybe_ast::protocol_slot_key(slot)).to_string()), &PlainNames);
-    class_slots::emit_class_get(&mut chunks[current], ObjSource::Stack, &cs_slot, Dest::Stack, line);
+    let cs_slot = class_slots::resolve(
+        &ClassSlot::Internal((&vybe_ast::protocol_slot_key(slot)).to_string()),
+        &PlainNames,
+    );
+    class_slots::emit_class_get(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &cs_slot,
+        Dest::Stack,
+        line,
+    );
     chunks[current].emit_op_u16(Op::LOCAL_SET, method_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, method_slot, line);
     host::emit(&mut chunks[current], "ecma:value", "typeof", 1, line);
@@ -2398,8 +2695,17 @@ fn emit_dart_length_probe(chunks: &mut [Chunk], current: usize, receiver_slot: u
     chunks[current].emit_else(line);
     let order_slot = reserve_slot(&mut chunks[current]);
     chunks[current].emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
-    let cs_slot = class_slots::resolve(&ClassSlot::Internal((MAP_ORDER_KEY).to_string()), &PlainNames);
-    class_slots::emit_class_get(&mut chunks[current], ObjSource::Stack, &cs_slot, Dest::Stack, line);
+    let cs_slot = class_slots::resolve(
+        &ClassSlot::Internal((MAP_ORDER_KEY).to_string()),
+        &PlainNames,
+    );
+    class_slots::emit_class_get(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &cs_slot,
+        Dest::Stack,
+        line,
+    );
     chunks[current].emit_op_u16(Op::LOCAL_SET, order_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, order_slot, line);
     host::emit(&mut chunks[current], "wasm:js-undefined", "test", 1, line);
@@ -2579,7 +2885,13 @@ fn emit_getter_or_field_to_slot(
     emit_call_ref_on_receiver(chunks, current, obj_slot, getter_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, dst_slot, line);
     chunks[current].emit_else(line);
-    emit_get_field_or_null_to_slot(&mut chunks[current], obj_slot, &ClassSlot::internal(field), dst_slot, line);
+    emit_get_field_or_null_to_slot(
+        &mut chunks[current],
+        obj_slot,
+        &ClassSlot::internal(field),
+        dst_slot,
+        line,
+    );
     chunks[current].emit_end(line);
 }
 
@@ -2599,13 +2911,19 @@ fn emit_set_string_field_from_slot(
 fn emit_mark_set_top(chunk: &mut Chunk, line: u32) {
     core_wasm::dup(chunk, line);
     chunk.emit_bool_const(true, line);
-    let cs_slot = class_slots::resolve(&ClassSlot::Internal((SET_MARKER_KEY).to_string()), &PlainNames);
+    let cs_slot = class_slots::resolve(
+        &ClassSlot::Internal((SET_MARKER_KEY).to_string()),
+        &PlainNames,
+    );
     class_slots::emit_class_set(chunk, ObjSource::Stack, &cs_slot, ValueSource::Stack, line);
 }
 
 fn emit_slot_is_set(chunk: &mut Chunk, slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
-    let cs_slot = class_slots::resolve(&ClassSlot::Internal((SET_MARKER_KEY).to_string()), &PlainNames);
+    let cs_slot = class_slots::resolve(
+        &ClassSlot::Internal((SET_MARKER_KEY).to_string()),
+        &PlainNames,
+    );
     class_slots::emit_class_get(chunk, ObjSource::Stack, &cs_slot, Dest::Stack, line);
     vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
 }
@@ -2628,8 +2946,20 @@ fn emit_pair_to_map_entry(chunks: &mut [Chunk], current: usize, pair_slot: u16, 
     collections::emit_get(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, value_slot, line);
     let chunk = &mut chunks[current];
-    emit_set_string_field_from_slot(chunk, pair_slot, &ClassSlot::internal("key"), key_slot, line);
-    emit_set_string_field_from_slot(chunk, pair_slot, &ClassSlot::internal("value"), value_slot, line);
+    emit_set_string_field_from_slot(
+        chunk,
+        pair_slot,
+        &ClassSlot::internal("key"),
+        key_slot,
+        line,
+    );
+    emit_set_string_field_from_slot(
+        chunk,
+        pair_slot,
+        &ClassSlot::internal("value"),
+        value_slot,
+        line,
+    );
 }
 
 pub fn emit_dart_identity(_chunks: &mut [Chunk], _current: usize, _line: u32) {}
@@ -2646,7 +2976,10 @@ pub fn emit_dart_sorted_map_new(chunks: &mut [Chunk], current: usize, line: u32)
     let chunk = &mut chunks[current];
     core_wasm::dup(chunk, line);
     chunk.emit_bool_const(true, line);
-    let cs_slot = class_slots::resolve(&ClassSlot::Internal((SORTED_MAP_MARKER_KEY).to_string()), &PlainNames);
+    let cs_slot = class_slots::resolve(
+        &ClassSlot::Internal((SORTED_MAP_MARKER_KEY).to_string()),
+        &PlainNames,
+    );
     class_slots::emit_class_set(chunk, ObjSource::Stack, &cs_slot, ValueSource::Stack, line);
 }
 
@@ -2776,8 +3109,20 @@ pub fn emit_dart_map_entry(chunks: &mut [Chunk], current: usize, line: u32) {
     let pair_slot = reserve_slot(&mut chunks[current]);
     chunks[current].emit_op_u16(Op::LOCAL_SET, pair_slot, line);
     let chunk = &mut chunks[current];
-    emit_set_string_field_from_slot(chunk, pair_slot, &ClassSlot::internal("key"), key_slot, line);
-    emit_set_string_field_from_slot(chunk, pair_slot, &ClassSlot::internal("value"), value_slot, line);
+    emit_set_string_field_from_slot(
+        chunk,
+        pair_slot,
+        &ClassSlot::internal("key"),
+        key_slot,
+        line,
+    );
+    emit_set_string_field_from_slot(
+        chunk,
+        pair_slot,
+        &ClassSlot::internal("value"),
+        value_slot,
+        line,
+    );
     chunk.emit_op_u16(Op::LOCAL_GET, pair_slot, line);
 }
 
@@ -2790,8 +3135,17 @@ fn emit_dart_map_record_new_key(
 ) {
     let order_slot = reserve_slot(&mut chunks[current]);
     chunks[current].emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
-    let cs_slot = class_slots::resolve(&ClassSlot::Internal((MAP_ORDER_KEY).to_string()), &PlainNames);
-    class_slots::emit_class_get(&mut chunks[current], ObjSource::Stack, &cs_slot, Dest::Stack, line);
+    let cs_slot = class_slots::resolve(
+        &ClassSlot::Internal((MAP_ORDER_KEY).to_string()),
+        &PlainNames,
+    );
+    class_slots::emit_class_get(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &cs_slot,
+        Dest::Stack,
+        line,
+    );
     chunks[current].emit_op_u16(Op::LOCAL_SET, order_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, order_slot, line);
     host::emit(&mut chunks[current], "wasm:js-undefined", "test", 1, line);
@@ -2807,8 +3161,17 @@ fn emit_dart_map_record_new_key(
     chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, order_slot, line);
-    let cs_slot = class_slots::resolve(&ClassSlot::Internal((MAP_ORDER_KEY).to_string()), &PlainNames);
-    class_slots::emit_class_set(&mut chunks[current], ObjSource::Stack, &cs_slot, ValueSource::Stack, line);
+    let cs_slot = class_slots::resolve(
+        &ClassSlot::Internal((MAP_ORDER_KEY).to_string()),
+        &PlainNames,
+    );
+    class_slots::emit_class_set(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &cs_slot,
+        ValueSource::Stack,
+        line,
+    );
 }
 
 pub fn emit_dart_map_keys(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -2817,8 +3180,17 @@ pub fn emit_dart_map_keys(chunks: &mut [Chunk], current: usize, line: u32) {
     let keys_slot = reserve_slot(&mut chunks[current]);
     chunks[current].emit_op_u16(Op::LOCAL_SET, receiver_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
-    let cs_slot = class_slots::resolve(&ClassSlot::Internal((MAP_ORDER_KEY).to_string()), &PlainNames);
-    class_slots::emit_class_get(&mut chunks[current], ObjSource::Stack, &cs_slot, Dest::Stack, line);
+    let cs_slot = class_slots::resolve(
+        &ClassSlot::Internal((MAP_ORDER_KEY).to_string()),
+        &PlainNames,
+    );
+    class_slots::emit_class_get(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &cs_slot,
+        Dest::Stack,
+        line,
+    );
     chunks[current].emit_op_u16(Op::LOCAL_SET, order_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, order_slot, line);
     host::emit(&mut chunks[current], "wasm:js-undefined", "test", 1, line);
@@ -2834,8 +3206,17 @@ pub fn emit_dart_map_keys(chunks: &mut [Chunk], current: usize, line: u32) {
     // read funnels through this, so ordering follows for all of them.
     chunks[current].emit_op_u16(Op::LOCAL_SET, keys_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
-    let cs_slot = class_slots::resolve(&ClassSlot::Internal((SORTED_MAP_MARKER_KEY).to_string()), &PlainNames);
-    class_slots::emit_class_get(&mut chunks[current], ObjSource::Stack, &cs_slot, Dest::Stack, line);
+    let cs_slot = class_slots::resolve(
+        &ClassSlot::Internal((SORTED_MAP_MARKER_KEY).to_string()),
+        &PlainNames,
+    );
+    class_slots::emit_class_get(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &cs_slot,
+        Dest::Stack,
+        line,
+    );
     vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
     // Map keys are stored as JS object-property strings, so a `Map<int,_>`
@@ -2995,8 +3376,17 @@ pub fn emit_dart_map_from_entries(chunks: &mut [Chunk], current: usize, line: u3
     loops::emit_for_in_end(chunks, current, idx_slot, state, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, map_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, order_slot, line);
-    let cs_slot = class_slots::resolve(&ClassSlot::Internal((MAP_ORDER_KEY).to_string()), &PlainNames);
-    class_slots::emit_class_set(&mut chunks[current], ObjSource::Stack, &cs_slot, ValueSource::Stack, line);
+    let cs_slot = class_slots::resolve(
+        &ClassSlot::Internal((MAP_ORDER_KEY).to_string()),
+        &PlainNames,
+    );
+    class_slots::emit_class_set(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &cs_slot,
+        ValueSource::Stack,
+        line,
+    );
     chunks[current].emit_op_u16(Op::LOCAL_GET, map_slot, line);
 }
 
@@ -3213,8 +3603,17 @@ fn emit_restore_cached_hash_if_any(
     chunks[current].emit_if(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, cached_hash_slot, line);
-    let cs_slot = class_slots::resolve(&ClassSlot::Internal(("__dart_identity_hash").to_string()), &PlainNames);
-    class_slots::emit_class_set(&mut chunks[current], ObjSource::Stack, &cs_slot, ValueSource::Stack, line);
+    let cs_slot = class_slots::resolve(
+        &ClassSlot::Internal(("__dart_identity_hash").to_string()),
+        &PlainNames,
+    );
+    class_slots::emit_class_set(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &cs_slot,
+        ValueSource::Stack,
+        line,
+    );
     chunks[current].emit_end(line);
 }
 
@@ -4004,13 +4403,32 @@ pub fn emit_dart_eq(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, left_slot, line);
     emit_dart_plain_map_like(&mut chunks[current], line);
     chunks[current].emit_op(Op::I32_AND, line);
-    let cs_slot_7 = class_slots::resolve_interned(&mut chunks[current], &ClassSlot::Internal(("__value_eq").to_string()), &PlainNames);
-    let cs_slot = class_slots::resolve(&ClassSlot::Internal(("__value_eq").to_string()), &PlainNames);
+    let cs_slot_7 = class_slots::resolve_interned(
+        &mut chunks[current],
+        &ClassSlot::Internal(("__value_eq").to_string()),
+        &PlainNames,
+    );
+    let cs_slot = class_slots::resolve(
+        &ClassSlot::Internal(("__value_eq").to_string()),
+        &PlainNames,
+    );
     chunks[current].emit_op_u16(Op::LOCAL_GET, left_slot, line);
-    class_slots::emit_class_get(&mut chunks[current], ObjSource::Stack, &cs_slot_7, Dest::Stack, line);
+    class_slots::emit_class_get(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &cs_slot_7,
+        Dest::Stack,
+        line,
+    );
     vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, right_slot, line);
-    class_slots::emit_class_get(&mut chunks[current], ObjSource::Stack, &cs_slot, Dest::Stack, line);
+    class_slots::emit_class_get(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &cs_slot,
+        Dest::Stack,
+        line,
+    );
     vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_op(Op::I32_AND, line);
     chunks[current].emit_op(Op::I32_OR, line);
@@ -4158,8 +4576,17 @@ fn emit_dart_cached_array_hash(chunks: &mut [Chunk], current: usize, value_slot:
     chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
-    let cs_slot = class_slots::resolve(&ClassSlot::Internal(("__dart_identity_hash").to_string()), &PlainNames);
-    class_slots::emit_class_set(&mut chunks[current], ObjSource::Stack, &cs_slot, ValueSource::Stack, line);
+    let cs_slot = class_slots::resolve(
+        &ClassSlot::Internal(("__dart_identity_hash").to_string()),
+        &PlainNames,
+    );
+    class_slots::emit_class_set(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &cs_slot,
+        ValueSource::Stack,
+        line,
+    );
     chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
     chunks[current].emit_end(line);
 }
@@ -4219,8 +4646,17 @@ fn emit_dart_identity_hash(chunks: &mut [Chunk], current: usize, value_slot: u16
     );
     chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, next_slot, line);
-    let cs_slot = class_slots::resolve(&ClassSlot::Internal(("__dart_identity_hash").to_string()), &PlainNames);
-    class_slots::emit_class_set(&mut chunks[current], ObjSource::Stack, &cs_slot, ValueSource::Stack, line);
+    let cs_slot = class_slots::resolve(
+        &ClassSlot::Internal(("__dart_identity_hash").to_string()),
+        &PlainNames,
+    );
+    class_slots::emit_class_set(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &cs_slot,
+        ValueSource::Stack,
+        line,
+    );
     chunks[current].emit_op_u16(Op::LOCAL_GET, next_slot, line);
     chunks[current].emit_end(line);
 }
@@ -5102,7 +5538,13 @@ fn emit_dart_materialize_iterable(chunks: &mut [Chunk], current: usize, line: u3
     generators::emit_drain_into_array(chunks, current, line);
     chunks[current].emit_else(line);
     let move_next_slot = reserve_slot(&mut chunks[current]);
-    emit_get_field_or_null_to_slot(&mut chunks[current], slot, &ClassSlot::internal("moveNext"), move_next_slot, line);
+    emit_get_field_or_null_to_slot(
+        &mut chunks[current],
+        slot,
+        &ClassSlot::internal("moveNext"),
+        move_next_slot,
+        line,
+    );
     chunks[current].emit_op_u16(Op::LOCAL_GET, move_next_slot, line);
     chunks[current].emit_op(Op::REF_IS_NULL, line);
     chunks[current].emit_op(Op::I32_EQZ, line);
@@ -5152,7 +5594,13 @@ fn emit_dart_materialize_iterable_precurrent(chunks: &mut [Chunk], current: usiz
     generators::emit_drain_into_array(chunks, current, line);
     chunks[current].emit_else(line);
     let move_next_slot = reserve_slot(&mut chunks[current]);
-    emit_get_field_or_null_to_slot(&mut chunks[current], slot, &ClassSlot::internal("moveNext"), move_next_slot, line);
+    emit_get_field_or_null_to_slot(
+        &mut chunks[current],
+        slot,
+        &ClassSlot::internal("moveNext"),
+        move_next_slot,
+        line,
+    );
     chunks[current].emit_op_u16(Op::LOCAL_GET, move_next_slot, line);
     chunks[current].emit_op(Op::REF_IS_NULL, line);
     chunks[current].emit_op(Op::I32_EQZ, line);
@@ -5267,7 +5715,16 @@ pub fn emit_dart_iter_any(chunks: &mut [Chunk], current: usize, line: u32) {
     let arr_slot = materialize_slot(chunks, current, receiver_slot, line);
     let idx_slot = reserve_slot(&mut chunks[current]);
     let result_slot = reserve_slot(&mut chunks[current]);
-    loops::emit_any_every(chunks, current, fn_slot, arr_slot, idx_slot, result_slot, true, line);
+    loops::emit_any_every(
+        chunks,
+        current,
+        fn_slot,
+        arr_slot,
+        idx_slot,
+        result_slot,
+        true,
+        line,
+    );
 }
 
 /// Dart `iterable.every(fn)`.
@@ -5276,7 +5733,16 @@ pub fn emit_dart_iter_every(chunks: &mut [Chunk], current: usize, line: u32) {
     let arr_slot = materialize_slot(chunks, current, receiver_slot, line);
     let idx_slot = reserve_slot(&mut chunks[current]);
     let result_slot = reserve_slot(&mut chunks[current]);
-    loops::emit_any_every(chunks, current, fn_slot, arr_slot, idx_slot, result_slot, false, line);
+    loops::emit_any_every(
+        chunks,
+        current,
+        fn_slot,
+        arr_slot,
+        idx_slot,
+        result_slot,
+        false,
+        line,
+    );
 }
 
 /// Dart `iterable.reduce(fn)` plus walker-normalized

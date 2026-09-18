@@ -172,10 +172,7 @@ pub fn emit_finish_js_error_instance(chunk: &mut Chunk, kind: &str, line: u32) {
     // err.__proto__ = <kind ctor>.prototype
     crate::primitives::instructions::core_wasm::dup(chunk, line); // [err, err]
     crate::primitives::globals::emit_read(chunk, format!("__ctor_{kind}").as_str(), line); // [err, err, ctor]
-    let slot = class_slots::resolve(
-        &class_slots::ClassSlot::Prototype,
-        &class_slots::PlainNames,
-    );
+    let slot = class_slots::resolve(&class_slots::ClassSlot::Prototype, &class_slots::PlainNames);
     class_slots::emit_class_get(
         chunk,
         class_slots::ObjSource::Stack,
@@ -183,10 +180,7 @@ pub fn emit_finish_js_error_instance(chunk: &mut Chunk, kind: &str, line: u32) {
         class_slots::Dest::Stack,
         line,
     ); // [err, err, proto]
-    let slot = class_slots::resolve(
-        &class_slots::ClassSlot::ProtoLink,
-        &class_slots::PlainNames,
-    );
+    let slot = class_slots::resolve(&class_slots::ClassSlot::ProtoLink, &class_slots::PlainNames);
     class_slots::emit_class_set(
         chunk,
         class_slots::ObjSource::Stack,
@@ -305,10 +299,7 @@ pub fn emit_try_table(
     clauses: &[TryTableClause],
     line: u32,
 ) {
-    let triples: Vec<(u8, u16, u16)> = clauses
-        .iter()
-        .map(|c| (c.kind, c.tag, c.label))
-        .collect();
+    let triples: Vec<(u8, u16, u16)> = clauses.iter().map(|c| (c.kind, c.tag, c.label)).collect();
     chunk.emit_try_table_clauses(params, results, &triples, line);
 }
 

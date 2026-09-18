@@ -104,7 +104,11 @@ pub fn mul(a_re: Expression, a_im: Expression, b_re: Expression, b_im: Expressio
             bin(BinOp::Mul, a_re.clone(), b_re.clone()),
             bin(BinOp::Mul, a_im.clone(), b_im.clone()),
         ),
-        bin(BinOp::Add, bin(BinOp::Mul, a_re, b_im), bin(BinOp::Mul, a_im, b_re)),
+        bin(
+            BinOp::Add,
+            bin(BinOp::Mul, a_re, b_im),
+            bin(BinOp::Mul, a_im, b_re),
+        ),
     )
 }
 
@@ -126,7 +130,11 @@ pub fn div(a_re: Expression, a_im: Expression, b_re: Expression, b_im: Expressio
         ),
         bin(
             BinOp::Div,
-            bin(BinOp::Sub, bin(BinOp::Mul, a_im, b_re), bin(BinOp::Mul, a_re, b_im)),
+            bin(
+                BinOp::Sub,
+                bin(BinOp::Mul, a_im, b_re),
+                bin(BinOp::Mul, a_re, b_im),
+            ),
             denom,
         ),
     )
@@ -166,14 +174,21 @@ pub fn exp(real: Expression, imag: Expression) -> Expression {
 }
 
 pub fn log(real: Expression, imag: Expression) -> Expression {
-    complex_object(ecma_math_call("log", cabs(real.clone(), imag.clone())), carg(real, imag))
+    complex_object(
+        ecma_math_call("log", cabs(real.clone(), imag.clone())),
+        carg(real, imag),
+    )
 }
 
 pub fn sqrt(real: Expression, imag: Expression) -> Expression {
     let r = cabs(real.clone(), imag.clone());
     let real_part = ecma_math_call(
         "sqrt",
-        bin(BinOp::Div, bin(BinOp::Add, r.clone(), real.clone()), int_lit(2)),
+        bin(
+            BinOp::Div,
+            bin(BinOp::Add, r.clone(), real.clone()),
+            int_lit(2),
+        ),
     );
     let imag_mag = ecma_math_call(
         "sqrt",
@@ -203,7 +218,11 @@ pub fn sin(real: Expression, imag: Expression) -> Expression {
             ecma_math_call("sin", real.clone()),
             ecma_math_call("cosh", imag.clone()),
         ),
-        bin(BinOp::Mul, ecma_math_call("cos", real), ecma_math_call("sinh", imag)),
+        bin(
+            BinOp::Mul,
+            ecma_math_call("cos", real),
+            ecma_math_call("sinh", imag),
+        ),
     )
 }
 
@@ -216,7 +235,11 @@ pub fn cos(real: Expression, imag: Expression) -> Expression {
         ),
         unary(
             UnaryOp::Neg,
-            bin(BinOp::Mul, ecma_math_call("sin", real), ecma_math_call("sinh", imag)),
+            bin(
+                BinOp::Mul,
+                ecma_math_call("sin", real),
+                ecma_math_call("sinh", imag),
+            ),
         ),
     )
 }
@@ -284,7 +307,12 @@ pub fn pow(
     exp_im: Expression,
 ) -> Expression {
     let log_base = log(base_re, base_im);
-    let product = mul(exp_re, exp_im, real_part(log_base.clone()), imag_part(log_base));
+    let product = mul(
+        exp_re,
+        exp_im,
+        real_part(log_base.clone()),
+        imag_part(log_base),
+    );
     exp(real_part(product.clone()), imag_part(product))
 }
 
@@ -295,7 +323,11 @@ pub fn sinh(real: Expression, imag: Expression) -> Expression {
             ecma_math_call("sinh", real.clone()),
             ecma_math_call("cos", imag.clone()),
         ),
-        bin(BinOp::Mul, ecma_math_call("cosh", real), ecma_math_call("sin", imag)),
+        bin(
+            BinOp::Mul,
+            ecma_math_call("cosh", real),
+            ecma_math_call("sin", imag),
+        ),
     )
 }
 
@@ -306,7 +338,11 @@ pub fn cosh(real: Expression, imag: Expression) -> Expression {
             ecma_math_call("cosh", real.clone()),
             ecma_math_call("cos", imag.clone()),
         ),
-        bin(BinOp::Mul, ecma_math_call("sinh", real), ecma_math_call("sin", imag)),
+        bin(
+            BinOp::Mul,
+            ecma_math_call("sinh", real),
+            ecma_math_call("sin", imag),
+        ),
     )
 }
 
@@ -325,12 +361,19 @@ pub fn tanh(real: Expression, imag: Expression) -> Expression {
 }
 
 pub fn polar(real: Expression, imag: Expression) -> Expression {
-    expr(ExprKind::Tuple(vec![cabs(real.clone(), imag.clone()), carg(real, imag)]))
+    expr(ExprKind::Tuple(vec![
+        cabs(real.clone(), imag.clone()),
+        carg(real, imag),
+    ]))
 }
 
 pub fn rect(radius: Expression, phase: Expression) -> Expression {
     complex_object(
-        bin(BinOp::Mul, radius.clone(), ecma_math_call("cos", phase.clone())),
+        bin(
+            BinOp::Mul,
+            radius.clone(),
+            ecma_math_call("cos", phase.clone()),
+        ),
         bin(BinOp::Mul, radius, ecma_math_call("sin", phase)),
     )
 }

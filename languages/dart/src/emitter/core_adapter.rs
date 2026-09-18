@@ -208,7 +208,11 @@ pub fn emit_num_is_negative(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_slot_is_type(chunks, current, value, "Duration", line);
     chunks[current].emit_if(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
-    get_field(&mut chunks[current], &ClassSlot::internal("isNegative"), line);
+    get_field(
+        &mut chunks[current],
+        &ClassSlot::internal("isNegative"),
+        line,
+    );
     chunks[current].emit_else(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
     chunks[current].emit_f64_const(0.0, line);

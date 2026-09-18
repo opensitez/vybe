@@ -148,7 +148,6 @@ pub fn emit_to_string_targeted(chunk: &mut Chunk, _target: &Target, line: u32) {
     emit_to_string(chunk, line);
 }
 
-
 // ── Linkable chunk builders ──────────────────────────────────────────────────
 //
 // Linkable chunk builders — the standalone-chunk packaging of what the
@@ -296,7 +295,6 @@ pub fn build_to_bytes(_imports: &mut Chunk) -> Chunk {
     c.emit_op(Op::RETURN, 0);
     c
 }
-
 
 // ── Linkable chunk builders ──────────────────────────────────────────────────
 //

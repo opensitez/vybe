@@ -5,6 +5,9 @@
 //! chunk-free (no `__vybe_*` fallback remains).
 
 use std::sync::Arc;
+use vybe_compiler::primitives::class_slots::{
+    self, ClassSlot, Dest, ObjSource, PlainNames, ValueSource,
+};
 use vybe_compiler::primitives::collections;
 use vybe_compiler::primitives::dict;
 use vybe_compiler::primitives::errors;
@@ -16,9 +19,6 @@ use vybe_compiler::primitives::sets;
 use vybe_compiler::primitives::strings;
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
-use vybe_compiler::primitives::class_slots::{
-    self, ClassSlot, Dest, ObjSource, PlainNames, ValueSource,
-};
 
 /// Emit `<module>.<name>(argc args)` — receiver/args already on the stack.
 fn call_import(
@@ -111,8 +111,15 @@ fn emit_ruby_inspect_from_slot(chunks: &mut [Chunk], current: usize, slot: u16, 
     ops::emit_dyn_eq(&mut chunks[current], line);
     chunks[current].emit_if_value(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
-    let type_key = class_slots::resolve_interned(&mut chunks[current], &ClassSlot::TypeIdentity, &PlainNames);
-    class_slots::emit_class_get(&mut chunks[current], ObjSource::Stack, &type_key, Dest::Stack, line);
+    let type_key =
+        class_slots::resolve_interned(&mut chunks[current], &ClassSlot::TypeIdentity, &PlainNames);
+    class_slots::emit_class_get(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &type_key,
+        Dest::Stack,
+        line,
+    );
     chunks[current].emit_op_u16(Op::LOCAL_SET, type_s, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, type_s, line);
     call_import(chunks, current, "ecma:value", "typeof", 1, line);
@@ -123,8 +130,18 @@ fn emit_ruby_inspect_from_slot(chunks: &mut [Chunk], current: usize, slot: u16, 
     call_import(chunks, current, "ecma:string", "String", 1, line);
     chunks[current].emit_else(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
-    let msg_key = class_slots::resolve_interned(&mut chunks[current], &ClassSlot::internal("message"), &PlainNames);
-    class_slots::emit_class_get(&mut chunks[current], ObjSource::Stack, &msg_key, Dest::Stack, line);
+    let msg_key = class_slots::resolve_interned(
+        &mut chunks[current],
+        &ClassSlot::internal("message"),
+        &PlainNames,
+    );
+    class_slots::emit_class_get(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &msg_key,
+        Dest::Stack,
+        line,
+    );
     chunks[current].emit_op_u16(Op::LOCAL_SET, msg_s, line);
     chunks[current].emit_string_const("#<", line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, type_s, line);
@@ -508,12 +525,29 @@ fn emit_ruby_exception_inspect(chunks: &mut [Chunk], current: usize, argc: u8, l
     let type_s = chunks[current].alloc_scratch(1);
     let msg_s = chunks[current].alloc_scratch(1);
     chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
-    let type_key = class_slots::resolve_interned(&mut chunks[current], &ClassSlot::TypeIdentity, &PlainNames);
-    class_slots::emit_class_get(&mut chunks[current], ObjSource::Stack, &type_key, Dest::Stack, line);
+    let type_key =
+        class_slots::resolve_interned(&mut chunks[current], &ClassSlot::TypeIdentity, &PlainNames);
+    class_slots::emit_class_get(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &type_key,
+        Dest::Stack,
+        line,
+    );
     chunks[current].emit_op_u16(Op::LOCAL_SET, type_s, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
-    let msg_key = class_slots::resolve_interned(&mut chunks[current], &ClassSlot::internal("message"), &PlainNames);
-    class_slots::emit_class_get(&mut chunks[current], ObjSource::Stack, &msg_key, Dest::Stack, line);
+    let msg_key = class_slots::resolve_interned(
+        &mut chunks[current],
+        &ClassSlot::internal("message"),
+        &PlainNames,
+    );
+    class_slots::emit_class_get(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &msg_key,
+        Dest::Stack,
+        line,
+    );
     chunks[current].emit_op_u16(Op::LOCAL_SET, msg_s, line);
     chunks[current].emit_string_const("#<", line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, type_s, line);
@@ -1050,8 +1084,15 @@ fn emit_ruby_is_wrapped_string_slot(chunks: &mut [Chunk], current: usize, slot: 
     ops::emit_dyn_eq(&mut chunks[current], line);
     chunks[current].emit_if_value(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
-    let type_key = class_slots::resolve_interned(&mut chunks[current], &ClassSlot::TypeIdentity, &PlainNames);
-    class_slots::emit_class_get(&mut chunks[current], ObjSource::Stack, &type_key, Dest::Stack, line);
+    let type_key =
+        class_slots::resolve_interned(&mut chunks[current], &ClassSlot::TypeIdentity, &PlainNames);
+    class_slots::emit_class_get(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &type_key,
+        Dest::Stack,
+        line,
+    );
     chunks[current].emit_op_u16(Op::LOCAL_SET, type_s, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, type_s, line);
     chunks[current].emit_string_const("String", line);
@@ -3461,8 +3502,15 @@ fn emit_ruby_time_utc(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
 }
 
 fn emit_time_set_const(chunks: &mut [Chunk], current: usize, key: &str, line: u32) {
-    let key_idx = class_slots::resolve_interned(&mut chunks[current], &ClassSlot::internal(key), &PlainNames);
-    class_slots::emit_class_set(&mut chunks[current], ObjSource::Stack, &key_idx, ValueSource::Stack, line);
+    let key_idx =
+        class_slots::resolve_interned(&mut chunks[current], &ClassSlot::internal(key), &PlainNames);
+    class_slots::emit_class_set(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &key_idx,
+        ValueSource::Stack,
+        line,
+    );
 }
 
 fn emit_time_object_from_ms(
@@ -8137,8 +8185,18 @@ fn emit_ruby_exception_set_backtrace(chunks: &mut [Chunk], current: usize, argc:
     };
     chunks[current].emit_op_u16(Op::LOCAL_GET, err_s, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, backtrace_s, line);
-    let key = class_slots::resolve_interned(&mut chunks[current], &ClassSlot::internal("backtrace"), &PlainNames);
-    class_slots::emit_class_set(&mut chunks[current], ObjSource::Stack, &key, ValueSource::Stack, line);
+    let key = class_slots::resolve_interned(
+        &mut chunks[current],
+        &ClassSlot::internal("backtrace"),
+        &PlainNames,
+    );
+    class_slots::emit_class_set(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &key,
+        ValueSource::Stack,
+        line,
+    );
     chunks[current].emit_op_u16(Op::LOCAL_GET, backtrace_s, line);
 }
 
@@ -8149,8 +8207,15 @@ fn emit_ruby_exception_with_message(chunks: &mut [Chunk], current: usize, argc: 
         return;
     };
     chunks[current].emit_op_u16(Op::LOCAL_GET, err_s, line);
-    let type_key = class_slots::resolve_interned(&mut chunks[current], &ClassSlot::TypeIdentity, &PlainNames);
-    class_slots::emit_class_get(&mut chunks[current], ObjSource::Stack, &type_key, Dest::Stack, line);
+    let type_key =
+        class_slots::resolve_interned(&mut chunks[current], &ClassSlot::TypeIdentity, &PlainNames);
+    class_slots::emit_class_get(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &type_key,
+        Dest::Stack,
+        line,
+    );
     chunks[current].emit_op_u16(Op::LOCAL_GET, msg_s, line);
     emit_ruby_exception_object(chunks, current, 2, line);
 }
@@ -11268,7 +11333,11 @@ fn emit_time_rounding(chunks: &mut [Chunk], current: usize, argc: u8, mode: &str
         chunks[current].emit_op_u16(Op::LOCAL_GET, scale_s, line);
         chunks[current].emit_op(Op::F64_MUL, line);
         match mode {
-            "round" | "round_half_up" => math::emit_round(&mut chunks[current], vybe_ast::MidpointPolicy::HalfAwayFromZero, line),
+            "round" | "round_half_up" => math::emit_round(
+                &mut chunks[current],
+                vybe_ast::MidpointPolicy::HalfAwayFromZero,
+                line,
+            ),
             "round_half_down" => {
                 chunks[current].emit_f64_const(0.5, line);
                 chunks[current].emit_op(Op::F64_SUB, line);
@@ -11293,7 +11362,11 @@ fn emit_time_rounding(chunks: &mut [Chunk], current: usize, argc: u8, mode: &str
     } else {
         emit_ruby_number_from_slot(chunks, current, slots[0], line);
         match mode {
-            "round" | "round_half_up" => math::emit_round(&mut chunks[current], vybe_ast::MidpointPolicy::HalfAwayFromZero, line),
+            "round" | "round_half_up" => math::emit_round(
+                &mut chunks[current],
+                vybe_ast::MidpointPolicy::HalfAwayFromZero,
+                line,
+            ),
             "round_half_down" => {
                 chunks[current].emit_f64_const(0.5, line);
                 chunks[current].emit_op(Op::F64_SUB, line);
@@ -11336,7 +11409,11 @@ fn emit_ruby_round_half_even_top(chunks: &mut [Chunk], current: usize, line: u32
     chunks[current].emit_end(line);
     chunks[current].emit_else(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, x_s, line);
-    math::emit_round(&mut chunks[current], vybe_ast::MidpointPolicy::HalfAwayFromZero, line);
+    math::emit_round(
+        &mut chunks[current],
+        vybe_ast::MidpointPolicy::HalfAwayFromZero,
+        line,
+    );
     chunks[current].emit_end(line);
 }
 
@@ -11563,8 +11640,15 @@ fn emit_ruby_class_name(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
     ops::emit_dyn_eq(&mut chunks[current], line);
     chunks[current].emit_if_value(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
-    let obj_type_key = class_slots::resolve_interned(&mut chunks[current], &ClassSlot::TypeIdentity, &PlainNames);
-    class_slots::emit_class_get(&mut chunks[current], ObjSource::Stack, &obj_type_key, Dest::Stack, line);
+    let obj_type_key =
+        class_slots::resolve_interned(&mut chunks[current], &ClassSlot::TypeIdentity, &PlainNames);
+    class_slots::emit_class_get(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &obj_type_key,
+        Dest::Stack,
+        line,
+    );
     chunks[current].emit_op_u16(Op::LOCAL_SET, type_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, type_slot, line);
     call_import(chunks, current, "ecma:value", "typeof", 1, line);
@@ -12162,7 +12246,11 @@ fn emit_ruby_map_round(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
     chunks[current].emit_op_u16(Op::LOCAL_GET, num_s, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, scale_s, line);
     chunks[current].emit_op(Op::F64_MUL, line);
-    math::emit_round(&mut chunks[current], vybe_ast::MidpointPolicy::HalfAwayFromZero, line);
+    math::emit_round(
+        &mut chunks[current],
+        vybe_ast::MidpointPolicy::HalfAwayFromZero,
+        line,
+    );
     chunks[current].emit_op_u16(Op::LOCAL_GET, scale_s, line);
     chunks[current].emit_op(Op::F64_DIV, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, rounded_s, line);
@@ -14020,9 +14108,7 @@ fn emit_sum(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         let init_arg = if slots.len() >= 3 {
             slots.get(1).copied()
         } else if slots.len() == 2 {
-            Some(slots[1]).filter(|_| {
-                false
-            })
+            Some(slots[1]).filter(|_| false)
         } else {
             None
         };
@@ -14073,7 +14159,12 @@ fn emit_sum(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         if slots.len() == 1 {
             emit_is_string_slot(chunks, current, elem_s, line);
             chunks[current].emit_if(line);
-            emit_ruby_type_error(chunks, current, "String can't be coerced into Integer", line);
+            emit_ruby_type_error(
+                chunks,
+                current,
+                "String can't be coerced into Integer",
+                line,
+            );
             chunks[current].emit_end(line);
         }
         chunks[current].emit_op_u16(Op::LOCAL_GET, acc_s, line);
@@ -14841,15 +14932,29 @@ fn emit_inject_initial(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, acc_s, line);
 }
 
-fn emit_ruby_inject_symbol(chunks: &mut [Chunk], current: usize, argc: u8, has_init: bool, line: u32) {
+fn emit_ruby_inject_symbol(
+    chunks: &mut [Chunk],
+    current: usize,
+    argc: u8,
+    has_init: bool,
+    line: u32,
+) {
     let slots = emit_store_args(chunks, current, argc, line);
     if slots.is_empty() {
         chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         return;
     }
     let recv_s = slots[0];
-    let init_s = if has_init { slots.get(1).copied() } else { None };
-    let sym_s = if has_init { slots.get(2).copied() } else { slots.get(1).copied() };
+    let init_s = if has_init {
+        slots.get(1).copied()
+    } else {
+        None
+    };
+    let sym_s = if has_init {
+        slots.get(2).copied()
+    } else {
+        slots.get(1).copied()
+    };
     let arr_s = chunks[current].alloc_scratch(1);
     let len_s = chunks[current].alloc_scratch(1);
     let idx_s = chunks[current].alloc_scratch(1);

@@ -74,10 +74,7 @@ pub fn emit_stamp_function_kind_proto(
         ); // [fn, fn]
     }
     crate::primitives::globals::emit_read(chunk, intrinsic, line); // [fn, ctor]
-    let slot = class_slots::resolve(
-        &class_slots::ClassSlot::Prototype,
-        &class_slots::PlainNames,
-    );
+    let slot = class_slots::resolve(&class_slots::ClassSlot::Prototype, &class_slots::PlainNames);
     class_slots::emit_class_get(
         chunk,
         class_slots::ObjSource::Stack,
@@ -85,10 +82,7 @@ pub fn emit_stamp_function_kind_proto(
         class_slots::Dest::Stack,
         line,
     ); // [fn, proto]
-    let slot = class_slots::resolve(
-        &class_slots::ClassSlot::ProtoLink,
-        &class_slots::PlainNames,
-    );
+    let slot = class_slots::resolve(&class_slots::ClassSlot::ProtoLink, &class_slots::PlainNames);
     class_slots::emit_class_set(
         chunk,
         class_slots::ObjSource::Stack,

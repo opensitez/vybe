@@ -45,17 +45,22 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         // its canonical name bound at registration — see `exceptions.rs`.
         _ if name.starts_with("pascal.exc_") => {
             let key = &name["pascal.exc_".len()..];
-            let (key, into) = match key.strip_suffix(vybe_compiler::component_classes::CTOR_INTO_SUFFIX) {
-                Some(key) => (key, true),
-                None => (key, false),
-            };
+            let (key, into) =
+                match key.strip_suffix(vybe_compiler::component_classes::CTOR_INTO_SUFFIX) {
+                    Some(key) => (key, true),
+                    None => (key, false),
+                };
             if let Some((spelling, _)) = crate::exceptions::EXCEPTION_TYPES
                 .iter()
                 .find(|(s, _)| s.to_lowercase() == key)
             {
                 if into {
                     crate::emitter::runtime_adapter::emit_exception_new_into(
-                        chunks, current, spelling, argc.saturating_sub(1), line,
+                        chunks,
+                        current,
+                        spelling,
+                        argc.saturating_sub(1),
+                        line,
                     );
                 } else {
                     crate::emitter::runtime_adapter::emit_exception_new(
@@ -70,7 +75,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         // root's reserved type.
         _ if name.starts_with("pascal.object_new.") => {
             let spelling = &name["pascal.object_new.".len()..];
-            crate::emitter::runtime_adapter::emit_tobject_new(chunks, current, spelling, argc, line);
+            crate::emitter::runtime_adapter::emit_tobject_new(
+                chunks, current, spelling, argc, line,
+            );
             return true;
         }
         // `a div b` with the zero check inlined at the call site.
@@ -89,11 +96,21 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         // `ExceptObject` / `ExceptAddr` / `AssertErrorProc`: program-visible
         // runtime state held in module globals.
         _ if name.starts_with("pascal.get_") => {
-            crate::emitter::runtime_adapter::emit_state_get(chunks, current, &name["pascal.get_".len()..], line);
+            crate::emitter::runtime_adapter::emit_state_get(
+                chunks,
+                current,
+                &name["pascal.get_".len()..],
+                line,
+            );
             return true;
         }
         _ if name.starts_with("pascal.set_") => {
-            crate::emitter::runtime_adapter::emit_state_set(chunks, current, &name["pascal.set_".len()..], line);
+            crate::emitter::runtime_adapter::emit_state_set(
+                chunks,
+                current,
+                &name["pascal.set_".len()..],
+                line,
+            );
             return true;
         }
         // `TDictionary` over the shared Map — see `runtime_adapter.rs`.

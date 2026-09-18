@@ -460,14 +460,7 @@ pub fn emit_parse_document(chunks: &mut [Chunk], current: usize, line: u32) {
 
 /// Close the record under construction: the pending field joins `row`, `row`
 /// joins `out`, and a fresh `row` and empty field buffer start the next one.
-fn emit_end_record(
-    chunks: &mut [Chunk],
-    current: usize,
-    row: u16,
-    cur: u16,
-    out: u16,
-    line: u32,
-) {
+fn emit_end_record(chunks: &mut [Chunk], current: usize, row: u16, cur: u16, out: u16, line: u32) {
     get(&mut chunks[current], row, line);
     get(&mut chunks[current], cur, line);
     crate::primitives::collections::emit_push(chunks, current, line);

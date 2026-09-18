@@ -1,11 +1,11 @@
 //! Kotlin `ClassDecl` → `NormalClass` normalization pass.
 
 use vybe_ast::class_normalize::{NormalMembers, build_normal_method, from_method_stmt, types::*};
-use vybe_compiler::primitives::class_slots;
 use vybe_ast::{
     Argument, BinOp, ClassKind, ClassMember, ClassModifiers, ConstructorInitializerTarget,
     ExprKind, Expression, Modifiers, Param, PassBy, PropertySetter, Span, Statement, StmtKind,
 };
+use vybe_compiler::primitives::class_slots;
 
 /// `this.<name>`.
 /// A component read from inside a derived member.

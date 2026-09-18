@@ -133,7 +133,11 @@ pub fn emit_invoke(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     for j in 0..n {
         chunks[current].emit_op_u16(Op::LOCAL_GET, arg_base + j, line);
     }
-    crate::primitives::callable::emit_direct_invoke_chunk(&mut chunks[current], n as u8 + __recv, line);
+    crate::primitives::callable::emit_direct_invoke_chunk(
+        &mut chunks[current],
+        n as u8 + __recv,
+        line,
+    );
     chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
     chunks[current].emit_end(line);
 
@@ -156,7 +160,11 @@ pub fn emit_invoke(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     for j in 0..n {
         chunks[current].emit_op_u16(Op::LOCAL_GET, arg_base + j, line);
     }
-    crate::primitives::callable::emit_direct_invoke_chunk(&mut chunks[current], n as u8 + __recv, line);
+    crate::primitives::callable::emit_direct_invoke_chunk(
+        &mut chunks[current],
+        n as u8 + __recv,
+        line,
+    );
     chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
     chunks[current].emit_end(line);
 

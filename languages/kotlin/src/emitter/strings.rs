@@ -454,12 +454,7 @@ pub fn emit_to_boolean_strict_or_null(
     chunks[current].emit_end(line);
 }
 
-pub fn emit_to_boolean_or_null(
-    chunks: &mut Vec<Chunk>,
-    current: usize,
-    _argc: u8,
-    line: u32,
-) {
+pub fn emit_to_boolean_or_null(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32) {
     strings::emit_to_lower(&mut chunks[current], line);
     emit_to_boolean_strict_or_null(chunks, current, 1, line);
 }

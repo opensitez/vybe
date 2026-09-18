@@ -31,10 +31,6 @@ dynamic_add = true
 # property get for string/hash keys, array index for ints). Without this,
 # `h["a"]` numeric-coerces the string key → `toF64` crash on every Hash read.
 dynamic_member_access = true
-# Route `==` through `ecma:value:abstractEq` (host → real boxed Boolean), the
-# same mechanism JS uses (JS is over wasm/js too). Without it Ruby `==` returns
-# a raw i32 that prints "1"/"0" instead of "true"/"false".
-abstract_equality = true
 throwable_is_root = true
 # Ruby `arr[-1]` returns the last element (same idiom as Python).
 # Also applies to strings: `"hello"[-1]` → "o".
@@ -849,3 +845,4 @@ sort             = "__array_sort"
 # concat `ToString` role.
 [builtin_slots.string]
 to_string = "common:ruby.to_s"
+eq = "common:ruby.eq"

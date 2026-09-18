@@ -916,13 +916,14 @@ impl Compiler {
     /// threshold. Byte-identical to the per-width arms this replaced.
     fn emit_int_width_wrap(&mut self, width: vybe_ast::builtin_types::IntWidth) {
         let modulus = width.modulus();
+        let line = self.line;
         self.emit(Op::F64_TRUNC);
         self.emit_const(Value::F64(modulus));
-        self.compile_binop(&BinOp::Mod);
+        crate::primitives::math::emit_c_fmod(self.chunk(), line);
         self.emit_const(Value::F64(modulus));
         self.emit(Op::F64_ADD);
         self.emit_const(Value::F64(modulus));
-        self.compile_binop(&BinOp::Mod);
+        crate::primitives::math::emit_c_fmod(self.chunk(), line);
 
         let Some(threshold) = width.sign_threshold() else {
             return;
@@ -930,15 +931,13 @@ impl Compiler {
         inst!(self, core_wasm::dup);
         self.emit_const(Value::F64(threshold));
         self.emit(Op::F64_GE);
-        let line = self.line;
-        self.chunk().emit_if_value(line);
+        self.chunk().emit_if_params(line, 1, 1);
         self.emit_const(Value::F64(modulus));
         self.emit(Op::F64_SUB);
         self.chunk().emit_else(line);
         self.chunk().emit_end(line);
     }
 }
-
 
 // ── Linkable chunk builders ──────────────────────────────────────────────────
 //
@@ -1281,7 +1280,6 @@ pub fn build_array_from(imports: &mut Chunk) -> Chunk {
     c.emit_op(vybe_runtime::opcode::Op::RETURN, 0);
     c
 }
-
 
 // ── Linkable chunk builders ──────────────────────────────────────────────────
 //

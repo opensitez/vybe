@@ -1257,13 +1257,7 @@ fn pascal_slot(chunk: &mut Chunk) -> u16 {
     chunk.alloc_scratch(1)
 }
 
-fn pascal_get_field_to_slot(
-    chunk: &mut Chunk,
-    obj_slot: u16,
-    key: &str,
-    out_slot: u16,
-    line: u32,
-) {
+fn pascal_get_field_to_slot(chunk: &mut Chunk, obj_slot: u16, key: &str, out_slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
     chunk.emit_string_const(key, line);
     host::emit(chunk, "ecma:object", "get", 2, line);
@@ -1325,7 +1319,13 @@ fn pascal_build_process_options(
     pascal_set_field_string(&mut chunks[current], opts, "encoding", "utf8", line);
 
     let cwd = pascal_slot(&mut chunks[current]);
-    pascal_get_field_to_slot(&mut chunks[current], proc_slot, "CurrentDirectory", cwd, line);
+    pascal_get_field_to_slot(
+        &mut chunks[current],
+        proc_slot,
+        "CurrentDirectory",
+        cwd,
+        line,
+    );
     chunks[current].emit_op_u16(Op::LOCAL_GET, cwd, line);
     chunks[current].emit_string_const("", line);
     ops::emit_dyn_eq(&mut chunks[current], line);
@@ -1337,7 +1337,13 @@ fn pascal_build_process_options(
     let input_stream = pascal_slot(&mut chunks[current]);
     pascal_get_field_to_slot(&mut chunks[current], proc_slot, "Input", input_stream, line);
     let input_data = pascal_slot(&mut chunks[current]);
-    pascal_get_field_to_slot(&mut chunks[current], input_stream, "__data", input_data, line);
+    pascal_get_field_to_slot(
+        &mut chunks[current],
+        input_stream,
+        "__data",
+        input_data,
+        line,
+    );
     chunks[current].emit_op_u16(Op::LOCAL_GET, input_data, line);
     chunks[current].emit_string_const("", line);
     ops::emit_dyn_eq(&mut chunks[current], line);
@@ -1367,12 +1373,7 @@ fn pascal_process_spawn_sync(
     raw
 }
 
-fn pascal_process_throw_if_error(
-    chunks: &mut [Chunk],
-    current: usize,
-    raw_slot: u16,
-    line: u32,
-) {
+fn pascal_process_throw_if_error(chunks: &mut [Chunk], current: usize, raw_slot: u16, line: u32) {
     let err = pascal_slot(&mut chunks[current]);
     pascal_get_field_to_slot(&mut chunks[current], raw_slot, "error", err, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, err, line);
@@ -1409,7 +1410,13 @@ pub fn emit_process_execute(chunks: &mut [Chunk], current: usize, line: u32) {
     pascal_get_field_to_slot(&mut chunks[current], raw, "stderr", stderr, line);
     let out_data = pascal_slot(&mut chunks[current]);
     let process_options = pascal_slot(&mut chunks[current]);
-    pascal_get_field_to_slot(&mut chunks[current], proc_slot, "Options", process_options, line);
+    pascal_get_field_to_slot(
+        &mut chunks[current],
+        proc_slot,
+        "Options",
+        process_options,
+        line,
+    );
     chunks[current].emit_op_u16(Op::LOCAL_GET, process_options, line);
     chunks[current].emit_string_const("poStderrToOutPut", line);
     collections::emit_contains(chunks, current, line);
@@ -1423,10 +1430,28 @@ pub fn emit_process_execute(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_SET, out_data, line);
     chunks[current].emit_end(line);
     let output_stream = pascal_slot(&mut chunks[current]);
-    pascal_get_field_to_slot(&mut chunks[current], proc_slot, "Output", output_stream, line);
+    pascal_get_field_to_slot(
+        &mut chunks[current],
+        proc_slot,
+        "Output",
+        output_stream,
+        line,
+    );
     let stderr_stream = pascal_slot(&mut chunks[current]);
-    pascal_get_field_to_slot(&mut chunks[current], proc_slot, "Stderr", stderr_stream, line);
-    pascal_set_field_from_slot(&mut chunks[current], output_stream, "__data", out_data, line);
+    pascal_get_field_to_slot(
+        &mut chunks[current],
+        proc_slot,
+        "Stderr",
+        stderr_stream,
+        line,
+    );
+    pascal_set_field_from_slot(
+        &mut chunks[current],
+        output_stream,
+        "__data",
+        out_data,
+        line,
+    );
     pascal_set_field_i32(&mut chunks[current], output_stream, "__pos", 0, line);
     pascal_set_field_from_slot(&mut chunks[current], stderr_stream, "__data", stderr, line);
     pascal_set_field_i32(&mut chunks[current], stderr_stream, "__pos", 0, line);
@@ -1509,13 +1534,25 @@ pub fn emit_execute_process(chunks: &mut [Chunk], current: usize, argc: u8, line
 /// `<Exc>.Create(args…)` with `argc` arguments on the stack: a fresh object
 /// of the exception's reserved WASM type (its ancestry the supertype chain),
 /// built by the shared exception machinery. Leaves the instance on the stack.
-pub fn emit_exception_new(chunks: &mut [Chunk], current: usize, spelling: &str, argc: u8, line: u32) {
+pub fn emit_exception_new(
+    chunks: &mut [Chunk],
+    current: usize,
+    spelling: &str,
+    argc: u8,
+    line: u32,
+) {
     emit_exception_ctor(chunks, current, spelling, argc, None, line);
 }
 
 /// The `#into` form: the receiver a derived constructor allocated is on top
 /// of the stack above the arguments; it is initialised as `<Exc>`.
-pub fn emit_exception_new_into(chunks: &mut [Chunk], current: usize, spelling: &str, argc: u8, line: u32) {
+pub fn emit_exception_new_into(
+    chunks: &mut [Chunk],
+    current: usize,
+    spelling: &str,
+    argc: u8,
+    line: u32,
+) {
     let receiver = chunks[current].alloc_scratch(1);
     chunks[current].emit_op_u16(Op::LOCAL_SET, receiver, line);
     emit_exception_ctor(chunks, current, spelling, argc, Some(receiver), line);

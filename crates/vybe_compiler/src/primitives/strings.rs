@@ -1792,7 +1792,6 @@ pub fn emit_is_lower(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_cased_class(chunks, current, false, line);
 }
 
-
 // ── Linkable chunk builders ──────────────────────────────────────────────────
 //
 // Linkable chunk builders for string operations, beside the `emit_*`
@@ -1962,7 +1961,6 @@ pub fn build_str_remove_range(imports: &mut Chunk) -> Chunk {
 
 // `build_string_raw` removed — nothing referenced `__vybe_string_raw`.
 
-
 // ── Linkable chunk builders ──────────────────────────────────────────────────
 //
 // Linkable chunk builders — the standalone-chunk packaging of what the
@@ -2065,8 +2063,12 @@ pub fn build_vb_format(imports: &mut Chunk) -> Chunk {
 
     // prefix = ""
     let empty = c.add_constant(vybe_runtime::Value::String(std::sync::Arc::from("")));
-    let short_date = c.add_constant(vybe_runtime::Value::String(std::sync::Arc::from("short date")));
-    let short_time = c.add_constant(vybe_runtime::Value::String(std::sync::Arc::from("short time")));
+    let short_date = c.add_constant(vybe_runtime::Value::String(std::sync::Arc::from(
+        "short date",
+    )));
+    let short_time = c.add_constant(vybe_runtime::Value::String(std::sync::Arc::from(
+        "short time",
+    )));
     let percent_str = c.add_constant(vybe_runtime::Value::String(std::sync::Arc::from("%")));
     let zero_str = c.add_constant(vybe_runtime::Value::String(std::sync::Arc::from("0")));
     let space_str = c.add_constant(vybe_runtime::Value::String(std::sync::Arc::from(" ")));
@@ -2618,7 +2620,6 @@ pub(crate) fn emit_str_char_code_at(chunk: &mut Chunk, line: u32) {
     let idx = chunk.add_import("wasm:js-string", "charCodeAt");
     chunk.emit_call(idx, 2, line);
 }
-
 
 /// Stack: `[a, b] -> [bool]`.
 pub(crate) fn emit_str_equals(chunk: &mut Chunk, line: u32) {

@@ -2,12 +2,12 @@
 
 use std::sync::Arc;
 
-use vybe_compiler::primitives::{callable, collections};
-use vybe_runtime::opcode::Op;
-use vybe_runtime::{Chunk, Value};
 use vybe_compiler::primitives::class_slots::{
     self, ClassSlot, Dest, ObjSource, PlainNames, ValueSource,
 };
+use vybe_compiler::primitives::{callable, collections};
+use vybe_runtime::opcode::Op;
+use vybe_runtime::{Chunk, Value};
 
 /// `measureTimeMillis { ... }` / `measureNanoTime { ... }`.
 ///
@@ -36,7 +36,11 @@ pub fn emit_identity_hash_code(chunks: &mut [Chunk], current: usize, line: u32) 
     let chunk = &mut chunks[current];
     let value = chunk.alloc_scratch(1);
     let existing = chunk.alloc_scratch(1);
-    let id_key = class_slots::resolve_interned(chunk, &ClassSlot::internal("__kt_identity_hash"), &PlainNames);
+    let id_key = class_slots::resolve_interned(
+        chunk,
+        &ClassSlot::internal("__kt_identity_hash"),
+        &PlainNames,
+    );
     let typeof_fn = chunk.add_import("ecma:value", "typeof");
     let random = chunk.add_import("ecma:math", "random");
 

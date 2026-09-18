@@ -3,8 +3,8 @@
 //! Extracted from `primitives/mod.rs` (`impl Compiler`) — conductor pattern,
 //! same as `statements.rs`/`builtins.rs`.
 
-use crate::primitives::class_slots;
 use super::*;
+use crate::primitives::class_slots;
 
 pub(crate) use vybe_runtime::chunk::ReceiverAbi;
 
@@ -367,7 +367,9 @@ impl Compiler {
 
     /// Static fields are own properties of the class object.
     pub(crate) fn static_fields_are_own_properties(&self) -> bool {
-        self.directives().static_fields_are_own_properties.unwrap_or(false)
+        self.directives()
+            .static_fields_are_own_properties
+            .unwrap_or(false)
     }
 
     /// In a SUBPROGRAM body, local declarations compile before nested
@@ -407,7 +409,12 @@ impl Compiler {
 
     /// Stamp the function object on TOS with its kind's intrinsic prototype,
     /// or DROP it when this unit's functions are not objects.
-    pub(crate) fn stamp_function_kind_proto(&mut self, is_async: bool, is_generator: bool, line: u32) {
+    pub(crate) fn stamp_function_kind_proto(
+        &mut self,
+        is_async: bool,
+        is_generator: bool,
+        line: u32,
+    ) {
         let objects = self.functions_are_objects();
         crate::primitives::prototypes::emit_stamp_function_kind_proto(
             self.chunk(),
@@ -479,14 +486,12 @@ impl Compiler {
     // frontend the way php sets `late_static_binding`, and read directly where
     // the class is in scope.
 
-
     pub(crate) fn method_receiver_model(&self) -> Option<vybe_ast::MethodReceiver> {
         if let Some(model) = self.directives().method_receiver {
             return Some(model);
         }
         None
     }
-
 
     // `static_methods_take_receiver` is GONE. It answered "do STATIC methods
     // carry the called class as a receiver" with `profile.name == "php"` — a
@@ -524,35 +529,88 @@ impl Compiler {
         false
     }
 
-    /// True for profiles whose comparison/equality operators dispatch to a
-    /// user-defined dunder (`__eq__`/`__lt__`/… and their cross-language
-    /// aliases) — i.e. the same profiles the `<`/`>` sites already route
-    /// through `emit_rich_compare_locals` (Python, Ruby, Dart, C#, VB, …).
-    /// Excludes JS (ECMA coercion), PHP (loose comparison) and Pascal.
+    fn program_has_any_protocol_slot(&self, slots: &[vybe_ast::ProtocolSlot]) -> bool {
+        slots
+            .iter()
+            .any(|slot| self.program_protocol_slots.contains(slot))
+    }
+
+    pub(crate) fn type_resolution(&self) -> vybe_ast::TypeResolution {
+        self.directives().type_resolution.unwrap_or_default()
+    }
+
+    pub(crate) fn operator_dispatch(&self) -> vybe_ast::OperatorDispatch {
+        if let Some(dispatch) = self.directives().operator_dispatch {
+            return dispatch;
+        }
+        if self.profile.ecma_operator_coercion {
+            return vybe_ast::OperatorDispatch::Ecma;
+        }
+        if self.profile.dynamic_numeric_dispatch {
+            return vybe_ast::OperatorDispatch::RuntimeProtocol;
+        }
+        vybe_ast::OperatorDispatch::StaticBuiltin
+    }
+
+    /// True when comparison/equality operators have a runtime role to probe.
     ///
-    /// Dispatch goes through the `Eq`/`Lt`/`Compare` SLOTS: a language that
-    /// binds them gets its own semantics, one that binds nothing falls back to
-    /// primitive comparison. Declaring nothing IS the opt-out, so no language
-    /// needs excluding here — pascal was, by name, and did not need to be.
-    /// PHP stays out via `string_aware_relational`, which it declares anyway.
+    /// This is a program capability, not "not ECMA" by subtraction. Static
+    /// languages such as C and Go should not emit rich-operator ladders unless
+    /// a normalized class/struct actually publishes the relevant slot. Dynamic
+    /// numeric-dispatch languages still keep the runtime path because their
+    /// operand type is intentionally unresolved until execution.
     pub(crate) fn uses_rich_comparison(&self) -> bool {
-        !self.profile.ecma_operator_coercion && !self.profile.string_aware_relational
+        if self.profile.string_aware_relational {
+            return false;
+        }
+        match self.operator_dispatch() {
+            vybe_ast::OperatorDispatch::Ecma | vybe_ast::OperatorDispatch::StaticBuiltin => false,
+            vybe_ast::OperatorDispatch::RuntimeProtocol => {
+                self.profile.dynamic_numeric_dispatch
+                    || self.program_has_any_protocol_slot(&[
+                        vybe_ast::ProtocolSlot::Eq,
+                        vybe_ast::ProtocolSlot::Ne,
+                        vybe_ast::ProtocolSlot::Compare,
+                        vybe_ast::ProtocolSlot::Lt,
+                        vybe_ast::ProtocolSlot::Le,
+                        vybe_ast::ProtocolSlot::Gt,
+                        vybe_ast::ProtocolSlot::Ge,
+                    ])
+            }
+        }
     }
 
     /// Operator overloading on the arithmetic/unary operators: a user
     /// `__add__`/`__neg__`/… on the operand wins over the primitive op.
-    ///
-    /// The same profiles that get rich comparison — a language either
-    /// dispatches operators to methods or it coerces operands, and the
-    /// two are the same question. Languages whose `+` is ECMA-coerced
-    /// reach their operator methods through `ecma:value.add`'s
-    /// ToPrimitive/`valueOf` chain instead.
     pub(crate) fn uses_rich_operators(&self) -> bool {
-        self.uses_rich_comparison()
+        match self.operator_dispatch() {
+            vybe_ast::OperatorDispatch::Ecma | vybe_ast::OperatorDispatch::StaticBuiltin => false,
+            vybe_ast::OperatorDispatch::RuntimeProtocol => {
+                self.profile.dynamic_numeric_dispatch
+                    || self.program_has_any_protocol_slot(&[
+                        vybe_ast::ProtocolSlot::Add,
+                        vybe_ast::ProtocolSlot::Sub,
+                        vybe_ast::ProtocolSlot::Mul,
+                        vybe_ast::ProtocolSlot::Div,
+                        vybe_ast::ProtocolSlot::IDiv,
+                        vybe_ast::ProtocolSlot::FloorDiv,
+                        vybe_ast::ProtocolSlot::Mod,
+                        vybe_ast::ProtocolSlot::Pow,
+                        vybe_ast::ProtocolSlot::Neg,
+                        vybe_ast::ProtocolSlot::Pos,
+                        vybe_ast::ProtocolSlot::And,
+                        vybe_ast::ProtocolSlot::Or,
+                        vybe_ast::ProtocolSlot::Xor,
+                        vybe_ast::ProtocolSlot::LShift,
+                        vybe_ast::ProtocolSlot::RShift,
+                    ])
+            }
+        }
     }
 
-    /// Box an i32 comparison result as a `Bool` — unless a CONDITION asked for
-    /// the i32, in which case the boxing is skipped and that is reported.
+    /// Turn an i32 comparison result into the value shape this profile uses —
+    /// unless a CONDITION asked for the raw i32, in which case conversion is
+    /// skipped and that is reported.
     ///
     /// Skipping and reporting are deliberately the SAME statement. Two
     /// separate booleans would drift, and the two drift directions are not
@@ -565,7 +623,12 @@ impl Compiler {
             return;
         }
         let line = self.line;
-        crate::primitives::ops::emit_i32_to_bool(self.chunk(), line);
+        if self.profile.ecma_operator_coercion || self.profile.materialize_bool_results {
+            crate::primitives::ops::emit_i32_to_bool(self.chunk(), line);
+        } else {
+            let from_i32 = self.import("wasm:js-number", "fromI32");
+            self.emit_host_call(from_i32, 1);
+        }
     }
 
     /// Compile `cond` and leave an **i32** 0/1 on the stack.
@@ -588,6 +651,13 @@ impl Compiler {
         &mut self,
         cond: &vybe_ast::Expression,
     ) -> Result<(), String> {
+        let cond_is_number = self.builtin_type_of(cond).is_some_and(|ty| {
+            matches!(
+                ty,
+                vybe_ast::builtin_slots::BuiltinType::Int
+                    | vybe_ast::builtin_slots::BuiltinType::Double
+            )
+        }) || self.expr_is_provably_number(cond);
         self.want_i32_condition = true;
         self.gave_i32_condition = false;
         let result = self.compile_expr(cond);
@@ -595,7 +665,13 @@ impl Compiler {
         let gave = std::mem::take(&mut self.gave_i32_condition);
         result?;
         if !gave {
-            self.emit_condition_truthiness_from_stack();
+            if cond_is_number {
+                let line = self.line;
+                self.emit_const(vybe_runtime::Value::F64(0.0));
+                self.chunk().emit_op(vybe_runtime::opcode::Op::F64_NE, line);
+            } else {
+                self.emit_condition_truthiness_from_stack();
+            }
         }
         Ok(())
     }
@@ -646,7 +722,9 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_SET, is_object_slot);
 
         // ── rung 1: ProtocolSlot::Bool ──────────────────────────────────
-        let bool_key = self.resolve_slot_interned(&class_slots::ClassSlot::internal(&vybe_ast::protocol_slot_key(vybe_ast::ProtocolSlot::Bool)));
+        let bool_key = self.resolve_slot_interned(&class_slots::ClassSlot::internal(
+            &vybe_ast::protocol_slot_key(vybe_ast::ProtocolSlot::Bool),
+        ));
         let bool_method = self.define_local("__truth_bool_method");
         self.emit_ref_null_local(bool_method);
         self.emit_u16(Op::LOCAL_GET, is_object_slot);
@@ -667,7 +745,9 @@ impl Compiler {
         self.chunk().emit_else(line);
 
         // ── rung 2: ProtocolSlot::Len on a user class ───────────────────
-        let len_key = self.resolve_slot_interned(&class_slots::ClassSlot::internal(&vybe_ast::protocol_slot_key(vybe_ast::ProtocolSlot::Len)));
+        let len_key = self.resolve_slot_interned(&class_slots::ClassSlot::internal(
+            &vybe_ast::protocol_slot_key(vybe_ast::ProtocolSlot::Len),
+        ));
         let len_method = self.define_local("__truth_len_method");
         self.emit_ref_null_local(len_method);
         self.emit_u16(Op::LOCAL_GET, is_object_slot);
@@ -722,7 +802,6 @@ impl Compiler {
             .emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         self.emit_u16(Op::LOCAL_SET, slot);
     }
-
 }
 
 /// How the receiver reaches the callee at ONE call site.
@@ -929,7 +1008,10 @@ impl Compiler {
 
         if self.scopes.len() > 1 {
             // Arrow function: capture `this` from the enclosing scope.
-            if self.resolve_upvalue(self.scopes.len() - 1, &self_kw).is_some() {
+            if self
+                .resolve_upvalue(self.scopes.len() - 1, &self_kw)
+                .is_some()
+            {
                 let env = self.closure_env_slot();
                 let idx = self.closure_env_index(&self_kw);
                 let l = self.line;

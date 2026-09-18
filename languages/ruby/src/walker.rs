@@ -22,7 +22,6 @@ pub(crate) struct RubyWalker {
     ruby_module_members: HashMap<String, Vec<ClassMember>>,
 }
 
-
 // ════════════════════════════════════════════════════════════════════════════
 // Entry point
 // ════════════════════════════════════════════════════════════════════════════
@@ -2390,12 +2389,19 @@ a = [1].freeze; begin; a.delete_at(0); rescue FrozenError; puts 'err'; end"#, r#
             // receiver comes from; this says it is a real parameter on every
             // function type. A plain `f()` passes `undefined` (§10.2.1.1).
             receiver_binding: Some(vybe_ast::ReceiverBinding::UniversalParameter),
+            type_resolution: Some(vybe_ast::TypeResolution::Hybrid),
+            operator_dispatch: Some(vybe_ast::OperatorDispatch::RuntimeProtocol),
             // ⛔ `@a` IS AN OWN PROPERTY. `instance_variables` enumerates the
             // object, so the host key walk has to see the field — indexed
             // storage hides it and the method answers `[]`. Stated as a
             // language FACT so `seam3_indexable` withholds the optimization
             // from a property that must stay observable.
             instance_fields_are_own_properties: Some(true),
+            // Residual `==`/`!=` nodes use Ruby's own equality adapter. Most
+            // user-written `==` already normalizes to `__ruby_eq`; this keeps
+            // the common fallback on the same declared slot instead of JS loose
+            // equality.
+            equality_fallback: Some(vybe_ast::EqualityFallback::Slot),
             ..Default::default()
         },
     })
@@ -4530,7 +4536,8 @@ fn normalize_ruby_const_reads(source: &str) -> String {
 
     out
 }
-fn walk_stmt_into(__w: &mut RubyWalker, 
+fn walk_stmt_into(
+    __w: &mut RubyWalker,
     pair: Pair<Rule>,
     body: &mut Vec<Statement>,
     imports: &mut Vec<Import>,
@@ -4696,8 +4703,7 @@ fn walk_alias_stmt(__w: &mut RubyWalker, pair: Pair<Rule>) -> Result<StmtKind, S
         .collect::<Vec<_>>();
     if names.len() >= 2 {
         {
-            __w.ruby_aliases
-                .insert(names[0].clone(), names[1].clone());
+            __w.ruby_aliases.insert(names[0].clone(), names[1].clone());
         };
     }
     Ok(StmtKind::Empty)
@@ -4729,7 +4735,10 @@ fn register_ruby_module_members(__w: &mut RubyWalker, name: &str, members: &[Cla
 }
 
 fn ruby_module_members(__w: &mut RubyWalker, name: &str) -> Vec<ClassMember> {
-    __w.ruby_module_members.get(name).cloned().unwrap_or_default()
+    __w.ruby_module_members
+        .get(name)
+        .cloned()
+        .unwrap_or_default()
 }
 
 fn register_ruby_member_methods(__w: &mut RubyWalker, owner: &str, members: &[ClassMember]) {
@@ -4917,7 +4926,11 @@ fn walk_class_def(__w: &mut RubyWalker, pair: Pair<Rule>) -> Result<StmtKind, St
     })
 }
 
-fn walk_class_body(__w: &mut RubyWalker, pair: Pair<Rule>, class_name: &str) -> Result<Vec<ClassMember>, String> {
+fn walk_class_body(
+    __w: &mut RubyWalker,
+    pair: Pair<Rule>,
+    class_name: &str,
+) -> Result<Vec<ClassMember>, String> {
     let mut members = Vec::new();
     let mut current_visibility = Visibility::Public;
 
@@ -5769,7 +5782,11 @@ fn is_ruby_exception_name(name: &str) -> bool {
 
 // ── Break / Next with optional modifier ─────────────────────────────────────
 
-fn walk_break_or_next(__w: &mut RubyWalker, pair: Pair<Rule>, is_break: bool) -> Result<StmtKind, String> {
+fn walk_break_or_next(
+    __w: &mut RubyWalker,
+    pair: Pair<Rule>,
+    is_break: bool,
+) -> Result<StmtKind, String> {
     let mut modifiers = Vec::new();
     for p in pair.into_inner() {
         if p.as_rule() == Rule::modifier_suffix {
@@ -6187,7 +6204,11 @@ fn walk_command_call(__w: &mut RubyWalker, mut items: Vec<Pair<Rule>>) -> Result
 }
 
 /// Wrap a statement in an if/unless/while/until modifier if present
-fn maybe_wrap_modifier(__w: &mut RubyWalker, stmt: StmtKind, rest: &mut Vec<Pair<Rule>>) -> Result<StmtKind, String> {
+fn maybe_wrap_modifier(
+    __w: &mut RubyWalker,
+    stmt: StmtKind,
+    rest: &mut Vec<Pair<Rule>>,
+) -> Result<StmtKind, String> {
     let mod_pos = rest
         .iter()
         .position(|p| p.as_rule() == Rule::modifier_suffix);
@@ -6636,7 +6657,8 @@ fn walk_infix_or_unwrap(__w: &mut RubyWalker, pair: Pair<Rule>) -> Result<ExprKi
     }
 }
 
-fn walk_binary_chain(__w: &mut RubyWalker, 
+fn walk_binary_chain(
+    __w: &mut RubyWalker,
     mut items: Vec<Pair<Rule>>,
     op_fn: impl Fn(&str) -> BinOp,
 ) -> Result<ExprKind, String> {
@@ -6676,7 +6698,10 @@ fn ruby_boolify_expr(expr: Expression) -> Expression {
 }
 
 /// Ruby `*` is dynamic (string repeat OR numeric mul), same as Python.
-fn walk_ruby_multiplicative(__w: &mut RubyWalker, mut items: Vec<Pair<Rule>>) -> Result<ExprKind, String> {
+fn walk_ruby_multiplicative(
+    __w: &mut RubyWalker,
+    mut items: Vec<Pair<Rule>>,
+) -> Result<ExprKind, String> {
     let mut left = walk_expression(__w, items.remove(0))?;
     let mut i = 0;
     while i < items.len() {
@@ -6697,7 +6722,10 @@ fn walk_ruby_multiplicative(__w: &mut RubyWalker, mut items: Vec<Pair<Rule>>) ->
     Ok(left.kind)
 }
 
-fn walk_binary_chain_with_ops(__w: &mut RubyWalker, mut items: Vec<Pair<Rule>>) -> Result<ExprKind, String> {
+fn walk_binary_chain_with_ops(
+    __w: &mut RubyWalker,
+    mut items: Vec<Pair<Rule>>,
+) -> Result<ExprKind, String> {
     let mut left = walk_expression(__w, items.remove(0))?;
     let mut i = 0;
     while i < items.len() {
@@ -6803,9 +6831,10 @@ fn ruby_tag_complex_object(value: Expression) -> Expression {
     let ExprKind::Object(mut props) = value.kind else {
         return value;
     };
-    if !props.iter().any(|prop| matches!(prop, ObjectProperty::KeyValue { key, .. }
-        if matches!(&key.kind, ExprKind::Lit(Literal::Str(name)) if name == "__type")))
-    {
+    if !props.iter().any(|prop| {
+        matches!(prop, ObjectProperty::KeyValue { key, .. }
+        if matches!(&key.kind, ExprKind::Lit(Literal::Str(name)) if name == "__type"))
+    }) {
         props.insert(
             0,
             ObjectProperty::KeyValue {
@@ -6988,13 +7017,15 @@ fn ruby_complex_static_method(name: &str, args: &[Argument]) -> Option<Expressio
         return None;
     }
     match name {
-        "rect" | "rectangular" if args.len() == 2 => {
-            Some(ruby_complex_object(args[0].value.clone(), args[1].value.clone()))
-        }
+        "rect" | "rectangular" if args.len() == 2 => Some(ruby_complex_object(
+            args[0].value.clone(),
+            args[1].value.clone(),
+        )),
         "polar" if args.len() == 2 => Some(ruby_tag_complex_object(complex::rect(
             args[0].value.clone(),
             args[1].value.clone(),
-        ))).map(ruby_complex_expr),
+        )))
+        .map(ruby_complex_expr),
         _ => None,
     }
 }
@@ -7014,7 +7045,9 @@ fn ruby_complex_method(expr: &Expression, name: &str, args: &[Argument]) -> Opti
     Some(match name {
         "real" => real,
         "imag" | "imaginary" => imag,
-        "conj" | "conjugate" => ruby_tag_complex_object(ruby_complex_expr(complex::conj(real, imag))),
+        "conj" | "conjugate" => {
+            ruby_tag_complex_object(ruby_complex_expr(complex::conj(real, imag)))
+        }
         "arg" | "angle" => ruby_complex_expr(complex::carg(real, imag)),
         "polar" => ruby_complex_expr(complex::polar(real, imag)),
         "rect" | "rectangular" => ruby_array_expr(vec![real, imag]),
@@ -7224,7 +7257,8 @@ fn walk_ident_call(__w: &mut RubyWalker, pair: Pair<Rule>) -> Result<ExprKind, S
     }
     if matches!(&callee.kind, ExprKind::Ident(name) if name == "method") && args.len() == 1 {
         if let Some(name) = ruby_method_name_arg(&args[0].value) {
-            return Ok(ruby_method_expr(__w, 
+            return Ok(ruby_method_expr(
+                __w,
                 &name,
                 Expression::null(),
                 "Object",
@@ -7275,7 +7309,8 @@ fn ruby_receiver_class_name(expr: &Expression) -> String {
     }
 }
 
-fn ruby_method_expr(__w: &mut RubyWalker, 
+fn ruby_method_expr(
+    __w: &mut RubyWalker,
     name: &str,
     fn_expr: Expression,
     owner: &str,
@@ -7330,7 +7365,11 @@ fn walk_postfix(__w: &mut RubyWalker, pair: Pair<Rule>) -> Result<ExprKind, Stri
     Ok(expr.kind)
 }
 
-fn walk_postfix_chain(__w: &mut RubyWalker, expr: Expression, chain: Pair<Rule>) -> Result<Expression, String> {
+fn walk_postfix_chain(
+    __w: &mut RubyWalker,
+    expr: Expression,
+    chain: Pair<Rule>,
+) -> Result<Expression, String> {
     let children: Vec<Pair<Rule>> = chain.into_inner().collect();
 
     if children.is_empty() {
@@ -8865,8 +8904,8 @@ fn walk_lambda(__w: &mut RubyWalker, pair: Pair<Rule>) -> Result<ExprKind, Strin
             let _line_index = vybe_ast::line_index::LineIndex::install(inner);
             if let Ok(mut parsed) = RubyParser::parse(Rule::expression, inner) {
                 if let Some(expr_pair) = parsed.next() {
-                    body = vec![Statement::new(StmtKind::Return(Some(walk_expression(__w, 
-                        expr_pair,
+                    body = vec![Statement::new(StmtKind::Return(Some(walk_expression(
+                        __w, expr_pair,
                     )?)))];
                 }
             }

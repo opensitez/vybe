@@ -4,8 +4,8 @@
 //! same as `statements.rs`/`builtins.rs`.
 
 use super::*;
-use vybe_ast::class_normalize::{PlatformBaseSpec, PlatformFieldGui};
 use crate::primitives::namespaces::UserGlobalKind;
+use vybe_ast::class_normalize::{PlatformBaseSpec, PlatformFieldGui};
 
 fn mounted_ambient_tree_root(tree_mounts: &HashMap<String, String>, path: &str) -> Option<String> {
     let trimmed = path.trim();
@@ -239,6 +239,41 @@ impl Compiler {
         }
     }
 
+    /// Record module-level declared variable types before top-level function
+    /// bodies compile. The executable initialization pass records the same
+    /// facts when it runs declarations, but function bodies are compiled before
+    /// that pass so they need the declared receiver types here.
+    pub(super) fn predeclare_module_variable_type_hints(&mut self, body: &[Statement]) {
+        for stmt in body {
+            match &stmt.kind {
+                StmtKind::Try {
+                    body: try_body,
+                    finally,
+                    ..
+                } => {
+                    self.predeclare_module_variable_type_hints(try_body);
+                    if let Some(finally_body) = finally {
+                        self.predeclare_module_variable_type_hints(finally_body);
+                    }
+                }
+                StmtKind::VarDecl { declarations, .. } => {
+                    for decl in declarations {
+                        let BindingPattern::Ident(name) = &decl.pattern else {
+                            continue;
+                        };
+                        let Some(declared) = decl.type_hint.as_ref() else {
+                            continue;
+                        };
+                        let mut normalized = declared.clone();
+                        normalized.set_spelling(Self::tree_type_key(declared.spelling()));
+                        self.global_type_hints.insert(self.canon(name), normalized);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
     /// Record one declaration of this unit in the `user.<unit>.*` root.
     ///
     /// Called AT THE POINT OF DECLARATION, so the tree is the storage rather
@@ -436,6 +471,7 @@ impl Compiler {
                             )
                         {
                             for special in &nc.special_methods {
+                                self.program_protocol_slots.insert(special.kind);
                                 match special.kind {
                                     vybe_ast::ProtocolSlot::GetItem => {
                                         self.classes_with_indexer.insert(member.clone());
@@ -512,6 +548,7 @@ impl Compiler {
                             // names, and only normalization knows which
                             // language's names these are.
                             for special in &nc.special_methods {
+                                self.program_protocol_slots.insert(special.kind);
                                 match special.kind {
                                     vybe_ast::ProtocolSlot::GetItem => {
                                         self.classes_with_indexer.insert(member.clone());
@@ -1165,8 +1202,7 @@ impl Compiler {
                     if modifiers.is_shared || modifiers.is_static {
                         static_fields.push(field_name.clone());
                         if let Some(type_hint) = type_hint.as_ref() {
-                            static_field_types
-                                .insert(field_name, Self::tree_type_key(type_hint));
+                            static_field_types.insert(field_name, Self::tree_type_key(type_hint));
                         }
                     } else {
                         fields.push(field_name.clone());
@@ -1502,9 +1538,10 @@ impl Compiler {
                                 .filter(|part| !part.is_empty())
                                 .collect();
                             segments.push(n.name.as_str());
-                            if let Some(target) =
-                                crate::primitives::namespaces::resolve_path(&segments, self.tree_fold())
-                            {
+                            if let Some(target) = crate::primitives::namespaces::resolve_path(
+                                &segments,
+                                self.tree_fold(),
+                            ) {
                                 self.bind_namespace_import_target(key, target);
                                 continue;
                             }

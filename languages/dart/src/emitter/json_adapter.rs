@@ -21,12 +21,10 @@
 //! `parseOrNull` answers null, and null-for-input-that-isn't-`"null"` IS the
 //! failure — no try/catch machinery needed.
 
+use vybe_compiler::primitives::class_slots::{self, ClassSlot, Dest, ObjSource, PlainNames};
 use vybe_compiler::primitives::{collections, ops};
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
-use vybe_compiler::primitives::class_slots::{
-    self, ClassSlot, Dest, ObjSource, PlainNames,
-};
 
 const MAP_ORDER_KEY: &str = "__dart_map_order";
 
@@ -265,8 +263,7 @@ fn kind_test(chunks: &mut [Chunk], current: usize, value_slot: u16, module: &str
 /// `__dart_json_clean(value, seen)` — see the module header.
 fn build_clean_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     let hidx = chunks.len();
-    let mut h =
-        vybe_compiler::primitives::functions::create_function_chunk("__dart_json_clean", 3);
+    let mut h = vybe_compiler::primitives::functions::create_function_chunk("__dart_json_clean", 3);
     h.alloc_scratch(3); // params: value = 0, seen = 1, hook = 2
     chunks.push(h);
     let (value_slot, seen_slot, hook_slot) = (0u16, 1u16, 2u16);
@@ -295,7 +292,12 @@ fn build_clean_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
         chunks[hidx].emit_op_u16(Op::LOCAL_GET, f_slot, line);
         chunks[hidx].emit_op(Op::F64_NE, line); // NaN != NaN
         chunks[hidx].emit_if(line);
-        emit_unsupported_throw(chunks, hidx, "Converting object to an encodable object failed: NaN", line);
+        emit_unsupported_throw(
+            chunks,
+            hidx,
+            "Converting object to an encodable object failed: NaN",
+            line,
+        );
         chunks[hidx].emit_end(line);
         for inf in [f64::INFINITY, f64::NEG_INFINITY] {
             chunks[hidx].emit_op_u16(Op::LOCAL_GET, f_slot, line);
@@ -435,7 +437,8 @@ fn build_clean_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     // dart's contract is JsonUnsupportedObjectError.
     let type_slot = slot(&mut chunks[hidx]);
     {
-        let key = class_slots::resolve_interned(&mut chunks[hidx], &ClassSlot::TypeIdentity, &PlainNames);
+        let key =
+            class_slots::resolve_interned(&mut chunks[hidx], &ClassSlot::TypeIdentity, &PlainNames);
         class_slots::emit_class_get(
             &mut chunks[hidx],
             ObjSource::Local(value_slot),
@@ -491,9 +494,19 @@ fn build_clean_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     let keys_slot = slot(&mut chunks[hidx]);
     let key_slot = slot(&mut chunks[hidx]);
     {
-        let order_key = class_slots::resolve_interned(&mut chunks[hidx], &ClassSlot::internal(MAP_ORDER_KEY), &PlainNames);
+        let order_key = class_slots::resolve_interned(
+            &mut chunks[hidx],
+            &ClassSlot::internal(MAP_ORDER_KEY),
+            &PlainNames,
+        );
         chunks[hidx].emit_op_u16(Op::LOCAL_GET, value_slot, line);
-        class_slots::emit_class_get(&mut chunks[hidx], ObjSource::Stack, &order_key, Dest::Stack, line);
+        class_slots::emit_class_get(
+            &mut chunks[hidx],
+            ObjSource::Stack,
+            &order_key,
+            Dest::Stack,
+            line,
+        );
         chunks[hidx].emit_op_u16(Op::LOCAL_SET, keys_slot, line);
     }
     kind_test(chunks, hidx, keys_slot, "wasm:js-undefined", line);

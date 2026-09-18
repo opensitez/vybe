@@ -379,7 +379,6 @@ struct CompInstance {
     funcs: HashMap<String, u32>,
 }
 
-
 /// Payload arity of exception tag `name` (0 if undeclared).
 fn tag_arity(__w: &mut WastWalker, name: &str) -> u8 {
     __w.tag_arities.get(name).copied().unwrap_or(0)
@@ -393,13 +392,15 @@ fn tag_ref_name(__w: &mut WastWalker, raw: &str) -> String {
     let local = match raw.strip_prefix('$') {
         Some(name) => name.to_string(),
         None => match raw.parse::<usize>() {
-            Ok(idx) => __w.tag_index_name.get(idx).cloned()
+            Ok(idx) => __w
+                .tag_index_name
+                .get(idx)
+                .cloned()
                 .unwrap_or_else(|| raw.to_string()),
             Err(_) => raw.to_string(),
         },
     };
-    __w.tag_canon.get(&local).cloned()
-        .unwrap_or(local)
+    __w.tag_canon.get(&local).cloned().unwrap_or(local)
 }
 
 /// A fresh unique identifier for a structured-control result temporary.
@@ -504,7 +505,10 @@ fn peek_block_result_count(__w: &mut WastWalker, pair: &Pair<Rule>) -> usize {
             // declared result count (looked up from the pre-scan).
             if let Some(idx) = bt.into_inner().find(|p| p.as_rule() == Rule::index) {
                 let name = idx.as_str().trim_start_matches('$').to_string();
-                count += __w.type_func_results.get(&qualify_type_name(__w, &name)).copied()
+                count += __w
+                    .type_func_results
+                    .get(&qualify_type_name(__w, &name))
+                    .copied()
                     .unwrap_or(0);
             }
         }
@@ -612,7 +616,11 @@ fn carry_stack_into_temps(
 /// value and stack position (so a later `i32.add` / block-result capture reads
 /// the wrong operand); binding them to temps preserves BOTH their side-effect
 /// order and their value across the statement boundary.
-fn preserve_stack_across_block(__w: &mut WastWalker, stack: &mut Vec<Expression>, statements: &mut Vec<Statement>) {
+fn preserve_stack_across_block(
+    __w: &mut WastWalker,
+    stack: &mut Vec<Expression>,
+    statements: &mut Vec<Statement>,
+) {
     let pending: Vec<Expression> = stack.drain(..).collect();
     for e in pending {
         // A bare value expression (const/local.get/ident) has no side effect and
@@ -643,7 +651,8 @@ fn preserve_stack_across_block(__w: &mut WastWalker, stack: &mut Vec<Expression>
 /// block path only returned the trailing expression and DISCARDED the body,
 /// which silently dropped side effects and any `br`/`br_on_*` inside. Leaves the
 /// block's N result values on `stack` for the continuation.
-fn emit_folded_block(__w: &mut WastWalker, 
+fn emit_folded_block(
+    __w: &mut WastWalker,
     inner: Pair<Rule>,
     is_loop: bool,
     span: Span,
@@ -808,7 +817,8 @@ fn folded_operand_child<'a>(child: &Pair<'a, Rule>) -> Option<Pair<'a, Rule>> {
 /// only the nested operands and substitutes defaults for the rest, so
 /// `(if (i32.ne) …)` compared 0 with 0 and the branch was constant. Only the
 /// fully-nested case is left to it.
-fn push_folded_operand(__w: &mut WastWalker, 
+fn push_folded_operand(
+    __w: &mut WastWalker,
     op: Pair<Rule>,
     labels: &mut LabelStack,
     statements: &mut Vec<Statement>,
@@ -900,7 +910,8 @@ fn push_folded_operand(__w: &mut WastWalker,
     Ok(())
 }
 
-fn emit_folded_if(__w: &mut WastWalker, 
+fn emit_folded_if(
+    __w: &mut WastWalker,
     inner: Pair<Rule>,
     span: Span,
     labels: &mut LabelStack,
@@ -1048,7 +1059,8 @@ fn emit_folded_if(__w: &mut WastWalker,
 /// `WasmTryTable` AST: each clause becomes a `WasmCatch` whose handler carries
 /// the delivered payload/exnref into `$L`'s branch-carry temps and branches
 /// there. The protected body runs normally when nothing is thrown.
-fn emit_folded_try_table(__w: &mut WastWalker, 
+fn emit_folded_try_table(
+    __w: &mut WastWalker,
     inner: Pair<Rule>,
     span: Span,
     labels: &mut LabelStack,
@@ -1235,7 +1247,8 @@ fn emit_folded_try_table(__w: &mut WastWalker,
 /// null (carrying the values below it); the non-null ref stays on the stack for
 /// fall-through. `br_on_non_null` branches when the ref is NON-null (carrying
 /// the ref into the target's result); the null case drops the ref.
-fn emit_folded_br_on_null(__w: &mut WastWalker, 
+fn emit_folded_br_on_null(
+    __w: &mut WastWalker,
     inner: Pair<Rule>,
     is_non_null: bool,
     span: Span,
@@ -1364,7 +1377,8 @@ fn emit_folded_br_on_null(__w: &mut WastWalker,
 /// Lower a folded `(return operand*)` as a `return` statement (the generic path
 /// maps `return` to a null expression, losing both the branch and its value).
 /// Multi-value-aware, like the plain `return` handler.
-fn emit_folded_return(__w: &mut WastWalker, 
+fn emit_folded_return(
+    __w: &mut WastWalker,
     inner: Pair<Rule>,
     span: Span,
     labels: &mut LabelStack,
@@ -1499,7 +1513,8 @@ fn folded_needs_stmt_lowering(pair: &Pair<Rule>) -> bool {
 /// instruction is a statement in program order; one value goes on the stack
 /// for its consumer; a multi-result call destructures into fresh temps (the
 /// shared compiler's multi-value ABI) and leaves the temps on the stack.
-fn land_instr_value(__w: &mut WastWalker, 
+fn land_instr_value(
+    __w: &mut WastWalker,
     expr: Expression,
     pushes: usize,
     is_call: bool,
@@ -1545,7 +1560,8 @@ fn land_instr_value(__w: &mut WastWalker,
 /// Route one nested folded OPERAND through the statement machinery: structured
 /// control goes to its dedicated emitter (which pushes its result temps onto
 /// the stack), branching instrs recurse through `emit_folded_stmtwise`.
-fn emit_folded_operand_stmtwise(__w: &mut WastWalker, 
+fn emit_folded_operand_stmtwise(
+    __w: &mut WastWalker,
     op: Pair<Rule>,
     labels: &mut LabelStack,
     statements: &mut Vec<Statement>,
@@ -1560,7 +1576,8 @@ fn emit_folded_operand_stmtwise(__w: &mut WastWalker,
         // Same structured lowering the flat head position uses — it leaves the
         // fall-through ref on the stack, which is exactly what the consuming
         // instruction (`call_ref`, `drop`, …) then pops.
-        h @ ("br_on_null" | "br_on_non_null") => emit_folded_br_on_null(__w, 
+        h @ ("br_on_null" | "br_on_non_null") => emit_folded_br_on_null(
+            __w,
             op,
             h == "br_on_non_null",
             op_span,
@@ -1588,7 +1605,8 @@ fn emit_folded_operand_stmtwise(__w: &mut WastWalker,
 /// being one function: the folded site had no lowering at all, so the branch
 /// became an ordinary call and the enclosing block's "result = last expression"
 /// assignment moved it to the END of the body.
-fn emit_br_on_cast_stmt(__w: &mut WastWalker,
+fn emit_br_on_cast_stmt(
+    __w: &mut WastWalker,
     args: &[Expression],
     is_fail: bool,
     span: Span,
@@ -1713,9 +1731,7 @@ fn emit_br_on_cast_stmt(__w: &mut WastWalker,
 /// is non-nullable.
 fn reftype_is_nullable(arg: Option<&Expression>) -> bool {
     match arg.map(|a| &a.kind) {
-        Some(ExprKind::Call { callee, args, .. })
-            if matches!(&callee.kind, ExprKind::Ident(n) if n == "ref") =>
-        {
+        Some(ExprKind::Call { callee, args, .. }) if matches!(&callee.kind, ExprKind::Ident(n) if n == "ref") => {
             args.iter()
                 .any(|a| matches!(&a.value.kind, ExprKind::Ident(n) if n == "null"))
         }
@@ -1728,9 +1744,7 @@ fn reftype_is_nullable(arg: Option<&Expression>) -> bool {
 /// `(ref null $a)`, and the bare spelling out of `anyref`.
 fn reftype_heap_name(arg: Option<&Expression>) -> String {
     match arg.map(|a| &a.kind) {
-        Some(ExprKind::Call { callee, args, .. })
-            if matches!(&callee.kind, ExprKind::Ident(n) if n == "ref") =>
-        {
+        Some(ExprKind::Call { callee, args, .. }) if matches!(&callee.kind, ExprKind::Ident(n) if n == "ref") => {
             args.iter()
                 .rev()
                 .find_map(|a| match &a.value.kind {
@@ -1813,9 +1827,7 @@ fn emit_br_on_cast_desc_eq_stmt(
     // the descriptor instruction itself is emitted exactly as spelled.
     if let Some(entry) = labels.resolve(&target) {
         if matches!(entry.kind, LabelKind::Block) {
-            emit_br_on_cast_desc_eq_native(
-                __w, args, is_fail, span, &entry, statements, stack,
-            );
+            emit_br_on_cast_desc_eq_native(__w, args, is_fail, span, &entry, statements, stack);
             return;
         }
     }
@@ -2075,10 +2087,7 @@ fn emit_br_on_cast_desc_eq_native(
     );
     let inner_body = vec![
         Statement::with_span(StmtKind::Expr(instr), span),
-        Statement::with_span(
-            StmtKind::Break(BreakTarget::Label(outer.clone())),
-            span,
-        ),
+        Statement::with_span(StmtKind::Break(BreakTarget::Label(outer.clone())), span),
     ];
     let mut outer_body = vec![Statement::with_span(
         StmtKind::Labeled {
@@ -2112,7 +2121,8 @@ fn emit_br_on_cast_desc_eq_native(
     stack.push(Expression::ident(&rtmp));
 }
 
-fn emit_folded_stmtwise(__w: &mut WastWalker,
+fn emit_folded_stmtwise(
+    __w: &mut WastWalker,
     inner: Pair<Rule>,
     span: Span,
     labels: &mut LabelStack,
@@ -2247,7 +2257,8 @@ fn emit_folded_stmtwise(__w: &mut WastWalker,
         }
         "br_if" => {
             let cond = stack.pop().unwrap_or(Expression::int(0));
-            emit_br_if_stmt(__w, 
+            emit_br_if_stmt(
+                __w,
                 immediate_args.first(),
                 cond,
                 span,
@@ -2260,7 +2271,8 @@ fn emit_folded_stmtwise(__w: &mut WastWalker,
             emit_br_table_stmt(__w, &immediate_args, span, labels, statements, stack);
         }
         "br_on_cast" | "br_on_cast_fail" => {
-            emit_br_on_cast_stmt(__w,
+            emit_br_on_cast_stmt(
+                __w,
                 &immediate_args,
                 head == "br_on_cast_fail",
                 span,
@@ -2628,7 +2640,8 @@ fn br_stmt_for(entry: &LabelEntry, span: Span) -> Statement {
 /// Unconditional `br`: carry (consume) the top N stack values into the target's
 /// temps, then jump. A `br` to a loop is a continue carrying the NEXT
 /// iteration's params; a `br` to a block carries the block's results.
-fn emit_br_stmt_carry(__w: &mut WastWalker, 
+fn emit_br_stmt_carry(
+    __w: &mut WastWalker,
     lbl_arg: Option<&Expression>,
     span: Span,
     labels: &mut LabelStack,
@@ -2656,7 +2669,8 @@ fn emit_br_stmt_carry(__w: &mut WastWalker,
 
 /// Conditional `br_if`: the carried values pass through only when taken, so
 /// peek (don't consume) the top N into the target's temps inside the then-arm.
-fn emit_br_if_stmt(__w: &mut WastWalker, 
+fn emit_br_if_stmt(
+    __w: &mut WastWalker,
     lbl_arg: Option<&Expression>,
     cond: Expression,
     span: Span,
@@ -2700,7 +2714,8 @@ fn emit_br_if_stmt(__w: &mut WastWalker,
 /// frame (l_n is the default). Lowered to an if/else-if chain over the index
 /// bound to a temp; each case carries the same top-N snapshot into the chosen
 /// target's result temps before branching, mirroring `br`.
-fn emit_br_table_stmt(__w: &mut WastWalker, 
+fn emit_br_table_stmt(
+    __w: &mut WastWalker,
     target_args: &[Expression],
     span: Span,
     labels: &mut LabelStack,
@@ -2929,6 +2944,8 @@ pub fn parse(source: &str) -> Result<Module, String> {
         // spec engine. wast maps to INSTRUCTIONS; it has no function objects.
         directives: vybe_ast::Directives {
             functions_are_objects: Some(false),
+            type_resolution: Some(vybe_ast::TypeResolution::Static),
+            operator_dispatch: Some(vybe_ast::OperatorDispatch::StaticBuiltin),
             ..Default::default()
         },
     })
@@ -2966,7 +2983,11 @@ fn walk_embedded_module_text(
     Ok(())
 }
 
-fn walk_script_cmd(__w: &mut WastWalker, pair: Pair<Rule>, body: &mut Vec<Statement>) -> Result<(), String> {
+fn walk_script_cmd(
+    __w: &mut WastWalker,
+    pair: Pair<Rule>,
+    body: &mut Vec<Statement>,
+) -> Result<(), String> {
     match pair.as_rule() {
         Rule::script_cmd => {
             let inner = pair.into_inner().next().ok_or("Empty script_cmd")?;
@@ -3093,19 +3114,19 @@ fn walk_script_cmd(__w: &mut WastWalker, pair: Pair<Rule>, body: &mut Vec<Statem
 /// calls it.
 fn component_definition_kind(rule: Rule) -> &'static str {
     match rule {
-        Rule::core_module_def   => "(core module …)",
+        Rule::core_module_def => "(core module …)",
         Rule::core_instance_def => "(core instance …)",
-        Rule::core_type_def     => "(core type …)",
-        Rule::component         => "(component …)",
-        Rule::comp_instance     => "(instance …)",
-        Rule::comp_alias        => "(alias …)",
-        Rule::canon             => "(canon …)",
-        Rule::comp_start        => "(start …)",
-        Rule::comp_import       => "(import …)",
-        Rule::comp_export       => "(export …)",
-        Rule::comp_value        => "(value …)",
-        Rule::comp_type         => "(type …)",
-        _                       => "definition",
+        Rule::core_type_def => "(core type …)",
+        Rule::component => "(component …)",
+        Rule::comp_instance => "(instance …)",
+        Rule::comp_alias => "(alias …)",
+        Rule::canon => "(canon …)",
+        Rule::comp_start => "(start …)",
+        Rule::comp_import => "(import …)",
+        Rule::comp_export => "(export …)",
+        Rule::comp_value => "(value …)",
+        Rule::comp_type => "(type …)",
+        _ => "definition",
     }
 }
 
@@ -3195,13 +3216,9 @@ fn walk_component(
                     .into_inner()
                     .next()
                     .ok_or("component: empty definition")?;
-                if let Err(e) = walk_component_definition(
-                    __w,
-                    inner,
-                    body,
-                    &mut modules,
-                    &mut components,
-                ) {
+                if let Err(e) =
+                    walk_component_definition(__w, inner, body, &mut modules, &mut components)
+                {
                     saved.restore(__w);
                     return Err(e);
                 }
@@ -3263,10 +3280,7 @@ impl ComponentSpaces {
             // declarations are appended, so its base is the vector's length AT
             // ENTRY. `take` leaves 0 behind, which is wrong here — the base has
             // to be SET, not cleared, which is why this is not a `take`.
-            comp_type_base: std::mem::replace(
-                &mut __w.comp_type_base,
-                __w.comp_types.len() as u32,
-            ),
+            comp_type_base: std::mem::replace(&mut __w.comp_type_base, __w.comp_types.len() as u32),
             core_type_index: std::mem::take(&mut __w.core_type_index),
             core_type_space: std::mem::take(&mut __w.core_type_space),
             comp_func_index: std::mem::take(&mut __w.comp_func_index),
@@ -3391,16 +3405,12 @@ fn walk_core_instance<'i>(
         .find(|c| c.as_rule() == Rule::index)
         .ok_or("core instance: (instantiate …) names no module")?;
     let midx = resolve_idx(&target, "core module", &modules.names)?;
-    let module = modules
-        .defs
-        .get(midx as usize)
-        .cloned()
-        .ok_or_else(|| {
-            format!(
-                "core instance: core module {midx} is not declared (have {})",
-                modules.defs.len()
-            )
-        })?;
+    let module = modules.defs.get(midx as usize).cloned().ok_or_else(|| {
+        format!(
+            "core instance: core module {midx} is not declared (have {})",
+            modules.defs.len()
+        )
+    })?;
 
     // The class `walk_module` will publish this instance's exports under.
     // Computed BEFORE the walk, because `walk_module` advances `module_seq`.
@@ -3455,12 +3465,16 @@ fn walk_core_instance<'i>(
                 .find(|c| c.as_rule() == Rule::index)
                 .ok_or("core instance: (with … (instance …)) names no instance")?;
             let iidx = resolve_idx(&iref, "core instance", &__w.core_instance_index)?;
-            let src = __w.core_instances.get(iidx as usize).cloned().ok_or_else(|| {
-                format!(
-                    "core instance: core instance {iidx} is not declared (have {})",
-                    __w.core_instances.len()
-                )
-            })?;
+            let src = __w
+                .core_instances
+                .get(iidx as usize)
+                .cloned()
+                .ok_or_else(|| {
+                    format!(
+                        "core instance: core instance {iidx} is not declared (have {})",
+                        __w.core_instances.len()
+                    )
+                })?;
             for (ename, item) in src.funcs {
                 supplied.insert((import_module.clone(), ename), item);
             }
@@ -3542,12 +3556,15 @@ fn core_externidx_item(__w: &WastWalker, target: &Pair<Rule>) -> Result<CoreFunc
         .find(|c| c.as_rule() == Rule::index)
         .ok_or("core instance: exported item names no index")?;
     let fidx = resolve_idx(&idx, "core func", &__w.core_func_index)?;
-    __w.core_func_space.get(fidx as usize).cloned().ok_or_else(|| {
-        format!(
-            "core instance: core func {fidx} is not defined (have {})",
-            __w.core_func_space.len()
-        )
-    })
+    __w.core_func_space
+        .get(fidx as usize)
+        .cloned()
+        .ok_or_else(|| {
+            format!(
+                "core instance: core func {fidx} is not defined (have {})",
+                __w.core_func_space.len()
+            )
+        })
 }
 
 /// `(alias core export <instanceidx> <name> (core <sort> <id>?))` — §5.
@@ -3633,8 +3650,7 @@ impl ExternNames {
         // label — compared RAW, before folding, or `foo-bar` and
         // `[constructor]foo-BAR` would be let through when the spec's own
         // example lists that pair as an error.
-        let ctor_pair =
-            |a: &str, b: &str| b.strip_prefix("[constructor]").is_some_and(|l| l == a);
+        let ctor_pair = |a: &str, b: &str| b.strip_prefix("[constructor]").is_some_and(|l| l == a);
         for prev in self.by_key.get(&key).into_iter().flatten() {
             if !ctor_pair(prev, name) && !ctor_pair(name, prev) {
                 return Err(format!(
@@ -3757,7 +3773,8 @@ fn walk_comp_import(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<(), String
         functype: Some(ft),
     });
     if let Some(id) = ty.into_inner().find(|c| c.as_rule() == Rule::id) {
-        __w.comp_func_index.insert(id.as_str()[1..].to_string(), fidx);
+        __w.comp_func_index
+            .insert(id.as_str()[1..].to_string(), fidx);
     }
     Ok(())
 }
@@ -3830,9 +3847,11 @@ fn walk_comp_export(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<(), String
     // the exported name is what a host matches on.
     __w.export_names.insert("export", &name)?;
     let src = comp_externidx_func(__w, "export", &target)?;
-    let entry = __w.comp_func_space.get(src as usize).cloned().ok_or_else(|| {
-        format!("export: `{text}` names component func {src}, which is gone")
-    })?;
+    let entry = __w
+        .comp_func_space
+        .get(src as usize)
+        .cloned()
+        .ok_or_else(|| format!("export: `{text}` names component func {src}, which is gone"))?;
     let fidx = __w.comp_func_space.len() as u32;
     __w.comp_func_space.push(entry);
     if let Some(n) = bind {
@@ -3856,12 +3875,16 @@ fn alias_component_export(
     let mut inner = pair.clone().into_inner();
     let iref = inner.next().ok_or("alias export: no instance index")?;
     let iidx = resolve_idx(&iref, "component instance", &__w.comp_instance_index)?;
-    let inst = __w.comp_instances.get(iidx as usize).cloned().ok_or_else(|| {
-        format!(
-            "alias export: instance {iidx} is not declared (have {})",
-            __w.comp_instances.len()
-        )
-    })?;
+    let inst = __w
+        .comp_instances
+        .get(iidx as usize)
+        .cloned()
+        .ok_or_else(|| {
+            format!(
+                "alias export: instance {iidx} is not declared (have {})",
+                __w.comp_instances.len()
+            )
+        })?;
     let name = inner
         .next()
         .filter(|c| c.as_rule() == Rule::externnamelit)
@@ -3884,16 +3907,28 @@ fn alias_component_export(
         have.sort_unstable();
         format!(
             "alias export: instance {iidx} exports no \"{name}\" (exports: {})",
-            if have.is_empty() { "none".to_string() } else { have.join(", ") }
+            if have.is_empty() {
+                "none".to_string()
+            } else {
+                have.join(", ")
+            }
         )
     })?;
-    let entry = __w.comp_func_space.get(src as usize).cloned().ok_or_else(|| {
-        format!("alias export: `{}` names component func {src}, which is gone", text.trim())
-    })?;
+    let entry = __w
+        .comp_func_space
+        .get(src as usize)
+        .cloned()
+        .ok_or_else(|| {
+            format!(
+                "alias export: `{}` names component func {src}, which is gone",
+                text.trim()
+            )
+        })?;
     let fidx = __w.comp_func_space.len() as u32;
     __w.comp_func_space.push(entry);
     if let Some(id) = pair.clone().into_inner().find(|c| c.as_rule() == Rule::id) {
-        __w.comp_func_index.insert(id.as_str()[1..].to_string(), fidx);
+        __w.comp_func_index
+            .insert(id.as_str()[1..].to_string(), fidx);
     }
     Ok(())
 }
@@ -4039,13 +4074,13 @@ fn walk_comp_instance<'i>(
 /// instance cannot export a core item, and a bare index does not say which
 /// index space it means — resolving it as a function would be a guess that
 /// looks right whenever the two spaces happen to line up.
-fn comp_externidx_func(
-    __w: &WastWalker,
-    what: &str,
-    target: &Pair<Rule>,
-) -> Result<u32, String> {
+fn comp_externidx_func(__w: &WastWalker, what: &str, target: &Pair<Rule>) -> Result<u32, String> {
     let text = target.as_str().trim();
-    if text.trim_start_matches('(').trim_start().starts_with("core") {
+    if text
+        .trim_start_matches('(')
+        .trim_start()
+        .starts_with("core")
+    {
         return Err(format!(
             "{what}: `{text}` — a component names COMPONENT items here; a core item has \
              to be lifted first"
@@ -4068,7 +4103,11 @@ fn comp_externidx_func(
              {sort} index space has no producer"
         ));
     }
-    if target.clone().into_inner().any(|c| c.as_rule() == Rule::string) {
+    if target
+        .clone()
+        .into_inner()
+        .any(|c| c.as_rule() == Rule::string)
+    {
         return Err(format!(
             "{what}: `{text}` — the trailing name form addresses an export PATH through \
              an instance, which needs the same resolution `(alias export …)` does; spell \
@@ -4116,12 +4155,16 @@ fn walk_comp_alias(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<(), String>
         ));
     }
     let iidx = resolve_idx(&iref, "core instance", &__w.core_instance_index)?;
-    let inst = __w.core_instances.get(iidx as usize).cloned().ok_or_else(|| {
-        format!(
-            "alias core export: core instance {iidx} is not declared (have {})",
-            __w.core_instances.len()
-        )
-    })?;
+    let inst = __w
+        .core_instances
+        .get(iidx as usize)
+        .cloned()
+        .ok_or_else(|| {
+            format!(
+                "alias core export: core instance {iidx} is not declared (have {})",
+                __w.core_instances.len()
+            )
+        })?;
     let name = inner
         .next()
         .filter(|c| c.as_rule() == Rule::string)
@@ -4132,7 +4175,11 @@ fn walk_comp_alias(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<(), String>
         have.sort_unstable();
         format!(
             "alias core export: core instance {iidx} exports no \"{name}\" (exports: {})",
-            if have.is_empty() { "none".to_string() } else { have.join(", ") }
+            if have.is_empty() {
+                "none".to_string()
+            } else {
+                have.join(", ")
+            }
         )
     })?;
     let sort = inner
@@ -4149,11 +4196,11 @@ fn walk_comp_alias(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<(), String>
     let fidx = __w.core_func_space.len() as u32;
     __w.core_func_space.push(item);
     if let Some(id) = inner.find(|c| c.as_rule() == Rule::id) {
-        __w.core_func_index.insert(id.as_str()[1..].to_string(), fidx);
+        __w.core_func_index
+            .insert(id.as_str()[1..].to_string(), fidx);
     }
     Ok(())
 }
-
 
 /// `(type <id>? <deftype>)` — one entry in the component's TYPE space.
 ///
@@ -4168,7 +4215,8 @@ fn walk_comp_type(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<(), String> 
     let idx = __w.comp_type_base + __w.comp_type_space;
     __w.comp_type_space += 1;
     if let Some(id) = pair.clone().into_inner().find(|c| c.as_rule() == Rule::id) {
-        __w.comp_type_index.insert(id.as_str()[1..].to_string(), idx);
+        __w.comp_type_index
+            .insert(id.as_str()[1..].to_string(), idx);
     }
     // The body IS walked now. It used to advance a bare counter and drop the
     // declaration, which is why `VM::canon_functypes` was empty and
@@ -4189,9 +4237,7 @@ fn walk_comp_type(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<(), String> 
         .and_then(|d| d.into_inner().next());
     let decl = match body {
         Some(b) => match type_decl(__w, &b)? {
-            vybe_ast::canon::TypeDecl::Resource(_) => {
-                vybe_ast::canon::TypeDecl::Resource(bound)
-            }
+            vybe_ast::canon::TypeDecl::Resource(_) => vybe_ast::canon::TypeDecl::Resource(bound),
             other => other,
         },
         None => vybe_ast::canon::TypeDecl::Opaque("type".to_string()),
@@ -4205,10 +4251,7 @@ fn walk_comp_type(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<(), String> 
 }
 
 /// One `<deftype>` alternative → the AST's record of it.
-fn type_decl(
-    __w: &WastWalker,
-    b: &Pair<Rule>,
-) -> Result<vybe_ast::canon::TypeDecl, String> {
+fn type_decl(__w: &WastWalker, b: &Pair<Rule>) -> Result<vybe_ast::canon::TypeDecl, String> {
     use vybe_ast::canon::TypeDecl;
     Ok(match b.as_rule() {
         Rule::functype_c => {
@@ -4289,10 +4332,7 @@ fn val_spec(__w: &WastWalker, v: &Pair<Rule>) -> Result<vybe_ast::canon::ValSpec
 }
 
 /// The `<defvaltype>` alternatives.
-fn val_spec_inner(
-    __w: &WastWalker,
-    d: &Pair<Rule>,
-) -> Result<vybe_ast::canon::ValSpec, String> {
+fn val_spec_inner(__w: &WastWalker, d: &Pair<Rule>) -> Result<vybe_ast::canon::ValSpec, String> {
     use vybe_ast::canon::ValSpec;
     let text = d.as_str().trim();
     let mut children = d.clone().into_inner().peekable();
@@ -4309,7 +4349,9 @@ fn val_spec_inner(
         .chars()
         .take_while(|c| c.is_ascii_alphanumeric() || *c == '-')
         .collect();
-    let vals = |w: &WastWalker, it: &mut dyn Iterator<Item = Pair<Rule>>| -> Result<Vec<ValSpec>, String> {
+    let vals = |w: &WastWalker,
+                it: &mut dyn Iterator<Item = Pair<Rule>>|
+     -> Result<Vec<ValSpec>, String> {
         let mut out = Vec::new();
         for c in it {
             if c.as_rule() == Rule::valtype {
@@ -4475,7 +4517,8 @@ fn walk_core_type(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<(), String> 
     let idx = __w.core_type_space;
     __w.core_type_space += 1;
     if let Some(id) = pair.into_inner().find(|c| c.as_rule() == Rule::id) {
-        __w.core_type_index.insert(id.as_str()[1..].to_string(), idx);
+        __w.core_type_index
+            .insert(id.as_str()[1..].to_string(), idx);
     }
     Ok(())
 }
@@ -4510,7 +4553,9 @@ fn idx_child<'a>(pair: &'a Pair<Rule>) -> Option<Pair<'a, Rule>> {
     if pair.as_rule() == Rule::index {
         return Some(pair.clone());
     }
-    pair.clone().into_inner().find(|c| c.as_rule() == Rule::index)
+    pair.clone()
+        .into_inner()
+        .find(|c| c.as_rule() == Rule::index)
 }
 
 /// Is this rule one of the atomic keyword rules that names a canon row?
@@ -4553,10 +4598,7 @@ fn apply_canonopt(
     // memidx and `(realloc f)` a core funcidx; consulting one map for both is
     // the one-integer-two-index-spaces defect, and it fails silently — the
     // name resolves, to the wrong entity.
-    let idx = |p: &Pair<Rule>,
-               space: &str,
-               names: &HashMap<String, u32>|
-     -> Result<u32, String> {
+    let idx = |p: &Pair<Rule>, space: &str, names: &HashMap<String, u32>| -> Result<u32, String> {
         idx_child(p)
             .ok_or_else(|| format!("canon: {space} option carries no index"))
             .and_then(|i| resolve_idx(&i, space, names))
@@ -4692,7 +4734,7 @@ fn walk_canon_lift(
                                  `canon {builtin}` at canonidx {canonidx}. A canonical \
                                  definition compiles to no chunk, so there is nothing \
                                  for `$callee` to name"
-                            ))
+                            ));
                         }
                     });
                     continue;
@@ -4725,17 +4767,14 @@ fn walk_canon_lift(
                     .into_inner()
                     .find(|c| c.as_rule() == Rule::index);
                 match named {
-                    Some(i) => {
-                        decl.functype =
-                            Some(resolve_comp_type(__w, &i)?)
-                    }
+                    Some(i) => decl.functype = Some(resolve_comp_type(__w, &i)?),
                     None => {
                         return Err(format!(
                             "canon lift: the lifted type is written inline (`{}`); \
                              name it with `(type $t …)` and lift `(func (type $t))` \
                              so the canon section can record its index",
                             child.as_str().trim()
-                        ))
+                        ));
                     }
                 }
             }
@@ -4833,9 +4872,7 @@ fn walk_canon_builtin(
                 let i = idx_child(&child).ok_or("canon: (memory …) carries no index")?;
                 decl.opts.memory = Some(resolve_idx(&i, "core memory", &__w.core_memory_index)?);
             }
-            Rule::index => {
-                idxs.push(resolve_comp_type(__w, &child)?)
-            }
+            Rule::index => idxs.push(resolve_comp_type(__w, &child)?),
             Rule::core_typeidx_ref => {
                 let i = idx_child(&child).ok_or("canon: core type ref carries no index")?;
                 idxs.push(resolve_idx(&i, "core type", &__w.core_type_index)?);
@@ -4857,9 +4894,12 @@ fn walk_canon_builtin(
             Rule::func_result_c => {
                 // `task.return (result <valtype>)?` — the result list. Only an
                 // indexed valtype has a number to record here.
-                if let Some(i) = child.clone().into_inner().find(|c| c.as_rule() == Rule::index) {
-                    decl.results
-                        .push(resolve_comp_type(__w, &i)?);
+                if let Some(i) = child
+                    .clone()
+                    .into_inner()
+                    .find(|c| c.as_rule() == Rule::index)
+                {
+                    decl.results.push(resolve_comp_type(__w, &i)?);
                 }
             }
             _ => {}
@@ -5178,9 +5218,10 @@ fn walk_module(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Vec<Statement>,
                     // The (module, name) pair is right here in the source —
                     // bind the local alias to it so the call can be lowered
                     // from what the import declared rather than from a table.
-                    if let (Some(alias), Some((m, n))) =
-                        (scan_func_signature(inner.clone()).0, scan_import_names(&inner))
-                    {
+                    if let (Some(alias), Some((m, n))) = (
+                        scan_func_signature(inner.clone()).0,
+                        scan_import_names(&inner),
+                    ) {
                         // An instantiation's `with` clause wins over the
                         // import's own (module, name) pair. That is what
                         // `instantiate` MEANS: the module names a slot, the
@@ -5302,7 +5343,9 @@ fn walk_module(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Vec<Statement>,
                         // An unnamed exported func is reached by its export name
                         // (e.g. `_start`); key its signature there too so the
                         // entry auto-invoke can tell whether it yields a value.
-                        name_results.entry(declared.clone()).or_insert(results_count);
+                        name_results
+                            .entry(declared.clone())
+                            .or_insert(results_count);
                         name_arities.entry(declared.clone()).or_insert(params_count);
                     }
                     for e in exports {
@@ -5472,7 +5515,7 @@ fn walk_module(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Vec<Statement>,
                                         Rule::struct_type => {
                                             is_struct = true;
                                             field_types = struct_field_types(&inner2);
-                                        field_ids = struct_field_names(&inner2);
+                                            field_ids = struct_field_names(&inner2);
                                             field_count = field_types.len();
                                         }
                                         // `(struct_subtype field* $Base)` — legacy
@@ -5480,7 +5523,7 @@ fn walk_module(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Vec<Statement>,
                                         Rule::struct_subtype => {
                                             is_struct = true;
                                             field_types = struct_field_types(&inner2);
-                                        field_ids = struct_field_names(&inner2);
+                                            field_ids = struct_field_names(&inner2);
                                             field_count = field_types.len();
                                             if let Some(idx) = inner2
                                                 .into_inner()
@@ -5642,7 +5685,9 @@ fn walk_module(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Vec<Statement>,
         let rec_of = rec_groups_of_module(&pair).unwrap_or_default();
         let group_of = |i: usize| rec_of.get(i).copied().unwrap_or(usize::MAX - i);
         let members_of = |g: usize| -> Vec<usize> {
-            (0..type_shapes.len()).filter(|j| group_of(*j) == g).collect()
+            (0..type_shapes.len())
+                .filter(|j| group_of(*j) == g)
+                .collect()
         };
         // ⛔ A REFERENCE INTO ONE'S OWN GROUP IS A POSITION, NOT A NAME. Under
         // iso-recursive equivalence a group is compared after unrolling, so
@@ -5666,7 +5711,9 @@ fn walk_module(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Vec<Statement>,
                 out.push_str(&rest[..at]);
                 let tail = &rest[at + 1..];
                 let end = tail
-                    .find(|c: char| !(c.is_alphanumeric() || "_.+-*/\\^~=<>!?@#$%&|:'`".contains(c)))
+                    .find(|c: char| {
+                        !(c.is_alphanumeric() || "_.+-*/\\^~=<>!?@#$%&|:'`".contains(c))
+                    })
                     .unwrap_or(tail.len());
                 if end == 0 {
                     out.push('$');
@@ -5787,9 +5834,7 @@ fn walk_module(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Vec<Statement>,
                 let mut shape = (0usize, 0usize);
                 for child in desc.into_inner() {
                     match child.as_rule() {
-                        Rule::id => {
-                            local = child.as_str().trim_start_matches('$').to_string()
-                        }
+                        Rule::id => local = child.as_str().trim_start_matches('$').to_string(),
                         Rule::typeuse => shape = count_typeuse_params_results(__w, &child),
                         _ => {}
                     }
@@ -5828,7 +5873,9 @@ fn walk_module(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Vec<Statement>,
         .into_iter()
         .map(|(k, (ps, rs))| {
             let canon_all = |v: Vec<String>| {
-                v.into_iter().map(|t| canonical_val_type(__w, &t)).collect::<Vec<_>>()
+                v.into_iter()
+                    .map(|t| canonical_val_type(__w, &t))
+                    .collect::<Vec<_>>()
             };
             (
                 __w.type_canonical.get(&k).cloned().unwrap_or(k),
@@ -6076,7 +6123,10 @@ fn walk_module(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Vec<Statement>,
             let t = idx.as_str().trim();
             let slot = match t.strip_prefix('$') {
                 Some(id) => table_names.get(id).copied(),
-                None => t.parse::<usize>().ok().and_then(|n| table_slots.get(n).copied()),
+                None => t
+                    .parse::<usize>()
+                    .ok()
+                    .and_then(|n| table_slots.get(n).copied()),
             };
             if let Some(slot) = slot {
                 table_exports.insert(name, slot);
@@ -6194,11 +6244,7 @@ fn walk_module(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Vec<Statement>,
                 s
             }
         };
-        if let Some(id) = decl
-            .clone()
-            .into_inner()
-            .find(|c| c.as_rule() == Rule::id)
-        {
+        if let Some(id) = decl.clone().into_inner().find(|c| c.as_rule() == Rule::id) {
             memory_names.insert(id.as_str()[1..].to_string(), slot);
         }
         for e in decl
@@ -6249,7 +6295,10 @@ fn walk_module(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Vec<Statement>,
             let t = idx.as_str().trim();
             let slot = match t.strip_prefix('$') {
                 Some(id) => memory_names.get(id).copied(),
-                None => t.parse::<usize>().ok().and_then(|n| memory_slots.get(n).copied()),
+                None => t
+                    .parse::<usize>()
+                    .ok()
+                    .and_then(|n| memory_slots.get(n).copied()),
             };
             if let Some(slot) = slot {
                 memory_exports.insert(name, slot);
@@ -6352,11 +6401,14 @@ fn walk_module(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Vec<Statement>,
                         .find(|c| c.as_rule() == Rule::import_inline)
                         .and_then(|c| scan_import_names(&c))
                         .and_then(|(m, e)| {
-                            __w.registered_module_class.get(&m).cloned().and_then(|cls| {
-                                __w.module_global_exports
-                                    .get(&cls)
-                                    .and_then(|ex| ex.get(&e).cloned())
-                            })
+                            __w.registered_module_class
+                                .get(&m)
+                                .cloned()
+                                .and_then(|cls| {
+                                    __w.module_global_exports
+                                        .get(&cls)
+                                        .and_then(|ex| ex.get(&e).cloned())
+                                })
                         });
                     // The cell this field names: the exporter's when it is
                     // imported, its own otherwise. Everything that refers to
@@ -6416,11 +6468,14 @@ fn walk_module(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Vec<Statement>,
                     // which cannot be referred to by name anyway.
                     let binding = global_binding_name(__w, &desc, global_names.len());
                     let imported = scan_import_names(&inner).and_then(|(m, e)| {
-                        __w.registered_module_class.get(&m).cloned().and_then(|cls| {
-                            __w.module_global_exports
-                                .get(&cls)
-                                .and_then(|ex| ex.get(&e).cloned())
-                        })
+                        __w.registered_module_class
+                            .get(&m)
+                            .cloned()
+                            .and_then(|cls| {
+                                __w.module_global_exports
+                                    .get(&cls)
+                                    .and_then(|ex| ex.get(&e).cloned())
+                            })
                     });
                     let cell = match &imported {
                         Some(exporter_binding) => {
@@ -6459,12 +6514,10 @@ fn walk_module(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Vec<Statement>,
                                     // `(global $g)` resolves to a bare `$id`;
                                     // `(global 0)` already reads a binding out
                                     // of the index space.
-                                    target = resolve_func_index_name(&idx, &global_names).map(|t| {
-                                        __w.global_binding_of_id
-                                            .get(&t)
-                                            .cloned()
-                                            .unwrap_or(t)
-                                    });
+                                    target =
+                                        resolve_func_index_name(&idx, &global_names).map(|t| {
+                                            __w.global_binding_of_id.get(&t).cloned().unwrap_or(t)
+                                        });
                                 }
                             }
                             _ => {}
@@ -6493,7 +6546,10 @@ fn walk_module(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Vec<Statement>,
             if let Some((params, results)) = func_name_sigs.get(&func_name) {
                 types.insert(
                     export_name,
-                    ExternType::Func { params: params.clone(), results: results.clone() },
+                    ExternType::Func {
+                        params: params.clone(),
+                        results: results.clone(),
+                    },
                 );
             }
         }
@@ -6648,12 +6704,16 @@ fn walk_module(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Vec<Statement>,
             Some(CoreFunc::Module(class, method)) => Some((class.clone(), method.clone())),
             // A canon row is a host callee, already bound above.
             Some(CoreFunc::Canon(..)) => None,
-            None => __w.registered_module_class.get(&m).cloned().and_then(|class| {
-                __w.module_exports
-                    .get(&class)
-                    .and_then(|ex| ex.get(&e).cloned())
-                    .map(|method| (class, method))
-            }),
+            None => __w
+                .registered_module_class
+                .get(&m)
+                .cloned()
+                .and_then(|class| {
+                    __w.module_exports
+                        .get(&class)
+                        .and_then(|ex| ex.get(&e).cloned())
+                        .map(|method| (class, method))
+                }),
         };
         // An unresolved import is left alone: it may be a host function the
         // profile's builtin table answers, which is how the WASI tests import.
@@ -6771,7 +6831,9 @@ fn walk_module(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Vec<Statement>,
                         // function index space.
                         let idx = import_func_count + defined_func_seq;
                         defined_func_seq += 1;
-                        members.push(ClassMember::Method(Box::new(walk_func_field(__w, inner, idx)?)))
+                        members.push(ClassMember::Method(Box::new(walk_func_field(
+                            __w, inner, idx,
+                        )?)))
                     }
                     // A `func_switch` "has no type and cannot be directly
                     // called", but `ref.func` must still yield a funcref for
@@ -6806,14 +6868,10 @@ fn walk_module(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Vec<Statement>,
                         // An imported tag takes the next slot in the tag index
                         // space, so it must advance the same ordinal counter a
                         // defined `(tag …)` uses to name itself.
-                        if inner
-                            .clone()
-                            .into_inner()
-                            .any(|c| {
-                                c.as_rule() == Rule::import_desc
-                                    && c.as_str().trim_start().starts_with("(tag")
-                            })
-                        {
+                        if inner.clone().into_inner().any(|c| {
+                            c.as_rule() == Rule::import_desc
+                                && c.as_str().trim_start().starts_with("(tag")
+                        }) {
                             __w.tag_decl_ordinal += 1;
                         }
                         post_stmts.push(walk_import_field(inner)?)
@@ -6891,7 +6949,9 @@ fn walk_module(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Vec<Statement>,
                     // emit: `multi-memory/linking0` instantiates a module whose
                     // data segment TRAPS, and the spec still requires its elem
                     // segment to have populated the table first.
-                    Rule::data_field if !is_definition => data_stmts.push(walk_data_field(__w, inner)?),
+                    Rule::data_field if !is_definition => {
+                        data_stmts.push(walk_data_field(__w, inner)?)
+                    }
                     Rule::table_field if !is_definition => {
                         let (decl, population) = walk_table_field(__w, inner, table_decl_idx)?;
                         pre_stmts.push(decl);
@@ -6917,11 +6977,10 @@ fn walk_module(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Vec<Statement>,
                     // the external name so an import and its export are ONE
                     // tag; identity crossing the boundary is the point.
                     Rule::import_field
-                        if inner
-                            .clone()
-                            .into_inner()
-                            .any(|c| c.as_rule() == Rule::import_desc
-                                && c.as_str().trim_start().starts_with("(call_tag")) =>
+                        if inner.clone().into_inner().any(|c| {
+                            c.as_rule() == Rule::import_desc
+                                && c.as_str().trim_start().starts_with("(call_tag")
+                        }) =>
                     {
                         pre_stmts.push(walk_imported_call_tag(__w, inner)?);
                     }
@@ -6930,7 +6989,9 @@ fn walk_module(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Vec<Statement>,
                     // call_indirect can dispatch through it. Emitted AFTER the
                     // class (a post-stmt) so the `ref.func` tear-off can resolve
                     // each function's chunk — but still before `_start` runs.
-                    Rule::elem_field if !is_definition => post_stmts.push(walk_elem_field(__w, inner)?),
+                    Rule::elem_field if !is_definition => {
+                        post_stmts.push(walk_elem_field(__w, inner)?)
+                    }
                     // A definition's memory/data/table/elem/tag fields fall
                     // through to here: declared, never materialised.
                     _ => {} // type — structural metadata
@@ -6996,14 +7057,20 @@ fn walk_module(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Vec<Statement>,
                     args: vec![
                         Argument::positional(Expression::string(name)),
                         Argument::positional(Expression::string(
-                            __w.type_func_parent.get(name).map(|s| s.as_str()).unwrap_or(""),
+                            __w.type_func_parent
+                                .get(name)
+                                .map(|s| s.as_str())
+                                .unwrap_or(""),
                         )),
                         Argument::positional(Expression::string(&params.join(","))),
                         Argument::positional(Expression::string(&results.join(","))),
                         // The rec group's size and this member's position in
                         // it — see `type_rec_shape`.
                         Argument::positional(Expression::string(
-                            __w.type_rec_shape.get(name).map(|s| s.as_str()).unwrap_or(""),
+                            __w.type_rec_shape
+                                .get(name)
+                                .map(|s| s.as_str())
+                                .unwrap_or(""),
                         )),
                     ],
                     optional: false,
@@ -7054,9 +7121,7 @@ fn walk_module(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Vec<Statement>,
                         // compared against an empty signature and answered 0.
                         Argument::positional(Expression::string(&module_class)),
                         // The DECLARED type name, for nominal (exact) matching.
-                        Argument::positional(Expression::string(
-                            declared.as_deref().unwrap_or(""),
-                        )),
+                        Argument::positional(Expression::string(declared.as_deref().unwrap_or(""))),
                     ],
                     optional: false,
                 })))
@@ -7091,9 +7156,7 @@ fn walk_module(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Vec<Statement>,
             // reached as `ModuleClass._start()`.
             // Does the entry yield a value? If so, surface it as output the way
             // `wasmtime --invoke` prints an exported function's result.
-            let entry_yields = __w.func_name_results.get(&entry).copied()
-                .unwrap_or(0)
-                > 0;
+            let entry_yields = __w.func_name_results.get(&entry).copied().unwrap_or(0) > 0;
             let callee = Expression::new(ExprKind::Member {
                 object: Box::new(Expression::ident(&class_name)),
                 field: entry,
@@ -7134,7 +7197,11 @@ fn walk_module(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Vec<Statement>,
 
 // ── Function field ────────────────────────────────────────────────────────────
 
-fn walk_func_field(__w: &mut WastWalker, pair: Pair<Rule>, func_index: usize) -> Result<Statement, String> {
+fn walk_func_field(
+    __w: &mut WastWalker,
+    pair: Pair<Rule>,
+    func_index: usize,
+) -> Result<Statement, String> {
     let span = to_span(&pair);
     let mut func_name = String::new();
     let mut params: Vec<Param> = Vec::new();
@@ -7214,9 +7281,15 @@ fn walk_func_field(__w: &mut WastWalker, pair: Pair<Rule>, func_index: usize) ->
                         .find(|c| c.as_rule() == Rule::index)
                         .map(|i| i.as_str().trim_start_matches('$').to_string())
                     {
-                        let pc = __w.type_func_params.get(&qualify_type_name(__w, &sig)).copied()
+                        let pc = __w
+                            .type_func_params
+                            .get(&qualify_type_name(__w, &sig))
+                            .copied()
                             .unwrap_or(0);
-                        result_count = __w.type_func_results.get(&qualify_type_name(__w, &sig)).copied()
+                        result_count = __w
+                            .type_func_results
+                            .get(&qualify_type_name(__w, &sig))
+                            .copied()
                             .unwrap_or(0);
                         params = (0..pc)
                             .map(|i| Param {
@@ -7320,11 +7393,27 @@ fn walk_func_field(__w: &mut WastWalker, pair: Pair<Rule>, func_index: usize) ->
 /// The external type of one export — the shape `assert_unlinkable` compares.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ExternType {
-    Func { params: Vec<String>, results: Vec<String> },
-    Global { ty: String, mutable: bool },
-    Memory { min: u64, max: Option<u64>, is64: bool },
-    Table { elem: String, min: u64, max: Option<u64> },
-    Tag { params: Vec<String> },
+    Func {
+        params: Vec<String>,
+        results: Vec<String>,
+    },
+    Global {
+        ty: String,
+        mutable: bool,
+    },
+    Memory {
+        min: u64,
+        max: Option<u64>,
+        is64: bool,
+    },
+    Table {
+        elem: String,
+        min: u64,
+        max: Option<u64>,
+    },
+    Tag {
+        params: Vec<String>,
+    },
 }
 
 /// `(assert_unlinkable (module …) "msg")` — instantiating the module against
@@ -7481,7 +7570,8 @@ fn scan_func_signature_typed(
                         // plain `val_type` or a `(ref …)` form).
                         Rule::any_val_type | Rule::val_type => {
                             types += 1;
-                            param_types.push(p.as_str().split_whitespace().collect::<Vec<_>>().join(" "));
+                            param_types
+                                .push(p.as_str().split_whitespace().collect::<Vec<_>>().join(" "));
                         }
                         _ => {}
                     }
@@ -7493,7 +7583,8 @@ fn scan_func_signature_typed(
                 for v in child.into_inner() {
                     if matches!(v.as_rule(), Rule::any_val_type | Rule::val_type) {
                         results += 1;
-                        result_types.push(v.as_str().split_whitespace().collect::<Vec<_>>().join(" "));
+                        result_types
+                            .push(v.as_str().split_whitespace().collect::<Vec<_>>().join(" "));
                     }
                 }
             }
@@ -7574,7 +7665,10 @@ fn walk_param(pair: Pair<Rule>, base: usize) -> Result<Vec<Param>, String> {
         .collect())
 }
 
-fn walk_local(pair: Pair<Rule>, index_base: usize) -> Result<(Vec<Statement>, Vec<String>), String> {
+fn walk_local(
+    pair: Pair<Rule>,
+    index_base: usize,
+) -> Result<(Vec<Statement>, Vec<String>), String> {
     let mut name: Option<String> = None;
     let mut types: Vec<String> = Vec::new();
     for child in pair.into_inner() {
@@ -7647,7 +7741,8 @@ fn walk_local(pair: Pair<Rule>, index_base: usize) -> Result<(Vec<Statement>, Ve
 // RETURN, UNREACHABLE).  Value-producing instructions become expressions.
 
 #[allow(dead_code)]
-fn walk_instr_as_stmts(__w: &mut WastWalker, 
+fn walk_instr_as_stmts(
+    __w: &mut WastWalker,
     pair: Pair<Rule>,
     labels: &mut LabelStack,
 ) -> Result<Vec<Statement>, String> {
@@ -7676,7 +7771,11 @@ fn trap_expr() -> Expression {
     })
 }
 
-fn walk_instr_as_expr(__w: &mut WastWalker, pair: Pair<Rule>, labels: &mut LabelStack) -> Result<Expression, String> {
+fn walk_instr_as_expr(
+    __w: &mut WastWalker,
+    pair: Pair<Rule>,
+    labels: &mut LabelStack,
+) -> Result<Expression, String> {
     let span = to_span(&pair);
     let inner = pair.into_inner().next().ok_or("Empty instr")?;
     match inner.as_rule() {
@@ -7689,7 +7788,8 @@ fn walk_instr_as_expr(__w: &mut WastWalker, pair: Pair<Rule>, labels: &mut Label
 // ── Plain instructions ────────────────────────────────────────────────────────
 
 #[allow(dead_code)]
-fn walk_plain_instr_as_stmts(__w: &mut WastWalker, 
+fn walk_plain_instr_as_stmts(
+    __w: &mut WastWalker,
     pair: Pair<Rule>,
     _span: Span,
     labels: &mut LabelStack,
@@ -7697,7 +7797,8 @@ fn walk_plain_instr_as_stmts(__w: &mut WastWalker,
     fold_instructions(__w, vec![pair], labels)
 }
 
-fn walk_plain_instr_as_expr(__w: &mut WastWalker, 
+fn walk_plain_instr_as_expr(
+    __w: &mut WastWalker,
     pair: Pair<Rule>,
     span: Span,
     labels: &mut LabelStack,
@@ -7724,7 +7825,8 @@ fn walk_plain_instr_as_expr(__w: &mut WastWalker,
 // ── Folded instructions ───────────────────────────────────────────────────────
 
 #[allow(dead_code)]
-fn walk_folded_instr_as_stmts(__w: &mut WastWalker, 
+fn walk_folded_instr_as_stmts(
+    __w: &mut WastWalker,
     pair: Pair<Rule>,
     span: Span,
     labels: &mut LabelStack,
@@ -7886,7 +7988,8 @@ fn walk_folded_instr_as_stmts(__w: &mut WastWalker,
     }
 }
 
-fn walk_folded_instr_as_expr(__w: &mut WastWalker, 
+fn walk_folded_instr_as_expr(
+    __w: &mut WastWalker,
     pair: Pair<Rule>,
     span: Span,
     labels: &mut LabelStack,
@@ -7936,7 +8039,8 @@ fn folded_head_keyword(text: &str) -> Option<String> {
 }
 
 /// Core folded instruction → expression (shared by both statement and expression contexts).
-fn walk_folded_core(__w: &mut WastWalker,
+fn walk_folded_core(
+    __w: &mut WastWalker,
     name: String,
     children: Vec<Pair<Rule>>,
     span: Span,
@@ -8196,7 +8300,9 @@ fn parse_memarg_number(text: &str) -> u64 {
 /// scheme the pre-scan used, so it works even if the pre-scan missed one).
 fn index_binding_name(__w: &mut WastWalker, i: i64, is_global: bool) -> String {
     if is_global {
-        __w.global_index_name.get(i as usize).cloned()
+        __w.global_index_name
+            .get(i as usize)
+            .cloned()
             .unwrap_or_else(|| format!("__wasm_global_{i}"))
     } else {
         local_index_binding_name(__w, i)
@@ -8348,8 +8454,7 @@ fn mem_op_trailing_index_count(name: &str) -> usize {
         // is that lane, not a memidx: `v128.load8_lane 1` addresses lane 1 of
         // the default memory.
         "v128.load8_lane" | "v128.load16_lane" | "v128.load32_lane" | "v128.load64_lane"
-        | "v128.store8_lane" | "v128.store16_lane" | "v128.store32_lane"
-        | "v128.store64_lane" => 1,
+        | "v128.store8_lane" | "v128.store16_lane" | "v128.store32_lane" | "v128.store64_lane" => 1,
         _ => 0,
     }
 }
@@ -8378,7 +8483,8 @@ fn is_bare_index_arg(raw: &Pair<Rule>) -> bool {
 /// memory is named). `raw_args` is left holding just the real operand args, so
 /// no operand is ever mistaken for a selector. The compiler turns each `@@mem<N>`
 /// into the VM's fixed 4-byte selector.
-fn peel_mem_selector(__w: &mut WastWalker, 
+fn peel_mem_selector(
+    __w: &mut WastWalker,
     name: &str,
     raw_args: &mut Vec<Pair<Rule>>,
     labels: &mut LabelStack,
@@ -8393,18 +8499,11 @@ fn peel_mem_selector(__w: &mut WastWalker,
     // emitter expects it — as the first arg.
     let trailing = mem_op_trailing_index_count(name);
     if trailing > 0 {
-        let bare = raw_args
-            .iter()
-            .take_while(|r| is_bare_index_arg(r))
-            .count();
+        let bare = raw_args.iter().take_while(|r| is_bare_index_arg(r)).count();
         // A memarg SEPARATES the two indices on a lane access, so counting
         // adjacent bare indices alone under-reads it: `v128.load8_lane 1
         // offset=0 2` has one bare index in front, and it is still a memidx.
-        let memarg_splits = bare >= n
-            && raw_args
-                .get(bare)
-                .map(is_memarg_arg)
-                .unwrap_or(false);
+        let memarg_splits = bare >= n && raw_args.get(bare).map(is_memarg_arg).unwrap_or(false);
         if bare < n + trailing && !memarg_splits {
             return Ok(name.to_string());
         }
@@ -8570,7 +8669,7 @@ fn build_call_ref_opcode(
             return Err(format!(
                 "{name}: cannot determine the argument count — `{type_name}` is not a \
                  declared function type and no operands were folded in"
-            ))
+            ));
         }
     };
     // The result count rides along for the WASM writer, which picks the
@@ -8591,7 +8690,12 @@ fn build_call_ref_opcode(
     Ok(make_call(name, operands, span))
 }
 
-fn map_instr_to_ast(__w: &mut WastWalker, name: String, args: Vec<Expression>, span: Span) -> Result<Expression, String> {
+fn map_instr_to_ast(
+    __w: &mut WastWalker,
+    name: String,
+    args: Vec<Expression>,
+    span: Span,
+) -> Result<Expression, String> {
     // A memory op with NO explicit selector targets ITS module's memory 0 —
     // which, in a multi-module script, is program memory <base>. Explicit
     // selectors were already `@@mem`-mangled (shifted) at the parse sites.
@@ -8749,10 +8853,7 @@ fn map_instr_to_ast(__w: &mut WastWalker, name: String, args: Vec<Expression>, s
                 0 => (Expression::int(__w.elem_index_base as i64), base),
                 1 => {
                     let written = a.remove(0);
-                    (
-                        Expression::int(resolve_wat_elemidx(__w, &written)),
-                        base,
-                    )
+                    (Expression::int(resolve_wat_elemidx(__w, &written)), base)
                 }
                 _ => {
                     let table = a.remove(0); // text order: tableidx first
@@ -8873,9 +8974,10 @@ fn map_instr_to_ast(__w: &mut WastWalker, name: String, args: Vec<Expression>, s
                     Expression::with_span(ExprKind::Ident(target), span)
                 }
                 ExprKind::Ident(n) => Expression::with_span(ExprKind::Ident(n.clone()), span),
-                ExprKind::Lit(Literal::Int(i)) => {
-                    Expression::with_span(ExprKind::Ident(index_binding_name(__w, *i, is_global)), span)
-                }
+                ExprKind::Lit(Literal::Int(i)) => Expression::with_span(
+                    ExprKind::Ident(index_binding_name(__w, *i, is_global)),
+                    span,
+                ),
                 _ => idx,
             })
         }
@@ -8894,9 +8996,10 @@ fn map_instr_to_ast(__w: &mut WastWalker, name: String, args: Vec<Expression>, s
                     Expression::with_span(ExprKind::Ident(t), span)
                 }
                 ExprKind::Ident(n) => Expression::with_span(ExprKind::Ident(n.clone()), span),
-                ExprKind::Lit(Literal::Int(i)) => {
-                    Expression::with_span(ExprKind::Ident(index_binding_name(__w, *i, is_global)), span)
-                }
+                ExprKind::Lit(Literal::Int(i)) => Expression::with_span(
+                    ExprKind::Ident(index_binding_name(__w, *i, is_global)),
+                    span,
+                ),
                 _ => target_raw,
             };
             Ok(Expression::with_span(
@@ -9042,7 +9145,10 @@ fn map_instr_to_ast(__w: &mut WastWalker, name: String, args: Vec<Expression>, s
             // literal: `call` past the index space is a validation error, and
             // inventing a name here would hide it behind a wrong callee.
             let callee = match &callee.kind {
-                ExprKind::Lit(Literal::Int(idx)) if *idx >= 0 => __w.func_index_name.get(*idx as usize).cloned()
+                ExprKind::Lit(Literal::Int(idx)) if *idx >= 0 => __w
+                    .func_index_name
+                    .get(*idx as usize)
+                    .cloned()
                     .map_or(callee, |n| Expression::with_span(ExprKind::Ident(n), span)),
                 _ => callee,
             };
@@ -9054,11 +9160,8 @@ fn map_instr_to_ast(__w: &mut WastWalker, name: String, args: Vec<Expression>, s
                 // so it must be qualified against THAT class — checked first,
                 // because the importing module also declares a same-named stub
                 // that `DEFINED_FUNC_NAMES` would otherwise claim.
-                ExprKind::Ident(n)
-                    if __w.import_alias.contains_key(n) =>
-                {
-                    let (class, method) =
-                        __w.import_alias.get(n).cloned().expect("just checked");
+                ExprKind::Ident(n) if __w.import_alias.contains_key(n) => {
+                    let (class, method) = __w.import_alias.get(n).cloned().expect("just checked");
                     Expression::with_span(
                         ExprKind::Member {
                             object: Box::new(Expression::ident(&class)),
@@ -9293,7 +9396,10 @@ fn map_instr_to_ast(__w: &mut WastWalker, name: String, args: Vec<Expression>, s
         // (0 for ints, 0.0 for floats, null for refs), stamped with its rtt.
         "struct.new_default" => {
             let type_name = resolve_wast_type_name(__w, args.first());
-            let field_types = __w.struct_field_types.get(&type_name).cloned()
+            let field_types = __w
+                .struct_field_types
+                .get(&type_name)
+                .cloned()
                 .unwrap_or_default();
             let props: Vec<ObjectProperty> = field_types
                 .iter()
@@ -9316,7 +9422,10 @@ fn map_instr_to_ast(__w: &mut WastWalker, name: String, args: Vec<Expression>, s
             let rest = args.get(1..).unwrap_or(&[]);
             let (vals, desc): (Vec<Expression>, Expression) = match rest.split_last() {
                 Some((d, v)) => (v.to_vec(), d.clone()),
-                None => (vec![], Expression::with_span(ExprKind::Lit(Literal::Null), span)),
+                None => (
+                    vec![],
+                    Expression::with_span(ExprKind::Lit(Literal::Null), span),
+                ),
             };
             let props: Vec<ObjectProperty> = vals
                 .into_iter()
@@ -9502,7 +9611,11 @@ fn map_instr_to_ast(__w: &mut WastWalker, name: String, args: Vec<Expression>, s
 
 // ── Instruction argument helpers ──────────────────────────────────────────────
 
-fn walk_instr_arg_pair(__w: &mut WastWalker, pair: Pair<Rule>, labels: &mut LabelStack) -> Result<Expression, String> {
+fn walk_instr_arg_pair(
+    __w: &mut WastWalker,
+    pair: Pair<Rule>,
+    labels: &mut LabelStack,
+) -> Result<Expression, String> {
     let inner = pair.into_inner().next().ok_or("Empty instr_arg")?;
     match inner.as_rule() {
         Rule::folded_instr => walk_folded_instr_as_expr(__w, inner, Span::default(), labels),
@@ -9625,8 +9738,8 @@ fn walk_instr_arg_for(
     } else {
         None
     };
-    let stores_float = matches!(name, "f32.const" | "f64.const")
-        || lane_shape.is_some_and(|s| s.starts_with('f'));
+    let stores_float =
+        matches!(name, "f32.const" | "f64.const") || lane_shape.is_some_and(|s| s.starts_with('f'));
     if stores_float
         && let Some(inner) = raw.clone().into_inner().next()
         && matches!(inner.as_rule(), Rule::float | Rule::integer)
@@ -9735,7 +9848,11 @@ fn global_field_id(pair: &Pair<Rule>) -> Option<String> {
         .map(|c| c.as_str()[1..].to_string())
 }
 
-fn walk_global_field(__w: &mut WastWalker, pair: Pair<Rule>, idx: usize) -> Result<(String, Expression), String> {
+fn walk_global_field(
+    __w: &mut WastWalker,
+    pair: Pair<Rule>,
+    idx: usize,
+) -> Result<(String, Expression), String> {
     let name = global_binding_name(__w, &pair, idx);
     let mut init = Expression::int(0);
     let mut labels = LabelStack::new();
@@ -9753,7 +9870,11 @@ fn walk_global_field(__w: &mut WastWalker, pair: Pair<Rule>, idx: usize) -> Resu
 /// `(memory (data "…"))` abbreviation, the active data segment it stands for:
 /// the memory is sized to exactly hold the data (⌈len/64Ki⌉ pages, min and max
 /// both), and the bytes land at offset 0.
-fn walk_memory_field(__w: &mut WastWalker, pair: Pair<Rule>, memory_idx: usize) -> Result<Vec<Statement>, String> {
+fn walk_memory_field(
+    __w: &mut WastWalker,
+    pair: Pair<Rule>,
+    memory_idx: usize,
+) -> Result<Vec<Statement>, String> {
     let span = to_span(&pair);
     // An IMPORTED memory that resolved to an exporter's memory declares
     // NOTHING: it is that memory, and its own written limits are a link-time
@@ -10039,10 +10160,7 @@ fn walk_imported_call_tag(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Stat
     let mut params = 0usize;
     let mut results = 0usize;
     let mut signature = String::new();
-    if let Some(desc) = pair
-        .into_inner()
-        .find(|c| c.as_rule() == Rule::import_desc)
-    {
+    if let Some(desc) = pair.into_inner().find(|c| c.as_rule() == Rule::import_desc) {
         for child in desc.into_inner() {
             match child.as_rule() {
                 Rule::id => local = child.as_str().trim_start_matches('$').to_string(),
@@ -10062,7 +10180,8 @@ fn walk_imported_call_tag(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Stat
         __w.call_tag_params.insert(local.clone(), (params, results));
         __w.call_tag_alias.insert(local, external.clone());
     }
-    __w.call_tag_params.insert(external.clone(), (params, results));
+    __w.call_tag_params
+        .insert(external.clone(), (params, results));
     Ok(Statement::with_span(
         StmtKind::WasmCallTagDecl {
             name: external,
@@ -10148,18 +10267,29 @@ fn walk_func_switch_field(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Stat
 /// which has no name to compare — the signature check covers that case.
 fn typeuse_canon_name(__w: &WastWalker, pair: &Pair<Rule>) -> String {
     let host = match pair.as_rule() {
-        Rule::instr => pair.clone().into_inner().next().unwrap_or_else(|| pair.clone()),
+        Rule::instr => pair
+            .clone()
+            .into_inner()
+            .next()
+            .unwrap_or_else(|| pair.clone()),
         _ => pair.clone(),
     };
     for c in host.into_inner() {
         if c.as_rule() != Rule::instr_arg {
             continue;
         }
-        let Some(bt) = c.into_inner().next() else { continue };
+        let Some(bt) = c.into_inner().next() else {
+            continue;
+        };
         if bt.as_rule() != Rule::block_type {
             continue;
         }
-        if !bt.as_str().trim_start_matches('(').trim_start().starts_with("type") {
+        if !bt
+            .as_str()
+            .trim_start_matches('(')
+            .trim_start()
+            .starts_with("type")
+        {
             continue;
         }
         if let Some(ix) = bt.into_inner().find(|x| x.as_rule() == Rule::index) {
@@ -10191,7 +10321,11 @@ fn typeuse_signature(__w: &mut WastWalker, pair: &Pair<Rule>) -> String {
     // shape mirrored here: `instr_arg` → `block_type`, whose KEYWORD is inlined
     // by the grammar and so has to be read off the node's own text.
     let host = match pair.as_rule() {
-        Rule::instr => pair.clone().into_inner().next().unwrap_or_else(|| pair.clone()),
+        Rule::instr => pair
+            .clone()
+            .into_inner()
+            .next()
+            .unwrap_or_else(|| pair.clone()),
         _ => pair.clone(),
     };
     let mut saw_block_type = false;
@@ -10199,7 +10333,9 @@ fn typeuse_signature(__w: &mut WastWalker, pair: &Pair<Rule>) -> String {
         if c.as_rule() != Rule::instr_arg {
             continue;
         }
-        let Some(bt) = c.into_inner().next() else { continue };
+        let Some(bt) = c.into_inner().next() else {
+            continue;
+        };
         if bt.as_rule() != Rule::block_type {
             continue;
         }
@@ -10246,9 +10382,10 @@ fn typeuse_signature(__w: &mut WastWalker, pair: &Pair<Rule>) -> String {
         for child in host.into_inner() {
             match child.as_rule() {
                 Rule::param => {
-                    for t in child.into_inner().filter(|c| {
-                        matches!(c.as_rule(), Rule::any_val_type | Rule::val_type)
-                    }) {
+                    for t in child
+                        .into_inner()
+                        .filter(|c| matches!(c.as_rule(), Rule::any_val_type | Rule::val_type))
+                    {
                         params.push(canonical_val_type(
                             __w,
                             &t.as_str().split_whitespace().collect::<Vec<_>>().join(" "),
@@ -10256,9 +10393,10 @@ fn typeuse_signature(__w: &mut WastWalker, pair: &Pair<Rule>) -> String {
                     }
                 }
                 Rule::result => {
-                    for t in child.into_inner().filter(|c| {
-                        matches!(c.as_rule(), Rule::any_val_type | Rule::val_type)
-                    }) {
+                    for t in child
+                        .into_inner()
+                        .filter(|c| matches!(c.as_rule(), Rule::any_val_type | Rule::val_type))
+                    {
                         results.push(canonical_val_type(
                             __w,
                             &t.as_str().split_whitespace().collect::<Vec<_>>().join(" "),
@@ -10321,7 +10459,8 @@ fn count_typeuse_params_results(__w: &mut WastWalker, pair: &Pair<Rule>) -> (usi
     (params, results)
 }
 
-fn scan_tag_decl(__w: &mut WastWalker,
+fn scan_tag_decl(
+    __w: &mut WastWalker,
     pair: &Pair<Rule>,
 ) -> (Option<String>, u8, Vec<String>, Option<(String, String)>) {
     let (name, arity) = scan_tag_signature(__w, pair.clone());
@@ -10411,7 +10550,8 @@ fn walk_tag_field(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Statement, S
 /// inline `(table t (elem $f …))` abbreviation, its active-segment population
 /// (goes AFTER the class — it references the funcs as static methods, so it must
 /// run once the class exists, exactly like a standalone `(elem …)` field).
-fn walk_table_field(__w: &mut WastWalker,
+fn walk_table_field(
+    __w: &mut WastWalker,
     pair: Pair<Rule>,
     field_ordinal: usize,
 ) -> Result<(Statement, Vec<Statement>), String> {
@@ -10560,7 +10700,14 @@ fn walk_table_field(__w: &mut WastWalker,
         _ => Vec::new(),
     };
     Ok((
-        Statement::with_span(StmtKind::TableDecl { min_size, max_size, is_64 }, span),
+        Statement::with_span(
+            StmtKind::TableDecl {
+                min_size,
+                max_size,
+                is_64,
+            },
+            span,
+        ),
         population,
     ))
 }
@@ -10602,10 +10749,7 @@ fn composite_type_text(type_field: &Pair<Rule>) -> String {
         for c in p.clone().into_inner() {
             if matches!(
                 c.as_rule(),
-                Rule::composite_type
-                    | Rule::struct_type
-                    | Rule::array_type
-                    | Rule::func_type
+                Rule::composite_type | Rule::struct_type | Rule::array_type | Rule::func_type
             ) {
                 return Some(c.as_str().to_string());
             }
@@ -10823,9 +10967,7 @@ fn walk_elem_field(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Statement, 
                     is_declare = true;
                 } else {
                     let folded = fold_const_offset(&child);
-                    offset = folded
-                        .or_else(|| find_first_integer(&child))
-                        .unwrap_or(0);
+                    offset = folded.or_else(|| find_first_integer(&child)).unwrap_or(0);
                     // Only a `global.get` genuinely defeats the fold — its
                     // value exists at instantiation, not at walk time. Every
                     // other unfoldable shape keeps the literal path, so this
@@ -10836,8 +10978,7 @@ fn walk_elem_field(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Statement, 
                         for sub in child.clone().into_inner() {
                             match sub.as_rule() {
                                 Rule::instr => {
-                                    offset_expr =
-                                        Some(walk_instr_as_expr(__w, sub, &mut labels)?);
+                                    offset_expr = Some(walk_instr_as_expr(__w, sub, &mut labels)?);
                                     break;
                                 }
                                 Rule::folded_instr => {
@@ -10896,8 +11037,7 @@ fn walk_elem_field(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Statement, 
                         match sub.as_rule() {
                             Rule::instr => expr = Some(walk_instr_as_expr(__w, sub, &mut labels)?),
                             Rule::folded_instr => {
-                                expr =
-                                    Some(walk_folded_instr_as_expr(__w, sub, span, &mut labels)?)
+                                expr = Some(walk_folded_instr_as_expr(__w, sub, span, &mut labels)?)
                             }
                             _ => {}
                         }
@@ -11197,9 +11337,7 @@ fn func_field_signature(__w: &WastWalker, func_field: &Pair<Rule>) -> (Vec<Strin
         }
         for t in c.into_inner() {
             match t.as_rule() {
-                Rule::index => {
-                    type_ref = Some(t.as_str().trim_start_matches('$').to_string())
-                }
+                Rule::index => type_ref = Some(t.as_str().trim_start_matches('$').to_string()),
                 Rule::param | Rule::result => {
                     let target = if t.as_rule() == Rule::param {
                         &mut params
@@ -11445,9 +11583,9 @@ fn walk_data_field(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Statement, 
                                     // `(memory $m2)` — resolve the name to its
                                     // declaration index.
                                     let name = i.as_str().trim_start_matches('$');
-                                    memory_index = __w.memory_name_index.get(name).copied()
-                                        .unwrap_or(0)
-                                        as u32;
+                                    memory_index =
+                                        __w.memory_name_index.get(name).copied().unwrap_or(0)
+                                            as u32;
                                 }
                             }
                         }
@@ -12183,9 +12321,7 @@ fn segment_offset_type_reason(module: &Pair<Rule>) -> Option<String> {
         // segment's ELEMENT TYPE rather than an abbreviated offset.
         let is_offset_mode = match p.as_rule() {
             Rule::data_mode => true,
-            Rule::elem_mode => {
-                p.as_str().trim() != "declare" && !elem_mode_is_reference_type(p)
-            }
+            Rule::elem_mode => p.as_str().trim() != "declare" && !elem_mode_is_reference_type(p),
             _ => false,
         };
         if is_offset_mode {
@@ -12488,11 +12624,7 @@ fn squeeze_ws(s: &str) -> String {
 /// pass cannot see it.
 fn array_copy_element_reason(module: &Pair<Rule>) -> Option<String> {
     let (types, names) = descriptor_type_table(module);
-    fn scan(
-        p: &Pair<Rule>,
-        types: &[DescType],
-        names: &HashMap<String, usize>,
-    ) -> Option<String> {
+    fn scan(p: &Pair<Rule>, types: &[DescType], names: &HashMap<String, usize>) -> Option<String> {
         if matches!(p.as_rule(), Rule::plain_instr | Rule::folded_instr)
             && instr_head_name(p).as_deref() == Some("array.copy")
         {
@@ -12545,11 +12677,7 @@ fn array_copy_element_reason(module: &Pair<Rule>) -> Option<String> {
 /// deliberately absent.
 fn array_immutability_reason(module: &Pair<Rule>) -> Option<String> {
     let (types, names) = descriptor_type_table(module);
-    fn scan(
-        p: &Pair<Rule>,
-        types: &[DescType],
-        names: &HashMap<String, usize>,
-    ) -> Option<String> {
+    fn scan(p: &Pair<Rule>, types: &[DescType], names: &HashMap<String, usize>) -> Option<String> {
         if matches!(p.as_rule(), Rule::plain_instr | Rule::folded_instr) {
             let head = instr_head_name(p).unwrap_or_default();
             if matches!(
@@ -12605,8 +12733,9 @@ fn tag_result_type_reason(module: &Pair<Rule>) -> Option<String> {
     for field in module_fields(module) {
         let is_tag = match field.as_rule() {
             Rule::tag_field => true,
-            Rule::import_field => find_rule(&field, Rule::import_desc)
-                .is_some_and(|d| head_keyword(&d) == "tag"),
+            Rule::import_field => {
+                find_rule(&field, Rule::import_desc).is_some_and(|d| head_keyword(&d) == "tag")
+            }
             _ => false,
         };
         if is_tag && has_result(&field) {
@@ -12693,12 +12822,17 @@ fn table_defaultable_reason(module: &Pair<Rule>) -> Option<String> {
         // Defaultable ⇔ nullable. The abbreviations (`funcref`, `externref`,
         // `anyref`, …) are all nullable by definition; only an explicit
         // `(ref …)` without `null` is not.
-        let inner = spelling.trim_start_matches('(').trim_end_matches(')').trim();
+        let inner = spelling
+            .trim_start_matches('(')
+            .trim_end_matches(')')
+            .trim();
         let non_null = inner
             .strip_prefix("ref")
             .is_some_and(|r| !r.trim_start().starts_with("null"));
         if non_null {
-            return Some(format!("type mismatch: table element {spelling} is not defaultable"));
+            return Some(format!(
+                "type mismatch: table element {spelling} is not defaultable"
+            ));
         }
     }
     None
@@ -12875,7 +13009,10 @@ fn elem_table_type_mismatch(module: &Pair<Rule>) -> Option<String> {
                     rest = rest.trim_start_matches('(').trim_start();
                     rest = rest.strip_prefix("elem").unwrap_or(rest).trim_start();
                     if rest.starts_with('$') {
-                        rest = rest.split_once(char::is_whitespace).map_or("", |(_, r)| r).trim_start();
+                        rest = rest
+                            .split_once(char::is_whitespace)
+                            .map_or("", |(_, r)| r)
+                            .trim_start();
                     }
                     if rest.starts_with("(ref.")
                         || rest.starts_with("(f32.")
@@ -13040,8 +13177,9 @@ fn name_resolution_walk(
                 .clone()
                 .into_inner()
                 .any(|x| x.as_rule() == Rule::data_mode),
-            Rule::plain_instr | Rule::folded_instr => instr_head_name(&pair)
-                .is_some_and(|n| instr_touches_memory(&n)),
+            Rule::plain_instr | Rule::folded_instr => {
+                instr_head_name(&pair).is_some_and(|n| instr_touches_memory(&n))
+            }
             _ => false,
         };
         if hits {
@@ -13070,8 +13208,9 @@ fn name_resolution_walk(
                     && x.as_str().trim() != "declare"
                     && !elem_mode_is_reference_type(&x)
             }),
-            Rule::plain_instr | Rule::folded_instr => instr_head_name(&pair)
-                .is_some_and(|n| instr_touches_table(&n)),
+            Rule::plain_instr | Rule::folded_instr => {
+                instr_head_name(&pair).is_some_and(|n| instr_touches_table(&n))
+            }
             _ => false,
         };
         if hits {
@@ -13161,9 +13300,7 @@ fn name_resolution_walk(
                 "global" => (!index_resolves(&idx, &c.globals)).then(|| "unknown global"),
                 // Tables and memories are counted, not named, in the census —
                 // a bare count is all an index needs.
-                "table" => {
-                    (!index_resolves(&idx, &c.tables)).then(|| "unknown table")
-                }
+                "table" => (!index_resolves(&idx, &c.tables)).then(|| "unknown table"),
                 "memory" => (!index_resolves(&idx, &c.memories)).then(|| "unknown memory"),
                 _ => None,
             };
@@ -13188,9 +13325,10 @@ fn name_resolution_walk(
     // the abstract spellings (`func`, `any`, `none`, …) are not.
     if rule == Rule::heap_type {
         let t = pair.as_str().trim();
-        let concrete = t.strip_prefix('$').map(|n| (true, n.to_string())).or_else(|| {
-            t.parse::<usize>().ok().map(|_| (false, t.to_string()))
-        });
+        let concrete = t
+            .strip_prefix('$')
+            .map(|n| (true, n.to_string()))
+            .or_else(|| t.parse::<usize>().ok().map(|_| (false, t.to_string())));
         if let Some((named, key)) = concrete {
             let ok = if named {
                 c.types.0.contains(&key)
@@ -13227,17 +13365,16 @@ fn name_resolution_walk(
         // one immediate the position is certain; with two it is not, and
         // guessing reports the wrong "unknown X" — which the message
         // comparison turns into a visible failure rather than a silent pass.
-        let idx_count = pair
-            .clone()
-            .into_inner()
-            .filter(|ch| ch.as_rule() == Rule::instr_arg)
-            .filter(|ch| {
-                ch.clone()
-                    .into_inner()
-                    .next()
-                    .is_some_and(|i| matches!(i.as_rule(), Rule::index | Rule::id | Rule::integer))
-            })
-            .count();
+        let idx_count =
+            pair.clone()
+                .into_inner()
+                .filter(|ch| ch.as_rule() == Rule::instr_arg)
+                .filter(|ch| {
+                    ch.clone().into_inner().next().is_some_and(|i| {
+                        matches!(i.as_rule(), Rule::index | Rule::id | Rule::integer)
+                    })
+                })
+                .count();
         if let (Some(n), Some(idx)) = (name.as_deref(), first_idx) {
             let base = n.split_once("@@").map(|(b, _)| b).unwrap_or(n);
             let bad = match base {
@@ -13502,12 +13639,12 @@ fn module_invalid_walk(
         // A limit too large to be a u128 is malformed text, not invalid, and
         // `parse_wat_u128` declining leaves it to that half.
         let ceiling: u128 = match (is_mem, is64) {
-            (true, false) => 65536,               // 4 GiB in 64 KiB pages
-            (true, true) => 1u128 << 48,          // memory64 page ceiling
+            (true, false) => 65536,      // 4 GiB in 64 KiB pages
+            (true, true) => 1u128 << 48, // memory64 page ceiling
             // ⛔ INCLUSIVE. A table holds at most 2^32 - 1 entries, so
             // `0x1_0000_0000` is the FIRST illegal value — `> 1<<32` let it
             // through. A memory's 65536 pages, by contrast, IS legal.
-            (false, false) => (1u128 << 32) - 1,  // table entries
+            (false, false) => (1u128 << 32) - 1, // table entries
             (false, true) => u128::MAX,
         };
         if let Some(&min) = nums.first() {
@@ -13544,8 +13681,7 @@ fn module_invalid_walk(
         // it looks like an offset here too — and `ref` is not a constant
         // expression, so this reported "constant expression required" for a
         // segment that has no offset at all. It is a type; skip it.
-        let is_ref_type = pair.as_rule() == Rule::elem_mode
-            && elem_mode_is_reference_type(&pair);
+        let is_ref_type = pair.as_rule() == Rule::elem_mode && elem_mode_is_reference_type(&pair);
         if !imported && !is_ref_type {
             if let Some(bad) = first_non_const_instr(&pair) {
                 let _ = bad;
@@ -13855,18 +13991,17 @@ fn descriptor_type_table(module: &Pair<Rule>) -> (Vec<DescType>, HashMap<String,
                                 })
                                 .unwrap_or_default();
                             t.fields = t.field_types.len();
-                            t.is_struct = c
-                                .clone()
-                                .into_inner()
-                                .next()
-                                .is_some_and(|k| {
-                                    matches!(k.as_rule(), Rule::struct_type | Rule::struct_subtype)
-                                });
+                            t.is_struct = c.clone().into_inner().next().is_some_and(|k| {
+                                matches!(k.as_rule(), Rule::struct_type | Rule::struct_subtype)
+                            });
                             // ⛔ THE FORM IS A LITERAL KEYWORD, so it is not a
                             // pair — read it off the text, the same way the
                             // folded block keyword has to be.
                             let head = c.as_str().trim_start_matches('(').trim_start();
-                            t.kind = match head.split(|ch: char| ch.is_whitespace() || ch == '(' || ch == ')').next() {
+                            t.kind = match head
+                                .split(|ch: char| ch.is_whitespace() || ch == '(' || ch == ')')
+                                .next()
+                            {
                                 Some("struct") => Some("struct"),
                                 Some("array") => Some("array"),
                                 Some("func") => Some("func"),
@@ -14006,7 +14141,13 @@ fn canonical_type_ids(module: &Pair<Rule>, names: &HashMap<String, usize>) -> Op
         let mut form = String::new();
         for &i in &members[g] {
             form.push_str(&canon_form(
-                &fields[i], names, &rec_of, g, start, &group_canon, &members,
+                &fields[i],
+                names,
+                &rec_of,
+                g,
+                start,
+                &group_canon,
+                &members,
             )?);
             form.push('|');
         }
@@ -14368,11 +14509,9 @@ fn descriptor_instr_reason(
                 // that is neither — a folded sub-expression sitting where the
                 // immediate would be — means the immediate is elsewhere, so
                 // this instruction is left unjudged.
-                let target = first_arg.as_deref().and_then(|a| {
-                    a.parse::<usize>()
-                        .ok()
-                        .or_else(|| names.get(a).copied())
-                });
+                let target = first_arg
+                    .as_deref()
+                    .and_then(|a| a.parse::<usize>().ok().or_else(|| names.get(a).copied()));
                 if let Some(t) = target {
                     let Some(info) = types.get(t) else {
                         // Only the descriptor-read form asserts this; the
@@ -14837,7 +14976,13 @@ fn infer_operand(
 ) -> Option<Vt> {
     // Unwrap the non-silent `instr` wrapper if it is still on.
     if pair.as_rule() == Rule::instr {
-        return infer_operand(&pair.clone().into_inner().next()?, locals, local_names, types, names);
+        return infer_operand(
+            &pair.clone().into_inner().next()?,
+            locals,
+            local_names,
+            types,
+            names,
+        );
     }
     if !matches!(pair.as_rule(), Rule::plain_instr | Rule::folded_instr) {
         return None;
@@ -14916,9 +15061,7 @@ fn infer_operand(
 // the returned operands, which a loop over owned pairs cannot do. Written the
 // tight way first; it compiled only because my own callers happened to hold
 // the pair, and broke the first caller that did not.
-fn split_immediates_and_operands<'a>(
-    pair: &Pair<'a, Rule>,
-) -> (Vec<String>, Vec<Pair<'a, Rule>>) {
+fn split_immediates_and_operands<'a>(pair: &Pair<'a, Rule>) -> (Vec<String>, Vec<Pair<'a, Rule>>) {
     let mut imms = Vec::new();
     let mut ops = Vec::new();
     for c in pair.clone().into_inner() {
@@ -15016,7 +15159,9 @@ fn descriptor_operand_mismatch(
         if c.as_rule() != Rule::module_field {
             continue;
         }
-        let Some(f) = c.into_inner().next() else { continue };
+        let Some(f) = c.into_inner().next() else {
+            continue;
+        };
         if f.as_rule() != Rule::func_field {
             continue;
         }
@@ -15154,8 +15299,7 @@ fn scan_descriptor_operands(
                         .or_else(|| names.get(a.as_str()).copied())
                     {
                         if types.get(idx).is_some() {
-                            let Some(got) =
-                                infer_operand(op, locals, local_names, types, names)
+                            let Some(got) = infer_operand(op, locals, local_names, types, names)
                             else {
                                 return None;
                             };
@@ -15394,7 +15538,10 @@ fn build_census(module: &Pair<Rule>, c: &mut ModuleCensus) {
 fn implicit_type_upper_bound(pair: &Pair<Rule>) -> usize {
     let mut n = 0;
     if pair.as_rule() == Rule::typeuse {
-        let has_index = pair.clone().into_inner().any(|c| c.as_rule() == Rule::index);
+        let has_index = pair
+            .clone()
+            .into_inner()
+            .any(|c| c.as_rule() == Rule::index);
         let has_sig = pair
             .clone()
             .into_inner()
@@ -15432,14 +15579,31 @@ fn index_resolves(idx: &Pair<Rule>, decl: &(std::collections::HashSet<String>, u
 /// extended-const proposal is merged into 3.0.
 fn first_non_const_instr(pair: &Pair<Rule>) -> Option<String> {
     const CONST_OPS: &[&str] = &[
-        "i32.const", "i64.const", "f32.const", "f64.const", "v128.const",
-        "ref.null", "ref.func", "ref.i31",
+        "i32.const",
+        "i64.const",
+        "f32.const",
+        "f64.const",
+        "v128.const",
+        "ref.null",
+        "ref.func",
+        "ref.i31",
         "global.get",
-        "struct.new", "struct.new_default", "struct.new_desc", "struct.new_default_desc",
-        "array.new", "array.new_default", "array.new_fixed",
+        "struct.new",
+        "struct.new_default",
+        "struct.new_desc",
+        "struct.new_default_desc",
+        "array.new",
+        "array.new_default",
+        "array.new_fixed",
         // extended-const (merged in WASM 3.0)
-        "i32.add", "i32.sub", "i32.mul", "i64.add", "i64.sub", "i64.mul",
-        "any.convert_extern", "extern.convert_any",
+        "i32.add",
+        "i32.sub",
+        "i32.mul",
+        "i64.add",
+        "i64.sub",
+        "i64.mul",
+        "any.convert_extern",
+        "extern.convert_any",
     ];
     fn walk(p: Pair<Rule>, out: &mut Option<String>) {
         if out.is_some() {
@@ -15537,7 +15701,12 @@ fn mnemonic_lane_count(name: &str) -> Option<u32> {
         }
     }
     // `v128.loadN_lane` / `v128.storeN_lane` — N bits per lane.
-    for (tag, lanes) in [("8_lane", 16u32), ("16_lane", 8), ("32_lane", 4), ("64_lane", 2)] {
+    for (tag, lanes) in [
+        ("8_lane", 16u32),
+        ("16_lane", 8),
+        ("32_lane", 4),
+        ("64_lane", 2),
+    ] {
         if name.ends_with(tag) {
             return Some(lanes);
         }
@@ -15625,432 +15794,451 @@ fn quoted_module_is_malformed(pairs: pest::iterators::Pairs<Rule>) -> bool {
             shapes: &HashMap<String, (Vec<String>, Vec<String>)>,
         ) -> bool {
             let walk = |p: Pair<Rule>| walk_inner(p, shapes);
-        if matches!(
-            pair.as_rule(),
-            Rule::export_inline | Rule::import_inline | Rule::export_field | Rule::import_field
-        ) && pair
-            .clone()
-            .into_inner()
-            .filter(|c| c.as_rule() == Rule::string)
-            .any(|s| !name_string_is_utf8(s.as_str()))
-        {
-            return true;
-        }
-        // A func's own clauses are ordered: `param`s before `result`s, both
-        // before `local`s, and all of them before the body. Out of place they
-        // still PARSE — the generic folded form is `"(" ~ instr_name ~ …`, so
-        // `(local i32)` after an instruction reads as a call to `local` — but
-        // none of the three is an instruction name, so the text is malformed.
-        if matches!(pair.as_rule(), Rule::plain_instr | Rule::folded_instr) {
-            if let Some(head) = pair
+            if matches!(
+                pair.as_rule(),
+                Rule::export_inline | Rule::import_inline | Rule::export_field | Rule::import_field
+            ) && pair
                 .clone()
                 .into_inner()
-                .find(|c| c.as_rule() == Rule::instr_name)
+                .filter(|c| c.as_rule() == Rule::string)
+                .any(|s| !name_string_is_utf8(s.as_str()))
             {
-                if matches!(head.as_str().trim(), "param" | "result" | "local" | "type") {
-                    return true;
-                }
+                return true;
             }
-        }
-        if pair.as_rule() == Rule::func_field {
-            // Params and locals share ONE index space, so a name may appear
-            // only once across both.
-            let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-            fn local_ids(p: &Pair<Rule>, seen: &mut std::collections::HashSet<String>) -> bool {
-                if matches!(p.as_rule(), Rule::param | Rule::local) {
-                    if let Some(id) = p.clone().into_inner().find(|c| c.as_rule() == Rule::id) {
-                        if !seen.insert(id.as_str().trim_start_matches('$').to_string()) {
-                            return true;
-                        }
-                    }
-                }
-                for c in p.clone().into_inner() {
-                    if local_ids(&c, seen) {
+            // A func's own clauses are ordered: `param`s before `result`s, both
+            // before `local`s, and all of them before the body. Out of place they
+            // still PARSE — the generic folded form is `"(" ~ instr_name ~ …`, so
+            // `(local i32)` after an instruction reads as a call to `local` — but
+            // none of the three is an instruction name, so the text is malformed.
+            if matches!(pair.as_rule(), Rule::plain_instr | Rule::folded_instr) {
+                if let Some(head) = pair
+                    .clone()
+                    .into_inner()
+                    .find(|c| c.as_rule() == Rule::instr_name)
+                {
+                    if matches!(head.as_str().trim(), "param" | "result" | "local" | "type") {
                         return true;
                     }
                 }
-                false
             }
-            if local_ids(&pair, &mut seen) {
-                return true;
-            }
-            // A func giving BOTH `(type $t)` and an inline signature must
-            // repeat `$t`'s shape exactly; a partial or differing one is the
-            // spec's "inline function type".
-            if let Some(tu) = pair.clone().into_inner().find(|c| c.as_rule() == Rule::typeuse) {
-                let named = tu
-                    .clone()
-                    .into_inner()
-                    .find(|c| c.as_rule() == Rule::index)
-                    .map(|c| c.as_str().trim_start_matches('$').to_string());
-                let types_of = |rule: Rule| -> Vec<String> {
-                    tu.clone()
-                        .into_inner()
-                        .filter(|c| c.as_rule() == rule)
-                        .flat_map(|c| {
-                            c.into_inner()
-                                .filter(|v| v.as_rule() == Rule::any_val_type)
-                                .map(|v| v.as_str().split_whitespace().collect::<Vec<_>>().join(" "))
-                                .collect::<Vec<_>>()
-                        })
-                        .collect()
-                };
-                let inline_params = types_of(Rule::param);
-                let inline_results = types_of(Rule::result);
-                if let Some(n) = named {
-                    if !(inline_params.is_empty() && inline_results.is_empty()) {
-                        if let Some((dp, dr)) = shapes.get(&n) {
-                            if *dp != inline_params || *dr != inline_results {
+            if pair.as_rule() == Rule::func_field {
+                // Params and locals share ONE index space, so a name may appear
+                // only once across both.
+                let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+                fn local_ids(p: &Pair<Rule>, seen: &mut std::collections::HashSet<String>) -> bool {
+                    if matches!(p.as_rule(), Rule::param | Rule::local) {
+                        if let Some(id) = p.clone().into_inner().find(|c| c.as_rule() == Rule::id) {
+                            if !seen.insert(id.as_str().trim_start_matches('$').to_string()) {
                                 return true;
                             }
                         }
                     }
-                }
-            }
-        }
-        if pair.as_rule() == Rule::plain_instr || pair.as_rule() == Rule::folded_instr {
-            let mut name: Option<String> = None;
-            let mut first_int: Option<String> = None;
-            let mut first_float: Option<String> = None;
-            for c in pair.clone().into_inner() {
-                // `align=N` states the access alignment as 2^k BYTES, so N must
-                // be a positive power of two. `align=0` and `align=7` are
-                // malformed TEXT (`align.wast`), separately from `align=8` on a
-                // one-byte access, which parses and is merely INVALID.
-                if c.as_rule() == Rule::instr_arg {
-                    if let Some(digits) = c.as_str().trim().strip_prefix("align=") {
-                        match digits.parse::<u32>() {
-                            Ok(n) if n.is_power_of_two() => {}
-                            _ => return true,
-                        }
-                    }
-                    // A memarg `offset=` field is a WAT `uN` — decimal or
-                    // `0x`-hex, `_` separators allowed, NO SIGN. `offset=-1`
-                    // is not a memarg the lexer can build at all, which is why
-                    // the spec's expected text is "unknown operator" and not
-                    // something about offsets (`simd_address.wast`).
-                    //
-                    // ⛔ This is a LEXICAL check only. `offset=4294967296` on a
-                    // 32-bit memory lexes fine and is INVALID, not malformed —
-                    // flagging it here would make that assertion pass for the
-                    // wrong reason.
-                    if let Some(digits) = c.as_str().trim().strip_prefix("offset=") {
-                        if !is_wat_unsigned_literal(digits) {
+                    for c in p.clone().into_inner() {
+                        if local_ids(&c, seen) {
                             return true;
                         }
                     }
+                    false
                 }
-                match c.as_rule() {
-                    Rule::instr_name if name.is_none() => name = Some(c.as_str().to_string()),
-                    Rule::instr_arg if first_int.is_none() && first_float.is_none() => {
-                        if let Some(inner) = c.into_inner().next() {
-                            match inner.as_rule() {
-                                Rule::integer => first_int = Some(inner.as_str().to_string()),
-                                Rule::float => first_float = Some(inner.as_str().to_string()),
-                                _ => {}
+                if local_ids(&pair, &mut seen) {
+                    return true;
+                }
+                // A func giving BOTH `(type $t)` and an inline signature must
+                // repeat `$t`'s shape exactly; a partial or differing one is the
+                // spec's "inline function type".
+                if let Some(tu) = pair
+                    .clone()
+                    .into_inner()
+                    .find(|c| c.as_rule() == Rule::typeuse)
+                {
+                    let named = tu
+                        .clone()
+                        .into_inner()
+                        .find(|c| c.as_rule() == Rule::index)
+                        .map(|c| c.as_str().trim_start_matches('$').to_string());
+                    let types_of = |rule: Rule| -> Vec<String> {
+                        tu.clone()
+                            .into_inner()
+                            .filter(|c| c.as_rule() == rule)
+                            .flat_map(|c| {
+                                c.into_inner()
+                                    .filter(|v| v.as_rule() == Rule::any_val_type)
+                                    .map(|v| {
+                                        v.as_str().split_whitespace().collect::<Vec<_>>().join(" ")
+                                    })
+                                    .collect::<Vec<_>>()
+                            })
+                            .collect()
+                    };
+                    let inline_params = types_of(Rule::param);
+                    let inline_results = types_of(Rule::result);
+                    if let Some(n) = named {
+                        if !(inline_params.is_empty() && inline_results.is_empty()) {
+                            if let Some((dp, dr)) = shapes.get(&n) {
+                                if *dp != inline_params || *dr != inline_results {
+                                    return true;
+                                }
                             }
                         }
                     }
-                    _ => {}
                 }
             }
-            if let Some(n) = name.as_deref() {
-                if unknown_instruction_name(n) {
-                    return true;
-                }
-                // ⛔ A FOLDED `if` THAT CARRIES AN `instr_name` IS MALFORMED.
-                // The dedicated `folded_instr` arm spells `if` as a LITERAL, so
-                // it produces no `instr_name` child; only the generic arm
-                // (`"(" ~ instr_name ~ instr_arg* ~ instr* ~ ")"`) does. A node
-                // reaching here therefore failed the arm that encodes the
-                // spec's shape — `'(' 'if' label blocktype foldedinstr*
-                // '(' 'then' … ')'` — and the generic arm accepted it anyway by
-                // taking `(then)`/`(else)` as ordinary folded instructions.
-                //
-                // That is exactly `(if i32.const 0 (then) (else))`: a PLAIN
-                // instruction where the abbreviation admits only folded ones.
-                //
-                // Checked over the TREE rather than by tightening the grammar:
-                // the rule change parses the same language but hands the walker
-                // a shape it skips, silently dropping the condition of every
-                // WELL-FORMED folded `if` in the suite.
-                if pair.as_rule() == Rule::folded_instr && n == "if" {
-                    return true;
-                }
-                if let Some(lit) = first_int.as_deref() {
-                    if const_literal_out_of_range(n, lit) {
-                        return true;
+            if pair.as_rule() == Rule::plain_instr || pair.as_rule() == Rule::folded_instr {
+                let mut name: Option<String> = None;
+                let mut first_int: Option<String> = None;
+                let mut first_float: Option<String> = None;
+                for c in pair.clone().into_inner() {
+                    // `align=N` states the access alignment as 2^k BYTES, so N must
+                    // be a positive power of two. `align=0` and `align=7` are
+                    // malformed TEXT (`align.wast`), separately from `align=8` on a
+                    // one-byte access, which parses and is merely INVALID.
+                    if c.as_rule() == Rule::instr_arg {
+                        if let Some(digits) = c.as_str().trim().strip_prefix("align=") {
+                            match digits.parse::<u32>() {
+                                Ok(n) if n.is_power_of_two() => {}
+                                _ => return true,
+                            }
+                        }
+                        // A memarg `offset=` field is a WAT `uN` — decimal or
+                        // `0x`-hex, `_` separators allowed, NO SIGN. `offset=-1`
+                        // is not a memarg the lexer can build at all, which is why
+                        // the spec's expected text is "unknown operator" and not
+                        // something about offsets (`simd_address.wast`).
+                        //
+                        // ⛔ This is a LEXICAL check only. `offset=4294967296` on a
+                        // 32-bit memory lexes fine and is INVALID, not malformed —
+                        // flagging it here would make that assertion pass for the
+                        // wrong reason.
+                        if let Some(digits) = c.as_str().trim().strip_prefix("offset=") {
+                            if !is_wat_unsigned_literal(digits) {
+                                return true;
+                            }
+                        }
+                    }
+                    match c.as_rule() {
+                        Rule::instr_name if name.is_none() => name = Some(c.as_str().to_string()),
+                        Rule::instr_arg if first_int.is_none() && first_float.is_none() => {
+                            if let Some(inner) = c.into_inner().next() {
+                                match inner.as_rule() {
+                                    Rule::integer => first_int = Some(inner.as_str().to_string()),
+                                    Rule::float => first_float = Some(inner.as_str().to_string()),
+                                    _ => {}
+                                }
+                            }
+                        }
+                        _ => {}
                     }
                 }
-                // An INTEGER const takes an integer literal. The grammar's
-                // `float` rule matches `nan`, `nan:arithmetic`, `inf` and any
-                // decimal-point form, and the generic operand rule lets one
-                // reach `i32.const` — which the spec calls malformed
-                // (`i32.wast`, `i64.wast`: "unexpected token").
-                if first_float.is_some() && matches!(n, "i32.const" | "i64.const") {
-                    return true;
-                }
-                // `nan:canonical` / `nan:arithmetic` are RESULT PATTERNS — they
-                // name a set of NaNs an `assert_return` will accept, not a
-                // value. As the operand of a `const` there is nothing for them
-                // to denote, and the spec calls the text malformed
-                // (`f32.wast`, `f64.wast`).
-                if matches!(n, "f32.const" | "f64.const")
-                    && first_float
-                        .as_deref()
-                        .is_some_and(|f| f.starts_with("nan:"))
-                {
-                    return true;
-                }
-                // A numeric `const` MUST carry its literal. Our grammar spells
-                // the operand as an optional `instr_arg`, so `(i32.const)`
-                // parsed and pushed a default (`const.wast`).
-                if matches!(n, "i32.const" | "i64.const" | "f32.const" | "f64.const")
-                    && first_int.is_none()
-                    && first_float.is_none()
-                {
-                    return true;
-                }
-                // …and it must be representable at its width.
-                if matches!(n, "f32.const" | "f64.const") {
-                    let is_f32 = n == "f32.const";
-                    if first_float
-                        .as_deref()
-                        .or(first_int.as_deref())
-                        .is_some_and(|f| float_literal_out_of_range(f, is_f32))
+                if let Some(n) = name.as_deref() {
+                    if unknown_instruction_name(n) {
+                        return true;
+                    }
+                    // ⛔ A FOLDED `if` THAT CARRIES AN `instr_name` IS MALFORMED.
+                    // The dedicated `folded_instr` arm spells `if` as a LITERAL, so
+                    // it produces no `instr_name` child; only the generic arm
+                    // (`"(" ~ instr_name ~ instr_arg* ~ instr* ~ ")"`) does. A node
+                    // reaching here therefore failed the arm that encodes the
+                    // spec's shape — `'(' 'if' label blocktype foldedinstr*
+                    // '(' 'then' … ')'` — and the generic arm accepted it anyway by
+                    // taking `(then)`/`(else)` as ordinary folded instructions.
+                    //
+                    // That is exactly `(if i32.const 0 (then) (else))`: a PLAIN
+                    // instruction where the abbreviation admits only folded ones.
+                    //
+                    // Checked over the TREE rather than by tightening the grammar:
+                    // the rule change parses the same language but hands the walker
+                    // a shape it skips, silently dropping the condition of every
+                    // WELL-FORMED folded `if` in the suite.
+                    if pair.as_rule() == Rule::folded_instr && n == "if" {
+                        return true;
+                    }
+                    if let Some(lit) = first_int.as_deref() {
+                        if const_literal_out_of_range(n, lit) {
+                            return true;
+                        }
+                    }
+                    // An INTEGER const takes an integer literal. The grammar's
+                    // `float` rule matches `nan`, `nan:arithmetic`, `inf` and any
+                    // decimal-point form, and the generic operand rule lets one
+                    // reach `i32.const` — which the spec calls malformed
+                    // (`i32.wast`, `i64.wast`: "unexpected token").
+                    if first_float.is_some() && matches!(n, "i32.const" | "i64.const") {
+                        return true;
+                    }
+                    // `nan:canonical` / `nan:arithmetic` are RESULT PATTERNS — they
+                    // name a set of NaNs an `assert_return` will accept, not a
+                    // value. As the operand of a `const` there is nothing for them
+                    // to denote, and the spec calls the text malformed
+                    // (`f32.wast`, `f64.wast`).
+                    if matches!(n, "f32.const" | "f64.const")
+                        && first_float
+                            .as_deref()
+                            .is_some_and(|f| f.starts_with("nan:"))
                     {
                         return true;
                     }
+                    // A numeric `const` MUST carry its literal. Our grammar spells
+                    // the operand as an optional `instr_arg`, so `(i32.const)`
+                    // parsed and pushed a default (`const.wast`).
+                    if matches!(n, "i32.const" | "i64.const" | "f32.const" | "f64.const")
+                        && first_int.is_none()
+                        && first_float.is_none()
+                    {
+                        return true;
+                    }
+                    // …and it must be representable at its width.
+                    if matches!(n, "f32.const" | "f64.const") {
+                        let is_f32 = n == "f32.const";
+                        if first_float
+                            .as_deref()
+                            .or(first_int.as_deref())
+                            .is_some_and(|f| float_literal_out_of_range(f, is_f32))
+                        {
+                            return true;
+                        }
+                    }
                 }
             }
-        }
-        // `catch` / `catch_all` are CLAUSES of a `try_table`, not instructions.
-        // Our grammar's generic mnemonic rule matches them anywhere, so
-        // `(func (catch_all))` parsed (`exceptions/try_table.wast`).
-        if matches!(pair.as_rule(), Rule::plain_instr | Rule::folded_instr) {
-            let head = pair
-                .clone()
-                .into_inner()
-                .find(|c| c.as_rule() == Rule::instr_name)
-                .map(|c| c.as_str().to_string())
-                .unwrap_or_default();
-            if matches!(
-                head.as_str(),
-                "catch" | "catch_ref" | "catch_all" | "catch_all_ref"
-            ) {
-                return true;
-            }
-            // A lane INDEX immediate is a `laneidx` — one unsigned byte. A
-            // negative or >255 index has no encoding, so the text is malformed
-            // (an index merely past the shape's lane count is INVALID, a
-            // different assertion). `simd_lane.wast`.
-            if head.ends_with("extract_lane")
-                || head.ends_with("extract_lane_s")
-                || head.ends_with("extract_lane_u")
-                || head.ends_with("replace_lane")
-                || head == "i8x16.shuffle"
-            {
-                // The immediate is MANDATORY: `(i8x16.extract_lane_s (local.get
-                // 0) …)` has a folded operand where the laneidx must be, which
-                // the spec calls malformed rather than defaulting to lane 0.
-                let has_immediate = pair
+            // `catch` / `catch_all` are CLAUSES of a `try_table`, not instructions.
+            // Our grammar's generic mnemonic rule matches them anywhere, so
+            // `(func (catch_all))` parsed (`exceptions/try_table.wast`).
+            if matches!(pair.as_rule(), Rule::plain_instr | Rule::folded_instr) {
+                let head = pair
                     .clone()
                     .into_inner()
-                    .filter(|c| c.as_rule() == Rule::instr_arg)
-                    .any(|c| {
-                        c.into_inner()
-                            .next()
-                            .is_some_and(|i| i.as_rule() == Rule::integer)
-                    });
-                if !has_immediate {
+                    .find(|c| c.as_rule() == Rule::instr_name)
+                    .map(|c| c.as_str().to_string())
+                    .unwrap_or_default();
+                if matches!(
+                    head.as_str(),
+                    "catch" | "catch_ref" | "catch_all" | "catch_all_ref"
+                ) {
                     return true;
                 }
-                // `shuffle` carries SIXTEEN of them; the others exactly one.
-                for idx in pair
-                    .clone()
-                    .into_inner()
-                    .filter(|c| c.as_rule() == Rule::instr_arg)
-                    .filter_map(|c| {
-                        c.into_inner()
-                            .next()
-                            .filter(|i| i.as_rule() == Rule::integer)
-                            .map(|i| i.as_str().to_string())
-                    })
+                // A lane INDEX immediate is a `laneidx` — one unsigned byte. A
+                // negative or >255 index has no encoding, so the text is malformed
+                // (an index merely past the shape's lane count is INVALID, a
+                // different assertion). `simd_lane.wast`.
+                if head.ends_with("extract_lane")
+                    || head.ends_with("extract_lane_s")
+                    || head.ends_with("extract_lane_u")
+                    || head.ends_with("replace_lane")
+                    || head == "i8x16.shuffle"
                 {
-                    // A laneidx is `u8` — an UNSIGNED literal, so even a `+`
-                    // sign has no spelling (`simd_lane.wast`).
-                    let text = idx.replace('_', "");
-                    if text.starts_with('+') || text.starts_with('-') {
+                    // The immediate is MANDATORY: `(i8x16.extract_lane_s (local.get
+                    // 0) …)` has a folded operand where the laneidx must be, which
+                    // the spec calls malformed rather than defaulting to lane 0.
+                    let has_immediate = pair
+                        .clone()
+                        .into_inner()
+                        .filter(|c| c.as_rule() == Rule::instr_arg)
+                        .any(|c| {
+                            c.into_inner()
+                                .next()
+                                .is_some_and(|i| i.as_rule() == Rule::integer)
+                        });
+                    if !has_immediate {
                         return true;
                     }
-                    let value = match text.strip_prefix("0x") {
-                        Some(hex) => u128::from_str_radix(hex, 16).ok(),
-                        None => text.parse::<u128>().ok(),
-                    };
-                    if value.is_none_or(|v| v > 255) {
-                        return true;
-                    }
-                    if head != "i8x16.shuffle" {
-                        break;
+                    // `shuffle` carries SIXTEEN of them; the others exactly one.
+                    for idx in pair
+                        .clone()
+                        .into_inner()
+                        .filter(|c| c.as_rule() == Rule::instr_arg)
+                        .filter_map(|c| {
+                            c.into_inner()
+                                .next()
+                                .filter(|i| i.as_rule() == Rule::integer)
+                                .map(|i| i.as_str().to_string())
+                        })
+                    {
+                        // A laneidx is `u8` — an UNSIGNED literal, so even a `+`
+                        // sign has no spelling (`simd_lane.wast`).
+                        let text = idx.replace('_', "");
+                        if text.starts_with('+') || text.starts_with('-') {
+                            return true;
+                        }
+                        let value = match text.strip_prefix("0x") {
+                            Some(hex) => u128::from_str_radix(hex, 16).ok(),
+                            None => text.parse::<u128>().ok(),
+                        };
+                        if value.is_none_or(|v| v > 255) {
+                            return true;
+                        }
+                        if head != "i8x16.shuffle" {
+                            break;
+                        }
                     }
                 }
-            }
-            // Every lane of a `v128.const` must fit its SHAPE's lane width,
-            // signed or unsigned (`simd_const.wast`).
-            if head == "v128.const" {
-                let mut shape: Option<String> = None;
-                for arg in pair
-                    .clone()
-                    .into_inner()
-                    .filter(|c| c.as_rule() == Rule::instr_arg)
-                {
-                    let Some(inner) = arg.into_inner().next() else {
-                        continue;
-                    };
-                    match inner.as_rule() {
-                        Rule::bare_lane_type | Rule::bare_val_type => {
-                            shape = Some(inner.as_str().to_string())
-                        }
-                        Rule::integer => {
-                            let bits = match shape.as_deref() {
-                                Some("i8x16") => 8u32,
-                                Some("i16x8") => 16,
-                                Some("i32x4") => 32,
-                                Some("i64x2") => 64,
-                                // A FLOAT shape's lane may be written without a
-                                // decimal point — `f32x4 340282356779733661637539395458142568448`
-                                // is a float literal spelled as an integer, and
-                                // it still has to be representable.
-                                Some("f32x4") | Some("f64x2") => {
-                                    if float_literal_out_of_range(
-                                        inner.as_str(),
-                                        shape.as_deref() == Some("f32x4"),
-                                    ) {
-                                        return true;
+                // Every lane of a `v128.const` must fit its SHAPE's lane width,
+                // signed or unsigned (`simd_const.wast`).
+                if head == "v128.const" {
+                    let mut shape: Option<String> = None;
+                    for arg in pair
+                        .clone()
+                        .into_inner()
+                        .filter(|c| c.as_rule() == Rule::instr_arg)
+                    {
+                        let Some(inner) = arg.into_inner().next() else {
+                            continue;
+                        };
+                        match inner.as_rule() {
+                            Rule::bare_lane_type | Rule::bare_val_type => {
+                                shape = Some(inner.as_str().to_string())
+                            }
+                            Rule::integer => {
+                                let bits = match shape.as_deref() {
+                                    Some("i8x16") => 8u32,
+                                    Some("i16x8") => 16,
+                                    Some("i32x4") => 32,
+                                    Some("i64x2") => 64,
+                                    // A FLOAT shape's lane may be written without a
+                                    // decimal point — `f32x4 340282356779733661637539395458142568448`
+                                    // is a float literal spelled as an integer, and
+                                    // it still has to be representable.
+                                    Some("f32x4") | Some("f64x2") => {
+                                        if float_literal_out_of_range(
+                                            inner.as_str(),
+                                            shape.as_deref() == Some("f32x4"),
+                                        ) {
+                                            return true;
+                                        }
+                                        continue;
                                     }
-                                    continue;
+                                    _ => continue,
+                                };
+                                if lane_literal_out_of_range(inner.as_str(), bits) {
+                                    return true;
                                 }
-                                _ => continue,
-                            };
-                            if lane_literal_out_of_range(inner.as_str(), bits) {
-                                return true;
                             }
-                        }
-                        Rule::float => {
-                            let is_f32 = match shape.as_deref() {
-                                Some("f32x4") => true,
-                                Some("f64x2") => false,
-                                _ => continue,
-                            };
-                            if float_literal_out_of_range(inner.as_str(), is_f32) {
-                                return true;
+                            Rule::float => {
+                                let is_f32 = match shape.as_deref() {
+                                    Some("f32x4") => true,
+                                    Some("f64x2") => false,
+                                    _ => continue,
+                                };
+                                if float_literal_out_of_range(inner.as_str(), is_f32) {
+                                    return true;
+                                }
                             }
+                            _ => {}
                         }
-                        _ => {}
                     }
                 }
-            }
-            // …and it must carry its SHAPE plus exactly one lane per element:
-            // `(v128.const)` and `(v128.const i32x4 0 0 0)` have no encoding.
-            if head == "v128.const" {
-                let mut shape: Option<String> = None;
-                let mut lanes = 0usize;
-                for arg in pair
-                    .clone()
-                    .into_inner()
-                    .filter(|c| c.as_rule() == Rule::instr_arg)
-                {
-                    match arg.into_inner().next().map(|i| (i.as_rule(), i.as_str().to_string())) {
-                        Some((Rule::bare_lane_type, t)) | Some((Rule::bare_val_type, t)) => {
-                            shape = Some(t)
-                        }
-                        Some((Rule::integer, _)) | Some((Rule::float, _)) => lanes += 1,
-                        _ => {}
-                    }
-                }
-                let expected = match shape.as_deref() {
-                    Some("i8x16") => 16,
-                    Some("i16x8") => 8,
-                    Some("i32x4") | Some("f32x4") => 4,
-                    Some("i64x2") | Some("f64x2") => 2,
-                    // No shape at all.
-                    _ => return true,
-                };
-                if lanes != expected {
-                    return true;
-                }
-            }
-            // `i8x16.shuffle` takes EXACTLY 16 lane indices — the mask is one
-            // byte per result lane, so a shorter or longer list has no encoding
-            // (`simd_lane.wast`).
-            if head == "i8x16.shuffle" {
-                let lanes = pair
-                    .clone()
-                    .into_inner()
-                    .filter(|c| c.as_rule() == Rule::instr_arg)
-                    .filter(|c| {
-                        c.clone()
+                // …and it must carry its SHAPE plus exactly one lane per element:
+                // `(v128.const)` and `(v128.const i32x4 0 0 0)` have no encoding.
+                if head == "v128.const" {
+                    let mut shape: Option<String> = None;
+                    let mut lanes = 0usize;
+                    for arg in pair
+                        .clone()
+                        .into_inner()
+                        .filter(|c| c.as_rule() == Rule::instr_arg)
+                    {
+                        match arg
                             .into_inner()
                             .next()
-                            .is_some_and(|i| i.as_rule() == Rule::integer)
-                    })
-                    .count();
-                if lanes != 16 {
-                    return true;
+                            .map(|i| (i.as_rule(), i.as_str().to_string()))
+                        {
+                            Some((Rule::bare_lane_type, t)) | Some((Rule::bare_val_type, t)) => {
+                                shape = Some(t)
+                            }
+                            Some((Rule::integer, _)) | Some((Rule::float, _)) => lanes += 1,
+                            _ => {}
+                        }
+                    }
+                    let expected = match shape.as_deref() {
+                        Some("i8x16") => 16,
+                        Some("i16x8") => 8,
+                        Some("i32x4") | Some("f32x4") => 4,
+                        Some("i64x2") | Some("f64x2") => 2,
+                        // No shape at all.
+                        _ => return true,
+                    };
+                    if lanes != expected {
+                        return true;
+                    }
                 }
-            }
-        }
-        // A BLOCK's parameters are positional and cannot be named — only a
-        // function's `(param $x t)` may carry an id (`block.wast`).
-        if pair.as_rule() == Rule::block_type
-            && pair.as_str().trim_start().trim_start_matches('(').trim_start().starts_with("param")
-            && pair.clone().into_inner().any(|c| c.as_rule() == Rule::id)
-        {
-            return true;
-        }
-        // A block type is written `(type)? (param)* (result)*`, in that order
-        // (§6.5.3). Our `block_type*` accepts any interleaving, so
-        // `(block (result i32) (param i32))` parsed — the spec calls it
-        // malformed (`block.wast`, `if.wast`, `loop.wast`).
-        if matches!(pair.as_rule(), Rule::plain_instr | Rule::folded_instr) {
-            // 0 = (type …), 1 = (param …), 2 = (result …): the rank must never
-            // decrease across the run.
-            let mut rank = 0u8;
-            for bt in pair
-                .clone()
-                .into_inner()
-                .filter(|c| c.as_rule() == Rule::block_type)
-            {
-                let text = bt.as_str().trim_start().trim_start_matches('(').trim_start();
-                let this = if text.starts_with("type") {
-                    0
-                } else if text.starts_with("param") {
-                    1
-                } else {
-                    2
-                };
-                if this < rank {
-                    return true;
-                }
-                rank = this;
-            }
-        }
-        // Two fields of one struct cannot share a name: `$x` would have to
-        // resolve to two different indices (`gc/struct.wast`).
-        if pair.as_rule() == Rule::struct_type {
-            let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-            for field in pair
-                .clone()
-                .into_inner()
-                .filter(|c| c.as_rule() == Rule::field_def)
-            {
-                if let Some(id) = field.into_inner().find(|c| c.as_rule() == Rule::id) {
-                    if !seen.insert(id.as_str().to_string()) {
+                // `i8x16.shuffle` takes EXACTLY 16 lane indices — the mask is one
+                // byte per result lane, so a shorter or longer list has no encoding
+                // (`simd_lane.wast`).
+                if head == "i8x16.shuffle" {
+                    let lanes = pair
+                        .clone()
+                        .into_inner()
+                        .filter(|c| c.as_rule() == Rule::instr_arg)
+                        .filter(|c| {
+                            c.clone()
+                                .into_inner()
+                                .next()
+                                .is_some_and(|i| i.as_rule() == Rule::integer)
+                        })
+                        .count();
+                    if lanes != 16 {
                         return true;
                     }
                 }
             }
-        }
+            // A BLOCK's parameters are positional and cannot be named — only a
+            // function's `(param $x t)` may carry an id (`block.wast`).
+            if pair.as_rule() == Rule::block_type
+                && pair
+                    .as_str()
+                    .trim_start()
+                    .trim_start_matches('(')
+                    .trim_start()
+                    .starts_with("param")
+                && pair.clone().into_inner().any(|c| c.as_rule() == Rule::id)
+            {
+                return true;
+            }
+            // A block type is written `(type)? (param)* (result)*`, in that order
+            // (§6.5.3). Our `block_type*` accepts any interleaving, so
+            // `(block (result i32) (param i32))` parsed — the spec calls it
+            // malformed (`block.wast`, `if.wast`, `loop.wast`).
+            if matches!(pair.as_rule(), Rule::plain_instr | Rule::folded_instr) {
+                // 0 = (type …), 1 = (param …), 2 = (result …): the rank must never
+                // decrease across the run.
+                let mut rank = 0u8;
+                for bt in pair
+                    .clone()
+                    .into_inner()
+                    .filter(|c| c.as_rule() == Rule::block_type)
+                {
+                    let text = bt
+                        .as_str()
+                        .trim_start()
+                        .trim_start_matches('(')
+                        .trim_start();
+                    let this = if text.starts_with("type") {
+                        0
+                    } else if text.starts_with("param") {
+                        1
+                    } else {
+                        2
+                    };
+                    if this < rank {
+                        return true;
+                    }
+                    rank = this;
+                }
+            }
+            // Two fields of one struct cannot share a name: `$x` would have to
+            // resolve to two different indices (`gc/struct.wast`).
+            if pair.as_rule() == Rule::struct_type {
+                let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+                for field in pair
+                    .clone()
+                    .into_inner()
+                    .filter(|c| c.as_rule() == Rule::field_def)
+                {
+                    if let Some(id) = field.into_inner().find(|c| c.as_rule() == Rule::id) {
+                        if !seen.insert(id.as_str().to_string()) {
+                            return true;
+                        }
+                    }
+                }
+            }
             // A block type written as BOTH `(type $t)` and an inline signature
             // must repeat `$t`'s shape exactly (`block.wast`, `if.wast`,
             // `loop.wast`).
@@ -16064,7 +16252,11 @@ fn quoted_module_is_malformed(pairs: pest::iterators::Pairs<Rule>) -> bool {
                     .into_inner()
                     .filter(|c| c.as_rule() == Rule::block_type)
                 {
-                    let text = bt.as_str().trim_start().trim_start_matches('(').trim_start();
+                    let text = bt
+                        .as_str()
+                        .trim_start()
+                        .trim_start_matches('(')
+                        .trim_start();
                     if text.starts_with("type") {
                         named = bt
                             .clone()
@@ -16187,10 +16379,43 @@ fn is_wat_unsigned_literal(text: &str) -> bool {
 /// are not evidence of malformed text.
 fn unknown_instruction_name(name: &str) -> bool {
     const STRUCTURAL: &[&str] = &[
-        "block", "loop", "if", "then", "else", "end", "try_table", "catch", "catch_ref",
-        "catch_all", "catch_all_ref", "item", "offset", "type", "param", "result", "local",
-        "func", "table", "memory", "global", "elem", "data", "export", "import", "mut", "declare",
-        "quote", "binary", "module", "tag", "field", "struct", "array", "sub", "rec", "final",
+        "block",
+        "loop",
+        "if",
+        "then",
+        "else",
+        "end",
+        "try_table",
+        "catch",
+        "catch_ref",
+        "catch_all",
+        "catch_all_ref",
+        "item",
+        "offset",
+        "type",
+        "param",
+        "result",
+        "local",
+        "func",
+        "table",
+        "memory",
+        "global",
+        "elem",
+        "data",
+        "export",
+        "import",
+        "mut",
+        "declare",
+        "quote",
+        "binary",
+        "module",
+        "tag",
+        "field",
+        "struct",
+        "array",
+        "sub",
+        "rec",
+        "final",
         "cont",
     ];
     if STRUCTURAL.contains(&name) {
@@ -16241,7 +16466,10 @@ fn lane_literal_out_of_range(lit: &str, bits: u32) -> bool {
     let text = lit.trim().replace('_', "");
     let negative = text.starts_with('-');
     let magnitude = text.trim_start_matches(['+', '-']);
-    let value = match magnitude.strip_prefix("0x").or_else(|| magnitude.strip_prefix("0X")) {
+    let value = match magnitude
+        .strip_prefix("0x")
+        .or_else(|| magnitude.strip_prefix("0X"))
+    {
         Some(hex) => u128::from_str_radix(hex, 16),
         None => magnitude.parse::<u128>(),
     };
@@ -16367,7 +16595,8 @@ fn wat_number_token_ok(tok: &str) -> bool {
         None => wat_digits_ok(mantissa, hex),
     };
     // The exponent is always DECIMAL, even for a hex float.
-    let exponent_ok = exponent.is_none_or(|e| wat_digits_ok(e.strip_prefix(['+', '-']).unwrap_or(e), false));
+    let exponent_ok =
+        exponent.is_none_or(|e| wat_digits_ok(e.strip_prefix(['+', '-']).unwrap_or(e), false));
     mantissa_ok && exponent_ok
 }
 
@@ -16569,7 +16798,11 @@ fn quoted_text_has_bad_token(src: &str) -> bool {
             // `$"l"0` is a quoted id and a `0`, and `"a""b"` is two strings,
             // both with nothing between them. The spec rejects each as an
             // unknown operator rather than reading it as either.
-            if chars.get(i).copied().is_some_and(|n| is_idchar(n) || n == '"') {
+            if chars
+                .get(i)
+                .copied()
+                .is_some_and(|n| is_idchar(n) || n == '"')
+            {
                 return true;
             }
             continue;
@@ -16736,9 +16969,7 @@ fn walk_assert_invalid(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Stateme
             // Only a VALIDATION rejection discharges `assert_invalid`; a module
             // that fails to decode is malformed, which is a different assertion.
             match vybe_platform_wasm::read_wasm_classified(&binary_module_bytes(&child)) {
-                Err(e) if e.phase == vybe_platform_wasm::Phase::Invalid => {
-                    reason = Some(e.message)
-                }
+                Err(e) if e.phase == vybe_platform_wasm::Phase::Invalid => reason = Some(e.message),
                 Err(_) | Ok(_) => {}
             }
             break;
@@ -17134,7 +17365,9 @@ fn build_trap_check_helper(span: Span) -> Statement {
                     BinOp::Add,
                     bin(
                         BinOp::Add,
-                        Expression::string("assert_trap failed: expected trap message containing \""),
+                        Expression::string(
+                            "assert_trap failed: expected trap message containing \"",
+                        ),
                         exp(),
                         span,
                     ),
@@ -17187,14 +17420,22 @@ fn build_trap_check_helper(span: Span) -> Statement {
             )],
             span,
         ),
-        let_of("__wct_nl", make_call("string_length", vec![exp()], span), span),
+        let_of(
+            "__wct_nl",
+            make_call("string_length", vec![exp()], span),
+            span,
+        ),
         // No expected text: any trap satisfies the assertion.
         if_then(
             bin(BinOp::Eq, nl(), Expression::int(0), span),
             vec![ret(span)],
             span,
         ),
-        let_of("__wct_hl", make_call("string_length", vec![m()], span), span),
+        let_of(
+            "__wct_hl",
+            make_call("string_length", vec![m()], span),
+            span,
+        ),
         // Needle longer than haystack: no window to test, and `hl - nl` would
         // go negative — `substring` clamps u32-wise, so the loop must not run.
         if_then(bin(BinOp::Lt, hl(), nl(), span), vec![report.clone()], span),
@@ -17401,9 +17642,10 @@ fn walk_get_cmd(__w: &mut WastWalker, pair: Pair<Rule>) -> Result<Statement, Str
     }
     // An exported global IS a top-level binding — read it directly.
     let binding = match &module_id {
-        Some(m) => {
-            __w.module_global_exports.get(m).and_then(|e| e.get(&name).cloned())
-        }
+        Some(m) => __w
+            .module_global_exports
+            .get(m)
+            .and_then(|e| e.get(&name).cloned()),
         None => __w.export_global_map.get(&name).cloned(),
     };
     let expr = match binding {
@@ -17668,7 +17910,10 @@ fn parse_integer(s: &str) -> Expression {
     } else {
         // Decimal: fall back to u64 (then reinterpret) for values above i64::MAX
         // such as an unsigned 64-bit literal written in decimal.
-        return match s.parse::<i64>().or_else(|_| s.parse::<u64>().map(|u| u as i64)) {
+        return match s
+            .parse::<i64>()
+            .or_else(|_| s.parse::<u64>().map(|u| u as i64))
+        {
             Ok(v) => Expression::int(v),
             // Too large for 64 bits, so it cannot be an integer const at all —
             // it is a FLOAT written in integer form. See `too_wide_for_integer`.
@@ -17711,7 +17956,9 @@ fn nan_literal(s: &str) -> f64 {
         .and_then(|(_, hex)| u64::from_str_radix(hex.trim(), 16).ok())
         .filter(|p| *p != 0)
         .unwrap_or(0x0008_0000_0000_0000); // canonical f64 quiet bit
-    f64::from_bits((u64::from(neg) << 63) | 0x7ff0_0000_0000_0000 | (payload & 0x000f_ffff_ffff_ffff))
+    f64::from_bits(
+        (u64::from(neg) << 63) | 0x7ff0_0000_0000_0000 | (payload & 0x000f_ffff_ffff_ffff),
+    )
 }
 
 /// Lower an `f32.const` operand.
@@ -17895,11 +18142,7 @@ fn round_binary(neg: bool, mant: u128, exp: i32, sticky: bool, is_f32: bool) -> 
             // zero. Anything strictly above rounds up to the smallest value.
             (mant, 0u128, None)
         } else {
-            (
-                mant & ((1u128 << s) - 1),
-                mant >> s,
-                Some(1u128 << (s - 1)),
-            )
+            (mant & ((1u128 << s) - 1), mant >> s, Some(1u128 << (s - 1)))
         };
         let up = match half {
             Some(h) => dropped > h || (dropped == h && (sticky || (keep & 1) == 1)),
@@ -18433,7 +18676,8 @@ fn find_matching_end(
     Err("unterminated block/loop/if (missing end)".to_string())
 }
 
-fn fold_instructions(__w: &mut WastWalker, 
+fn fold_instructions(
+    __w: &mut WastWalker,
     pairs: Vec<Pair<Rule>>,
     labels: &mut LabelStack,
 ) -> Result<Vec<Statement>, String> {
@@ -18442,7 +18686,8 @@ fn fold_instructions(__w: &mut WastWalker,
 
 /// Like `fold_instructions`, but the value stack starts pre-loaded with `seed`
 /// (bottom-to-top). Used to thread WASM `block (param …)` inputs into the body.
-fn fold_instructions_seeded(__w: &mut WastWalker,
+fn fold_instructions_seeded(
+    __w: &mut WastWalker,
     // `mut` because a PLAIN instruction that absorbed a following folded one
     // splices it back in as the next instruction — see the `plain_instr` arm.
     mut pairs: Vec<Pair<Rule>>,
@@ -18465,9 +18710,10 @@ fn fold_instructions_seeded(__w: &mut WastWalker,
                     let (else_idx, end_idx) = find_matching_end(&pairs, i)?;
 
                     if kw == "if" {
-                        let result_temps: Vec<String> = (0..peek_block_result_count(__w, &pairs[i]))
-                            .map(|_| fresh_result_temp(__w))
-                            .collect();
+                        let result_temps: Vec<String> =
+                            (0..peek_block_result_count(__w, &pairs[i]))
+                                .map(|_| fresh_result_temp(__w))
+                                .collect();
                         // Condition is the value on top of the stack; below it sit
                         // the `(param …)` block-type inputs, which WASM threads into
                         // BOTH branch bodies — split them off to seed each fold
@@ -18599,9 +18845,10 @@ fn fold_instructions_seeded(__w: &mut WastWalker,
                         // carries the top N stack values into N temps, and the
                         // fall-through assigns the same temps; the temps are left
                         // on the stack. N == 1 is the single-value baseline.
-                        let result_temps: Vec<String> = (0..peek_block_result_count(__w, &pairs[i]))
-                            .map(|_| fresh_result_temp(__w))
-                            .collect();
+                        let result_temps: Vec<String> =
+                            (0..peek_block_result_count(__w, &pairs[i]))
+                                .map(|_| fresh_result_temp(__w))
+                                .collect();
                         for tmp in &result_temps {
                             statements.push(Statement::new(StmtKind::VarDecl {
                                 declarations: vec![VarDeclarator {
@@ -18707,7 +18954,8 @@ fn fold_instructions_seeded(__w: &mut WastWalker,
                 "br_on_null" | "br_on_non_null" => {
                     let span = to_span(&pairs[i]);
                     let is_non_null = kw == "br_on_non_null";
-                    emit_folded_br_on_null(__w, 
+                    emit_folded_br_on_null(
+                        __w,
                         pairs[i].clone(),
                         is_non_null,
                         span,
@@ -18800,19 +19048,43 @@ fn fold_instructions_seeded(__w: &mut WastWalker,
                 let head = folded_instr_head(&inner);
                 match head.as_str() {
                     "block" => {
-                        emit_folded_block(__w, inner, false, span, labels, &mut statements, &mut stack)?;
+                        emit_folded_block(
+                            __w,
+                            inner,
+                            false,
+                            span,
+                            labels,
+                            &mut statements,
+                            &mut stack,
+                        )?;
                     }
                     "loop" => {
-                        emit_folded_block(__w, inner, true, span, labels, &mut statements, &mut stack)?;
+                        emit_folded_block(
+                            __w,
+                            inner,
+                            true,
+                            span,
+                            labels,
+                            &mut statements,
+                            &mut stack,
+                        )?;
                     }
                     "if" => {
                         emit_folded_if(__w, inner, span, labels, &mut statements, &mut stack)?;
                     }
                     "try_table" => {
-                        emit_folded_try_table(__w, inner, span, labels, &mut statements, &mut stack)?;
+                        emit_folded_try_table(
+                            __w,
+                            inner,
+                            span,
+                            labels,
+                            &mut statements,
+                            &mut stack,
+                        )?;
                     }
                     "br_on_null" => {
-                        emit_folded_br_on_null(__w, 
+                        emit_folded_br_on_null(
+                            __w,
                             inner,
                             false,
                             span,
@@ -18822,7 +19094,8 @@ fn fold_instructions_seeded(__w: &mut WastWalker,
                         )?;
                     }
                     "br_on_non_null" => {
-                        emit_folded_br_on_null(__w, 
+                        emit_folded_br_on_null(
+                            __w,
                             inner,
                             true,
                             span,
@@ -18859,7 +19132,8 @@ fn fold_instructions_seeded(__w: &mut WastWalker,
                             nested.as_ref().map(folded_instr_head).unwrap_or_default();
                         match (nested, nested_head.as_str()) {
                             (Some(op), "br_on_null") => {
-                                emit_folded_br_on_null(__w, 
+                                emit_folded_br_on_null(
+                                    __w,
                                     op,
                                     false,
                                     span,
@@ -18870,7 +19144,8 @@ fn fold_instructions_seeded(__w: &mut WastWalker,
                                 stack.pop();
                             }
                             (Some(op), "br_on_non_null") => {
-                                emit_folded_br_on_null(__w, 
+                                emit_folded_br_on_null(
+                                    __w,
                                     op,
                                     true,
                                     span,
@@ -18889,7 +19164,8 @@ fn fold_instructions_seeded(__w: &mut WastWalker,
                             // DEFERRED expression (e.g. a call) whose side
                             // effects must still run in program order.
                             (Some(op), _) if folded_needs_stmt_lowering(&op) => {
-                                emit_folded_operand_stmtwise(__w, 
+                                emit_folded_operand_stmtwise(
+                                    __w,
                                     op,
                                     labels,
                                     &mut statements,
@@ -18934,7 +19210,14 @@ fn fold_instructions_seeded(__w: &mut WastWalker,
                         // branch/label machinery would lower to null and vanish.
                         // Unfold it through the statement machinery instead.
                         if folded_needs_stmt_lowering(&inner) {
-                            emit_folded_stmtwise(__w, inner, span, labels, &mut statements, &mut stack)?;
+                            emit_folded_stmtwise(
+                                __w,
+                                inner,
+                                span,
+                                labels,
+                                &mut statements,
+                                &mut stack,
+                            )?;
                             continue;
                         }
                         // A folded operand nests as `instr` or `instr_arg →
@@ -19006,7 +19289,9 @@ fn fold_instructions_seeded(__w: &mut WastWalker,
                                         )?;
                                     } else {
                                         let s = to_span(&nested);
-                                        stack.push(walk_plain_instr_as_expr(__w, nested, s, labels)?);
+                                        stack.push(walk_plain_instr_as_expr(
+                                            __w, nested, s, labels,
+                                        )?);
                                     }
                                 }
                             }
@@ -19020,7 +19305,8 @@ fn fold_instructions_seeded(__w: &mut WastWalker,
                                 get_instruction_push_count(&head)
                             };
                             let expr = map_instr_to_ast(__w, head.clone(), args, span)?;
-                            land_instr_value(__w, 
+                            land_instr_value(
+                                __w,
                                 expr,
                                 pushes,
                                 head == "call",
@@ -19047,7 +19333,8 @@ fn fold_instructions_seeded(__w: &mut WastWalker,
                         if head.is_empty() {
                             stack.push(expr);
                         } else {
-                            land_instr_value(__w, 
+                            land_instr_value(
+                                __w,
                                 expr,
                                 pushes,
                                 head == "call",
@@ -19210,7 +19497,14 @@ fn fold_instructions_seeded(__w: &mut WastWalker,
                         }
                     }
                     "br" => {
-                        emit_br_stmt_carry(__w, args.first(), span, labels, &mut statements, &mut stack);
+                        emit_br_stmt_carry(
+                            __w,
+                            args.first(),
+                            span,
+                            labels,
+                            &mut statements,
+                            &mut stack,
+                        );
                     }
                     "br_if" => {
                         // Arity 1 pops the condition; the label (if any) is the
@@ -19224,7 +19518,8 @@ fn fold_instructions_seeded(__w: &mut WastWalker,
                             cond = Some(args[0].clone());
                         }
                         let cond_expr = cond.unwrap_or(Expression::int(0));
-                        emit_br_if_stmt(__w, 
+                        emit_br_if_stmt(
+                            __w,
                             lbl_arg,
                             cond_expr,
                             span,
@@ -19241,7 +19536,8 @@ fn fold_instructions_seeded(__w: &mut WastWalker,
                     // when it is NOT. The ref stays on the stack for the
                     // fall-through path (like `br_if`'s peeked block result).
                     "br_on_cast" | "br_on_cast_fail" => {
-                        emit_br_on_cast_stmt(__w,
+                        emit_br_on_cast_stmt(
+                            __w,
                             &args,
                             name == "br_on_cast_fail",
                             span,
@@ -19276,7 +19572,8 @@ fn fold_instructions_seeded(__w: &mut WastWalker,
                         // used to inline its own copy, which then missed the
                         // void-ordering rule the folded path had — stack.wast
                         // `not-quite-a-tree` returned 5 instead of 3).
-                        land_instr_value(__w, 
+                        land_instr_value(
+                            __w,
                             expr,
                             pushes,
                             name == "call",
@@ -19494,9 +19791,7 @@ fn get_instruction_arity(__w: &mut WastWalker, name: &str, args: &[Expression]) 
         "call" | "return_call" => {
             if let Some(first) = args.first() {
                 match &first.kind {
-                    ExprKind::Ident(n) => {
-                        *__w.func_name_arities.get(n).unwrap_or(&1)
-                    }
+                    ExprKind::Ident(n) => *__w.func_name_arities.get(n).unwrap_or(&1),
                     ExprKind::Lit(Literal::Int(idx)) => {
                         *__w.func_index_arities.get(*idx as usize).unwrap_or(&1)
                     }
@@ -19567,7 +19862,7 @@ fn get_instruction_arity(__w: &mut WastWalker, name: &str, args: &[Expression]) 
         "struct.new_default_desc" => 1, // descriptor only
         "ref.get_desc" => 1,            // [ref] → [descriptor]
         "struct.get" | "struct.get_s" | "struct.get_u" => 1, // pops 1 ref
-        "struct.set" => 2,         // pops ref + val
+        "struct.set" => 2,              // pops ref + val
 
         // ── SIMD v128: number of STACK operands (lane index / v128.const values
         //    are immediates, not stack operands). ────────────────────────────
@@ -19651,9 +19946,11 @@ fn simd_stack_arity(name: &str) -> usize {
 /// only functions we positively know to be void become statements.
 fn call_result_count(__w: &mut WastWalker, args: &[Expression]) -> usize {
     match args.first().map(|e| &e.kind) {
-        Some(ExprKind::Ident(n)) => __w.func_name_results.get(n).copied()
-            .unwrap_or(1),
-        Some(ExprKind::Lit(Literal::Int(idx))) => __w.func_index_results.get(*idx as usize).copied()
+        Some(ExprKind::Ident(n)) => __w.func_name_results.get(n).copied().unwrap_or(1),
+        Some(ExprKind::Lit(Literal::Int(idx))) => __w
+            .func_index_results
+            .get(*idx as usize)
+            .copied()
             .unwrap_or(1),
         _ => 1,
     }
@@ -19767,7 +20064,11 @@ fn vt_show(v: &Vt) -> String {
             format!(
                 "(ref{}{})",
                 if r.nullable { " null" } else { "" },
-                if r.exact { format!(" (exact {h})") } else { format!(" {h}") }
+                if r.exact {
+                    format!(" (exact {h})")
+                } else {
+                    format!(" {h}")
+                }
             )
         }
     }
@@ -20143,8 +20444,16 @@ fn fixed_sig(name: &str) -> Option<(Vec<&'static str>, Vec<&'static str>)> {
             || op.starts_with("relaxed_trunc_")
             || matches!(
                 op,
-                "abs" | "neg" | "sqrt" | "ceil" | "floor" | "trunc" | "nearest" | "popcnt"
-                    | "demote_f64x2_zero" | "promote_low_f32x4"
+                "abs"
+                    | "neg"
+                    | "sqrt"
+                    | "ceil"
+                    | "floor"
+                    | "trunc"
+                    | "nearest"
+                    | "popcnt"
+                    | "demote_f64x2_zero"
+                    | "promote_low_f32x4"
             )
         {
             return Some((vec!["v128"], vec!["v128"]));
@@ -20165,10 +20474,24 @@ fn fixed_sig(name: &str) -> Option<(Vec<&'static str>, Vec<&'static str>)> {
             || op.starts_with("relaxed_")
             || matches!(
                 op,
-                "div" | "pmin" | "pmax" | "swizzle"
-                    | "eq" | "ne" | "lt" | "gt" | "le" | "ge"
-                    | "lt_s" | "lt_u" | "gt_s" | "gt_u"
-                    | "le_s" | "le_u" | "ge_s" | "ge_u"
+                "div"
+                    | "pmin"
+                    | "pmax"
+                    | "swizzle"
+                    | "eq"
+                    | "ne"
+                    | "lt"
+                    | "gt"
+                    | "le"
+                    | "ge"
+                    | "lt_s"
+                    | "lt_u"
+                    | "gt_s"
+                    | "gt_u"
+                    | "le_s"
+                    | "le_u"
+                    | "ge_s"
+                    | "ge_u"
             )
         {
             return Some((vec!["v128", "v128"], vec!["v128"]));
@@ -20400,7 +20723,9 @@ fn build_type_ctx(module: &Pair<Rule>) -> TypeCtx {
         if has_index {
             continue;
         }
-        let Some(sig) = sig_from_params(&tu, &names) else { continue };
+        let Some(sig) = sig_from_params(&tu, &names) else {
+            continue;
+        };
         // ⛔ `(func $f)` DEFINES THE TYPE `[] -> []` LIKE ANY OTHER SIGNATURE.
         // Skipping the empty one left such a function with no type index at
         // all, so `ref.func $f` bailed and the whole init expression went
@@ -20507,24 +20832,21 @@ fn add_entity(ctx: &mut TypeCtx, p: &Pair<Rule>, names: &HashMap<String, usize>)
             ctx.funcs.push(sig.map(|(_, s)| s));
         }
         "global" => {
-            let vt = find_rule(p, Rule::global_type)
-                .and_then(|g| {
-                    let inner = g.as_str().trim();
-                    let spelling = inner
-                        .strip_prefix('(')
-                        .and_then(|x| x.trim().strip_prefix("mut"))
-                        .map(|x| x.trim().trim_end_matches(')').trim())
-                        .unwrap_or(inner);
-                    parse_vt(spelling, names)
-                })
-                ;
-            let is_mut = find_rule(p, Rule::global_type)
-                .is_some_and(|g| {
-                    g.as_str()
-                        .trim()
-                        .strip_prefix('(')
-                        .is_some_and(|x| x.trim().starts_with("mut"))
-                });
+            let vt = find_rule(p, Rule::global_type).and_then(|g| {
+                let inner = g.as_str().trim();
+                let spelling = inner
+                    .strip_prefix('(')
+                    .and_then(|x| x.trim().strip_prefix("mut"))
+                    .map(|x| x.trim().trim_end_matches(')').trim())
+                    .unwrap_or(inner);
+                parse_vt(spelling, names)
+            });
+            let is_mut = find_rule(p, Rule::global_type).is_some_and(|g| {
+                g.as_str()
+                    .trim()
+                    .strip_prefix('(')
+                    .is_some_and(|x| x.trim().starts_with("mut"))
+            });
             if let Some(n) = id {
                 ctx.global_names.insert(n, ctx.globals.len());
             }
@@ -20554,8 +20876,7 @@ fn add_entity(ctx: &mut TypeCtx, p: &Pair<Rule>, names: &HashMap<String, usize>)
                         .filter(|c| !matches!(c.as_rule(), Rule::integer))
                         .last()
                 })
-                .and_then(|c| parse_vt(c.as_str().trim(), names))
-                ;
+                .and_then(|c| parse_vt(c.as_str().trim(), names));
             if let Some(n) = id {
                 ctx.table_names.insert(n, ctx.tables.len());
             }
@@ -20578,9 +20899,10 @@ fn add_entity(ctx: &mut TypeCtx, p: &Pair<Rule>, names: &HashMap<String, usize>)
                         .and_then(|i| ctx.type_sigs.get(i).cloned().flatten())
                         .map(|sig| sig.params)
                 })
-                .or_else(|| tt.as_ref().and_then(|t| {
-                    sig_from_params(t, names).map(|s| s.params)
-                }))
+                .or_else(|| {
+                    tt.as_ref()
+                        .and_then(|t| sig_from_params(t, names).map(|s| s.params))
+                })
                 .unwrap_or_default();
             if let Some(n) = id {
                 ctx.tag_names.insert(n, ctx.tags.len());
@@ -20673,10 +20995,19 @@ fn flatten_instrs<'a>(seq: Vec<Pair<'a, Rule>>, out: &mut Vec<FlatInstr<'a>>) ->
                     .map(|c| c.as_str()[1..].to_string());
                 let imms = imms
                     .into_iter()
-                    .filter(|s| !s.starts_with("(type") && !s.starts_with("(result")
-                        && !s.starts_with("(param"))
+                    .filter(|s| {
+                        !s.starts_with("(type")
+                            && !s.starts_with("(result")
+                            && !s.starts_with("(param")
+                    })
                     .collect();
-                out.push(FlatInstr { head, imms, btypes, label, clauses: vec![] });
+                out.push(FlatInstr {
+                    head,
+                    imms,
+                    btypes,
+                    label,
+                    clauses: vec![],
+                });
             }
             Rule::folded_instr => {
                 let head = head_keyword(&p);
@@ -20747,8 +21078,10 @@ fn flatten_instrs<'a>(seq: Vec<Pair<'a, Rule>>, out: &mut Vec<FlatInstr<'a>>) ->
                         for c in p.clone().into_inner() {
                             match c.as_rule() {
                                 Rule::then_block => {
-                                    let b: Vec<Pair<Rule>> =
-                                        c.into_inner().filter(|x| x.as_rule() == Rule::instr).collect();
+                                    let b: Vec<Pair<Rule>> = c
+                                        .into_inner()
+                                        .filter(|x| x.as_rule() == Rule::instr)
+                                        .collect();
                                     flatten_instrs(b, out)?;
                                 }
                                 Rule::else_block => {
@@ -20759,8 +21092,10 @@ fn flatten_instrs<'a>(seq: Vec<Pair<'a, Rule>>, out: &mut Vec<FlatInstr<'a>>) ->
                                         label: None,
                                         clauses: vec![],
                                     });
-                                    let b: Vec<Pair<Rule>> =
-                                        c.into_inner().filter(|x| x.as_rule() == Rule::instr).collect();
+                                    let b: Vec<Pair<Rule>> = c
+                                        .into_inner()
+                                        .filter(|x| x.as_rule() == Rule::instr)
+                                        .collect();
                                     flatten_instrs(b, out)?;
                                 }
                                 _ => {}
@@ -20818,10 +21153,19 @@ fn flatten_instrs<'a>(seq: Vec<Pair<'a, Rule>>, out: &mut Vec<FlatInstr<'a>>) ->
                         flatten_instrs(ops, out)?;
                         let imms = imms
                             .into_iter()
-                            .filter(|s| !s.starts_with("(type") && !s.starts_with("(result")
-                                && !s.starts_with("(param"))
+                            .filter(|s| {
+                                !s.starts_with("(type")
+                                    && !s.starts_with("(result")
+                                    && !s.starts_with("(param")
+                            })
                             .collect();
-                        out.push(FlatInstr { head, imms, btypes, label, clauses: vec![] });
+                        out.push(FlatInstr {
+                            head,
+                            imms,
+                            btypes,
+                            label,
+                            clauses: vec![],
+                        });
                     }
                 }
             }
@@ -20849,7 +21193,13 @@ impl<'a> Tv<'a> {
             if let Some(rest) = body.strip_prefix("type") {
                 let name = rest.trim().trim_end_matches(')').trim();
                 let i = resolve_wast_index(name, &self.ctx.type_names).ok_or(Fail::Bail)?;
-                let sig = self.ctx.type_sigs.get(i).cloned().flatten().ok_or(Fail::Bail)?;
+                let sig = self
+                    .ctx
+                    .type_sigs
+                    .get(i)
+                    .cloned()
+                    .flatten()
+                    .ok_or(Fail::Bail)?;
                 params.extend(sig.params);
                 results.extend(sig.results);
             } else if body.starts_with("result") || body.starts_with("param") {
@@ -20858,8 +21208,7 @@ impl<'a> Tv<'a> {
                     if c.as_rule() == Rule::id {
                         continue;
                     }
-                    let v = parse_vt(c.as_str().trim(), &self.ctx.type_names)
-                        .ok_or(Fail::Bail)?;
+                    let v = parse_vt(c.as_str().trim(), &self.ctx.type_names).ok_or(Fail::Bail)?;
                     if is_param {
                         params.push(v)
                     } else {
@@ -20895,7 +21244,13 @@ impl<'a> Tv<'a> {
             .unwrap_or(0);
         // A table whose element type did not parse ABSTAINS. It must not
         // fall through to a bottom that accepts anything.
-        let elem = self.ctx.tables.get(idx).cloned().flatten().ok_or(Fail::Bail)?;
+        let elem = self
+            .ctx
+            .tables
+            .get(idx)
+            .cloned()
+            .flatten()
+            .ok_or(Fail::Bail)?;
         let addr = Vt::Num(self.ctx.table_addr.get(idx).copied().ok_or(Fail::Bail)?);
         Ok((idx, elem, addr))
     }
@@ -21115,9 +21470,7 @@ impl<'a> Tv<'a> {
                             .zip(lt.iter())
                             .all(|(g, w)| vt_subtype(g, w, &self.ctx.types));
                     if !agrees {
-                        let show = |vs: &[Vt]| {
-                            vs.iter().map(vt_show).collect::<Vec<_>>().join(" ")
-                        };
+                        let show = |vs: &[Vt]| vs.iter().map(vt_show).collect::<Vec<_>>().join(" ");
                         return tmis_d(format!(
                             "handler carries [{}] but label takes [{}]",
                             show(&carried),
@@ -21177,15 +21530,17 @@ impl<'a> Tv<'a> {
                 if !f.unreachable {
                     let have: Vec<Vt> = self.vals[f.height..].to_vec();
                     let disagrees = have.len() < params.len()
-                        || !params.iter().rev().zip(have.iter().rev()).all(|(want, got)| {
-                            matches!(got, Vt::Bottom)
-                                || matches!(want, Vt::Bottom)
-                                || vt_subtype(got, want, &self.ctx.types)
-                        });
+                        || !params
+                            .iter()
+                            .rev()
+                            .zip(have.iter().rev())
+                            .all(|(want, got)| {
+                                matches!(got, Vt::Bottom)
+                                    || matches!(want, Vt::Bottom)
+                                    || vt_subtype(got, want, &self.ctx.types)
+                            });
                     if disagrees {
-                        let show = |vs: &[Vt]| {
-                            vs.iter().map(vt_show).collect::<Vec<_>>().join(" ")
-                        };
+                        let show = |vs: &[Vt]| vs.iter().map(vt_show).collect::<Vec<_>>().join(" ");
                         return Err(Fail::Mismatch(format!(
                             "type mismatch: instruction requires [{}] but stack has [{}]",
                             show(&params),
@@ -21280,7 +21635,13 @@ impl<'a> Tv<'a> {
             "call_ref" | "return_call_ref" => {
                 let ti = resolve_wast_index(imms.first().ok_or(Fail::Bail)?, &self.ctx.type_names)
                     .ok_or(Fail::Bail)?;
-                let sig = self.ctx.type_sigs.get(ti).cloned().flatten().ok_or(Fail::Bail)?;
+                let sig = self
+                    .ctx
+                    .type_sigs
+                    .get(ti)
+                    .cloned()
+                    .flatten()
+                    .ok_or(Fail::Bail)?;
                 self.pop_expect(&Vt::Ref(RefT {
                     nullable: true,
                     exact: false,
@@ -21346,7 +21707,13 @@ impl<'a> Tv<'a> {
                 {
                     return Err(Fail::Mismatch("constant expression required".to_string()));
                 }
-                let t = self.ctx.globals.get(i).cloned().flatten().ok_or(Fail::Bail)?;
+                let t = self
+                    .ctx
+                    .globals
+                    .get(i)
+                    .cloned()
+                    .flatten()
+                    .ok_or(Fail::Bail)?;
                 if name == "global.get" {
                     self.push_val(t);
                 } else {
@@ -21404,7 +21771,13 @@ impl<'a> Tv<'a> {
                 // Without the function's TYPE index this cannot be given the
                 // `(ref $t)` the spec assigns it, and approximating it as
                 // `(ref func)` would fail a perfectly good `(ref $t)` context.
-                let ti = self.ctx.func_types.get(f).copied().flatten().ok_or(Fail::Bail)?;
+                let ti = self
+                    .ctx
+                    .func_types
+                    .get(f)
+                    .copied()
+                    .flatten()
+                    .ok_or(Fail::Bail)?;
                 self.push_val(Vt::Ref(RefT {
                     nullable: false,
                     exact: false,
@@ -22111,36 +22484,36 @@ fn module_init_expr_reason(module: &Pair<Rule>) -> Option<String> {
             _ => continue,
         };
         let Some(want) = want else { continue };
-        let init: Vec<Pair<Rule>> = if matches!(field.as_rule(), Rule::elem_field | Rule::data_field)
-        {
-            // The offset lives inside `elem_mode`/`data_mode`. ⛔ AND THE SAME
-            // GRAMMAR AMBIGUITY BITES HERE: `elem_mode`'s last alternative is a
-            // bare folded instruction, so `(elem $e (ref 1))`'s element TYPE
-            // parses as an offset. `elem_mode_is_reference_type` is what tells
-            // them apart — without it every typed passive segment reports a
-            // mismatch against the table's address type.
-            let mode = field
-                .clone()
-                .into_inner()
-                .find(|c| matches!(c.as_rule(), Rule::elem_mode | Rule::data_mode));
-            match mode {
-                Some(m)
-                    if !(m.as_rule() == Rule::elem_mode && elem_mode_is_reference_type(&m))
-                        && m.as_str().trim() != "declare" =>
-                {
-                    m.into_inner()
-                        .filter(|c| matches!(c.as_rule(), Rule::folded_instr | Rule::instr))
-                        .collect()
+        let init: Vec<Pair<Rule>> =
+            if matches!(field.as_rule(), Rule::elem_field | Rule::data_field) {
+                // The offset lives inside `elem_mode`/`data_mode`. ⛔ AND THE SAME
+                // GRAMMAR AMBIGUITY BITES HERE: `elem_mode`'s last alternative is a
+                // bare folded instruction, so `(elem $e (ref 1))`'s element TYPE
+                // parses as an offset. `elem_mode_is_reference_type` is what tells
+                // them apart — without it every typed passive segment reports a
+                // mismatch against the table's address type.
+                let mode = field
+                    .clone()
+                    .into_inner()
+                    .find(|c| matches!(c.as_rule(), Rule::elem_mode | Rule::data_mode));
+                match mode {
+                    Some(m)
+                        if !(m.as_rule() == Rule::elem_mode && elem_mode_is_reference_type(&m))
+                            && m.as_str().trim() != "declare" =>
+                    {
+                        m.into_inner()
+                            .filter(|c| matches!(c.as_rule(), Rule::folded_instr | Rule::instr))
+                            .collect()
+                    }
+                    _ => Vec::new(),
                 }
-                _ => Vec::new(),
-            }
-        } else {
-            field
-                .clone()
-                .into_inner()
-                .filter(|c| matches!(c.as_rule(), Rule::folded_instr | Rule::instr))
-                .collect()
-        };
+            } else {
+                field
+                    .clone()
+                    .into_inner()
+                    .filter(|c| matches!(c.as_rule(), Rule::folded_instr | Rule::instr))
+                    .collect()
+            };
         if init.is_empty() {
             // ⛔ EMPTY IS ONLY LEGAL WHERE THERE IS NOTHING TO INITIALISE.
             // A global's initializer is REQUIRED — `(global i32)` delivers no
@@ -22263,7 +22636,10 @@ fn func_local_types(
     let off = sig.params.len();
     let mut v = sig.params.clone();
     v.extend(declared);
-    let shifted = declared_names.into_iter().map(|(k, i)| (k, i + off)).collect();
+    let shifted = declared_names
+        .into_iter()
+        .map(|(k, i)| (k, i + off))
+        .collect();
     // The signature's params come first and are initialized by arrival.
     let mut inited = vec![true; off];
     inited.extend(declared_inited);
@@ -22287,8 +22663,11 @@ fn module_unknown_local_reason(module: &Pair<Rule>) -> Option<String> {
         if f.as_rule() != Rule::func_field || find_rule(&f, Rule::import_inline).is_some() {
             continue;
         }
-        let Some(tu) = find_rule(&f, Rule::typeuse) else { continue };
-        let Some((_, sig)) = sig_from_typeuse(&tu, &ctx.type_sigs, &ctx.type_names, &ctx.type_names)
+        let Some(tu) = find_rule(&f, Rule::typeuse) else {
+            continue;
+        };
+        let Some((_, sig)) =
+            sig_from_typeuse(&tu, &ctx.type_sigs, &ctx.type_names, &ctx.type_names)
         else {
             continue;
         };

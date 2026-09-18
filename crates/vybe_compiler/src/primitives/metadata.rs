@@ -197,7 +197,10 @@ impl Compiler {
 
     /// The same list as bare type names — what overload selection matches on.
     fn seeded_param_types(&self, declared: &[vybe_runtime::component::Param]) -> Vec<String> {
-        declared.iter().map(|param| self.seeded_param_type(param)).collect()
+        declared
+            .iter()
+            .map(|param| self.seeded_param_type(param))
+            .collect()
     }
 
     fn seeded_param_type(&self, param: &vybe_runtime::component::Param) -> String {
@@ -207,8 +210,8 @@ impl Compiler {
     }
 
     fn seed_dotnet_reflection_metadata(&mut self) {
-        use crate::profile::ReflectionTypeNaming;
         use crate::component_classes::ComponentItemKind;
+        use crate::profile::ReflectionTypeNaming;
 
         if self.profile.reflection_type_naming != ReflectionTypeNaming::FrameworkQualified {
             return;
@@ -216,7 +219,10 @@ impl Compiler {
 
         for export in vybe_runtime::registry::platform_component_descriptors()
             .into_iter()
-            .filter_map(|d| d.downcast::<crate::component_classes::ComponentDescriptor>().ok())
+            .filter_map(|d| {
+                d.downcast::<crate::component_classes::ComponentDescriptor>()
+                    .ok()
+            })
             .flat_map(|d| d.exports)
         {
             let ComponentItemKind::Class(class) = export.kind else {
@@ -335,7 +341,16 @@ impl Compiler {
             }
             StmtKind::ModuleDecl { name, members, .. } => {
                 let runtime_name = self.reflection_runtime_type_name(name, parent_runtime_name);
-                self.record_reflection_type(&runtime_name, name, &[], &[], &[], members, false, true);
+                self.record_reflection_type(
+                    &runtime_name,
+                    name,
+                    &[],
+                    &[],
+                    &[],
+                    members,
+                    false,
+                    true,
+                );
             }
             StmtKind::InterfaceDecl {
                 name,
@@ -432,7 +447,9 @@ impl Compiler {
         is_sealed: bool,
     ) {
         let mut metadata = ReflectionTypeMetadata {
-            display_name: common::generics::erased_type_name(declared_name).trim().to_string(),
+            display_name: common::generics::erased_type_name(declared_name)
+                .trim()
+                .to_string(),
             parents: parents
                 .iter()
                 .map(|parent| self.reflection_runtime_type_name(parent, None))
@@ -563,9 +580,7 @@ impl Compiler {
                     );
                 }
                 ClassMember::Constructor {
-                    params,
-                    visibility,
-                    ..
+                    params, visibility, ..
                 } => {
                     metadata.constructors.push(ReflectionConstructorMetadata {
                         param_types: params
@@ -904,10 +919,12 @@ impl Compiler {
         // sharing a leaf leave the name unresolved, as it was.
         let leaf = trimmed.rsplit('.').next().unwrap_or(trimmed);
         if !leaf.is_empty() {
-            let mut matches = self
-                .reflection_types
-                .keys()
-                .filter(|known| known.rsplit('.').next().is_some_and(|k| k.eq_ignore_ascii_case(leaf)));
+            let mut matches = self.reflection_types.keys().filter(|known| {
+                known
+                    .rsplit('.')
+                    .next()
+                    .is_some_and(|k| k.eq_ignore_ascii_case(leaf))
+            });
             if let (Some(only), None) = (matches.next(), matches.next()) {
                 return only.clone();
             }
@@ -962,16 +979,27 @@ impl Compiler {
     fn reflection_display_leaf(&self, type_name: &str) -> Option<String> {
         let erased = common::generics::erased_type_name(type_name);
         let trimmed = erased.trim().trim_end_matches('?').trim();
-        let display = &self.reflection_types.get(trimmed).or_else(|| {
-            self.reflection_types
-                .iter()
-                .find(|(known, _)| known.eq_ignore_ascii_case(trimmed))
-                .map(|(_, meta)| meta)
-        })?.display_name;
+        let display = &self
+            .reflection_types
+            .get(trimmed)
+            .or_else(|| {
+                self.reflection_types
+                    .iter()
+                    .find(|(known, _)| known.eq_ignore_ascii_case(trimmed))
+                    .map(|(_, meta)| meta)
+            })?
+            .display_name;
         if display.is_empty() {
             return None;
         }
-        Some(display.rsplit('.').next().unwrap_or(display).trim().to_string())
+        Some(
+            display
+                .rsplit('.')
+                .next()
+                .unwrap_or(display)
+                .trim()
+                .to_string(),
+        )
     }
 
     pub(crate) fn reflection_is_enum_type(&self, type_name: &str) -> bool {
@@ -1413,9 +1441,7 @@ impl Compiler {
             // answer or a constructor's own writes stay keyed while reads of
             // the same field index.
             ExprKind::This => self.current_class.clone()?,
-            ExprKind::Ident(name)
-                if self.canon(name) == self.canon(&self.profile.self_keyword) =>
-            {
+            ExprKind::Ident(name) if self.canon(name) == self.canon(&self.profile.self_keyword) => {
                 self.current_class.clone()?
             }
             _ => {
@@ -1752,9 +1778,7 @@ impl Compiler {
         // still knows. Every other private site now asks the declaration
         // (`member_access_is_private`); replacing this one measured 5 js
         // failures, all `*_outside_*_throws`.
-        self.supports_private_fields()
-            && field.starts_with('#')
-            && self.current_class.is_none()
+        self.supports_private_fields() && field.starts_with('#') && self.current_class.is_none()
     }
 
     pub(super) fn emit_private_access_denied(&mut self, field: &str) -> Result<(), String> {

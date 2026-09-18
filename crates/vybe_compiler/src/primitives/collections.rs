@@ -610,20 +610,13 @@ pub fn emit_gc_array_set(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op(Op::ARRAY_SET, line);
 }
 
-/// Polymorphic indexed write. Stack: [collection, index, value] → [value].
-///
-/// Emits the WASM GC `array.set` opcode (`Op::ARRAY_SET`, byte 0xFB 0x0E).
-/// VM dispatch per ObjectKind: Array element store (with auto-extend
-/// + length sync), Map IndexMap insert (mirrors `ecma:map.set`,
-/// ECMA-262 §24.1.3.9), or plain Object property-bag write.
-///
-/// Set element / property. Stack: [obj, key, val] → [retval] via
-/// `ecma:array.set`. The host fn is the single dispatch point: Array
+/// Dynamic indexed write. Stack: [obj, key, val] -> [retval] via
+/// `ecma:array.set`. This is the shared dynamic-language dispatch point: Array
 /// (with ECMA-262 §6.1.7.2 sparse-fill semantics — holes are
 /// Undefined), Map (Value-keyed IndexMap insert), and Ordinary
-/// (property bag). Routing through one place keeps PHP `$a[$k]=v`,
-/// Python `d[k]=v`, JS `a[i]=v`, Ruby `h[k]=v` etc. on identical
-/// runtime semantics regardless of source language.
+/// (property bag). Static storage paths should prefer typed memory slots
+/// such as `memory.bytes_set_item` so hot loops do not cross the host boundary
+/// per element.
 ///
 /// The host fn returns `Null` per its spec; existing `emit(Op::DROP)`
 /// calls after `emit_set` discard it without breaking the void-style
@@ -1228,7 +1221,8 @@ pub fn emit_index_func(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_if(line);
     let __abi = crate::primitives::class_context::module_receiver_abi(chunks);
     lget(&mut chunks[current], pred_slot, line);
-    let __recv = crate::primitives::callable::emit_callback_receiver(&mut chunks[current], __abi, line);
+    let __recv =
+        crate::primitives::callable::emit_callback_receiver(&mut chunks[current], __abi, line);
     lget(&mut chunks[current], arr_slot, line);
     lget(&mut chunks[current], idx_slot, line);
     emit_get(chunks, current, line);
@@ -1293,7 +1287,8 @@ pub fn emit_sort_func(chunks: &mut [Chunk], current: usize, line: u32) {
 
     let __abi = crate::primitives::class_context::module_receiver_abi(chunks);
     lget(&mut chunks[current], cmp_slot, line);
-    let __recv = crate::primitives::callable::emit_callback_receiver(&mut chunks[current], __abi, line);
+    let __recv =
+        crate::primitives::callable::emit_callback_receiver(&mut chunks[current], __abi, line);
     lget(&mut chunks[current], arr_slot, line);
     lget(&mut chunks[current], j_slot, line);
     emit_get(chunks, current, line);
@@ -1384,7 +1379,8 @@ pub fn emit_is_sorted_func(chunks: &mut [Chunk], current: usize, line: u32) {
 
     let __abi = crate::primitives::class_context::module_receiver_abi(chunks);
     lget(&mut chunks[current], cmp_slot, line);
-    let __recv = crate::primitives::callable::emit_callback_receiver(&mut chunks[current], __abi, line);
+    let __recv =
+        crate::primitives::callable::emit_callback_receiver(&mut chunks[current], __abi, line);
     lget(&mut chunks[current], arr_slot, line);
     lget(&mut chunks[current], idx_slot, line);
     emit_get(chunks, current, line);
@@ -1477,7 +1473,11 @@ fn emit_binary_search_pair_impl(chunks: &mut [Chunk], current: usize, line: u32,
         lget(&mut chunks[current], mid_slot, line);
         emit_get(chunks, current, line);
         lget(&mut chunks[current], target_slot, line);
-        crate::primitives::callable::emit_direct_invoke_chunk(&mut chunks[current], 2 + __recv, line);
+        crate::primitives::callable::emit_direct_invoke_chunk(
+            &mut chunks[current],
+            2 + __recv,
+            line,
+        );
         chunks[current].emit_i32_const(0, line);
         crate::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
     } else {
@@ -1519,7 +1519,11 @@ fn emit_binary_search_pair_impl(chunks: &mut [Chunk], current: usize, line: u32,
         lget(&mut chunks[current], lo_slot, line);
         emit_get(chunks, current, line);
         lget(&mut chunks[current], target_slot, line);
-        crate::primitives::callable::emit_direct_invoke_chunk(&mut chunks[current], 2 + __recv, line);
+        crate::primitives::callable::emit_direct_invoke_chunk(
+            &mut chunks[current],
+            2 + __recv,
+            line,
+        );
         chunks[current].emit_i32_const(0, line);
         crate::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
     } else {
@@ -1908,7 +1912,8 @@ pub fn emit_map_delete_func(chunks: &mut [Chunk], current: usize, line: u32) {
 
     let __abi = crate::primitives::class_context::module_receiver_abi(chunks);
     lget(&mut chunks[current], pred_slot, line);
-    let __recv = crate::primitives::callable::emit_callback_receiver(&mut chunks[current], __abi, line);
+    let __recv =
+        crate::primitives::callable::emit_callback_receiver(&mut chunks[current], __abi, line);
     lget(&mut chunks[current], key_slot, line);
     lget(&mut chunks[current], value_slot, line);
     crate::primitives::callable::emit_direct_invoke_chunk(&mut chunks[current], 2 + __recv, line);
@@ -2708,7 +2713,6 @@ pub fn emit_pymax(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_runtime_helper_call(chunks, current, "__vybe_max", 1, line);
 }
 
-
 // ── Linkable chunk builders ──────────────────────────────────────────────────
 //
 // Linkable chunk builders for collection REDUCTIONS and reshapes.
@@ -3142,7 +3146,6 @@ pub fn build_isempty(imports: &mut Chunk) -> Chunk {
     c
 }
 
-
 // ── Linkable chunk builders ──────────────────────────────────────────────────
 //
 // Linkable chunk builders — the standalone-chunk packaging of what the
@@ -3566,11 +3569,8 @@ pub fn build_sort_with_comparator(imports: &mut Chunk) -> Chunk {
     // `cmp` is the CALLER'S comparator, so it takes a receiver wherever the
     // module declares one — read off `imports`, which carries the module ABI.
     c.emit_op_u16(Op::LOCAL_GET, cmp, 0);
-    let __recv = crate::primitives::callable::emit_callback_receiver(
-        &mut c,
-        imports.module_receiver_abi,
-        0,
-    );
+    let __recv =
+        crate::primitives::callable::emit_callback_receiver(&mut c, imports.module_receiver_abi, 0);
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);
     c.emit_op_u16(Op::LOCAL_GET, j, 0);
     crate::primitives::collections::emit_get_into(imports, &mut c, 0);

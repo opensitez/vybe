@@ -21,8 +21,8 @@
 //! dotnet → rest), each gated on its suite + the resolution snapshot.
 
 use super::Compiler;
-use crate::primitives::namespaces::{self, ResolutionTarget};
 use crate::primitives::namespaces::UserGlobalKind;
+use crate::primitives::namespaces::{self, ResolutionTarget};
 
 /// Lazy platform-tree registration: every platform/language package
 /// contributes its descriptor DATA to the shared tree before a walk
@@ -563,7 +563,8 @@ mod user_root_tests {
     fn qualified_spelling_resolves_to_the_declared_identity() {
         let c = compiler_with(&["myapp.models.customer"]);
         assert_eq!(
-            c.resolve_user_namespace_type("myapp.models.customer").as_deref(),
+            c.resolve_user_namespace_type("myapp.models.customer")
+                .as_deref(),
             Some("myapp.models.customer")
         );
     }
@@ -604,10 +605,7 @@ mod user_root_tests {
     /// through its statics.
     #[test]
     fn bare_class_and_namespace_sharing_a_root_both_resolve() {
-        for order in [
-            ["Demo", "Demo.Sub.Demo"],
-            ["Demo.Sub.Demo", "Demo"],
-        ] {
+        for order in [["Demo", "Demo.Sub.Demo"], ["Demo.Sub.Demo", "Demo"]] {
             let c = compiler_with(&order);
             assert_eq!(
                 c.resolve_user_namespace_type("Demo").as_deref(),

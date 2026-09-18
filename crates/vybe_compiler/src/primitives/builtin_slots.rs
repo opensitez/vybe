@@ -158,6 +158,31 @@ pub fn platform_defaults() -> BuiltinSlotBindings {
         "common:str_is_lower",
     );
 
+    // ── numeric primitives ────────────────────────────────────────────
+    //
+    // Static numeric syntax should not reach the dynamic equality/arithmetic
+    // ladders. These rows are the declared platform defaults for built-in
+    // numeric operands; a language override still wins through §2d precedence.
+    for ty in [BuiltinType::Int, BuiltinType::Double] {
+        b.insert(ty, ProtocolSlot::Add, "opcode:f64.add");
+        b.insert(ty, ProtocolSlot::Sub, "opcode:f64.sub");
+        b.insert(ty, ProtocolSlot::Mul, "opcode:f64.mul");
+        b.insert(ty, ProtocolSlot::Div, "opcode:f64.div");
+        b.insert(ty, ProtocolSlot::Eq, "opcode:f64.eq");
+        b.insert(ty, ProtocolSlot::Ne, "opcode:f64.ne");
+        b.insert(ty, ProtocolSlot::Lt, "opcode:f64.lt");
+        b.insert(ty, ProtocolSlot::Le, "opcode:f64.le");
+        b.insert(ty, ProtocolSlot::Gt, "opcode:f64.gt");
+        b.insert(ty, ProtocolSlot::Ge, "opcode:f64.ge");
+    }
+    b.insert(BuiltinType::Int, ProtocolSlot::And, "opcode:i32.and");
+    b.insert(BuiltinType::Int, ProtocolSlot::Or, "opcode:i32.or");
+    b.insert(BuiltinType::Int, ProtocolSlot::Xor, "opcode:i32.xor");
+    b.insert(BuiltinType::Int, ProtocolSlot::IDiv, "opcode:i32.div_s");
+    b.insert(BuiltinType::Int, ProtocolSlot::Mod, "opcode:i32.rem_s");
+    b.insert(BuiltinType::Int, ProtocolSlot::LShift, "opcode:i32.shl");
+    b.insert(BuiltinType::Int, ProtocolSlot::RShift, "opcode:i32.shr_s");
+
     // ── array ───────────────────────────────────────────────────────────
     b.insert(
         BuiltinType::Array,
@@ -222,7 +247,12 @@ pub fn platform_defaults() -> BuiltinSlotBindings {
     b.insert(
         BuiltinType::Bytes,
         ProtocolSlot::GetItem,
-        "host:ecma:uint8array:at",
+        "common:memory.bytes_get_item",
+    );
+    b.insert(
+        BuiltinType::Bytes,
+        ProtocolSlot::SetItem,
+        "common:memory.bytes_set_item",
     );
     b.insert(
         BuiltinType::Map,
@@ -278,6 +308,11 @@ pub fn unbound_reason(ty: BuiltinType, slot: ProtocolSlot) -> Option<&'static st
         // `(Int, Mod)` is bound by Python (floored `%`), so `Int` can no longer
         // claim a blanket reason — only the slots nobody has measured.
         (T::Int, S::Mod) => return None,
+        (
+            T::Int | T::Double,
+            S::Add | S::Sub | S::Mul | S::Div | S::Eq | S::Ne | S::Lt | S::Le | S::Gt | S::Ge,
+        ) => return None,
+        (T::Int, S::And | S::Or | S::Xor | S::LShift | S::RShift) => return None,
         // Same graduation, 2026-08-07: csharp/vb/powershell bind `(Int, Char)`
         // (`(char)65` → "A") and `(Int, ToString)` / `(Double, ToString)`, so
         // the blanket "no target chosen yet" below would now be stale for
@@ -564,6 +599,7 @@ mod tests {
             (BuiltinType::Array, ProtocolSlot::GetItem),
             (BuiltinType::String, ProtocolSlot::GetItem),
             (BuiltinType::Bytes, ProtocolSlot::GetItem),
+            (BuiltinType::Bytes, ProtocolSlot::SetItem),
             (BuiltinType::String, ProtocolSlot::Eq),
             (BuiltinType::String, ProtocolSlot::Ne),
         ] {

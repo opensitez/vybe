@@ -411,8 +411,7 @@ pub fn normalize_global_table(chunks: &mut [Chunk]) {
         }
     }
 
-    let table =
-        vybe_runtime::chunk::global_index_space(&string_constants, &host_globals, &defined);
+    let table = vybe_runtime::chunk::global_index_space(&string_constants, &host_globals, &defined);
 
     let mut remaps: Vec<Vec<(u32, u32)>> = Vec::with_capacity(chunks.len());
     for chunk in chunks.iter() {

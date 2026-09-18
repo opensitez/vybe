@@ -38,8 +38,8 @@
 //! The helper splices the method-name constant between `receiver` and
 //! the args using temp local slots (no `SWAP` / `INSERT` opcodes).
 
-use vybe_runtime::opcode::Op;
 use vybe_runtime::Chunk;
+use vybe_runtime::opcode::Op;
 
 /// Emit a polymorphic `receiver.method(args)` invocation.
 ///

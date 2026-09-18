@@ -35,9 +35,7 @@
 //! Composes the shared primitives (`collections`, `dict`, `strings`, `tuples`,
 //! `loops`) rather than emitting raw opcodes wherever one exists.
 
-use vybe_compiler::primitives::class_slots::{
-    self, ClassSlot, Dest, ObjSource, PlainNames,
-};
+use vybe_compiler::primitives::class_slots::{self, ClassSlot, Dest, ObjSource, PlainNames};
 use vybe_compiler::primitives::functions::create_function_chunk;
 use vybe_compiler::primitives::{callable, dict, expressions, loops, ops, sets, strings, tuples};
 use vybe_runtime::Chunk;
@@ -95,8 +93,18 @@ fn emit_is_object(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
 /// here, and the presence of `__keys` is the honest question to ask.
 fn emit_has_dict_keys(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
-    let key = class_slots::resolve_interned(&mut chunks[current], &ClassSlot::internal("__keys"), &PlainNames);
-    class_slots::emit_class_get(&mut chunks[current], ObjSource::Stack, &key, Dest::Stack, line);
+    let key = class_slots::resolve_interned(
+        &mut chunks[current],
+        &ClassSlot::internal("__keys"),
+        &PlainNames,
+    );
+    class_slots::emit_class_get(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &key,
+        Dest::Stack,
+        line,
+    );
     chunks[current].emit_op(Op::REF_IS_NULL, line);
     chunks[current].emit_op(Op::I32_EQZ, line);
 }
@@ -163,8 +171,20 @@ pub fn emit_to_string(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
 /// so the answer can be used to ORDER the probes rather than only to call it.
 fn emit_has_to_string_slot(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
-    let key = class_slots::resolve_interned(&mut chunks[current], &ClassSlot::internal(vybe_ast::protocol_slot_key(vybe_ast::ProtocolSlot::ToString).as_str()), &PlainNames);
-    class_slots::emit_class_get(&mut chunks[current], ObjSource::Stack, &key, Dest::Stack, line);
+    let key = class_slots::resolve_interned(
+        &mut chunks[current],
+        &ClassSlot::internal(
+            vybe_ast::protocol_slot_key(vybe_ast::ProtocolSlot::ToString).as_str(),
+        ),
+        &PlainNames,
+    );
+    class_slots::emit_class_get(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &key,
+        Dest::Stack,
+        line,
+    );
     chunks[current].emit_op(Op::REF_IS_NULL, line);
     chunks[current].emit_op(Op::I32_EQZ, line);
 }
@@ -173,8 +193,18 @@ fn emit_has_to_string_slot(chunks: &mut [Chunk], current: usize, slot: u16, line
 /// Kotlin set marker.
 fn emit_is_set(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
-    let key = class_slots::resolve_interned(&mut chunks[current], &ClassSlot::internal(SET_MARKER), &PlainNames);
-    class_slots::emit_class_get(&mut chunks[current], ObjSource::Stack, &key, Dest::Stack, line);
+    let key = class_slots::resolve_interned(
+        &mut chunks[current],
+        &ClassSlot::internal(SET_MARKER),
+        &PlainNames,
+    );
+    class_slots::emit_class_get(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &key,
+        Dest::Stack,
+        line,
+    );
     chunks[current].emit_op(Op::REF_IS_NULL, line);
     chunks[current].emit_op(Op::I32_EQZ, line);
 
@@ -215,7 +245,13 @@ fn emit_object_to_string(
     // not print `[object StringBuilder]`.
     chunks[current].emit_op_u16(Op::LOCAL_GET, v, line);
     let cs_slot = class_slots::resolve(&ClassSlot::Internal(("__buffer").to_string()), &PlainNames);
-    class_slots::emit_class_get(&mut chunks[current], ObjSource::Stack, &cs_slot, Dest::Stack, line);
+    class_slots::emit_class_get(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &cs_slot,
+        Dest::Stack,
+        line,
+    );
     let buf = chunks[current].alloc_scratch(1);
     chunks[current].emit_op_u16(Op::LOCAL_SET, buf, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, buf, line);

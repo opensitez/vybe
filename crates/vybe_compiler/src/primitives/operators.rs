@@ -4,8 +4,15 @@
 //! `builtins.rs`/`calls.rs`. Methods are `pub(super)` so the core compile
 //! paths in `mod.rs` and sibling files can reach them.
 
-use crate::primitives::class_slots;
 use super::*;
+use crate::primitives::class_slots;
+use vybe_ast::builtin_slots::BuiltinType;
+
+#[derive(Debug, Clone)]
+struct StaticOperatorTarget {
+    slot: vybe_ast::ProtocolSlot,
+    target: String,
+}
 
 // Primitive fallbacks for `emit_rich_binop`, which takes the fallback as a
 // `fn(&mut Chunk, u32)` so a slot and its primitive op stay one decision. The
@@ -435,8 +442,12 @@ impl Compiler {
             });
             let idx = self.import(module, func);
             self.emit_host_call(idx, argc);
+        } else if let Some(name) = target.strip_prefix("opcode:") {
+            self.emit_named_opcode(name);
         } else {
-            panic!("[builtin_slots] {what} target `{target}` must be `common:…` or `host:…`");
+            panic!(
+                "[builtin_slots] {what} target `{target}` must be `common:…`, `host:…`, or `opcode:…`"
+            );
         }
     }
 
@@ -847,9 +858,12 @@ impl Compiler {
         self.chunk().emit_end(line);
     }
 
-    fn expr_is_provably_number(&self, expr: &Expression) -> bool {
+    pub(super) fn expr_is_provably_number(&self, expr: &Expression) -> bool {
         if Self::is_emitted_number_literal(expr) {
             return true;
+        }
+        if self.type_resolution() == vybe_ast::TypeResolution::Dynamic {
+            return false;
         }
         let ExprKind::Ident(name) = &expr.kind else {
             return false;
@@ -876,6 +890,120 @@ impl Compiler {
             return false;
         }
         self.hint_is_builtin_number(declared.spelling())
+    }
+
+    fn equality_fallback(&self) -> vybe_ast::EqualityFallback {
+        self.directives().equality_fallback.unwrap_or_default()
+    }
+
+    fn binary_operator_slot(op: &BinOp) -> Option<vybe_ast::ProtocolSlot> {
+        Some(match op {
+            BinOp::Add => vybe_ast::ProtocolSlot::Add,
+            BinOp::Sub => vybe_ast::ProtocolSlot::Sub,
+            BinOp::Mul => vybe_ast::ProtocolSlot::Mul,
+            BinOp::Div => vybe_ast::ProtocolSlot::Div,
+            BinOp::IDiv => vybe_ast::ProtocolSlot::IDiv,
+            BinOp::FloorDiv => vybe_ast::ProtocolSlot::FloorDiv,
+            BinOp::Mod => vybe_ast::ProtocolSlot::Mod,
+            BinOp::Pow => vybe_ast::ProtocolSlot::Pow,
+            BinOp::Eq | BinOp::StrictEq => vybe_ast::ProtocolSlot::Eq,
+            BinOp::NotEq | BinOp::StrictNotEq => vybe_ast::ProtocolSlot::Ne,
+            BinOp::Lt => vybe_ast::ProtocolSlot::Lt,
+            BinOp::LtEq => vybe_ast::ProtocolSlot::Le,
+            BinOp::Gt => vybe_ast::ProtocolSlot::Gt,
+            BinOp::GtEq => vybe_ast::ProtocolSlot::Ge,
+            BinOp::BitAnd => vybe_ast::ProtocolSlot::And,
+            BinOp::BitOr => vybe_ast::ProtocolSlot::Or,
+            BinOp::BitXor => vybe_ast::ProtocolSlot::Xor,
+            BinOp::Shl => vybe_ast::ProtocolSlot::LShift,
+            BinOp::Shr => vybe_ast::ProtocolSlot::RShift,
+            _ => return None,
+        })
+    }
+
+    pub(super) fn static_builtin_operator_type(
+        &self,
+        op: &BinOp,
+        left: &Expression,
+        right: &Expression,
+    ) -> Option<BuiltinType> {
+        use BinOp::*;
+        let left_ty = self.builtin_type_of(left)?;
+        let right_ty = self.builtin_type_of(right)?;
+        match op {
+            Add | Sub | Mul | Div | Mod | Eq | NotEq | StrictEq | StrictNotEq | Lt | LtEq | Gt
+            | GtEq => match (left_ty, right_ty) {
+                (BuiltinType::Int, BuiltinType::Int) => Some(BuiltinType::Int),
+                (
+                    BuiltinType::Int | BuiltinType::Double,
+                    BuiltinType::Int | BuiltinType::Double,
+                ) => Some(BuiltinType::Double),
+                _ => None,
+            },
+            IDiv | FloorDiv => {
+                if left_ty == BuiltinType::Int && right_ty == BuiltinType::Int {
+                    Some(BuiltinType::Int)
+                } else {
+                    None
+                }
+            }
+            BitAnd | BitOr | BitXor | Shl | Shr => {
+                if left_ty == BuiltinType::Int && right_ty == BuiltinType::Int {
+                    Some(BuiltinType::Int)
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    }
+
+    fn resolve_static_builtin_operator(
+        &self,
+        op: &BinOp,
+        left: &Expression,
+        right: &Expression,
+    ) -> Option<StaticOperatorTarget> {
+        let slot = Self::binary_operator_slot(op)?;
+        let ty = self.static_builtin_operator_type(op, left, right)?;
+        let target = self.builtin_type_slot_target(ty, slot)?.to_string();
+        Some(StaticOperatorTarget { slot, target })
+    }
+
+    fn emit_static_builtin_operator_target(&mut self, resolved: &StaticOperatorTarget) {
+        match resolved.target.as_str() {
+            "opcode:i32.shl" => {
+                self.emit_shift_slot(Op::I32_SHL, None);
+                return;
+            }
+            "opcode:i32.shr_s" => {
+                self.emit_shift_slot(Op::I32_SHR_S, None);
+                return;
+            }
+            _ => {}
+        }
+        self.emit_slot_target(&resolved.target, 2, self.line, "static builtin operator");
+        if matches!(
+            resolved.slot,
+            vybe_ast::ProtocolSlot::Eq
+                | vybe_ast::ProtocolSlot::Ne
+                | vybe_ast::ProtocolSlot::Lt
+                | vybe_ast::ProtocolSlot::Le
+                | vybe_ast::ProtocolSlot::Gt
+                | vybe_ast::ProtocolSlot::Ge
+        ) {
+            if std::mem::take(&mut self.want_i32_condition) {
+                self.gave_i32_condition = true;
+                return;
+            }
+            if self.profile.ecma_operator_coercion || self.profile.materialize_bool_results {
+                let line = self.line;
+                crate::primitives::ops::emit_i32_to_bool(self.chunk(), line);
+            } else {
+                let from_i32 = self.import("wasm:js-number", "fromI32");
+                self.emit_host_call(from_i32, 1);
+            }
+        }
     }
 
     /// The `both_provably_number` relational fold: the bare WASM compare,
@@ -953,6 +1081,12 @@ impl Compiler {
         // per iteration — a bare 2M-iteration loop exceeded 60s in C, go and
         // JS alike.
         let both_provably_number = left_is_number && right_is_number;
+        if let Some((left, right)) = operands {
+            if let Some(target) = self.resolve_static_builtin_operator(op, left, right) {
+                self.emit_static_builtin_operator_target(&target);
+                return;
+            }
+        }
         match op {
             BinOp::Add => {
                 // Two provable numbers cannot concatenate, carry a user
@@ -1131,17 +1265,7 @@ impl Compiler {
                     )
                     .map(str::to_string)
                 {
-                    if let Some(name) = target.strip_prefix("common:") {
-                        self.emit_common(name, 2, l);
-                    } else if let Some(rest) = target.strip_prefix("host:") {
-                        let (module, func) = rest.rsplit_once(':').unwrap_or_else(|| {
-                            panic!("[builtin_slots.int] mod `{target}` is not `host:<m>:<fn>`")
-                        });
-                        let idx = self.import(module, func);
-                        self.emit_host_call(idx, 2);
-                    } else {
-                        panic!("[builtin_slots.int] mod `{target}` must be `common:…` or `host:…`");
-                    }
+                    self.emit_slot_target(&target, 2, l, "int mod");
                 } else if self.profile.dynamic_numeric_dispatch {
                     self.emit_js_dynamic_arith("rem", NumberArith::Mod);
                 } else if self.uses_rich_operators() {
@@ -1170,15 +1294,22 @@ impl Compiler {
             }
             BinOp::Eq => {
                 // `[builtin_slots.string] eq` — the language's own `==`.
-                if let Some(target) = self.loose_eq_target() {
-                    let line = self.line;
-                    self.emit_slot_target(&target, 2, line, "string eq");
-                    return;
+                match self.equality_fallback() {
+                    vybe_ast::EqualityFallback::Slot => {
+                        if let Some(target) = self.loose_eq_target() {
+                            let line = self.line;
+                            self.emit_slot_target(&target, 2, line, "equality fallback");
+                            return;
+                        }
+                    }
+                    vybe_ast::EqualityFallback::EcmaAbstract => {
+                        let idx = self.import("ecma:value", "abstractEq");
+                        self.emit_host_call(idx, 2);
+                        return;
+                    }
+                    vybe_ast::EqualityFallback::Exact => {}
                 }
-                if self.profile.abstract_equality {
-                    let idx = self.import("ecma:value", "abstractEq");
-                    self.emit_host_call(idx, 2);
-                } else if self.uses_rich_comparison() {
+                if self.uses_rich_comparison() {
                     // Dispatch to a user `__eq__` (or cross-language alias) with
                     // the receiver, falling back to structural equality.
                     let right_slot = self.define_local("__rich_eq_rhs");
@@ -1219,6 +1350,10 @@ impl Compiler {
                 } else {
                     {
                         let line = self.line;
+                        let condition_result = std::mem::take(&mut self.want_i32_condition);
+                        if condition_result {
+                            self.gave_i32_condition = true;
+                        }
                         // Value equality, as DECLARED. Both sides carrying the
                         // `__value_eq` stamp means two languages independently
                         // said their `==` compares fields — so compare fields,
@@ -1237,7 +1372,13 @@ impl Compiler {
                             line,
                         );
                         self.chunk().emit_op(Op::I32_AND, line);
-                        self.chunk().emit_if(line);
+                        if condition_result {
+                            self.chunk().emit_if_i32(line);
+                        } else if self.profile.materialize_bool_results {
+                            self.chunk().emit_if_value(line);
+                        } else {
+                            self.chunk().emit_if_i32(line);
+                        }
                         crate::primitives::records::emit_value_fields_equal(
                             &mut self.chunks,
                             self.current,
@@ -1245,31 +1386,52 @@ impl Compiler {
                             right_slot,
                             line,
                         );
-                        if !self.profile.materialize_bool_results {
+                        if condition_result || !self.profile.materialize_bool_results {
                             crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
                         }
                         self.chunk().emit_else(line);
                         self.emit_u16(Op::LOCAL_GET, left_slot);
                         self.emit_u16(Op::LOCAL_GET, right_slot);
                         crate::primitives::ops::emit_dyn_eq(self.chunk(), line);
-                        if self.profile.materialize_bool_results {
+                        if self.profile.materialize_bool_results && !condition_result {
                             crate::primitives::ops::emit_i32_to_bool(self.chunk(), line);
                         }
                         self.chunk().emit_end(line);
+                        if !condition_result && !self.profile.materialize_bool_results {
+                            let from_i32 = self.import("wasm:js-number", "fromI32");
+                            self.emit_host_call(from_i32, 1);
+                        }
                     };
                 }
             }
             BinOp::NotEq => {
                 // `[builtin_slots.string] ne` — its OWN target, see there.
-                if let Some(target) = self.loose_ne_target() {
-                    let line = self.line;
-                    self.emit_slot_target(&target, 2, line, "string ne");
-                    return;
+                match self.equality_fallback() {
+                    vybe_ast::EqualityFallback::Slot => {
+                        if let Some(target) = self.loose_ne_target().or_else(|| {
+                            self.loose_eq_target().map(|target| {
+                                // Derived `Ne` from `Eq` is handled below by
+                                // emitting the Eq target and negating it.
+                                target
+                            })
+                        }) {
+                            let derived = self.loose_ne_target().is_none();
+                            let line = self.line;
+                            self.emit_slot_target(&target, 2, line, "inequality fallback");
+                            if derived {
+                                crate::primitives::ops::emit_dyn_not(self.chunk(), line);
+                            }
+                            return;
+                        }
+                    }
+                    vybe_ast::EqualityFallback::EcmaAbstract => {
+                        let idx = self.import("ecma:value", "abstractNe");
+                        self.emit_host_call(idx, 2);
+                        return;
+                    }
+                    vybe_ast::EqualityFallback::Exact => {}
                 }
-                if self.profile.abstract_equality {
-                    let idx = self.import("ecma:value", "abstractNe");
-                    self.emit_host_call(idx, 2);
-                } else if self.uses_rich_comparison() {
+                if self.uses_rich_comparison() {
                     // `a != b` == not (a `__eq__` b) — dispatch `__eq__`, negate.
                     let right_slot = self.define_local("__rich_ne_rhs");
                     let left_slot = self.define_local("__rich_ne_lhs");
@@ -1311,8 +1473,13 @@ impl Compiler {
                     {
                         let line = self.line;
                         crate::primitives::ops::emit_dyn_ne(self.chunk(), line);
-                        if self.profile.materialize_bool_results {
+                        if std::mem::take(&mut self.want_i32_condition) {
+                            self.gave_i32_condition = true;
+                        } else if self.profile.materialize_bool_results {
                             crate::primitives::ops::emit_i32_to_bool(self.chunk(), line);
+                        } else {
+                            let from_i32 = self.import("wasm:js-number", "fromI32");
+                            self.emit_host_call(from_i32, 1);
                         }
                     };
                 }
@@ -1682,23 +1849,43 @@ impl Compiler {
             // to `I32_AND`, which coerces a BigInt to 0. The slots existed and
             // nothing read them.
             BinOp::BitAnd => {
-                self.emit_rich_binop(vybe_ast::ProtocolSlot::And, |chunk, _| {
-                    chunk.emit_op(Op::I32_AND, 0)
-                });
+                if self.uses_rich_operators() {
+                    self.emit_rich_binop(vybe_ast::ProtocolSlot::And, |chunk, _| {
+                        chunk.emit_op(Op::I32_AND, 0)
+                    });
+                } else {
+                    self.emit(Op::I32_AND);
+                }
             }
             BinOp::BitOr => {
-                self.emit_rich_binop(vybe_ast::ProtocolSlot::Or, |chunk, _| {
-                    chunk.emit_op(Op::I32_OR, 0)
-                });
+                if self.uses_rich_operators() {
+                    self.emit_rich_binop(vybe_ast::ProtocolSlot::Or, |chunk, _| {
+                        chunk.emit_op(Op::I32_OR, 0)
+                    });
+                } else {
+                    self.emit(Op::I32_OR);
+                }
             }
             BinOp::BitXor => {
-                self.emit_rich_binop(vybe_ast::ProtocolSlot::Xor, |chunk, _| {
-                    chunk.emit_op(Op::I32_XOR, 0)
-                });
+                if self.uses_rich_operators() {
+                    self.emit_rich_binop(vybe_ast::ProtocolSlot::Xor, |chunk, _| {
+                        chunk.emit_op(Op::I32_XOR, 0)
+                    });
+                } else {
+                    self.emit(Op::I32_XOR);
+                }
             }
-            BinOp::Shl => self.emit_shift_slot(Op::I32_SHL, Some(vybe_ast::ProtocolSlot::LShift)),
+            BinOp::Shl => {
+                let slot = self
+                    .uses_rich_operators()
+                    .then_some(vybe_ast::ProtocolSlot::LShift);
+                self.emit_shift_slot(Op::I32_SHL, slot);
+            }
             BinOp::Shr => {
-                self.emit_shift_slot(Op::I32_SHR_S, Some(vybe_ast::ProtocolSlot::RShift))
+                let slot = self
+                    .uses_rich_operators()
+                    .then_some(vybe_ast::ProtocolSlot::RShift);
+                self.emit_shift_slot(Op::I32_SHR_S, slot);
             }
             BinOp::UShr => {
                 self.emit_shift(Op::I32_SHR_U);
@@ -2032,4 +2219,73 @@ impl Compiler {
     }
 
     // ════════════════════════════════════════════════════════════════════════
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use vybe_ast::{ExprKind, Expression, Literal};
+
+    fn compiler() -> Compiler {
+        let profile = crate::profile::parse_profile("[compiler]\n").expect("minimal profile");
+        Compiler::with_profile(profile)
+    }
+
+    fn compiler_with_profile(src: &str) -> Compiler {
+        let profile = crate::profile::parse_profile(src).expect("test profile");
+        Compiler::with_profile(profile)
+    }
+
+    fn int_lit(value: i64) -> Expression {
+        Expression::new(ExprKind::Lit(Literal::Int(value)))
+    }
+
+    fn str_lit(value: &str) -> Expression {
+        Expression::new(ExprKind::Lit(Literal::Str(value.into())))
+    }
+
+    #[test]
+    fn static_numeric_equality_resolves_to_builtin_slot() {
+        let compiler = compiler();
+        let resolved = compiler
+            .resolve_static_builtin_operator(&BinOp::Eq, &int_lit(1), &int_lit(1))
+            .expect("int equality should resolve statically");
+
+        assert_eq!(resolved.slot, vybe_ast::ProtocolSlot::Eq);
+        assert_eq!(resolved.target, "opcode:f64.eq");
+    }
+
+    #[test]
+    fn static_string_add_is_not_universal_binary_plus() {
+        let compiler = compiler();
+        assert!(
+            compiler
+                .resolve_static_builtin_operator(&BinOp::Add, &str_lit("a"), &str_lit("b"))
+                .is_none(),
+            "string Add default is not every language's binary + semantics"
+        );
+    }
+
+    #[test]
+    fn equality_fallback_is_ast_directive_not_profile_boolean() {
+        let compiler = compiler_with_profile("[compiler]\nabstract_equality = true\n");
+        assert_eq!(
+            compiler.equality_fallback(),
+            vybe_ast::EqualityFallback::Exact
+        );
+    }
+
+    #[test]
+    fn equality_fallback_directive_selects_non_exact_policy() {
+        let mut compiler = compiler();
+        compiler.directives = vec![vybe_ast::Directives {
+            equality_fallback: Some(vybe_ast::EqualityFallback::EcmaAbstract),
+            ..Default::default()
+        }];
+
+        assert_eq!(
+            compiler.equality_fallback(),
+            vybe_ast::EqualityFallback::EcmaAbstract
+        );
+    }
 }

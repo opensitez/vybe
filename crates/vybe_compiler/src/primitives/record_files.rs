@@ -309,9 +309,10 @@ impl Compiler {
         let offset_slot = self.chunk().alloc_scratch(1);
         self.emit_record_offset(handle_slot, width_slot, offset_slot, at)?;
 
-        let read_via = self
-            .chunk()
-            .add_import("wasi:filesystem/types", "[method]descriptor.read-via-stream");
+        let read_via = self.chunk().add_import(
+            "wasi:filesystem/types",
+            "[method]descriptor.read-via-stream",
+        );
         let at_idx = self.chunk().add_import("ecma:array", "at");
         let end_slot = self.chunk().alloc_scratch(1);
         let text_slot = self.chunk().alloc_scratch(1);
@@ -397,11 +398,7 @@ impl Compiler {
     }
 
     /// Store a two-character file status, when the program asked for one.
-    fn emit_status_store(
-        &mut self,
-        status: Option<&Expression>,
-        code: &str,
-    ) -> Result<(), String> {
+    fn emit_status_store(&mut self, status: Option<&Expression>, code: &str) -> Result<(), String> {
         let Some(status) = status else {
             return Ok(());
         };
@@ -544,13 +541,11 @@ impl Compiler {
         record_type: &TypeRef,
         record: &Expression,
     ) -> Result<(), String> {
-        let layout = self
-            .record_layout(record_type)
-            .ok_or_else(|| {
-                "RecordTransfer WRITE: the file's record type has no declared layout, so there \
+        let layout = self.record_layout(record_type).ok_or_else(|| {
+            "RecordTransfer WRITE: the file's record type has no declared layout, so there \
                  is no way to say how wide each field is"
-                    .to_string()
-            })?;
+                .to_string()
+        })?;
 
         let line = self.line;
         let record_slot = self.chunk().alloc_scratch(1);
@@ -645,7 +640,6 @@ impl Compiler {
         self.chunks[current].emit_string_const(field, line);
         super::collections::emit_get(&mut self.chunks, current, line);
     }
-
 }
 
 enum HandleInit {

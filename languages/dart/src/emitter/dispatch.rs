@@ -74,7 +74,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             crate::emitter::io_adapter::emit_set_last_accessed_sync(chunks, current, argc, line)
         }
         "dart.io_resolve_symbolic_links_sync" => {
-            crate::emitter::io_adapter::emit_resolve_symbolic_links_sync(chunks, current, argc, line)
+            crate::emitter::io_adapter::emit_resolve_symbolic_links_sync(
+                chunks, current, argc, line,
+            )
         }
         "dart.io_target_sync" => {
             crate::emitter::io_adapter::emit_target_sync(chunks, current, argc, line)
@@ -85,9 +87,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "dart.io_create_temp_sync" => {
             crate::emitter::io_adapter::emit_create_temp_sync(chunks, current, argc, line)
         }
-        "dart.io_watch" => {
-            crate::emitter::io_adapter::emit_watch(chunks, current, argc, line)
-        }
+        "dart.io_watch" => crate::emitter::io_adapter::emit_watch(chunks, current, argc, line),
         "dart.io_absolute_handle" => {
             crate::emitter::io_adapter::emit_absolute_handle(chunks, current, argc, line)
         }
@@ -131,7 +131,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             crate::emitter::io_adapter::emit_process_stdin_add(chunks, current, argc, line)
         }
         "dart.io_process_stdin_write_char_code" => {
-            crate::emitter::io_adapter::emit_process_stdin_write_char_code(chunks, current, argc, line)
+            crate::emitter::io_adapter::emit_process_stdin_write_char_code(
+                chunks, current, argc, line,
+            )
         }
         "dart.io_process_stdin_flush" => {
             crate::emitter::io_adapter::emit_process_stdin_flush(chunks, current, argc, line)
@@ -143,22 +145,36 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             crate::emitter::io_adapter::emit_process_stdin_add_error(chunks, current, argc, line)
         }
         "dart.developer.inspect" => {
-            crate::emitter::reflection_adapter::emit_dart_developer_inspect(chunks, current, argc, line)
+            crate::emitter::reflection_adapter::emit_dart_developer_inspect(
+                chunks, current, argc, line,
+            )
         }
-        "dart.developer.log" | "dart.developer.post_event" | "dart.developer.register_extension" => {
-            crate::emitter::reflection_adapter::emit_dart_developer_noop(chunks, current, argc, line)
+        "dart.developer.log"
+        | "dart.developer.post_event"
+        | "dart.developer.register_extension" => {
+            crate::emitter::reflection_adapter::emit_dart_developer_noop(
+                chunks, current, argc, line,
+            )
         }
         "dart.developer.debugger" => {
-            crate::emitter::reflection_adapter::emit_dart_developer_debugger(chunks, current, argc, line)
+            crate::emitter::reflection_adapter::emit_dart_developer_debugger(
+                chunks, current, argc, line,
+            )
         }
         "dart.developer.extension_stream_has_listener" => {
-            crate::emitter::reflection_adapter::emit_dart_developer_extension_stream_has_listener(chunks, current, line)
+            crate::emitter::reflection_adapter::emit_dart_developer_extension_stream_has_listener(
+                chunks, current, line,
+            )
         }
         "dart.developer.service_extension_response_result" => {
-            crate::emitter::reflection_adapter::emit_dart_service_extension_response_result(chunks, current, line)
+            crate::emitter::reflection_adapter::emit_dart_service_extension_response_result(
+                chunks, current, line,
+            )
         }
         "dart.developer.service_extension_response_error" => {
-            crate::emitter::reflection_adapter::emit_dart_service_extension_response_error(chunks, current, line)
+            crate::emitter::reflection_adapter::emit_dart_service_extension_response_error(
+                chunks, current, line,
+            )
         }
         "dart.utf8_encode" => {
             crate::emitter::io_adapter::emit_utf8_encode(chunks, current, argc, line)
@@ -473,7 +489,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             crate::emitter::string_adapter::emit_dart_string_runes(chunks, current, line)
         }
         "dart.unsupported_mutation" => {
-            crate::emitter::string_adapter::emit_dart_unsupported_mutation_throw(chunks, current, line)
+            crate::emitter::string_adapter::emit_dart_unsupported_mutation_throw(
+                chunks, current, line,
+            )
         }
         "dart.throw_range_error" => {
             crate::emitter::string_adapter::emit_dart_throw_range_error(chunks, current, line)

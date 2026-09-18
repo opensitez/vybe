@@ -76,12 +76,7 @@ pub fn emit_method(chunks: &mut [Chunk], current: usize, line: u32) {
 
 /// Path AND query, exactly as `wasi:http` reports it. Stack: [] → [string|null].
 pub fn emit_path_with_query(chunks: &mut [Chunk], current: usize, line: u32) {
-    emit_request_method_call(
-        chunks,
-        current,
-        "[method]request.get-path-with-query",
-        line,
-    );
+    emit_request_method_call(chunks, current, "[method]request.get-path-with-query", line);
 }
 
 /// URI scheme, or null. Stack: [] → [string|null].

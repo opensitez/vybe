@@ -13,7 +13,11 @@ fn emit_try_start_opens_handler_block_then_try_table() {
         ((chunk.code[0] as u16) << 8) | chunk.code[1] as u16,
         ((chunk.code[2] as u16) << 8) | chunk.code[3] as u16,
     );
-    assert_eq!(first, Some(Op::BLOCK), "try_start must open a handler block");
+    assert_eq!(
+        first,
+        Some(Op::BLOCK),
+        "try_start must open a handler block"
+    );
     // It carries ONE result — the exception object travels as the block's
     // result when the clause branches.
     assert_eq!(chunk.code[4], 0, "handler block takes no params");

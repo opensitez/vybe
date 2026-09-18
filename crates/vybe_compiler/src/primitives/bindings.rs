@@ -3,8 +3,8 @@
 //! Extracted from `primitives/mod.rs` (`impl Compiler`) — conductor pattern,
 //! same as `statements.rs`/`builtins.rs`.
 
-use crate::primitives::class_slots;
 use super::*;
+use crate::primitives::class_slots;
 
 /// The enclosing frame's closure bookkeeping, held across a nested
 /// function-like frame. See [`Compiler::enter_closure_frame`].
@@ -179,7 +179,10 @@ impl Compiler {
                         self.visible_instance_field_storage_name_for_class(class_name, name)
                     })
                     .unwrap_or_else(|| self.canon(name));
-                self.class_get(class_slots::ObjSource::Stack, &class_slots::ClassSlot::internal(&cname));
+                self.class_get(
+                    class_slots::ObjSource::Stack,
+                    &class_slots::ClassSlot::internal(&cname),
+                );
                 return;
             }
         }
@@ -190,14 +193,20 @@ impl Compiler {
         // struct, not the module's global namespace.
         if let Some(class_name) = self.is_class_static_field(name) {
             self.emit_global_read(&class_name);
-            self.class_get(class_slots::ObjSource::Stack, &class_slots::ClassSlot::internal(&self.canon(name)));
+            self.class_get(
+                class_slots::ObjSource::Stack,
+                &class_slots::ClassSlot::internal(&self.canon(name)),
+            );
             return;
         }
         // Bare static method in class scope — `Double(x)` inside
         // `class Converter` resolves to `Converter.Double`.
         if let Some(class_name) = self.is_class_static_method(name) {
             self.emit_global_read(&class_name);
-            self.class_get(class_slots::ObjSource::Stack, &class_slots::ClassSlot::internal(&self.canon(name)));
+            self.class_get(
+                class_slots::ObjSource::Stack,
+                &class_slots::ClassSlot::internal(&self.canon(name)),
+            );
             return;
         }
         let cname = self.canon(name);
@@ -649,7 +658,7 @@ impl Compiler {
                     "TypeError",
                     line,
                 );
-            // ⛔ LINK THE PROTOTYPE. Building the object and stamping it is
+                // ⛔ LINK THE PROTOTYPE. Building the object and stamping it is
                 // not enough — an error that is an instance of nothing answers
                 // `false` to `e instanceof ReferenceError` AND to
                 // `e instanceof Error`. It only looked right while the ECMA host

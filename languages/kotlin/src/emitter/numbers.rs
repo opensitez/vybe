@@ -313,12 +313,7 @@ fn emit_to_double_checked(
     chunks[current].emit_end(line);
 }
 
-fn emit_double_parse_failure(
-    chunks: &mut Vec<Chunk>,
-    current: usize,
-    or_null: bool,
-    line: u32,
-) {
+fn emit_double_parse_failure(chunks: &mut Vec<Chunk>, current: usize, or_null: bool, line: u32) {
     if or_null {
         chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     } else {

@@ -10,7 +10,6 @@ use vybe_ast::*;
 use vybe_platform_dotnet::winforms::control::ControlType;
 use vybe_platform_dotnet::winforms::form::Form;
 
-
 /// Emit C# designer code from the shared form model.
 pub fn generate_designer_code(form: &Form) -> String {
     let mut out = String::new();

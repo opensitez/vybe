@@ -105,8 +105,14 @@ pub fn resolve_common_import(name: &str) -> Option<CommonImport> {
         // (space → "%20"). Let each language bind its own urlencode
         // variant via the profile so the on-the-wire bytes match the
         // language's spec.
-        "encodeuricomponent" => Some(CommonImport::HostGlobal("ecma:string", "encodeURIComponent")),
-        "decodeuricomponent" => Some(CommonImport::HostGlobal("ecma:string", "decodeURIComponent")),
+        "encodeuricomponent" => Some(CommonImport::HostGlobal(
+            "ecma:string",
+            "encodeURIComponent",
+        )),
+        "decodeuricomponent" => Some(CommonImport::HostGlobal(
+            "ecma:string",
+            "decodeURIComponent",
+        )),
 
         // ── JSON ─────────────────────────────────────────────────────────
         "json_decode" => Some(CommonImport::Host("ecma:json", "parse")),

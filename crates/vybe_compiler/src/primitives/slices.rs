@@ -629,7 +629,6 @@ pub fn emit_strided_del(chunks: &mut [Chunk], current: usize, line: u32, opts: O
     loops::emit_loop_end(chunks, current, st, line);
 }
 
-
 // ── Linkable chunk builders ──────────────────────────────────────────────────
 //
 // Linkable chunk builders — the standalone-chunk packaging of what the

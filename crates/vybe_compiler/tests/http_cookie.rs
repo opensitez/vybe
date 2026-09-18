@@ -72,7 +72,11 @@ fn serialize(name: &str, value: &str, attrs: &[(&str, Value)]) -> String {
                     );
                     vm.set_global_owned(name.clone(), other.clone());
                     let ci = chunks[0].intern_string_constant(&name);
-                    chunks[0].emit_op_u16(Op::GLOBAL_GET, ci, 0);
+                    chunks[0].emit_op_u16(
+                        Op::GLOBAL_GET,
+                        ci.try_into().expect("test constant index fits u16"),
+                        0,
+                    );
                 }
             }
             vybe_compiler::primitives::collections::emit_set(&mut chunks, 0, 0);

@@ -104,6 +104,7 @@ __vybe_type_get = { emit = "intrinsic:symbol_probe", min_args = 1, max_args = 1 
 "__vb_task_delay" = { emit = "common:dotnet.task_delay", min_args = 1, max_args = 2 }
 "__vb_task_run" = { emit = "common:threading.task_run", min_args = 1, max_args = 1 }
 "__vb_task_from_result" = { emit = "common:dotnet.task_from_result", min_args = 1, max_args = 1 }
+"__vb_task_result" = { emit = "common:dotnet.task_result", min_args = 1, max_args = 1 }
 "__vb_task_when_all" = { emit = "common:dotnet.task_when_all", min_args = 1, max_args = 255 }
 "__vb_task_when_any" = { emit = "common:dotnet.task_when_any", min_args = 1, max_args = 255 }
 "__dotnet_list_add" = { emit = "common:dotnet.list_add", min_args = 2, max_args = 2 }
@@ -124,11 +125,11 @@ __vybe_type_get = { emit = "intrinsic:symbol_probe", min_args = 1, max_args = 1 
 
 # ── Type Conversions ─────────────────────────────────────────────────────────
 
-cstr    = { emit = "intrinsic:cstr",               min_args = 1, max_args = 1 }
+cstr    = { emit = "common:dotnet.vb_to_string",   min_args = 1, max_args = 1 }
 cint    = { emit = "intrinsic:cint",               min_args = 1, max_args = 1 }
 cdbl    = { emit = "common:dotnet.vb_to_number",   min_args = 1, max_args = 1 }
-cbool   = { emit = "common:dyn_to_bool",           min_args = 1, max_args = 1 }
-clng    = { emit = "intrinsic:clng",       min_args = 1, max_args = 1 }
+cbool   = { emit = "common:dotnet.convert_to_boolean", min_args = 1, max_args = 1 }
+clng    = { emit = "common:dotnet.convert_to_int64", min_args = 1, max_args = 1 }
 csng    = { emit = "common:dotnet.vb_to_number",    min_args = 1, max_args = 1 }
 cbyte   = { emit = "common:dotnet.convert_to_byte",   min_args = 1, max_args = 1 }
 cchar   = { emit = "common:dotnet.cchar",          min_args = 1, max_args = 1 }
@@ -142,7 +143,7 @@ cchar   = { emit = "common:dotnet.cchar",          min_args = 1, max_args = 1 }
 cshort  = { emit = "common:dotnet.convert_to_int16",  min_args = 1, max_args = 1 }
 cushort = { emit = "common:dotnet.convert_to_uint16", min_args = 1, max_args = 1 }
 cuint   = { emit = "common:dotnet.convert_to_uint32", min_args = 1, max_args = 1 }
-culng   = { emit = "opcode:i32_from_f64",          min_args = 1, max_args = 1 }
+culng   = { emit = "common:dotnet.convert_to_uint64", min_args = 1, max_args = 1 }
 csbyte  = { emit = "common:dotnet.convert_to_sbyte",  min_args = 1, max_args = 1 }
 ccur    = { emit = "opcode:f64_from_i32",          min_args = 1, max_args = 1 }
 cdec    = { emit = "common:dotnet.vb_to_number",   min_args = 1, max_args = 1 }
@@ -184,6 +185,9 @@ fix           = { emit = "opcode:f64_trunc",   min_args = 1, max_args = 1 }
 # op — the lane is signed, so `Not 0UI` lands as -1 without it. Emitted by the
 # walker, never written in source.
 "__vb_as_unsigned32" = { emit = "common:bits.as_unsigned32", min_args = 1, max_args = 1 }
+"__vb_as_unsigned64" = { emit = "common:dotnet.uint64_as_unsigned", min_args = 1, max_args = 1 }
+"__vb_uint64_shl" = { emit = "common:dotnet.uint64_shl", min_args = 2, max_args = 2 }
+"__vb_uint64_shr" = { emit = "common:dotnet.uint64_shr", min_args = 2, max_args = 2 }
 int           = { emit = "opcode:f64_floor",   min_args = 1, max_args = 1 }
 sqr           = { emit = "opcode:f64_sqrt",    min_args = 1, max_args = 1 }
 # VB `Round`/`Math.Round` is BANKER'S rounding — `Round(2.5)` is 2, `Round(3.5)`
@@ -264,14 +268,14 @@ ltrim      = { emit = "common:str_trim_start",     min_args = 1, max_args = 1 }
 rtrim      = { emit = "common:str_trim_end",       min_args = 1, max_args = 1 }
 "rtrim$"   = { emit = "common:str_trim_end",       min_args = 1, max_args = 1 }
 strreverse = { emit = "common:str_reverse",        min_args = 1, max_args = 1 }
-chr        = { emit = "common:str_from_char_code",  min_args = 1, max_args = 1 }
-"chr$"     = { emit = "common:str_from_char_code",  min_args = 1, max_args = 1 }
-chrw       = { emit = "common:str_from_char_code",  min_args = 1, max_args = 1 }
+chr        = { emit = "common:dotnet.vb_chrw",      min_args = 1, max_args = 1 }
+"chr$"     = { emit = "common:dotnet.vb_chrw",      min_args = 1, max_args = 1 }
+chrw       = { emit = "common:dotnet.vb_chrw",      min_args = 1, max_args = 1 }
 
 # ── String functions — multi-opcode intrinsics ───────────────────────────────
 
-asc        = { emit = "intrinsic:asc",             min_args = 1, max_args = 1 }
-ascw       = { emit = "intrinsic:asc",             min_args = 1, max_args = 1 }
+asc        = { emit = "common:dotnet.vb_ascw",     min_args = 1, max_args = 1 }
+ascw       = { emit = "common:dotnet.vb_ascw",     min_args = 1, max_args = 1 }
 "string"   = { emit = "intrinsic:string_repeat",   min_args = 2, max_args = 2 }
 "string$"  = { emit = "intrinsic:string_repeat",   min_args = 2, max_args = 2 }
 instr      = { emit = "intrinsic:instr",           min_args = 2, max_args = 3 }

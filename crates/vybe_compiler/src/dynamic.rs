@@ -1727,12 +1727,11 @@ impl JsDynamicRuntime {
                     // below, and the nested VM's prepend reads it from the host
                     // receiver channel — `new Function("v","this.v = v")` used
                     // as a constructor has no other way to reach its instance.
-                    let previous_receiver =
-                        state.vm.set_host_receiver(ctx.current_js_this());
+                    let previous_receiver = state.vm.set_host_receiver(ctx.current_js_this());
                     ensure_js_runtime_registered(&mut state.vm);
                     let mut nested_runtime = JsDynamicRuntime::new(state.caps.clone());
                     let _guard = nested_runtime.activate(&mut state.vm, Vec::new(), Vec::new());
-// ⛔ THE RECEIVER IS THIS WRAPPER'S ARGUMENT 0, NOT THE DYNAMIC
+                    // ⛔ THE RECEIVER IS THIS WRAPPER'S ARGUMENT 0, NOT THE DYNAMIC
                     // FUNCTION'S. Under `ReceiverAbi::Parameter` the call site
                     // hands a host callee its receiver at argument 0, so the
                     // compiled body must not see it: without this,
@@ -2342,10 +2341,7 @@ mod tests {
         }
 
         let greet = vm.global("greet").cloned().expect("greet global");
-        let call_greet = vm
-            .global("callgreet")
-            .cloned()
-            .expect("callGreet global");
+        let call_greet = vm.global("callgreet").cloned().expect("callGreet global");
 
         assert_numeric_value(vm.invoke(&greet, &[]).expect("invoke greet"), 7.0);
         assert_numeric_value(vm.invoke(&call_greet, &[]).expect("invoke callGreet"), 7.0);

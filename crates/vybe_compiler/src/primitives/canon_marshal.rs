@@ -265,7 +265,13 @@ pub fn emit_new_bytes(chunk: &mut Chunk, line: u32) {
 /// straddles a chunk boundary into two replacement characters, and with a
 /// fixed 64KB read buffer the boundary lands mid-sequence for roughly one
 /// body in 65536 — a corruption that would pass every test with short input.
-pub fn emit_append_bytes(chunk: &mut Chunk, line: u32, arr_slot: u16, ptr_slot: u16, len_slot: u16) {
+pub fn emit_append_bytes(
+    chunk: &mut Chunk,
+    line: u32,
+    arr_slot: u16,
+    ptr_slot: u16,
+    len_slot: u16,
+) {
     let i = chunk.alloc_scratch(1);
 
     chunk.emit_i32_const(0, line);

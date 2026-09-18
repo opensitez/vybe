@@ -536,7 +536,6 @@ pub fn set_string_field(chunk: &mut Chunk, field: &str, value: &str, line: u32) 
     );
 }
 
-
 // ── Linkable chunk builders ──────────────────────────────────────────────────
 //
 // Linkable chunk builders — the standalone-chunk packaging of what the

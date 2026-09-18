@@ -3,8 +3,8 @@
 //! Extracted from `primitives/mod.rs` (`impl Compiler`) — conductor pattern,
 //! same as `statements.rs`/`builtins.rs`.
 
-use crate::primitives::class_slots;
 use super::*;
+use crate::primitives::class_slots;
 
 impl Compiler {
     /// Terminate the program with `status`, from any depth.
@@ -151,7 +151,10 @@ impl Compiler {
         // methods registered by crate::primitives::classes::register_type, including
         // "iterator" (the walker-normalized [Symbol.iterator]).
         self.emit_u16(Op::LOCAL_GET, iter_slot);
-        self.class_get(class_slots::ObjSource::Stack, &class_slots::ClassSlot::internal("iterator"));
+        self.class_get(
+            class_slots::ObjSource::Stack,
+            &class_slots::ClassSlot::internal("iterator"),
+        );
         let iter_fn_slot = self.define_local("__cit_iter_fn");
         self.emit_u16(Op::LOCAL_SET, iter_fn_slot);
 
@@ -180,7 +183,10 @@ impl Compiler {
 
         // next_method = it.next via STRUCT_GET
         self.emit_u16(Op::LOCAL_GET, it_slot);
-        self.class_get(class_slots::ObjSource::Stack, &class_slots::ClassSlot::internal("next"));
+        self.class_get(
+            class_slots::ObjSource::Stack,
+            &class_slots::ClassSlot::internal("next"),
+        );
         self.emit_u16(Op::LOCAL_SET, next_method_slot);
 
         // Call next() with the receiver = it. Same rule as the iterator call
@@ -508,11 +514,7 @@ impl Compiler {
                             vybe_runtime::chunk::ReceiverAbi::Ambient
                         };
                         let line = self.line;
-                        crate::primitives::callable::emit_callback_receiver(
-                            self.chunk(),
-                            abi,
-                            line,
-                        )
+                        crate::primitives::callable::emit_callback_receiver(self.chunk(), abi, line)
                     };
                     for arg in args {
                         self.compile_expr(&arg.value)?;
@@ -1039,7 +1041,7 @@ impl Compiler {
         self.class_get_resolved(class_slots::ObjSource::Stack, &kind_key);
         self.emit_string_eq_literal("cell");
         let base_cell_line = self.line;
-        self.chunk().emit_if_value(base_cell_line);
+        self.chunk().emit_if_params(base_cell_line, 0, 1);
         self.emit_u16(Op::LOCAL_GET, base_slot);
         crate::primitives::references::emit_cell_load(&mut self.chunks, self.current, self.line);
         self.chunk().emit_else(base_cell_line);
@@ -1065,7 +1067,10 @@ impl Compiler {
         self.emit_string_eq_literal(crate::primitives::pointers::SHARED_KIND);
         let shared_line = self.line;
         self.chunk().emit_if_value(shared_line);
-        self.class_get(class_slots::ObjSource::Local(obj_slot), &class_slots::ClassSlot::internal(crate::primitives::pointers::SHARED_ADDR_KEY));
+        self.class_get(
+            class_slots::ObjSource::Local(obj_slot),
+            &class_slots::ClassSlot::internal(crate::primitives::pointers::SHARED_ADDR_KEY),
+        );
         {
             let line = self.line;
             crate::primitives::threading::emit_atomic_load(self.chunk(), line);
@@ -1118,7 +1123,6 @@ impl Compiler {
             value_slot,
             self.line,
         );
-        self.emit(Op::DROP);
 
         let line = self.line;
         self.chunk().emit_else(line);
@@ -1172,7 +1176,6 @@ impl Compiler {
             value_slot,
             self.line,
         );
-        self.emit(Op::DROP);
 
         let line = self.line;
         self.chunk().emit_else(line);
@@ -1202,7 +1205,10 @@ impl Compiler {
         self.emit_string_eq_literal(crate::primitives::pointers::SHARED_KIND);
         let shared_line = self.line;
         self.chunk().emit_if(shared_line);
-        self.class_get(class_slots::ObjSource::Local(ptr_slot), &class_slots::ClassSlot::internal(crate::primitives::pointers::SHARED_ADDR_KEY));
+        self.class_get(
+            class_slots::ObjSource::Local(ptr_slot),
+            &class_slots::ClassSlot::internal(crate::primitives::pointers::SHARED_ADDR_KEY),
+        );
         self.emit_u16(Op::LOCAL_GET, value_slot);
         {
             let line = self.line;
@@ -1692,7 +1698,8 @@ impl Compiler {
 
         if let Some(ctx) = target_ctx {
             let target_finally_depth = ctx.finally_depth;
-            let nested_finally_count = self.frame_cf()
+            let nested_finally_count = self
+                .frame_cf()
                 .active_finally_blocks
                 .len()
                 .saturating_sub(target_finally_depth);
@@ -1733,7 +1740,8 @@ impl Compiler {
     /// (so the completion-code route can chain through them). False if any is a
     /// `using`/dispose without a registered join — then the caller inlines.
     fn finally_join_route(&self, break_label_depth: u32, nested_finally_count: usize) -> bool {
-        let joins_between = self.frame_cf()
+        let joins_between = self
+            .frame_cf()
             .finally_joins
             .iter()
             .filter(|j| j.join_label_depth > break_label_depth)
@@ -1775,7 +1783,8 @@ impl Compiler {
 
         if let Some(ctx) = target_ctx {
             let target_finally_depth = ctx.finally_depth;
-            let nested_finally_count = self.frame_cf()
+            let nested_finally_count = self
+                .frame_cf()
                 .active_finally_blocks
                 .len()
                 .saturating_sub(target_finally_depth);
@@ -2005,7 +2014,6 @@ impl Compiler {
         Some((self.label_depth - ctx.continue_label_depth) as u8)
     }
 }
-
 
 // ── Linkable chunk builders ──────────────────────────────────────────────────
 //
@@ -2266,19 +2274,31 @@ fn rewrite_gotos_in_stmts(
                 elifs,
                 else_body,
             } => {
-                let then_body =
-                    rewrite_gotos_in_stmts(then_body, label_to_block, pc_name, dispatch_label, fold_labels);
+                let then_body = rewrite_gotos_in_stmts(
+                    then_body,
+                    label_to_block,
+                    pc_name,
+                    dispatch_label,
+                    fold_labels,
+                );
                 let elifs = elifs
                     .into_iter()
                     .map(|(c, b)| {
                         (
                             c,
-                            rewrite_gotos_in_stmts(b, label_to_block, pc_name, dispatch_label, fold_labels),
+                            rewrite_gotos_in_stmts(
+                                b,
+                                label_to_block,
+                                pc_name,
+                                dispatch_label,
+                                fold_labels,
+                            ),
                         )
                     })
                     .collect();
-                let else_body = else_body
-                    .map(|b| rewrite_gotos_in_stmts(b, label_to_block, pc_name, dispatch_label, fold_labels));
+                let else_body = else_body.map(|b| {
+                    rewrite_gotos_in_stmts(b, label_to_block, pc_name, dispatch_label, fold_labels)
+                });
                 out.push(goto_stmt(StmtKind::If {
                     cond,
                     then_body,
@@ -2296,7 +2316,13 @@ fn rewrite_gotos_in_stmts(
                     init,
                     cond,
                     update,
-                    body: rewrite_gotos_in_stmts(body, label_to_block, pc_name, dispatch_label, fold_labels),
+                    body: rewrite_gotos_in_stmts(
+                        body,
+                        label_to_block,
+                        pc_name,
+                        dispatch_label,
+                        fold_labels,
+                    ),
                 }));
             }
             StmtKind::ForIn {
@@ -2312,10 +2338,22 @@ fn rewrite_gotos_in_stmts(
                     var,
                     key,
                     iter,
-                    body: rewrite_gotos_in_stmts(body, label_to_block, pc_name, dispatch_label, fold_labels),
+                    body: rewrite_gotos_in_stmts(
+                        body,
+                        label_to_block,
+                        pc_name,
+                        dispatch_label,
+                        fold_labels,
+                    ),
                     of,
                     else_body: else_body.map(|b| {
-                        rewrite_gotos_in_stmts(b, label_to_block, pc_name, dispatch_label, fold_labels)
+                        rewrite_gotos_in_stmts(
+                            b,
+                            label_to_block,
+                            pc_name,
+                            dispatch_label,
+                            fold_labels,
+                        )
                     }),
                     is_async,
                 }));
@@ -2327,15 +2365,33 @@ fn rewrite_gotos_in_stmts(
             } => {
                 out.push(goto_stmt(StmtKind::While {
                     cond,
-                    body: rewrite_gotos_in_stmts(body, label_to_block, pc_name, dispatch_label, fold_labels),
+                    body: rewrite_gotos_in_stmts(
+                        body,
+                        label_to_block,
+                        pc_name,
+                        dispatch_label,
+                        fold_labels,
+                    ),
                     else_body: else_body.map(|b| {
-                        rewrite_gotos_in_stmts(b, label_to_block, pc_name, dispatch_label, fold_labels)
+                        rewrite_gotos_in_stmts(
+                            b,
+                            label_to_block,
+                            pc_name,
+                            dispatch_label,
+                            fold_labels,
+                        )
                     }),
                 }));
             }
             StmtKind::DoWhile { body, cond, until } => {
                 out.push(goto_stmt(StmtKind::DoWhile {
-                    body: rewrite_gotos_in_stmts(body, label_to_block, pc_name, dispatch_label, fold_labels),
+                    body: rewrite_gotos_in_stmts(
+                        body,
+                        label_to_block,
+                        pc_name,
+                        dispatch_label,
+                        fold_labels,
+                    ),
                     cond,
                     until,
                 }));
@@ -2348,13 +2404,19 @@ fn rewrite_gotos_in_stmts(
                 let cases = cases
                     .into_iter()
                     .map(|mut c| {
-                        c.body =
-                            rewrite_gotos_in_stmts(c.body, label_to_block, pc_name, dispatch_label, fold_labels);
+                        c.body = rewrite_gotos_in_stmts(
+                            c.body,
+                            label_to_block,
+                            pc_name,
+                            dispatch_label,
+                            fold_labels,
+                        );
                         c
                     })
                     .collect();
-                let default = default
-                    .map(|b| rewrite_gotos_in_stmts(b, label_to_block, pc_name, dispatch_label, fold_labels));
+                let default = default.map(|b| {
+                    rewrite_gotos_in_stmts(b, label_to_block, pc_name, dispatch_label, fold_labels)
+                });
                 out.push(goto_stmt(StmtKind::Switch {
                     expr,
                     cases,
@@ -2376,19 +2438,32 @@ fn rewrite_gotos_in_stmts(
                 else_body,
                 finally,
             } => {
-                let body = rewrite_gotos_in_stmts(body, label_to_block, pc_name, dispatch_label, fold_labels);
+                let body = rewrite_gotos_in_stmts(
+                    body,
+                    label_to_block,
+                    pc_name,
+                    dispatch_label,
+                    fold_labels,
+                );
                 let catches = catches
                     .into_iter()
                     .map(|mut c| {
-                        c.body =
-                            rewrite_gotos_in_stmts(c.body, label_to_block, pc_name, dispatch_label, fold_labels);
+                        c.body = rewrite_gotos_in_stmts(
+                            c.body,
+                            label_to_block,
+                            pc_name,
+                            dispatch_label,
+                            fold_labels,
+                        );
                         c
                     })
                     .collect();
-                let else_body = else_body
-                    .map(|b| rewrite_gotos_in_stmts(b, label_to_block, pc_name, dispatch_label, fold_labels));
-                let finally = finally
-                    .map(|b| rewrite_gotos_in_stmts(b, label_to_block, pc_name, dispatch_label, fold_labels));
+                let else_body = else_body.map(|b| {
+                    rewrite_gotos_in_stmts(b, label_to_block, pc_name, dispatch_label, fold_labels)
+                });
+                let finally = finally.map(|b| {
+                    rewrite_gotos_in_stmts(b, label_to_block, pc_name, dispatch_label, fold_labels)
+                });
                 out.push(goto_stmt(StmtKind::Try {
                     body,
                     catches,

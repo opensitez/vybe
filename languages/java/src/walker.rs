@@ -119,7 +119,6 @@ pub(crate) struct JavaWalker {
     java_declared_methods: HashMap<String, (Option<String>, HashSet<String>)>,
 }
 
-
 // ════════════════════════════════════════════════════════════════════════════
 // Entry point
 // ════════════════════════════════════════════════════════════════════════════
@@ -221,9 +220,16 @@ fn java_prescan_declared_methods(__w: &mut JavaWalker, pair: Pair<Rule>) {
 /// share the name. A user class extending a JDK type keeps the adapter for the
 /// methods it does NOT declare (`class MyList extends ArrayList` still gets the
 /// list `add`), which is why membership, not merely "is a user type", is the test.
-fn java_user_class_declares_method(__w: &mut JavaWalker, receiver: &Expression, method: &str) -> bool {
+fn java_user_class_declares_method(
+    __w: &mut JavaWalker,
+    receiver: &Expression,
+    method: &str,
+) -> bool {
     let type_name = match &receiver.kind {
-        ExprKind::Ident(name) => __w.java_local_types.get(name).cloned()
+        ExprKind::Ident(name) => __w
+            .java_local_types
+            .get(name)
+            .cloned()
             .or_else(|| __w.java_static_field_types.get(name).cloned()),
         ExprKind::New { class, .. } => java_expr_dotted_name(class),
         ExprKind::This => __w.java_current_class_stack.last().cloned(),
@@ -303,12 +309,10 @@ pub fn parse(source: &str) -> Result<Module, String> {
     __w.java_instanceof_bindings.clear();
     __w.java_declared_methods.clear();
 
-    let mut pairs =
-        {
-            let _line_index = vybe_ast::line_index::LineIndex::install(source);
-            JavaParser::parse(Rule::program, source)
-                .map_err(|e| format!("Java parse error: {}", e))?
-        };
+    let mut pairs = {
+        let _line_index = vybe_ast::line_index::LineIndex::install(source);
+        JavaParser::parse(Rule::program, source).map_err(|e| format!("Java parse error: {}", e))?
+    };
     let program = pairs.next().ok_or("empty parse")?;
     java_prescan_declared_methods(__w, program.clone());
 
@@ -433,6 +437,8 @@ pub fn parse(source: &str) -> Result<Module, String> {
             // methods — ECMA-262 §10.2.1 `[[Call]](thisArgument,
             // argumentsList)`. A plain `f()` passes `undefined` (§10.2.1.1).
             receiver_binding: Some(vybe_ast::ReceiverBinding::UniversalParameter),
+            type_resolution: Some(vybe_ast::TypeResolution::Static),
+            operator_dispatch: Some(vybe_ast::OperatorDispatch::StaticBuiltin),
             ..Default::default()
         },
     })
@@ -1629,7 +1635,8 @@ fn walk_class_body(__w: &mut JavaWalker, pair: Pair<Rule>) -> Result<Vec<ClassMe
     walk_class_body_with_owner(__w, pair, None)
 }
 
-fn walk_class_body_with_owner(__w: &mut JavaWalker, 
+fn walk_class_body_with_owner(
+    __w: &mut JavaWalker,
     pair: Pair<Rule>,
     owner: Option<&str>,
 ) -> Result<Vec<ClassMember>, String> {
@@ -1845,7 +1852,10 @@ fn walk_method(__w: &mut JavaWalker, pair: Pair<Rule>) -> Result<ClassMember, St
 
     if pm.is_synchronized {
         let lock_expr = if modifiers.is_static {
-            let owner = __w.java_current_class_stack.last().cloned()
+            let owner = __w
+                .java_current_class_stack
+                .last()
+                .cloned()
                 .unwrap_or_else(|| "__java_static_lock".to_string());
             Expression::ident(&owner)
         } else {
@@ -2005,7 +2015,8 @@ fn walk_interface(__w: &mut JavaWalker, pair: Pair<Rule>) -> Result<StmtKind, St
     };
     if let Some(method_name) = java_single_abstract_interface_method(&members) {
         {
-            __w.java_functional_interface_methods.insert(name.clone(), method_name);
+            __w.java_functional_interface_methods
+                .insert(name.clone(), method_name);
         };
     }
 
@@ -2693,7 +2704,11 @@ fn java_record_storage_field(name: &str) -> String {
     name.to_string()
 }
 
-fn java_record_has_component(__w: &mut JavaWalker, type_name: Option<&str>, component: &str) -> bool {
+fn java_record_has_component(
+    __w: &mut JavaWalker,
+    type_name: Option<&str>,
+    component: &str,
+) -> bool {
     let Some(type_name) = type_name else {
         return false;
     };
@@ -2909,7 +2924,10 @@ fn walk_block(__w: &mut JavaWalker, pair: Pair<Rule>) -> Result<Vec<Statement>, 
     Ok(out)
 }
 
-fn walk_statement_into_body(__w: &mut JavaWalker, pair: Pair<Rule>) -> Result<Vec<Statement>, String> {
+fn walk_statement_into_body(
+    __w: &mut JavaWalker,
+    pair: Pair<Rule>,
+) -> Result<Vec<Statement>, String> {
     if pair.as_rule() == Rule::block_statement {
         walk_block(__w, pair)
     } else {
@@ -2921,14 +2939,16 @@ fn walk_statement_into_body(__w: &mut JavaWalker, pair: Pair<Rule>) -> Result<Ve
 }
 
 /// Pull the next `expression`-shaped child from `inner` and walk it.
-fn walk_expr_inner<'a>(__w: &mut JavaWalker, 
+fn walk_expr_inner<'a>(
+    __w: &mut JavaWalker,
     inner: &mut impl Iterator<Item = Pair<'a, Rule>>,
 ) -> Result<Expression, String> {
     walk_expression(__w, inner.next().ok_or("missing expression")?)
 }
 
 /// Pull the next statement-shaped child from `inner` and expand to body.
-fn walk_body_inner<'a>(__w: &mut JavaWalker, 
+fn walk_body_inner<'a>(
+    __w: &mut JavaWalker,
     inner: &mut impl Iterator<Item = Pair<'a, Rule>>,
 ) -> Result<Vec<Statement>, String> {
     let p = inner.next().ok_or("missing body")?;
@@ -2984,7 +3004,8 @@ fn walk_var_decl(__w: &mut JavaWalker, pair: Pair<Rule>) -> Result<StmtKind, Str
     Ok(StmtKind::VarDecl { declarations, kind })
 }
 
-fn walk_var_declarator(__w: &mut JavaWalker, 
+fn walk_var_declarator(
+    __w: &mut JavaWalker,
     pair: Pair<Rule>,
     type_hint: Option<String>,
 ) -> Result<VarDeclarator, String> {
@@ -3062,7 +3083,8 @@ fn walk_var_declarator(__w: &mut JavaWalker,
         __w.java_runnable_vars.insert(name.clone());
         __w.java_functional_vars.insert(name.clone());
         if let Some(hint) = type_hint.as_deref() {
-            __w.java_functional_types.insert(name.clone(), hint.to_string());
+            __w.java_functional_types
+                .insert(name.clone(), hint.to_string());
         }
     }
     if type_hint
@@ -3074,7 +3096,8 @@ fn walk_var_declarator(__w: &mut JavaWalker,
     {
         __w.java_functional_vars.insert(name.clone());
         if let Some(hint) = type_hint.as_deref() {
-            __w.java_functional_types.insert(name.clone(), hint.to_string());
+            __w.java_functional_types
+                .insert(name.clone(), hint.to_string());
         }
     }
     if type_hint
@@ -3218,7 +3241,8 @@ fn walk_var_declarator(__w: &mut JavaWalker,
             Some("Runnable" | "java.lang.Runnable")
         ) {
             {
-                __w.java_runnable_targets.insert(name.clone(), init_expr.clone());
+                __w.java_runnable_targets
+                    .insert(name.clone(), init_expr.clone());
             };
             if java_thread_target_is_unsafe(__w, init_expr, &HashSet::new()) {
                 {
@@ -3639,11 +3663,10 @@ fn java_switch_discriminant_expr(__w: &mut JavaWalker, expr: Expression) -> Expr
     let is_char_source = match &expr.kind {
         ExprKind::Lit(Literal::Char(_)) => true,
         ExprKind::Lit(Literal::Str(value)) => value.chars().count() == 1,
-        ExprKind::Ident(name) => {
-            __w.java_local_types
-                .get(name)
-                .is_some_and(|ty| java_type_simple_name(ty) == "char")
-        },
+        ExprKind::Ident(name) => __w
+            .java_local_types
+            .get(name)
+            .is_some_and(|ty| java_type_simple_name(ty) == "char"),
         ExprKind::Index { .. } => true,
         ExprKind::Call { callee, .. } => matches!(
             &callee.kind,
@@ -3669,11 +3692,18 @@ struct JavaSwitchArm {
     has_break: bool,
 }
 
-fn walk_switch_rule_body_part(__w: &mut JavaWalker, pair: Pair<Rule>) -> Result<Vec<Statement>, String> {
+fn walk_switch_rule_body_part(
+    __w: &mut JavaWalker,
+    pair: Pair<Rule>,
+) -> Result<Vec<Statement>, String> {
     match pair.as_rule() {
         Rule::block_statement => walk_block(__w, pair),
-        Rule::throw_statement => Ok(vec![Statement::new(walk_statement(__w, pair)?.unwrap().kind)]),
-        Rule::expression => Ok(vec![Statement::new(StmtKind::Expr(walk_expression(__w, pair)?))]),
+        Rule::throw_statement => Ok(vec![Statement::new(
+            walk_statement(__w, pair)?.unwrap().kind,
+        )]),
+        Rule::expression => Ok(vec![Statement::new(StmtKind::Expr(walk_expression(
+            __w, pair,
+        )?))]),
         Rule::expression_statement => Ok(walk_statement(__w, pair)?.into_iter().collect()),
         _ => Ok(walk_statement(__w, pair)?.into_iter().collect()),
     }
@@ -3730,9 +3760,7 @@ fn walk_switch_label(__w: &mut JavaWalker, pair: Pair<Rule>) -> Result<JavaSwitc
                     }
                     value = Some(expr);
                 } else {
-                    if let Some(constant) =
-                        __w.java_final_constants.get(text).cloned()
-                    {
+                    if let Some(constant) = __w.java_final_constants.get(text).cloned() {
                         value = Some(constant);
                         continue;
                     }
@@ -3740,15 +3768,17 @@ fn walk_switch_label(__w: &mut JavaWalker, pair: Pair<Rule>) -> Result<JavaSwitc
                     // `Mode.ON` — class-shaped enums have no compile-time
                     // member table to resolve bare names against.
                     let qualified = {
-                        __w.java_enum_values.iter().find_map(|(enum_name, members)| {
-                            members.iter().any(|m| m == text).then(|| {
-                                Expression::new(ExprKind::Member {
-                                    object: Box::new(Expression::ident(enum_name)),
-                                    field: text.to_string(),
-                                    null_safe: false,
+                        __w.java_enum_values
+                            .iter()
+                            .find_map(|(enum_name, members)| {
+                                members.iter().any(|m| m == text).then(|| {
+                                    Expression::new(ExprKind::Member {
+                                        object: Box::new(Expression::ident(enum_name)),
+                                        field: text.to_string(),
+                                        null_safe: false,
+                                    })
                                 })
                             })
-                        })
                     };
                     value = Some(qualified.unwrap_or_else(|| Expression::ident(text)));
                 }
@@ -3767,7 +3797,10 @@ fn walk_switch_label(__w: &mut JavaWalker, pair: Pair<Rule>) -> Result<JavaSwitc
     }
 }
 
-fn walk_switch_pattern_label(__w: &mut JavaWalker, pair: Pair<Rule>) -> Result<JavaSwitchLabel, String> {
+fn walk_switch_pattern_label(
+    __w: &mut JavaWalker,
+    pair: Pair<Rule>,
+) -> Result<JavaSwitchLabel, String> {
     let mut inner = pair.into_inner();
     let type_pair = inner.next().ok_or("switch pattern: missing type")?;
     let type_name = extract_ref_name(&type_pair);
@@ -3787,7 +3820,11 @@ fn walk_switch_pattern_label(__w: &mut JavaWalker, pair: Pair<Rule>) -> Result<J
     })
 }
 
-fn java_switch_label_match(__w: &mut JavaWalker, value_name: &str, label: &JavaSwitchLabel) -> Expression {
+fn java_switch_label_match(
+    __w: &mut JavaWalker,
+    value_name: &str,
+    label: &JavaSwitchLabel,
+) -> Expression {
     match label {
         JavaSwitchLabel::Value(value) => {
             java_binary(BinOp::Eq, Expression::ident(value_name), value.clone())
@@ -3809,7 +3846,11 @@ fn java_switch_label_match(__w: &mut JavaWalker, value_name: &str, label: &JavaS
     }
 }
 
-fn java_pattern_type_match_expr(__w: &mut JavaWalker, value_name: &str, type_name: &str) -> Expression {
+fn java_pattern_type_match_expr(
+    __w: &mut JavaWalker,
+    value_name: &str,
+    type_name: &str,
+) -> Expression {
     let simple = java_type_simple_name(type_name);
     if let Some(enum_match) = java_enum_pattern_match_expr(__w, value_name, simple) {
         return enum_match;
@@ -3830,7 +3871,11 @@ fn java_pattern_type_match_expr(__w: &mut JavaWalker, value_name: &str, type_nam
     java_type_test_expr(&Expression::ident(value_name), type_name)
 }
 
-fn java_enum_pattern_match_expr(__w: &mut JavaWalker, value_name: &str, enum_name: &str) -> Option<Expression> {
+fn java_enum_pattern_match_expr(
+    __w: &mut JavaWalker,
+    value_name: &str,
+    enum_name: &str,
+) -> Option<Expression> {
     {
         __w.java_enum_values.get(enum_name).map(|members| {
             let value_matches = java_or_exprs(
@@ -3940,7 +3985,12 @@ fn java_type_test_expr(subject: &Expression, stamped_name: &str) -> Expression {
         })
 }
 
-fn rewrite_java_record_accessors_stmt(__w: &mut JavaWalker, stmt: &mut Statement, binding: &str, type_name: &str) {
+fn rewrite_java_record_accessors_stmt(
+    __w: &mut JavaWalker,
+    stmt: &mut Statement,
+    binding: &str,
+    type_name: &str,
+) {
     match &mut stmt.kind {
         StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) => {
             rewrite_java_record_accessors_expr(__w, expr, binding, type_name);
@@ -3989,7 +4039,12 @@ fn rewrite_java_record_accessors_stmt(__w: &mut JavaWalker, stmt: &mut Statement
     }
 }
 
-fn rewrite_java_record_accessors_expr(__w: &mut JavaWalker, expr: &mut Expression, binding: &str, type_name: &str) {
+fn rewrite_java_record_accessors_expr(
+    __w: &mut JavaWalker,
+    expr: &mut Expression,
+    binding: &str,
+    type_name: &str,
+) {
     if let ExprKind::Call { callee, args, .. } = &mut expr.kind {
         if args.is_empty() {
             if let ExprKind::Member { object, field, .. } = &callee.kind {
@@ -4209,7 +4264,10 @@ fn walk_switch_expression(__w: &mut JavaWalker, pair: Pair<Rule>) -> Result<Expr
     }))
 }
 
-fn java_switch_rule_body_expr(__w: &mut JavaWalker, pair: Pair<Rule>) -> Result<Option<Expression>, String> {
+fn java_switch_rule_body_expr(
+    __w: &mut JavaWalker,
+    pair: Pair<Rule>,
+) -> Result<Option<Expression>, String> {
     for p in pair.into_inner() {
         match p.as_rule() {
             Rule::expression => return Ok(Some(walk_expression(__w, p)?)),
@@ -4499,7 +4557,11 @@ fn walk_binop(__w: &mut JavaWalker, pair: Pair<Rule>) -> Result<Expression, Stri
     Ok(build_java_binop_precedence(__w, operands, ops))
 }
 
-fn build_java_binop_precedence(__w: &mut JavaWalker, mut operands: Vec<Expression>, mut ops: Vec<BinOp>) -> Expression {
+fn build_java_binop_precedence(
+    __w: &mut JavaWalker,
+    mut operands: Vec<Expression>,
+    mut ops: Vec<BinOp>,
+) -> Expression {
     for level in [
         &[BinOp::Mul, BinOp::Div, BinOp::Mod][..],
         &[BinOp::Add, BinOp::Sub][..],
@@ -4527,7 +4589,12 @@ fn build_java_binop_precedence(__w: &mut JavaWalker, mut operands: Vec<Expressio
     operands.into_iter().next().unwrap_or_else(Expression::null)
 }
 
-fn java_binary_with_string_concat(__w: &mut JavaWalker, op: BinOp, left: Expression, right: Expression) -> Expression {
+fn java_binary_with_string_concat(
+    __w: &mut JavaWalker,
+    op: BinOp,
+    left: Expression,
+    right: Expression,
+) -> Expression {
     if op == BinOp::Add
         && (is_java_string_concat_operand(&left) || is_java_string_concat_operand(&right))
     {
@@ -4614,9 +4681,7 @@ fn contains_java_integer_bound_constant(expr: &Expression) -> bool {
 fn is_java_double_arithmetic_expr(__w: &mut JavaWalker, expr: &Expression) -> bool {
     match &expr.kind {
         ExprKind::Lit(Literal::Float(_)) => true,
-        ExprKind::Ident(name) => {
-            __w.java_double_vars.contains(name.as_str())
-        }
+        ExprKind::Ident(name) => __w.java_double_vars.contains(name.as_str()),
         ExprKind::Member { object, field, .. } => {
             matches!(
                 java_expr_dotted_name(object).as_deref(),
@@ -4786,7 +4851,11 @@ fn java_expr_is_char_numeric_source(
     }
 }
 
-fn java_expr_is_string_value(__w: &mut JavaWalker, expr: &Expression, local_types: &HashMap<String, String>) -> bool {
+fn java_expr_is_string_value(
+    __w: &mut JavaWalker,
+    expr: &Expression,
+    local_types: &HashMap<String, String>,
+) -> bool {
     match &expr.kind {
         ExprKind::Lit(Literal::Str(value)) => value.chars().count() != 1,
         ExprKind::Ident(name) => {
@@ -4844,8 +4913,11 @@ fn walk_instanceof(__w: &mut JavaWalker, pair: Pair<Rule>) -> Result<Expression,
                 // binding for walk_if to inject into the then-body.
                 if let Some((type_name, subject)) = pending.take() {
                     {
-                        __w.java_instanceof_bindings
-                            .push((p.as_str().to_string(), type_name, subject))
+                        __w.java_instanceof_bindings.push((
+                            p.as_str().to_string(),
+                            type_name,
+                            subject,
+                        ))
                     };
                 }
             }
@@ -4858,7 +4930,11 @@ fn walk_instanceof(__w: &mut JavaWalker, pair: Pair<Rule>) -> Result<Expression,
 /// The type-test expression for `subject instanceof Type`. Identical to the
 /// switch-pattern path when the subject is a plain name, so enum membership is
 /// answered the same way in both; otherwise the shared type test.
-fn java_instanceof_match_expr(__w: &mut JavaWalker, subject: &Expression, type_name: &str) -> Expression {
+fn java_instanceof_match_expr(
+    __w: &mut JavaWalker,
+    subject: &Expression,
+    type_name: &str,
+) -> Expression {
     if let ExprKind::Ident(name) = &subject.kind {
         return java_pattern_type_match_expr(__w, name, type_name);
     }
@@ -5068,7 +5144,8 @@ fn walk_primary_chain(__w: &mut JavaWalker, pair: Pair<Rule>) -> Result<Expressi
                         continue;
                     }
                     if matches!(name.as_str(), "wait" | "notify" | "notifyAll") {
-                        current = normalise_method_call(__w, 
+                        current = normalise_method_call(
+                            __w,
                             Expression::new(ExprKind::This),
                             name.clone(),
                             args,
@@ -5192,7 +5269,10 @@ fn java_print_stream_write(__w: &mut JavaWalker, method: &str, args: Vec<Argumen
             .unwrap_or_else(|| Argument::positional(Expression::string("")))
     };
     match method {
-        "println" => build("__java_println", vec![java_print_arg(__w, first_or_empty(args))]),
+        "println" => build(
+            "__java_println",
+            vec![java_print_arg(__w, first_or_empty(args))],
+        ),
         "append" if args.len() == 3 => {
             // append(csq, start, end) → write csq.substring(start, end)
             let mut it = args.into_iter();
@@ -5210,8 +5290,14 @@ fn java_print_stream_write(__w: &mut JavaWalker, method: &str, args: Vec<Argumen
             });
             build("__java_print", vec![Argument::positional(sub)])
         }
-        "print" => build("__java_print", vec![java_print_arg(__w, first_or_empty(args))]),
-        "append" => build("__java_print", vec![java_print_arg(__w, first_or_empty(args))]),
+        "print" => build(
+            "__java_print",
+            vec![java_print_arg(__w, first_or_empty(args))],
+        ),
+        "append" => build(
+            "__java_print",
+            vec![java_print_arg(__w, first_or_empty(args))],
+        ),
         // printf | format
         _ => {
             let mut it = args.into_iter();
@@ -5273,7 +5359,12 @@ fn java_rewrite_printstream_format_literal(fmt: &mut Expression, args: &mut [Arr
 }
 
 /// Normalise Java-specific call patterns to a compiler-friendly shape.
-fn normalise_method_call(__w: &mut JavaWalker, receiver: Expression, method: String, args: Vec<Argument>) -> Expression {
+fn normalise_method_call(
+    __w: &mut JavaWalker,
+    receiver: Expression,
+    method: String,
+    args: Vec<Argument>,
+) -> Expression {
     let receiver = java_reflection_indexed_token(&receiver).unwrap_or(receiver);
 
     // JLS §15.12.1 — the receiver's declared type decides. Everything below
@@ -6172,9 +6263,7 @@ fn normalise_method_call(__w: &mut JavaWalker, receiver: Expression, method: Str
     }
 
     let decimal_format_receiver = match &receiver.kind {
-        ExprKind::Ident(n) => {
-            __w.java_decimal_format_vars.contains(n.as_str())
-        }
+        ExprKind::Ident(n) => __w.java_decimal_format_vars.contains(n.as_str()),
         ExprKind::Call { callee, .. } => matches!(
             &callee.kind,
             ExprKind::Ident(n) if matches!(n.as_str(), "__j_df_new" | "__j_df_currency" | "__j_df_percent" | "__j_df_clone")
@@ -6220,8 +6309,7 @@ fn normalise_method_call(__w: &mut JavaWalker, receiver: Expression, method: Str
     }
 
     if let ExprKind::Ident(name) = &receiver.kind {
-        let receiver_type =
-            __w.java_local_types.get(name.as_str()).cloned();
+        let receiver_type = __w.java_local_types.get(name.as_str()).cloned();
         if java_type_is_bitset(receiver_type.as_deref())
             && let Some(prelude_fn) = java_bitset_method_name(&method)
         {
@@ -6374,9 +6462,7 @@ fn normalise_method_call(__w: &mut JavaWalker, receiver: Expression, method: Str
     // its declared returns) resolves through the jvm tree.
 
     let string_tokenizer_receiver = match &receiver.kind {
-        ExprKind::Ident(n) => {
-            __w.java_string_tokenizer_vars.contains(n.as_str())
-        }
+        ExprKind::Ident(n) => __w.java_string_tokenizer_vars.contains(n.as_str()),
         ExprKind::Call { callee, .. } => {
             matches!(&callee.kind, ExprKind::Ident(n) if n == "__j_st_new")
         }
@@ -6480,9 +6566,7 @@ fn normalise_method_call(__w: &mut JavaWalker, receiver: Expression, method: Str
     }
 
     let message_format_receiver = match &receiver.kind {
-        ExprKind::Ident(n) => {
-            __w.java_message_format_vars.contains(n.as_str())
-        }
+        ExprKind::Ident(n) => __w.java_message_format_vars.contains(n.as_str()),
         ExprKind::Call { callee, .. } => {
             matches!(&callee.kind, ExprKind::Ident(n) if matches!(n.as_str(), "__j_mf_new" | "__j_mf_clone"))
         }
@@ -7463,11 +7547,15 @@ fn java_reflection_class_meta(__w: &mut JavaWalker, name: &str) -> Option<JavaRe
     let simple = java_type_simple_name(name);
     {
         let classes_b = &__w.java_reflection_classes;
-        classes_b.get(name).or_else(|| classes_b.get(simple)).cloned()
+        classes_b
+            .get(name)
+            .or_else(|| classes_b.get(simple))
+            .cloned()
     }
 }
 
-fn java_class_token_method(__w: &mut JavaWalker, 
+fn java_class_token_method(
+    __w: &mut JavaWalker,
     receiver: &Expression,
     method: &str,
     args: &[Argument],
@@ -7758,7 +7846,11 @@ fn java_reflection_call_args(args: &[Argument]) -> Vec<Expression> {
     args.iter().map(|arg| arg.value.clone()).collect()
 }
 
-fn java_class_token_noarg_method(__w: &mut JavaWalker, receiver: &Expression, method: &str) -> Option<Expression> {
+fn java_class_token_noarg_method(
+    __w: &mut JavaWalker,
+    receiver: &Expression,
+    method: &str,
+) -> Option<Expression> {
     let class_name = java_class_token_name(receiver)?;
     match method {
         "getCanonicalName" | "getTypeName" => Some(Expression::string(&class_name)),
@@ -7770,7 +7862,10 @@ fn java_class_token_noarg_method(__w: &mut JavaWalker, receiver: &Expression, me
         )),
         "isArray" => Some(Expression::bool(class_name.ends_with("[]"))),
         "isPrimitive" => Some(Expression::bool(java_class_name_is_primitive(&class_name))),
-        "isInterface" => Some(Expression::bool(java_class_name_is_interface(__w, &class_name))),
+        "isInterface" => Some(Expression::bool(java_class_name_is_interface(
+            __w,
+            &class_name,
+        ))),
         "isEnum" => Some(Expression::bool(java_class_name_is_enum(__w, &class_name))),
         "getComponentType" => Some(
             class_name
@@ -7794,11 +7889,15 @@ fn java_class_package_name(name: &str) -> String {
         .unwrap_or_default()
 }
 
-fn java_class_assignable_from_expr(__w: &mut JavaWalker, receiver: &Expression, arg: &Expression) -> Option<Expression> {
+fn java_class_assignable_from_expr(
+    __w: &mut JavaWalker,
+    receiver: &Expression,
+    arg: &Expression,
+) -> Option<Expression> {
     let target = java_class_token_name(receiver)?;
     let source = java_class_token_name(arg)?;
-    Some(Expression::bool(java_class_is_assignable_from(__w, 
-        &target, &source,
+    Some(Expression::bool(java_class_is_assignable_from(
+        __w, &target, &source,
     )))
 }
 
@@ -8493,7 +8592,11 @@ fn java_functional_method(method: &str) -> bool {
     )
 }
 
-fn java_functional_receiver_method(__w: &mut JavaWalker, receiver: &Expression, method: &str) -> bool {
+fn java_functional_receiver_method(
+    __w: &mut JavaWalker,
+    receiver: &Expression,
+    method: &str,
+) -> bool {
     if java_functional_method(method) {
         return true;
     }
@@ -8518,9 +8621,7 @@ fn java_functional_result_method(method: &str) -> bool {
 
 fn java_functional_type_of(__w: &mut JavaWalker, receiver: &Expression) -> Option<String> {
     match &receiver.kind {
-        ExprKind::Ident(name) => {
-            __w.java_functional_types.get(name).cloned()
-        }
+        ExprKind::Ident(name) => __w.java_functional_types.get(name).cloned(),
         _ => None,
     }
 }
@@ -8559,7 +8660,8 @@ fn java_forwarding_lambda(is_bi: bool, body: Expression) -> Expression {
     }
 }
 
-fn java_functional_default_method(__w: &mut JavaWalker, 
+fn java_functional_default_method(
+    __w: &mut JavaWalker,
     receiver: &Expression,
     method: &str,
     args: &[Argument],
@@ -8669,9 +8771,7 @@ fn java_functional_static_call(
 
 fn java_arg_is_char_array(__w: &mut JavaWalker, arg: &Argument) -> bool {
     match &arg.value.kind {
-        ExprKind::Ident(name) => {
-            __w.java_char_array_vars.contains(name.as_str())
-        }
+        ExprKind::Ident(name) => __w.java_char_array_vars.contains(name.as_str()),
         // `Character.toChars(cp)` IS a char[] — so `new String(...)` over it
         // routes through the chars-to-string copy, not Object stringify.
         ExprKind::Call { callee, .. } => {
@@ -8789,7 +8889,9 @@ fn walk_primary_atom(__w: &mut JavaWalker, pair: Pair<Rule>) -> Result<Expressio
         Rule::array_creation => walk_array_creation(__w, inner),
         Rule::switch_expression => walk_switch_expression(__w, inner),
         Rule::lambda_expression => walk_lambda(__w, inner),
-        Rule::paren_expression => walk_expression(__w, inner.into_inner().next().ok_or("paren: empty")?),
+        Rule::paren_expression => {
+            walk_expression(__w, inner.into_inner().next().ok_or("paren: empty")?)
+        }
         Rule::literal => walk_literal(inner),
         Rule::this_kw => Ok(Expression::new(ExprKind::This)),
         Rule::super_kw => Ok(Expression::new(ExprKind::Super)),
@@ -8827,7 +8929,8 @@ fn walk_new(__w: &mut JavaWalker, pair: Pair<Rule>) -> Result<Expression, String
                 if class_name.rsplit('.').next() == Some("Comparator")
                     && inner.peek().map(|next| next.as_rule()) == Some(Rule::anonymous_class_body)
                 {
-                    if let Some(comparator) = walk_anonymous_comparator(__w, inner.next().unwrap())? {
+                    if let Some(comparator) = walk_anonymous_comparator(__w, inner.next().unwrap())?
+                    {
                         return Ok(comparator);
                     }
                 }
@@ -8839,7 +8942,8 @@ fn walk_new(__w: &mut JavaWalker, pair: Pair<Rule>) -> Result<Expression, String
                     interfaces = std::mem::take(&mut anonymous_interfaces);
                 }
                 if inner.peek().map(|next| next.as_rule()) == Some(Rule::anonymous_class_body) {
-                    return walk_anonymous_class_new(__w, 
+                    return walk_anonymous_class_new(
+                        __w,
                         &class_name,
                         args,
                         interfaces,
@@ -9165,7 +9269,8 @@ fn walk_new(__w: &mut JavaWalker, pair: Pair<Rule>) -> Result<Expression, String
                         return Ok(comparator);
                     }
                 }
-                return walk_anonymous_class_new(__w, 
+                return walk_anonymous_class_new(
+                    __w,
                     &class_name,
                     vec![],
                     std::mem::take(&mut anonymous_interfaces),
@@ -9211,7 +9316,11 @@ fn java_thread_constructor_args(mut args: Vec<Argument>) -> Vec<Argument> {
     args
 }
 
-fn java_synchronized_stmt(__w: &mut JavaWalker, lock: Expression, body: Vec<Statement>) -> Statement {
+fn java_synchronized_stmt(
+    __w: &mut JavaWalker,
+    lock: Expression,
+    body: Vec<Statement>,
+) -> Statement {
     let temp = {
         let counter_b = &mut __w.java_monitor_temp_counter;
         *counter_b += 1;
@@ -9254,7 +9363,8 @@ fn java_type_is_concurrent_hash_map(type_name: &str) -> bool {
     simple == "ConcurrentHashMap" || simple.starts_with("ConcurrentHashMap<")
 }
 
-fn walk_anonymous_class_new(__w: &mut JavaWalker, 
+fn walk_anonymous_class_new(
+    __w: &mut JavaWalker,
     class_name: &str,
     args: Vec<Argument>,
     mut interfaces: Vec<String>,
@@ -9283,8 +9393,7 @@ fn walk_anonymous_class_new(__w: &mut JavaWalker,
 
 fn java_anonymous_interface_target(__w: &mut JavaWalker, class_name: &str) -> bool {
     let simple_name = class_name.rsplit('.').next().unwrap_or(class_name);
-    matches!(simple_name, "Runnable")
-        || __w.java_interface_names.contains(simple_name)
+    matches!(simple_name, "Runnable") || __w.java_interface_names.contains(simple_name)
 }
 
 fn java_anonymous_root_class(class_name: &str) -> bool {
@@ -9298,7 +9407,8 @@ fn erase_java_interface_param_hints(__w: &mut JavaWalker, body: &mut [Statement]
     erase_java_interface_param_hints_with_types(__w, body, &mut HashMap::new());
 }
 
-fn erase_java_interface_param_hints_with_types(__w: &mut JavaWalker, 
+fn erase_java_interface_param_hints_with_types(
+    __w: &mut JavaWalker,
     body: &mut [Statement],
     concrete_locals: &mut HashMap<String, String>,
 ) {
@@ -9375,16 +9485,22 @@ fn erase_java_interface_param_hints_with_types(__w: &mut JavaWalker,
                     match member {
                         ClassMember::Constructor { params, body, .. } => {
                             erase_java_interface_params(__w, params);
-                            erase_java_interface_param_hints_with_types(__w, body, &mut HashMap::new());
+                            erase_java_interface_param_hints_with_types(
+                                __w,
+                                body,
+                                &mut HashMap::new(),
+                            );
                         }
                         ClassMember::Method(method) => {
-                            erase_java_interface_param_hints_with_types(__w, 
+                            erase_java_interface_param_hints_with_types(
+                                __w,
                                 std::slice::from_mut(method),
                                 &mut HashMap::new(),
                             );
                         }
                         ClassMember::NestedType(nested) => {
-                            erase_java_interface_param_hints_with_types(__w, 
+                            erase_java_interface_param_hints_with_types(
+                                __w,
                                 std::slice::from_mut(nested),
                                 &mut HashMap::new(),
                             );
@@ -9394,7 +9510,11 @@ fn erase_java_interface_param_hints_with_types(__w: &mut JavaWalker,
                 }
             }
             StmtKind::Block(stmts) | StmtKind::NamespaceDecl { body: stmts, .. } => {
-                erase_java_interface_param_hints_with_types(__w, stmts, &mut concrete_locals.clone());
+                erase_java_interface_param_hints_with_types(
+                    __w,
+                    stmts,
+                    &mut concrete_locals.clone(),
+                );
             }
             _ => {}
         }
@@ -9763,7 +9883,10 @@ fn reject_java_direct_abstract_instantiation_expr(
     Ok(())
 }
 
-fn walk_anonymous_comparator(__w: &mut JavaWalker, pair: Pair<Rule>) -> Result<Option<Expression>, String> {
+fn walk_anonymous_comparator(
+    __w: &mut JavaWalker,
+    pair: Pair<Rule>,
+) -> Result<Option<Expression>, String> {
     for member in pair.into_inner() {
         if member.as_rule() != Rule::method_declaration {
             continue;
@@ -12242,7 +12365,8 @@ fn java_typed_outer_expr(owner_name: &str) -> Expression {
     })
 }
 
-fn rewrite_java_nested_type_refs_in_members(__w: &mut JavaWalker, 
+fn rewrite_java_nested_type_refs_in_members(
+    __w: &mut JavaWalker,
     members: &mut [ClassMember],
     nested_types: &HashMap<String, (String, bool)>,
 ) {
@@ -12256,14 +12380,17 @@ fn rewrite_java_nested_type_refs_in_members(__w: &mut JavaWalker,
             ClassMember::Constructor { body, .. } => {
                 rewrite_java_nested_type_refs_stmts(__w, body, nested_types);
             }
-            ClassMember::Method(stmt) => rewrite_java_nested_type_refs_stmt(__w, stmt, nested_types),
+            ClassMember::Method(stmt) => {
+                rewrite_java_nested_type_refs_stmt(__w, stmt, nested_types)
+            }
             ClassMember::NestedType(_) => {}
             _ => {}
         }
     }
 }
 
-fn rewrite_java_nested_type_refs_stmt(__w: &mut JavaWalker, 
+fn rewrite_java_nested_type_refs_stmt(
+    __w: &mut JavaWalker,
     stmt: &mut Statement,
     nested_types: &HashMap<String, (String, bool)>,
 ) {
@@ -12356,7 +12483,8 @@ fn rewrite_java_nested_type_refs_stmt(__w: &mut JavaWalker,
     }
 }
 
-fn rewrite_java_nested_type_refs_stmts(__w: &mut JavaWalker, 
+fn rewrite_java_nested_type_refs_stmts(
+    __w: &mut JavaWalker,
     stmts: &mut [Statement],
     nested_types: &HashMap<String, (String, bool)>,
 ) {
@@ -12365,7 +12493,8 @@ fn rewrite_java_nested_type_refs_stmts(__w: &mut JavaWalker,
     }
 }
 
-fn rewrite_java_nested_type_refs_expr(__w: &mut JavaWalker, 
+fn rewrite_java_nested_type_refs_expr(
+    __w: &mut JavaWalker,
     expr: &mut Expression,
     nested_types: &HashMap<String, (String, bool)>,
 ) {
@@ -12720,7 +12849,8 @@ fn rewrite_java_user_tostring_calls(__w: &mut JavaWalker, body: &mut [Statement]
     collect_java_double_methods(body, &mut double_methods);
     rewrite_java_double_field_print_tree(body, &double_fields);
     rewrite_java_double_method_print_tree(body, &double_methods);
-    rewrite_java_tostring_stmts(__w, 
+    rewrite_java_tostring_stmts(
+        __w,
         body,
         &tostring_classes,
         &enum_values,
@@ -12875,7 +13005,8 @@ fn collect_java_tostring_classes(body: &[Statement], out: &mut HashSet<String>) 
     }
 }
 
-fn rewrite_java_tostring_stmts(__w: &mut JavaWalker, 
+fn rewrite_java_tostring_stmts(
+    __w: &mut JavaWalker,
     stmts: &mut [Statement],
     tostring_classes: &HashSet<String>,
     enum_values: &HashMap<String, Vec<String>>,
@@ -12974,7 +13105,8 @@ fn rewrite_java_tostring_stmts(__w: &mut JavaWalker,
                                     .iter()
                                     .map(|(name, ty)| (name.clone(), ty.clone())),
                             );
-                            rewrite_java_tostring_stmts(__w, 
+                            rewrite_java_tostring_stmts(
+                                __w,
                                 body,
                                 tostring_classes,
                                 enum_values,
@@ -13003,7 +13135,8 @@ fn rewrite_java_tostring_stmts(__w: &mut JavaWalker,
                                         .iter()
                                         .map(|(name, ty)| (name.clone(), ty.clone())),
                                 );
-                                rewrite_java_tostring_stmts(__w, 
+                                rewrite_java_tostring_stmts(
+                                    __w,
                                     body,
                                     tostring_classes,
                                     enum_values,
@@ -13013,7 +13146,8 @@ fn rewrite_java_tostring_stmts(__w: &mut JavaWalker,
                             }
                         }
                         ClassMember::NestedType(nested) => {
-                            rewrite_java_tostring_stmts(__w, 
+                            rewrite_java_tostring_stmts(
+                                __w,
                                 std::slice::from_mut(nested),
                                 tostring_classes,
                                 enum_values,
@@ -13028,7 +13162,8 @@ fn rewrite_java_tostring_stmts(__w: &mut JavaWalker,
             StmtKind::VarDecl { declarations, .. } => {
                 for decl in declarations {
                     if let Some(init) = &mut decl.init {
-                        rewrite_java_tostring_expr(__w, 
+                        rewrite_java_tostring_expr(
+                            __w,
                             init,
                             tostring_classes,
                             enum_values,
@@ -13053,7 +13188,8 @@ fn rewrite_java_tostring_stmts(__w: &mut JavaWalker,
                 }
             }
             StmtKind::Assign { targets, value, .. } => {
-                rewrite_java_tostring_expr(__w, 
+                rewrite_java_tostring_expr(
+                    __w,
                     value,
                     tostring_classes,
                     enum_values,
@@ -13061,7 +13197,8 @@ fn rewrite_java_tostring_stmts(__w: &mut JavaWalker,
                     locals,
                 );
                 for target in &mut *targets {
-                    rewrite_java_tostring_expr(__w, 
+                    rewrite_java_tostring_expr(
+                        __w,
                         target,
                         tostring_classes,
                         enum_values,
@@ -13071,14 +13208,16 @@ fn rewrite_java_tostring_stmts(__w: &mut JavaWalker,
                 }
             }
             StmtKind::CompoundAssign { target, value, .. } => {
-                rewrite_java_tostring_expr(__w, 
+                rewrite_java_tostring_expr(
+                    __w,
                     value,
                     tostring_classes,
                     enum_values,
                     current_class,
                     locals,
                 );
-                rewrite_java_tostring_expr(__w, 
+                rewrite_java_tostring_expr(
+                    __w,
                     target,
                     tostring_classes,
                     enum_values,
@@ -13091,7 +13230,8 @@ fn rewrite_java_tostring_stmts(__w: &mut JavaWalker,
             | StmtKind::Throw {
                 expr: Some(expr), ..
             } => {
-                rewrite_java_tostring_expr(__w, 
+                rewrite_java_tostring_expr(
+                    __w,
                     expr,
                     tostring_classes,
                     enum_values,
@@ -13108,14 +13248,16 @@ fn rewrite_java_tostring_stmts(__w: &mut JavaWalker,
                 elifs,
                 else_body,
             } => {
-                rewrite_java_tostring_expr(__w, 
+                rewrite_java_tostring_expr(
+                    __w,
                     cond,
                     tostring_classes,
                     enum_values,
                     current_class,
                     locals,
                 );
-                rewrite_java_tostring_stmts(__w, 
+                rewrite_java_tostring_stmts(
+                    __w,
                     then_body,
                     tostring_classes,
                     enum_values,
@@ -13123,14 +13265,16 @@ fn rewrite_java_tostring_stmts(__w: &mut JavaWalker,
                     &mut locals.clone(),
                 );
                 for (elif_cond, elif_body) in elifs {
-                    rewrite_java_tostring_expr(__w, 
+                    rewrite_java_tostring_expr(
+                        __w,
                         elif_cond,
                         tostring_classes,
                         enum_values,
                         current_class,
                         locals,
                     );
-                    rewrite_java_tostring_stmts(__w, 
+                    rewrite_java_tostring_stmts(
+                        __w,
                         elif_body,
                         tostring_classes,
                         enum_values,
@@ -13139,7 +13283,8 @@ fn rewrite_java_tostring_stmts(__w: &mut JavaWalker,
                     );
                 }
                 if let Some(else_body) = else_body {
-                    rewrite_java_tostring_stmts(__w, 
+                    rewrite_java_tostring_stmts(
+                        __w,
                         else_body,
                         tostring_classes,
                         enum_values,
@@ -13149,14 +13294,16 @@ fn rewrite_java_tostring_stmts(__w: &mut JavaWalker,
                 }
             }
             StmtKind::While { cond, body, .. } => {
-                rewrite_java_tostring_expr(__w, 
+                rewrite_java_tostring_expr(
+                    __w,
                     cond,
                     tostring_classes,
                     enum_values,
                     current_class,
                     locals,
                 );
-                rewrite_java_tostring_stmts(__w, 
+                rewrite_java_tostring_stmts(
+                    __w,
                     body,
                     tostring_classes,
                     enum_values,
@@ -13172,7 +13319,8 @@ fn rewrite_java_tostring_stmts(__w: &mut JavaWalker,
                 else_body,
                 ..
             } => {
-                rewrite_java_tostring_expr(__w, 
+                rewrite_java_tostring_expr(
+                    __w,
                     iter,
                     tostring_classes,
                     enum_values,
@@ -13184,7 +13332,8 @@ fn rewrite_java_tostring_stmts(__w: &mut JavaWalker,
                 if let Some(key) = key {
                     loop_locals.insert(key.clone(), "Object".to_string());
                 }
-                rewrite_java_tostring_stmts(__w, 
+                rewrite_java_tostring_stmts(
+                    __w,
                     body,
                     tostring_classes,
                     enum_values,
@@ -13192,7 +13341,8 @@ fn rewrite_java_tostring_stmts(__w: &mut JavaWalker,
                     &mut loop_locals,
                 );
                 if let Some(else_body) = else_body {
-                    rewrite_java_tostring_stmts(__w, 
+                    rewrite_java_tostring_stmts(
+                        __w,
                         else_body,
                         tostring_classes,
                         enum_values,
@@ -13202,7 +13352,8 @@ fn rewrite_java_tostring_stmts(__w: &mut JavaWalker,
                 }
             }
             StmtKind::Block(body) => {
-                rewrite_java_tostring_stmts(__w, 
+                rewrite_java_tostring_stmts(
+                    __w,
                     body,
                     tostring_classes,
                     enum_values,
@@ -13216,7 +13367,8 @@ fn rewrite_java_tostring_stmts(__w: &mut JavaWalker,
                 else_body,
                 finally,
             } => {
-                rewrite_java_tostring_stmts(__w, 
+                rewrite_java_tostring_stmts(
+                    __w,
                     body,
                     tostring_classes,
                     enum_values,
@@ -13228,7 +13380,8 @@ fn rewrite_java_tostring_stmts(__w: &mut JavaWalker,
                     if let (Some(var_name), Some(ty)) = (&c.var_name, c.types.first()) {
                         catch_locals.insert(var_name.clone(), ty.clone());
                     }
-                    rewrite_java_tostring_stmts(__w, 
+                    rewrite_java_tostring_stmts(
+                        __w,
                         &mut c.body,
                         tostring_classes,
                         enum_values,
@@ -13237,7 +13390,8 @@ fn rewrite_java_tostring_stmts(__w: &mut JavaWalker,
                     );
                 }
                 if let Some(else_body) = else_body {
-                    rewrite_java_tostring_stmts(__w, 
+                    rewrite_java_tostring_stmts(
+                        __w,
                         else_body,
                         tostring_classes,
                         enum_values,
@@ -13246,7 +13400,8 @@ fn rewrite_java_tostring_stmts(__w: &mut JavaWalker,
                     );
                 }
                 if let Some(finally) = finally {
-                    rewrite_java_tostring_stmts(__w, 
+                    rewrite_java_tostring_stmts(
+                        __w,
                         finally,
                         tostring_classes,
                         enum_values,
@@ -13262,7 +13417,8 @@ fn rewrite_java_tostring_stmts(__w: &mut JavaWalker,
                 body,
             } => {
                 if let Some(init) = init {
-                    rewrite_java_tostring_stmts(__w, 
+                    rewrite_java_tostring_stmts(
+                        __w,
                         std::slice::from_mut(init),
                         tostring_classes,
                         enum_values,
@@ -13271,7 +13427,8 @@ fn rewrite_java_tostring_stmts(__w: &mut JavaWalker,
                     );
                 }
                 if let Some(cond) = cond {
-                    rewrite_java_tostring_expr(__w, 
+                    rewrite_java_tostring_expr(
+                        __w,
                         cond,
                         tostring_classes,
                         enum_values,
@@ -13280,7 +13437,8 @@ fn rewrite_java_tostring_stmts(__w: &mut JavaWalker,
                     );
                 }
                 if let Some(update) = update {
-                    rewrite_java_tostring_expr(__w, 
+                    rewrite_java_tostring_expr(
+                        __w,
                         update,
                         tostring_classes,
                         enum_values,
@@ -13288,7 +13446,8 @@ fn rewrite_java_tostring_stmts(__w: &mut JavaWalker,
                         locals,
                     );
                 }
-                rewrite_java_tostring_stmts(__w, 
+                rewrite_java_tostring_stmts(
+                    __w,
                     body,
                     tostring_classes,
                     enum_values,
@@ -13657,7 +13816,8 @@ fn java_is_double_print_call(expr: &Expression) -> bool {
     }
 }
 
-fn rewrite_java_tostring_expr(__w: &mut JavaWalker, 
+fn rewrite_java_tostring_expr(
+    __w: &mut JavaWalker,
     expr: &mut Expression,
     tostring_classes: &HashSet<String>,
     enum_values: &HashMap<String, Vec<String>>,
@@ -13676,7 +13836,8 @@ fn rewrite_java_tostring_expr(__w: &mut JavaWalker,
     match &mut expr.kind {
         ExprKind::Call { callee, args, .. } => {
             for arg in &mut *args {
-                rewrite_java_tostring_expr(__w, 
+                rewrite_java_tostring_expr(
+                    __w,
                     &mut arg.value,
                     tostring_classes,
                     enum_values,
@@ -13711,7 +13872,11 @@ fn rewrite_java_tostring_expr(__w: &mut JavaWalker,
             if let ExprKind::Member { object, field, .. } = &mut callee.kind {
                 if args.is_empty() {
                     if let ExprKind::Ident(ref name) = object.kind {
-                        if java_record_has_component(__w, locals.get(name).map(String::as_str), field) {
+                        if java_record_has_component(
+                            __w,
+                            locals.get(name).map(String::as_str),
+                            field,
+                        ) {
                             *expr = Expression::new(ExprKind::Member {
                                 object: Box::new((**object).clone()),
                                 field: java_record_storage_field(field),
@@ -13793,7 +13958,8 @@ fn rewrite_java_tostring_expr(__w: &mut JavaWalker,
                         }
                     }
                 }
-                rewrite_java_tostring_expr(__w, 
+                rewrite_java_tostring_expr(
+                    __w,
                     object,
                     tostring_classes,
                     enum_values,
@@ -14169,7 +14335,8 @@ fn rewrite_java_tostring_expr(__w: &mut JavaWalker,
                 // (flexclassplan: languages bind, they don't name); a
                 // syntactic rewrite that second-guesses it can only subtract.
             } else {
-                rewrite_java_tostring_expr(__w, 
+                rewrite_java_tostring_expr(
+                    __w,
                     callee,
                     tostring_classes,
                     enum_values,
@@ -14226,7 +14393,8 @@ fn rewrite_java_tostring_expr(__w: &mut JavaWalker,
                 });
                 return;
             }
-            rewrite_java_tostring_expr(__w, 
+            rewrite_java_tostring_expr(
+                __w,
                 object,
                 tostring_classes,
                 enum_values,
@@ -14235,23 +14403,52 @@ fn rewrite_java_tostring_expr(__w: &mut JavaWalker,
             );
         }
         ExprKind::Index { object, index, .. } => {
-            rewrite_java_tostring_expr(__w, 
+            rewrite_java_tostring_expr(
+                __w,
                 object,
                 tostring_classes,
                 enum_values,
                 current_class,
                 locals,
             );
-            rewrite_java_tostring_expr(__w, index, tostring_classes, enum_values, current_class, locals);
+            rewrite_java_tostring_expr(
+                __w,
+                index,
+                tostring_classes,
+                enum_values,
+                current_class,
+                locals,
+            );
         }
         ExprKind::Binary { left, right, .. } => {
-            rewrite_java_tostring_expr(__w, left, tostring_classes, enum_values, current_class, locals);
-            rewrite_java_tostring_expr(__w, right, tostring_classes, enum_values, current_class, locals);
+            rewrite_java_tostring_expr(
+                __w,
+                left,
+                tostring_classes,
+                enum_values,
+                current_class,
+                locals,
+            );
+            rewrite_java_tostring_expr(
+                __w,
+                right,
+                tostring_classes,
+                enum_values,
+                current_class,
+                locals,
+            );
             rewrite_java_switch_enum_label(left, right, locals);
             rewrite_java_switch_enum_label(right, left, locals);
         }
         ExprKind::Unary { expr: inner, .. } => {
-            rewrite_java_tostring_expr(__w, inner, tostring_classes, enum_values, current_class, locals);
+            rewrite_java_tostring_expr(
+                __w,
+                inner,
+                tostring_classes,
+                enum_values,
+                current_class,
+                locals,
+            );
         }
         ExprKind::Lambda { params, body, .. } => {
             let mut lambda_locals = locals.clone();
@@ -14261,14 +14458,16 @@ fn rewrite_java_tostring_expr(__w: &mut JavaWalker,
                 }
             }
             match body {
-                LambdaBody::Expr(inner) => rewrite_java_tostring_expr(__w, 
+                LambdaBody::Expr(inner) => rewrite_java_tostring_expr(
+                    __w,
                     inner,
                     tostring_classes,
                     enum_values,
                     current_class,
                     &lambda_locals,
                 ),
-                LambdaBody::Block(stmts) => rewrite_java_tostring_stmts(__w, 
+                LambdaBody::Block(stmts) => rewrite_java_tostring_stmts(
+                    __w,
                     stmts,
                     tostring_classes,
                     enum_values,
@@ -14281,7 +14480,14 @@ fn rewrite_java_tostring_expr(__w: &mut JavaWalker,
             expr: inner,
             type_name,
         } => {
-            rewrite_java_tostring_expr(__w, inner, tostring_classes, enum_values, current_class, locals);
+            rewrite_java_tostring_expr(
+                __w,
+                inner,
+                tostring_classes,
+                enum_values,
+                current_class,
+                locals,
+            );
             if enum_values.contains_key(java_type_simple_name(type_name)) {
                 if java_enum_type_from_member_expr(inner).map(java_type_simple_name)
                     == Some(java_type_simple_name(type_name))
@@ -14291,8 +14497,16 @@ fn rewrite_java_tostring_expr(__w: &mut JavaWalker,
             }
         }
         ExprKind::Assign { target, value } => {
-            rewrite_java_tostring_expr(__w, value, tostring_classes, enum_values, current_class, locals);
-            rewrite_java_tostring_expr(__w, 
+            rewrite_java_tostring_expr(
+                __w,
+                value,
+                tostring_classes,
+                enum_values,
+                current_class,
+                locals,
+            );
+            rewrite_java_tostring_expr(
+                __w,
                 target,
                 tostring_classes,
                 enum_values,
@@ -14301,13 +14515,35 @@ fn rewrite_java_tostring_expr(__w: &mut JavaWalker,
             );
         }
         ExprKind::Ternary { cond, then, else_ } => {
-            rewrite_java_tostring_expr(__w, cond, tostring_classes, enum_values, current_class, locals);
-            rewrite_java_tostring_expr(__w, then, tostring_classes, enum_values, current_class, locals);
-            rewrite_java_tostring_expr(__w, else_, tostring_classes, enum_values, current_class, locals);
+            rewrite_java_tostring_expr(
+                __w,
+                cond,
+                tostring_classes,
+                enum_values,
+                current_class,
+                locals,
+            );
+            rewrite_java_tostring_expr(
+                __w,
+                then,
+                tostring_classes,
+                enum_values,
+                current_class,
+                locals,
+            );
+            rewrite_java_tostring_expr(
+                __w,
+                else_,
+                tostring_classes,
+                enum_values,
+                current_class,
+                locals,
+            );
         }
         ExprKind::Array(elems) => {
             for elem in elems {
-                rewrite_java_tostring_expr(__w, 
+                rewrite_java_tostring_expr(
+                    __w,
                     &mut elem.value,
                     tostring_classes,
                     enum_values,
@@ -14318,7 +14554,8 @@ fn rewrite_java_tostring_expr(__w: &mut JavaWalker,
         }
         ExprKind::New { args, .. } => {
             for arg in args {
-                rewrite_java_tostring_expr(__w, 
+                rewrite_java_tostring_expr(
+                    __w,
                     &mut arg.value,
                     tostring_classes,
                     enum_values,
@@ -14627,9 +14864,7 @@ fn java_type_is_random(type_name: Option<&str>) -> bool {
 
 fn java_random_receiver(__w: &mut JavaWalker, receiver: &Expression) -> bool {
     match &receiver.kind {
-        ExprKind::Ident(name) => {
-            __w.java_random_vars.contains(name.as_str())
-        }
+        ExprKind::Ident(name) => __w.java_random_vars.contains(name.as_str()),
         ExprKind::Call { callee, .. } => {
             matches!(&callee.kind, ExprKind::Ident(name) if name == "__java_random_new")
         }
@@ -15335,7 +15570,8 @@ fn java_expr_is_negative_f64(expr: &Expression) -> bool {
     }
 }
 
-fn java_expr_is_bigint(__w: &mut JavaWalker, 
+fn java_expr_is_bigint(
+    __w: &mut JavaWalker,
     expr: &Expression,
     locals: &std::collections::HashMap<String, String>,
 ) -> bool {
@@ -15360,7 +15596,8 @@ fn java_expr_is_bigint(__w: &mut JavaWalker,
     }
 }
 
-fn java_expr_is_bigdecimal(__w: &mut JavaWalker, 
+fn java_expr_is_bigdecimal(
+    __w: &mut JavaWalker,
     expr: &Expression,
     locals: &std::collections::HashMap<String, String>,
 ) -> bool {
@@ -15428,7 +15665,10 @@ fn java_bigint_constant_replacement(__w: &mut JavaWalker, expr: &Expression) -> 
     None
 }
 
-fn java_bigdecimal_constant_replacement(__w: &mut JavaWalker, expr: &Expression) -> Option<Expression> {
+fn java_bigdecimal_constant_replacement(
+    __w: &mut JavaWalker,
+    expr: &Expression,
+) -> Option<Expression> {
     if let ExprKind::Member { object, field, .. } = &expr.kind {
         let is_bigdecimal_type = java_qualified_static_type(__w, object)
             .is_some_and(|name| java_type_simple_name(&name) == "BigDecimal")
@@ -15517,7 +15757,8 @@ fn java_type_base_simple_name(type_name: &str) -> &str {
 }
 
 #[allow(dead_code)]
-fn java_print_arg_needs_tostring(__w: &mut JavaWalker, 
+fn java_print_arg_needs_tostring(
+    __w: &mut JavaWalker,
     arg: &Expression,
     tostring_classes: &std::collections::HashSet<String>,
     enum_values: &std::collections::HashMap<String, Vec<String>>,
@@ -15544,7 +15785,8 @@ fn java_tostring_call(receiver: Expression) -> Expression {
 }
 
 #[allow(dead_code)]
-fn java_expr_enum_type(__w: &mut JavaWalker, 
+fn java_expr_enum_type(
+    __w: &mut JavaWalker,
     expr: &Expression,
     enum_values: &std::collections::HashMap<String, Vec<String>>,
     current_class: Option<&str>,
@@ -15611,7 +15853,8 @@ fn java_expr_enum_type(__w: &mut JavaWalker,
                     _ => java_expr_enum_type(__w, object, enum_values, current_class, locals),
                 };
                 if let Some(receiver_type) = receiver_type {
-                    if let Some(return_type) = java_class_method_return_type(__w, &receiver_type, field)
+                    if let Some(return_type) =
+                        java_class_method_return_type(__w, &receiver_type, field)
                     {
                         let simple = java_type_simple_name(&return_type);
                         if enum_values.contains_key(simple) {
@@ -15656,7 +15899,11 @@ fn java_expr_enum_type(__w: &mut JavaWalker,
     }
 }
 
-fn java_class_method_return_type(__w: &mut JavaWalker, class_name: &str, method_name: &str) -> Option<String> {
+fn java_class_method_return_type(
+    __w: &mut JavaWalker,
+    class_name: &str,
+    method_name: &str,
+) -> Option<String> {
     let simple = java_type_simple_name(class_name);
     {
         __w.java_reflection_classes.get(simple).and_then(|meta| {
@@ -15668,7 +15915,11 @@ fn java_class_method_return_type(__w: &mut JavaWalker, class_name: &str, method_
     }
 }
 
-fn java_class_field_type(__w: &mut JavaWalker, class_name: &str, field_name: &str) -> Option<String> {
+fn java_class_field_type(
+    __w: &mut JavaWalker,
+    class_name: &str,
+    field_name: &str,
+) -> Option<String> {
     let simple = java_type_simple_name(class_name);
     {
         __w.java_reflection_classes.get(simple).and_then(|meta| {
@@ -15768,7 +16019,8 @@ fn collect_java_static_initializer_classes(body: &[Statement], out: &mut Vec<Str
     }
 }
 
-fn collect_java_class_member_names(__w: &mut JavaWalker, 
+fn collect_java_class_member_names(
+    __w: &mut JavaWalker,
     body: &[Statement],
     out: &mut std::collections::HashMap<String, JavaClassMemberNames>,
     parents_out: &mut std::collections::HashMap<String, Vec<String>>,
@@ -15783,10 +16035,8 @@ fn collect_java_class_member_names(__w: &mut JavaWalker,
                 modifiers,
                 ..
             } => {
-                let is_interface =
-                    __w.java_interface_names.contains(name.as_str());
-                let is_enum =
-                    __w.java_enum_values.contains_key(name.as_str());
+                let is_interface = __w.java_interface_names.contains(name.as_str());
+                let is_enum = __w.java_enum_values.contains_key(name.as_str());
                 {
                     __w.java_reflection_classes.insert(
                         name.clone(),
@@ -15807,7 +16057,8 @@ fn collect_java_class_member_names(__w: &mut JavaWalker,
                 parents_out.insert(name.clone(), inherited);
                 for member in members {
                     if let ClassMember::NestedType(nested) = member {
-                        collect_java_class_member_names(__w, 
+                        collect_java_class_member_names(
+                            __w,
                             std::slice::from_ref(nested),
                             out,
                             parents_out,
@@ -15826,7 +16077,8 @@ fn collect_java_class_member_names(__w: &mut JavaWalker,
                 );
                 for member in body_members {
                     if let ClassMember::NestedType(nested) = member {
-                        collect_java_class_member_names(__w, 
+                        collect_java_class_member_names(
+                            __w,
                             std::slice::from_ref(nested),
                             out,
                             parents_out,
@@ -15840,7 +16092,8 @@ fn collect_java_class_member_names(__w: &mut JavaWalker,
     }
 }
 
-fn normalize_java_class_tree_with_members(__w: &mut JavaWalker, 
+fn normalize_java_class_tree_with_members(
+    __w: &mut JavaWalker,
     body: &mut [Statement],
     class_members: &std::collections::HashMap<String, JavaClassMemberNames>,
     class_parents: &std::collections::HashMap<String, Vec<String>>,
@@ -15866,7 +16119,8 @@ fn normalize_java_class_tree_with_members(__w: &mut JavaWalker,
                 normalize_java_class_members(__w, members, name, &names, class_members);
                 for member in members {
                     if let ClassMember::NestedType(nested) = member {
-                        normalize_java_class_tree_with_members(__w, 
+                        normalize_java_class_tree_with_members(
+                            __w,
                             std::slice::from_mut(nested),
                             class_members,
                             class_parents,
@@ -15881,7 +16135,8 @@ fn normalize_java_class_tree_with_members(__w: &mut JavaWalker,
                 normalize_java_class_members(__w, body_members, name, &names, class_members);
                 for member in body_members {
                     if let ClassMember::NestedType(nested) = member {
-                        normalize_java_class_tree_with_members(__w, 
+                        normalize_java_class_tree_with_members(
+                            __w,
                             std::slice::from_mut(nested),
                             class_members,
                             class_parents,
@@ -15928,7 +16183,8 @@ fn merge_java_inherited_member_names(
     }
 }
 
-fn install_java_interface_default_methods(__w: &mut JavaWalker, 
+fn install_java_interface_default_methods(
+    __w: &mut JavaWalker,
     body: &mut [Statement],
     class_members: &std::collections::HashMap<String, JavaClassMemberNames>,
     class_parents: &std::collections::HashMap<String, Vec<String>>,
@@ -15959,7 +16215,8 @@ fn install_java_interface_default_methods(__w: &mut JavaWalker,
                     let mut implemented = parents.clone();
                     implemented.extend(interfaces.iter().cloned());
                     let mut aliases = Vec::new();
-                    collect_java_interface_default_methods(__w, 
+                    collect_java_interface_default_methods(
+                        __w,
                         &implemented,
                         class_members,
                         class_parents,
@@ -15977,7 +16234,8 @@ fn install_java_interface_default_methods(__w: &mut JavaWalker,
                 }
                 for member in members {
                     if let ClassMember::NestedType(nested) = member {
-                        install_java_interface_default_methods(__w, 
+                        install_java_interface_default_methods(
+                            __w,
                             std::slice::from_mut(nested),
                             class_members,
                             class_parents,
@@ -15993,7 +16251,8 @@ fn install_java_interface_default_methods(__w: &mut JavaWalker,
     }
 }
 
-fn collect_java_interface_default_methods(__w: &mut JavaWalker, 
+fn collect_java_interface_default_methods(
+    __w: &mut JavaWalker,
     interfaces: &[String],
     class_members: &std::collections::HashMap<String, JavaClassMemberNames>,
     class_parents: &std::collections::HashMap<String, Vec<String>>,
@@ -16006,7 +16265,8 @@ fn collect_java_interface_default_methods(__w: &mut JavaWalker,
             continue;
         }
         if let Some(parents) = class_parents.get(interface) {
-            collect_java_interface_default_methods(__w, 
+            collect_java_interface_default_methods(
+                __w,
                 parents,
                 class_members,
                 class_parents,
@@ -16085,7 +16345,8 @@ fn java_interface_default_method_name(interface: &str, method: &str) -> String {
     format!("__java_default_{interface}_{method}")
 }
 
-fn normalize_java_anonymous_class_tree(__w: &mut JavaWalker, 
+fn normalize_java_anonymous_class_tree(
+    __w: &mut JavaWalker,
     body: &mut [Statement],
     class_members: &std::collections::HashMap<String, JavaClassMemberNames>,
 ) {
@@ -16896,7 +17157,8 @@ fn rewrite_java_capture_refs_expr(
     }
 }
 
-fn normalize_java_anonymous_class_members(__w: &mut JavaWalker, 
+fn normalize_java_anonymous_class_members(
+    __w: &mut JavaWalker,
     members: &mut [ClassMember],
     class_members: &std::collections::HashMap<String, JavaClassMemberNames>,
 ) {
@@ -16923,7 +17185,8 @@ fn normalize_java_anonymous_class_members(__w: &mut JavaWalker,
     }
 }
 
-fn normalize_java_anonymous_class_stmt(__w: &mut JavaWalker, 
+fn normalize_java_anonymous_class_stmt(
+    __w: &mut JavaWalker,
     stmt: &mut Statement,
     class_members: &std::collections::HashMap<String, JavaClassMemberNames>,
 ) {
@@ -17170,7 +17433,9 @@ fn normalize_java_anonymous_class_stmt(__w: &mut JavaWalker,
                 normalize_java_anonymous_class_expr(__w, default, class_members);
             }
         }
-        StmtKind::Labeled { body, .. } => normalize_java_anonymous_class_stmt(__w, body, class_members),
+        StmtKind::Labeled { body, .. } => {
+            normalize_java_anonymous_class_stmt(__w, body, class_members)
+        }
         StmtKind::MatchStatement { subject, cases } => {
             normalize_java_anonymous_class_expr(__w, subject, class_members);
             for case in cases {
@@ -17184,7 +17449,8 @@ fn normalize_java_anonymous_class_stmt(__w: &mut JavaWalker,
     }
 }
 
-fn normalize_java_anonymous_class_expr(__w: &mut JavaWalker, 
+fn normalize_java_anonymous_class_expr(
+    __w: &mut JavaWalker,
     expr: &mut Expression,
     class_members: &std::collections::HashMap<String, JavaClassMemberNames>,
 ) {
@@ -17203,7 +17469,9 @@ fn normalize_java_anonymous_class_expr(__w: &mut JavaWalker,
         | ExprKind::RefLoad(inner) => {
             normalize_java_anonymous_class_expr(__w, inner, class_members);
         }
-        ExprKind::Yield(Some(inner)) => normalize_java_anonymous_class_expr(__w, inner, class_members),
+        ExprKind::Yield(Some(inner)) => {
+            normalize_java_anonymous_class_expr(__w, inner, class_members)
+        }
         ExprKind::Ternary { cond, then, else_ } => {
             normalize_java_anonymous_class_expr(__w, cond, class_members);
             normalize_java_anonymous_class_expr(__w, then, class_members);
@@ -17233,8 +17501,12 @@ fn normalize_java_anonymous_class_expr(__w: &mut JavaWalker,
             normalize_java_anonymous_class_expr(__w, value, class_members);
         }
         ExprKind::Lambda { body, .. } => match body {
-            LambdaBody::Expr(inner) => normalize_java_anonymous_class_expr(__w, inner, class_members),
-            LambdaBody::Block(stmts) => normalize_java_anonymous_class_tree(__w, stmts, class_members),
+            LambdaBody::Expr(inner) => {
+                normalize_java_anonymous_class_expr(__w, inner, class_members)
+            }
+            LambdaBody::Block(stmts) => {
+                normalize_java_anonymous_class_tree(__w, stmts, class_members)
+            }
         },
         ExprKind::Array(elems) => {
             for elem in elems {
@@ -17310,7 +17582,9 @@ fn normalize_java_anonymous_class_expr(__w: &mut JavaWalker,
             normalize_java_class_members(__w, members, "", &names, class_members);
             normalize_java_anonymous_class_members(__w, members, class_members);
         }
-        ExprKind::FunctionExpr(func) => normalize_java_anonymous_class_stmt(__w, func, class_members),
+        ExprKind::FunctionExpr(func) => {
+            normalize_java_anonymous_class_stmt(__w, func, class_members)
+        }
         ExprKind::Range { start, end, .. } => {
             normalize_java_anonymous_class_expr(__w, start, class_members);
             normalize_java_anonymous_class_expr(__w, end, class_members);
@@ -17334,7 +17608,8 @@ fn normalize_java_anonymous_class_expr(__w: &mut JavaWalker,
     }
 }
 
-fn normalize_java_anonymous_case_condition(__w: &mut JavaWalker, 
+fn normalize_java_anonymous_case_condition(
+    __w: &mut JavaWalker,
     condition: &mut CaseCondition,
     class_members: &std::collections::HashMap<String, JavaClassMemberNames>,
 ) {
@@ -17349,7 +17624,8 @@ fn normalize_java_anonymous_case_condition(__w: &mut JavaWalker,
     }
 }
 
-fn normalize_java_anonymous_object_property(__w: &mut JavaWalker, 
+fn normalize_java_anonymous_object_property(
+    __w: &mut JavaWalker,
     prop: &mut ObjectProperty,
     class_members: &std::collections::HashMap<String, JavaClassMemberNames>,
 ) {
@@ -17358,7 +17634,9 @@ fn normalize_java_anonymous_object_property(__w: &mut JavaWalker,
             normalize_java_anonymous_class_expr(__w, key, class_members);
             normalize_java_anonymous_class_expr(__w, value, class_members);
         }
-        ObjectProperty::Spread(expr) => normalize_java_anonymous_class_expr(__w, expr, class_members),
+        ObjectProperty::Spread(expr) => {
+            normalize_java_anonymous_class_expr(__w, expr, class_members)
+        }
         ObjectProperty::Method { value, .. } | ObjectProperty::Accessor { value, .. } => {
             normalize_java_anonymous_class_stmt(__w, value, class_members);
         }
@@ -17462,7 +17740,8 @@ impl JavaClassMemberNames {
     }
 }
 
-fn normalize_java_class_members(__w: &mut JavaWalker, 
+fn normalize_java_class_members(
+    __w: &mut JavaWalker,
     members: &mut [ClassMember],
     class_name: &str,
     names: &JavaClassMemberNames,
@@ -17497,7 +17776,8 @@ fn normalize_java_class_members(__w: &mut JavaWalker,
                         .iter()
                         .map(|(name, ty)| (name.clone(), ty.clone())),
                 );
-                normalize_java_stmts(__w, 
+                normalize_java_stmts(
+                    __w,
                     body,
                     &names.fields,
                     &names.methods,
@@ -17534,7 +17814,8 @@ fn normalize_java_class_members(__w: &mut JavaWalker,
                     );
                     if modifiers.is_static {
                         let empty = std::collections::HashSet::new();
-                        normalize_java_stmts(__w, 
+                        normalize_java_stmts(
+                            __w,
                             body,
                             &empty,
                             &empty,
@@ -17546,7 +17827,8 @@ fn normalize_java_class_members(__w: &mut JavaWalker,
                             &mut local_types,
                         );
                     } else {
-                        normalize_java_stmts(__w, 
+                        normalize_java_stmts(
+                            __w,
                             body,
                             &names.fields,
                             &names.methods,
@@ -17749,7 +18031,8 @@ fn java_overload_receiver_type(
     }
 }
 
-fn java_static_field_receiver(__w: &mut JavaWalker, 
+fn java_static_field_receiver(
+    __w: &mut JavaWalker,
     object: &Expression,
     current_class: Option<&str>,
 ) -> Option<Expression> {
@@ -17826,14 +18109,20 @@ fn java_static_field_type(__w: &mut JavaWalker, object: &Expression) -> Option<S
     __w.java_static_field_types.get(&key).cloned()
 }
 
-fn java_current_static_field_type(__w: &mut JavaWalker, field_name: &str) -> Option<(String, String)> {
+fn java_current_static_field_type(
+    __w: &mut JavaWalker,
+    field_name: &str,
+) -> Option<(String, String)> {
     let class_name = __w.java_current_class_stack.last().cloned()?;
     let key = format!("{class_name}.{field_name}");
-    __w.java_static_field_types.get(&key).cloned()
+    __w.java_static_field_types
+        .get(&key)
+        .cloned()
         .map(|ty| (class_name, ty))
 }
 
-fn java_receiver_type(__w: &mut JavaWalker, 
+fn java_receiver_type(
+    __w: &mut JavaWalker,
     object: &Expression,
     local_types: &HashMap<String, String>,
 ) -> Option<String> {
@@ -17852,7 +18141,8 @@ fn java_receiver_type(__w: &mut JavaWalker,
 /// at run time with `undefined is not callable`, while the identical call on a
 /// local works. A shadowing local always wins, so this only fires when the
 /// name is not a local.
-fn java_bare_static_field_type(__w: &mut JavaWalker, 
+fn java_bare_static_field_type(
+    __w: &mut JavaWalker,
     object: &Expression,
     local_types: &HashMap<String, String>,
 ) -> Option<String> {
@@ -18041,11 +18331,13 @@ fn java_stmt_reads_any_local(stmt: &Statement, locals: &HashSet<String>) -> bool
     }
 }
 
-fn java_thread_target_is_unsafe(__w: &mut JavaWalker, target: &Expression, locals: &HashSet<String>) -> bool {
+fn java_thread_target_is_unsafe(
+    __w: &mut JavaWalker,
+    target: &Expression,
+    locals: &HashSet<String>,
+) -> bool {
     match &target.kind {
-        ExprKind::Ident(name) => {
-            __w.java_runnable_unsafe_targets.contains(name)
-        }
+        ExprKind::Ident(name) => __w.java_runnable_unsafe_targets.contains(name),
         ExprKind::Lambda { .. } | ExprKind::CallableRef { .. } => {
             java_expr_reads_any_local(target, locals)
         }
@@ -18061,7 +18353,8 @@ fn java_thread_target_is_unsafe(__w: &mut JavaWalker, target: &Expression, local
     }
 }
 
-fn java_expr_is_thread_like_receiver(__w: &mut JavaWalker, 
+fn java_expr_is_thread_like_receiver(
+    __w: &mut JavaWalker,
     expr: &Expression,
     local_types: &HashMap<String, String>,
 ) -> bool {
@@ -18070,8 +18363,7 @@ fn java_expr_is_thread_like_receiver(__w: &mut JavaWalker,
             __w.java_thread_vars.contains(name)
                 || local_types.get(name).is_some_and(|type_name| {
                     let simple = java_type_base_simple_name(type_name);
-                    simple == "Thread"
-                        || __w.java_thread_types.contains(simple)
+                    simple == "Thread" || __w.java_thread_types.contains(simple)
                 })
         }
         ExprKind::Call { callee, .. } => {
@@ -18093,9 +18385,7 @@ fn java_expr_is_thread_like_receiver(__w: &mut JavaWalker,
 #[allow(dead_code)]
 fn java_resolve_runnable_target(__w: &mut JavaWalker, target: Expression) -> Expression {
     if let ExprKind::Ident(name) = &target.kind {
-        if let Some(resolved) =
-            __w.java_runnable_targets.get(name).cloned()
-        {
+        if let Some(resolved) = __w.java_runnable_targets.get(name).cloned() {
             return resolved;
         }
     }
@@ -18277,7 +18567,8 @@ fn java_rewrite_spawned_thread_sleep_stmt(stmt: &mut Statement) {
     }
 }
 
-fn normalize_java_stmts(__w: &mut JavaWalker, 
+fn normalize_java_stmts(
+    __w: &mut JavaWalker,
     stmts: &mut [Statement],
     fields: &std::collections::HashSet<String>,
     methods: &std::collections::HashSet<String>,
@@ -18293,7 +18584,8 @@ fn normalize_java_stmts(__w: &mut JavaWalker,
             StmtKind::VarDecl { declarations, .. } => {
                 for decl in declarations {
                     if let Some(init) = &mut decl.init {
-                        normalize_java_expr(__w, 
+                        normalize_java_expr(
+                            __w,
                             init,
                             fields,
                             methods,
@@ -18327,7 +18619,8 @@ fn normalize_java_stmts(__w: &mut JavaWalker,
                                             __w.java_thread_targets
                                                 .insert(name.clone(), target.value.clone());
                                         };
-                                        if java_thread_target_is_unsafe(__w, &target.value, locals) {
+                                        if java_thread_target_is_unsafe(__w, &target.value, locals)
+                                        {
                                             {
                                                 __w.java_thread_unsafe_targets.insert(name.clone());
                                             };
@@ -18352,7 +18645,8 @@ fn normalize_java_stmts(__w: &mut JavaWalker,
                 }
             }
             StmtKind::Assign { targets, value, .. } => {
-                normalize_java_expr(__w, 
+                normalize_java_expr(
+                    __w,
                     value,
                     fields,
                     methods,
@@ -18382,7 +18676,8 @@ fn normalize_java_stmts(__w: &mut JavaWalker,
                     }
                 }
                 for target in &mut *targets {
-                    normalize_java_expr(__w, 
+                    normalize_java_expr(
+                        __w,
                         target,
                         fields,
                         methods,
@@ -18397,7 +18692,8 @@ fn normalize_java_stmts(__w: &mut JavaWalker,
                 }
             }
             StmtKind::CompoundAssign { target, value, .. } => {
-                normalize_java_expr(__w, 
+                normalize_java_expr(
+                    __w,
                     value,
                     fields,
                     methods,
@@ -18409,7 +18705,8 @@ fn normalize_java_stmts(__w: &mut JavaWalker,
                     local_types,
                     false,
                 );
-                normalize_java_expr(__w, 
+                normalize_java_expr(
+                    __w,
                     target,
                     fields,
                     methods,
@@ -18423,7 +18720,8 @@ fn normalize_java_stmts(__w: &mut JavaWalker,
                 );
             }
             StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) => {
-                normalize_java_expr(__w, 
+                normalize_java_expr(
+                    __w,
                     expr,
                     fields,
                     methods,
@@ -18442,7 +18740,8 @@ fn normalize_java_stmts(__w: &mut JavaWalker,
                 elifs,
                 else_body,
             } => {
-                normalize_java_expr(__w, 
+                normalize_java_expr(
+                    __w,
                     cond,
                     fields,
                     methods,
@@ -18454,7 +18753,8 @@ fn normalize_java_stmts(__w: &mut JavaWalker,
                     local_types,
                     false,
                 );
-                normalize_java_stmts(__w, 
+                normalize_java_stmts(
+                    __w,
                     then_body,
                     fields,
                     methods,
@@ -18466,7 +18766,8 @@ fn normalize_java_stmts(__w: &mut JavaWalker,
                     &mut local_types.clone(),
                 );
                 for (elif_cond, elif_body) in elifs {
-                    normalize_java_expr(__w, 
+                    normalize_java_expr(
+                        __w,
                         elif_cond,
                         fields,
                         methods,
@@ -18478,7 +18779,8 @@ fn normalize_java_stmts(__w: &mut JavaWalker,
                         local_types,
                         false,
                     );
-                    normalize_java_stmts(__w, 
+                    normalize_java_stmts(
+                        __w,
                         elif_body,
                         fields,
                         methods,
@@ -18491,7 +18793,8 @@ fn normalize_java_stmts(__w: &mut JavaWalker,
                     );
                 }
                 if let Some(else_body) = else_body {
-                    normalize_java_stmts(__w, 
+                    normalize_java_stmts(
+                        __w,
                         else_body,
                         fields,
                         methods,
@@ -18513,7 +18816,8 @@ fn normalize_java_stmts(__w: &mut JavaWalker,
                 let mut loop_locals = locals.clone();
                 let mut loop_local_types = local_types.clone();
                 if let Some(init_stmt) = init.as_mut() {
-                    normalize_java_stmts(__w, 
+                    normalize_java_stmts(
+                        __w,
                         std::slice::from_mut(init_stmt.as_mut()),
                         fields,
                         methods,
@@ -18526,7 +18830,8 @@ fn normalize_java_stmts(__w: &mut JavaWalker,
                     );
                 }
                 if let Some(cond) = cond {
-                    normalize_java_expr(__w, 
+                    normalize_java_expr(
+                        __w,
                         cond,
                         fields,
                         methods,
@@ -18540,7 +18845,8 @@ fn normalize_java_stmts(__w: &mut JavaWalker,
                     );
                 }
                 if let Some(update) = update {
-                    normalize_java_expr(__w, 
+                    normalize_java_expr(
+                        __w,
                         update,
                         fields,
                         methods,
@@ -18553,7 +18859,8 @@ fn normalize_java_stmts(__w: &mut JavaWalker,
                         false,
                     );
                 }
-                normalize_java_stmts(__w, 
+                normalize_java_stmts(
+                    __w,
                     body,
                     fields,
                     methods,
@@ -18572,7 +18879,8 @@ fn normalize_java_stmts(__w: &mut JavaWalker,
                 body,
                 ..
             } => {
-                normalize_java_expr(__w, 
+                normalize_java_expr(
+                    __w,
                     iter,
                     fields,
                     methods,
@@ -18587,15 +18895,14 @@ fn normalize_java_stmts(__w: &mut JavaWalker,
                 let mut loop_locals = locals.clone();
                 let mut loop_local_types = local_types.clone();
                 loop_locals.insert(var.clone());
-                if let Some(type_hint) =
-                    __w.java_local_types.get(var).cloned()
-                {
+                if let Some(type_hint) = __w.java_local_types.get(var).cloned() {
                     loop_local_types.insert(var.clone(), type_hint);
                 }
                 if let Some(key) = key {
                     loop_locals.insert(key.clone());
                 }
-                normalize_java_stmts(__w, 
+                normalize_java_stmts(
+                    __w,
                     body,
                     fields,
                     methods,
@@ -18608,7 +18915,8 @@ fn normalize_java_stmts(__w: &mut JavaWalker,
                 );
             }
             StmtKind::While { cond, body, .. } => {
-                normalize_java_expr(__w, 
+                normalize_java_expr(
+                    __w,
                     cond,
                     fields,
                     methods,
@@ -18620,7 +18928,8 @@ fn normalize_java_stmts(__w: &mut JavaWalker,
                     local_types,
                     false,
                 );
-                normalize_java_stmts(__w, 
+                normalize_java_stmts(
+                    __w,
                     body,
                     fields,
                     methods,
@@ -18633,7 +18942,8 @@ fn normalize_java_stmts(__w: &mut JavaWalker,
                 );
             }
             StmtKind::DoWhile { body, cond, .. } => {
-                normalize_java_stmts(__w, 
+                normalize_java_stmts(
+                    __w,
                     body,
                     fields,
                     methods,
@@ -18644,7 +18954,8 @@ fn normalize_java_stmts(__w: &mut JavaWalker,
                     &mut locals.clone(),
                     &mut local_types.clone(),
                 );
-                normalize_java_expr(__w, 
+                normalize_java_expr(
+                    __w,
                     cond,
                     fields,
                     methods,
@@ -18662,7 +18973,8 @@ fn normalize_java_stmts(__w: &mut JavaWalker,
                 cases,
                 default,
             } => {
-                normalize_java_expr(__w, 
+                normalize_java_expr(
+                    __w,
                     expr,
                     fields,
                     methods,
@@ -18681,7 +18993,8 @@ fn normalize_java_stmts(__w: &mut JavaWalker,
                     for condition in &mut case.conditions {
                         match condition {
                             CaseCondition::Value(value) => {
-                                normalize_java_expr(__w, 
+                                normalize_java_expr(
+                                    __w,
                                     value,
                                     fields,
                                     methods,
@@ -18696,7 +19009,8 @@ fn normalize_java_stmts(__w: &mut JavaWalker,
                                 *value = java_char_numeric_cast_expr(value.clone());
                             }
                             CaseCondition::Range { from, to } => {
-                                normalize_java_expr(__w, 
+                                normalize_java_expr(
+                                    __w,
                                     from,
                                     fields,
                                     methods,
@@ -18708,7 +19022,8 @@ fn normalize_java_stmts(__w: &mut JavaWalker,
                                     local_types,
                                     false,
                                 );
-                                normalize_java_expr(__w, 
+                                normalize_java_expr(
+                                    __w,
                                     to,
                                     fields,
                                     methods,
@@ -18722,7 +19037,8 @@ fn normalize_java_stmts(__w: &mut JavaWalker,
                                 );
                             }
                             CaseCondition::Comparison { expr, .. } => {
-                                normalize_java_expr(__w, 
+                                normalize_java_expr(
+                                    __w,
                                     expr,
                                     fields,
                                     methods,
@@ -18737,7 +19053,8 @@ fn normalize_java_stmts(__w: &mut JavaWalker,
                             }
                         }
                     }
-                    normalize_java_stmts(__w, 
+                    normalize_java_stmts(
+                        __w,
                         &mut case.body,
                         fields,
                         methods,
@@ -18750,7 +19067,8 @@ fn normalize_java_stmts(__w: &mut JavaWalker,
                     );
                 }
                 if let Some(default) = default {
-                    normalize_java_stmts(__w, 
+                    normalize_java_stmts(
+                        __w,
                         default,
                         fields,
                         methods,
@@ -18764,7 +19082,8 @@ fn normalize_java_stmts(__w: &mut JavaWalker,
                 }
             }
             StmtKind::Block(body) => {
-                normalize_java_stmts(__w, 
+                normalize_java_stmts(
+                    __w,
                     body,
                     fields,
                     methods,
@@ -18777,7 +19096,8 @@ fn normalize_java_stmts(__w: &mut JavaWalker,
                 );
             }
             StmtKind::Lock { expr, body } => {
-                normalize_java_expr(__w, 
+                normalize_java_expr(
+                    __w,
                     expr,
                     fields,
                     methods,
@@ -18789,7 +19109,8 @@ fn normalize_java_stmts(__w: &mut JavaWalker,
                     local_types,
                     false,
                 );
-                normalize_java_stmts(__w, 
+                normalize_java_stmts(
+                    __w,
                     body,
                     fields,
                     methods,
@@ -18807,7 +19128,8 @@ fn normalize_java_stmts(__w: &mut JavaWalker,
                 else_body,
                 finally,
             } => {
-                normalize_java_stmts(__w, 
+                normalize_java_stmts(
+                    __w,
                     body,
                     fields,
                     methods,
@@ -18823,7 +19145,8 @@ fn normalize_java_stmts(__w: &mut JavaWalker,
                     if let Some(name) = &catch.var_name {
                         catch_locals.insert(name.clone());
                     }
-                    normalize_java_stmts(__w, 
+                    normalize_java_stmts(
+                        __w,
                         &mut catch.body,
                         fields,
                         methods,
@@ -18836,7 +19159,8 @@ fn normalize_java_stmts(__w: &mut JavaWalker,
                     );
                 }
                 if let Some(else_body) = else_body {
-                    normalize_java_stmts(__w, 
+                    normalize_java_stmts(
+                        __w,
                         else_body,
                         fields,
                         methods,
@@ -18849,7 +19173,8 @@ fn normalize_java_stmts(__w: &mut JavaWalker,
                     );
                 }
                 if let Some(finally) = finally {
-                    normalize_java_stmts(__w, 
+                    normalize_java_stmts(
+                        __w,
                         finally,
                         fields,
                         methods,
@@ -18930,7 +19255,8 @@ fn collect_binding_types(
     }
 }
 
-fn normalize_java_expr(__w: &mut JavaWalker, 
+fn normalize_java_expr(
+    __w: &mut JavaWalker,
     expr: &mut Expression,
     fields: &std::collections::HashSet<String>,
     methods: &std::collections::HashSet<String>,
@@ -18952,15 +19278,13 @@ fn normalize_java_expr(__w: &mut JavaWalker,
             };
         }
         ExprKind::Ident(name)
-            if !locals.contains(name)
-                && current_class.is_some()
-                && {
-                    __w.java_static_field_vars.contains(&format!(
-                        "{}.{}",
-                        current_class.unwrap_or_default(),
-                        name
-                    ))
-                } =>
+            if !locals.contains(name) && current_class.is_some() && {
+                __w.java_static_field_vars.contains(&format!(
+                    "{}.{}",
+                    current_class.unwrap_or_default(),
+                    name
+                ))
+            } =>
         {
             let class_name = current_class.unwrap_or_default();
             let field = name.clone();
@@ -18971,7 +19295,8 @@ fn normalize_java_expr(__w: &mut JavaWalker,
             };
         }
         ExprKind::New { class, args } => {
-            normalize_java_expr(__w, 
+            normalize_java_expr(
+                __w,
                 class,
                 fields,
                 methods,
@@ -18984,7 +19309,8 @@ fn normalize_java_expr(__w: &mut JavaWalker,
                 false,
             );
             for arg in args.iter_mut() {
-                normalize_java_expr(__w, 
+                normalize_java_expr(
+                    __w,
                     &mut arg.value,
                     fields,
                     methods,
@@ -19012,7 +19338,8 @@ fn normalize_java_expr(__w: &mut JavaWalker,
         }
         ExprKind::Call { callee, args, .. } => {
             for arg in args.iter_mut() {
-                normalize_java_expr(__w, 
+                normalize_java_expr(
+                    __w,
                     &mut arg.value,
                     fields,
                     methods,
@@ -19117,7 +19444,8 @@ fn normalize_java_expr(__w: &mut JavaWalker,
                         }
                     }
                 }
-                normalize_java_expr(__w, 
+                normalize_java_expr(
+                    __w,
                     object,
                     fields,
                     methods,
@@ -19218,8 +19546,9 @@ fn normalize_java_expr(__w: &mut JavaWalker,
                         return;
                     }
                 }
-                if java_type_is_count_down_latch(java_receiver_type(__w, object, local_types).as_deref())
-                {
+                if java_type_is_count_down_latch(
+                    java_receiver_type(__w, object, local_types).as_deref(),
+                ) {
                     if let Some(internal) = java_count_down_latch_method_name(field, args.len()) {
                         let mut new_args = Vec::with_capacity(args.len() + 1);
                         new_args.push(Argument::positional((**object).clone()));
@@ -19232,7 +19561,8 @@ fn normalize_java_expr(__w: &mut JavaWalker,
                         return;
                     }
                 }
-                if java_type_is_future_task(java_receiver_type(__w, object, local_types).as_deref()) {
+                if java_type_is_future_task(java_receiver_type(__w, object, local_types).as_deref())
+                {
                     if let Some(internal) = java_future_task_method_name(field, args.len()) {
                         let mut new_args = Vec::with_capacity(args.len() + 1);
                         new_args.push(Argument::positional((**object).clone()));
@@ -19247,7 +19577,9 @@ fn normalize_java_expr(__w: &mut JavaWalker,
                 }
                 // Executor methods are NOT rewritten — `ExecutorService` is a
                 // platforms/jvm class; the typed receiver resolves via the tree.
-                if java_type_is_queue_or_deque(java_receiver_type(__w, object, local_types).as_deref()) {
+                if java_type_is_queue_or_deque(
+                    java_receiver_type(__w, object, local_types).as_deref(),
+                ) {
                     let receiver_type = java_receiver_type(__w, object, local_types);
                     if let Some(internal) =
                         java_queue_method_name(receiver_type.as_deref(), field, args.len())
@@ -19323,8 +19655,9 @@ fn normalize_java_expr(__w: &mut JavaWalker,
                         return;
                     }
                 }
-                if java_type_is_process_builder(java_receiver_type(__w, object, local_types).as_deref())
-                {
+                if java_type_is_process_builder(
+                    java_receiver_type(__w, object, local_types).as_deref(),
+                ) {
                     if field == "command" && !args.is_empty() {
                         *expr = Expression::new(ExprKind::Call {
                             callee: Box::new(Expression::ident("__j_pb_command_set")),
@@ -19422,7 +19755,8 @@ fn normalize_java_expr(__w: &mut JavaWalker,
                     }
                 }
             }
-            normalize_java_expr(__w, 
+            normalize_java_expr(
+                __w,
                 callee,
                 fields,
                 methods,
@@ -19455,7 +19789,8 @@ fn normalize_java_expr(__w: &mut JavaWalker,
                     return;
                 }
             }
-            normalize_java_expr(__w, 
+            normalize_java_expr(
+                __w,
                 object,
                 fields,
                 methods,
@@ -19469,7 +19804,8 @@ fn normalize_java_expr(__w: &mut JavaWalker,
             );
         }
         ExprKind::Index { object, index, .. } => {
-            normalize_java_expr(__w, 
+            normalize_java_expr(
+                __w,
                 object,
                 fields,
                 methods,
@@ -19481,7 +19817,8 @@ fn normalize_java_expr(__w: &mut JavaWalker,
                 local_types,
                 false,
             );
-            normalize_java_expr(__w, 
+            normalize_java_expr(
+                __w,
                 index,
                 fields,
                 methods,
@@ -19495,7 +19832,8 @@ fn normalize_java_expr(__w: &mut JavaWalker,
             );
         }
         ExprKind::Binary { op, left, right } => {
-            normalize_java_expr(__w, 
+            normalize_java_expr(
+                __w,
                 left,
                 fields,
                 methods,
@@ -19507,7 +19845,8 @@ fn normalize_java_expr(__w: &mut JavaWalker,
                 local_types,
                 false,
             );
-            normalize_java_expr(__w, 
+            normalize_java_expr(
+                __w,
                 right,
                 fields,
                 methods,
@@ -19563,7 +19902,8 @@ fn normalize_java_expr(__w: &mut JavaWalker,
             }
         }
         ExprKind::Unary { op, expr: inner } => {
-            normalize_java_expr(__w, 
+            normalize_java_expr(
+                __w,
                 inner,
                 fields,
                 methods,
@@ -19608,7 +19948,8 @@ fn normalize_java_expr(__w: &mut JavaWalker,
             rewrite_java_this_field_update(expr);
         }
         ExprKind::Assign { target, value } => {
-            normalize_java_expr(__w, 
+            normalize_java_expr(
+                __w,
                 value,
                 fields,
                 methods,
@@ -19633,7 +19974,8 @@ fn normalize_java_expr(__w: &mut JavaWalker,
             {
                 **value = java_cast_char_numeric_operand((**value).clone(), local_types);
             }
-            normalize_java_expr(__w, 
+            normalize_java_expr(
+                __w,
                 target,
                 fields,
                 methods,
@@ -19648,7 +19990,8 @@ fn normalize_java_expr(__w: &mut JavaWalker,
             rewrite_java_this_field_assign(expr);
         }
         ExprKind::Ternary { cond, then, else_ } => {
-            normalize_java_expr(__w, 
+            normalize_java_expr(
+                __w,
                 cond,
                 fields,
                 methods,
@@ -19660,7 +20003,8 @@ fn normalize_java_expr(__w: &mut JavaWalker,
                 local_types,
                 false,
             );
-            normalize_java_expr(__w, 
+            normalize_java_expr(
+                __w,
                 then,
                 fields,
                 methods,
@@ -19672,7 +20016,8 @@ fn normalize_java_expr(__w: &mut JavaWalker,
                 local_types,
                 false,
             );
-            normalize_java_expr(__w, 
+            normalize_java_expr(
+                __w,
                 else_,
                 fields,
                 methods,
@@ -19687,7 +20032,8 @@ fn normalize_java_expr(__w: &mut JavaWalker,
         }
         ExprKind::Array(elems) => {
             for elem in elems {
-                normalize_java_expr(__w, 
+                normalize_java_expr(
+                    __w,
                     &mut elem.value,
                     fields,
                     methods,
@@ -19716,7 +20062,8 @@ fn normalize_java_expr(__w: &mut JavaWalker,
                 }
             }
             match body {
-                LambdaBody::Expr(inner) => normalize_java_expr(__w, 
+                LambdaBody::Expr(inner) => normalize_java_expr(
+                    __w,
                     inner,
                     fields,
                     methods,
@@ -19728,7 +20075,8 @@ fn normalize_java_expr(__w: &mut JavaWalker,
                     &lambda_types,
                     false,
                 ),
-                LambdaBody::Block(stmts) => normalize_java_stmts(__w, 
+                LambdaBody::Block(stmts) => normalize_java_stmts(
+                    __w,
                     stmts,
                     fields,
                     methods,
@@ -19761,7 +20109,8 @@ fn normalize_java_expr(__w: &mut JavaWalker,
             *captures = explicit_captures;
         }
         ExprKind::StaticAccess { class, member } => {
-            normalize_java_expr(__w, 
+            normalize_java_expr(
+                __w,
                 class,
                 fields,
                 methods,
@@ -19773,7 +20122,8 @@ fn normalize_java_expr(__w: &mut JavaWalker,
                 local_types,
                 false,
             );
-            normalize_java_expr(__w, 
+            normalize_java_expr(
+                __w,
                 member,
                 fields,
                 methods,

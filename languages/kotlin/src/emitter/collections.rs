@@ -278,9 +278,19 @@ pub fn emit_to_mutable_list(chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
     let out = chunks[current].alloc_scratch(1);
     set(&mut chunks[current], out, line);
     get(&mut chunks[current], out, line);
-    let marker = class_slots::resolve_interned(&mut chunks[current], &ClassSlot::internal(MUTABLE_LIST_MARKER), &PlainNames);
+    let marker = class_slots::resolve_interned(
+        &mut chunks[current],
+        &ClassSlot::internal(MUTABLE_LIST_MARKER),
+        &PlainNames,
+    );
     chunks[current].emit_bool_const(true, line);
-    class_slots::emit_class_set(&mut chunks[current], ObjSource::Stack, &marker, ValueSource::Stack, line);
+    class_slots::emit_class_set(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &marker,
+        ValueSource::Stack,
+        line,
+    );
     get(&mut chunks[current], out, line);
 }
 
@@ -292,8 +302,17 @@ pub fn emit_is_mutable_list(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, 
     ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if_value(line);
     get(&mut chunks[current], value, line);
-    let cs_slot = class_slots::resolve(&ClassSlot::Internal((MUTABLE_LIST_MARKER).to_string()), &PlainNames);
-    class_slots::emit_class_get(&mut chunks[current], ObjSource::Stack, &cs_slot, Dest::Stack, line);
+    let cs_slot = class_slots::resolve(
+        &ClassSlot::Internal((MUTABLE_LIST_MARKER).to_string()),
+        &PlainNames,
+    );
+    class_slots::emit_class_get(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &cs_slot,
+        Dest::Stack,
+        line,
+    );
     ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_else(line);
     chunks[current].emit_bool_const(false, line);
@@ -483,7 +502,13 @@ pub fn emit_is_empty(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u
     // StringBuilder: empty when its `__buffer` is.
     get(&mut chunks[current], value, line);
     let cs_slot = class_slots::resolve(&ClassSlot::Internal(("__buffer").to_string()), &PlainNames);
-    class_slots::emit_class_get(&mut chunks[current], ObjSource::Stack, &cs_slot, Dest::Stack, line);
+    class_slots::emit_class_get(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &cs_slot,
+        Dest::Stack,
+        line,
+    );
     let buf = chunks[current].alloc_scratch(1);
     set(&mut chunks[current], buf, line);
     get(&mut chunks[current], buf, line);
@@ -532,7 +557,13 @@ pub fn emit_make_entry(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
         chunks[current].emit_dup(line);
         get(&mut chunks[current], slot, line);
         let cs_slot = class_slots::resolve(&ClassSlot::Internal((prop).to_string()), &PlainNames);
-        class_slots::emit_class_set(&mut chunks[current], ObjSource::Stack, &cs_slot, ValueSource::Stack, line);
+        class_slots::emit_class_set(
+            &mut chunks[current],
+            ObjSource::Stack,
+            &cs_slot,
+            ValueSource::Stack,
+            line,
+        );
     }
 }
 
@@ -580,7 +611,13 @@ pub fn emit_dict_as_list(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
         &ClassSlot::internal(crate::emitter::tostring::SET_MARKER),
         &PlainNames,
     );
-    class_slots::emit_class_get(&mut chunks[current], ObjSource::Stack, &marker, Dest::Stack, line);
+    class_slots::emit_class_get(
+        &mut chunks[current],
+        ObjSource::Stack,
+        &marker,
+        Dest::Stack,
+        line,
+    );
     chunks[current].emit_op(Op::REF_IS_NULL, line);
     chunks[current].emit_op(Op::I32_EQZ, line);
     chunks[current].emit_if_value(line);

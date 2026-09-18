@@ -28,9 +28,7 @@
 //! (the StringBuffer `length` lesson: measured 0/50 across dart slices).
 
 use super::builders::*;
-use vybe_ast::{
-    Argument, ChanOp, ExprKind, Expression, ObjectProperty, Statement, StmtKind,
-};
+use vybe_ast::{Argument, ChanOp, ExprKind, Expression, ObjectProperty, Statement, StmtKind};
 
 const CHAN: &str = "_vybeChan";
 const STATE: &str = "_vybeState";
