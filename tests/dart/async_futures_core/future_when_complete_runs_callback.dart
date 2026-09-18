@@ -20,13 +20,13 @@ void __check(String want) {
   }
 }
 
-void __vybeMain() {
-  Future.value(1).whenComplete(() {
+Future<void> __vybeMain() async {
+  await Future.value(1).whenComplete(() {
     __p('finished');
   });
 }
 
-void main() {
-  __vybeMain();
+Future<void> main() async {
+  await __vybeMain();
   __check('finished');
 }

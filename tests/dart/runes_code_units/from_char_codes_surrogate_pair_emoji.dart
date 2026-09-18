@@ -21,7 +21,7 @@ void __check(String want) {
 }
 
 void __vybeMain() {
-  __p(String.fromCharCodes([55357, 56842]));
+  __p(String.fromCharCodes([55357, 56898]));
 }
 
 void main() {

@@ -20,13 +20,13 @@ void __check(String want) {
   }
 }
 
-void __vybeMain() {
-  Future.value(15).then((v) {
+Future<void> __vybeMain() async {
+  await Future.value(15).then((v) {
     __p(v);
   });
 }
 
-void main() {
-  __vybeMain();
+Future<void> main() async {
+  await __vybeMain();
   __check('15');
 }

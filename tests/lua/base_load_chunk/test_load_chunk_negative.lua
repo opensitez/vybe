@@ -1,7 +1,7 @@
 -- vybe-test: lua/base_load_chunk/test_load_chunk_negative
 -- origin: languages/lua/tests/lua/test_base_load_chunk.rs
 
-local __w1 = "true"
+local __w1 = "15"
 local __i = 0
 
 local f = assert(load("return 7+8")); do local __t = tostring(f()); __i = __i + 1

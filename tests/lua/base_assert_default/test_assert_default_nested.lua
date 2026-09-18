@@ -1,7 +1,7 @@
 -- vybe-test: lua/base_assert_default/test_assert_default_nested
 -- origin: languages/lua/tests/lua/test_base_assert_default.rs
 
-local __w1 = "true\tnil"
+local __w1 = "true"
 local __i = 0
 
 do local __t = tostring(select(1, pcall(function() assert(1 + 1 == 2) end))); __i = __i + 1

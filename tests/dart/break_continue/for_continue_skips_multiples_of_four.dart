@@ -29,5 +29,5 @@ void __vybeMain() {
 
 void main() {
   __vybeMain();
-  __check('1\n2\n3\n5\n6\n7\n8');
+  __check('1\n2\n3\n5\n6\n7');
 }

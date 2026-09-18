@@ -12,16 +12,16 @@ end if
     print *, "FAIL: want [3] got [", size(matrix(:,2:6:2),2), "]"
     stop 1
 end if
-    if ((sum(matrix(:,2:6:2))) /= 60) then
-    print *, "FAIL: want [60] got [", sum(matrix(:,2:6:2)), "]"
+    if ((sum(matrix(:,2:6:2))) /= 99) then
+    print *, "FAIL: want [99] got [", sum(matrix(:,2:6:2)), "]"
     stop 1
 end if
-    if ((matrix(2,2:6:2)(1)) /= 8) then
-    print *, "FAIL: want [8] got [", matrix(2,2:6:2)(1), "]"
+    if ((matrix(2,2:6:2)(1)) /= 5) then
+    print *, "FAIL: want [5] got [", matrix(2,2:6:2)(1), "]"
     stop 1
 end if
-    if ((matrix(2,2:6:2)(size(matrix(:,2:6:2),2))) /= 14) then
-    print *, "FAIL: want [14] got [", matrix(2,2:6:2)(size(matrix(:,2:6:2),2)), "]"
+    if ((matrix(2,2:6:2)(size(matrix(:,2:6:2),2))) /= 17) then
+    print *, "FAIL: want [17] got [", matrix(2,2:6:2)(size(matrix(:,2:6:2),2)), "]"
     stop 1
 end if
 end program array_section_shape_and_strides_strided_column_slice

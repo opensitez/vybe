@@ -4,16 +4,16 @@
 program array_section_strictness_and_errors_lbound_omitted
     integer :: values(0:4)
     values = (/1, 2, 3, 4, 5/)
-    if ((lbound(values(:3))) /= 0) then
-    print *, "FAIL: want [0] got [", lbound(values(:3)), "]"
+    if ((lbound(values(:3),1)) /= 1) then
+    print *, "FAIL: want [1] got [", lbound(values(:3),1), "]"
     stop 1
 end if
-    if ((ubound(values(:3))) /= 2) then
-    print *, "FAIL: want [2] got [", ubound(values(:3)), "]"
+    if ((ubound(values(:3),1)) /= 4) then
+    print *, "FAIL: want [4] got [", ubound(values(:3),1), "]"
     stop 1
 end if
-    if ((size(values(:3))) /= 3) then
-    print *, "FAIL: want [3] got [", size(values(:3)), "]"
+    if ((size(values(:3))) /= 4) then
+    print *, "FAIL: want [4] got [", size(values(:3)), "]"
     stop 1
 end if
 end program array_section_strictness_and_errors_lbound_omitted

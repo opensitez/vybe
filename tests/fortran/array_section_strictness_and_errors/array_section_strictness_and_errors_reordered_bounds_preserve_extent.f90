@@ -8,8 +8,8 @@ program array_section_strictness_and_errors_reordered_bounds_preserve_extent
     print *, "FAIL: want [6] got [", values(6:2:-2)(1), "]"
     stop 1
 end if
-    if ((values(6:2:-2)(2)) /= 2) then
-    print *, "FAIL: want [2] got [", values(6:2:-2)(2), "]"
+    if ((values(6:2:-2)(2)) /= 4) then
+    print *, "FAIL: want [4] got [", values(6:2:-2)(2), "]"
     stop 1
 end if
     if ((size(values(6:2:-2))) /= 3) then

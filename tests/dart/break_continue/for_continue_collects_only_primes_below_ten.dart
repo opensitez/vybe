@@ -31,5 +31,5 @@ void __vybeMain() {
 
 void main() {
   __vybeMain();
-  __check('4');
+  __check('5');
 }

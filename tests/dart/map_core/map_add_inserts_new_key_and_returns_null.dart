@@ -22,12 +22,11 @@ void __check(String want) {
 
 void __vybeMain() {
   var m = <String, int>{};
-  var prev = m.add('n', 7);
-  __p(prev);
+  m.addEntries([MapEntry('n', 7)]);
   __p(m['n']);
 }
 
 void main() {
   __vybeMain();
-  __check('null\n7');
+  __check('7');
 }

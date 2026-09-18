@@ -5,7 +5,7 @@ program array_section_shape_and_strides_flattened_section_sum
     integer :: matrix(3,3)
     integer :: total
     matrix = reshape((/ (i, i = 1, 9) /), (/3,3/))
-    total = sum(reshape(matrix(2:3,1:3), (/6/))
+    total = sum(reshape(matrix(2:3,1:3), (/6/)))
     if ((total) /= 33) then
     print *, "FAIL: want [33] got [", total, "]"
     stop 1

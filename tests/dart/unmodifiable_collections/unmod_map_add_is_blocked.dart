@@ -22,7 +22,7 @@ void __check(String want) {
 
 void __vybeMain() {
   var frozen = Map.unmodifiable(<String, int>{});
-  try { frozen.add('k', 1); } catch (_) { __p('blocked'); }
+  try { frozen.addEntries([MapEntry('k', 1)]); } catch (_) { __p('blocked'); }
   __p(frozen.length);
 }
 

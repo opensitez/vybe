@@ -6,17 +6,17 @@ program array_section_shape_and_strides_section_as_lhs_rhs_same_shape
     integer :: sample(2:8)
     values = (/ (i, i = 1, 10) /)
     sample = values(2:8)
-    sample(1:3) = sample(1:3) + 1
-    if ((sum(sample)) /= 37) then
-    print *, "FAIL: want [37] got [", sum(sample), "]"
+    sample(2:4) = sample(2:4) + 1
+    if ((sum(sample)) /= 38) then
+    print *, "FAIL: want [38] got [", sum(sample), "]"
     stop 1
 end if
-    if ((sample(1)) /= 11) then
-    print *, "FAIL: want [11] got [", sample(1), "]"
+    if ((sample(2)) /= 3) then
+    print *, "FAIL: want [3] got [", sample(2), "]"
     stop 1
 end if
-    if ((sample(7)) /= 7) then
-    print *, "FAIL: want [7] got [", sample(7), "]"
+    if ((sample(8)) /= 8) then
+    print *, "FAIL: want [8] got [", sample(8), "]"
     stop 1
 end if
 end program array_section_shape_and_strides_section_as_lhs_rhs_same_shape

@@ -5,11 +5,12 @@ program array_masked_array_operations_masked_copy_from_expression
     integer :: values(6)
     integer :: result(6)
     values = (/ 1, 2, 3, 4, 5, 6 /)
+    result = 0
     where (values >= 3)
         result = values + 10
     end where
-    if ((sum(result)) /= 60) then
-    print *, "FAIL: want [60] got [", sum(result), "]"
+    if ((sum(result)) /= 58) then
+    print *, "FAIL: want [58] got [", sum(result), "]"
     stop 1
 end if
     if ((result(1)) /= 0) then

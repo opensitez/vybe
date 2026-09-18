@@ -1,7 +1,7 @@
 -- vybe-test: lua/base_load_chunk/test_load_chunk_prefixed
 -- origin: languages/lua/tests/lua/test_base_load_chunk.rs
 
-local __w1 = "true"
+local __w1 = "13"
 local __i = 0
 
 local f = assert(load("return 6+7")); do local __t = tostring(f()); __i = __i + 1

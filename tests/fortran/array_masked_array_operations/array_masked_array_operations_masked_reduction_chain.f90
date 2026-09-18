@@ -5,6 +5,7 @@ program array_masked_array_operations_masked_reduction_chain
     integer :: values(4)
     integer :: result(4)
     values = (/ 5, 10, 15, 20 /)
+    result = 0
     where (values >= 10)
         result = values / 5
     end where
@@ -12,8 +13,8 @@ program array_masked_array_operations_masked_reduction_chain
     print *, "FAIL: want [9] got [", sum(result), "]"
     stop 1
 end if
-    if ((count(result == 0)) /= 2) then
-    print *, "FAIL: want [2] got [", count(result == 0), "]"
+    if ((count(result == 0)) /= 1) then
+    print *, "FAIL: want [1] got [", count(result == 0), "]"
     stop 1
 end if
     if ((sum(merge(1, 0, result /= 0))) /= 3) then

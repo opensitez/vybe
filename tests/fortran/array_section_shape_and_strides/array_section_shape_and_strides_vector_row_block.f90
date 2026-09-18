@@ -12,12 +12,12 @@ end if
     print *, "FAIL: want [3] got [", size(matrix(2:3,2:4),2), "]"
     stop 1
 end if
-    if ((matrix(2,2:4)(2)) /= 7) then
-    print *, "FAIL: want [7] got [", matrix(2,2:4)(2), "]"
+    if ((matrix(2,2:4)(2)) /= 10) then
+    print *, "FAIL: want [10] got [", matrix(2,2:4)(2), "]"
     stop 1
 end if
-    if ((sum(matrix(2:3,2:4))) /= 58) then
-    print *, "FAIL: want [58] got [", sum(matrix(2:3,2:4)), "]"
+    if ((sum(matrix(2:3,2:4))) /= 63) then
+    print *, "FAIL: want [63] got [", sum(matrix(2:3,2:4)), "]"
     stop 1
 end if
 end program array_section_shape_and_strides_vector_row_block

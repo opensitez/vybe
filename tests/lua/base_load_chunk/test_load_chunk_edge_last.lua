@@ -1,7 +1,7 @@
 -- vybe-test: lua/base_load_chunk/test_load_chunk_edge_last
 -- origin: languages/lua/tests/lua/test_base_load_chunk.rs
 
-local __w1 = "true"
+local __w1 = "37"
 local __i = 0
 
 local f = assert(load("return 18+19")); do local __t = tostring(f()); __i = __i + 1

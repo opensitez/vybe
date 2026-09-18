@@ -3,7 +3,7 @@
 
 program array_masked_array_operations_where_mask_with_stride
 integer :: vybe_check_i = 0
-integer :: vybe_check_w(4) = [ 46, 1, 10, 30 ]
+integer :: vybe_check_w(4) = [ 69, 1, 10, 30 ]
     integer :: values(6)
     integer :: result(6)
     integer :: i

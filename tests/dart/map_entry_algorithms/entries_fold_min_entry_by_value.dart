@@ -22,7 +22,7 @@ void __check(String want) {
 
 void __vybeMain() {
   var m = {'a': 30, 'b': 10, 'c': 20};
-  var minKey = m.entries.fold('?', (best, e) => e.value < m[best]! ? e.key : best);
+  var minKey = m.entries.fold('a', (best, e) => e.value < m[best]! ? e.key : best);
   __p(minKey);
   __p(m[minKey]);
 }

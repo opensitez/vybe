@@ -4,8 +4,8 @@
 program array_section_shape_and_strides_step_two_stride
     integer :: values(1:12)
     values = (/ (i, i = 1, 12) /)
-    if ((lbound(values(2:10:2),1)) /= 2) then
-    print *, "FAIL: want [2] got [", lbound(values(2:10:2),1), "]"
+    if ((lbound(values(2:10:2),1)) /= 1) then
+    print *, "FAIL: want [1] got [", lbound(values(2:10:2),1), "]"
     stop 1
 end if
     if ((size(values(2:10:2))) /= 5) then

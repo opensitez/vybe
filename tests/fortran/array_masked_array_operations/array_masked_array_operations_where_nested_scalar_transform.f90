@@ -5,6 +5,7 @@ program array_masked_array_operations_where_nested_scalar_transform
     integer :: values(4)
     integer :: result(4)
     values = (/ 2, 3, 4, 5 /)
+    result = 1
     where (mod(values,2) == 0)
         where (values > 3)
             result = values * 3

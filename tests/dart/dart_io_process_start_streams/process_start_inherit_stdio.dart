@@ -29,5 +29,5 @@ void __vybeMain() async {
 
 Future<void> main() async {
   await __vybeMain();
-  __check('test_inherit');
+  __check('true');
 }

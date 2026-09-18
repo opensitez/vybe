@@ -21,7 +21,7 @@ void __check(String want) {
 }
 
 void __vybeMain() {
-  var s = String.fromCharCodes([55357, 56842]);
+  var s = String.fromCharCodes([55357, 56898]);
   __p(s.length);
   __p(s.runes.length);
 }

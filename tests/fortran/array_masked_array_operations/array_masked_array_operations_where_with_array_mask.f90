@@ -7,6 +7,7 @@ program array_masked_array_operations_where_with_array_mask
     integer :: result(5)
     values = (/ 4, 5, 6, 7, 8 /)
     mask = (/ 1, 0, 1, 0, 1 /)
+    result = 0
     where (mask == 1)
         result = values + 1
     end where

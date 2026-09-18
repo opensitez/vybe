@@ -29,5 +29,5 @@ void __vybeMain() {
 
 void main() {
   __vybeMain();
-  __check('0\n1');
+  __check('1\n2');
 }

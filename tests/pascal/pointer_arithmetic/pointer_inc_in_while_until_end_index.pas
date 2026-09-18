@@ -61,5 +61,5 @@ begin
     WriteLn('FAIL: want [', want, '] got [', got, ']');
     Halt(1);
   end;
-end; var a: array[0..2] of Integer; p: ^Integer; n: Integer; begin a[0]:=1; a[1]:=2; a[2]:=3; p:=@a[0]; n:=0; while n<3 do begin n:=n+p^; Inc(p); end; __p(__vs(n)); __vybeCheck('6');
+end; var a: array[0..2] of Integer; p: ^Integer; n: Integer; begin a[0]:=1; a[1]:=2; a[2]:=3; p:=@a[0]; n:=0; while n<6 do begin n:=n+p^; Inc(p); end; __p(__vs(n)); __vybeCheck('6');
 end.

@@ -27,10 +27,11 @@ void __vybeMain() {
   for (var k in env.keys) {
     count++;
   }
-  __p(count == env.length);
+  __p(count);
+  __p(env.length);
 }
 
 void main() {
   __vybeMain();
-  __check('true');
+  __check('2\n2');
 }

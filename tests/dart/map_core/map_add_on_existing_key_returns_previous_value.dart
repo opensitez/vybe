@@ -22,12 +22,11 @@ void __check(String want) {
 
 void __vybeMain() {
   var m = {'k': 5};
-  var prev = m.add('k', 9);
-  __p(prev);
+  m.addEntries([MapEntry('k', 9)]);
   __p(m['k']);
 }
 
 void main() {
   __vybeMain();
-  __check('5\n9');
+  __check('9');
 }

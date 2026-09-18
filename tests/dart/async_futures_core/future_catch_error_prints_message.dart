@@ -20,13 +20,14 @@ void __check(String want) {
   }
 }
 
-void __vybeMain() {
-  Future<int>.error('fail').catchError((e) {
+Future<void> __vybeMain() async {
+  await Future<int>.error('fail').catchError((e) {
     __p(e);
+    return 0;
   });
 }
 
-void main() {
-  __vybeMain();
+Future<void> main() async {
+  await __vybeMain();
   __check('fail');
 }
