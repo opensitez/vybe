@@ -59,10 +59,25 @@ uses_common_resolver = true
 
 [builtins]
 "__c_u8array_new" = { emit = "host:ecma:uint8array:new", min_args = 1, max_args = 1 }
+"__c_array_get" = { emit = "common:c.array_get", min_args = 2, max_args = 2 }
 "__c_array_set" = { emit = "common:c.array_set", min_args = 3, max_args = 3 }
+"__c_ptr_i32_load" = { emit = "common:pointers.linear_i32_load", min_args = 1, max_args = 1 }
+"__c_ptr_i32_load8_u" = { emit = "common:pointers.linear_i32_load8_u", min_args = 1, max_args = 1 }
+"__c_ptr_i32_load8_s" = { emit = "common:pointers.linear_i32_load8_s", min_args = 1, max_args = 1 }
+"__c_ptr_i32_load16_u" = { emit = "common:pointers.linear_i32_load16_u", min_args = 1, max_args = 1 }
+"__c_ptr_i32_load16_s" = { emit = "common:pointers.linear_i32_load16_s", min_args = 1, max_args = 1 }
+"__c_ptr_i64_load" = { emit = "common:pointers.linear_i64_load", min_args = 1, max_args = 1 }
+"__c_ptr_i32_store" = { emit = "common:pointers.linear_i32_store", min_args = 2, max_args = 2 }
+"__c_ptr_i32_store8" = { emit = "common:pointers.linear_i32_store8", min_args = 2, max_args = 2 }
+"__c_ptr_i32_store16" = { emit = "common:pointers.linear_i32_store16", min_args = 2, max_args = 2 }
+"__c_ptr_i64_store" = { emit = "common:pointers.linear_i64_store", min_args = 2, max_args = 2 }
+"__c_ptr_memory_size" = { emit = "common:pointers.linear_memory_size", min_args = 0, max_args = 0 }
+"__c_ptr_memory_grow" = { emit = "common:pointers.linear_memory_grow", min_args = 1, max_args = 1 }
 "__c_struct_array" = { emit = "common:c.struct_array", min_args = 2, max_args = 2 }
 "__c_static_numeric_array" = { emit = "common:c.static_numeric_array", min_args = 1, max_args = 1 }
 "__c_static_json_value" = { emit = "common:c.static_json_value", min_args = 1, max_args = 1 }
+"__c_regexp_new" = { emit = "host:ecma:regexp:new", min_args = 1, max_args = 2 }
+"__c_regexp_exec" = { emit = "host:ecma:regexp:exec", min_args = 2, max_args = 2 }
 
 # ── SDL (via platforms/libc adapter) ────────────────────────────────────────────
 

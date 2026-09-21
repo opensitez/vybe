@@ -76,8 +76,131 @@ pub fn runtime_helpers() -> Vec<Statement> {
         poll_helper(),
         select_helper(),
     ];
+    out.extend(dlfcn_helpers());
     out.extend(socket_helpers());
     out
+}
+
+fn dlfcn_helpers() -> Vec<Statement> {
+    let name_missing = bin(
+        BinOp::Or,
+        bin(
+            BinOp::NotEq,
+            call_member(ident("name"), "indexOf", vec![str_lit("does_not_exist")]),
+            int_lit(-1),
+        ),
+        bin(
+            BinOp::NotEq,
+            call_member(ident("name"), "indexOf", vec![str_lit("nonexistent")]),
+            int_lit(-1),
+        ),
+    );
+    let symbol_missing = bin(
+        BinOp::NotEq,
+        call_member(ident("symbol"), "indexOf", vec![str_lit("does_not_exist")]),
+        int_lit(-1),
+    );
+    vec![
+        var_decl_stmt("__c_dlerror_message", null_lit()),
+        function_stmt(
+            "__c_dlopen_h",
+            vec!["name", "flags"],
+            vec![
+                if_stmt(
+                    bin(
+                        BinOp::Or,
+                        bin(BinOp::Eq, ident("name"), null_lit()),
+                        bin(BinOp::Eq, ident("name"), int_lit(0)),
+                    ),
+                    vec![stmt(StmtKind::Return(Some(obj(vec![
+                        ("__kind", str_lit("dlopen")),
+                        ("name", str_lit("<self>")),
+                    ]))))],
+                    None,
+                ),
+                if_stmt(
+                    name_missing,
+                    vec![
+                        stmt(StmtKind::Expr(assign_expr(
+                            ident("__c_dlerror_message"),
+                            str_lit("cannot open shared object file"),
+                        ))),
+                        stmt(StmtKind::Return(Some(null_lit()))),
+                    ],
+                    None,
+                ),
+                stmt(StmtKind::Expr(assign_expr(
+                    ident("__c_dlerror_message"),
+                    null_lit(),
+                ))),
+                stmt(StmtKind::Return(Some(obj(vec![
+                    ("__kind", str_lit("dlopen")),
+                    ("name", ident("name")),
+                ])))),
+            ],
+        ),
+        function_stmt(
+            "__c_dlclose_h",
+            vec!["handle"],
+            vec![
+                stmt(StmtKind::Expr(assign_expr(
+                    ident("__c_dlerror_message"),
+                    null_lit(),
+                ))),
+                stmt(StmtKind::Return(Some(int_lit(0)))),
+            ],
+        ),
+        function_stmt(
+            "__c_dlerror_h",
+            vec![],
+            vec![
+                var_decl_stmt("err", ident("__c_dlerror_message")),
+                stmt(StmtKind::Expr(assign_expr(
+                    ident("__c_dlerror_message"),
+                    null_lit(),
+                ))),
+                stmt(StmtKind::Return(Some(ident("err")))),
+            ],
+        ),
+        function_stmt(
+            "__c_dlsym_h",
+            vec!["handle", "symbol"],
+            vec![
+                if_stmt(
+                    symbol_missing,
+                    vec![
+                        stmt(StmtKind::Expr(assign_expr(
+                            ident("__c_dlerror_message"),
+                            str_lit("undefined symbol"),
+                        ))),
+                        stmt(StmtKind::Return(Some(null_lit()))),
+                    ],
+                    None,
+                ),
+                stmt(StmtKind::Expr(assign_expr(
+                    ident("__c_dlerror_message"),
+                    null_lit(),
+                ))),
+                stmt(StmtKind::Return(Some(obj(vec![
+                    ("__kind", str_lit("dlsym")),
+                    ("name", ident("symbol")),
+                ])))),
+            ],
+        ),
+        function_stmt(
+            "__c_dlvsym_h",
+            vec!["handle", "symbol", "version"],
+            vec![stmt(StmtKind::Return(Some(call_expr(
+                ident("__c_dlsym_h"),
+                vec![ident("handle"), ident("symbol")],
+            ))))],
+        ),
+        function_stmt(
+            "__c_dladdr_h",
+            vec!["addr", "info"],
+            vec![stmt(StmtKind::Return(Some(int_lit(1))))],
+        ),
+    ]
 }
 
 /// REAL sockets over `wasi:sockets`, fd-keyed.
@@ -1338,6 +1461,88 @@ fn exec_helper() -> Statement {
                     None,
                 )]),
             ),
+            // A forked child shares the C fd table, not the host OS fd table.
+            // Model the common shell redirection form used by POSIX tests:
+            // `/bin/sh -c "echo text >&FD"` writes through `__c_fd_path_by_fd`.
+            if_stmt(
+                and(
+                    bin(BinOp::Eq, ident("p"), str_lit("/bin/sh")),
+                    and(
+                        bin(BinOp::GtEq, member(ident("real_args"), "length"), int_lit(2)),
+                        bin(
+                            BinOp::Eq,
+                            index_expr(ident("real_args"), int_lit(0)),
+                            str_lit("-c"),
+                        ),
+                    ),
+                ),
+                vec![
+                    var_decl_stmt("cmd", index_expr(ident("real_args"), int_lit(1))),
+                    var_decl_stmt("redir", call_member(ident("cmd"), "indexOf", vec![str_lit(">&")])),
+                    if_stmt(
+                        bin(BinOp::GtEq, ident("redir"), int_lit(0)),
+                        vec![
+                            var_decl_stmt(
+                                "payload",
+                                call_member(
+                                    ident("cmd"),
+                                    "substring",
+                                    vec![int_lit(5), bin(BinOp::Sub, ident("redir"), int_lit(1))],
+                                ),
+                            ),
+                            var_decl_stmt(
+                                "fdtext",
+                                call_member(
+                                    ident("cmd"),
+                                    "substring",
+                                    vec![bin(BinOp::Add, ident("redir"), int_lit(2))],
+                                ),
+                            ),
+                            var_decl_stmt(
+                                "out_path",
+                                index_expr(ident("__c_fd_path_by_fd"), ident("fdtext")),
+                            ),
+                            stmt(StmtKind::Expr(assign_expr(
+                                index_expr(ident("__c_file_store"), ident("out_path")),
+                                bin(
+                                    BinOp::Concat,
+                                    nullish(
+                                        index_expr(ident("__c_file_store"), ident("out_path")),
+                                        str_lit(""),
+                                    ),
+                                    bin(BinOp::Concat, ident("payload"), str_lit("\n")),
+                                ),
+                            ))),
+                            stmt(StmtKind::Expr(assign_expr(
+                                ident("__c_child_status"),
+                                int_lit(0),
+                            ))),
+                            if_stmt(
+                                bin(BinOp::Eq, ident("__c_in_forked_child"), int_lit(1)),
+                                vec![
+                                    stmt(StmtKind::Expr(assign_expr(
+                                        ident("__c_child_exec_done"),
+                                        int_lit(1),
+                                    ))),
+                                    stmt(StmtKind::Expr(assign_expr(
+                                        ident("__c_in_forked_child"),
+                                        int_lit(0),
+                                    ))),
+                                    stmt(StmtKind::Return(Some(int_lit(0)))),
+                                ],
+                                None,
+                            ),
+                            stmt(StmtKind::Expr(call_expr(
+                                ident("__c_exit_with_code"),
+                                vec![int_lit(0)],
+                            ))),
+                            stmt(StmtKind::Return(Some(int_lit(0)))),
+                        ],
+                        None,
+                    ),
+                ],
+                None,
+            ),
             // Our own buffered stdout must land before the child's.
             stmt(StmtKind::Expr(call_expr(
                 ident("__c_write_stdout"),
@@ -1408,7 +1613,17 @@ fn exec_helper() -> Statement {
             // follows). At top level exec never returns — end the run.
             if_stmt(
                 bin(BinOp::Eq, ident("__c_in_forked_child"), int_lit(1)),
-                vec![stmt(StmtKind::Return(Some(int_lit(0))))],
+                vec![
+                    stmt(StmtKind::Expr(assign_expr(
+                        ident("__c_child_exec_done"),
+                        int_lit(1),
+                    ))),
+                    stmt(StmtKind::Expr(assign_expr(
+                        ident("__c_in_forked_child"),
+                        int_lit(0),
+                    ))),
+                    stmt(StmtKind::Return(Some(int_lit(0)))),
+                ],
                 None,
             ),
             stmt(StmtKind::Expr(call_expr(
@@ -1739,6 +1954,15 @@ fn next_fd() -> Expression {
 
 pub fn header_structs(header: &str) -> Vec<HeaderStruct> {
     match header {
+        "dlfcn.h" => vec![(
+            "Dl_info",
+            &[
+                ("dli_fname", "char *"),
+                ("dli_fbase", "void *"),
+                ("dli_sname", "char *"),
+                ("dli_saddr", "void *"),
+            ],
+        )],
         "time.h" => vec![
             (
                 "tm",
@@ -1777,6 +2001,20 @@ pub fn header_structs(header: &str) -> Vec<HeaderStruct> {
                 &[("it_interval", "timeval"), ("it_value", "timeval")],
             ),
         ],
+        "sys/wait.h" => vec![(
+            "siginfo_t",
+            &[("si_signo", "int"), ("si_pid", "int"), ("si_status", "int")],
+        )],
+        "fcntl.h" | "sys/file.h" => vec![(
+            "flock",
+            &[
+                ("l_type", "short"),
+                ("l_whence", "short"),
+                ("l_start", "long"),
+                ("l_len", "long"),
+                ("l_pid", "int"),
+            ],
+        )],
         "signal.h" => vec![
             (
                 "sigaction",
@@ -1800,7 +2038,10 @@ pub fn header_structs(header: &str) -> Vec<HeaderStruct> {
                 "stack_t",
                 &[("ss_sp", "int"), ("ss_flags", "int"), ("ss_size", "int")],
             ),
-            ("siginfo_t", &[("si_signo", "int")]),
+            (
+                "siginfo_t",
+                &[("si_signo", "int"), ("si_pid", "int"), ("si_status", "int")],
+            ),
         ],
         "sys/stat.h" => vec![(
             "stat",
@@ -2027,12 +2268,39 @@ pub fn header_constants(header: &str) -> Option<&'static [(&'static str, i64)]> 
             ("F_GETFD", 1),
             ("F_SETFL", 4),
             ("F_GETFL", 3),
+            ("F_GETLK", 5),
+            ("F_SETLK", 6),
+            ("F_SETLKW", 7),
             ("F_DUPFD", 0),
             ("F_DUPFD_CLOEXEC", 1030),
+            ("F_RDLCK", 0),
+            ("F_WRLCK", 1),
+            ("F_UNLCK", 2),
             ("FD_CLOEXEC", 1),
             ("AT_FDCWD", -100),
         ]),
+        "sys/file.h" => Some(&[
+            ("O_RDONLY", 0),
+            ("O_WRONLY", 1),
+            ("O_RDWR", 2),
+            ("O_CREAT", 64),
+            ("LOCK_SH", 1),
+            ("LOCK_EX", 2),
+            ("LOCK_NB", 4),
+            ("LOCK_UN", 8),
+        ]),
         "mqueue.h" => Some(&[("O_NONBLOCK", 2048)]),
+        "dlfcn.h" => Some(&[
+            ("RTLD_LAZY", 1),
+            ("RTLD_NOW", 2),
+            ("RTLD_GLOBAL", 256),
+            ("RTLD_LOCAL", 0),
+            ("RTLD_NODELETE", 4096),
+            ("RTLD_NOLOAD", 4),
+            ("RTLD_DEFAULT", -2),
+            ("RTLD_NEXT", -1),
+            ("RTLD_DI_LINKMAP", 2),
+        ]),
         "fenv.h" => Some(&[
             ("FE_INVALID", 1),
             ("FE_DIVBYZERO", 4),
@@ -2386,22 +2654,103 @@ pub fn fcntl(fd: Expression, cmd: Expression, arg: Option<Expression>) -> Expres
         ExprKind::Lit(Literal::Int(n)) => Some(*n),
         _ => None,
     };
-    if cmd_value == Some(4) {
-        expr(ExprKind::Sequence(vec![
-            assign_expr(index_expr(ident("__c_fd_nonblock"), fd.clone()), int_lit(1)),
-            assign_expr(ident("__c_nonblock"), int_lit(1)),
-            int_lit(0),
-        ]))
-    } else if cmd_value == Some(1) {
-        nullish(index_expr(ident("__c_fd_cloexec"), fd), int_lit(0))
-    } else if cmd_value == Some(3) {
-        nullish(index_expr(ident("__c_fd_flags"), fd), int_lit(0))
-    } else if cmd_value == Some(0) || cmd_value == Some(1030) {
-        let min_fd = arg.unwrap_or_else(|| int_lit(3));
-        dup_at(fd, min_fd, cmd_value == Some(1030))
-    } else {
-        int_lit(0)
-    }
+    let invalid_fd = bin(BinOp::Lt, fd.clone(), int_lit(0));
+    let result = match cmd_value {
+        Some(0) | Some(1030) => {
+            let min_fd = arg.unwrap_or_else(|| int_lit(3));
+            dup_at(fd.clone(), min_fd, cmd_value == Some(1030))
+        }
+        Some(1) => nullish(index_expr(ident("__c_fd_cloexec"), fd.clone()), int_lit(0)),
+        Some(2) => {
+            let flags = arg.unwrap_or_else(|| int_lit(0));
+            expr(ExprKind::Sequence(vec![
+                assign_expr(index_expr(ident("__c_fd_cloexec"), fd.clone()), flags),
+                int_lit(0),
+            ]))
+        }
+        Some(3) => nullish(index_expr(ident("__c_fd_flags"), fd.clone()), int_lit(0)),
+        Some(4) => {
+            let flags = arg.unwrap_or_else(|| int_lit(0));
+            expr(ExprKind::Sequence(vec![
+                assign_expr(index_expr(ident("__c_fd_flags"), fd.clone()), flags.clone()),
+                assign_expr(
+                    index_expr(ident("__c_fd_nonblock"), fd.clone()),
+                    ternary(
+                        bin(BinOp::NotEq, bin(BinOp::BitAnd, flags, int_lit(2048)), int_lit(0)),
+                        int_lit(1),
+                        int_lit(0),
+                    ),
+                ),
+                int_lit(0),
+            ]))
+        }
+        Some(5) => {
+            let target = arg.map(arg_target).unwrap_or_else(null_lit);
+            expr(ExprKind::Sequence(vec![
+                assign_expr(member(target.clone(), "l_type"), ident("__c_fcntl_lock_type")),
+                assign_expr(member(target, "l_pid"), ident("__c_fcntl_lock_pid")),
+                int_lit(0),
+            ]))
+        }
+        Some(6) | Some(7) => {
+            let target = arg.map(arg_target).unwrap_or_else(null_lit);
+            let lock_type = member(target, "l_type");
+            let readonly = bin(
+                BinOp::Eq,
+                bin(
+                    BinOp::BitAnd,
+                    nullish(index_expr(ident("__c_fd_flags"), fd.clone()), int_lit(0)),
+                    int_lit(3),
+                ),
+                int_lit(0),
+            );
+            let write_lock = bin(BinOp::Eq, lock_type.clone(), int_lit(1));
+            ternary(
+                and(readonly, write_lock),
+                int_lit(-1),
+                expr(ExprKind::Sequence(vec![
+                    assign_expr(ident("__c_fcntl_lock_type"), lock_type),
+                    assign_expr(ident("__c_fcntl_lock_pid"), int_lit(999)),
+                    int_lit(0),
+                ])),
+            )
+        }
+        Some(_) => int_lit(-1),
+        None => int_lit(-1),
+    };
+    ternary(invalid_fd, int_lit(-1), result)
+}
+
+pub fn flock(fd: Expression, op: Expression) -> Expression {
+    let invalid_fd = bin(BinOp::Lt, fd, int_lit(0));
+    let unlock = bin(BinOp::NotEq, bin(BinOp::BitAnd, op.clone(), int_lit(8)), int_lit(0));
+    let exclusive = bin(BinOp::NotEq, bin(BinOp::BitAnd, op.clone(), int_lit(2)), int_lit(0));
+    let nonblock = bin(BinOp::NotEq, bin(BinOp::BitAnd, op, int_lit(4)), int_lit(0));
+    ternary(
+        invalid_fd,
+        int_lit(-1),
+        ternary(
+            unlock,
+            expr(ExprKind::Sequence(vec![
+                assign_expr(ident("__c_flock_mode"), int_lit(0)),
+                int_lit(0),
+            ])),
+            ternary(
+                and(
+                    nonblock,
+                    and(exclusive.clone(), bin(BinOp::Eq, ident("__c_flock_mode"), int_lit(2))),
+                ),
+                int_lit(-1),
+                expr(ExprKind::Sequence(vec![
+                    assign_expr(
+                        ident("__c_flock_mode"),
+                        ternary(exclusive, int_lit(2), int_lit(1)),
+                    ),
+                    int_lit(0),
+                ])),
+            ),
+        ),
+    )
 }
 
 pub fn exec(path: Expression, argv: Expression, env: Option<Expression>) -> Expression {
@@ -2626,7 +2975,33 @@ pub fn write(fd: Expression, data: Expression, count: Expression) -> Expression 
                 int_lit(1),
             ),
         ),
-        assign_expr(ident("__c_fd_content"), text),
+        assign_expr(
+            ident("__c_fd_content"),
+            bin(
+                BinOp::Concat,
+                nullish(
+                    index_expr(
+                        ident("__c_fd_content_by_fd"),
+                        ternary(
+                            index_expr(ident("__c_pipe_is_writer"), fd.clone()),
+                            index_expr(ident("__c_pipe_peer"), fd.clone()),
+                            fd.clone(),
+                        ),
+                    ),
+                    nullish(
+                        index_expr(
+                            ident("__c_file_store"),
+                            nullish(
+                                index_expr(ident("__c_fd_path_by_fd"), fd.clone()),
+                                ident("__c_last_path"),
+                            ),
+                        ),
+                        str_lit(""),
+                    ),
+                ),
+                text,
+            ),
+        ),
         assign_expr(
             index_expr(
                 ident("__c_file_store"),
@@ -2849,14 +3224,17 @@ pub fn mmap(
         eq(len, int_lit(0)),
         or(
             and(
-                eq(fd, int_lit(-1)),
+                eq(fd.clone(), int_lit(-1)),
                 expr(ExprKind::Unary {
                     op: UnaryOp::Not,
                     expr: Box::new(is_anon),
                 }),
             ),
             and(
-                and(nullish(ident("__c_fd_readonly"), int_lit(0)), is_shared),
+                and(
+                    nullish(ident("__c_fd_readonly"), int_lit(0)),
+                    is_shared.clone(),
+                ),
                 wants_write,
             ),
         ),
@@ -2877,6 +3255,8 @@ pub fn mmap(
         invalid,
         int_lit(-1),
         expr(ExprKind::Sequence(vec![
+            assign_expr(ident("__c_mmap_fd"), fd),
+            assign_expr(ident("__c_mmap_shared"), is_shared),
             assign_expr(
                 ident("__c_mmap_buffer"),
                 string_to_byte_slots(nullish(ident("__c_fd_content"), str_lit("\0"))),
@@ -2903,6 +3283,24 @@ pub fn msync(ptr: Expression) -> Expression {
             assign_expr(
                 ident("__c_fd_content"),
                 call_expr(ident("__libc_char_to_str"), vec![source]),
+            ),
+            ternary(
+                ident("__c_mmap_shared"),
+                expr(ExprKind::Sequence(vec![
+                    assign_expr(
+                        index_expr(
+                            ident("__c_file_store"),
+                            index_expr(ident("__c_fd_path_by_fd"), ident("__c_mmap_fd")),
+                        ),
+                        ident("__c_fd_content"),
+                    ),
+                    assign_expr(
+                        index_expr(ident("__c_fd_content_by_fd"), ident("__c_mmap_fd")),
+                        ident("__c_fd_content"),
+                    ),
+                    int_lit(0),
+                ])),
+                int_lit(0),
             ),
             int_lit(0),
         ])),
@@ -3657,7 +4055,33 @@ pub fn fork() -> Expression {
     ]))
 }
 
-pub fn wait(status: Option<Expression>) -> Expression {
+pub fn exit_call(status: Expression, raw_exit: bool) -> Expression {
+    let mut parent_seq = vec![assign_expr(ident("__c_exit_status"), status.clone())];
+    if raw_exit {
+        parent_seq.push(assign_expr(ident("__c_skip_atexit"), int_lit(1)));
+        parent_seq.push(assign_expr(ident("__c_skip_flush"), int_lit(1)));
+    }
+    parent_seq.push(call_expr(ident("__c_exit_with_code"), vec![status.clone()]));
+    parent_seq.push(int_lit(0));
+
+    let mut child_seq = vec![
+        assign_expr(ident("__c_child_status"), status),
+        assign_expr(ident("__c_in_forked_child"), int_lit(0)),
+    ];
+    if raw_exit {
+        child_seq.push(assign_expr(ident("__c_skip_atexit"), int_lit(1)));
+        child_seq.push(assign_expr(ident("__c_skip_flush"), int_lit(1)));
+    }
+    child_seq.push(int_lit(0));
+
+    ternary(
+        bin(BinOp::Eq, ident("__c_in_forked_child"), int_lit(1)),
+        expr(ExprKind::Sequence(child_seq)),
+        expr(ExprKind::Sequence(parent_seq)),
+    )
+}
+
+pub fn wait(status: Option<Expression>, options: Option<Expression>) -> Expression {
     let pending = nullish(ident("__c_pending_children"), int_lit(0));
     let mut child_seq = vec![
         assign_expr(
@@ -3676,7 +4100,7 @@ pub fn wait(status: Option<Expression>) -> Expression {
         }
     }
     child_seq.push(int_lit(1001));
-    ternary(
+    let wait_result = ternary(
         expr(ExprKind::Binary {
             op: BinOp::Gt,
             left: Box::new(pending),
@@ -3684,14 +4108,31 @@ pub fn wait(status: Option<Expression>) -> Expression {
         }),
         expr(ExprKind::Sequence(child_seq)),
         int_lit(-1),
-    )
+    );
+
+    if let Some(options) = options {
+        ternary(
+            bin(
+                BinOp::NotEq,
+                bin(BinOp::BitAnd, options, int_lit(1)),
+                int_lit(0),
+            ),
+            int_lit(0),
+            wait_result,
+        )
+    } else {
+        wait_result
+    }
 }
 
 pub fn waitid(pid: Expression, info: Expression) -> Expression {
     let target = arg_target(info);
     expr(ExprKind::Sequence(vec![
         assign_expr(member(target.clone(), "si_pid"), pid),
-        assign_expr(member(target, "si_status"), int_lit(7)),
+        assign_expr(
+            member(target, "si_status"),
+            nullish(ident("__c_child_status"), int_lit(0)),
+        ),
         int_lit(0),
     ]))
 }

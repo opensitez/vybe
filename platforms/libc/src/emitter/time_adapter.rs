@@ -133,7 +133,7 @@ fn array(values: &[&str]) -> Expression {
 }
 
 fn tm_field(name: &str) -> Expression {
-    member(ident("tm"), name)
+    tm_field_of(&ident("tm"), name)
 }
 
 fn tm_field_of(tm: &Expression, name: &str) -> Expression {
@@ -800,7 +800,7 @@ fn strftime_function() -> Statement {
     let mut decl = function_stmt("__c_strftime_format_h", vec!["fmt", "tm"], strftime_body());
     if let StmtKind::FunctionDecl { params, .. } = &mut decl.kind {
         if let Some(param) = params.get_mut(1) {
-            param.type_hint = Some("struct tm".to_string().into());
+            param.type_hint = Some("tm".to_string().into());
         }
     }
     decl

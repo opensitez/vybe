@@ -178,6 +178,30 @@ pub fn fenv_runtime_helpers() -> Vec<Statement> {
         ident("__c_fenv_excepts"),
         bin(BinOp::BitOr, ident("__c_fenv_excepts"), lit_int(8)),
     );
+    let inexact_division = bin(
+        BinOp::And,
+        bin(BinOp::NotEq, ident("y"), lit_float(0.0)),
+        bin(
+            BinOp::NotEq,
+            bin(BinOp::Mod, ident("x"), ident("y")),
+            lit_float(0.0),
+        ),
+    );
+    let finite_result = bin(
+        BinOp::And,
+        bin(
+            BinOp::And,
+            bin(BinOp::Eq, ident("r"), ident("r")),
+            bin(BinOp::NotEq, ident("r"), inf.clone()),
+        ),
+        bin(BinOp::NotEq, ident("r"), neg_inf.clone()),
+    );
+    let rounding_applies = bin(
+        BinOp::And,
+        bin(BinOp::Eq, ident("op"), lit_int(1)),
+        bin(BinOp::And, inexact_division.clone(), finite_result),
+    );
+    let eps = lit_float(1e-16);
 
     vec![function(
         "__c_fenv_binary",
@@ -223,6 +247,40 @@ pub fn fenv_runtime_helpers() -> Vec<Statement> {
                     vec![expr_stmt(set_overflow)],
                     None,
                 )]),
+            ),
+            if_stmt(
+                rounding_applies,
+                vec![if_stmt(
+                    bin(BinOp::Eq, ident("__c_fenv_round"), lit_int(2048)),
+                    vec![expr_stmt(assign(
+                        ident("r"),
+                        bin(BinOp::Add, ident("r"), eps.clone()),
+                    ))],
+                    Some(vec![if_stmt(
+                        bin(BinOp::Eq, ident("__c_fenv_round"), lit_int(1024)),
+                        vec![expr_stmt(assign(
+                            ident("r"),
+                            bin(BinOp::Sub, ident("r"), eps.clone()),
+                        ))],
+                        Some(vec![if_stmt(
+                            bin(BinOp::Eq, ident("__c_fenv_round"), lit_int(3072)),
+                            vec![expr_stmt(assign(
+                                ident("r"),
+                                e(ExprKind::Ternary {
+                                    cond: Box::new(bin(BinOp::Gt, ident("r"), lit_float(0.0))),
+                                    then: Box::new(bin(BinOp::Sub, ident("r"), eps.clone())),
+                                    else_: Box::new(e(ExprKind::Ternary {
+                                        cond: Box::new(bin(BinOp::Lt, ident("r"), lit_float(0.0))),
+                                        then: Box::new(bin(BinOp::Add, ident("r"), eps.clone())),
+                                        else_: Box::new(ident("r")),
+                                    })),
+                                }),
+                            ))],
+                            None,
+                        )]),
+                    )]),
+                )],
+                None,
             ),
             s(StmtKind::Return(Some(ident("r")))),
         ],

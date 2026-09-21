@@ -89,6 +89,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, _argc: u8, 
     }
 
     match name {
+        "c.array_get" => {
+            chunks[current].emit_op(Op::ARRAY_GET, line);
+        }
         "c.array_set" => {
             let value = chunks[current].alloc_scratch(1);
             chunks[current].emit_op_u16(Op::LOCAL_SET, value, line);

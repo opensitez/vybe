@@ -1217,6 +1217,15 @@ pub fn char_to_str_runtime_helper() -> Statement {
                 ],
                 None,
             ),
+            if_stmt(
+                bin(
+                    BinOp::And,
+                    bin(BinOp::NotEq, ident("v"), e(ExprKind::Lit(Literal::Null))),
+                    bin(BinOp::Eq, member(ident("v"), "__ref_kind"), lit_str("cell")),
+                ),
+                vec![expr_stmt(assign_expr(ident("v"), member(ident("v"), "__value")))],
+                None,
+            ),
             var_decl("a", ident("v")),
             // carray pointer → take the slice from __idx onward.
             if_stmt(

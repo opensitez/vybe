@@ -910,6 +910,46 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
         }),
         stmt(StmtKind::VarDecl {
             declarations: vec![VarDeclarator {
+                pattern: BindingPattern::Ident("__c_child_exec_done".to_string()),
+                type_hint: None,
+                init: Some(int_lit(0)),
+                array_bounds: None,
+                with_events: false,
+            }],
+            kind: VarDeclKind::Var,
+        }),
+        stmt(StmtKind::VarDecl {
+            declarations: vec![VarDeclarator {
+                pattern: BindingPattern::Ident("__c_pgrp".to_string()),
+                type_hint: None,
+                init: Some(int_lit(1000)),
+                array_bounds: None,
+                with_events: false,
+            }],
+            kind: VarDeclKind::Var,
+        }),
+        stmt(StmtKind::VarDecl {
+            declarations: vec![VarDeclarator {
+                pattern: BindingPattern::Ident("__c_sid".to_string()),
+                type_hint: None,
+                init: Some(int_lit(1000)),
+                array_bounds: None,
+                with_events: false,
+            }],
+            kind: VarDeclKind::Var,
+        }),
+        stmt(StmtKind::VarDecl {
+            declarations: vec![VarDeclarator {
+                pattern: BindingPattern::Ident("__c_session_leader".to_string()),
+                type_hint: None,
+                init: Some(int_lit(0)),
+                array_bounds: None,
+                with_events: false,
+            }],
+            kind: VarDeclKind::Var,
+        }),
+        stmt(StmtKind::VarDecl {
+            declarations: vec![VarDeclarator {
                 pattern: BindingPattern::Ident("__c_pending_children".to_string()),
                 type_hint: None,
                 init: Some(int_lit(0)),
@@ -993,6 +1033,36 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
                 pattern: BindingPattern::Ident("__c_fd_nonblock".to_string()),
                 type_hint: None,
                 init: Some(expr(ExprKind::Object(vec![]))),
+                array_bounds: None,
+                with_events: false,
+            }],
+            kind: VarDeclKind::Var,
+        }),
+        stmt(StmtKind::VarDecl {
+            declarations: vec![VarDeclarator {
+                pattern: BindingPattern::Ident("__c_fcntl_lock_type".to_string()),
+                type_hint: None,
+                init: Some(int_lit(2)),
+                array_bounds: None,
+                with_events: false,
+            }],
+            kind: VarDeclKind::Var,
+        }),
+        stmt(StmtKind::VarDecl {
+            declarations: vec![VarDeclarator {
+                pattern: BindingPattern::Ident("__c_fcntl_lock_pid".to_string()),
+                type_hint: None,
+                init: Some(int_lit(999)),
+                array_bounds: None,
+                with_events: false,
+            }],
+            kind: VarDeclKind::Var,
+        }),
+        stmt(StmtKind::VarDecl {
+            declarations: vec![VarDeclarator {
+                pattern: BindingPattern::Ident("__c_flock_mode".to_string()),
+                type_hint: None,
+                init: Some(int_lit(0)),
                 array_bounds: None,
                 with_events: false,
             }],
@@ -1101,6 +1171,16 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
         stmt(StmtKind::VarDecl {
             declarations: vec![VarDeclarator {
                 pattern: BindingPattern::Ident("__c_fenv_excepts".to_string()),
+                type_hint: None,
+                init: Some(int_lit(0)),
+                array_bounds: None,
+                with_events: false,
+            }],
+            kind: VarDeclKind::Var,
+        }),
+        stmt(StmtKind::VarDecl {
+            declarations: vec![VarDeclarator {
+                pattern: BindingPattern::Ident("__c_fenv_round".to_string()),
                 type_hint: None,
                 init: Some(int_lit(0)),
                 array_bounds: None,
@@ -3820,12 +3900,52 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
             ),
             if_stmt(
                 expr(ExprKind::Binary {
+                    op: BinOp::Eq,
+                    left: Box::new(expr(ExprKind::Unary {
+                        op: vybe_ast::UnaryOp::Typeof,
+                        expr: Box::new(ident("ungot")),
+                    })),
+                    right: Box::new(str_lit("undefined")),
+                }),
+                vec![
+                    stmt(StmtKind::Expr(assign_expr(
+                        index_expr(ident("__c_file_ungot"), ident("handle")),
+                        expr(ExprKind::Array(vec![])),
+                    ))),
+                    stmt(StmtKind::Expr(assign_expr(
+                        ident("ungot"),
+                        index_expr(ident("__c_file_ungot"), ident("handle")),
+                    ))),
+                ],
+                None,
+            ),
+            if_stmt(
+                expr(ExprKind::Binary {
                     op: BinOp::Gt,
                     left: Box::new(member(ident("ungot"), "length")),
                     right: Box::new(int_lit(0)),
                 }),
                 vec![
-                    var_decl_stmt("ch", call_member(ident("ungot"), "pop", vec![])),
+                    var_decl_stmt("n", member(ident("ungot"), "length")),
+                    var_decl_stmt(
+                        "ch",
+                        index_expr(
+                            ident("ungot"),
+                            expr(ExprKind::Binary {
+                                op: BinOp::Sub,
+                                left: Box::new(ident("n")),
+                                right: Box::new(int_lit(1)),
+                            }),
+                        ),
+                    ),
+                    stmt(StmtKind::Expr(assign_expr(
+                        member(ident("ungot"), "length"),
+                        expr(ExprKind::Binary {
+                            op: BinOp::Sub,
+                            left: Box::new(ident("n")),
+                            right: Box::new(int_lit(1)),
+                        }),
+                    ))),
                     stmt(StmtKind::Expr(assign_expr(
                         index_expr(ident("__c_file_eof"), ident("handle")),
                         int_lit(0),
@@ -3917,10 +4037,12 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
                 )))],
                 None,
             ),
-            stmt(StmtKind::Expr(call_member(
-                index_expr(ident("__c_file_ungot"), ident("handle")),
-                "push",
-                vec![ident("code")],
+            stmt(StmtKind::Expr(assign_expr(
+                index_expr(
+                    index_expr(ident("__c_file_ungot"), ident("handle")),
+                    member(index_expr(ident("__c_file_ungot"), ident("handle")), "length"),
+                ),
+                ident("code"),
             ))),
             stmt(StmtKind::Expr(assign_expr(
                 index_expr(ident("__c_file_eof"), ident("handle")),
@@ -4193,6 +4315,27 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
             var_decl_stmt(
                 "ungot",
                 index_expr(ident("__c_file_ungot"), ident("handle")),
+            ),
+            if_stmt(
+                expr(ExprKind::Binary {
+                    op: BinOp::Eq,
+                    left: Box::new(expr(ExprKind::Unary {
+                        op: vybe_ast::UnaryOp::Typeof,
+                        expr: Box::new(ident("ungot")),
+                    })),
+                    right: Box::new(str_lit("undefined")),
+                }),
+                vec![
+                    stmt(StmtKind::Expr(assign_expr(
+                        index_expr(ident("__c_file_ungot"), ident("handle")),
+                        expr(ExprKind::Array(vec![])),
+                    ))),
+                    stmt(StmtKind::Expr(assign_expr(
+                        ident("ungot"),
+                        index_expr(ident("__c_file_ungot"), ident("handle")),
+                    ))),
+                ],
+                None,
             ),
             if_stmt(
                 expr(ExprKind::Binary {

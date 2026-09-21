@@ -21,7 +21,7 @@
 
 use crate::emitter::build::*;
 use vybe_ast::{
-    Argument, BinOp, CatchClause, ExprKind, Expression, ObjectProperty, Statement, StmtKind,
+    BinOp, CatchClause, ExprKind, Expression, Literal, ObjectProperty, Statement, StmtKind,
 };
 
 // POSIX error codes (glibc values) used here.
@@ -66,10 +66,160 @@ fn ternary(cond: Expression, then: Expression, else_: Expression) -> Expression 
 }
 
 fn new_regexp(src: Expression, flags: Expression) -> Expression {
-    expr(ExprKind::New {
-        class: Box::new(ident("RegExp")),
-        args: vec![Argument::positional(src), Argument::positional(flags)],
-    })
+    call_expr(ident("__c_regexp_new"), vec![src, flags])
+}
+
+fn literal_str(expr: &Expression) -> Option<&str> {
+    match &expr.kind {
+        ExprKind::Lit(Literal::Str(s)) => Some(s.as_str()),
+        _ => None,
+    }
+}
+
+fn literal_int(expr: &Expression) -> Option<i64> {
+    match &expr.kind {
+        ExprKind::Lit(Literal::Int(v)) => Some(*v),
+        ExprKind::Lit(Literal::Float(v)) => Some(*v as i64),
+        _ => None,
+    }
+}
+
+fn posix_pattern_to_ecma(src: &str, cflags: i64) -> String {
+    let mut out = src
+        .replace("[[:alpha:]]", "[A-Za-z]")
+        .replace("[[:digit:]]", "[0-9]")
+        .replace("[[:alnum:]]", "[A-Za-z0-9]")
+        .replace("[[:space:]]", r"\s");
+    if cflags & 1 == 0 {
+        let mut converted = String::with_capacity(out.len());
+        let mut chars = out.chars().peekable();
+        while let Some(ch) = chars.next() {
+            if ch == '\\' {
+                match chars.peek().copied() {
+                    Some('(') | Some(')') => {
+                        converted.push(chars.next().unwrap());
+                    }
+                    _ => {
+                        converted.push(ch);
+                    }
+                }
+            } else if matches!(ch, '(' | ')' | '+' | '?' | '{' | '|' | '}') {
+                converted.push('\\');
+                converted.push(ch);
+            } else {
+                converted.push(ch);
+            }
+        }
+        out = converted;
+    }
+    out
+}
+
+fn count_ecma_capture_groups(src: &str, cflags: i64) -> i64 {
+    if cflags & 8 != 0 {
+        return 0;
+    }
+    let mut count = 0;
+    let mut escaped = false;
+    let mut in_class = false;
+    let chars: Vec<char> = src.chars().collect();
+    for (i, ch) in chars.iter().copied().enumerate() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if ch == '\\' {
+            escaped = true;
+            continue;
+        }
+        if ch == '[' {
+            in_class = true;
+            continue;
+        }
+        if ch == ']' {
+            in_class = false;
+            continue;
+        }
+        if in_class || ch != '(' {
+            continue;
+        }
+        if chars.get(i + 1) == Some(&'?') {
+            continue;
+        }
+        count += 1;
+    }
+    count
+}
+
+fn simple_compile_error(src: &str) -> bool {
+    let mut escaped = false;
+    let mut in_class = false;
+    let mut class_closed = true;
+    let mut parens = 0i64;
+    for ch in src.chars() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if ch == '\\' {
+            escaped = true;
+            continue;
+        }
+        if in_class {
+            if ch == ']' {
+                in_class = false;
+                class_closed = true;
+            }
+            continue;
+        }
+        match ch {
+            '[' => {
+                in_class = true;
+                class_closed = false;
+            }
+            '(' => parens += 1,
+            ')' => {
+                parens -= 1;
+                if parens < 0 {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+    }
+    !class_closed || parens != 0
+}
+
+fn literal_regex_t(src: &str, cflags: i64) -> Expression {
+    let translated = posix_pattern_to_ecma(src, cflags);
+    let err = literal_regex_error_code_from_translated(&translated);
+    let mut flags = String::new();
+    if cflags & 2 != 0 {
+        flags.push('i');
+    }
+    if cflags & 4 != 0 {
+        flags.push('m');
+    }
+    obj(vec![
+        ("__src", str_lit(&translated)),
+        ("__flags", str_lit(&flags)),
+        ("__nosub", int_lit(if cflags & 8 != 0 { 1 } else { 0 })),
+        ("re_nsub", int_lit(count_ecma_capture_groups(&translated, cflags))),
+        ("__err", int_lit(err)),
+    ])
+}
+
+fn literal_regex_error_code_from_translated(translated: &str) -> i64 {
+    if simple_compile_error(translated) {
+        REG_BADPAT
+    } else {
+        0
+    }
+}
+
+fn literal_regex_error_code(src: &str, cflags: i64) -> i64 {
+    let translated = posix_pattern_to_ecma(src, cflags);
+    literal_regex_error_code_from_translated(&translated)
 }
 
 /// `(flags & bit) != 0`
@@ -86,6 +236,13 @@ fn flag_set(var: &str, bit: i64) -> Expression {
 /// `regcomp(&preg, pattern, cflags)` → compile into `preg`; returns 0 on success
 /// or an error code (`REG_BADPAT` for an invalid pattern).
 pub fn regcomp(preg_lval: Expression, pattern: Expression, cflags: Expression) -> Expression {
+    if let (Some(src), Some(flags)) = (literal_str(&pattern), literal_int(&cflags)) {
+        let store = assign_expr(preg_lval.clone(), literal_regex_t(src, flags));
+        return expr(ExprKind::Sequence(vec![
+            store,
+            int_lit(literal_regex_error_code(src, flags)),
+        ]));
+    }
     let store = assign_expr(
         preg_lval.clone(),
         call_expr(ident("__c_regcomp_compile"), vec![pattern, cflags]),
@@ -146,24 +303,21 @@ fn regcomp_compile_helper() -> Statement {
             flag_set("cflags", bit),
             vec![stmt(StmtKind::Expr(assign_expr(
                 ident("flags"),
-                bin(BinOp::Add, ident("flags"), str_lit(ch)),
+                bin(BinOp::Concat, ident("flags"), str_lit(ch)),
             )))],
             None,
         )
     };
     // try { var g = new RegExp(pat + "|", flags); nsub = g.exec("").length - 1; }
     // catch (e) { err = REG_BADPAT; }
-    let probe = new_regexp(bin(BinOp::Add, ident("pat"), str_lit("|")), ident("flags"));
+    let probe = new_regexp(bin(BinOp::Concat, ident("pat"), str_lit("|")), ident("flags"));
     let try_body = vec![
         var_decl_stmt("g", probe),
         stmt(StmtKind::Expr(assign_expr(
             ident("nsub"),
             bin(
                 BinOp::Sub,
-                member(
-                    call_expr(member(ident("g"), "exec"), vec![str_lit("")]),
-                    "length",
-                ),
+                member(call_expr(ident("__c_regexp_exec"), vec![ident("g"), str_lit("")]), "length"),
                 int_lit(1),
             ),
         ))),
@@ -216,7 +370,21 @@ fn regcomp_compile_helper() -> Statement {
 fn regexec_helper() -> Statement {
     let new_re = new_regexp(
         member(ident("preg"), "__src"),
-        bin(BinOp::Add, member(ident("preg"), "__flags"), str_lit("d")),
+        bin(BinOp::Concat, member(ident("preg"), "__flags"), str_lit("d")),
+    );
+    let notbol_anchor = bin(
+        BinOp::And,
+        flag_set("eflags", 1),
+        bin(
+            BinOp::Eq,
+            call_member(member(ident("preg"), "__src"), "indexOf", vec![str_lit("^")]),
+            int_lit(0),
+        ),
+    );
+    let noteol_anchor = bin(
+        BinOp::And,
+        flag_set("eflags", 2),
+        call_member(member(ident("preg"), "__src"), "endsWith", vec![str_lit("$")]),
     );
     let sp = index_expr(member(ident("m"), "indices"), ident("i"));
     let fill = if_stmt(
@@ -248,10 +416,15 @@ fn regexec_helper() -> Statement {
         "__c_regexec",
         vec!["preg", "str", "nmatch", "pmatch", "eflags"],
         vec![
+            if_stmt(
+                bin(BinOp::Or, notbol_anchor, noteol_anchor),
+                vec![stmt(StmtKind::Return(Some(int_lit(REG_NOMATCH))))],
+                None,
+            ),
             var_decl_stmt("re", new_re),
             var_decl_stmt(
                 "m",
-                call_expr(member(ident("re"), "exec"), vec![ident("str")]),
+                call_expr(ident("__c_regexp_exec"), vec![ident("re"), ident("str")]),
             ),
             if_stmt(
                 bin(BinOp::Eq, ident("m"), null_lit()),

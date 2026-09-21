@@ -9,9 +9,11 @@
 //! emits a direct call-by-name to it. This keeps the implementation in
 //! Rust bytecode (no JS polyfill) and in the proper emitter path.
 
+use vybe_compiler::primitives::class_slots::{self, ClassSlot, ObjSource, PlainNames, ValueSource};
 use vybe_compiler::primitives::instructions::core_wasm;
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
+use vybe_runtime::opcode::heaptype::{HT_STRUCT, HeapType};
 
 const CHUNK_NAME: &str = "__libc_fmt_sprintf";
 
@@ -219,6 +221,98 @@ fn inc(c: &mut Chunk, s: u16) {
     ls(c, s);
 }
 
+fn emit_string_eq_const(c: &mut Chunk, literal: &str) {
+    cs(c, literal);
+    let eq = c.add_import("wasm:js-string", "equals");
+    hc(c, eq, 2);
+}
+
+fn resolved_slot(c: &mut Chunk, key: &str) -> class_slots::ResolvedSlot {
+    class_slots::resolve_interned(c, &ClassSlot::internal(key), &PlainNames)
+}
+
+fn emit_ref_store(c: &mut Chunk, ptr_slot: u16, value_slot: u16, arr_set: u16) {
+    let kind_key = resolved_slot(c, "__ref_kind");
+    let value_key = resolved_slot(c, "__value");
+    let base_key = resolved_slot(c, "__base");
+    let idx_key = resolved_slot(c, "__idx");
+    let addr_key = resolved_slot(c, "__addr");
+
+    lg(c, ptr_slot);
+    c.emit_ref_type_op(Op::REF_TEST, HeapType::Abstract(HT_STRUCT), 0);
+    c.emit_if(0);
+
+    lg(c, ptr_slot);
+    class_slots::emit_class_get(c, ObjSource::Stack, &kind_key, class_slots::Dest::Stack, 0);
+    emit_string_eq_const(c, "cell");
+    c.emit_if(0);
+    class_slots::emit_class_set(
+        c,
+        ObjSource::Local(ptr_slot),
+        &value_key,
+        ValueSource::Local(value_slot),
+        0,
+    );
+    c.emit_else(0);
+
+    lg(c, ptr_slot);
+    class_slots::emit_class_get(c, ObjSource::Stack, &kind_key, class_slots::Dest::Stack, 0);
+    emit_string_eq_const(c, "carray");
+    c.emit_if(0);
+
+    let base_slot = c.alloc_scratch(1);
+    let idx_slot = c.alloc_scratch(1);
+    lg(c, ptr_slot);
+    class_slots::emit_class_get(c, ObjSource::Stack, &base_key, class_slots::Dest::Local(base_slot), 0);
+    lg(c, ptr_slot);
+    class_slots::emit_class_get(c, ObjSource::Stack, &idx_key, class_slots::Dest::Local(idx_slot), 0);
+
+    lg(c, base_slot);
+    c.emit_ref_type_op(Op::REF_TEST, HeapType::Abstract(HT_STRUCT), 0);
+    c.emit_if(0);
+    lg(c, base_slot);
+    class_slots::emit_class_get(c, ObjSource::Stack, &kind_key, class_slots::Dest::Stack, 0);
+    emit_string_eq_const(c, "cell");
+    c.emit_if(0);
+    class_slots::emit_class_set(
+        c,
+        ObjSource::Local(base_slot),
+        &value_key,
+        ValueSource::Local(value_slot),
+        0,
+    );
+    c.emit_else(0);
+    lg(c, base_slot);
+    lg(c, idx_slot);
+    lg(c, value_slot);
+    hc(c, arr_set, 3);
+    c.emit_op(Op::DROP, 0);
+    c.emit_end(0);
+    c.emit_else(0);
+    lg(c, base_slot);
+    lg(c, idx_slot);
+    lg(c, value_slot);
+    hc(c, arr_set, 3);
+    c.emit_op(Op::DROP, 0);
+    c.emit_end(0);
+
+    c.emit_else(0);
+    lg(c, ptr_slot);
+    class_slots::emit_class_get(c, ObjSource::Stack, &kind_key, class_slots::Dest::Stack, 0);
+    emit_string_eq_const(c, "shared");
+    c.emit_if(0);
+    lg(c, ptr_slot);
+    class_slots::emit_class_get(c, ObjSource::Stack, &addr_key, class_slots::Dest::Stack, 0);
+    lg(c, value_slot);
+    vybe_compiler::primitives::threading::emit_atomic_store(c, 0);
+    c.emit_end(0);
+
+    c.emit_end(0);
+    c.emit_end(0);
+    c.emit_else(0);
+    c.emit_end(0);
+}
+
 /// Build the sprintf helper chunk.  Takes (fmt: string, args: array) and
 /// returns the formatted string.
 pub fn build_sprintf(_imports: &mut Chunk) -> Chunk {
@@ -248,6 +342,7 @@ pub fn build_sprintf(_imports: &mut Chunk) -> Chunk {
     let math_pow = c.add_import("ecma:math", "pow");
     let math_round = c.add_import("ecma:math", "round");
     let arr_at = c.add_import("ecma:array", "at");
+    let arr_set = c.add_import("ecma:array", "set");
 
     // init
     lg(&mut c, FMT);
@@ -765,6 +860,7 @@ pub fn build_sprintf(_imports: &mut Chunk) -> Chunk {
         let known = c.emit_block(0);
         for ch in [
             37i32, 115, 100, 105, 117, 102, 70, 101, 69, 112, 120, 88, 111, 99, 103, 71,
+            110,
         ] {
             lg(&mut c, CONV);
             ci(&mut c, ch);
@@ -818,6 +914,21 @@ pub fn build_sprintf(_imports: &mut Chunk) -> Chunk {
     lg(&mut c, ARG);
     hc(&mut c, num_num, 1);
     ls(&mut c, N);
+
+    {
+        let not_n = c.emit_block(0);
+        lg(&mut c, CONV);
+        ci(&mut c, 110);
+        c.emit_op(Op::I32_NE, 0);
+        c.emit_br_if(0, 0);
+        lg(&mut c, OUT);
+        hc(&mut c, str_len, 1);
+        ls(&mut c, N);
+        emit_ref_store(&mut c, ARG, N, arr_set);
+        c.emit_br(1, 0);
+        c.emit_end(0);
+        c.patch_block(not_n);
+    }
 
     // conversions
     conv_s(&mut c, str_tostr, str_slice, str_test, str_indexof);
