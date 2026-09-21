@@ -690,7 +690,6 @@ fn emit_php_session_sync_legacy_id(chunks: &mut [Chunk], current: usize, line: u
 
 fn emit_php_session_load_working_copy(chunks: &mut [Chunk], current: usize, line: u32) {
     vybe_compiler::primitives::http_session::emit_data(chunks, current, line);
-    vybe_compiler::primitives::collections::emit_map_clone(chunks, current, line);
     vybe_compiler::primitives::globals::emit_write(&mut chunks[current], "$_SESSION", line);
 }
 
@@ -724,6 +723,41 @@ fn emit_send_cookie(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op(Op::DROP, line);
 }
 
+fn emit_php_session_start_cookie_if_needed(chunks: &mut [Chunk], current: usize, line: u32) {
+    vybe_compiler::primitives::globals::emit_read(
+        &mut chunks[current],
+        PHP_SESSION_NEEDS_COOKIE_GLOBAL,
+        line,
+    );
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if(line);
+
+    push_str(&mut chunks[current], PHP_SESSION_COOKIE_NAME, line);
+    vybe_compiler::primitives::globals::emit_read(&mut chunks[current], PHP_SESSION_ID_GLOBAL, line);
+
+    call_import(chunks, current, "ecma:map", "new", 0, line);
+    let attrs_slot = alloc_local(&mut chunks[current]);
+    lset(&mut chunks[current], attrs_slot, line);
+    lget(&mut chunks[current], attrs_slot, line);
+    push_str(&mut chunks[current], "path", line);
+    push_str(&mut chunks[current], "/", line);
+    vybe_compiler::primitives::collections::emit_set(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    lget(&mut chunks[current], attrs_slot, line);
+
+    vybe_compiler::primitives::http_cookie::emit_serialize(chunks, current, 3, line);
+    emit_send_cookie(chunks, current, line);
+
+    push_const(&mut chunks[current], Value::Bool(false), line);
+    vybe_compiler::primitives::globals::emit_write(
+        &mut chunks[current],
+        PHP_SESSION_NEEDS_COOKIE_GLOBAL,
+        line,
+    );
+
+    chunks[current].emit_end(line);
+}
+
 pub fn emit_php_session_start(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     if argc > 0 {
         chunks[current].emit_op(Op::DROP, line);
@@ -751,6 +785,7 @@ pub fn emit_php_session_start(chunks: &mut [Chunk], current: usize, argc: u8, li
         PHP_SESSION_DESTROYED_GLOBAL,
         line,
     );
+    emit_php_session_start_cookie_if_needed(chunks, current, line);
     lget(&mut chunks[current], result_slot, line);
 }
 

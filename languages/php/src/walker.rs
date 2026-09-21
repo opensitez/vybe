@@ -276,6 +276,16 @@ fn type_kind_is(__php_w: &mut PhpWalker, name: &str, kind: &str) -> bool {
         .unwrap_or(false)
 }
 
+fn type_kind_is_php_public(__php_w: &mut PhpWalker, name: &str, kind: &str) -> bool {
+    let bare = name.trim_start_matches('\\');
+    let normalized = php_normalize_class_ref(bare);
+    __php_w.type_kinds.iter().any(|(registered, registered_kind)| {
+        *registered_kind == kind
+            && (registered.eq_ignore_ascii_case(bare)
+                || registered.eq_ignore_ascii_case(&normalized))
+    })
+}
+
 fn mk_param_named(name: &str) -> Param {
     Param {
         name: name.to_string(),
@@ -4793,13 +4803,13 @@ const SUPERGLOBAL_ENV: usize = 6;
 
 fn php_superglobal_initializers(_php_w: &mut PhpWalker, names: &[bool; 7]) -> Vec<Statement> {
     let bindings = [
-        (SUPERGLOBAL_SERVER, "", "__vybe_superglobal_server"),
-        (SUPERGLOBAL_GET, "", "__vybe_superglobal_get"),
-        (SUPERGLOBAL_POST, "", "__vybe_superglobal_post"),
-        (SUPERGLOBAL_FILES, "", "__vybe_superglobal_files"),
-        (SUPERGLOBAL_COOKIE, "", "__vybe_superglobal_cookie"),
-        (SUPERGLOBAL_REQUEST, "", "__vybe_superglobal_request"),
-        (SUPERGLOBAL_ENV, "", "__vybe_php_env"),
+        (SUPERGLOBAL_SERVER, "$_SERVER", "__vybe_superglobal_server"),
+        (SUPERGLOBAL_GET, "$_GET", "__vybe_superglobal_get"),
+        (SUPERGLOBAL_POST, "$_POST", "__vybe_superglobal_post"),
+        (SUPERGLOBAL_FILES, "$_FILES", "__vybe_superglobal_files"),
+        (SUPERGLOBAL_COOKIE, "$_COOKIE", "__vybe_superglobal_cookie"),
+        (SUPERGLOBAL_REQUEST, "$_REQUEST", "__vybe_superglobal_request"),
+        (SUPERGLOBAL_ENV, "$_ENV", "__vybe_php_env"),
     ];
     bindings
         .into_iter()
@@ -12092,6 +12102,185 @@ fn php_eval_literal_class_error(__php_w: &mut PhpWalker, source: &str) -> bool {
 
 fn php_eval_literal_parse_error(source: &str) -> bool {
     PhpParser::parse(Rule::program_pure, source).is_err()
+}
+
+fn php_eval_type_flag_key(kind: &str, name: &str) -> String {
+    format!(
+        "__php_eval_type:{kind}:{}",
+        php_normalize_class_ref(name).to_ascii_lowercase()
+    )
+}
+
+fn php_eval_type_list_key(kind: &str) -> &'static str {
+    match kind {
+        "interface" => "__php_eval_declared_interfaces",
+        "trait" => "__php_eval_declared_traits",
+        _ => "__php_eval_declared_classes",
+    }
+}
+
+fn php_global_string_slot(key: &str, span: &Span) -> Expression {
+    Expression::with_span(
+        ExprKind::Index {
+            object: Box::new(Expression::with_span(ExprKind::GlobalNamespace, span.clone())),
+            index: Box::new(Expression::string(key)),
+            null_safe: false,
+        },
+        span.clone(),
+    )
+}
+
+fn php_eval_type_registry_flag(kind: &str, name: &str, span: &Span) -> Expression {
+    Expression::with_span(
+        ExprKind::Binary {
+            op: BinOp::StrictEq,
+            left: Box::new(php_global_string_slot(
+                &php_eval_type_flag_key(kind, name),
+                span,
+            )),
+            right: Box::new(Expression::with_span(
+                ExprKind::Lit(Literal::Bool(true)),
+                span.clone(),
+            )),
+        },
+        span.clone(),
+    )
+}
+
+fn php_eval_type_mark_expr(kind: &str, name: &str, span: &Span) -> Expression {
+    let flag_target = php_global_string_slot(&php_eval_type_flag_key(kind, name), span);
+    let list_target = php_global_string_slot(php_eval_type_list_key(kind), span);
+    let list_value = Expression::with_span(
+        ExprKind::Call {
+            callee: Box::new(Expression::ident("array_merge")),
+            args: vec![
+                Argument::positional(Expression::with_span(
+                    ExprKind::NullCoalesce {
+                        left: Box::new(list_target.clone()),
+                        right: Box::new(Expression::with_span(ExprKind::Array(vec![]), span.clone())),
+                    },
+                    span.clone(),
+                )),
+                Argument::positional(Expression::with_span(
+                    ExprKind::Array(vec![ArrayElement {
+                        key: None,
+                        value: Expression::string(name),
+                        spread: false,
+                        by_ref: false,
+                    }]),
+                    span.clone(),
+                )),
+            ],
+            optional: false,
+        },
+        span.clone(),
+    );
+    Expression::with_span(
+        ExprKind::Sequence(vec![
+            Expression::with_span(
+                ExprKind::Assign {
+                    target: Box::new(flag_target),
+                    value: Box::new(Expression::with_span(
+                        ExprKind::Lit(Literal::Bool(true)),
+                        span.clone(),
+                    )),
+                },
+                span.clone(),
+            ),
+            Expression::with_span(
+                ExprKind::Assign {
+                    target: Box::new(list_target),
+                    value: Box::new(list_value),
+                },
+                span.clone(),
+            ),
+        ]),
+        span.clone(),
+    )
+}
+
+fn php_eval_type_exists_expr(kind: &str, name: &str, autoload: bool, span: &Span) -> Expression {
+    let flag = php_eval_type_registry_flag(kind, name, span);
+    if !autoload {
+        return flag;
+    }
+    let call_autoload = Expression::with_span(
+        ExprKind::Call {
+            callee: Box::new(Expression::ident("spl_autoload_call")),
+            args: vec![Argument::positional(Expression::string(name))],
+            optional: false,
+        },
+        span.clone(),
+    );
+    Expression::with_span(
+        ExprKind::Binary {
+            op: BinOp::Or,
+            left: Box::new(flag),
+            right: Box::new(Expression::with_span(
+                ExprKind::Sequence(vec![
+                    call_autoload,
+                    php_eval_type_registry_flag(kind, name, span),
+                ]),
+                span.clone(),
+            )),
+        },
+        span.clone(),
+    )
+}
+
+fn php_eval_declared_types(source: &str) -> Vec<(String, String)> {
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    for ch in source.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '_' || ch == '\\' {
+            current.push(ch);
+        } else {
+            if !current.is_empty() {
+                tokens.push(current.clone());
+                current.clear();
+            }
+            if ch == ';' || ch == '{' || ch == '}' {
+                tokens.push(ch.to_string());
+            }
+        }
+    }
+    if !current.is_empty() {
+        tokens.push(current);
+    }
+
+    let mut out = Vec::new();
+    let mut namespace = String::new();
+    let mut i = 0;
+    while i < tokens.len() {
+        match tokens[i].as_str() {
+            "namespace" => {
+                if let Some(ns) = tokens.get(i + 1) {
+                    if ns != "{" && ns != ";" && ns != "}" {
+                        namespace = ns.trim_matches('\\').to_string();
+                    }
+                }
+                i += 1;
+            }
+            "class" | "interface" | "trait" => {
+                let kind = tokens[i].clone();
+                if let Some(name) = tokens.get(i + 1) {
+                    if name != "{" && name != ";" && name != "}" {
+                        let bare = name.trim_matches('\\');
+                        let full = if bare.contains('\\') || namespace.is_empty() {
+                            bare.to_string()
+                        } else {
+                            format!("{namespace}\\{bare}")
+                        };
+                        out.push((kind, full));
+                    }
+                }
+                i += 1;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    out
 }
 
 fn php_throw_error_expr(message: &str, span: &Span) -> ExprKind {
@@ -32768,6 +32957,7 @@ fn lower_php_builtin_call(
         // compiles + runs it in the same VM, so definitions escape to scope.
         "eval" if args.len() == 1 => {
             let source = arg(0)?;
+            let mut eval_declared_types = Vec::new();
             if let ExprKind::Lit(Literal::Str(code)) = &source.kind {
                 if php_eval_literal_class_error(__php_w, code) {
                     return Some(php_throw_error_expr("Class declaration error", span));
@@ -32779,40 +32969,101 @@ fn lower_php_builtin_call(
                         span,
                     ));
                 }
+                eval_declared_types = php_eval_declared_types(code);
             }
-            mk_call(
-                Expression::ident("__vybe_eval"),
-                vec![
-                    source,
-                    Expression::with_span(
-                        ExprKind::Lit(Literal::Str("php".to_string())),
-                        span.clone(),
-                    ),
-                    Expression::with_span(
-                        ExprKind::Object(vec![
-                            ObjectProperty::KeyValue {
-                                key: Expression::string("source_context"),
-                                value: Expression::string("php_open_tag"),
-                            },
-                            ObjectProperty::KeyValue {
-                                key: Expression::string("preserve_existing_globals"),
-                                value: Expression::with_span(
-                                    ExprKind::Lit(Literal::Bool(true)),
-                                    span.clone(),
-                                ),
-                            },
-                            ObjectProperty::KeyValue {
-                                key: Expression::string("preserve_output_buffer_state"),
-                                value: Expression::with_span(
-                                    ExprKind::Lit(Literal::Bool(true)),
-                                    span.clone(),
-                                ),
-                            },
+            let tmp_id = next_tmp_id(__php_w);
+            let level_name = format!("__php_eval_ob_level_{tmp_id}");
+            let contents_name = format!("__php_eval_ob_contents_{tmp_id}");
+            let result_name = format!("__php_eval_result_{tmp_id}");
+            let ident = |name: &str| {
+                Expression::with_span(ExprKind::Ident(name.to_string()), span.clone())
+            };
+            let call_expr = |name: &str, call_args: Vec<Expression>| {
+                Expression::with_span(mk_call(Expression::ident(name), call_args), span.clone())
+            };
+            let assign_expr = |target: Expression, value: Expression| {
+                Expression::with_span(
+                    ExprKind::Assign {
+                        target: Box::new(target),
+                        value: Box::new(value),
+                    },
+                    span.clone(),
+                )
+            };
+            let active_buffer = |level: Expression| {
+                Expression::with_span(
+                    ExprKind::Binary {
+                        op: BinOp::Gt,
+                        left: Box::new(level),
+                        right: Box::new(Expression::int(0)),
+                    },
+                    span.clone(),
+                )
+            };
+            let eval_call = Expression::with_span(
+                mk_call(
+                    Expression::ident("__vybe_eval"),
+                    vec![
+                        source,
+                        Expression::with_span(
+                            ExprKind::Lit(Literal::Str("php".to_string())),
+                            span.clone(),
+                        ),
+                        Expression::with_span(
+                            ExprKind::Object(vec![
+                                ObjectProperty::KeyValue {
+                                    key: Expression::string("source_context"),
+                                    value: Expression::string("php_open_tag"),
+                                },
+                                ObjectProperty::KeyValue {
+                                    key: Expression::string("preserve_existing_globals"),
+                                    value: Expression::with_span(
+                                        ExprKind::Lit(Literal::Bool(true)),
+                                        span.clone(),
+                                    ),
+                                },
+                            ]),
+                            span.clone(),
+                        ),
+                    ],
+                ),
+                span.clone(),
+            );
+            let save_level = assign_expr(ident(&level_name), call_expr("ob_get_level", vec![]));
+            let save_contents = assign_expr(
+                ident(&contents_name),
+                Expression::with_span(
+                    ExprKind::Ternary {
+                        cond: Box::new(active_buffer(ident(&level_name))),
+                        then: Box::new(call_expr("ob_get_contents", vec![])),
+                        else_: Box::new(Expression::string("")),
+                    },
+                    span.clone(),
+                ),
+            );
+            let save_result = assign_expr(ident(&result_name), eval_call);
+            let restore_buffer = Expression::with_span(
+                ExprKind::Ternary {
+                    cond: Box::new(active_buffer(ident(&level_name))),
+                    then: Box::new(Expression::with_span(
+                        ExprKind::Sequence(vec![
+                            call_expr("ob_start", vec![]),
+                            call_expr("__php_echo", vec![ident(&contents_name)]),
+                            ident(&result_name),
                         ]),
                         span.clone(),
-                    ),
-                ],
-            )
+                    )),
+                    else_: Box::new(ident(&result_name)),
+                },
+                span.clone(),
+            );
+            let mut seq = vec![save_level, save_contents];
+            for (kind, name) in eval_declared_types {
+                seq.push(php_eval_type_mark_expr(&kind, &name, span));
+            }
+            seq.push(save_result);
+            seq.push(restore_buffer);
+            ExprKind::Sequence(seq)
         }
         // libxml error-handling functions — our DOM host doesn't surface a
         // global libxml error queue, so these fold to their no-op results:
@@ -35322,6 +35573,28 @@ fn lower_php_builtin_call(
                 ) {
                     return Some(ExprKind::Lit(Literal::Bool(true)));
                 }
+                if type_kind_is_php_public(__php_w, bare, "interface") {
+                    return Some(ExprKind::Lit(Literal::Bool(true)));
+                }
+                let autoload = !matches!(
+                    args.get(1).map(|a| &a.value.kind),
+                    Some(ExprKind::Lit(Literal::Bool(false)))
+                );
+                return Some(php_eval_type_exists_expr("interface", bare, autoload, span).kind);
+            }
+            return None;
+        }
+        "trait_exists" if !args.is_empty() => {
+            if let ExprKind::Lit(Literal::Str(n)) = &args[0].value.kind {
+                let bare = n.trim_start_matches('\\');
+                if type_kind_is_php_public(__php_w, bare, "trait") {
+                    return Some(ExprKind::Lit(Literal::Bool(true)));
+                }
+                let autoload = !matches!(
+                    args.get(1).map(|a| &a.value.kind),
+                    Some(ExprKind::Lit(Literal::Bool(false)))
+                );
+                return Some(php_eval_type_exists_expr("trait", bare, autoload, span).kind);
             }
             return None;
         }
@@ -35355,7 +35628,18 @@ fn lower_php_builtin_call(
                     by_ref: false,
                 })
                 .collect();
-            ExprKind::Array(items)
+            let static_items = Expression::with_span(ExprKind::Array(items), span.clone());
+            let runtime_items = Expression::with_span(
+                ExprKind::NullCoalesce {
+                    left: Box::new(php_global_string_slot(php_eval_type_list_key(kind), span)),
+                    right: Box::new(Expression::with_span(ExprKind::Array(vec![]), span.clone())),
+                },
+                span.clone(),
+            );
+            mk_call(
+                Expression::ident("array_merge"),
+                vec![static_items, runtime_items],
+            )
         }
         // `class_parents` and `class_implements` both return a MAP keyed by the
         // name — `array('A' => 'A', 'B' => 'B')` — which is what makes the
