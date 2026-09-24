@@ -80,6 +80,8 @@ pub fn register_namespace_tree() {
             "clone_field_set",
             "field_get",
             "field_set",
+            "global_get",
+            "global_set",
             "strict_eq",
             "dynamic_method_call",
             "method_exists",

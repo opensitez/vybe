@@ -130,10 +130,11 @@ pub fn emit_php_get_loaded_extensions(chunks: &mut [Chunk], current: usize, argc
         "mysqli",
         "mysqlnd",
         "pdo_mysql",
+        "sodium",
     ] {
         push_str(chunk, ext, line);
     }
-    chunk.emit_array_new_fixed(0, 10, line);
+    chunk.emit_array_new_fixed(0, 11, line);
 }
 
 pub fn emit_php_extension_loaded(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
@@ -162,6 +163,7 @@ pub fn emit_php_extension_loaded(chunks: &mut [Chunk], current: usize, argc: u8,
         "mysqli",
         "mysqlnd",
         "pdo_mysql",
+        "sodium",
     ] {
         emit_eq_str(chunk, ext_slot, ext, line);
         chunk.emit_if_value(line);
@@ -169,7 +171,7 @@ pub fn emit_php_extension_loaded(chunks: &mut [Chunk], current: usize, argc: u8,
         chunk.emit_else(line);
     }
     chunk.emit_bool_const(false, line);
-    for _ in 0..10 {
+    for _ in 0..11 {
         chunk.emit_end(line);
     }
 }

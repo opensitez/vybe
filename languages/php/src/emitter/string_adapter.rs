@@ -190,7 +190,8 @@ fn emit_stringify(chunk: &mut Chunk, line: u32) {
     chunk.emit_call(test_bool_echo, 1, line);
     chunk.emit_if(line);
     lget(chunk, v_slot, line);
-    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+    let cast_bool_echo = chunk.add_import("wasm:js-boolean", "cast");
+    chunk.emit_call(cast_bool_echo, 1, line);
     chunk.emit_if_value(line);
     push_str(chunk, "1", line);
     chunk.emit_else(line);
@@ -205,73 +206,71 @@ fn emit_stringify(chunk: &mut Chunk, line: u32) {
     lget(chunk, v_slot, line);
     chunk.emit_call(bigint_to_string, 1, line);
     chunk.emit_else(line);
-    // Not bigint. PHP prints special float values as INF / -INF / NAN
-    // (uppercase), unlike the VM's "Infinity"/"NaN". These eq-probes are
-    // safe for non-numbers: a string/object compares equal to itself, so
-    // it skips straight to the default `"" + v` path.
-    // NaN?  (v !== v)
-    lget(chunk, v_slot, line);
-    lget(chunk, v_slot, line);
-    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
-    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
-    chunk.emit_op(Op::I32_EQZ, line);
-    chunk.emit_if_value(line);
-    push_str(chunk, "NAN", line);
-    chunk.emit_else(line);
-    // +Infinity?
-    lget(chunk, v_slot, line);
-    push_const(chunk, Value::F64(f64::INFINITY), line);
-    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
-    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
-    chunk.emit_if_value(line);
-    push_str(chunk, "INF", line);
-    chunk.emit_else(line);
-    // -Infinity?
-    lget(chunk, v_slot, line);
-    push_const(chunk, Value::F64(f64::NEG_INFINITY), line);
-    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
-    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
-    chunk.emit_if_value(line);
-    push_str(chunk, "-INF", line);
-    chunk.emit_else(line);
-    // Exact i64 values (PHP ints) must not go through f64 stringification,
-    // otherwise PHP_INT_MAX/PHP_INT_MIN lose their final digits.
-    // Use bigint test to detect i64 values.
-    lget(chunk, v_slot, line);
-    let test_bigint_i64 = chunk.add_import("wasm:js-bigint", "test");
-    chunk.emit_call(test_bigint_i64, 1, line);
-    chunk.emit_if_value(line);
-    lget(chunk, v_slot, line);
-    chunk.emit_call(from_i64, 1, line);
-    chunk.emit_else(line);
-    // default. PHP stringifies floats with `precision=14` significant digits
-    // (php_gcvt), not the VM's shortest-round-trip form. Normalize a float via
-    // toPrecision(14) then parseFloat — the round-trip trims trailing zeros
-    // exactly like PHP (`1.4142135623730951`→`1.4142135623731`, `0.1+0.2`→
-    // `0.3`). Integers and non-numbers keep the plain `"" + v` path.
+    // Not bigint. Keep non-numbers on the old `"" + v` path below so object
+    // coercion and `__toString` stay centralized there, but use direct number
+    // slots for actual numbers. The previous shape used three full dynamic
+    // equality ladders (`v !== v`, `v == INF`, `v == -INF`) for every unknown
+    // concat operand; WordPress path constants hit this thousands of times.
     lget(chunk, v_slot, line);
     let num_test_echo = chunk.add_import("wasm:js-number", "test");
     chunk.emit_call(num_test_echo, 1, line);
     chunk.emit_if_value(line);
+
+    let n_slot = alloc_local(chunk);
+    let to_f64_echo = chunk.add_import("wasm:js-number", "toF64");
+    lget(chunk, v_slot, line);
+    chunk.emit_call(to_f64_echo, 1, line);
+    lset(chunk, n_slot, line);
+
+    // NaN?  (n !== n)
+    lget(chunk, n_slot, line);
+    lget(chunk, n_slot, line);
+    chunk.emit_op(Op::F64_NE, line);
+    chunk.emit_if_value(line);
+    push_str(chunk, "NAN", line);
+    chunk.emit_else(line);
+
+    // +Infinity?
+    lget(chunk, n_slot, line);
+    push_const(chunk, Value::F64(f64::INFINITY), line);
+    chunk.emit_op(Op::F64_EQ, line);
+    chunk.emit_if_value(line);
+    push_str(chunk, "INF", line);
+    chunk.emit_else(line);
+
+    // -Infinity?
+    lget(chunk, n_slot, line);
+    push_const(chunk, Value::F64(f64::NEG_INFINITY), line);
+    chunk.emit_op(Op::F64_EQ, line);
+    chunk.emit_if_value(line);
+    push_str(chunk, "-INF", line);
+    chunk.emit_else(line);
+
+    // Finite number. PHP stringifies floats with `precision=14` significant digits
+    // (php_gcvt), not the VM's shortest-round-trip form. Normalize a float via
+    // toPrecision(14) then parseFloat — the round-trip trims trailing zeros
+    // exactly like PHP (`1.4142135623730951`→`1.4142135623731`, `0.1+0.2`→
+    // `0.3`). Integers use ECMA String(), which matches the old `"" + v`
+    // result without emitting the dynamic-add ladder.
+    let to_string_echo = chunk.add_import("ecma:string", "String");
     lget(chunk, v_slot, line);
     let is_int_echo = chunk.add_import("ecma:number", "isInteger");
     chunk.emit_call(is_int_echo, 1, line);
-    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+    let cast_bool_number = chunk.add_import("wasm:js-boolean", "cast");
+    chunk.emit_call(cast_bool_number, 1, line);
     chunk.emit_if_value(line);
-    // integer-valued number: plain "" + v
-    push_str(chunk, "", line);
+    // integer-valued number.
     lget(chunk, v_slot, line);
-    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
+    chunk.emit_call(to_string_echo, 1, line);
     chunk.emit_else(line);
-    // fractional float: "" + parseFloat(toPrecision(v, 14))
-    push_str(chunk, "", line);
+    // fractional float: String(parseFloat(toPrecision(v, 14)))
     lget(chunk, v_slot, line);
     push_const(chunk, Value::I32(14), line);
     let to_prec_echo = chunk.add_import("ecma:number", "toPrecision");
     chunk.emit_call(to_prec_echo, 2, line);
     let parse_f_echo = chunk.add_import("ecma:number", "parseFloat");
     chunk.emit_call(parse_f_echo, 1, line);
-    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
+    chunk.emit_call(to_string_echo, 1, line);
     chunk.emit_end(line);
     chunk.emit_else(line);
     // non-number: "" + v
@@ -279,8 +278,7 @@ fn emit_stringify(chunk: &mut Chunk, line: u32) {
     lget(chunk, v_slot, line);
     vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     chunk.emit_end(line);
-    // Close: i64, -INF, INF, NaN, bigint, boolean, null — seven if_value blocks.
-    chunk.emit_end(line);
+    // Close: finite number, -INF, INF, NaN, number, bigint, boolean, null.
     chunk.emit_end(line);
     chunk.emit_end(line);
     chunk.emit_end(line);
@@ -1583,14 +1581,125 @@ pub fn emit_str_ireplace(chunks: &mut [Chunk], current: usize, _argc: u8, line: 
 /// Strategy: probe `Array.isArray(search)` at runtime via
 /// `ecma:array.isArray`. If false, fall back to `ecma:string.replaceAll`.
 /// Otherwise loop over the array and split/join per element.
-pub fn emit_str_replace(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+fn emit_str_replace_count_occurrences(
+    chunks: &mut [Chunk],
+    current: usize,
+    subj_slot: u16,
+    needle_slot: u16,
+    count_slot: u16,
+    line: u32,
+) {
+    {
+        let chunk = &mut chunks[current];
+        lget(chunk, subj_slot, line);
+        lget(chunk, needle_slot, line);
+    }
+    call_import(chunks, current, "ecma:string", "split", 2, line);
+    let chunk = &mut chunks[current];
+    chunk.emit_op(Op::ARRAY_LENGTH, line);
+    push_const(chunk, Value::F64(1.0), line);
+    chunk.emit_op(Op::F64_SUB, line);
+    lget(chunk, count_slot, line);
+    chunk.emit_op(Op::F64_ADD, line);
+    lset(chunk, count_slot, line);
+}
+
+fn emit_class_get_internal(chunk: &mut Chunk, key: &str, line: u32) {
+    let slot = class_slots::resolve(&ClassSlot::internal(key), &PlainNames);
+    class_slots::emit_class_get(
+        chunk,
+        ObjSource::Stack,
+        &slot,
+        Dest::Stack,
+        line,
+    );
+}
+
+fn emit_str_replace_count_store(
+    chunks: &mut [Chunk],
+    current: usize,
+    ref_slot: u16,
+    count_slot: u16,
+    line: u32,
+) {
+    use vybe_compiler::primitives::pointers::{
+        CARRAY_BASE_KEY, CARRAY_IDX_KEY, CARRAY_KIND, CELL_KIND, REF_KIND_KEY,
+    };
+
+    let chunk = &mut chunks[current];
+    let kind_slot = alloc_local(chunk);
+    lget(chunk, ref_slot, line);
+    emit_class_get_internal(chunk, REF_KIND_KEY, line);
+    lset(chunk, kind_slot, line);
+
+    lget(chunk, kind_slot, line);
+    push_str(chunk, CELL_KIND, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if(line);
+
+    lget(chunk, ref_slot, line);
+    vybe_compiler::primitives::references::emit_cell_store(chunks, current, count_slot, line);
+    let chunk = &mut chunks[current];
+
+    chunk.emit_else(line);
+    lget(chunk, kind_slot, line);
+    push_str(chunk, CARRAY_KIND, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if(line);
+
+    let base_slot = alloc_local(chunk);
+    let idx_slot = alloc_local(chunk);
+    lget(chunk, ref_slot, line);
+    emit_class_get_internal(chunk, CARRAY_BASE_KEY, line);
+    lset(chunk, base_slot, line);
+    lget(chunk, ref_slot, line);
+    emit_class_get_internal(chunk, CARRAY_IDX_KEY, line);
+    lset(chunk, idx_slot, line);
+
+    lget(chunk, base_slot, line);
+    emit_class_get_internal(chunk, REF_KIND_KEY, line);
+    push_str(chunk, CELL_KIND, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if(line);
+
+    lget(chunk, base_slot, line);
+    vybe_compiler::primitives::references::emit_cell_store(chunks, current, count_slot, line);
+    let chunk = &mut chunks[current];
+
+    chunk.emit_else(line);
+    lget(chunk, base_slot, line);
+    lget(chunk, idx_slot, line);
+    lget(chunk, count_slot, line);
+    vybe_compiler::primitives::collections::emit_set(chunks, current, line);
+    let chunk = &mut chunks[current];
+    chunk.emit_op(Op::DROP, line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
+}
+
+pub fn emit_str_replace(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let chunk = &mut chunks[current];
     let subj_slot = alloc_local(chunk);
     let repl_slot = alloc_local(chunk);
     let srch_slot = alloc_local(chunk);
+    let count_slot = alloc_local(chunk);
+    let has_count = argc >= 4;
+    let count_arg_slot = if has_count {
+        let slot = alloc_local(chunk);
+        lset(chunk, slot, line);
+        Some(slot)
+    } else {
+        None
+    };
     lset(chunk, subj_slot, line);
     lset(chunk, repl_slot, line);
     lset(chunk, srch_slot, line);
+    push_const(chunk, Value::F64(0.0), line);
+    lset(chunk, count_slot, line);
 
     // Coerce subj to string — PHP's coercion, not ECMA's. This was a fourth
     // inline `"" + v`, which is why `str_replace("1","Z",false)` yielded `"0"`
@@ -1644,12 +1753,11 @@ pub fn emit_str_replace(chunks: &mut [Chunk], current: usize, _argc: u8, line: u
     vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
     let chunk = &mut chunks[current];
 
-    // needle = "" + srch[i]
-    push_str(chunk, "", line);
+    // needle = (string) srch[i]
     lget(chunk, srch_slot, line);
     lget(chunk, i_slot, line);
     chunk.emit_op(Op::ARRAY_GET, line);
-    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
+    coerce_to_str(chunk, line);
     lset(chunk, needle_slot, line);
 
     // if needle.length > 0: do replacement (else skip)
@@ -1674,21 +1782,24 @@ pub fn emit_str_replace(chunks: &mut [Chunk], current: usize, _argc: u8, line: u
     vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
     vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
-    push_str(chunk, "", line);
     lget(chunk, repl_slot, line);
     lget(chunk, i_slot, line);
     chunk.emit_op(Op::ARRAY_GET, line);
-    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
+    coerce_to_str(chunk, line);
     chunk.emit_else(line);
     push_str(chunk, "", line);
     chunk.emit_end(line);
     chunk.emit_else(line);
     // scalar repl path
-    push_str(chunk, "", line);
     lget(chunk, repl_slot, line);
-    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
+    coerce_to_str(chunk, line);
     chunk.emit_end(line);
     lset(chunk, rep_slot, line);
+
+    // count += substr_count(subj, needle) before subject is mutated.
+    let _ = chunk;
+    emit_str_replace_count_occurrences(chunks, current, subj_slot, needle_slot, count_slot, line);
+    let chunk = &mut chunks[current];
 
     // subj = ecma:string.replaceAll(subj, needle, rep)
     lget(chunk, subj_slot, line);
@@ -1715,20 +1826,58 @@ pub fn emit_str_replace(chunks: &mut [Chunk], current: usize, _argc: u8, line: u
     chunk.emit_else(line); // else branch of scalar_path if-value
 
     // ── Scalar path ──
-    // ecma:string.replaceAll(subj, "" + srch, "" + repl)
-    lget(chunk, subj_slot, line);
-    push_str(chunk, "", line);
+    // ecma:string.replaceAll(subj, (string) srch, (string) repl), unless the
+    // needle is empty. PHP treats an empty search as no replacements.
+    let scalar_needle_slot = alloc_local(chunk);
+    let scalar_rep_slot = alloc_local(chunk);
     lget(chunk, srch_slot, line);
-    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
-    push_str(chunk, "", line);
+    coerce_to_str(chunk, line);
+    lset(chunk, scalar_needle_slot, line);
     lget(chunk, repl_slot, line);
-    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
+    coerce_to_str(chunk, line);
+    lset(chunk, scalar_rep_slot, line);
+
+    lget(chunk, scalar_needle_slot, line);
+    {
+        let idx = chunk.add_import("wasm:js-string", "length");
+        chunk.emit_call(idx, 1, line);
+    }
+    push_const(chunk, Value::F64(0.0), line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_not(chunk, line);
+    chunk.emit_if_value(line);
+
+    let _ = chunk;
+    emit_str_replace_count_occurrences(
+        chunks,
+        current,
+        subj_slot,
+        scalar_needle_slot,
+        count_slot,
+        line,
+    );
+    let chunk = &mut chunks[current];
+
+    lget(chunk, subj_slot, line);
+    lget(chunk, scalar_needle_slot, line);
+    lget(chunk, scalar_rep_slot, line);
     {
         let idx = chunk.add_import("ecma:string", "replaceAll");
         chunk.emit_call(idx, 3, line);
     }
+    lset(chunk, subj_slot, line);
+    chunk.emit_end(line);
+    lget(chunk, subj_slot, line);
 
     chunk.emit_end(line); // end scalar_path if-value
+
+    if let Some(count_arg_slot) = count_arg_slot {
+        lset(chunk, subj_slot, line);
+        let _ = chunk;
+        emit_str_replace_count_store(chunks, current, count_arg_slot, count_slot, line);
+        let chunk = &mut chunks[current];
+        lget(chunk, subj_slot, line);
+    }
 }
 
 // ── wordwrap ───────────────────────────────────────────────────────
@@ -3602,12 +3751,19 @@ pub fn emit_php_field_get(chunks: &mut [Chunk], current: usize, argc: u8, line: 
     let key_slot = alloc_local(chunk);
     let obj_slot = alloc_local(chunk);
     lset(chunk, key_slot, line);
-    lset(chunk, obj_slot, line);
+    vybe_compiler::primitives::references::emit_autoderef_to_stack(chunks, current, line);
+    lset(&mut chunks[current], obj_slot, line);
     let slot = class_slots::resolve(
         &ClassSlot::Dynamic(ValueSource::Local(key_slot)),
         &PlainNames,
     );
-    class_slots::emit_class_get(chunk, ObjSource::Local(obj_slot), &slot, Dest::Stack, line);
+    class_slots::emit_class_get(
+        &mut chunks[current],
+        ObjSource::Local(obj_slot),
+        &slot,
+        Dest::Stack,
+        line,
+    );
 }
 
 pub fn emit_php_field_set(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
@@ -3620,20 +3776,21 @@ pub fn emit_php_field_set(chunks: &mut [Chunk], current: usize, argc: u8, line: 
     let obj_slot = alloc_local(chunk);
     lset(chunk, value_slot, line);
     lset(chunk, key_slot, line);
-    lset(chunk, obj_slot, line);
+    vybe_compiler::primitives::references::emit_autoderef_to_stack(chunks, current, line);
+    lset(&mut chunks[current], obj_slot, line);
     let slot = class_slots::resolve(
         &ClassSlot::Dynamic(ValueSource::Local(key_slot)),
         &PlainNames,
     );
     class_slots::emit_class_set(
-        chunk,
+        &mut chunks[current],
         ObjSource::Local(obj_slot),
         &slot,
         ValueSource::Local(value_slot),
         line,
     );
-    chunk.emit_op(Op::DROP, line);
-    lget(chunk, value_slot, line);
+    chunks[current].emit_op(Op::DROP, line);
+    lget(&mut chunks[current], value_slot, line);
 }
 
 pub fn emit_php_clone_field_get(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {

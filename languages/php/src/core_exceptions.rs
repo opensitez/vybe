@@ -327,6 +327,7 @@ pub(crate) fn declarations() -> Vec<Statement> {
         ("UnhandledMatchError", "Error"),
         ("FiberError", "Error"),
         ("RuntimeException", "Exception"),
+        ("PDOException", "RuntimeException"),
         ("LogicException", "Exception"),
         ("InvalidArgumentException", "LogicException"),
         ("DomainException", "LogicException"),

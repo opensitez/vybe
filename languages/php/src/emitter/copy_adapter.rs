@@ -109,12 +109,6 @@ fn emit_php_arrayish_slot(chunk: &mut Chunk, slot: u16, line: u32) {
     lset(chunk, type_slot, line);
 
     lget(chunk, type_slot, line);
-    call_import(chunk, "wasm:js-undefined", "test", 1, line);
-    chunk.emit_if_i32(line);
-    chunk.emit_i32_const(1, line);
-    chunk.emit_else(line);
-
-    lget(chunk, type_slot, line);
     call_import(chunk, "wasm:js-string", "test", 1, line);
     chunk.emit_if_i32(line);
     emit_string_eq_lit(chunk, type_slot, "Array", line);
@@ -124,7 +118,6 @@ fn emit_php_arrayish_slot(chunk: &mut Chunk, slot: u16, line: u32) {
     chunk.emit_i32_const(0, line);
     chunk.emit_end(line);
 
-    chunk.emit_end(line);
     chunk.emit_else(line);
     chunk.emit_i32_const(0, line);
     chunk.emit_end(line);

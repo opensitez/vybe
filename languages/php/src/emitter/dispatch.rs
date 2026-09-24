@@ -49,8 +49,20 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         // `Map` (assoc) or `Array` (sequential).
         "php.echo" => super::output_adapter::emit_php_echo(chunks, current, argc, line),
         "php.print_expr" => super::output_adapter::emit_php_print_expr(chunks, current, line),
+        "php.global_get" => {
+            super::globals_adapter::emit_php_global_get(chunks, current, argc, line)
+        }
+        "php.global_ref" => {
+            super::globals_adapter::emit_php_global_ref(chunks, current, argc, line)
+        }
+        "php.global_set" => {
+            super::globals_adapter::emit_php_global_set(chunks, current, argc, line)
+        }
         "php.dynamic_method_call" => {
             super::call_adapter::emit_php_dynamic_method_call(chunks, current, argc, line)
+        }
+        "php.call_user_func_array" => {
+            super::call_adapter::emit_php_call_user_func_array(chunks, current, argc, line)
         }
         "php.method_exists" => {
             super::call_adapter::emit_php_method_exists(chunks, current, argc, line)
@@ -109,9 +121,12 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
                 let idx = chunks[current].add_import("ecma:number", "parseInt");
                 chunks[current].emit_call(idx, 2, line);
             } else {
-                let num_idx = chunks[current].add_import("ecma:number", "Number");
-                chunks[current].emit_call(num_idx, 1, line);
-                chunks[current].emit_op(vybe_runtime::opcode::Op::F64_TRUNC, line);
+                // PHP integer casts read a numeric prefix from strings:
+                // `(int) "40M"` is 40, not NaN. Reuse the PHP floatval
+                // adapter, which already implements null/bool/string
+                // numeric-prefix coercion, then truncate toward zero.
+                crate::emitter::numeric_adapter::emit_php_floatval(chunks, current, 1, line);
+                chunks[current].emit_op(Op::F64_TRUNC, line);
             }
         }
         // Guarded delegators: PHP throws TypeError when the first argument
@@ -345,6 +360,8 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "php.array_is_list" => {
             super::array_adapter::emit_php_array_is_list(chunks, current, argc, line)
         }
+        "php.current" => super::array_adapter::emit_php_current(chunks, current, argc, line),
+        "php.next" => super::array_adapter::emit_php_next(chunks, current, argc, line),
         "php.end" => super::array_adapter::emit_php_end(chunks, current, argc, line),
         "php.array_chunk" => super::array_adapter::emit_array_chunk(chunks, current, argc, line),
         "php.array_combine" => {
@@ -610,6 +627,10 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "php.getdate" => {
             crate::emitter::datetime_adapter::emit_php_getdate(chunks, current, argc, line)
+        }
+        "php.sleep" => crate::emitter::time_adapter::emit_php_sleep(chunks, current, argc, line),
+        "php.usleep" => {
+            crate::emitter::time_adapter::emit_php_usleep(chunks, current, argc, line)
         }
 
         // ── PHP `$x++` / `$x--` arithmetic ─────────────────────────

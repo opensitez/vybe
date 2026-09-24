@@ -24,8 +24,8 @@ pub fn canonical_method(name: &str) -> (String, Option<SpecialMethodKind>) {
         "__isset" => ("hasattr".into(), Some(HasAttr)),
         "__unset" => ("delattr".into(), Some(DelAttr)),
         "__clone" => ("clone".into(), Some(Clone)),
-        "__serialize" => ("serialize".into(), Some(Serialize)),
-        "__unserialize" => ("deserialize".into(), Some(Deserialize)),
+        "__serialize" | "__sleep" => ("serialize".into(), Some(Serialize)),
+        "__unserialize" | "__wakeup" => ("deserialize".into(), Some(Deserialize)),
         // SPL interfaces are PHP's protocol surface: `Countable::count`,
         // `ArrayAccess::offset*`, `IteratorAggregate::getIterator`. They fill
         // the same roles a Python dunder does, so they resolve to the same

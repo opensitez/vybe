@@ -175,6 +175,9 @@ pub fn emit_php_fiber_start(chunks: &mut [Chunk], current: usize, argc: u8, line
         ValueSource::Stack,
         line,
     ); // [ret, ret]
+    chunk.emit_op(Op::DROP, line);
+    chunk.emit_op(Op::DROP, line);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunk.emit_br(0, line);
 
     // Yield arm: VM jumps here from SUSPEND with [yielded_value].
@@ -329,9 +332,34 @@ pub fn emit_php_fiber_throw(chunks: &mut [Chunk], current: usize, argc: u8, line
 /// `__return` is populated by the walker rewrite of resume that
 /// stashes RESUME's return value before re-pushing it for the caller.
 pub fn emit_php_fiber_get_return(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
-    let chunk = &mut chunks[current];
-    let cs_slot = class_slots::resolve(&ClassSlot::Internal(("__return").to_string()), &PlainNames);
-    class_slots::emit_class_get(chunk, ObjSource::Stack, &cs_slot, Dest::Stack, line);
+    let fiber_slot = {
+        let chunk = &mut chunks[current];
+        let fiber_slot = alloc_local(chunk);
+        lset(chunk, fiber_slot, line);
+        fiber_slot
+    };
+    let terminated_key = class_slots::resolve(
+        &ClassSlot::Internal(("__terminated".to_string())),
+        &PlainNames,
+    );
+    let return_key = class_slots::resolve(&ClassSlot::Internal(("__return".to_string())), &PlainNames);
+    {
+        let chunk = &mut chunks[current];
+        lget(chunk, fiber_slot, line);
+        class_slots::emit_class_get(chunk, ObjSource::Stack, &terminated_key, Dest::Stack, line);
+        chunk.emit_if_value(line);
+        lget(chunk, fiber_slot, line);
+        class_slots::emit_class_get(chunk, ObjSource::Stack, &return_key, Dest::Stack, line);
+        chunk.emit_else(line);
+    }
+    crate::emitter::type_guard::emit_throw_const(
+        chunks,
+        current,
+        "FiberError",
+        "Cannot get fiber return value before termination",
+        line,
+    );
+    chunks[current].emit_end(line);
 }
 
 /// State-check helpers — minimal MVP, all default to false (the

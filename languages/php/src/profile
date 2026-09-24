@@ -41,7 +41,7 @@ missing_arg_is_undefined = true     # a param default fires only when the arg is
                                     # keeps `null`, doesn't fall back to default.
                                     # callback, then retry.
 unified_array_map = true          # ONE `array` type: list + dict, autovivifying
-concat_stringifies_operands = true # `.` stringifies both sides (true→"1", null→"", array→"Array")
+concat_stringifies_operands = true  # PHP `.` uses the shared ToString slot reader.
 function_scoped_variables = true   # `if (true) { $x = 1; } echo $x;` is legal — blocks don't scope
 buffered_iterator_methods = true    # $gen->current()/next()/valid()/send()/
                                     # getReturn(); foreach buffers current value.
@@ -108,6 +108,11 @@ vsprintf            = { emit = "intrinsic:php_vsprintf",     min_args = 2, max_a
 sscanf              = { emit = "common:php.sscanf",          min_args = 2, max_args = 2 }
 uniqid              = { emit = "common:php.uniqid",          min_args = 0, max_args = 2 }
 __php_dynamic_include = { emit = "host:vybe:php:dynamic_include", min_args = 2, max_args = 2 }
+__php_global_function = { emit = "host:vybe:php:global_function", min_args = 1, max_args = 1 }
+__php_call_user_func_array = { emit = "common:php.call_user_func_array", min_args = 2, max_args = 2 }
+__php_global_get = { emit = "common:php.global_get", min_args = 1, max_args = 1 }
+__php_global_ref = { emit = "common:php.global_ref", min_args = 1, max_args = 1 }
+__php_global_set = { emit = "common:php.global_set", min_args = 2, max_args = 2 }
 # `eval($code)` → universal compiler-as-a-service; the walker injects the
 # source language and eval-mode attrs explicitly.
 __vybe_eval         = { emit = "host:vybe:eval:eval",       min_args = 2, max_args = 3 }
@@ -162,7 +167,7 @@ basename            = { emit = "common:php.basename",  min_args = 1, max_args = 
 dirname             = { emit = "common:php.dirname", min_args = 1, max_args = 2 }
 pathinfo            = { emit = "common:php.pathinfo",           min_args = 1, max_args = 2 }
 # Substring replace — direct ecma:string.replaceAll opcode (ECMA replaceAll-equivalent).
-str_replace         = { emit = "common:php.str_replace",     min_args = 3, max_args = 4 }
+str_replace         = { emit = "common:php.str_replace",     min_args = 3, max_args = 4, pass_by = ["value", "value", "value", "alias"] }
 ctype_alpha         = { emit = "common:php.ctype_alpha",     min_args = 1, max_args = 1 }
 ctype_digit         = { emit = "common:php.ctype_digit",     min_args = 1, max_args = 1 }
 ctype_alnum         = { emit = "common:php.ctype_alnum",     min_args = 1, max_args = 1 }
@@ -460,6 +465,8 @@ count               = { emit = "common:php.count",                min_args = 1, 
 sizeof              = { emit = "common:php.count",                min_args = 1, max_args = 2 }
 array_push          = { emit = "common:php.array_push_g",          min_args = 2, max_args = 255 }
 array_pop           = { emit = "common:php.array_pop_g",           min_args = 1, max_args = 1 }
+current             = { emit = "common:php.current",              min_args = 1, max_args = 1 }
+next                = { emit = "common:php.next",                 min_args = 1, max_args = 1 }
 end                 = { emit = "common:php.end",                  min_args = 1, max_args = 1 }
 array_shift         = { emit = "common:array_shift",               min_args = 1, max_args = 1 }
 array_unshift       = { emit = "host:ecma:array:unshift",          min_args = 2, max_args = 255 }
@@ -679,7 +686,8 @@ date                = { emit = "common:php.date",                min_args = 1, m
 strftime            = { emit = "common:php.strftime",            min_args = 1, max_args = 2 }
 strtotime           = { emit = "common:php.strtotime",           min_args = 1, max_args = 2 }
 mktime              = { emit = "common:php.mktime",              min_args = 0, max_args = 6 }
-sleep               = { emit = "host:wasi:clocks:sleep",     min_args = 1, max_args = 1 }
+sleep               = { emit = "common:php.sleep",               min_args = 1, max_args = 1 }
+usleep              = { emit = "common:php.usleep",              min_args = 1, max_args = 1 }
 date_default_timezone_set = { emit = "intrinsic:default_timezone_set", min_args = 1, max_args = 1 }
 date_default_timezone_get = { emit = "intrinsic:default_timezone_get", min_args = 0, max_args = 0 }
 
@@ -1054,6 +1062,9 @@ __php_fiber_is_started    = { emit = "common:php.fiber_is_started",    min_args 
 __php_fiber_is_suspended  = { emit = "common:php.fiber_is_suspended",  min_args = 1, max_args = 1 }
 __php_fiber_is_running    = { emit = "common:php.fiber_is_running",    min_args = 1, max_args = 1 }
 __php_fiber_is_terminated = { emit = "common:php.fiber_is_terminated", min_args = 1, max_args = 1 }
+__php_pdo_query           = { emit = "common:php.pdo_query",           min_args = 2, max_args = 2 }
+__php_db_prepare          = { emit = "common:php.db_prepare",          min_args = 2, max_args = 2 }
+__php_mysqli_query        = { emit = "common:php.mysqli_query",        min_args = 2, max_args = 2 }
 
 # ────────────────────────────────────────────────────────────────────────────
 # VALUE METHODS — instance method calls on intrinsic types
@@ -1079,9 +1090,7 @@ shift            = { emit = "common:array_shift",                 min_args = 0, 
 unshift          = { emit = "host:ecma:array:unshift",            min_args = 1, max_args = 255 }
 splice           = { emit = "host:ecma:array:splice",             min_args = 1, max_args = 255 }
 
-query            = { emit = "common:php.pdo_query",              min_args = 1, max_args = 1 }
 exec             = { emit = "common:php.pdo_exec",               min_args = 1, max_args = 1 }
-prepare          = { emit = "common:php.db_prepare",             min_args = 1, max_args = 1 }
 setAttribute     = { emit = "common:php.pdo_set_attribute",      min_args = 2, max_args = 2 }
 beginTransaction = { emit = "common:php.pdo_begin_transaction",  min_args = 0, max_args = 0 }
 commit           = { emit = "common:php.pdo_commit",             min_args = 0, max_args = 0 }

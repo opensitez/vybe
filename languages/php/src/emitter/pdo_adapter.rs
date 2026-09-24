@@ -210,6 +210,7 @@ fn normalize_pdo_dsn(
 
     replace_in_slot(chunk, normalized_slot, "mysql:", "", line);
     replace_in_slot(chunk, normalized_slot, "dbname=", "db=", line);
+    replace_in_slot(chunk, normalized_slot, "host=localhost", "host=127.0.0.1", line);
     append_credentials(chunk, normalized_slot, username_slot, password_slot, line);
 
     chunk.emit_else(line);
@@ -888,11 +889,19 @@ pub fn emit_php_pdo_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
     lget(chunk, conn_slot, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
     chunk.emit_if(line);
-    push_str(chunk, "sqlite::memory:", line);
-    let _ = chunk;
-    call_import(chunks, current, "wasi:sql", "connect", 1, line);
-    let chunk = &mut chunks[current];
-    lset(chunk, conn_slot, line);
+    class_slots::emit_class_alloc(chunk, line);
+    chunk.emit_dup(line);
+    push_str(
+        chunk,
+        "SQLSTATE[HY000]: General error: Connection failed",
+        line,
+    );
+    vybe_compiler::primitives::errors::emit_exception_new_finalize(
+        chunk,
+        "PDOException",
+        line,
+    );
+    vybe_compiler::primitives::errors::emit_throw(chunk, line);
     chunk.emit_end(line);
     stamp_pdo_type(chunk, conn_slot, line);
     lget(chunk, conn_slot, line);
@@ -976,6 +985,7 @@ pub fn emit_php_pdo_query(chunks: &mut [Chunk], current: usize, _argc: u8, line:
     let rows_slot = alloc_local(&mut chunks[current]);
     let chunk = &mut chunks[current];
     lset(chunk, rows_slot, line);
+    emit_record_failure(chunks, current, conn_slot, line);
 
     emit_new_statement(
         chunks,

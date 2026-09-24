@@ -331,4 +331,18 @@ mod tests {
             vec!["Countable".to_string(), "IteratorAggregate".to_string()]
         );
     }
+
+    #[test]
+    fn legacy_serialization_magic_methods_fill_protocol_slots() {
+        let nc = normalize_class(
+            dummy_span(),
+            "Foo",
+            &[],
+            &[make_method("__sleep"), make_method("__wakeup")],
+            &ClassModifiers::default(),
+        );
+        let kinds: Vec<_> = nc.special_methods.iter().map(|s| s.kind).collect();
+        assert!(kinds.contains(&SpecialMethodKind::Serialize));
+        assert!(kinds.contains(&SpecialMethodKind::Deserialize));
+    }
 }

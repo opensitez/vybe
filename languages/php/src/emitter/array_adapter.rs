@@ -200,6 +200,15 @@ pub fn emit_test_object(chunk: &mut Chunk, line: u32) {
     emit_test_bool(chunk, line);
     chunk.emit_op(Op::I32_EQZ, line); // not boolean
     chunk.emit_op(Op::I32_AND, line);
+    lget(chunk, slot, line);
+    emit_test_bigint(chunk, line);
+    chunk.emit_op(Op::I32_EQZ, line); // not bigint
+    chunk.emit_op(Op::I32_AND, line);
+    lget(chunk, slot, line);
+    let undef_idx = chunk.add_import("wasm:js-undefined", "test");
+    chunk.emit_call(undef_idx, 1, line);
+    chunk.emit_op(Op::I32_EQZ, line); // not undefined
+    chunk.emit_op(Op::I32_AND, line);
 }
 /// Test if value is callable (function/closure). Not null, not a primitive type.
 /// For now same as object test — functions are non-primitive non-null values.
@@ -220,6 +229,16 @@ pub(crate) fn emit_php_empty_from_slot(
     value_slot: u16,
     line: u32,
 ) {
+    {
+        let chunk = &mut chunks[current];
+        lget(chunk, value_slot, line);
+    }
+    vybe_compiler::primitives::references::emit_autoderef_to_stack(chunks, current, line);
+    {
+        let chunk = &mut chunks[current];
+        lset(chunk, value_slot, line);
+    }
+
     let chunk = &mut chunks[current];
     lget(chunk, value_slot, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
@@ -1266,6 +1285,45 @@ pub fn emit_php_end(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     chunk.emit_op(Op::F64_SUB, line);
     chunk.emit_op(Op::ARRAY_GET, line);
     chunk.emit_end(line);
+}
+
+pub fn emit_php_current(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let chunk = &mut chunks[current];
+    for _ in 1..argc {
+        chunk.emit_op(Op::DROP, line);
+    }
+    let arr_slot = alloc_local(chunk);
+    let values_slot = alloc_local(chunk);
+    let len_slot = alloc_local(chunk);
+    lset(chunk, arr_slot, line);
+
+    lget(chunk, arr_slot, line);
+    vybe_compiler::primitives::collections::emit_iter_values(chunks, current, line);
+    let chunk = &mut chunks[current];
+    lset(chunk, values_slot, line);
+
+    lget(chunk, values_slot, line);
+    chunk.emit_op(Op::ARRAY_LENGTH, line);
+    lset(chunk, len_slot, line);
+
+    lget(chunk, len_slot, line);
+    push_const(chunk, Value::F64(0.0), line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    chunk.emit_if_value(line);
+    push_const(chunk, Value::Bool(false), line);
+    chunk.emit_else(line);
+    lget(chunk, values_slot, line);
+    push_const(chunk, Value::F64(0.0), line);
+    chunk.emit_op(Op::ARRAY_GET, line);
+    chunk.emit_end(line);
+}
+
+pub fn emit_php_next(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let chunk = &mut chunks[current];
+    for _ in 0..argc {
+        chunk.emit_op(Op::DROP, line);
+    }
+    push_const(chunk, Value::Bool(false), line);
 }
 
 #[allow(dead_code)]
@@ -3091,9 +3149,11 @@ pub fn emit_array_column(chunks: &mut [Chunk], current: usize, argc: u8, line: u
         index_value_slot,
         get_method_slot,
         include_slot,
+        index_has_slot,
     ) = {
         let chunk = &mut chunks[current];
         (
+            alloc_local(chunk),
             alloc_local(chunk),
             alloc_local(chunk),
             alloc_local(chunk),
@@ -3131,10 +3191,15 @@ pub fn emit_array_column(chunks: &mut [Chunk], current: usize, argc: u8, line: u
         chunk.emit_end(line);
     }
 
-    // PHP arrays use the VM array/dict representation for both list and
-    // keyed results. Keep indexed array_column output in that same storage so
-    // ARRAY_SET/count/key access behave like normal PHP arrays.
-    chunks[current].emit_array_new_fixed(0, 0, line);
+    // Without an index key, array_column returns a list. With an index key it
+    // returns a PHP associative array, represented as the same Map-backed
+    // shape used by array_diff_key/array_intersect_key so count()/array_keys()
+    // enumerate dynamic object-derived keys correctly.
+    if has_index {
+        call_import(chunks, current, "ecma:map", "new", 0, line);
+    } else {
+        chunks[current].emit_array_new_fixed(0, 0, line);
+    }
     {
         let chunk = &mut chunks[current];
         lset(chunk, out_slot, line);
@@ -3246,6 +3311,15 @@ pub fn emit_array_column(chunks: &mut [Chunk], current: usize, argc: u8, line: u
                 &ClassSlot::Dynamic(ValueSource::Local(index_key_slot)),
                 &PlainNames,
             );
+            class_slots::emit_class_has(
+                chunk,
+                ObjSource::Local(row_slot),
+                &dyn_index_slot,
+                Dest::Local(index_has_slot),
+                line,
+            );
+            lget(chunk, index_has_slot, line);
+            chunk.emit_if(line);
             class_slots::emit_class_get(
                 chunk,
                 ObjSource::Local(row_slot),
@@ -3254,10 +3328,14 @@ pub fn emit_array_column(chunks: &mut [Chunk], current: usize, argc: u8, line: u
                 line,
             );
             lget(chunk, index_value_slot, line);
-            chunk.emit_op(Op::REF_IS_NULL, line);
-            chunk.emit_if(line);
+            let _ = chunk;
+            vybe_compiler::primitives::convert::emit_to_string(&mut chunks[current], line);
+            let chunk = &mut chunks[current];
+            lset(chunk, index_value_slot, line);
+            chunk.emit_else(line);
             lget(chunk, i_slot, line);
             lset(chunk, index_value_slot, line);
+            chunk.emit_end(line);
             chunk.emit_end(line);
 
             lget(chunk, include_slot, line);
