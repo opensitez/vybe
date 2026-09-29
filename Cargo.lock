@@ -1285,7 +1285,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -1956,7 +1956,7 @@ dependencies = [
  "libc",
  "percent-encoding",
  "pin-project-lite",
- "socket2 0.6.3",
+ "socket2 0.5.10",
  "system-configuration",
  "tokio",
  "tower-layer",
@@ -3685,6 +3685,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "pcre2"
+version = "0.2.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9e970b0fcce0c7ee6ef662744ff711f21ccd6f11b7cf03cd187a80e89797fc67"
+dependencies = [
+ "libc",
+ "log",
+ "pcre2-sys",
+]
+
+[[package]]
+name = "pcre2-sys"
+version = "0.2.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "18b9073c1a2549bd409bf4a32c94d903bb1a09bf845bc306ae148897fa0760a4"
+dependencies = [
+ "cc",
+ "libc",
+ "pkg-config",
+]
+
+[[package]]
 name = "pem"
 version = "3.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4431,7 +4453,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -4819,7 +4841,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3a766e1110788c36f4fa1c2b71b387a7815aa65f88ce0229841826633d93723e"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -5010,7 +5032,7 @@ dependencies = [
  "getrandom 0.4.2",
  "once_cell",
  "rustix 1.1.4",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -5479,7 +5501,7 @@ checksum = "f2f6fb2847f6742cd76af783a2a2c49e9375d0a111c7bef6f71cd9e738c72d6e"
 dependencies = [
  "memoffset",
  "tempfile",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -5547,9 +5569,9 @@ checksum = "383ad40bb927465ec0ce7720e033cb4ca06912855fc35db31b5755d0de75b1ee"
 
 [[package]]
 name = "unicode-segmentation"
-version = "1.13.2"
+version = "1.13.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9629274872b2bfaf8d66f5f15725007f635594914870f65218920345aa11aa8c"
+checksum = "c6f5d3c3b1bf09027a88a6bc961fc00497d651009560b5463668dc81b0fa87a8"
 
 [[package]]
 name = "unicode-width"
@@ -5801,9 +5823,15 @@ dependencies = [
 name = "vybe_language_php"
 version = "0.6.2"
 dependencies = [
+ "getrandom 0.2.17",
+ "glob",
  "inventory",
+ "libc",
+ "pcre2",
  "pest",
  "pest_derive",
+ "regex",
+ "serde_json",
  "uuid",
  "vybe_ast",
  "vybe_compiler",
@@ -6034,6 +6062,7 @@ dependencies = [
  "md-5 0.10.6",
  "quick-xml 0.36.2",
  "sha2 0.10.9",
+ "tiny-skia 0.12.0",
  "url",
  "vybe_platform_ecma",
  "vybe_runtime",
@@ -6067,6 +6096,7 @@ dependencies = [
  "mime_guess",
  "percent-encoding",
  "serde_json",
+ "tiny-skia 0.12.0",
  "tokio",
  "uuid",
  "vybe_compiler",
@@ -6098,6 +6128,7 @@ dependencies = [
  "vybe_platform_wasm",
  "vybe_platform_web",
  "vybe_runtime",
+ "webcore",
  "widgets",
 ]
 
@@ -6392,7 +6423,7 @@ dependencies = [
 
 [[package]]
 name = "webcore"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "base64 0.21.7",
  "brotli 8.0.4",
@@ -6406,10 +6437,12 @@ dependencies = [
  "raw-window-handle",
  "rayon",
  "reqwest",
+ "rfd",
  "softbuffer",
  "swash",
  "tiny-skia 0.12.0",
  "unicode-bidi",
+ "unicode-segmentation",
  "winit",
 ]
 
@@ -6472,7 +6505,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]

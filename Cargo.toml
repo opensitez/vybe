@@ -156,6 +156,14 @@ vybe_platform_jvm = { path = "platforms/jvm" }
 vybe_platform_plib = { path = "platforms/plib" }
 widgets = "0.2.0"
 # The HTML/CSS engine behind `web:*` when the `engine-webcore` feature is on.
-webcore = "0.3.3"
+webcore = "0.3.4"
 vybe_compiler = { path = "crates/vybe_compiler" }
 vybex = { path = "crates/vybex" }
+[profile.dev.package.vybe_compiler]
+opt-level = 2
+
+[profile.dev.package.vybe_language_php]
+opt-level = 2
+
+[profile.dev.package.vybe_runtime]
+opt-level = 2
