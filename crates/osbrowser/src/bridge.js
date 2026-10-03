@@ -60,7 +60,13 @@
         };
         fetch('event', {
           method: 'POST', headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ document: documentIds.get(doc), node: idOf(target), kind, fields })
+          body: JSON.stringify({
+            document: documentIds.get(doc), node: idOf(target), kind, fields,
+            path: event.bubbles
+              ? event.composedPath().filter(n => n === doc || n.nodeType === 1)
+                  .map(n => n === doc ? 0 : idOf(n))
+              : [idOf(target)]
+          })
         }).catch(() => {});
       }, true);
     }

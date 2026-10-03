@@ -7,7 +7,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::net::SocketAddr;
 use std::process::Command;
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{Arc, Condvar, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
@@ -24,6 +24,8 @@ use serde_json::Value;
 pub struct BrowserEvent {
     pub document: u64,
     pub node: u64,
+    #[serde(default)]
+    pub path: Vec<u64>,
     pub kind: String,
     #[serde(default)]
     pub fields: Value,
@@ -89,6 +91,7 @@ pub struct BrowserSession {
     address: SocketAddr,
     token: String,
     state: Arc<Mutex<State>>,
+    event_ready: Arc<Condvar>,
     wake: Arc<tokio::sync::Notify>,
 }
 
@@ -98,6 +101,8 @@ impl BrowserSession {
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
         let state = Arc::new(Mutex::new(State::default()));
         let server_state = Arc::clone(&state);
+        let event_ready = Arc::new(Condvar::new());
+        let server_event_ready = Arc::clone(&event_ready);
         let token = uuid::Uuid::new_v4().simple().to_string();
         let server_token = token.clone();
         let wake = Arc::new(tokio::sync::Notify::new());
@@ -124,11 +129,18 @@ impl BrowserSession {
                             break;
                         };
                         let state = Arc::clone(&server_state);
+                        let event_ready = Arc::clone(&server_event_ready);
                         let token = server_token.clone();
                         let wake = Arc::clone(&server_wake);
                         tokio::spawn(async move {
                             let service = service_fn(move |request| {
-                                serve(request, Arc::clone(&state), token.clone(), Arc::clone(&wake))
+                                serve(
+                                    request,
+                                    Arc::clone(&state),
+                                    token.clone(),
+                                    Arc::clone(&wake),
+                                    Arc::clone(&event_ready),
+                                )
                             });
                             let _ = http1::Builder::new()
                                 .serve_connection(TokioIo::new(stream), service)
@@ -142,6 +154,7 @@ impl BrowserSession {
             address: ready_rx.recv().map_err(|e| e.to_string())??,
             token,
             state,
+            event_ready,
             wake,
         })
     }
@@ -259,6 +272,16 @@ impl BrowserSession {
             .map(|mut state| state.events.drain(..).collect())
             .unwrap_or_default()
     }
+
+    pub fn wait_for_event(&self, timeout: Duration) {
+        if let Ok(state) = self.state.lock() {
+            if state.events.is_empty() {
+                let _ = self.event_ready.wait_timeout_while(state, timeout, |state| {
+                    state.events.is_empty()
+                });
+            }
+        }
+    }
 }
 
 type Body = Full<Bytes>;
@@ -277,6 +300,7 @@ async fn serve(
     state: Arc<Mutex<State>>,
     token: String,
     wake: Arc<tokio::sync::Notify>,
+    event_ready: Arc<Condvar>,
 ) -> Result<Response<Body>, std::convert::Infallible> {
     let prefix = format!("/{token}");
     let path = request.uri().path().strip_prefix(&prefix).unwrap_or("");
@@ -341,6 +365,7 @@ async fn serve(
                 if let Ok(event) = serde_json::from_slice::<BrowserEvent>(&body.to_bytes()) {
                     if let Ok(mut state) = state.lock() {
                         state.events.push_back(event);
+                        event_ready.notify_one();
                     }
                 }
             }
@@ -353,7 +378,9 @@ async fn serve(
 
 #[cfg(test)]
 mod tests {
-    use super::{State, WireCommand};
+    use super::{BrowserEvent, BrowserSession, State, WireCommand};
+    use std::sync::{Arc, Condvar, Mutex};
+    use std::time::{Duration, Instant};
 
     fn command(id: u64, operation: &str) -> WireCommand {
         WireCommand {
@@ -376,6 +403,27 @@ mod tests {
     }
 
     #[test]
+    fn grid_creation_drains_as_one_ordered_batch() {
+        let mut state = State::default();
+        state.batch_depth = 1;
+        for _ in 0..42 {
+            state.commands.push_back(command(0, "CreateElement"));
+            state.commands.push_back(command(0, "SetStyleProperty"));
+            state.commands.push_back(command(0, "SetStyleProperty"));
+            state.commands.push_back(command(0, "AppendChild"));
+            assert!(state.take_ready_commands().is_empty());
+        }
+        state.batch_depth = 0;
+        let commands = state.take_ready_commands();
+        assert_eq!(commands.len(), 42 * 4);
+        for cell in commands.chunks_exact(4) {
+            assert_eq!(cell[0].operation, "CreateElement");
+            assert_eq!(cell[3].operation, "AppendChild");
+        }
+        assert!(state.take_ready_commands().is_empty());
+    }
+
+    #[test]
     fn read_flushes_earlier_mutations_in_order() {
         let mut state = State::default();
         state.batch_depth = 1;
@@ -388,5 +436,34 @@ mod tests {
         assert_eq!(operations, ["CreateElement", "AppendChild", "QuerySelector"]);
         state.commands.push_back(command(0, "SetStyleProperty"));
         assert!(state.take_ready_commands().is_empty());
+    }
+
+    #[test]
+    fn browser_event_wakes_idle_vm() {
+        let session = BrowserSession {
+            address: "127.0.0.1:0".parse().unwrap(),
+            token: String::new(),
+            state: Arc::new(Mutex::new(State::default())),
+            event_ready: Arc::new(Condvar::new()),
+            wake: Arc::new(tokio::sync::Notify::new()),
+        };
+        let state = Arc::clone(&session.state);
+        let ready = Arc::clone(&session.event_ready);
+        let producer = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(10));
+            state.lock().unwrap().events.push_back(BrowserEvent {
+                document: 1,
+                node: 2,
+                path: vec![2],
+                kind: "click".into(),
+                fields: serde_json::Value::Null,
+            });
+            ready.notify_one();
+        });
+        let start = Instant::now();
+        session.wait_for_event(Duration::from_secs(1));
+        assert!(start.elapsed() < Duration::from_millis(500));
+        assert_eq!(session.drain_events()[0].kind, "click");
+        producer.join().unwrap();
     }
 }
