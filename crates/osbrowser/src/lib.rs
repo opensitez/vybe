@@ -276,9 +276,9 @@ impl BrowserSession {
     pub fn wait_for_event(&self, timeout: Duration) {
         if let Ok(state) = self.state.lock() {
             if state.events.is_empty() {
-                let _ = self.event_ready.wait_timeout_while(state, timeout, |state| {
-                    state.events.is_empty()
-                });
+                let _ = self
+                    .event_ready
+                    .wait_timeout_while(state, timeout, |state| state.events.is_empty());
             }
         }
     }
@@ -286,7 +286,7 @@ impl BrowserSession {
 
 type Body = Full<Bytes>;
 
-fn response(status: StatusCode, body: impl Into<Bytes>, content_type: &'static str) -> Response<Body> {
+fn response(status: StatusCode, body: impl Into<Bytes>, content_type: &'static str,) -> Response<Body> {
     Response::builder()
         .status(status)
         .header("content-type", content_type)
@@ -327,9 +327,11 @@ async fn serve(
             }).unwrap_or_default();
             if commands.is_empty() {
                 let _ = tokio::time::timeout(Duration::from_secs(1), wake.notified()).await;
-                commands = state.lock().ok().map(|mut state| {
-                    state.take_ready_commands()
-                }).unwrap_or_default();
+                commands = state
+                    .lock()
+                    .ok()
+                    .map(|mut state| state.take_ready_commands())
+                    .unwrap_or_default();
             }
             if commands.is_empty() {
                 response(StatusCode::NO_CONTENT, Bytes::new(), "application/json")

@@ -58,7 +58,7 @@ fn run(browser: &osbrowser::BrowserSession, smoke: bool) -> Result<(), String> {
     browser.call(1, "NewDocument", json!({ "title": "OsBrowser" }))?;
     let node = browser.call(1, "CreateElement", json!({
         "tag": "button", "input_type": ""
-    }))?;
+    }),)?;
     let node = node["Node"].as_u64().ok_or("browser returned no element")?;
     browser.call(1, "SetTextContent", json!([node, "Click me"]))?;
     browser.call(1, "AppendChild", json!({ "parent": 0, "child": node }))?;
@@ -71,11 +71,11 @@ fn run(browser: &osbrowser::BrowserSession, smoke: bool) -> Result<(), String> {
             let queued_node = 1_000_000_000_000 + offset;
             browser.enqueue(1, "CreateElement", json!({
                 "tag": "span", "input_type": ""
-            }), Some(queued_node))?;
-            browser.enqueue(1, "SetTextContent", json!([queued_node, format!("item {offset}")]), None)?;
+            }), Some(queued_node),)?;
+            browser.enqueue(1, "SetTextContent", json!([queued_node, format!("item {offset}")]), None,)?;
             browser.enqueue(1, "AppendChild", json!({
                 "parent": 0, "child": queued_node
-            }), None)?;
+            }), None,)?;
         }
         let spans = browser.call(1, "QuerySelectorAll", json!("span"))?;
         if spans["Nodes"].as_array().is_none_or(|nodes| nodes.len() != 128) {
@@ -83,20 +83,20 @@ fn run(browser: &osbrowser::BrowserSession, smoke: bool) -> Result<(), String> {
         }
         let canvas = browser.call(1, "CreateElement", json!({
             "tag": "canvas", "input_type": ""
-        }))?;
+        }),)?;
         let canvas = canvas["Node"].as_u64().ok_or("browser returned no canvas")?;
         browser.call(1, "AppendChild", json!({ "parent": 0, "child": canvas }))?;
         let target = format!("n{canvas}");
         browser.call(1, "CanvasApply", json!({
             "target": target, "payload": { "SetFillStyleCss": "#ff0000" }
-        }))?;
+        }),)?;
         browser.call(1, "CanvasApply", json!({
             "target": target, "payload": { "FillRect": [0, 0, 2, 2] }
-        }))?;
+        }),)?;
         let pixel = browser.call(1, "CanvasQuery", json!({
             "target": target,
             "payload": { "GetImageData": { "sx": 0, "sy": 0, "sw": 1, "sh": 1 } }
-        }))?;
+        }),)?;
         if pixel["Pixels"]["data"][0] != 255 || pixel["Pixels"]["data"][3] != 255 {
             return Err(format!("canvas round trip failed: {pixel}"));
         }
@@ -108,7 +108,7 @@ fn run(browser: &osbrowser::BrowserSession, smoke: bool) -> Result<(), String> {
             + bounds["height"].as_f64().unwrap_or(0.0) / 2.0;
         browser.call(1, "DispatchPointer", json!({
             "kind": "click", "client_x": x, "client_y": y, "button": 0
-        }))?;
+        }),)?;
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
         while std::time::Instant::now() < deadline {
             if browser.drain_events().into_iter().any(|e| e.node == node && e.kind == "click") {
