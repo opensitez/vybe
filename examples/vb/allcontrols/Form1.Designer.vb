@@ -141,6 +141,14 @@ Partial Class Form1
         Me.lst1.Name = "lst1"
         Me.lst1.TabIndex = 0
         Me.Controls.Add(Me.lst1)
+        Me.lst1.Items.Add("First item")
+        Me.lst1.Items.Add("Second item")
+        Me.lst1.Items.Add("Third item")
+        Me.cbo1.Items.Add("Red")
+        Me.cbo1.Items.Add("Green")
+        Me.cbo1.Items.Add("Blue")
+        Me.lst1.SelectedIndex = 0
+        Me.cbo1.SelectedIndex = 0
         Me.fra1.Location = New System.Drawing.Point(20, 430)
         Me.fra1.Size = New System.Drawing.Size(150, 90)
         Me.fra1.Text = "fra1"
@@ -153,6 +161,7 @@ Partial Class Form1
         Me.pic1.Location = New System.Drawing.Point(20, 530)
         Me.pic1.Size = New System.Drawing.Size(150, 100)
         Me.pic1.Text = "pic1"
+        Me.pic1.ImageLocation = "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxNTAiIGhlaWdodD0iMTAwIj48cmVjdCB3aWR0aD0iMTUwIiBoZWlnaHQ9IjEwMCIgZmlsbD0iIzNiODJmNiIvPjxjaXJjbGUgY3g9Ijc1IiBjeT0iNTAiIHI9IjI4IiBmaWxsPSIjZmFjYzE1Ii8+PC9zdmc+"
         Me.pic1.BackColor = System.Drawing.ColorTranslator.FromHtml("#f8fafc")
         Me.pic1.ForeColor = System.Drawing.ColorTranslator.FromHtml("#0f172a")
         Me.pic1.Font = New System.Drawing.Font("Segoe UI", 12F)
@@ -186,6 +195,10 @@ Partial Class Form1
         Me.tvw1.Name = "tvw1"
         Me.tvw1.TabIndex = 0
         Me.Controls.Add(Me.tvw1)
+        Dim projectsNode = Me.tvw1.Nodes.Add("Projects")
+        projectsNode.Nodes.Add("Vybe")
+        projectsNode.Expand()
+        Me.tvw1.Nodes.Add("Recent files")
         Me.pnl1.Location = New System.Drawing.Point(200, 440)
         Me.pnl1.Size = New System.Drawing.Size(200, 150)
         Me.pnl1.Text = "pnl1"
@@ -195,6 +208,11 @@ Partial Class Form1
         Me.pnl1.Name = "pnl1"
         Me.pnl1.TabIndex = 0
         Me.Controls.Add(Me.pnl1)
+        Dim panelLabel As New System.Windows.Forms.Label()
+        panelLabel.Text = "Panel content"
+        panelLabel.Location = New System.Drawing.Point(8, 8)
+        panelLabel.Size = New System.Drawing.Size(150, 24)
+        Me.pnl1.Controls.Add(panelLabel)
         Me.dgv1.Location = New System.Drawing.Point(200, 290)
         Me.dgv1.Size = New System.Drawing.Size(200, 140)
         Me.dgv1.Text = "dgv1"
@@ -204,6 +222,10 @@ Partial Class Form1
         Me.dgv1.Name = "dgv1"
         Me.dgv1.TabIndex = 0
         Me.Controls.Add(Me.dgv1)
+        Me.dgv1.Columns.Add("name", "Name")
+        Me.dgv1.Columns.Add("state", "State")
+        Me.dgv1.Rows.Add("Build", "Ready")
+        Me.dgv1.Rows.Add("Tests", "Running")
         Me.lvw1.Location = New System.Drawing.Point(410, 50)
         Me.lvw1.Size = New System.Drawing.Size(220, 150)
         Me.lvw1.Text = "lvw1"
@@ -213,6 +235,9 @@ Partial Class Form1
         Me.lvw1.Name = "lvw1"
         Me.lvw1.TabIndex = 0
         Me.Controls.Add(Me.lvw1)
+        Me.lvw1.Columns.Add("Item")
+        Me.lvw1.Items.Add("First document")
+        Me.lvw1.Items.Add("Second document")
         Me.tab1.Location = New System.Drawing.Point(410, 210)
         Me.tab1.Size = New System.Drawing.Size(220, 200)
         Me.tab1.Text = "tab1"
@@ -222,6 +247,22 @@ Partial Class Form1
         Me.tab1.Name = "tab1"
         Me.tab1.TabIndex = 0
         Me.Controls.Add(Me.tab1)
+        Dim overviewPage As New System.Windows.Forms.TabPage()
+        overviewPage.Text = "Overview"
+        Me.tab1.TabPages.Add(overviewPage)
+        Dim overviewLabel As New System.Windows.Forms.Label()
+        overviewLabel.Text = "General settings"
+        overviewLabel.Location = New System.Drawing.Point(10, 10)
+        overviewLabel.Size = New System.Drawing.Size(170, 24)
+        overviewPage.Controls.Add(overviewLabel)
+        Dim detailsPage As New System.Windows.Forms.TabPage()
+        detailsPage.Text = "Details"
+        Me.tab1.TabPages.Add(detailsPage)
+        Dim detailsLabel As New System.Windows.Forms.Label()
+        detailsLabel.Text = "Additional details"
+        detailsLabel.Location = New System.Drawing.Point(10, 10)
+        detailsLabel.Size = New System.Drawing.Size(170, 24)
+        detailsPage.Controls.Add(detailsLabel)
         Me.pb1.Location = New System.Drawing.Point(410, 420)
         Me.pb1.Size = New System.Drawing.Size(200, 23)
         Me.pb1.Text = "pb1"
@@ -231,9 +272,10 @@ Partial Class Form1
         Me.pb1.Name = "pb1"
         Me.pb1.TabIndex = 0
         Me.Controls.Add(Me.pb1)
+        Me.pb1.Value = 45
         Me.nud1.Location = New System.Drawing.Point(410, 450)
         Me.nud1.Size = New System.Drawing.Size(120, 23)
-        Me.nud1.Text = "nud1"
+        Me.nud1.Text = "3"
         Me.nud1.BackColor = System.Drawing.ColorTranslator.FromHtml("#f8fafc")
         Me.nud1.ForeColor = System.Drawing.ColorTranslator.FromHtml("#0f172a")
         Me.nud1.Font = New System.Drawing.Font("Segoe UI", 12F)
@@ -249,6 +291,15 @@ Partial Class Form1
         Me.ms1.Name = "ms1"
         Me.ms1.TabIndex = 0
         Me.Controls.Add(Me.ms1)
+        Dim fileMenu As New System.Windows.Forms.ToolStripMenuItem()
+        fileMenu.Text = "File"
+        fileMenu.Name = "fileMenu"
+        Dim openMenuItem As New System.Windows.Forms.ToolStripMenuItem()
+        openMenuItem.Text = "Open"
+        openMenuItem.Name = "openMenuItem"
+        AddHandler openMenuItem.Click, AddressOf openMenuItem_Click
+        fileMenu.DropDownItems.Add(openMenuItem)
+        Me.ms1.Items.Add(fileMenu)
         Me.cms1.Location = New System.Drawing.Point(410, 520)
         Me.cms1.Size = New System.Drawing.Size(150, 24)
         Me.cms1.Text = "cms1"
@@ -267,9 +318,12 @@ Partial Class Form1
         Me.ss1.Name = "ss1"
         Me.ss1.TabIndex = 0
         Me.Controls.Add(Me.ss1)
+        Dim statusItem As New System.Windows.Forms.ToolStripStatusLabel()
+        statusItem.Text = "Ready"
+        Me.ss1.Items.Add(statusItem)
         Me.dtp1.Location = New System.Drawing.Point(410, 620)
         Me.dtp1.Size = New System.Drawing.Size(200, 23)
-        Me.dtp1.Text = "dtp1"
+        Me.dtp1.Text = "2026-10-01T12:00"
         Me.dtp1.BackColor = System.Drawing.ColorTranslator.FromHtml("#f8fafc")
         Me.dtp1.ForeColor = System.Drawing.ColorTranslator.FromHtml("#0f172a")
         Me.dtp1.Font = New System.Drawing.Font("Segoe UI", 12F)
@@ -294,9 +348,14 @@ Partial Class Form1
         Me.ts1.Name = "ts1"
         Me.ts1.TabIndex = 0
         Me.Controls.Add(Me.ts1)
+        Dim toolButton As New System.Windows.Forms.ToolStripButton()
+        toolButton.Text = "Open"
+        toolButton.Name = "openToolButton"
+        AddHandler toolButton.Click, AddressOf toolButton_Click
+        Me.ts1.Items.Add(toolButton)
         Me.trk1.Location = New System.Drawing.Point(410, 690)
         Me.trk1.Size = New System.Drawing.Size(200, 20)
-        Me.trk1.Text = "trk1"
+        Me.trk1.Text = "4"
         Me.trk1.BackColor = System.Drawing.ColorTranslator.FromHtml("#f8fafc")
         Me.trk1.ForeColor = System.Drawing.ColorTranslator.FromHtml("#0f172a")
         Me.trk1.Font = New System.Drawing.Font("Segoe UI", 12F)
@@ -313,7 +372,8 @@ Partial Class Form1
         Me.mtxt1.TabIndex = 0
         Me.Controls.Add(Me.mtxt1)
         Me.bs1.Name = "bs1"
-        Me.bnav1.Location = New System.Drawing.Point(10, 850)
+        Me.bs1.DataSource = New String() {"Alpha", "Beta", "Gamma"}
+        Me.bnav1.Location = New System.Drawing.Point(10, 10)
         Me.bnav1.Size = New System.Drawing.Size(200, 20)
         Me.bnav1.Text = "bnav1"
         Me.bnav1.BackColor = System.Drawing.ColorTranslator.FromHtml("#f8fafc")
@@ -322,6 +382,8 @@ Partial Class Form1
         Me.bnav1.Name = "bnav1"
         Me.bnav1.TabIndex = 0
         Me.Controls.Add(Me.bnav1)
+        Me.bnav1.BindingSource = Me.bs1
+        Me.mtxt1.DataBindings.Add("Text", Me.bs1, "")
         Me.hsb1.Location = New System.Drawing.Point(230, 850)
         Me.hsb1.Size = New System.Drawing.Size(170, 20)
         Me.hsb1.Text = "hsb1"
@@ -346,7 +408,7 @@ Partial Class Form1
         Me.dt1.Name = "dt1"
         Me.da1.Name = "da1"
         Me.mc1.Location = New System.Drawing.Point(410, 760)
-        Me.mc1.Size = New System.Drawing.Size(220, 20)
+        Me.mc1.Size = New System.Drawing.Size(220, 160)
         Me.mc1.Text = "mc1"
         Me.mc1.BackColor = System.Drawing.ColorTranslator.FromHtml("#f8fafc")
         Me.mc1.ForeColor = System.Drawing.ColorTranslator.FromHtml("#0f172a")
@@ -363,6 +425,14 @@ Partial Class Form1
         Me.sc1.Name = "sc1"
         Me.sc1.TabIndex = 0
         Me.Controls.Add(Me.sc1)
+        Dim leftPaneLabel As New System.Windows.Forms.Label()
+        leftPaneLabel.Text = "Left"
+        leftPaneLabel.Location = New System.Drawing.Point(4, 4)
+        Me.sc1.Panel1.Controls.Add(leftPaneLabel)
+        Dim rightPaneLabel As New System.Windows.Forms.Label()
+        rightPaneLabel.Text = "Right"
+        rightPaneLabel.Location = New System.Drawing.Point(4, 4)
+        Me.sc1.Panel2.Controls.Add(rightPaneLabel)
         Me.flp1.Location = New System.Drawing.Point(200, 690)
         Me.flp1.Size = New System.Drawing.Size(200, 120)
         Me.flp1.Text = "flp1"
@@ -372,6 +442,14 @@ Partial Class Form1
         Me.flp1.Name = "flp1"
         Me.flp1.TabIndex = 0
         Me.Controls.Add(Me.flp1)
+        Dim flowFirst As New System.Windows.Forms.Button()
+        flowFirst.Text = "One"
+        flowFirst.Size = New System.Drawing.Size(65, 28)
+        Me.flp1.Controls.Add(flowFirst)
+        Dim flowSecond As New System.Windows.Forms.Button()
+        flowSecond.Text = "Two"
+        flowSecond.Size = New System.Drawing.Size(65, 28)
+        Me.flp1.Controls.Add(flowSecond)
         Me.tlp1.Location = New System.Drawing.Point(20, 740)
         Me.tlp1.Size = New System.Drawing.Size(170, 100)
         Me.tlp1.Text = "tlp1"
@@ -381,7 +459,15 @@ Partial Class Form1
         Me.tlp1.Name = "tlp1"
         Me.tlp1.TabIndex = 0
         Me.Controls.Add(Me.tlp1)
-        Me.ClientSize = New System.Drawing.Size(640, 880)
+        Dim tableFirst As New System.Windows.Forms.Button()
+        tableFirst.Text = "A"
+        tableFirst.Size = New System.Drawing.Size(65, 28)
+        Me.tlp1.Controls.Add(tableFirst)
+        Dim tableSecond As New System.Windows.Forms.Button()
+        tableSecond.Text = "B"
+        tableSecond.Size = New System.Drawing.Size(65, 28)
+        Me.tlp1.Controls.Add(tableSecond)
+        Me.ClientSize = New System.Drawing.Size(640, 950)
         Me.Text = "Form1"
         Me.Name = "Form1"
         Me.ResumeLayout(False)

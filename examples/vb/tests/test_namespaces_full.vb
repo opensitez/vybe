@@ -1,27 +1,40 @@
 ' ============================================================
 ' Comprehensive Namespace, Imports and Resolution Tests
 ' Tests VB.NET-compatible namespace, imports and type resolution
+'
+' VERIFIED against real VB.NET: this file compiles clean and produces the
+' output below under the .NET SDK's VB compiler (`dotnet new console -lang VB`).
+'
+' It previously did not, and the four defects are worth naming because each one
+' was a REAL VB rule the sample was breaking, not a vybe limitation:
+'
+'   1. The user namespaces were never imported. `Dim c As New Customer()` with
+'      no `Imports MyApp.Models` is BC30002 "Type 'Customer' is not defined" —
+'      a namespace does NOT publish its types to the global scope. Real VB
+'      rejects the short name; only the import (or the full path) reaches it.
+'   2. `Dim level As Integer = Info` — BC30451 "'Info' is not declared". An
+'      enum member is reached through its enum type, `LogLevel.Info`, even
+'      when the enclosing namespace is imported.
+'   3. `Dim myMath As Object = System.Math` — BC30112 "'System.Math' is a type
+'      and cannot be used as an expression". A shared class is not a value.
+'      TEST 14 now calls the static method directly, which is what it meant.
+'   4. `Error` is a VB keyword, so an enum member of that name needs brackets:
+'      `[Error]`.
+'
+' Executable statements live in `Sub Main` because VB.NET has no top-level
+' code — a namespace and a statement cannot be siblings.
 ' ============================================================
 
-' === TEST 1: Basic Imports statement (parsed, not silently skipped) ===
+' === TEST 1: Imports statements (parsed, not silently skipped) ===
 Imports System
 Imports System.IO
+Imports MyApp.Models
+Imports Company.HR
+Imports Utils
+Imports Config
+Imports Animals
 
-' === TEST 2: System.Console fully-qualified ===
-System.Console.WriteLine("TEST 2: System.Console.WriteLine works")
-
-' === TEST 3: Implicit Console (like Imports System) ===
-Console.WriteLine("TEST 3: Console.WriteLine works (implicit)")
-
-' === TEST 4: System.Math fully-qualified ===
-Dim maxVal As Double = System.Math.Max(10, 20)
-Console.WriteLine("TEST 4: System.Math.Max(10, 20) = " & maxVal)
-
-' === TEST 5: Math without qualification ===
-Dim sqrtVal As Double = Math.Sqrt(16)
-Console.WriteLine("TEST 5: Math.Sqrt(16) = " & sqrtVal)
-
-' === TEST 6: Namespace block with class ===
+' === TEST 6: Namespace block with classes ===
 Namespace MyApp.Models
     Public Class Customer
         Public Property Name As String
@@ -47,24 +60,6 @@ Namespace MyApp.Models
     End Class
 End Namespace
 
-' === TEST 7: Create class from namespace (short name) ===
-Dim c As New Customer()
-c.Name = "Alice"
-c.Age = 30
-Console.WriteLine("TEST 7: " & c.GetInfo())
-
-' === TEST 8: Create class with fully-qualified name ===
-Dim c2 As New MyApp.Models.Customer()
-c2.Name = "Bob"
-c2.Age = 25
-Console.WriteLine("TEST 8: " & c2.GetInfo())
-
-' === TEST 9: Multiple classes in same namespace ===
-Dim o As New Order()
-o.OrderId = 1001
-o.CustomerName = "Alice"
-Console.WriteLine("TEST 9: " & o.GetSummary())
-
 ' === TEST 10: Nested namespaces ===
 Namespace Company
     Namespace HR
@@ -79,12 +74,7 @@ Namespace Company
     End Namespace
 End Namespace
 
-Dim emp As New Employee()
-emp.EmpName = "Charlie"
-emp.Department = "Engineering"
-Console.WriteLine("TEST 10: " & emp.Describe())
-
-' === TEST 11: Namespace with Module (functions globally accessible) ===
+' === TEST 11: Namespace with Module — members reach the enclosing namespace ===
 Namespace Utils
     Module StringHelpers
         Public Function Reverse(s As String) As String
@@ -107,21 +97,15 @@ Namespace Utils
     End Module
 End Namespace
 
-Console.WriteLine("TEST 11a: Reverse('Hello') = " & Reverse("Hello"))
-Console.WriteLine("TEST 11b: Repeat('ab', 3) = " & Repeat("ab", 3))
-
 ' === TEST 12: Namespace with Enum ===
 Namespace Config
     Public Enum LogLevel
         Debug = 0
         Info = 1
         Warning = 2
-        Error = 3
+        [Error] = 3
     End Enum
 End Namespace
-
-Dim level As Integer = Info
-Console.WriteLine("TEST 12: LogLevel.Info = " & level)
 
 ' === TEST 13: Class inheritance across namespaces ===
 Namespace Animals
@@ -142,17 +126,67 @@ Public Class Dog
     End Function
 End Class
 
-Dim d As New Dog()
-d.Species = "Dog"
-Console.WriteLine("TEST 13: " & d.Speak())
+Module Program
+    Sub Main()
+        ' === TEST 2: System.Console fully-qualified ===
+        System.Console.WriteLine("TEST 2: System.Console.WriteLine works")
 
-' === TEST 14: Object assignment from namespace ===
-Dim myMath As Object = System.Math
-Dim minVal As Double = myMath.Min(5, 15)
-Console.WriteLine("TEST 14: myMath.Min(5, 15) = " & minVal)
+        ' === TEST 3: Implicit Console (via Imports System) ===
+        Console.WriteLine("TEST 3: Console.WriteLine works (implicit)")
 
-' === TEST 15: System.IO access ===
-Console.WriteLine("TEST 15: System.IO namespace accessible = True")
+        ' === TEST 4: System.Math fully-qualified ===
+        Dim maxVal As Double = System.Math.Max(10, 20)
+        Console.WriteLine("TEST 4: System.Math.Max(10, 20) = " & maxVal)
 
-' === ALL TESTS COMPLETE ===
-Console.WriteLine("=== All namespace tests completed ===")
+        ' === TEST 5: Math without qualification ===
+        Dim sqrtVal As Double = Math.Sqrt(16)
+        Console.WriteLine("TEST 5: Math.Sqrt(16) = " & sqrtVal)
+
+        ' === TEST 7: Create class from namespace (short name, via Imports) ===
+        Dim c As New Customer()
+        c.Name = "Alice"
+        c.Age = 30
+        Console.WriteLine("TEST 7: " & c.GetInfo())
+
+        ' === TEST 8: Create class with fully-qualified name ===
+        Dim c2 As New MyApp.Models.Customer()
+        c2.Name = "Bob"
+        c2.Age = 25
+        Console.WriteLine("TEST 8: " & c2.GetInfo())
+
+        ' === TEST 9: Multiple classes in same namespace ===
+        Dim o As New Order()
+        o.OrderId = 1001
+        o.CustomerName = "Alice"
+        Console.WriteLine("TEST 9: " & o.GetSummary())
+
+        ' === TEST 10: Nested namespace type, via Imports Company.HR ===
+        Dim emp As New Employee()
+        emp.EmpName = "Charlie"
+        emp.Department = "Engineering"
+        Console.WriteLine("TEST 10: " & emp.Describe())
+
+        ' === TEST 11: Module members unqualified, via Imports Utils ===
+        Console.WriteLine("TEST 11a: Reverse('Hello') = " & Reverse("Hello"))
+        Console.WriteLine("TEST 11b: Repeat('ab', 3) = " & Repeat("ab", 3))
+
+        ' === TEST 12: Enum member through its enum type ===
+        Dim level As Integer = LogLevel.Info
+        Console.WriteLine("TEST 12: LogLevel.Info = " & level)
+
+        ' === TEST 13: Inheriting a base class from another namespace ===
+        Dim d As New Dog()
+        d.Species = "Dog"
+        Console.WriteLine("TEST 13: " & d.Speak())
+
+        ' === TEST 14: Static call on a namespace-qualified shared class ===
+        Dim minVal As Double = System.Math.Min(5, 15)
+        Console.WriteLine("TEST 14: System.Math.Min(5, 15) = " & minVal)
+
+        ' === TEST 15: System.IO access ===
+        Console.WriteLine("TEST 15: System.IO namespace accessible = True")
+
+        ' === ALL TESTS COMPLETE ===
+        Console.WriteLine("=== All namespace tests completed ===")
+    End Sub
+End Module

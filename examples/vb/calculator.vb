@@ -1,15 +1,17 @@
-' VB Calculator with WinForms-style GUI
+' VB Calculator with WinForms GUI
 ' Run: vybec examples/vb/calculator.vb
 
+Imports System.Windows.Forms
+
 Module Program
-    Dim displayName As String = ""
+    Dim display As TextBox
     Dim currentText As String = "0"
     Dim previousValue As String = ""
     Dim currentOp As String = ""
     Dim resetNext As Boolean = False
 
     Sub UpdateDisplay()
-        vybe.gui.setProperty(displayName, "Text", currentText)
+        display.Text = currentText
     End Sub
 
     Sub PressDigit(d As String)
@@ -119,164 +121,163 @@ Module Program
     End Sub
 
     Sub Main()
-        Dim form As Object = Window.Forms.Form("Calculator")
+        Dim form As New Form()
 
         ' Display
-        Dim display As Object = Window.Forms.TextBox()
-        display.text = "0"
-        display.left = 10
-        display.top = 10
-        display.width = 250
-        display.height = 40
-        display.readonly = True
+        display = New TextBox()
+        display.Text = "0"
+        display.Left = 10
+        display.Top = 10
+        display.Width = 260
+        display.Height = 40
+        display.ReadOnly = True
         form.Controls.Add(display)
-        displayName = display.name
 
         ' Row 1: 7 8 9 /
-        Dim btn7 As Object = Window.Forms.Button()
-        btn7.text = "7"
-        btn7.left = 10
-        btn7.top = 60
-        btn7.width = 58
-        btn7.height = 48
+        Dim btn7 As New Button()
+        btn7.Text = "7"
+        btn7.Left = 10
+        btn7.Top = 60
+        btn7.Width = 58
+        btn7.Height = 48
         form.Controls.Add(btn7)
         AddHandler btn7.Click, AddressOf OnBtn7
 
-        Dim btn8 As Object = Window.Forms.Button()
-        btn8.text = "8"
-        btn8.left = 73
-        btn8.top = 60
-        btn8.width = 58
-        btn8.height = 48
+        Dim btn8 As New Button()
+        btn8.Text = "8"
+        btn8.Left = 73
+        btn8.Top = 60
+        btn8.Width = 58
+        btn8.Height = 48
         form.Controls.Add(btn8)
         AddHandler btn8.Click, AddressOf OnBtn8
 
-        Dim btn9 As Object = Window.Forms.Button()
-        btn9.text = "9"
-        btn9.left = 136
-        btn9.top = 60
-        btn9.width = 58
-        btn9.height = 48
+        Dim btn9 As New Button()
+        btn9.Text = "9"
+        btn9.Left = 136
+        btn9.Top = 60
+        btn9.Width = 58
+        btn9.Height = 48
         form.Controls.Add(btn9)
         AddHandler btn9.Click, AddressOf OnBtn9
 
-        Dim btnDiv As Object = Window.Forms.Button()
-        btnDiv.text = "/"
-        btnDiv.left = 199
-        btnDiv.top = 60
-        btnDiv.width = 58
-        btnDiv.height = 48
+        Dim btnDiv As New Button()
+        btnDiv.Text = "/"
+        btnDiv.Left = 199
+        btnDiv.Top = 60
+        btnDiv.Width = 58
+        btnDiv.Height = 48
         form.Controls.Add(btnDiv)
         AddHandler btnDiv.Click, AddressOf OnBtnDiv
 
         ' Row 2: 4 5 6 *
-        Dim btn4 As Object = Window.Forms.Button()
-        btn4.text = "4"
-        btn4.left = 10
-        btn4.top = 115
-        btn4.width = 58
-        btn4.height = 48
+        Dim btn4 As New Button()
+        btn4.Text = "4"
+        btn4.Left = 10
+        btn4.Top = 115
+        btn4.Width = 58
+        btn4.Height = 48
         form.Controls.Add(btn4)
         AddHandler btn4.Click, AddressOf OnBtn4
 
-        Dim btn5 As Object = Window.Forms.Button()
-        btn5.text = "5"
-        btn5.left = 73
-        btn5.top = 115
-        btn5.width = 58
-        btn5.height = 48
+        Dim btn5 As New Button()
+        btn5.Text = "5"
+        btn5.Left = 73
+        btn5.Top = 115
+        btn5.Width = 58
+        btn5.Height = 48
         form.Controls.Add(btn5)
         AddHandler btn5.Click, AddressOf OnBtn5
 
-        Dim btn6 As Object = Window.Forms.Button()
-        btn6.text = "6"
-        btn6.left = 136
-        btn6.top = 115
-        btn6.width = 58
-        btn6.height = 48
+        Dim btn6 As New Button()
+        btn6.Text = "6"
+        btn6.Left = 136
+        btn6.Top = 115
+        btn6.Width = 58
+        btn6.Height = 48
         form.Controls.Add(btn6)
         AddHandler btn6.Click, AddressOf OnBtn6
 
-        Dim btnMul As Object = Window.Forms.Button()
-        btnMul.text = "*"
-        btnMul.left = 199
-        btnMul.top = 115
-        btnMul.width = 58
-        btnMul.height = 48
+        Dim btnMul As New Button()
+        btnMul.Text = "*"
+        btnMul.Left = 199
+        btnMul.Top = 115
+        btnMul.Width = 58
+        btnMul.Height = 48
         form.Controls.Add(btnMul)
         AddHandler btnMul.Click, AddressOf OnBtnMul
 
         ' Row 3: 1 2 3 -
-        Dim btn1 As Object = Window.Forms.Button()
-        btn1.text = "1"
-        btn1.left = 10
-        btn1.top = 170
-        btn1.width = 58
-        btn1.height = 48
+        Dim btn1 As New Button()
+        btn1.Text = "1"
+        btn1.Left = 10
+        btn1.Top = 170
+        btn1.Width = 58
+        btn1.Height = 48
         form.Controls.Add(btn1)
         AddHandler btn1.Click, AddressOf OnBtn1
 
-        Dim btn2 As Object = Window.Forms.Button()
-        btn2.text = "2"
-        btn2.left = 73
-        btn2.top = 170
-        btn2.width = 58
-        btn2.height = 48
+        Dim btn2 As New Button()
+        btn2.Text = "2"
+        btn2.Left = 73
+        btn2.Top = 170
+        btn2.Width = 58
+        btn2.Height = 48
         form.Controls.Add(btn2)
         AddHandler btn2.Click, AddressOf OnBtn2
 
-        Dim btn3 As Object = Window.Forms.Button()
-        btn3.text = "3"
-        btn3.left = 136
-        btn3.top = 170
-        btn3.width = 58
-        btn3.height = 48
+        Dim btn3 As New Button()
+        btn3.Text = "3"
+        btn3.Left = 136
+        btn3.Top = 170
+        btn3.Width = 58
+        btn3.Height = 48
         form.Controls.Add(btn3)
         AddHandler btn3.Click, AddressOf OnBtn3
 
-        Dim btnSubtr As Object = Window.Forms.Button()
-        btnSubtr.text = "-"
-        btnSubtr.left = 199
-        btnSubtr.top = 170
-        btnSubtr.width = 58
-        btnSubtr.height = 48
+        Dim btnSubtr As New Button()
+        btnSubtr.Text = "-"
+        btnSubtr.Left = 199
+        btnSubtr.Top = 170
+        btnSubtr.Width = 58
+        btnSubtr.Height = 48
         form.Controls.Add(btnSubtr)
         AddHandler btnSubtr.Click, AddressOf OnBtnSub
 
         ' Row 4: C 0 = +
-        Dim btnC As Object = Window.Forms.Button()
-        btnC.text = "C"
-        btnC.left = 10
-        btnC.top = 225
-        btnC.width = 58
-        btnC.height = 48
+        Dim btnC As New Button()
+        btnC.Text = "C"
+        btnC.Left = 10
+        btnC.Top = 225
+        btnC.Width = 58
+        btnC.Height = 48
         form.Controls.Add(btnC)
         AddHandler btnC.Click, AddressOf OnBtnC
 
-        Dim btn0 As Object = Window.Forms.Button()
-        btn0.text = "0"
-        btn0.left = 73
-        btn0.top = 225
-        btn0.width = 58
-        btn0.height = 48
+        Dim btn0 As New Button()
+        btn0.Text = "0"
+        btn0.Left = 73
+        btn0.Top = 225
+        btn0.Width = 58
+        btn0.Height = 48
         form.Controls.Add(btn0)
         AddHandler btn0.Click, AddressOf OnBtn0
 
-        Dim btnEq As Object = Window.Forms.Button()
-        btnEq.text = "="
-        btnEq.left = 136
-        btnEq.top = 225
-        btnEq.width = 58
-        btnEq.height = 48
+        Dim btnEq As New Button()
+        btnEq.Text = "="
+        btnEq.Left = 136
+        btnEq.Top = 225
+        btnEq.Width = 58
+        btnEq.Height = 48
         form.Controls.Add(btnEq)
         AddHandler btnEq.Click, AddressOf OnBtnEq
 
-        Dim btnAdd As Object = Window.Forms.Button()
-        btnAdd.text = "+"
-        btnAdd.left = 199
-        btnAdd.top = 225
-        btnAdd.width = 58
-        btnAdd.height = 48
+        Dim btnAdd As New Button()
+        btnAdd.Text = "+"
+        btnAdd.Left = 199
+        btnAdd.Top = 225
+        btnAdd.Width = 58
+        btnAdd.Height = 48
         form.Controls.Add(btnAdd)
         AddHandler btnAdd.Click, AddressOf OnBtnAdd
 

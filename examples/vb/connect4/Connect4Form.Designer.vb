@@ -68,9 +68,9 @@ Partial Class Connect4Form
         '
         'btnReset
         '
-        Me.btnReset.Location = New System.Drawing.Point(212, 450)
+        Me.btnReset.Location = New System.Drawing.Point(202, 450)
         Me.btnReset.Name = "btnReset"
-        Me.btnReset.Size = New System.Drawing.Size(75, 23)
+        Me.btnReset.Size = New System.Drawing.Size(96, 23)
         Me.btnReset.TabIndex = 3
         Me.btnReset.Text = "Reset Game"
         Me.btnReset.UseVisualStyleBackColor = True

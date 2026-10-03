@@ -1,6 +1,6 @@
+Public Class Form1
 
-
-Private Sub btn1_Click(sender As Object, e As EventArgs) Handles btn1.Click
+    Private Sub btn1_Click(sender As Object, e As EventArgs) Handles btn1.Click
         ' 1. Declare and Instantiate the class
         Dim user As New Person()
 
@@ -9,5 +9,6 @@ Private Sub btn1_Click(sender As Object, e As EventArgs) Handles btn1.Click
 
         ' 3. Call the method
         user.Greet()
-End Sub
+    End Sub
 
+End Class

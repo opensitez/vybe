@@ -118,7 +118,7 @@ Partial Class Form1
         Me.btn8.TabIndex = 8
         Me.btn8.Enabled = True
         Me.btn8.Visible = True
-        Me.lblStatus.Location = New System.Drawing.Point(20, 230)
+        Me.lblStatus.Location = New System.Drawing.Point(20, 235)
         Me.lblStatus.Size = New System.Drawing.Size(180, 23)
         Me.lblStatus.Text = "Player X Turn"
         Me.lblStatus.BackColor = System.Drawing.ColorTranslator.FromHtml("#f8fafc")
@@ -137,13 +137,13 @@ Partial Class Form1
         Me.btnReset.TabIndex = 10
         Me.btnReset.Enabled = True
         Me.btnReset.Visible = True
-        Me.lbl12.Location = New System.Drawing.Point(32, 16)
+        Me.lbl12.Location = New System.Drawing.Point(22, 16)
         Me.lbl12.Size = New System.Drawing.Size(80, 20)
-        Me.lbl12.Text = "lbl12"
+        Me.lbl12.Text = "Tic Tac Toe"
         Me.lbl12.BackColor = System.Drawing.ColorTranslator.FromHtml("#f8fafc")
         Me.lbl12.ForeColor = System.Drawing.ColorTranslator.FromHtml("#0f172a")
         Me.lbl12.Font = New System.Drawing.Font("Segoe UI", 12F)
-        Me.lbl12.Name = "lbl12"
+        Me.lbl12.Name = "titleLabel"
         Me.lbl12.TabIndex = 0
         Me.lbl12.Visible = True
         Me.Controls.Add(Me.btn0)

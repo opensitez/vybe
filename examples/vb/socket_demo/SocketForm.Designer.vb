@@ -1,7 +1,6 @@
 Partial Class SocketForm
     Inherits System.Windows.Forms.Form
 
-    Friend WithEvents Size As System.Drawing.Size
     Friend WithEvents lblServer As System.Windows.Forms.Label
     Friend WithEvents btnListen As System.Windows.Forms.Button
     Friend WithEvents txtServerLog As System.Windows.Forms.TextBox
@@ -12,7 +11,6 @@ Partial Class SocketForm
     Friend WithEvents txtClientLog As System.Windows.Forms.TextBox
 
     Private Sub InitializeComponent()
-        Me.Size = New System.Drawing.Size()
         Me.lblServer = New System.Windows.Forms.Label()
         Me.btnListen = New System.Windows.Forms.Button()
         Me.txtServerLog = New System.Windows.Forms.TextBox()
@@ -22,16 +20,6 @@ Partial Class SocketForm
         Me.btnSend = New System.Windows.Forms.Button()
         Me.txtClientLog = New System.Windows.Forms.TextBox()
         Me.SuspendLayout()
-        Me.Size.Location = New System.Drawing.Point(290, 40)
-        Me.Size.Size = New System.Drawing.Size(100, 100)
-        Me.Size.Text = "Size"
-        Me.Size.BackColor = System.Drawing.ColorTranslator.FromHtml("#f8fafc")
-        Me.Size.ForeColor = System.Drawing.ColorTranslator.FromHtml("#0f172a")
-        Me.Size.Font = New System.Drawing.Font("Segoe UI", 12F)
-        Me.Size.Name = "Size"
-        Me.Size.TabIndex = 0
-        Me.Size.Enabled = True
-        Me.Size.Visible = True
         Me.lblServer.Location = New System.Drawing.Point(20, 70)
         Me.lblServer.Size = New System.Drawing.Size(180, 20)
         Me.lblServer.Text = "TCP Server (Port 8080)"
@@ -116,7 +104,6 @@ Partial Class SocketForm
         Me.txtClientLog.ReadOnly = True
         Me.txtClientLog.ScrollBars = System.Windows.Forms.ScrollBars.Vertical
         Me.txtClientLog.Visible = True
-        Me.Controls.Add(Me.Size)
         Me.Controls.Add(Me.lblServer)
         Me.Controls.Add(Me.btnListen)
         Me.Controls.Add(Me.txtServerLog)

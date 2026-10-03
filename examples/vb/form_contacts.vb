@@ -1,101 +1,138 @@
 ' VB Contacts Manager — WinForms-style GUI
 ' Demonstrates: Form, Labels, TextBoxes, Buttons, ListBox, DataGridView
 
+Imports System.Windows.Forms
+
 Module Program
+    Dim txtName As TextBox
+    Dim txtEmail As TextBox
+    Dim txtPhone As TextBox
+    Dim grid As DataGridView
+    Dim status As Label
+    Dim contactCount As Integer = 0
+
+    Sub ClearInputs()
+        txtName.Text = ""
+        txtEmail.Text = ""
+        txtPhone.Text = ""
+    End Sub
+
+    Sub OnAddContact()
+        If txtName.Text = "" Then
+            status.Text = "Enter a name"
+            Return
+        End If
+        grid.Rows.Add(txtName.Text, txtEmail.Text, txtPhone.Text)
+        contactCount += 1
+        status.Text = CStr(contactCount) & " contacts"
+        ClearInputs()
+    End Sub
+
+    Sub OnClear()
+        ClearInputs()
+        status.Text = "Ready - " & CStr(contactCount) & " contacts"
+    End Sub
+
     Sub Main()
-        Dim form As Object = Window.Forms.Form("Contact Manager")
+        Dim form As New Form()
+        form.Text = "Contact Manager"
 
         ' Header
-        Dim header As Object = Window.Forms.Label()
-        header.text = "Contact Manager"
-        header.left = 10
-        header.top = 10
-        header.width = 300
-        header.height = 30
-        vybe.gui.controlsAdd("Contact Manager", header)
+        Dim header As New Label()
+        header.Text = "Contact Manager"
+        header.Left = 10
+        header.Top = 10
+        header.Width = 300
+        header.Height = 30
+        form.Controls.Add(header)
 
         ' Name input
-        Dim lblName As Object = Window.Forms.Label()
-        lblName.text = "Name:"
-        lblName.left = 10
-        lblName.top = 50
-        lblName.width = 60
-        lblName.height = 25
-        vybe.gui.controlsAdd("Contact Manager", lblName)
+        Dim lblName As New Label()
+        lblName.Text = "Name:"
+        lblName.Left = 10
+        lblName.Top = 50
+        lblName.Width = 60
+        lblName.Height = 25
+        form.Controls.Add(lblName)
 
-        Dim txtName As Object = Window.Forms.TextBox()
-        txtName.left = 80
-        txtName.top = 50
-        txtName.width = 200
-        txtName.height = 25
-        vybe.gui.controlsAdd("Contact Manager", txtName)
+        txtName = New TextBox()
+        txtName.Left = 80
+        txtName.Top = 50
+        txtName.Width = 200
+        txtName.Height = 25
+        form.Controls.Add(txtName)
 
         ' Email input
-        Dim lblEmail As Object = Window.Forms.Label()
-        lblEmail.text = "Email:"
-        lblEmail.left = 10
-        lblEmail.top = 85
-        lblEmail.width = 60
-        lblEmail.height = 25
-        vybe.gui.controlsAdd("Contact Manager", lblEmail)
+        Dim lblEmail As New Label()
+        lblEmail.Text = "Email:"
+        lblEmail.Left = 10
+        lblEmail.Top = 85
+        lblEmail.Width = 60
+        lblEmail.Height = 25
+        form.Controls.Add(lblEmail)
 
-        Dim txtEmail As Object = Window.Forms.TextBox()
-        txtEmail.left = 80
-        txtEmail.top = 85
-        txtEmail.width = 200
-        txtEmail.height = 25
-        vybe.gui.controlsAdd("Contact Manager", txtEmail)
+        txtEmail = New TextBox()
+        txtEmail.Left = 80
+        txtEmail.Top = 85
+        txtEmail.Width = 200
+        txtEmail.Height = 25
+        form.Controls.Add(txtEmail)
 
         ' Phone input
-        Dim lblPhone As Object = Window.Forms.Label()
-        lblPhone.text = "Phone:"
-        lblPhone.left = 10
-        lblPhone.top = 120
-        lblPhone.width = 60
-        lblPhone.height = 25
-        vybe.gui.controlsAdd("Contact Manager", lblPhone)
+        Dim lblPhone As New Label()
+        lblPhone.Text = "Phone:"
+        lblPhone.Left = 10
+        lblPhone.Top = 120
+        lblPhone.Width = 60
+        lblPhone.Height = 25
+        form.Controls.Add(lblPhone)
 
-        Dim txtPhone As Object = Window.Forms.TextBox()
-        txtPhone.left = 80
-        txtPhone.top = 120
-        txtPhone.width = 200
-        txtPhone.height = 25
-        vybe.gui.controlsAdd("Contact Manager", txtPhone)
+        txtPhone = New TextBox()
+        txtPhone.Left = 80
+        txtPhone.Top = 120
+        txtPhone.Width = 200
+        txtPhone.Height = 25
+        form.Controls.Add(txtPhone)
 
         ' Buttons
-        Dim btnAdd As Object = Window.Forms.Button()
-        btnAdd.text = "Add Contact"
-        btnAdd.left = 80
-        btnAdd.top = 160
-        btnAdd.width = 95
-        btnAdd.height = 35
-        vybe.gui.controlsAdd("Contact Manager", btnAdd)
+        Dim btnAdd As New Button()
+        btnAdd.Text = "Add Contact"
+        btnAdd.Left = 80
+        btnAdd.Top = 160
+        btnAdd.Width = 95
+        btnAdd.Height = 35
+        form.Controls.Add(btnAdd)
+        AddHandler btnAdd.Click, AddressOf OnAddContact
 
-        Dim btnClear As Object = Window.Forms.Button()
-        btnClear.text = "Clear"
-        btnClear.left = 185
-        btnClear.top = 160
-        btnClear.width = 95
-        btnClear.height = 35
-        vybe.gui.controlsAdd("Contact Manager", btnClear)
+        Dim btnClear As New Button()
+        btnClear.Text = "Clear"
+        btnClear.Left = 185
+        btnClear.Top = 160
+        btnClear.Width = 95
+        btnClear.Height = 35
+        form.Controls.Add(btnClear)
+        AddHandler btnClear.Click, AddressOf OnClear
 
         ' Contacts grid
-        Dim grid As Object = Window.Forms.DataGridView()
-        grid.left = 10
-        grid.top = 210
-        grid.width = 560
-        grid.height = 300
-        vybe.gui.controlsAdd("Contact Manager", grid)
+        grid = New DataGridView()
+        grid.Left = 10
+        grid.Top = 210
+        grid.Width = 560
+        grid.Height = 300
+        form.Controls.Add(grid)
+        grid.Columns.Add("Name", "Name")
+        grid.Columns.Add("Email", "Email")
+        grid.Columns.Add("Phone", "Phone")
 
         ' Status bar
-        Dim status As Object = Window.Forms.Label()
-        status.text = "Ready — 0 contacts"
-        status.left = 10
-        status.top = 520
-        status.width = 560
-        status.height = 25
-        vybe.gui.controlsAdd("Contact Manager", status)
+        status = New Label()
+        status.Text = "Ready — 0 contacts"
+        status.Left = 10
+        status.Top = 520
+        status.Width = 560
+        status.Height = 25
+        form.Controls.Add(status)
 
-        Application.Run("Contact Manager")
+        Application.Run(form)
     End Sub
 End Module

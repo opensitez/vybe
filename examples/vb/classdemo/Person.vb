@@ -16,8 +16,4 @@ Public Class Person
     Public Sub Greet()
         MessageBox.Show("Hello, my name is " & _name, "Greeting")
     End Sub
-
-Private Sub btn1_Click(sender As Object, e As EventArgs) Handles btn1.Click
-    ' TODO: Add your code here
-End Sub
 End Class

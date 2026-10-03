@@ -12,7 +12,7 @@ Partial Class Form2
         Me.txt1 = New System.Windows.Forms.TextBox()
         Me.bnav1 = New System.Windows.Forms.BindingNavigator()
         Me.SuspendLayout()
-        Me.da1.ConnectionString = "Server=localhost;Port=3306;Database=genealogy;Uid=root;Pwd=password"
+        Me.da1.ConnectionString = "Server=localhost;Port=3306;Database=genealogy;Uid=root;Pwd="
         Me.da1.Name = "da1"
         Me.bs1.DataSource = Me.da1
         Me.bs1.DataMember = "names"

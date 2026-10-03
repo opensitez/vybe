@@ -12,37 +12,38 @@ Public Class Connect4Form
     Private _isGameOver As Boolean = False
 
     Private Sub Connect4Form_Load(sender As Object, e As EventArgs) Handles MyBase.Load
-        Console.WriteLine("DEBUG: Connect4Form_Load called")
         InitializeBoard()
     End Sub
 
     Private Sub InitializeBoard()
-        Console.WriteLine("DEBUG: InitializeBoard start")
-        pnlBoard.Controls.Clear()
         pnlBoard.RowCount = 6
         pnlBoard.ColumnCount = 7
 
         For r As Integer = 0 To 5
             For c As Integer = 0 To 6
-                Dim p As New Panel()
-                p.BackColor = Color.White
-                p.BorderStyle = BorderStyle.FixedSingle
-                p.Margin = New Padding(2)
-                p.Dock = DockStyle.Fill
-                p.Tag = r & "," & c
-                
-                Console.WriteLine("DEBUG: Adding panel at " & r & "," & c)
-                pnlBoard.Controls.Add(p, c, r)
-                _panels(r, c) = p
+                _board(r, c) = 0
+                If _panels(r, c) Is Nothing Then
+                    Dim p As New Panel()
+                    p.Name = "Cell_" & CStr(r) & "_" & CStr(c)
+                    p.BackColor = Color.White
+                    p.BorderStyle = BorderStyle.FixedSingle
+                    p.Margin = New Padding(2)
+                    p.Dock = DockStyle.Fill
+                    p.Tag = New Point(r, c)
+                    AddHandler p.Click, AddressOf Cell_Click
+                    pnlBoard.Controls.Add(p, c, r)
+                    _panels(r, c) = p
+                Else
+                    _panels(r, c).BackColor = Color.White
+                End If
             Next
         Next
-        Console.WriteLine("DEBUG: InitializeBoard done")
     End Sub
 
     Private Sub Cell_Click(sender As Object, e As EventArgs)
         If Not _isPlayerTurn Or _isGameOver Then Return
         
-        Dim p = DirectCast(sender, Panel)
+        Dim p As Panel = DirectCast(sender, Panel)
         Dim coords = DirectCast(p.Tag, Point)
         Dim col = coords.Y
         
@@ -50,10 +51,6 @@ Public Class Connect4Form
             If _isGameOver Then Return
             _isPlayerTurn = False
             lblStatus.Text = "AI Thinking..."
-            Application.DoEvents()
-            
-            ' Small delay for realism
-            System.Threading.Thread.Sleep(500)
             
             Dim aiCol = GetBestMove()
             MakeMove(aiCol, 2)
@@ -165,7 +162,7 @@ Public Class Connect4Form
         For c As Integer = 0 To COLS - 1
             If _board(0, c) = 0 Then
                 Dim r = DropTemp(c, 2)
-                Dim score = Minimax(4, -1000000, 1000000, False)
+                Dim score = Minimax(2, -1000000, 1000000, False)
                 UndoTemp(r, c)
                 
                 If score > bestScore Then
