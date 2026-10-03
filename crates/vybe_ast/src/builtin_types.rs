@@ -194,7 +194,7 @@ pub const PLATFORM_INT_WIDTHS: &[WidthSpelling] = &[
 /// The storage width `hint` declares, or `None` if the platform does not narrow
 /// it. Matching is on a normalised hint, like every other lookup here.
 pub fn int_width_of(hint: &str) -> Option<IntWidth> {
-    let normalized = normalize(hint);
+    let normalized = normalize_for_lookup(hint);
     PLATFORM_INT_WIDTHS
         .iter()
         .find(|sp| match sp.how {
@@ -301,6 +301,15 @@ pub fn normalize(hint: &str) -> String {
     hint.trim().to_lowercase()
 }
 
+fn normalize_for_lookup(hint: &str) -> Cow<'_, str> {
+    let trimmed = hint.trim();
+    if trimmed.is_ascii() && !trimmed.bytes().any(|b| b.is_ascii_uppercase()) {
+        Cow::Borrowed(trimmed)
+    } else {
+        Cow::Owned(trimmed.to_lowercase())
+    }
+}
+
 fn matches(sp: &Spelling, normalized: &str) -> bool {
     let pattern = sp.pattern.as_ref();
     match sp.how {
@@ -333,7 +342,7 @@ fn matches(sp: &Spelling, normalized: &str) -> bool {
 /// change the predicates for overlapping hints — the differential tests below
 /// caught exactly that.
 pub fn classify_with(extra: &[Spelling], hint: &str) -> Option<BuiltinType> {
-    let normalized = normalize(hint);
+    let normalized = normalize_for_lookup(hint);
     extra
         .iter()
         .chain(PLATFORM_SPELLINGS.iter())
@@ -351,7 +360,7 @@ pub fn classify(hint: &str) -> Option<BuiltinType> {
 ///
 /// This is the predicates' semantics, not the resolver's — see [`classify_with`].
 pub fn matches_type_with(extra: &[Spelling], hint: &str, ty: BuiltinType) -> bool {
-    let normalized = normalize(hint);
+    let normalized = normalize_for_lookup(hint);
     extra
         .iter()
         .chain(PLATFORM_SPELLINGS.iter())
@@ -369,12 +378,25 @@ pub fn is(hint: &str, ty: BuiltinType) -> bool {
 /// Whether `hint` names any numeric built-in — the exact question the old
 /// `is_numeric_type_hint` answered, preserved for its call sites.
 pub fn is_numeric(hint: &str) -> bool {
-    is(hint, BuiltinType::Int) || is(hint, BuiltinType::Double) || is(hint, BuiltinType::BigInt)
+    let normalized = normalize_for_lookup(hint);
+    PLATFORM_SPELLINGS.iter().any(|sp| {
+        matches!(sp.ty, BuiltinType::Int | BuiltinType::Double | BuiltinType::BigInt)
+            && matches(sp, &normalized)
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lookup_preserves_unicode_and_whitespace_normalization() {
+        let spelling = [Spelling::owned("\u{130}NT", Match::Exact, BuiltinType::Int)];
+        assert_eq!(classify_with(&spelling, "  \u{130}NT\t"), Some(BuiltinType::Int));
+        assert!(matches_type_with(&spelling, "i\u{307}nt", BuiltinType::Int));
+        assert_eq!(int_width_of("\tUINT32  "), Some(IntWidth::U32));
+        assert!(is_numeric("\tDouble  "));
+    }
 
     /// Every spelling the old `is_string_type_hint` accepted must still
     /// classify as a string. This is the neutrality check for the move: the

@@ -2755,6 +2755,24 @@ impl BitLane {
     }
 }
 
+/// Integer operations whose semantics depend on a declared storage lane.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IntOp {
+    Add,
+    Sub,
+    Mul,
+    DivS,
+    DivU,
+    RemS,
+    RemU,
+    Shl,
+    ShrS,
+    ShrU,
+    And,
+    Or,
+    Xor,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum BinOp {
     /// Rotate left — the bits shifted out re-enter at the other end, so
@@ -2769,6 +2787,9 @@ pub enum BinOp {
     Add,
     Sub,
     Mul,
+    /// Integer arithmetic in the operand's declared lane, independent of a
+    /// language-wide operator policy.
+    Integer(IntOp, BitLane),
     Div,
     IDiv,
     Mod,
@@ -4541,6 +4562,11 @@ pub struct Directives {
     /// have to change its shape.
     pub method_receiver: Option<MethodReceiver>,
 
+    /// Whether a declared method can be replaced after class creation.
+    /// `None` preserves live dispatch; `Some(false)` permits a resolved,
+    /// non-variadic method call to omit runtime callable-shape probes.
+    pub method_bindings_live: Option<bool>,
+
     /// Is a parameter with no supplied argument bound to `undefined`, rather
     /// than being an error or a language-specific sentinel? ECMA-262 §10.2.1.1.
     pub missing_arg_is_undefined: Option<bool>,
@@ -5177,6 +5203,9 @@ impl Directives {
         if other.spread_arguments.is_some() {
             self.spread_arguments = other.spread_arguments;
         }
+        if other.method_bindings_live.is_some() {
+            self.method_bindings_live = other.method_bindings_live;
+        }
         // A unit-level fact about the object model, not something a nested
         // region redefines — but it gets a rule all the same, because the note
         // above is right: a field with no rule here is dropped by any merge,
@@ -5743,6 +5772,7 @@ impl Statement {
             }
             // InterfaceDecl members are SIGNATURES — no bodies to walk.
             StmtKind::NamespaceDecl { body: b, .. } => body(b, f),
+            StmtKind::Labeled { body: b, .. } => b.walk_exprs_mut(f),
             StmtKind::VarDecl { declarations, .. } => {
                 for decl in declarations {
                     if let Some(init) = &mut decl.init {

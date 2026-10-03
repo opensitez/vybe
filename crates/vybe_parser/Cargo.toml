@@ -1,0 +1,14 @@
+[package]
+name = "vybe_parser"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-only"
+description = "Independent Vybe grammar frontend and parser infrastructure"
+
+# Deliberately independent: core development must not resolve/build the
+# compiler, runtime, language plugins, pest, or a JS toolchain.
+[workspace]
+resolver = "2"
+members = ["."]
+
+[dependencies]

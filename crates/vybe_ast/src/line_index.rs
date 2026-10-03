@@ -128,14 +128,10 @@ mod tests {
         assert_eq!(line_col(6), Some((2, 1)));
         assert_eq!(line_col(11), Some((3, 1))); // the empty line
         assert_eq!(line_col(12), Some((4, 1)));
+        let span = span_0based(6, 10).expect("indexed span");
         assert_eq!(
-            span_0based(6, 10),
-            Some(Span {
-                start_line: 1,
-                start_col: 0,
-                end_line: 1,
-                end_col: 4
-            })
+            (span.start_line, span.start_col, span.end_line, span.end_col),
+            (1, 0, 1, 4),
         );
     }
 
@@ -144,7 +140,7 @@ mod tests {
         // Proves the check can fail: a walker that never installs an index
         // keeps its own fallback rather than reporting line 0.
         assert_eq!(line_col(0), None);
-        assert_eq!(span_1based(0, 1), None);
+        assert!(span_1based(0, 1).is_none());
     }
 
     #[test]
