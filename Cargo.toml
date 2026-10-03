@@ -76,7 +76,7 @@ inventory = "0.3"
 dashmap = "6"
 
 # Dialog libraries
-rfd = "0.14"
+rfd = "0.15.4"
 
 # HTTP server stack
 hyper = { version = "1", features = ["full"] }
