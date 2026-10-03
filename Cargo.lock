@@ -1669,8 +1669,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ff2abc00be7fca6ebc474524697ae276ad847ad0a6b3faa4bcb027e9a4614ad0"
 dependencies = [
  "cfg-if",
+ "js-sys",
  "libc",
  "wasi 0.11.1+wasi-snapshot-preview1",
+ "wasm-bindgen",
 ]
 
 [[package]]
@@ -1692,11 +1694,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0de51e6874e94e7bf76d726fc5d13ba782deca734ff60d5bb2fb2607c7406555"
 dependencies = [
  "cfg-if",
+ "js-sys",
  "libc",
  "r-efi 6.0.0",
  "rand_core 0.10.1",
  "wasip2",
  "wasip3",
+ "wasm-bindgen",
 ]
 
 [[package]]
@@ -1774,6 +1778,7 @@ dependencies = [
  "allocator-api2",
  "equivalent",
  "foldhash 0.1.5",
+ "serde",
 ]
 
 [[package]]
@@ -1918,24 +1923,9 @@ dependencies = [
  "hyper",
  "hyper-util",
  "rustls",
+ "rustls-native-certs",
  "tokio",
  "tokio-rustls",
- "tower-service",
-]
-
-[[package]]
-name = "hyper-tls"
-version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "70206fc6890eaca9fde8a0bf71caa2ddfc9fe045ac9e5c70df101a7dbde866e0"
-dependencies = [
- "bytes",
- "http-body-util",
- "hyper",
- "hyper-util",
- "native-tls",
- "tokio",
- "tokio-native-tls",
  "tower-service",
 ]
 
@@ -2892,6 +2882,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "lru-slab"
+version = "0.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4050469837a6ff301cd14c1f8f24f88549e6d548f24f64e2148eb0f72cebc51f"
+
+[[package]]
 name = "lsp-server"
 version = "0.7.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3647,6 +3643,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "osbrowser"
+version = "0.6.2"
+dependencies = [
+ "bytes",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "serde",
+ "serde_json",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "owned_ttf_parser"
 version = "0.25.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4060,6 +4070,62 @@ dependencies = [
 ]
 
 [[package]]
+name = "quinn"
+version = "0.11.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4051e23e9185c255a7e33ef59cdbca87a22d359052eecd22fc6b901fb37d9d11"
+dependencies = [
+ "bytes",
+ "cfg_aliases",
+ "pin-project-lite",
+ "quinn-proto",
+ "quinn-udp",
+ "rustc-hash",
+ "rustls",
+ "socket2 0.5.10",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "web-time",
+]
+
+[[package]]
+name = "quinn-proto"
+version = "0.11.18"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a9746dbde176634f4f2f1faf2404e30a31b2bc1e9cafb5329c95d8177a18c9fc"
+dependencies = [
+ "bytes",
+ "getrandom 0.4.2",
+ "lru-slab",
+ "rand 0.10.1",
+ "rand_pcg",
+ "ring",
+ "rustc-hash",
+ "rustls",
+ "rustls-pki-types",
+ "slab",
+ "thiserror 2.0.18",
+ "tinyvec",
+ "tracing",
+ "web-time",
+]
+
+[[package]]
+name = "quinn-udp"
+version = "0.5.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "35a133f956daabe89a61a685c2649f13d82d5aa4bd5d12d1277e1072a21c0694"
+dependencies = [
+ "cfg_aliases",
+ "libc",
+ "once_cell",
+ "socket2 0.5.10",
+ "tracing",
+ "windows-sys 0.52.0",
+]
+
+[[package]]
 name = "quote"
 version = "1.0.45"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4132,6 +4198,15 @@ name = "rand_core"
 version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "63b8176103e19a2643978565ca18b50549f6101881c443590420e4dc998a3c69"
+
+[[package]]
+name = "rand_pcg"
+version = "0.10.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "caa0f4137e1c0a72f4c651489402276c8e8e1cf081f3b0ba156d2cbeef09e86a"
+dependencies = [
+ "rand_core 0.10.1",
+]
 
 [[package]]
 name = "rangemap"
@@ -4269,21 +4344,22 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-rustls",
- "hyper-tls",
  "hyper-util",
  "js-sys",
  "log",
  "mime",
- "native-tls",
  "percent-encoding",
  "pin-project-lite",
+ "quinn",
+ "rustls",
+ "rustls-native-certs",
  "rustls-pki-types",
  "serde",
  "serde_json",
  "serde_urlencoded",
  "sync_wrapper",
  "tokio",
- "tokio-native-tls",
+ "tokio-rustls",
  "tower",
  "tower-http",
  "tower-service",
@@ -4463,10 +4539,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0283386ce02abc0151e1761d08802dfe86c173b0b494af5cbc086574e453da06"
 dependencies = [
  "once_cell",
+ "ring",
  "rustls-pki-types",
  "rustls-webpki",
  "subtle",
  "zeroize",
+]
+
+[[package]]
+name = "rustls-native-certs"
+version = "0.8.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dab5152771c58876a2146916e53e35057e1a4dfa2b9df0f0305b07f611fdea4d"
+dependencies = [
+ "openssl-probe",
+ "rustls-pki-types",
+ "schannel",
+ "security-framework",
 ]
 
 [[package]]
@@ -4475,6 +4564,7 @@ version = "1.15.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2f4925028c7eb5d1fcdaf196971378ed9d2c1c4efc7dc5d011256f76c99c0a96"
 dependencies = [
+ "web-time",
  "zeroize",
 ]
 
@@ -5265,16 +5355,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tokio-native-tls"
-version = "0.3.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bbae76ab933c85776efabc971569dd6119c580d8f5d448769dec1764bf796ef2"
-dependencies = [
- "native-tls",
- "tokio",
-]
-
-[[package]]
 name = "tokio-postgres"
 version = "0.7.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5666,12 +5746,15 @@ dependencies = [
  "vybe_ast",
  "vybe_language_cobol",
  "vybe_language_php",
+ "vybe_language_python",
  "vybe_platform_ecma",
  "vybe_platform_node",
  "vybe_platform_wasi",
+ "vybe_platform_wasm",
  "vybe_platform_web",
  "vybe_runtime",
  "vybex",
+ "wasmparser",
 ]
 
 [[package]]
@@ -5712,7 +5795,6 @@ dependencies = [
  "vybe_platform_dotnet",
  "vybe_platform_wasm",
  "vybe_runtime",
- "widgets",
 ]
 
 [[package]]
@@ -5802,6 +5884,8 @@ dependencies = [
  "pest_derive",
  "vybe_ast",
  "vybe_compiler",
+ "vybe_parser",
+ "vybe_parser_codegen",
  "vybe_runtime",
 ]
 
@@ -5893,7 +5977,6 @@ dependencies = [
  "vybe_language_js",
  "vybe_platform_dotnet",
  "vybe_runtime",
- "widgets",
 ]
 
 [[package]]
@@ -5919,6 +6002,20 @@ dependencies = [
  "vybe_compiler",
  "vybe_platform_wasm",
  "vybe_runtime",
+]
+
+[[package]]
+name = "vybe_parser"
+version = "0.1.0"
+dependencies = [
+ "unicode-ident",
+]
+
+[[package]]
+name = "vybe_parser_codegen"
+version = "0.1.0"
+dependencies = [
+ "vybe_parser",
 ]
 
 [[package]]
@@ -6051,6 +6148,7 @@ dependencies = [
  "indexmap",
  "inventory",
  "vybe_runtime",
+ "wasmparser",
 ]
 
 [[package]]
@@ -6060,14 +6158,17 @@ dependencies = [
  "form_urlencoded",
  "inventory",
  "md-5 0.10.6",
+ "osbrowser",
  "quick-xml 0.36.2",
+ "rfd",
+ "serde",
+ "serde_json",
  "sha2 0.10.9",
  "tiny-skia 0.12.0",
  "url",
  "vybe_platform_ecma",
  "vybe_runtime",
  "webcore",
- "widgets",
 ]
 
 [[package]]
@@ -6129,7 +6230,6 @@ dependencies = [
  "vybe_platform_web",
  "vybe_runtime",
  "webcore",
- "widgets",
 ]
 
 [[package]]
@@ -6290,6 +6390,7 @@ dependencies = [
  "hashbrown 0.15.5",
  "indexmap",
  "semver",
+ "serde",
 ]
 
 [[package]]
@@ -6422,17 +6523,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "webcanvas"
+version = "0.1.0"
+dependencies = [
+ "base64 0.21.7",
+ "cosmic-text",
+ "image",
+ "rayon",
+ "swash",
+ "tiny-skia 0.12.0",
+]
+
+[[package]]
 name = "webcore"
 version = "0.3.4"
 dependencies = [
  "base64 0.21.7",
- "brotli 8.0.4",
  "bytemuck",
  "cosmic-text",
  "encoding_rs",
- "flate2",
  "fontdb",
  "image",
+ "mime",
+ "objc2 0.6.4",
+ "objc2-core-foundation",
+ "objc2-core-graphics",
+ "objc2-foundation 0.3.2",
+ "objc2-quartz-core 0.3.2",
+ "png",
  "rand 0.8.5",
  "raw-window-handle",
  "rayon",
@@ -6443,7 +6561,20 @@ dependencies = [
  "tiny-skia 0.12.0",
  "unicode-bidi",
  "unicode-segmentation",
+ "webcanvas",
+ "webmedia",
  "winit",
+ "zune-jpeg",
+]
+
+[[package]]
+name = "webmedia"
+version = "0.1.0"
+dependencies = [
+ "brotli 8.0.4",
+ "flate2",
+ "image",
+ "url",
 ]
 
 [[package]]
@@ -6480,6 +6611,7 @@ dependencies = [
  "softbuffer",
  "swash",
  "tiny-skia 0.12.0",
+ "webcanvas",
  "winit",
 ]
 
