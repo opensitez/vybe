@@ -1,0 +1,2 @@
+WHITESPACE = _{ "_" }
+word = { "x" ~ "y" }

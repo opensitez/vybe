@@ -1,0 +1,18 @@
+[package]
+name = "conformance_tests"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-only"
+publish = false
+
+# Separate lock/build boundary: ordinary core tests never build pest/derive.
+[workspace]
+resolver = "2"
+
+[dependencies]
+vybe_parser = { path = ".." }
+pest = "=2.8.6"
+pest_derive = "=2.8.6"
+
+[dev-dependencies]
+vybe_parser_generated_tests = { path = "../generated_tests" }

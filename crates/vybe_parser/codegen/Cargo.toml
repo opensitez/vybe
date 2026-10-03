@@ -1,0 +1,9 @@
+[package]
+name = "vybe_parser_codegen"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-only"
+description = "Build-time Rust program generation for Vybe grammars"
+
+[dependencies]
+vybe_parser = { path = ".." }

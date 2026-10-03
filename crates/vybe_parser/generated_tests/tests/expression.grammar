@@ -1,0 +1,6 @@
+WHITESPACE = _{ " " | "\n" }
+number = @{ ASCII_DIGIT+ }
+operator = { "+" | "-" | "*" | "^" }
+open = { "(" }
+close = { ")" }
+expression = { SOI ~ (number | operator | open | close)+ ~ EOI }

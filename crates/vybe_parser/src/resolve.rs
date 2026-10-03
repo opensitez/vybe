@@ -65,12 +65,17 @@ pub enum Reference {
 }
 
 /// Located grammar IR with names resolved once to dense numeric IDs.
-/// Does not yet certify progress/recursion safety or supply a source parser.
+/// Includes conservative progress/effect analysis. Warnings require runtime
+/// guards; they do not prove a grammar unsafe or cause compilation rejection.
 #[derive(Debug, Clone)]
 pub struct CompiledGrammar {
     syntax: GrammarSyntax,
     references: Vec<Option<Reference>>,
     rules_by_name: HashMap<String, RuleId>,
+    analysis: crate::analysis::Analysis,
+    pub(crate) scopes: Vec<crate::program::Scope>,
+    pub(crate) rule_scopes: Vec<usize>,
+    pub(crate) pratt: Vec<Option<crate::program::OwnedPratt>>,
 }
 
 impl CompiledGrammar {
@@ -83,10 +88,32 @@ impl CompiledGrammar {
     pub fn reference(&self, expression: ExprId) -> Option<Reference> {
         self.references.get(expression).copied().flatten()
     }
+    pub fn analysis(&self) -> &crate::analysis::Analysis {
+        &self.analysis
+    }
+    pub fn scopes(&self) -> &[crate::program::Scope] {
+        &self.scopes
+    }
+    pub fn entries(&self) -> impl Iterator<Item = (&str, RuleId)> {
+        self.rules_by_name
+            .iter()
+            .map(|(name, id)| (name.as_str(), *id))
+    }
+    pub(crate) fn add_entry(&mut self, name: String, id: RuleId) {
+        self.rules_by_name.insert(name, id);
+    }
+    pub(crate) fn refresh_analysis(&mut self) {
+        self.analysis = crate::analysis::analyze(self);
+    }
 }
 
 pub fn compile(source: &str) -> Result<CompiledGrammar, Vec<Diagnostic>> {
-    resolve(crate::parse(source).map_err(|error| vec![error])?)
+    let grammar = resolve(crate::parse(source).map_err(|error| vec![error])?)?;
+    if grammar.analysis.errors.is_empty() {
+        Ok(grammar)
+    } else {
+        Err(grammar.analysis.errors.clone())
+    }
 }
 
 pub fn resolve(syntax: GrammarSyntax) -> Result<CompiledGrammar, Vec<Diagnostic>> {
@@ -125,11 +152,26 @@ pub fn resolve(syntax: GrammarSyntax) -> Result<CompiledGrammar, Vec<Diagnostic>
         }
     }
     if diagnostics.is_empty() {
-        Ok(CompiledGrammar {
+        let mut grammar = CompiledGrammar {
+            pratt: vec![None; syntax.rules.len()],
+            rule_scopes: vec![0; syntax.rules.len()],
             syntax,
             references,
             rules_by_name,
-        })
+            analysis: crate::analysis::Analysis::default(),
+            scopes: vec![crate::program::Scope::default()],
+        };
+        let whitespace = grammar.rule_id("WHITESPACE");
+        let (whitespace_class, whitespace_prefix_class) =
+            crate::lexical::whitespace_classes(&grammar, whitespace);
+        grammar.scopes[0] = crate::program::Scope {
+            whitespace,
+            comment: grammar.rule_id("COMMENT"),
+            whitespace_class,
+            whitespace_prefix_class,
+        };
+        grammar.analysis = crate::analysis::analyze(&grammar);
+        Ok(grammar)
     } else {
         Err(diagnostics)
     }

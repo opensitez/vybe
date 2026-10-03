@@ -1,0 +1,2 @@
+WHITESPACE = _{ " " }
+program = { SOI ~ "a" ~ imported ~ "b" ~ EOI }

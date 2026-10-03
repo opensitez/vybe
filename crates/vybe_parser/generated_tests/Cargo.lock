@@ -9,6 +9,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e6e4313cd5fcd3dad5cafa179702e2b244f760991f45397d14d4ebf38247da75"
 
 [[package]]
+name = "vybe_ast"
+version = "0.6.2"
+
+[[package]]
 name = "vybe_parser"
 version = "0.1.0"
 dependencies = [
@@ -20,6 +24,15 @@ name = "vybe_parser_codegen"
 version = "0.1.0"
 dependencies = [
  "vybe_parser",
+]
+
+[[package]]
+name = "vybe_parser_generated_tests"
+version = "0.1.0"
+dependencies = [
+ "vybe_ast",
+ "vybe_parser",
+ "vybe_parser_codegen",
 ]
 
 [[patch.unused]]

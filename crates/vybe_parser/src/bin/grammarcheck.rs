@@ -5,7 +5,7 @@ fn main() -> ExitCode {
     let paths: Vec<_> = env::args_os().skip(1).collect();
     if paths.is_empty() {
         eprintln!(
-            "usage: grammarcheck <grammar.pest> [grammar.pest ...]\nChecks grammar syntax and reference resolution; source matching is not implemented yet."
+            "usage: grammarcheck <grammar.pest> [grammar.pest ...]\nChecks grammar syntax, reference resolution, recursion and progress."
         );
         return ExitCode::from(2);
     }
@@ -22,12 +22,17 @@ fn main() -> ExitCode {
         };
         let started = Instant::now();
         match vybe_parser::compile(&source) {
-            Ok(grammar) => println!(
-                "{label}: {} rules, {} expressions, {:.3} ms (syntax + resolution)",
-                grammar.syntax().rules.len(),
-                grammar.syntax().expressions.len(),
-                started.elapsed().as_secs_f64() * 1000.0
-            ),
+            Ok(grammar) => {
+                for warning in &grammar.analysis().warnings {
+                    eprintln!("{}", warning.render(&label, &source));
+                }
+                println!(
+                    "{label}: {} rules, {} expressions, {:.3} ms (syntax + resolution + analysis)",
+                    grammar.syntax().rules.len(),
+                    grammar.syntax().expressions.len(),
+                    started.elapsed().as_secs_f64() * 1000.0
+                );
+            }
             Err(errors) => {
                 failed = true;
                 for error in errors {

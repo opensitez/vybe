@@ -9,6 +9,9 @@ description = "Independent Vybe grammar frontend and parser infrastructure"
 # compiler, runtime, language plugins, pest, or a JS toolchain.
 [workspace]
 resolver = "2"
-members = ["."]
+members = [".", "codegen"]
+default-members = ["."]
+exclude = ["conformance_tests", "generated_tests"]
 
 [dependencies]
+unicode-ident = "=1.0.24"

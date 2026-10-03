@@ -16,7 +16,7 @@ pub struct Diagnostic {
 }
 
 impl Diagnostic {
-    pub(crate) fn new(code: &'static str, message: impl Into<String>, span: Span) -> Self {
+    pub fn new(code: &'static str, message: impl Into<String>, span: Span) -> Self {
         Self {
             code,
             message: message.into(),

@@ -1,40 +1,49 @@
-# Vybe parser: independent grammar frontend
+# Vybe grammar compiler and parser
 
-First implementation milestone of [`grammarplan.md`](../../grammarplan.md): compile existing pest-compatible grammar **definitions** into a located, reference-resolved arena IR. This does not yet parse guest language source, generate Rust parsers, construct the common AST, or implement editor recovery.
+Independent implementation of [grammarplan.md](../../grammarplan.md). Existing language defaults remain unchanged. Production uses Rust and pest-compatible grammar text; it has no pest dependency and requires no JS/Node tooling.
 
-The package is its own Cargo workspace, with no dependencies. Ordinary tests do not build pest, language plugins, the compiler, or the VM. The parent workspace excludes this directory; existing language parsers remain unchanged.
+The core compiles grammar definitions, resolves dense IDs, and analyzes nullable/effect/recursion/progress facts. An iterative engine matches source with ordered choices, all rule modes, implicit trivia, Unicode XID, transactional grammar stacks, work/depth guards, and compact borrowed captures. `parse_source` builds captures; `recognize` omits them.
+
+`codegen` emits typed Rust rule enums and static programs without runtime grammar loading or resolution. It currently shares the iterative engine rather than emitting specialized matching functions. `engine::build_program` instead executes transactional semantic hooks with no capture arena. A generated fixture builds actual `vybe_ast` return statements while matching and checks rollback; full language AST bindings are still pending.
+
+The independent source-expression Pratt module has typed transactional builders, explicit operator precedence/associativity, groups and resource limits. A generated token grammar feeds it into common-AST expression nodes with source spans. Automatic island lowering and call/index/ternary integration remain pending. Certified ASCII whitespace has a bounded byte-set fast path; uncertain/effectful trivia retains the full engine.
+
+`source::Index` converts byte offsets and zero-based UTF-8/UTF-16/scalar positions, with explicit scalar/surrogate/CRLF errors and sparse checkpoints for long lines. This is the coordinate foundation used by the basic editor session.
+
+The package is its own Cargo workspace. Default tests build only the core and `unicode-ident`; `codegen` is an optional workspace member. Neither path builds the compiler, language plugins or VM. Optional conformance/generated checks have separate manifests and build directories.
 
 From the repository root:
 
 ```sh
+# Fast core loop
 cargo test --manifest-path crates/vybe_parser/Cargo.toml --offline
 cargo run --manifest-path crates/vybe_parser/Cargo.toml --offline --bin grammarcheck -- languages/*/src/grammar.pest
-cargo tree --manifest-path crates/vybe_parser/Cargo.toml --offline
+# Core plus Rust generation correctness
+cargo test --manifest-path crates/vybe_parser/Cargo.toml --workspace --offline
+# Black-box acceptance/capture comparisons with test-only reference parser
+cargo test --manifest-path crates/vybe_parser/conformance_tests/Cargo.toml --offline
+# Generated matcher parity and direct-common-AST fixture
+cargo test --manifest-path crates/vybe_parser/generated_tests/Cargo.toml --offline
+# Compile generated Rust for every repository grammar
+cargo test --manifest-path crates/vybe_parser/generated_tests/Cargo.toml --offline --features all-grammars
+# Local performance baseline (no timing assertions in tests)
+cargo run --manifest-path crates/vybe_parser/conformance_tests/Cargo.toml --offline --release --example baseline
 ```
 
-`grammarcheck` reads one or more UTF-8 grammar files, reports rules/expression counts and syntax-plus-resolution time, and exits nonzero on errors. Its timing is a development aid, not a benchmark or a speed claim relative to pest. Parent `.cargo/config.toml` overrides may produce unused-patch warnings; those crates are not dependencies and are not compiled.
+`grammarcheck` reports grammar errors and analysis warnings with byte spans rendered as one-based Unicode-scalar line/columns. Its timing includes syntax, resolution and analysis. CLI columns use Unicode scalars; `source::Index` provides LSP UTF-16 conversion separately. Parent Cargo configuration may print unused-patch warnings; those crates are not built.
 
-## Implemented
+`parse` returns located `GrammarSyntax`; `compile` resolves it and rejects proven analysis errors. `resolve` is the lower-level API retaining analysis errors for inspection. Uncertain findings are warnings backed by runtime guards. Ordinary corpus tests compile all 18 repository grammars without importing the language crates.
 
-- Native Rust grammar lexer, comments, decoded string/character escapes and byte locations.
-- All five rule modes; ordered choice, sequence, groups, predicates, repeats and bounded repeats.
-- Pratt parsing of **grammar expressions**, preserving postfix/predicate/sequence/choice precedence. Source-language Pratt parsing comes later.
-- Structured `PUSH`, `PUSH_LITERAL`, and indexed `PEEK`; ordinary stack builtin references.
-- Dense rule IDs and builtin resolution, forward references, duplicate/undefined-rule diagnostics.
-- Topologically ordered expression arena; bounded repeats do not expand into copies.
-- Grammar nesting limit and iterative flat chains; deterministic independent parse contexts.
-- Repository corpus test reading all 18 grammar files without importing language crates.
+Remaining: broader Unicode-property/extension support (tags currently report an unsupported-feature error), specialized generated matching and lexical dispatch, automatic Pratt-island lowering, complete common-AST bindings, modular grammars, richer recovery/REPL/LSP sessions, language migration and end-to-end performance gates. The current iterative matcher remains several times slower than the reference on the local Lua baseline; replacing syntax tooling alone has not achieved the performance objective.
 
-## API
+No pest or Tree-sitter source was inspected or reused. Only documented syntax and repository grammar files are implementation inputs.
 
-`parse` / `parse_with_options` return `GrammarSyntax` with rules, source ranges, and expression IDs. `compile` adds name resolution and returns `CompiledGrammar`; `syntax()`, `rule_id()` and `reference()` expose the located IR and resolved symbols. Grammar parsing reports the first lexical/syntactic error; resolution collects duplicates and unresolved references with related locations.
+Format packages explicitly with `cargo fmt -p vybe_parser -p vybe_parser_codegen --manifest-path crates/vybe_parser/Cargo.toml`. For optional packages, select `-p conformance_tests` or `-p vybe_parser_generated_tests`. Avoid `--all` there: Cargo follows the AST path dependency into its outer workspace.
 
-All locations are half-open UTF-8 byte ranges in the input grammar. Diagnostic rendering reports one-based lines and Unicode-scalar columns; this is not yet an LSP position conversion API.
+`compat` provides an optional owned typed-pair view for walker migration; generated `Parser::parse_pairs` exposes rule enums (including EOI), child iteration, text, spans and cheap handle cloning. The compatibility position method follows the one-based scalar/LF convention; indexed LSP positions use `source::Index` instead. Broader walker API compatibility still needs inventory and migration checks.
 
-## Deliberate remaining work
+`arena::Arena<T>` journals semantic node/value handles without requiring AST nodes to implement Clone. `editor::Session` applies revision-checked edits and produces immutable source/index/capture reports with document/revision-scoped IDs and complete-document diagnostics. It is currently a full-reparse correctness baseline; incremental reuse/recovery remains pending.
 
-This milestone covers the constructs and builtin names used by the repository, not the entire pest extension/Unicode-property catalog. Tags currently produce an explicit unsupported-feature diagnostic. Parsing a stack operation does not implement its source-matching behavior. Compilation does not yet validate left recursion, progress/nullable repetitions, or certify that a grammar is safe to execute.
+Generate Rust directly with `cargo run --manifest-path crates/vybe_parser/Cargo.toml -p vybe_parser_codegen --bin grammargen --offline -- input.grammar output.rs`. Build scripts can call `vybe_parser_codegen::generate` and write the module into OUT_DIR. Unchanged CLI output preserves its timestamp.
 
-Next: specify execution/mode/stack rollback contracts, add conservative grammar analysis, and implement the reference recognition engine with conformance fixtures. The generated performance backend, source-language Pratt islands, direct AST builders and LSP sessions follow the plan. Keep those stages independently testable here.
-
-Implementation inputs are the documented pest syntax and Vybe's grammars. No pest or Tree-sitter source is used; no JavaScript/Node grammar tooling is required.
+`modules::compile` links ordinary grammar sources using explicit Rust import/export metadata. Rules retain module-local trivia; local names, exported entry aliases and cross-file diagnostics are preserved. `vybe_parser_codegen::generate_modules` emits the same scoped program. Declarative manifest loading/reexports/package resolution are still pending. Existing standalone grammars need no changes.
