@@ -164,7 +164,6 @@ impl Compiler {
             self.emit_u16(Op::LOCAL_GET, key_slot);
             self.emit_const(Value::String(Arc::from(key_text.as_str())));
             crate::primitives::ops::emit_dyn_eq(self.chunk(), line);
-            crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
             self.chunk().emit_if(line);
             self.emit_var_get(&name);
             self.emit_u16(Op::LOCAL_SET, result_slot);
@@ -200,7 +199,6 @@ impl Compiler {
             self.emit_u16(Op::LOCAL_GET, key_slot);
             self.emit_const(Value::String(Arc::from(key_text.as_str())));
             crate::primitives::ops::emit_dyn_eq(self.chunk(), line);
-            crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
             self.chunk().emit_if(line);
             self.emit_u16(Op::LOCAL_GET, value_slot);
             self.emit_var_set(&name);

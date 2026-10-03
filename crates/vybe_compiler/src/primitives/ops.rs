@@ -1692,8 +1692,8 @@ pub fn build_dyn_mul(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, 0, 0);
     crate::primitives::reflection::emit_typeof_in_chunk(&mut c, 0);
     crate::primitives::expressions::emit_const_index(&mut c, str_tag, 0);
-    crate::primitives::ops::emit_dyn_eq_into(imports, &mut c, 0);
-    crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
+    crate::primitives::strings::emit_str_equals(&mut c, 0);
+    c.emit_op(Op::I32_EQZ, 0);
     c.emit_br_if(0, 0); // skip if a is NOT string
     c.emit_op_u16(Op::LOCAL_GET, 0, 0);
     c.emit_op_u16(Op::LOCAL_GET, 1, 0);
@@ -1709,8 +1709,8 @@ pub fn build_dyn_mul(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, 1, 0);
     crate::primitives::reflection::emit_typeof_in_chunk(&mut c, 0);
     crate::primitives::expressions::emit_const_index(&mut c, str_tag, 0);
-    crate::primitives::ops::emit_dyn_eq_into(imports, &mut c, 0);
-    crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
+    crate::primitives::strings::emit_str_equals(&mut c, 0);
+    c.emit_op(Op::I32_EQZ, 0);
     c.emit_br_if(0, 0); // skip if b is NOT string
     c.emit_op_u16(Op::LOCAL_GET, 1, 0);
     c.emit_op_u16(Op::LOCAL_GET, 0, 0);

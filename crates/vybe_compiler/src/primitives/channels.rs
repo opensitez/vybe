@@ -364,7 +364,6 @@ pub fn build_chan_send(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, cnt, line);
     c.emit_op_u16(Op::LOCAL_GET, eff, line);
     ops::emit_dyn_lt_into(imports, &mut c, line);
-    ops::emit_dyn_to_bool_into(imports, &mut c, line);
     c.emit_if(line); // $if1
     // reserve: cmpxchg(addr, cnt, cnt+1)
     c.emit_op_u16(Op::LOCAL_GET, addr, line);
@@ -742,7 +741,6 @@ pub fn build_chan_ready_send(imports: &mut Chunk) -> Chunk {
     );
     core_wasm::i32_const(&mut c, line, 0);
     ops::emit_dyn_eq_into(imports, &mut c, line);
-    ops::emit_dyn_to_bool_into(imports, &mut c, line);
     c.emit_if_value(line);
     load_recv_waiters(&mut c, addr, line);
     core_wasm::i32_const(&mut c, line, 0);
@@ -886,7 +884,6 @@ pub fn build_chan_try_send(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, cnt, line);
     c.emit_op_u16(Op::LOCAL_GET, cap, line);
     ops::emit_dyn_lt_into(imports, &mut c, line);
-    ops::emit_dyn_to_bool_into(imports, &mut c, line);
     c.emit_op(Op::I32_EQZ, line);
     c.emit_if(line); // full
     c.emit_bool_const(false, line);
@@ -989,7 +986,6 @@ pub fn build_chan_try_recv(imports: &mut Chunk) -> Chunk {
     queue_into(imports, &mut c, line);
     collections::emit_len_into(imports, &mut c, line);
     ops::emit_dyn_lt_into(imports, &mut c, line);
-    ops::emit_dyn_to_bool_into(imports, &mut c, line);
     c.emit_if(line);
     c.emit_op_u16(Op::LOCAL_GET, ch, line);
     queue_into(imports, &mut c, line);
@@ -1039,7 +1035,6 @@ pub fn build_chan_try_peek(imports: &mut Chunk) -> Chunk {
     queue_into(imports, &mut c, line);
     collections::emit_len_into(imports, &mut c, line);
     ops::emit_dyn_lt_into(imports, &mut c, line);
-    ops::emit_dyn_to_bool_into(imports, &mut c, line);
     c.emit_if(line);
     c.emit_op_u16(Op::LOCAL_GET, ch, line);
     queue_into(imports, &mut c, line);

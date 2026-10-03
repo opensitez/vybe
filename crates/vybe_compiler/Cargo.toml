@@ -28,11 +28,14 @@ quick-xml = "0.39"
 
 
 [dev-dependencies]
+vybe_platform_wasm = { workspace = true }
+wasmparser = "0.244.0"
 # Test-only. These tests exercise the BUNDLER against real php/cobol sources,
 # so a frontend must be registered — the registry is empty in this crate's test
 # binary because `vybe_compiler` links no language by design. Dev-dependency
 # cycles are permitted by Cargo, and this keeps the production graph unchanged.
 vybe_language_php = { workspace = true }
+vybe_language_python = { workspace = true }
 vybe_language_cobol = { workspace = true }
 vybex = { path = "../vybex" }
 

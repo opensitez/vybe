@@ -7,6 +7,22 @@ use super::*;
 use crate::primitives::class_slots;
 
 impl Compiler {
+    fn emit_step_for_expr(&mut self, operand: &Expression, add: bool) {
+        if self.operator_dispatch() == vybe_ast::OperatorDispatch::StaticBuiltin
+            && self.type_resolution() == vybe_ast::TypeResolution::Static
+            && self.expr_is_provably_number(operand)
+        {
+            let one = Expression::new(ExprKind::Lit(Literal::Int(1)));
+            self.emit_const(Value::F64(1.0));
+            self.compile_binop_operands(
+                if add { &BinOp::Add } else { &BinOp::Sub },
+                Some((operand, &one)),
+            );
+        } else {
+            self.emit_step_by_one(add);
+        }
+    }
+
     fn emit_len_value_method(&mut self, def: &crate::profile::BuiltinDef) -> Result<(), String> {
         match &def.emit {
             vybe_runtime::profile::BuiltinEmit::HostCall(module, func) => {
@@ -1341,7 +1357,7 @@ impl Compiler {
                     } else {
                         common::expressions::emit_or_i32_start(
                             &mut self.chunks[self.current],
-                            line,
+                            line
                         )
                     };
                     self.compile_condition_to_i32(right)?;
@@ -1966,7 +1982,7 @@ impl Compiler {
                         if *op == UnaryOp::PostInc {
                             inst!(self, core_wasm::dup);
                         }
-                        self.emit_step_by_one(true);
+                        self.emit_step_for_expr(inner, true);
                         if *op == UnaryOp::PreInc {
                             inst!(self, core_wasm::dup);
                         }
@@ -1977,7 +1993,7 @@ impl Compiler {
                         if *op == UnaryOp::PostDec {
                             inst!(self, core_wasm::dup);
                         }
-                        self.emit_step_by_one(false);
+                        self.emit_step_for_expr(inner, false);
                         if *op == UnaryOp::PreDec {
                             inst!(self, core_wasm::dup);
                         }
@@ -3634,9 +3650,24 @@ impl Compiler {
                 // with a `Count` property was protected only by the uppercase
                 // heuristic before; this states it.
                 let receiver_declares_field = self.receiver_class_declares_member(object, field);
+                let registered_property_target = if !self.profile.namespaces.type_scopes.is_empty()
+                    && !*null_safe
+                {
+                    receiver_type_hint.as_deref().and_then(|type_hint| {
+                        let class_name = Self::tree_type_key(type_hint);
+                        if self.is_declared_instance_field(&class_name, field) {
+                            None
+                        } else {
+                            self.inherited_tree_property_target(&class_name, field, false)
+                        }
+                    })
+                } else {
+                    None
+                };
                 let is_size_property_read = reads_size_property
                     && receiver_is_collection_like
                     && !receiver_declares_field
+                    && registered_property_target.is_none()
                     && !self.receiver_names_a_type(object);
                 // The same member, when the value turns out to be a FUNCTION at
                 // run time — read it, then call it only if it is callable.
@@ -3644,6 +3675,7 @@ impl Compiler {
                     && !is_size_property_read
                     && !*null_safe
                     && !receiver_declares_field
+                    && registered_property_target.is_none()
                     && !self.receiver_names_a_type(object);
 
                 // The type hint names the set types exactly; the family check
@@ -3728,7 +3760,7 @@ impl Compiler {
                         }
                     }
                     return Ok(());
-                } else if is_dotnet_observable_count {
+                } else if is_dotnet_observable_count && registered_property_target.is_none() {
                     self.compile_expr(object)?;
                     self.emit_common("dotnet.observable_collection_count", 1, self.line);
                     return Ok(());
@@ -3749,42 +3781,7 @@ impl Compiler {
                     self.compile_expr(object)?;
                     self.emit_common("dotnet.observable_collection_items", 1, self.line);
                     return Ok(());
-                } else if !self.profile.namespaces.type_scopes.is_empty()
-                    && !*null_safe
-                    && let Some(target) = receiver_type_hint.as_deref().and_then(|type_hint| {
-                        let class_name = Self::tree_type_key(type_hint);
-                        // A USER-DECLARED class owns its own members. Without
-                        // this, a platform type sharing the name answered for
-                        // them: `Class Point` with a field `X` had every `p.X`
-                        // compiled to the host getter for
-                        // `System.Drawing.Point.X`, so two distinct Points read
-                        // one shared value and it presented as object aliasing
-                        // — the objects were fine, the READS were redirected.
-                        //
-                        // `shadows_builtin_type` rather than a bare
-                        // `defined_classes` probe because `normalize_type_hint`
-                        // lowercases unconditionally while `canon` keeps case
-                        // for a case-sensitive language; that helper asks the
-                        // question both ways, and is the same one the parent-
-                        // constructor path already uses.
-                        //
-                        // Construction was ALREADY guarded
-                        // (`constructed_control_type_name` refuses a
-                        // user-declared name); this is the missing half for
-                        // property access. Inheritance is unaffected: a lookup
-                        // here is on the receiver's own declared type, and
-                        // `Class MyForm Inherits Form` never matched at this
-                        // site anyway — it reaches Form's roles through
-                        // `declared_property_role`'s parent walk.
-                        // Case-blind on its own terms — the tree lookup
-                        // beside it is not; see
-                        // `user_owns_type_spelling`.
-                        if self.is_declared_instance_field(&class_name, field) {
-                            return None;
-                        }
-                        self.inherited_tree_property_target(&class_name, field, false)
-                    })
-                {
+                } else if let Some(target) = registered_property_target {
                     self.compile_expr(object)?;
                     match target {
                         crate::component_classes::InstancePropertyTarget::Host {

@@ -5,6 +5,10 @@
 //! bytecode. The VM resolves `CALL_IMPORT` against the executing chunk,
 //! and the WASM writer can still aggregate those imports into a module
 //! section.
+//!
+//! Dynamic comparison helpers return an i32 predicate. Consume that directly
+//! in `if`/`br_if`, or negate it with `i32.eqz`; running the generic ToBoolean
+//! dispatcher again adds type probes and scratch locals without changing it.
 
 use crate::primitives::Target;
 #[allow(unused_imports)]
@@ -559,7 +563,6 @@ pub fn emit_promote_empty_array_for_string_key(
     chunks[current].emit_op(Op::ARRAY_LENGTH, line);
     core_wasm::i32_const(&mut chunks[current], line, 0);
     crate::primitives::ops::emit_dyn_ne(&mut chunks[current], line);
-    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_op(Op::I32_EQZ, line);
     chunks[current].emit_if(line);
 
@@ -862,111 +865,96 @@ pub fn emit_sort_with_comparator_in_chunk(chunk: &mut Chunk, line: u32) {
 /// language helper, so Python `heapq`, JS/PHP comparators, and future language
 /// adapters can share one bytecode shape for key-based ordering.
 pub fn emit_sort_by_key_in_place(chunks: &mut [Chunk], current: usize, line: u32) {
-    // ⛔ RESOLVED BEFORE THE BORROW. `key_fn` is the caller's block, so it takes
-    // a receiver wherever the region declares one, and the ask needs the whole
-    // vector while the body below holds a single chunk.
     let abi = crate::primitives::class_context::module_receiver_abi(chunks);
-    let chunk = &mut chunks[current];
-    let key_fn = alloc_local(chunk);
-    let arr = alloc_local(chunk);
-    let len = alloc_local(chunk);
-    let i = alloc_local(chunk);
-    let j = alloc_local(chunk);
-    let best = alloc_local(chunk);
-    let tmp = alloc_local(chunk);
+    let c = &mut chunks[current];
+    let base = c.alloc_scratch(6);
+    let key_fn = base;
+    let arr = base + 1;
+    let len = base + 2;
+    let index = base + 3;
+    let decorated = base + 4;
+    let value = base + 5;
+    lset(c, key_fn, line);
+    lset(c, arr, line);
+    let mut imports = Chunk::new("imports");
+    lget(c, arr, line);
+    emit_len_into(&mut imports, c, line);
+    lset(c, len, line);
+    lget(c, len, line);
+    emit_new_with_length_into(&mut imports, c, line);
+    lset(c, decorated, line);
 
-    lset(chunk, key_fn, line);
-    lset(chunk, arr, line);
+    // Evaluate keys exactly once, in input order. Keep the original values in
+    // private fixed-size GC pairs, so a throwing key never partially sorts arr.
+    c.emit_f64_const(0.0, line);
+    lset(c, index, line);
+    let done = c.emit_block(line);
+    let (repeat, _) = c.emit_loop_s(line);
+    lget(c, index, line);
+    lget(c, len, line);
+    c.emit_op(Op::F64_GE, line);
+    c.emit_br_if(1, line);
+    lget(c, arr, line);
+    lget(c, index, line);
+    emit_get_into(&mut imports, c, line);
+    lset(c, value, line);
+    lget(c, decorated, line);
+    lget(c, index, line);
+    lget(c, key_fn, line);
+    let recv = crate::primitives::callable::emit_callback_receiver(c, abi, line);
+    lget(c, value, line);
+    crate::primitives::callable::emit_direct_invoke_chunk(c, 1 + recv, line);
+    lget(c, value, line);
+    c.emit_array_new_fixed(0, 2, line);
+    emit_set_into(&mut imports, c, line);
+    c.emit_op(Op::DROP, line);
+    lget(c, index, line);
+    c.emit_f64_const(1.0, line);
+    c.emit_op(Op::F64_ADD, line);
+    lset(c, index, line);
+    c.emit_br(0, line);
+    c.emit_end(line);
+    c.patch_loop(repeat);
+    c.emit_end(line);
+    c.patch_block(done);
 
-    lget(chunk, arr, line);
-    chunk.emit_op(Op::ARRAY_LENGTH, line);
-    lset(chunk, len, line);
+    emit_stable_merge_sort(&mut imports, c, decorated, line, |_, c, lhs, rhs, line| {
+        for pair in [lhs, rhs] {
+            lget(c, pair, line);
+            c.emit_i32_const(0, line);
+            c.emit_op(Op::ARRAY_GET, line);
+        }
+        // Preserve the existing dynamic key comparison and coercion contract.
+        crate::primitives::ops::emit_dyn_gt(c, line);
+    });
 
-    core_wasm::i32_const(chunk, line, 0);
-    lset(chunk, i, line);
-
-    let _ = chunk;
-    let outer = crate::primitives::loops::emit_loop_start(chunks, current, line);
-    let chunk = &mut chunks[current];
-    lget(chunk, i, line);
-    lget(chunk, len, line);
-    chunk.emit_op(Op::I32_LT_S, line);
-    let _ = chunk;
-    crate::primitives::loops::emit_loop_cond(chunks, current, line);
-    let chunk = &mut chunks[current];
-
-    lget(chunk, i, line);
-    lset(chunk, best, line);
-    lget(chunk, i, line);
-    core_wasm::i32_const(chunk, line, 1);
-    chunk.emit_op(Op::I32_ADD, line);
-    lset(chunk, j, line);
-
-    let _ = chunk;
-    let inner = crate::primitives::loops::emit_loop_start(chunks, current, line);
-    let chunk = &mut chunks[current];
-    lget(chunk, j, line);
-    lget(chunk, len, line);
-    chunk.emit_op(Op::I32_LT_S, line);
-    let _ = chunk;
-    crate::primitives::loops::emit_loop_cond(chunks, current, line);
-    let chunk = &mut chunks[current];
-
-    lget(chunk, key_fn, line);
-    let recv = crate::primitives::callable::emit_callback_receiver(chunk, abi, line);
-    lget(chunk, arr, line);
-    lget(chunk, j, line);
-    chunk.emit_op(Op::ARRAY_GET, line);
-    crate::primitives::callable::emit_direct_invoke_chunk(chunk, 1 + recv, line);
-    lget(chunk, key_fn, line);
-    let recv = crate::primitives::callable::emit_callback_receiver(chunk, abi, line);
-    lget(chunk, arr, line);
-    lget(chunk, best, line);
-    chunk.emit_op(Op::ARRAY_GET, line);
-    crate::primitives::callable::emit_direct_invoke_chunk(chunk, 1 + recv, line);
-    crate::primitives::ops::emit_dyn_lt(chunk, line);
-    chunk.emit_if(line);
-    lget(chunk, j, line);
-    lset(chunk, best, line);
-    chunk.emit_end(line);
-
-    lget(chunk, j, line);
-    core_wasm::i32_const(chunk, line, 1);
-    chunk.emit_op(Op::I32_ADD, line);
-    lset(chunk, j, line);
-    let _ = chunk;
-    crate::primitives::loops::emit_loop_end(chunks, current, inner, line);
-    let chunk = &mut chunks[current];
-
-    lget(chunk, best, line);
-    lget(chunk, i, line);
-    chunk.emit_op(Op::I32_NE, line);
-    chunk.emit_if(line);
-    lget(chunk, arr, line);
-    lget(chunk, i, line);
-    chunk.emit_op(Op::ARRAY_GET, line);
-    lset(chunk, tmp, line);
-
-    lget(chunk, arr, line);
-    lget(chunk, i, line);
-    lget(chunk, arr, line);
-    lget(chunk, best, line);
-    chunk.emit_op(Op::ARRAY_GET, line);
-    chunk.emit_op(Op::ARRAY_SET, line);
-
-    lget(chunk, arr, line);
-    lget(chunk, best, line);
-    lget(chunk, tmp, line);
-    chunk.emit_op(Op::ARRAY_SET, line);
-    chunk.emit_end(line);
-
-    lget(chunk, i, line);
-    core_wasm::i32_const(chunk, line, 1);
-    chunk.emit_op(Op::I32_ADD, line);
-    lset(chunk, i, line);
-    let _ = chunk;
-    crate::primitives::loops::emit_loop_end(chunks, current, outer, line);
-    lget(&mut chunks[current], arr, line);
+    c.emit_f64_const(0.0, line);
+    lset(c, index, line);
+    let done = c.emit_block(line);
+    let (repeat, _) = c.emit_loop_s(line);
+    lget(c, index, line);
+    lget(c, len, line);
+    c.emit_op(Op::F64_GE, line);
+    c.emit_br_if(1, line);
+    lget(c, arr, line);
+    lget(c, index, line);
+    lget(c, decorated, line);
+    lget(c, index, line);
+    emit_get_into(&mut imports, c, line);
+    c.emit_i32_const(1, line);
+    c.emit_op(Op::ARRAY_GET, line);
+    emit_set_into(&mut imports, c, line);
+    c.emit_op(Op::DROP, line);
+    lget(c, index, line);
+    c.emit_f64_const(1.0, line);
+    c.emit_op(Op::F64_ADD, line);
+    lset(c, index, line);
+    c.emit_br(0, line);
+    c.emit_end(line);
+    c.patch_loop(repeat);
+    c.emit_end(line);
+    c.patch_block(done);
+    lget(c, arr, line);
 }
 
 /// Array lastIndexOf. Stack: [array, value] → [i32] via `ecma:array.lastIndexOf`.
@@ -1054,8 +1042,8 @@ pub fn emit_sequence_equal(chunks: &mut [Chunk], current: usize, line: u32) {
     lget(&mut chunks[current], right_slot, line);
     emit_len(chunks, current, line);
     lget(&mut chunks[current], len_slot, line);
-    crate::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
-    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    // Both length emitters produce numbers; element equality remains dynamic.
+    chunks[current].emit_op(Op::F64_EQ, line);
     chunks[current].emit_if(line);
 
     core_wasm::i32_const(&mut chunks[current], line, 0);
@@ -1066,8 +1054,7 @@ pub fn emit_sequence_equal(chunks: &mut [Chunk], current: usize, line: u32) {
     lget(&mut chunks[current], idx_slot, line);
     lget(&mut chunks[current], len_slot, line);
     crate::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
-    crate::primitives::ops::emit_dyn_not(&mut chunks[current], line);
-    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
     chunks[current].emit_br_if(1, line);
 
     lget(&mut chunks[current], right_slot, line);
@@ -1080,7 +1067,6 @@ pub fn emit_sequence_equal(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_get(chunks, current, line);
     lget(&mut chunks[current], right_elem_slot, line);
     crate::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
-    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     let equal_values = chunks[current].emit_block(line);
     chunks[current].emit_br_if(0, line);
 
@@ -1120,8 +1106,7 @@ pub fn emit_nil_to_empty_array(chunks: &mut [Chunk], current: usize, line: u32) 
 
     lget(&mut chunks[current], value_slot, line);
     chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
-    crate::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
-    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    crate::primitives::ops::emit_dyn_eq_null_operand(&mut chunks[current], false, line);
     chunks[current].emit_if_value(line);
     emit_array_new(chunks, current, 0, line);
     chunks[current].emit_else(line);
@@ -1247,107 +1232,27 @@ pub fn emit_index_func(chunks: &mut [Chunk], current: usize, line: u32) {
     lget(&mut chunks[current], result_slot, line);
 }
 
-/// In-place stable insertion sort using a comparator returning negative/zero/positive.
+/// In-place stable merge sort using a comparator returning negative/zero/positive.
 /// Stack: [array, comparator] -> [array].
 pub fn emit_sort_func(chunks: &mut [Chunk], current: usize, line: u32) {
-    let arr_slot = alloc_local(&mut chunks[current]);
-    let cmp_slot = alloc_local(&mut chunks[current]);
-    let len_slot = alloc_local(&mut chunks[current]);
-    let i_slot = alloc_local(&mut chunks[current]);
-    let j_slot = alloc_local(&mut chunks[current]);
-    let tmp_slot = alloc_local(&mut chunks[current]);
-
-    lset(&mut chunks[current], cmp_slot, line);
-    lset(&mut chunks[current], arr_slot, line);
-
-    lget(&mut chunks[current], arr_slot, line);
-    emit_len(chunks, current, line);
-    lset(&mut chunks[current], len_slot, line);
-    chunks[current].emit_i32_const(1, line);
-    lset(&mut chunks[current], i_slot, line);
-
-    let outer_block = chunks[current].emit_block(line);
-    let (outer_loop, _) = chunks[current].emit_loop_s(line);
-    lget(&mut chunks[current], i_slot, line);
-    lget(&mut chunks[current], len_slot, line);
-    chunks[current].emit_op(Op::I32_LT_S, line);
-    chunks[current].emit_op(Op::I32_EQZ, line);
-    chunks[current].emit_br_if(1, line);
-
-    lget(&mut chunks[current], i_slot, line);
-    lset(&mut chunks[current], j_slot, line);
-
-    let inner_block = chunks[current].emit_block(line);
-    let (inner_loop, _) = chunks[current].emit_loop_s(line);
-    lget(&mut chunks[current], j_slot, line);
-    chunks[current].emit_i32_const(0, line);
-    chunks[current].emit_op(Op::I32_GT_S, line);
-    chunks[current].emit_op(Op::I32_EQZ, line);
-    chunks[current].emit_br_if(1, line);
-
-    let __abi = crate::primitives::class_context::module_receiver_abi(chunks);
-    lget(&mut chunks[current], cmp_slot, line);
-    let __recv =
-        crate::primitives::callable::emit_callback_receiver(&mut chunks[current], __abi, line);
-    lget(&mut chunks[current], arr_slot, line);
-    lget(&mut chunks[current], j_slot, line);
-    emit_get(chunks, current, line);
-    lget(&mut chunks[current], arr_slot, line);
-    lget(&mut chunks[current], j_slot, line);
-    chunks[current].emit_i32_const(1, line);
-    chunks[current].emit_op(Op::I32_SUB, line);
-    emit_get(chunks, current, line);
-    crate::primitives::callable::emit_direct_invoke_chunk(&mut chunks[current], 2 + __recv, line);
-    chunks[current].emit_i32_const(0, line);
-    crate::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
-    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
-    chunks[current].emit_op(Op::I32_EQZ, line);
-    chunks[current].emit_br_if(1, line);
-
-    lget(&mut chunks[current], arr_slot, line);
-    lget(&mut chunks[current], j_slot, line);
-    emit_get(chunks, current, line);
-    lset(&mut chunks[current], tmp_slot, line);
-
-    lget(&mut chunks[current], arr_slot, line);
-    lget(&mut chunks[current], j_slot, line);
-    lget(&mut chunks[current], arr_slot, line);
-    lget(&mut chunks[current], j_slot, line);
-    chunks[current].emit_i32_const(1, line);
-    chunks[current].emit_op(Op::I32_SUB, line);
-    emit_get(chunks, current, line);
-    emit_set(chunks, current, line);
-    chunks[current].emit_op(Op::DROP, line);
-
-    lget(&mut chunks[current], arr_slot, line);
-    lget(&mut chunks[current], j_slot, line);
-    chunks[current].emit_i32_const(1, line);
-    chunks[current].emit_op(Op::I32_SUB, line);
-    lget(&mut chunks[current], tmp_slot, line);
-    emit_set(chunks, current, line);
-    chunks[current].emit_op(Op::DROP, line);
-
-    lget(&mut chunks[current], j_slot, line);
-    chunks[current].emit_i32_const(1, line);
-    chunks[current].emit_op(Op::I32_SUB, line);
-    lset(&mut chunks[current], j_slot, line);
-    chunks[current].emit_br(0, line);
-    chunks[current].emit_end(line);
-    chunks[current].patch_loop(inner_loop);
-    chunks[current].emit_end(line);
-    chunks[current].patch_block(inner_block);
-
-    lget(&mut chunks[current], i_slot, line);
-    chunks[current].emit_i32_const(1, line);
-    chunks[current].emit_op(Op::I32_ADD, line);
-    lset(&mut chunks[current], i_slot, line);
-    chunks[current].emit_br(0, line);
-    chunks[current].emit_end(line);
-    chunks[current].patch_loop(outer_loop);
-    chunks[current].emit_end(line);
-    chunks[current].patch_block(outer_block);
-
-    lget(&mut chunks[current], arr_slot, line);
+    let abi = crate::primitives::class_context::module_receiver_abi(chunks);
+    let c = &mut chunks[current];
+    let arr = alloc_local(c);
+    let cmp = alloc_local(c);
+    lset(c, cmp, line);
+    lset(c, arr, line);
+    // Imports are chunk-local; this carrier only preserves the existing _into API.
+    let mut imports = Chunk::new("imports");
+    emit_stable_merge_sort(&mut imports, c, arr, line, |imports, c, lhs, rhs, line| {
+        lget(c, cmp, line);
+        let receiver = crate::primitives::callable::emit_callback_receiver(c, abi, line);
+        lget(c, lhs, line);
+        lget(c, rhs, line);
+        crate::primitives::callable::emit_direct_invoke_chunk(c, 2 + receiver, line);
+        c.emit_i32_const(0, line);
+        crate::primitives::ops::emit_dyn_gt_into(imports, c, line);
+    });
+    lget(c, arr, line);
 }
 
 /// Sortedness using a comparator returning negative/zero/positive.
@@ -1392,7 +1297,6 @@ pub fn emit_is_sorted_func(chunks: &mut [Chunk], current: usize, line: u32) {
     crate::primitives::callable::emit_direct_invoke_chunk(&mut chunks[current], 2 + __recv, line);
     chunks[current].emit_i32_const(0, line);
     crate::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
-    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
     chunks[current].emit_bool_const(false, line);
     lset(&mut chunks[current], result_slot, line);
@@ -1655,8 +1559,7 @@ pub fn emit_compact_adjacent(chunks: &mut [Chunk], current: usize, line: u32) {
     lget(&mut chunks[current], idx_slot, line);
     lget(&mut chunks[current], len_slot, line);
     crate::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
-    crate::primitives::ops::emit_dyn_not(&mut chunks[current], line);
-    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
     chunks[current].emit_br_if(1, line);
 
     lget(&mut chunks[current], arr_slot, line);
@@ -1723,8 +1626,7 @@ pub fn emit_map_clone(chunks: &mut [Chunk], current: usize, line: u32) {
 
     lget(&mut chunks[current], src_slot, line);
     chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
-    crate::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
-    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    crate::primitives::ops::emit_dyn_eq_null_operand(&mut chunks[current], false, line);
     chunks[current].emit_if_value(line);
     chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunks[current].emit_else(line);
@@ -1745,8 +1647,7 @@ pub fn emit_map_clone(chunks: &mut [Chunk], current: usize, line: u32) {
     lget(&mut chunks[current], idx_slot, line);
     lget(&mut chunks[current], len_slot, line);
     crate::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
-    crate::primitives::ops::emit_dyn_not(&mut chunks[current], line);
-    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
     chunks[current].emit_br_if(1, line);
 
     lget(&mut chunks[current], entries_slot, line);
@@ -1815,8 +1716,7 @@ pub fn emit_map_copy(chunks: &mut [Chunk], current: usize, line: u32) {
     lget(&mut chunks[current], idx_slot, line);
     lget(&mut chunks[current], len_slot, line);
     crate::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
-    crate::primitives::ops::emit_dyn_not(&mut chunks[current], line);
-    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
     chunks[current].emit_br_if(1, line);
 
     lget(&mut chunks[current], entries_slot, line);
@@ -1892,8 +1792,7 @@ pub fn emit_map_delete_func(chunks: &mut [Chunk], current: usize, line: u32) {
     lget(&mut chunks[current], idx_slot, line);
     lget(&mut chunks[current], len_slot, line);
     crate::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
-    crate::primitives::ops::emit_dyn_not(&mut chunks[current], line);
-    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
     chunks[current].emit_br_if(1, line);
 
     lget(&mut chunks[current], entries_slot, line);
@@ -1964,7 +1863,6 @@ pub fn emit_sequence_compare(chunks: &mut [Chunk], current: usize, line: u32) {
     lget(&mut chunks[current], left_len_slot, line);
     lget(&mut chunks[current], right_len_slot, line);
     crate::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
-    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if_value(line);
     lget(&mut chunks[current], left_len_slot, line);
     chunks[current].emit_else(line);
@@ -1982,8 +1880,7 @@ pub fn emit_sequence_compare(chunks: &mut [Chunk], current: usize, line: u32) {
     lget(&mut chunks[current], idx_slot, line);
     lget(&mut chunks[current], len_slot, line);
     crate::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
-    crate::primitives::ops::emit_dyn_not(&mut chunks[current], line);
-    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
     chunks[current].emit_br_if(1, line);
 
     lget(&mut chunks[current], left_slot, line);
@@ -1999,7 +1896,6 @@ pub fn emit_sequence_compare(chunks: &mut [Chunk], current: usize, line: u32) {
     lget(&mut chunks[current], left_elem_slot, line);
     lget(&mut chunks[current], right_elem_slot, line);
     crate::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
-    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
     chunks[current].emit_i32_const(-1, line);
     lset(&mut chunks[current], result_slot, line);
@@ -2008,7 +1904,6 @@ pub fn emit_sequence_compare(chunks: &mut [Chunk], current: usize, line: u32) {
     lget(&mut chunks[current], left_elem_slot, line);
     lget(&mut chunks[current], right_elem_slot, line);
     crate::primitives::ops::emit_dyn_gt(&mut chunks[current], line);
-    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
     chunks[current].emit_i32_const(1, line);
     lset(&mut chunks[current], result_slot, line);
@@ -2029,12 +1924,10 @@ pub fn emit_sequence_compare(chunks: &mut [Chunk], current: usize, line: u32) {
     lget(&mut chunks[current], result_slot, line);
     chunks[current].emit_i32_const(0, line);
     crate::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
-    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
     lget(&mut chunks[current], left_len_slot, line);
     lget(&mut chunks[current], right_len_slot, line);
     crate::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
-    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
     chunks[current].emit_i32_const(-1, line);
     lset(&mut chunks[current], result_slot, line);
@@ -2042,7 +1935,6 @@ pub fn emit_sequence_compare(chunks: &mut [Chunk], current: usize, line: u32) {
     lget(&mut chunks[current], left_len_slot, line);
     lget(&mut chunks[current], right_len_slot, line);
     crate::primitives::ops::emit_dyn_gt(&mut chunks[current], line);
-    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
     chunks[current].emit_i32_const(1, line);
     lset(&mut chunks[current], result_slot, line);
@@ -2076,8 +1968,7 @@ pub fn emit_is_sorted(chunks: &mut [Chunk], current: usize, line: u32) {
     lget(&mut chunks[current], idx_slot, line);
     lget(&mut chunks[current], len_slot, line);
     crate::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
-    crate::primitives::ops::emit_dyn_not(&mut chunks[current], line);
-    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
     chunks[current].emit_br_if(1, line);
 
     lget(&mut chunks[current], arr_slot, line);
@@ -2095,7 +1986,6 @@ pub fn emit_is_sorted(chunks: &mut [Chunk], current: usize, line: u32) {
     lget(&mut chunks[current], curr_slot, line);
     lget(&mut chunks[current], prev_slot, line);
     crate::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
-    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
     chunks[current].emit_bool_const(false, line);
     lset(&mut chunks[current], result_slot, line);
@@ -2591,7 +2481,7 @@ pub fn emit_zip(chunks: &mut [Chunk], current: usize, n: u8, mode: ZipLen, line:
     chunks[current].emit_op_u16(Op::LOCAL_GET, i_s, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, len_s, line);
     crate::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
-    crate::primitives::ops::emit_dyn_not(&mut chunks[current], line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
     chunks[current].emit_br_if(1, line);
     // Each row is a real tuple, not a plain list: `zip`/`enumerate` pair
     // heterogeneous values, and tuple-typed languages (Python/Dart/C#) must
@@ -2668,7 +2558,7 @@ pub fn emit_reversed(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
     core_wasm::i32_const(&mut chunks[current], line, 0);
     crate::primitives::ops::emit_dyn_ge(&mut chunks[current], line);
-    crate::primitives::ops::emit_dyn_not(&mut chunks[current], line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
     chunks[current].emit_br_if(1, line);
     // result.push(seq[i])
     chunks[current].emit_op_u16(Op::LOCAL_GET, result, line);
@@ -2745,8 +2635,9 @@ pub fn build_sum(imports: &mut Chunk) -> Chunk {
     let (loop_p, _) = c.emit_loop_s(0);
     c.emit_op_u16(Op::LOCAL_GET, i, 0);
     c.emit_op_u16(Op::LOCAL_GET, len, 0);
-    crate::primitives::ops::emit_dyn_lt_into(imports, &mut c, 0);
-    crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
+    // Private counter and collection length are proven numeric producers.
+    c.emit_op(Op::F64_LT, 0);
+    c.emit_op(Op::I32_EQZ, 0);
     c.emit_br_if(1, 0); // exit loop
 
     c.emit_op_u16(Op::LOCAL_GET, total, 0);
@@ -2799,8 +2690,9 @@ pub fn build_min(imports: &mut Chunk) -> Chunk {
     let (loop_p, _) = c.emit_loop_s(0);
     c.emit_op_u16(Op::LOCAL_GET, i, 0);
     c.emit_op_u16(Op::LOCAL_GET, len, 0);
-    crate::primitives::ops::emit_dyn_lt_into(imports, &mut c, 0);
-    crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
+    // Private counter and collection length are proven numeric producers.
+    c.emit_op(Op::F64_LT, 0);
+    c.emit_op(Op::I32_EQZ, 0);
     c.emit_br_if(1, 0); // exit loop
 
     // if arr[i] < best: best = arr[i]
@@ -2811,7 +2703,7 @@ pub fn build_min(imports: &mut Chunk) -> Chunk {
     crate::primitives::collections::emit_get_into(imports, &mut c, 0);
     c.emit_op_u16(Op::LOCAL_GET, best, 0);
     crate::primitives::ops::emit_dyn_lt_into(imports, &mut c, 0);
-    crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
+    c.emit_op(Op::I32_EQZ, 0);
     c.emit_br_if(0, 0); // skip if NOT less than
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);
     c.emit_op_u16(Op::LOCAL_GET, i, 0);
@@ -2862,8 +2754,9 @@ pub fn build_max(imports: &mut Chunk) -> Chunk {
     let (loop_p, _) = c.emit_loop_s(0);
     c.emit_op_u16(Op::LOCAL_GET, i, 0);
     c.emit_op_u16(Op::LOCAL_GET, len, 0);
-    crate::primitives::ops::emit_dyn_lt_into(imports, &mut c, 0);
-    crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
+    // Private counter and collection length are proven numeric producers.
+    c.emit_op(Op::F64_LT, 0);
+    c.emit_op(Op::I32_EQZ, 0);
     c.emit_br_if(1, 0); // exit loop
 
     let skip_block_p = c.emit_block(0);
@@ -2872,7 +2765,7 @@ pub fn build_max(imports: &mut Chunk) -> Chunk {
     crate::primitives::collections::emit_get_into(imports, &mut c, 0);
     c.emit_op_u16(Op::LOCAL_GET, best, 0);
     crate::primitives::ops::emit_dyn_gt_into(imports, &mut c, 0);
-    crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
+    c.emit_op(Op::I32_EQZ, 0);
     c.emit_br_if(0, 0); // skip if NOT greater than
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);
     c.emit_op_u16(Op::LOCAL_GET, i, 0);
@@ -2897,117 +2790,233 @@ pub fn build_max(imports: &mut Chunk) -> Chunk {
     c
 }
 
-// ── sorted(array) → array (insertion sort — O(n²) but works) ──
+/// Stable bottom-up merge sort. Only private numeric indices are specialized;
+/// `greater` owns element/comparator semantics and leaves an i32 predicate.
+/// Alternating source/destination buffers avoids copying after every merge.
+/// The original array reference is retained, with a final copy only when needed.
+pub(crate) fn emit_stable_merge_sort(
+    imports: &mut Chunk,
+    c: &mut Chunk,
+    arr: u16,
+    line: u32,
+    mut greater: impl FnMut(&mut Chunk, &mut Chunk, u16, u16, u32),
+) {
+    let base = c.alloc_scratch(13);
+    let len = base;
+    let src = base + 1;
+    let dst = base + 2;
+    let swap = base + 3;
+    let width = base + 4;
+    let start = base + 5;
+    let mid = base + 6;
+    let end = base + 7;
+    let left = base + 8;
+    let right = base + 9;
+    let out = base + 10;
+    let lhs = base + 11;
+    let rhs = base + 12;
+
+    fn increment(c: &mut Chunk, slot: u16, line: u32) {
+        lget(c, slot, line);
+        c.emit_f64_const(1.0, line);
+        c.emit_op(Op::F64_ADD, line);
+        lset(c, slot, line);
+    }
+    fn read(imports: &mut Chunk, c: &mut Chunk, src: u16, index: u16, value: u16, line: u32) {
+        lget(c, src, line);
+        lget(c, index, line);
+        emit_get_into(imports, c, line);
+        lset(c, value, line);
+    }
+
+    lget(c, arr, line);
+    emit_len_into(imports, c, line);
+    lset(c, len, line);
+    // Empty/singleton arrays need no temporary allocation or comparison.
+    let done = c.emit_block(line);
+    lget(c, len, line);
+    c.emit_f64_const(2.0, line);
+    c.emit_op(Op::F64_LT, line);
+    c.emit_br_if(0, line);
+    // Keep the linear best case of insertion sort. This also avoids a buffer
+    // allocation for already sorted arrays, including arrays of equal keys.
+    c.emit_f64_const(0.0, line);
+    lset(c, left, line);
+    read(imports, c, arr, left, lhs, line);
+    c.emit_f64_const(1.0, line);
+    lset(c, out, line);
+    let not_sorted = c.emit_block(line);
+    let (scan, _) = c.emit_loop_s(line);
+    lget(c, out, line);
+    lget(c, len, line);
+    c.emit_op(Op::F64_GE, line);
+    c.emit_br_if(2, line); // all adjacent pairs ordered: leave done
+    read(imports, c, arr, out, rhs, line);
+    greater(imports, c, lhs, rhs, line);
+    c.emit_br_if(1, line); // first descending pair: merge the array
+    lget(c, rhs, line);
+    lset(c, lhs, line);
+    increment(c, out, line);
+    c.emit_br(0, line);
+    c.emit_end(line);
+    c.patch_loop(scan);
+    c.emit_end(line);
+    c.patch_block(not_sorted);
+    lget(c, arr, line);
+    lset(c, src, line);
+    lget(c, len, line);
+    emit_new_with_length_into(imports, c, line);
+    lset(c, dst, line);
+    c.emit_f64_const(1.0, line);
+    lset(c, width, line);
+
+    let passes_done = c.emit_block(line);
+    let (passes, _) = c.emit_loop_s(line);
+    lget(c, width, line);
+    lget(c, len, line);
+    c.emit_op(Op::F64_GE, line);
+    c.emit_br_if(1, line);
+    c.emit_f64_const(0.0, line);
+    lset(c, start, line);
+
+    let runs_done = c.emit_block(line);
+    let (runs, _) = c.emit_loop_s(line);
+    lget(c, start, line);
+    lget(c, len, line);
+    c.emit_op(Op::F64_GE, line);
+    c.emit_br_if(1, line);
+    // Bounds remain exact Number integers, including lengths above i32::MAX.
+    for (from, to) in [(start, mid), (mid, end)] {
+        lget(c, from, line);
+        lget(c, width, line);
+        c.emit_op(Op::F64_ADD, line);
+        lget(c, len, line);
+        c.emit_op(Op::F64_MIN, line);
+        lset(c, to, line);
+    }
+    lget(c, start, line);
+    lset(c, left, line);
+    lget(c, mid, line);
+    lset(c, right, line);
+    lget(c, start, line);
+    lset(c, out, line);
+
+    let merge_done = c.emit_block(line);
+    let (merge, _) = c.emit_loop_s(line);
+    lget(c, out, line);
+    lget(c, end, line);
+    c.emit_op(Op::F64_GE, line);
+    c.emit_br_if(1, line);
+    lget(c, left, line);
+    lget(c, mid, line);
+    c.emit_op(Op::F64_GE, line);
+    c.emit_if(line);
+    read(imports, c, src, right, lhs, line);
+    increment(c, right, line);
+    c.emit_else(line);
+    lget(c, right, line);
+    lget(c, end, line);
+    c.emit_op(Op::F64_GE, line);
+    c.emit_if(line);
+    read(imports, c, src, left, lhs, line);
+    increment(c, left, line);
+    c.emit_else(line);
+    read(imports, c, src, left, lhs, line);
+    read(imports, c, src, right, rhs, line);
+    greater(imports, c, lhs, rhs, line);
+    c.emit_if(line);
+    lget(c, rhs, line);
+    lset(c, lhs, line);
+    increment(c, right, line);
+    c.emit_else(line);
+    // Ties select the left run: equal elements keep their original order.
+    increment(c, left, line);
+    c.emit_end(line);
+    c.emit_end(line);
+    c.emit_end(line);
+    lget(c, dst, line);
+    lget(c, out, line);
+    lget(c, lhs, line);
+    emit_set_into(imports, c, line);
+    c.emit_op(Op::DROP, line);
+    increment(c, out, line);
+    c.emit_br(0, line);
+    c.emit_end(line);
+    c.patch_loop(merge);
+    c.emit_end(line);
+    c.patch_block(merge_done);
+    lget(c, end, line);
+    lset(c, start, line);
+    c.emit_br(0, line);
+    c.emit_end(line);
+    c.patch_loop(runs);
+    c.emit_end(line);
+    c.patch_block(runs_done);
+    lget(c, src, line);
+    lset(c, swap, line);
+    lget(c, dst, line);
+    lset(c, src, line);
+    lget(c, swap, line);
+    lset(c, dst, line);
+    lget(c, width, line);
+    c.emit_f64_const(2.0, line);
+    c.emit_op(Op::F64_MUL, line);
+    lset(c, width, line);
+    c.emit_br(0, line);
+    c.emit_end(line);
+    c.patch_loop(passes);
+    c.emit_end(line);
+    c.patch_block(passes_done);
+
+    lget(c, src, line);
+    lget(c, arr, line);
+    c.emit_op(Op::REF_EQ, line);
+    c.emit_op(Op::I32_EQZ, line);
+    c.emit_if(line);
+    c.emit_f64_const(0.0, line);
+    lset(c, out, line);
+    let copy_done = c.emit_block(line);
+    let (copy, _) = c.emit_loop_s(line);
+    lget(c, out, line);
+    lget(c, len, line);
+    c.emit_op(Op::F64_GE, line);
+    c.emit_br_if(1, line);
+    lget(c, arr, line);
+    lget(c, out, line);
+    lget(c, src, line);
+    lget(c, out, line);
+    emit_get_into(imports, c, line);
+    emit_set_into(imports, c, line);
+    c.emit_op(Op::DROP, line);
+    increment(c, out, line);
+    c.emit_br(0, line);
+    c.emit_end(line);
+    c.patch_loop(copy);
+    c.emit_end(line);
+    c.patch_block(copy_done);
+    c.emit_end(line);
+    c.emit_end(line);
+    c.patch_block(done);
+}
+
+fn emit_sort_greater(imports: &mut Chunk, c: &mut Chunk, lhs: u16, rhs: u16, line: u32) {
+    lget(c, lhs, line);
+    lget(c, rhs, line);
+    crate::primitives::ops::emit_dyn_gt_into(imports, c, line);
+}
+
+// ── sorted(array) → stable sorted copy ──
 pub fn build_sorted(imports: &mut Chunk) -> Chunk {
     let mut c = Chunk::new("__stdlib_sorted");
     c.arity = 1;
-    c.local_count = 6; // arr(0) + result(1) + i(2) + j(3) + len(4) + key(5)
-    let arr = 0u16;
-    let result = 1;
-    let i = 2;
-    let j = 3;
-    let len = 4;
-    let key = 5;
-
-    // Copy input array → result (so we don't mutate the original)
-    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
-    crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 0);
+    c.local_count = 2;
+    lget(&mut c, 0, 0);
+    c.emit_i32_const(0, 0);
     c.emit_i32_const(i32::MAX, 0);
-    crate::primitives::collections::emit_slice_into(imports, &mut c, 0);
-    c.emit_op_u16(Op::LOCAL_SET, result, 0);
-
-    // len = result.length
-    c.emit_op_u16(Op::LOCAL_GET, result, 0);
-    crate::primitives::collections::emit_len_into(imports, &mut c, 0);
-    c.emit_op_u16(Op::LOCAL_SET, len, 0);
-
-    // Insertion sort: for i = 1 to len-1
-    crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 1);
-    c.emit_op_u16(Op::LOCAL_SET, i, 0);
-
-    let outer_block_p = c.emit_block(0);
-    let (outer_loop_p, _) = c.emit_loop_s(0);
-    c.emit_op_u16(Op::LOCAL_GET, i, 0);
-    c.emit_op_u16(Op::LOCAL_GET, len, 0);
-    crate::primitives::ops::emit_dyn_lt_into(imports, &mut c, 0);
-    crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
-    c.emit_br_if(1, 0); // exit outer loop
-
-    // key = result[i]
-    c.emit_op_u16(Op::LOCAL_GET, result, 0);
-    c.emit_op_u16(Op::LOCAL_GET, i, 0);
-    crate::primitives::collections::emit_get_into(imports, &mut c, 0);
-    c.emit_op_u16(Op::LOCAL_SET, key, 0);
-
-    // j = i - 1
-    c.emit_op_u16(Op::LOCAL_GET, i, 0);
-    crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 1);
-    c.emit_op(Op::I32_SUB, 0);
-    c.emit_op_u16(Op::LOCAL_SET, j, 0);
-
-    // while j >= 0 && result[j] > key
-    let inner_block_p = c.emit_block(0);
-    let (inner_loop_p, _) = c.emit_loop_s(0);
-    c.emit_op_u16(Op::LOCAL_GET, j, 0);
-    crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 0);
-    crate::primitives::ops::emit_dyn_ge_into(imports, &mut c, 0);
-    crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
-    c.emit_br_if(1, 0); // exit inner loop
-
-    c.emit_op_u16(Op::LOCAL_GET, result, 0);
-    c.emit_op_u16(Op::LOCAL_GET, j, 0);
-    crate::primitives::collections::emit_get_into(imports, &mut c, 0);
-    c.emit_op_u16(Op::LOCAL_GET, key, 0);
-    crate::primitives::ops::emit_dyn_gt_into(imports, &mut c, 0);
-    crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
-    c.emit_br_if(1, 0); // exit inner loop (second condition)
-
-    // result[j+1] = result[j]
-    c.emit_op_u16(Op::LOCAL_GET, result, 0);
-    c.emit_op_u16(Op::LOCAL_GET, j, 0);
-    crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 1);
-    c.emit_op(Op::I32_ADD, 0);
-    // Now stack: [result, j+1] — need value = result[j]
-    c.emit_op_u16(Op::LOCAL_GET, result, 0);
-    c.emit_op_u16(Op::LOCAL_GET, j, 0);
-    crate::primitives::collections::emit_get_into(imports, &mut c, 0);
-    crate::primitives::collections::emit_set_into(imports, &mut c, 0);
-    c.emit_op(Op::DROP, 0);
-
-    // j -= 1
-    c.emit_op_u16(Op::LOCAL_GET, j, 0);
-    crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 1);
-    c.emit_op(Op::I32_SUB, 0);
-    c.emit_op_u16(Op::LOCAL_SET, j, 0);
-
-    c.emit_br(0, 0); // continue inner loop
-    c.emit_end(0);
-    c.patch_loop(inner_loop_p);
-    c.emit_end(0);
-    c.patch_block(inner_block_p);
-
-    // result[j+1] = key
-    c.emit_op_u16(Op::LOCAL_GET, result, 0);
-    c.emit_op_u16(Op::LOCAL_GET, j, 0);
-    crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 1);
-    c.emit_op(Op::I32_ADD, 0);
-    c.emit_op_u16(Op::LOCAL_GET, key, 0);
-    crate::primitives::collections::emit_set_into(imports, &mut c, 0);
-    c.emit_op(Op::DROP, 0);
-
-    // i += 1
-    c.emit_op_u16(Op::LOCAL_GET, i, 0);
-    crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 1);
-    c.emit_op(Op::I32_ADD, 0);
-    c.emit_op_u16(Op::LOCAL_SET, i, 0);
-
-    c.emit_br(0, 0); // continue outer loop
-    c.emit_end(0);
-    c.patch_loop(outer_loop_p);
-    c.emit_end(0);
-    c.patch_block(outer_block_p);
-
-    c.emit_op_u16(Op::LOCAL_GET, result, 0);
+    emit_slice_into(imports, &mut c, 0);
+    lset(&mut c, 1, 0);
+    emit_stable_merge_sort(imports, &mut c, 1, 0, emit_sort_greater);
+    lget(&mut c, 1, 0);
     c.emit_op(Op::RETURN, 0);
     c
 }
@@ -3040,8 +3049,9 @@ pub fn build_enumerate(imports: &mut Chunk) -> Chunk {
     let (loop_p, _) = c.emit_loop_s(0);
     c.emit_op_u16(Op::LOCAL_GET, i, 0);
     c.emit_op_u16(Op::LOCAL_GET, len, 0);
-    crate::primitives::ops::emit_dyn_lt_into(imports, &mut c, 0);
-    crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
+    // Private counter and collection length are proven numeric producers.
+    c.emit_op(Op::F64_LT, 0);
+    c.emit_op(Op::I32_EQZ, 0);
     c.emit_br_if(1, 0); // exit loop
 
     // Build pair [i, arr[i]], then push onto result.
@@ -3096,8 +3106,9 @@ pub fn build_compact(imports: &mut Chunk) -> Chunk {
     let (loop_p, _) = c.emit_loop_s(0);
     c.emit_op_u16(Op::LOCAL_GET, i, 0);
     c.emit_op_u16(Op::LOCAL_GET, len, 0);
-    crate::primitives::ops::emit_dyn_lt_into(imports, &mut c, 0);
-    crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
+    // Private counter and collection length are proven numeric producers.
+    c.emit_op(Op::F64_LT, 0);
+    c.emit_op(Op::I32_EQZ, 0);
     c.emit_br_if(1, 0);
 
     // elem = arr[i]; stash into local
@@ -3141,7 +3152,7 @@ pub fn build_isempty(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, 0, 0);
     crate::primitives::collections::emit_len_into(imports, &mut c, 0);
     crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 0);
-    crate::primitives::ops::emit_dyn_eq_into(imports, &mut c, 0);
+    c.emit_op(Op::F64_EQ, 0);
     c.emit_op(Op::RETURN, 0);
     c
 }
@@ -3213,8 +3224,9 @@ pub fn build_any_all(imports: &mut Chunk, name: &str, is_any: bool) -> Chunk {
     let (loop_p, _) = c.emit_loop_s(0);
     c.emit_op_u16(Op::LOCAL_GET, i, 0);
     c.emit_op_u16(Op::LOCAL_GET, len, 0);
-    crate::primitives::ops::emit_dyn_lt_into(imports, &mut c, 0);
-    crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
+    // Private counter and collection length are proven numeric producers.
+    c.emit_op(Op::F64_LT, 0);
+    c.emit_op(Op::I32_EQZ, 0);
     c.emit_br_if(1, 0); // exit loop → fell through
 
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);
@@ -3307,8 +3319,9 @@ pub fn build_pyiter(imports: &mut Chunk) -> Chunk {
     let (loop_p, _) = c.emit_loop_s(0);
     c.emit_op_u16(Op::LOCAL_GET, i, 0);
     c.emit_op_u16(Op::LOCAL_GET, len, 0);
-    crate::primitives::ops::emit_dyn_lt_into(imports, &mut c, 0);
-    crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
+    // Private counter and collection length are proven numeric producers.
+    c.emit_op(Op::F64_LT, 0);
+    c.emit_op(Op::I32_EQZ, 0);
     c.emit_br_if(1, 0);
 
     c.emit_op_u16(Op::LOCAL_GET, out, 0);
@@ -3372,8 +3385,7 @@ pub fn build_pynext(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, 0, 0);
     crate::primitives::collections::emit_len_into(imports, &mut c, 0);
     crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 0);
-    crate::primitives::ops::emit_dyn_eq_into(imports, &mut c, 0);
-    crate::primitives::ops::emit_dyn_to_bool_into(imports, &mut c, 0);
+    c.emit_op(Op::F64_EQ, 0);
     c.emit_if(0);
     c.emit_op_u16(Op::LOCAL_GET, 1, 0); // default
     c.emit_op(Op::RETURN, 0);
@@ -3387,130 +3399,25 @@ pub fn build_pynext(imports: &mut Chunk) -> Chunk {
 }
 
 // ── sort_in_place(array) → same array, mutated ──────────────
-// In-place insertion sort. Used by every language whose surface syntax for
+// In-place stable merge sort. Used by every language whose surface syntax for
 // sorting is in-place: C# `list.Sort()`, VB `list.Sort()`, JS `arr.sort()`,
 // Python `list.sort()`, Pascal `Sort(arr)`. The walker normalizes each form
 // into a canonical builtin call which routes here through compiler_common.
 //
-// Insertion sort is O(n²) but small and works on arbitrary value comparisons
-// via dyn_gt. Higher-perf algorithms can be added behind the same name later.
+// O(n log n) comparisons with an O(n) temporary buffer; dynamic comparison
+// semantics remain owned by dyn_gt.
 pub fn build_sort_in_place(imports: &mut Chunk) -> Chunk {
     let mut c = Chunk::new("__stdlib_sort_in_place");
     c.arity = 1;
-    c.local_count = 6; // arr(0) + i(1) + j(2) + len(3) + key(4) + lhs(5)
-    let arr = 0u16;
-    let i = 1;
-    let j = 2;
-    let len = 3;
-    let key = 4;
-    let lhs = 5;
-
-    // len = arr.length
-    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
-    crate::primitives::collections::emit_len_into(imports, &mut c, 0);
-    c.emit_op_u16(Op::LOCAL_SET, len, 0);
-
-    // i = 1
-    crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 1);
-    c.emit_op_u16(Op::LOCAL_SET, i, 0);
-
-    let outer_block_p = c.emit_block(0);
-    let (outer_loop_p, _) = c.emit_loop_s(0);
-    c.emit_op_u16(Op::LOCAL_GET, i, 0);
-    c.emit_op_u16(Op::LOCAL_GET, len, 0);
-    crate::primitives::ops::emit_dyn_lt_into(imports, &mut c, 0);
-    crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
-    c.emit_br_if(1, 0); // exit outer loop
-
-    // key = arr[i]
-    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
-    c.emit_op_u16(Op::LOCAL_GET, i, 0);
-    crate::primitives::collections::emit_get_into(imports, &mut c, 0);
-    c.emit_op_u16(Op::LOCAL_SET, key, 0);
-
-    // j = i - 1
-    c.emit_op_u16(Op::LOCAL_GET, i, 0);
-    crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 1);
-    c.emit_op(Op::I32_SUB, 0);
-    c.emit_op_u16(Op::LOCAL_SET, j, 0);
-
-    // while j >= 0 && arr[j] > key
-    let inner_block_p = c.emit_block(0);
-    let (inner_loop_p, _) = c.emit_loop_s(0);
-    c.emit_op_u16(Op::LOCAL_GET, j, 0);
-    crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 0);
-    crate::primitives::ops::emit_dyn_ge_into(imports, &mut c, 0);
-    crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
-    c.emit_br_if(1, 0); // exit inner loop
-
-    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
-    c.emit_op_u16(Op::LOCAL_GET, j, 0);
-    crate::primitives::collections::emit_get_into(imports, &mut c, 0);
-    c.emit_op_u16(Op::LOCAL_SET, lhs, 0);
-
-    // Use _into variant so imports go to the shared `imports` chunk (chunk[0]),
-    // not directly to `c`. Mixing emit_dyn_gt (adds to c.imports) with
-    // emit_import_call_into (emits CALL_IMPORT with chunk[0] indices) causes
-    // CALL_IMPORT to resolve the wrong host fn at runtime — same collision
-    // documented in emit_len_into's comment above.
-    c.emit_op_u16(Op::LOCAL_GET, lhs, 0);
-    c.emit_op_u16(Op::LOCAL_GET, key, 0);
-    crate::primitives::ops::emit_dyn_gt_into(imports, &mut c, 0);
-    crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
-    c.emit_br_if(1, 0); // exit inner loop (second condition)
-
-    // arr[j+1] = arr[j]
-    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
-    c.emit_op_u16(Op::LOCAL_GET, j, 0);
-    crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 1);
-    c.emit_op(Op::I32_ADD, 0);
-    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
-    c.emit_op_u16(Op::LOCAL_GET, j, 0);
-    crate::primitives::collections::emit_get_into(imports, &mut c, 0);
-    crate::primitives::collections::emit_set_into(imports, &mut c, 0);
-    c.emit_op(Op::DROP, 0);
-
-    // j -= 1
-    c.emit_op_u16(Op::LOCAL_GET, j, 0);
-    crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 1);
-    c.emit_op(Op::I32_SUB, 0);
-    c.emit_op_u16(Op::LOCAL_SET, j, 0);
-
-    c.emit_br(0, 0); // continue inner loop
-    c.emit_end(0);
-    c.patch_loop(inner_loop_p);
-    c.emit_end(0);
-    c.patch_block(inner_block_p);
-
-    // arr[j+1] = key
-    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
-    c.emit_op_u16(Op::LOCAL_GET, j, 0);
-    crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 1);
-    c.emit_op(Op::I32_ADD, 0);
-    c.emit_op_u16(Op::LOCAL_GET, key, 0);
-    crate::primitives::collections::emit_set_into(imports, &mut c, 0);
-    c.emit_op(Op::DROP, 0);
-
-    // i += 1
-    c.emit_op_u16(Op::LOCAL_GET, i, 0);
-    crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 1);
-    c.emit_op(Op::I32_ADD, 0);
-    c.emit_op_u16(Op::LOCAL_SET, i, 0);
-
-    c.emit_br(0, 0); // continue outer loop
-    c.emit_end(0);
-    c.patch_loop(outer_loop_p);
-    c.emit_end(0);
-    c.patch_block(outer_block_p);
-
-    // return arr (same reference, now sorted in place)
-    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
+    c.local_count = 1;
+    emit_stable_merge_sort(imports, &mut c, 0, 0, emit_sort_greater);
+    lget(&mut c, 0, 0);
     c.emit_op(Op::RETURN, 0);
     c
 }
 
 // ── sort_with_comparator(array, fn) → same array, sorted using fn ──
-// Same insertion sort as sort_in_place, but uses `fn(a, b)` for
+// Same stable merge sort as sort_in_place, but uses `fn(a, b)` for
 // comparison instead of `dyn_gt`. The comparator returns:
 //   negative → a before b (no swap)
 //   zero     → equal (no swap)
@@ -3519,114 +3426,18 @@ pub fn build_sort_in_place(imports: &mut Chunk) -> Chunk {
 pub fn build_sort_with_comparator(imports: &mut Chunk) -> Chunk {
     let mut c = Chunk::new("__stdlib_sort_with_comparator");
     c.arity = 2;
-    c.local_count = 6; // arr(0) + cmp(1) + i(2) + j(3) + len(4) + key(5)
-    let arr = 0u16;
-    let cmp = 1;
-    let i = 2;
-    let j = 3;
-    let len = 4;
-    let key = 5;
-
-    // len = arr.length
-    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
-    crate::primitives::collections::emit_len_into(imports, &mut c, 0);
-    c.emit_op_u16(Op::LOCAL_SET, len, 0);
-
-    // i = 1
-    crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 1);
-    c.emit_op_u16(Op::LOCAL_SET, i, 0);
-
-    let outer_block_p = c.emit_block(0);
-    let (outer_loop_p, _) = c.emit_loop_s(0);
-    c.emit_op_u16(Op::LOCAL_GET, i, 0);
-    c.emit_op_u16(Op::LOCAL_GET, len, 0);
-    crate::primitives::ops::emit_dyn_lt_into(imports, &mut c, 0);
-    crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
-    c.emit_br_if(1, 0); // exit outer loop
-
-    // key = arr[i]
-    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
-    c.emit_op_u16(Op::LOCAL_GET, i, 0);
-    crate::primitives::collections::emit_get_into(imports, &mut c, 0);
-    c.emit_op_u16(Op::LOCAL_SET, key, 0);
-
-    // j = i - 1
-    c.emit_op_u16(Op::LOCAL_GET, i, 0);
-    crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 1);
-    c.emit_op(Op::I32_SUB, 0);
-    c.emit_op_u16(Op::LOCAL_SET, j, 0);
-
-    // while j >= 0 && cmp(arr[j], key) > 0
-    let inner_block_p = c.emit_block(0);
-    let (inner_loop_p, _) = c.emit_loop_s(0);
-    c.emit_op_u16(Op::LOCAL_GET, j, 0);
-    crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 0);
-    crate::primitives::ops::emit_dyn_ge_into(imports, &mut c, 0);
-    crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
-    c.emit_br_if(1, 0); // exit inner loop
-
-    // call cmp(arr[j], key) → result
-    // `cmp` is the CALLER'S comparator, so it takes a receiver wherever the
-    // module declares one — read off `imports`, which carries the module ABI.
-    c.emit_op_u16(Op::LOCAL_GET, cmp, 0);
-    let __recv =
-        crate::primitives::callable::emit_callback_receiver(&mut c, imports.module_receiver_abi, 0);
-    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
-    c.emit_op_u16(Op::LOCAL_GET, j, 0);
-    crate::primitives::collections::emit_get_into(imports, &mut c, 0);
-    c.emit_op_u16(Op::LOCAL_GET, key, 0);
-    crate::primitives::callable::emit_direct_invoke_chunk(&mut c, 2 + __recv, 0);
-    // result > 0 → swap needed
-    crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 0);
-    crate::primitives::ops::emit_dyn_gt_into(imports, &mut c, 0);
-    crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
-    c.emit_br_if(1, 0); // exit inner loop (second condition)
-
-    // arr[j+1] = arr[j]
-    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
-    c.emit_op_u16(Op::LOCAL_GET, j, 0);
-    crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 1);
-    c.emit_op(Op::I32_ADD, 0);
-    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
-    c.emit_op_u16(Op::LOCAL_GET, j, 0);
-    crate::primitives::collections::emit_get_into(imports, &mut c, 0);
-    crate::primitives::collections::emit_set_into(imports, &mut c, 0);
-    c.emit_op(Op::DROP, 0);
-
-    // j -= 1
-    c.emit_op_u16(Op::LOCAL_GET, j, 0);
-    crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 1);
-    c.emit_op(Op::I32_SUB, 0);
-    c.emit_op_u16(Op::LOCAL_SET, j, 0);
-
-    c.emit_br(0, 0); // continue inner loop
-    c.emit_end(0);
-    c.patch_loop(inner_loop_p);
-    c.emit_end(0);
-    c.patch_block(inner_block_p);
-
-    // arr[j+1] = key
-    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
-    c.emit_op_u16(Op::LOCAL_GET, j, 0);
-    crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 1);
-    c.emit_op(Op::I32_ADD, 0);
-    c.emit_op_u16(Op::LOCAL_GET, key, 0);
-    crate::primitives::collections::emit_set_into(imports, &mut c, 0);
-    c.emit_op(Op::DROP, 0);
-
-    // i += 1
-    c.emit_op_u16(Op::LOCAL_GET, i, 0);
-    crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 1);
-    c.emit_op(Op::I32_ADD, 0);
-    c.emit_op_u16(Op::LOCAL_SET, i, 0);
-
-    c.emit_br(0, 0); // continue outer loop
-    c.emit_end(0);
-    c.patch_loop(outer_loop_p);
-    c.emit_end(0);
-    c.patch_block(outer_block_p);
-
-    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
+    c.local_count = 2;
+    let abi = imports.module_receiver_abi;
+    emit_stable_merge_sort(imports, &mut c, 0, 0, |imports, c, lhs, rhs, line| {
+        lget(c, 1, line);
+        let receiver = crate::primitives::callable::emit_callback_receiver(c, abi, line);
+        lget(c, lhs, line);
+        lget(c, rhs, line);
+        crate::primitives::callable::emit_direct_invoke_chunk(c, 2 + receiver, line);
+        c.emit_i32_const(0, line);
+        crate::primitives::ops::emit_dyn_gt_into(imports, c, line);
+    });
+    lget(&mut c, 0, 0);
     c.emit_op(Op::RETURN, 0);
     c
 }

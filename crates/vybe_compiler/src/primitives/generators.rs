@@ -293,7 +293,7 @@ pub fn emit_take_into_array(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, count_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, limit_slot, line);
     ops::emit_dyn_lt(&mut chunks[current], line);
-    ops::emit_dyn_not(&mut chunks[current], line);
+    chunks[current].emit_op(vybe_runtime::opcode::Op::I32_EQZ, line);
     chunks[current].emit_br_if(1, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, cont_slot, line);
@@ -373,7 +373,7 @@ pub fn emit_flat_map_generator_mapper_into_array(chunks: &mut [Chunk], current: 
     chunks[current].emit_op_u16(Op::LOCAL_GET, i_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, len_slot, line);
     ops::emit_dyn_lt(&mut chunks[current], line);
-    ops::emit_dyn_not(&mut chunks[current], line);
+    chunks[current].emit_op(vybe_runtime::opcode::Op::I32_EQZ, line);
     chunks[current].emit_br_if(1, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, source_slot, line);
@@ -2409,7 +2409,7 @@ pub fn build_iter_drain(imports: &mut Chunk) -> Chunk {
         c.emit_call(idx, 1, 0);
     }
     c.emit_string_const("function", 0);
-    crate::primitives::ops::emit_dyn_eq_into(imports, &mut c, 0);
+    crate::primitives::strings::emit_str_equals(&mut c, 0);
     c.emit_br_if(0, 0); // is function → skip early-exit
     c.emit_op_u16(Op::LOCAL_GET, v, 0);
     c.emit_op_u16(Op::LOCAL_SET, result, 0);
@@ -2481,7 +2481,7 @@ pub fn build_iter_drain(imports: &mut Chunk) -> Chunk {
         c.emit_call(idx, 1, 0);
     }
     c.emit_string_const("function", 0);
-    crate::primitives::ops::emit_dyn_eq_into(imports, &mut c, 0);
+    crate::primitives::strings::emit_str_equals(&mut c, 0);
     c.emit_br_if(0, 0);
     c.emit_op_u16(Op::LOCAL_GET, out, 0);
     c.emit_op_u16(Op::LOCAL_SET, result, 0);
@@ -2504,7 +2504,7 @@ pub fn build_iter_drain(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, counter, 0);
     c.emit_i32_const(1_000_000, 0);
     crate::primitives::ops::emit_dyn_lt_into(imports, &mut c, 0);
-    crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
+    c.emit_op(vybe_runtime::opcode::Op::I32_EQZ, 0);
     c.emit_br_if(1, 0); // counter >= cap → break
 
     // step = it.method() — the receiver is `it`

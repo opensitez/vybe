@@ -1099,7 +1099,6 @@ pub fn emit_close_file(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, fnum, line);
     chunks[current].emit_f64_const(-1.0, line);
     crate::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
-    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
     // `Close` with no argument: a fresh table IS closing every file, since a
     // handle holds no descriptor to release.
@@ -1230,13 +1229,11 @@ fn emit_csv_quote(chunks: &mut [Chunk], current: usize, line: u32) {
     crate::primitives::strings::emit_index_of(&mut chunks[current], line);
     chunks[current].emit_f64_const(0.0, line);
     crate::primitives::ops::emit_dyn_ge(&mut chunks[current], line);
-    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, s, line);
     chunks[current].emit_string_const("\"", line);
     crate::primitives::strings::emit_index_of(&mut chunks[current], line);
     chunks[current].emit_f64_const(0.0, line);
     crate::primitives::ops::emit_dyn_ge(&mut chunks[current], line);
-    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_op(Op::I32_OR, line);
     chunks[current].emit_if_value(line);
     {
@@ -1330,7 +1327,6 @@ pub fn emit_line_input(chunks: &mut [Chunk], current: usize, line: u32) {
         chunks[current].emit_op_u16(Op::LOCAL_GET, nl, line);
         chunks[current].emit_f64_const(0.0, line);
         crate::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
-        crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
         chunks[current].emit_if_value(line);
         chunks[current].emit_op_u16(Op::LOCAL_GET, rest, line);
         chunks[current].emit_else(line);

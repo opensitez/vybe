@@ -60,7 +60,6 @@ pub fn emit_sort_if_ordered(chunks: &mut [Chunk], current: usize, value: u16, li
     host::emit(&mut chunks[current], "ecma:value", "typeof", 1, line);
     chunks[current].emit_string_const("function", line);
     ops::emit_dyn_eq(&mut chunks[current], line);
-    ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if_value(line);
     get(&mut chunks[current], value, line);
     get(&mut chunks[current], comparator, line);
@@ -189,11 +188,11 @@ pub fn emit_bound_condition(
     match mode {
         0 => {
             ops::emit_dyn_lt(&mut chunks[current], line);
-            ops::emit_dyn_not(&mut chunks[current], line);
+            chunks[current].emit_op(vybe_runtime::opcode::Op::I32_EQZ, line);
         }
         1 => {
             ops::emit_dyn_gt(&mut chunks[current], line);
-            ops::emit_dyn_not(&mut chunks[current], line);
+            chunks[current].emit_op(vybe_runtime::opcode::Op::I32_EQZ, line);
         }
         2 => ops::emit_dyn_gt(&mut chunks[current], line),
         _ => ops::emit_dyn_lt(&mut chunks[current], line),
@@ -214,7 +213,7 @@ fn emit_upper_condition(
         if upper_inclusive {
             // key <= upper
             ops::emit_dyn_gt(&mut chunks[current], line);
-            ops::emit_dyn_not(&mut chunks[current], line);
+            chunks[current].emit_op(vybe_runtime::opcode::Op::I32_EQZ, line);
         } else {
             // key < upper
             ops::emit_dyn_lt(&mut chunks[current], line);
@@ -245,8 +244,7 @@ pub fn emit_range_condition(
         get(&mut chunks[current], key, line);
         get(&mut chunks[current], lower, line);
         ops::emit_dyn_lt(&mut chunks[current], line);
-        ops::emit_dyn_not(&mut chunks[current], line);
-        ops::emit_dyn_to_bool(&mut chunks[current], line);
+        chunks[current].emit_op(vybe_runtime::opcode::Op::I32_EQZ, line);
         chunks[current].emit_if_value(line);
         emit_upper_condition(chunks, current, key, upper, upper_inclusive, line);
         chunks[current].emit_else(line);
@@ -303,7 +301,7 @@ pub fn emit_sorted_set_range_view(
     get(&mut chunks[current], index, line);
     get(&mut chunks[current], len, line);
     ops::emit_dyn_lt(&mut chunks[current], line);
-    ops::emit_dyn_not(&mut chunks[current], line);
+    chunks[current].emit_op(vybe_runtime::opcode::Op::I32_EQZ, line);
     chunks[current].emit_br_if(1, line);
     get(&mut chunks[current], list, line);
     get(&mut chunks[current], index, line);
@@ -388,7 +386,7 @@ pub fn emit_sorted_map_values(chunks: &mut [Chunk], current: usize, line: u32) {
     get(&mut chunks[current], index, line);
     get(&mut chunks[current], len, line);
     ops::emit_dyn_lt(&mut chunks[current], line);
-    ops::emit_dyn_not(&mut chunks[current], line);
+    chunks[current].emit_op(vybe_runtime::opcode::Op::I32_EQZ, line);
     chunks[current].emit_br_if(1, line);
     get(&mut chunks[current], out, line);
     get(&mut chunks[current], map, line);
@@ -436,7 +434,7 @@ pub fn emit_sorted_map_entries(chunks: &mut [Chunk], current: usize, line: u32) 
     get(&mut chunks[current], index, line);
     get(&mut chunks[current], len, line);
     ops::emit_dyn_lt(&mut chunks[current], line);
-    ops::emit_dyn_not(&mut chunks[current], line);
+    chunks[current].emit_op(vybe_runtime::opcode::Op::I32_EQZ, line);
     chunks[current].emit_br_if(1, line);
     get(&mut chunks[current], keys, line);
     get(&mut chunks[current], index, line);

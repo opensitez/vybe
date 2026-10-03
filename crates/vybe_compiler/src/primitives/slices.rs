@@ -144,7 +144,6 @@ fn is_neg(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
     get(chunks, current, slot, line);
     core_wasm::i32_const(&mut chunks[current], line, 0);
     ops::emit_dyn_lt(&mut chunks[current], line);
-    ops::emit_dyn_to_bool(&mut chunks[current], line);
 }
 
 /// Push i32 bool: `obj` is a string (via `wasm:js-string.test`, yields i32).
@@ -234,7 +233,6 @@ fn normalize_bound(
     get(chunks, current, dst, line);
     get(chunks, current, len, line);
     ops::emit_dyn_ge(&mut chunks[current], line);
-    ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
     set_by_step_sign(
         chunks,
@@ -288,7 +286,6 @@ fn normalize_slice_into(
         get(chunks, current, step_n, line);
         core_wasm::i32_const(&mut chunks[current], line, 0);
         ops::emit_dyn_eq(&mut chunks[current], line);
-        ops::emit_dyn_to_bool(&mut chunks[current], line);
         chunks[current].emit_if(line);
         class_slots::emit_class_alloc(&mut chunks[current], line);
         chunks[current].emit_dup(line);
@@ -312,7 +309,6 @@ fn normalize_slice_into(
         get(chunks, current, step_n, line);
         core_wasm::i32_const(&mut chunks[current], line, 0);
         ops::emit_dyn_eq(&mut chunks[current], line);
-        ops::emit_dyn_to_bool(&mut chunks[current], line);
         chunks[current].emit_if(line);
         core_wasm::i32_const(&mut chunks[current], line, 0);
         set(chunks, current, lo, line);
@@ -370,7 +366,6 @@ pub fn emit_stepped(chunks: &mut [Chunk], current: usize, line: u32, opts: Optio
     get(chunks, current, step_n, line);
     core_wasm::i32_const(&mut chunks[current], line, 0);
     ops::emit_dyn_gt(&mut chunks[current], line);
-    ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
     get(chunks, current, i, line);
     get(chunks, current, hi, line);
@@ -431,7 +426,6 @@ fn emit_stride_cond(chunks: &mut [Chunk], current: usize, step_n: u16, i: u16, h
     get(chunks, current, step_n, line);
     core_wasm::i32_const(&mut chunks[current], line, 0);
     ops::emit_dyn_gt(&mut chunks[current], line);
-    ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if_value(line);
     get(chunks, current, i, line);
     get(chunks, current, hi, line);
@@ -480,7 +474,6 @@ pub fn emit_splice_assign(chunks: &mut [Chunk], current: usize, line: u32) {
     get(chunks, current, hi, line);
     core_wasm::i32_const(&mut chunks[current], line, 0);
     ops::emit_dyn_lt(&mut chunks[current], line);
-    ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
     core_wasm::i32_const(&mut chunks[current], line, 0);
     set(chunks, current, hi, line);
@@ -601,7 +594,6 @@ pub fn emit_strided_del(chunks: &mut [Chunk], current: usize, line: u32, opts: O
     get(chunks, current, step_n, line);
     core_wasm::i32_const(&mut chunks[current], line, 0);
     ops::emit_dyn_gt(&mut chunks[current], line);
-    ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
     get(chunks, current, i, line);
     get(chunks, current, removed, line);
@@ -710,7 +702,6 @@ pub fn build_slice_step(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, 7, 0);
     crate::primitives::expressions::emit_const_index(&mut c, zero, 0);
     crate::primitives::ops::emit_dyn_gt_into(imports, &mut c, 0);
-    crate::primitives::ops::emit_dyn_to_bool_into(imports, &mut c, 0);
     c.emit_if(0);
     crate::primitives::expressions::emit_const_index(&mut c, zero, 0);
     c.emit_op_u16(Op::LOCAL_SET, 8, 0);
@@ -732,7 +723,6 @@ pub fn build_slice_step(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, 7, 0);
     crate::primitives::expressions::emit_const_index(&mut c, zero, 0);
     crate::primitives::ops::emit_dyn_gt_into(imports, &mut c, 0);
-    crate::primitives::ops::emit_dyn_to_bool_into(imports, &mut c, 0);
     c.emit_if(0);
     c.emit_op_u16(Op::LOCAL_GET, 10, 0);
     c.emit_op_u16(Op::LOCAL_SET, 9, 0);
@@ -749,7 +739,6 @@ pub fn build_slice_step(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, 7, 0);
     crate::primitives::expressions::emit_const_index(&mut c, zero, 0);
     crate::primitives::ops::emit_dyn_eq_into(imports, &mut c, 0);
-    crate::primitives::ops::emit_dyn_to_bool_into(imports, &mut c, 0);
     c.emit_if(0);
     c.emit_op_u16(Op::LOCAL_GET, 4, 0);
     c.emit_op(Op::RETURN, 0);
@@ -767,7 +756,6 @@ pub fn build_slice_step(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, 7, 0);
     crate::primitives::expressions::emit_const_index(&mut c, zero, 0);
     crate::primitives::ops::emit_dyn_gt_into(imports, &mut c, 0);
-    crate::primitives::ops::emit_dyn_to_bool_into(imports, &mut c, 0);
     c.emit_if(0);
 
     // positive step: cond = i < end
@@ -787,7 +775,6 @@ pub fn build_slice_step(imports: &mut Chunk) -> Chunk {
     // Check condition — exit if false
     c.emit_op_u16(Op::LOCAL_GET, 6, 0);
     crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
-    crate::primitives::ops::emit_dyn_to_bool_into(imports, &mut c, 0);
     c.emit_br_if(1, 0); // exit loop (depth 1 = outer block)
 
     // bounds check: skip push if i < 0 or i >= arr.length
@@ -796,12 +783,10 @@ pub fn build_slice_step(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, 5, 0);
     crate::primitives::expressions::emit_const_index(&mut c, zero, 0);
     crate::primitives::ops::emit_dyn_lt_into(imports, &mut c, 0);
-    crate::primitives::ops::emit_dyn_to_bool_into(imports, &mut c, 0);
     c.emit_br_if(0, 0); // skip push if i < 0
     c.emit_op_u16(Op::LOCAL_GET, 5, 0);
     c.emit_op_u16(Op::LOCAL_GET, 10, 0);
     crate::primitives::ops::emit_dyn_ge_into(imports, &mut c, 0);
-    crate::primitives::ops::emit_dyn_to_bool_into(imports, &mut c, 0);
     c.emit_br_if(0, 0); // skip push if i >= length
     c.emit_op_u16(Op::LOCAL_GET, 0, 0);
     crate::primitives::reflection::emit_is_string(&mut c, 0);
@@ -888,7 +873,7 @@ pub fn build_splice(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, i, 0);
     c.emit_op_u16(Op::LOCAL_GET, end, 0);
     crate::primitives::ops::emit_dyn_lt_into(imports, &mut c, 0);
-    crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
+    c.emit_op(vybe_runtime::opcode::Op::I32_EQZ, 0);
     c.emit_br_if(1, 0); // exit loop
 
     c.emit_op_u16(Op::LOCAL_GET, result_local, 0);

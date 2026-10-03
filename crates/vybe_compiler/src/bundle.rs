@@ -15,7 +15,9 @@ use vybe_runtime::{ExportEntry, ModuleRecord};
 /// every unit of another language) repeats work with no new information.
 fn cached_language_profile(src: &'static str) -> Result<vybe_runtime::profile::LanguageProfile, String> {
     use std::sync::{Mutex, OnceLock};
-    static PROFILES: OnceLock<Mutex<HashMap<&'static str, vybe_runtime::profile::LanguageProfile>>> = OnceLock::new();
+    static PROFILES: OnceLock<
+        Mutex<HashMap<&'static str, vybe_runtime::profile::LanguageProfile>>,
+    > = OnceLock::new();
     let cache = PROFILES.get_or_init(|| Mutex::new(HashMap::new()));
     if let Some(profile) = cache.lock().unwrap().get(src) {
         return Ok(profile.clone());
@@ -497,6 +499,24 @@ impl Bundle {
             write_bundle_timing(path, "compiler_compile_with_imports", compiler_started.elapsed());
         }
         let mut chunks = compile_result.chunks;
+        // Do not mislabel a merged multi-source unit as its first input file.
+        // Runtime includes/eval and ordinary single-file projects retain their
+        // actual compilation-unit path, including when chunks are cached.
+        if self.sources.len() == 1 {
+            let path = &self.sources[0].path;
+            let path = path.canonicalize().unwrap_or_else(|_| {
+                if path.is_absolute() {
+                    path.clone()
+                } else {
+                    std::env::current_dir().unwrap_or_default().join(path)
+                }
+            });
+            let source: std::sync::Arc<str> =
+                std::sync::Arc::from(path.to_string_lossy().as_ref());
+            for chunk in &mut chunks {
+                chunk.source_path = Some(source.clone());
+            }
+        }
         let host_imports = compile_result.host_imports;
         let app_shell = compile_result.app_shell;
 

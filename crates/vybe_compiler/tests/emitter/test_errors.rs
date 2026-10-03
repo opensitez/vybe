@@ -28,12 +28,14 @@ fn emit_try_start_opens_handler_block_then_try_table() {
         ((chunk.code[8] as u16) << 8) | chunk.code[9] as u16,
     );
     assert_eq!(second, Some(Op::TRY_TABLE));
-    assert_eq!(chunk.code[10], 1, "one catch clause");
+    assert_eq!(chunk.code[10], 0, "try body takes no params");
+    assert_eq!(chunk.code[11], 0, "try body produces no results");
+    assert_eq!((chunk.code[12], chunk.code[13]), (0, 1), "one catch clause");
     // [kind, tag hi, tag lo, label hi, label lo] — the label is 0, naming the
     // handler block just opened. This is a labelidx (a block depth), NOT a byte
     // offset; nothing is patched into it.
     assert_eq!(
-        (chunk.code[14], chunk.code[15]),
+        (chunk.code[17], chunk.code[18]),
         (0, 0),
         "clause must carry labelidx 0 — the handler block"
     );

@@ -2750,9 +2750,9 @@ impl Compiler {
         &mut self,
         class: &crate::primitives::class_normalize::NormalClass,
     ) -> Result<(), String> {
-        let _debug_class = vybe_runtime::debugger::DebugPhase::current_lazy(||
-            format!("compiler class {}", class.name),
-        );
+        let _debug_class = vybe_runtime::debugger::DebugPhase::current_lazy(|| {
+            format!("compiler class {}", class.name)
+        });
         // Extract the canonicalised names the orchestration below needs.
         // Canonicalisation happens once here rather than at every caller.
         let cname = self.canon(&class.name);
@@ -3079,9 +3079,9 @@ impl Compiler {
                                          is_static: bool|
          -> Result<(), String> {
             let mname = &m.source_name;
-            let _debug_method = vybe_runtime::debugger::DebugPhase::current_lazy(||
-                format!("compiler method {}::{}", class.name, mname),
-            );
+            let _debug_method = vybe_runtime::debugger::DebugPhase::current_lazy(|| {
+                format!("compiler method {}::{}", class.name, mname)
+            });
             let is_static_init = is_static && mname == "__static_init__";
             let is_ctor = if cc.case_sensitive {
                 mname == &ctor_name || (is_static && mname == "new")
@@ -3584,9 +3584,12 @@ impl Compiler {
                     );
                 }
                 for s in &m.body {
-                    let _debug_stmt = vybe_runtime::debugger::DebugPhase::current_lazy(||
-                        format!("compiler statement {}::{} line {}", class.name, mname, s.span.start_line),
-                    );
+                    let _debug_stmt = vybe_runtime::debugger::DebugPhase::current_lazy(|| {
+                        format!(
+                            "compiler statement {}::{} line {}",
+                            class.name, mname, s.span.start_line
+                        )
+                    });
                     cc.compile_stmt(s)?;
                 }
                 if let Some(slot) = cc.scope().resolve(&self_kw) {
@@ -3609,18 +3612,24 @@ impl Compiler {
                 cc.emit_u16(Op::LOCAL_SET, rs);
                 cc.current_result_slot = Some(rs);
                 for s in &m.body {
-                    let _debug_stmt = vybe_runtime::debugger::DebugPhase::current_lazy(||
-                        format!("compiler statement {}::{} line {}", class.name, mname, s.span.start_line),
-                    );
+                    let _debug_stmt = vybe_runtime::debugger::DebugPhase::current_lazy(|| {
+                        format!(
+                            "compiler statement {}::{} line {}",
+                            class.name, mname, s.span.start_line
+                        )
+                    });
                     cc.compile_stmt(s)?;
                 }
                 cc.emit_u16(Op::LOCAL_GET, rs);
                 cc.emit_return_through_finally(1)?;
             } else {
                 for s in &m.body {
-                    let _debug_stmt = vybe_runtime::debugger::DebugPhase::current_lazy(||
-                        format!("compiler statement {}::{} line {}", class.name, mname, s.span.start_line),
-                    );
+                    let _debug_stmt = vybe_runtime::debugger::DebugPhase::current_lazy(|| {
+                        format!(
+                            "compiler statement {}::{} line {}",
+                            class.name, mname, s.span.start_line
+                        )
+                    });
                     cc.compile_stmt(s)?;
                 }
                 if cc.current_ref_out_params.is_some() {
@@ -5271,7 +5280,13 @@ impl Compiler {
             }
         }
         let php_initializer_arity = (self.profile.name == "php")
-            .then(|| ctor_helpers.iter().filter(|entry| entry.4.is_none()).map(|entry| entry.0).max())
+            .then(|| {
+                ctor_helpers
+                    .iter()
+                    .filter(|entry| entry.4.is_none())
+                    .map(|entry| entry.0)
+                    .max()
+            })
             .flatten();
         for (arity, _, helper_idx, helper_captures, named) in &ctor_helpers {
             emit_helper_ref(self, *helper_idx, helper_captures)?;

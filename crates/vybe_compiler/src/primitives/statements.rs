@@ -199,9 +199,9 @@ impl Compiler {
         });
         let should_trace = timing.is_some()
             && current_function.as_deref().is_some()
-            && debug_function.as_deref().is_some_and(|target| {
-                target == "*" || current_function.as_deref() == Some(target)
-            });
+            && debug_function
+                .as_deref()
+                .is_some_and(|target| target == "*" || current_function.as_deref() == Some(target));
         if should_trace {
             if let (Some(path), Some(function_name)) = (timing.as_deref(), current_function.as_deref()) {
                 let scope_next = self.scopes.last().map(|s| s.next_slot).unwrap_or(0);

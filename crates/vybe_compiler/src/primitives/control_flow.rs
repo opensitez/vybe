@@ -69,7 +69,6 @@ impl Compiler {
             self.emit_host_call(typeof_idx, 1);
             self.emit_const(Value::String(std::sync::Arc::from("string")));
             crate::primitives::ops::emit_dyn_eq(self.chunk(), line);
-            crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
             self.chunk().emit_if(line);
             // The message goes through THE write so it lands in the innermost
             // output buffer exactly as `echo` does: `wasi:logging` appends a
@@ -216,7 +215,7 @@ impl Compiler {
         self.emit_host_call(typeof_idx, 1);
         self.emit_const(Value::String(Arc::from("object")));
         crate::primitives::ops::emit_dyn_eq(self.chunk(), line);
-        crate::primitives::ops::emit_dyn_not(self.chunk(), line);
+        self.chunk().emit_op(vybe_runtime::opcode::Op::I32_EQZ, line);
         self.chunk().emit_if(line);
         self.emit_const(Value::String(Arc::from("Iterator result is not an object")));
         self.emit_js_exception_ctor_from_message_value("TypeError")?;

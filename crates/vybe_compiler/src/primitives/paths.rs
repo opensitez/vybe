@@ -56,7 +56,6 @@ fn emit_last_sep(chunk: &mut Chunk, s: u16, line: u32) -> u16 {
     chunk.emit_op_u16(Op::LOCAL_GET, fwd, line);
     chunk.emit_op_u16(Op::LOCAL_GET, back, line);
     ops::emit_dyn_lt(chunk, line);
-    ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     chunk.emit_op_u16(Op::LOCAL_GET, back, line);
     chunk.emit_else(line);
@@ -76,7 +75,6 @@ pub fn emit_file_name(chunk: &mut Chunk, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, cut, line);
     chunk.emit_f64_const(0.0, line);
     ops::emit_dyn_lt(chunk, line);
-    ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     // No separator: the whole string IS the file name.
     chunk.emit_op_u16(Op::LOCAL_GET, s, line);
@@ -104,7 +102,6 @@ pub fn emit_directory(chunk: &mut Chunk, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, cut, line);
     chunk.emit_f64_const(0.0, line);
     ops::emit_dyn_lt(chunk, line);
-    ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     chunk.emit_string_const("", line);
     chunk.emit_else(line);
@@ -134,7 +131,6 @@ fn emit_ext_dot(chunk: &mut Chunk, s: u16, line: u32) -> u16 {
     chunk.emit_op_u16(Op::LOCAL_GET, dot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, cut, line);
     ops::emit_dyn_lt(chunk, line);
-    ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     chunk.emit_f64_const(-1.0, line);
     chunk.emit_op_u16(Op::LOCAL_SET, dot, line);
@@ -153,7 +149,6 @@ pub fn emit_extension(chunk: &mut Chunk, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, dot, line);
     chunk.emit_f64_const(0.0, line);
     ops::emit_dyn_lt(chunk, line);
-    ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     chunk.emit_string_const("", line);
     chunk.emit_else(line);
@@ -177,7 +172,6 @@ pub fn emit_file_stem(chunk: &mut Chunk, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, dot, line);
     chunk.emit_f64_const(0.0, line);
     ops::emit_dyn_lt(chunk, line);
-    ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     chunk.emit_op_u16(Op::LOCAL_GET, name, line);
     chunk.emit_else(line);
@@ -196,7 +190,6 @@ pub fn emit_has_extension(chunk: &mut Chunk, line: u32) {
     strings::emit_length(chunk, line);
     chunk.emit_f64_const(0.0, line);
     ops::emit_dyn_gt(chunk, line);
-    ops::emit_dyn_to_bool(chunk, line);
     ops::emit_i32_to_bool(chunk, line);
 }
 
@@ -215,7 +208,6 @@ pub fn emit_change_extension(chunk: &mut Chunk, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, dot, line);
     chunk.emit_f64_const(0.0, line);
     ops::emit_dyn_lt(chunk, line);
-    ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     chunk.emit_op_u16(Op::LOCAL_GET, s, line);
     chunk.emit_else(line);
@@ -233,7 +225,6 @@ pub fn emit_change_extension(chunk: &mut Chunk, line: u32) {
     strings::emit_index_of(chunk, line);
     chunk.emit_f64_const(0.0, line);
     ops::emit_dyn_eq(chunk, line);
-    ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     chunk.emit_op_u16(Op::LOCAL_GET, ext, line);
     chunk.emit_else(line);
@@ -258,20 +249,17 @@ pub fn emit_is_rooted(chunk: &mut Chunk, line: u32) {
     strings::emit_index_of(chunk, line);
     chunk.emit_f64_const(0.0, line);
     ops::emit_dyn_eq(chunk, line);
-    ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, s, line);
     chunk.emit_string_const("\\", line);
     strings::emit_index_of(chunk, line);
     chunk.emit_f64_const(0.0, line);
     ops::emit_dyn_eq(chunk, line);
-    ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_op(Op::I32_OR, line);
     chunk.emit_op_u16(Op::LOCAL_GET, s, line);
     chunk.emit_string_const(":", line);
     strings::emit_index_of(chunk, line);
     chunk.emit_f64_const(1.0, line);
     ops::emit_dyn_eq(chunk, line);
-    ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_op(Op::I32_OR, line);
     ops::emit_i32_to_bool(chunk, line);
 }
@@ -300,7 +288,6 @@ pub fn emit_combine(chunk: &mut Chunk, argc: u8, line: u32) {
         strings::emit_length(chunk, line);
         chunk.emit_f64_const(0.0, line);
         ops::emit_dyn_gt(chunk, line);
-        ops::emit_dyn_to_bool(chunk, line);
         chunk.emit_if(line);
         {
             chunk.emit_op_u16(Op::LOCAL_GET, seg, line);
@@ -310,7 +297,6 @@ pub fn emit_combine(chunk: &mut Chunk, argc: u8, line: u32) {
             strings::emit_length(chunk, line);
             chunk.emit_f64_const(0.0, line);
             ops::emit_dyn_eq(chunk, line);
-            ops::emit_dyn_to_bool(chunk, line);
             chunk.emit_op(Op::I32_OR, line);
             chunk.emit_if_value(line);
             // rooted, or nothing accumulated yet: this segment replaces
@@ -338,7 +324,6 @@ pub fn emit_combine(chunk: &mut Chunk, argc: u8, line: u32) {
                 chunk.emit_op_u16(Op::LOCAL_GET, acc, line);
                 strings::emit_length(chunk, line);
                 ops::emit_dyn_eq(chunk, line);
-                ops::emit_dyn_to_bool(chunk, line);
                 chunk.emit_if_value(line);
                 chunk.emit_string_const("", line);
                 chunk.emit_else(line);
@@ -409,7 +394,6 @@ fn emit_canonicalize(chunk: &mut Chunk, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, seg, line);
     chunk.emit_string_const("..", line);
     ops::emit_dyn_eq(chunk, line);
-    ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     chunk.emit_op_u16(Op::LOCAL_GET, out, line);
     chunk.emit_call(arr_len, 1, line);
@@ -425,11 +409,9 @@ fn emit_canonicalize(chunk: &mut Chunk, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, seg, line);
     chunk.emit_string_const("", line);
     ops::emit_dyn_eq(chunk, line);
-    ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, seg, line);
     chunk.emit_string_const(".", line);
     ops::emit_dyn_eq(chunk, line);
-    ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_op(Op::I32_OR, line);
     chunk.emit_op(Op::I32_EQZ, line);
     chunk.emit_if(line);

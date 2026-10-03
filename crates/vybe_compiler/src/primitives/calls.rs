@@ -600,7 +600,7 @@ pub(super) fn resolve_receiver_type_hint(compiler: &Compiler, recv: &Expression)
             if let ExprKind::Member { field, .. } = &callee.kind {
                 if let Some(receiver_type) = member_receiver_type.as_deref() {
                     if let Some(return_type) = compiler
-                        .resolve_instance_method_overload_for_type(receiver_type, field, &arg_exprs, false)
+                        .resolve_instance_method_overload_for_type(receiver_type, field, &arg_exprs, false,)
                         .and_then(|overload| overload.return_type.clone())
                     {
                         return Some(return_type);
@@ -626,7 +626,7 @@ pub(super) fn resolve_receiver_type_hint(compiler: &Compiler, recv: &Expression)
 
             let inferred = (if let ExprKind::Member { object, field, .. } = &callee.kind {
                 let inferred_receiver = compiler.infer_expr_type_hint(object);
-                compiler.infer_member_function_return_type(object, field, inferred_receiver.as_deref())
+                compiler.infer_member_function_return_type(object, field, inferred_receiver.as_deref(),)
             } else {
                 compiler.infer_function_return_type(callee)
             })
@@ -3666,9 +3666,9 @@ impl Compiler {
         callee: &Expression,
         args: &[Argument],
     ) -> Result<(), String> {
-        let _debug_call = vybe_runtime::debugger::DebugPhase::current_lazy(||
-            format!("compiler call expression line {}", callee.span.start_line),
-        );
+        let _debug_call = vybe_runtime::debugger::DebugPhase::current_lazy(|| {
+            format!("compiler call expression line {}", callee.span.start_line)
+        });
         let reordered_args;
         let args = if args.iter().any(|arg| arg.name.is_some()) {
             reordered_args = self.reorder_named_call_args(callee, args);
@@ -4758,7 +4758,9 @@ impl Compiler {
                     && !self.uses_proxy
                     && self
                         .resolve_static_method_overload_for_type(&class_canon, field, &arg_exprs)
-                        .is_some_and(|overload| !overload.signature.has_rest && !overload.is_virtual);
+                        .is_some_and(|overload| {
+                            !overload.signature.has_rest && !overload.is_virtual
+                        });
                 // Declared parameter modes for the callee. `Alias` must be
                 // passed AS a reference and never written back; `Ref`/`Out`
                 // are copy-in/copy-out and must be. Without this lookup the
@@ -5737,8 +5739,12 @@ impl Compiler {
                                     && members[members.len() - 1] == "add"
                                 {
                                     let parent = match &callee.kind {
-                                        ExprKind::Member { object: controls, .. } => match &controls.kind {
-                                            ExprKind::Member { object: parent, .. } => Some(parent.as_ref()),
+                                        ExprKind::Member {
+                                            object: controls, ..
+                                        } => match &controls.kind {
+                                            ExprKind::Member { object: parent, .. } => {
+                                                Some(parent.as_ref())
+                                            }
                                             _ => None,
                                         },
                                         _ => None,
@@ -5773,7 +5779,7 @@ impl Compiler {
                                             self.compile_expr(a)?;
                                         }
                                         if grid_add {
-                                            self.emit_common(common::gui::APPEND_CHILD_AT_EMIT, 4, line);
+                                            self.emit_common(common::gui::APPEND_CHILD_AT_EMIT, 4, line,);
                                         } else {
                                             let append_idx =
                                                 self.import(common::gui::DOM_MODULE, "appendChild");

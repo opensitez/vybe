@@ -619,7 +619,7 @@ pub fn hybrid_element_distance(
         binary(BinOp::Div, linear, e(ExprKind::Lit(Literal::Int(stride))))
     };
     e(ExprKind::Ternary {
-        cond: Box::new(binary(BinOp::And, is_number(a.clone()), is_number(b.clone()))),
+        cond: Box::new(binary(BinOp::And, is_number(a.clone()), is_number(b.clone()),)),
         then: Box::new(linear),
         else_: Box::new(carray_diff(
             if a_is_array_base { make_carray_ptr(a, e(ExprKind::Lit(Literal::Int(0)))) } else { a },

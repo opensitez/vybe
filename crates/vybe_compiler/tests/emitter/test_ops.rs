@@ -23,6 +23,23 @@ thread_local! {
 
 fn run(emit: impl FnOnce(&mut Chunk)) -> Value {
     let mut chunk = Chunk::new("<test>");
+    let helpers = vybe_compiler::primitives::polyfills::build_runtime_helpers_for_exports(
+        &mut chunk,
+        &[
+            "__stdlib_autoderef",
+            "__stdlib_dyneq",
+            "__stdlib_dynlt",
+            "__stdlib_dyngt",
+            "__stdlib_dynle",
+            "__stdlib_dynge",
+        ],
+    );
+    for (index, export) in helpers.exports.iter().enumerate() {
+        chunk.emit_op_u16(Op::REF_FUNC, (index + 1) as u16, 0);
+        chunk.emit(0, 0);
+        let global = export.replacen("__stdlib_", "__vybe_", 1);
+        vybe_compiler::primitives::globals::emit_write(&mut chunk, &global, 0);
+    }
     emit(&mut chunk);
     chunk.emit_op(Op::RETURN, 0);
     let mut vm = VM::new();
@@ -32,7 +49,9 @@ fn run(emit: impl FnOnce(&mut Chunk)) -> Value {
             vm.set_global_owned(name, value);
         }
     });
-    vm.run(vec![chunk]).expect("VM run failed")
+    let mut chunks = vec![chunk];
+    chunks.extend(helpers.chunks);
+    vm.run(chunks).expect("VM run failed")
 }
 
 fn push(c: &mut Chunk, v: Value) {
@@ -49,12 +68,7 @@ fn push(c: &mut Chunk, v: Value) {
                 "__test_arg_{}",
                 TEST_GLOBAL_SEQ.fetch_add(1, Ordering::Relaxed)
             );
-            let ci = c.intern_string_constant(&name);
-            c.emit_op_u16(
-                Op::GLOBAL_GET,
-                ci.try_into().expect("test constant index fits u16"),
-                0,
-            );
+            vybe_compiler::primitives::globals::emit_read(c, &name, 0);
             PENDING_GLOBALS.with(|p| p.borrow_mut().push((name, other)));
         }
     }

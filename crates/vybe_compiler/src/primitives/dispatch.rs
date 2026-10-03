@@ -581,12 +581,8 @@ pub fn emit_common(
         "pointers.linear_i32_load" => pointers::emit_linear_i32_load(chunks, current, line),
         "pointers.linear_i32_load8_u" => pointers::emit_linear_i32_load8_u(chunks, current, line),
         "pointers.linear_i32_load8_s" => pointers::emit_linear_i32_load8_s(chunks, current, line),
-        "pointers.linear_i32_load16_u" => {
-            pointers::emit_linear_i32_load16_u(chunks, current, line)
-        }
-        "pointers.linear_i32_load16_s" => {
-            pointers::emit_linear_i32_load16_s(chunks, current, line)
-        }
+        "pointers.linear_i32_load16_u" => pointers::emit_linear_i32_load16_u(chunks, current, line),
+        "pointers.linear_i32_load16_s" => pointers::emit_linear_i32_load16_s(chunks, current, line),
         "pointers.linear_i64_load" => pointers::emit_linear_i64_load(chunks, current, line),
         "pointers.linear_i32_store" => pointers::emit_linear_i32_store(chunks, current, line),
         "pointers.linear_i32_store8" => pointers::emit_linear_i32_store8(chunks, current, line),
@@ -713,8 +709,12 @@ pub fn emit_common(
         "strings.split" => strings::emit_split(&mut chunks[current], line),
         "strings.index_of" => strings::emit_index_of(&mut chunks[current], line),
         "strings.concat" => strings::emit_concat(&mut chunks[current], 2, line),
-        "strings.equals_if_string" => strings::emit_equals_if_string(&mut chunks[current], false, line),
-        "strings.not_equals_if_string" => strings::emit_equals_if_string(&mut chunks[current], true, line),
+        "strings.equals_if_string" => {
+            strings::emit_equals_if_string(&mut chunks[current], false, line)
+        }
+        "strings.not_equals_if_string" => {
+            strings::emit_equals_if_string(&mut chunks[current], true, line)
+        }
         "base64.encode_binary_string" => base64::emit_encode_binary_string(chunks, current, line),
         "base64.decode_binary_string" => base64::emit_decode_binary_string(chunks, current, line),
         "c.static_json_value" => {

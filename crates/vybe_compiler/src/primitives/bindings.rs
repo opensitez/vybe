@@ -523,7 +523,7 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, list);
         common::collections::emit_len(&mut self.chunks, self.current, line);
         crate::primitives::ops::emit_dyn_lt(self.chunk(), line);
-        crate::primitives::ops::emit_dyn_not(self.chunk(), line);
+        self.chunk().emit_op(vybe_runtime::opcode::Op::I32_EQZ, line);
         self.chunk().emit_br_if(1, line);
 
         // entry = list[i]; call entry[0] with entry[1..]
@@ -544,7 +544,6 @@ impl Compiler {
         common::collections::emit_len(&mut self.chunks, self.current, line);
         self.emit_const(Value::F64(1.0));
         crate::primitives::ops::emit_dyn_eq(self.chunk(), line);
-        crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
         self.chunk().emit_if(line);
 
         let recv = crate::primitives::callable::push_callback_from_slot(

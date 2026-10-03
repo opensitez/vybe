@@ -8,8 +8,8 @@ use vybe_runtime::Chunk;
 
 #[test]
 fn for_in_numeric_condition_handles_empty_arrays_and_live_length() {
-    use vybe_runtime::{Value, VM};
     use vybe_runtime::opcode::Op;
+    use vybe_runtime::{VM, Value};
     for (values, grow, expected) in [
         (vec![], false, 0),
         (vec![1, 2, 3], false, 6),
@@ -39,9 +39,14 @@ fn for_in_numeric_condition_handles_empty_arrays_and_live_length() {
         chunks[0].emit_op(Op::RETURN, 0);
         let mut vm = VM::new();
         vybe_compiler::primitives::platforms::register_platforms_all(&mut vm);
-        vm.set_global_owned("items".to_owned(), Value::Object(vybe_runtime::heap::alloc(
-            vybe_runtime::object::Object::new_array(values.into_iter().map(Value::I32).collect()),
-        )));
+        vm.set_global_owned(
+            "items".to_owned(),
+            Value::Object(vybe_runtime::heap::alloc(
+                vybe_runtime::value::Object::new_array(
+                    values.into_iter().map(Value::I32).collect(),
+                ),
+            )),
+        );
         assert_eq!(vm.run(chunks).expect("for-in execution").as_i32(), expected);
     }
 }

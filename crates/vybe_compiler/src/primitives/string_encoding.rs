@@ -162,7 +162,6 @@ fn emit_hexval(chunk: &mut Chunk, code_slot: u16, line: u32) {
     lget(chunk, code_slot, line);
     push_const(chunk, Value::F64(57.0), line);
     crate::primitives::ops::emit_dyn_le(chunk, line);
-    crate::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     lget(chunk, code_slot, line);
     push_const(chunk, Value::F64(48.0), line);
@@ -171,7 +170,6 @@ fn emit_hexval(chunk: &mut Chunk, code_slot: u16, line: u32) {
     lget(chunk, code_slot, line);
     push_const(chunk, Value::F64(97.0), line);
     crate::primitives::ops::emit_dyn_ge(chunk, line);
-    crate::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     lget(chunk, code_slot, line);
     push_const(chunk, Value::F64(87.0), line);
@@ -203,7 +201,6 @@ fn emit_rot13_range(chunk: &mut Chunk, code_slot: u16, base: f64, tmp_slot: u16,
     lget(chunk, tmp_slot, line);
     push_const(chunk, Value::F64(26.0), line);
     crate::primitives::ops::emit_dyn_ge(chunk, line);
-    crate::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     lget(chunk, tmp_slot, line);
     push_const(chunk, Value::F64(26.0), line);
@@ -219,7 +216,6 @@ fn emit_uu_dec(chunk: &mut Chunk, code_slot: u16, line: u32) {
     lget(chunk, code_slot, line);
     push_const(chunk, Value::F64(96.0), line);
     crate::primitives::ops::emit_dyn_eq(chunk, line);
-    crate::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     push_const(chunk, Value::F64(0.0), line);
     chunk.emit_else(line);
@@ -233,7 +229,6 @@ fn emit_uu_enc(chunk: &mut Chunk, c_slot: u16, line: u32) {
     lget(chunk, c_slot, line);
     push_const(chunk, Value::F64(0.0), line);
     crate::primitives::ops::emit_dyn_eq(chunk, line);
-    crate::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     push_const(chunk, Value::F64(96.0), line);
     chunk.emit_else(line);
@@ -511,7 +506,6 @@ pub fn emit_hex2bin(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) 
     lget(chunk, hi_slot, line);
     push_const(chunk, Value::F64(0.0), line);
     crate::primitives::ops::emit_dyn_lt(chunk, line);
-    crate::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     push_const(chunk, Value::Bool(false), line);
     chunk.emit_op(Op::RETURN, line);
@@ -519,7 +513,6 @@ pub fn emit_hex2bin(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) 
     lget(chunk, lo_slot, line);
     push_const(chunk, Value::F64(0.0), line);
     crate::primitives::ops::emit_dyn_lt(chunk, line);
-    crate::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     push_const(chunk, Value::Bool(false), line);
     chunk.emit_op(Op::RETURN, line);
@@ -595,13 +588,11 @@ pub fn emit_str_rot13(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32
     lget(chunk, code_slot, line);
     push_const(chunk, Value::F64(65.0), line);
     crate::primitives::ops::emit_dyn_ge(chunk, line);
-    crate::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     //   if code <= 90 → uppercase A-Z
     lget(chunk, code_slot, line);
     push_const(chunk, Value::F64(90.0), line);
     crate::primitives::ops::emit_dyn_le(chunk, line);
-    crate::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     emit_rot13_range(chunk, code_slot, 65.0, tmp_slot, line);
     lset(chunk, rot_slot, line);
@@ -610,13 +601,11 @@ pub fn emit_str_rot13(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32
     lget(chunk, code_slot, line);
     push_const(chunk, Value::F64(97.0), line);
     crate::primitives::ops::emit_dyn_ge(chunk, line);
-    crate::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     //     if code <= 122 → lowercase a-z
     lget(chunk, code_slot, line);
     push_const(chunk, Value::F64(122.0), line);
     crate::primitives::ops::emit_dyn_le(chunk, line);
-    crate::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     emit_rot13_range(chunk, code_slot, 97.0, tmp_slot, line);
     lset(chunk, rot_slot, line);
@@ -700,20 +689,16 @@ pub fn emit_quoted_printable_encode(chunks: &mut [Chunk], current: usize, _argc:
     lget(chunk, code_slot, line);
     push_const(chunk, Value::F64(61.0), line);
     crate::primitives::ops::emit_dyn_eq(chunk, line);
-    crate::primitives::ops::emit_dyn_to_bool(chunk, line);
     lget(chunk, code_slot, line);
     push_const(chunk, Value::F64(126.0), line);
     crate::primitives::ops::emit_dyn_gt(chunk, line);
-    crate::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_op(Op::I32_OR, line);
     lget(chunk, code_slot, line);
     push_const(chunk, Value::F64(32.0), line);
     crate::primitives::ops::emit_dyn_lt(chunk, line);
-    crate::primitives::ops::emit_dyn_to_bool(chunk, line);
     lget(chunk, code_slot, line);
     push_const(chunk, Value::F64(9.0), line);
     crate::primitives::ops::emit_dyn_eq(chunk, line);
-    crate::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_op(Op::I32_EQZ, line);
     chunk.emit_op(Op::I32_AND, line);
     chunk.emit_op(Op::I32_OR, line);
@@ -814,7 +799,6 @@ pub fn emit_quoted_printable_decode(chunks: &mut [Chunk], current: usize, _argc:
     lget(chunk, code_slot, line);
     push_const(chunk, Value::F64(61.0), line);
     crate::primitives::ops::emit_dyn_eq(chunk, line);
-    crate::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     // c1 = charCodeAt(i+1)
     lget(chunk, s_slot, line);
@@ -830,11 +814,9 @@ pub fn emit_quoted_printable_decode(chunks: &mut [Chunk], current: usize, _argc:
     lget(chunk, c1_slot, line);
     push_const(chunk, Value::F64(13.0), line);
     crate::primitives::ops::emit_dyn_eq(chunk, line);
-    crate::primitives::ops::emit_dyn_to_bool(chunk, line);
     lget(chunk, c1_slot, line);
     push_const(chunk, Value::F64(10.0), line);
     crate::primitives::ops::emit_dyn_eq(chunk, line);
-    crate::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_op(Op::I32_OR, line);
     chunk.emit_if(line);
     // soft break: skip '=' + CR (+ LF if CRLF). i += (c1==13 ? 2 : 1) ... plus the '='
@@ -847,7 +829,6 @@ pub fn emit_quoted_printable_decode(chunks: &mut [Chunk], current: usize, _argc:
     lget(chunk, c1_slot, line);
     push_const(chunk, Value::F64(13.0), line);
     crate::primitives::ops::emit_dyn_eq(chunk, line);
-    crate::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     lget(chunk, i_slot, line);
     push_const(chunk, Value::F64(1.0), line);
@@ -960,7 +941,6 @@ pub fn emit_convert_uuencode(chunks: &mut [Chunk], current: usize, _argc: u8, li
     chunk.emit_op(Op::F64_ADD, line);
     lget(chunk, n_slot, line);
     crate::primitives::ops::emit_dyn_lt(chunk, line);
-    crate::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     lget(chunk, s_slot, line);
     lget(chunk, i_slot, line);
@@ -980,7 +960,6 @@ pub fn emit_convert_uuencode(chunks: &mut [Chunk], current: usize, _argc: u8, li
     chunk.emit_op(Op::F64_ADD, line);
     lget(chunk, n_slot, line);
     crate::primitives::ops::emit_dyn_lt(chunk, line);
-    crate::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     lget(chunk, s_slot, line);
     lget(chunk, i_slot, line);
@@ -1124,7 +1103,6 @@ pub fn emit_convert_uudecode(chunks: &mut [Chunk], current: usize, _argc: u8, li
     lget(chunk, done_slot, line);
     lget(chunk, count_slot, line);
     crate::primitives::ops::emit_dyn_lt(chunk, line);
-    crate::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     // b1 = (c1 mod 16)*16 + floor(c2/4)
     emit_modn(chunk, c1, 16.0, line);
@@ -1151,7 +1129,6 @@ pub fn emit_convert_uudecode(chunks: &mut [Chunk], current: usize, _argc: u8, li
     lget(chunk, done_slot, line);
     lget(chunk, count_slot, line);
     crate::primitives::ops::emit_dyn_lt(chunk, line);
-    crate::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     // b2 = (c2 mod 4)*64 + c3
     emit_modn(chunk, c2, 4.0, line);

@@ -29,17 +29,21 @@ pub fn emit_concat(chunk: &mut Chunk, part_count: usize, line: u32) {
         chunk.emit_string_const("", line);
     } else if part_count > 1 {
         let concat_idx = chunk.add_import("wasm:js-string", "concat");
+        // Only the trailing parts obstruct the first pair. Leave that pair
+        // on the operand stack and preserve left-to-right concatenation.
+        let tail_count = u16::try_from(part_count - 2)
+            .expect("emit_concat: too many string parts");
         let base = chunk.local_count;
         chunk.local_count = chunk
             .local_count
-            .checked_add(part_count as u16)
+            .checked_add(tail_count)
             .expect("emit_concat: local slot overflow");
-        for i in (0..part_count).rev() {
-            chunk.emit_op_u16(Op::LOCAL_SET, base + i as u16, line);
+        for i in (0..tail_count).rev() {
+            chunk.emit_op_u16(Op::LOCAL_SET, base + i, line);
         }
-        chunk.emit_op_u16(Op::LOCAL_GET, base, line);
-        for i in 1..part_count {
-            chunk.emit_op_u16(Op::LOCAL_GET, base + i as u16, line);
+        chunk.emit_call(concat_idx, 2, line);
+        for i in 0..tail_count {
+            chunk.emit_op_u16(Op::LOCAL_GET, base + i, line);
             chunk.emit_call(concat_idx, 2, line);
         }
     }
@@ -299,7 +303,6 @@ pub fn emit_cstr_truncate(chunks: &mut [Chunk], current: usize, line: u32) {
     get(&mut chunks[current], at, line);
     chunks[current].emit_f64_const(0.0, line);
     crate::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
-    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if_value(line);
     get(&mut chunks[current], s, line);
     chunks[current].emit_else(line);
@@ -442,7 +445,6 @@ pub fn emit_scalar_index_of(chunks: &mut [Chunk], current: usize, line: u32) {
         chunk.emit_op_u16(Op::LOCAL_GET, at, line);
         crate::primitives::instructions::core_wasm::i32_const(chunk, line, 0);
         crate::primitives::ops::emit_dyn_lt(chunk, line);
-        crate::primitives::ops::emit_dyn_to_bool(chunk, line);
         chunk.emit_if_value(line);
         crate::primitives::instructions::core_wasm::i32_const(chunk, line, -1);
         chunk.emit_else(line);
@@ -474,7 +476,6 @@ pub fn emit_scalar_last_index_of(chunks: &mut [Chunk], current: usize, line: u32
         chunk.emit_op_u16(Op::LOCAL_GET, at, line);
         crate::primitives::instructions::core_wasm::i32_const(chunk, line, 0);
         crate::primitives::ops::emit_dyn_lt(chunk, line);
-        crate::primitives::ops::emit_dyn_to_bool(chunk, line);
         chunk.emit_if_value(line);
         crate::primitives::instructions::core_wasm::i32_const(chunk, line, -1);
         chunk.emit_else(line);
@@ -637,7 +638,6 @@ pub fn emit_split_limit(
     get(&mut chunks[current], limit, line);
     chunks[current].emit_f64_const(0.0, line);
     super::ops::emit_dyn_lt(&mut chunks[current], line);
-    super::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if_value(line);
     if opts.negative_drops_tail {
         // `full.slice(0, max(full.length + limit, 0))`.
@@ -700,7 +700,6 @@ fn emit_clamp_low_zero(chunks: &mut [Chunk], current: usize, line: u32) {
     get(&mut chunks[current], n, line);
     chunks[current].emit_f64_const(0.0, line);
     super::ops::emit_dyn_lt(&mut chunks[current], line);
-    super::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if_value(line);
     chunks[current].emit_i32_const(0, line);
     chunks[current].emit_else(line);
@@ -971,7 +970,6 @@ pub fn emit_glob_to_regex(chunks: &mut [Chunk], current: usize, line: u32) {
             emit_index_of(&mut chunks[current], line);
             i32c(&mut chunks[current], 0, line);
             crate::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
-            crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
             chunks[current].emit_if_value(line);
             get(&mut chunks[current], c, line);
             chunks[current].emit_else(line);
@@ -1812,7 +1810,7 @@ pub fn build_to_string(imports: &mut Chunk) -> Chunk {
 }
 
 // ── string_is_null_or_empty(value) → bool ─────────────────
-pub fn build_string_is_null_or_empty(imports: &mut Chunk) -> Chunk {
+pub fn build_string_is_null_or_empty(_imports: &mut Chunk) -> Chunk {
     let mut c = Chunk::new("__stdlib_string_is_null_or_empty");
     c.arity = 1;
     c.local_count = 1;
@@ -1821,7 +1819,7 @@ pub fn build_string_is_null_or_empty(imports: &mut Chunk) -> Chunk {
     let non_null = c.emit_block(0);
     c.emit_op_u16(Op::LOCAL_GET, value, 0);
     c.emit_op(Op::REF_IS_NULL, 0);
-    crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
+    c.emit_op(Op::I32_EQZ, 0);
     c.emit_br_if(0, 0);
     c.emit_bool_const(true, 0);
     c.emit_op(Op::RETURN, 0);
@@ -1834,13 +1832,13 @@ pub fn build_string_is_null_or_empty(imports: &mut Chunk) -> Chunk {
         c.emit_call(idx, 1, 0);
     }
     crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 0);
-    crate::primitives::ops::emit_dyn_eq_into(imports, &mut c, 0);
+    c.emit_op(Op::I32_EQ, 0);
     c.emit_op(Op::RETURN, 0);
     c
 }
 
 // ── string_is_null_or_whitespace(value) → bool ─────────────
-pub fn build_string_is_null_or_whitespace(imports: &mut Chunk) -> Chunk {
+pub fn build_string_is_null_or_whitespace(_imports: &mut Chunk) -> Chunk {
     let mut c = Chunk::new("__stdlib_string_is_null_or_whitespace");
     c.arity = 1;
     c.local_count = 1;
@@ -1849,7 +1847,7 @@ pub fn build_string_is_null_or_whitespace(imports: &mut Chunk) -> Chunk {
     let non_null = c.emit_block(0);
     c.emit_op_u16(Op::LOCAL_GET, value, 0);
     c.emit_op(Op::REF_IS_NULL, 0);
-    crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
+    c.emit_op(Op::I32_EQZ, 0);
     c.emit_br_if(0, 0);
     c.emit_bool_const(true, 0);
     c.emit_op(Op::RETURN, 0);
@@ -1866,7 +1864,7 @@ pub fn build_string_is_null_or_whitespace(imports: &mut Chunk) -> Chunk {
         c.emit_call(idx, 1, 0);
     }
     crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 0);
-    crate::primitives::ops::emit_dyn_eq_into(imports, &mut c, 0);
+    c.emit_op(Op::I32_EQ, 0);
     c.emit_op(Op::RETURN, 0);
     c
 }
@@ -2099,8 +2097,8 @@ pub fn build_vb_format(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, picture, 0);
     emit_str_length(&mut c, 0);
     crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 0);
-    crate::primitives::ops::emit_dyn_eq_into(imports, &mut c, 0);
-    crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
+    c.emit_op(Op::I32_EQ, 0);
+    c.emit_op(Op::I32_EQZ, 0);
     c.emit_br_if(0, 0);
     c.emit_op_u16(Op::LOCAL_GET, value, 0);
     c.emit_call(to_str, 1, 0);
@@ -2124,8 +2122,8 @@ pub fn build_vb_format(imports: &mut Chunk) -> Chunk {
     let not_short_date = c.emit_block(0);
     c.emit_op_u16(Op::LOCAL_GET, fmt_lower, 0);
     crate::primitives::expressions::emit_const_index(&mut c, short_date, 0);
-    crate::primitives::ops::emit_dyn_eq_into(imports, &mut c, 0);
-    crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
+    emit_str_equals(&mut c, 0);
+    c.emit_op(Op::I32_EQZ, 0);
     c.emit_br_if(0, 0);
     c.emit_op_u16(Op::LOCAL_GET, val_str, 0);
     crate::primitives::expressions::emit_const_index(&mut c, space_str, 0);
@@ -2155,8 +2153,8 @@ pub fn build_vb_format(imports: &mut Chunk) -> Chunk {
     let not_short_time = c.emit_block(0);
     c.emit_op_u16(Op::LOCAL_GET, fmt_lower, 0);
     crate::primitives::expressions::emit_const_index(&mut c, short_time, 0);
-    crate::primitives::ops::emit_dyn_eq_into(imports, &mut c, 0);
-    crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
+    emit_str_equals(&mut c, 0);
+    c.emit_op(Op::I32_EQZ, 0);
     c.emit_br_if(0, 0);
     c.emit_op_u16(Op::LOCAL_GET, val_str, 0);
     c.emit_call(to_str, 1, 0);
@@ -2239,8 +2237,8 @@ pub fn build_vb_format(imports: &mut Chunk) -> Chunk {
     let already_short_time = c.emit_block(0);
     c.emit_op_u16(Op::LOCAL_GET, work, 0);
     c.emit_op_u16(Op::LOCAL_GET, idx_a, 0);
-    crate::primitives::ops::emit_dyn_eq_into(imports, &mut c, 0);
-    crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
+    c.emit_op(Op::F64_EQ, 0);
+    c.emit_op(Op::I32_EQZ, 0);
     c.emit_br_if(0, 0);
     c.emit_op_u16(Op::LOCAL_GET, idx_b, 0);
     crate::primitives::expressions::emit_const_index(&mut c, space_str, 0);
@@ -2269,8 +2267,8 @@ pub fn build_vb_format(imports: &mut Chunk) -> Chunk {
     emit_str_char_code_at(&mut c, 0);
     let dollar_code = c.add_constant(vybe_runtime::Value::I32(b'$' as i32));
     crate::primitives::expressions::emit_const_index(&mut c, dollar_code, 0);
-    crate::primitives::ops::emit_dyn_eq_into(imports, &mut c, 0);
-    crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
+    c.emit_op(Op::I32_EQ, 0);
+    c.emit_op(Op::I32_EQZ, 0);
     c.emit_br_if(0, 0);
     // prefix = "$"
     let dollar_str = c.add_constant(vybe_runtime::Value::String(std::sync::Arc::from("$")));
@@ -2292,7 +2290,7 @@ pub fn build_vb_format(imports: &mut Chunk) -> Chunk {
     emit_str_length(&mut c, 0);
     crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 0);
     crate::primitives::ops::emit_dyn_gt_into(imports, &mut c, 0);
-    crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
+    c.emit_op(vybe_runtime::opcode::Op::I32_EQZ, 0);
     c.emit_br_if(0, 0);
     c.emit_op_u16(Op::LOCAL_GET, picture, 0);
     c.emit_op_u16(Op::LOCAL_GET, picture, 0);
@@ -2302,8 +2300,8 @@ pub fn build_vb_format(imports: &mut Chunk) -> Chunk {
     emit_str_char_code_at(&mut c, 0);
     let percent_code = c.add_constant(vybe_runtime::Value::I32(b'%' as i32));
     crate::primitives::expressions::emit_const_index(&mut c, percent_code, 0);
-    crate::primitives::ops::emit_dyn_eq_into(imports, &mut c, 0);
-    crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
+    c.emit_op(Op::I32_EQ, 0);
+    c.emit_op(Op::I32_EQZ, 0);
     c.emit_br_if(0, 0);
     c.emit_bool_const(true, 0);
     c.emit_op_u16(Op::LOCAL_SET, percent, 0);
@@ -2333,7 +2331,7 @@ pub fn build_vb_format(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, dot_pos, 0);
     crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 0);
     crate::primitives::ops::emit_dyn_lt_into(imports, &mut c, 0);
-    crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
+    c.emit_op(vybe_runtime::opcode::Op::I32_EQZ, 0);
     c.emit_br_if(0, 0);
     // No dot — integer rendering, optionally zero-padded / percentage.
     let no_pct_int = c.emit_block(0);
@@ -2361,15 +2359,15 @@ pub fn build_vb_format(imports: &mut Chunk) -> Chunk {
     emit_str_length(&mut c, 0);
     crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 1);
     crate::primitives::ops::emit_dyn_gt_into(imports, &mut c, 0);
-    crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
+    c.emit_op(vybe_runtime::opcode::Op::I32_EQZ, 0);
     c.emit_br_if(0, 0);
     c.emit_op_u16(Op::LOCAL_GET, picture, 0);
     crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 0);
     emit_str_char_code_at(&mut c, 0);
     let zero_code = c.add_constant(vybe_runtime::Value::I32(b'0' as i32));
     crate::primitives::expressions::emit_const_index(&mut c, zero_code, 0);
-    crate::primitives::ops::emit_dyn_eq_into(imports, &mut c, 0);
-    crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
+    c.emit_op(Op::I32_EQ, 0);
+    c.emit_op(Op::I32_EQZ, 0);
     c.emit_br_if(0, 0);
     c.emit_op_u16(Op::LOCAL_GET, picture, 0);
     emit_str_length(&mut c, 0);
@@ -2475,7 +2473,7 @@ pub fn build_format_map(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, i, 0);
     c.emit_op_u16(Op::LOCAL_GET, len, 0);
     crate::primitives::ops::emit_dyn_lt_into(imports, &mut c, 0);
-    crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
+    c.emit_op(vybe_runtime::opcode::Op::I32_EQZ, 0);
     c.emit_br_if(1, 0);
 
     // ch = wasm:js-string.charCodeAt(s, i)
@@ -2491,8 +2489,8 @@ pub fn build_format_map(imports: &mut Chunk) -> Chunk {
     let open_block = c.emit_block(0);
     c.emit_op_u16(Op::LOCAL_GET, ch_slot, 0);
     crate::primitives::expressions::emit_const_index(&mut c, open_brace, 0);
-    crate::primitives::ops::emit_dyn_eq_into(imports, &mut c, 0);
-    crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
+    c.emit_op(Op::I32_EQ, 0);
+    c.emit_op(Op::I32_EQZ, 0);
     c.emit_br_if(0, 0);
 
     // Find closing '}': end = i+1; while end < len && s[end] != '}': end++
@@ -2506,13 +2504,13 @@ pub fn build_format_map(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, end, 0);
     c.emit_op_u16(Op::LOCAL_GET, len, 0);
     crate::primitives::ops::emit_dyn_lt_into(imports, &mut c, 0);
-    crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
+    c.emit_op(vybe_runtime::opcode::Op::I32_EQZ, 0);
     c.emit_br_if(1, 0);
     c.emit_op_u16(Op::LOCAL_GET, s, 0);
     c.emit_op_u16(Op::LOCAL_GET, end, 0);
     emit_str_char_code_at(&mut c, 0);
     crate::primitives::expressions::emit_const_index(&mut c, close_brace, 0);
-    crate::primitives::ops::emit_dyn_eq_into(imports, &mut c, 0);
+    c.emit_op(Op::I32_EQ, 0);
     c.emit_br_if(1, 0);
     c.emit_op_u16(Op::LOCAL_GET, end, 0);
     crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 1);

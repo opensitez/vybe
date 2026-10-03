@@ -862,14 +862,16 @@ impl Compiler {
         if Self::is_emitted_number_literal(expr) {
             return true;
         }
+        if let ExprKind::Cast { expr: inner, type_name ,} = &expr.kind {
+            // A numeric conversion proves its result even when ordinary
+            // variable hints are advisory. Do not infer through an object
+            // cast or a user class whose spelling resembles a builtin.
+            let _ = inner;
+            return self.hint_is_builtin_number(type_name)
+                && self.resolve_pending_class_name_for_type_hint(type_name).is_none();
+        }
         if self.type_resolution() == vybe_ast::TypeResolution::Dynamic {
             return false;
-        }
-        if let ExprKind::Cast { expr: inner, type_name } = &expr.kind {
-            if self.hint_is_builtin_number(type_name) {
-                return true;
-            }
-            return self.expr_is_provably_number(inner);
         }
         let ExprKind::Ident(name) = &expr.kind else {
             return false;
@@ -1081,15 +1083,23 @@ impl Compiler {
                 );
             } else {
                 crate::primitives::ops::emit_dyn_eq_null_operand(
-                    self.chunk(), null_on_left, line,
+                    self.chunk(), null_on_left, line
                 );
             }
             return;
         }
-        let (left_string, right_string) = operands.map_or((false, false), |(left, right)| (
-            matches!(&left.kind, ExprKind::Lit(Literal::Str(_)) | ExprKind::TypeOf(_)),
-            matches!(&right.kind, ExprKind::Lit(Literal::Str(_)) | ExprKind::TypeOf(_)),
-        ));
+        let (left_string, right_string) = operands.map_or((false, false), |(left, right)| {
+            (
+                matches!(
+                    &left.kind,
+                    ExprKind::Lit(Literal::Str(_)) | ExprKind::TypeOf(_)
+                ),
+                matches!(
+                    &right.kind,
+                    ExprKind::Lit(Literal::Str(_)) | ExprKind::TypeOf(_)
+                ),
+            )
+        });
         if left_string && right_string {
             let equals = self.import("wasm:js-string", "equals");
             self.emit_host_call(equals, 2);

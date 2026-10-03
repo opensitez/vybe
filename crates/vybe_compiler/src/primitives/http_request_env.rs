@@ -311,7 +311,6 @@ pub fn emit_environ(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, scheme, line);
     chunks[current].emit_string_const("https", line);
     super::ops::emit_dyn_eq(&mut chunks[current], line);
-    super::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
     chunks[current].emit_string_const("on", line);
     emit_put(chunks, current, map, "HTTPS", line);

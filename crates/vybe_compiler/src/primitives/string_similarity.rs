@@ -10,6 +10,11 @@
 //! language turns a non-string into a string is the language's own rule and
 //! stays at its call site — PHP's `trim(true)` is `"1"` where ECMA's
 //! `String(true)` is `"true"`, and Python raises instead of coercing.
+//!
+//! The algorithm's private counters/distances are numbers, character results
+//! and phonetic digits are strings, and flags are booleans. Their producers
+//! establish the type: compare them directly instead of emitting dynamic
+//! equality, arithmetic, and truthiness dispatch inside the nested loops.
 
 use std::sync::Arc;
 use vybe_runtime::opcode::Op;
@@ -66,33 +71,27 @@ fn emit_soundex_digit(
     digit_slot: u16,
     line: u32,
 ) {
-    // Range table: A→default 0, then per character.
-    // BFPV → "1"; CGJKQSXZ → "2"; DT → "3"; L → "4"; MN → "5"; R → "6"
-    // Everything else (vowels, H, W, Y, non-letters) → "0"
-    // Implementation: a long if-else chain by char code.
-    let table: &[(&[u32], &str)] = &[
-        (&[66, 70, 80, 86], "1"),
-        (&[67, 71, 74, 75, 81, 83, 88, 90], "2"),
-        (&[68, 84], "3"),
-        (&[76], "4"),
-        (&[77, 78], "5"),
-        (&[82], "6"),
-    ];
+    // A..Z -> the same Soundex groups, as a constant indexed string. The
+    // unsigned bounds test also rejects codes below A after subtraction.
     let chunk = &mut chunks[current];
+    let index = alloc_local(chunk);
+    lget(chunk, code_slot, line);
+    chunk.emit_i32_const(65, line);
+    chunk.emit_op(Op::I32_SUB, line);
+    chunk.emit_op_u16(Op::LOCAL_TEE, index, line);
+    chunk.emit_i32_const(25, line);
+    chunk.emit_op(Op::I32_LE_U, line);
+    chunk.emit_if_value(line);
+    push_str(chunk, "01230120022455012623010202", line);
+    lget(chunk, index, line);
+    lget(chunk, index, line);
+    chunk.emit_i32_const(1, line);
+    chunk.emit_op(Op::I32_ADD, line);
+    crate::primitives::strings::emit_str_substring(chunk, line);
+    chunk.emit_else(line);
     push_str(chunk, "0", line);
+    chunk.emit_end(line);
     lset(chunk, digit_slot, line);
-    for (codes, digit) in table {
-        for &cc in *codes {
-            lget(chunk, code_slot, line);
-            push_const(chunk, Value::F64(cc as f64), line);
-            crate::primitives::ops::emit_dyn_eq(chunk, line);
-            crate::primitives::ops::emit_dyn_to_bool(chunk, line);
-            chunk.emit_if(line);
-            push_str(chunk, digit, line);
-            lset(chunk, digit_slot, line);
-            chunk.emit_end(line);
-        }
-    }
 }
 
 pub fn emit_soundex(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
@@ -102,7 +101,6 @@ pub fn emit_soundex(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) 
     let i_slot = alloc_local(chunk);
     let n_slot = alloc_local(chunk);
     let last_slot = alloc_local(chunk);
-    let c_slot = alloc_local(chunk);
     let code_slot = alloc_local(chunk);
     let digit_slot = alloc_local(chunk);
 
@@ -121,8 +119,7 @@ pub fn emit_soundex(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) 
         chunk.emit_call(idx, 1, line);
     }
     push_const(chunk, Value::F64(0.0), line);
-    crate::primitives::ops::emit_dyn_eq(chunk, line);
-    crate::primitives::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_op(Op::F64_EQ, line);
     chunk.emit_if_value(line);
     push_str(chunk, "", line);
     chunk.emit_else(line);
@@ -168,31 +165,23 @@ pub fn emit_soundex(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) 
     // compound condition: i < n AND out.length < 4
     lget(chunk, i_slot, line);
     lget(chunk, n_slot, line);
-    crate::primitives::ops::emit_dyn_lt(chunk, line);
-    crate::primitives::ops::emit_dyn_to_bool(chunk, line);
-    chunk.emit_if_value(line);
+    chunk.emit_op(Op::F64_LT, line);
+    chunk.emit_if_i32(line);
     lget(chunk, out_slot, line);
     {
         let idx = chunk.add_import("wasm:js-string", "length");
         chunk.emit_call(idx, 1, line);
     }
     push_const(chunk, Value::F64(4.0), line);
-    crate::primitives::ops::emit_dyn_lt(chunk, line);
+    chunk.emit_op(Op::F64_LT, line);
     chunk.emit_else(line);
-    push_const(chunk, Value::Bool(false), line);
+    chunk.emit_i32_const(0, line);
     chunk.emit_end(line);
     let _ = chunk;
-    crate::primitives::loops::emit_loop_cond(chunks, current, line);
+    crate::primitives::loops::emit_loop_cond_from_i32(chunks, current, line);
     let chunk = &mut chunks[current];
 
-    // c = s.charAt(i); code = s.charCodeAt(i); digit = lookup
-    lget(chunk, s_slot, line);
-    lget(chunk, i_slot, line);
-    {
-        let idx = chunk.add_import("ecma:string", "charAt");
-        chunk.emit_call(idx, 2, line);
-    }
-    lset(chunk, c_slot, line);
+    // code = s.charCodeAt(i); digit = lookup
     lget(chunk, s_slot, line);
     lget(chunk, i_slot, line);
     {
@@ -207,8 +196,7 @@ pub fn emit_soundex(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) 
     // else: last = "0" (vowels reset last)
     lget(chunk, digit_slot, line);
     push_str(chunk, "0", line);
-    crate::primitives::ops::emit_dyn_eq(chunk, line);
-    crate::primitives::ops::emit_dyn_to_bool(chunk, line);
+    crate::primitives::strings::emit_str_equals(chunk, line);
     chunk.emit_if(line);
     // digit == "0": reset last
     push_str(chunk, "0", line);
@@ -217,13 +205,13 @@ pub fn emit_soundex(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) 
     // digit != "0": check if same as last; if not same: append
     lget(chunk, digit_slot, line);
     lget(chunk, last_slot, line);
-    crate::primitives::ops::emit_dyn_eq(chunk, line);
-    crate::primitives::ops::emit_dyn_not(chunk, line);
+    crate::primitives::strings::emit_str_equals(chunk, line);
+    chunk.emit_op(Op::I32_EQZ, line);
     chunk.emit_if(line);
     // different non-zero: append
     lget(chunk, out_slot, line);
     lget(chunk, digit_slot, line);
-    crate::primitives::ops::emit_dyn_add(chunk, line);
+    crate::primitives::strings::emit_concat(chunk, 2, line);
     lset(chunk, out_slot, line);
     lget(chunk, digit_slot, line);
     lset(chunk, last_slot, line);
@@ -249,13 +237,13 @@ pub fn emit_soundex(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) 
         chunk.emit_call(idx, 1, line);
     }
     push_const(chunk, Value::F64(4.0), line);
-    crate::primitives::ops::emit_dyn_lt(chunk, line);
+    chunk.emit_op(Op::F64_LT, line);
     let _ = chunk;
-    crate::primitives::loops::emit_loop_cond(chunks, current, line);
+    crate::primitives::loops::emit_loop_cond_from_i32(chunks, current, line);
     let chunk = &mut chunks[current];
     lget(chunk, out_slot, line);
     push_str(chunk, "0", line);
-    crate::primitives::ops::emit_dyn_add(chunk, line);
+    crate::primitives::strings::emit_concat(chunk, 2, line);
     lset(chunk, out_slot, line);
     let _ = chunk;
     crate::primitives::loops::emit_loop_end(chunks, current, pad_state, line);
@@ -307,9 +295,9 @@ pub fn emit_levenshtein(chunks: &mut [Chunk], current: usize, _argc: u8, line: u
     lget(chunk, n_slot, line);
     push_const(chunk, Value::F64(1.0), line);
     chunk.emit_op(Op::F64_ADD, line);
-    crate::primitives::ops::emit_dyn_lt(chunk, line);
+    chunk.emit_op(Op::F64_LT, line);
     let _ = chunk;
-    crate::primitives::loops::emit_loop_cond(chunks, current, line);
+    crate::primitives::loops::emit_loop_cond_from_i32(chunks, current, line);
     let chunk = &mut chunks[current];
     lget(chunk, prev_slot, line);
     lget(chunk, j_slot, line);
@@ -335,9 +323,9 @@ pub fn emit_levenshtein(chunks: &mut [Chunk], current: usize, _argc: u8, line: u
     lget(chunk, n_slot, line);
     push_const(chunk, Value::F64(1.0), line);
     chunk.emit_op(Op::F64_ADD, line);
-    crate::primitives::ops::emit_dyn_lt(chunk, line);
+    chunk.emit_op(Op::F64_LT, line);
     let _ = chunk;
-    crate::primitives::loops::emit_loop_cond(chunks, current, line);
+    crate::primitives::loops::emit_loop_cond_from_i32(chunks, current, line);
     let chunk = &mut chunks[current];
     lget(chunk, curr_slot, line);
     push_const(chunk, Value::F64(0.0), line);
@@ -361,9 +349,9 @@ pub fn emit_levenshtein(chunks: &mut [Chunk], current: usize, _argc: u8, line: u
     lget(chunk, m_slot, line);
     push_const(chunk, Value::F64(1.0), line);
     chunk.emit_op(Op::F64_ADD, line);
-    crate::primitives::ops::emit_dyn_lt(chunk, line);
+    chunk.emit_op(Op::F64_LT, line);
     let _ = chunk;
-    crate::primitives::loops::emit_loop_cond(chunks, current, line);
+    crate::primitives::loops::emit_loop_cond_from_i32(chunks, current, line);
     let chunk = &mut chunks[current];
 
     // curr[0] = i
@@ -382,9 +370,9 @@ pub fn emit_levenshtein(chunks: &mut [Chunk], current: usize, _argc: u8, line: u
     lget(chunk, n_slot, line);
     push_const(chunk, Value::F64(1.0), line);
     chunk.emit_op(Op::F64_ADD, line);
-    crate::primitives::ops::emit_dyn_lt(chunk, line);
+    chunk.emit_op(Op::F64_LT, line);
     let _ = chunk;
-    crate::primitives::loops::emit_loop_cond(chunks, current, line);
+    crate::primitives::loops::emit_loop_cond_from_i32(chunks, current, line);
     let chunk = &mut chunks[current];
 
     // cost = (a[i-1] == b[j-1]) ? 0 : 1
@@ -404,8 +392,7 @@ pub fn emit_levenshtein(chunks: &mut [Chunk], current: usize, _argc: u8, line: u
         let idx = chunk.add_import("ecma:string", "charAt");
         chunk.emit_call(idx, 2, line);
     }
-    crate::primitives::ops::emit_dyn_eq(chunk, line);
-    crate::primitives::ops::emit_dyn_to_bool(chunk, line);
+    crate::primitives::strings::emit_str_equals(chunk, line);
     chunk.emit_if_value(line);
     push_const(chunk, Value::F64(0.0), line);
     chunk.emit_else(line);
@@ -434,8 +421,7 @@ pub fn emit_levenshtein(chunks: &mut [Chunk], current: usize, _argc: u8, line: u
     // tmp = min(tmp, v)
     lget(chunk, v_slot, line);
     lget(chunk, tmp_slot, line);
-    crate::primitives::ops::emit_dyn_lt(chunk, line);
-    crate::primitives::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_op(Op::F64_LT, line);
     chunk.emit_if(line);
     lget(chunk, v_slot, line);
     lset(chunk, tmp_slot, line);
@@ -454,8 +440,7 @@ pub fn emit_levenshtein(chunks: &mut [Chunk], current: usize, _argc: u8, line: u
     // tmp = min(tmp, v)
     lget(chunk, v_slot, line);
     lget(chunk, tmp_slot, line);
-    crate::primitives::ops::emit_dyn_lt(chunk, line);
-    crate::primitives::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_op(Op::F64_LT, line);
     chunk.emit_if(line);
     lget(chunk, v_slot, line);
     lset(chunk, tmp_slot, line);
@@ -546,9 +531,9 @@ pub fn emit_similar_text(chunks: &mut [Chunk], current: usize, argc: u8, line: u
     lget(chunk, n_slot, line);
     push_const(chunk, Value::F64(1.0), line);
     chunk.emit_op(Op::F64_ADD, line);
-    crate::primitives::ops::emit_dyn_lt(chunk, line);
+    chunk.emit_op(Op::F64_LT, line);
     let _ = chunk;
-    crate::primitives::loops::emit_loop_cond(chunks, current, line);
+    crate::primitives::loops::emit_loop_cond_from_i32(chunks, current, line);
     let chunk = &mut chunks[current];
     lget(chunk, used_slot, line);
     push_const(chunk, Value::Bool(false), line);
@@ -569,9 +554,9 @@ pub fn emit_similar_text(chunks: &mut [Chunk], current: usize, argc: u8, line: u
     let chunk = &mut chunks[current];
     lget(chunk, i_slot, line);
     lget(chunk, m_slot, line);
-    crate::primitives::ops::emit_dyn_lt(chunk, line);
+    chunk.emit_op(Op::F64_LT, line);
     let _ = chunk;
-    crate::primitives::loops::emit_loop_cond(chunks, current, line);
+    crate::primitives::loops::emit_loop_cond_from_i32(chunks, current, line);
 
     push_const(&mut chunks[current], Value::F64(0.0), line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, j_slot, line);
@@ -579,16 +564,18 @@ pub fn emit_similar_text(chunks: &mut [Chunk], current: usize, argc: u8, line: u
     let chunk = &mut chunks[current];
     lget(chunk, j_slot, line);
     lget(chunk, n_slot, line);
-    crate::primitives::ops::emit_dyn_lt(chunk, line);
+    chunk.emit_op(Op::F64_LT, line);
     let _ = chunk;
-    crate::primitives::loops::emit_loop_cond(chunks, current, line);
+    crate::primitives::loops::emit_loop_cond_from_i32(chunks, current, line);
     let chunk = &mut chunks[current];
 
     // if !used[j] && a[i] == b[j]: mark used, count, break inner
     lget(chunk, used_slot, line);
     lget(chunk, j_slot, line);
     chunk.emit_op(Op::ARRAY_GET, line);
-    crate::primitives::ops::emit_dyn_not(chunk, line);
+    let cast_bool = chunk.add_import("wasm:js-boolean", "cast");
+    chunk.emit_call(cast_bool, 1, line);
+    chunk.emit_op(Op::I32_EQZ, line);
     chunk.emit_if(line); // if !used[j]
 
     lget(chunk, a_slot, line);
@@ -603,8 +590,7 @@ pub fn emit_similar_text(chunks: &mut [Chunk], current: usize, argc: u8, line: u
         let idx = chunk.add_import("ecma:string", "charAt");
         chunk.emit_call(idx, 2, line);
     }
-    crate::primitives::ops::emit_dyn_eq(chunk, line);
-    crate::primitives::ops::emit_dyn_to_bool(chunk, line);
+    crate::primitives::strings::emit_str_equals(chunk, line);
     chunk.emit_if(line); // if a[i]==b[j]
 
     lget(chunk, used_slot, line);
@@ -680,9 +666,9 @@ pub fn emit_metaphone(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
     let chunk = &mut chunks[current];
     lget(chunk, i_slot, line);
     lget(chunk, n_slot, line);
-    crate::primitives::ops::emit_dyn_lt(chunk, line);
+    chunk.emit_op(Op::F64_LT, line);
     let _ = chunk;
-    crate::primitives::loops::emit_loop_cond(chunks, current, line);
+    crate::primitives::loops::emit_loop_cond_from_i32(chunks, current, line);
     let chunk = &mut chunks[current];
 
     lget(chunk, s_slot, line);
@@ -703,13 +689,12 @@ pub fn emit_metaphone(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
     // First letter always kept; subsequent: skip vowels/H/W/Y, keep consonants
     lget(chunk, i_slot, line);
     push_const(chunk, Value::F64(0.0), line);
-    crate::primitives::ops::emit_dyn_eq(chunk, line);
-    crate::primitives::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_op(Op::F64_EQ, line);
     chunk.emit_if(line);
     // first: append c
     lget(chunk, out_slot, line);
     lget(chunk, c_slot, line);
-    crate::primitives::ops::emit_dyn_add(chunk, line);
+    crate::primitives::strings::emit_concat(chunk, 2, line);
     lset(chunk, out_slot, line);
     chunk.emit_else(line);
 
@@ -721,8 +706,7 @@ pub fn emit_metaphone(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
     for &cc in &[65u32, 69, 73, 79, 85, 72, 87, 89] {
         lget(chunk, code_slot, line);
         push_const(chunk, Value::F64(cc as f64), line);
-        crate::primitives::ops::emit_dyn_eq(chunk, line);
-        crate::primitives::ops::emit_dyn_to_bool(chunk, line);
+        chunk.emit_op(Op::F64_EQ, line);
         chunk.emit_if(line);
         push_const(chunk, Value::Bool(true), line);
         lset(chunk, is_vowel_slot, line);
@@ -730,24 +714,24 @@ pub fn emit_metaphone(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
     }
     // if !is_vowel: append if code in A-Z range
     lget(chunk, is_vowel_slot, line);
-    crate::primitives::ops::emit_dyn_not(chunk, line);
+    let cast_bool = chunk.add_import("wasm:js-boolean", "cast");
+    chunk.emit_call(cast_bool, 1, line);
+    chunk.emit_op(Op::I32_EQZ, line);
     chunk.emit_if(line);
     // not a vowel: append if 65 <= code <= 90
     lget(chunk, code_slot, line);
     push_const(chunk, Value::F64(65.0), line);
-    crate::primitives::ops::emit_dyn_lt(chunk, line);
-    crate::primitives::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_op(Op::F64_LT, line);
     chunk.emit_op(Op::I32_EQZ, line); // >= 65
     lget(chunk, code_slot, line);
     push_const(chunk, Value::F64(90.0), line);
-    crate::primitives::ops::emit_dyn_gt(chunk, line);
-    crate::primitives::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_op(Op::F64_GT, line);
     chunk.emit_op(Op::I32_EQZ, line); // <= 90
     chunk.emit_op(Op::I32_AND, line);
     chunk.emit_if(line);
     lget(chunk, out_slot, line);
     lget(chunk, c_slot, line);
-    crate::primitives::ops::emit_dyn_add(chunk, line);
+    crate::primitives::strings::emit_concat(chunk, 2, line);
     lset(chunk, out_slot, line);
     chunk.emit_end(line); // end range check
     chunk.emit_end(line); // end not_vowel if
@@ -766,8 +750,7 @@ pub fn emit_metaphone(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
     if argc >= 2 {
         lget(chunk, limit_slot, line);
         push_const(chunk, Value::F64(0.0), line);
-        crate::primitives::ops::emit_dyn_gt(chunk, line);
-        crate::primitives::ops::emit_dyn_to_bool(chunk, line);
+        chunk.emit_op(Op::F64_GT, line);
         chunk.emit_if_value(line);
         lget(chunk, out_slot, line);
         push_const(chunk, Value::F64(0.0), line);

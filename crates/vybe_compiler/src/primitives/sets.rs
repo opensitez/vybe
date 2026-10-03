@@ -146,7 +146,6 @@ fn emit_snapshot_render(chunks: &mut [Chunk], current: usize, line: u32) {
     call_host(chunks, current, "ecma:value", "typeof", 1, line);
     chunks[current].emit_string_const("object", line);
     crate::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
-    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if_value(line);
     // A Set ELEMENT keys by its sorted values — `AbstractSet.equals` is
     // order-independent, so `setOf(1,2)` and `setOf(2,1)` must collide.
@@ -344,7 +343,7 @@ pub fn emit_resync_snapshot_keys(chunks: &mut [Chunk], current: usize, line: u32
     chunks[current].emit_op_u16(Op::LOCAL_GET, index, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, len, line);
     crate::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
-    crate::primitives::ops::emit_dyn_not(&mut chunks[current], line);
+    chunks[current].emit_op(vybe_runtime::opcode::Op::I32_EQZ, line);
     chunks[current].emit_br_if(1, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, keys, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, values, line);
@@ -386,7 +385,7 @@ pub fn emit_from_iterable_snapshot(chunks: &mut [Chunk], current: usize, line: u
     chunks[current].emit_op_u16(Op::LOCAL_GET, index, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, len, line);
     crate::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
-    crate::primitives::ops::emit_dyn_not(&mut chunks[current], line);
+    chunks[current].emit_op(vybe_runtime::opcode::Op::I32_EQZ, line);
     chunks[current].emit_br_if(1, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, values, line);

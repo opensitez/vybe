@@ -362,7 +362,11 @@ fn property_op(role: &str, setting: bool) -> (&'static str, &'static str, Option
         // nodeName round trip. The generic `text` role remains for dynamic nodes.
         "textcontent" => (
             DOM_MODULE,
-            if setting { "setTextContent" } else { "textContent" },
+            if setting {
+                "setTextContent"
+            } else {
+                "textContent"
+            },
             None,
         ),
         // `text` and `caption` are dispatched by `emit_gui_text_property`:
@@ -788,7 +792,14 @@ impl Compiler {
         if let Some(slot) = value {
             self.emit_u16(Op::LOCAL_GET, slot);
         }
-        let text_idx = self.import(DOM_MODULE, if setting { "setTextContent" } else { "textContent" });
+        let text_idx = self.import(
+            DOM_MODULE,
+            if setting {
+                "setTextContent"
+            } else {
+                "textContent"
+            },
+        );
         self.emit_host_call(text_idx, if setting { 3 } else { 2 });
         self.chunk().emit_end(line);
     }
@@ -2117,11 +2128,20 @@ impl Compiler {
         None
     }
 
-    pub(super) fn declared_property_role(&self, type_name: &str, prop: &str, setting: bool) -> Option<String> {
+    pub(super) fn declared_property_role(
+        &self,
+        type_name: &str,
+        prop: &str,
+        setting: bool,
+    ) -> Option<String> {
         let target = self.inherited_tree_property_target(type_name, prop, setting)?;
         match target {
             crate::component_classes::InstancePropertyTarget::Common { emit } => emit
-                .strip_prefix(if setting { PROP_SET_EMIT } else { PROP_GET_EMIT })
+                .strip_prefix(if setting {
+                    PROP_SET_EMIT
+                } else {
+                    PROP_GET_EMIT
+                })
                 .map(str::to_string),
             // A complete platform accessor cannot be reduced to a GUI role.
             _ => None,
@@ -2304,13 +2324,12 @@ impl Compiler {
 
         // A composed platform control can declare its own property accessor.
         // Honor it before generic GUI lowering can replace its children.
-        if let Some(crate::component_classes::InstancePropertyTarget::Common { emit }) =
-            self.inherited_tree_property_target(type_name, prop, true)
-        {
+        let target = self.inherited_tree_property_target(type_name, prop, true);
+        if let Some(crate::component_classes::InstancePropertyTarget::Common { emit }) = &target {
             if !emit.starts_with(PROP_SET_EMIT) {
                 self.compile_expr(object)?;
                 self.emit_u16(Op::LOCAL_GET, value_tmp);
-                self.emit_common(&emit, 2, line);
+                self.emit_common(emit, 2, line);
                 self.emit(Op::DROP);
                 return Ok(());
             }
@@ -2329,16 +2348,21 @@ impl Compiler {
         // it — lowercasing the Pascal spelling and calling it a role sent every
         // RENAMED property to `setAttribute("clientwidth", …)`, which no widget
         // reads, with no error to show for it.
-        let prop = prop.to_ascii_lowercase();
-        let mut role = self
-            .declared_property_role(type_name, &prop, true)
-            .unwrap_or_else(|| prop.clone());
+        let mut role = match &target {
+            Some(crate::component_classes::InstancePropertyTarget::Common { emit }) => {
+                emit.strip_prefix(PROP_SET_EMIT).map(str::to_string)
+            }
+            _ => None,
+        }
+        .unwrap_or_else(|| prop.to_ascii_lowercase());
         // A caption written onto a control that is born with children would
         // replace them — see the `unpaintedtext` arm in `property_op`. Asked of
         // the ELEMENT rather than of a control list, so a control acquires the
         // behaviour by declaring chrome and nothing has to be kept in step.
+        let element = registered_control_element(self, type_name);
         if matches!(role.as_str(), "text" | "caption")
-            && registered_control_element(self, type_name)
+            && element
+                .as_ref()
                 .is_some_and(|element| element.inner_html.is_some())
         {
             role = "unpaintedtext".to_string();
@@ -2354,10 +2378,11 @@ impl Compiler {
         // form-control submission key that `form.elements[…]` and
         // serialization read. A control that set only `id` would look right
         // and submit nothing, so set both.
-        let form_associated = registered_control_element(self, type_name)
-            .map(|e| e.is_form_associated())
-            .unwrap_or(false);
-        if prop == "name" && form_associated {
+        if prop.eq_ignore_ascii_case("name")
+            && element
+                .as_ref()
+                .is_some_and(ControlElement::is_form_associated)
+        {
             let doc_idx = self.import(DOCUMENT_MODULE, HOST_FN_ACTIVE_DOCUMENT);
             self.chunk().emit_call(doc_idx, 0, line);
             self.compile_expr(object)?;

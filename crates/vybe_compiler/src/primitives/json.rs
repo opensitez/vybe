@@ -89,7 +89,7 @@ fn loop_break_unless_lt(chunk: &mut Chunk, i_slot: u16, n_slot: u16, line: u32) 
     lget(chunk, i_slot, line);
     lget(chunk, n_slot, line);
     crate::primitives::ops::emit_dyn_lt(chunk, line);
-    crate::primitives::ops::emit_dyn_not(chunk, line);
+    chunk.emit_op(vybe_runtime::opcode::Op::I32_EQZ, line);
     chunk.emit_br_if(1, line);
 }
 
@@ -286,21 +286,17 @@ fn build_normalize_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
         lget(&mut h, keys_slot, line);
         push_str(&mut h, "datetime", line);
         crate::primitives::ops::emit_dyn_eq(&mut h, line);
-        crate::primitives::ops::emit_dyn_to_bool(&mut h, line);
         lget(&mut h, keys_slot, line);
         push_str(&mut h, "DateTime", line);
         crate::primitives::ops::emit_dyn_eq(&mut h, line);
-        crate::primitives::ops::emit_dyn_to_bool(&mut h, line);
         h.emit_op(Op::I32_OR, line);
         lget(&mut h, keys_slot, line);
         push_str(&mut h, "datetimeoffset", line);
         crate::primitives::ops::emit_dyn_eq(&mut h, line);
-        crate::primitives::ops::emit_dyn_to_bool(&mut h, line);
         h.emit_op(Op::I32_OR, line);
         lget(&mut h, keys_slot, line);
         push_str(&mut h, "DateTimeOffset", line);
         crate::primitives::ops::emit_dyn_eq(&mut h, line);
-        crate::primitives::ops::emit_dyn_to_bool(&mut h, line);
         h.emit_op(Op::I32_OR, line);
         h.emit_if(line);
         dyn_get(&mut h, value_slot, "__time", line);

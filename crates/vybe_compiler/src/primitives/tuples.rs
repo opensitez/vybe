@@ -242,14 +242,12 @@ pub fn emit_list_string_to_tuple(chunk: &mut Chunk, line: u32) {
     chunk.emit_call(ilen, 1, line);
     core_wasm::i32_const(chunk, line, 0);
     crate::primitives::ops::emit_dyn_gt(chunk, line);
-    crate::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, inner, line);
     core_wasm::string_const(chunk, line, ", ");
     let index_of = chunk.add_import("ecma:string", "indexOf");
     chunk.emit_call(index_of, 2, line);
     core_wasm::i32_const(chunk, line, 0);
     crate::primitives::ops::emit_dyn_lt(chunk, line);
-    crate::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_op(Op::I32_AND, line);
     chunk.emit_if(line);
     chunk.emit_op_u16(Op::LOCAL_GET, res, line);

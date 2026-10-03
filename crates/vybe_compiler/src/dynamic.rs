@@ -12,9 +12,9 @@ use vybe_ast::{ClassKind, ClassMember, Module, Statement, StmtKind};
 use vybe_runtime::capabilities::{Capabilities, Capability};
 use vybe_runtime::chunk::Chunk;
 use vybe_runtime::chunk::Import;
+use vybe_runtime::debugger::{DebugPhase, DebugReportScope};
 use vybe_runtime::value::{Function, Object, ObjectKind};
 use vybe_runtime::{HostContext, ImportTarget, VM, Value};
-use vybe_runtime::debugger::{DebugPhase, DebugReportScope};
 
 thread_local! {
     static ACTIVE_PHP_RUNTIME: RefCell<Option<*mut PhpIncludeRuntime>> = const { RefCell::new(None) };
@@ -76,8 +76,7 @@ pub fn reset_dynamic_compilation_state() {
     NEXT_JS_DYNAMIC_ID.store(1, Ordering::Relaxed);
 }
 
-#[derive(Debug)]
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct DynamicCompilation {
     pub chunks: Vec<Chunk>,
     pub host_imports: HostImportMetadata,
@@ -752,9 +751,11 @@ fn strip_installed_php_exception_bootstrap(module: &mut vybe_ast::Module) {
         "UnderflowException", "UnexpectedValueException", "JsonException",
         "__PHP_Incomplete_Class",
     ];
-    let Some(start) = module.body.iter().position(|stmt| {
-        matches!(&stmt.kind, StmtKind::ClassDecl { name, .. } if name == names[0])
-    }) else { return };
+    let Some(start) = module.body.iter().position(
+        |stmt| matches!(&stmt.kind, StmtKind::ClassDecl { name, .. } if name == names[0]),
+    ) else {
+        return;
+    };
     let matches_bootstrap = module.body[start..].iter().zip(names).all(|(stmt, expected)| {
         matches!(&stmt.kind, StmtKind::ClassDecl { name, .. } if name == expected)
     });
@@ -1295,7 +1296,7 @@ impl PhpIncludeRuntime {
 
     fn include_available_php_traits(
         &mut self,
-        module: &mut Module,
+        module: &mut Module
     ) {
         fn class_statements(body: &[Statement]) -> Vec<&Statement> {
             let mut classes = Vec::new();
@@ -1319,12 +1320,13 @@ impl PhpIncludeRuntime {
         }
         fn trait_uses(statement: &Statement) -> Vec<(String, String)> {
             match &statement.kind {
-                StmtKind::ClassDecl { name, members, .. } => members.iter().filter_map(|member| {
-                    match member {
+                StmtKind::ClassDecl { name, members, .. } => members
+                    .iter()
+                    .filter_map(|member| match member {
                         ClassMember::Augment(augment) => Some((name.clone(), augment.from.clone())),
                         _ => None,
-                    }
-                }).collect(),
+                    })
+                    .collect(),
                 _ => Vec::new(),
             }
         }
@@ -1342,8 +1344,9 @@ impl PhpIncludeRuntime {
             if !seen.insert(source_key.clone()) {
                 continue;
             }
-            if class_statements(&module.body).iter().any(|statement| trait_name(statement)
-                .is_some_and(|name| name.eq_ignore_ascii_case(&source_name))) {
+            if class_statements(&module.body).iter().any(|statement| {
+                trait_name(statement).is_some_and(|name| name.eq_ignore_ascii_case(&source_name))
+            }) {
                 continue;
             }
             let known = self.php_trait_declarations.get(&source_key).cloned().or_else(|| {
@@ -1376,7 +1379,9 @@ impl PhpIncludeRuntime {
                             }
                         }
                     }
-                    StmtKind::NamespaceDecl { body, .. } | StmtKind::Block(body) => rewrite_augments(body, resolved),
+                    StmtKind::NamespaceDecl { body, .. } | StmtKind::Block(body) => {
+                        rewrite_augments(body, resolved)
+                    }
                     _ => {}
                 }
             }
@@ -1414,7 +1419,9 @@ impl PhpIncludeRuntime {
                             }
                         }
                     }
-                    StmtKind::NamespaceDecl { body, .. } | StmtKind::Block(body) => collect_trait_names(body, out),
+                    StmtKind::NamespaceDecl { body, .. } | StmtKind::Block(body) => {
+                        collect_trait_names(body, out)
+                    }
                     _ => {}
                 }
             }
@@ -1426,12 +1433,19 @@ impl PhpIncludeRuntime {
             if self.php_trait_declarations.keys().any(|name| name == &key || name.ends_with(&format!(".{key}"))) {
                 continue;
             }
-            let callbacks = vm.global("__php_autoload_stack").and_then(|value| {
-                let Value::Object(stack) = value else { return None };
-                let stack = stack.lock().unwrap();
-                let ObjectKind::Array(callbacks) = &stack.kind else { return None };
-                Some(callbacks.clone())
-            }).unwrap_or_default();
+            let callbacks = vm
+                .global("__php_autoload_stack")
+                .and_then(|value| {
+                    let Value::Object(stack) = value else {
+                        return None;
+                    };
+                    let stack = stack.lock().unwrap();
+                    let ObjectKind::Array(callbacks) = &stack.kind else {
+                        return None;
+                    };
+                    Some(callbacks.clone())
+                })
+                .unwrap_or_default();
             let _phase = DebugPhase::current(format!("autoload trait {trait_name}"));
             let namespace = owner.rsplit_once('.').map(|(namespace, _)| namespace).unwrap_or("");
             let mut candidates = vec![trait_name.clone()];
@@ -2236,63 +2250,93 @@ impl Drop for ActiveJsRuntimeGuard {
 fn ensure_php_runtime_registered(vm: &mut VM) {
     let compact_key = ("vybe:php".to_string(), "compact".to_string());
     if !vm.host_registry.contains_key(&compact_key) {
-        vm.register_host_fn("vybe:php", "compact", Box::new(|_, args| {
-            fn names(value: &Value, output: &mut Vec<String>) {
-                match value {
-                    Value::String(name) => output.push(name.to_string()),
-                    Value::Object(object) => {
-                        let values = match &object.lock().unwrap().kind {
-                            ObjectKind::Array(values) => values.clone(),
-                            ObjectKind::Map(values) => values.values().cloned().collect(),
-                            _ => Vec::new(),
-                        };
-                        for value in values { names(&value, output); }
-                    }
-                    _ => {}
-                }
-            }
-            ACTIVE_PHP_RUNTIME.with(|active| {
-                let Some(pointer) = *active.borrow() else { return Value::Null };
-                let runtime = unsafe { &mut *pointer };
-                if runtime.vm.is_null() { return Value::Null; }
-                let vm = unsafe { &mut *runtime.vm };
-                let mut variables = HashMap::new();
-                if let Some((chunk, locals)) = vm.current_source_scope() {
-                    if chunk != "<script>" {
-                        for (_, name, value) in locals {
-                            variables.insert(name.trim_start_matches('$').to_string(), value);
+        vm.register_host_fn(
+            "vybe:php",
+            "compact",
+            Box::new(|_, args| {
+                fn names(value: &Value, output: &mut Vec<String>) {
+                    match value {
+                        Value::String(name) => output.push(name.to_string()),
+                        Value::Object(object) => {
+                            let values = match &object.lock().unwrap().kind {
+                                ObjectKind::Array(values) => values.clone(),
+                                ObjectKind::Map(values) => values.values().cloned().collect(),
+                                _ => Vec::new(),
+                            };
+                            for value in values {
+                                names(&value, output);
+                            }
                         }
-                    } else {
-                        let scope = runtime.include_scope.clone().unwrap_or_else(|| {
-                            let Some(Value::Object(global)) = vm.global("globalThis") else { return Value::Null };
-                            global.lock().unwrap().properties.get("__vybe_php_globals").cloned().unwrap_or(Value::Null)
-                        });
-                        if let Value::Object(scope) = scope {
-                            variables.extend(scope.lock().unwrap().properties.iter().map(|(key, value)| (key.clone(), value.clone())));
-                        }
+                        _ => {}
                     }
                 }
-                let mut requested = Vec::new();
-                for arg in args { names(arg, &mut requested); }
-                let mut result = Object::new();
-                result.kind = ObjectKind::Map(Default::default());
-                if let ObjectKind::Map(entries) = &mut result.kind {
-                    for name in requested {
-                        if let Some(value) = variables.get(&name) {
-                            let value = if let Some(deref) = vm.global("__vybe_autoderef").cloned() {
-                                vm.invoke_callback(&deref, &[value.clone()])
-                            } else { value.clone() };
-                            entries.insert(Value::String(Arc::from(name)), value);
+                ACTIVE_PHP_RUNTIME.with(|active| {
+                    let Some(pointer) = *active.borrow() else {
+                        return Value::Null;
+                    };
+                    let runtime = unsafe { &mut *pointer };
+                    if runtime.vm.is_null() {
+                        return Value::Null;
+                    }
+                    let vm = unsafe { &mut *runtime.vm };
+                    let mut variables = HashMap::new();
+                    if let Some((chunk, locals)) = vm.current_source_scope() {
+                        if chunk != "<script>" {
+                            for (_, name, value) in locals {
+                                variables.insert(name.trim_start_matches('$').to_string(), value);
+                            }
+                        } else {
+                            let scope = runtime.include_scope.clone().unwrap_or_else(|| {
+                                let Some(Value::Object(global)) = vm.global("globalThis") else {
+                                    return Value::Null;
+                                };
+                                global
+                                    .lock()
+                                    .unwrap()
+                                    .properties
+                                    .get("__vybe_php_globals")
+                                    .cloned()
+                                    .unwrap_or(Value::Null)
+                            });
+                            if let Value::Object(scope) = scope {
+                                variables.extend(
+                                    scope
+                                        .lock()
+                                        .unwrap()
+                                        .properties
+                                        .iter()
+                                        .map(|(key, value)| (key.clone(), value.clone())),
+                                );
+                            }
                         }
                     }
-                }
-                Value::Object(vybe_runtime::heap::alloc(result))
-            })
-        }));
+                    let mut requested = Vec::new();
+                    for arg in args {
+                        names(arg, &mut requested);
+                    }
+                    let mut result = Object::new();
+                    result.kind = ObjectKind::Map(Default::default());
+                    if let ObjectKind::Map(entries) = &mut result.kind {
+                        for name in requested {
+                            if let Some(value) = variables.get(&name) {
+                                let value =
+                                    if let Some(deref) = vm.global("__vybe_autoderef").cloned() {
+                                        vm.invoke_callback(&deref, &[value.clone()])
+                                    } else {
+                                        value.clone()
+                                    };
+                                entries.insert(Value::String(Arc::from(name)), value);
+                            }
+                        }
+                    }
+                    Value::Object(vybe_runtime::heap::alloc(result))
+                })
+            }),
+        );
     }
     let scope_key = ("vybe:php".to_string(), "include_scope".to_string());
     if !vm.host_registry.contains_key(&scope_key) {
-        vm.register_host_fn("vybe:php", "include_scope", Box::new(|_, _| php_include_scope()));
+        vm.register_host_fn("vybe:php", "include_scope", Box::new(|_, _| php_include_scope()),);
     }
     let include_key = ("vybe:php".to_string(), "dynamic_include".to_string());
     if !vm.host_registry.contains_key(&include_key) {
@@ -3095,7 +3139,7 @@ mod tests {
         let base = std::env::temp_dir().join(format!("vybe-php-shared-exceptions-{stamp}"));
         std::fs::create_dir_all(&base).unwrap();
         let main = base.join("main.php");
-        std::fs::write(&main, "<?php $a = 'a.php'; include $a; $b = 'b.php'; include $b;").unwrap();
+        std::fs::write(&main, "<?php $a = 'a.php'; include $a; $b = 'b.php'; include $b;",).unwrap();
         std::fs::write(base.join("a.php"), "<?php $first = new Exception('one');").unwrap();
         std::fs::write(base.join("b.php"), "<?php $second = new Exception('two');").unwrap();
 

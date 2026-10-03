@@ -207,7 +207,6 @@ pub fn emit_days_in_month(chunk: &mut Chunk, indexing: MonthIndexing, line: u32)
     chunk.emit_op_u16(Op::LOCAL_GET, month, line);
     chunk.emit_f64_const(2.0, line);
     super::ops::emit_dyn_eq(chunk, line);
-    super::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     chunk.emit_op_u16(Op::LOCAL_GET, year, line);
     emit_is_leap_year(chunk, line);
@@ -222,7 +221,6 @@ pub fn emit_days_in_month(chunk: &mut Chunk, indexing: MonthIndexing, line: u32)
         chunk.emit_op_u16(Op::LOCAL_GET, month, line);
         chunk.emit_f64_const(short_month, line);
         super::ops::emit_dyn_eq(chunk, line);
-        super::ops::emit_dyn_to_bool(chunk, line);
         chunk.emit_if_value(line);
         chunk.emit_f64_const(30.0, line);
         chunk.emit_else(line);

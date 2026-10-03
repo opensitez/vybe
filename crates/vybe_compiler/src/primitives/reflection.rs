@@ -3814,7 +3814,6 @@ pub fn build_isdate(imports: &mut Chunk) -> Chunk {
     crate::primitives::expressions::emit_const_index(&mut c, obj_str, 0);
     crate::primitives::strings::emit_str_equals(&mut c, 0);
     crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
-    crate::primitives::ops::emit_dyn_to_bool_into(imports, &mut c, 0);
     c.emit_br_if(0, 0);
 
     // result = (v.__type == "DateTime")

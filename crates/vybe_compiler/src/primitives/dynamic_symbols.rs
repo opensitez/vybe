@@ -89,7 +89,6 @@ pub fn emit_resolver_register(chunk: &mut Chunk, stack: ResolverStack<'_>, line:
     array_call(chunk, "indexOf", 2, line);
     chunk.emit_i32_const(0, line);
     crate::primitives::ops::emit_dyn_lt(chunk, line);
-    crate::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, prepend_slot, line);
@@ -129,7 +128,6 @@ pub fn emit_resolver_unregister(chunk: &mut Chunk, stack: ResolverStack<'_>, lin
     chunk.emit_op_u16(Op::LOCAL_GET, found_slot, line);
     chunk.emit_i32_const(0, line);
     crate::primitives::ops::emit_dyn_lt(chunk, line);
-    crate::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_op(Op::I32_EQZ, line);
     chunk.emit_if(line);
     chunk.emit_op_u16(Op::LOCAL_GET, array_slot, line);
@@ -645,7 +643,6 @@ impl Compiler {
         }
         self.emit_const(Value::I32(2));
         crate::primitives::ops::emit_dyn_eq(self.chunk(), line);
-        crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
         self.chunk().emit_if(line);
 
         self.emit_u16(Op::LOCAL_GET, slot);
@@ -799,7 +796,6 @@ impl Compiler {
             self.emit_u16(Op::LOCAL_GET, key_slot);
             self.emit_const(Value::String(std::sync::Arc::from(global.as_str())));
             crate::primitives::ops::emit_dyn_eq(self.chunk(), line);
-            crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
             self.chunk().emit_if(line);
             self.emit_constructor_global_ref(&global, &global);
             self.emit_u16(Op::LOCAL_SET, result_slot);

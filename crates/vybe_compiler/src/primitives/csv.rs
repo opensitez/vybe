@@ -113,7 +113,6 @@ pub fn emit_parse_line(chunks: &mut [Chunk], current: usize, line: u32) {
         get(&mut chunks[current], c, line);
         get(&mut chunks[current], enc, line);
         crate::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
-        crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
         chunks[current].emit_if(line);
         {
             // A doubled enclosure is a literal one; anything else closes.
@@ -126,13 +125,11 @@ pub fn emit_parse_line(chunks: &mut [Chunk], current: usize, line: u32) {
             get(&mut chunks[current], next, line);
             get(&mut chunks[current], n, line);
             crate::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
-            crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
             chunks[current].emit_if(line);
             {
                 char_at(chunks, current, s, next, line);
                 get(&mut chunks[current], enc, line);
                 crate::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
-                crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
                 chunks[current].emit_if(line);
                 get(&mut chunks[current], cur, line);
                 get(&mut chunks[current], enc, line);
@@ -163,7 +160,6 @@ pub fn emit_parse_line(chunks: &mut [Chunk], current: usize, line: u32) {
         get(&mut chunks[current], c, line);
         get(&mut chunks[current], enc, line);
         crate::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
-        crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
         chunks[current].emit_if(line);
         chunks[current].emit_bool_const(true, line);
         set(&mut chunks[current], in_q, line);
@@ -172,7 +168,6 @@ pub fn emit_parse_line(chunks: &mut [Chunk], current: usize, line: u32) {
             get(&mut chunks[current], c, line);
             get(&mut chunks[current], delim, line);
             crate::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
-            crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
             chunks[current].emit_if(line);
             get(&mut chunks[current], out, line);
             get(&mut chunks[current], cur, line);
@@ -288,7 +283,6 @@ pub fn emit_parse_document(chunks: &mut [Chunk], current: usize, line: u32) {
         get(&mut chunks[current], c, line);
         get(&mut chunks[current], enc, line);
         crate::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
-        crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
         chunks[current].emit_if(line);
         {
             let next = chunks[current].alloc_scratch(1);
@@ -300,13 +294,11 @@ pub fn emit_parse_document(chunks: &mut [Chunk], current: usize, line: u32) {
             get(&mut chunks[current], next, line);
             get(&mut chunks[current], n, line);
             crate::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
-            crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
             chunks[current].emit_if(line);
             {
                 char_at(chunks, current, s, next, line);
                 get(&mut chunks[current], enc, line);
                 crate::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
-                crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
                 chunks[current].emit_if(line);
                 get(&mut chunks[current], cur, line);
                 get(&mut chunks[current], enc, line);
@@ -337,7 +329,6 @@ pub fn emit_parse_document(chunks: &mut [Chunk], current: usize, line: u32) {
         get(&mut chunks[current], c, line);
         get(&mut chunks[current], enc, line);
         crate::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
-        crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
         chunks[current].emit_if(line);
         chunks[current].emit_bool_const(true, line);
         set(&mut chunks[current], in_q, line);
@@ -346,7 +337,6 @@ pub fn emit_parse_document(chunks: &mut [Chunk], current: usize, line: u32) {
             get(&mut chunks[current], c, line);
             get(&mut chunks[current], delim, line);
             crate::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
-            crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
             chunks[current].emit_if(line);
             get(&mut chunks[current], row, line);
             get(&mut chunks[current], cur, line);
@@ -362,7 +352,6 @@ pub fn emit_parse_document(chunks: &mut [Chunk], current: usize, line: u32) {
                 get(&mut chunks[current], c, line);
                 chunks[current].emit_string_const("\r", line);
                 crate::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
-                crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
                 chunks[current].emit_if(line);
                 {
                     let next = chunks[current].alloc_scratch(1);
@@ -373,13 +362,11 @@ pub fn emit_parse_document(chunks: &mut [Chunk], current: usize, line: u32) {
                     get(&mut chunks[current], next, line);
                     get(&mut chunks[current], n, line);
                     crate::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
-                    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
                     chunks[current].emit_if(line);
                     {
                         char_at(chunks, current, s, next, line);
                         chunks[current].emit_string_const("\n", line);
                         crate::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
-                        crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
                         chunks[current].emit_if(line);
                         get(&mut chunks[current], next, line);
                         set(&mut chunks[current], i, line);
@@ -393,7 +380,6 @@ pub fn emit_parse_document(chunks: &mut [Chunk], current: usize, line: u32) {
                     get(&mut chunks[current], c, line);
                     chunks[current].emit_string_const("\n", line);
                     crate::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
-                    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
                     chunks[current].emit_if(line);
                     emit_end_record(chunks, current, row, cur, out, line);
                     chunks[current].emit_else(line);
@@ -425,18 +411,15 @@ pub fn emit_parse_document(chunks: &mut [Chunk], current: usize, line: u32) {
     get(&mut chunks[current], cur, line);
     chunks[current].emit_string_const("", line);
     crate::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
-    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_op(Op::I32_EQZ, line);
     get(&mut chunks[current], row, line);
     crate::primitives::collections::emit_len(chunks, current, line);
     chunks[current].emit_f64_const(0.0, line);
     crate::primitives::ops::emit_dyn_gt(&mut chunks[current], line);
-    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_op(Op::I32_OR, line);
     get(&mut chunks[current], n, line);
     chunks[current].emit_f64_const(0.0, line);
     crate::primitives::ops::emit_dyn_gt(&mut chunks[current], line);
-    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
     get(&mut chunks[current], n, line);
     chunks[current].emit_f64_const(1.0, line);
@@ -446,7 +429,6 @@ pub fn emit_parse_document(chunks: &mut [Chunk], current: usize, line: u32) {
     char_at(chunks, current, s, last_idx, line);
     get(&mut chunks[current], enc, line);
     crate::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
-    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_else(line);
     chunks[current].emit_bool_const(false, line);
     chunks[current].emit_end(line);
@@ -541,7 +523,6 @@ pub fn emit_format_row(chunks: &mut [Chunk], current: usize, opts: FormatOptions
     get(&mut chunks[current], i, line);
     chunks[current].emit_f64_const(0.0, line);
     crate::primitives::ops::emit_dyn_gt(&mut chunks[current], line);
-    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
     get(&mut chunks[current], out, line);
     get(&mut chunks[current], delim, line);

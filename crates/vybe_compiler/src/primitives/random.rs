@@ -265,7 +265,7 @@ pub fn emit_sample_k(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, i_s, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, k_s, line);
     crate::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
-    crate::primitives::ops::emit_dyn_not(&mut chunks[current], line);
+    chunks[current].emit_op(vybe_runtime::opcode::Op::I32_EQZ, line);
     chunks[current].emit_br_if(1, line);
     // j = i + floor(next_unit() * (n - i))
     emit_next_unit(chunks, current, line);

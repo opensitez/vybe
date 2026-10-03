@@ -289,7 +289,7 @@ pub fn build_runtime_helpers(imports: &mut Chunk) -> RuntimeHelpers {
     chunks.push(crate::primitives::references::build_autoderef());
     exports.push("__stdlib_autoderef");
 
-    for name in ["__stdlib_dyneq", "__stdlib_dynlt", "__stdlib_dyngt", "__stdlib_dynle", "__stdlib_dynge"] {
+    for name in ["__stdlib_dyneq", "__stdlib_dynlt", "__stdlib_dyngt", "__stdlib_dynle", "__stdlib_dynge",] {
         chunks.push(crate::primitives::ops::build_dyn_comparison(name));
         exports.push(name);
     }

@@ -356,9 +356,9 @@ impl Compiler {
     }
 
     pub(super) fn infer_expr_type_hint(&self, expr: &Expression) -> Option<String> {
-        let _debug_infer = vybe_runtime::debugger::DebugPhase::current_lazy(||
-            format!("compiler infer expression line {}", expr.span.start_line),
-        );
+        let _debug_infer = vybe_runtime::debugger::DebugPhase::current_lazy(|| {
+            format!("compiler infer expression line {}", expr.span.start_line)
+        });
         match &expr.kind {
             ExprKind::Ident(name) => self.lookup_var_type_hint(name).map(str::to_string),
             // The type of `self` is the class being compiled. Without this the
@@ -395,6 +395,12 @@ impl Compiler {
                 op: UnaryOp::Neg | UnaryOp::Pos,
                 expr,
             } => self.infer_expr_type_hint(expr),
+            ExprKind::Unary {
+                op: UnaryOp::PreInc | UnaryOp::PostInc | UnaryOp::PreDec | UnaryOp::PostDec,
+                expr,
+            } if self.type_resolution() == vybe_ast::TypeResolution::Static => {
+                self.infer_expr_type_hint(expr)
+            }
             ExprKind::RefOf(place) => {
                 let pointee_type = match place.as_ref() {
                     PlaceExpr::Ident(name) => self.lookup_var_type_hint(name).map(str::to_string),
@@ -602,7 +608,9 @@ impl Compiler {
                                 .is_none()
                             {
                                 let class_name = Self::tree_type_key(receiver_type);
-                                if let Some(return_type) = self.tree_member_return(&class_name, field) {
+                                if let Some(return_type) =
+                                    self.tree_member_return(&class_name, field)
+                                {
                                     return Some(return_type);
                                 }
                             }

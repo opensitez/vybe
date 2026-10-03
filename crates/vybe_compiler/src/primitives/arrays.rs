@@ -1031,7 +1031,6 @@ pub fn build_array_remove_value(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(vybe_runtime::opcode::Op::LOCAL_GET, idx, 0);
     crate::primitives::instructions::core_wasm::i32_const(&mut c, 0, 0);
     crate::primitives::ops::emit_dyn_ge_into(imports, &mut c, 0);
-    crate::primitives::ops::emit_dyn_to_bool_into(imports, &mut c, 0);
     c.emit_if(0);
 
     c.emit_op_u16(vybe_runtime::opcode::Op::LOCAL_GET, arr, 0);
@@ -1207,7 +1206,7 @@ pub fn build_array_reverse_range(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(vybe_runtime::opcode::Op::LOCAL_GET, lo, 0);
     c.emit_op_u16(vybe_runtime::opcode::Op::LOCAL_GET, hi, 0);
     crate::primitives::ops::emit_dyn_lt_into(imports, &mut c, 0);
-    crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
+    c.emit_op(vybe_runtime::opcode::Op::I32_EQZ, 0);
     c.emit_br_if(1, 0);
     // tmp = arr[lo]
     c.emit_op_u16(vybe_runtime::opcode::Op::LOCAL_GET, arr, 0);

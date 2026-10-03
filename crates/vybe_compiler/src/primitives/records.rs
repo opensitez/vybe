@@ -64,7 +64,6 @@ pub fn emit_value_fields_equal(
     chunks[current].emit_op_u16(Op::LOCAL_GET, right_keys, line);
     collections::emit_len(chunks, current, line);
     ops::emit_dyn_eq(&mut chunks[current], line);
-    ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_op(Op::I32_EQZ, line);
     chunks[current].emit_if(line);
     chunks[current].emit_bool_const(false, line);
@@ -82,7 +81,6 @@ pub fn emit_value_fields_equal(
     get_field(chunks, current, left_slot);
     get_field(chunks, current, right_slot);
     ops::emit_dyn_eq(&mut chunks[current], line);
-    ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_op(Op::I32_EQZ, line);
     chunks[current].emit_if(line);
     chunks[current].emit_bool_const(false, line);

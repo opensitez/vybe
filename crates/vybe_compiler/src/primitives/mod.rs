@@ -145,9 +145,9 @@ mod operators;
 mod overloads;
 pub mod prototypes;
 pub mod records;
+mod reference_analysis;
 pub mod references;
 pub mod reflection;
-mod reference_analysis;
 mod resolver;
 mod scope;
 pub mod slices;
@@ -3609,7 +3609,7 @@ impl Compiler {
             self.publish_class_storage(class);
         }
         if let Some(path) = timing.as_deref() {
-            write_compiler_timing(path, "publish_parentless_class_storage", publish_storage_started.elapsed());
+            write_compiler_timing(path, "publish_parentless_class_storage", publish_storage_started.elapsed(),);
         }
 
         let function_pass_started = Instant::now();
@@ -3642,7 +3642,7 @@ impl Compiler {
         }
         drop(_debug_functions);
         if let Some(path) = timing.as_deref() {
-            write_compiler_timing(path, "compile_function_decls", function_pass_started.elapsed());
+            write_compiler_timing(path, "compile_function_decls", function_pass_started.elapsed(),);
         }
 
         // ECMA-262 §11.2.1: Detect top-level "use strict" directive prologue
@@ -3660,7 +3660,7 @@ impl Compiler {
             self.compile_stmt(stmt)?;
         }
         if let Some(path) = timing.as_deref() {
-            write_compiler_timing(path, "compile_non_function_stmts", non_function_pass_started.elapsed());
+            write_compiler_timing(path, "compile_non_function_stmts", non_function_pass_started.elapsed(),);
         }
         drop(debug_body);
 
@@ -3854,7 +3854,7 @@ impl Compiler {
             chunk.module_instance_fields_are_own_properties = unit_fields_are_own_properties;
         }
         if let Some(path) = timing.as_deref() {
-            write_compiler_timing(path, "finalize.stamp_chunks", stamp_chunks_started.elapsed());
+            write_compiler_timing(path, "finalize.stamp_chunks", stamp_chunks_started.elapsed(),);
         }
         // The canon section, published to every chunk on the same principle as
         // the global index space above: a chunk carrying a canonidx must be

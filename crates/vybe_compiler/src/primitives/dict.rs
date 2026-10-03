@@ -786,7 +786,7 @@ pub fn build_dict_values_from_entries(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, i, 0);
     c.emit_op_u16(Op::LOCAL_GET, len, 0);
     crate::primitives::ops::emit_dyn_lt_into(imports, &mut c, 0);
-    crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
+    c.emit_op(vybe_runtime::opcode::Op::I32_EQZ, 0);
     c.emit_br_if(1, 0);
 
     // result.push(entries[i][1])

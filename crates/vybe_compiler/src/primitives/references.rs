@@ -5,8 +5,8 @@ use crate::primitives::pointers::{
     CARRAY_BASE_KEY, CARRAY_IDX_KEY, CARRAY_KIND, CELL_KIND, REF_KIND_KEY, REF_VALUE_KEY,
     SHARED_ADDR_KEY, SHARED_KIND,
 };
-use vybe_runtime::opcode::Op;
 use vybe_runtime::Chunk;
+use vybe_runtime::opcode::Op;
 
 fn lget(chunk: &mut Chunk, slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);

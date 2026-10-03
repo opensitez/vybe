@@ -60,7 +60,6 @@ fn eq_const(chunks: &mut [Chunk], current: usize, slot: u16, literal: &str, line
     get(&mut chunks[current], slot, line);
     chunks[current].emit_string_const(literal, line);
     crate::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
-    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
 }
 
 /// `config.parse` — INI text to a map of section name → map of key → value.
@@ -156,7 +155,6 @@ pub fn emit_parse(chunks: &mut [Chunk], current: usize, line: u32) {
             chunks[current].emit_f64_const(0.0, line);
             get(&mut chunks[current], end, line);
             crate::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
-            crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
             chunks[current].emit_if(line);
             {
                 get(&mut chunks[current], t, line);
@@ -218,18 +216,15 @@ pub fn emit_parse(chunks: &mut [Chunk], current: usize, line: u32) {
                 get(&mut chunks[current], colon_at, line);
                 chunks[current].emit_f64_const(0.0, line);
                 crate::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
-                crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
                 chunks[current].emit_op(Op::I32_EQZ, line);
                 chunks[current].emit_if(line);
                 {
                     get(&mut chunks[current], at, line);
                     chunks[current].emit_f64_const(0.0, line);
                     crate::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
-                    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
                     get(&mut chunks[current], colon_at, line);
                     get(&mut chunks[current], at, line);
                     crate::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
-                    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
                     chunks[current].emit_op(Op::I32_OR, line);
                     chunks[current].emit_if(line);
                     {
@@ -244,7 +239,6 @@ pub fn emit_parse(chunks: &mut [Chunk], current: usize, line: u32) {
                 get(&mut chunks[current], at, line);
                 chunks[current].emit_f64_const(0.0, line);
                 crate::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
-                crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
                 chunks[current].emit_op(Op::I32_EQZ, line);
                 chunks[current].emit_if(line);
                 {

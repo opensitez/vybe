@@ -217,7 +217,7 @@ pub fn build_is_numeric(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, val, 0);
     c.emit_call(pf_idx, 1, 0);
     c.emit_dup(0);
-    crate::primitives::ops::emit_dyn_eq_into(imports, &mut c, 0);
+    c.emit_op(Op::F64_EQ, 0);
     c.emit_op_u16(Op::LOCAL_SET, result, 0);
 
     c.emit_end(0);
@@ -234,7 +234,7 @@ pub fn build_is_numeric(imports: &mut Chunk) -> Chunk {
 // "stop at first non-numeric" semantic; the only divergence is that
 // parseFloat returns NaN on no-match while VB returns 0. Wrap with an
 // `r != r` (NaN sentinel) check and select 0 in that case.
-pub fn build_val(imports: &mut Chunk) -> Chunk {
+pub fn build_val(_imports: &mut Chunk) -> Chunk {
     let mut c = Chunk::new("__stdlib_val");
     c.arity = 1;
     c.local_count = 2; // arg(0), result(1)
@@ -252,7 +252,7 @@ pub fn build_val(imports: &mut Chunk) -> Chunk {
     let done = c.emit_block(0);
     c.emit_op_u16(Op::LOCAL_GET, result, 0);
     c.emit_op_u16(Op::LOCAL_GET, result, 0);
-    crate::primitives::ops::emit_dyn_eq_into(imports, &mut c, 0);
+    c.emit_op(Op::F64_EQ, 0);
     c.emit_br_if(0, 0);
 
     // result = 0

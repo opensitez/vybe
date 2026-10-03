@@ -899,7 +899,6 @@ pub fn emit_value_to_name(chunk: &mut Chunk, line: u32) {
     host::emit(chunk, "ecma:value", "typeof", 1, line);
     chunk.emit_string_const("number", line);
     crate::primitives::ops::emit_dyn_eq(chunk, line);
-    crate::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
 
     // name = ecma:object.get(enumObj, "" + value)  (raw reverse-field read)
@@ -951,7 +950,6 @@ pub fn emit_name_to_member_or_null(chunk: &mut Chunk, line: u32) {
     host::emit(chunk, "ecma:value", "typeof", 1, line);
     chunk.emit_string_const("number", line);
     crate::primitives::ops::emit_dyn_eq(chunk, line);
-    crate::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     chunk.emit_op_u16(Op::LOCAL_GET, input, line);
     chunk.emit_else(line);

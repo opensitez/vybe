@@ -69,7 +69,7 @@ pub fn heap_zeroed_array(count: usize) -> Expression {
 pub fn heap_zeroed_array_sized(count: Expression) -> Expression {
     Expression::new(ExprKind::Call {
         callee: Box::new(Expression::new(ExprKind::Ident("Array".to_string()))),
-        args: vec![Argument::positional(count), Argument::positional(Expression::int(0))],
+        args: vec![Argument::positional(count), Argument::positional(Expression::int(0)),],
         optional: false,
     })
 }

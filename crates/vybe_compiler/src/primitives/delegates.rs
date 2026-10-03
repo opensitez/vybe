@@ -90,7 +90,6 @@ pub fn emit_invoke(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
 
     emit_slot_is_nullish(chunks, current, delegate_slot, line);
     crate::primitives::ops::emit_dyn_not(&mut chunks[current], line);
-    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, delegate_slot, line);
@@ -112,7 +111,7 @@ pub fn emit_invoke(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, i_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, len_slot, line);
     crate::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
-    crate::primitives::ops::emit_dyn_not(&mut chunks[current], line);
+    chunks[current].emit_op(vybe_runtime::opcode::Op::I32_EQZ, line);
     chunks[current].emit_br_if(1, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, delegate_slot, line);
@@ -243,7 +242,6 @@ pub fn emit_remove(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, loop_counter, line);
     core_wasm::i32_const(&mut chunks[current], line, 0);
     crate::primitives::ops::emit_dyn_ge(&mut chunks[current], line);
-    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_op(Op::I32_EQZ, line);
     chunks[current].emit_br_if(1, line);
 
@@ -255,7 +253,6 @@ pub fn emit_remove(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, elem_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, handler_slot, line);
     crate::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
-    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, loop_counter, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, idx_slot, line);
@@ -275,7 +272,6 @@ pub fn emit_remove(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
     core_wasm::i32_const(&mut chunks[current], line, 0);
     crate::primitives::ops::emit_dyn_ge(&mut chunks[current], line);
-    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, cur_slot, line);
@@ -291,7 +287,6 @@ pub fn emit_remove(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, len_slot, line);
     core_wasm::i32_const(&mut chunks[current], line, 0);
     crate::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
-    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if_value(line);
     chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunks[current].emit_else(line);
@@ -299,7 +294,6 @@ pub fn emit_remove(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, len_slot, line);
     core_wasm::i32_const(&mut chunks[current], line, 1);
     crate::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
-    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if_value(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, cur_slot, line);
     core_wasm::i32_const(&mut chunks[current], line, 0);
@@ -313,7 +307,6 @@ pub fn emit_remove(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, cur_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, handler_slot, line);
     crate::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
-    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if_value(line);
     chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunks[current].emit_else(line);
