@@ -6,6 +6,46 @@
 use vybe_compiler::primitives::loops;
 use vybe_runtime::Chunk;
 
+#[test]
+fn for_in_numeric_condition_handles_empty_arrays_and_live_length() {
+    use vybe_runtime::{Value, VM};
+    use vybe_runtime::opcode::Op;
+    for (values, grow, expected) in [
+        (vec![], false, 0),
+        (vec![1, 2, 3], false, 6),
+        (vec![1], true, 3),
+    ] {
+        let mut chunks = one_chunk(3);
+        vybe_compiler::primitives::globals::emit_read(&mut chunks[0], "items", 0);
+        chunks[0].emit_op_u16(Op::LOCAL_SET, 1, 0);
+        chunks[0].emit_i32_const(0, 0);
+        chunks[0].emit_op_u16(Op::LOCAL_SET, 0, 0);
+        let state = loops::emit_for_in_start(&mut chunks, 0, 1, 2, 0);
+        chunks[0].emit_op_u16(Op::LOCAL_GET, 0, 0);
+        chunks[0].emit_op(Op::I32_ADD, 0);
+        chunks[0].emit_op_u16(Op::LOCAL_SET, 0, 0);
+        if grow {
+            chunks[0].emit_op_u16(Op::LOCAL_GET, 2, 0);
+            chunks[0].emit_op(Op::I32_EQZ, 0);
+            chunks[0].emit_if(0);
+            chunks[0].emit_op_u16(Op::LOCAL_GET, 1, 0);
+            chunks[0].emit_i32_const(2, 0);
+            vybe_compiler::primitives::collections::emit_push(&mut chunks, 0, 0);
+            chunks[0].emit_op(Op::DROP, 0);
+            chunks[0].emit_end(0);
+        }
+        loops::emit_for_in_end(&mut chunks, 0, 2, state, 0);
+        chunks[0].emit_op_u16(Op::LOCAL_GET, 0, 0);
+        chunks[0].emit_op(Op::RETURN, 0);
+        let mut vm = VM::new();
+        vybe_compiler::primitives::platforms::register_platforms_all(&mut vm);
+        vm.set_global_owned("items".to_owned(), Value::Object(vybe_runtime::heap::alloc(
+            vybe_runtime::object::Object::new_array(values.into_iter().map(Value::I32).collect()),
+        )));
+        assert_eq!(vm.run(chunks).expect("for-in execution").as_i32(), expected);
+    }
+}
+
 fn one_chunk(local_count: u16) -> Vec<Chunk> {
     let mut c = Chunk::new("test");
     c.local_count = local_count;

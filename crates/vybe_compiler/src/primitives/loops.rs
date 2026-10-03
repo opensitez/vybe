@@ -227,8 +227,10 @@ pub fn emit_for_in_start(
         let idx = chunks[current].add_import("ecma:array", "length");
         chunks[current].emit_call(idx, 1, line);
     }
-    crate::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
-    emit_loop_cond(chunks, current, line);
+    // Both the counter and ecma:array.length have the declared i32 ABI.
+    // No dynamic type dispatch or Boolean coercion is needed here.
+    chunks[current].emit_op(Op::I32_LT_S, line);
+    emit_loop_cond_from_i32(chunks, current, line);
 
     // block $body { — continue targets this, skips to increment
     let body_block_patch = chunks[current].emit_block(line);
@@ -293,10 +295,10 @@ pub fn emit_map(
     crate::primitives::collections::emit_array_new(chunks, current, 0, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
 
+    let elem_slot = chunks[current].alloc_scratch(1);
     let state = emit_for_in_start(chunks, current, arr_slot, idx_slot, line);
 
-    // Drop element from for_in_start — we'll re-fetch inline
-    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, elem_slot, line);
 
     // result.push(fn(arr[i], i))
     let abi = crate::primitives::class_context::module_receiver_abi(chunks);
@@ -305,9 +307,7 @@ pub fn emit_map(
     // §10.2.1: the receiver is argument 0 of the CALLBACK, pushed before its
     // real arguments — see `callable::emit_callback_receiver`.
     let recv = crate::primitives::callable::emit_callback_receiver(&mut chunks[current], abi, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
-    crate::primitives::collections::emit_get(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, elem_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
     crate::primitives::callable::emit_direct_invoke_chunk(&mut chunks[current], 2 + recv, line);
     crate::primitives::collections::emit_push(chunks, current, line);
@@ -357,7 +357,7 @@ pub fn emit_filter(
     crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     // Use structured if for the conditional push
     let if_block = chunks[current].emit_block(line);
-    crate::primitives::ops::emit_dyn_not(&mut chunks[current], line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
     chunks[current].emit_br_if(0, line); // skip push if false
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
@@ -383,9 +383,10 @@ pub fn emit_foreach(
     idx_slot: u16,
     line: u32,
 ) {
+    let elem_slot = chunks[current].alloc_scratch(1);
     let state = emit_for_in_start(chunks, current, arr_slot, idx_slot, line);
 
-    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, elem_slot, line);
 
     // §10.2.1: the callback's receiver is argument 0 — see
     // `callable::emit_callback_receiver`.
@@ -393,9 +394,7 @@ pub fn emit_foreach(
     chunks[current].emit_op_u16(Op::LOCAL_GET, fn_slot, line);
     let __recv =
         crate::primitives::callable::emit_callback_receiver(&mut chunks[current], __abi, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
-    crate::primitives::collections::emit_get(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, elem_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
     crate::primitives::callable::emit_direct_invoke_chunk(&mut chunks[current], 2 + __recv, line);
     chunks[current].emit_op(Op::DROP, line);
@@ -466,8 +465,8 @@ pub fn emit_reduce(
         let idx = chunks[current].add_import("ecma:array", "length");
         chunks[current].emit_call(idx, 1, line);
     }
-    crate::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
-    emit_loop_cond(chunks, current, line);
+    chunks[current].emit_op(Op::I32_LT_S, line);
+    emit_loop_cond_from_i32(chunks, current, line);
 
     emit_reduce_step(chunks, current, fn_slot, arr_slot, acc_slot, idx_slot, line);
 
@@ -517,10 +516,10 @@ pub fn emit_any_every(
     }
     chunks[current].emit_op_u16(Op::LOCAL_SET, result_local, line);
 
+    let elem_slot = chunks[current].alloc_scratch(1);
     let state = emit_for_in_start(chunks, current, arr_slot, idx_slot, line);
 
-    // Drop element from for_in_start, call fn(arr[i]) directly
-    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, elem_slot, line);
 
     // §10.2.1: the callback's receiver is argument 0 — see
     // `callable::emit_callback_receiver`.
@@ -528,9 +527,7 @@ pub fn emit_any_every(
     chunks[current].emit_op_u16(Op::LOCAL_GET, fn_slot, line);
     let __recv =
         crate::primitives::callable::emit_callback_receiver(&mut chunks[current], __abi, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
-    crate::primitives::collections::emit_get(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, elem_slot, line);
     crate::primitives::callable::emit_direct_invoke_chunk(&mut chunks[current], 1 + __recv, line);
     crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     // Structure from emit_for_in_start: block $exit { loop $loop { cond, block $body {
@@ -538,7 +535,7 @@ pub fn emit_any_every(
     // With an extra block $skip: depth 0=$skip, 1=$body, 2=$loop, 3=$exit
     if is_any {
         let skip = chunks[current].emit_block(line);
-        crate::primitives::ops::emit_dyn_not(&mut chunks[current], line);
+        chunks[current].emit_op(Op::I32_EQZ, line);
         chunks[current].emit_br_if(0, line); // skip if false
         chunks[current].emit_bool_const(true, line);
         chunks[current].emit_op_u16(Op::LOCAL_SET, result_local, line);

@@ -1120,10 +1120,34 @@ fn emit_ob_pop_and_flush(chunks: &mut [Chunk], current: usize, line: u32) {
         crate::primitives::callable::push_callback_from_slot(chunks, current, handler_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, raw_slot, line);
     crate::primitives::callable::emit_direct_invoke_chunk(&mut chunks[current], 1 + recv, line);
-    emit_write_or_buffer(chunks, current, line);
+    emit_ob_handler_output_or_raw(chunks, current, raw_slot, line);
     chunks[current].emit_end(line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, raw_slot, line);
+}
+
+/// PHP output handlers can return boolean false to request the unmodified
+/// buffer. An empty string is different: it deliberately suppresses output.
+fn emit_ob_handler_output_or_raw(chunks: &mut [Chunk], current: usize, raw_slot: u16, line: u32) {
+    let result_slot = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
+    let is_bool = chunks[current].add_import("wasm:js-boolean", "test");
+    chunks[current].emit_call(is_bool, 1, line);
+    super::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
+    super::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, raw_slot, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
+    chunks[current].emit_end(line);
+    emit_write_or_buffer(chunks, current, line);
 }
 
 /// Close the innermost buffer and write its contents to the next target out —
@@ -1177,7 +1201,7 @@ pub fn emit_ob_flush(chunks: &mut [Chunk], current: usize, line: u32) {
         );
         chunks[current].emit_op_u16(Op::LOCAL_GET, contents_slot, line);
         crate::primitives::callable::emit_direct_invoke_chunk(&mut chunks[current], 1 + recv, line);
-        emit_write_or_buffer(chunks, current, line);
+        emit_ob_handler_output_or_raw(chunks, current, contents_slot, line);
         chunks[current].emit_end(line);
 
         emit_ob_stack(chunks, current, line);
@@ -1429,10 +1453,8 @@ pub fn emit_ob_list_handlers(chunks: &mut [Chunk], current: usize, default_name:
 /// → [string|false].
 pub fn emit_ob_get_clean(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_when_buffering(chunks, current, line, |chunks, current| {
-        // The handler runs on a clean as well as on a flush — it is how a
-        // throwing handler surfaces rather than being swallowed — and its
-        // result is what comes back. Nothing is WRITTEN: that is the whole
-        // difference between `ob_get_clean` and `ob_get_flush`.
+        // A clean invokes the handler for its side effects, but returns the
+        // original buffered text. PHP discards the handler's transformed text.
         let handler_slot = chunks[current].alloc_scratch(1);
         emit_ob_top_field(chunks, current, OB_HANDLER, line);
         chunks[current].emit_op_u16(Op::LOCAL_SET, handler_slot, line);
@@ -1441,12 +1463,9 @@ pub fn emit_ob_get_clean(chunks: &mut [Chunk], current: usize, line: u32) {
         emit_ob_pop(chunks, current, line);
         chunks[current].emit_op_u16(Op::LOCAL_SET, raw_slot, line);
 
-        let out_slot = chunks[current].alloc_scratch(1);
         chunks[current].emit_op_u16(Op::LOCAL_GET, handler_slot, line);
         chunks[current].emit_op(Op::REF_IS_NULL, line);
         chunks[current].emit_if(line);
-        chunks[current].emit_op_u16(Op::LOCAL_GET, raw_slot, line);
-        chunks[current].emit_op_u16(Op::LOCAL_SET, out_slot, line);
         chunks[current].emit_else(line);
         let recv = crate::primitives::callable::push_callback_from_slot(
             chunks,
@@ -1456,9 +1475,9 @@ pub fn emit_ob_get_clean(chunks: &mut [Chunk], current: usize, line: u32) {
         );
         chunks[current].emit_op_u16(Op::LOCAL_GET, raw_slot, line);
         crate::primitives::callable::emit_direct_invoke_chunk(&mut chunks[current], 1 + recv, line);
-        chunks[current].emit_op_u16(Op::LOCAL_SET, out_slot, line);
+        chunks[current].emit_op(Op::DROP, line);
         chunks[current].emit_end(line);
-        chunks[current].emit_op_u16(Op::LOCAL_GET, out_slot, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, raw_slot, line);
     });
 }
 

@@ -235,31 +235,41 @@ impl Compiler {
                 self.function_return_types.get(&self.canon(name)).cloned()
             }
             ExprKind::Member { object, field, .. } => {
-                if let Some(receiver_type) = self.infer_expr_type_hint(object) {
-                    let receiver_trimmed = receiver_type.trim().trim_end_matches('?').trim();
-                    let receiver_base = receiver_trimmed
-                        .split('<')
-                        .next()
-                        .unwrap_or(receiver_trimmed)
-                        .trim();
-                    let receiver_key = self
-                        .resolve_pending_class_name_for_type_hint(&receiver_type)
-                        .unwrap_or_else(|| self.canon(receiver_base));
-                    let qualified = self.canon(&format!("{}.{}", receiver_key, field));
-                    if let Some(return_type) = self.function_return_types.get(&qualified) {
-                        return Some(return_type.clone());
-                    }
-                }
-                if let ExprKind::Ident(object_name) = &object.kind {
-                    let qualified = self.canon(&format!("{}.{}", object_name, field));
-                    if let Some(return_type) = self.function_return_types.get(&qualified) {
-                        return Some(return_type.clone());
-                    }
-                }
-                self.function_return_types.get(&self.canon(field)).cloned()
+                let receiver_type = self.infer_expr_type_hint(object);
+                self.infer_member_function_return_type(object, field, receiver_type.as_deref())
             }
             _ => None,
         }
+    }
+
+    pub(super) fn infer_member_function_return_type(
+        &self,
+        object: &Expression,
+        field: &str,
+        receiver_type: Option<&str>,
+    ) -> Option<String> {
+        if let Some(receiver_type) = receiver_type {
+            let receiver_trimmed = receiver_type.trim().trim_end_matches('?').trim();
+            let receiver_base = receiver_trimmed
+                .split('<')
+                .next()
+                .unwrap_or(receiver_trimmed)
+                .trim();
+            let receiver_key = self
+                .resolve_pending_class_name_for_type_hint(receiver_type)
+                .unwrap_or_else(|| self.canon(receiver_base));
+            let qualified = self.canon(&format!("{}.{}", receiver_key, field));
+            if let Some(return_type) = self.function_return_types.get(&qualified) {
+                return Some(return_type.clone());
+            }
+        }
+        if let ExprKind::Ident(object_name) = &object.kind {
+            let qualified = self.canon(&format!("{}.{}", object_name, field));
+            if let Some(return_type) = self.function_return_types.get(&qualified) {
+                return Some(return_type.clone());
+            }
+        }
+        self.function_return_types.get(&self.canon(field)).cloned()
     }
 
     pub(super) fn infer_array_element_type_hint<'a>(
@@ -346,6 +356,9 @@ impl Compiler {
     }
 
     pub(super) fn infer_expr_type_hint(&self, expr: &Expression) -> Option<String> {
+        let _debug_infer = vybe_runtime::debugger::DebugPhase::current_lazy(||
+            format!("compiler infer expression line {}", expr.span.start_line),
+        );
         match &expr.kind {
             ExprKind::Ident(name) => self.lookup_var_type_hint(name).map(str::to_string),
             // The type of `self` is the class being compiled. Without this the
@@ -576,25 +589,31 @@ impl Compiler {
                             .map(str::to_string)
                     });
                 }
-                if !self.profile.namespaces.type_scopes.is_empty() {
-                    if let ExprKind::Member { object, field, .. } = &callee.kind {
-                        if let Some(receiver_type) = self.infer_expr_type_hint(object) {
+                if let ExprKind::Member { object, field, .. } = &callee.kind {
+                    // Fluent chains reach this arm once per call. Infer the
+                    // receiver once: repeating it for the tree lookup and
+                    // function return lookup makes an untyped chain grow
+                    // exponentially with its length.
+                    let receiver_type = self.infer_expr_type_hint(object);
+                    if !self.profile.namespaces.type_scopes.is_empty() {
+                        if let Some(receiver_type) = receiver_type.as_deref() {
                             if self
-                                .resolve_pending_class_name_for_type_hint(&receiver_type)
+                                .resolve_pending_class_name_for_type_hint(receiver_type)
                                 .is_none()
                             {
-                                let class_name = Self::tree_type_key(&receiver_type);
-                                if let Some(return_type) =
-                                    self.tree_member_return(&class_name, field)
-                                {
+                                let class_name = Self::tree_type_key(receiver_type);
+                                if let Some(return_type) = self.tree_member_return(&class_name, field) {
                                     return Some(return_type);
                                 }
                             }
                         }
                     }
+                    self.infer_member_function_return_type(object, field, receiver_type.as_deref())
+                        .or_else(|| self.infer_namespace_tree_factory_return_type(callee))
+                } else {
+                    self.infer_function_return_type(callee)
+                        .or_else(|| self.infer_namespace_tree_factory_return_type(callee))
                 }
-                self.infer_function_return_type(callee)
-                    .or_else(|| self.infer_namespace_tree_factory_return_type(callee))
             }
             ExprKind::Index { object, .. } => {
                 self.infer_expr_type_hint(object).and_then(|type_hint| {
@@ -609,7 +628,8 @@ impl Compiler {
                 if let Some(type_hint) = self.infer_vb_runtime_member_type_hint(expr) {
                     return Some(type_hint);
                 }
-                if let Some(receiver_type) = self.infer_expr_type_hint(object) {
+                let receiver_type = self.infer_expr_type_hint(object);
+                if let Some(receiver_type) = receiver_type.as_deref() {
                     if let Some(class_name) =
                         self.resolve_pending_class_name_for_type_hint(&receiver_type)
                     {
@@ -629,7 +649,7 @@ impl Compiler {
                 // here, chains through properties (`date.dayOfWeek.value`)
                 // lost their type at the property hop.
                 if !self.profile.namespaces.type_scopes.is_empty() {
-                    if let Some(receiver_type) = self.infer_expr_type_hint(object) {
+                    if let Some(receiver_type) = receiver_type.as_deref() {
                         if self
                             .resolve_pending_class_name_for_type_hint(&receiver_type)
                             .is_none()
@@ -646,6 +666,9 @@ impl Compiler {
                     .contains_key(&self.canon(&enum_type))
                     .then_some(enum_type)
             }
+            ExprKind::Binary {
+                op: BinOp::Concat, ..
+            } => Some("string".into()),
             ExprKind::Binary { op, left, right }
                 if matches!(
                     op,

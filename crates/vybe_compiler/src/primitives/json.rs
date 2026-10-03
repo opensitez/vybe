@@ -447,6 +447,13 @@ fn build_normalize_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     lget(&mut h, key_slot, line);
     add_call(&mut h, "ecma:object", "hasOwn", 2, line);
     crate::primitives::ops::emit_dyn_to_bool(&mut h, line);
+    // Map entries are not ECMAScript own properties. They still preserve
+    // their exact keys when a language encodes a dictionary as JSON.
+    lget(&mut h, value_slot, line);
+    lget(&mut h, key_slot, line);
+    add_call(&mut h, "ecma:map", "has", 2, line);
+    crate::primitives::ops::emit_dyn_to_bool(&mut h, line);
+    h.emit_op(Op::I32_OR, line);
     h.emit_if_value(line);
     lget(&mut h, value_slot, line);
     lget(&mut h, key_slot, line);

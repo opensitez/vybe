@@ -93,7 +93,7 @@ pub fn emit_store_byte_array(
     chunk.emit_op_u16(Op::LOCAL_SET, len, line);
 
     // ── bump-allocate `len` bytes ───────────────────────────────────────────
-    // base = BUMP, growing a page the first time (BUMP starts null/undefined).
+    // base = BUMP, growing enough pages for the payload when BUMP is absent.
     crate::primitives::globals::emit_read(chunk, BUMP, line);
     chunk.emit_op_u16(Op::LOCAL_TEE, base, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
@@ -102,16 +102,19 @@ pub fn emit_store_byte_array(
     chunk.emit_call(undef_test, 1, line);
     chunk.emit_op(Op::I32_OR, line);
     chunk.emit_if(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, len, line);
+    chunk.emit_i32_const(16, line);
+    chunk.emit_op(Op::I32_SHR_U, line);
     chunk.emit_i32_const(1, line);
+    chunk.emit_op(Op::I32_ADD, line);
     chunk.emit_op_idx(Op::MEMORY_GROW, 0u32, line);
     chunk.emit_i32_const(65536, line);
     chunk.emit_op(Op::I32_MUL, line);
     chunk.emit_op_u16(Op::LOCAL_SET, base, line);
     chunk.emit_end(line);
 
-    // Grow again if this request would run off the end of the page. Without
-    // it the allocator hands out addresses past the memory it owns, and the
-    // corruption surfaces nowhere near here.
+    // Grow again if this request would run off the end of memory. BUMP may
+    // already be near a page boundary, and one write may span several pages.
     chunk.emit_op_u16(Op::LOCAL_GET, base, line);
     chunk.emit_op_u16(Op::LOCAL_GET, len, line);
     chunk.emit_op(Op::I32_ADD, line);
@@ -120,7 +123,11 @@ pub fn emit_store_byte_array(
     chunk.emit_op(Op::I32_MUL, line);
     chunk.emit_op(Op::I32_GT_U, line);
     chunk.emit_if(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, len, line);
+    chunk.emit_i32_const(16, line);
+    chunk.emit_op(Op::I32_SHR_U, line);
     chunk.emit_i32_const(1, line);
+    chunk.emit_op(Op::I32_ADD, line);
     chunk.emit_op_idx(Op::MEMORY_GROW, 0u32, line);
     chunk.emit_i32_const(65536, line);
     chunk.emit_op(Op::I32_MUL, line);

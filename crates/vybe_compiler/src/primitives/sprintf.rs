@@ -30,14 +30,6 @@ pub fn emit_sprintf(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32
     // The helper expects (fmt, args_array).  The compiler pushed the args
     // on the stack in order: [fmt, arg0, arg1, ...].
     // We need to pack args 1..N into an array first.
-    let push_idx = chunks[current].add_import("ecma:array", "push");
-
-    // Allocate a local to hold the args array being built.
-    let arr_slot = chunks[current].local_count;
-    chunks[current].alloc_scratch(1);
-    // Allocate a local to hold the format string.
-    let fmt_slot = chunks[current].local_count;
-    chunks[current].alloc_scratch(1);
 
     let nargs = argc as i32; // total args including fmt
     let nrest = nargs - 1; // args after fmt
@@ -46,11 +38,12 @@ pub fn emit_sprintf(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32
     // Simpler: all args are already on the stack in forward order.
     // Strategy:
     //   1. Store all args into locals (right-to-left to keep stack sane).
-    //   2. Build the args array from the stored locals.
-    //   3. GLOBAL_GET the sprintf fn, call(fmt, args_array).
+    //   2. Build one fixed-size array from the stored locals.
+    //   3. Call the sprintf helper with (fmt, args_array).
 
     // Allocate temp locals for the variadic args.
     let first_arg_slot = chunks[current].alloc_scratch(nrest.max(0) as u16);
+    let fmt_slot = chunks[current].alloc_scratch(1);
 
     // Store variadic args (they are on top of stack, in order arg0..argN-1).
     // Stack order: ... fmt arg0 arg1 ... argN-1  (argN-1 on top)
@@ -62,24 +55,14 @@ pub fn emit_sprintf(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32
     // Now fmt is on top — store it.
     chunks[current].emit_op_u16(Op::LOCAL_SET, fmt_slot, line);
 
-    // Build args array: []
-    crate::primitives::collections::emit_array_new(chunks, current, 0, line);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, arr_slot, line);
-
-    // Push each variadic arg into the array.
-    for k in 0..nrest {
-        let slot = first_arg_slot + k as u16;
-        chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
-        chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
-        chunks[current].emit_call(push_idx, 2, line);
-        chunks[current].emit_op(Op::DROP, line);
-    }
-
     // Call the helper directly by function reference.
     chunks[current].emit_op_u16(Op::REF_FUNC, helper_idx as u16, line);
     chunks[current].emit(0u8, line); // upvalue count
     chunks[current].emit_op_u16(Op::LOCAL_GET, fmt_slot, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
+    for k in 0..nrest {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, first_arg_slot + k as u16, line);
+    }
+    crate::primitives::collections::emit_array_new(chunks, current, nrest.max(0) as u16, line);
     crate::primitives::callable::emit_direct_invoke_chunk(&mut chunks[current], 2, line);
 }
 
@@ -227,6 +210,8 @@ pub fn build_sprintf(_imports: &mut Chunk) -> Chunk {
     let str_ccat = c.add_import("ecma:string", "charCodeAt");
     let str_chat = c.add_import("ecma:string", "charAt");
     let str_slice = c.add_import("ecma:string", "slice");
+    let str_index = c.add_import("ecma:string", "indexOf");
+    let str_last_index = c.add_import("ecma:string", "lastIndexOf");
     let str_tostr = c.add_import("ecma:string", "String");
     let str_fcc = c.add_import("ecma:string", "fromCharCode");
     let str_cat = c.add_import("ecma:string", "concat");
@@ -247,6 +232,57 @@ pub fn build_sprintf(_imports: &mut Chunk) -> Chunk {
     lg(&mut c, FMT);
     hc(&mut c, str_len, 1);
     ls(&mut c, FLEN);
+
+    // A single, unmodified %s is common in generated templates. Avoid the
+    // general character-by-character formatter while leaving flags, escaped
+    // percent signs, and multiple conversions to the full parser below.
+    lg(&mut c, FMT);
+    cs(&mut c, "%");
+    hc(&mut c, str_index, 2);
+    c.emit_op(Op::I32_FROM_F64, 0);
+    ls(&mut c, POS);
+    lg(&mut c, POS);
+    ci(&mut c, -1);
+    c.emit_op(Op::I32_NE, 0);
+    lg(&mut c, ARGS);
+    c.emit_op(Op::ARRAY_LENGTH, 0);
+    ci(&mut c, 1);
+    c.emit_op(Op::I32_EQ, 0);
+    c.emit_op(Op::I32_AND, 0);
+    lg(&mut c, FMT);
+    cs(&mut c, "%s");
+    hc(&mut c, str_index, 2);
+    c.emit_op(Op::I32_FROM_F64, 0);
+    lg(&mut c, POS);
+    c.emit_op(Op::I32_EQ, 0);
+    c.emit_op(Op::I32_AND, 0);
+    lg(&mut c, FMT);
+    cs(&mut c, "%");
+    hc(&mut c, str_last_index, 2);
+    c.emit_op(Op::I32_FROM_F64, 0);
+    lg(&mut c, POS);
+    c.emit_op(Op::I32_EQ, 0);
+    c.emit_op(Op::I32_AND, 0);
+    c.emit_if(0);
+    lg(&mut c, FMT);
+    ci(&mut c, 0);
+    lg(&mut c, POS);
+    hc(&mut c, str_slice, 3);
+    lg(&mut c, ARGS);
+    ci(&mut c, 0);
+    hc(&mut c, arr_at, 2);
+    hc(&mut c, str_tostr, 1);
+    hc(&mut c, str_cat, 2);
+    lg(&mut c, FMT);
+    lg(&mut c, POS);
+    ci(&mut c, 2);
+    c.emit_op(Op::I32_ADD, 0);
+    lg(&mut c, FLEN);
+    hc(&mut c, str_slice, 3);
+    hc(&mut c, str_cat, 2);
+    c.emit_op(Op::RETURN, 0);
+    c.emit_end(0);
+
     cs(&mut c, "");
     ls(&mut c, OUT);
     core_wasm::i32_const(&mut c, 0, 0);

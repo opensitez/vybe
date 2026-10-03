@@ -27,8 +27,8 @@ use vybe_runtime::opcode::Op;
 use crate::primitives::threading as thread_adapter;
 use crate::primitives::{
     base64, collections, config, csv, dict, fs_path, heap, http_cookie, http_form,
-    http_request_env, http_session, io, object, ops, paths, reflection, sets, strings, threading,
-    url, xml,
+    http_request_env, http_session, io, object, ops, paths, pointers, reflection, sets, strings,
+    threading, url, xml,
 };
 
 /// Handle common ops that need only a chunk and line.
@@ -578,6 +578,26 @@ pub fn emit_common(
         "memory.bytes_set_item" => {
             crate::primitives::memory::emit_bytes_set_item(chunks, current, line)
         }
+        "pointers.linear_i32_load" => pointers::emit_linear_i32_load(chunks, current, line),
+        "pointers.linear_i32_load8_u" => pointers::emit_linear_i32_load8_u(chunks, current, line),
+        "pointers.linear_i32_load8_s" => pointers::emit_linear_i32_load8_s(chunks, current, line),
+        "pointers.linear_i32_load16_u" => {
+            pointers::emit_linear_i32_load16_u(chunks, current, line)
+        }
+        "pointers.linear_i32_load16_s" => {
+            pointers::emit_linear_i32_load16_s(chunks, current, line)
+        }
+        "pointers.linear_i64_load" => pointers::emit_linear_i64_load(chunks, current, line),
+        "pointers.linear_i32_store" => pointers::emit_linear_i32_store(chunks, current, line),
+        "pointers.linear_i32_store8" => pointers::emit_linear_i32_store8(chunks, current, line),
+        "pointers.linear_i32_store16" => pointers::emit_linear_i32_store16(chunks, current, line),
+        "pointers.linear_i64_store" => pointers::emit_linear_i64_store(chunks, current, line),
+        "pointers.linear_memory_size" => pointers::emit_linear_memory_size(chunks, current, line),
+        "pointers.linear_memory_grow" => pointers::emit_linear_memory_grow(chunks, current, line),
+        "pointers.linear_memory_copy" => pointers::emit_linear_memory_copy(chunks, current, line),
+        "pointers.linear_memory_fill" => pointers::emit_linear_memory_fill(chunks, current, line),
+        "pointers.byte_copy" => pointers::emit_byte_copy(chunks, current, line),
+        "pointers.linear_alloc" => pointers::emit_linear_alloc(chunks, current, line),
         "collections.contains" => collections::emit_contains(chunks, current, line),
         "tuple.value_eq" => {
             crate::primitives::tuples::emit_tuple_value_eq(&mut chunks[current], line)
@@ -693,8 +713,14 @@ pub fn emit_common(
         "strings.split" => strings::emit_split(&mut chunks[current], line),
         "strings.index_of" => strings::emit_index_of(&mut chunks[current], line),
         "strings.concat" => strings::emit_concat(&mut chunks[current], 2, line),
+        "strings.equals_if_string" => strings::emit_equals_if_string(&mut chunks[current], false, line),
+        "strings.not_equals_if_string" => strings::emit_equals_if_string(&mut chunks[current], true, line),
         "base64.encode_binary_string" => base64::emit_encode_binary_string(chunks, current, line),
         "base64.decode_binary_string" => base64::emit_decode_binary_string(chunks, current, line),
+        "c.static_json_value" => {
+            let idx = chunks[current].add_import("ecma:json", "parse");
+            chunks[current].emit_call(idx, 1, line);
+        }
         "sprintf.format" => crate::primitives::sprintf::emit_sprintf(chunks, current, argc, line),
         "sprintf.format_array" => {
             crate::primitives::sprintf::emit_sprintf_from_array(chunks, current, line)
@@ -711,6 +737,7 @@ pub fn emit_common(
             crate::primitives::expressions::emit_f64_mod(&mut chunks[current], line)
         }
         "math.clamp" => crate::primitives::math::emit_clamp(&mut chunks[current], line),
+        "math.fmod" => crate::primitives::math::emit_c_fmod(&mut chunks[current], line),
         "math.copysign" => crate::primitives::math::emit_copysign(&mut chunks[current], line),
         "math.signbit" => crate::primitives::math::emit_signbit(&mut chunks[current], line),
         "math.dim" => crate::primitives::math::emit_dim(&mut chunks[current], line),
@@ -810,6 +837,9 @@ pub fn emit_common(
         // bitwise op, whose lane is signed: `Not 0UI` is `4294967295`, not −1.
         "bits.as_unsigned32" => {
             crate::primitives::bits::emit_as_unsigned32(&mut chunks[current], line)
+        }
+        "bits.wrap_unsigned32" => {
+            crate::primitives::bits::emit_wrap_unsigned32(&mut chunks[current], line)
         }
         "bits.rotl32u" => crate::primitives::bits::emit_rotl32_unsigned(chunks, current, line),
         "bits.rotr32u" => crate::primitives::bits::emit_rotr32_unsigned(chunks, current, line),
@@ -1105,6 +1135,10 @@ pub fn emit_common(
         }
         "ref_eq" => {
             chunks[current].emit_op(Op::REF_EQ, line);
+        }
+        "ref_nonnull" => {
+            chunks[current].emit_op(Op::REF_IS_NULL, line);
+            chunks[current].emit_op(Op::I32_EQZ, line);
         }
 
         // ── Array ops (profile common:array_*) ──

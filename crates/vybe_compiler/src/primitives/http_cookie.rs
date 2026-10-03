@@ -223,11 +223,25 @@ pub fn emit_serialize(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
         chunks[current].emit_op(Op::REF_IS_NULL, line);
         chunks[current].emit_op(Op::I32_EQZ, line);
         chunks[current].emit_if(line);
+        // An empty optional attribute is absent. In particular, `Domain=`
+        // is invalid and clients discard the entire cookie when PHP passes
+        // its default empty domain string.
+        chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
+        let to_string = chunks[current].add_import("ecma:string", "String");
+        chunks[current].emit_call(to_string, 1, line);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, slot, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
+        let length = chunks[current].add_import("wasm:js-string", "length");
+        chunks[current].emit_call(length, 1, line);
+        chunks[current].emit_i32_const(0, line);
+        chunks[current].emit_op(Op::I32_GT_S, line);
+        chunks[current].emit_if(line);
         chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
         chunks[current].emit_string_const(label, line);
         chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
         super::strings::emit_concat(&mut chunks[current], 3, line);
         chunks[current].emit_op_u16(Op::LOCAL_SET, out, line);
+        chunks[current].emit_end(line);
         chunks[current].emit_end(line);
     }
 

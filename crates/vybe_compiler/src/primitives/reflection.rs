@@ -2758,6 +2758,14 @@ pub fn emit_typeof_in_chunk(chunk: &mut Chunk, line: u32) {
     emit_import_call_in_chunk(chunk, "ecma:value", "typeof", 1, line);
 }
 
+/// Stack: `[value] -> [i32]`. `typeof` always returns a string, so comparing
+/// its result needs neither dynamic equality nor a second truthiness pass.
+pub fn emit_typeof_is(chunk: &mut Chunk, kind: &str, line: u32) {
+    emit_typeof_in_chunk(chunk, line);
+    chunk.emit_string_const(kind, line);
+    emit_import_call_in_chunk(chunk, "wasm:js-string", "equals", 2, line);
+}
+
 /// Stack: `[callable] -> [bool]`.
 pub fn emit_is_callable(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_import_call(chunks, current, "ecma:reflect", "isCallable", 1, line);
@@ -2855,14 +2863,33 @@ pub fn emit_instanceof(chunks: &mut [Chunk], current: usize, line: u32) {
     let (obj_s, klass_s, types_s) = (base, base + 1, base + 2);
     chunks[current].emit_op_u16(Op::LOCAL_SET, klass_s, line); // [obj]
     chunks[current].emit_op_u16(Op::LOCAL_SET, obj_s, line); // []
-    // types = obj["__types"]
+    // Type identity lives in class slots, including on Map-backed adapters.
+    // Collection indexing would read Map entries instead of named slots.
+    let types_key = class_slots::resolve_interned(
+        &mut chunks[current],
+        &class_slots::ClassSlot::internal(FIELD_TYPES),
+        &class_slots::PlainNames,
+    );
+    let type_key = class_slots::resolve_interned(
+        &mut chunks[current],
+        &class_slots::ClassSlot::internal(FIELD_TYPE),
+        &class_slots::PlainNames,
+    );
     chunks[current].emit_op_u16(Op::LOCAL_GET, obj_s, line);
-    chunks[current].emit_string_const(FIELD_TYPES, line);
-    crate::primitives::collections::emit_get(chunks, current, line);
+    class_slots::emit_class_get(
+        &mut chunks[current],
+        class_slots::ObjSource::Stack,
+        &types_key,
+        class_slots::Dest::Stack,
+        line,
+    );
     chunks[current].emit_op_u16(Op::LOCAL_SET, types_s, line);
-    // if types present -> types.includes(class_name); else obj["__type"] == class_name
+    // if types present -> types.includes(class_name); else obj.__type == class_name
     chunks[current].emit_op_u16(Op::LOCAL_GET, types_s, line);
     chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, types_s, line);
+    emit_import_call(chunks, current, "wasm:js-undefined", "test", 1, line);
+    chunks[current].emit_op(Op::I32_OR, line);
     chunks[current].emit_op(Op::I32_EQZ, line); // 1 when __types is present
     chunks[current].emit_if_value(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, types_s, line);
@@ -2870,8 +2897,13 @@ pub fn emit_instanceof(chunks: &mut [Chunk], current: usize, line: u32) {
     crate::primitives::collections::emit_contains(chunks, current, line);
     chunks[current].emit_else(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, obj_s, line);
-    chunks[current].emit_string_const(FIELD_TYPE, line);
-    crate::primitives::collections::emit_get(chunks, current, line); // obj["__type"]
+    class_slots::emit_class_get(
+        &mut chunks[current],
+        class_slots::ObjSource::Stack,
+        &type_key,
+        class_slots::Dest::Stack,
+        line,
+    );
     chunks[current].emit_op_u16(Op::LOCAL_GET, klass_s, line);
     crate::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
     chunks[current].emit_end(line);

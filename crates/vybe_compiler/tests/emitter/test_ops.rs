@@ -202,6 +202,45 @@ fn not_nonzero_gives_false() {
 // ── emit_dyn_eq ──────────────────────────────────────────────────────
 
 #[test]
+fn literal_null_specializations_preserve_both_equality_contracts() {
+    for value in [
+        Value::Null,
+        Value::Undefined,
+        Value::Bool(false),
+        Value::I32(0),
+        Value::F64(f64::NAN),
+        Value::String(Arc::from("")),
+        Value::String(Arc::from("null")),
+    ] {
+        for null_on_left in [false, true] {
+            let emit_operands = |c: &mut Chunk| {
+                if null_on_left {
+                    push(c, Value::Null);
+                    push(c, value.clone());
+                } else {
+                    push(c, value.clone());
+                    push(c, Value::Null);
+                }
+            };
+            let general = run(|c| {
+                emit_operands(c);
+                ops::emit_dyn_eq(c, 0);
+            });
+            let specialized = run(|c| {
+                emit_operands(c);
+                ops::emit_dyn_eq_null_operand(c, null_on_left, 0);
+            });
+            assert_eq!(specialized.as_i32(), general.as_i32(), "{value:?}");
+            let strict = run(|c| {
+                emit_operands(c);
+                ops::emit_js_strict_eq_null_operand(c, null_on_left, 0);
+            });
+            assert_eq!(strict.as_i32(), i32::from(matches!(value, Value::Null)), "{value:?}");
+        }
+    }
+}
+
+#[test]
 fn eq_same_numbers() {
     let r = run(|c| {
         push(c, Value::F64(3.0));

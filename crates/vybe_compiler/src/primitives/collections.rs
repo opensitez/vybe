@@ -1729,7 +1729,7 @@ pub fn emit_map_clone(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunks[current].emit_else(line);
 
-    emit_import_call(chunks, current, "ecma:object", "new", 0, line);
+    emit_import_call(chunks, current, "ecma:map", "new", 0, line);
     lset(&mut chunks[current], out_slot, line);
     lget(&mut chunks[current], src_slot, line);
     emit_import_call(chunks, current, "ecma:object", "entries", 1, line);

@@ -17,6 +17,13 @@ use vybe_runtime::{Chunk, Value};
 
 use super::Compiler;
 
+pub(crate) fn php_loaded_extension_function_name(name: &str) -> bool {
+    let normalized = name
+        .trim_start_matches('\\')
+        .to_ascii_lowercase();
+    normalized.starts_with("sodium_")
+}
+
 // ── Default parameter handling ──────────────────────────────────────────
 
 /// Emit the start of a default parameter check.
@@ -196,6 +203,25 @@ impl Compiler {
     /// `__kind` stamp is absent, so leaving the unmatched name on the stack
     /// would answer `true` for every string.
     pub(crate) fn emit_source_function_exists_by_runtime_name(&mut self, name_slot: u16) {
+        if self.profile.name == "php" {
+            self.emit_u16(Op::LOCAL_GET, name_slot);
+            let builtin = self.import("php:dynamic", "builtinExists");
+            self.emit_host_call(builtin, 1);
+            let line = self.line;
+            self.chunk().emit_if_value(line);
+            self.emit_const(Value::Bool(true));
+            self.chunk().emit_else(line);
+            self.emit_u16(Op::LOCAL_GET, name_slot);
+            let lookup = self.import("php:dynamic", "functionByName");
+            self.emit_host_call(lookup, 1);
+            crate::primitives::dynamic_symbols::emit_symbol_kind_test(
+                self.chunk(),
+                Some(crate::primitives::reflection::ReflectKind::Function),
+                line,
+            );
+            self.chunk().emit_end(line);
+            return;
+        }
         let resolved_slot = self.define_local("__function_exists_resolved");
         self.emit_null();
         self.emit_u16(Op::LOCAL_SET, resolved_slot);
@@ -259,6 +285,31 @@ impl Compiler {
 
     pub(crate) fn emit_source_function_callable_name_resolution(&mut self, callee_slot: u16) {
         if !self.profile.source_function_callable_aliases {
+            return;
+        }
+
+        if self.profile.name == "php" {
+            // Look up the live function namespace. Emitting one comparison per
+            // known function at every call site made lowering quadratic, and
+            // could not see functions installed by subsequent includes.
+            let line = self.line;
+            self.emit_u16(Op::LOCAL_GET, callee_slot);
+            let is_string = self.import("wasm:js-string", "test");
+            self.emit_host_call(is_string, 1);
+            self.chunk().emit_if(line);
+            self.emit_u16(Op::LOCAL_GET, callee_slot);
+            let lookup = self.import("php:dynamic", "functionByName");
+            self.emit_host_call(lookup, 1);
+            let resolved = self.define_local("__source_string_callee_resolved");
+            self.emit_u16(Op::LOCAL_SET, resolved);
+            self.emit_u16(Op::LOCAL_GET, resolved);
+            self.emit(Op::REF_IS_NULL);
+            self.emit(Op::I32_EQZ);
+            self.chunk().emit_if(line);
+            self.emit_u16(Op::LOCAL_GET, resolved);
+            self.emit_u16(Op::LOCAL_SET, callee_slot);
+            self.chunk().emit_end(line);
+            self.chunk().emit_end(line);
             return;
         }
 

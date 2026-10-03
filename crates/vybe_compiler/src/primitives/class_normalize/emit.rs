@@ -49,6 +49,13 @@ use vybe_ast::class_normalize::types::*;
 /// keeps its original spelling, so a base that is not a user-namespaced type
 /// reaches the existing `canon` downstream unchanged.
 fn resolve_declared_bases(compiler: &Compiler, parents: &[String]) -> Vec<String> {
+    // PHP's walker has already resolved `extends` and `implements`, including
+    // leading `\` global names. Resolving a global `InvalidArgumentException`
+    // again inside namespace App would turn it into App.InvalidArgumentException
+    // and make the class inherit from itself.
+    if compiler.profile.name == "php" {
+        return parents.to_vec();
+    }
     parents
         .iter()
         .map(|p| {

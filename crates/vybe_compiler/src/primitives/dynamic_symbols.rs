@@ -192,8 +192,9 @@ pub fn emit_resolver_stack_invoke(
     // while (index < len)
     chunk.emit_op_u16(Op::LOCAL_GET, index_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, len_slot, line);
-    crate::primitives::ops::emit_dyn_lt(chunk, line);
-    crate::primitives::ops::emit_dyn_to_bool(chunk, line);
+    // Both operands are internal nonnegative array counters. Dynamic
+    // coercion here generated object/string arithmetic at every class lookup.
+    chunk.emit_op(Op::I32_LT_U, line);
     chunk.emit_op(Op::I32_EQZ, line);
     chunk.emit_br_if(1, line);
 
@@ -215,11 +216,7 @@ pub fn emit_resolver_stack_invoke(
     match stack.invoke_member {
         Some(member) => {
             chunk.emit_op_u16(Op::LOCAL_GET, entry_slot, line);
-            let type_of = chunk.add_import("ecma:value", "typeof");
-            chunk.emit_call(type_of, 1, line);
-            chunk.emit_string_const("function", line);
-            crate::primitives::ops::emit_dyn_eq(chunk, line);
-            crate::primitives::ops::emit_dyn_to_bool(chunk, line);
+            crate::primitives::reflection::emit_typeof_is(chunk, "function", line);
             chunk.emit_if(line);
             chunk.emit_op_u16(Op::LOCAL_GET, entry_slot, line);
             // §10.2.1: a resolver is an ordinary callable, so where the region
@@ -256,7 +253,7 @@ pub fn emit_resolver_stack_invoke(
 
     chunk.emit_op_u16(Op::LOCAL_GET, index_slot, line);
     chunk.emit_i32_const(1, line);
-    crate::primitives::ops::emit_dyn_add(chunk, line);
+    chunk.emit_op(Op::I32_ADD, line);
     chunk.emit_op_u16(Op::LOCAL_SET, index_slot, line);
 
     chunk.emit_br(0, line);
@@ -556,16 +553,22 @@ impl Compiler {
         // nesting depth stops mattering.
         let slot = self.define_local("__class_designator");
         let out = self.define_local("__class_designator_out");
-        self.compile_expr(class)?;
+        if let ExprKind::Ident(name) = &class.kind {
+            if self.profile.supports_autoload && !name.starts_with('$') {
+                let global = self.canon_type_global(name);
+                self.emit_constructor_global_ref(&global, name);
+            } else {
+                self.compile_expr(class)?;
+            }
+        } else {
+            self.compile_expr(class)?;
+        }
         self.emit_u16(Op::LOCAL_SET, slot);
         self.emit_u16(Op::LOCAL_GET, slot);
         self.emit_u16(Op::LOCAL_SET, out);
 
         self.emit_u16(Op::LOCAL_GET, slot);
-        crate::primitives::reflection::emit_typeof_in_chunk(self.chunk(), line);
-        self.emit_const(Value::String(std::sync::Arc::from("string")));
-        crate::primitives::ops::emit_dyn_eq(self.chunk(), line);
-        crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
+        crate::primitives::reflection::emit_typeof_is(self.chunk(), "string", line);
         self.chunk().emit_if(line);
         self.emit_u16(Op::LOCAL_GET, slot);
         self.emit_symbol_ref_for_name_on_stack();
@@ -595,19 +598,9 @@ impl Compiler {
     /// [`Self::emit_source_function_callable_name_resolution`] and by the Call
     /// slot probe respectively.
     ///
-    /// ⛔ A class NAME that is only known at run time — `"Class::method"`, or a
-    /// pair whose first element is a string — is deliberately NOT resolved
-    /// here, and the reason is a hard size limit rather than a missing idea.
-    /// Resolving a name needs [`Self::emit_symbol_ref_for_name_on_stack`], one
-    /// comparison per declared symbol each guarding the language's autoload
-    /// sequence. That is affordable at a `New` or `StaticAccess` site, which
-    /// is why `emit_class_designator` can inline it; it is not affordable at
-    /// EVERY call site. `Chunk::emit_try_table_clauses` patches a catch
-    /// handler as a two-byte offset, so one inflated call site inside a `try`
-    /// pushed the body past 65535 bytes, the offset truncated, and execution
-    /// resumed mid-instruction (`Invalid opcode: 0x0000 0x2000`). Those two
-    /// spellings are resolved by the frontend instead, where the name is
-    /// literal — see `php_callable_target_expr`.
+    /// PHP also resolves `["Class", "method"]` through its live symbol table.
+    /// That lookup is bounded in size; the older per-symbol comparison chain
+    /// could inflate a call site past the VM's two-byte catch offset limit.
     ///
     /// Gated on `source_function_callable_aliases`, the axis that already
     /// declares *"this language has PHP/Ruby-style dynamic callables"*. It has
@@ -631,14 +624,25 @@ impl Compiler {
         // ordinary two-field instance would have answered 2 and been taken
         // apart as a pair.
         self.emit_u16(Op::LOCAL_GET, slot);
-        let is_array_idx = self.import("ecma:array", "isArray");
+        // PHP's packed arrays can travel through the Map representation at a
+        // callback boundary. The ECMA predicate sees only ObjectKind::Array.
+        let is_php_array = self.profile.name == "php";
+        let is_array_idx = if is_php_array {
+            self.import("php:array", "isArray")
+        } else {
+            self.import("ecma:array", "isArray")
+        };
         self.emit_host_call(is_array_idx, 1);
         crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
         self.chunk().emit_if(line);
 
         self.emit_u16(Op::LOCAL_GET, slot);
-        let length_idx = self.import("ecma:array", "length");
-        self.emit_host_call(length_idx, 1);
+        if is_php_array {
+            common::collections::emit_len(&mut self.chunks, self.current, line);
+        } else {
+            let length_idx = self.import("ecma:array", "length");
+            self.emit_host_call(length_idx, 1);
+        }
         self.emit_const(Value::I32(2));
         crate::primitives::ops::emit_dyn_eq(self.chunk(), line);
         crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
@@ -660,10 +664,7 @@ impl Compiler {
         // is just an array, and reading member `2` off the number `1` threw
         // where php answers `false`.
         self.emit_u16(Op::LOCAL_GET, receiver_slot);
-        crate::primitives::reflection::emit_typeof_in_chunk(self.chunk(), line);
-        self.emit_const(Value::String(std::sync::Arc::from("object")));
-        crate::primitives::ops::emit_dyn_eq(self.chunk(), line);
-        crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
+        crate::primitives::reflection::emit_typeof_is(self.chunk(), "object", line);
         self.chunk().emit_if(line);
 
         // `ecma:function.bind` supplies the fresh function object — mutating
@@ -704,6 +705,25 @@ impl Compiler {
         );
 
         self.chunk().emit_end(line);
+
+        if is_php_array {
+            self.chunk().emit_else(line);
+            self.emit_u16(Op::LOCAL_GET, receiver_slot);
+            crate::primitives::reflection::emit_typeof_is(self.chunk(), "string", line);
+            self.chunk().emit_if(line);
+            self.emit_u16(Op::LOCAL_GET, receiver_slot);
+            self.emit_symbol_ref_for_name_on_stack();
+            self.emit_u16(Op::LOCAL_SET, receiver_slot);
+            self.emit_u16(Op::LOCAL_GET, receiver_slot);
+            crate::primitives::reflection::emit_typeof_is(self.chunk(), "function", line);
+            self.chunk().emit_if(line);
+            self.emit_u16(Op::LOCAL_GET, receiver_slot);
+            self.emit_u16(Op::LOCAL_GET, member_slot);
+            crate::primitives::reflection::emit_get_property_in_chunk(self.chunk(), line);
+            self.emit_u16(Op::LOCAL_SET, slot);
+            self.chunk().emit_end(line);
+            self.chunk().emit_end(line);
+        }
         self.chunk().emit_end(line);
         self.chunk().emit_end(line);
         self.chunk().emit_end(line);
@@ -719,6 +739,59 @@ impl Compiler {
         let result_slot = self.define_local("__symbol_result");
         crate::primitives::instructions::core_wasm::undefined(self.chunk(), line);
         self.emit_u16(Op::LOCAL_SET, result_slot);
+
+        // Dynamic includes may publish a class after this function was
+        // compiled. Read the VM's live symbol table first; the generated
+        // candidate path below still handles registered autoloaders on a miss.
+        if self.profile.name == "php" {
+            // PHP accepts a leading namespace separator in class-name
+            // strings, but spl_autoload callbacks receive the name without
+            // that separator. Normalize before both the live lookup and the
+            // resolver call so dynamic class_exists() agrees with literal
+            // class references.
+            self.emit_u16(Op::LOCAL_GET, key_slot);
+            let normalize = self.import("php:dynamic", "autoloadName");
+            self.emit_host_call(normalize, 1);
+            self.emit_u16(Op::LOCAL_SET, key_slot);
+            self.emit_u16(Op::LOCAL_GET, key_slot);
+            let lookup = self.import("php:dynamic", "globalByName");
+            self.emit_host_call(lookup, 1);
+            self.emit_u16(Op::LOCAL_SET, result_slot);
+            self.emit_u16(Op::LOCAL_GET, result_slot);
+            self.emit(Op::REF_IS_NULL);
+            self.emit_u16(Op::LOCAL_GET, result_slot);
+            let is_undefined = self.import("wasm:js-undefined", "test");
+            self.emit_host_call(is_undefined, 1);
+            self.emit(Op::I32_OR);
+            self.chunk().emit_if(line);
+            // PHP classes can appear after this function was compiled. A
+            // generated comparison against every then-known global both
+            // misses those classes and makes large modules expensive to
+            // lower. Ask the live autoload stack using the computed name,
+            // then look in the VM's current global table again.
+            self.emit_u16(Op::LOCAL_GET, key_slot);
+            let abi = if self.universal_receiver() {
+                vybe_runtime::chunk::ReceiverAbi::Parameter
+            } else {
+                vybe_runtime::chunk::ReceiverAbi::Ambient
+            };
+            emit_resolver_stack_invoke(
+                self.chunk(),
+                abi,
+                ResolverStack {
+                    stack_global: "__php_autoload_stack",
+                    invoke_member: Some("__invoke"),
+                },
+                None,
+                line,
+            );
+            self.emit_u16(Op::LOCAL_GET, key_slot);
+            self.emit_host_call(lookup, 1);
+            self.emit_u16(Op::LOCAL_SET, result_slot);
+            self.chunk().emit_end(line);
+            self.emit_u16(Op::LOCAL_GET, result_slot);
+            return;
+        }
 
         let mut candidates: Vec<String> = self.defined_globals.iter().cloned().collect();
         candidates.sort();

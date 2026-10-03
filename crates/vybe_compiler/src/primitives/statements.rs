@@ -169,6 +169,9 @@ impl Compiler {
         if let Some(i64_slot) = self.chunks[cur].i64_scratch_slot {
             restore = restore.max(i64_slot + 1);
         }
+        if let Some(autoderef_slot) = self.chunks[cur].autoderef_scratch_slot {
+            restore = restore.max(autoderef_slot + 1);
+        }
         let peak = self.chunks[cur].local_count;
         if peak > self.chunks[cur].scratch_high_water {
             self.chunks[cur].scratch_high_water = peak;
@@ -184,6 +187,36 @@ impl Compiler {
         // reading it afterwards could reclaim against the wrong chunk.
         let cur = self.current;
         let mark = self.chunks[cur].local_count;
+        let timing = compiler_timing_path();
+        let debug_function = std::env::var("VYBE_COMPILER_DEBUG_FUNCTION").ok();
+        let current_function = self.current_func_name.clone();
+        let _debug_stmt = vybe_runtime::debugger::DebugPhase::current_lazy(|| {
+            format!(
+                "compiler nested statement {} line {}",
+                current_function.as_deref().unwrap_or("<script>"),
+                stmt.span.start_line
+            )
+        });
+        let should_trace = timing.is_some()
+            && current_function.as_deref().is_some()
+            && debug_function.as_deref().is_some_and(|target| {
+                target == "*" || current_function.as_deref() == Some(target)
+            });
+        if should_trace {
+            if let (Some(path), Some(function_name)) = (timing.as_deref(), current_function.as_deref()) {
+                let scope_next = self.scopes.last().map(|s| s.next_slot).unwrap_or(0);
+                write_compiler_timing(
+                    path,
+                    &format!(
+                        "compile_stmt_start {function_name} line={} mark={mark} scope_next={scope_next} local_count={}",
+                        stmt.span.start_line,
+                        self.chunks[cur].local_count
+                    ),
+                    std::time::Duration::ZERO,
+                );
+            }
+        }
+        let started = std::time::Instant::now();
         let result = self.compile_stmt_inner(stmt);
         let floor = self.scopes.last().map_or(0, |s| s.next_slot);
         let mut restore = mark.max(floor);
@@ -201,6 +234,9 @@ impl Compiler {
         if let Some(i64_slot) = self.chunks[cur].i64_scratch_slot {
             restore = restore.max(i64_slot + 1);
         }
+        if let Some(autoderef_slot) = self.chunks[cur].autoderef_scratch_slot {
+            restore = restore.max(autoderef_slot + 1);
+        }
         // `local_count` is TWO facts in one field: the bump pointer for the
         // next allocation, AND the peak the frame must be sized to. Only the
         // first is reclaimable. `define_local` temps raise `local_count` but
@@ -217,6 +253,20 @@ impl Compiler {
         }
         if restore < peak {
             self.chunks[cur].local_count = restore;
+        }
+        if should_trace {
+            if let (Some(path), Some(function_name)) = (timing.as_deref(), current_function.as_deref()) {
+                let scope_next = self.scopes.last().map(|s| s.next_slot).unwrap_or(0);
+                write_compiler_timing(
+                    path,
+                    &format!(
+                        "compile_stmt_done {function_name} line={} restore={restore} scope_next={scope_next} local_count={} peak={peak}",
+                        stmt.span.start_line,
+                        self.chunks[cur].local_count
+                    ),
+                    started.elapsed(),
+                );
+            }
         }
         result
     }
@@ -241,6 +291,7 @@ impl Compiler {
         // only exists on the Vec.
         targets: &Vec<Expression>,
         value: &Expression,
+        by_ref: bool,
     ) -> Result<(), String> {
         // Rebinding a name to the null literal drops what it held —
         // Python's `x = None`. Scoped to the literal ON PURPOSE:
@@ -300,6 +351,11 @@ impl Compiler {
         }
         if targets.len() == 1 {
             if let ExprKind::Ident(name) = &targets[0].kind {
+                if by_ref {
+                    self.compile_expr(value)?;
+                    self.emit_var_bind_reference(name);
+                    return Ok(());
+                }
                 let binding_key = self.canon(name);
                 if let Some(binding) = self.resolve_reflection_binding_expr(value) {
                     self.reflection_bindings.insert(binding_key, binding);
@@ -487,6 +543,8 @@ impl Compiler {
                 ClassMember::Method(stmt) => {
                     if let StmtKind::FunctionDecl {
                         name: mname,
+                        params,
+                        return_type,
                         modifiers,
                         ..
                     } = &stmt.kind
@@ -538,10 +596,31 @@ impl Compiler {
                         self.current_class = Some(module_name.clone());
                         self.current_class_implicit_self = false;
                         self.current_member_is_static = true;
+                        let chunk_idx = self.chunks.len();
                         self.compile_stmt(&module_stmt)?;
                         self.current_class = saved_class;
                         self.current_class_implicit_self = saved_implicit_self;
                         self.current_member_is_static = saved_member_static;
+                        if let Some(pending) = self.pending_classes.get_mut(&module_name) {
+                            pending
+                                .static_method_overloads
+                                .entry(mn.clone())
+                                .or_default()
+                                .push(PendingMethodOverload {
+                                    param_types: params
+                                        .iter()
+                                        .map(|param| {
+                                            Self::normalize_type_hint(
+                                                param.type_hint.as_deref().unwrap_or("object"),
+                                            )
+                                        })
+                                        .collect(),
+                                    chunk_idx,
+                                    return_type: return_type.clone(),
+                                    signature: CallSignature::from_params(params),
+                                    is_virtual: false,
+                                });
+                        }
                         member_names.push((mn, global_name));
                     }
                 }
@@ -705,35 +784,50 @@ impl Compiler {
         }
         let mut member_names: Vec<(String, String, bool)> = Vec::new();
         let mut qualified_body: Vec<Statement> = Vec::with_capacity(body.len());
-        for s in body {
-            let mut qualified = s.clone();
-            match &mut qualified.kind {
-                StmtKind::ClassDecl { name: cn, .. }
-                | StmtKind::StructDecl { name: cn, .. }
-                | StmtKind::EnumDecl { name: cn, .. }
-                | StmtKind::InterfaceDecl { name: cn, .. }
-                | StmtKind::ModuleDecl { name: cn, .. } => {
-                    let member_name = self.canon(cn);
+        fn qualify_namespace_members(
+            compiler: &Compiler,
+            stmt: &mut Statement,
+            ns_name: &str,
+            member_names: &mut Vec<(String, String, bool)>,
+        ) {
+            match &mut stmt.kind {
+                StmtKind::Block(body) => {
+                    // PHP wraps declarations that need a parent autoload in a
+                    // block. They still belong to the enclosing namespace.
+                    for child in body {
+                        qualify_namespace_members(compiler, child, ns_name, member_names);
+                    }
+                }
+                StmtKind::ClassDecl { name, .. }
+                | StmtKind::StructDecl { name, .. }
+                | StmtKind::EnumDecl { name, .. }
+                | StmtKind::InterfaceDecl { name, .. }
+                | StmtKind::ModuleDecl { name, .. } => {
+                    let member_name = compiler.canon(name);
                     let qualified_name = if member_name.contains('.') {
                         member_name.clone()
                     } else {
                         format!("{ns_name}.{member_name}")
                     };
                     member_names.push((member_name, qualified_name.clone(), true));
-                    *cn = qualified_name;
+                    *name = qualified_name;
                 }
-                StmtKind::FunctionDecl { name: cn, .. } => {
-                    let member_name = self.canon(cn);
+                StmtKind::FunctionDecl { name, .. } => {
+                    let member_name = compiler.canon(name);
                     let qualified_name = if member_name.contains('.') {
                         member_name.clone()
                     } else {
                         format!("{ns_name}.{member_name}")
                     };
                     member_names.push((member_name, qualified_name.clone(), false));
-                    *cn = qualified_name;
+                    *name = qualified_name;
                 }
                 _ => {}
             }
+        }
+        for s in body {
+            let mut qualified = s.clone();
+            qualify_namespace_members(self, &mut qualified, &ns_name, &mut member_names);
             qualified_body.push(qualified);
         }
         for (_, qualified_name, is_type_like) in &member_names {
@@ -1078,9 +1172,14 @@ impl Compiler {
                 self.chunk().emit_end(line);
             }
             ExprKind::Sequence(parts) => {
-                for part in parts {
+                let Some((last, prefix)) = parts.split_last() else {
+                    return Ok(());
+                };
+                for part in prefix {
                     self.compile_expr_stmt(part)?;
                 }
+                self.compile_expr(last)?;
+                self.emit(Op::DROP);
             }
             // Bare identifier that's a known function → call with 0 args
             ExprKind::Ident(name) if self.defined_functions.contains(name.as_str()) => {
@@ -1100,35 +1199,14 @@ impl Compiler {
                 }
                 self.emit(Op::DROP);
             }
-            // JS bare member statements evaluate the property access
-            // and discard the result; they are not implicit calls.
+            // Bare member statements evaluate the property access and discard
+            // the result. Languages that spell an implicit zero-arg call must
+            // normalize that as an explicit `Call`; treating every member
+            // statement as a call makes C-generated struct/pointer expressions
+            // allocate enormous receiver/call temporaries.
             ExprKind::Member { object, field, .. } => {
-                if self.profile.dynamic_member_access {
-                    self.compile_expr(expr)?;
-                    self.emit(Op::DROP);
-                    return Ok(());
-                }
-                self.compile_expr(object)?;
-                let field_name = self.canon(field);
-                let prop =
-                    self.resolve_slot_interned(&class_slots::ClassSlot::internal(field_name));
-                inst!(self, core_wasm::dup);
-                let line = self.line;
-                class_slots::emit_class_get(
-                    self.chunk(),
-                    class_slots::ObjSource::Stack,
-                    &prop,
-                    class_slots::Dest::Stack,
-                    line,
-                );
-                let fn_tmp = self.define_local("__fn");
-                self.emit_u16(Op::LOCAL_SET, fn_tmp);
-                let obj_tmp = self.define_local("__obj");
-                self.reserve_local_slot(obj_tmp);
-                self.emit_u16(Op::LOCAL_SET, obj_tmp);
-                self.emit_u16(Op::LOCAL_GET, fn_tmp);
-                self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                self.emit_direct_callable_invoke(1);
+                let _ = (object, field);
+                self.compile_expr(expr)?;
                 self.emit(Op::DROP);
             }
             _ => {
@@ -1888,6 +1966,8 @@ impl Compiler {
         cases: &Vec<SwitchCase>,
         default: &Option<Vec<Statement>>,
     ) -> Result<(), String> {
+        let numeric_switch = self.operator_dispatch() == vybe_ast::OperatorDispatch::StaticBuiltin
+            && self.expr_is_provably_number(expr);
         // Save switch expression to a local so checks can read it
         // without leaving it on the stack during body execution.
         self.compile_expr(expr)?;
@@ -1946,24 +2026,24 @@ impl Compiler {
                     CaseCondition::Value(val) => {
                         self.emit_u16(Op::LOCAL_GET, sw_slot);
                         self.compile_expr(val)?;
-                        // JS switch uses === (strict equality, no type coercion
-                        // per ECMA-262 §14.12.1). Other languages use their
-                        // ordinary equality operator, including any user/value
-                        // slots. The policy is a module directive, not a
-                        // profile flag.
-                        match self.directives().switch_case_equality.unwrap_or_default() {
-                            vybe_ast::SwitchCaseEquality::StrictEq => {
-                                self.compile_binop(&BinOp::StrictEq);
+                        if numeric_switch && self.expr_is_provably_number(val) {
+                            self.emit(Op::F64_EQ);
+                            self.chunk().emit_if(line);
+                        } else {
+                            // JS switch uses ===; other languages use their
+                            // declared equality policy for nonnumeric cases.
+                            match self.directives().switch_case_equality.unwrap_or_default() {
+                                vybe_ast::SwitchCaseEquality::StrictEq => {
+                                    self.compile_binop(&BinOp::StrictEq);
+                                }
+                                vybe_ast::SwitchCaseEquality::Eq => {
+                                    self.compile_binop(&BinOp::Eq);
+                                }
                             }
-                            vybe_ast::SwitchCaseEquality::Eq => {
-                                self.compile_binop(&BinOp::Eq);
-                            }
-                        }
-                        {
                             let line = self.line;
                             crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
-                        };
-                        self.chunk().emit_if(line);
+                            self.chunk().emit_if(line);
+                        }
                         self.emit_const(Value::Bool(true));
                         self.emit_u16(Op::LOCAL_SET, case_match_slot);
                         self.chunk().emit_end(line);
@@ -2780,8 +2860,12 @@ impl Compiler {
             }
 
             // ── Assignment ──────────────────────────────────────────────
-            StmtKind::Assign { targets, value, .. } => {
-                self.compile_assign_stmt(targets, value)?;
+            StmtKind::Assign {
+                targets,
+                value,
+                by_ref,
+            } => {
+                self.compile_assign_stmt(targets, value, *by_ref)?;
             }
 
             StmtKind::CompoundAssign { target, op, value } => {
@@ -2870,8 +2954,10 @@ impl Compiler {
                 else_body,
             } => {
                 let line = self.line;
+                let cond_mark = self.chunks[self.current].local_count;
                 self.compile_condition_to_i32(cond)?;
                 self.chunk().emit_if(line);
+                self.reclaim_scratch_to(cond_mark);
                 self.label_depth += 1;
 
                 self.scope_mut().begin_scope();
@@ -2905,8 +2991,10 @@ impl Compiler {
                     // `compile_stmt`'s wrapper.
                     let mark = self.chunks[self.current].local_count;
                     self.chunk().emit_else(line);
+                    let cond_mark = self.chunks[self.current].local_count;
                     self.compile_condition_to_i32(elif_cond)?;
                     self.chunk().emit_if(line);
+                    self.reclaim_scratch_to(cond_mark);
                     self.label_depth += 1;
                     opened += 1;
                     self.scope_mut().begin_scope();
@@ -2957,9 +3045,11 @@ impl Compiler {
                     is_continuable: true,
                     finally_depth: self.frame_cf().active_finally_blocks.len(),
                 });
+                let cond_mark = self.chunks[self.current].local_count;
                 self.compile_condition_to_i32(cond)?;
                 let line = self.line;
                 common::loops::emit_loop_cond_from_i32(&mut self.chunks, self.current, line);
+                self.reclaim_scratch_to(cond_mark);
                 for s in body {
                     self.compile_stmt(s)?;
                 }
@@ -3031,7 +3121,48 @@ impl Compiler {
                     self.chunks[self.current].patch_block(patch);
                 }
                 self.label_depth -= 1;
+                let timing = compiler_timing_path();
+                let current_function = self.current_func_name.clone();
+                let debug_function = std::env::var("VYBE_COMPILER_DEBUG_FUNCTION").ok();
+                let should_trace = timing.is_some()
+                    && current_function.as_deref().is_some()
+                    && debug_function.as_deref().is_some_and(|target| {
+                        target == "*" || current_function.as_deref() == Some(target)
+                    });
+                if should_trace {
+                    if let (Some(path), Some(function_name)) =
+                        (timing.as_deref(), current_function.as_deref())
+                    {
+                        let scope_next = self.scopes.last().map(|s| s.next_slot).unwrap_or(0);
+                        write_compiler_timing(
+                            path,
+                            &format!(
+                                "compile_dowhile_cond_start {function_name} line={} scope_next={scope_next} local_count={}",
+                                self.line,
+                                self.chunks[self.current].local_count
+                            ),
+                            std::time::Duration::ZERO,
+                        );
+                    }
+                }
+                let cond_started = std::time::Instant::now();
                 self.compile_condition_to_i32(cond)?;
+                if should_trace {
+                    if let (Some(path), Some(function_name)) =
+                        (timing.as_deref(), current_function.as_deref())
+                    {
+                        let scope_next = self.scopes.last().map(|s| s.next_slot).unwrap_or(0);
+                        write_compiler_timing(
+                            path,
+                            &format!(
+                                "compile_dowhile_cond_done {function_name} line={} scope_next={scope_next} local_count={}",
+                                self.line,
+                                self.chunks[self.current].local_count
+                            ),
+                            cond_started.elapsed(),
+                        );
+                    }
+                }
                 self.loops.pop();
                 let lp = self.loop_states.pop().unwrap();
                 let line = self.line;
@@ -3109,6 +3240,16 @@ impl Compiler {
                             self.chunk().emit_end(line);
                         }
                     }
+                } else if let Some((ctx_chunk, this_slot)) = self.constructor_this_ctx
+                    && ctx_chunk == self.current
+                {
+                    if self.js_derived_ctor_ctx == Some((ctx_chunk, this_slot)) {
+                        let line = self.line;
+                        crate::primitives::classes::emit_this_initialized_guard(
+                            self.chunk(), this_slot, line,
+                        );
+                    }
+                    self.emit_u16(Op::LOCAL_GET, this_slot);
                 } else if let Some(rs) = self.current_result_slot {
                     // ResultSlot return: return the result slot value
                     self.emit_u16(Op::LOCAL_GET, rs);
@@ -5234,7 +5375,25 @@ impl Compiler {
                     if *kind == VarDeclKind::Const && self.profile.ecma_lexical_declarations {
                         self.scope_mut().mark_const(slot);
                     }
-                    self.emit_u16(Op::LOCAL_SET, slot);
+                    if *kind == VarDeclKind::FunctionScoped
+                        && self.is_variable_name(name)
+                        && let Some(finalizer) =
+                            vybe_runtime::registry::hooks(&self.profile.name).rebind_finalizer
+                    {
+                        // A function-scoped declaration inside a loop writes
+                        // the SAME slot on every iteration. It is a rebind at
+                        // runtime even though the source spells a declaration.
+                        let incoming = self.define_local("__decl_incoming");
+                        self.emit_u16(Op::LOCAL_SET, incoming);
+                        self.emit_u16(Op::LOCAL_GET, slot);
+                        let old = self.define_local("__decl_old");
+                        self.emit_u16(Op::LOCAL_SET, old);
+                        self.emit_u16(Op::LOCAL_GET, incoming);
+                        self.emit_u16(Op::LOCAL_SET, slot);
+                        self.emit_rebound_value_finalizer(old, finalizer);
+                    } else {
+                        self.emit_u16(Op::LOCAL_SET, slot);
+                    }
                     // If this local is captured by inner closures, also store
                     // the initial value in the shared env array so closures
                     // see the same value.
@@ -5612,15 +5771,52 @@ impl Compiler {
                     });
                     return self.compile_assign_target_valued(&this_member, source);
                 }
+                let finalizer = vybe_runtime::registry::hooks(&self.profile.name).rebind_finalizer;
+                if finalizer.is_some()
+                    && self.is_variable_name(name)
+                    && self.scopes.len() > 1
+                    && self.scope().resolve(name).is_none()
+                    && !self.scope().declared_open(name)
+                    && !self.scope().declared_open(&self.canon(name))
+                    && self.shared_env_index(name).is_none()
+                {
+                    // The first assignment may be inside a loop. Its slot is
+                    // new at compile time but reused at runtime, so establish
+                    // the source binding before reading the old value.
+                    self.define_source_local(name);
+                }
+                // A first binding has no old value. Compiler temporaries and
+                // non-variable symbols never participate in source-language
+                // object ownership.
+                let release_old = finalizer.is_some()
+                    && self.is_variable_name(name)
+                    && self.scope().resolve(name).is_some();
+                let old_slot = if release_old {
+                    let incoming = self.define_local("__rebind_incoming");
+                    self.emit_u16(Op::LOCAL_SET, incoming);
+                    self.compile_expr(target)?;
+                    let old = self.define_local("__rebind_old");
+                    self.emit_u16(Op::LOCAL_SET, old);
+                    self.emit_u16(Op::LOCAL_GET, incoming);
+                    Some(old)
+                } else {
+                    None
+                };
                 let stored_type_hint = self.lookup_var_type_hint(name).map(str::to_string);
                 self.bind_value_to_declared_type(stored_type_hint.as_deref(), source)?;
                 self.emit_var_set(name);
+                if let (Some(old), Some(emit_finalizer)) = (old_slot, finalizer) {
+                    self.emit_rebound_value_finalizer(old, emit_finalizer);
+                }
             }
             ExprKind::StaticAccess { class, member } => {
                 let value_tmp = self.define_local("__static_access_value");
                 self.emit_u16(Op::LOCAL_SET, value_tmp);
 
-                self.compile_expr(class)?;
+                // Writes resolve a live class designator just like reads.
+                // The class may arrive through a later include, or be named
+                // by a string variable rather than a lexical binding.
+                self.emit_class_designator(class)?;
                 let class_tmp = self.define_local("__static_access_class");
                 self.emit_u16(Op::LOCAL_SET, class_tmp);
 
@@ -5719,9 +5915,8 @@ impl Compiler {
                     crate::primitives::calls::resolve_receiver_type_hint(self, object)
                         .or_else(|| self.infer_expr_type_hint(object));
                 if let Some(type_hint) = receiver_type_hint {
-                    let class_name = Self::normalize_type_hint(&type_hint);
+                    let class_name = Self::tree_type_key(&type_hint);
                     if self.control_element_for_type(&class_name).is_some()
-                        && !self.user_owns_type_spelling(&class_name)
                         && !self.is_declared_instance_field(&class_name, field)
                     {
                         let line = self.line;
@@ -5877,7 +6072,7 @@ impl Compiler {
                 }
                 if let ExprKind::Ident(obj_name) = &object.kind {
                     if let Some(key) = self.generic_static_member_key(obj_name, field) {
-                        let tmp = self.define_local("__tmp");
+                        let tmp = self.define_temp_local("__tmp");
                         self.emit_u16(Op::LOCAL_SET, tmp);
                         self.emit_u16(Op::LOCAL_GET, tmp);
                         self.emit_global_write(&key);
@@ -5894,7 +6089,7 @@ impl Compiler {
                                     })
                                     .is_some());
                     if needs_value_type_writeback {
-                        let value_tmp = self.define_local("__tmp");
+                        let value_tmp = self.define_temp_local("__tmp");
                         let obj_tmp = self.define_local("__value_type_member_obj");
                         self.emit_u16(Op::LOCAL_SET, value_tmp);
 
@@ -5939,7 +6134,7 @@ impl Compiler {
                     }
                     return Ok(());
                 }
-                let tmp = self.define_local("__tmp");
+                let tmp = self.define_temp_local("__tmp");
                 self.emit_u16(Op::LOCAL_SET, tmp);
                 let field_name = self
                     .field_storage_name_for_receiver(object, field)
@@ -6131,7 +6326,7 @@ impl Compiler {
                     let slot = indexed_write
                         .unwrap_or_else(|| class_slots::ClassSlot::internal(&field_name));
                     if !has_indexed_write && !field_name.starts_with("__") {
-                        let obj_slot = self.define_local("__member_set_obj");
+                        let obj_slot = self.define_temp_local("__member_set_obj");
                         self.emit(Op::DROP);
                         self.emit_u16(Op::LOCAL_SET, obj_slot);
 
@@ -6141,7 +6336,7 @@ impl Compiler {
                             class_slots::ObjSource::Stack,
                             &class_slots::ClassSlot::internal(&setter_name),
                         );
-                        let setter_slot = self.define_local("__member_setter");
+                        let setter_slot = self.define_temp_local("__member_setter");
                         self.emit_u16(Op::LOCAL_SET, setter_slot);
 
                         self.emit_u16(Op::LOCAL_GET, setter_slot);
@@ -6532,7 +6727,7 @@ impl Compiler {
                 // auto-append form; route through collections::emit_push.
                 let is_append = matches!(&index.kind, ExprKind::Lit(crate::ast::Literal::Null));
                 let line = self.line;
-                let tmp = self.define_local("__tmp");
+                let tmp = self.define_temp_local("__tmp");
                 self.emit_u16(Op::LOCAL_SET, tmp);
                 if let Some((args_slot, param_slot, alias_index)) =
                     self.js_arguments_alias_for_index_target(object, index)
@@ -7080,7 +7275,7 @@ impl Compiler {
                 if self.profile.has_ecma_globals
                     && matches!(&callee.kind, ExprKind::Ident(name) if name == "__len__")
                 {
-                    let tmp = self.define_local("__tmp");
+                    let tmp = self.define_temp_local("__tmp");
                     self.emit_u16(Op::LOCAL_SET, tmp);
                     self.compile_expr(&args[0].value)?;
                     self.emit_u16(Op::LOCAL_GET, tmp);
@@ -7092,7 +7287,7 @@ impl Compiler {
                 // Route the subscript through the owner-aware normalization
                 // path so Pascal char-bound arrays and other declaration-
                 // relative indices match the read path.
-                let tmp = self.define_local("__tmp");
+                let tmp = self.define_temp_local("__tmp");
                 self.emit_u16(Op::LOCAL_SET, tmp);
                 self.compile_expr(callee)?;
                 self.compile_array_index_operand_for_owner(callee, &args[0].value)?;

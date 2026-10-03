@@ -1146,22 +1146,41 @@ impl Compiler {
                 BuiltinEmit::Intrinsic(intrinsic_name) => {
                     self.emit_intrinsic(intrinsic_name, args)?;
                 }
-                BuiltinEmit::Common(name) => {
+                BuiltinEmit::Common(common_name) => {
                     // Compile args, then dispatch to compiler_common emitter.
                     // Console.WriteLine/Write should preserve enum names instead
                     // of writing raw ordinals, and apply .NET numeric formatting.
-                    if (name.eq_ignore_ascii_case("dotnet.console_writeline")
-                        || name.eq_ignore_ascii_case("dotnet.console_write"))
+                    if (common_name.eq_ignore_ascii_case("dotnet.console_writeline")
+                        || common_name.eq_ignore_ascii_case("dotnet.console_write"))
                         && args.len() == 1
                     {
                         self.emit_dotnet_console_arg(args[0])?;
                     } else {
-                        for a in args {
-                            self.compile_expr(a)?;
+                        let declared_modes = self
+                            .profile
+                            .builtin_signatures
+                            .iter()
+                            .any(|member| match member {
+                                InterfaceMember::Method { name: sig_name, .. } => {
+                                    self.canon(sig_name) == self.canon(name)
+                                }
+                                _ => false,
+                            })
+                            .then(|| self.function_param_modes.get(&self.canon(name)).cloned())
+                            .flatten();
+                        for (index, a) in args.iter().enumerate() {
+                            let mode = declared_modes
+                                .as_ref()
+                                .and_then(|modes| modes.get(index).copied());
+                            if matches!(mode, Some(PassBy::Ref | PassBy::Out)) {
+                                self.compile_address_of_expr(a)?;
+                            } else {
+                                self.compile_builtin_argument(a, mode)?;
+                            }
                         }
                     }
                     let line = self.line;
-                    self.emit_common(name.as_str(), args.len() as u8, line);
+                    self.emit_common(common_name.as_str(), args.len() as u8, line);
                 }
                 BuiltinEmit::Noop => {
                     self.emit_null();
@@ -1948,6 +1967,10 @@ impl Compiler {
             self.emit_gui_append_child(line);
             return;
         }
+        if name == common::gui::APPEND_CHILD_AT_EMIT {
+            common::gui::emit_append_child_at(self.chunk(), line);
+            return;
+        }
         if name == common::gui::APPEND_ITEM_EMIT {
             self.emit_gui_append_item(line);
             return;
@@ -2128,7 +2151,10 @@ impl Compiler {
         let handled =
             common::dispatch::emit_common(name, &mut self.chunks, self.current, argc, line2);
         if handled {
-            self.sync_scope_slots_with_chunk();
+            let chunk = &mut self.chunks[self.current];
+            if chunk.local_count > chunk.scratch_high_water {
+                chunk.scratch_high_water = chunk.local_count;
+            }
         }
         if !handled {
             eprintln!("Unknown common emit: {}", name);
@@ -3838,7 +3864,8 @@ impl Compiler {
                 }) = args.first()
                 {
                     let builtin_exists = self.profile.lookup_builtin(name).is_some()
-                        || crate::primitives::imports::resolve_common_import(name).is_some();
+                        || crate::primitives::imports::resolve_common_import(name).is_some()
+                        || crate::primitives::functions::php_loaded_extension_function_name(name);
                     if builtin_exists {
                         // A builtin's existence IS a compile-time fact — it is a
                         // property of the language, not of the running program.
@@ -4430,6 +4457,11 @@ impl Compiler {
                     let length_slot = self.define_local("__php_substr_length");
 
                     self.compile_expr(args[0])?;
+                    // PHP string functions coerce scalar inputs before
+                    // measuring or slicing. The old path sent false/null
+                    // straight to wasm:js-string.length and trapped.
+                    let stringify = self.to_string_target(args[0]);
+                    self.emit_to_string_slot(stringify.as_deref(), line);
                     self.emit_u16(Op::LOCAL_SET, str_slot);
 
                     self.compile_expr(args[1])?;

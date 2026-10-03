@@ -6,7 +6,24 @@ use crate::ast::*;
 use crate::languages::Language;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 use vybe_runtime::{ExportEntry, ModuleRecord};
+
+/// Language profiles are immutable source embedded in the language plugin.
+/// Clone the parsed definition for each compile because the compiler adjusts
+/// entry settings on its copy; parsing the same TOML for every PHP include (or
+/// every unit of another language) repeats work with no new information.
+fn cached_language_profile(src: &'static str) -> Result<vybe_runtime::profile::LanguageProfile, String> {
+    use std::sync::{Mutex, OnceLock};
+    static PROFILES: OnceLock<Mutex<HashMap<&'static str, vybe_runtime::profile::LanguageProfile>>> = OnceLock::new();
+    let cache = PROFILES.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some(profile) = cache.lock().unwrap().get(src) {
+        return Ok(profile.clone());
+    }
+    let profile = crate::profile::parse_profile(src)?;
+    cache.lock().unwrap().entry(src).or_insert_with(|| profile.clone());
+    Ok(profile)
+}
 
 // ── Source-read recording ───────────────────────────────────────────────────
 //
@@ -30,6 +47,29 @@ use vybe_runtime::{ExportEntry, ModuleRecord};
 thread_local! {
     static SOURCE_READS: std::cell::RefCell<Option<Vec<PathBuf>>> =
         const { std::cell::RefCell::new(None) };
+}
+
+fn bundle_timing_path() -> Option<String> {
+    let value = std::env::var("VYBE_BUNDLE_DEBUG_TIMINGS").ok()?;
+    if value.is_empty() {
+        None
+    } else if value == "1" {
+        Some("/private/tmp/vybe_bundle_timings.log".to_string())
+    } else {
+        Some(value)
+    }
+}
+
+fn write_bundle_timing(path: &str, label: &str, elapsed: Duration) {
+    use std::io::Write;
+
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        let _ = writeln!(file, "{label} {elapsed:?}");
+    }
 }
 
 /// Record that preparation opened `path`, if anyone is collecting.
@@ -161,6 +201,7 @@ impl Bundle {
         &self,
         php_entry_path_override: Option<&Path>,
     ) -> Result<Module, String> {
+        let debug_expand = vybe_runtime::debugger::DebugPhase::current("source expansion");
         let (combined, php_blocks) = if self.language.name == "php" {
             let expanded = expand_php_bundle_sources_with_map_and_entry_path(
                 &self.sources,
@@ -211,13 +252,16 @@ impl Bundle {
             let _ = std::fs::write("/tmp/vybex_expanded.php", &combined);
         }
 
+        drop(debug_expand);
         // Parse → common AST
+        let debug_parse = vybe_runtime::debugger::DebugPhase::current("source parse and walk");
         let mut module = (self.language.parse)(&combined).map_err(|err| {
             php_blocks
                 .as_ref()
                 .map(|blocks| annotate_php_parse_error(&err, blocks))
                 .unwrap_or(err)
         })?;
+        drop(debug_parse);
 
         // Resolve imports relative to the FIRST source's directory. Correct for
         // one source, and for languages whose sources are one text stream; with
@@ -348,8 +392,33 @@ impl Bundle {
         modules: &std::collections::HashMap<String, vybe_runtime::ModuleRecord>,
         php_entry_path_override: Option<&Path>,
     ) -> Result<CompiledBundle, String> {
+        let timing = bundle_timing_path();
+        let total_started = Instant::now();
+        let prepare_started = Instant::now();
         let module = self.prepared_module_with_php_entry_override(php_entry_path_override)?;
-        self.compile_prepared_module(&module, modules)
+        if let Some(path) = timing.as_deref() {
+            write_bundle_timing(path, "prepared_module", prepare_started.elapsed());
+        }
+        let compile_started = Instant::now();
+        let result = self.compile_prepared_module_with_module_end_hooks(&module, modules, true);
+        if let Some(path) = timing.as_deref() {
+            write_bundle_timing(path, "compile_prepared_module", compile_started.elapsed());
+            write_bundle_timing(path, "compile_full_total", total_started.elapsed());
+        }
+        result
+    }
+
+    pub fn compile_full_with_modules_and_php_entry_override_without_module_end_hooks(
+        &self,
+        modules: &std::collections::HashMap<String, vybe_runtime::ModuleRecord>,
+        php_entry_path_override: Option<&Path>,
+    ) -> Result<CompiledBundle, String> {
+        let module = {
+            let _phase = vybe_runtime::debugger::DebugPhase::current("prepare source");
+            self.prepared_module_with_php_entry_override(php_entry_path_override)?
+        };
+        let _phase = vybe_runtime::debugger::DebugPhase::current("lower module");
+        self.compile_prepared_module_with_module_end_hooks(&module, modules, false)
     }
 
     /// Compile an already-prepared (possibly transformed) common-AST module with
@@ -363,6 +432,26 @@ impl Bundle {
         module: &Module,
         modules: &std::collections::HashMap<String, vybe_runtime::ModuleRecord>,
     ) -> Result<CompiledBundle, String> {
+        self.compile_prepared_module_with_module_end_hooks(module, modules, true)
+    }
+
+    /// Dynamic includes run in a VM that already owns module-end state.
+    pub fn compile_prepared_module_without_module_end_hooks(
+        &self,
+        module: &Module,
+        modules: &std::collections::HashMap<String, vybe_runtime::ModuleRecord>,
+    ) -> Result<CompiledBundle, String> {
+        self.compile_prepared_module_with_module_end_hooks(module, modules, false)
+    }
+
+    fn compile_prepared_module_with_module_end_hooks(
+        &self,
+        module: &Module,
+        modules: &std::collections::HashMap<String, vybe_runtime::ModuleRecord>,
+        run_module_end_hooks: bool,
+    ) -> Result<CompiledBundle, String> {
+        let timing = bundle_timing_path();
+        let total_started = Instant::now();
         // Load profile + compile source code.
         //
         // Flatten the VM's module registry into a per-module map of
@@ -375,7 +464,11 @@ impl Bundle {
         // declares in `type_scopes`. The seed here flattened EVERY registered
         // platform into one list and handed it to every language, which is the
         // opposite of scoping.
-        let mut profile = crate::profile::parse_profile((self.language.profile_source)())?;
+        let profile_started = Instant::now();
+        let mut profile = cached_language_profile((self.language.profile_source)())?;
+        if let Some(path) = timing.as_deref() {
+            write_bundle_timing(path, "parse_profile", profile_started.elapsed());
+        }
 
         // Entry override, `ld -e` style: the profile's `entry_point` is the
         // linker DEFAULT (C: "main"); an explicit Function entry replaces the
@@ -388,17 +481,27 @@ impl Bundle {
         // (replaces per-language profile duplication)
         add_shared_gui_namespace(&mut profile);
 
+        let exports_started = Instant::now();
         let module_exports = flatten_module_exports(modules);
         let value_exports = flatten_module_value_exports(modules);
+        if let Some(path) = timing.as_deref() {
+            write_bundle_timing(path, "flatten_module_exports", exports_started.elapsed());
+        }
+        let compiler_started = Instant::now();
         let compile_result = crate::primitives::Compiler::with_profile(profile)
+            .with_run_module_end_hooks(run_module_end_hooks)
             .with_module_exports(module_exports)
             .with_module_value_exports(value_exports)
             .compile_with_imports(module)?;
+        if let Some(path) = timing.as_deref() {
+            write_bundle_timing(path, "compiler_compile_with_imports", compiler_started.elapsed());
+        }
         let mut chunks = compile_result.chunks;
         let host_imports = compile_result.host_imports;
         let app_shell = compile_result.app_shell;
 
         // Load and append WASM binary chunks
+        let wasm_started = Instant::now();
         for wf in &self.wasm_files {
             // Through the registry: the platform that can decode this format
             // registered a reader. The compiler does not name `vybe_platform_wasm`.
@@ -421,6 +524,10 @@ impl Bundle {
                 }
             }
             chunks.extend(wasm_chunks);
+        }
+        if let Some(path) = timing.as_deref() {
+            write_bundle_timing(path, "append_wasm_files", wasm_started.elapsed());
+            write_bundle_timing(path, "compile_prepared_total", total_started.elapsed());
         }
 
         Ok(CompiledBundle {
@@ -1479,6 +1586,29 @@ fn normalize_php_source_for_parser(source: &str) -> String {
 }
 
 fn rewrite_php_execution_operator(source: &str) -> String {
+    if !source.contains("<?") {
+        return rewrite_php_execution_operator_in_code(source);
+    }
+    let mut out = String::with_capacity(source.len());
+    for segment in split_mixed_php_include_source(source) {
+        match segment {
+            MixedPhpIncludeSegment::Html(html) => out.push_str(html),
+            MixedPhpIncludeSegment::Code { code, has_close_tag } => {
+                out.push_str("<?php");
+                out.push_str(&rewrite_php_execution_operator_in_code(code));
+                if has_close_tag { out.push_str("?>"); }
+            }
+            MixedPhpIncludeSegment::Echo { expr, has_close_tag } => {
+                out.push_str("<?=");
+                out.push_str(&rewrite_php_execution_operator_in_code(expr));
+                if has_close_tag { out.push_str("?>"); }
+            }
+        }
+    }
+    out
+}
+
+fn rewrite_php_execution_operator_in_code(source: &str) -> String {
     #[derive(Clone, Copy, PartialEq, Eq)]
     enum State {
         Normal,
@@ -2823,6 +2953,13 @@ $notesTree = [
         };
 
         bundle.prepared_module().expect("prepared module");
+    }
+
+    #[test]
+    fn php_execution_operator_preserves_inline_javascript() {
+        let source = "<script>const a = `before ${id}`;</script><?php $x = `printf ok`; ?><script>const b = `after ${id}`;</script><?= `printf yes` ?>";
+        assert_eq!(super::rewrite_php_execution_operator(source),
+            "<script>const a = `before ${id}`;</script><?php $x = shell_exec(\"printf ok\"); ?><script>const b = `after ${id}`;</script><?= shell_exec(\"printf yes\") ?>");
     }
 
     #[test]

@@ -111,6 +111,15 @@ impl Compiler {
         }
     }
 
+    // Called after resolving an upvalue: the nearest enclosing binding owns
+    // its reference semantics, including an aliased parameter captured by a
+    // closure. A same-spelled local in another scope must not affect it.
+    fn captured_binding_uses_pointer_cell(&self, name: &str) -> bool {
+        self.scopes.iter().rev().skip(1)
+            .find_map(|scope| scope.holds_reference(name))
+            .unwrap_or_else(|| self.binding_uses_pointer_cell(name))
+    }
+
     pub(crate) fn emit_var_get(&mut self, name: &str) {
         self.emit_name_get(name, NameUse::Variable);
     }
@@ -137,13 +146,25 @@ impl Compiler {
             if let Some(env_slot) = self.shared_env_slot {
                 let l = self.line;
                 crate::primitives::closures::emit_env_get(self.chunk(), env_slot, idx, l);
+                if self.binding_uses_pointer_cell(name) || self.profile.name == "php" { self.emit_autoderef_pointer_cell(); }
                 return;
             }
+        }
+        // Static locals live in their backing global, even when an earlier
+        // expression allocated a frame slot with the same source name.
+        if let Some(binding) = self.static_local_binding(name) {
+            let global_name = binding.global_name.clone();
+            self.emit_global_read(&global_name);
+            // The address may be taken later in the function body. Earlier
+            // reads still execute again on later calls, after the backing
+            // global has become a reference cell.
+            self.emit_autoderef_pointer_cell();
+            return;
         }
         // Local
         if let Some(slot) = self.scope().resolve(name) {
             self.emit_u16(Op::LOCAL_GET, slot);
-            if self.binding_uses_pointer_cell(name) {
+            if self.binding_uses_pointer_cell(name) || self.profile.name == "php" {
                 // Not `emit_cell_load` — a binding can hold EITHER reference
                 // shape (`&$x` gives a cell, `&$a[1]` gives a carray) and the
                 // cell-only load read `__value` off a carray, i.e. undefined.
@@ -157,13 +178,9 @@ impl Compiler {
                 let idx = self.closure_env_index(name);
                 let l = self.line;
                 crate::primitives::closures::emit_env_get(self.chunk(), env, idx, l);
+                if self.captured_binding_uses_pointer_cell(name) || self.profile.name == "php" { self.emit_autoderef_pointer_cell(); }
                 return;
             }
-        }
-        if let Some(binding) = self.static_local_binding(name) {
-            let global_name = binding.global_name.clone();
-            self.emit_global_read(&global_name);
-            return;
         }
         // Implicit self field — when inside a class method and the name is a
         // field of the current class, read from `me.<name>`. This is what
@@ -516,14 +533,35 @@ impl Compiler {
         common::collections::emit_get(&mut self.chunks, self.current, line);
         self.emit_u16(Op::LOCAL_SET, entry);
 
-        // `apply(fn, thisArg, argsArray)` — THREE arguments, as every other
-        // call site emits. Passing two consumed the argument array as
-        // `thisArg`, so a handler registered with extra arguments
-        // (`register_shutdown_function($fn, "ARG")`) was called with none:
-        // `SHUTDOWN ` where php prints `SHUTDOWN ARG`.
+        let callback = self.chunk().alloc_scratch(1);
         self.emit_u16(Op::LOCAL_GET, entry);
         self.emit_const(Value::F64(0.0));
         common::collections::emit_get(&mut self.chunks, self.current, line);
+        self.emit_u16(Op::LOCAL_SET, callback);
+        self.emit_callable_value_resolution(callback);
+
+        self.emit_u16(Op::LOCAL_GET, entry);
+        common::collections::emit_len(&mut self.chunks, self.current, line);
+        self.emit_const(Value::F64(1.0));
+        crate::primitives::ops::emit_dyn_eq(self.chunk(), line);
+        crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
+        self.chunk().emit_if(line);
+
+        let recv = crate::primitives::callable::push_callback_from_slot(
+            &mut self.chunks,
+            self.current,
+            callback,
+            line,
+        );
+        self.emit_direct_callable_invoke(recv);
+        self.emit(Op::DROP);
+
+        self.chunk().emit_else(line);
+
+        // Fallback for callbacks registered with extra args:
+        // `apply(fn, thisArg, argsArray)` — THREE arguments as every other
+        // call site emits.
+        self.emit_u16(Op::LOCAL_GET, callback);
         self.emit_null();
         self.emit_u16(Op::LOCAL_GET, entry);
         self.emit_const(Value::F64(1.0));
@@ -539,6 +577,7 @@ impl Compiler {
         let apply = self.import("ecma:function", "apply");
         self.emit_host_call(apply, 3);
         self.emit(Op::DROP);
+        self.chunk().emit_end(line);
 
         self.emit_u16(Op::LOCAL_GET, idx);
         self.emit_const(Value::F64(1.0));
@@ -686,9 +725,40 @@ impl Compiler {
         if let Some(idx) = self.shared_env_index(name) {
             if let Some(env_slot) = self.shared_env_slot {
                 let l = self.line;
-                crate::primitives::closures::emit_env_set(self.chunk(), env_slot, idx, l);
+                if through_reference && self.binding_uses_pointer_cell(name) {
+                    let value_slot = self.define_local("__capture_ref_value");
+                    self.emit_u16(Op::LOCAL_SET, value_slot);
+                    crate::primitives::closures::emit_env_get(self.chunk(), env_slot, idx, l);
+                    let pointer_slot = self.define_local("__capture_ref_pointer");
+                    self.emit_u16(Op::LOCAL_SET, pointer_slot);
+                    self.emit_store_through_pointer(pointer_slot, value_slot);
+                } else {
+                    crate::primitives::closures::emit_env_set(self.chunk(), env_slot, idx, l);
+                }
                 return;
             }
+        }
+        if let Some(binding) = self.static_local_binding(name) {
+            let global_name = binding.global_name.clone();
+            let value_slot = self.define_local("__static_local_ref_value");
+            self.emit_u16(Op::LOCAL_SET, value_slot);
+            self.emit_global_read(&global_name);
+            let ptr_slot = self.define_local("__static_local_ref_ptr");
+            self.emit_u16(Op::LOCAL_SET, ptr_slot);
+            self.emit_u16(Op::LOCAL_GET, ptr_slot);
+            crate::primitives::references::emit_is_reference_to_stack(
+                &mut self.chunks,
+                self.current,
+                self.line,
+            );
+            let line = self.line;
+            self.chunk().emit_if(line);
+            self.emit_store_through_pointer(ptr_slot, value_slot);
+            self.chunk().emit_else(line);
+            self.emit_u16(Op::LOCAL_GET, value_slot);
+            self.emit_global_write(&global_name);
+            self.chunk().emit_end(line);
+            return;
         }
         // Local
         if let Some(slot) = self.scope().resolve(name) {
@@ -725,14 +795,18 @@ impl Compiler {
                 let env = self.closure_env_slot();
                 let idx = self.closure_env_index(name);
                 let l = self.line;
-                crate::primitives::closures::emit_env_set(self.chunk(), env, idx, l);
+                if through_reference && self.captured_binding_uses_pointer_cell(name) {
+                    let value_slot = self.define_local("__capture_ref_value");
+                    self.emit_u16(Op::LOCAL_SET, value_slot);
+                    crate::primitives::closures::emit_env_get(self.chunk(), env, idx, l);
+                    let pointer_slot = self.define_local("__capture_ref_pointer");
+                    self.emit_u16(Op::LOCAL_SET, pointer_slot);
+                    self.emit_store_through_pointer(pointer_slot, value_slot);
+                } else {
+                    crate::primitives::closures::emit_env_set(self.chunk(), env, idx, l);
+                }
                 return;
             }
-        }
-        if let Some(binding) = self.static_local_binding(name) {
-            let global_name = binding.global_name.clone();
-            self.emit_global_write(&global_name);
-            return;
         }
         if self.current_class_implicit_self && self.is_class_field(name) {
             let value_slot = self.define_local("__implicit_self_value");

@@ -103,36 +103,50 @@ impl Compiler {
 
         let original_script_imports = chunks[0].imports.clone();
         let mut unified: Vec<BytecodeImport> = Vec::new();
+        let mut unified_index: HashMap<(&str, &str), u16> = HashMap::new();
         let mut remaps: Vec<Vec<u16>> = Vec::with_capacity(chunks.len());
 
         for chunk in chunks.iter() {
             let mut remap = Vec::with_capacity(chunk.imports.len());
             for imp in &chunk.imports {
-                let idx = unified
-                    .iter()
-                    .position(|existing| existing.module == imp.module && existing.name == imp.name)
-                    .unwrap_or_else(|| {
+                let key = (imp.module.as_str(), imp.name.as_str());
+                let idx = match unified_index.get(&key).copied() {
+                    Some(idx) => idx,
+                    None => {
+                        let idx = unified.len() as u16;
                         unified.push(imp.clone());
-                        unified.len() - 1
-                    });
-                remap.push(idx as u16);
+                        unified_index.insert(key, idx);
+                        idx
+                    }
+                };
+                remap.push(idx);
             }
             remaps.push(remap);
         }
 
-        let script_remap = remaps.first().cloned().unwrap_or_default();
+        // Release the keys borrowed from chunks before rewriting their code.
+        drop(unified_index);
+
+        let script_remap = remaps.first().map(Vec::as_slice).unwrap_or_default();
 
         for (chunk_idx, chunk) in chunks.iter_mut().enumerate() {
             let local_remap = &remaps[chunk_idx];
+            if local_remap
+                .iter()
+                .enumerate()
+                .all(|(old, &new)| old == usize::from(new))
+            {
+                continue;
+            }
             let code = &mut chunk.code;
             let mut ip = 0usize;
             while ip + 3 < code.len() {
                 let group = ((code[ip] as u16) << 8) | code[ip + 1] as u16;
                 let sub = ((code[ip + 2] as u16) << 8) | code[ip + 3] as u16;
-                let Some(op) = Op::decode(group, sub) else {
-                    ip += 4;
-                    continue;
-                };
+                // The compiler emitted this bytecode, so the remap pass only
+                // needs its operand shape. Unknown opcodes have the default
+                // zero-length format, matching the old four-byte advance.
+                let op = Op::new(group, sub);
 
                 let operand_start = ip + 4;
                 let operand_len = op.operand_format().size_in(code, operand_start);
@@ -415,6 +429,13 @@ impl Compiler {
 
         for stmt in body {
             match &stmt.kind {
+                StmtKind::Block(body) => {
+                    // Frontends can wrap a class declaration in a block to
+                    // perform a runtime prerequisite first (PHP autoloads its
+                    // parent this way). The declaration still needs the same
+                    // normalization and augmentation pass as a direct class.
+                    self.predeclare_type_names(body, namespace);
+                }
                 StmtKind::NamespaceDecl { name, body } => {
                     let member = self.canon(name).replace('\\', ".");
                     let qualified = match namespace {

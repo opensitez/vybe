@@ -258,10 +258,22 @@ pub fn is_compiling_runtime_helper() -> bool {
 }
 
 fn with_polyfill_guard<R>(f: impl FnOnce() -> R) -> R {
-    IN_POLYFILL_BUILD.with(|c| c.set(true));
-    let result = f();
-    IN_POLYFILL_BUILD.with(|c| c.set(false));
-    result
+    let _guard = RuntimeHelperBuildGuard::enter();
+    f()
+}
+
+struct RuntimeHelperBuildGuard(bool);
+
+impl RuntimeHelperBuildGuard {
+    fn enter() -> Self {
+        Self(IN_POLYFILL_BUILD.with(|c| c.replace(true)))
+    }
+}
+
+impl Drop for RuntimeHelperBuildGuard {
+    fn drop(&mut self) {
+        IN_POLYFILL_BUILD.with(|c| c.set(self.0));
+    }
 }
 
 /// Build all runtime helper chunks. Each chunk registers any `ecma:array.*`
@@ -270,8 +282,17 @@ fn with_polyfill_guard<R>(f: impl FnOnce() -> R) -> R {
 /// Returns the helper chunks + their export names, in matching order;
 /// caller appends the chunks to its own vec.
 pub fn build_runtime_helpers(imports: &mut Chunk) -> RuntimeHelpers {
+    let _guard = RuntimeHelperBuildGuard::enter();
     let mut chunks = Vec::new();
     let mut exports = Vec::new();
+
+    chunks.push(crate::primitives::references::build_autoderef());
+    exports.push("__stdlib_autoderef");
+
+    for name in ["__stdlib_dyneq", "__stdlib_dynlt", "__stdlib_dyngt", "__stdlib_dynle", "__stdlib_dynge"] {
+        chunks.push(crate::primitives::ops::build_dyn_comparison(name));
+        exports.push(name);
+    }
 
     chunks.push(crate::primitives::collections::build_sorted(imports));
     exports.push("__stdlib_sorted");
@@ -586,7 +607,11 @@ pub fn build_runtime_helpers_for_exports(
 }
 
 fn build_runtime_helper_export(imports: &mut Chunk, name: &str) -> Option<Chunk> {
+    let _guard = RuntimeHelperBuildGuard::enter();
     let chunk = match name {
+        "__stdlib_autoderef" => crate::primitives::references::build_autoderef(),
+        "__stdlib_dyneq" | "__stdlib_dynlt" | "__stdlib_dyngt" | "__stdlib_dynle" | "__stdlib_dynge" =>
+            crate::primitives::ops::build_dyn_comparison(name),
         "__stdlib_sorted" => crate::primitives::collections::build_sorted(imports),
         "__stdlib_chan_send" => crate::primitives::channels::build_chan_send(imports),
         "__stdlib_chan_recv" => crate::primitives::channels::build_chan_recv(imports),

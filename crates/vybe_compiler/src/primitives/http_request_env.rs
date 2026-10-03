@@ -213,6 +213,19 @@ fn set_global(chunk: &mut Chunk, name: &str, line: u32) {
     crate::primitives::globals::emit_write(chunk, name, line);
 }
 
+/// Condition: this program is currently running under an HTTP request.
+///
+/// CLI scripts compile through the same language prelude as served scripts, so
+/// a plain `$_SERVER` read can reach this primitive with no request global at
+/// all. In that mode the CGI map must stay deployment/env-only; calling
+/// `request.get-*` on `null` returns host error objects, and PHP later
+/// stringifies those as `[object Object]` inside URLs.
+fn emit_has_request(chunks: &mut [Chunk], current: usize, line: u32) {
+    push_global(&mut chunks[current], REQUEST_GLOBAL, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+}
+
 /// Store `[value]` into the environ map under `key`. Stack: [map, value] → [map].
 fn emit_put(chunks: &mut [Chunk], current: usize, map: u16, key: &str, line: u32) {
     let value = chunks[current].alloc_scratch(1);
@@ -256,14 +269,27 @@ pub fn emit_environ(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_SET, map, line);
     chunks[current].emit_end(line);
 
+    emit_has_request(chunks, current, line);
+    chunks[current].emit_if(line);
+
     emit_method(chunks, current, line);
     emit_put(chunks, current, map, "REQUEST_METHOD", line);
 
     emit_path_with_query(chunks, current, line);
     emit_put(chunks, current, map, "REQUEST_URI", line);
 
+    // A directory server knows which script handled the request and supplies
+    // the suffix after SCRIPT_NAME. Keep that value, including an empty one;
+    // generic HTTP handlers without deployment metadata use the request path.
+    chunks[current].emit_op_u16(Op::LOCAL_GET, map, line);
+    chunks[current].emit_string_const("PATH_INFO", line);
+    let has_path_info = chunks[current].add_import("ecma:map", "has");
+    chunks[current].emit_call(has_path_info, 2, line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_if(line);
     emit_path(chunks, current, line);
     emit_put(chunks, current, map, "PATH_INFO", line);
+    chunks[current].emit_end(line);
 
     emit_query_string(chunks, current, line);
     emit_put(chunks, current, map, "QUERY_STRING", line);
@@ -297,6 +323,8 @@ pub fn emit_environ(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_put(chunks, current, map, "CONTENT_LENGTH", line);
 
     emit_http_header_keys(chunks, current, map, line);
+
+    chunks[current].emit_end(line);
 
     push_global(&mut chunks[current], ENVIRON_CACHE_GLOBAL, line);
     chunks[current].emit_op(Op::DROP, line);

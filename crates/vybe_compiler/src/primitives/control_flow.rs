@@ -85,6 +85,13 @@ impl Compiler {
             self.chunk().emit_end(line);
         }
 
+        // PHP shutdown handlers run on `exit`/`die`, not only at normal module
+        // fallthrough. `emit_php_run_shutdown_fns` clears the callback list
+        // before invoking it, so this is safe even if a shutdown callback exits.
+        if self.directives().exit_argument == Some(vybe_ast::ExitArgument::MessageOrStatus) {
+            self.emit_php_run_shutdown_fns();
+        }
+
         let current = self.current;
         common::io::emit_ob_flush_all(&mut self.chunks, current, line);
 
@@ -869,6 +876,18 @@ impl Compiler {
     pub(super) fn promote_local_binding_to_pointer_cell(&mut self, name: &str) -> Option<u16> {
         let slot = self.resolve_named_local_slot(name)?;
         if !self.binding_already_pointer_cell(name) {
+            // A promotion inside a loop runs on every iteration. The local
+            // may already hold the cell created on the first iteration even
+            // though this source site was compiled only once.
+            self.emit_u16(Op::LOCAL_GET, slot);
+            crate::primitives::references::emit_is_reference_to_stack(
+                &mut self.chunks,
+                self.current,
+                self.line,
+            );
+            let line = self.line;
+            self.chunk().emit_if(line);
+            self.chunk().emit_else(line);
             crate::primitives::references::emit_cell_new_from_local(
                 &mut self.chunks,
                 self.current,
@@ -876,6 +895,7 @@ impl Compiler {
                 self.line,
             );
             self.emit_u16(Op::LOCAL_SET, slot);
+            self.chunk().emit_end(line);
             self.mark_pointer_cell_binding(name);
         }
         Some(slot)
@@ -913,32 +933,53 @@ impl Compiler {
     /// case.
     pub(super) fn promote_global_binding_to_pointer_cell(&mut self, name: &str) -> bool {
         let global_key = self.variable_global_binding_key(name);
+        self.promote_global_storage_key_to_pointer_cell(name, &global_key)
+    }
+
+    pub(super) fn global_storage_key_uses_pointer_cell(&self, global_key: &str) -> bool {
+        self.promoted_global_cells
+            .contains(&self.pointer_binding_key(global_key))
+    }
+
+    pub(super) fn promote_global_storage_key_to_pointer_cell(
+        &mut self,
+        mark_name: &str,
+        global_key: &str,
+    ) -> bool {
         // The real-promotion set ONLY, never `binding_uses_pointer_cell`: that
         // also answers `true` for the module-wide address-taken PRE-PASS, which
         // is a "readers must deref" hint, not a record that the wrap happened.
         // Consulting it here made promotion skip itself — readers deref a global
         // that was never wrapped.
-        let already_promoted = self
-            .promoted_global_cells
-            .contains(&self.pointer_binding_key(name));
+        let already_promoted = self.global_storage_key_uses_pointer_cell(mark_name);
         if !already_promoted {
             let value_slot = self.define_local("__ref_global_value");
-            self.emit_global_read(&global_key);
+            self.emit_global_read(global_key);
             self.emit_u16(Op::LOCAL_SET, value_slot);
+            self.emit_u16(Op::LOCAL_GET, value_slot);
+            crate::primitives::references::emit_is_reference_to_stack(
+                &mut self.chunks,
+                self.current,
+                self.line,
+            );
+            self.emit(Op::I32_EQZ);
+            let line = self.line;
+            self.chunk().emit_if(line);
             crate::primitives::references::emit_cell_new(
                 &mut self.chunks,
                 self.current,
                 value_slot,
                 self.line,
             );
-            self.emit_global_write(&global_key);
+            self.emit_global_write(global_key);
+            self.chunk().emit_end(line);
             // The GLOBAL store, not the routing helper: this site just promoted
             // a global and knows it. Routing by resolution would put the flag on
             // whatever local happens to share the name in the CURRENT scope —
             // at module scope that is the script scope's own binding — and then
             // a `global $g;` in some other function finds the global store empty
             // and reads the cell object raw.
-            self.mark_promoted_global_cell(name);
+            self.mark_promoted_global_cell(mark_name);
         }
 
         true
@@ -956,32 +997,16 @@ impl Compiler {
     }
 
     pub(super) fn is_pointer_runtime_field(field: &str) -> bool {
-        matches!(field, "__ref_kind" | "__base" | "__idx" | "__value")
+        matches!(field, "__ref_kind" | "__base" | "__idx" | "__value" | "__byte_backed")
     }
 
     pub(super) fn emit_string_slot_eq_literal(&mut self, slot: u16, literal: &str) {
-        self.emit_u16(Op::LOCAL_GET, slot);
-        let test = self.import("wasm:js-string", "test");
-        self.emit_host_call(test, 1);
         let line = self.line;
-        // ⛔ BOTH ARMS PRODUCE A VALUE, so the block is not void. `equals`
-        // returns i32 and the else arm is `I32(0)`, which makes this an
-        // i32-result block — `emit_if_i32`, the same shape every other
-        // comparison chain uses. Declared `(0, 0)` it was only survivable
-        // because the VM shares one operand stack across blocks; wasm blocks
-        // do not, and the surplus is rejected at the `else`.
-        self.chunk().emit_if_i32(line);
-        self.emit_u16(Op::LOCAL_GET, slot);
-        self.emit_const(Value::String(Arc::from(literal)));
-        let eq = self.import("wasm:js-string", "equals");
-        self.emit_host_call(eq, 2);
-        self.chunk().emit_else(line);
-        self.emit_const(Value::I32(0));
-        self.chunk().emit_end(line);
+        crate::primitives::ops::emit_string_slot_eq_literal(self.chunk(), slot, literal, line);
     }
 
     pub(super) fn emit_string_eq_literal(&mut self, literal: &str) {
-        let slot = self.define_local("__string_eq_candidate");
+        let slot = self.chunks[self.current].alloc_scratch(1);
         self.emit_u16(Op::LOCAL_SET, slot);
         self.emit_string_slot_eq_literal(slot, literal);
     }
@@ -994,97 +1019,9 @@ impl Compiler {
     }
 
     pub(super) fn emit_autoderef_pointer_cell(&mut self) {
-        let obj_slot = self.define_local("__ref_autoderef_obj");
-        self.emit_u16(Op::LOCAL_SET, obj_slot);
-
-        self.emit_u16(Op::LOCAL_GET, obj_slot);
-        inst!(self, recipes::is_object);
-        let obj_line = self.line;
-        // ⛔ EVERY CONDITIONAL IN THIS FUNCTION YIELDS A VALUE — an autoderef
-        // leaves the pointed-to value on the stack down every one of the
-        // cell / carray / shared / passthrough arms. Declared `emit_if` they
-        // were all `(0, 0)`: void blocks whose arms each push. The VM tolerated
-        // it because its blocks share one operand stack; wasm blocks do not.
-        self.chunk().emit_if_value(obj_line);
-
-        let kind_key = self.resolve_slot_interned(&class_slots::ClassSlot::internal("__ref_kind"));
-
-        self.emit_u16(Op::LOCAL_GET, obj_slot);
-        self.class_get_resolved(class_slots::ObjSource::Stack, &kind_key);
-        self.emit_string_eq_literal("cell");
-        let cell_line = self.line;
-        self.chunk().emit_if_value(cell_line);
-        self.emit_u16(Op::LOCAL_GET, obj_slot);
-        crate::primitives::references::emit_cell_load(&mut self.chunks, self.current, self.line);
-        self.chunk().emit_else(cell_line);
-
-        self.emit_u16(Op::LOCAL_GET, obj_slot);
-        self.class_get_resolved(class_slots::ObjSource::Stack, &kind_key);
-        self.emit_string_eq_literal("carray");
-        let carray_line = self.line;
-        self.chunk().emit_if_value(carray_line);
-
-        let base_key = self.resolve_slot_interned(&class_slots::ClassSlot::internal("__base"));
-        let idx_key = self.resolve_slot_interned(&class_slots::ClassSlot::internal("__idx"));
-        let base_slot = self.define_local("__ref_carray_base");
-
-        self.emit_u16(Op::LOCAL_GET, obj_slot);
-        self.class_get_resolved(class_slots::ObjSource::Stack, &base_key);
-        self.emit_u16(Op::LOCAL_SET, base_slot);
-
-        self.emit_u16(Op::LOCAL_GET, base_slot);
-        inst!(self, recipes::is_object);
-        let base_obj_line = self.line;
-        self.chunk().emit_if_value(base_obj_line);
-
-        self.emit_u16(Op::LOCAL_GET, base_slot);
-        self.class_get_resolved(class_slots::ObjSource::Stack, &kind_key);
-        self.emit_string_eq_literal("cell");
-        let base_cell_line = self.line;
-        self.chunk().emit_if_params(base_cell_line, 0, 1);
-        self.emit_u16(Op::LOCAL_GET, base_slot);
-        crate::primitives::references::emit_cell_load(&mut self.chunks, self.current, self.line);
-        self.chunk().emit_else(base_cell_line);
-        self.emit_u16(Op::LOCAL_GET, base_slot);
-        self.emit_u16(Op::LOCAL_GET, obj_slot);
-        self.class_get_resolved(class_slots::ObjSource::Stack, &idx_key);
-        common::collections::emit_get(&mut self.chunks, self.current, self.line);
-        self.chunk().emit_end(base_cell_line);
-
-        self.chunk().emit_else(base_obj_line);
-        self.emit_u16(Op::LOCAL_GET, base_slot);
-        self.emit_u16(Op::LOCAL_GET, obj_slot);
-        self.class_get_resolved(class_slots::ObjSource::Stack, &idx_key);
-        common::collections::emit_get(&mut self.chunks, self.current, self.line);
-        self.chunk().emit_end(base_obj_line);
-
-        self.chunk().emit_else(carray_line);
-        // Third shape: a word in SHARED linear memory. The load is the WASM
-        // atomic one — an ordinary read of an atomically-updated binding must
-        // see the other thread's write.
-        self.emit_u16(Op::LOCAL_GET, obj_slot);
-        self.class_get_resolved(class_slots::ObjSource::Stack, &kind_key);
-        self.emit_string_eq_literal(crate::primitives::pointers::SHARED_KIND);
-        let shared_line = self.line;
-        self.chunk().emit_if_value(shared_line);
-        self.class_get(
-            class_slots::ObjSource::Local(obj_slot),
-            &class_slots::ClassSlot::internal(crate::primitives::pointers::SHARED_ADDR_KEY),
+        crate::primitives::references::emit_autoderef_to_stack(
+            &mut self.chunks, self.current, self.line,
         );
-        {
-            let line = self.line;
-            crate::primitives::threading::emit_atomic_load(self.chunk(), line);
-        }
-        self.chunk().emit_else(shared_line);
-        self.emit_u16(Op::LOCAL_GET, obj_slot);
-        self.chunk().emit_end(shared_line);
-        self.chunk().emit_end(carray_line);
-
-        self.chunk().emit_end(cell_line);
-
-        self.chunk().emit_else(obj_line);
-        self.emit_u16(Op::LOCAL_GET, obj_slot);
-        self.chunk().emit_end(obj_line);
     }
 
     /// Store `value_slot` THROUGH the reference in `ptr_slot`. Consumes
@@ -1096,133 +1033,13 @@ impl Compiler {
     /// container instead of growing a dead `__value` field on the reference
     /// object — which is what a cell-only store did, silently.
     pub(super) fn emit_store_through_pointer(&mut self, ptr_slot: u16, value_slot: u16) {
-        self.emit_u16(Op::LOCAL_GET, ptr_slot);
-        inst!(self, recipes::is_object);
-        let line = self.line;
-        // `ref.test` pushes `Value::I32(0|1)` and `Op::IF` takes an i32 — the
-        // ToBoolean ladder here was a no-op. See `operators::emit_to_primitive`.
-        self.chunk().emit_if(line);
-
-        let kind_key = self.resolve_slot_interned(&class_slots::ClassSlot::internal("__ref_kind"));
-
-        self.emit_u16(Op::LOCAL_GET, ptr_slot);
-        self.class_get_resolved(class_slots::ObjSource::Stack, &kind_key);
-        self.emit_const(Value::String(Arc::from("cell")));
-        {
-            let line = self.line;
-            crate::primitives::ops::emit_dyn_eq(self.chunk(), line);
-        }
-        let line = self.line;
-        crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
-        self.chunk().emit_if(line);
-
-        self.emit_u16(Op::LOCAL_GET, ptr_slot);
-        crate::primitives::references::emit_cell_store(
+        crate::primitives::references::emit_store_through_pointer(
             &mut self.chunks,
             self.current,
+            ptr_slot,
             value_slot,
             self.line,
         );
-
-        let line = self.line;
-        self.chunk().emit_else(line);
-
-        self.emit_u16(Op::LOCAL_GET, ptr_slot);
-        self.class_get_resolved(class_slots::ObjSource::Stack, &kind_key);
-        self.emit_const(Value::String(Arc::from("carray")));
-        {
-            let line = self.line;
-            crate::primitives::ops::emit_dyn_eq(self.chunk(), line);
-        }
-        let line = self.line;
-        crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
-        self.chunk().emit_if(line);
-
-        let base_key = self.resolve_slot_interned(&class_slots::ClassSlot::internal("__base"));
-        let idx_key = self.resolve_slot_interned(&class_slots::ClassSlot::internal("__idx"));
-        let base_slot = self.define_local("__ref_store_carray_base");
-        let idx_slot = self.define_local("__ref_store_carray_idx");
-
-        self.emit_u16(Op::LOCAL_GET, ptr_slot);
-        self.class_get_resolved(class_slots::ObjSource::Stack, &base_key);
-        self.emit_u16(Op::LOCAL_SET, base_slot);
-
-        self.emit_u16(Op::LOCAL_GET, ptr_slot);
-        self.class_get_resolved(class_slots::ObjSource::Stack, &idx_key);
-        self.emit_u16(Op::LOCAL_SET, idx_slot);
-
-        self.emit_u16(Op::LOCAL_GET, base_slot);
-        inst!(self, recipes::is_object);
-        let line = self.line;
-        // `ref.test` pushes `Value::I32(0|1)` and `Op::IF` takes an i32 — the
-        // ToBoolean ladder here was a no-op. See `operators::emit_to_primitive`.
-        self.chunk().emit_if(line);
-
-        self.emit_u16(Op::LOCAL_GET, base_slot);
-        self.class_get_resolved(class_slots::ObjSource::Stack, &kind_key);
-        self.emit_const(Value::String(Arc::from("cell")));
-        {
-            let line = self.line;
-            crate::primitives::ops::emit_dyn_eq(self.chunk(), line);
-        }
-        let line = self.line;
-        crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
-        self.chunk().emit_if(line);
-
-        self.emit_u16(Op::LOCAL_GET, base_slot);
-        crate::primitives::references::emit_cell_store(
-            &mut self.chunks,
-            self.current,
-            value_slot,
-            self.line,
-        );
-
-        let line = self.line;
-        self.chunk().emit_else(line);
-        self.emit_u16(Op::LOCAL_GET, base_slot);
-        self.emit_u16(Op::LOCAL_GET, idx_slot);
-        self.emit_u16(Op::LOCAL_GET, value_slot);
-        common::collections::emit_set(&mut self.chunks, self.current, self.line);
-        self.emit(Op::DROP);
-        self.chunk().emit_end(line);
-
-        let line = self.line;
-        self.chunk().emit_else(line);
-        self.emit_u16(Op::LOCAL_GET, base_slot);
-        self.emit_u16(Op::LOCAL_GET, idx_slot);
-        self.emit_u16(Op::LOCAL_GET, value_slot);
-        common::collections::emit_set(&mut self.chunks, self.current, self.line);
-        self.emit(Op::DROP);
-        self.chunk().emit_end(line);
-
-        let line = self.line;
-        self.chunk().emit_else(line);
-        // Third shape: shared word — mirror of the load dispatcher's arm. A
-        // plain assignment to a name bound to shared storage IS an atomic
-        // store; anything weaker would tear against a concurrent RMW.
-        self.emit_u16(Op::LOCAL_GET, ptr_slot);
-        self.class_get_resolved(class_slots::ObjSource::Stack, &kind_key);
-        self.emit_string_eq_literal(crate::primitives::pointers::SHARED_KIND);
-        let shared_line = self.line;
-        self.chunk().emit_if(shared_line);
-        self.class_get(
-            class_slots::ObjSource::Local(ptr_slot),
-            &class_slots::ClassSlot::internal(crate::primitives::pointers::SHARED_ADDR_KEY),
-        );
-        self.emit_u16(Op::LOCAL_GET, value_slot);
-        {
-            let line = self.line;
-            crate::primitives::threading::emit_atomic_store(self.chunk(), line);
-        }
-        self.chunk().emit_end(shared_line);
-        self.chunk().emit_end(line);
-
-        let line = self.line;
-        self.chunk().emit_end(line);
-
-        let line = self.line;
-        self.chunk().emit_else(line);
-        self.chunk().emit_end(line);
     }
 
     pub(super) fn compile_address_of_expr(&mut self, expr: &Expression) -> Result<(), String> {
@@ -1276,6 +1093,12 @@ impl Compiler {
     /// with a local worked (§10d, pre-existing #2). One concept, two spellings,
     /// one resolution — the recurring failure this plan exists to end.
     pub(super) fn compile_ident_reference(&mut self, name: &str) {
+        if let Some(binding) = self.static_local_binding(name) {
+            let global_name = binding.global_name.clone();
+            self.promote_global_storage_key_to_pointer_cell(&global_name, &global_name);
+            self.emit_global_read(&global_name);
+            return;
+        }
         if let Some(slot) = self.promote_local_binding_to_pointer_cell(name) {
             self.emit_u16(Op::LOCAL_GET, slot);
             return;
@@ -1462,6 +1285,16 @@ impl Compiler {
     }
 
     pub(crate) fn define_local(&mut self, name: &str) -> u16 {
+        if self.profile.function_scoped_variables
+            && self.is_variable_name(name)
+            && self.scope().resolve(name).is_none()
+        {
+            // A binding declared in one branch can be read when that branch
+            // never ran. Its initial null must not be a temporary left by an
+            // earlier expression, so give it a slot never used for scratch.
+            let chunk = &mut self.chunks[self.current];
+            chunk.local_count = chunk.local_count.max(chunk.scratch_high_water);
+        }
         self.sync_scope_allocator();
         // Two independent questions, deliberately asked separately: does this
         // language scope variables to the function rather than the block, and
@@ -1482,6 +1315,24 @@ impl Compiler {
         }
         self.track_lexical_name(name);
         slot
+    }
+
+    pub(crate) fn define_temp_local(&mut self, _name: &str) -> u16 {
+        let cur = self.current;
+        let mut floor = self.scopes.last().map_or(0, |s| s.next_slot);
+        if let Some(dup_slot) = self.chunks[cur].dup_slot {
+            floor = floor.max(dup_slot + 1);
+        }
+        if let Some(&max_capture) = self.capture_locals.values().max() {
+            floor = floor.max(max_capture + 1);
+        }
+        if let Some(i64_slot) = self.chunks[cur].i64_scratch_slot {
+            floor = floor.max(i64_slot + 1);
+        }
+        if self.chunks[cur].local_count < floor {
+            self.chunks[cur].local_count = floor;
+        }
+        self.chunks[cur].alloc_scratch(1)
     }
 
     /// Record a user binding for sloppy-mode unresolvable-read detection.
@@ -1559,6 +1410,29 @@ impl Compiler {
     /// when the frame returns, which keeps bytecode structurally valid
     /// even when a return appears inside an `if`/`else`, loop, or block.
     pub(crate) fn emit_return(&mut self) {
+        if let Some(emit_finalizer) =
+            vybe_runtime::registry::hooks(&self.profile.name).rebind_finalizer
+        {
+            // Function-scoped languages release source bindings on return.
+            // Return values are already on the expression stack, so a returned
+            // object remains reachable while the local holding it is cleared.
+            let locals = self.scope().defined_names.clone();
+            let mut seen = std::collections::HashSet::new();
+            for local in locals.iter().rev() {
+                if !local.is_source()
+                    || !self.is_variable_name(&local.name)
+                    || !seen.insert(local.slot)
+                {
+                    continue;
+                }
+                let old = self.define_local("__return_release_old");
+                self.emit_u16(Op::LOCAL_GET, local.slot);
+                self.emit_u16(Op::LOCAL_SET, old);
+                self.emit_null();
+                self.emit_u16(Op::LOCAL_SET, local.slot);
+                self.emit_rebound_value_finalizer(old, emit_finalizer);
+            }
+        }
         self.emit(Op::RETURN);
     }
 

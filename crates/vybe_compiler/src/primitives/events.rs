@@ -68,6 +68,13 @@ impl Compiler {
         }
     }
 
+    fn declared_gui_event_type(&self, control: &Expression, event: &str) -> String {
+        self.event_receiver_type_hint(control)
+            .and_then(|type_name| self.declared_property_role(&type_name, event, true))
+            .and_then(|role| role.strip_prefix("on").map(str::to_string))
+            .unwrap_or_else(|| event.to_ascii_lowercase())
+    }
+
     fn type_uses_winforms_event_host(&self, candidate_type: &str) -> bool {
         if let Some(mut current) = self.resolve_pending_class_name_for_type_hint(candidate_type) {
             let mut visited = std::collections::HashSet::new();
@@ -185,7 +192,7 @@ impl Compiler {
             // Pascal writes the property `OnClick`, and this is the same role
             // reached from `Click`. `event_role_type` strips it back off, so
             // `Load`/`Timer` register alongside `click` with no table.
-            let role = format!("on{}", event.to_ascii_lowercase());
+            let role = format!("on{}", self.declared_gui_event_type(control, event));
             self.emit_gui_property_set(&role, line);
             self.emit(Op::DROP);
             return Ok(());
@@ -204,7 +211,7 @@ impl Compiler {
             let line = self.line;
             self.compile_expr(control)?;
             self.compile_expr(handler)?;
-            let role = format!("on{}", event.to_ascii_lowercase());
+            let role = format!("on{}", self.declared_gui_event_type(control, event));
             self.emit_gui_property_set(&role, line);
             self.emit(Op::DROP);
             return Ok(());
@@ -242,7 +249,8 @@ impl Compiler {
             let line = self.line;
             self.compile_expr(control)?;
             self.compile_expr(handler)?;
-            self.emit_remove_event_listener(event, line);
+            let event_type = self.declared_gui_event_type(control, event);
+            self.emit_remove_event_listener(&event_type, line);
             self.emit(Op::DROP);
             return Ok(());
         }
@@ -256,7 +264,8 @@ impl Compiler {
             let line = self.line;
             self.compile_expr(control)?;
             self.compile_expr(handler)?;
-            self.emit_remove_event_listener(event, line);
+            let event_type = self.declared_gui_event_type(control, event);
+            self.emit_remove_event_listener(&event_type, line);
             self.emit(Op::DROP);
             return Ok(());
         }

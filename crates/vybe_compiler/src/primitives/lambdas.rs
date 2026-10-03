@@ -40,16 +40,17 @@ impl Compiler {
             .iter()
             .any(|capture| !Self::split_explicit_capture(capture).0)
         {
-            return self.compile_lambda_with_explicit_captures(
-                params,
-                body,
-                captures,
-                is_async,
-                is_generator,
-            );
+            self.compile_lambda_with_explicit_captures(
+                params, body, captures, is_async, is_generator, is_arrow,
+            )?;
+        } else {
+            self.compile_lambda_direct(params, body, is_async, is_generator, is_arrow)?;
         }
-
-        self.compile_lambda_direct(params, body, is_async, is_generator, is_arrow)
+        if let Some(emit) = vybe_runtime::registry::hooks(&self.profile.name).function_literal {
+            let line = self.line;
+            emit(self.chunk(), line);
+        }
+        Ok(())
     }
 
     pub(super) fn compile_lambda_with_explicit_captures(
@@ -59,6 +60,7 @@ impl Compiler {
         captures: &[String],
         is_async: bool,
         is_generator: bool,
+        is_arrow: bool,
     ) -> Result<(), String> {
         let capture_bindings: Vec<(String, Option<String>)> = captures
             .iter()
@@ -100,8 +102,9 @@ impl Compiler {
         // upvalue-captures the factory's locals (the by-value captures,
         // including the receiver). compile_lambda_direct emits REF_FUNC into the factory chunk,
         // leaving the function reference on the factory's operand stack.
-        // PHP `use` closures — never arrows.
-        self.compile_lambda_direct(params, body, is_async, is_generator, false)?;
+        // Explicit value captures do not change the receiver binding. PHP
+        // closures retain their lexical receiver even with a `use` list.
+        self.compile_lambda_direct(params, body, is_async, is_generator, is_arrow)?;
 
         // Emit RETURN so the factory returns the function reference it just built.
         let line = self.line;
@@ -156,7 +159,9 @@ impl Compiler {
         }
         for capture in captures {
             let (by_ref, capture_name) = Self::split_explicit_capture(capture);
-            if !by_ref {}
+            if !by_ref {
+                self.emit_var_get(capture_name);
+            }
         }
         self.emit_direct_callable_invoke(capture_bindings.len() as u8);
         Ok(())
@@ -490,8 +495,8 @@ impl Compiler {
                 inst!(self, core_wasm::undefined);
                 self.emit(Op::RETURN);
             } else {
-                let line = self.line;
-                common::functions::emit_function_epilogue(&mut self.chunks[ci], line);
+                self.emit_null();
+                self.emit_return();
             }
         }
         if let Some(saved_rs) = saved_result_slot {

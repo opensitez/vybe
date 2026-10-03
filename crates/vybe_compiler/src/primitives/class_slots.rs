@@ -795,10 +795,8 @@ impl crate::Compiler {
         let fallback = self.resolve_slot_interned(&ClassSlot::internal(
             self.js_member_storage_name_for_class(&class, field),
         ));
-        // A named local, not `alloc_scratch`: the receiver is read twice (once
-        // to test, once to load) and scratch shares an index space with the
-        // walker's named locals.
-        let recv = self.define_local("__seam3_recv");
+        // Compiler temporary: live only inside this guarded access.
+        let recv = self.chunks[self.current].alloc_scratch(1);
         push_obj(&mut self.chunks[self.current], obj, line);
         self.emit_u16(Op::LOCAL_SET, recv);
 
@@ -857,8 +855,8 @@ impl crate::Compiler {
         let fallback = self.resolve_slot_interned(&ClassSlot::internal(
             self.js_member_storage_name_for_class(&class, field),
         ));
-        let recv = self.define_local("__seam3_set_recv");
-        let value = self.define_local("__seam3_set_val");
+        let recv = self.chunks[self.current].alloc_scratch(1);
+        let value = self.chunks[self.current].alloc_scratch(1);
         // ⛔ VALUE FIRST. Where both operands are already stacked the value is
         // on TOP, so taking the receiver first stores the value in `recv` and
         // `ref.test` then tests an integer — it fails, every write takes the

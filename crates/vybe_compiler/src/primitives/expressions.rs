@@ -1249,6 +1249,72 @@ impl Compiler {
                 // stack unbalanced. emit_dyn_to_bool is correct: empty()/isset()
                 // already handle PHP array truthiness at the call site.
                 if matches!(op, BinOp::And | BinOp::Or)
+                    && !self.expr_is_integer_like(right)
+                {
+                    let mut rights: Vec<&Expression> = vec![right];
+                    let mut head = left.as_ref();
+                    while let ExprKind::Binary {
+                        op: nested_op,
+                        left: nested_left,
+                        right: nested_right,
+                    } = &head.kind
+                    {
+                        if nested_op != op || self.expr_is_integer_like(nested_right) {
+                            break;
+                        }
+                        rights.push(nested_right);
+                        head = nested_left;
+                    }
+                    if rights.len() > 1 {
+                        let static_bool = self.operator_dispatch()
+                            == vybe_ast::OperatorDispatch::StaticBuiltin
+                            && self.type_resolution() == vybe_ast::TypeResolution::Static;
+                        if static_bool {
+                            self.compile_condition_to_i32(head)?;
+                        } else {
+                            self.compile_expr(head)?;
+                        }
+                        for term in rights.into_iter().rev() {
+                            let line = self.line;
+                            let skip = match (static_bool, op) {
+                                (true, BinOp::And) => common::expressions::emit_and_i32_start(
+                                    &mut self.chunks[self.current], line,
+                                ),
+                                (true, _) => common::expressions::emit_or_i32_start(
+                                    &mut self.chunks[self.current], line,
+                                ),
+                                (false, BinOp::And) => common::expressions::emit_and_start(
+                                    &mut self.chunks[self.current], line,
+                                ),
+                                (false, _) => common::expressions::emit_or_start(
+                                    &mut self.chunks[self.current], line,
+                                ),
+                            };
+                            if static_bool {
+                                self.compile_condition_to_i32(term)?;
+                            } else {
+                                self.compile_expr(term)?;
+                            }
+                            common::expressions::emit_short_circuit_end(
+                                &mut self.chunks[self.current], skip,
+                            );
+                        }
+                        if static_bool {
+                            if want_i32_condition {
+                                self.gave_i32_condition = true;
+                            } else if self.profile.materialize_bool_results {
+                                let line = self.line;
+                                crate::primitives::ops::emit_i32_to_bool(self.chunk(), line);
+                            }
+                        } else if self.profile.materialize_bool_results {
+                            let line = self.line;
+                            crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
+                            crate::primitives::ops::emit_i32_to_bool(self.chunk(), line);
+                        }
+                        return Ok(());
+                    }
+                }
+                if matches!(op, BinOp::And | BinOp::Or)
                     && self.expr_is_integer_like(left)
                     && self.expr_is_integer_like(right)
                 {
@@ -1258,6 +1324,36 @@ impl Compiler {
                         self.compile_binop(&BinOp::BitAnd);
                     } else {
                         self.compile_binop(&BinOp::BitOr);
+                    }
+                    return Ok(());
+                }
+                if matches!(op, BinOp::And | BinOp::Or)
+                    && self.operator_dispatch() == vybe_ast::OperatorDispatch::StaticBuiltin
+                    && self.type_resolution() == vybe_ast::TypeResolution::Static
+                {
+                    self.compile_condition_to_i32(left)?;
+                    let line = self.line;
+                    let skip = if *op == BinOp::And {
+                        common::expressions::emit_and_i32_start(
+                            &mut self.chunks[self.current],
+                            line,
+                        )
+                    } else {
+                        common::expressions::emit_or_i32_start(
+                            &mut self.chunks[self.current],
+                            line,
+                        )
+                    };
+                    self.compile_condition_to_i32(right)?;
+                    common::expressions::emit_short_circuit_end(
+                        &mut self.chunks[self.current],
+                        skip,
+                    );
+                    if want_i32_condition {
+                        self.gave_i32_condition = true;
+                    } else if self.profile.materialize_bool_results {
+                        let line = self.line;
+                        crate::primitives::ops::emit_i32_to_bool(self.chunk(), line);
                     }
                     return Ok(());
                 }
@@ -1639,9 +1735,13 @@ impl Compiler {
                     // the shared ECMA `String()` coercion, so a language that
                     // declares nothing is unaffected.
                     for operand in [left, right] {
-                        let stringify = self.to_string_target(operand);
                         self.compile_expr(operand)?;
-                        self.emit_to_string_slot(stringify.as_deref(), line);
+                        if self.builtin_type_of(operand)
+                            != Some(vybe_ast::builtin_slots::BuiltinType::String)
+                        {
+                            let stringify = self.to_string_target(operand);
+                            self.emit_to_string_slot(stringify.as_deref(), line);
+                        }
                     }
                     self.compile_binop(op);
                     return Ok(());
@@ -2210,6 +2310,15 @@ impl Compiler {
                     }
 
                     self.compile_call(callee, args)?;
+                    if want_i32_condition {
+                        if let ExprKind::Ident(name) = &callee.kind {
+                            if self.scope().resolve(name).is_none()
+                                && self.profile.lookup_builtin(name).is_some_and(|def| def.i32_condition)
+                            {
+                                self.gave_i32_condition = true;
+                            }
+                        }
+                    }
                     // Multi-value result repack: when the callee is one of
                     // the pre-scanned multi-return functions, CALL leaves
                     // N values on the stack. A destructure-assign consumes
@@ -3268,6 +3377,18 @@ impl Compiler {
                 let receiver_type_hint =
                     crate::primitives::calls::resolve_receiver_type_hint(self, object)
                         .or_else(|| self.infer_expr_type_hint(object));
+                let declared_static_field = if let ExprKind::Ident(owner) = &object.kind {
+                    let class_name = self.canon(owner);
+                    let field_name = self.canon(field);
+                    self.defined_classes.contains(&class_name)
+                        && self.scope().resolve(owner).is_none()
+                        && self
+                            .pending_classes
+                            .get(&class_name)
+                            .is_some_and(|class| class.static_fields.contains(&field_name))
+                } else {
+                    false
+                };
                 if self.profile.member_invokes_parameterless_method && !*null_safe {
                     if let Some(class_name) = receiver_type_hint.as_deref().and_then(|type_hint| {
                         self.resolve_pending_class_name_for_type_hint(type_hint)
@@ -3658,12 +3779,10 @@ impl Compiler {
                         // Case-blind on its own terms — the tree lookup
                         // beside it is not; see
                         // `user_owns_type_spelling`.
-                        if self.user_owns_type_spelling(type_hint)
-                            || self.user_owns_type_spelling(&class_name)
-                        {
+                        if self.is_declared_instance_field(&class_name, field) {
                             return None;
                         }
-                        self.tree_property_target(&class_name, field)
+                        self.inherited_tree_property_target(&class_name, field, false)
                     })
                 {
                     self.compile_expr(object)?;
@@ -3697,14 +3816,16 @@ impl Compiler {
                     return Ok(());
                 } else {
                     self.compile_expr(object)?;
-                    let static_class_receiver_needs_no_autoderef = receiver_type_hint
-                        .as_deref()
-                        .filter(|type_hint| !type_hint.trim().ends_with('*'))
-                        .and_then(|type_hint| {
-                            self.resolve_pending_class_name_for_type_hint(type_hint)
-                        })
-                        .is_some()
-                        && self.type_resolution() == vybe_ast::TypeResolution::Static;
+                    let static_class_receiver_needs_no_autoderef =
+                        self.type_resolution() == vybe_ast::TypeResolution::Static
+                            && (declared_static_field
+                                || receiver_type_hint
+                                    .as_deref()
+                                    .filter(|type_hint| !type_hint.trim().ends_with('*'))
+                                    .and_then(|type_hint| {
+                                        self.resolve_pending_class_name_for_type_hint(type_hint)
+                                    })
+                                    .is_some());
                     if !Self::is_pointer_runtime_field(field)
                         && !static_class_receiver_needs_no_autoderef
                     {
@@ -3926,11 +4047,21 @@ impl Compiler {
                 } else {
                     let field_name = self
                         .field_storage_name_for_receiver(object, field)
-                        .unwrap_or_else(|| self.canon(field));
+                        .unwrap_or_else(|| {
+                            // Runtime-loaded classes may keep a colliding
+                            // property in a distinct slot. Probe that slot
+                            // before the source spelling; the existing
+                            // undefined fallback below handles ordinary fields.
+                            if self.separate_property_method_namespace() {
+                                format!("__prop${}", self.canon(field))
+                            } else {
+                                self.canon(field)
+                            }
+                        });
                     // `field_name` is the name resolution settled on; a
                     // difference from the source spelling is the signal, and it
                     // is data, not a language family.
-                    if field.as_str() != field_name {
+                    if field.as_str() != field_name && !declared_static_field {
                         let obj_slot = self.define_local("__dotnet_member_obj");
                         self.emit_u16(Op::LOCAL_SET, obj_slot);
 
@@ -4729,16 +4860,56 @@ impl Compiler {
                         if self.profile.negative_index_wraps {
                             self.emit_negative_index_wrap();
                         }
-                        {
-                            let l = self.line;
-                            common::collections::emit_get(&mut self.chunks, self.current, l);
-                        }
+                        let l = self.line;
+                        common::collections::emit_get(&mut self.chunks, self.current, l);
                     }
+                    self.emit_autoderef_pointer_cell();
                 }
             }
 
             // ── New ─────────────────────────────────────────────────────
             ExprKind::New { class, args } => {
+                // A PHP class supplied by runtime autoload has no constructor
+                // signature in this compile unit. Keep argument names until
+                // the class is loaded, then bind against its declared params.
+                if self.directives().spread_arguments.is_some()
+                    && args.iter().any(|arg| arg.name.is_some())
+                {
+                    if let ExprKind::Ident(name) = &class.kind {
+                        let key = self.canon(name);
+                        if !self.constructor_signatures.contains_key(&key) {
+                            let line = self.line;
+                            self.emit_constructor_global_ref(&key, name);
+                            let constructor_slot = self.define_local("__named_constructor");
+                            self.emit_u16(Op::LOCAL_SET, constructor_slot);
+
+                            for arg in args {
+                                self.compile_expr(&arg.value)?;
+                            }
+                            self.chunk().emit_array_new_fixed(0, args.len() as u16, line);
+                            let values_slot = self.define_local("__named_constructor_values");
+                            self.emit_u16(Op::LOCAL_SET, values_slot);
+
+                            for arg in args {
+                                if let Some(name) = &arg.name {
+                                    self.chunk().emit_string_const(name, line);
+                                } else {
+                                    super::expressions::emit_undefined(self.chunk(), line);
+                                }
+                            }
+                            self.chunk().emit_array_new_fixed(0, args.len() as u16, line);
+                            let names_slot = self.define_local("__named_constructor_names");
+                            self.emit_u16(Op::LOCAL_SET, names_slot);
+
+                            self.emit_u16(Op::LOCAL_GET, constructor_slot);
+                            self.emit_u16(Op::LOCAL_GET, values_slot);
+                            self.emit_u16(Op::LOCAL_GET, names_slot);
+                            let bind = self.import("php:dynamic", "constructNamed");
+                            self.chunk().emit_call(bind, 3, line);
+                            return Ok(());
+                        }
+                    }
+                }
                 let reordered_args;
                 let args = if args.iter().any(|arg| arg.name.is_some()) {
                     let ctor_key = match &class.kind {
@@ -5022,7 +5193,7 @@ impl Compiler {
                     // is registered as a sibling global per ECMA-334 §15.3.
                     // Try the last segment as a type name when the full
                     // dotted form misses.
-                    if class_parts.len() > 1 {
+                    if class_parts.len() > 1 && !self.profile.supports_autoload {
                         let last = class_parts.last().unwrap();
                         let canon_last = self.canon(last);
                         if self.defined_classes.contains(&canon_last) {
@@ -5110,7 +5281,8 @@ impl Compiler {
                     // shadowed by a real class is no longer an intrinsic.
                     // A tree adapter constructor for the name wins over the
                     // generic shape.
-                    let is_intrinsic_exception = common::errors::is_exception_type(bare_str)
+                    let is_intrinsic_exception = !type_name.contains('.')
+                        && common::errors::is_exception_type(bare_str)
                         && self.tree_ctor_target(bare_src_str).is_none()
                         && !self.defined_classes.contains(type_name)
                         && !self.defined_classes.contains(&self.canon(type_name))
@@ -5471,10 +5643,18 @@ impl Compiler {
                                     Some(&fallback_ctor),
                                     &autoload_name,
                                 );
+                                // A later include can supply a variadic constructor.
+                                // Apply packs arguments using its live rest metadata.
+                                self.emit_const(Value::Null);
                                 for a in args {
                                     self.compile_expr(&a.value)?;
                                 }
-                                self.emit_direct_callable_invoke(args.len() as u8);
+                                let line = self.line;
+                                common::collections::emit_array_new(
+                                    &mut self.chunks, self.current, args.len() as u16, line,
+                                );
+                                let apply = self.import("ecma:function", "apply");
+                                self.emit_host_call(apply, 3);
                                 return Ok(());
                             }
                         }
@@ -7780,7 +7960,10 @@ impl Compiler {
                         let parent_canon = self.canon(&target);
                         let method_idx = self
                             .resolve_slot_interned(&class_slots::ClassSlot::internal(&method_name));
-                        self.emit_var_get(&parent_canon);
+                        // A parent class is a callable/type binding, not a
+                        // local variable. Closed variable scopes must still
+                        // resolve classes published by an earlier include.
+                        self.emit_callee_get(&parent_canon);
                         self.class_get_resolved(class_slots::ObjSource::Stack, &method_idx);
 
                         // ⛔ RESOLVING THE METHOD IS NOT CALLING IT. The read
@@ -8934,6 +9117,16 @@ pub fn emit_and_start(chunk: &mut Chunk, line: u32) -> usize {
     block
 }
 
+/// Static-profile `&&` where the left operand is already a raw i32 condition.
+pub fn emit_and_i32_start(chunk: &mut Chunk, line: u32) -> usize {
+    let block = chunk.emit_block_params(line, 1, 1);
+    chunk.emit_dup(line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_br_if(0, line);
+    chunk.emit_op(Op::DROP, line);
+    block
+}
+
 // ── Short-circuit logical OR ────────────────────────────────────────────
 //
 // Usage:
@@ -8957,6 +9150,15 @@ pub fn emit_or_start(chunk: &mut Chunk, line: u32) -> usize {
     crate::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_br_if(0, line);
     chunk.emit_op(Op::DROP, line); // discard left, right becomes result
+    block
+}
+
+/// Static-profile `||` where the left operand is already a raw i32 condition.
+pub fn emit_or_i32_start(chunk: &mut Chunk, line: u32) -> usize {
+    let block = chunk.emit_block_params(line, 1, 1);
+    chunk.emit_dup(line);
+    chunk.emit_br_if(0, line);
+    chunk.emit_op(Op::DROP, line);
     block
 }
 
@@ -9430,7 +9632,7 @@ pub fn emit_rich_compare_locals(
     chunk.emit_op_u16(Op::LOCAL_GET, method_slot, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
     chunk.emit_op(Op::I32_EQZ, line);
-    chunk.emit_if(line);
+    chunk.emit_if_value(line);
     // Found method: call it with self=left, arg=right → result
     chunk.emit_op_u16(Op::LOCAL_GET, method_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, left_slot, line);

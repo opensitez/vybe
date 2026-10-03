@@ -15,6 +15,12 @@ use vybe_runtime::{Chunk, Value};
 
 /// Mapping from helper chunk name to the global name used at call sites.
 const MAPPINGS: &[(&str, &str)] = &[
+    ("__stdlib_autoderef", "__vybe_autoderef"),
+    ("__stdlib_dyneq", "__vybe_dyneq"),
+    ("__stdlib_dynlt", "__vybe_dynlt"),
+    ("__stdlib_dyngt", "__vybe_dyngt"),
+    ("__stdlib_dynle", "__vybe_dynle"),
+    ("__stdlib_dynge", "__vybe_dynge"),
     ("__stdlib_sorted", "__vybe_sorted"),
     ("__stdlib_chan_send", "__vybe_chan_send"),
     ("__stdlib_chan_recv", "__vybe_chan_recv"),

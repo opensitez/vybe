@@ -50,6 +50,22 @@ pub fn emit_i32_to_bool(chunk: &mut Chunk, line: u32) {
     i32_to_bool(chunk, line);
 }
 
+/// Compare a possibly absent runtime tag with a string literal, yielding i32.
+/// Internal string tags do not need general numeric/object equality dispatch.
+pub fn emit_string_slot_eq_literal(chunk: &mut Chunk, slot: u16, literal: &str, line: u32) {
+    let test = chunk.add_import("wasm:js-string", "test");
+    let equals = chunk.add_import("wasm:js-string", "equals");
+    chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
+    chunk.emit_call(test, 1, line);
+    chunk.emit_if_i32(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
+    chunk.emit_string_const(literal, line);
+    chunk.emit_call(equals, 2, line);
+    chunk.emit_else(line);
+    chunk.emit_i32_const(0, line);
+    chunk.emit_end(line);
+}
+
 fn save(chunk: &mut Chunk, slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_SET, slot, line);
 }
@@ -248,7 +264,7 @@ fn emit_js_to_number_f64(
 
 /// Truthy coercion — ECMA-262 §7.1.2 ToBoolean.
 /// Stack: [v] → [i32: 0 or 1]
-/// Uses WASM structured control flow: Op::IF / Op::ELSE / Op::END.
+/// Calls the shared ToBoolean implementation and narrows its Boolean to i32.
 ///
 /// ⛔ **THE NAME LIES ABOUT THE DIRECTION, AND IT IS NOT THE INVERSE OF
 /// [`emit_i32_to_bool`].** Read the two together:
@@ -265,81 +281,14 @@ fn emit_js_to_number_f64(
 /// was doing precisely what it says on the tin. If what you need is a value
 /// ECMA-262 calls a `boolean`, you want [`emit_i32_to_bool`].
 pub fn emit_dyn_to_bool(chunk: &mut Chunk, line: u32) {
-    let slots = alloc_locals(chunk, 2);
-    let v = slots;
-    let f = slots + 1;
-
-    let test_bool = chunk.add_import("wasm:js-boolean", "test");
-    let cast_bool = chunk.add_import("wasm:js-boolean", "cast");
-    let test_num = chunk.add_import("wasm:js-number", "test");
-    let to_f64 = chunk.add_import("wasm:js-number", "toF64");
-    let test_str = chunk.add_import("wasm:js-string", "test");
-    let str_length = chunk.add_import("wasm:js-string", "length");
-    let test_bigint = chunk.add_import("wasm:js-bigint", "test");
-
-    save(chunk, v, line);
-
-    // null / undefined → false
-    load(chunk, v, line);
-    chunk.emit_op(Op::REF_IS_NULL, line); // i32: 1 if null
-    chunk.emit_if_i32(line);
-    i32_const(chunk, 0, line);
-    chunk.emit_else(line);
-
-    // boolean? — cast_bool returns i32 (1=true, 0=false) for a known Bool value
-    load(chunk, v, line);
-    call1(chunk, test_bool, line); // i32: 1 if bool
-    chunk.emit_if_i32(line);
-    load(chunk, v, line);
-    call1(chunk, cast_bool, line); // Bool → i32
-    chunk.emit_else(line);
-
-    // number?
-    load(chunk, v, line);
-    call1(chunk, test_num, line); // i32: 1 if number
-    chunk.emit_if_i32(line);
-    load(chunk, v, line);
-    call1(chunk, to_f64, line); // f64
-    save(chunk, f, line);
-    load(chunk, f, line);
-    load(chunk, f, line);
-    chunk.emit_op(Op::F64_NE, line); // i32: 1 if NaN (NaN != NaN)
-    chunk.emit_if_i32(line); // NaN → false
-    i32_const(chunk, 0, line);
-    chunk.emit_else(line);
-    load(chunk, f, line);
-    f64_const(chunk, 0.0, line);
-    chunk.emit_op(Op::F64_NE, line); // i32: 1 if nonzero
-    chunk.emit_end(line);
-
-    chunk.emit_else(line);
-
-    // string?
-    load(chunk, v, line);
-    call1(chunk, test_str, line); // i32: 1 if string
-    chunk.emit_if_i32(line);
-    load(chunk, v, line);
-    call1(chunk, str_length, line); // i32 length
-    i32_const(chunk, 0, line);
-    chunk.emit_op(Op::I32_NE, line); // i32: 1 if nonempty
-    chunk.emit_else(line);
-
-    // bigint?
-    load(chunk, v, line);
-    call1(chunk, test_bigint, line); // i32: 1 if bigint
-    chunk.emit_if_i32(line);
-    // §7.1.2 ToBoolean: a BigInt is falsy exactly when it is `0n`.
-    load(chunk, v, line);
-    emit_bigint_zero(chunk, line);
-    emit_bigint_cmp(chunk, "ne", line);
-    chunk.emit_else(line);
-    i32_const(chunk, 1, line); // object / symbol → truthy
-    chunk.emit_end(line);
-
-    chunk.emit_end(line); // end string
-    chunk.emit_end(line); // end number
-    chunk.emit_end(line); // end boolean
-    chunk.emit_end(line); // end null
+    // Reuse the platform's ToBoolean implementation instead of expanding the
+    // same type-dispatch tree at every condition. Keep the public contract an
+    // i32 condition: the first call returns a language Boolean, the second
+    // converts that known Boolean to 0/1.
+    let convert = chunk.add_import("ecma:boolean", "toBoolean");
+    let cast = chunk.add_import("wasm:js-boolean", "cast");
+    call1(chunk, convert, line);
+    call1(chunk, cast, line);
 }
 
 /// Lua truthiness — only `nil` and `false` are falsy (§3.3.3).
@@ -381,6 +330,33 @@ pub fn emit_dyn_not(chunk: &mut Chunk, line: u32) {
 // ── emit_dyn_eq ───────────────────────────────────────────────────────
 
 pub fn emit_dyn_eq(chunk: &mut Chunk, line: u32) {
+    if !crate::primitives::polyfills::is_compiling_runtime_helper() {
+        emit_comparison_helper_call(chunk, "__vybe_dyneq", line);
+        return;
+    }
+    emit_dyn_eq_inline(chunk, line);
+}
+
+/// Both operands have been evaluated; one is a known null literal.
+/// Keep only the other operand, preserving the evaluation order.
+fn retain_other_null_operand(chunk: &mut Chunk, null_on_left: bool, line: u32) {
+    if null_on_left {
+        let value = alloc_locals(chunk, 1);
+        save(chunk, value, line);
+        chunk.emit_op(Op::DROP, line);
+        load(chunk, value, line);
+    } else {
+        chunk.emit_op(Op::DROP, line);
+    }
+}
+
+/// Specialize the nullish arms of emit_dyn_eq for a literal null operand.
+pub fn emit_dyn_eq_null_operand(chunk: &mut Chunk, null_on_left: bool, line: u32) {
+    retain_other_null_operand(chunk, null_on_left, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+}
+
+fn emit_dyn_eq_inline(chunk: &mut Chunk, line: u32) {
     let slots = alloc_locals(chunk, 4);
     let b_slot = slots;
     let a_slot = slots + 1;
@@ -406,12 +382,14 @@ pub fn emit_dyn_eq(chunk: &mut Chunk, line: u32) {
     // a is null → true iff b is also null
     load(chunk, b_slot, line);
     chunk.emit_op(Op::REF_IS_NULL, line); // i32
-    chunk.emit_if_i32(line);
-    i32_const(chunk, 1, line); // both null → equal
     chunk.emit_else(line);
-    i32_const(chunk, 0, line); // a null, b not → not equal
-    chunk.emit_end(line);
 
+    // The symmetric null case is common in property guards. Neither
+    // primitive comparisons nor a non-null wrapper payload can equal null.
+    load(chunk, b_slot, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_if_i32(line);
+    i32_const(chunk, 0, line);
     chunk.emit_else(line);
 
     // both number?
@@ -539,7 +517,8 @@ pub fn emit_dyn_eq(chunk: &mut Chunk, line: u32) {
     chunk.emit_end(line); // boolean
     chunk.emit_end(line); // string
     chunk.emit_end(line); // number
-    chunk.emit_end(line); // null
+    chunk.emit_end(line); // b null
+    chunk.emit_end(line); // a null
     // Result is i32 (0 or 1) — WASM-compliant for IF conditions
 }
 
@@ -553,6 +532,14 @@ fn emit_slot_is_null_only(chunk: &mut Chunk, slot: u16, line: u32) {
     }
     chunk.emit_op(Op::I32_EQZ, line);
     chunk.emit_op(Op::I32_AND, line);
+}
+
+/// Specialize strict ECMA equality against null, excluding undefined.
+pub fn emit_js_strict_eq_null_operand(chunk: &mut Chunk, null_on_left: bool, line: u32) {
+    retain_other_null_operand(chunk, null_on_left, line);
+    let value = alloc_locals(chunk, 1);
+    save(chunk, value, line);
+    emit_slot_is_null_only(chunk, value, line);
 }
 
 pub fn emit_js_strict_eq(chunk: &mut Chunk, line: u32) {
@@ -691,6 +678,20 @@ fn i64_cmp_op(op: &CmpOp) -> Op {
 }
 
 fn emit_dyn_cmp(chunk: &mut Chunk, line: u32, op: CmpOp) {
+    if !crate::primitives::polyfills::is_compiling_runtime_helper() {
+        let name = match op {
+            CmpOp::Lt => "__vybe_dynlt",
+            CmpOp::Gt => "__vybe_dyngt",
+            CmpOp::Le => "__vybe_dynle",
+            CmpOp::Ge => "__vybe_dynge",
+        };
+        emit_comparison_helper_call(chunk, name, line);
+        return;
+    }
+    emit_dyn_cmp_inline(chunk, line, op);
+}
+
+fn emit_dyn_cmp_inline(chunk: &mut Chunk, line: u32, op: CmpOp) {
     let slots = alloc_locals(chunk, 4);
     let b_slot = slots;
     let a_slot = slots + 1;
@@ -1012,8 +1013,7 @@ fn emit_to_primitive_in_place(chunk: &mut Chunk, slot: u16, line: u32) {
         );
         chunk.emit_op_u16(Op::LOCAL_SET, method, line);
 
-        load(chunk, method, line);
-        chunk.emit_op(Op::REF_IS_NULL, line);
+        emit_slot_is_null_or_undefined(chunk, method, line);
         chunk.emit_op(Op::I32_EQZ, line);
         chunk.emit_if(line);
         load(chunk, method, line);
@@ -1375,11 +1375,11 @@ pub fn emit_dyn_eq_into(_imports: &mut Chunk, code: &mut Chunk, line: u32) {
     code.emit_if_i32(line);
     load(code, b_slot, line);
     code.emit_op(Op::REF_IS_NULL, line);
-    code.emit_if_i32(line);
-    i32_const(code, 1, line);
     code.emit_else(line);
+    load(code, b_slot, line);
+    code.emit_op(Op::REF_IS_NULL, line);
+    code.emit_if_i32(line);
     i32_const(code, 0, line);
-    code.emit_end(line);
     code.emit_else(line);
 
     load(code, a_slot, line);
@@ -1454,6 +1454,7 @@ pub fn emit_dyn_eq_into(_imports: &mut Chunk, code: &mut Chunk, line: u32) {
     code.emit_end(line);
     code.emit_end(line);
     code.emit_end(line);
+    code.emit_end(line); // symmetric null guard
     // Result is i32 — WASM-compliant
 }
 
@@ -1642,6 +1643,38 @@ pub fn emit_dyn_neg_into(_imports: &mut Chunk, code: &mut Chunk, line: u32) {
 }
 
 // ── Linkable chunk builders ──────────────────────────────────────────────────
+
+/// The type-dispatch body is identical at every use. Link it once per module
+/// through the existing helper mechanism, retaining the public i32 result.
+fn emit_comparison_helper_call(chunk: &mut Chunk, global: &str, line: u32) {
+    let base = alloc_locals(chunk, 2);
+    save(chunk, base + 1, line);
+    save(chunk, base, line);
+    crate::primitives::globals::emit_read(chunk, global, line);
+    load(chunk, base, line);
+    load(chunk, base + 1, line);
+    crate::primitives::callable::emit_direct_invoke_chunk(chunk, 2, line);
+    let to_i32 = chunk.add_import("wasm:js-number", "toI32");
+    call1(chunk, to_i32, line);
+}
+
+pub fn build_dyn_comparison(name: &str) -> Chunk {
+    let mut chunk = Chunk::new(name);
+    chunk.arity = 2;
+    chunk.local_count = 2;
+    load(&mut chunk, 0, 0);
+    load(&mut chunk, 1, 0);
+    match name {
+        "__stdlib_dyneq" => emit_dyn_eq_inline(&mut chunk, 0),
+        "__stdlib_dynlt" => emit_dyn_cmp_inline(&mut chunk, 0, CmpOp::Lt),
+        "__stdlib_dyngt" => emit_dyn_cmp_inline(&mut chunk, 0, CmpOp::Gt),
+        "__stdlib_dynle" => emit_dyn_cmp_inline(&mut chunk, 0, CmpOp::Le),
+        "__stdlib_dynge" => emit_dyn_cmp_inline(&mut chunk, 0, CmpOp::Ge),
+        _ => unreachable!("unknown comparison helper"),
+    }
+    chunk.emit_op(Op::RETURN, 0);
+    chunk
+}
 //
 // Linkable chunk builders — the standalone-chunk packaging of what the
 // `emit_*` forms splice inline. A language prefix in a name records which

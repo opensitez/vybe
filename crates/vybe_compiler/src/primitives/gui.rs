@@ -187,6 +187,27 @@ pub const DOCUMENT_MODULE: &str = "web:html";
 pub const HOST_FN_CREATE_ELEMENT: &str = "createElement";
 /// `window.document` of the current browsing context.
 pub const HOST_FN_ACTIVE_DOCUMENT: &str = "activeDocument";
+
+/// Register an adapter-owned DOM listener on an element. Language-visible
+/// handlers still use `gui.prop_set.on*`, which binds their receiver.
+pub fn emit_add_event_listener(
+    chunk: &mut Chunk,
+    node: u16,
+    event_type: &str,
+    callback: usize,
+    line: u32,
+) {
+    let document = chunk.add_import(DOCUMENT_MODULE, HOST_FN_ACTIVE_DOCUMENT);
+    chunk.emit_call(document, 0, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, node, line);
+    chunk.emit_string_const(event_type, line);
+    chunk.emit_op_u16(Op::REF_FUNC, callback as u16, line);
+    chunk.emit(0, line);
+    let listen = chunk.add_import(DOM_MODULE, "addEventListener");
+    chunk.emit_call(listen, 4, line);
+    chunk.emit_op(Op::DROP, line);
+}
+
 /// CSSOM — `element.style`.
 pub const CSSOM_MODULE: &str = "web:cssom";
 
@@ -253,6 +274,41 @@ pub const CTRL_METHOD_EMIT: &str = "gui.ctrl.";
 /// menu that does not enter the DOCUMENT cannot render, be hit-tested, or be
 /// listed by `widgets`.
 pub const APPEND_CHILD_EMIT: &str = "gui.append_child";
+pub const APPEND_CHILD_AT_EMIT: &str = "gui.append_child_at";
+
+/// Stack: `[container, child, zero_based_column, zero_based_row] -> [child]`.
+pub fn emit_append_child_at(chunk: &mut Chunk, line: u32) {
+    let row = chunk.alloc_scratch(1);
+    chunk.emit_op_u16(Op::LOCAL_SET, row, line);
+    let column = chunk.alloc_scratch(1);
+    chunk.emit_op_u16(Op::LOCAL_SET, column, line);
+    let child = chunk.alloc_scratch(1);
+    chunk.emit_op_u16(Op::LOCAL_SET, child, line);
+    let container = chunk.alloc_scratch(1);
+    chunk.emit_op_u16(Op::LOCAL_SET, container, line);
+
+    let document = chunk.add_import(DOCUMENT_MODULE, HOST_FN_ACTIVE_DOCUMENT);
+    let set_style = chunk.add_import("web:cssom", "setStyleProperty");
+    let number = chunk.add_import("ecma:number", "Number");
+    for (slot, property) in [(column, "grid-column-start"), (row, "grid-row-start")] {
+        chunk.emit_call(document, 0, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, child, line);
+        chunk.emit_string_const(property, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
+        chunk.emit_call(number, 1, line);
+        chunk.emit_f64_const(1.0, line);
+        chunk.emit_op(Op::F64_ADD, line);
+        strings::emit_to_string(chunk, line);
+        chunk.emit_call(set_style, 4, line);
+        chunk.emit_op(Op::DROP, line);
+    }
+
+    chunk.emit_call(document, 0, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, container, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, child, line);
+    let append = chunk.add_import(DOM_MODULE, "appendChild");
+    chunk.emit_call(append, 3, line);
+}
 
 /// `List.Items.Add(text)` — the sibling of [`APPEND_CHILD_EMIT`] for a list
 /// whose entries are STRINGS rather than controls the caller built. A platform
@@ -302,18 +358,15 @@ pub const APP_EXIT_EMIT: &str = "gui.app.exit";
 /// specially rather than a table that grows per control.
 fn property_op(role: &str, setting: bool) -> (&'static str, &'static str, Option<&'static str>) {
     match role {
-        // The widget resolves what "text" means for the control it is: a
-        // `SetText` on a text field sets its value, on a label its caption.
-        // So this needs no element test — the engine already knows.
-        "text" | "caption" => (
+        // A registered element type can choose this role without a runtime
+        // nodeName round trip. The generic `text` role remains for dynamic nodes.
+        "textcontent" => (
             DOM_MODULE,
-            if setting {
-                "setTextContent"
-            } else {
-                "textContent"
-            },
+            if setting { "setTextContent" } else { "textContent" },
             None,
         ),
+        // `text` and `caption` are dispatched by `emit_gui_text_property`:
+        // input controls expose their displayed text through `value`.
         // **A control that is BORN WITH CHILDREN does not paint its `Text`.**
         //
         // `textContent =` REPLACES a node's children (DOM §4.4 "string replace
@@ -699,6 +752,47 @@ fn event_role_type(role: &str) -> Option<&str> {
 }
 
 impl Compiler {
+    fn emit_gui_text_property(&mut self, setting: bool, line: u32) {
+        let value = setting.then(|| self.define_local("__gui_text_value"));
+        if let Some(slot) = value {
+            self.emit_u16(Op::LOCAL_SET, slot);
+        }
+        let ctrl = self.define_local("__gui_text_ctrl");
+        self.emit_u16(Op::LOCAL_SET, ctrl);
+        let tag = self.define_local("__gui_text_tag");
+        let doc_idx = self.import(DOCUMENT_MODULE, HOST_FN_ACTIVE_DOCUMENT);
+        self.chunk().emit_call(doc_idx, 0, line);
+        self.emit_u16(Op::LOCAL_GET, ctrl);
+        let name_idx = self.import(DOM_MODULE, "nodeName");
+        self.emit_host_call(name_idx, 2);
+        self.emit_u16(Op::LOCAL_SET, tag);
+
+        let equals_idx = self.import("wasm:js-string", "equals");
+        for name in ["INPUT", "TEXTAREA"] {
+            self.emit_u16(Op::LOCAL_GET, tag);
+            emit_string_const(self.chunk(), name, line);
+            self.emit_host_call(equals_idx, 2);
+        }
+        self.emit(Op::I32_OR);
+        self.chunk().emit_if_value(line);
+        self.chunk().emit_call(doc_idx, 0, line);
+        self.emit_u16(Op::LOCAL_GET, ctrl);
+        if let Some(slot) = value {
+            self.emit_u16(Op::LOCAL_GET, slot);
+        }
+        let value_idx = self.import(DOCUMENT_MODULE, if setting { "setValue" } else { "value" });
+        self.emit_host_call(value_idx, if setting { 3 } else { 2 });
+        self.chunk().emit_else(line);
+        self.chunk().emit_call(doc_idx, 0, line);
+        self.emit_u16(Op::LOCAL_GET, ctrl);
+        if let Some(slot) = value {
+            self.emit_u16(Op::LOCAL_GET, slot);
+        }
+        let text_idx = self.import(DOM_MODULE, if setting { "setTextContent" } else { "textContent" });
+        self.emit_host_call(text_idx, if setting { 3 } else { 2 });
+        self.chunk().emit_end(line);
+    }
+
     /// The slot holding the receiver, when this code is inside a method or a
     /// constructor. Resolved the same way `ExprKind::This` resolves it, and
     /// through the profile's own keyword so no language is named.
@@ -1009,9 +1103,9 @@ impl Compiler {
     /// platform's [`CtorSpec::nest_coerce`]. No-op when the platform declares
     /// none — a control that IS its element has nothing to answer.
     ///
-    /// The coercion is a plain call to a guest function of one argument, so the
-    /// platform authors it in the target language and the shared path stays
-    /// free of any framework's inflation rules. It must be TOTAL: it is applied
+    /// The coercion is a guest call with one user argument. Its receiver slot
+    /// follows the module ABI, so the platform can author it in the target
+    /// language without this path knowing its inflation rules. It must be TOTAL: it is applied
     /// to every nested value, including the scalars that end up as properties,
     /// so anything it does not recognise it returns unchanged.
     ///
@@ -1038,7 +1132,7 @@ impl Compiler {
         self.emit_u16(Op::REF_FUNC, chunk_idx as u16);
         self.chunk().emit(0u8, line); // upvalue count
         self.emit_u16(Op::LOCAL_GET, slot);
-        crate::primitives::callable::emit_direct_invoke_chunk(self.chunk(), 1, line);
+        crate::primitives::callable::emit_stacked_invoke(&mut self.chunks, self.current, 1, line);
         self.emit_u16(Op::LOCAL_SET, slot);
         Ok(())
     }
@@ -1206,6 +1300,10 @@ impl Compiler {
 
     /// Lower `gui.prop_get.<role>` — stack in `[control]`, out `[value]`.
     pub fn emit_gui_property_get(&mut self, role: &str, line: u32) {
+        if matches!(role, "text" | "caption") {
+            self.emit_gui_text_property(false, line);
+            return;
+        }
         let (module, func, key) = property_op(role, false);
         let ctrl = self.define_local("__gui_prop_ctrl");
         self.emit_u16(Op::LOCAL_SET, ctrl);
@@ -1323,6 +1421,10 @@ impl Compiler {
 
     /// Lower `gui.prop_set.<role>` — stack in `[control, value]`, out `[_]`.
     pub fn emit_gui_property_set(&mut self, role: &str, line: u32) {
+        if matches!(role, "text" | "caption") {
+            self.emit_gui_text_property(true, line);
+            return;
+        }
         // The WINDOW title is the DOCUMENT's, not an element's.
         //
         // It is the one role whose target is not the control it was written on:
@@ -1374,14 +1476,10 @@ impl Compiler {
             // function is already a complete listener.
             if let Some(receiver) = self.receiver_slot() {
                 self.emit_u16(Op::LOCAL_GET, receiver);
-                // HOW a receiver reaches a body is the profile's answer, not a
-                // language's name. Where `this` is ambient (ECMA §10.2.1.1 —
-                // JS, Dart) `bind`'s `thisArg` IS the binding and the handler's
-                // own parameters are untouched. Where the receiver is an
-                // explicit first parameter it must also arrive as a bound
-                // ARGUMENT, or slot 0 stays empty and the handler reads the
-                // Event as its own `Self` — which is precisely the nil-receiver
-                // failure this replaces.
+                // `bind`'s thisArg is the sole receiver channel. With a
+                // parameter receiver ABI the VM places it in slot 0; with an
+                // ambient ABI it remains ambient. Passing it as a bound
+                // argument too shifts every declared handler parameter.
                 //
                 // The SAME frameworks bind the control in as well. A DOM
                 // listener is handed an Event; a method-pointer/delegate
@@ -1392,11 +1490,8 @@ impl Compiler {
                 // ahead of the Event, so VCL reads the control as `Sender` and
                 // WinForms reads `(control, event)`; without it `Sender` IS the
                 // Event and `(Sender as TButton).Caption` reads nothing.
-                // ⛔ The 2-argument ambient shape is gone; the receiver and
-                // control are always passed positionally.
-                self.emit_u16(Op::LOCAL_GET, receiver);
                 self.emit_u16(Op::LOCAL_GET, ctrl);
-                let argc = 4;
+                let argc = 3;
                 let bind_idx = self.import("ecma:function", "bind");
                 self.emit_host_call(bind_idx, argc);
             }
@@ -1519,9 +1614,9 @@ impl Compiler {
                     emit_string_const(self.chunk(), "repeat(", line);
                     self.emit_u16(Op::LOCAL_GET, value);
                     strings::emit_to_string(self.chunk(), line);
-                    ops::emit_dyn_add(self.chunk(), line);
+                    strings::emit_str_concat(self.chunk(), line);
                     emit_string_const(self.chunk(), ", 1fr)", line);
-                    ops::emit_dyn_add(self.chunk(), line);
+                    strings::emit_str_concat(self.chunk(), line);
                     let idx = self.import(module, func);
                     self.emit_host_call(idx, 4);
                     return;
@@ -1534,6 +1629,7 @@ impl Compiler {
                 // runtime values, so there is nothing to fold.
                 if role == "font" {
                     let font = self.define_local("__gui_font");
+                    self.emit_u16(Op::LOCAL_GET, value);
                     self.emit_u16(Op::LOCAL_SET, font);
                     for (field, css) in [("italic", "italic "), ("bold", "bold ")] {
                         self.emit_u16(Op::LOCAL_GET, font);
@@ -1548,22 +1644,22 @@ impl Compiler {
                         emit_string_const(self.chunk(), "", line);
                         self.chunk().emit_end(line);
                     }
-                    ops::emit_dyn_add(self.chunk(), line);
+                    strings::emit_str_concat(self.chunk(), line);
                     self.emit_u16(Op::LOCAL_GET, font);
                     self.class_get(
                         class_slots::ObjSource::Stack,
                         &class_slots::ClassSlot::internal("size"),
                     );
                     strings::emit_to_string(self.chunk(), line);
-                    ops::emit_dyn_add(self.chunk(), line);
+                    strings::emit_str_concat(self.chunk(), line);
                     emit_string_const(self.chunk(), "px ", line);
-                    ops::emit_dyn_add(self.chunk(), line);
+                    strings::emit_str_concat(self.chunk(), line);
                     self.emit_u16(Op::LOCAL_GET, font);
                     self.class_get(
                         class_slots::ObjSource::Stack,
                         &class_slots::ClassSlot::internal("name"),
                     );
-                    ops::emit_dyn_add(self.chunk(), line);
+                    strings::emit_str_concat_coercing(self.chunk(), line);
                     let idx = self.import(module, func);
                     self.emit_host_call(idx, 4);
                     return;
@@ -1610,7 +1706,7 @@ impl Compiler {
                     "left" | "top" | "width" | "height" | "padding" | "margin"
                 ) {
                     emit_string_const(self.chunk(), "px", line);
-                    ops::emit_dyn_add(self.chunk(), line);
+                    strings::emit_str_concat(self.chunk(), line);
                 }
                 4
             }
@@ -1639,9 +1735,8 @@ pub struct ControlElement {
     /// to express a flex container was to invent a `vybe-*` tag — a pseudo-tag
     /// naming no widget kind, which renders as a 120x20 label.
     ///
-    /// Declared CSS, not a layout flag: it lands through the same
-    /// `setStyleProperty` a program would use, so it cascades, serializes into
-    /// the `style` attribute, and a browser would do the same thing with it.
+    /// Declared CSS, not a layout flag: it is written to the inline `style`
+    /// attribute at construction, so it cascades like a program's style write.
     pub declares: Vec<(String, String)>,
     /// Content ATTRIBUTES the control is born with, written `@name=value` in
     /// the declaration (`@multiple` alone for a boolean one).
@@ -1868,8 +1963,10 @@ impl Compiler {
         // in it would already have broken construction long before here.
         let mut current = self.pending_class_parent(type_name);
         while let Some(parent) = current {
-            if let Some(element) = registered_control_element(self, &parent) {
-                return Some(element);
+            if !self.user_owns_type_spelling(&parent) {
+                if let Some(element) = registered_control_element(self, &parent) {
+                    return Some(element);
+                }
             }
             current = self.pending_class_parent(&parent);
         }
@@ -1972,24 +2069,17 @@ impl Compiler {
     /// Walks the user chain for the same reason `control_element_for_type`
     /// does: `TForm1 = class(TForm)` inherits `TForm`'s declarations, and the
     /// receiver's static type is the subclass.
-    fn declared_property_role(&self, type_name: &str, prop: &str, setting: bool) -> Option<String> {
+    pub(super) fn inherited_tree_property_target(
+        &self,
+        type_name: &str,
+        prop: &str,
+        setting: bool,
+    ) -> Option<crate::component_classes::InstancePropertyTarget> {
         let declared = |name: &str| {
-            let target = if setting {
+            if setting {
                 self.tree_property_setter_target(name, prop)
             } else {
                 self.tree_property_target(name, prop)
-            }?;
-            match target {
-                crate::component_classes::InstancePropertyTarget::Common { emit } => emit
-                    .strip_prefix(if setting {
-                        PROP_SET_EMIT
-                    } else {
-                        PROP_GET_EMIT
-                    })
-                    .map(str::to_string),
-                // A host-backed accessor is already a complete target; it is
-                // not a role and must not be rewritten into one.
-                _ => None,
             }
         };
         // A USER-DECLARED class owns its own members: a platform type that
@@ -2011,18 +2101,31 @@ impl Compiler {
         // Case-blind, like the role tables this guards — see
         // `user_owns_type_spelling`.
         if !self.user_owns_type_spelling(type_name) {
-            if let Some(role) = declared(type_name) {
-                return Some(role);
+            if let Some(target) = declared(type_name) {
+                return Some(target);
             }
         }
         let mut current = self.pending_class_parent(type_name);
         while let Some(parent) = current {
-            if let Some(role) = declared(&parent) {
-                return Some(role);
+            if !self.user_owns_type_spelling(&parent) {
+                if let Some(target) = declared(&parent) {
+                    return Some(target);
+                }
             }
             current = self.pending_class_parent(&parent);
         }
         None
+    }
+
+    pub(super) fn declared_property_role(&self, type_name: &str, prop: &str, setting: bool) -> Option<String> {
+        let target = self.inherited_tree_property_target(type_name, prop, setting)?;
+        match target {
+            crate::component_classes::InstancePropertyTarget::Common { emit } => emit
+                .strip_prefix(if setting { PROP_SET_EMIT } else { PROP_GET_EMIT })
+                .map(str::to_string),
+            // A complete platform accessor cannot be reduced to a GUI role.
+            _ => None,
+        }
     }
 
     /// `control.<prop> = value` → the DOM.
@@ -2199,6 +2302,20 @@ impl Compiler {
         let value_tmp = self.define_local("__ctrl_prop_value");
         self.emit_u16(Op::LOCAL_SET, value_tmp);
 
+        // A composed platform control can declare its own property accessor.
+        // Honor it before generic GUI lowering can replace its children.
+        if let Some(crate::component_classes::InstancePropertyTarget::Common { emit }) =
+            self.inherited_tree_property_target(type_name, prop, true)
+        {
+            if !emit.starts_with(PROP_SET_EMIT) {
+                self.compile_expr(object)?;
+                self.emit_u16(Op::LOCAL_GET, value_tmp);
+                self.emit_common(&emit, 2, line);
+                self.emit(Op::DROP);
+                return Ok(());
+            }
+        }
+
         // ONE role→DOM mapping, not two. This used to carry its own copy of
         // the `property_op` match, and the copies drifted the moment a role
         // was added to one of them: `OnClick` reached the DOM as an
@@ -2319,11 +2436,30 @@ impl Compiler {
         for (name, value) in &element.attributes {
             self.emit_declared_attribute(name, value, line);
         }
-        for (prop, value) in &element.declares {
-            self.emit_declared_style(prop, value, line);
+        if element.attributes.iter().any(|(name, _)| name == "style") {
+            for (prop, value) in &element.declares {
+                self.emit_declared_style(prop, value, line);
+            }
+        } else if !element.declares.is_empty() {
+            let style = element
+                .declares
+                .iter()
+                .map(|(prop, value)| format!("{prop}:{value}"))
+                .collect::<Vec<_>>()
+                .join(";");
+            self.emit_declared_attribute("style", &style, line);
         }
         if let Some(html) = &element.inner_html {
             self.emit_declared_markup(html, line);
+        }
+        // A platform may initialize runtime-owned control state after its
+        // declared HTML exists. The constructor still returns the same node.
+        if let Some(crate::primitives::namespaces::NamespaceNode::CommonEmit(init)) =
+            self.tree_static_member(type_name, "__gui_init")
+        {
+            self.chunk().emit_dup(line);
+            self.emit_common(&init, 1, line);
+            self.chunk().emit_op(Op::DROP, line);
         }
     }
 

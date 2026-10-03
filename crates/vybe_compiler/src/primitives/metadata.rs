@@ -1263,6 +1263,38 @@ impl Compiler {
         self.any_class_declares_private_member(field)
     }
 
+    /// Resolve a private access against the class that owns this receiver.
+    /// PHP method names are ordinary identifiers, so another class declaring
+    /// the same name private says nothing about this call. JS private names
+    /// remain lexical and keep their existing brand semantics.
+    pub(super) fn private_member_owner_for_receiver(
+        &self,
+        receiver: &Expression,
+        field: &str,
+    ) -> Option<String> {
+        if !self.supports_private_fields() {
+            return None;
+        }
+        if self.profile.name != "php" {
+            return self
+                .member_access_is_private(field)
+                .then(|| self.current_class.clone())
+                .flatten();
+        }
+        let owner = if self.receiver_is_self(receiver) {
+            self.current_class.clone()
+        } else {
+            crate::primitives::calls::resolve_receiver_type_hint(self, receiver)
+                .and_then(|hint| self.resolve_pending_class_name_for_type_hint(&hint))
+        }?;
+        let caller = self.current_class.as_deref()?;
+        if self.canon(caller) != self.canon(&owner) {
+            return None;
+        }
+        self.class_declares_private_member(&owner, field)
+            .then_some(owner)
+    }
+
     /// Does ANY class in the program declare `member` private? The question a
     /// site asks when it has no receiver and no enclosing class to resolve
     /// against — an access from outside every class body.
@@ -1893,6 +1925,45 @@ impl Compiler {
         let line = self.line;
         self.emit_host_call(has_idx, 2);
         crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
+        self.chunk().emit_if(line);
+        self.chunk().emit_else(line);
+        self.emit_const(Value::String(Arc::from(
+            "Cannot read private member from an object whose class did not declare it",
+        )));
+        self.emit_js_exception_ctor_from_message_value("TypeError")?;
+        common::errors::emit_throw(self.chunk(), line);
+        self.chunk().emit_end(line);
+        Ok(())
+    }
+
+    /// Check the same declared slot that a private method call will read.
+    /// An indexed slot has no string property for `ecma:object.has` to find.
+    pub(super) fn emit_private_method_slot_guard(
+        &mut self,
+        object_slot: u16,
+        owner: &str,
+        field: &str,
+    ) -> Result<(), String> {
+        let slot = class_slots::ClassSlot::instance_of(owner, field);
+        let line = self.line;
+        match self.resolve_slot(&slot) {
+            class_slots::ResolvedSlot::Indexed { .. } => {
+                self.emit_u16(Op::LOCAL_GET, object_slot);
+                self.emit_ref_type_test(Op::REF_TEST, owner, line);
+            }
+            class_slots::ResolvedSlot::Key(key) => {
+                self.emit_u16(Op::LOCAL_GET, object_slot);
+                self.emit_const(Value::String(Arc::from(key)));
+                let has = self.import("ecma:object", "has");
+                self.emit_host_call(has, 2);
+                crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
+            }
+            _ => {
+                return Err(
+                    "private method slot did not resolve to a declared storage location".into(),
+                );
+            }
+        }
         self.chunk().emit_if(line);
         self.chunk().emit_else(line);
         self.emit_const(Value::String(Arc::from(

@@ -592,16 +592,23 @@ pub(super) fn resolve_receiver_type_hint(compiler: &Compiler, recv: &Expression)
                 }
             }
             let arg_exprs: Vec<&Expression> = args.iter().map(|arg| &arg.value).collect();
-            if let ExprKind::Member { object, field, .. } = &callee.kind {
-                if let Some(return_type) = compiler
-                    .resolve_instance_method_overload(object, field, &arg_exprs, false)
-                    .and_then(|overload| overload.return_type.clone())
-                {
-                    return Some(return_type);
+            let member_receiver_type = if let ExprKind::Member { object, .. } = &callee.kind {
+                resolve_receiver_type_hint(compiler, object)
+            } else {
+                None
+            };
+            if let ExprKind::Member { field, .. } = &callee.kind {
+                if let Some(receiver_type) = member_receiver_type.as_deref() {
+                    if let Some(return_type) = compiler
+                        .resolve_instance_method_overload_for_type(receiver_type, field, &arg_exprs, false)
+                        .and_then(|overload| overload.return_type.clone())
+                    {
+                        return Some(return_type);
+                    }
                 }
 
                 if !compiler.profile.namespaces.type_scopes.is_empty() {
-                    if let Some(receiver_type) = resolve_receiver_type_hint(compiler, object) {
+                    if let Some(receiver_type) = member_receiver_type.as_deref() {
                         if compiler
                             .resolve_pending_class_name_for_type_hint(&receiver_type)
                             .is_none()
@@ -617,8 +624,12 @@ pub(super) fn resolve_receiver_type_hint(compiler: &Compiler, recv: &Expression)
                 }
             }
 
-            let inferred = compiler
-                .infer_function_return_type(callee)
+            let inferred = (if let ExprKind::Member { object, field, .. } = &callee.kind {
+                let inferred_receiver = compiler.infer_expr_type_hint(object);
+                compiler.infer_member_function_return_type(object, field, inferred_receiver.as_deref())
+            } else {
+                compiler.infer_function_return_type(callee)
+            })
                 .or_else(|| dotnet_factory_return_type(compiler, callee))
                 .or_else(|| match &callee.kind {
                     ExprKind::Ident(name) => {
@@ -639,8 +650,8 @@ pub(super) fn resolve_receiver_type_hint(compiler: &Compiler, recv: &Expression)
             // Redundant name check removed: `instance_pointer_method_names`
             // is only non-empty for a class with a `*T` receiver method.
             {
-                if let ExprKind::Member { object, field, .. } = &callee.kind {
-                    if let Some(receiver_type) = resolve_receiver_type_hint(compiler, object) {
+                if let ExprKind::Member { field, .. } = &callee.kind {
+                    if let Some(receiver_type) = member_receiver_type.as_deref() {
                         if let Some(class_name) =
                             compiler.resolve_pending_class_name_for_type_hint(&receiver_type)
                         {
@@ -654,7 +665,7 @@ pub(super) fn resolve_receiver_type_hint(compiler: &Compiler, recv: &Expression)
                                         .any(|name| compiler.canon(name) == compiler.canon(field))
                                 })
                             {
-                                return Some(receiver_type);
+                                return Some(receiver_type.to_string());
                             }
                         }
                     }
@@ -1096,6 +1107,21 @@ impl Compiler {
         include_receiver: bool,
     ) -> Option<PendingMethodOverload> {
         let receiver_type = resolve_receiver_type_hint(self, object)?;
+        self.resolve_instance_method_overload_for_type(
+            &receiver_type,
+            method_name,
+            arg_exprs,
+            include_receiver,
+        )
+    }
+
+    fn resolve_instance_method_overload_for_type(
+        &self,
+        receiver_type: &str,
+        method_name: &str,
+        arg_exprs: &[&Expression],
+        include_receiver: bool,
+    ) -> Option<PendingMethodOverload> {
         let class_name = self.resolve_pending_class_name_for_type_hint(&receiver_type)?;
         // ⛔ ASK THE CHAIN, NOT JUST THE CLASS. This looked in the receiver's
         // OWN `instance_method_overloads` and gave up — but an INHERITED
@@ -1546,7 +1572,7 @@ impl Compiler {
         }
 
         self.emit_global_read("__js_global_this");
-        let global_this_slot = self.define_local("__js_global_this_value");
+        let global_this_slot = self.define_temp_local("__js_global_this_value");
         self.emit_u16(Op::LOCAL_SET, global_this_slot);
         self.emit_u16(Op::LOCAL_GET, global_this_slot);
         self.emit(Op::REF_IS_NULL);
@@ -1665,7 +1691,7 @@ impl Compiler {
                 inst!(self, core_wasm::undefined);
             }
         }
-        let rest_slot = self.define_local("__runtime_rest_call_array");
+        let rest_slot = self.define_temp_local("__runtime_rest_call_array");
         common::collections::emit_array_new(&mut self.chunks, self.current, 0, line);
         self.emit_u16(Op::LOCAL_SET, rest_slot);
         for slot in arg_slots.iter().skip(fixed_count) {
@@ -1923,7 +1949,7 @@ impl Compiler {
                 common::collections::emit_slice(&mut self.chunks, self.current, line);
             }
             None => {
-                let len_slot = self.define_local("__runtime_spread_len");
+                let len_slot = self.define_temp_local("__runtime_spread_len");
                 self.emit_u16(Op::LOCAL_GET, args_slot);
                 common::collections::emit_len(&mut self.chunks, self.current, line);
                 self.emit_u16(Op::LOCAL_SET, len_slot);
@@ -1954,7 +1980,7 @@ impl Compiler {
         // through it when proxy lowering is active.
         if self.uses_proxy {
             let line = self.line;
-            let args_arr_slot = self.define_local("__proxy_apply_args");
+            let args_arr_slot = self.define_temp_local("__proxy_apply_args");
             common::collections::emit_array_new(&mut self.chunks, self.current, 0, line);
             self.emit_u16(Op::LOCAL_SET, args_arr_slot);
             for slot in arg_slots {
@@ -1976,6 +2002,40 @@ impl Compiler {
             return;
         }
 
+        // Includes can introduce a variadic callee whose arity was never seen
+        // while compiling this module. Use the callable's live metadata, not
+        // the caller's compile-time arity inventory. Profiles with tagged
+        // multi-value rows retain their specialized packing below.
+        if self.profile.multi_value_row_marker.is_empty() {
+            self.class_get(
+                class_slots::ObjSource::Local(callee_slot),
+                &class_slots::ClassSlot::internal("__vybe_rest_fixed_arity"),
+            );
+            self.emit(Op::REF_IS_NULL);
+            let line = self.line;
+            self.chunk().emit_if(line);
+            self.emit_normal_call_from_arg_slots(
+                callee_slot, receiver_slot, js_this_slot, arg_slots,
+            );
+            self.emit_u16(Op::LOCAL_SET, result_slot);
+            self.chunk().emit_else(line);
+            let args_slot = self.define_temp_local("__live_rest_args");
+            common::collections::emit_array_new(&mut self.chunks, self.current, 0, line);
+            self.emit_u16(Op::LOCAL_SET, args_slot);
+            for slot in arg_slots {
+                self.emit_u16(Op::LOCAL_GET, args_slot);
+                self.emit_u16(Op::LOCAL_GET, *slot);
+                common::collections::emit_push(&mut self.chunks, self.current, line);
+                self.emit(Op::DROP);
+            }
+            self.emit_normal_call_from_args_array(
+                callee_slot, js_this_slot.or(receiver_slot), args_slot, Some(arg_slots.len()),
+            );
+            self.emit_u16(Op::LOCAL_SET, result_slot);
+            self.chunk().emit_end(line);
+            return;
+        }
+
         let rest_fixed_counts: Vec<u8> = self.rest_fixed_arities.iter().copied().collect();
         if rest_fixed_counts.is_empty() {
             self.emit_normal_call_from_arg_slots(
@@ -1990,12 +2050,12 @@ impl Compiler {
 
         let rest_key = self
             .resolve_slot_interned(&class_slots::ClassSlot::internal("__vybe_rest_fixed_arity"));
-        let rest_arity_slot = self.define_local("__call_rest_fixed_arity");
+        let rest_arity_slot = self.define_temp_local("__call_rest_fixed_arity");
         self.emit_u16(Op::LOCAL_GET, callee_slot);
         self.class_get_resolved(class_slots::ObjSource::Stack, &rest_key);
         self.emit_u16(Op::LOCAL_SET, rest_arity_slot);
 
-        let used_rest_slot = self.define_local("__call_used_rest_arity");
+        let used_rest_slot = self.define_temp_local("__call_used_rest_arity");
         self.emit_const(Value::I32(0));
         self.emit_u16(Op::LOCAL_SET, used_rest_slot);
 
@@ -2050,14 +2110,14 @@ impl Compiler {
     ) {
         if let Some(receiver_slot) = receiver_slot {
             if self.class_prototype_dispatch() {
-                let result_slot = self.define_local("__call_runtime_result");
+                let result_slot = self.define_temp_local("__call_runtime_result");
                 let has_own_marker_slot =
                     self.emit_js_has_own_receiver_marker(callee_slot, "__js_receiver_call_marker");
                 self.class_get(
                     class_slots::ObjSource::Local(callee_slot),
                     &class_slots::ClassSlot::internal("__vybe_method_receiver"),
                 );
-                let marker_slot = self.define_local("__js_receiver_call_marker_value");
+                let marker_slot = self.define_temp_local("__js_receiver_call_marker_value");
                 self.emit_u16(Op::LOCAL_SET, marker_slot);
 
                 self.emit_u16(Op::LOCAL_GET, has_own_marker_slot);
@@ -2092,23 +2152,20 @@ impl Compiler {
                 return;
             }
         }
-        let result_slot = self.define_local("__call_runtime_result");
+        let result_slot = self.define_temp_local("__call_runtime_result");
         if let Some(receiver_slot) = receiver_slot {
+            // Null and undefined use the same invocation. Compute the test
+            // once instead of emitting the entire dispatch body twice.
+            // Short-circuiting retains the cheap null receiver path.
             self.emit_u16(Op::LOCAL_GET, receiver_slot);
             self.emit(Op::REF_IS_NULL);
             let line = self.line;
-            self.chunk().emit_if(line);
-            self.emit_dispatch_and_store_from_arg_slots(
-                callee_slot,
-                None,
-                None,
-                arg_slots,
-                result_slot,
-            );
+            self.chunk().emit_if_i32(line);
+            self.chunk().emit_i32_const(1, line);
             self.chunk().emit_else(line);
             self.emit_u16(Op::LOCAL_GET, receiver_slot);
             fn_call!(self, "wasm:js-undefined", "test", 1);
-            let line = self.line;
+            self.chunk().emit_end(line);
             self.chunk().emit_if(line);
             self.emit_dispatch_and_store_from_arg_slots(
                 callee_slot,
@@ -2125,7 +2182,6 @@ impl Compiler {
                 arg_slots,
                 result_slot,
             );
-            self.chunk().emit_end(line);
             self.chunk().emit_end(line);
         } else {
             self.emit_dispatch_and_store_from_arg_slots(
@@ -2151,7 +2207,7 @@ impl Compiler {
             class_slots::ObjSource::Local(callee_slot),
             &class_slots::ClassSlot::internal("__vybe_method_receiver"),
         );
-        let marker_slot = self.define_local("__js_receiver_host_marker_value");
+        let marker_slot = self.define_temp_local("__js_receiver_host_marker_value");
         self.emit_u16(Op::LOCAL_SET, marker_slot);
 
         self.emit_u16(Op::LOCAL_GET, has_own_marker_slot);
@@ -2191,7 +2247,7 @@ impl Compiler {
     ) {
         self.emit_u16(Op::LOCAL_GET, callee_slot);
         self.emit_u16(Op::LOCAL_GET, receiver_slot);
-        let args_slot = self.define_local("__js_apply_args");
+        let args_slot = self.define_temp_local("__js_apply_args");
         common::collections::emit_array_new(&mut self.chunks, self.current, 0, self.line);
         self.emit_u16(Op::LOCAL_SET, args_slot);
         for slot in arg_slots {
@@ -2228,7 +2284,7 @@ impl Compiler {
         js_this_slot: u16,
         arg_slots: &[u16],
     ) {
-        let result_slot = self.define_local("__call_runtime_result");
+        let result_slot = self.define_temp_local("__call_runtime_result");
         self.emit_dispatch_and_store_from_arg_slots(
             callee_slot,
             None,
@@ -2298,7 +2354,7 @@ impl Compiler {
         // Marker-gated rather than unconditional because most callees reached
         // here are ordinary JS functions, which take `this` and not a leading
         // argument — passing one would shift every parameter they have.
-        let result_slot = self.define_local("__js_member_call_result");
+        let result_slot = self.define_temp_local("__js_member_call_result");
         let has_receiver_marker =
             self.emit_js_has_own_receiver_marker(lookup_slot, "__js_member_receiver_marker");
         self.emit_u16(Op::LOCAL_GET, has_receiver_marker);
@@ -2398,6 +2454,14 @@ impl Compiler {
         known_len: Option<usize>,
         result_slot: u16,
     ) {
+        // The shared apply implementation already reads live rest metadata
+        // and packs the arguments, including functions loaded by an include.
+        if self.profile.multi_value_row_marker.is_empty() {
+            self.emit_normal_call_from_args_array(callee_slot, receiver_slot, args_slot, known_len);
+            self.emit_u16(Op::LOCAL_SET, result_slot);
+            return;
+        }
+
         let rest_fixed_counts: Vec<u8> = self.rest_fixed_arities.iter().copied().collect();
         if !rest_fixed_counts.is_empty() {
             let rest_key = self.resolve_slot_interned(&class_slots::ClassSlot::internal(
@@ -2574,7 +2638,7 @@ impl Compiler {
     /// An argument that denotes no storage falls back to its value. php raises a
     /// notice there and a reference to a temporary is worse than a copy — the
     /// same judgement `PlaceExpr::from_expr` returning `None` already encodes.
-    fn compile_builtin_argument(
+    pub(crate) fn compile_builtin_argument(
         &mut self,
         arg: &Expression,
         mode: Option<PassBy>,
@@ -3602,6 +3666,9 @@ impl Compiler {
         callee: &Expression,
         args: &[Argument],
     ) -> Result<(), String> {
+        let _debug_call = vybe_runtime::debugger::DebugPhase::current_lazy(||
+            format!("compiler call expression line {}", callee.span.start_line),
+        );
         let reordered_args;
         let args = if args.iter().any(|arg| arg.name.is_some()) {
             reordered_args = self.reorder_named_call_args(callee, args);
@@ -3941,14 +4008,15 @@ impl Compiler {
         // receives a chunk and an argc, and cannot reach the scope table.
         if let Some(ns) = self.variable_namespace {
             if let ExprKind::Ident(name) = &callee.kind {
-                if name == "compact" {
+                // Dynamic names are handled by the language's runtime builtin.
+                // Do not emit a partial map and then null for a valid call.
+                if name == "compact"
+                    && args.iter().all(|arg| matches!(arg.value.kind, ExprKind::Lit(Literal::Str(_))))
+                {
                     let line = self.line;
                     common::collections::emit_map_new(&mut self.chunks, self.current, line);
                     for arg in args {
-                        let ExprKind::Lit(Literal::Str(var_name)) = &arg.value.kind else {
-                            self.emit_null();
-                            return Ok(());
-                        };
+                        let ExprKind::Lit(Literal::Str(var_name)) = &arg.value.kind else { unreachable!() };
                         let var_binding = (ns.spell)(var_name);
                         inst!(self, core_wasm::dup);
                         self.emit_const(Value::String(Arc::from(var_name.as_str())));
@@ -4686,6 +4754,11 @@ impl Compiler {
                             .filter(|signature| signature.has_rest)
                             .cloned()
                     });
+                let sealed_nonrest_method = self.directives().method_bindings_live == Some(false)
+                    && !self.uses_proxy
+                    && self
+                        .resolve_static_method_overload_for_type(&class_canon, field, &arg_exprs)
+                        .is_some_and(|overload| !overload.signature.has_rest && !overload.is_virtual);
                 // Declared parameter modes for the callee. `Alias` must be
                 // passed AS a reference and never written back; `Ref`/`Out`
                 // are copy-in/copy-out and must be. Without this lookup the
@@ -4756,7 +4829,16 @@ impl Compiler {
                         self.emit_u16(Op::LOCAL_GET, result_slot);
                     } else {
                         let receiver = self.call_supplies_receiver().then_some(obj_tmp);
-                        self.emit_call_ref_with_arg_slots(fn_tmp, receiver, &arg_slots);
+                        if sealed_nonrest_method {
+                            self.emit_normal_call_from_arg_slots(
+                                fn_tmp,
+                                receiver,
+                                receiver,
+                                &arg_slots,
+                            );
+                        } else {
+                            self.emit_call_ref_with_arg_slots(fn_tmp, receiver, &arg_slots);
+                        }
                     }
                 }
                 // Which arguments the callee actually wrote back. With
@@ -5416,7 +5498,7 @@ impl Compiler {
 
                                 if (emit.eq_ignore_ascii_case("dotnet.console_writeline")
                                     || emit.eq_ignore_ascii_case("dotnet.console_write"))
-                                    && arg_exprs.len() == 1
+                                    && matches!(arg_exprs.len(), 1 | 3)
                                 {
                                     self.emit_dotnet_console_arg(arg_exprs[0])?;
                                 } else {
@@ -5654,30 +5736,52 @@ impl Compiler {
                                     && members[members.len() - 2] == "controls"
                                     && members[members.len() - 1] == "add"
                                 {
-                                    // `parent.Controls.Add(child)` IS
-                                    // `parent.appendChild(child)`. A control
-                                    // is an element now, and `createElement`
-                                    // leaves it DETACHED — it has no parent
-                                    // and renders nothing until something
-                                    // inserts it. Routing this to a host-side
-                                    // collection instead left every control
-                                    // unparented, which is why a form opened
-                                    // with nothing on it.
-                                    let line = self.line;
-                                    let doc_idx = self.import(
-                                        common::gui::DOCUMENT_MODULE,
-                                        common::gui::HOST_FN_ACTIVE_DOCUMENT,
-                                    );
-                                    self.chunk().emit_call(doc_idx, 0, line);
-                                    self.emit_var_get(&local);
-                                    for a in &arg_exprs {
-                                        self.compile_expr(a)?;
+                                    let parent = match &callee.kind {
+                                        ExprKind::Member { object: controls, .. } => match &controls.kind {
+                                            ExprKind::Member { object: parent, .. } => Some(parent.as_ref()),
+                                            _ => None,
+                                        },
+                                        _ => None,
+                                    };
+                                    let grid_add = arg_exprs.len() == 3
+                                        && parent
+                                            .and_then(|parent| self.infer_expr_type_hint(parent))
+                                            .and_then(|ty| self.namespace_tree_instance_method_owner(&ty, "Add", 4))
+                                            .and_then(|owner| self.tree_instance_target(&owner, "Add", 4))
+                                            .is_some_and(|target| matches!(
+                                                target,
+                                                crate::component_classes::InstanceMethodTarget::Common { emit, arity: 4 }
+                                                    if emit == common::gui::APPEND_CHILD_AT_EMIT
+                                            ));
+                                    if arg_exprs.len() == 1 || grid_add {
+                                        // Control construction leaves a detached element;
+                                        // Controls.Add inserts it into the parent's DOM tree.
+                                        let line = self.line;
+                                        if !grid_add {
+                                            let doc_idx = self.import(
+                                                common::gui::DOCUMENT_MODULE,
+                                                common::gui::HOST_FN_ACTIVE_DOCUMENT,
+                                            );
+                                            self.chunk().emit_call(doc_idx, 0, line);
+                                        }
+                                        if let Some(parent) = parent {
+                                            self.compile_expr(parent)?;
+                                        } else {
+                                            self.emit_var_get(&local);
+                                        }
+                                        for a in &arg_exprs {
+                                            self.compile_expr(a)?;
+                                        }
+                                        if grid_add {
+                                            self.emit_common(common::gui::APPEND_CHILD_AT_EMIT, 4, line);
+                                        } else {
+                                            let append_idx =
+                                                self.import(common::gui::DOM_MODULE, "appendChild");
+                                            self.emit_host_call(append_idx, 3);
+                                        }
+                                        self.emit(Op::DROP);
+                                        return Ok(());
                                     }
-                                    let append_idx =
-                                        self.import(common::gui::DOM_MODULE, "appendChild");
-                                    self.emit_host_call(append_idx, 2 + arg_exprs.len() as u8);
-                                    self.emit(Op::DROP);
-                                    return Ok(());
                                 }
                                 // Intercept Thread/Task methods → WASM stack switching opcodes.
                                 // Disambiguation by arity: `Thread.Join()` is zero-arg; an
@@ -6904,7 +7008,14 @@ impl Compiler {
                         );
                         let receiver_slot = self.define_local("__shadowed_value_bound_recv");
                         self.emit_u16(Op::LOCAL_SET, receiver_slot);
-                        {
+                        if self.profile.name == "php" {
+                            // PHP's `$object->method()` always invokes a
+                            // method on `$object`. An inherited method from
+                            // a runtime include can lack the function stamp,
+                            // but that does not make it a free function.
+                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                            self.emit_u16(Op::LOCAL_SET, receiver_slot);
+                        } else {
                             let line = self.line;
                             self.emit_u16(Op::LOCAL_GET, receiver_slot);
                             self.chunk().emit_op(Op::REF_IS_NULL, line);
@@ -7950,7 +8061,11 @@ impl Compiler {
                 self.emit_private_access_denied(field)?;
                 return Ok(());
             }
-            if self.member_access_is_private(field) && !*null_safe {
+            let private_owner = self.private_member_owner_for_receiver(object, field);
+            if (private_owner.is_some()
+                || (self.profile.name != "php" && self.member_access_is_private(field)))
+                && !*null_safe
+            {
                 self.compile_expr(object)?;
                 let obj_tmp = self.define_local("__js_private_call_obj");
                 self.emit_u16(Op::LOCAL_SET, obj_tmp);
@@ -8019,14 +8134,23 @@ impl Compiler {
                         self.emit_u16(Op::LOCAL_SET, fn_tmp);
                     }
                 } else {
-                    let field_name = self.js_member_storage_name_for_receiver(object, field);
-                    private_storage_name = field_name.clone();
-                    self.emit_js_private_brand_check(obj_tmp, &private_storage_name)?;
-                    self.class_get_to(
-                        class_slots::ObjSource::Local(obj_tmp),
-                        &class_slots::ClassSlot::internal(&field_name),
-                        fn_tmp,
-                    );
+                    if let Some(owner) = private_owner.as_deref() {
+                        self.emit_private_method_slot_guard(obj_tmp, owner, field)?;
+                        self.class_get_to(
+                            class_slots::ObjSource::Local(obj_tmp),
+                            &class_slots::ClassSlot::instance_of(owner, field),
+                            fn_tmp,
+                        );
+                    } else {
+                        let field_name = self.js_member_storage_name_for_receiver(object, field);
+                        private_storage_name = field_name.clone();
+                        self.emit_js_private_brand_check(obj_tmp, &private_storage_name)?;
+                        self.class_get_to(
+                            class_slots::ObjSource::Local(obj_tmp),
+                            &class_slots::ClassSlot::internal(&field_name),
+                            fn_tmp,
+                        );
+                    }
                 }
 
                 let saved_js_this = self.begin_receiver_bind("__js_prev_this_private_call");
@@ -8812,7 +8936,17 @@ impl Compiler {
                 return Ok(());
             }
 
-            self.compile_expr(object)?;
+            if let ExprKind::Ident(name) = &object.kind {
+                if self.profile.supports_autoload && !name.starts_with('$') {
+                    let global = self.canon_type_global(name);
+                    self.emit_constructor_global_ref(&global, name);
+                } else {
+                    self.compile_expr(object)?;
+                }
+            } else {
+                self.compile_expr(object)?;
+            }
+            self.emit_autoderef_pointer_cell();
             let obj_tmp = self.define_local("__obj");
             self.reserve_local_slot(obj_tmp);
             self.emit_u16(Op::LOCAL_SET, obj_tmp);
@@ -8894,7 +9028,12 @@ impl Compiler {
                 }
             }
 
-            let field_name = self.js_member_storage_name_for_receiver(object, field);
+            // This is a METHOD call, not a property read. Do not resolve through
+            // `field_storage_name_for_receiver`: classes with separate
+            // property/method namespaces (PHP: `$tables` and `tables()`) may
+            // remap the property storage to `__prop$tables`, but the call must
+            // still target the method slot `tables`.
+            let field_name = self.js_member_storage_name(field);
             let prop = self.resolve_slot_interned(&class_slots::ClassSlot::internal(&field_name));
 
             if self.profile.parens_for_index && !arg_exprs.is_empty() {
@@ -9056,6 +9195,20 @@ impl Compiler {
                 self.class_get_resolved(class_slots::ObjSource::Stack, &receiver_key);
                 let receiver_slot = self.define_local("__member_fast_receiver");
                 self.emit_u16(Op::LOCAL_SET, receiver_slot);
+                // An ordinary instance method need not carry a bound-method
+                // receiver. The generator-aware path must preserve the object
+                // just as the normal member-call path does.
+                if !self.class_prototype_dispatch()
+                    && !resolves_to_static_container_method(self, object, field)
+                {
+                    self.emit_u16(Op::LOCAL_GET, receiver_slot);
+                    self.emit(Op::REF_IS_NULL);
+                    let line = self.line;
+                    self.chunk().emit_if(line);
+                    self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                    self.emit_u16(Op::LOCAL_SET, receiver_slot);
+                    self.chunk().emit_end(line);
+                }
                 if self.class_prototype_dispatch() {
                     let mut arg_slots = Vec::with_capacity(arg_exprs.len());
                     for (index, arg) in arg_exprs.iter().enumerate() {
@@ -10183,50 +10336,70 @@ impl Compiler {
 
             // ── ESM host-module import binding ──────────────────────────
             let key = self.canon(name);
-            if let Some((module, func)) = self.host_import_bindings.get(&key).cloned() {
-                let _ = (module, func);
-                let mut arg_slots = Vec::with_capacity(arg_exprs.len());
-                for (index, arg) in arg_exprs.iter().enumerate() {
-                    self.compile_expr_with_value_copy(arg)?;
-                    let arg_slot = self.define_local(&format!("__host_import_call_arg_{}", index));
-                    self.emit_u16(Op::LOCAL_SET, arg_slot);
-                    arg_slots.push(arg_slot);
+            let shadows_import_binding = self.defined_functions.contains(name)
+                || self.defined_functions.contains(&key)
+                || (!self.case_sensitive
+                    && self
+                        .defined_functions
+                        .iter()
+                        .any(|g| g.eq_ignore_ascii_case(name)))
+                || self.active_namespaces.as_ref().is_some_and(|active| {
+                    let decl_name = format!("decl:{name}");
+                    let decl_key = format!("decl:{key}");
+                    active.contains(&decl_name)
+                        || active.contains(&decl_key)
+                        || (!self.case_sensitive
+                            && active
+                                .iter()
+                                .any(|ns| ns.eq_ignore_ascii_case(&decl_name)))
+                });
+            if !shadows_import_binding {
+                if let Some((module, func)) = self.host_import_bindings.get(&key).cloned() {
+                    let _ = (module, func);
+                    let mut arg_slots = Vec::with_capacity(arg_exprs.len());
+                    for (index, arg) in arg_exprs.iter().enumerate() {
+                        self.compile_expr_with_value_copy(arg)?;
+                        let arg_slot =
+                            self.define_local(&format!("__host_import_call_arg_{}", index));
+                        self.emit_u16(Op::LOCAL_SET, arg_slot);
+                        arg_slots.push(arg_slot);
+                    }
+                    self.emit_var_get(name);
+                    let callee_slot = self.define_local("__host_import_call_callee");
+                    self.emit_u16(Op::LOCAL_SET, callee_slot);
+                    self.emit_call_ref_with_arg_slots(callee_slot, None, &arg_slots);
+                    return Ok(());
                 }
-                self.emit_var_get(name);
-                let callee_slot = self.define_local("__host_import_call_callee");
-                self.emit_u16(Op::LOCAL_SET, callee_slot);
-                self.emit_call_ref_with_arg_slots(callee_slot, None, &arg_slots);
-                return Ok(());
-            }
-            if let Some(target) = self.namespace_import_bindings.get(&key).cloned() {
-                match target {
-                    crate::primitives::namespaces::ResolutionTarget::CommonEmit(emit) => {
-                        for a in &arg_exprs {
-                            self.compile_expr(a)?;
+                if let Some(target) = self.namespace_import_bindings.get(&key).cloned() {
+                    match target {
+                        crate::primitives::namespaces::ResolutionTarget::CommonEmit(emit) => {
+                            for a in &arg_exprs {
+                                self.compile_expr(a)?;
+                            }
+                            let line = self.line;
+                            self.emit_common(&emit, arg_exprs.len() as u8, line);
+                            return Ok(());
                         }
-                        let line = self.line;
-                        self.emit_common(&emit, arg_exprs.len() as u8, line);
-                        return Ok(());
-                    }
-                    crate::primitives::namespaces::ResolutionTarget::HostCall {
-                        module,
-                        func,
-                        ..
-                    } => {
-                        for a in &arg_exprs {
-                            self.compile_expr(a)?;
+                        crate::primitives::namespaces::ResolutionTarget::HostCall {
+                            module,
+                            func,
+                            ..
+                        } => {
+                            for a in &arg_exprs {
+                                self.compile_expr(a)?;
+                            }
+                            let idx = self.import(&module, &func);
+                            self.emit_host_call(idx, arg_exprs.len() as u8);
+                            return Ok(());
                         }
-                        let idx = self.import(&module, &func);
-                        self.emit_host_call(idx, arg_exprs.len() as u8);
-                        return Ok(());
+                        crate::primitives::namespaces::ResolutionTarget::Ctor {
+                            spec: Some(spec),
+                            ..
+                        } => {
+                            return self.emit_tree_ctor_construction(&spec, args);
+                        }
+                        _ => {}
                     }
-                    crate::primitives::namespaces::ResolutionTarget::Ctor {
-                        spec: Some(spec),
-                        ..
-                    } => {
-                        return self.emit_tree_ctor_construction(&spec, args);
-                    }
-                    _ => {}
                 }
             }
 
@@ -10869,6 +11042,16 @@ impl Compiler {
                     arg_slots.push(arg_slot);
                 }
 
+                // In languages with a separate variable namespace, a bare
+                // function name cannot contain an invokable object. Keep this
+                // path's argument and receiver setup (including late includes),
+                // but emit only its function arm. Falling through to the known
+                // declaration path would change reference argument handling.
+                if self.variable_namespace.is_some_and(|ns| (ns.body)(name) == name) {
+                    self.emit_call_ref_with_arg_slots(callee_slot, Some(receiver_slot), &arg_slots);
+                    return Ok(());
+                }
+
                 self.emit_u16(Op::LOCAL_GET, callee_slot);
                 let typeof_idx = self.import("ecma:value", "typeof");
                 self.emit_host_call(typeof_idx, 1);
@@ -11405,7 +11588,7 @@ impl Compiler {
 
         // ── Fallback: general expression call ───────────────────────
         self.compile_expr(callee)?;
-        let callee_slot = self.define_local("__call_ref_callee");
+        let callee_slot = self.define_temp_local("__call_ref_callee");
         self.emit_u16(Op::LOCAL_SET, callee_slot);
         self.emit_callable_value_resolution(callee_slot);
 
@@ -11420,19 +11603,15 @@ impl Compiler {
         // no method-name table appears in shared code. Rewrites `callee_slot`
         // to the bound method and remembers the object as the receiver, so the
         // existing dispatch below carries it as `this`.
-        let invoke_matched = self.define_local("__call_ref_invoke_matched");
-        let invoke_receiver = self.define_local("__call_ref_invoke_receiver");
+        let invoke_matched = self.define_temp_local("__call_ref_invoke_matched");
+        let invoke_receiver = self.define_temp_local("__call_ref_invoke_receiver");
         self.emit_const(Value::I32(0));
         self.emit_u16(Op::LOCAL_SET, invoke_matched);
         if self.profile.callable_objects {
             let line = self.line;
             // STRUCT_GET traps on a primitive, so gate on it being an object.
             self.emit_u16(Op::LOCAL_GET, callee_slot);
-            let typeof_idx = self.import("ecma:value", "typeof");
-            self.emit_host_call(typeof_idx, 1);
-            self.emit_const(Value::String(Arc::from("object")));
-            crate::primitives::ops::emit_dyn_eq(self.chunk(), line);
-            crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
+            crate::primitives::reflection::emit_typeof_is(self.chunk(), "object", line);
             self.chunk().emit_if(line);
 
             self.emit_u16(Op::LOCAL_GET, callee_slot);
@@ -11448,7 +11627,7 @@ impl Compiler {
                 class_slots::Dest::Stack,
                 line,
             );
-            let method_slot = self.define_local("__call_ref_invoke_method");
+            let method_slot = self.define_temp_local("__call_ref_invoke_method");
             self.emit_u16(Op::LOCAL_SET, method_slot);
 
             self.emit_u16(Op::LOCAL_GET, method_slot);
@@ -11465,10 +11644,10 @@ impl Compiler {
             self.chunk().emit_end(line);
         }
 
-        let result_slot = self.define_local("__call_ref_result");
+        let result_slot = self.define_temp_local("__call_ref_result");
         self.emit_null();
         self.emit_u16(Op::LOCAL_SET, result_slot);
-        let runtime_index_matched = self.define_local("__call_ref_runtime_index_matched");
+        let runtime_index_matched = self.define_temp_local("__call_ref_runtime_index_matched");
         self.emit_const(Value::I32(0));
         self.emit_u16(Op::LOCAL_SET, runtime_index_matched);
 
@@ -11503,7 +11682,7 @@ impl Compiler {
             class_slots::ObjSource::Local(callee_slot),
             &class_slots::ClassSlot::internal("__vybe_method_receiver"),
         );
-        let receiver_slot = self.define_local("__call_ref_receiver");
+        let receiver_slot = self.define_temp_local("__call_ref_receiver");
         self.emit_u16(Op::LOCAL_SET, receiver_slot);
 
         // The Call-slot method is UNBOUND — its receiver is the object the call
@@ -11531,14 +11710,6 @@ impl Compiler {
             self.chunk().emit_end(line);
         }
 
-        let mut arg_slots = Vec::with_capacity(arg_exprs.len());
-        for (index, arg) in arg_exprs.iter().enumerate() {
-            self.compile_expr(arg)?;
-            let arg_slot = self.define_local(&format!("__call_ref_arg_{}", index));
-            self.emit_u16(Op::LOCAL_SET, arg_slot);
-            arg_slots.push(arg_slot);
-        }
-
         // Route through the shared dispatcher so a callee with a rest
         // parameter (e.g. a returned `(...more) => …`) gets its trailing
         // args packed via the runtime `__vybe_rest_fixed_arity` stamp —
@@ -11547,7 +11718,25 @@ impl Compiler {
         // and `this` binding internally; leaves the result on the stack.
         let saved_js_new_target = self.save_js_new_target("__js_prev_new_target_call_ref");
         self.set_js_new_target_undefined();
-        self.emit_call_ref_with_arg_slots(callee_slot, Some(receiver_slot), &arg_slots);
+        if args.iter().any(|arg| arg.spread) && !has_by_ref_args {
+            let (args_slot, known_len) =
+                self.compile_call_args_array(args, "call_ref_spread")?;
+            self.emit_call_ref_with_args_array(
+                callee_slot,
+                Some(receiver_slot),
+                args_slot,
+                known_len,
+            );
+        } else {
+            let mut arg_slots = Vec::with_capacity(arg_exprs.len());
+            for (index, arg) in arg_exprs.iter().enumerate() {
+                self.compile_expr(arg)?;
+                let arg_slot = self.define_temp_local(&format!("__call_ref_arg_{}", index));
+                self.emit_u16(Op::LOCAL_SET, arg_slot);
+                arg_slots.push(arg_slot);
+            }
+            self.emit_call_ref_with_arg_slots(callee_slot, Some(receiver_slot), &arg_slots);
+        }
         self.emit_u16(Op::LOCAL_SET, result_slot);
         self.restore_js_new_target(saved_js_new_target);
         self.chunk().emit_end(line); // close the runtime_index_matched `if`

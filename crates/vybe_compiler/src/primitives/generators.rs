@@ -1337,6 +1337,7 @@ impl Compiler {
         current_key: &class_slots::ResolvedSlot,
     ) {
         self.emit_buffered_generator_set_bool_property(obj_slot, done_key, false);
+        self.emit_buffered_generator_store_yield_key(obj_slot, value_slot);
         self.emit_u16(Op::LOCAL_GET, obj_slot);
         self.emit_generator_yield_value(value_slot);
         {
@@ -1350,6 +1351,54 @@ impl Compiler {
                 line,
             );
         }
+    }
+
+    fn emit_buffered_generator_store_yield_key(&mut self, obj_slot: u16, value_slot: u16) {
+        let next_key = self.resolve_slot_interned(&class_slots::ClassSlot::internal(
+            "__vybe_generator_next_key",
+        ));
+        let current_key = self.resolve_slot_interned(&class_slots::ClassSlot::internal(
+            "__vybe_generator_current_key",
+        ));
+        self.class_get_resolved(class_slots::ObjSource::Local(obj_slot), &next_key);
+        let index_slot = self.define_local("__gen_next_key");
+        self.emit_u16(Op::LOCAL_SET, index_slot);
+
+        self.emit_u16(Op::LOCAL_GET, index_slot);
+        let number_test = self.import("wasm:js-number", "test");
+        self.emit_host_call(number_test, 1);
+        let line = self.line;
+        self.chunk().emit_if(line);
+        self.chunk().emit_else(line);
+        self.emit_const(Value::F64(0.0));
+        self.emit_u16(Op::LOCAL_SET, index_slot);
+        self.chunk().emit_end(line);
+
+        self.emit_generator_yield_key_or_fallback(value_slot, Some(index_slot));
+        let key_slot = self.define_local("__gen_yield_key");
+        self.emit_u16(Op::LOCAL_SET, key_slot);
+        self.emit_u16(Op::LOCAL_GET, obj_slot);
+        self.emit_u16(Op::LOCAL_GET, key_slot);
+        self.class_set_resolved(
+            class_slots::ObjSource::Stack,
+            &current_key,
+            class_slots::ValueSource::Stack,
+        );
+
+        self.emit_u16(Op::LOCAL_GET, key_slot);
+        self.emit_host_call(number_test, 1);
+        let line = self.line;
+        self.chunk().emit_if(line);
+        self.emit_u16(Op::LOCAL_GET, obj_slot);
+        self.emit_u16(Op::LOCAL_GET, key_slot);
+        self.emit_const(Value::F64(1.0));
+        crate::primitives::ops::emit_dyn_add(self.chunk(), line);
+        self.class_set_resolved(
+            class_slots::ObjSource::Stack,
+            &next_key,
+            class_slots::ValueSource::Stack,
+        );
+        self.chunk().emit_end(line);
     }
 
     fn emit_buffered_generator_store_completed_state(
@@ -1375,6 +1424,16 @@ impl Compiler {
             );
         }
         self.emit_buffered_generator_set_bool_property(obj_slot, current_key, false);
+        let key = self.resolve_slot_interned(&class_slots::ClassSlot::internal(
+            "__vybe_generator_current_key",
+        ));
+        self.emit_u16(Op::LOCAL_GET, obj_slot);
+        self.emit_null();
+        self.class_set_resolved(
+            class_slots::ObjSource::Stack,
+            &key,
+            class_slots::ValueSource::Stack,
+        );
     }
 
     fn emit_buffered_generator_set_step_result(
@@ -1567,6 +1626,7 @@ impl Compiler {
         let line = self.line;
         self.chunk().emit_if(line);
 
+        self.emit_buffered_generator_store_yield_key(cont_slot, value_slot);
         self.emit_u16(Op::LOCAL_GET, cont_slot);
         self.emit_const(Value::Bool(false));
         self.class_set_resolved(
@@ -1631,6 +1691,7 @@ impl Compiler {
         arg_exprs: &[&Expression],
     ) -> Result<Option<usize>, String> {
         let is_buffered_generator_method = (field_name == "current" && arg_exprs.is_empty())
+            || (field_name == "key" && arg_exprs.is_empty())
             || (field_name == "send" && arg_exprs.len() == 1)
             || (field_name == "next" && arg_exprs.is_empty())
             || (field_name == "throw" && arg_exprs.len() == 1)
@@ -1672,6 +1733,35 @@ impl Compiler {
         self.chunk().emit_if(line);
 
         match field_name {
+            "key" => {
+                self.class_get_resolved(class_slots::ObjSource::Local(obj_tmp), &started_key);
+                let line = self.line;
+                crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
+                self.chunk().emit_if(line);
+                self.chunk().emit_else(line);
+                self.emit_buffered_generator_start_with_next(
+                    obj_tmp,
+                    result_slot,
+                    BufferedGeneratorStepMode::Current,
+                    &started_key,
+                    &done_key,
+                    &current_key,
+                    &return_key,
+                );
+                self.chunk().emit_end(line);
+                self.class_get_resolved(class_slots::ObjSource::Local(obj_tmp), &done_key);
+                let line = self.line;
+                crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
+                self.chunk().emit_if(line);
+                self.emit_null();
+                self.chunk().emit_else(line);
+                self.class_get(
+                    class_slots::ObjSource::Local(obj_tmp),
+                    &class_slots::ClassSlot::internal("__vybe_generator_current_key"),
+                );
+                self.chunk().emit_end(line);
+                self.emit_u16(Op::LOCAL_SET, result_slot);
+            }
             "getReturn" => {
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
                 {

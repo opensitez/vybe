@@ -529,6 +529,21 @@ impl Compiler {
         false
     }
 
+    /// Should an instance method value carry its receiver on the callable?
+    ///
+    /// This is the complement of call-site receiver passing, not a synonym for
+    /// "non-prototype". PHP's `CallSite` model installs raw functions on the
+    /// instance and every method call pushes `$this` as argument 0. Stamping
+    /// `__vybe_method_receiver` there makes generic callable paths see a
+    /// bound-method value and can feed the receiver through a second channel.
+    ///
+    /// Bind-on-access/ambient profiles still need the callable marker: reading
+    /// the method value is how callbacks and host-dispatched methods recover
+    /// their receiver.
+    pub(crate) fn method_values_carry_receiver(&self) -> bool {
+        !self.class_prototype_dispatch() && !self.call_supplies_receiver()
+    }
+
     fn program_has_any_protocol_slot(&self, slots: &[vybe_ast::ProtocolSlot]) -> bool {
         slots
             .iter()
@@ -667,6 +682,11 @@ impl Compiler {
         if !gave {
             if cond_is_number {
                 let line = self.line;
+                crate::primitives::references::emit_autoderef_to_stack(
+                    &mut self.chunks,
+                    self.current,
+                    line,
+                );
                 self.emit_const(vybe_runtime::Value::F64(0.0));
                 self.chunk().emit_op(vybe_runtime::opcode::Op::F64_NE, line);
             } else {
@@ -691,13 +711,17 @@ impl Compiler {
     /// `__len__` uses, so there is no "empty collections" special case and a
     /// class in any language earns the behaviour by binding the slot.
     pub(super) fn emit_condition_truthiness_from_stack(&mut self) {
+        let line = self.line;
+        crate::primitives::references::emit_autoderef_to_stack(
+            &mut self.chunks,
+            self.current,
+            line,
+        );
         if !self.protocol_truthiness() {
-            let line = self.line;
             crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
             return;
         }
 
-        let line = self.line;
         let value_slot = self.define_local("__truth_value");
         self.emit_u16(Op::LOCAL_SET, value_slot);
 

@@ -321,13 +321,15 @@ pub fn emit_cstr_length(chunks: &mut [Chunk], current: usize, line: u32) {
 }
 
 pub fn emit_byte_length(chunks: &mut [Chunk], current: usize, line: u32) {
+    // Length, indices and codePointAt results are already i32. Keep the
+    // counter typed instead of emitting dynamic type dispatch per character.
     let base = chunks[current].alloc_scratch(5);
     let (s, i, n, bytes, cp) = (base, base + 1, base + 2, base + 3, base + 4);
 
     set(&mut chunks[current], s, line);
-    chunks[current].emit_f64_const(0.0, line);
+    chunks[current].emit_i32_const(0, line);
     set(&mut chunks[current], i, line);
-    chunks[current].emit_f64_const(0.0, line);
+    chunks[current].emit_i32_const(0, line);
     set(&mut chunks[current], bytes, line);
     get(&mut chunks[current], s, line);
     emit_length(&mut chunks[current], line);
@@ -336,8 +338,8 @@ pub fn emit_byte_length(chunks: &mut [Chunk], current: usize, line: u32) {
     let loop_state = crate::primitives::loops::emit_loop_start(chunks, current, line);
     get(&mut chunks[current], i, line);
     get(&mut chunks[current], n, line);
-    crate::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
-    crate::primitives::loops::emit_loop_cond(chunks, current, line);
+    chunks[current].emit_op(Op::I32_LT_U, line);
+    crate::primitives::loops::emit_loop_cond_from_i32(chunks, current, line);
 
     // cp = s.codePointAt(i) — the WHOLE code point, not a surrogate half.
     get(&mut chunks[current], s, line);
@@ -349,35 +351,33 @@ pub fn emit_byte_length(chunks: &mut [Chunk], current: usize, line: u32) {
     set(&mut chunks[current], cp, line);
 
     // bytes += UTF-8 width of cp
-    for (bound, width) in [(128.0, 1.0), (2048.0, 2.0), (65536.0, 3.0)] {
+    for (bound, width) in [(128, 1), (2048, 2), (65536, 3)] {
         get(&mut chunks[current], cp, line);
-        chunks[current].emit_f64_const(bound, line);
-        crate::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
-        crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
-        chunks[current].emit_if_value(line);
-        chunks[current].emit_f64_const(width, line);
+        chunks[current].emit_i32_const(bound, line);
+        chunks[current].emit_op(Op::I32_LT_U, line);
+        chunks[current].emit_if_i32(line);
+        chunks[current].emit_i32_const(width, line);
         chunks[current].emit_else(line);
     }
-    chunks[current].emit_f64_const(4.0, line);
+    chunks[current].emit_i32_const(4, line);
     for _ in 0..3 {
         chunks[current].emit_end(line);
     }
     get(&mut chunks[current], bytes, line);
-    crate::primitives::ops::emit_dyn_add(&mut chunks[current], line);
+    chunks[current].emit_op(Op::I32_ADD, line);
     set(&mut chunks[current], bytes, line);
 
     // i += cp > 0xFFFF ? 2 : 1 — an astral code point spans two UTF-16 units.
     get(&mut chunks[current], cp, line);
-    chunks[current].emit_f64_const(65535.0, line);
-    crate::primitives::ops::emit_dyn_gt(&mut chunks[current], line);
-    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
-    chunks[current].emit_if_value(line);
-    chunks[current].emit_f64_const(2.0, line);
+    chunks[current].emit_i32_const(65535, line);
+    chunks[current].emit_op(Op::I32_GT_U, line);
+    chunks[current].emit_if_i32(line);
+    chunks[current].emit_i32_const(2, line);
     chunks[current].emit_else(line);
-    chunks[current].emit_f64_const(1.0, line);
+    chunks[current].emit_i32_const(1, line);
     chunks[current].emit_end(line);
     get(&mut chunks[current], i, line);
-    crate::primitives::ops::emit_dyn_add(&mut chunks[current], line);
+    chunks[current].emit_op(Op::I32_ADD, line);
     set(&mut chunks[current], i, line);
 
     crate::primitives::loops::emit_loop_end(chunks, current, loop_state, line);
@@ -2625,4 +2625,26 @@ pub(crate) fn emit_str_char_code_at(chunk: &mut Chunk, line: u32) {
 pub(crate) fn emit_str_equals(chunk: &mut Chunk, line: u32) {
     let idx = chunk.add_import("wasm:js-string", "equals");
     chunk.emit_call(idx, 2, line);
+}
+
+/// Stack: `[value, expected_string] -> [i32]`. A non-string value cannot
+/// match a string tag; guard the string builtin without evaluating either
+/// operand twice or invoking dynamic equality.
+pub(crate) fn emit_equals_if_string(chunk: &mut Chunk, negate: bool, line: u32) {
+    let slots = chunk.alloc_scratch(2);
+    chunk.emit_op_u16(Op::LOCAL_SET, slots + 1, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, slots, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, slots, line);
+    let test = chunk.add_import("wasm:js-string", "test");
+    chunk.emit_call(test, 1, line);
+    chunk.emit_if_i32(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, slots, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, slots + 1, line);
+    emit_str_equals(chunk, line);
+    chunk.emit_else(line);
+    chunk.emit_i32_const(0, line);
+    chunk.emit_end(line);
+    if negate {
+        chunk.emit_op(Op::I32_EQZ, line);
+    }
 }

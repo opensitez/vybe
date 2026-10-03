@@ -8,11 +8,13 @@ use std::sync::{Arc, Mutex};
 use crate::bundle::{Bundle, CompiledBundle, EntryPoint, SourceFile};
 use crate::languages::{self, Language};
 use crate::primitives::HostImportMetadata;
+use vybe_ast::{ClassKind, ClassMember, Module, Statement, StmtKind};
 use vybe_runtime::capabilities::{Capabilities, Capability};
 use vybe_runtime::chunk::Chunk;
 use vybe_runtime::chunk::Import;
 use vybe_runtime::value::{Function, Object, ObjectKind};
 use vybe_runtime::{HostContext, ImportTarget, VM, Value};
+use vybe_runtime::debugger::{DebugPhase, DebugReportScope};
 
 thread_local! {
     static ACTIVE_PHP_RUNTIME: RefCell<Option<*mut PhpIncludeRuntime>> = const { RefCell::new(None) };
@@ -21,6 +23,15 @@ thread_local! {
 }
 
 static NEXT_JS_DYNAMIC_ID: AtomicU64 = AtomicU64::new(1);
+
+/// PHP's language adapter can also run without an active dynamic compiler.
+/// In that case module variables use the ordinary request-global store.
+pub fn php_include_scope() -> Value {
+    ACTIVE_PHP_RUNTIME.with(|slot| {
+        slot.borrow().as_ref().and_then(|pointer| unsafe { (**pointer).include_scope.clone() })
+            .unwrap_or(Value::Null)
+    })
+}
 
 /// Drop every `new Function(...)` backing state and restart the id counter.
 ///
@@ -66,6 +77,7 @@ pub fn reset_dynamic_compilation_state() {
 }
 
 #[derive(Debug)]
+#[derive(Clone)]
 pub struct DynamicCompilation {
     pub chunks: Vec<Chunk>,
     pub host_imports: HostImportMetadata,
@@ -109,20 +121,19 @@ pub trait IncludeCompileCache: Send + Sync {
 
 /// Everything a runtime include's compile depends on BESIDES its own source.
 ///
-/// `compile_full_with_modules_and_php_entry_override` reads two things from the
-/// live VM: the module map (`modules.get(m).exports.get(n)`, so record CONTENT,
-/// not just which modules exist) and the entry path, which PHP's magic
-/// constants make observable. A cached compilation may only be reused where
-/// both are what they were.
+/// Runtime includes are compiled as relocatable chunks. Calls into already
+/// loaded code are still represented by import names and are resolved against
+/// the live VM when the include runs, not baked as absolute function indices in
+/// the cached chunk. That means the cache key must not include the whole VM
+/// module table: WordPress grows that table on every include, so a plain
+/// `require version.php` after early bootstrap and the same `require
+/// version.php` while building the DB error page looked like different
+/// compilations and missed the cache.
 ///
-/// That map is not frozen during a run: `host_imports::install` runs on every
-/// dynamic include and registers host functions, and registration is the one
-/// path that writes `vm.modules` (`insert_host_module_export`). So the
-/// fingerprint is checked per include rather than assumed stable for the run.
-///
-/// Order-independent (wrapping sum of per-entry hashes) so no sort is needed —
-/// this runs on every include and has to stay far below the ~15-25ms compile it
-/// is there to avoid.
+/// The source dependency set recorded by `record_source_reads` guards the file
+/// contents. The remaining compile-time input that is intentionally observable
+/// is the entry path: PHP magic constants and relative include resolution are
+/// anchored to that top-level script.
 pub fn module_fingerprint(vm: &VM, entry_path: &Path) -> u64 {
     use std::hash::{Hash, Hasher};
 
@@ -132,31 +143,8 @@ pub fn module_fingerprint(vm: &VM, entry_path: &Path) -> u64 {
         hasher.finish()
     }
 
-    let mut total: u64 = hash_of(entry_path);
-    total = total.wrapping_mul(31).wrapping_add(vm.modules.len() as u64);
-    for (name, record) in &vm.modules {
-        let mut per_module = hash_of(name).wrapping_add(record.exports.len() as u64);
-        for (export, entry) in &record.exports {
-            // The export's IDENTITY, not just its name: re-registering the same
-            // `(module, name)` with a different index leaves both counts equal
-            // and would otherwise read as "nothing changed".
-            per_module = per_module
-                .wrapping_add(hash_of(export))
-                .wrapping_add(hash_of(std::mem::discriminant(entry)))
-                .wrapping_add(match entry {
-                    vybe_runtime::ExportEntry::Function { idx } => *idx as u64,
-                    vybe_runtime::ExportEntry::ResourceType { type_id } => *type_id as u64,
-                    // A `Value` export re-registered under the same name with a
-                    // different value is invisible here — only its variant is.
-                    // Those are boot infrastructure (`ecma:math.PI`), written
-                    // before any include runs, not something a running script
-                    // rewrites.
-                    _ => 0,
-                });
-        }
-        total = total.wrapping_add(per_module);
-    }
-    total
+    let _ = vm;
+    hash_of(entry_path)
 }
 
 pub fn run_with_js_dynamic_runtime(
@@ -183,6 +171,7 @@ pub fn run_with_js_dynamic_runtime(
 /// Warm embedders call it during boot so the host module records are part of
 /// the reset baseline instead of being dropped as per-tenant script state.
 pub fn register_dynamic_runtime_imports(vm: &mut VM) {
+    ensure_php_runtime_registered(vm);
     ensure_js_runtime_registered(vm);
 }
 
@@ -193,10 +182,32 @@ struct PhpIncludeRuntime {
     /// Per-RUN, and it stays that way. Only the COMPILATION is cacheable: share
     /// this across requests and request two sees request one's "already
     /// included" and skips the include entirely.
-    included_once: HashSet<PathBuf>,
+    /// Canonical dynamic-load resources seen by PHP includes in this run.
+    ///
+    /// PHP's `_once` table is not populated only by `_once` calls: a plain
+    /// `require 'autoload.php'` also makes a nested
+    /// `require_once 'autoload.php'` a no-op while that file is still loading
+    /// (and after it finishes). WordPress' sodium compat loader relies on that:
+    /// `autoload.php` plain-requires `lib/php72compat.php`, whose first line is
+    /// `require_once dirname(dirname(__FILE__)) . '/autoload.php'`.
+    ///
+    /// Plain `include` / `require` do not CONSULT this table for their own
+    /// skip decision, so they can still intentionally load a file again later.
+    /// They do PUBLISH loading/loaded state so subsequent `_once` calls observe
+    /// PHP's included-files semantics.
+    once_resources: HashMap<PathBuf, IncludeOnceState>,
     active_imports: Vec<Import>,
     active_resolved_imports: Vec<ImportTarget>,
     include_cache: Option<std::sync::Arc<dyn IncludeCompileCache>>,
+    include_scope: Option<Value>,
+    builtin_callables: HashMap<(String, usize), Value>,
+    php_trait_declarations: HashMap<String, Statement>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum IncludeOnceState {
+    Loading,
+    Loaded,
 }
 
 struct ActivePhpRuntimeGuard {
@@ -246,6 +257,8 @@ impl<'vm> RuntimeCompilerService<'vm> {
     }
 
     pub fn compile_bundle(&mut self, bundle: &Bundle) -> Result<DynamicCompilation, String> {
+        let _report_scope = DebugReportScope::enter(self.vm.debug_report());
+        let _phase = DebugPhase::new(self.vm.debug_report(), "compile entry");
         ensure_php_runtime_registered(self.vm);
         ensure_js_runtime_registered(self.vm);
         let compiled = bundle.compile_full_with_modules(&self.vm.modules)?;
@@ -545,17 +558,19 @@ fn obtain_eval_expression(
 ) -> Result<(Bundle, crate::ast::Module, crate::ast::Expression), String> {
     use crate::ast::StmtKind;
     // Path A — bare expression (dynamic / expression-oriented languages).
-    let bundle = bundle_from_source(expr, language, PathBuf::from("<dbg-eval>"));
-    if let Ok(mut module) = bundle.prepared_module() {
-        if let Some(idx) = module
-            .body
-            .iter()
-            .rposition(|s| matches!(s.kind, StmtKind::Expr(_)))
-        {
-            if let StmtKind::Expr(e) =
-                std::mem::replace(&mut module.body[idx].kind, StmtKind::Empty)
+    if language.name != "php" {
+        let bundle = bundle_from_source(expr, language, PathBuf::from("<dbg-eval>"));
+        if let Ok(mut module) = bundle.prepared_module() {
+            if let Some(idx) = module
+                .body
+                .iter()
+                .rposition(|s| matches!(s.kind, StmtKind::Expr(_)))
             {
-                return Ok((bundle, module, e));
+                if let StmtKind::Expr(e) =
+                    std::mem::replace(&mut module.body[idx].kind, StmtKind::Empty)
+                {
+                    return Ok((bundle, module, e));
+                }
             }
         }
     }
@@ -598,6 +613,7 @@ fn eval_scaffold(language_name: &str, expr: &str) -> Option<String> {
         "vb" => format!(
             "Module __VbFrag\n  Function __vybe_frag() As Object\n    Return ({expr})\n  End Function\nEnd Module\n"
         ),
+        "php" => format!("<?php function __vybe_frag() {{ return ({expr}); }}\n"),
         _ => return None,
     };
     Some(src)
@@ -640,17 +656,14 @@ fn frag_return_expression(module: &crate::ast::Module) -> Option<crate::ast::Exp
     None
 }
 
-/// A value that can be lifted into the eval mini-VM. Function/host-function
-/// values can't cross VMs (their chunk_index refs are VM-local), so they are
-/// excluded.
-fn eval_value_is_copyable(_v: &Value) -> bool {
-    // Copy EVERY global into the eval mini-VM, including function/constructor
-    // values. They are Arc-shared, so property READS (`typeof C.prototype.x`,
-    // walking a class's prototype chain) see live state — essential for
-    // debugger inspection of classes. Calling a copied user `Function` in the
-    // mini-VM would dispatch on the live VM's chunk_index (wrong table) and
-    // error, but that degrades gracefully; `HostFunction(idx)` stays call-safe
-    // because register_all is deterministic (same index in the mini-VM).
+/// A value that can be lifted into the eval mini-VM for inspection. Function
+/// objects retain their type and properties; dispatch guards their VM-local
+/// chunk indexes if an expression tries to call them.
+fn eval_value_is_copyable(v: &Value) -> bool {
+    // Preserve callable values for read-only expressions such as `typeof f`
+    // and `C.prototype.method`. Their chunk indexes belong to the live VM;
+    // attempting to invoke one in the isolated VM is guarded at dispatch.
+    let _ = v;
     true
 }
 
@@ -670,6 +683,25 @@ fn install_chunk_globals_with_policy(
         }
         let name = chunk.name.to_lowercase();
         if preserve_existing_globals && vm.has_global(&name) {
+            continue;
+        }
+        // A dynamically included function may share its PHP name with an
+        // already declared class. Keep the class constructor in the bare
+        // global; function calls use their separate callable registration.
+        let existing_type = vm
+            .global(&name)
+            .and_then(|value| object_get_prop(value, crate::primitives::reflection::FIELD_KIND))
+            .is_some_and(|kind| {
+                matches!(
+                    kind,
+                    Value::String(ref name)
+                        if matches!(
+                            name.as_ref(),
+                            "class" | "interface" | "trait" | "mixin" | "module" | "struct"
+                        )
+                )
+            });
+        if existing_type {
             continue;
         }
 
@@ -705,6 +737,30 @@ fn preprocess_dynamic_php_source(source: &str, source_path: &Path) -> String {
     );
 
     replace_php_magic_constants(source, &file_literal, &dir_literal)
+}
+
+fn strip_installed_php_exception_bootstrap(module: &mut vybe_ast::Module) {
+    use vybe_ast::StmtKind;
+    let names = [
+        "Throwable", "Exception", "Error", "ErrorException", "TypeError",
+        "ValueError", "ArithmeticError", "DivisionByZeroError", "ArgumentCountError",
+        "CompileError", "ParseError", "AssertionError", "UnhandledMatchError",
+        "FiberError", "RuntimeException", "PDOException", "LogicException",
+        "InvalidArgumentException", "DomainException", "LengthException",
+        "OutOfRangeException", "BadFunctionCallException", "BadMethodCallException",
+        "OutOfBoundsException", "RangeException", "OverflowException",
+        "UnderflowException", "UnexpectedValueException", "JsonException",
+        "__PHP_Incomplete_Class",
+    ];
+    let Some(start) = module.body.iter().position(|stmt| {
+        matches!(&stmt.kind, StmtKind::ClassDecl { name, .. } if name == names[0])
+    }) else { return };
+    let matches_bootstrap = module.body[start..].iter().zip(names).all(|(stmt, expected)| {
+        matches!(&stmt.kind, StmtKind::ClassDecl { name, .. } if name == expected)
+    });
+    if matches_bootstrap && module.body.len() >= start + names.len() {
+        module.body.drain(start..start + names.len());
+    }
 }
 
 fn replace_php_magic_constants(source: &str, file_literal: &str, dir_literal: &str) -> String {
@@ -850,16 +906,81 @@ pub fn into_dynamic_compilation(compiled: CompiledBundle) -> DynamicCompilation 
 }
 
 impl PhpIncludeRuntime {
+    fn trace_include_event(
+        &self,
+        event: &str,
+        kind: &str,
+        target: &str,
+        resolved_path: &Path,
+        canonical_path: &Path,
+    ) {
+        if std::env::var_os("VYBE_TRACE_PHP_INCLUDE").is_some() {
+            eprintln!(
+                "[php-include] event={event} depth={} kind={kind} target={} resolved={} canonical={} state={:?}",
+                self.current_paths.len(),
+                target,
+                resolved_path.display(),
+                canonical_path.display(),
+                self.once_resources.get(canonical_path)
+            );
+        }
+    }
+
+    fn trace_include_cache_event(&self, event: &str, path: &Path, fingerprint: u64) {
+        if std::env::var_os("VYBE_TRACE_PHP_INCLUDE_CACHE").is_some() {
+            eprintln!(
+                "[php-include-cache] event={event} fingerprint={fingerprint} path={}",
+                path.display()
+            );
+        }
+    }
+
     fn new(caps: Capabilities) -> Self {
         Self {
             caps,
             vm: std::ptr::null_mut(),
             current_paths: Vec::new(),
-            included_once: HashSet::new(),
+            once_resources: HashMap::new(),
             include_cache: None,
             active_imports: Vec::new(),
             active_resolved_imports: Vec::new(),
+            include_scope: None,
+            builtin_callables: HashMap::new(),
+            php_trait_declarations: HashMap::new(),
         }
+    }
+
+    fn begin_once_resource(&mut self, path: &Path) -> bool {
+        match self.once_resources.get(path) {
+            Some(IncludeOnceState::Loading | IncludeOnceState::Loaded) => false,
+            None => {
+                self.once_resources
+                    .insert(path.to_path_buf(), IncludeOnceState::Loading);
+                true
+            }
+        }
+    }
+
+    fn finish_once_resource(&mut self, path: PathBuf) {
+        self.once_resources.insert(path, IncludeOnceState::Loaded);
+    }
+
+    fn fail_once_resource(&mut self, path: &Path) {
+        self.once_resources.remove(path);
+    }
+
+    fn publish_include_resource(&mut self, path: &Path) -> bool {
+        if self.once_resources.contains_key(path) {
+            false
+        } else {
+            self.once_resources
+                .insert(path.to_path_buf(), IncludeOnceState::Loading);
+            true
+        }
+    }
+
+    fn is_currently_loading(&self, path: &Path) -> bool {
+        self.current_paths.iter().any(|active| active == path)
     }
 
     fn activate(
@@ -871,8 +992,13 @@ impl PhpIncludeRuntime {
     ) -> ActivePhpRuntimeGuard {
         self.vm = vm as *mut VM;
         self.current_paths.clear();
+        self.builtin_callables.clear();
+        self.php_trait_declarations.clear();
         if let Some(path) = entry_path {
-            self.current_paths.push(path.to_path_buf());
+            let canonical_path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+            self.current_paths.push(canonical_path.clone());
+            self.once_resources
+                .insert(canonical_path, IncludeOnceState::Loaded);
         }
         self.active_imports = active_imports;
         self.active_resolved_imports = active_resolved_imports;
@@ -917,16 +1043,39 @@ impl PhpIncludeRuntime {
         let canonical_path = resolved_path
             .canonicalize()
             .unwrap_or_else(|_| resolved_path.clone());
+        let _include_phase = DebugPhase::new(
+            vm.debug_report(),
+            format!("include {}", canonical_path.display()),
+        );
 
-        if matches!(kind.as_str(), "include_once" | "require_once")
-            && self.included_once.contains(&canonical_path)
-        {
+        let load_once = matches!(kind.as_str(), "include_once" | "require_once");
+        if load_once && !self.begin_once_resource(&canonical_path) {
+            self.trace_include_event("skip-once", &kind, &target, &resolved_path, &canonical_path);
             return Ok(Value::I32(1));
         }
+        if !load_once && self.is_currently_loading(&canonical_path) {
+            self.trace_include_event(
+                "skip-active",
+                &kind,
+                &target,
+                &resolved_path,
+                &canonical_path,
+            );
+            return Ok(Value::I32(1));
+        }
+        let published_plain_resource = if load_once {
+            false
+        } else {
+            self.publish_include_resource(&canonical_path)
+        };
+        self.trace_include_event("load", &kind, &target, &resolved_path, &canonical_path);
 
         let source = match fs::read_to_string(&resolved_path) {
             Ok(source) => source,
             Err(e) => {
+                if load_once || published_plain_resource {
+                    self.fail_once_resource(&canonical_path);
+                }
                 let detail = format!(
                     "{kind}({}): failed to open stream: {e}",
                     resolved_path.display()
@@ -953,11 +1102,26 @@ impl PhpIncludeRuntime {
             .unwrap_or(0);
         if let Some(cache) = cache.as_ref() {
             if let Some(hit) = cache.get(&canonical_path, fingerprint) {
+                self.trace_include_cache_event("hit", &canonical_path, fingerprint);
                 // A cached compile FAILURE is still that file's answer; letting
                 // it fall through would recompile a broken include on every
                 // request, which is exactly what the entry cache refuses to do.
-                let compiled = hit?;
-                return self.run_included_compilation(vm, compiled, kind, canonical_path);
+                let compiled = match hit {
+                    Ok(compiled) => compiled,
+                    Err(err) => {
+                        if load_once || published_plain_resource {
+                            self.fail_once_resource(&canonical_path);
+                        }
+                        return Err(err);
+                    }
+                };
+                return self.run_included_compilation(
+                    vm,
+                    compiled,
+                    kind,
+                    canonical_path,
+                    load_once || published_plain_resource,
+                );
             }
         }
 
@@ -984,11 +1148,34 @@ impl PhpIncludeRuntime {
                     deps,
                     result.as_ref().map_err(|err| err.as_str()),
                 );
-                result?
+                self.trace_include_cache_event("store", &canonical_path, fingerprint);
+                match result {
+                    Ok(compiled) => compiled,
+                    Err(err) => {
+                        if load_once || published_plain_resource {
+                            self.fail_once_resource(&canonical_path);
+                        }
+                        return Err(err);
+                    }
+                }
             }
-            None => self.compile_dynamic_php(vm, &bundle, &entry)?,
+            None => match self.compile_dynamic_php(vm, &bundle, &entry) {
+                Ok(compiled) => compiled,
+                Err(err) => {
+                    if load_once || published_plain_resource {
+                        self.fail_once_resource(&canonical_path);
+                    }
+                    return Err(err);
+                }
+            },
         };
-        self.run_included_compilation(vm, compiled, kind, canonical_path)
+        self.run_included_compilation(
+            vm,
+            compiled,
+            kind,
+            canonical_path,
+            load_once || published_plain_resource,
+        )
     }
 
     /// Install a compiled include into the live VM and run it — the half that
@@ -998,9 +1185,16 @@ impl PhpIncludeRuntime {
         &mut self,
         vm: &mut VM,
         compiled: DynamicCompilation,
-        kind: String,
+        _kind: String,
         canonical_path: PathBuf,
+        publishes_once_resource: bool,
     ) -> Result<Value, String> {
+        // A function-scoped include inherits the caller's symbol table. Keep
+        // it distinct from request globals: functions declared/called by the
+        // template must still see genuine `global $name` bindings.
+        let caller_locals = vm.current_source_scope()
+            .filter(|(name, _)| name != "<script>")
+            .map(|(_, locals)| locals).unwrap_or_default();
         let base_chunk_index = vm.chunks.len();
         crate::host_imports::install(vm, &compiled.host_imports);
         install_chunk_globals(vm, &compiled.chunks, base_chunk_index);
@@ -1018,6 +1212,14 @@ impl PhpIncludeRuntime {
             child_active_resolved_imports.clone(),
         );
 
+        let previous_scope = self.include_scope.clone();
+        if !caller_locals.is_empty() {
+            let mut scope = Object::new();
+            for (_, name, value) in &caller_locals {
+                scope.properties.insert(name.trim_start_matches('$').to_string(), value.clone());
+            }
+            self.include_scope = Some(Value::Object(vybe_runtime::heap::alloc(scope)));
+        }
         self.current_paths.push(canonical_path.clone());
         let result = vm
             .run_linked_nested(compiled.chunks, child_active_resolved_imports)
@@ -1025,35 +1227,261 @@ impl PhpIncludeRuntime {
         self.current_paths.pop();
         self.active_imports = saved_active_imports;
         self.active_resolved_imports = saved_active_resolved_imports;
+        if !caller_locals.is_empty() {
+            if let Some(Value::Object(scope)) = &self.include_scope {
+                let scope = scope.lock().unwrap();
+                for (slot, name, _) in &caller_locals {
+                    if let Some(value) = scope.properties.get(name.trim_start_matches('$')) {
+                        vm.set_current_source_local(*slot, value.clone());
+                    }
+                }
+            }
+        }
+        self.include_scope = previous_scope;
 
         match result {
             Ok(Value::Null) => {
-                if matches!(kind.as_str(), "include_once" | "require_once") {
-                    self.included_once.insert(canonical_path);
+                if publishes_once_resource {
+                    self.finish_once_resource(canonical_path);
                 }
                 Ok(Value::I32(1))
             }
             Ok(value) => {
-                if matches!(kind.as_str(), "include_once" | "require_once") {
-                    self.included_once.insert(canonical_path);
+                if publishes_once_resource {
+                    self.finish_once_resource(canonical_path);
                 }
                 Ok(value)
             }
             // The included file ran and failed. That is the script's error, not
             // a failed file open — reporting it as `false` made a fatal inside
             // an include indistinguishable from a missing file.
-            Err(err) => Err(err),
+            Err(err) => {
+                if publishes_once_resource {
+                    self.fail_once_resource(&canonical_path);
+                }
+                Err(err)
+            }
+        }
+    }
+
+    /// Materialize a compiler-lowered builtin only when a dynamic callback
+    /// actually requests it. Reuse the normal PHP lowering and cache the
+    /// resulting function in this request's live VM, indexed by argument count.
+    fn builtin_callable(&mut self, name: &str, argc: usize) -> Result<Value, String> {
+        let name = name.trim_start_matches('\\').to_ascii_lowercase();
+        let key = (name.clone(), argc);
+        if let Some(value) = self.builtin_callables.get(&key) {
+            return Ok(value.clone());
+        }
+        if argc > 255 || name.is_empty()
+            || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
+            return Ok(Value::Null);
+        }
+        let language = languages::find_by_name("php").ok_or("PHP language unavailable")?;
+        let profile = crate::profile::parse_profile((language.profile_source)())?;
+        if profile.lookup_builtin(&name).is_none() {
+            return Ok(Value::Null);
+        }
+        let parameters = (0..argc).map(|i| format!("$__arg{i}")).collect::<Vec<_>>().join(", ");
+        let source = format!("<?php return function({parameters}) {{ return \\{name}({parameters}); }};");
+        let path = PathBuf::from(format!("<php-builtin-{name}-{argc}>.php"));
+        let bundle = bundle_from_source(source, language, &path);
+        let vm = unsafe { &mut *self.vm };
+        let compiled = self.compile_dynamic_php(vm, &bundle, &path)?;
+        let value = self.run_included_compilation(vm, compiled, "builtin".into(), path, false)?;
+        self.builtin_callables.insert(key, value.clone());
+        Ok(value)
+    }
+
+    fn include_available_php_traits(
+        &mut self,
+        module: &mut Module,
+    ) {
+        fn class_statements(body: &[Statement]) -> Vec<&Statement> {
+            let mut classes = Vec::new();
+            for statement in body {
+                match &statement.kind {
+                    StmtKind::ClassDecl { .. } => classes.push(statement),
+                    StmtKind::NamespaceDecl { body, .. } | StmtKind::Block(body) => {
+                        classes.extend(class_statements(body));
+                    }
+                    _ => {}
+                }
+            }
+            classes
+        }
+        fn trait_name(statement: &Statement) -> Option<&str> {
+            match &statement.kind {
+                StmtKind::ClassDecl { name, modifiers, .. }
+                    if modifiers.kind == ClassKind::Trait => Some(name),
+                _ => None,
+            }
+        }
+        fn trait_uses(statement: &Statement) -> Vec<(String, String)> {
+            match &statement.kind {
+                StmtKind::ClassDecl { name, members, .. } => members.iter().filter_map(|member| {
+                    match member {
+                        ClassMember::Augment(augment) => Some((name.clone(), augment.from.clone())),
+                        _ => None,
+                    }
+                }).collect(),
+                _ => Vec::new(),
+            }
+        }
+        for statement in class_statements(&module.body) {
+            if let Some(name) = trait_name(statement) {
+                self.php_trait_declarations.insert(name.to_ascii_lowercase(), statement.clone());
+            }
+        }
+        let mut pending: Vec<(String, String)> = class_statements(&module.body).into_iter().flat_map(trait_uses).collect();
+        let mut inserted = Vec::new();
+        let mut seen = HashSet::new();
+        let mut resolved_augments = HashMap::new();
+        while let Some((_owner, source_name)) = pending.pop() {
+            let source_key = source_name.to_ascii_lowercase();
+            if !seen.insert(source_key.clone()) {
+                continue;
+            }
+            if class_statements(&module.body).iter().any(|statement| trait_name(statement)
+                .is_some_and(|name| name.eq_ignore_ascii_case(&source_name))) {
+                continue;
+            }
+            let known = self.php_trait_declarations.get(&source_key).cloned().or_else(|| {
+                let suffix = format!(".{source_key}");
+                let mut matches = self.php_trait_declarations.iter()
+                    .filter(|(name, _)| name.ends_with(&suffix));
+                match (matches.next(), matches.next()) {
+                    (Some((_, statement)), None) => Some(statement.clone()),
+                    _ => None,
+                }
+            });
+            let declaration = known;
+            if let Some(declaration) = declaration {
+                if let Some(name) = trait_name(&declaration) {
+                    resolved_augments.insert(source_key, name.to_string());
+                }
+                pending.extend(trait_uses(&declaration));
+                inserted.push(declaration);
+            }
+        }
+        fn rewrite_augments(body: &mut [Statement], resolved: &HashMap<String, String>) {
+            for statement in body {
+                match &mut statement.kind {
+                    StmtKind::ClassDecl { members, .. } => {
+                        for member in members {
+                            if let ClassMember::Augment(augment) = member {
+                                if let Some(name) = resolved.get(&augment.from.to_ascii_lowercase()) {
+                                    augment.from = name.clone();
+                                }
+                            }
+                        }
+                    }
+                    StmtKind::NamespaceDecl { body, .. } | StmtKind::Block(body) => rewrite_augments(body, resolved),
+                    _ => {}
+                }
+            }
+        }
+        rewrite_augments(&mut module.body, &resolved_augments);
+        rewrite_augments(&mut inserted, &resolved_augments);
+        if !inserted.is_empty() {
+            inserted.reverse();
+            module.body.splice(0..0, inserted);
         }
     }
 
     fn compile_dynamic_php(
-        &self,
-        vm: &VM,
+        &mut self,
+        vm: &mut VM,
         bundle: &Bundle,
         entry_path: &Path,
     ) -> Result<DynamicCompilation, String> {
-        let compiled = bundle
-            .compile_full_with_modules_and_php_entry_override(&vm.modules, Some(entry_path))?;
+        let _report_scope = DebugReportScope::enter(vm.debug_report());
+        let _phase = DebugPhase::new(
+            vm.debug_report(),
+            format!("compile {}", bundle.sources.first().map_or("<unknown>", |s| s.path.to_str().unwrap_or("<path>"))),
+        );
+        let mut module = {
+            let _phase = DebugPhase::current("prepare source");
+            bundle.prepared_module_with_php_entry_override(Some(entry_path))?
+        };
+        fn collect_trait_names(body: &[Statement], out: &mut Vec<(String, String)>) {
+            for statement in body {
+                match &statement.kind {
+                    StmtKind::ClassDecl { name, members, .. } => {
+                        for member in members {
+                            if let ClassMember::Augment(augment) = member {
+                                out.push((name.clone(), augment.from.clone()));
+                            }
+                        }
+                    }
+                    StmtKind::NamespaceDecl { body, .. } | StmtKind::Block(body) => collect_trait_names(body, out),
+                    _ => {}
+                }
+            }
+        }
+        let mut trait_names = Vec::new();
+        collect_trait_names(&module.body, &mut trait_names);
+        for (owner, trait_name) in trait_names {
+            let key = trait_name.to_ascii_lowercase();
+            if self.php_trait_declarations.keys().any(|name| name == &key || name.ends_with(&format!(".{key}"))) {
+                continue;
+            }
+            let callbacks = vm.global("__php_autoload_stack").and_then(|value| {
+                let Value::Object(stack) = value else { return None };
+                let stack = stack.lock().unwrap();
+                let ObjectKind::Array(callbacks) = &stack.kind else { return None };
+                Some(callbacks.clone())
+            }).unwrap_or_default();
+            let _phase = DebugPhase::current(format!("autoload trait {trait_name}"));
+            let namespace = owner.rsplit_once('.').map(|(namespace, _)| namespace).unwrap_or("");
+            let mut candidates = vec![trait_name.clone()];
+            if !namespace.is_empty() && !trait_name.starts_with(&format!("{namespace}.")) {
+                candidates.push(format!("{namespace}.{trait_name}"));
+            }
+            for candidate in candidates {
+                let spelling = Value::String(Arc::from(candidate.replace('.', "\\")));
+                for callback in &callbacks {
+                    vm.invoke_callback(callback, &[spelling.clone()]);
+                    if self.php_trait_declarations.keys().any(|name| name == &key || name.ends_with(&format!(".{key}"))) {
+                        break;
+                    }
+                }
+                if self.php_trait_declarations.keys().any(|name| name == &key || name.ends_with(&format!(".{key}"))) {
+                    break;
+                }
+            }
+        }
+        self.include_available_php_traits(&mut module);
+        // PHP's walker prepends the complete core exception class family to
+        // every file that mentions an exception. In a linked include these
+        // classes already live in the VM once their first unit has run. Keep
+        // the first installation, then compile later files against that shared
+        // runtime instead of emitting the same ~30 classes and their methods
+        // again. Match the entire synthetic prefix in declaration order so a
+        // user class can never be removed by a matching name alone.
+        if ["throwable", "exception"].iter().all(|name| {
+            vm.global(name).is_some_and(|value| !matches!(value, Value::Null | Value::Undefined))
+        }) {
+            strip_installed_php_exception_bootstrap(&mut module);
+        }
+        let compiled = {
+            let _phase = DebugPhase::current("lower module");
+            bundle.compile_prepared_module_without_module_end_hooks(&module, &vm.modules)?
+        };
+        if std::env::var_os("VYBE_TRACE_PHP_INCLUDE_HELPERS").is_some() {
+            if let Some(script) = compiled.chunks.first() {
+                let names: Vec<&str> = script
+                    .global_inits
+                    .iter()
+                    .map(|init| init.name.as_str())
+                    .collect();
+                eprintln!(
+                    "[php-include-helpers] path={} chunks={} global_inits={names:?}",
+                    bundle.sources.first().map_or("<none>", |source| source.path.to_str().unwrap_or("<invalid-path>")),
+                    compiled.chunks.len(),
+                );
+            }
+        }
         Ok(DynamicCompilation {
             chunks: compiled.chunks,
             host_imports: compiled.host_imports,
@@ -1085,7 +1513,12 @@ impl JsDynamicRuntime {
         } else {
             None
         };
-        let compiled = match bundle.compile_full_with_modules(&vm.modules) {
+        let compiled = match bundle
+            .compile_full_with_modules_and_php_entry_override_without_module_end_hooks(
+                &vm.modules,
+                None,
+            )
+        {
             Ok(compiled) => compiled,
             Err(e) => return throw_eval_error(ctx, "SyntaxError", &e),
         };
@@ -1801,30 +2234,138 @@ impl Drop for ActiveJsRuntimeGuard {
 }
 
 fn ensure_php_runtime_registered(vm: &mut VM) {
-    let key = ("vybe:php".to_string(), "dynamic_include".to_string());
-    if vm.host_registry.contains_key(&key) {
-        return;
+    let compact_key = ("vybe:php".to_string(), "compact".to_string());
+    if !vm.host_registry.contains_key(&compact_key) {
+        vm.register_host_fn("vybe:php", "compact", Box::new(|_, args| {
+            fn names(value: &Value, output: &mut Vec<String>) {
+                match value {
+                    Value::String(name) => output.push(name.to_string()),
+                    Value::Object(object) => {
+                        let values = match &object.lock().unwrap().kind {
+                            ObjectKind::Array(values) => values.clone(),
+                            ObjectKind::Map(values) => values.values().cloned().collect(),
+                            _ => Vec::new(),
+                        };
+                        for value in values { names(&value, output); }
+                    }
+                    _ => {}
+                }
+            }
+            ACTIVE_PHP_RUNTIME.with(|active| {
+                let Some(pointer) = *active.borrow() else { return Value::Null };
+                let runtime = unsafe { &mut *pointer };
+                if runtime.vm.is_null() { return Value::Null; }
+                let vm = unsafe { &mut *runtime.vm };
+                let mut variables = HashMap::new();
+                if let Some((chunk, locals)) = vm.current_source_scope() {
+                    if chunk != "<script>" {
+                        for (_, name, value) in locals {
+                            variables.insert(name.trim_start_matches('$').to_string(), value);
+                        }
+                    } else {
+                        let scope = runtime.include_scope.clone().unwrap_or_else(|| {
+                            let Some(Value::Object(global)) = vm.global("globalThis") else { return Value::Null };
+                            global.lock().unwrap().properties.get("__vybe_php_globals").cloned().unwrap_or(Value::Null)
+                        });
+                        if let Value::Object(scope) = scope {
+                            variables.extend(scope.lock().unwrap().properties.iter().map(|(key, value)| (key.clone(), value.clone())));
+                        }
+                    }
+                }
+                let mut requested = Vec::new();
+                for arg in args { names(arg, &mut requested); }
+                let mut result = Object::new();
+                result.kind = ObjectKind::Map(Default::default());
+                if let ObjectKind::Map(entries) = &mut result.kind {
+                    for name in requested {
+                        if let Some(value) = variables.get(&name) {
+                            let value = if let Some(deref) = vm.global("__vybe_autoderef").cloned() {
+                                vm.invoke_callback(&deref, &[value.clone()])
+                            } else { value.clone() };
+                            entries.insert(Value::String(Arc::from(name)), value);
+                        }
+                    }
+                }
+                Value::Object(vybe_runtime::heap::alloc(result))
+            })
+        }));
+    }
+    let scope_key = ("vybe:php".to_string(), "include_scope".to_string());
+    if !vm.host_registry.contains_key(&scope_key) {
+        vm.register_host_fn("vybe:php", "include_scope", Box::new(|_, _| php_include_scope()));
+    }
+    let include_key = ("vybe:php".to_string(), "dynamic_include".to_string());
+    if !vm.host_registry.contains_key(&include_key) {
+        vm.register_host_fn(
+            "vybe:php",
+            "dynamic_include",
+            Box::new(|ctx, args| {
+                ACTIVE_PHP_RUNTIME.with(|slot| {
+                    let Some(runtime_ptr) = *slot.borrow() else {
+                        return throw_dynamic_compile_error(
+                            ctx,
+                            "include/require ran with no active PHP runtime".to_string(),
+                        );
+                    };
+                    let runtime = unsafe { &mut *runtime_ptr };
+                    match runtime.handle_dynamic_include(args) {
+                        Ok(value) => value,
+                        Err(message) => throw_dynamic_compile_error(ctx, message),
+                    }
+                })
+            }),
+        );
     }
 
-    vm.register_host_fn(
-        "vybe:php",
-        "dynamic_include",
-        Box::new(|ctx, args| {
-            ACTIVE_PHP_RUNTIME.with(|slot| {
-                let Some(runtime_ptr) = *slot.borrow() else {
-                    return throw_dynamic_compile_error(
-                        ctx,
-                        "include/require ran with no active PHP runtime".to_string(),
-                    );
-                };
-                let runtime = unsafe { &mut *runtime_ptr };
-                match runtime.handle_dynamic_include(args) {
-                    Ok(value) => value,
-                    Err(message) => throw_dynamic_compile_error(ctx, message),
-                }
-            })
-        }),
-    );
+    let function_key = ("vybe:php".to_string(), "global_function".to_string());
+    if !vm.host_registry.contains_key(&function_key) {
+        vm.register_host_fn(
+            "vybe:php",
+            "global_function",
+            Box::new(|ctx, args| {
+                let raw_name = args.first().map(value_to_string).unwrap_or_default();
+                ACTIVE_PHP_RUNTIME.with(|slot| {
+                    let Some(runtime_ptr) = *slot.borrow() else {
+                        return throw_dynamic_compile_error(
+                            ctx,
+                            "PHP global function lookup ran with no active runtime".to_string(),
+                        );
+                    };
+                    let runtime = unsafe { &mut *runtime_ptr };
+                    if runtime.vm.is_null() {
+                        return Value::Null;
+                    }
+                    let vm = unsafe { &mut *runtime.vm };
+                    let trimmed = raw_name.trim_start_matches('\\');
+                    let dotted = trimmed.replace('\\', ".");
+                    let candidates = [
+                        raw_name.clone(),
+                        trimmed.to_string(),
+                        dotted.clone(),
+                        raw_name.to_lowercase(),
+                        trimmed.to_lowercase(),
+                        dotted.to_lowercase(),
+                        trimmed.strip_prefix("__php_fn_").unwrap_or(trimmed).to_lowercase(),
+                    ];
+                    for name in candidates {
+                        if let Some(value) = vm.global(&name) {
+                            if !matches!(value, Value::Null | Value::Undefined) {
+                                return value.clone();
+                            }
+                        }
+                    }
+                    if let Some(argc) = args.get(1) {
+                        let name = trimmed.strip_prefix("__php_fn_").unwrap_or(trimmed);
+                        return match runtime.builtin_callable(name, argc.as_f64() as usize) {
+                            Ok(value) => value,
+                            Err(message) => throw_dynamic_compile_error(ctx, message),
+                        };
+                    }
+                    Value::Null
+                })
+            }),
+        );
+    }
 }
 
 fn throw_dynamic_compile_error(ctx: &mut HostContext, message: String) -> Value {
@@ -2549,6 +3090,22 @@ mod tests {
     }
 
     #[test]
+    fn php_includes_reuse_installed_exception_bootstrap() {
+        let stamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let base = std::env::temp_dir().join(format!("vybe-php-shared-exceptions-{stamp}"));
+        std::fs::create_dir_all(&base).unwrap();
+        let main = base.join("main.php");
+        std::fs::write(&main, "<?php $a = 'a.php'; include $a; $b = 'b.php'; include $b;").unwrap();
+        std::fs::write(base.join("a.php"), "<?php $first = new Exception('one');").unwrap();
+        std::fs::write(base.join("b.php"), "<?php $second = new Exception('two');").unwrap();
+
+        let mut vm = configured_vm();
+        RuntimeCompilerService::new(&mut vm).compile_and_run_path(&main).unwrap();
+        let exception_chunks = vm.chunks.iter().filter(|chunk| chunk.name == "Exception").count();
+        assert_eq!(exception_chunks, 1, "core Exception must be compiled once per VM");
+    }
+
+    #[test]
     fn php_dynamic_include_resolves_magic_file_constants_in_nested_runtime_paths() {
         let stamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -2588,6 +3145,43 @@ mod tests {
             Some(Value::I64(value)) => assert_eq!(*value, 42),
             Some(Value::F64(value)) => assert_eq!(*value, 42.0),
             other => panic!("expected nested $result global, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn php_dynamic_plain_include_active_cycle_returns_success_without_reentering() {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let base = std::env::temp_dir().join(format!("vybe-dynamic-active-include-{stamp}"));
+        std::fs::create_dir_all(&base).expect("create temp dir");
+
+        let main_path = base.join("main.php");
+        let child_path = base.join("child.php");
+
+        std::fs::write(
+            &main_path,
+            "<?php $first = require __DIR__ . '/child.php'; $second = require __DIR__ . '/child.php'; $result = $first + $second;",
+        )
+        .expect("write main php");
+        std::fs::write(
+            &child_path,
+            "<?php $nested = require __FILE__; return $nested + 40;",
+        )
+        .expect("write child php");
+
+        let mut vm = configured_vm();
+        let mut service = RuntimeCompilerService::new(&mut vm);
+        service
+            .compile_and_run_path(&main_path)
+            .expect("run php active include cycle");
+
+        match vm.global("__php_var_result") {
+            Some(Value::I32(value)) => assert_eq!(*value, 82),
+            Some(Value::I64(value)) => assert_eq!(*value, 82),
+            Some(Value::F64(value)) => assert_eq!(*value, 82.0),
+            other => panic!("expected active include $result global, got {other:?}"),
         }
     }
 

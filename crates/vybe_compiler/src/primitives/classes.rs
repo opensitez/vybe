@@ -23,6 +23,51 @@ pub fn ctor_global_for(prefix: &str, arity: usize) -> String {
 }
 
 impl Compiler {
+    fn compile_function_body_stmt(
+        &mut self,
+        function_name: &str,
+        statement_index: usize,
+        statement: &Statement,
+    ) -> Result<(), String> {
+        let timing = compiler_timing_path();
+        let debug_function = std::env::var("VYBE_COMPILER_DEBUG_FUNCTION").ok();
+        let should_trace = timing.is_some()
+            && debug_function
+                .as_deref()
+                .is_some_and(|target| target == function_name || target == "*");
+        let started = std::time::Instant::now();
+        if should_trace {
+            if let Some(path) = timing.as_deref() {
+                let scope_next = self.scopes.last().map(|s| s.next_slot).unwrap_or(0);
+                let local_count = self.chunks[self.current].local_count;
+                write_compiler_timing(
+                    path,
+                    &format!(
+                        "compile_function_stmt_start {function_name}[{statement_index}] line={} scope_next={scope_next} local_count={local_count}",
+                        statement.span.start_line
+                    ),
+                    std::time::Duration::ZERO,
+                );
+            }
+        }
+        let result = self.compile_stmt(statement);
+        if should_trace {
+            if let Some(path) = timing.as_deref() {
+                let scope_next = self.scopes.last().map(|s| s.next_slot).unwrap_or(0);
+                let local_count = self.chunks[self.current].local_count;
+                write_compiler_timing(
+                    path,
+                    &format!(
+                        "compile_function_stmt_done {function_name}[{statement_index}] line={} scope_next={scope_next} local_count={local_count}",
+                        statement.span.start_line
+                    ),
+                    started.elapsed(),
+                );
+            }
+        }
+        result
+    }
+
     pub(crate) fn static_constructors_run_on_first_type_use(&self) -> bool {
         self.directives().static_constructor_timing
             == Some(vybe_ast::StaticConstructorTiming::FirstTypeUse)
@@ -270,6 +315,7 @@ impl Compiler {
         init: Option<&Expression>,
         array_bounds: Option<&[Expression]>,
         is_value_type: bool,
+        php_inherited_mode: Option<u16>,
         line: u32,
     ) -> Result<(), String> {
         let value_slot = self.define_local("__field_init_value");
@@ -320,16 +366,44 @@ impl Compiler {
         // key into its property bag. A class with no registered type, or a
         // field the type does not declare, falls back to the string key
         // automatically.
-        let slot = match self.current_class.clone() {
+        let own_slot = match self.current_class.clone() {
             Some(class) => class_slots::ClassSlot::instance_of(class, field_name),
             None => class_slots::ClassSlot::instance(field_name),
         };
-        self.class_set(
-            class_slots::ObjSource::Local(owner_slot),
-            &slot,
-            class_slots::ValueSource::Local(value_slot),
-        );
+        if let Some(mode_slot) = php_inherited_mode {
+            self.emit_u16(Op::LOCAL_GET, mode_slot);
+            self.chunk().emit_if(line);
+            // An ancestor may have been compiled in another module. Its
+            // struct index cannot be used against this child's receiver.
+            self.class_set(
+                class_slots::ObjSource::Local(owner_slot),
+                &class_slots::ClassSlot::internal(field_name),
+                class_slots::ValueSource::Local(value_slot),
+            );
+            self.chunk().emit_else(line);
+            self.class_set(
+                class_slots::ObjSource::Local(owner_slot),
+                &own_slot,
+                class_slots::ValueSource::Local(value_slot),
+            );
+            self.chunk().emit_end(line);
+        } else {
+            self.class_set(
+                class_slots::ObjSource::Local(owner_slot),
+                &own_slot,
+                class_slots::ValueSource::Local(value_slot),
+            );
+        }
         Ok(())
+    }
+
+    fn emit_php_field_defaults_call(&mut self, class_name: &str, owner_slot: u16) {
+        let global = format!("__php_field_defaults_{}", self.canon(class_name));
+        self.emit_global_read(&global);
+        self.emit_u16(Op::LOCAL_GET, owner_slot);
+        self.emit_const(Value::Bool(false));
+        self.emit_direct_callable_invoke(2);
+        self.emit(Op::DROP);
     }
 
     fn class_requires_form_identity_stamp(&self, parent: &Option<String>) -> bool {
@@ -606,6 +680,14 @@ impl Compiler {
         if self.dotnet_descriptor_parent_has_no_user_ctor(parent_name) {
             return false;
         }
+        // PHP requires an `extends` parent to exist when the child is
+        // declared. Dynamic includes can provide that parent after this
+        // module was compiled, so the declaration sets below cannot decide
+        // whether its constructor should run. `emit_parent_ctor_value` reads
+        // the live class global in that case.
+        if self.profile.name == "php" {
+            return true;
+        }
         let pname = self.canon(parent_name);
         let has_local = self.scope().resolve(parent_name).is_some();
         let has_upvalue = self.scopes.len() > 1
@@ -726,6 +808,26 @@ impl Compiler {
             return Ok(());
         }
 
+        // A PHP parent loaded by an earlier include is absent from this
+        // compiler unit. Its constructor may have optional parameters: a
+        // direct call would put the trailing receiver into the first omitted
+        // parameter. The class publishes its initializer arity at runtime,
+        // so initialize can pad the arguments before passing that receiver.
+        if self.profile.name == "php"
+            && !self.pending_classes.contains_key(&self.canon(parent_name))
+            && !common::errors::is_exception_type(parent_name)
+        {
+            self.emit_parent_ctor_value(parent_name);
+            self.emit_u16(Op::LOCAL_GET, this_slot);
+            for arg in args {
+                self.compile_expr(arg)?;
+            }
+            self.emit_array_new_fixed(0, args.len() as u16);
+            fn_call!(self, "ecma:function", "initialize", 3);
+            self.emit_ctor_result(this_slot, result);
+            return Ok(());
+        }
+
         // 4. a callable parent: `parent(args…, this)`. Under ECMA every
         // parent is called — an uncallable one must fail loudly at the call.
         if tdz || self.parent_ctor_is_bound(parent_name) {
@@ -761,10 +863,18 @@ impl Compiler {
             return Ok(());
         }
 
-        // 5. nothing to call: the derived allocation stands.
-        if matches!(result, CtorResult::Keep) {
-            self.emit_u16(Op::LOCAL_GET, this_slot);
+        // A separately compiled parent is absent from this unit's bindings,
+        // but can already exist in the live module. Its published initializer
+        // carries the declared arity, including optional parameters, so the
+        // existing receiver reaches the helper's trailing receiver slot.
+        self.emit_parent_ctor_value(parent_name);
+        self.emit_u16(Op::LOCAL_GET, this_slot);
+        for arg in args {
+            self.compile_expr(arg)?;
         }
+        self.emit_array_new_fixed(0, args.len() as u16);
+        fn_call!(self, "ecma:function", "initialize", 3);
+        self.emit_ctor_result(this_slot, result);
         Ok(())
     }
 
@@ -947,8 +1057,25 @@ impl Compiler {
             self.emit_global_read(arity_ctor.as_deref().unwrap_or(&default_ctor));
         } else if !want_class_object && self.defined_globals.contains(&default_ctor) {
             self.emit_global_read(&default_ctor);
+        } else if !bound {
+            // A parent loaded by an earlier runtime include is absent from
+            // this compilation's declaration set. It is still a class name,
+            // not a closed-scope variable, so resolve its live global when
+            // wiring the constructor and prototype chain.
+            if self.profile.name == "php" {
+                self.emit_global_read(&pname);
+            } else {
+                self.emit_callee_get(&pname);
+            }
         } else {
-            self.emit_var_get(&pname);
+            // PHP's walker has already resolved an `extends` name. A second
+            // namespace lookup here turns global `InvalidArgumentException`
+            // into the current class when an autoloaded child has that leaf.
+            if self.profile.name == "php" {
+                self.emit_global_read(&pname);
+            } else {
+                self.emit_var_get(&pname);
+            }
         }
     }
 
@@ -1172,6 +1299,7 @@ impl Compiler {
             }
             self.emit_store_super_ref(this_slot, &pname);
         }
+        if self.profile.name != "php" {
         for (fname, type_hint, init, array_bounds) in field_inits {
             self.emit_class_field_initializer(
                 this_slot,
@@ -1180,8 +1308,10 @@ impl Compiler {
                 init.as_ref(),
                 array_bounds.as_deref(),
                 is_value_type,
+                None,
                 line,
             )?;
+        }
         }
         // ⛔ AFTER the parent-constructor chain, BEFORE self's own methods.
         //
@@ -1241,7 +1371,7 @@ impl Compiler {
                     *mci,
                     capture_names,
                     method_rest_fixed_counts.get(mci).copied(),
-                    !self.class_prototype_dispatch(),
+                    self.method_values_carry_receiver(),
                 )?;
             }
         }
@@ -2186,28 +2316,28 @@ impl Compiler {
         }
 
         if self.body_declarations_first() {
-            for statement in body {
+            for (statement_index, statement) in body.iter().enumerate() {
                 if matches!(&statement.kind, StmtKind::VarDecl { .. }) {
-                    self.compile_stmt(statement)?;
+                    self.compile_function_body_stmt(name, statement_index, statement)?;
                 }
             }
-            for statement in body {
+            for (statement_index, statement) in body.iter().enumerate() {
                 if matches!(&statement.kind, StmtKind::FunctionDecl { .. }) {
-                    self.compile_stmt(statement)?;
+                    self.compile_function_body_stmt(name, statement_index, statement)?;
                 }
             }
-            for statement in body {
+            for (statement_index, statement) in body.iter().enumerate() {
                 if matches!(
                     &statement.kind,
                     StmtKind::VarDecl { .. } | StmtKind::FunctionDecl { .. }
                 ) {
                     continue;
                 }
-                self.compile_stmt(statement)?;
+                self.compile_function_body_stmt(name, statement_index, statement)?;
             }
         } else {
-            for statement in body {
-                self.compile_stmt(statement)?;
+            for (statement_index, statement) in body.iter().enumerate() {
+                self.compile_function_body_stmt(name, statement_index, statement)?;
             }
         }
 
@@ -2240,8 +2370,8 @@ impl Compiler {
             self.emit_null();
             self.emit_return_through_finally(1)?;
         } else {
-            let line = self.line;
-            common::functions::emit_function_epilogue(&mut self.chunks[func_idx], line);
+            self.emit_null();
+            self.emit_return();
         }
 
         self.current_func_name = saved_fn;
@@ -2323,18 +2453,44 @@ impl Compiler {
         // captures this name the frame boxes it into the shared env, and only
         // `emit_var_set` knows to store through the box. A raw slot write left
         // the box holding null, so the sibling closure's call found nothing.
-        if enclosing_fn_slot.is_some() {
-            self.emit_var_set(name);
-        } else {
-            self.emit_global_write(name);
-        }
-        if let Some(callable_global) = self.source_function_callable_global_name(name) {
-            if enclosing_fn_slot.is_some() {
-                self.emit_var_get(name);
-            } else {
-                self.emit_global_read(name);
+        if self.profile.source_function_callable_aliases {
+            // This profile has a distinct function namespace. The closure is
+            // already on the stack; publish it there without writing the bare
+            // type/global name, which may hold a same-named class constructor.
+            let function_slot = self.define_local("__declared_function_callable");
+            self.emit_u16(Op::LOCAL_SET, function_slot);
+            if let Some(callable_global) = self.source_function_callable_global_name(name) {
+                self.emit_u16(Op::LOCAL_GET, function_slot);
+                self.emit_global_write(&callable_global);
+                if self.profile.name == "php" {
+                    // PHP callable names are case-insensitive even though its
+                    // variable namespace is case-sensitive. Publish the folded
+                    // alias once so runtime lookups need no candidate scan.
+                    let folded = format!("__vybe_func${}",
+                        crate::primitives::namespaces::normalize_source_path(name)
+                            .to_ascii_lowercase());
+                    if folded != callable_global {
+                        self.emit_u16(Op::LOCAL_GET, function_slot);
+                        self.emit_global_write(&folded);
+                    }
+                }
+                self.emit_u16(Op::LOCAL_GET, function_slot);
+                self.emit_global_write(&format!("__php_fn_{}", name.replace('.', "__")));
             }
-            self.emit_global_write(&callable_global);
+        } else {
+            if enclosing_fn_slot.is_some() {
+                self.emit_var_set(name);
+            } else {
+                self.emit_global_write(name);
+            }
+            if let Some(callable_global) = self.source_function_callable_global_name(name) {
+                if enclosing_fn_slot.is_some() {
+                    self.emit_var_get(name);
+                } else {
+                    self.emit_global_read(name);
+                }
+                self.emit_global_write(&callable_global);
+            }
         }
 
         if self.profile.has_function_prototype_bind {
@@ -2594,6 +2750,9 @@ impl Compiler {
         &mut self,
         class: &crate::primitives::class_normalize::NormalClass,
     ) -> Result<(), String> {
+        let _debug_class = vybe_runtime::debugger::DebugPhase::current_lazy(||
+            format!("compiler class {}", class.name),
+        );
         // Extract the canonicalised names the orchestration below needs.
         // Canonicalisation happens once here rather than at every caller.
         let cname = self.canon(&class.name);
@@ -2920,6 +3079,9 @@ impl Compiler {
                                          is_static: bool|
          -> Result<(), String> {
             let mname = &m.source_name;
+            let _debug_method = vybe_runtime::debugger::DebugPhase::current_lazy(||
+                format!("compiler method {}::{}", class.name, mname),
+            );
             let is_static_init = is_static && mname == "__static_init__";
             let is_ctor = if cc.case_sensitive {
                 mname == &ctor_name || (is_static && mname == "new")
@@ -3261,7 +3423,11 @@ impl Compiler {
                     None
                 };
                 if let Some(this_slot) = this_slot {
-                    cc.emit_js_private_brand_check(this_slot, &bound_name)?;
+                    if cc.profile.name == "php" {
+                        cc.emit_private_method_slot_guard(this_slot, &class.name, mname)?;
+                    } else {
+                        cc.emit_js_private_brand_check(this_slot, &bound_name)?;
+                    }
                 }
             }
             if has_receiver {
@@ -3418,6 +3584,9 @@ impl Compiler {
                     );
                 }
                 for s in &m.body {
+                    let _debug_stmt = vybe_runtime::debugger::DebugPhase::current_lazy(||
+                        format!("compiler statement {}::{} line {}", class.name, mname, s.span.start_line),
+                    );
                     cc.compile_stmt(s)?;
                 }
                 if let Some(slot) = cc.scope().resolve(&self_kw) {
@@ -3440,20 +3609,26 @@ impl Compiler {
                 cc.emit_u16(Op::LOCAL_SET, rs);
                 cc.current_result_slot = Some(rs);
                 for s in &m.body {
+                    let _debug_stmt = vybe_runtime::debugger::DebugPhase::current_lazy(||
+                        format!("compiler statement {}::{} line {}", class.name, mname, s.span.start_line),
+                    );
                     cc.compile_stmt(s)?;
                 }
                 cc.emit_u16(Op::LOCAL_GET, rs);
                 cc.emit_return_through_finally(1)?;
             } else {
                 for s in &m.body {
+                    let _debug_stmt = vybe_runtime::debugger::DebugPhase::current_lazy(||
+                        format!("compiler statement {}::{} line {}", class.name, mname, s.span.start_line),
+                    );
                     cc.compile_stmt(s)?;
                 }
                 if cc.current_ref_out_params.is_some() {
                     cc.emit_null();
                     cc.emit_return_through_finally(1)?;
                 } else {
-                    let line = cc.line;
-                    common::functions::emit_function_epilogue(&mut cc.chunks[ci], line);
+                    cc.emit_null();
+                    cc.emit_return();
                 }
             }
 
@@ -3807,8 +3982,8 @@ impl Compiler {
                     }
                 }
 
-                let line = self.line;
-                common::functions::emit_function_epilogue(&mut self.chunks[ci], line);
+                self.emit_null();
+                self.emit_return();
                 {
                     let ns = self.scope().next_slot;
                     self.chunks[ci].finalize_local_count(ns);
@@ -3823,6 +3998,64 @@ impl Compiler {
 
         self.current_class = saved_class;
         self.current_class_implicit_self = saved_implicit;
+
+        // PHP initializes inherited property defaults even when a child has
+        // its own constructor and never calls parent::__construct(). Keep that
+        // work separate from constructor bodies, which PHP does not chain.
+        // The helper is published as a global so a child compiled by a later
+        // dynamic include can invoke its parent's defaults as well.
+        let php_field_defaults_idx = if self.profile.name == "php" {
+            let helper_idx = self.chunks.len();
+            self.chunks.push(common::functions::create_function_chunk(
+                &format!("__php_field_defaults_{}", name),
+                2,
+            ));
+            self.scopes.push(Scope::new_function(self.directives().variable_fold()));
+            let saved_cur = self.current;
+            let saved_class = self.current_class.replace(name.to_string());
+            self.current = helper_idx;
+            let line = self.line;
+            let receiver = self.define_source_local(&self.profile.self_keyword.clone());
+            let inherited_mode = self.define_source_local("__php_inherited_defaults");
+            if let Some(parent_name) = parent {
+                let parent_init = format!("__php_field_defaults_{}", self.canon(parent_name));
+                let parent_fn = self.define_local("__php_parent_field_defaults");
+                self.emit_global_read(&parent_init);
+                self.emit_u16(Op::LOCAL_SET, parent_fn);
+                self.emit_u16(Op::LOCAL_GET, parent_fn);
+                crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
+                self.chunk().emit_if(line);
+                self.emit_u16(Op::LOCAL_GET, parent_fn);
+                self.emit_u16(Op::LOCAL_GET, receiver);
+                self.emit_const(Value::Bool(true));
+                self.emit_direct_callable_invoke(2);
+                self.emit(Op::DROP);
+                self.chunk().emit_end(line);
+            }
+            for (fname, type_hint, init, array_bounds) in &field_inits {
+                self.emit_class_field_initializer(
+                    receiver,
+                    fname,
+                    type_hint.as_deref(),
+                    init.as_ref(),
+                    array_bounds.as_deref(),
+                    class.is_value_type,
+                    Some(inherited_mode),
+                    line,
+                )?;
+            }
+            self.emit_u16(Op::LOCAL_GET, receiver);
+            self.emit(Op::RETURN);
+            let ns = self.scope().next_slot;
+            self.chunks[helper_idx].finalize_local_count(ns);
+            self.chunks[helper_idx].local_names = self.scope().defined_names.clone();
+            self.scopes.pop();
+            self.current = saved_cur;
+            self.current_class = saved_class;
+            Some(helper_idx)
+        } else {
+            None
+        };
 
         const IMPLICIT_CTOR_FORWARD_ARGS: u8 = 16;
         let instance_methods: Vec<&(String, usize, bool, bool)> = method_chunks
@@ -3911,6 +4144,7 @@ impl Compiler {
         };
 
         let mut ctor_helpers: Vec<(usize, usize, usize, Vec<String>, Option<String>)> = Vec::new();
+        let mut ctor_rest_fixed_counts = HashMap::new();
         for (ctor_index, ctor_variant) in ctor_variants.iter().enumerate() {
             let helper_name = format!("__{}_ctor_{}", name, ctor_index);
             let ctor_auto_base = ctor_variant
@@ -3960,6 +4194,12 @@ impl Compiler {
             };
 
             let helper_idx = self.chunks.len();
+            if let Some((_, params)) = ctor_body {
+                if params.last().is_some_and(|param| param.is_rest) {
+                    let skip = usize::from(class.explicit_self_param);
+                    ctor_rest_fixed_counts.insert(helper_idx, params.len().saturating_sub(skip + 1));
+                }
+            }
             // `user_arity + 1`: the extra trailing argument is the RECEIVER.
             //
             // WASM GC fixes an object's type at allocation and offers no way to
@@ -4014,12 +4254,22 @@ impl Compiler {
             for p in &user_params {
                 self.define_source_local(p);
             }
+            if synthesized_forward_args {
+                for i in 0..IMPLICIT_CTOR_FORWARD_ARGS {
+                    self.define_local(&format!("__implicit_arg_{}", i));
+                }
+            }
+            // The caller places the receiver immediately after the user
+            // arguments. Reserve that slot before a default expression or
+            // the `new` guard can allocate scratch locals into its place.
+            self.define_local_typed(
+                &self_kw,
+                Some(vybe_ast::TypeHint::descriptive(class.name.clone())),
+            );
+            let this_slot = user_arity as u16;
             // §15.7.14: class constructors require `new` (JS only).
             // `__js_new_target` is null on plain calls; every `new` chain
             // (incl. super()) sets or defaults it before this body runs.
-            // Emitted AFTER param slots are claimed — emitter scratch
-            // allocation before define_local shifts param slots (the
-            // documented alloc_scratch/define_local collision).
             if self.ecma_new_dispatch() {
                 let line = self.line;
                 crate::primitives::classes::emit_class_requires_new_guard(self.chunk(), name, line);
@@ -4041,22 +4291,13 @@ impl Compiler {
                     self.chunks[self.current].emit_end(branch_line);
                 }
             }
-            if synthesized_forward_args {
-                for i in 0..IMPLICIT_CTOR_FORWARD_ARGS {
-                    self.define_local(&format!("__implicit_arg_{}", i));
-                }
-            }
-            self.define_local_typed(
-                &self_kw,
-                Some(vybe_ast::TypeHint::descriptive(class.name.clone())),
-            );
-            let this_slot = user_arity as u16;
             // §9.1.1.3.4 (JS): derived-constructor `this` TDZ context.
             // While this chunk's body compiles, `this` reads and `super()`
             // calls emit runtime guards against this_slot (null until
             // super() initializes it). Saved/restored so nested classes
             // compiled mid-body don't leak the context.
             let saved_derived_ctx = self.js_derived_ctor_ctx.take();
+            let saved_constructor_ctx = self.constructor_this_ctx.replace((self.current, this_slot));
             if self.ecma_new_dispatch() && parent.is_some() && ctor_body.is_some() {
                 self.js_derived_ctor_ctx = Some((self.current, this_slot));
             }
@@ -4126,20 +4367,26 @@ impl Compiler {
                             *mci,
                             capture_names,
                             method_rest_fixed_count(*mci),
-                            !self.class_prototype_dispatch(),
+                            self.method_values_carry_receiver(),
                         )?;
                     }
                 }
                 crate::primitives::classes::emit_constructor_return(self.chunk(), this_slot, line);
-            } else {
+                } else {
                 let is_child = parent.is_some();
                 let parent_ctor_is_bound = match parent {
                     Some(parent_name) => self.parent_ctor_is_bound(parent_name),
                     None => false,
                 };
                 if is_child {
-                    self.emit_null();
-                    self.emit_u16(Op::LOCAL_SET, this_slot);
+                    // PHP passes the most-derived object through each parent
+                    // constructor. Keep a supplied receiver so a separately
+                    // compiled parent does not allocate another object and
+                    // lose properties written before parent::__construct().
+                    if self.profile.name != "php" {
+                        self.emit_null();
+                        self.emit_u16(Op::LOCAL_SET, this_slot);
+                    }
                     // THE MOST-DERIVED CONSTRUCTOR ALLOCATES. WASM GC fixes the
                     // type at allocation, so `this` is allocated with this
                     // class's typeidx before any parent runs, and the parent
@@ -4159,6 +4406,21 @@ impl Compiler {
                             type_slot,
                             line,
                         );
+                        if self.profile.name == "php" {
+                            self.emit_php_field_defaults_call(name, this_slot);
+                        }
+                        // A derived instance enters its parent's constructor
+                        // before derived stamps run. Keep the most-derived
+                        // class available to `static::CONST` in that body.
+                        if !self.class_prototype_dispatch() {
+                            self.emit_u16(Op::LOCAL_GET, this_slot);
+                            self.emit_global_read(name);
+                            self.class_set(
+                                class_slots::ObjSource::Stack,
+                                &class_slots::ClassSlot::internal("constructor"),
+                                class_slots::ValueSource::Stack,
+                            );
+                        }
                         for (mname, mci, _, _) in &instance_methods {
                             if mname.starts_with("__get_") || mname.starts_with("__set_") {
                                 continue;
@@ -4179,7 +4441,7 @@ impl Compiler {
                                 *mci,
                                 capture_names,
                                 method_rest_fixed_count(*mci),
-                                !self.class_prototype_dispatch(),
+                                self.method_values_carry_receiver(),
                             )?;
                         }
                     }
@@ -4277,6 +4539,9 @@ impl Compiler {
                             // initialises it, once for every forwarding shape.
                             self.emit_default_js_new_target(name);
                             self.emit_parent_ctor_value(parent_name);
+                            let php_dynamic_parent = self.profile.name == "php"
+                                && !self.pending_classes.contains_key(&self.canon(parent_name))
+                                && !common::errors::is_exception_type(parent_name);
                             if synthesized_forward_args {
                                 let parent_ctor_slot =
                                     self.define_local(&format!("__{}_parent_ctor", helper_name));
@@ -4294,11 +4559,20 @@ impl Compiler {
                                     self.emit(Op::I32_EQZ);
                                     self.chunks[self.current].emit_if(line);
                                     self.emit_u16(Op::LOCAL_GET, parent_ctor_slot);
-                                    for arg_index in 0..count {
-                                        self.emit_u16(Op::LOCAL_GET, arg_index as u16);
+                                    if php_dynamic_parent {
+                                        self.emit_u16(Op::LOCAL_GET, this_slot);
+                                        for arg_index in 0..count {
+                                            self.emit_u16(Op::LOCAL_GET, arg_index as u16);
+                                        }
+                                        self.emit_array_new_fixed(0, count as u16);
+                                        fn_call!(self, "ecma:function", "initialize", 3);
+                                    } else {
+                                        for arg_index in 0..count {
+                                            self.emit_u16(Op::LOCAL_GET, arg_index as u16);
+                                        }
+                                        self.emit_u16(Op::LOCAL_GET, this_slot);
+                                        self.emit_direct_callable_invoke(count + 1);
                                     }
-                                    self.emit_u16(Op::LOCAL_GET, this_slot);
-                                    self.emit_direct_callable_invoke(count + 1);
                                     self.emit_u16(Op::LOCAL_SET, this_slot);
                                     inst!(self, core_wasm::i32_const, 1);
                                     self.emit_u16(Op::LOCAL_SET, parent_called_slot);
@@ -4310,7 +4584,12 @@ impl Compiler {
                                 self.chunks[self.current].emit_if(line);
                                 self.emit_u16(Op::LOCAL_GET, parent_ctor_slot);
                                 self.emit_u16(Op::LOCAL_GET, this_slot);
-                                self.emit_direct_callable_invoke(1);
+                                if php_dynamic_parent {
+                                    self.emit_array_new_fixed(0, 0);
+                                    fn_call!(self, "ecma:function", "initialize", 3);
+                                } else {
+                                    self.emit_direct_callable_invoke(1);
+                                }
                                 self.emit_u16(Op::LOCAL_SET, this_slot);
                                 self.chunks[self.current].emit_end(line);
                             } else {
@@ -4527,6 +4806,9 @@ impl Compiler {
                         type_slot,
                         line,
                     );
+                    if self.profile.name == "php" {
+                        self.emit_php_field_defaults_call(name, this_slot);
+                    }
                     if class.is_value_type {
                         crate::primitives::classes::emit_value_equality_stamp(
                             self.chunk(),
@@ -4534,6 +4816,7 @@ impl Compiler {
                             line,
                         );
                     }
+                    if self.profile.name != "php" {
                     for (fname, type_hint, init, array_bounds) in &field_inits {
                         self.emit_class_field_initializer(
                             this_slot,
@@ -4542,8 +4825,10 @@ impl Compiler {
                             init.as_ref(),
                             array_bounds.as_deref(),
                             class.is_value_type,
+                            None,
                             line,
                         )?;
+                    }
                     }
                     for (mname, mci, _, _) in &instance_methods {
                         // §15.7 — see the matching skip in the `ctor_this_args`
@@ -4588,7 +4873,7 @@ impl Compiler {
                                 *mci,
                                 capture_names,
                                 method_rest_fixed_count(*mci),
-                                !self.class_prototype_dispatch(),
+                                self.method_values_carry_receiver(),
                             )?;
                         }
                     }
@@ -4606,6 +4891,33 @@ impl Compiler {
                         self.class_set(
                             class_slots::ObjSource::Stack,
                             &class_slots::ClassSlot::ProtoLink,
+                            class_slots::ValueSource::Stack,
+                        );
+                        self.chunks[self.current].emit_end(line);
+                    }
+                    // Instance constructors may use late static binding in
+                    // their own body. Publish the class link before running
+                    // user code; the final stamp below still restores the
+                    // derived class after a parent constructor returns.
+                    if !self.class_prototype_dispatch() {
+                        let existing_ctor = self.define_local(&format!("__{}_early_constructor", name));
+                        self.emit_u16(Op::LOCAL_GET, this_slot);
+                        self.class_get(
+                            class_slots::ObjSource::Stack,
+                            &class_slots::ClassSlot::internal("constructor"),
+                        );
+                        self.emit_u16(Op::LOCAL_SET, existing_ctor);
+                        self.emit_u16(Op::LOCAL_GET, existing_ctor);
+                        self.emit(Op::REF_IS_NULL);
+                        self.emit_u16(Op::LOCAL_GET, existing_ctor);
+                        fn_call!(self, "wasm:js-undefined", "test", 1);
+                        self.emit(Op::I32_OR);
+                        self.chunks[self.current].emit_if(line);
+                        self.emit_u16(Op::LOCAL_GET, this_slot);
+                        self.emit_global_read(name);
+                        self.class_set(
+                            class_slots::ObjSource::Stack,
+                            &class_slots::ClassSlot::internal("constructor"),
                             class_slots::ValueSource::Stack,
                         );
                         self.chunks[self.current].emit_end(line);
@@ -4794,6 +5106,7 @@ impl Compiler {
             self.current_class = saved_class2;
             self.current_class_implicit_self = saved_implicit2;
             self.js_derived_ctor_ctx = saved_derived_ctx;
+            self.constructor_this_ctx = saved_constructor_ctx;
             self.shared_env_slot = saved_ctor_shared_env_slot;
             self.shared_env_names = saved_ctor_shared_env_names;
             self.closure_env_names = saved_ctor_closure_env_names;
@@ -4926,6 +5239,11 @@ impl Compiler {
             case_sensitive,
             line,
         );
+        if let Some(helper_idx) = php_field_defaults_idx {
+            common::functions::emit_ref_func(self.chunk(), helper_idx, 0, line);
+            let global = format!("__php_field_defaults_{}", self.canon(name));
+            self.emit_global_write(&global);
+        }
         if !self.class_prototype_dispatch() {
             // Stamp the declared class name on the ctor function so
             // `get_class($x)` ($x.constructor.name) returns it. The
@@ -4938,11 +5256,53 @@ impl Compiler {
                 &class_slots::ClassSlot::internal("name"),
                 class_slots::ValueSource::Stack,
             );
+            if let Some(parent_name) = parent.as_deref() {
+                // Instance methods can use per-instance dispatch while static
+                // members still inherit through the class object. Link the
+                // live parent constructor so a parent loaded in another
+                // module remains visible to late static lookup.
+                self.emit_u16(Op::LOCAL_GET, ctor_local);
+                self.emit_parent_class_value(parent_name);
+                self.class_set(
+                    class_slots::ObjSource::Stack,
+                    &class_slots::ClassSlot::ProtoLink,
+                    class_slots::ValueSource::Stack,
+                );
+            }
         }
+        let php_initializer_arity = (self.profile.name == "php")
+            .then(|| ctor_helpers.iter().filter(|entry| entry.4.is_none()).map(|entry| entry.0).max())
+            .flatten();
         for (arity, _, helper_idx, helper_captures, named) in &ctor_helpers {
             emit_helper_ref(self, *helper_idx, helper_captures)?;
+            if let Some(&fixed) = ctor_rest_fixed_counts.get(helper_idx) {
+                self.emit_stamp_rest_metadata_on_stack(fixed);
+            }
             let helper_global = ctor_global_for(&ctor_global_prefix, *arity);
             self.emit_global_write(&helper_global);
+            if named.is_none()
+                && (ctor_helpers.len() == 1 || php_initializer_arity == Some(*arity))
+            {
+                if let Some(&fixed) = ctor_rest_fixed_counts.get(helper_idx) {
+                    self.emit_u16(Op::LOCAL_GET, ctor_local);
+                    self.emit_stamp_rest_metadata_on_stack(fixed);
+                    self.emit(Op::DROP);
+                }
+                self.emit_u16(Op::LOCAL_GET, ctor_local);
+                emit_helper_ref(self, *helper_idx, helper_captures)?;
+                self.class_set(
+                    class_slots::ObjSource::Stack,
+                    &class_slots::ClassSlot::internal("__vybe_constructor_initializer"),
+                    class_slots::ValueSource::Stack,
+                );
+                self.emit_u16(Op::LOCAL_GET, ctor_local);
+                self.emit_const(Value::F64(*arity as f64));
+                self.class_set(
+                    class_slots::ObjSource::Stack,
+                    &class_slots::ClassSlot::internal("__vybe_constructor_arity"),
+                    class_slots::ValueSource::Stack,
+                );
+            }
             // A named constructor (`Point.origin()`) is reached through the
             // class rather than by arity — several of them commonly share an
             // arity with each other and with the unnamed ctor. The helper
@@ -5352,6 +5712,7 @@ impl Compiler {
                 init.as_ref(),
                 array_bounds.as_deref(),
                 class.is_value_type,
+                None,
                 self.line,
             )?;
             self.current_member_is_static = saved_member_static;
@@ -5478,6 +5839,23 @@ impl Compiler {
                 m_gen,
                 line,
             );
+            if self.profile.name == "php" {
+                let folded = mname.to_ascii_lowercase();
+                if folded != *mname {
+                    crate::primitives::classes::emit_attach_static_method_kinded(
+                        self.chunk(),
+                        objects,
+                        ctor_local,
+                        &folded,
+                        *mci,
+                        php_static_receiver,
+                        method_rest_fixed_count(*mci),
+                        m_async,
+                        m_gen,
+                        line,
+                    );
+                }
+            }
             all_statics.push((mname.clone(), *mci));
         }
 
@@ -6595,6 +6973,30 @@ fn emit_object_base_stub(chunk: &mut Chunk, line: u32) {
 // ── Name drop ───────────────────────────────────────────────────────────
 
 impl Compiler {
+    /// Finalize a value only if the language's runtime finds no remaining
+    /// program-visible owner. The old value is held in a compiler spill slot;
+    /// that slot is excluded from the root walk.
+    pub(crate) fn emit_rebound_value_finalizer(
+        &mut self,
+        old: u16,
+        emit_finalizer: fn(&mut Chunk, u32),
+    ) {
+        self.emit_u16(Op::LOCAL_GET, old);
+        self.emit_u16(Op::LOCAL_GET, old);
+        let key = self.resolve_slot_interned(&class_slots::ClassSlot::Slot(
+            vybe_ast::ProtocolSlot::Destructor,
+        ));
+        let line = self.line;
+        class_slots::emit_class_get(
+            self.chunk(),
+            class_slots::ObjSource::Stack,
+            &key,
+            class_slots::Dest::Stack,
+            line,
+        );
+        emit_finalizer(self.chunk(), line);
+    }
+
     /// Run the referent's [`ProtocolSlot::Destructor`] before a name stops
     /// referring to it, when [`Directives::name_drop`] says this region
     /// finalises on drop.

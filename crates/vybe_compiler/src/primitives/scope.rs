@@ -73,6 +73,9 @@ pub enum ScopeResolution {
 #[derive(Debug)]
 pub struct Scope {
     pub locals: Vec<Local>,
+    // Latest active binding for an exact spelling. Folded lookup remains a
+    // separate fallback so exact spellings retain their existing precedence.
+    local_indices: std::collections::HashMap<String, usize>,
     pub upvalues: Vec<UpvalueDesc>,
     /// See [`ScopeResolution`].
     pub resolution: ScopeResolution,
@@ -124,6 +127,7 @@ impl Scope {
     pub fn new(fold: Option<vybe_ast::CaseAlphabet>) -> Self {
         Self {
             locals: Vec::new(),
+            local_indices: std::collections::HashMap::new(),
             upvalues: Vec::new(),
             resolution: ScopeResolution::Chain,
             open_names: std::collections::HashSet::new(),
@@ -203,6 +207,7 @@ impl Scope {
 
     pub fn define_typed(&mut self, name: &str, type_hint: Option<vybe_ast::TypeHint>) -> u16 {
         let slot = self.next_slot;
+        self.local_indices.insert(name.to_string(), self.locals.len());
         self.locals.push(Local {
             name: name.to_string(),
             depth: self.depth,
@@ -236,6 +241,7 @@ impl Scope {
         type_hint: Option<vybe_ast::TypeHint>,
     ) -> u16 {
         let slot = self.next_slot;
+        self.local_indices.insert(name.to_string(), self.locals.len());
         self.locals.push(Local {
             name: name.to_string(),
             depth: 0,
@@ -288,12 +294,7 @@ impl Scope {
 
     /// Returns `true` if a binding for `name` is in scope and is `const`.
     pub fn resolve_is_const(&self, name: &str) -> bool {
-        for l in self.locals.iter().rev() {
-            if l.name == name {
-                return l.is_const;
-            }
-        }
-        false
+        self.local_indices.get(name).is_some_and(|&index| self.locals[index].is_const)
     }
 
     /// Exact match first, THEN a folded pass — never one folded scan.
@@ -312,8 +313,8 @@ impl Scope {
     /// this scope folds. Every per-binding property is read through here, so it
     /// can never disagree with the slot `resolve` returns.
     fn resolve_local(&self, name: &str) -> Option<&Local> {
-        if let Some(l) = self.locals.iter().rev().find(|l| l.name == name) {
-            return Some(l);
+        if let Some(&index) = self.local_indices.get(name) {
+            return self.locals.get(index);
         }
         let fold = self.fold?;
         self.locals
@@ -323,8 +324,8 @@ impl Scope {
     }
 
     fn resolve_local_mut(&mut self, name: &str) -> Option<&mut Local> {
-        if self.locals.iter().rev().any(|l| l.name == name) {
-            return self.locals.iter_mut().rev().find(|l| l.name == name);
+        if let Some(&index) = self.local_indices.get(name) {
+            return self.locals.get_mut(index);
         }
         let fold = self.fold?;
         self.locals
@@ -363,46 +364,19 @@ impl Scope {
     /// [`Scope::resolve`] — reach for this only when "did it match exactly?" is
     /// itself the question.
     pub fn resolve_exact(&self, name: &str) -> Option<u16> {
-        for l in self.locals.iter().rev() {
-            if l.name == name {
-                return Some(l.slot);
-            }
-        }
-        None
+        self.local_indices.get(name).map(|&index| self.locals[index].slot)
     }
 
     /// Exact-then-folded, for the same reason as [`Scope::resolve`].
     pub fn resolve_type(&self, name: &str) -> Option<&str> {
-        for l in self.locals.iter().rev() {
-            if l.name == name {
-                return l.type_hint.as_deref();
-            }
-        }
-        let fold = self.fold?;
-        for l in self.locals.iter().rev() {
-            if names_equal(fold, &l.name, name) {
-                return l.type_hint.as_deref();
-            }
-        }
-        None
+        self.resolve_local(name).and_then(|local| local.type_hint.as_deref())
     }
 
     /// The full declared type, not just its spelling — the caller needs
     /// [`vybe_ast::TypeBinding`], which `resolve_type` drops on the way to
     /// `&str`. Same exact-then-folded order as [`Scope::resolve_type`].
     pub fn resolve_declared(&self, name: &str) -> Option<&vybe_ast::TypeHint> {
-        for l in self.locals.iter().rev() {
-            if l.name == name {
-                return l.type_hint.as_ref();
-            }
-        }
-        let fold = self.fold?;
-        for l in self.locals.iter().rev() {
-            if names_equal(fold, &l.name, name) {
-                return l.type_hint.as_ref();
-            }
-        }
-        None
+        self.resolve_local(name).and_then(|local| local.type_hint.as_ref())
     }
 
     pub fn mark_captured(&mut self, slot: u16) {
@@ -430,7 +404,14 @@ impl Scope {
         // the list, and leaves the var-scoped ones alone. Order is preserved,
         // so shadowing still resolves to the latest declaration.
         let depth = self.depth;
+        let old_len = self.locals.len();
         self.locals.retain(|l| l.depth < depth);
+        if self.locals.len() != old_len {
+            self.local_indices.clear();
+            for (index, local) in self.locals.iter().enumerate() {
+                self.local_indices.insert(local.name.clone(), index);
+            }
+        }
         self.depth -= 1;
     }
 

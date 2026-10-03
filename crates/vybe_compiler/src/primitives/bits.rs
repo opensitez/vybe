@@ -19,20 +19,19 @@
 //! [`TrailingZeros`]: UnaryOp::TrailingZeros
 //! [`RotR`]: BinOp::RotR
 
-use vybe_ast::{BitLane, NumericRepr, ShiftOverflow};
+use vybe_ast::{BitLane, IntOp, NumericRepr, ShiftOverflow};
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
 
 /// Bring the value on the stack into `lane`'s integer type.
 ///
-/// The `I32_*` opcodes coerce their operands dynamically, so the 32-bit lane
-/// only has to force the coercion (`| 0`, the same trick every i32 site in the
-/// tree uses). The 64-bit lane needs a real narrowing.
+/// Convert the numeric value to its integer lane. A direct i32 coercion can
+/// saturate values above INT32_MAX; wrapping through i64 preserves all 32 bits.
 fn narrow(chunk: &mut Chunk, lane: BitLane, line: u32) {
     match lane {
         BitLane::W32 => {
-            chunk.emit_i32_const(0, line);
-            chunk.emit_op(Op::I32_OR, line);
+            chunk.emit_op(Op::I64_TRUNC_F64_S, line);
+            chunk.emit_op(Op::I32_WRAP_I64, line);
         }
         BitLane::W64 => chunk.emit_op(Op::I64_TRUNC_F64_S, line),
     }
@@ -86,6 +85,46 @@ pub fn emit_rotate(chunk: &mut Chunk, lane: BitLane, left: bool, line: u32) {
         (BitLane::W64, false) => Op::I64_ROTR,
     };
     chunk.emit_op(op, line);
+    widen(chunk, lane, line);
+}
+
+/// Stack `[left, right]` -> one numeric result, using the declared integer
+/// lane instead of the profile's default arithmetic slot.
+pub fn emit_integer_binary(chunk: &mut Chunk, lane: BitLane, op: IntOp, line: u32) {
+    let right = chunk.alloc_scratch(1);
+    narrow(chunk, lane, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, right, line);
+    narrow(chunk, lane, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, right, line);
+    let opcode = match (lane, op) {
+        (BitLane::W32, IntOp::Add) => Op::I32_ADD,
+        (BitLane::W32, IntOp::Sub) => Op::I32_SUB,
+        (BitLane::W32, IntOp::Mul) => Op::I32_MUL,
+        (BitLane::W32, IntOp::DivS) => Op::I32_DIV_S,
+        (BitLane::W32, IntOp::DivU) => Op::I32_DIV_U,
+        (BitLane::W32, IntOp::RemS) => Op::I32_REM_S,
+        (BitLane::W32, IntOp::RemU) => Op::I32_REM_U,
+        (BitLane::W32, IntOp::Shl) => Op::I32_SHL,
+        (BitLane::W32, IntOp::ShrS) => Op::I32_SHR_S,
+        (BitLane::W32, IntOp::ShrU) => Op::I32_SHR_U,
+        (BitLane::W32, IntOp::And) => Op::I32_AND,
+        (BitLane::W32, IntOp::Or) => Op::I32_OR,
+        (BitLane::W32, IntOp::Xor) => Op::I32_XOR,
+        (BitLane::W64, IntOp::Add) => Op::I64_ADD,
+        (BitLane::W64, IntOp::Sub) => Op::I64_SUB,
+        (BitLane::W64, IntOp::Mul) => Op::I64_MUL,
+        (BitLane::W64, IntOp::DivS) => Op::I64_DIV_S,
+        (BitLane::W64, IntOp::DivU) => Op::I64_DIV_U,
+        (BitLane::W64, IntOp::RemS) => Op::I64_REM_S,
+        (BitLane::W64, IntOp::RemU) => Op::I64_REM_U,
+        (BitLane::W64, IntOp::Shl) => Op::I64_SHL,
+        (BitLane::W64, IntOp::ShrS) => Op::I64_SHR_S,
+        (BitLane::W64, IntOp::ShrU) => Op::I64_SHR_U,
+        (BitLane::W64, IntOp::And) => Op::I64_AND,
+        (BitLane::W64, IntOp::Or) => Op::I64_OR,
+        (BitLane::W64, IntOp::Xor) => Op::I64_XOR,
+    };
+    chunk.emit_op(opcode, line);
     widen(chunk, lane, line);
 }
 
@@ -316,6 +355,14 @@ pub fn emit_round_up_pow2(chunks: &mut [Chunk], current: usize, line: u32) {
 ///
 /// Stack: `[i32]` → `[n]`.
 pub fn emit_as_unsigned32(chunk: &mut Chunk, line: u32) {
+    chunk.emit_op(Op::F64_CONVERT_I32_U, line);
+}
+
+/// Wrap an integral f64 through the low 32 bits and expose the unsigned value.
+/// Stack: `[f64]` -> `[f64]`. Callers must keep inputs within the i64 range.
+pub fn emit_wrap_unsigned32(chunk: &mut Chunk, line: u32) {
+    chunk.emit_op(Op::I64_TRUNC_F64_S, line);
+    chunk.emit_op(Op::I32_WRAP_I64, line);
     chunk.emit_op(Op::F64_CONVERT_I32_U, line);
 }
 

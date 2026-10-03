@@ -865,6 +865,12 @@ impl Compiler {
         if self.type_resolution() == vybe_ast::TypeResolution::Dynamic {
             return false;
         }
+        if let ExprKind::Cast { expr: inner, type_name } = &expr.kind {
+            if self.hint_is_builtin_number(type_name) {
+                return true;
+            }
+            return self.expr_is_provably_number(inner);
+        }
         let ExprKind::Ident(name) = &expr.kind else {
             return false;
         };
@@ -999,7 +1005,9 @@ impl Compiler {
             if self.profile.ecma_operator_coercion || self.profile.materialize_bool_results {
                 let line = self.line;
                 crate::primitives::ops::emit_i32_to_bool(self.chunk(), line);
-            } else {
+            } else if self.operator_dispatch() != vybe_ast::OperatorDispatch::StaticBuiltin
+                || self.type_resolution() != vybe_ast::TypeResolution::Static
+            {
                 let from_i32 = self.import("wasm:js-number", "fromI32");
                 self.emit_host_call(from_i32, 1);
             }
@@ -1037,6 +1045,84 @@ impl Compiler {
         self.compile_binop_operands(op, None);
     }
 
+    fn is_constructed_string(expr: &Expression) -> bool {
+        matches!(
+            &expr.kind,
+            ExprKind::Lit(Literal::Str(_))
+                | ExprKind::TypeOf(_)
+                | ExprKind::Unary {
+                    op: UnaryOp::Typeof,
+                    ..
+                }
+        )
+    }
+
+    fn emit_strict_equality_operands(
+        &mut self,
+        operands: Option<(&Expression, &Expression)>,
+        line: u32,
+    ) {
+        let null_operand = operands.and_then(|(left, right)| {
+            if matches!(&right.kind, ExprKind::Lit(Literal::Null)) {
+                Some(false)
+            } else if matches!(&left.kind, ExprKind::Lit(Literal::Null)) {
+                Some(true)
+            } else {
+                None
+            }
+        });
+        if let Some(null_on_left) = null_operand {
+            // Specialize the same equality primitive selected below. Its
+            // null/undefined contract and the caller's Boolean result ABI
+            // remain intact; both operand expressions have already run.
+            if self.profile.ecma_operator_coercion {
+                crate::primitives::ops::emit_js_strict_eq_null_operand(
+                    self.chunk(), null_on_left, line,
+                );
+            } else {
+                crate::primitives::ops::emit_dyn_eq_null_operand(
+                    self.chunk(), null_on_left, line,
+                );
+            }
+            return;
+        }
+        let (left_string, right_string) = operands.map_or((false, false), |(left, right)| (
+            matches!(&left.kind, ExprKind::Lit(Literal::Str(_)) | ExprKind::TypeOf(_)),
+            matches!(&right.kind, ExprKind::Lit(Literal::Str(_)) | ExprKind::TypeOf(_)),
+        ));
+        if left_string && right_string {
+            let equals = self.import("wasm:js-string", "equals");
+            self.emit_host_call(equals, 2);
+        } else if left_string || right_string {
+            // Both expressions have already run. Preserve their evaluation
+            // order and retain the general fallback for non-string wrappers.
+            let base = self.chunk().alloc_scratch(2);
+            self.emit_u16(Op::LOCAL_SET, base + 1);
+            self.emit_u16(Op::LOCAL_SET, base);
+            self.emit_u16(Op::LOCAL_GET, if left_string { base + 1 } else { base });
+            let test = self.import("wasm:js-string", "test");
+            self.emit_host_call(test, 1);
+            self.chunk().emit_if_i32(line);
+            self.emit_u16(Op::LOCAL_GET, base);
+            self.emit_u16(Op::LOCAL_GET, base + 1);
+            let equals = self.import("wasm:js-string", "equals");
+            self.emit_host_call(equals, 2);
+            self.chunk().emit_else(line);
+            if self.profile.ecma_operator_coercion {
+                self.emit_const(Value::I32(0));
+            } else {
+                self.emit_u16(Op::LOCAL_GET, base);
+                self.emit_u16(Op::LOCAL_GET, base + 1);
+                crate::primitives::ops::emit_dyn_eq(self.chunk(), line);
+            }
+            self.chunk().emit_end(line);
+        } else if self.profile.ecma_operator_coercion {
+            crate::primitives::ops::emit_js_strict_eq(self.chunk(), line);
+        } else {
+            crate::primitives::ops::emit_dyn_eq(self.chunk(), line);
+        }
+    }
+
     /// `compile_binop`, plus the operand expressions when the caller has them.
     ///
     /// Same shape as the `&&`/`||` arm in `expressions.rs`, which already reads
@@ -1049,6 +1135,11 @@ impl Compiler {
         op: &BinOp,
         operands: Option<(&Expression, &Expression)>,
     ) {
+        if let BinOp::Integer(operation, lane) = op {
+            let line = self.line;
+            crate::primitives::bits::emit_integer_binary(self.chunk(), *lane, *operation, line);
+            return;
+        }
         let (left_num_lit, right_num_lit) = match operands {
             Some((left, right)) => (
                 Self::is_emitted_number_literal(left),
@@ -1086,8 +1177,28 @@ impl Compiler {
                 self.emit_static_builtin_operator_target(&target);
                 return;
             }
+            if matches!(op, BinOp::Eq | BinOp::NotEq)
+                && self.operator_dispatch() == vybe_ast::OperatorDispatch::StaticBuiltin
+                && self.type_resolution() == vybe_ast::TypeResolution::Static
+                && Self::is_constructed_string(left)
+                && Self::is_constructed_string(right)
+            {
+                let equals = self.import("wasm:js-string", "equals");
+                self.emit_host_call(equals, 2);
+                if matches!(op, BinOp::NotEq) {
+                    self.emit(Op::I32_EQZ);
+                }
+                if std::mem::take(&mut self.want_i32_condition) {
+                    self.gave_i32_condition = true;
+                } else if self.profile.materialize_bool_results {
+                    let line = self.line;
+                    crate::primitives::ops::emit_i32_to_bool(self.chunk(), line);
+                }
+                return;
+            }
         }
         match op {
+            BinOp::Integer(..) => unreachable!("handled before builtin dispatch"),
             BinOp::Add => {
                 // Two provable numbers cannot concatenate, carry a user
                 // `operator +`, or need ToPrimitive — every branch below
@@ -1354,52 +1465,79 @@ impl Compiler {
                         if condition_result {
                             self.gave_i32_condition = true;
                         }
-                        // Value equality, as DECLARED. Both sides carrying the
-                        // `__value_eq` stamp means two languages independently
-                        // said their `==` compares fields — so compare fields,
-                        // whoever allocated the objects. This is the read side
-                        // of the policy; Dart and dotnet each had a private
-                        // reader of the same stamp, which is what made a record
-                        // lose its equality the moment it crossed a boundary.
-                        let right_slot = self.define_local("__veq_rhs");
-                        let left_slot = self.define_local("__veq_lhs");
-                        self.emit_u16(Op::LOCAL_SET, right_slot);
-                        self.emit_u16(Op::LOCAL_SET, left_slot);
-                        crate::primitives::records::emit_is_value_eq(self.chunk(), left_slot, line);
-                        crate::primitives::records::emit_is_value_eq(
-                            self.chunk(),
-                            right_slot,
-                            line,
-                        );
-                        self.chunk().emit_op(Op::I32_AND, line);
-                        if condition_result {
-                            self.chunk().emit_if_i32(line);
-                        } else if self.profile.materialize_bool_results {
-                            self.chunk().emit_if_value(line);
+                        if self.operator_dispatch() == vybe_ast::OperatorDispatch::StaticBuiltin
+                            && self.type_resolution() == vybe_ast::TypeResolution::Static
+                        {
+                            if both_provably_number {
+                                self.emit(Op::F64_EQ);
+                            } else {
+                                crate::primitives::ops::emit_dyn_eq(self.chunk(), line);
+                            }
+                            if condition_result {
+                                // `want_i32_condition` asked for the raw condition
+                                // result. Static numeric equality and `emit_dyn_eq`
+                                // both already leave i32.
+                            } else if self.profile.materialize_bool_results {
+                                crate::primitives::ops::emit_i32_to_bool(self.chunk(), line);
+                            } else if self.operator_dispatch()
+                                != vybe_ast::OperatorDispatch::StaticBuiltin
+                                || self.type_resolution() != vybe_ast::TypeResolution::Static
+                            {
+                                let from_i32 = self.import("wasm:js-number", "fromI32");
+                                self.emit_host_call(from_i32, 1);
+                            }
                         } else {
-                            self.chunk().emit_if_i32(line);
-                        }
-                        crate::primitives::records::emit_value_fields_equal(
-                            &mut self.chunks,
-                            self.current,
-                            left_slot,
-                            right_slot,
-                            line,
-                        );
-                        if condition_result || !self.profile.materialize_bool_results {
-                            crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
-                        }
-                        self.chunk().emit_else(line);
-                        self.emit_u16(Op::LOCAL_GET, left_slot);
-                        self.emit_u16(Op::LOCAL_GET, right_slot);
-                        crate::primitives::ops::emit_dyn_eq(self.chunk(), line);
-                        if self.profile.materialize_bool_results && !condition_result {
-                            crate::primitives::ops::emit_i32_to_bool(self.chunk(), line);
-                        }
-                        self.chunk().emit_end(line);
-                        if !condition_result && !self.profile.materialize_bool_results {
-                            let from_i32 = self.import("wasm:js-number", "fromI32");
-                            self.emit_host_call(from_i32, 1);
+                            // Value equality, as DECLARED. Both sides carrying the
+                            // `__value_eq` stamp means two languages independently
+                            // said their `==` compares fields — so compare fields,
+                            // whoever allocated the objects. Static-builtin
+                            // languages such as C bypass this above: their `==`
+                            // is exact scalar/pointer equality, not record
+                            // structural equality.
+                            let right_slot = self.define_local("__veq_rhs");
+                            let left_slot = self.define_local("__veq_lhs");
+                            self.emit_u16(Op::LOCAL_SET, right_slot);
+                            self.emit_u16(Op::LOCAL_SET, left_slot);
+                            crate::primitives::records::emit_is_value_eq(
+                                self.chunk(),
+                                left_slot,
+                                line,
+                            );
+                            crate::primitives::records::emit_is_value_eq(
+                                self.chunk(),
+                                right_slot,
+                                line,
+                            );
+                            self.chunk().emit_op(Op::I32_AND, line);
+                            if condition_result {
+                                self.chunk().emit_if_i32(line);
+                            } else if self.profile.materialize_bool_results {
+                                self.chunk().emit_if_value(line);
+                            } else {
+                                self.chunk().emit_if_i32(line);
+                            }
+                            crate::primitives::records::emit_value_fields_equal(
+                                &mut self.chunks,
+                                self.current,
+                                left_slot,
+                                right_slot,
+                                line,
+                            );
+                            if condition_result || !self.profile.materialize_bool_results {
+                                crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
+                            }
+                            self.chunk().emit_else(line);
+                            self.emit_u16(Op::LOCAL_GET, left_slot);
+                            self.emit_u16(Op::LOCAL_GET, right_slot);
+                            crate::primitives::ops::emit_dyn_eq(self.chunk(), line);
+                            if self.profile.materialize_bool_results && !condition_result {
+                                crate::primitives::ops::emit_i32_to_bool(self.chunk(), line);
+                            }
+                            self.chunk().emit_end(line);
+                            if !condition_result && !self.profile.materialize_bool_results {
+                                let from_i32 = self.import("wasm:js-number", "fromI32");
+                                self.emit_host_call(from_i32, 1);
+                            }
                         }
                     };
                 }
@@ -1472,12 +1610,24 @@ impl Compiler {
                 } else {
                     {
                         let line = self.line;
-                        crate::primitives::ops::emit_dyn_ne(self.chunk(), line);
-                        if std::mem::take(&mut self.want_i32_condition) {
+                        let condition_result = std::mem::take(&mut self.want_i32_condition);
+                        if self.operator_dispatch() == vybe_ast::OperatorDispatch::StaticBuiltin
+                            && self.type_resolution() == vybe_ast::TypeResolution::Static
+                            && both_provably_number
+                        {
+                            self.emit(Op::F64_EQ);
+                            self.emit(Op::I32_EQZ);
+                        } else {
+                            crate::primitives::ops::emit_dyn_ne(self.chunk(), line);
+                        }
+                        if condition_result {
                             self.gave_i32_condition = true;
                         } else if self.profile.materialize_bool_results {
                             crate::primitives::ops::emit_i32_to_bool(self.chunk(), line);
-                        } else {
+                        } else if self.operator_dispatch()
+                            != vybe_ast::OperatorDispatch::StaticBuiltin
+                            || self.type_resolution() != vybe_ast::TypeResolution::Static
+                        {
                             let from_i32 = self.import("wasm:js-number", "fromI32");
                             self.emit_host_call(from_i32, 1);
                         }
@@ -1486,10 +1636,10 @@ impl Compiler {
             }
             BinOp::StrictEq => {
                 let line = self.line;
-                if self.profile.ecma_operator_coercion {
-                    crate::primitives::ops::emit_js_strict_eq(self.chunk(), line);
-                } else {
-                    crate::primitives::ops::emit_dyn_eq(self.chunk(), line);
+                self.emit_strict_equality_operands(operands, line);
+                if std::mem::take(&mut self.want_i32_condition) {
+                    self.gave_i32_condition = true;
+                    return;
                 }
                 // A comparison RESULT is a boolean, normalized here rather than
                 // left to a per-language flag. The VM has no true/false, so the
@@ -1507,11 +1657,11 @@ impl Compiler {
                 // JS !==: negate of ===.
                 {
                     let line = self.line;
-                    if self.profile.ecma_operator_coercion {
-                        crate::primitives::ops::emit_js_strict_eq(self.chunk(), line);
-                        self.emit(Op::I32_EQZ);
-                    } else {
-                        crate::primitives::ops::emit_dyn_ne(self.chunk(), line);
+                    self.emit_strict_equality_operands(operands, line);
+                    self.emit(Op::I32_EQZ);
+                    if std::mem::take(&mut self.want_i32_condition) {
+                        self.gave_i32_condition = true;
+                        return;
                     }
                     // Same normalization as `StrictEq` above.
                     crate::primitives::ops::emit_i32_to_bool(self.chunk(), line);
@@ -1557,8 +1707,8 @@ impl Compiler {
                     // immediately unboxed by the ToBoolean ladder.
                     self.emit_i32_to_bool_or_report();
                 } else {
-                    let right_slot = self.define_local("__rich_cmp_rhs");
-                    let left_slot = self.define_local("__rich_cmp_lhs");
+                    let right_slot = self.define_temp_local("__rich_cmp_rhs");
+                    let left_slot = self.define_temp_local("__rich_cmp_lhs");
                     self.emit_u16(Op::LOCAL_SET, right_slot);
                     self.emit_u16(Op::LOCAL_SET, left_slot);
                     let line = self.line;
@@ -1611,8 +1761,8 @@ impl Compiler {
                     );
                     self.emit_i32_to_bool_or_report();
                 } else {
-                    let right_slot = self.define_local("__rich_cmp_rhs");
-                    let left_slot = self.define_local("__rich_cmp_lhs");
+                    let right_slot = self.define_temp_local("__rich_cmp_rhs");
+                    let left_slot = self.define_temp_local("__rich_cmp_lhs");
                     self.emit_u16(Op::LOCAL_SET, right_slot);
                     self.emit_u16(Op::LOCAL_SET, left_slot);
                     let line = self.line;
@@ -1665,8 +1815,8 @@ impl Compiler {
                     );
                     self.emit_i32_to_bool_or_report();
                 } else {
-                    let right_slot = self.define_local("__rich_cmp_rhs");
-                    let left_slot = self.define_local("__rich_cmp_lhs");
+                    let right_slot = self.define_temp_local("__rich_cmp_rhs");
+                    let left_slot = self.define_temp_local("__rich_cmp_lhs");
                     self.emit_u16(Op::LOCAL_SET, right_slot);
                     self.emit_u16(Op::LOCAL_SET, left_slot);
                     let line = self.line;
@@ -1719,8 +1869,8 @@ impl Compiler {
                     );
                     self.emit_i32_to_bool_or_report();
                 } else {
-                    let right_slot = self.define_local("__rich_cmp_rhs");
-                    let left_slot = self.define_local("__rich_cmp_lhs");
+                    let right_slot = self.define_temp_local("__rich_cmp_rhs");
+                    let left_slot = self.define_temp_local("__rich_cmp_lhs");
                     self.emit_u16(Op::LOCAL_SET, right_slot);
                     self.emit_u16(Op::LOCAL_SET, left_slot);
                     let line = self.line;

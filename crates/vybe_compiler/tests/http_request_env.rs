@@ -239,3 +239,43 @@ fn every_request_op_survives_with_no_request() {
         );
     }
 }
+
+#[test]
+fn environ_with_no_request_does_not_store_request_error_objects() {
+    let mut vm = VM::new();
+    register_platforms(&mut vm, &Capabilities::all());
+
+    let mut chunks = vec![Chunk::new("<no-request-environ-test>")];
+    assert!(dispatch::emit_common(
+        "http_request.environ",
+        &mut chunks,
+        0,
+        0,
+        0
+    ));
+    chunks[0].emit_op(Op::RETURN, 0);
+
+    let env = vm
+        .run(chunks)
+        .expect("http_request.environ should not trap without a request");
+
+    for key_name in [
+        "REQUEST_METHOD",
+        "REQUEST_URI",
+        "PATH_INFO",
+        "QUERY_STRING",
+        "HTTP_HOST",
+        "SERVER_NAME",
+        "REQUEST_SCHEME",
+        "CONTENT_TYPE",
+        "CONTENT_LENGTH",
+        "HTTP_CONTENT_TYPE",
+        "HTTP_CONTENT_LENGTH",
+    ] {
+        assert_eq!(
+            key(&env, key_name),
+            None,
+            "{key_name} must not be synthesized from an invalid request handle"
+        );
+    }
+}

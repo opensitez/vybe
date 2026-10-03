@@ -147,6 +147,7 @@ pub mod prototypes;
 pub mod records;
 pub mod references;
 pub mod reflection;
+mod reference_analysis;
 mod resolver;
 mod scope;
 pub mod slices;
@@ -162,9 +163,33 @@ use crate::primitives::scope::Scope;
 use crate::profile::*;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use vybe_runtime::chunk::Import as BytecodeImport;
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
+
+fn compiler_timing_path() -> Option<String> {
+    let value = std::env::var("VYBE_COMPILER_DEBUG_TIMINGS").ok()?;
+    if value.is_empty() {
+        None
+    } else if value == "1" {
+        Some("/private/tmp/vybe_compiler_timings.log".to_string())
+    } else {
+        Some(value)
+    }
+}
+
+fn write_compiler_timing(path: &str, label: &str, elapsed: Duration) {
+    use std::io::Write;
+
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        let _ = writeln!(file, "{label} {elapsed:?}");
+    }
+}
 
 // ════════════════════════════════════════════════════════════════════════════
 // Loop context for break/continue patching
@@ -610,6 +635,12 @@ pub struct Compiler {
     /// table — SipHash's resistance to attacker-chosen keys buys nothing here.
     /// See [`vybe_runtime::chunk::FxBuildHasher`].
     pub(crate) defined_functions: HashSet<String, vybe_runtime::chunk::FxBuildHasher>,
+    /// Whether this compiled module owns whole-program end-of-module hooks.
+    ///
+    /// Normal entry modules do. Dynamic fragments/includes do not: they run in
+    /// the caller's request and must not fire request-end hooks or flush every
+    /// output buffer just because one included file reached EOF.
+    run_module_end_hooks: bool,
     function_param_modes: HashMap<String, Vec<PassBy>>,
     function_param_types: HashMap<String, Vec<Option<String>>>,
     function_min_arity: HashMap<String, usize>,
@@ -886,6 +917,9 @@ pub struct Compiler {
     /// (null until super() initializes it). Chunk index is checked so
     /// nested functions/classes compiled mid-body don't inherit the guard.
     pub(crate) js_derived_ctor_ctx: Option<(usize, u16)>,
+    /// A bare return in a constructor returns the allocated instance.
+    /// The chunk index keeps nested function bodies outside this context.
+    pub(crate) constructor_this_ctx: Option<(usize, u16)>,
     /// Number of user-visible parameters (excluding the hidden control
     /// slot) for each synchronous generator function. Used at call
     /// sites to pad missing optional args with `undefined` so the
@@ -2982,6 +3016,7 @@ impl Compiler {
             gave_i32_condition: false,
             program_lexical_names: HashSet::new(),
             defined_functions: HashSet::default(),
+            run_module_end_hooks: true,
             function_param_modes: HashMap::new(),
             function_param_types: HashMap::new(),
             function_min_arity: HashMap::new(),
@@ -3046,6 +3081,7 @@ impl Compiler {
             generator_functions: HashSet::new(),
             method_fn_kinds: HashMap::new(),
             js_derived_ctor_ctx: None,
+            constructor_this_ctx: None,
             generator_param_counts: HashMap::new(),
             host_import_bindings: HashMap::new(),
             host_const_bindings: HashMap::new(),
@@ -3066,6 +3102,11 @@ impl Compiler {
             bigint_enabled: false,
             js_arguments_bindings: Vec::new(),
         }
+    }
+
+    pub fn with_run_module_end_hooks(mut self, enabled: bool) -> Self {
+        self.run_module_end_hooks = enabled;
+        self
     }
 
     /// The control-flow bookkeeping of the frame being compiled.
@@ -3255,6 +3296,9 @@ impl Compiler {
     /// followed by `const f = X` works, and to synthesize Module
     /// Namespace Objects for `import * as ns` reflective access.
     pub fn compile_with_imports(mut self, module: &Module) -> Result<CompileResult, String> {
+        let _debug_compile = vybe_runtime::debugger::DebugPhase::current("compiler total");
+        let timing = compiler_timing_path();
+        let total_started = Instant::now();
         // ⛔ THE MODULE'S DECLARED POLICY, NOT THE PROFILE'S. `variable_case`
         // is stated by the walker on `Module.directives`, so a multi-language
         // bundle gets the right answer per UNIT rather than per whichever
@@ -3314,13 +3358,17 @@ impl Compiler {
         //
         // Establish it up front, the same way `collect_addr_taken_idents`
         // already establishes address-taken LOCALS before a body is compiled.
-        // Deliberately an OVER-approximation: a name taken by address anywhere
-        // marks the global too, even if that site was a local. That is safe
-        // because a local binding is consulted first (so it shadows correctly)
-        // and `emit_autoderef_pointer_cell` passes a non-reference through
-        // untouched — the cost of over-marking is one runtime shape check, and
-        // the cost of under-marking is a wrong answer.
-        collect_addr_taken_idents(&module.body, &mut self.module_addr_taken_globals);
+        // Resolve nested address-taking through its lexical scopes. A later
+        // function can promote a global, but a shadowing local cannot.
+        let prescan_started = Instant::now();
+        let debug_prescans = vybe_runtime::debugger::DebugPhase::current("compiler prescans");
+        self.module_addr_taken_globals = reference_analysis::module_address_taken(
+            &module.body,
+            module.directives.variable_fold(),
+        )
+        .into_iter()
+        .map(|name| self.pointer_binding_key(&name))
+        .collect();
         // Same forward-pass argument, for ATOMIC places: a module-level name
         // any statement (including one inside a nested function or lambda)
         // targets with an atomic op becomes a shared-memory word at its
@@ -3393,6 +3441,10 @@ impl Compiler {
                 }
             }
         }
+        if let Some(path) = timing.as_deref() {
+            write_compiler_timing(path, "prescans", prescan_started.elapsed());
+        }
+        drop(debug_prescans);
 
         // ── Phase A: Link ──────────────────────────────────────────────
         //
@@ -3408,7 +3460,13 @@ impl Compiler {
         // linked immediately — they're leaves with no code. User
         // `.wasm` / source-file imports continue to resolve at Bundle
         // load time in a separate step.
+        let link_started = Instant::now();
+        let debug_link = vybe_runtime::debugger::DebugPhase::current("compiler resolve");
         self.link(module);
+        drop(debug_link);
+        if let Some(path) = timing.as_deref() {
+            write_compiler_timing(path, "link", link_started.elapsed());
+        }
 
         // .NET BCL classes no longer emit a per-class constructor prelude:
         // control/value/drawing types resolve through the component descriptor
@@ -3436,6 +3494,7 @@ impl Compiler {
         let has_partial = module.body.iter().any(
             |s| matches!(&s.kind, StmtKind::ClassDecl { modifiers, .. } if modifiers.is_partial),
         );
+        let merge_started = Instant::now();
         let mut merged_body = if has_partial {
             merge_partial_classes(&module.body, self.case_sensitive)
         } else {
@@ -3465,7 +3524,12 @@ impl Compiler {
             }));
         }
         let merged_body = merged_body;
+        if let Some(path) = timing.as_deref() {
+            write_compiler_timing(path, "merge_body", merge_started.elapsed());
+        }
 
+        let declarations_started = Instant::now();
+        let _debug_declarations = vybe_runtime::debugger::DebugPhase::current("compiler declarations");
         self.predeclare_type_names(&merged_body, None);
         self.collect_module_variable_names(&merged_body);
         self.predeclare_module_variable_type_hints(&merged_body);
@@ -3492,6 +3556,10 @@ impl Compiler {
         self.predeclare_class_surfaces();
         self.predeclare_function_names(&merged_body);
         self.predeclare_interface_signatures_in_body(&merged_body);
+        drop(_debug_declarations);
+        if let Some(path) = timing.as_deref() {
+            write_compiler_timing(path, "declaration_passes", declarations_started.elapsed());
+        }
 
         // Pre-collect every rest-parameter arity in the program so call-site
         // rest packing is emitted even when the callee (e.g. a `const f =
@@ -3529,6 +3597,7 @@ impl Compiler {
         // consecutive runs, while a one-class dart file looked stable and hid
         // it. Any deterministic order will do; the key order is the one that
         // needs no extra state.
+        let publish_storage_started = Instant::now();
         let mut parentless_classes: Vec<_> = self
             .normalized_classes
             .iter()
@@ -3539,11 +3608,41 @@ impl Compiler {
         for (_, class) in &parentless_classes {
             self.publish_class_storage(class);
         }
+        if let Some(path) = timing.as_deref() {
+            write_compiler_timing(path, "publish_parentless_class_storage", publish_storage_started.elapsed());
+        }
 
+        let function_pass_started = Instant::now();
+        let _debug_functions = vybe_runtime::debugger::DebugPhase::current("compiler functions");
+        let mut function_pass_index = 0usize;
         for stmt in &merged_body {
-            if matches!(&stmt.kind, StmtKind::FunctionDecl { .. }) {
+            if let StmtKind::FunctionDecl { name, .. } = &stmt.kind {
+                let _debug_function = vybe_runtime::debugger::DebugPhase::current(format!("function {name}"));
+                let one_function_started = Instant::now();
+                if let Some(path) = timing.as_deref() {
+                    write_compiler_timing(
+                        path,
+                        &format!("compile_function_start[{function_pass_index}] {name}"),
+                        Duration::ZERO,
+                    );
+                }
                 self.compile_stmt(stmt)?;
+                if let Some(path) = timing.as_deref() {
+                    function_pass_index += 1;
+                    let elapsed = one_function_started.elapsed();
+                    if elapsed.as_millis() >= 250 || function_pass_index % 100 == 0 {
+                        write_compiler_timing(
+                            path,
+                            &format!("compile_function_decl[{function_pass_index}] {name}"),
+                            elapsed,
+                        );
+                    }
+                }
             }
+        }
+        drop(_debug_functions);
+        if let Some(path) = timing.as_deref() {
+            write_compiler_timing(path, "compile_function_decls", function_pass_started.elapsed());
         }
 
         // ECMA-262 §11.2.1: Detect top-level "use strict" directive prologue
@@ -3552,14 +3651,21 @@ impl Compiler {
             self.in_strict = true;
         }
 
+        let non_function_pass_started = Instant::now();
+        let debug_body = vybe_runtime::debugger::DebugPhase::current("compiler module body");
         for stmt in &merged_body {
             if matches!(&stmt.kind, StmtKind::FunctionDecl { .. }) {
                 continue;
             }
             self.compile_stmt(stmt)?;
         }
+        if let Some(path) = timing.as_deref() {
+            write_compiler_timing(path, "compile_non_function_stmts", non_function_pass_started.elapsed());
+        }
+        drop(debug_body);
 
         // Auto-call entry point if defined
+        let ep_started = Instant::now();
         if let Some(ref ep) = self.profile.entry_point.clone() {
             let has_ep = self.defined_globals.contains(ep)
                 || (!self.case_sensitive
@@ -3569,7 +3675,11 @@ impl Compiler {
                         .any(|g| g.eq_ignore_ascii_case(ep)));
             if has_ep {
                 self.emit_var_get(ep);
-                self.emit_direct_callable_invoke(0);
+                let abi = crate::primitives::class_context::module_receiver_abi(&self.chunks);
+                let line = self.line;
+                let recv =
+                    crate::primitives::callable::emit_callback_receiver(self.chunk(), abi, line);
+                self.emit_direct_callable_invoke(recv);
                 self.emit(Op::DROP);
             } else {
                 // C#-style entry: `static void Main()` lives as a static
@@ -3588,10 +3698,20 @@ impl Compiler {
                         class_slots::ObjSource::Stack,
                         &class_slots::ClassSlot::internal(&ep_canon),
                     );
-                    self.emit_direct_callable_invoke(0);
+                    let abi = crate::primitives::class_context::module_receiver_abi(&self.chunks);
+                    let line = self.line;
+                    let recv = crate::primitives::callable::emit_callback_receiver(
+                        self.chunk(),
+                        abi,
+                        line,
+                    );
+                    self.emit_direct_callable_invoke(recv);
                     self.emit(Op::DROP);
                 }
             }
+        }
+        if let Some(path) = timing.as_deref() {
+            write_compiler_timing(path, "entrypoint_emit", ep_started.elapsed());
         }
 
         // Any output buffer still open when the script ends is FLUSHED, not
@@ -3604,13 +3724,18 @@ impl Compiler {
         // the runner is a null check on `__php_shutdown_fns`, which only exists
         // once something registered one, so a program in any other language
         // pays the same single check the buffer flush above already costs.
-        let saved = self.current;
-        self.current = 0;
-        self.emit_php_run_shutdown_fns();
-        self.current = saved;
+        let module_end_started = Instant::now();
+        if self.run_module_end_hooks {
+            let saved = self.current;
+            self.current = 0;
+            self.emit_php_run_shutdown_fns();
+            self.current = saved;
+        }
 
         let line = self.line;
-        common::io::emit_ob_flush_all(&mut self.chunks, 0, line);
+        if self.run_module_end_hooks {
+            common::io::emit_ob_flush_all(&mut self.chunks, 0, line);
+        }
 
         // A module that recorded an exit status hands it to the process HERE —
         // after the entry point has run and after the flush, so no output is
@@ -3623,6 +3748,9 @@ impl Compiler {
             self.emit_var_get("__c_exit_status");
             let exit_idx = self.import("wasi:cli/exit", "exit-with-code");
             self.emit_host_call(exit_idx, 1);
+        }
+        if let Some(path) = timing.as_deref() {
+            write_compiler_timing(path, "module_end_emit", module_end_started.elapsed());
         }
 
         self.emit_null();
@@ -3639,6 +3767,10 @@ impl Compiler {
         // compilation and recurse through `Compiler::compile`.
         // and recurse forever. Cheap thread-local guard since polyfill
         // compilation is single-threaded at vybex build time.
+        let finalize_started = Instant::now();
+        let helper_finalize_started = Instant::now();
+        let _debug_finalize = vybe_runtime::debugger::DebugPhase::current("compiler finalize");
+        let _debug_helpers = vybe_runtime::debugger::DebugPhase::current("finalize helpers");
         if !crate::primitives::polyfills::is_compiling_runtime_helper() {
             // The exclusion list is profile data — a language that supplies
             // its own implementation of a shared helper names it there, rather
@@ -3654,12 +3786,50 @@ impl Compiler {
                 );
             }
         }
+        if let Some(path) = timing.as_deref() {
+            write_compiler_timing(
+                path,
+                "finalize.runtime_helpers",
+                helper_finalize_started.elapsed(),
+            );
+        }
+        drop(_debug_helpers);
+        let normalize_imports_started = Instant::now();
+        let _debug_imports = vybe_runtime::debugger::DebugPhase::current("finalize imports");
         Self::normalize_import_table(&mut self.chunks);
+        drop(_debug_imports);
+        if let Some(path) = timing.as_deref() {
+            write_compiler_timing(
+                path,
+                "finalize.normalize_import_table",
+                normalize_imports_started.elapsed(),
+            );
+        }
+        let declare_globals_started = Instant::now();
+        let _debug_free_globals = vybe_runtime::debugger::DebugPhase::current("finalize free globals");
         common::globals::declare_free_globals(&mut self.chunks);
+        drop(_debug_free_globals);
+        if let Some(path) = timing.as_deref() {
+            write_compiler_timing(
+                path,
+                "finalize.declare_free_globals",
+                declare_globals_started.elapsed(),
+            );
+        }
         // Assign every global a real index over `global_imports ++ defined`
         // and rewrite the operands into it. Must follow the line above,
         // which decides the import half.
+        let normalize_globals_started = Instant::now();
+        let _debug_globals = vybe_runtime::debugger::DebugPhase::current("finalize globals");
         common::globals::normalize_global_table(&mut self.chunks);
+        drop(_debug_globals);
+        if let Some(path) = timing.as_deref() {
+            write_compiler_timing(
+                path,
+                "finalize.normalize_global_table",
+                normalize_globals_started.elapsed(),
+            );
+        }
         // Publish this UNIT's receiver ABI to every chunk it produced, on the
         // same principle as the global index space and canon section below: a
         // chunk that was compiled under an ABI must be able to say which one.
@@ -3677,14 +3847,19 @@ impl Compiler {
         };
         let unit_members_on_prototype = self.members_on_prototype();
         let unit_fields_are_own_properties = self.instance_fields_are_own_properties();
+        let stamp_chunks_started = Instant::now();
         for chunk in &mut self.chunks {
             chunk.module_receiver_abi = unit_abi;
             chunk.module_members_on_prototype = unit_members_on_prototype;
             chunk.module_instance_fields_are_own_properties = unit_fields_are_own_properties;
         }
+        if let Some(path) = timing.as_deref() {
+            write_compiler_timing(path, "finalize.stamp_chunks", stamp_chunks_started.elapsed());
+        }
         // The canon section, published to every chunk on the same principle as
         // the global index space above: a chunk carrying a canonidx must be
         // able to say what that index means.
+        let canon_started = Instant::now();
         let mut canon = std::mem::take(&mut self.canon_section);
         let decls = std::mem::take(&mut self.canon_decls);
         common::canon::resolve_core_export_callees(&mut self.chunks, &decls, &mut canon)?;
@@ -3693,7 +3868,18 @@ impl Compiler {
         let vts = std::mem::take(&mut self.canon_valtypes);
         let cfuncs = std::mem::take(&mut self.component_funcs);
         common::canon::install_type_space(&mut self.chunks, &fts, &vts, &cfuncs);
+        if let Some(path) = timing.as_deref() {
+            write_compiler_timing(path, "finalize.canon", canon_started.elapsed());
+        }
+        let host_imports_started = Instant::now();
         let host_imports = self.collected_host_imports();
+        if let Some(path) = timing.as_deref() {
+            write_compiler_timing(
+                path,
+                "finalize.collected_host_imports",
+                host_imports_started.elapsed(),
+            );
+        }
         // Frame 0 is the module's own declaration (installed above from
         // `module.directives`); an in-source `Directive` with `Module` scope
         // writes through to it, so reading the base frame answers for the whole
@@ -3710,12 +3896,25 @@ impl Compiler {
         // Runs after every registration and after all emission, so it can never
         // move an index a `struct.get` already baked (see the licence check
         // inside).
+        let class_finalize_started = Instant::now();
         self.finalize_type_prefixes();
         // Descriptor rows come AFTER the prefix merge, so each descriptor's
         // funcref slots mirror an already-merged method list.
         self.append_descriptor_type_rows();
+        drop(_debug_finalize);
+        if let Some(path) = timing.as_deref() {
+            write_compiler_timing(
+                path,
+                "finalize.class_metadata",
+                class_finalize_started.elapsed(),
+            );
+        }
         if dump_classes_enabled() {
             self.dump_pending_classes();
+        }
+        if let Some(path) = timing.as_deref() {
+            write_compiler_timing(path, "finalize", finalize_started.elapsed());
+            write_compiler_timing(path, "compile_with_imports_total", total_started.elapsed());
         }
         Ok(CompileResult {
             chunks: self.chunks,
