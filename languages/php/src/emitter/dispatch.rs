@@ -39,10 +39,16 @@ fn emit_isset_all(chunk: &mut Chunk, argc: u8, line: u32) {
             chunk.emit_op(Op::I32_AND, line);
         }
     }
+    vybe_compiler::primitives::ops::emit_i32_to_bool(chunk, line);
 }
 
 pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) -> bool {
     match name {
+        "php.cookie_decode_request" => {
+            vybe_compiler::primitives::http_cookie::emit_request_cookies(chunks, current, line);
+            let decode = chunks[current].add_import("php:cookie", "decodeRequest");
+            chunks[current].emit_call(decode, 1, line);
+        }
         name if super::runtime_adapter::emit_helper(name, chunks, current, argc, line) => {}
         // ── PHP array helpers ──────────────────────────────────────
         // Index-based loops + ECMA array/object ops. PHP `array` ≡
@@ -51,6 +57,32 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "php.print_expr" => super::output_adapter::emit_php_print_expr(chunks, current, line),
         "php.global_get" => {
             super::globals_adapter::emit_php_global_get(chunks, current, argc, line)
+        }
+        "php.globals_object" => {
+            super::globals_adapter::emit_php_globals_object(chunks, current, line)
+        }
+        "php.module_get" => {
+            super::globals_adapter::emit_php_module_get(chunks, current, argc, line)
+        }
+        "php.module_set" => {
+            super::globals_adapter::emit_php_module_set(chunks, current, argc, line)
+        }
+        "php.module_ref" => {
+            super::globals_adapter::emit_php_module_ref(chunks, current, argc, line)
+        }
+        "php.object_id" | "php.object_hash" => {
+            let operation = if name == "php.object_id" {
+                "objectId"
+            } else {
+                "objectHash"
+            };
+            let host = chunks[current].add_import("php:array", operation);
+            chunks[current].emit_call(host, argc, line);
+        }
+        "php.compact" => {
+            let host = chunks[current].add_import("vybe:php", "compact");
+            chunks[current].emit_call(host, argc, line);
+            super::copy_adapter::emit_php_copy_on_assign(chunks, current, 1, line);
         }
         "php.global_ref" => {
             super::globals_adapter::emit_php_global_ref(chunks, current, argc, line)
@@ -193,6 +225,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             super::array_adapter::emit_array_walk_recursive(chunks, current, argc, line)
         }
         "php.is_array" => super::array_adapter::emit_php_is_array(chunks, current, argc, line),
+        "php.is_object" => super::array_adapter::emit_php_is_object(chunks, current, line),
         "php.array_sum" => super::array_adapter::emit_php_array_sum(chunks, current, argc, line),
         "php.offset" => super::array_adapter::emit_php_offset(chunks, current, argc, line),
         "php.key" => super::array_adapter::emit_php_key(chunks, current, argc, line),
@@ -274,7 +307,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             super::xml_adapter::emit_simplexml_child_text(chunks, current, argc, line)
         }
         "php.dom_node_item" => super::xml_adapter::emit_dom_node_item(chunks, current, argc, line),
-        "php.xmlwriter_new" => super::xml_adapter::emit_php_xmlwriter_new(chunks, current, argc, line),
+        "php.xmlwriter_new" => {
+            super::xml_adapter::emit_php_xmlwriter_new(chunks, current, argc, line)
+        }
         "php.xmlwriter_open_memory" => {
             super::xml_adapter::emit_php_xmlwriter_open_memory(chunks, current, argc, line)
         }
@@ -296,7 +331,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "php.xmlwriter_end_attribute" => {
             super::xml_adapter::emit_php_xmlwriter_end_attribute(chunks, current, argc, line)
         }
-        "php.xmlwriter_text" => super::xml_adapter::emit_php_xmlwriter_text(chunks, current, argc, line),
+        "php.xmlwriter_text" => {
+            super::xml_adapter::emit_php_xmlwriter_text(chunks, current, argc, line)
+        }
         "php.xmlwriter_write_element" => {
             super::xml_adapter::emit_php_xmlwriter_write_element(chunks, current, argc, line)
         }
@@ -306,7 +343,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "php.xmlwriter_output_memory" => {
             super::xml_adapter::emit_php_xmlwriter_output_memory(chunks, current, argc, line)
         }
-        "php.xmlwriter_flush" => super::xml_adapter::emit_php_xmlwriter_flush(chunks, current, argc, line),
+        "php.xmlwriter_flush" => {
+            super::xml_adapter::emit_php_xmlwriter_flush(chunks, current, argc, line)
+        }
         "php.xmlwriter_end_document" => {
             super::xml_adapter::emit_php_xmlwriter_end_document(chunks, current, argc, line)
         }
@@ -366,6 +405,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "php.array_chunk" => super::array_adapter::emit_array_chunk(chunks, current, argc, line),
         "php.array_combine" => {
             super::array_adapter::emit_array_combine(chunks, current, argc, line)
+        }
+        "php.array_read_deref" => {
+            super::array_adapter::emit_php_array_read_deref(chunks, current, argc, line)
         }
         "php.array_flip" => super::array_adapter::emit_array_flip(chunks, current, argc, line),
         "php.array_diff" => super::array_adapter::emit_array_diff(chunks, current, argc, line),
@@ -488,7 +530,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             super::array_adapter::emit_php_in_array(chunks, current, argc, line)
         }
         "php.obj_to_array" => {
-            super::array_adapter::emit_php_obj_to_array(chunks, current, argc, line)
+            super::array_adapter::emit_php_cast_to_array(chunks, current, argc, line)
         }
         "php.array_to_object" => {
             super::array_adapter::emit_php_array_to_object(chunks, current, argc, line)
@@ -629,9 +671,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             crate::emitter::datetime_adapter::emit_php_getdate(chunks, current, argc, line)
         }
         "php.sleep" => crate::emitter::time_adapter::emit_php_sleep(chunks, current, argc, line),
-        "php.usleep" => {
-            crate::emitter::time_adapter::emit_php_usleep(chunks, current, argc, line)
-        }
+        "php.usleep" => crate::emitter::time_adapter::emit_php_usleep(chunks, current, argc, line),
 
         // ── PHP `$x++` / `$x--` arithmetic ─────────────────────────
         // Composes `ecma:number.parseFloat` for string-numeric coerce.
@@ -872,7 +912,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
                 current,
                 argc,
                 0,
-                super::type_guard::Expect::NotArray,
+                super::type_guard::Expect::StringCoercible,
                 "TypeError",
                 "strlen(): Argument #1 ($string) must be of type string",
                 line,
@@ -890,6 +930,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "php.mb_substr" => {
             crate::emitter::string_adapter::emit_mb_substr(chunks, current, argc, line)
+        }
+        "php.mb_strlen" => {
+            crate::emitter::string_adapter::emit_mb_strlen(chunks, current, argc, line)
         }
         "php.mb_strpos" => {
             crate::emitter::string_adapter::emit_mb_strpos(chunks, current, argc, line)
@@ -1200,6 +1243,20 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "php.get_class" => {
             crate::emitter::reflection_adapter::emit_php_get_class(chunks, current, argc, line)
         }
+        "php.get_object_vars" => {
+            vybe_compiler::primitives::references::emit_autoderef_to_stack(chunks, current, line);
+            super::type_guard::guard_arg(
+                chunks,
+                current,
+                argc,
+                0,
+                super::type_guard::Expect::NotScalar,
+                "TypeError",
+                "get_object_vars(): Argument #1 ($object) must be of type object",
+                line,
+            );
+            crate::emitter::array_adapter::emit_php_obj_to_array(chunks, current, argc, line)
+        }
         "php.get_parent_class" => crate::emitter::reflection_adapter::emit_php_get_parent_class(
             chunks, current, argc, line,
         ),
@@ -1437,6 +1494,8 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "php.getenv" => crate::emitter::env_adapter::emit_php_getenv(chunks, current, argc, line),
         "php.putenv" => crate::emitter::env_adapter::emit_php_putenv(chunks, current, argc, line),
+        "php.getcwd" => crate::emitter::env_adapter::emit_php_getcwd(chunks, current, line),
+        "php.chdir" => crate::emitter::env_adapter::emit_php_chdir(chunks, current, line),
         "php.superglobal_server" => {
             crate::emitter::superglobal_adapter::emit_php_superglobal_server(
                 chunks, current, argc, line,
@@ -1722,6 +1781,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "php.mysqli_init" => {
             crate::emitter::mysqli_adapter::emit_php_mysqli_init(chunks, current, argc, line)
         }
+        "php.mysqli_options" => {
+            crate::emitter::mysqli_adapter::emit_php_mysqli_options(chunks, current, argc, line)
+        }
         "php.mysqli_real_connect" => crate::emitter::mysqli_adapter::emit_php_mysqli_real_connect(
             chunks, current, argc, line,
         ),
@@ -1804,6 +1866,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "php.mysqli_fetch_array" => {
             crate::emitter::mysqli_adapter::emit_php_mysqli_fetch_array(chunks, current, argc, line)
+        }
+        "php.mysqli_fetch_row" => {
+            crate::emitter::mysqli_adapter::emit_php_mysqli_fetch_row(chunks, current, argc, line)
         }
         "php.mysqli_fetch_assoc" => {
             crate::emitter::mysqli_adapter::emit_php_mysqli_fetch_assoc(chunks, current, argc, line)

@@ -386,6 +386,14 @@ pub fn emit_readlink(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32)
 /// `pathinfo($path, $flag)` — returns the single requested component.
 /// PATHINFO_DIRNAME(1), PATHINFO_BASENAME(2), PATHINFO_EXTENSION(4),
 /// PATHINFO_FILENAME(8).
+fn emit_pathinfo_extension(chunk: &mut Chunk, line: u32) {
+    paths::emit_extension(chunk, line);
+    // The shared path primitive includes the dot; PHP pathinfo omits it.
+    chunk.emit_f64_const(1.0, line);
+    let substring = chunk.add_import("ecma:string", "substring");
+    chunk.emit_call(substring, 2, line);
+}
+
 fn emit_pathinfo_flag(chunks: &mut [Chunk], current: usize, line: u32) {
     // stack: [path, flag]
     let (flag_slot, path_slot) = {
@@ -428,7 +436,7 @@ fn emit_pathinfo_flag(chunks: &mut [Chunk], current: usize, line: u32) {
         chunk.emit_if(line);
         lget(chunk, path_slot, line);
     }
-    paths::emit_extension(&mut chunks[current], line);
+    emit_pathinfo_extension(&mut chunks[current], line);
     {
         let chunk = &mut chunks[current];
         chunk.emit_else(line);
@@ -472,7 +480,7 @@ pub fn emit_pathinfo(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) 
 
     lget(chunk, path_slot, line);
     let _ = chunk;
-    paths::emit_extension(&mut chunks[current], line);
+    emit_pathinfo_extension(&mut chunks[current], line);
     let chunk = &mut chunks[current];
     lset(chunk, extension_slot, line);
 
@@ -527,217 +535,15 @@ pub fn emit_file(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     }
 }
 
-/// PHP `glob($pattern, $flags = 0)` — current support covers the common
-/// single-`*` filename wildcard form by listing the directory and
-/// filtering entries with prefix/suffix checks. Returns matching full paths.
+/// PHP `glob($pattern, $flags = 0)` — expand path-component wildcards through
+/// the filesystem adapter. Optional flags retain the existing default behavior.
 pub fn emit_glob(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let chunk = &mut chunks[current];
     for _ in 1..argc {
         chunk.emit_op(Op::DROP, line);
     }
-
-    let pattern_slot = alloc_local(chunk);
-    let dir_slot = alloc_local(chunk);
-    let file_pattern_slot = alloc_local(chunk);
-    let result_slot = alloc_local(chunk);
-    lset(chunk, pattern_slot, line);
-
-    lget(chunk, pattern_slot, line);
-    let _ = chunk;
-    paths::emit_directory(&mut chunks[current], line);
-    let chunk = &mut chunks[current];
-    lset(chunk, dir_slot, line);
-
-    lget(chunk, pattern_slot, line);
-    let _ = chunk;
-    paths::emit_file_name(&mut chunks[current], line);
-    let chunk = &mut chunks[current];
-    lset(chunk, file_pattern_slot, line);
-
-    lget(chunk, file_pattern_slot, line);
-    push_str(chunk, "*", line);
-    {
-        let idx = chunk.add_import("ecma:string", "includes");
-        chunk.emit_call(idx, 2, line);
-    }
-    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
-    chunk.emit_if(line);
-
-    let parts_slot = alloc_local(chunk);
-    let parts_len_slot = alloc_local(chunk);
-    let last_part_idx_slot = alloc_local(chunk);
-    let prefix_slot = alloc_local(chunk);
-    let suffix_slot = alloc_local(chunk);
-    let entries_slot = alloc_local(chunk);
-    let entries_len_slot = alloc_local(chunk);
-    let index_slot = alloc_local(chunk);
-    let entry_slot = alloc_local(chunk);
-    let full_path_slot = alloc_local(chunk);
-    let pass_slot = alloc_local(chunk);
-
-    lget(chunk, file_pattern_slot, line);
-    push_str(chunk, "*", line);
-    {
-        let idx = chunk.add_import("ecma:string", "split");
-        chunk.emit_call(idx, 2, line);
-    }
-    lset(chunk, parts_slot, line);
-
-    lget(chunk, parts_slot, line);
-    chunk.emit_op(Op::ARRAY_LENGTH, line);
-    lset(chunk, parts_len_slot, line);
-
-    lget(chunk, parts_slot, line);
-    push_const(chunk, Value::F64(0.0), line);
-    chunk.emit_op(Op::ARRAY_GET, line);
-    lset(chunk, prefix_slot, line);
-
-    lget(chunk, parts_len_slot, line);
-    push_const(chunk, Value::F64(-1.0), line);
-    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
-    lset(chunk, last_part_idx_slot, line);
-
-    lget(chunk, parts_slot, line);
-    lget(chunk, last_part_idx_slot, line);
-    chunk.emit_op(Op::ARRAY_GET, line);
-    lset(chunk, suffix_slot, line);
-
-    lget(chunk, dir_slot, line);
-    let _ = chunk;
-    fs_path::emit_list_dir(&mut chunks[current], line);
-    let chunk = &mut chunks[current];
-    lset(chunk, entries_slot, line);
-
-    lget(chunk, entries_slot, line);
-    chunk.emit_op(Op::ARRAY_LENGTH, line);
-    lset(chunk, entries_len_slot, line);
-
-    vybe_compiler::primitives::collections::emit_array_new(chunks, current, 0, line);
-    let chunk = &mut chunks[current];
-    lset(chunk, result_slot, line);
-
-    push_const(chunk, Value::F64(0.0), line);
-    lset(chunk, index_slot, line);
-
-    let (loop_patch, _) = chunk.emit_loop_s(line);
-    lget(chunk, index_slot, line);
-    lget(chunk, entries_len_slot, line);
-    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
-    chunk.emit_op(Op::I32_EQZ, line);
-    chunk.emit_br_if(1, line);
-
-    let skip_entry = chunk.emit_block(line);
-
-    lget(chunk, entries_slot, line);
-    lget(chunk, index_slot, line);
-    chunk.emit_op(Op::ARRAY_GET, line);
-    lset(chunk, entry_slot, line);
-
-    push_const(chunk, Value::Bool(true), line);
-    lset(chunk, pass_slot, line);
-    lget(chunk, prefix_slot, line);
-    push_str(chunk, "", line);
-    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
-    chunk.emit_op(Op::I32_EQZ, line);
-    chunk.emit_if(line);
-    lget(chunk, entry_slot, line);
-    lget(chunk, prefix_slot, line);
-    {
-        let idx = chunk.add_import("ecma:string", "startsWith");
-        chunk.emit_call(idx, 2, line);
-    }
-    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
-    lset(chunk, pass_slot, line);
-    chunk.emit_end(line);
-    lget(chunk, pass_slot, line);
-    chunk.emit_op(Op::I32_EQZ, line);
-    chunk.emit_br_if(0, line);
-
-    push_const(chunk, Value::Bool(true), line);
-    lset(chunk, pass_slot, line);
-    lget(chunk, suffix_slot, line);
-    push_str(chunk, "", line);
-    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
-    chunk.emit_op(Op::I32_EQZ, line);
-    chunk.emit_if(line);
-    lget(chunk, entry_slot, line);
-    lget(chunk, suffix_slot, line);
-    {
-        let idx = chunk.add_import("ecma:string", "endsWith");
-        chunk.emit_call(idx, 2, line);
-    }
-    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
-    lset(chunk, pass_slot, line);
-    chunk.emit_end(line);
-    lget(chunk, pass_slot, line);
-    chunk.emit_op(Op::I32_EQZ, line);
-    chunk.emit_br_if(0, line);
-
-    lget(chunk, dir_slot, line);
-    push_str(chunk, "/", line);
-    {
-        let idx = chunk.add_import("wasm:js-string", "concat");
-        chunk.emit_call(idx, 2, line);
-    }
-    lget(chunk, entry_slot, line);
-    {
-        let idx = chunk.add_import("wasm:js-string", "concat");
-        chunk.emit_call(idx, 2, line);
-    }
-    lset(chunk, full_path_slot, line);
-
-    lget(chunk, full_path_slot, line);
-    let _ = chunk;
-    fs_path::emit_is_file(&mut chunks[current], line);
-    let chunk = &mut chunks[current];
-    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
-    chunk.emit_op(Op::I32_EQZ, line);
-    chunk.emit_br_if(0, line);
-
-    lget(chunk, result_slot, line);
-    lget(chunk, full_path_slot, line);
-    let _ = chunk;
-    vybe_compiler::primitives::collections::emit_push(chunks, current, line);
-    let chunk = &mut chunks[current];
-    chunk.emit_op(Op::DROP, line);
-
-    chunk.emit_end(line);
-    chunk.patch_block(skip_entry);
-    lget(chunk, index_slot, line);
-    push_const(chunk, Value::F64(1.0), line);
-    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
-    lset(chunk, index_slot, line);
-    chunk.emit_br(0, line);
-    chunk.emit_end(line);
-    chunk.patch_loop(loop_patch);
-
-    chunk.emit_else(line);
-
-    lget(chunk, pattern_slot, line);
-    let _ = chunk;
-    fs_path::emit_exists(&mut chunks[current], line);
-    let chunk = &mut chunks[current];
-    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
-    chunk.emit_if(line);
-
-    vybe_compiler::primitives::collections::emit_array_new(chunks, current, 0, line);
-    let chunk = &mut chunks[current];
-    lset(chunk, result_slot, line);
-    lget(chunk, result_slot, line);
-    lget(chunk, pattern_slot, line);
-    let _ = chunk;
-    vybe_compiler::primitives::collections::emit_push(chunks, current, line);
-    let chunk = &mut chunks[current];
-    chunk.emit_op(Op::DROP, line);
-
-    chunk.emit_else(line);
-    vybe_compiler::primitives::collections::emit_array_new(chunks, current, 0, line);
-    let chunk = &mut chunks[current];
-    lset(chunk, result_slot, line);
-    chunk.emit_end(line);
-
-    chunk.emit_end(line);
-    lget(chunk, result_slot, line);
+    let glob = chunk.add_import("php:filesystem", "glob");
+    chunk.emit_call(glob, 1, line);
 }
 
 /// PHP `dir($path)` — materialize directory entries and return an

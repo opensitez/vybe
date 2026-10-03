@@ -58,11 +58,11 @@ pub fn parse(source: &str) -> Result<Module, String> {
         ("Error", empty_array_expr()),
         ("__ps_history", empty_array_expr()),
         ("MaximumHistoryCount", Expression::int(4096)),
-        ("PSDefaultParameterValues", object_entries_to_dictionary(Vec::new())),
+        ("PSDefaultParameterValues", object_entries_to_dictionary(Vec::new()),),
         ("ErrorActionPreference", Expression::string("Continue")),
         ("WarningPreference", Expression::string("Continue")),
         ("DebugPreference", Expression::string("SilentlyContinue")),
-        ("InformationPreference", Expression::string("SilentlyContinue")),
+        ("InformationPreference", Expression::string("SilentlyContinue"),),
         ("VerbosePreference", Expression::string("SilentlyContinue")),
     ]
     .into_iter()
@@ -926,14 +926,14 @@ fn ps_catch_error_record_rebind(__w: &PsWalker) -> Statement {
     let has_exception = ps_binary(
         BinOp::IsNot,
         existing_exception.clone(),
-        Expression::null(),
+        Expression::null()
     );
     let has_meaningful_error_id = ps_binary(
         BinOp::And,
         ps_binary(
             BinOp::IsNot,
             existing_error_id.clone(),
-            Expression::null(),
+            Expression::null()
         ),
         ps_binary(
             BinOp::NotEq,
@@ -1016,12 +1016,12 @@ fn ps_error_record_enrich_expr(__w: &PsWalker, record: Expression) -> Expression
         }),
         Statement::new(StmtKind::If {
             cond: type_test_expr(
-                ps_builtin("__ps_index_get", vec![rec(), Expression::string("Exception")]),
+                ps_builtin("__ps_index_get", vec![rec(), Expression::string("Exception")],),
                 &type_literal_expr("System.Management.Automation.ErrorRecord"),
             ),
             then_body: vec![Statement::new(StmtKind::Assign {
                 targets: vec![rec()],
-                value: ps_builtin("__ps_index_get", vec![rec(), Expression::string("Exception")]),
+                value: ps_builtin("__ps_index_get", vec![rec(), Expression::string("Exception")],),
                 by_ref: false,
             })],
             elifs: Vec::new(),
@@ -1114,8 +1114,8 @@ fn ps_error_invocation_info_expr() -> Expression {
             ("commandorigin", Expression::string("Internal")),
             ("DisplayScriptPosition", Expression::null()),
             ("displayscriptposition", Expression::null()),
-            ("PositionMessage", Expression::string("At line:1 char:1\n+ throw")),
-            ("positionmessage", Expression::string("At line:1 char:1\n+ throw")),
+            ("PositionMessage", Expression::string("At line:1 char:1\n+ throw"),),
+            ("positionmessage", Expression::string("At line:1 char:1\n+ throw"),),
             ("BoundParameters", object_entries_to_dictionary(Vec::new())),
             ("boundparameters", object_entries_to_dictionary(Vec::new())),
             ("UnboundArguments", ps_array_of(Vec::new())),
@@ -1156,7 +1156,7 @@ fn write_error_record_expr(
         const REC: &str = "__ps_write_error_detail_record";
         let details = new_dotnet_expr(
             "System.Management.Automation.ErrorDetails",
-            vec![message],
+            vec![message]
         );
         record = block_value_expr(vec![
             local_decl(REC),
@@ -1209,7 +1209,7 @@ fn write_error_expr(
     const REC: &str = "__ps_write_error_record";
     const ACTION: &str = "__ps_write_error_action";
     let action = explicit_action.unwrap_or_else(|| Expression::ident("ErrorActionPreference"));
-    let action_text = ps_member_call(ps_builtin("__ps_to_string", vec![action]), "ToLower", Vec::new());
+    let action_text = ps_member_call(ps_builtin("__ps_to_string", vec![action]), "ToLower", Vec::new(),);
     block_value_expr(vec![
         local_decl(REC),
         local_decl(ACTION),
@@ -1236,7 +1236,7 @@ fn write_error_expr(
                 Expression::ident(ACTION),
                 Expression::string("ignore"),
             ),
-            then_body: vec![Statement::new(StmtKind::Return(Some(ps_array_of(Vec::new()))))],
+            then_body: vec![Statement::new(StmtKind::Return(Some(ps_array_of(Vec::new(),))))],
             elifs: Vec::new(),
             else_body: None,
         }),
@@ -1337,14 +1337,10 @@ fn collect_statement_value_stmts(value: Expression, span: Span) -> Vec<Statement
             by_ref: false,
         }),
         Statement::new(StmtKind::If {
-            cond: ps_binary(
-                BinOp::NotEq,
+            cond: ps_binary(BinOp::NotEq, Expression::ident(VALUE), Expression::null()),
+            then_body: vec![Statement::new(StmtKind::Expr(collect_call(
                 Expression::ident(VALUE),
-                Expression::null(),
-            ),
-            then_body: vec![Statement::new(StmtKind::Expr(collect_call(Expression::ident(
-                VALUE,
-            ))))],
+            )))],
             elifs: Vec::new(),
             else_body: None,
         }),
@@ -2421,7 +2417,7 @@ fn parse_function_decl(__w: &mut PsWalker, pair: Pair<Rule>) -> Result<Statement
             .insert(name.to_lowercase(), binding_info.clone());
         let mut parameter_attrs = early_parameter_attrs.clone();
         for dynamic_param in &dynamic_params {
-            parameter_attrs.insert(dynamic_param.name.to_lowercase(), dynamic_param.attr.clone());
+            parameter_attrs.insert(dynamic_param.name.to_lowercase(), dynamic_param.attr.clone(),);
         }
         __w.function_parameter_attributes
             .insert(name.to_lowercase(), parameter_attrs.clone());
@@ -2830,7 +2826,7 @@ fn parameter_validation_guard(param: &str, attr: &str) -> Option<Statement> {
                 ),
                 arg(1),
             ),
-            ps_binary(BinOp::Add, Expression::string("; actual value is "), value()),
+            ps_binary(BinOp::Add, Expression::string("; actual value is "), value(),),
         )
     } else if head_lower == "validateset" && !parts.is_empty() {
         let allowed = parts
@@ -3013,7 +3009,7 @@ fn ps_default_parameter_value_expr(
         parameter_name,
         validators,
     ));
-    body.push(Statement::new(StmtKind::Return(Some(Expression::ident(VALUE)))));
+    body.push(Statement::new(StmtKind::Return(Some(Expression::ident(VALUE,)))));
     block_value_expr(body)
 }
 
@@ -3024,29 +3020,31 @@ fn ps_default_parameter_validation_returns(
     validators
         .iter()
         .filter_map(|attr| ps_default_parameter_validator_ok(parameter_name, attr))
-        .map(|ok| Statement::new(StmtKind::If {
-            cond: ps_binary(
-                BinOp::And,
-                Expression::new(ExprKind::Unary {
-                    op: UnaryOp::Not,
-                    expr: Box::new(ps_builtin(
-                        "__ps_is_null",
-                        vec![Expression::ident("__ps_default_value")],
-                    )),
-                }),
-                Expression::new(ExprKind::Unary {
-                    op: UnaryOp::Not,
-                    expr: Box::new(ok),
-                }),
-            ),
-            then_body: vec![Statement::new(StmtKind::Assign {
-                targets: vec![Expression::ident("__ps_default_value")],
-                value: Expression::null(),
-                by_ref: false,
-            })],
-            elifs: Vec::new(),
-            else_body: None,
-        }))
+        .map(|ok| {
+            Statement::new(StmtKind::If {
+                cond: ps_binary(
+                    BinOp::And,
+                    Expression::new(ExprKind::Unary {
+                        op: UnaryOp::Not,
+                        expr: Box::new(ps_builtin(
+                            "__ps_is_null",
+                            vec![Expression::ident("__ps_default_value")],
+                        )),
+                    }),
+                    Expression::new(ExprKind::Unary {
+                        op: UnaryOp::Not,
+                        expr: Box::new(ok),
+                    }),
+                ),
+                then_body: vec![Statement::new(StmtKind::Assign {
+                    targets: vec![Expression::ident("__ps_default_value")],
+                    value: Expression::null(),
+                    by_ref: false,
+                })],
+                elifs: Vec::new(),
+                else_body: None,
+            })
+        })
         .collect()
 }
 
@@ -3086,7 +3084,7 @@ fn ps_default_parameter_validator_ok(parameter_name: &str, attr: &str) -> Option
         (_, other) => other,
     };
     let subject = if all_quoted {
-        method_call_expr(Expression::ident("__ps_default_value"), "ToLower", Vec::new())
+        method_call_expr(Expression::ident("__ps_default_value"), "ToLower", Vec::new(),)
     } else {
         Expression::ident("__ps_default_value")
     };
@@ -4196,8 +4194,11 @@ fn powershell_error_record_expr(__w: &PsWalker, expr: &Expression) -> bool {
         {
             powershell_error_record_expr(__w, left)
         }
-        ExprKind::Object(_) => object_property_value(expr, &["Message", "message"]).is_some()
-            && object_property_value(expr, &["FullyQualifiedErrorId", "fullyqualifiederrorid"]).is_some(),
+        ExprKind::Object(_) => {
+            object_property_value(expr, &["Message", "message"]).is_some()
+                && object_property_value(expr, &["FullyQualifiedErrorId", "fullyqualifiederrorid"])
+                    .is_some()
+        }
         _ => false,
     }
 }
@@ -4435,8 +4436,8 @@ fn parse_variable_metadata_command_statement(
             || (__w.readonly_vars.contains(&key) && !force && !is_readonly)
         {
             return Some(Statement::new(StmtKind::Expr(ps_constant_variable_error_expr(
-                &scoped,
-            ))));
+                &scoped
+            ),)));
         }
         __w.defined_vars.insert(key.clone());
         if is_constant {
@@ -4467,13 +4468,13 @@ fn parse_variable_metadata_command_statement(
     }
     if __w.constant_vars.contains(&key) {
         return Some(Statement::new(StmtKind::Expr(ps_constant_variable_error_expr(
-            &scoped,
-        ))));
+            &scoped
+        ),)));
     }
     if __w.readonly_vars.contains(&key) && !force {
         return Some(Statement::new(StmtKind::Expr(ps_constant_variable_error_expr(
-            &scoped,
-        ))));
+            &scoped
+        ),)));
     }
     if cmd == "remove-variable" {
         __w.readonly_vars.remove(&key);
@@ -4932,8 +4933,16 @@ fn parse_assignment_statement(__w: &mut PsWalker, pair: Pair<Rule>) -> Statement
         let is_hashtable_ctor = assignment_expr_is_hashtable_ctor(&value);
         __w.hashtable_vars
             .entry(key.clone())
-            .and_modify(|slot| *slot = is_literal || is_hashtable_ctor || is_runtime_defined_parameter_dictionary_expr(&value))
-            .or_insert(is_literal || is_hashtable_ctor || is_runtime_defined_parameter_dictionary_expr(&value));
+            .and_modify(|slot| {
+                *slot = is_literal
+                    || is_hashtable_ctor
+                    || is_runtime_defined_parameter_dictionary_expr(&value)
+            })
+            .or_insert(
+                is_literal
+                    || is_hashtable_ctor
+                    || is_runtime_defined_parameter_dictionary_expr(&value),
+            );
         let is_case_sensitive_hashtable = assignment_expr_is_case_sensitive_hashtable(&value);
         __w.hashtable_case_sensitive_vars
             .entry(key.clone())
@@ -6176,7 +6185,7 @@ fn build_command_call_inner(
         call
     };
     let (call, lambda_params, lambda_args) = stream_context_callee_binding(__w, call);
-    let call = wrap_stream_context_call(call, stream_captures, stream_preferences, lambda_params, lambda_args);
+    let call = wrap_stream_context_call(call, stream_captures, stream_preferences, lambda_params, lambda_args,);
     let call = wrap_stream_file_redirect_call(call, file_redirects);
     wrap_stream_redirect_call(call, redirect_globals)
 }
@@ -6281,10 +6290,12 @@ fn take_stream_preferences(args: &mut Vec<Argument>) -> Vec<StreamPreference> {
         (&["VerboseAction", "va"][..], "VerbosePreference"),
     ] {
         let value = take_named_arg(args, names).or_else(|| {
-            splat_named_arg(args, names[0], -1).map(|value| Expression::new(ExprKind::NullCoalesce {
-                left: Box::new(value),
-                right: Box::new(ps_guest_global(global)),
-            }))
+            splat_named_arg(args, names[0], -1).map(|value| {
+                Expression::new(ExprKind::NullCoalesce {
+                    left: Box::new(value),
+                    right: Box::new(ps_guest_global(global)),
+                })
+            })
         });
         if let Some(value) = value {
             preferences.push(StreamPreference {
@@ -6300,9 +6311,11 @@ fn named_or_splat_arg(args: &[Argument], names: &[&str], splat_index: i64) -> Op
     if let Some(value) = args
         .iter()
         .find(|arg| {
-            arg.name
-                .as_deref()
-                .is_some_and(|name| names.iter().any(|candidate| name.eq_ignore_ascii_case(candidate)))
+            arg.name.as_deref().is_some_and(|name| {
+                names
+                    .iter()
+                    .any(|candidate| name.eq_ignore_ascii_case(candidate))
+            })
         })
         .map(|arg| arg.value.clone())
     {
@@ -6311,26 +6324,30 @@ fn named_or_splat_arg(args: &[Argument], names: &[&str], splat_index: i64) -> Op
     names
         .iter()
         .filter_map(|name| splat_named_arg(args, name, splat_index))
-        .reduce(|left, right| Expression::new(ExprKind::NullCoalesce {
-            left: Box::new(left),
-            right: Box::new(right),
-        }))
+        .reduce(|left, right| {
+            Expression::new(ExprKind::NullCoalesce {
+                left: Box::new(left),
+                right: Box::new(right),
+            })
+        })
 }
 
 fn preference_value_from_args(args: &[Argument], names: &[&str], global: &str) -> Expression {
     named_or_splat_arg(args, names, -1).map_or_else(
         || ps_guest_global(global),
-        |value| Expression::new(ExprKind::NullCoalesce {
-            left: Box::new(value),
-            right: Box::new(ps_guest_global(global)),
-        }),
+        |value| {
+            Expression::new(ExprKind::NullCoalesce {
+                left: Box::new(value),
+                right: Box::new(ps_guest_global(global)),
+            })
+        },
     )
 }
 
 fn action_preference_is_stop_expr(action: Expression) -> Expression {
     ps_binary(
         BinOp::Eq,
-        ps_member_call(ps_builtin("__ps_to_string", vec![action]), "ToLower", Vec::new()),
+        ps_member_call(ps_builtin("__ps_to_string", vec![action]), "ToLower", Vec::new(),),
         Expression::string("stop"),
     )
 }
@@ -6682,7 +6699,7 @@ fn wrap_stream_file_redirect_call(
         Expression::null()
     } else {
         Expression::ident(RESULT)
-    }))));
+    },))));
     block_value_expr(body)
 }
 
@@ -8074,7 +8091,7 @@ fn regex_replace_evaluator_expr(
                     value: ps_binary(
                         BinOp::Add,
                         match_index,
-                        ps_member(match_value, "Length"),
+                        ps_member(match_value, "Length")
                     ),
                     by_ref: false,
                 }),
@@ -8407,7 +8424,7 @@ fn ps_nested_array_new(default: Expression, rows: Expression, cols: Expression) 
     }
     let outer = Expression::new(ExprKind::Call {
         callee: Box::new(Expression::ident("__ps_repeat")),
-        args: vec![Argument::positional(Expression::null()), Argument::positional(rows)],
+        args: vec![Argument::positional(Expression::null()), Argument::positional(rows),],
         optional: false,
     });
     ps_member_call(
@@ -8430,7 +8447,7 @@ fn ps_nested_array_get(object: Expression, row: Expression, col: Expression) -> 
     )
 }
 
-fn ps_nested_array_set(object: Expression, row: Expression, col: Expression, value: Expression) -> Expression {
+fn ps_nested_array_set(object: Expression, row: Expression, col: Expression, value: Expression,) -> Expression {
     ps_builtin(
         "__ps_index_set",
         vec![ps_builtin("__ps_index_get", vec![object, row]), col, value],
@@ -8742,7 +8759,7 @@ fn parameter_binding_cast(type_name: &str, expr: Expression) -> Expression {
             &[VALUE],
             vec![expr],
             ps_ternary(
-                type_test_expr(Expression::ident(VALUE), &type_literal_expr("System.String")),
+                type_test_expr(Expression::ident(VALUE), &type_literal_expr("System.String"),),
                 dotnet_static_call(parser, "Parse", vec![Expression::ident(VALUE)]),
                 apply_cast(type_name.to_string(), Expression::ident(VALUE)),
             ),
@@ -9829,7 +9846,7 @@ fn walk_postfix(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
                     let too_long = ps_binary(
                         BinOp::Gt,
                         next_len,
-                        ps_member(expr.clone(), "MaxCapacity"),
+                        ps_member(expr.clone(), "MaxCapacity")
                     );
                     let call = method_call_expr(expr, "Append", args);
                     expr = block_value_expr(vec![
@@ -10302,7 +10319,7 @@ fn walk_postfix(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
                     && let Some((enum_type, enum_args)) = enum_static_args(__w, &args)
                 {
                     if name.eq_ignore_ascii_case("GetValues") {
-                        expr = enum_values_expr(&enum_type, __w.enum_members.get(&enum_type.to_lowercase()));
+                        expr = enum_values_expr(&enum_type, __w.enum_members.get(&enum_type.to_lowercase()),);
                         continue;
                     }
                     if name.eq_ignore_ascii_case("GetNames") {
@@ -10595,9 +10612,7 @@ fn walk_postfix(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
                         .and_then(|t| match t.rsplit('.').next() {
                             Some(n) if n.eq_ignore_ascii_case("PSNoteProperty") => Some("note"),
                             Some(n) if n.eq_ignore_ascii_case("PSAliasProperty") => Some("alias"),
-                            Some(n) if n.eq_ignore_ascii_case("PSScriptProperty") => {
-                                Some("script")
-                            }
+                            Some(n) if n.eq_ignore_ascii_case("PSScriptProperty") => Some("script"),
                             Some(n) if n.eq_ignore_ascii_case("PSCodeProperty") => Some("code"),
                             Some(n) if n.eq_ignore_ascii_case("PSScriptMethod") => {
                                 Some("scriptmethod")
@@ -10773,7 +10788,7 @@ fn walk_postfix(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
                                                     Expression::new(ExprKind::Object(vec![
                                                         object_entry(
                                                             "getter",
-                                                            payload.clone(),
+                                                            payload.clone()
                                                         ),
                                                         object_entry(
                                                             "setter",
@@ -10790,7 +10805,7 @@ fn walk_postfix(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
                                                 };
                                                 let mut writes = vec![write(
                                                     format!("__get_{member}"),
-                                                    getter,
+                                                    getter
                                                 )];
                                                 if let Some(setter) = setter {
                                                     let setter = if kind == "code" {
@@ -11011,15 +11026,15 @@ fn walk_postfix(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
                                             BinOp::NotEq,
                                             ps_member(Expression::ident("_"), "Name"),
                                             Expression::string(&member),
-                                        ),
-                                    )))])],
+                                        )
+                                    ),))])],
                                 ),
                                 "ForEach",
                                 vec![item_lambda(vec![Statement::new(StmtKind::Return(Some(
                                     ps_member(Expression::ident("_"), "Name"),
                                 )))])],
                             )),
-                        },
+                        }
                     )));
                     expr = block_value_expr(vec![
                         retain_keys,
@@ -11115,7 +11130,7 @@ fn walk_postfix(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
                     continue;
                 }
                 if !is_static && name.eq_ignore_ascii_case("SetValue") && args.len() >= 2 {
-                    expr = ps_builtin("__ps_index_set", vec![expr, args[1].clone(), args[0].clone()]);
+                    expr = ps_builtin("__ps_index_set", vec![expr, args[1].clone(), args[0].clone()],);
                     continue;
                 }
                 // `.ForEach(…)` / `.Where(…)` — the intrinsic collection
@@ -11246,7 +11261,7 @@ fn walk_postfix(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
                             );
                             continue;
                         }
-                        if class.eq_ignore_ascii_case("System.Management.Automation.PSTypeNameAttribute")
+                        if class.eq_ignore_ascii_case("System.Management.Automation.PSTypeNameAttribute",)
                             || class.eq_ignore_ascii_case("PSTypeNameAttribute")
                         {
                             let type_name = args.first().cloned().unwrap_or_else(Expression::null);
@@ -11254,7 +11269,7 @@ fn walk_postfix(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
                                 "System.Management.Automation.PSTypeNameAttribute",
                                 vec![
                                     ("TypeName", type_name.clone()),
-                                    ("typename", type_name),
+                                    ("typename", type_name)
                                 ],
                             );
                             continue;
@@ -11405,7 +11420,7 @@ fn walk_postfix(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
                             then_body: vec![
                                 Statement::new(StmtKind::Assign {
                                     targets: vec![out_target],
-                                    value: method_call_expr(expr.clone(), "get_Item", vec![key.clone()]),
+                                    value: method_call_expr(expr.clone(), "get_Item", vec![key.clone()],),
                                     by_ref: false,
                                 }),
                                 Statement::new(StmtKind::Expr(method_call_expr(
@@ -11439,7 +11454,7 @@ fn walk_postfix(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
                     const ITEM: &str = "__ps_sd_copy_item";
                     expr = block_value_expr(vec![
                         local_decl(ENTRIES),
-                        assign_ident_expr_stmt(ENTRIES, method_call_expr(expr, "EntriesSorted", Vec::new())),
+                        assign_ident_expr_stmt(ENTRIES, method_call_expr(expr, "EntriesSorted", Vec::new()),),
                         local_decl(INDEX),
                         assign_ident_expr_stmt(INDEX, start),
                         Statement::new(StmtKind::ForIn {
@@ -11457,35 +11472,35 @@ fn walk_postfix(__w: &mut PsWalker, pair: Pair<Rule>) -> Expression {
                                                 "Key",
                                                 ps_builtin(
                                                     "__ps_index_get",
-                                                    vec![Expression::ident(ITEM), Expression::int(0)],
+                                                    vec![Expression::ident(ITEM), Expression::int(0),],
                                                 ),
                                             ),
                                             object_entry(
                                                 "key",
                                                 ps_builtin(
                                                     "__ps_index_get",
-                                                    vec![Expression::ident(ITEM), Expression::int(0)],
+                                                    vec![Expression::ident(ITEM), Expression::int(0),],
                                                 ),
                                             ),
                                             object_entry(
                                                 "Name",
                                                 ps_builtin(
                                                     "__ps_index_get",
-                                                    vec![Expression::ident(ITEM), Expression::int(0)],
+                                                    vec![Expression::ident(ITEM), Expression::int(0),],
                                                 ),
                                             ),
                                             object_entry(
                                                 "Value",
                                                 ps_builtin(
                                                     "__ps_index_get",
-                                                    vec![Expression::ident(ITEM), Expression::int(1)],
+                                                    vec![Expression::ident(ITEM), Expression::int(1),],
                                                 ),
                                             ),
                                             object_entry(
                                                 "value",
                                                 ps_builtin(
                                                     "__ps_index_get",
-                                                    vec![Expression::ident(ITEM), Expression::int(1)],
+                                                    vec![Expression::ident(ITEM), Expression::int(1),],
                                                 ),
                                             ),
                                         ])),
@@ -13802,7 +13817,7 @@ fn group_object_expr(upstream: &Expression, args: &[Argument]) -> Option<Express
 
     let group_type = "Microsoft.PowerShell.Commands.GroupInfo";
     let group_type_object = command_type_object(group_type);
-    let group_type_body = vec![Statement::new(StmtKind::Return(Some(group_type_object.clone())))];
+    let group_type_body = vec![Statement::new(StmtKind::Return(Some(group_type_object.clone(),)))];
     let group_type_names = Expression::new(ExprKind::Array(vec![
         ArrayElement {
             key: None,
@@ -15002,8 +15017,8 @@ fn char_static_expr(__w: &PsWalker, name: &str, args: &[Expression]) -> Option<E
                             ps_binary(BinOp::Lt, Expression::ident(CODE), Expression::int(32)),
                             ps_binary(
                                 BinOp::And,
-                                ps_binary(BinOp::GtEq, Expression::ident(CODE), Expression::int(127)),
-                                ps_binary(BinOp::LtEq, Expression::ident(CODE), Expression::int(159)),
+                                ps_binary(BinOp::GtEq, Expression::ident(CODE), Expression::int(127),),
+                                ps_binary(BinOp::LtEq, Expression::ident(CODE), Expression::int(159),),
                             ),
                         ),
                     ))
@@ -15026,8 +15041,8 @@ fn char_static_expr(__w: &PsWalker, name: &str, args: &[Expression]) -> Option<E
                         vec![char_code_expr(__w, arg.clone())],
                         ps_binary(
                             BinOp::And,
-                            ps_binary(BinOp::GtEq, Expression::ident(CODE), Expression::int(0xD800)),
-                            ps_binary(BinOp::LtEq, Expression::ident(CODE), Expression::int(0xDBFF)),
+                            ps_binary(BinOp::GtEq, Expression::ident(CODE), Expression::int(0xD800),),
+                            ps_binary(BinOp::LtEq, Expression::ident(CODE), Expression::int(0xDBFF),),
                         ),
                     ))
                 }
@@ -15038,8 +15053,8 @@ fn char_static_expr(__w: &PsWalker, name: &str, args: &[Expression]) -> Option<E
                         vec![char_code_expr(__w, arg.clone())],
                         ps_binary(
                             BinOp::And,
-                            ps_binary(BinOp::GtEq, Expression::ident(CODE), Expression::int(0xDC00)),
-                            ps_binary(BinOp::LtEq, Expression::ident(CODE), Expression::int(0xDFFF)),
+                            ps_binary(BinOp::GtEq, Expression::ident(CODE), Expression::int(0xDC00),),
+                            ps_binary(BinOp::LtEq, Expression::ident(CODE), Expression::int(0xDFFF),),
                         ),
                     ))
                 }
@@ -15535,7 +15550,7 @@ fn convert_from_string_data_expr(upstream: &Expression, args: &[Argument]) -> Op
     let text = method_call_expr(
         call(
             "__ps_array",
-            vec![source.clone()],
+            vec![source.clone()]
         ),
         "__ps_join",
         vec![Expression::string("\n")],
@@ -15683,7 +15698,7 @@ fn convert_from_string_data_expr(upstream: &Expression, args: &[Argument]) -> Op
                     elifs: Vec::new(),
                     else_body: None,
                 }),
-                Statement::new(StmtKind::Return(Some(call("__ps_from_entries", vec![pairs])))),
+                Statement::new(StmtKind::Return(Some(call("__ps_from_entries", vec![pairs],)))),
             ]),
         ),
     ))
@@ -16097,11 +16112,9 @@ fn type_data_object(info: &PsTypeDataInfo) -> Expression {
     let members = info
         .members
         .values()
-        .map(|member| {
-            ObjectProperty::KeyValue {
-                key: Expression::string(&member.name),
-                value: type_data_member_object(member),
-            }
+        .map(|member| ObjectProperty::KeyValue {
+            key: Expression::string(&member.name),
+            value: type_data_member_object(member),
         })
         .collect();
     let default_set = info
@@ -16110,12 +16123,12 @@ fn type_data_object(info: &PsTypeDataInfo) -> Expression {
         .map(|names| {
             Expression::new(ExprKind::Object(vec![object_entry(
                 "ReferencedProperties",
-                ps_array_of(names.iter().map(|name| Expression::string(name.as_str())).collect()),
+                ps_array_of(names.iter().map(|name| Expression::string(name.as_str())).collect(),),
             )]))
         })
         .unwrap_or_else(Expression::null);
     Expression::new(ExprKind::Object(vec![
-        object_entry("__ps_typedata_typename", Expression::string(&info.type_name)),
+        object_entry("__ps_typedata_typename", Expression::string(&info.type_name),),
         object_entry("TypeName", Expression::string(&info.type_name)),
         object_entry("Members", Expression::new(ExprKind::Object(members))),
         object_entry(
@@ -16192,12 +16205,18 @@ fn typedata_receiver_names(__w: &PsWalker, expr: &Expression) -> Vec<String> {
         return seed.clone();
     }
     match &expr.kind {
-        ExprKind::Lit(Literal::Int(_)) => vec!["System.Int32".to_string(), "System.Object".to_string()],
-        ExprKind::Lit(Literal::Float(_)) => vec!["System.Double".to_string(), "System.Object".to_string()],
+        ExprKind::Lit(Literal::Int(_)) => {
+            vec!["System.Int32".to_string(), "System.Object".to_string()]
+        }
+        ExprKind::Lit(Literal::Float(_)) => {
+            vec!["System.Double".to_string(), "System.Object".to_string()]
+        }
         ExprKind::Lit(Literal::Str(_)) | ExprKind::Interpolation(_) => {
             vec!["System.String".to_string(), "System.Object".to_string()]
         }
-        ExprKind::Lit(Literal::Bool(_)) => vec!["System.Boolean".to_string(), "System.Object".to_string()],
+        ExprKind::Lit(Literal::Bool(_)) => {
+            vec!["System.Boolean".to_string(), "System.Object".to_string()]
+        }
         _ => Vec::new(),
     }
 }
@@ -16252,9 +16271,10 @@ fn typedata_script_call(
 }
 
 fn typedata_return_last_output(body: Vec<Statement>) -> Vec<Statement> {
-    let Some(start) = body.windows(2).position(|pair| {
-        is_local_decl_named(&pair[0], OUT_ACC) && is_empty_output_init(&pair[1])
-    }) else {
+    let Some(start) = body
+        .windows(2)
+        .position(|pair| is_local_decl_named(&pair[0], OUT_ACC) && is_empty_output_init(&pair[1]))
+    else {
         return body;
     };
     let mut out = Vec::new();
@@ -16445,9 +16465,13 @@ fn is_unwrap_output_expr(expr: &Expression) -> bool {
 fn expr_mentions_output(expr: &Expression) -> bool {
     match &expr.kind {
         ExprKind::Ident(id) => id == OUT_ACC,
-        ExprKind::Binary { left, right, .. } => expr_mentions_output(left) || expr_mentions_output(right),
+        ExprKind::Binary { left, right, .. } => {
+            expr_mentions_output(left) || expr_mentions_output(right)
+        }
         ExprKind::Member { object, .. } => expr_mentions_output(object),
-        ExprKind::Index { object, index, .. } => expr_mentions_output(object) || expr_mentions_output(index),
+        ExprKind::Index { object, index, .. } => {
+            expr_mentions_output(object) || expr_mentions_output(index)
+        }
         ExprKind::Call { callee, args, .. } => {
             expr_mentions_output(callee) || args.iter().any(|arg| expr_mentions_output(&arg.value))
         }
@@ -16572,7 +16596,7 @@ fn rewrite_this_in_expr(expr: &mut Expression, this_name: &str) {
             rewrite_this_in_expr(object, this_name);
             rewrite_this_in_expr(index, this_name);
         }
-        ExprKind::Call { callee, args, .. } | ExprKind::New { class: callee, args } => {
+        ExprKind::Call { callee, args, .. } | ExprKind::New { class: callee, args ,} => {
             rewrite_this_in_expr(callee, this_name);
             for arg in args {
                 rewrite_this_in_expr(&mut arg.value, this_name);
@@ -17002,9 +17026,7 @@ fn normalize_cmdlet(__w: Option<&PsWalker>, name: &str, args: &[Argument]) -> Op
                     let scoped = scope_qualified_name(name);
                     return Some(Expression::bool(
                         name.eq_ignore_ascii_case("PWD")
-                            || __w.is_some_and(|w| {
-                                w.defined_vars.contains(&scoped.to_lowercase())
-                            }),
+                            || __w.is_some_and(|w| w.defined_vars.contains(&scoped.to_lowercase())),
                     ));
                 }
             }
@@ -18127,7 +18149,7 @@ fn normalize_cmdlet(__w: Option<&PsWalker>, name: &str, args: &[Argument]) -> Op
                     };
                     let mut writes = vec![assign(
                         format!("__get_{name}"),
-                        getter,
+                        getter
                     )];
                     if let Some(setter) = named("SecondValue") {
                         let setter = if kind == "codeproperty" {
@@ -18140,7 +18162,7 @@ fn normalize_cmdlet(__w: Option<&PsWalker>, name: &str, args: &[Argument]) -> Op
                         };
                         writes.push(assign(
                             format!("__set_{name}"),
-                            setter,
+                            setter
                         ));
                     } else {
                         writes.push(assign(
@@ -18576,9 +18598,9 @@ fn normalize_cmdlet(__w: Option<&PsWalker>, name: &str, args: &[Argument]) -> Op
             Some(Expression::new(ExprKind::Ternary {
                 cond: Box::new(Expression::new(ExprKind::Binary {
                     op: BinOp::NotEq,
-                    left: Box::new(Expression::bool(__w.is_some_and(|w| {
-                        w.defined_vars.contains(&key)
-                    }))),
+                    left: Box::new(Expression::bool(
+                        __w.is_some_and(|w| w.defined_vars.contains(&key)),
+                    )),
                     right: Box::new(Expression::bool(false)),
                 })),
                 then: Box::new(snapshot),
@@ -18882,10 +18904,10 @@ fn ps_provider_implementing_type_object(name: &str) -> Expression {
     let assembly = Expression::new(ExprKind::Object(vec![
         object_entry("GetName", no_param_lambda(vec![Statement::new(StmtKind::Return(Some(
             assembly_name.clone(),
-        )))])),
+        )))]),),
         object_entry("getname", no_param_lambda(vec![Statement::new(StmtKind::Return(Some(
-            assembly_name,
-        )))])),
+            assembly_name
+        )))]),),
     ]));
     Expression::new(ExprKind::Object(vec![
         object_entry("FullName", Expression::string(full_name)),
@@ -19372,9 +19394,7 @@ fn automation_attribute_type_name(raw: &str) -> Option<String> {
         .trim_start_matches("System.Management.Automation.");
     let leaf = head.rsplit('.').next().unwrap_or(head).trim();
     let full = match leaf.to_ascii_lowercase().as_str() {
-        "credential" | "credentialattribute" => {
-            "System.Management.Automation.CredentialAttribute"
-        }
+        "credential" | "credentialattribute" => "System.Management.Automation.CredentialAttribute",
         "supportswildcards" | "supportswildcardsattribute" => {
             "System.Management.Automation.SupportsWildcardsAttribute"
         }
@@ -19692,7 +19712,7 @@ fn reflected_attribute_from_dynamic_expr(expr: &str) -> Option<PsReflectedAttrib
     ] {
         if let Some(hit) = lower.find(needle) {
             let full = automation_attribute_type_name(
-                needle.trim_end_matches("]::new"),
+                needle.trim_end_matches("]::new")
             )?;
             let rest = expr[hit + needle.len()..].trim_start();
             let args = parenthesized_args_text(rest)
@@ -20037,8 +20057,8 @@ fn datetime_object_from_millis(millis: Expression) -> Expression {
         "System.DateTime",
         vec![
             ("__time", millis.clone()),
-            ("Ticks", ps_binary(BinOp::Mul, millis.clone(), Expression::int(10_000))),
-            ("ticks", ps_binary(BinOp::Mul, millis.clone(), Expression::int(10_000))),
+            ("Ticks", ps_binary(BinOp::Mul, millis.clone(), Expression::int(10_000)),),
+            ("ticks", ps_binary(BinOp::Mul, millis.clone(), Expression::int(10_000)),),
         ],
     )
 }
@@ -20125,7 +20145,7 @@ fn error_category_info_to_string_lambda() -> Expression {
                 ps_builtin("__ps_to_string", vec![ps_member(this.clone(), "Category")]),
                 Expression::string(": "),
             ),
-            ps_builtin("__ps_to_string", vec![ps_member(this.clone(), "TargetName")]),
+            ps_builtin("__ps_to_string", vec![ps_member(this.clone(), "TargetName")],),
         ),
         ps_binary(
             BinOp::Add,
@@ -20155,7 +20175,7 @@ fn error_category_info_to_string_value(receiver: Expression) -> Expression {
         BinOp::Add,
         ps_binary(
             BinOp::Add,
-            ps_builtin("__ps_to_string", vec![ps_member(receiver.clone(), "Category")]),
+            ps_builtin("__ps_to_string", vec![ps_member(receiver.clone(), "Category")],),
             Expression::string(": "),
         ),
         ps_builtin("__ps_to_string", vec![ps_member(receiver, "TargetName")]),
@@ -20294,11 +20314,11 @@ fn scoped_item_options_expr(value: i64) -> Expression {
         ),
         object_entry(
             "ToString",
-            no_param_lambda(vec![Statement::new(StmtKind::Return(Some(label_expr.clone())))]),
+            no_param_lambda(vec![Statement::new(StmtKind::Return(Some(label_expr.clone(),)))]),
         ),
         object_entry(
             "tostring",
-            no_param_lambda(vec![Statement::new(StmtKind::Return(Some(label_expr.clone())))]),
+            no_param_lambda(vec![Statement::new(StmtKind::Return(Some(label_expr.clone(),)))]),
         ),
         object_entry(
             &vybe_ast::protocol_slot_key(vybe_ast::ProtocolSlot::ToString),
@@ -20349,11 +20369,11 @@ fn pscredential_object(username: Expression, password: Expression) -> Expression
         object_entry("username", username.clone()),
         object_entry(
             "Password",
-            ps_member(password.clone(), "__ps_clear_text"),
+            ps_member(password.clone(), "__ps_clear_text")
         ),
         object_entry(
             "password",
-            ps_member(password.clone(), "__ps_clear_text"),
+            ps_member(password.clone(), "__ps_clear_text")
         ),
     ]));
     let get_network = no_param_lambda(vec![Statement::new(StmtKind::Return(Some(network)))]);
@@ -20393,11 +20413,11 @@ fn automation_constructor_expr(type_name: &str, args: Vec<Expression>) -> Option
                 ("position", Expression::int(-1)),
                 (
                     "ParameterSetName",
-                    Expression::string("__AllParameterSets"),
+                    Expression::string("__AllParameterSets")
                 ),
                 (
                     "parametersetname",
-                    Expression::string("__AllParameterSets"),
+                    Expression::string("__AllParameterSets")
                 ),
             ],
         )),
@@ -20418,19 +20438,19 @@ fn automation_constructor_expr(type_name: &str, args: Vec<Expression>) -> Option
         "validaterangeattribute" => Some(reflected_automation_object(
             "System.Management.Automation.ValidateRangeAttribute",
             vec![
-                ("MinRange", args.first().cloned().unwrap_or_else(Expression::null)),
-                ("minrange", args.first().cloned().unwrap_or_else(Expression::null)),
-                ("MaxRange", args.get(1).cloned().unwrap_or_else(Expression::null)),
-                ("maxrange", args.get(1).cloned().unwrap_or_else(Expression::null)),
+                ("MinRange", args.first().cloned().unwrap_or_else(Expression::null),),
+                ("minrange", args.first().cloned().unwrap_or_else(Expression::null),),
+                ("MaxRange", args.get(1).cloned().unwrap_or_else(Expression::null),),
+                ("maxrange", args.get(1).cloned().unwrap_or_else(Expression::null),),
             ],
         )),
         "validatecountattribute" => Some(reflected_automation_object(
             "System.Management.Automation.ValidateCountAttribute",
             vec![
-                ("MinLength", args.first().cloned().unwrap_or_else(Expression::null)),
-                ("minlength", args.first().cloned().unwrap_or_else(Expression::null)),
-                ("MaxLength", args.get(1).cloned().unwrap_or_else(Expression::null)),
-                ("maxlength", args.get(1).cloned().unwrap_or_else(Expression::null)),
+                ("MinLength", args.first().cloned().unwrap_or_else(Expression::null),),
+                ("minlength", args.first().cloned().unwrap_or_else(Expression::null),),
+                ("MaxLength", args.get(1).cloned().unwrap_or_else(Expression::null),),
+                ("maxlength", args.get(1).cloned().unwrap_or_else(Expression::null),),
             ],
         )),
         "validatenotnulloremptyattribute" if args.is_empty() => Some(reflected_automation_object(
@@ -20500,16 +20520,18 @@ fn runtime_defined_parameter_ctor_args(
     if args.len() == 2
         && let Some((type_name, attributes)) = split_accidental_type_literal_cast(&args[1])
     {
-        return Some((args[0].clone(), powershell_type_object(&type_name), attributes));
+        return Some((args[0].clone(), powershell_type_object(&type_name), attributes,));
     }
     None
 }
 
 fn unwrap_single_array_expr(expr: Expression) -> Expression {
     match expr.kind {
-        ExprKind::Array(items) if items.len() == 1 => {
-            items.into_iter().next().map(|item| item.value).unwrap_or_else(Expression::null)
-        }
+        ExprKind::Array(items) if items.len() == 1 => items
+            .into_iter()
+            .next()
+            .map(|item| item.value)
+            .unwrap_or_else(Expression::null),
         _ => expr,
     }
 }
@@ -20532,14 +20554,12 @@ fn split_accidental_type_literal_cast(expr: &Expression) -> Option<(String, Expr
             };
             (type_name, &args[0].value)
         }
-        ExprKind::Cast { type_name, expr } => {
-            (
-                type_accelerator(type_name)
-                    .map(str::to_string)
-                    .unwrap_or_else(|| type_name.clone()),
-                expr.as_ref(),
-            )
-        }
+        ExprKind::Cast { type_name, expr } => (
+            type_accelerator(type_name)
+                .map(str::to_string)
+                .unwrap_or_else(|| type_name.clone()),
+            expr.as_ref(),
+        ),
         _ => return None,
     };
     let ExprKind::Array(items) = &inner.kind else {
@@ -20985,7 +21005,7 @@ fn ps_set_contains_value_expr(__w: &PsWalker, recv: Expression, value: Expressio
     if receiver_expr_is_ignore_case_set_var(__w, &recv) {
         return ps_binary(
             BinOp::In,
-            ps_member_call(ps_builtin("__ps_to_string", vec![value]), "ToLower", Vec::new()),
+            ps_member_call(ps_builtin("__ps_to_string", vec![value]), "ToLower", Vec::new(),),
             ps_member_call(
                 ps_collection_to_array_expr(recv),
                 "ForEach",
@@ -21034,7 +21054,7 @@ fn ps_set_remove_value_expr(__w: &PsWalker, recv: Expression, value: Expression)
                 Statement::new(StmtKind::Return(Some(Expression::bool(true)))),
             ],
             elifs: Vec::new(),
-            else_body: Some(vec![Statement::new(StmtKind::Return(Some(Expression::bool(false))))]),
+            else_body: Some(vec![Statement::new(StmtKind::Return(Some(Expression::bool(false),)))]),
         }),
     ])
 }
@@ -21070,8 +21090,13 @@ fn ps_set_mutating_operation_expr(
         })
     };
     let item_in_right = || ps_binary(BinOp::In, Expression::ident(ITEM), Expression::ident(RIGHT));
-    let other_item_in_left =
-        || ps_binary(BinOp::In, Expression::ident(OTHER_ITEM), Expression::ident(LEFT));
+    let other_item_in_left = || {
+        ps_binary(
+            BinOp::In,
+            Expression::ident(OTHER_ITEM),
+            Expression::ident(LEFT),
+        )
+    };
     let mut body = vec![
         assign_ident_expr_stmt(LEFT, ps_collection_to_array_expr(recv)),
         assign_ident_expr_stmt(RIGHT, ps_collection_to_array_expr(other)),
@@ -21140,7 +21165,7 @@ fn ps_set_mutating_operation_expr(
     }
     body.push(assign_ident_expr_stmt(
         &var_name,
-        ps_rebuild_collection_expr(__w, &Expression::ident(&var_name), Expression::ident(RESULT)),
+        ps_rebuild_collection_expr(__w, &Expression::ident(&var_name), Expression::ident(RESULT),),
     ));
     body.push(Statement::new(StmtKind::Return(Some(Expression::null()))));
     block_value_expr(body)
@@ -21183,7 +21208,7 @@ fn history_info_object(input: Expression) -> Expression {
         &[INPUT, ID],
         vec![
             input,
-            ps_binary(BinOp::Add, ps_member(history_store(), "Count"), Expression::int(1)),
+            ps_binary(BinOp::Add, ps_member(history_store(), "Count"), Expression::int(1),),
         ],
         reflected_automation_object(
             "Microsoft.PowerShell.Commands.HistoryInfo",
@@ -21225,7 +21250,7 @@ fn history_add_expr(input: Expression, passthru: bool) -> Expression {
         assign_ident_expr_stmt(ENTRY, history_info_object(input)),
         assign_ident_expr_stmt(
             "__ps_history",
-            ps_binary(BinOp::Add, history_store(), ps_array(vec![Expression::ident(ENTRY)])),
+            ps_binary(BinOp::Add, history_store(), ps_array(vec![Expression::ident(ENTRY)]),),
         ),
         Statement::new(StmtKind::Return(Some(if passthru {
             Expression::ident(ENTRY)
@@ -21235,7 +21260,7 @@ fn history_add_expr(input: Expression, passthru: bool) -> Expression {
     ])
 }
 
-fn history_get_expr(id: Option<Expression>, count: Option<Expression>, _newest: bool) -> Expression {
+fn history_get_expr(id: Option<Expression>, count: Option<Expression>, _newest: bool,) -> Expression {
     let mut body = vec![history_store_init_stmt()];
     let mut params = Vec::new();
     let mut args = Vec::new();
@@ -21257,10 +21282,10 @@ fn history_get_expr(id: Option<Expression>, count: Option<Expression>, _newest: 
             cond: ps_binary(
                 BinOp::Eq,
                 found.clone(),
-                Expression::null(),
+                Expression::null()
             ),
             then_body: vec![Statement::new(StmtKind::Throw {
-                expr: Some(Expression::string("The specified history Id was not found.")),
+                expr: Some(Expression::string("The specified history Id was not found.",)),
                 cause: None,
             })],
             elifs: Vec::new(),
@@ -21320,10 +21345,10 @@ fn history_clear_expr(
             cond: ps_binary(
                 BinOp::Eq,
                 found,
-                Expression::null(),
+                Expression::null()
             ),
             then_body: vec![Statement::new(StmtKind::Throw {
-                expr: Some(Expression::string("The specified history Id was not found.")),
+                expr: Some(Expression::string("The specified history Id was not found.",)),
                 cause: None,
             })],
             elifs: Vec::new(),
@@ -21338,7 +21363,7 @@ fn history_clear_expr(
                     BinOp::NotEq,
                     ps_member(Expression::ident("_"), "Id"),
                     Expression::ident(ID_ARG),
-                ))))])],
+                ),)))])],
             ),
         ));
     } else if let Some(command_line) = command_line {
@@ -21378,7 +21403,7 @@ fn history_clear_expr(
             ps_member_call(
                 Expression::ident(STORE_ARG),
                 "Where",
-                vec![item_lambda(vec![Statement::new(StmtKind::Return(Some(keep)))] )],
+                vec![item_lambda(vec![Statement::new(StmtKind::Return(Some(keep,)))] )],
             ),
         ));
     } else if let Some(count) = count {
@@ -21403,7 +21428,7 @@ fn history_clear_expr(
         };
         body.push(assign_ident_expr_stmt(
             "__ps_history",
-            ps_builtin("__ps_slice", vec![Expression::ident(STORE_ARG), Expression::int(0), end]),
+            ps_builtin("__ps_slice", vec![Expression::ident(STORE_ARG), Expression::int(0), end],),
         ));
     } else {
         body.push(assign_ident_expr_stmt("__ps_history", ps_array(Vec::new())));
@@ -22829,7 +22854,7 @@ fn ps_hashtable_order_or_keys(recv: Expression) -> Expression {
             ps_binary(
                 BinOp::NotEq,
                 order.clone(),
-                Expression::null(),
+                Expression::null()
             ),
             order,
             ps_hashtable_visible_keys(Expression::ident(HT)),
@@ -22850,7 +22875,7 @@ fn ps_hashtable_count_or_member(recv: Expression) -> Expression {
             ps_binary(
                 BinOp::NotEq,
                 order.clone(),
-                Expression::null(),
+                Expression::null()
             ),
             ps_builtin("__ps_count", vec![order]),
             ps_member(Expression::ident(HT), "Count"),
@@ -22898,7 +22923,7 @@ fn ps_hashtable_delete_stmt(recv: Expression, key: Expression) -> Statement {
 fn ps_hashtable_remove_expr(
     recv: Expression,
     key: Expression,
-    case_sensitive: bool,
+    case_sensitive: bool
 ) -> Expression {
     let compare_key = if case_sensitive {
         key.clone()
@@ -22916,7 +22941,7 @@ fn ps_hashtable_remove_expr(
         ),
         by_ref: false,
     });
-    let mut body = vec![retain_order, ps_hashtable_delete_stmt(recv.clone(), key.clone())];
+    let mut body = vec![retain_order, ps_hashtable_delete_stmt(recv.clone(), key.clone()),];
     if !case_sensitive {
         body.push(ps_hashtable_delete_stmt(recv, compare_key));
     }
@@ -23020,7 +23045,7 @@ fn ps_case_sensitive_hashtable_get_expr(recv: Expression, key: Expression) -> Ex
             ps_builtin("__ps_ceq", vec![Expression::ident("_"), key]),
         )))])],
     );
-    ps_builtin("__ps_index_get", vec![ps_member(recv, "__ps_values"), index])
+    ps_builtin("__ps_index_get", vec![ps_member(recv, "__ps_values"), index],)
 }
 
 fn psobject_target(expr: &Expression) -> Option<Expression> {
@@ -23233,9 +23258,9 @@ fn static_type_name_of_expr(__w: &PsWalker, expr: &Expression) -> Option<String>
 }
 
 fn datetime_value_expr(__w: &PsWalker, expr: &Expression) -> bool {
-    if static_type_name_of_expr(__w, expr)
-        .is_some_and(|name| name.eq_ignore_ascii_case("System.DateTime") || name.eq_ignore_ascii_case("DateTime"))
-    {
+    if static_type_name_of_expr(__w, expr).is_some_and(|name| {
+        name.eq_ignore_ascii_case("System.DateTime") || name.eq_ignore_ascii_case("DateTime")
+    }) {
         return true;
     }
     match &expr.kind {
@@ -23303,7 +23328,7 @@ fn ps_numeric_value_or_self(expr: Expression) -> Expression {
     const VALUE: &str = "__ps_numeric_object";
     let numeric = ps_builtin(
         "__ps_index_get",
-        vec![Expression::ident(VALUE), Expression::string("__ps_numeric_value")],
+        vec![Expression::ident(VALUE), Expression::string("__ps_numeric_value"),],
     );
     bind_and_call(
         &[VALUE],
@@ -24509,7 +24534,7 @@ fn apply_set_strict_mode_tokens(__w: &mut PsWalker, tokens: &[String]) -> bool {
 
 fn strict_function_call_with_parens_statement(
     __w: &PsWalker,
-    text: &str,
+    text: &str
 ) -> Option<Statement> {
     if __w.strict_mode_level < 2 {
         return None;
@@ -24724,7 +24749,7 @@ fn enum_value_object_expr(__w: &PsWalker, type_name: &str, value: Expression) ->
                     "System.ValueType".to_string(),
                     "System.Object".to_string(),
                 ]
-            }).into_iter().map(|name| Expression::string(&name)).collect()),
+            }).into_iter().map(|name| Expression::string(&name)).collect(),),
         ),
         object_entry(
             &int_slot,
@@ -24875,7 +24900,7 @@ fn day_of_week_value_expr(value: i64) -> Expression {
                 "System.Enum".to_string(),
                 "System.ValueType".to_string(),
                 "System.Object".to_string(),
-            ].into_iter().map(|name| Expression::string(&name)).collect()),
+            ].into_iter().map(|name| Expression::string(&name)).collect(),),
         ),
         object_entry(
             &int_slot,
@@ -24896,20 +24921,20 @@ fn day_of_week_value_expr(value: i64) -> Expression {
         object_entry(
             &to_string_slot,
             no_param_lambda(vec![Statement::new(StmtKind::Return(Some(Expression::string(
-                name,
-            ))))]),
+                name
+            ),)))]),
         ),
         object_entry(
             "ToString",
             no_param_lambda(vec![Statement::new(StmtKind::Return(Some(Expression::string(
-                name,
-            ))))]),
+                name
+            ),)))]),
         ),
         object_entry(
             "tostring",
             no_param_lambda(vec![Statement::new(StmtKind::Return(Some(Expression::string(
-                name,
-            ))))]),
+                name
+            ),)))]),
         ),
     ]))
 }
@@ -24918,7 +24943,7 @@ fn ps_enum_numeric_value(expr: Expression) -> Expression {
     const VALUE: &str = "__ps_enum_numeric_object";
     let numeric = ps_builtin(
         "__ps_index_get",
-        vec![Expression::ident(VALUE), Expression::string("__ps_numeric_value")],
+        vec![Expression::ident(VALUE), Expression::string("__ps_numeric_value"),],
     );
     bind_and_call(
         &[VALUE],
@@ -25031,7 +25056,7 @@ fn enum_parse_value_expr(__w: &PsWalker, type_name: &str, expr: Expression) -> E
             return Expression::int(value);
         }
     }
-    let mut parsed = ps_builtin("__ps_to_int", vec![Expression::ident("__ps_enum_parse_value")]);
+    let mut parsed = ps_builtin("__ps_to_int", vec![Expression::ident("__ps_enum_parse_value")],);
     let members = powershell_enum_members(__w, type_name);
     if !members.is_empty() {
         let value_text = ps_builtin(
@@ -25068,7 +25093,7 @@ fn enum_static_args(__w: &PsWalker, args: &[Expression]) -> Option<(String, Vec<
         [Expression {
             kind: ExprKind::Array(items),
             ..
-        }] => items.iter().map(|item| item.value.clone()).collect(),
+        },] => items.iter().map(|item| item.value.clone()).collect(),
         _ => args.to_vec(),
     };
     let first = expanded_args.first()?;
@@ -25268,7 +25293,7 @@ fn enum_numeric_values_expr(members: Option<&Vec<(String, i64)>>) -> Expression 
     let Some(members) = members else {
         return ps_array_of(Vec::new());
     };
-    ps_array_of(members.iter().map(|(_, value)| Expression::int(*value)).collect())
+    ps_array_of(members.iter().map(|(_, value)| Expression::int(*value)).collect(),)
 }
 
 fn enum_object_numeric_value(expr: &Expression) -> Option<Expression> {
@@ -25277,11 +25302,13 @@ fn enum_object_numeric_value(expr: &Expression) -> Option<Expression> {
 
 fn enum_is_defined_expr(__w: &PsWalker, type_name: &str, value: Expression) -> Expression {
     if let Some(text) = literal_text(&value) {
-        return Expression::bool(
-            __w.enum_members
-                .get(&type_name.to_lowercase())
-                .is_some_and(|members| members.iter().any(|(name, _)| name.eq_ignore_ascii_case(&text))),
-        );
+        return Expression::bool(__w.enum_members.get(&type_name.to_lowercase()).is_some_and(
+            |members| {
+                members
+                    .iter()
+                    .any(|(name, _)| name.eq_ignore_ascii_case(&text))
+            },
+        ));
     }
     if let Some(number) = literal_int_value(&value) {
         return Expression::bool(
@@ -25297,7 +25324,7 @@ fn enum_is_defined_expr(__w: &PsWalker, type_name: &str, value: Expression) -> E
             enum_numeric_values_expr(__w.enum_members.get(&type_name.to_lowercase())),
         );
     }
-    ps_binary(BinOp::In, value, enum_names_expr(__w.enum_members.get(&type_name.to_lowercase())))
+    ps_binary(BinOp::In, value, enum_names_expr(__w.enum_members.get(&type_name.to_lowercase())),)
 }
 
 fn enum_try_parse_expr(
@@ -25312,12 +25339,22 @@ fn enum_try_parse_expr(
         enum_cast_expr(__w, type_name, value.clone())
     };
     let ok = if let Some(text) = literal_text(&value) {
-        Expression::bool(text.split(',').map(|p| p.trim()).filter(|p| !p.is_empty()).all(|part| {
-            part.parse::<i64>().is_ok()
-                || __w.enum_members
-                    .get(&type_name.to_lowercase())
-                    .is_some_and(|members| members.iter().any(|(name, _)| name.eq_ignore_ascii_case(part)))
-        }))
+        Expression::bool(
+            text.split(',')
+                .map(|p| p.trim())
+                .filter(|p| !p.is_empty())
+                .all(|part| {
+                    part.parse::<i64>().is_ok()
+                        || __w
+                            .enum_members
+                            .get(&type_name.to_lowercase())
+                            .is_some_and(|members| {
+                                members
+                                    .iter()
+                                    .any(|(name, _)| name.eq_ignore_ascii_case(part))
+                            })
+                }),
+        )
     } else {
         Expression::bool(true)
     };
@@ -25678,7 +25715,7 @@ fn string_comparer_value(receiver: &Expression, member: &str) -> Option<Expressi
         }
         _ => return None,
     };
-    Some(dotnet_static_call("System.StringComparer", method, Vec::new()))
+    Some(dotnet_static_call("System.StringComparer", method, Vec::new(),))
 }
 
 fn culture_info_value(receiver: &Expression, member: &str) -> Option<Expression> {
@@ -25743,7 +25780,7 @@ fn culture_text_info_expr(expr: &Expression) -> bool {
 fn title_case_expr(input: Expression) -> Expression {
     let word = Expression::ident("_");
     let head = ps_member_call(
-        ps_member_call(word.clone(), "Substring", vec![Expression::int(0), Expression::int(1)]),
+        ps_member_call(word.clone(), "Substring", vec![Expression::int(0), Expression::int(1)],),
         "ToUpper",
         Vec::new(),
     );
@@ -25752,7 +25789,7 @@ fn title_case_expr(input: Expression) -> Expression {
         ps_member_call(
             input,
             "Split",
-            vec![Expression::string(" ")],
+            vec![Expression::string(" ")]
         ),
         "ForEach",
         vec![item_lambda(vec![Statement::new(StmtKind::Return(Some(
@@ -25995,7 +26032,7 @@ fn build_binary(__w: &PsWalker, op_raw: &str, left: Expression, right: Expressio
             let right_type = canonical_powershell_type_object_name(&right_type);
             let test = ps_builtin(
                 "__ps_eq",
-                vec![Expression::string(&left_type), Expression::string(&right_type)],
+                vec![Expression::string(&left_type), Expression::string(&right_type),],
             );
             return if word == "ne" { negate(test) } else { test };
         }
@@ -26019,7 +26056,7 @@ fn build_binary(__w: &PsWalker, op_raw: &str, left: Expression, right: Expressio
         };
         return ps_builtin(
             builtin,
-            vec![ps_numeric_value_or_self(left), ps_numeric_value_or_self(right)],
+            vec![ps_numeric_value_or_self(left), ps_numeric_value_or_self(right),],
         );
     }
 
@@ -26240,7 +26277,7 @@ fn build_binary(__w: &PsWalker, op_raw: &str, left: Expression, right: Expressio
                     name,
                     vec![
                         ps_enum_numeric_value(left),
-                        ps_enum_numeric_value(right),
+                        ps_enum_numeric_value(right)
                     ],
                 ),
             );
@@ -26408,7 +26445,7 @@ fn wildcard_contains_expr(pattern: Expression) -> Expression {
     ps_builtin("__ps_wildcard_contains", vec![pattern])
 }
 
-fn wildcard_is_match_expr(input: Expression, pattern: Expression, options: Expression) -> Expression {
+fn wildcard_is_match_expr(input: Expression, pattern: Expression, options: Expression,) -> Expression {
     ps_builtin("__ps_wildcard_is_match", vec![input, pattern, options])
 }
 
@@ -26645,7 +26682,7 @@ fn type_test_expr(value: Expression, type_expr: &Expression) -> Expression {
     if leaf == "iordereddictionary" {
         return ps_binary(
             BinOp::NotEq,
-            ps_builtin("__ps_index_get", vec![value, Expression::string("__ps_key_order")]),
+            ps_builtin("__ps_index_get", vec![value, Expression::string("__ps_key_order")],),
             Expression::null(),
         );
     }
@@ -26679,7 +26716,7 @@ fn type_test_expr(value: Expression, type_expr: &Expression) -> Expression {
         let short = ps_binary(
             BinOp::In,
             Expression::string(short_name),
-            type_names_array,
+            type_names_array
         );
         let stamped = ps_binary(
             BinOp::And,
@@ -26701,7 +26738,7 @@ fn type_test_expr(value: Expression, type_expr: &Expression) -> Expression {
                 direct,
                 ps_binary(
                     BinOp::Eq,
-                    ps_builtin("__ps_index_get", vec![value.clone(), Expression::string("__type")]),
+                    ps_builtin("__ps_index_get", vec![value.clone(), Expression::string("__type")],),
                     Expression::string(leaf.as_str()),
                 ),
             ),
@@ -26712,7 +26749,7 @@ fn type_test_expr(value: Expression, type_expr: &Expression) -> Expression {
             ps_leaf_type_name(value.clone()),
             Expression::string(short_name),
         );
-        let mut test = ps_binary(BinOp::Or, ps_binary(BinOp::Or, stamped, direct), runtime_name);
+        let mut test = ps_binary(BinOp::Or, ps_binary(BinOp::Or, stamped, direct), runtime_name,);
         if leaf == "runtimeexception" {
             let nested_exception = Expression::new(ExprKind::NullCoalesce {
                 left: Box::new(ps_builtin(
@@ -26731,7 +26768,7 @@ fn type_test_expr(value: Expression, type_expr: &Expression) -> Expression {
                 )),
                 right: Box::new(ps_builtin(
                     "__ps_index_get",
-                    vec![nested_exception.clone(), Expression::string("__ps_type_names")],
+                    vec![nested_exception.clone(), Expression::string("__ps_type_names"),],
                 )),
             });
             let nested_direct = ps_builtin(

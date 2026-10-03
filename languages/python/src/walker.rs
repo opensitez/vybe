@@ -17213,7 +17213,7 @@ fn empty_bytes_expr() -> Expression {
     Expression::new(ExprKind::Lit(Literal::Bytes(Vec::new())))
 }
 
-fn rewrite_hashlib_call(__w: &mut PyWalker, callee: &Expression, args: &[Argument]) -> Option<Expression> {
+fn rewrite_hashlib_call(__w: &mut PyWalker, callee: &Expression, args: &[Argument],) -> Option<Expression> {
     let (path, field) = py_module_call_path(__w, callee)?;
     if path != "hashlib" {
         return None;
@@ -20483,7 +20483,7 @@ fn walk_infix_or_unwrap(__w: &mut PyWalker, pair: Pair<Rule>) -> Result<ExprKind
                 let mut result = pair_expr(
                     comparisons[0].0,
                     operands[0].clone(),
-                    operands[1].clone(),
+                    operands[1].clone()
                 );
                 for j in 1..comparisons.len() {
                     let pairwise = pair_expr(

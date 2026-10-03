@@ -16,10 +16,15 @@ vybe_runtime = { workspace = true }
 uuid = { workspace = true }
 pest = { workspace = true }
 pest_derive = { workspace = true }
+serde_json = { workspace = true }
+regex = { workspace = true }
+pcre2 = "0.2.11"
+glob = "0.3.3"
+libc = { workspace = true }
+getrandom = { workspace = true }
 
 [dev-dependencies]
 vybe_compiler = { workspace = true }
 vybe_runtime = { workspace = true }
 vybe_ast = { workspace = true }
 uuid = { workspace = true }
-

@@ -90,6 +90,14 @@ pub fn emit_php_call_user_func_array(chunks: &mut [Chunk], current: usize, argc:
     chunk.emit_op_u16(Op::LOCAL_SET, args_slot, line);
     chunk.emit_op_u16(Op::LOCAL_SET, callable_slot, line);
 
+    // PHP arrays can be backed by an ordered Map after an offset write.
+    // Function.apply only expands JS arrays/array-like objects, so normalize
+    // the argument values here rather than changing ECMA apply semantics.
+    let object_values = chunk.add_import("ecma:object", "values");
+    chunk.emit_op_u16(Op::LOCAL_GET, args_slot, line);
+    chunk.emit_call(object_values, 1, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, args_slot, line);
+
     let typeof_fn = chunk.add_import("ecma:value", "typeof");
     let is_array = chunk.add_import("ecma:array", "isArray");
     let array_get = chunk.add_import("ecma:array", "get");
@@ -112,6 +120,18 @@ pub fn emit_php_call_user_func_array(chunks: &mut [Chunk], current: usize, argc:
     chunk.emit_f64_const(1.0, line);
     chunk.emit_call(array_get, 2, line);
     chunk.emit_op_u16(Op::LOCAL_SET, method_slot, line);
+
+    // A PHP callback pair can name a class loaded by an include. Resolve that
+    // name against the live module globals before looking up its static method.
+    // Looking up the member on the string itself silently produced no callable.
+    chunk.emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
+    vybe_compiler::primitives::reflection::emit_typeof_is(chunk, "string", line);
+    chunk.emit_if(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
+    let class_lookup = chunk.add_import("php:dynamic", "globalByName");
+    chunk.emit_call(class_lookup, 1, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, receiver_slot, line);
+    chunk.emit_end(line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, method_slot, line);
@@ -136,7 +156,9 @@ pub fn emit_php_call_user_func_array(chunks: &mut [Chunk], current: usize, argc:
     chunk.emit_string_const(&Arc::<str>::from("__php_fn_"), line);
     chunk.emit_op_u16(Op::LOCAL_GET, callable_slot, line);
     chunk.emit_call(str_concat, 2, line);
-    chunk.emit_call(global_function, 1, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, args_slot, line);
+    chunk.emit_op(Op::ARRAY_LENGTH, line);
+    chunk.emit_call(global_function, 2, line);
     chunk.emit_op_u16(Op::LOCAL_SET, target_slot, line);
 
     chunk.emit_else(line);
@@ -165,6 +187,16 @@ pub fn emit_php_method_exists(chunks: &mut [Chunk], current: usize, argc: u8, li
     chunk.emit_op_u16(Op::LOCAL_SET, method_slot, line);
     chunk.emit_op_u16(Op::LOCAL_SET, receiver_slot, line);
 
+    chunk.emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
+    let is_string = chunk.add_import("wasm:js-string", "test");
+    chunk.emit_call(is_string, 1, line);
+    chunk.emit_if_value(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, method_slot, line);
+    let class_lookup = chunk.add_import("php:dynamic", "methodExists");
+    chunk.emit_call(class_lookup, 2, line);
+    chunk.emit_else(line);
+
     let lookup = chunk.add_import("ecma:value", "getMethodForCall");
     chunk.emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, method_slot, line);
@@ -176,4 +208,5 @@ pub fn emit_php_method_exists(chunks: &mut [Chunk], current: usize, argc: u8, li
     chunk.emit_string_const(&Arc::<str>::from("function"), line);
     vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
     vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_end(line);
 }

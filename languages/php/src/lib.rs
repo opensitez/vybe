@@ -8,10 +8,27 @@
 // Force-link every plugin crate in `[dependencies]` so its link-time
 // registration reaches the registry. Generated from Cargo.toml — see build.rs.
 include!(concat!(env!("OUT_DIR"), "/linked_plugins.rs"));
+mod array_read;
+mod cookies;
 pub(crate) mod core_exceptions;
+mod datetime;
+mod dynamic_symbols;
 pub mod emitter;
+mod environment;
+mod filesystem;
+mod globals;
+mod logging;
 pub mod normalize_class;
+mod numeric;
+mod pdo_rows;
 pub mod protocol;
+mod random;
+mod regex;
+mod serialization;
+mod sodium;
+mod spl_filesystem;
+mod string_bytes;
+mod string_scan;
 pub mod tree_register;
 pub mod walker;
 
@@ -86,6 +103,15 @@ pub fn register() {
         "php",
         vybe_runtime::registry::LanguageHooks {
             variable_namespace: Some(&VARIABLE_NAMESPACE),
+            function_literal: Some(|chunk, line| {
+                let host = chunk.add_import("php:array", "newClosure");
+                chunk.emit_call(host, 1, line);
+            }),
+            rebind_finalizer: Some(|chunk, line| {
+                let host = chunk.add_import("php:object", "finalizeUnreachable");
+                chunk.emit_call(host, 2, line);
+                chunk.emit_op(vybe_runtime::opcode::Op::DROP, line);
+            }),
             constructor_ref_autoload: Some(
                 emitter::autoload_adapter::emit_constructor_ref_with_autoload,
             ),
@@ -105,8 +131,25 @@ impl vybe_runtime::Plugin for Plugin {
     fn name(&self) -> &'static str {
         "php"
     }
-    fn init(&self, _fw: &mut vybe_runtime::Framework<'_>) {
+    fn init(&self, fw: &mut vybe_runtime::Framework<'_>) {
         register();
+        array_read::register(fw);
+        globals::register(fw);
+        numeric::register(fw);
+        string_scan::register(fw);
+        random::register(fw);
+        sodium::register(fw);
+        cookies::register(fw);
+        serialization::register(fw);
+        spl_filesystem::register(fw);
+        dynamic_symbols::register(fw);
+        regex::register(fw);
+        string_bytes::register(fw);
+        datetime::register(fw);
+        logging::register(fw);
+        environment::register(fw);
+        filesystem::register(fw);
+        pdo_rows::register(fw);
     }
     /// Drop the walker's per-program registries at the TENANT BOUNDARY.
     ///

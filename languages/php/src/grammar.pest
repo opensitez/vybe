@@ -593,8 +593,8 @@ foreach_alt_block = {
 
 // `as $value` or `as $key => $value`
 foreach_target = {
-    variable ~ "=>" ~ "&"? ~ (variable | list_expression | short_array_expression)
-    | "&"? ~ (variable | list_expression | short_array_expression)
+    postfix_expression ~ "=>" ~ "&"? ~ (postfix_expression | list_expression | short_array_expression)
+    | "&"? ~ (postfix_expression | list_expression | short_array_expression)
 }
 
 switch_statement = {
@@ -684,16 +684,24 @@ null_coalesce_expression = {
 }
 
 logic_or_expression = {
-    logic_and_expression ~ (logic_or_op ~ logic_and_expression)*
+    logic_and_expression ~ (logic_or_op ~ logic_or_assignment_operand)*
 }
 
 logic_or_op = { "||" }
 
+logic_or_assignment_operand = {
+    logic_and_expression ~ (assign_op ~ assignment_expression)?
+}
+
 logic_and_expression = {
-    bit_or_expression ~ (logic_and_op ~ bit_or_expression)*
+    bit_or_expression ~ (logic_and_op ~ logic_and_assignment_operand)*
 }
 
 logic_and_op = { "&&" }
+
+logic_and_assignment_operand = {
+    bit_or_expression ~ (assign_op ~ assignment_expression)?
+}
 
 // Keep PHP bitwise operators separate from logical `&&` / `||` so
 // single-char `&` and `|` are tokenized distinctly.
@@ -716,7 +724,13 @@ bit_and_expression = {
 bit_and_op = { "&" ~ !"&" }
 
 equality_expression = {
-    comparison_expression ~ (eq_op ~ comparison_expression)*
+    comparison_expression ~ (eq_op ~ equality_assignment_operand)*
+}
+// PHP permits an assignment on the right side of equality, as in
+// `false !== $position = strrpos(...)`. Keep the comparison chain itself
+// left-associative while grouping that assignment with the right operand.
+equality_assignment_operand = {
+    comparison_expression ~ (assign_op ~ assignment_expression)?
 }
 
 eq_op = { "===" | "!==" | "==" | "!=" | "<>" }
@@ -725,7 +739,7 @@ comparison_expression = {
     concat_expression ~ (cmp_op ~ concat_expression)*
 }
 
-cmp_op = { "<=>" | "<=" | ">=" | "<" | ">" | kw_instanceof }
+cmp_op = { "<=>" | "<=" | ">=" | "<" | ">" }
 
 concat_expression = {
     shift_expression ~ (concat_op ~ shift_expression)*
@@ -746,24 +760,32 @@ additive_expression = {
 additive_op = { "+" | "-" }
 
 multiplicative_expression = {
-    power_expression ~ (mul_op ~ power_expression)*
+    boolean_not_expression ~ (mul_op ~ boolean_not_expression)*
 }
 
 mul_op = { "*" | "/" | "%" }
 
 // PHP `**` binds TIGHTER than `* / %` and is RIGHT-associative
 // (`2 * 3 ** 2` == 18, `2 ** 3 ** 2` == 512).
-power_expression = {
-    unary_expression ~ ("**" ~ power_expression)?
+power_expression = { postfix_expression ~ ("**" ~ unary_expression)? }
+
+// `instanceof` binds more tightly than logical negation, but less tightly
+// than numeric unary operators and casts. In particular, `!$x instanceof C`
+// means `!($x instanceof C)`.
+boolean_not_expression = {
+    unary_not_op ~ boolean_not_expression | instanceof_expression
 }
+unary_not_op = { "!" }
+instanceof_expression = { unary_expression ~ (kw_instanceof ~ unary_expression)* }
 
 unary_expression = {
     unary_op ~ unary_expression
     | cast_expression
-    | postfix_expression
+    | unary_not_op ~ boolean_not_expression
+    | power_expression
 }
 
-unary_op = { "++" | "--" | "!" | "~" | "-" | "+" | "@" | "&" }
+unary_op = { "++" | "--" | "~" | "-" | "+" | "@" | "&" }
 
 cast_expression = {
     "(" ~ cast_kw ~ ")" ~ unary_expression

@@ -512,7 +512,7 @@ pub fn emit_hexdigest(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u
         lget(&mut chunks[current], base + 1, line);
     } else {
         lget(&mut chunks[current], base, line);
-        struct_get_key(&mut chunks[current], &ClassSlot::internal("digest_size"), line);
+        struct_get_key(&mut chunks[current], &ClassSlot::internal("digest_size"), line,);
     }
     chunks[current].emit_i32_const(2, line);
     chunks[current].emit_op(Op::I32_MUL, line);

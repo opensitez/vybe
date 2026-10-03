@@ -26,6 +26,8 @@ pub enum Expect {
     /// Must be coercible to string/number; an array is illegal but scalars are
     /// fine (`strlen`, `str_starts_with`, `abs`, `round`).
     NotArray,
+    /// Scalars or objects implementing PHP's string-conversion protocol.
+    StringCoercible,
     /// Must be a collection or object; a bare scalar is illegal but objects
     /// (Countable, Traversable, generators) are fine (`count`,
     /// `iterator_to_array`).
@@ -150,6 +152,25 @@ pub fn guard_arg(
             // bad = !is_collection
             push_is_collection(chunk, slot, line);
             chunk.emit_op(Op::I32_EQZ, line);
+        }
+        Expect::StringCoercible => {
+            push_is_collection(chunk, slot, line);
+            chunk.emit_if_i32(line);
+            let method = class_slots::resolve(
+                &class_slots::ClassSlot::Slot(vybe_ast::ProtocolSlot::ToString),
+                &class_slots::PlainNames,
+            );
+            class_slots::emit_class_get(
+                chunk,
+                class_slots::ObjSource::Local(slot),
+                &method,
+                class_slots::Dest::Stack,
+                line,
+            );
+            chunk.emit_op(Op::REF_IS_NULL, line);
+            chunk.emit_else(line);
+            chunk.emit_i32_const(0, line);
+            chunk.emit_end(line);
         }
         // Accept a scalar; an array/object is illegal.
         Expect::NotArray => {

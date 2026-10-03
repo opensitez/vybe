@@ -397,7 +397,7 @@ fn build_php_serialize_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
         helper.emit_end(line);
 
         lget(&mut helper, value_slot, line);
-        struct_get_key(&mut helper, &ClassSlot::Slot(vybe_ast::ProtocolSlot::Serialize), line);
+        struct_get_key(&mut helper, &ClassSlot::Slot(vybe_ast::ProtocolSlot::Serialize), line,);
         lset(&mut helper, method_slot, line);
         // function test: not null AND not number AND not string AND not boolean
         {
@@ -759,6 +759,19 @@ fn build_php_unserialize_helper(chunks: &mut Vec<Chunk>, alloc_idx: usize, line:
         }
         helper.emit_if(line);
         helper.emit_else(line);
+        // PHP arrays with associative keys must be sparse. A numeric string
+        // such as a cron timestamp cannot be written into a dense VM array:
+        // array.set would resize it to billions of elements.
+        lget(&mut helper, out_slot, line);
+        call_import_into(
+            imports,
+            &mut helper,
+            "php:serialization",
+            "arrayToMap",
+            1,
+            line,
+        );
+        lset(&mut helper, out_slot, line);
         lget(&mut helper, assoc_slot, line);
         call_import_into(imports, &mut helper, "ecma:object", "keys", 1, line);
         lset(&mut helper, names_slot, line);
@@ -780,7 +793,18 @@ fn build_php_unserialize_helper(chunks: &mut Vec<Chunk>, alloc_idx: usize, line:
         dynamic_get_from_slots(&mut helper, assoc_slot, key_slot, line);
         call_ref(&mut helper, 1, line);
         lset(&mut helper, tmp_slot, line);
-        dynamic_set_from_slots(&mut helper, out_slot, key_slot, tmp_slot, line);
+        lget(&mut helper, out_slot, line);
+        lget(&mut helper, key_slot, line);
+        lget(&mut helper, tmp_slot, line);
+        call_import_into(
+            imports,
+            &mut helper,
+            "php:serialization",
+            "assocSet",
+            3,
+            line,
+        );
+        helper.emit_op(Op::DROP, line);
         bump_loop_index(&mut helper, i_slot, line);
         helper_loop_end(&mut helper, assoc_loop, line);
         lget(&mut helper, names_slot, line);
@@ -806,7 +830,7 @@ fn build_php_unserialize_helper(chunks: &mut Vec<Chunk>, alloc_idx: usize, line:
         vybe_compiler::primitives::ops::emit_dyn_eq(&mut helper, line);
         helper.emit_if(line);
         lget(&mut helper, out_slot, line);
-        struct_get_key(&mut helper, &ClassSlot::Slot(vybe_ast::ProtocolSlot::Deserialize), line);
+        struct_get_key(&mut helper, &ClassSlot::Slot(vybe_ast::ProtocolSlot::Deserialize), line,);
         lset(&mut helper, method_slot, line);
         // function test: not null AND not number AND not string AND not boolean
         {
@@ -947,6 +971,7 @@ pub fn emit_php_unserialize(chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
     lset(chunk, value_slot, line);
     lget(chunk, value_slot, line);
     let _ = chunk;
+    call_import(chunks, current, "php:serialization", "toJson", 1, line);
     call_import(chunks, current, "ecma:json", "parse", 1, line);
     let chunk = &mut chunks[current];
     let parsed_slot = alloc_local(chunk);

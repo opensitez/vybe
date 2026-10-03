@@ -182,9 +182,20 @@ fn build_get_parent_class(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     build_field_getter(chunks, "__refl_getParentClass", "__parent_ref", line)
 }
 
-/// `getParameters()` → return __params array.
+/// `getParameters()` returns a PHP array value, not a mutable alias of the
+/// reflector's stored parameter list.
 fn build_get_parameters(chunks: &mut Vec<Chunk>, line: u32) -> usize {
-    build_field_getter(chunks, "__refl_getParams", "__params", line)
+    let mut c = Chunk::new("__refl_getParams");
+    c.arity = 1;
+    let params = class_slots::resolve(&ClassSlot::Internal("__params".to_string()), &PlainNames);
+    c.emit_op_u16(Op::LOCAL_GET, 0, line);
+    class_slots::emit_class_get(&mut c, ObjSource::Stack, &params, Dest::Stack, line);
+    let copy = c.add_import("php:array", "copy");
+    c.emit_call(copy, 1, line);
+    c.emit_op(Op::RETURN, line);
+    c.local_count = c.local_count.max(1);
+    chunks.push(c);
+    chunks.len() - 1
 }
 
 /// `getAttributes()` → return __attributes array. Filtering is normalized by
@@ -197,6 +208,42 @@ fn build_get_attributes(chunks: &mut Vec<Chunk>, line: u32) -> usize {
 /// `getConstructor()` → return __constructor_ref.
 fn build_get_constructor(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     build_field_getter(chunks, "__refl_getCtor", "__constructor_ref", line)
+}
+
+fn build_get_doc_comment(chunks: &mut Vec<Chunk>, line: u32) -> usize {
+    let mut c = Chunk::new("__refl_getDocComment");
+    c.arity = 1;
+    c.emit_bool_const(false, line);
+    c.emit_op(Op::RETURN, line);
+    c.local_count = 1;
+    chunks.push(c);
+    chunks.len() - 1
+}
+
+/// ReflectionClass::newInstance[Args]() constructs the class named by this
+/// reflection object. The host resolves that name through the live module
+/// globals, including classes loaded by Composer after this chunk compiled.
+fn build_new_instance(chunks: &mut Vec<Chunk>, with_args: bool, line: u32) -> usize {
+    let mut c = Chunk::new(if with_args {
+        "__refl_newInstanceArgs"
+    } else {
+        "__refl_newInstance"
+    });
+    c.arity = if with_args { 2 } else { 1 };
+    let name = sconst(&mut c, "name");
+    c.emit_op_u16(Op::LOCAL_GET, 0, line);
+    class_slots::emit_class_get(&mut c, ObjSource::Stack, &name, Dest::Stack, line);
+    if with_args {
+        c.emit_op_u16(Op::LOCAL_GET, 1, line);
+    } else {
+        c.emit_array_new_fixed(0, 0, line);
+    }
+    let instantiate = c.add_import("php:reflect", "newInstanceArgs");
+    c.emit_call(instantiate, 2, line);
+    c.emit_op(Op::RETURN, line);
+    c.local_count = c.local_count.max(c.arity as u16);
+    chunks.push(c);
+    chunks.len() - 1
 }
 
 /// Stamp `__type`, set fields, bind methods, leave instance on stack.
@@ -221,7 +268,11 @@ pub fn emit_refl_class(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: 
     let get_parent = build_get_parent_class(chunks, line);
     let get_attrs = build_get_attributes(chunks, line);
     let get_ctor = build_get_constructor(chunks, line);
+    let get_doc_comment = build_get_doc_comment(chunks, line);
+    let get_file_name = build_get_doc_comment(chunks, line);
     let get_params = build_get_parameters(chunks, line);
+    let new_instance = build_new_instance(chunks, false, line);
+    let new_instance_args = build_new_instance(chunks, true, line);
 
     let chunk = &mut chunks[current];
 
@@ -297,13 +348,20 @@ pub fn emit_refl_class(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: 
     }
     chunk.emit_op_u16(Op::LOCAL_SET, name_slot, line);
 
-    // Mini ReflectionMethod for getConstructor()->getParameters().
+    // The constructor is a ReflectionMethod, so it must expose the same
+    // callable surface as other reflected methods, including getAttributes().
+    let ctor_attrs_slot = chunk.alloc_scratch(1);
+    chunk.emit_array_new_fixed(0, 0, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, ctor_attrs_slot, line);
     reflection::emit_new_reflection_object(
         chunk,
         ctor_ref_slot,
         "ReflectionMethod",
-        &[("__params", ctor_params_slot)],
-        &[("getparameters", get_params)],
+        &[
+            ("__params", ctor_params_slot),
+            ("__attributes", ctor_attrs_slot),
+        ],
+        &[("getparameters", get_params), ("getattributes", get_attrs)],
         line,
     );
     chunk.emit_op(Op::DROP, line);
@@ -333,6 +391,10 @@ pub fn emit_refl_class(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: 
             ("getparentclass", get_parent),
             ("getattributes", get_attrs),
             ("getconstructor", get_ctor),
+            ("getdoccomment", get_doc_comment),
+            ("getfilename", get_file_name),
+            ("newinstance", new_instance),
+            ("newinstanceargs", new_instance_args),
         ],
         line,
     );
@@ -381,13 +443,16 @@ pub fn emit_refl_method(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line:
     let invoke = build_method_invoke(chunks, line);
     let get_params_count = build_field_getter(chunks, "__refl_nparams", "__param_count", line);
     let get_required = build_field_getter(chunks, "__refl_nreq", "__required_params", line);
+    let get_params = build_get_parameters(chunks, line);
     let is_public = build_bool_getter(chunks, "__refl_ispub", "__is_public", line);
     let is_protected = build_bool_getter(chunks, "__refl_isprot", "__is_protected", line);
     let is_private = build_bool_getter(chunks, "__refl_ispriv", "__is_private", line);
+    let is_static = build_bool_getter(chunks, "__refl_isstatic", "__is_static", line);
     let get_attrs = build_get_attributes(chunks, line);
 
     let chunk = &mut chunks[current];
 
+    let params_slot = chunk.alloc_scratch(1);
     let attrs_slot = chunk.alloc_scratch(1);
     let required_slot = chunk.alloc_scratch(1);
     let param_count_slot = chunk.alloc_scratch(1);
@@ -398,7 +463,20 @@ pub fn emit_refl_method(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line:
     let is_pub_slot = chunk.alloc_scratch(1);
     let is_prot_slot = chunk.alloc_scratch(1);
     let is_priv_slot = chunk.alloc_scratch(1);
+    let is_static_slot = chunk.alloc_scratch(1);
 
+    if argc >= 8 {
+        chunk.emit_op_u16(Op::LOCAL_SET, params_slot, line);
+    } else {
+        chunk.emit_array_new_fixed(0, 0, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, params_slot, line);
+    }
+    if argc >= 7 {
+        chunk.emit_op_u16(Op::LOCAL_SET, is_static_slot, line);
+    } else {
+        chunk.emit_bool_const(false, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, is_static_slot, line);
+    }
     if argc >= 6 {
         chunk.emit_op_u16(Op::LOCAL_SET, attrs_slot, line);
         chunk.emit_op_u16(Op::LOCAL_SET, required_slot, line);
@@ -449,12 +527,15 @@ pub fn emit_refl_method(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line:
         "ReflectionMethod",
         &[
             ("method", method_slot),
+            ("name", method_slot),
             ("class", class_slot),
             ("__param_count", param_count_slot),
             ("__required_params", required_slot),
+            ("__params", params_slot),
             ("__is_public", is_pub_slot),
             ("__is_protected", is_prot_slot),
             ("__is_private", is_priv_slot),
+            ("__is_static", is_static_slot),
             ("__attributes", attrs_slot),
         ],
         &[
@@ -462,9 +543,11 @@ pub fn emit_refl_method(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line:
             ("invoke", invoke),
             ("getnumberofparameters", get_params_count),
             ("getnumberofrequiredparameters", get_required),
+            ("getparameters", get_params),
             ("ispublic", is_public),
             ("isprotected", is_protected),
             ("isprivate", is_private),
+            ("isstatic", is_static),
             ("getattributes", get_attrs),
         ],
         line,
@@ -515,18 +598,35 @@ pub fn emit_refl_function(chunks: &mut Vec<Chunk>, current: usize, argc: u8, lin
     let get_params_count = build_field_getter(chunks, "__refl_fn_nparams", "__param_count", line);
     let get_required = build_field_getter(chunks, "__refl_fn_nreq", "__required_params", line);
     let get_params = build_get_parameters(chunks, line);
+    let get_attrs = build_get_attributes(chunks, line);
     let get_return_type = build_field_getter(chunks, "__refl_fn_rettype", "__return_type", line);
     let has_return_type = build_has_field(chunks, "__refl_fn_hasret", "__return_type", line);
+    let get_closure_this =
+        build_field_getter(chunks, "__refl_fn_closure_this", "__closure_this", line);
+    let get_closure_class =
+        build_field_getter(chunks, "__refl_fn_closure_class", "__closure_class", line);
 
     let chunk = &mut chunks[current];
     let return_type_slot = chunk.alloc_scratch(1);
+    let closure_class_slot = chunk.alloc_scratch(1);
+    let closure_this_slot = chunk.alloc_scratch(1);
     let params_slot = chunk.alloc_scratch(1);
     let required_slot = chunk.alloc_scratch(1);
     let param_count_slot = chunk.alloc_scratch(1);
     let name_slot = chunk.alloc_scratch(1);
     let this_slot = chunk.alloc_scratch(1);
+    let attrs_slot = chunk.alloc_scratch(1);
 
-    // The return-type surface is the LAST positional arg, so every shorter
+    if argc >= 7 {
+        chunk.emit_op_u16(Op::LOCAL_SET, closure_class_slot, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, closure_this_slot, line);
+    } else {
+        chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, closure_class_slot, line);
+        chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, closure_this_slot, line);
+    }
+    // The return-type surface follows the four required positional args.
     // call shape has to default it before reading the ones below it.
     if argc >= 5 {
         chunk.emit_op_u16(Op::LOCAL_SET, return_type_slot, line);
@@ -553,6 +653,8 @@ pub fn emit_refl_function(chunks: &mut Vec<Chunk>, current: usize, argc: u8, lin
         chunk.emit_op_u16(Op::LOCAL_SET, param_count_slot, line);
     }
     chunk.emit_op_u16(Op::LOCAL_SET, name_slot, line);
+    chunk.emit_array_new_fixed(0, 0, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, attrs_slot, line);
 
     finish(
         chunk,
@@ -564,6 +666,9 @@ pub fn emit_refl_function(chunks: &mut Vec<Chunk>, current: usize, argc: u8, lin
             ("__required_params", required_slot),
             ("__params", params_slot),
             ("__return_type", return_type_slot),
+            ("__closure_this", closure_this_slot),
+            ("__closure_class", closure_class_slot),
+            ("__attributes", attrs_slot),
         ],
         &[
             ("getname", getname),
@@ -572,6 +677,10 @@ pub fn emit_refl_function(chunks: &mut Vec<Chunk>, current: usize, argc: u8, lin
             ("getparameters", get_params),
             ("getreturntype", get_return_type),
             ("hasreturntype", has_return_type),
+            ("getclosurethis", get_closure_this),
+            ("getclosurecalledclass", get_closure_class),
+            ("getclosurescopeclass", get_closure_class),
+            ("getattributes", get_attrs),
         ],
         line,
     );

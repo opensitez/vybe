@@ -11,6 +11,7 @@ use vybe_runtime::{Chunk, Value};
 const PHP_SESSION_COOKIE_NAME: &str = "PHPSESSID";
 const PHP_SESSION_ID_GLOBAL: &str = "__php_session_id";
 const PHP_SESSION_STARTED_GLOBAL: &str = "__php_session_started";
+const PHP_SESSION_USED_GLOBAL: &str = "__php_session_used";
 const PHP_SESSION_DESTROYED_GLOBAL: &str = "__php_session_destroyed";
 const PHP_SESSION_NEEDS_COOKIE_GLOBAL: &str = "__php_session_needs_cookie";
 
@@ -733,7 +734,7 @@ fn emit_php_session_start_cookie_if_needed(chunks: &mut [Chunk], current: usize,
     chunks[current].emit_if(line);
 
     push_str(&mut chunks[current], PHP_SESSION_COOKIE_NAME, line);
-    vybe_compiler::primitives::globals::emit_read(&mut chunks[current], PHP_SESSION_ID_GLOBAL, line);
+    vybe_compiler::primitives::globals::emit_read(&mut chunks[current], PHP_SESSION_ID_GLOBAL, line,);
 
     call_import(chunks, current, "ecma:map", "new", 0, line);
     let attrs_slot = alloc_local(&mut chunks[current]);
@@ -777,6 +778,12 @@ pub fn emit_php_session_start(chunks: &mut [Chunk], current: usize, argc: u8, li
     vybe_compiler::primitives::globals::emit_write(
         &mut chunks[current],
         PHP_SESSION_STARTED_GLOBAL,
+        line,
+    );
+    push_const(&mut chunks[current], Value::Bool(true), line);
+    vybe_compiler::primitives::globals::emit_write(
+        &mut chunks[current],
+        PHP_SESSION_USED_GLOBAL,
         line,
     );
     push_const(&mut chunks[current], Value::Bool(false), line);
@@ -866,6 +873,16 @@ pub fn emit_php_session_regenerate_id(chunks: &mut [Chunk], current: usize, argc
     let ok_slot = alloc_local(&mut chunks[current]);
     lset(&mut chunks[current], ok_slot, line);
     emit_php_session_sync_legacy_id(chunks, current, line);
+    // The session store now uses the new id. Publish that id to the client as
+    // well; otherwise the next request sends the old cookie and PHP sees a
+    // different session than the one embedded in its forms.
+    push_const(&mut chunks[current], Value::Bool(true), line);
+    vybe_compiler::primitives::globals::emit_write(
+        &mut chunks[current],
+        PHP_SESSION_NEEDS_COOKIE_GLOBAL,
+        line,
+    );
+    emit_php_session_start_cookie_if_needed(chunks, current, line);
     lget(&mut chunks[current], ok_slot, line);
     chunks[current].emit_else(line);
     push_const(&mut chunks[current], Value::Bool(false), line);
@@ -918,9 +935,15 @@ pub fn emit_php_session_reset(chunks: &mut [Chunk], current: usize, _argc: u8, l
 }
 
 pub fn emit_php_session_unset(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
-    chunks[current].emit_array_new_fixed(0, 0, line);
-    vybe_compiler::primitives::globals::emit_write(&mut chunks[current], "$_SESSION", line);
+    // Both names must keep referring to the same map. Applications commonly
+    // repopulate $_SESSION immediately after session_unset(); the shared
+    // session store must see those writes as well.
     call_import(chunks, current, "ecma:map", "new", 0, line);
+    let session_slot = alloc_local(&mut chunks[current]);
+    lset(&mut chunks[current], session_slot, line);
+    lget(&mut chunks[current], session_slot, line);
+    vybe_compiler::primitives::globals::emit_write(&mut chunks[current], "$_SESSION", line);
+    lget(&mut chunks[current], session_slot, line);
     vybe_compiler::primitives::globals::emit_write(
         &mut chunks[current],
         vybe_compiler::primitives::http_session::SESSION_DATA_GLOBAL,

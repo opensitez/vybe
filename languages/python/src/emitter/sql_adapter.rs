@@ -317,7 +317,7 @@ fn emit_store_description_from_rows(
 
     lget(&mut chunks[current], cursor, line);
     lget(&mut chunks[current], desc, line);
-    struct_set_key(&mut chunks[current], &ClassSlot::internal("description"), line);
+    struct_set_key(&mut chunks[current], &ClassSlot::internal("description"), line,);
 }
 
 /// Compute `use_raw = truthy(cursor.__conn.row_factory)` into `flag_slot` — set
@@ -465,7 +465,7 @@ pub fn emit_cursor(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
 
     lget(&mut chunks[current], cur, line);
     empty_array(chunks, current, line);
-    struct_set_key(&mut chunks[current], &ClassSlot::internal("description"), line);
+    struct_set_key(&mut chunks[current], &ClassSlot::internal("description"), line,);
 
     lget(&mut chunks[current], cur, line);
     // result: cursor
@@ -615,7 +615,7 @@ pub fn emit_execute(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         struct_set_key(&mut chunks[current], &ClassSlot::internal("__cursor"), line);
         lget(&mut chunks[current], cursor, line);
         empty_array(chunks, current, line);
-        struct_set_key(&mut chunks[current], &ClassSlot::internal("description"), line);
+        struct_set_key(&mut chunks[current], &ClassSlot::internal("description"), line,);
 
         lget(&mut chunks[current], conn, line);
         lget(&mut chunks[current], conn, line);

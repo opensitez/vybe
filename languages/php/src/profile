@@ -109,15 +109,23 @@ sscanf              = { emit = "common:php.sscanf",          min_args = 2, max_a
 uniqid              = { emit = "common:php.uniqid",          min_args = 0, max_args = 2 }
 __php_dynamic_include = { emit = "host:vybe:php:dynamic_include", min_args = 2, max_args = 2 }
 __php_global_function = { emit = "host:vybe:php:global_function", min_args = 1, max_args = 1 }
+__php_resolve_function = { emit = "host:php:dynamic:functionByName", min_args = 1, max_args = 1 }
 __php_call_user_func_array = { emit = "common:php.call_user_func_array", min_args = 2, max_args = 2 }
 __php_global_get = { emit = "common:php.global_get", min_args = 1, max_args = 1 }
+__php_globals_object = { emit = "common:php.globals_object", min_args = 0, max_args = 0 }
 __php_global_ref = { emit = "common:php.global_ref", min_args = 1, max_args = 1 }
 __php_global_set = { emit = "common:php.global_set", min_args = 2, max_args = 2 }
+__php_module_get = { emit = "common:php.module_get", min_args = 1, max_args = 1 }
+__php_module_set = { emit = "common:php.module_set", min_args = 2, max_args = 2 }
+__php_module_ref = { emit = "common:php.module_ref", min_args = 1, max_args = 1 }
+compact = { emit = "common:php.compact", min_args = 0, max_args = 255 }
+spl_object_id = { emit = "common:php.object_id", min_args = 1, max_args = 1 }
+spl_object_hash = { emit = "common:php.object_hash", min_args = 1, max_args = 1 }
 # `eval($code)` → universal compiler-as-a-service; the walker injects the
 # source language and eval-mode attrs explicitly.
 __vybe_eval         = { emit = "host:vybe:eval:eval",       min_args = 2, max_args = 3 }
 readline            = { emit = "intrinsic:readline",     min_args = 0, max_args = 1 }
-error_log           = { emit = "host:wasi:cli:error",        min_args = 1, max_args = 4 }
+error_log           = { emit = "host:php:logging:errorLog", min_args = 1, max_args = 4 }
 __php_int_max       = { emit = "common:php.int_max",         min_args = 0, max_args = 0 }
 __php_int_min       = { emit = "common:php.int_min",         min_args = 0, max_args = 0 }
 __php_is_int        = { emit = "common:php.is_int",          min_args = 1, max_args = 1 }
@@ -148,6 +156,7 @@ str_starts_with     = { emit = "intrinsic:php_str_starts_with",     min_args = 2
 str_ends_with       = { emit = "intrinsic:php_str_ends_with",       min_args = 2, max_args = 2 }
 str_repeat          = { emit = "common:php.str_repeat",      min_args = 2, max_args = 2 }
 base64_decode       = { emit = "common:php.base64_decode",   min_args = 1, max_args = 2 }
+base64_encode       = { emit = "intrinsic:base64_encode_binary_string", min_args = 1, max_args = 1 }
 gzcompress          = { emit = "common:php.gzcompress",      min_args = 1, max_args = 2 }
 gzuncompress        = { emit = "common:php.gzuncompress",    min_args = 1, max_args = 2 }
 gzencode            = { emit = "common:php.gzencode",        min_args = 1, max_args = 2 }
@@ -180,8 +189,8 @@ ctype_print         = { emit = "common:php.ctype_print",     min_args = 1, max_a
 ctype_cntrl         = { emit = "common:php.ctype_cntrl",     min_args = 1, max_args = 1 }
 # `mb_*` counts CODE POINTS; the plain functions count BYTES. They are two
 # different index units (`unifiedstringplan.md` Axis 1), not aliases.
-mb_strlen           = { emit = "common:str_scalar_length",   min_args = 1, max_args = 2 }
-mb_strtolower       = { emit = "common:str_to_lower",        min_args = 1, max_args = 2 }
+mb_strlen           = { emit = "common:php.mb_strlen",       min_args = 1, max_args = 2 }
+mb_strtolower       = { emit = "common:php.strtolower",      min_args = 1, max_args = 2 }
 mb_strtoupper       = { emit = "common:php.strtoupper",      min_args = 1, max_args = 2 }
 # `mb_substr` walker-rewritten to `__php_mb_substr` (see below) — NOT to
 # `__php_substr`, whose bound math runs in UTF-16 units.
@@ -321,6 +330,7 @@ glob                = { emit = "common:php.glob",           min_args = 1, max_ar
 # chunks (`__stdlib_regex_*_pat_first`) that reorder PHP's pat-first
 # args into ECMA's str-first order before calling ecma:regexp.*.
 preg_match          = { emit = "host:ecma:regexp:test",          min_args = 2, max_args = 5 }
+__php_preg_match_offsets = { emit = "host:php:regex:matchWithOffsets", min_args = 4, max_args = 4 }
 preg_match_all      = { emit = "common:php.regex_match_all_pat_first", min_args = 2, max_args = 5 }
 preg_replace        = { emit = "common:php.regex_replace_pat_first", min_args = 3, max_args = 4 }
 preg_replace_callback = { emit = "common:php.preg_replace_callback", min_args = 3, max_args = 5 }
@@ -332,7 +342,7 @@ __php_field_set       = { emit = "common:php.field_set",         min_args = 3, m
 __php_clone_helper  = { emit = "common:php.clone_helper",        min_args = 1, max_args = 2 }
 __php_dynamic_method_call = { emit = "common:php.dynamic_method_call", min_args = 3, max_args = 3 }
 __php_method_exists = { emit = "common:php.method_exists", min_args = 2, max_args = 2 }
-preg_split          = { emit = "common:php.preg_split",          min_args = 2, max_args = 4 }
+preg_split          = { emit = "host:php:regex:split",          min_args = 2, max_args = 4 }
 preg_quote          = { emit = "common:php.preg_quote",          min_args = 1, max_args = 2 }
 
 # ── Math functions ───────────────────────────────────────────────────────────
@@ -358,6 +368,10 @@ log10               = { emit = "host:ecma:math:log10",       min_args = 1, max_a
 rand                = { emit = "common:php.rand",             min_args = 0, max_args = 2 }
 mt_rand             = { emit = "common:php.rand",             min_args = 0, max_args = 2 }
 random_int          = { emit = "common:php.rand",             min_args = 2, max_args = 2 }
+random_bytes        = { emit = "host:php:random:bytes",        min_args = 1, max_args = 1 }
+sodium_crypto_secretbox_keygen = { emit = "host:php:sodium:keygen", min_args = 0, max_args = 0 }
+sodium_crypto_secretbox = { emit = "host:php:sodium:secretbox", min_args = 3, max_args = 3 }
+sodium_crypto_secretbox_open = { emit = "host:php:sodium:secretbox_open", min_args = 3, max_args = 3 }
 lcg_value           = { emit = "common:php.lcg_value",        min_args = 0, max_args = 0 }
 __php_float_bytes   = { emit = "common:php.pack_float_bytes", min_args = 2, max_args = 2 }
 pack                = { emit = "common:php.pack",             min_args = 1, max_args = 255 }
@@ -457,17 +471,26 @@ is_float            = { emit = "intrinsic:php_is_float",         min_args = 1, m
 is_double           = { emit = "intrinsic:php_is_float",         min_args = 1, max_args = 1 }
 is_real             = { emit = "intrinsic:php_is_float",         min_args = 1, max_args = 1 }
 is_array            = { emit = "common:php.is_array",            min_args = 1, max_args = 1 }
-is_object           = { emit = "intrinsic:php_is_object",        min_args = 1, max_args = 1 }
+is_object           = { emit = "common:php.is_object",           min_args = 1, max_args = 1 }
 
 # ── Array functions ─────────────────────────────────────────────────────────
 
+__vybe_php_array_read = { emit = "common:php.array_read_deref", min_args = 2, max_args = 2 }
+__vybe_php_nested_member_set = { emit = "host:php:array:nested_member_set", min_args = 5, max_args = 5 }
+__vybe_php_local_set = { emit = "host:php:array:local_set", min_args = 3, max_args = 3 }
+__vybe_php_local_append = { emit = "host:php:array:local_append", min_args = 2, max_args = 2 }
+__vybe_php_property_inaccessible = { emit = "host:php:property:isInaccessible", min_args = 3, max_args = 3 }
+__vybe_php_recursive_files = { emit = "host:php:spl:recursiveFiles", min_args = 1, max_args = 1 }
+__vybe_php_regex_filter = { emit = "host:php:spl:regexFilter", min_args = 2, max_args = 3 }
 count               = { emit = "common:php.count",                min_args = 1, max_args = 2 }
 sizeof              = { emit = "common:php.count",                min_args = 1, max_args = 2 }
 array_push          = { emit = "common:php.array_push_g",          min_args = 2, max_args = 255 }
 array_pop           = { emit = "common:php.array_pop_g",           min_args = 1, max_args = 1 }
-current             = { emit = "common:php.current",              min_args = 1, max_args = 1 }
-next                = { emit = "common:php.next",                 min_args = 1, max_args = 1 }
-end                 = { emit = "common:php.end",                  min_args = 1, max_args = 1 }
+current             = { emit = "host:php:array:current",            min_args = 1, max_args = 1 }
+reset               = { emit = "host:php:array:reset",              min_args = 1, max_args = 1 }
+next                = { emit = "host:php:array:next",               min_args = 1, max_args = 1 }
+end                 = { emit = "host:php:array:end",                min_args = 1, max_args = 1 }
+prev                = { emit = "host:php:array:prev",               min_args = 1, max_args = 1 }
 array_shift         = { emit = "common:array_shift",               min_args = 1, max_args = 1 }
 array_unshift       = { emit = "host:ecma:array:unshift",          min_args = 2, max_args = 255 }
 array_reverse       = { emit = "common:php.array_reverse",         min_args = 1, max_args = 2 }
@@ -487,14 +510,14 @@ array_sum           = { emit = "common:php.array_sum",             min_args = 1,
 # the receiver decides the answer: from-end on a STRING, a real key −1 on an
 # array. Every other key shape folds at walk time instead.
 __php_offset__      = { emit = "common:php.offset",                min_args = 2, max_args = 2 }
-# STAGED, NOT YET INJECTED. The runtime key normalizer for a non-literal key.
-# `php_array_key_operand` deliberately does not emit it: a call injected into
-# every dynamic subscript collides with the surrounding `emit_dyn_to_bool`
-# scratch slots (`wasm:js-boolean.cast — not a boolean`, from php's own
-# `__php_copy_on_assign`). Wire it up once that is understood — the emitter it
-# points at is live and shared with the array builtins that mint keys.
+# Runtime key normalization for non-literal array keys. Literal keys are
+# folded by the PHP walker before they reach this emitter.
 __php_key__         = { emit = "common:php.key",                   min_args = 1, max_args = 1 }
 __php_copy_on_assign = { emit = "common:php.copy_on_assign",       min_args = 1, max_args = 1 }
+__php_is_arrayobject = { emit = "host:php:array:isArrayObject",    min_args = 1, max_args = 1 }
+__php_arrayobject_exchange = { emit = "host:php:array:objectExchange", min_args = 2, max_args = 2 }
+__php_arrayobject_copy = { emit = "host:php:array:objectCopy", min_args = 1, max_args = 1 }
+__php_stringify_value = { emit = "common:php.concat_stringify", min_args = 1, max_args = 1 }
 __php_strict_eq     = { emit = "common:php.strict_eq",             min_args = 2, max_args = 2 }
 array_fill          = { emit = "common:php.array_fill",            min_args = 3, max_args = 3 }
 array_fill_keys     = { emit = "common:php.array_fill_keys",       min_args = 2, max_args = 2 }
@@ -528,6 +551,9 @@ __php_gen_valid     = { emit = "common:php.generator_valid",       min_args = 1,
 # surface, one CVE surface.
 array_keys          = { emit = "common:php.array_keys",         min_args = 1, max_args = 3 }
 array_values        = { emit = "common:php.array_values",       min_args = 1, max_args = 1 }
+__php_foreach_entries = { emit = "host:ecma:object:entries", min_args = 1, max_args = 1 }
+__php_foreach_get = { emit = "host:ecma:array:get", min_args = 2, max_args = 2 }
+__php_foreach_length = { emit = "host:ecma:array:length", min_args = 1, max_args = 1 }
 array_is_list        = { emit = "common:php.array_is_list",      min_args = 1, max_args = 1 }
 # Argument order is normalized to canonical `(obj, key)` at the PHP
 # walker layer (`canonicalize_php_call_args`), so both entries below
@@ -587,7 +613,7 @@ array_count_values  = { emit = "common:php.array_count_values",   min_args = 1, 
 array_column        = { emit = "common:php.array_column",         min_args = 2, max_args = 3 }
 array_key_first     = { emit = "common:php.array_key_first",      min_args = 1, max_args = 1 }
 array_key_last      = { emit = "common:php.array_key_last",       min_args = 1, max_args = 1 }
-key                 = { emit = "common:php.array_key_first",      min_args = 1, max_args = 1 }
+key                 = { emit = "host:php:array:key",                min_args = 1, max_args = 1 }
 
 # Assoc-array sort family — mutates the object in place, preserving
 # the caller's reference (PHP arrays are JS objects in our model).
@@ -681,7 +707,7 @@ __php_xml_node_name   = { emit = "common:xml.node_name",                       m
 time                = { emit = "host:ecma:date:nowSeconds",      min_args = 0, max_args = 0 }
 checkdate           = { emit = "common:php.checkdate",           min_args = 3, max_args = 3 }
 getdate             = { emit = "common:php.getdate",             min_args = 0, max_args = 1 }
-microtime           = { emit = "host:wasi:clocks:hrtime",           min_args = 0, max_args = 1 }
+microtime           = { emit = "host:php:datetime:microtime",       min_args = 0, max_args = 1 }
 date                = { emit = "common:php.date",                min_args = 1, max_args = 2 }
 strftime            = { emit = "common:php.strftime",            min_args = 1, max_args = 2 }
 strtotime           = { emit = "common:php.strtotime",           min_args = 1, max_args = 2 }
@@ -698,7 +724,7 @@ sprintf             = { emit = "common:sprintf.format",     min_args = 1, max_ar
 
 # ── Internal helpers — AST rewrite targets ─────────────────────────────────
 
-__php_substr        = { emit = "intrinsic:php_substr",          min_args = 2, max_args = 3 }
+__php_substr        = { emit = "host:php:string:substr",         min_args = 2, max_args = 3 }
 __php_mb_substr     = { emit = "common:php.mb_substr",          min_args = 2, max_args = 3 }
 __php_strpos        = { emit = "common:php.strpos",             min_args = 2, max_args = 3 }
 __php_array_search  = { emit = "intrinsic:php_array_search",    min_args = 2, max_args = 3 }
@@ -736,7 +762,13 @@ is_writable         = { emit = "common:php.is_writable",        min_args = 1, ma
 is_writeable        = { emit = "common:php.is_writable",        min_args = 1, max_args = 1 }
 filetype            = { emit = "common:php.filetype",           min_args = 1, max_args = 1 }
 scandir             = { emit = "common:php.scandir",            min_args = 1, max_args = 3 }
+opendir             = { emit = "host:php:filesystem:opendir",   min_args = 1, max_args = 2 }
+readdir             = { emit = "host:php:filesystem:readdir",   min_args = 1, max_args = 1 }
+rewinddir           = { emit = "host:php:filesystem:rewinddir", min_args = 1, max_args = 1 }
+closedir            = { emit = "host:php:filesystem:closedir",  min_args = 1, max_args = 1 }
 tempnam             = { emit = "common:php.tempnam",            min_args = 2, max_args = 2 }
+umask               = { emit = "host:php:filesystem:umask",       min_args = 0, max_args = 1 }
+chmod               = { emit = "host:php:filesystem:chmod",       min_args = 2, max_args = 2 }
 mime_content_type   = { emit = "common:php.mime_content_type", min_args = 1, max_args = 1 }
 fileperms           = { emit = "common:php.fileperms",          min_args = 1, max_args = 1 }
 disk_free_space     = { emit = "common:php.disk_free_space",   min_args = 1, max_args = 1 }
@@ -815,8 +847,23 @@ spl_autoload_functions = { emit = "common:php.spl_autoload_functions", min_args 
 spl_autoload_call   = { emit = "common:php.spl_autoload_call",   min_args = 1, max_args = 1 }
 # A SAPI is a PHP concept — Node has none, so this cannot live in `node:http`.
 php_sapi_name       = { emit = "common:php.sapi_name",             min_args = 0, max_args = 0 }
-getcwd              = { emit = "host:wasi:cli:cwd",          min_args = 0, max_args = 0 }
-gethostname         = { emit = "host:wasi:cli:machineName",  min_args = 0, max_args = 0 }
+getcwd              = { emit = "common:php.getcwd", min_args = 0, max_args = 0 }
+chdir               = { emit = "common:php.chdir", min_args = 1, max_args = 1 }
+gethostname         = { emit = "host:php:environment:gethostname", min_args = 0, max_args = 0 }
+__php_is_closure    = { emit = "host:php:environment:isClosure", min_args = 1, max_args = 1 }
+__php_attach_closure_reflection = { emit = "host:php:environment:attachClosureReflection", min_args = 2, max_args = 2 }
+__php_closure_reflection_params = { emit = "host:php:environment:closureReflectionParams", min_args = 1, max_args = 1 }
+__php_attach_callable_reflection = { emit = "host:php:environment:attachCallableReflection", min_args = 2, max_args = 2 }
+__php_reflection_function_name = { emit = "host:php:environment:reflectionFunctionName", min_args = 1, max_args = 1 }
+__php_closure_this = { emit = "host:php:environment:closureThis", min_args = 1, max_args = 1 }
+__php_closure_called_class = { emit = "host:php:environment:closureCalledClass", min_args = 1, max_args = 1 }
+__php_reflection_class_name = { emit = "host:php:environment:reflectionClassName", min_args = 1, max_args = 1 }
+__php_get_class_methods_runtime = { emit = "host:php:environment:getClassMethods", min_args = 1, max_args = 1 }
+__php_unpack_values = { emit = "host:php:array:unpackValues", min_args = 1, max_args = 1 }
+getallheaders        = { emit = "host:php:environment:getallheaders", min_args = 0, max_args = 0 }
+apache_request_headers = { emit = "host:php:environment:getallheaders", min_args = 0, max_args = 0 }
+__php_getallheaders_host = { emit = "host:php:environment:getallheaders", min_args = 0, max_args = 0 }
+fstat               = { emit = "host:php:filesystem:fstat", min_args = 1, max_args = 1 }
 
 # ── HTTP / web (vybex --serve) ──────────────────────────────────────────────
 header              = { emit = "common:php.header",               min_args = 1, max_args = 3 }
@@ -872,7 +919,7 @@ __vybe_superglobal_server  = { emit = "common:php.superglobal_server",      min_
 __vybe_superglobal_get     = { emit = "common:http_request.query_params",   min_args = 0, max_args = 0 }
 __vybe_superglobal_post    = { emit = "common:http_form.fields",           min_args = 0, max_args = 0 }
 __vybe_superglobal_files   = { emit = "common:php.superglobal_files",       min_args = 0, max_args = 0 }
-__vybe_superglobal_cookie  = { emit = "common:http_cookie.request_cookies", min_args = 0, max_args = 0 }
+__vybe_superglobal_cookie  = { emit = "common:php.cookie_decode_request", min_args = 0, max_args = 0 }
 __vybe_superglobal_request = { emit = "common:http_request.request_params", min_args = 0, max_args = 0 }
 # `$_ENV` is the ONE superglobal that is not the HTTP message: it is the process
 # environment, which WASI already exposes. Spec shape is
@@ -927,6 +974,7 @@ mysqli_character_set_name = { emit = "common:php.mysqli_character_set_name", min
 mysqli_get_client_info = { emit = "common:php.mysqli_get_client_info", min_args = 0, max_args = 0 }
 mysqli_get_server_info = { emit = "common:php.mysqli_get_server_info", min_args = 1, max_args = 1 }
 mysqli_fetch_array  = { emit = "common:php.mysqli_fetch_array",  min_args = 1, max_args = 2 }
+mysqli_fetch_row    = { emit = "common:php.mysqli_fetch_row",    min_args = 1, max_args = 1 }
 mysqli_fetch_assoc  = { emit = "common:php.mysqli_fetch_assoc",  min_args = 1, max_args = 1 }
 mysqli_fetch_object = { emit = "common:php.mysqli_fetch_object", min_args = 1, max_args = 1 }
 mysqli_num_rows     = { emit = "common:php.mysqli_num_rows",     min_args = 1, max_args = 1 }
@@ -989,7 +1037,8 @@ __php_dt_add_years     = { emit = "common:php.datetime_add_years",   min_args = 
 __php_strtotime_rel_calendar = { emit = "common:php.strtotime_rel_calendar", min_args = 3, max_args = 3 }
 # Walker-emitted helpers for `preg_match_all($p,$s,$m)` / `preg_match($p,$s,$m)`
 # 3-arg form. The walker rewrites the call to `$m = __preg_*_groups($p,$s)`.
-__preg_match_all_groups = { emit = "common:php.preg_match_all_groups", min_args = 2, max_args = 2 }
+__preg_match_all_groups = { emit = "common:php.preg_match_all_groups", min_args = 2, max_args = 3 }
+__preg_match_all_set_order_groups = { emit = "common:php.preg_match_all_set_order_groups", min_args = 2, max_args = 3 }
 __preg_match_groups     = { emit = "common:php.preg_match_groups",     min_args = 2, max_args = 2 }
 
 # PHP Fiber adapters (PHP 8.1) — leverage the VM's WASM stack-switching
@@ -1042,9 +1091,12 @@ __spl_count_method             = { emit = "common:php.spl_count_method",        
 # `__types` stamps every frontend writes — not folded in the walker, which
 # could only ever answer with the class an expression is DECLARED as.
 __php_get_class                = { emit = "common:php.get_class",                min_args = 1, max_args = 1 }
+get_object_vars                = { emit = "common:php.get_object_vars",          min_args = 1, max_args = 1 }
 __php_get_parent_class         = { emit = "common:php.get_parent_class",         min_args = 1, max_args = 1 }
 __refl_class                   = { emit = "common:php.refl_class",               min_args = 1, max_args = 10 }
-__refl_method                  = { emit = "common:php.refl_method",              min_args = 2, max_args = 6 }
+__refl_method                  = { emit = "common:php.refl_method",              min_args = 2, max_args = 8 }
+__php_method_reflection_params = { emit = "host:php:dynamic:methodReflectionParams", min_args = 2, max_args = 2 }
+__php_method_is_static = { emit = "host:php:dynamic:methodIsStatic", min_args = 2, max_args = 2 }
 __refl_property                = { emit = "common:php.refl_property",            min_args = 2, max_args = 3 }
 __refl_function                = { emit = "common:php.refl_function",            min_args = 1, max_args = 4 }
 __refl_constant                = { emit = "common:php.refl_constant",            min_args = 3, max_args = 3 }
@@ -1056,6 +1108,7 @@ __php_fiber_new           = { emit = "common:php.fiber_new",           min_args 
 __php_fiber_suspend       = { emit = "common:php.fiber_suspend",       min_args = 0, max_args = 1 }
 __php_fiber_start         = { emit = "common:php.fiber_start",         min_args = 1, max_args = 16 }
 __php_fiber_resume        = { emit = "common:php.fiber_resume",        min_args = 1, max_args = 2 }
+__php_is_fiber            = { emit = "host:php:fiber:isFiber",          min_args = 1, max_args = 1 }
 __php_fiber_throw         = { emit = "common:php.fiber_throw",         min_args = 1, max_args = 2 }
 __php_fiber_get_return    = { emit = "common:php.fiber_get_return",    min_args = 1, max_args = 1 }
 __php_fiber_is_started    = { emit = "common:php.fiber_is_started",    min_args = 1, max_args = 1 }
@@ -1064,6 +1117,7 @@ __php_fiber_is_running    = { emit = "common:php.fiber_is_running",    min_args 
 __php_fiber_is_terminated = { emit = "common:php.fiber_is_terminated", min_args = 1, max_args = 1 }
 __php_pdo_query           = { emit = "common:php.pdo_query",           min_args = 2, max_args = 2 }
 __php_db_prepare          = { emit = "common:php.db_prepare",          min_args = 2, max_args = 2 }
+__php_pdo_prepare         = { emit = "common:php.pdo_prepare",         min_args = 2, max_args = 2 }
 __php_mysqli_query        = { emit = "common:php.mysqli_query",        min_args = 2, max_args = 2 }
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -1091,7 +1145,9 @@ unshift          = { emit = "host:ecma:array:unshift",            min_args = 1, 
 splice           = { emit = "host:ecma:array:splice",             min_args = 1, max_args = 255 }
 
 exec             = { emit = "common:php.pdo_exec",               min_args = 1, max_args = 1 }
-setAttribute     = { emit = "common:php.pdo_set_attribute",      min_args = 2, max_args = 2 }
+# PDO installs setAttribute on its own instances in pdo_adapter.rs. It is
+# not an intrinsic value method: a global spelling intercepts unrelated
+# object methods such as Twig\Node\Node::setAttribute.
 beginTransaction = { emit = "common:php.pdo_begin_transaction",  min_args = 0, max_args = 0 }
 commit           = { emit = "common:php.pdo_commit",             min_args = 0, max_args = 0 }
 rollBack         = { emit = "common:php.pdo_rollback",           min_args = 0, max_args = 0 }
@@ -1113,12 +1169,13 @@ setFetchMode     = { emit = "common:php.pdo_statement_set_fetch_mode", min_args 
 rowCount         = { emit = "common:php.pdo_statement_row_count",  min_args = 0, max_args = 0 }
 columnCount      = { emit = "common:php.pdo_statement_column_count", min_args = 0, max_args = 0 }
 paramCount       = { emit = "common:php.pdo_statement_param_count", min_args = 0, max_args = 0 }
-getAttribute     = { emit = "common:php.pdo_get_attribute",       min_args = 1, max_args = 1 }
 quote            = { emit = "common:php.pdo_quote",               min_args = 1, max_args = 2 }
 errorCode        = { emit = "common:php.pdo_error_code",          min_args = 0, max_args = 0 }
 errorInfo        = { emit = "common:php.pdo_error_info",           min_args = 0, max_args = 0 }
 lastInsertId     = { emit = "common:php.pdo_last_insert_id",      min_args = 0, max_args = 1 }
 attr_get         = { emit = "common:php.mysqli_stmt_attr_get",    min_args = 1, max_args = 1 }
+real_connect     = { emit = "common:php.mysqli_real_connect",     min_args = 3, max_args = 7 }
+options          = { emit = "common:php.mysqli_options",          min_args = 2, max_args = 2 }
 
 # ── mysqli_stmt OO methods (thin over the shared wasi:sql db_adapter) ──
 # `bind_param($types, &$var1, &$var2, …)` — variadic, so every position after
@@ -1137,7 +1194,7 @@ next_result      = { emit = "common:php.mysqli_stmt_false",      min_args = 0, m
 get_result       = { emit = "common:php.mysqli_stmt_get_result", min_args = 0, max_args = 0 }
 result_metadata  = { emit = "common:php.mysqli_stmt_result_metadata", min_args = 0, max_args = 0 }
 fetch_assoc      = { emit = "common:php.mysqli_fetch_assoc",     min_args = 0, max_args = 0 }
-fetch_row        = { emit = "common:php.mysqli_fetch_array",     min_args = 0, max_args = 0 }
+fetch_row        = { emit = "common:php.mysqli_fetch_row",       min_args = 0, max_args = 0 }
 fetch_object     = { emit = "common:php.mysqli_fetch_object",    min_args = 0, max_args = 1 }
 fetch_all        = { emit = "common:php.mysqli_fetch_all",       min_args = 0, max_args = 1 }
 
@@ -1154,7 +1211,6 @@ fetch_all        = { emit = "common:php.mysqli_fetch_all",       min_args = 0, m
 # popular as user class methods (`$repo->find(1)`); listing them
 # here would intercept those user methods. Keep this table minimal.
 [array_methods]
-filter   = "__array_filter"
 reduce   = "__array_reduce"
 
 
@@ -1277,12 +1333,9 @@ array  = ["array", "iterable"]
 # `<=>` out of two `<`/`>` calls.
 [builtin_slots.string]
 compare = "common:php.compare3"
-# PHP counts UTF-8 BYTES: `strlen("café")` is 5 where the platform default
-# (`host:ecma:string:length`) counts UTF-16 units and answers 4. Until
-# `common:str_byte_length` existed there was nothing on the platform to bind
-# here — php's counter was private to its own adapter, which is exactly the
-# fork `builtinslotplan.md` §1 set out to remove.
-len = "common:str_byte_length"
+# Typed strings can use the runtime's UTF-8 byte length directly. Generic
+# strlen still applies PHP scalar coercion in common:php.strlen first.
+len = "host:php:string:byteLength"
 # `==` / `!=`. PHP's loose equality coerces (`"1" == 1` is true) and is NOT the
 # platform's `ops::emit_dyn_eq`.
 #

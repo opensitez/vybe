@@ -76,6 +76,22 @@ pub fn emit_php_loose_eq(chunks: &mut [Chunk], current: usize, _argc: u8, negate
     lset(chunk, b_slot, line);
     lset(chunk, a_slot, line);
 
+    // PHP compares both operands as booleans whenever either one is a bool.
+    // The dynamic equality fallback otherwise treats false and numeric zero
+    // as different values, which breaks common `hasChildren() == 0` checks.
+    let test_bool = chunk.add_import("wasm:js-boolean", "test");
+    lget(chunk, a_slot, line);
+    chunk.emit_call(test_bool, 1, line);
+    lget(chunk, b_slot, line);
+    chunk.emit_call(test_bool, 1, line);
+    chunk.emit_op(Op::I32_OR, line);
+    chunk.emit_if_value(line);
+    lget(chunk, a_slot, line);
+    lget(chunk, b_slot, line);
+    let bool_eq = chunk.add_import("php:value", "looseBoolEq");
+    chunk.emit_call(bool_eq, 2, line);
+    chunk.emit_else(line);
+
     lget(chunk, a_slot, line);
     let test_str_a = chunk.add_import("wasm:js-string", "test");
     chunk.emit_call(test_str_a, 1, line);
@@ -155,6 +171,8 @@ pub fn emit_php_loose_eq(chunks: &mut [Chunk], current: usize, _argc: u8, negate
     emit_dyn_eq(chunk, line);
     vybe_compiler::primitives::ops::emit_i32_to_bool(chunk, line);
     chunk.emit_end(line);
+    chunk.emit_end(line);
+
     chunk.emit_end(line);
 
     if negate {

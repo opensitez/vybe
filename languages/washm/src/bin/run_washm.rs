@@ -21,6 +21,9 @@ fn main() {
             std::process::exit(1);
         }
     };
+    unsafe {
+        std::env::set_var("VYBE_WASHM_SOURCE_PATH", path.display().to_string());
+    }
 
     vybe_language_washm::register();
     let language = vybe_runtime::registry::find("bash").expect("bash language registered");

@@ -8,16 +8,24 @@ license.workspace = true
 [lib]
 name = "vybe_language_lua"
 
+[features]
+default = ["legacy-parser"]
+legacy-parser = ["dep:pest", "dep:pest_derive"]
+native-parser = ["dep:vybe_parser", "dep:vybe_parser_codegen"]
+
 [dependencies]
 vybe_compiler = { workspace = true }
 inventory = { workspace = true }
 vybe_ast = { workspace = true }
 vybe_runtime = { workspace = true }
-pest = { workspace = true }
-pest_derive = { workspace = true }
+pest = { workspace = true, optional = true }
+pest_derive = { workspace = true, optional = true }
+vybe_parser = { path = "../../crates/vybe_parser", optional = true }
+
+[build-dependencies]
+vybe_parser_codegen = { path = "../../crates/vybe_parser/codegen", optional = true }
 
 [dev-dependencies]
 vybe_compiler = { workspace = true }
 vybe_runtime = { workspace = true }
 vybe_ast = { workspace = true }
-

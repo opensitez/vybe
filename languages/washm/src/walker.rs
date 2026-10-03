@@ -40,14 +40,24 @@ use vybe_ast::*;
 use crate::{Rule, WashmParser};
 
 /// Variables the walker declares before the program's own statements.
-const PRELUDE_DECLS: usize = 28;
+const PRELUDE_DECLS: usize = 71;
 const BASH_ARGS: &str = "__bash_args";
 const BASH_FUNCNAME: &str = "__bash_funcname";
 
 // ── entry ────────────────────────────────────────────────────────────────────
 
+fn washm_source_hash(source: &str) -> u64 {
+    source.bytes().fold(0xcbf29ce484222325u64, |hash, byte| {
+        (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3)
+    })
+}
+
 /// Parse Bash source into the common AST.
 pub fn parse(source: &str) -> Result<Module, String> {
+    let (static_vars, static_files, static_assoc_arrays, static_array_values) =
+        prescan_static_source_files(source);
+    let source_path = std::env::var("VYBE_WASHM_SOURCE_PATH").unwrap_or_else(|_| "main".into());
+    let temp_prefix = format!("/tmp/vybe-washm-{:016x}", washm_source_hash(source));
     let (stripped, heredocs) = extract_heredocs(source);
     let _line_index = vybe_ast::line_index::LineIndex::install(&stripped);
     let pairs =
@@ -59,18 +69,50 @@ pub fn parse(source: &str) -> Result<Module, String> {
         functions: HashMap::new(),
         function_bodies: HashMap::new(),
         function_commands: HashMap::new(),
+        temp_prefix,
         variables: [
             "HOME".to_string(),
             "PWD".to_string(),
             "OLDPWD".to_string(),
+            "BASH".to_string(),
+            "BASH_VERSION".to_string(),
+            "BASH_VERSINFO".to_string(),
+            "BASHPID".to_string(),
+            "BASH_ALIASES".to_string(),
+            "BASH_ARGC".to_string(),
+            "BASH_ARGV".to_string(),
+            "BASH_SOURCE".to_string(),
+            "BASH_LINENO".to_string(),
+            "BASH_COMMAND".to_string(),
             "BASH_SUBSHELL".to_string(),
+            "UID".to_string(),
+            "EUID".to_string(),
+            "GROUPS".to_string(),
+            "SHLVL".to_string(),
+            "RANDOM".to_string(),
+            "SECONDS".to_string(),
+            "EPOCHSECONDS".to_string(),
+            "EPOCHREALTIME".to_string(),
+            "GLOBIGNORE".to_string(),
+            "PS4".to_string(),
+            "LINENO".to_string(),
+            "IFS".to_string(),
+            "OPTIND".to_string(),
+            "OPTARG".to_string(),
+            "OPTERR".to_string(),
+            "__bash_getopts_next".to_string(),
         ]
         .into_iter()
         .collect(),
-        variable_values: HashMap::new(),
-        array_values: HashMap::new(),
+        variable_values: static_vars,
+        static_files,
+        array_values: static_array_values,
+        declare_serializations: HashMap::new(),
         indexed_arrays: HashSet::new(),
-        assoc_arrays: HashSet::new(),
+        assoc_arrays: ["BASH_ALIASES".to_string()]
+            .into_iter()
+            .chain(static_assoc_arrays)
+            .collect(),
         readonly_vars: HashSet::new(),
         integer_vars: HashSet::new(),
         lowercase_vars: HashSet::new(),
@@ -78,8 +120,10 @@ pub fn parse(source: &str) -> Result<Module, String> {
         exported_vars: HashSet::new(),
         exported_functions: HashSet::new(),
         traced_functions: HashSet::new(),
+        disabled_builtins: HashSet::new(),
         namerefs: HashMap::new(),
         aliases: HashMap::new(),
+        complete_specs: HashMap::new(),
         positional_values: Vec::new(),
         brace_expansion_enabled: true,
         nullglob_enabled: false,
@@ -91,17 +135,73 @@ pub fn parse(source: &str) -> Result<Module, String> {
         nocasematch_enabled: false,
         patsub_replacement_enabled: true,
         lastpipe_enabled: false,
+        shopt_options: ["cmdhist".to_string(), "patsub_replacement".to_string()]
+            .into_iter()
+            .collect(),
+        posix_mode: false,
         shell_flags: "Bh".chars().collect(),
         subshell_depth: 0,
+        loop_labels: Vec::new(),
         arith_stack: Vec::new(),
         dynamic_arith: false,
+        source_depth: 0,
         function_depth: 0,
         inline_call_context: false,
         inline_stack: Vec::new(),
         suppress_function_inlining: false,
         hoisted_functions: Vec::new(),
         exit_trap_body: None,
+        signal_traps: HashMap::new(),
+        umask: 0o022,
+        umask_dynamic: false,
     };
+    w.indexed_arrays.insert("BASH_VERSINFO".to_string());
+    w.indexed_arrays.insert("BASH_ARGC".to_string());
+    w.indexed_arrays.insert("BASH_ARGV".to_string());
+    w.indexed_arrays.insert("BASH_SOURCE".to_string());
+    w.indexed_arrays.insert("BASH_LINENO".to_string());
+    w.indexed_arrays.insert(BASH_FUNCNAME.to_string());
+    w.indexed_arrays.insert("GROUPS".to_string());
+    w.indexed_arrays.insert("PIPESTATUS".to_string());
+    w.readonly_vars.insert("UID".to_string());
+    w.readonly_vars.insert("EUID".to_string());
+    w.readonly_vars.insert("GROUPS".to_string());
+    w.integer_vars.insert("UID".to_string());
+    w.integer_vars.insert("EUID".to_string());
+    w.integer_vars.insert("SHLVL".to_string());
+    w.integer_vars.insert("SECONDS".to_string());
+    w.exported_vars.insert("SHLVL".to_string());
+    w.variable_values
+        .insert("IFS".to_string(), " \t\n".to_string());
+    w.variable_values
+        .insert("UID".to_string(), "1000".to_string());
+    w.variable_values
+        .insert("EUID".to_string(), "1000".to_string());
+    w.variable_values
+        .insert("SHLVL".to_string(), "1".to_string());
+    w.variable_values
+        .insert("GLOBIGNORE".to_string(), "".to_string());
+    w.variable_values
+        .insert("PS4".to_string(), "+ ".to_string());
+    w.array_values.insert(
+        "BASH_VERSINFO".to_string(),
+        vec![
+            ("0".to_string(), "5".to_string()),
+            ("1".to_string(), "3".to_string()),
+            ("2".to_string(), "0".to_string()),
+            ("3".to_string(), "1".to_string()),
+            ("4".to_string(), "release".to_string()),
+            ("5".to_string(), "wasm".to_string()),
+        ],
+    );
+    w.array_values.insert(
+        "GROUPS".to_string(),
+        vec![("0".to_string(), "1000".to_string())],
+    );
+    w.array_values.insert(
+        "BASH_SOURCE".to_string(),
+        vec![("0".to_string(), source_path.clone())],
+    );
     let mut body = Vec::new();
     for (name, init) in [
         (BASH_ARGS, array(Vec::new())),
@@ -109,25 +209,81 @@ pub fn parse(source: &str) -> Result<Module, String> {
         ("__bash_ret", undefined()),
         ("__bash_stdin", lit("")),
         ("__bash_fds", object(Vec::new())),
+        ("__bash_fd_paths", object(Vec::new())),
+        ("__bash_fd_offsets", object(Vec::new())),
+        ("__bash_file_modes", object(Vec::new())),
+        ("__bash_next_fd", int(10)),
         ("__bash_stdout_null", Expression::bool(false)),
         ("__bash_stdout_to_stderr", Expression::bool(false)),
         ("__bash_stderr_to_stdout", Expression::bool(false)),
         ("__bash_stderr_null", Expression::bool(false)),
         ("__bash_abort_line", Expression::bool(false)),
+        ("__bash_arith_error", Expression::bool(false)),
+        ("__bash_arith_lhs", bigint(0)),
+        ("__bash_arith_rhs", bigint(0)),
         ("__bash_line", int(0)),
+        ("__bash_random_seed", bigint(1)),
+        (
+            "__bash_seconds_base_ms",
+            call_named("__bash_now_ms", vec![]),
+        ),
         ("BASH_REMATCH", array(Vec::new())),
-        ("PIPESTATUS", array(Vec::new())),
-        (BASH_FUNCNAME, array(Vec::new())),
+        ("PIPESTATUS", array(vec![int(0)])),
+        (BASH_FUNCNAME, array(vec![lit("main")])),
         ("__bash_had", Expression::bool(false)),
         ("__bash_fields", array(Vec::new())),
         ("__bash_last_arg", lit("")),
         ("__bash_pid", int(1)),
+        ("BASH", lit("/usr/bin/bash")),
+        ("BASH_VERSION", lit("5.3.0(1)-release")),
+        (
+            "BASH_VERSINFO",
+            array(vec![
+                lit("5"),
+                lit("3"),
+                lit("0"),
+                lit("1"),
+                lit("release"),
+                lit("wasm"),
+            ]),
+        ),
+        ("BASHPID", ident("__bash_pid")),
+        ("BASH_ALIASES", object(Vec::new())),
+        ("BASH_ARGC", array(Vec::new())),
+        ("BASH_ARGV", array(Vec::new())),
+        ("BASH_SOURCE", array(vec![lit(&source_path)])),
+        ("BASH_LINENO", array(vec![int(0)])),
+        ("BASH_COMMAND", lit("")),
         ("BASH_SUBSHELL", int(0)),
+        ("UID", lit("1000")),
+        ("EUID", lit("1000")),
+        ("GROUPS", array(vec![lit("1000")])),
+        ("SHLVL", lit("1")),
+        ("RANDOM", undefined()),
+        ("SECONDS", undefined()),
+        ("EPOCHSECONDS", undefined()),
+        ("EPOCHREALTIME", undefined()),
+        ("GLOBIGNORE", lit("")),
+        ("PS4", lit("+ ")),
+        ("LINENO", int(1)),
+        ("IFS", lit(" \t\n")),
+        ("OPTIND", int(1)),
+        ("OPTARG", undefined()),
+        ("OPTERR", int(1)),
+        ("__bash_getopts_next", int(1)),
         ("__bash_last_bg_pid", int(0)),
         ("__bash_job_seq", int(1)),
+        ("__bash_job_order", array(Vec::new())),
+        ("__bash_job_wait_order", array(Vec::new())),
+        ("__bash_job_wait_times", object(Vec::new())),
         ("__bash_jobs", object(Vec::new())),
+        ("__bash_completed_jobs", object(Vec::new())),
+        ("__bash_job_cmds", object(Vec::new())),
+        ("__bash_job_nohup", object(Vec::new())),
+        ("__bash_killed_jobs", object(Vec::new())),
         ("__bash_coprocs", object(Vec::new())),
         ("__bash_flags", lit("Bh")),
+        ("__bash_umask", lit("0022")),
         ("TIMEFORMAT", lit("real 0.00\nuser 0.00\nsys 0.00")),
         ("HOME", bash_env_value_expr("HOME", lit(""))),
         ("PWD", call_named("__bash_getcwd", vec![])),
@@ -317,11 +473,35 @@ fn lit(s: &str) -> Expression {
 fn int(n: i64) -> Expression {
     Expression::int(n)
 }
+fn num(n: i64) -> Expression {
+    Expression::new(ExprKind::Lit(Literal::Float(n as f64)))
+}
 fn bigint(n: i64) -> Expression {
     Expression::new(ExprKind::Lit(Literal::BigInt(n)))
 }
 fn undefined() -> Expression {
     Expression::new(ExprKind::Lit(Literal::Undefined))
+}
+fn is_undefined_expr(e: Expression) -> Expression {
+    binary(
+        BinOp::StrictEq,
+        Expression::new(ExprKind::TypeOf(Box::new(e))),
+        lit("undefined"),
+    )
+}
+fn is_not_undefined_expr(e: Expression) -> Expression {
+    binary(
+        BinOp::StrictNotEq,
+        Expression::new(ExprKind::TypeOf(Box::new(e))),
+        lit("undefined"),
+    )
+}
+fn is_missing_expr(e: Expression) -> Expression {
+    binary(
+        BinOp::Or,
+        is_undefined_expr(e.clone()),
+        binary(BinOp::StrictEq, e, null()),
+    )
 }
 fn null() -> Expression {
     Expression::null()
@@ -370,6 +550,15 @@ fn call(callee: Expression, args: Vec<Expression>) -> Expression {
 fn call_named(name: &str, args: Vec<Expression>) -> Expression {
     call(ident(name), args)
 }
+fn bash_object_get(obj: Expression, key: Expression) -> Expression {
+    call_named("__bash_object_get", vec![obj, key])
+}
+fn bash_object_set(obj: Expression, key: Expression, value: Expression) -> Expression {
+    call_named("__bash_object_set", vec![obj, key, value])
+}
+fn bash_object_set_stmt(obj: Expression, key: Expression, value: Expression) -> Statement {
+    expr_stmt(bash_object_set(obj, key, value))
+}
 fn call_named_args(name: &str, args: Vec<Argument>) -> Expression {
     Expression::new(ExprKind::Call {
         callee: Box::new(ident(name)),
@@ -391,6 +580,20 @@ fn object(props: Vec<(&str, Expression)>) -> Expression {
             .collect(),
     ))
 }
+fn object_spread(value: Expression) -> Expression {
+    Expression::new(ExprKind::Object(vec![ObjectProperty::Spread(value)]))
+}
+fn string_object(props: impl IntoIterator<Item = (String, String)>) -> Expression {
+    Expression::new(ExprKind::Object(
+        props
+            .into_iter()
+            .map(|(key, value)| ObjectProperty::KeyValue {
+                key: lit(&key),
+                value: lit(&value),
+            })
+            .collect(),
+    ))
+}
 fn method(obj: Expression, name: &str, args: Vec<Expression>) -> Expression {
     call(member(obj, name), args)
 }
@@ -407,6 +610,58 @@ fn bash_path_with_cwd(path: Expression, cwd: Expression) -> Expression {
             Part::Expr(path),
         ]),
     )
+}
+fn bash_parent_path(path: Expression) -> Expression {
+    let slash = method(path.clone(), "lastIndexOf", vec![lit("/")]);
+    ternary(
+        binary(BinOp::LtEq, slash.clone(), int(0)),
+        lit("/"),
+        method(path, "slice", vec![int(0), slash]),
+    )
+}
+fn bash_file_mode_allows_write(mode: Expression) -> Expression {
+    regex_test_expr(regexp(lit("[2367]"), ""), mode)
+}
+fn bash_file_mode_allows_read(mode: Expression) -> Expression {
+    regex_test_expr(regexp(lit("[4567]"), ""), mode)
+}
+fn bash_output_path_can_open(path: Expression) -> Expression {
+    let mode = index(ident("__bash_file_modes"), path.clone());
+    ternary(
+        binary(
+            BinOp::Or,
+            binary(BinOp::StrictEq, path.clone(), lit("/dev/null")),
+            binary(
+                BinOp::Or,
+                binary(BinOp::StrictEq, path.clone(), lit("/dev/stdout")),
+                binary(BinOp::StrictEq, path.clone(), lit("/dev/stderr")),
+            ),
+        ),
+        Expression::bool(true),
+        ternary(
+            binary(BinOp::StrictNotEq, mode.clone(), undefined()),
+            bash_file_mode_allows_write(mode),
+            ternary(
+                call_named("__bash_file_exists", vec![path.clone()]),
+                Expression::bool(true),
+                call_named("__bash_is_dir", vec![bash_parent_path(path)]),
+            ),
+        ),
+    )
+}
+fn bash_output_path_can_open_for(path: Expression, noclobber: bool) -> Expression {
+    if noclobber {
+        binary(
+            BinOp::And,
+            unary(
+                UnaryOp::Not,
+                call_named("__bash_file_exists", vec![path.clone()]),
+            ),
+            bash_output_path_can_open(path),
+        )
+    } else {
+        bash_output_path_can_open(path)
+    }
 }
 fn assign_expr(target: Expression, value: Expression) -> Expression {
     Expression::new(ExprKind::Assign {
@@ -451,6 +706,13 @@ fn array_spread(items: Vec<(Expression, bool)>) -> Expression {
     ))
 }
 fn shell_args_array(args: Vec<ShellArg>) -> Expression {
+    if args.len() == 1 && args[0].spread {
+        return args.into_iter().next().unwrap().value;
+    }
+    shell_array_literal(args)
+}
+
+fn shell_array_literal(args: Vec<ShellArg>) -> Expression {
     if args.len() == 1 && args[0].spread {
         return args.into_iter().next().unwrap().value;
     }
@@ -524,25 +786,55 @@ fn iife(body: Vec<Statement>) -> Expression {
 fn iife_with_args(body: Vec<Statement>, params: Vec<Param>, args: Vec<Expression>) -> Expression {
     call(lambda_block_with_params(params, body), args)
 }
-fn shell_state_params_args() -> (Vec<Param>, Vec<Expression>) {
-    let names = [
+fn shell_state_names() -> &'static [&'static str] {
+    &[
+        "BASHPID",
         "BASH_SUBSHELL",
+        "UID",
+        "EUID",
+        "GROUPS",
+        "SHLVL",
+        "RANDOM",
+        "SECONDS",
+        "EPOCHSECONDS",
+        "EPOCHREALTIME",
+        "GLOBIGNORE",
+        "PS4",
         BASH_FUNCNAME,
+        "BASH_SOURCE",
+        "BASH_LINENO",
         "PIPESTATUS",
         "TIMEFORMAT",
+        "__bash_random_seed",
+        "__bash_seconds_base_ms",
         "__bash_fds",
+        "__bash_fd_paths",
+        "__bash_fd_offsets",
+        "__bash_file_modes",
         "__bash_ret",
         "__bash_status",
         "__bash_stdin",
         "__bash_abort_line",
+        "__bash_arith_error",
         "__bash_jobs",
+        "__bash_job_order",
+        "__bash_job_wait_order",
+        "__bash_job_wait_times",
+        "__bash_completed_jobs",
+        "__bash_killed_jobs",
+        "__bash_job_cmds",
+        "__bash_job_nohup",
         "__bash_coprocs",
         "__bash_job_seq",
         "__bash_stderr_null",
         "__bash_stderr_to_stdout",
         "__bash_stdout_null",
         "__bash_stdout_to_stderr",
-    ];
+        "__bash_umask",
+    ]
+}
+fn shell_state_params_args() -> (Vec<Param>, Vec<Expression>) {
+    let names = shell_state_names();
     (
         names.iter().map(|name| param_named(name)).collect(),
         names.iter().map(|name| ident(name)).collect(),
@@ -552,30 +844,6 @@ fn shell_state_iife(body: Vec<Statement>) -> Expression {
     let (params, args) = shell_state_params_args();
     iife_with_args(body, params, args)
 }
-fn bash_input_lines(input: Expression) -> Expression {
-    let value = "__bash_line_input";
-    let lines = "__bash_line_items";
-    iife_with_args(
-        vec![
-            Statement::new(StmtKind::If {
-                cond: binary(BinOp::StrictEq, ident(value), lit("")),
-                then_body: vec![Statement::new(StmtKind::Return(Some(array(Vec::new()))))],
-                elifs: Vec::new(),
-                else_body: None,
-            }),
-            let_stmt(lines, method(ident(value), "split", vec![lit("\n")])),
-            Statement::new(StmtKind::If {
-                cond: method(ident(value), "endsWith", vec![lit("\n")]),
-                then_body: vec![expr_stmt(method(ident(lines), "pop", vec![]))],
-                elifs: Vec::new(),
-                else_body: None,
-            }),
-            Statement::new(StmtKind::Return(Some(ident(lines)))),
-        ],
-        vec![param_named(value)],
-        vec![input],
-    )
-}
 fn bash_function_params() -> Vec<Param> {
     let (state_params, _) = shell_state_params_args();
     let mut params = vec![args_param()];
@@ -583,29 +851,142 @@ fn bash_function_params() -> Vec<Param> {
     params
 }
 fn funcname_push_stmts(name: &str) -> Vec<Statement> {
-    let mut out = Vec::new();
-    for i in (1..32).rev() {
-        out.push(assign_stmt(
-            index(ident(BASH_FUNCNAME), int(i)),
-            index(ident(BASH_FUNCNAME), int(i - 1)),
-        ));
-    }
-    out.push(assign_stmt(index(ident(BASH_FUNCNAME), int(0)), lit(name)));
-    out
+    vec![
+        assign_stmt(
+            ident(BASH_FUNCNAME),
+            array_spread(vec![(lit(name), false), (ident(BASH_FUNCNAME), true)]),
+        ),
+        assign_stmt(
+            ident("BASH_LINENO"),
+            array_spread(vec![(int(1), false), (ident("BASH_LINENO"), true)]),
+        ),
+    ]
 }
 fn funcname_pop_exprs() -> Vec<Expression> {
-    let mut out = Vec::new();
-    for i in 0..31 {
-        out.push(assign_expr(
-            index(ident(BASH_FUNCNAME), int(i)),
-            index(ident(BASH_FUNCNAME), int(i + 1)),
-        ));
+    vec![
+        assign_expr(
+            ident(BASH_FUNCNAME),
+            method(ident(BASH_FUNCNAME), "slice", vec![int(1)]),
+        ),
+        assign_expr(
+            ident("BASH_LINENO"),
+            method(ident("BASH_LINENO"), "slice", vec![int(1)]),
+        ),
+    ]
+}
+fn bash_arg_frame_push_stmts() -> Vec<Statement> {
+    vec![
+        assign_stmt(
+            ident("BASH_ARGC"),
+            call_named(
+                "__bash_concat",
+                vec![
+                    array(vec![member(ident(BASH_ARGS), "length")]),
+                    ident("BASH_ARGC"),
+                ],
+            ),
+        ),
+        assign_stmt(
+            ident("BASH_ARGV"),
+            call_named(
+                "__bash_concat",
+                vec![
+                    bash_reverse_array_expr(ident(BASH_ARGS)),
+                    ident("BASH_ARGV"),
+                ],
+            ),
+        ),
+    ]
+}
+fn bash_reverse_array_expr(value: Expression) -> Expression {
+    let input = "__bash_reverse_input";
+    let out = "__bash_reverse_out";
+    let idx = "__bash_reverse_idx";
+    iife_with_args(
+        vec![
+            let_stmt(out, array(Vec::new())),
+            let_stmt(
+                idx,
+                binary(BinOp::Sub, member(ident(input), "length"), int(1)),
+            ),
+            Statement::new(StmtKind::While {
+                cond: binary(BinOp::GtEq, ident(idx), int(0)),
+                body: vec![
+                    assign_stmt(
+                        ident(out),
+                        call_named(
+                            "__bash_concat",
+                            vec![ident(out), array(vec![index(ident(input), ident(idx))])],
+                        ),
+                    ),
+                    assign_stmt(ident(idx), binary(BinOp::Sub, ident(idx), int(1))),
+                ],
+                else_body: None,
+            }),
+            Statement::new(StmtKind::Return(Some(ident(out)))),
+        ],
+        vec![param_named(input)],
+        vec![value],
+    )
+}
+
+fn bash_pipeline_status_expr(
+    statuses: Expression,
+    last_status: Expression,
+    pipefail_enabled: bool,
+) -> Expression {
+    if !pipefail_enabled {
+        return last_status;
     }
-    out.push(assign_expr(
-        index(ident(BASH_FUNCNAME), int(31)),
-        undefined(),
-    ));
-    out
+    let status_list = "__bash_pipefail_statuses";
+    let idx = "__bash_pipefail_idx";
+    let value = "__bash_pipefail_value";
+    iife_with_args(
+        vec![
+            let_stmt(
+                idx,
+                binary(BinOp::Sub, member(ident(status_list), "length"), int(1)),
+            ),
+            Statement::new(StmtKind::While {
+                cond: binary(BinOp::GtEq, ident(idx), int(0)),
+                body: vec![
+                    let_stmt(value, index(ident(status_list), ident(idx))),
+                    Statement::new(StmtKind::If {
+                        cond: binary(BinOp::NotEq, ident(value), int(0)),
+                        then_body: vec![Statement::new(StmtKind::Return(Some(ident(value))))],
+                        elifs: Vec::new(),
+                        else_body: None,
+                    }),
+                    assign_stmt(ident(idx), binary(BinOp::Sub, ident(idx), int(1))),
+                ],
+                else_body: None,
+            }),
+            Statement::new(StmtKind::Return(Some(last_status))),
+        ],
+        vec![param_named(status_list)],
+        vec![statuses],
+    )
+}
+
+fn bash_arg_frame_pop_exprs() -> Vec<Expression> {
+    vec![
+        assign_expr(
+            ident("BASH_ARGV"),
+            bash_array_slice_end_expr(
+                ident("BASH_ARGV"),
+                index(ident("BASH_ARGC"), int(0)),
+                member(ident("BASH_ARGV"), "length"),
+            ),
+        ),
+        assign_expr(
+            ident("BASH_ARGC"),
+            bash_array_slice_end_expr(
+                ident("BASH_ARGC"),
+                int(1),
+                member(ident("BASH_ARGC"), "length"),
+            ),
+        ),
+    ]
 }
 fn declarator(name: &str, init: Option<Expression>) -> VarDeclarator {
     VarDeclarator {
@@ -647,6 +1028,31 @@ fn stmts_to_exprs(stmts: &[Statement]) -> Option<Vec<Expression>> {
                         return None;
                     }
                 }
+            }
+            StmtKind::If {
+                cond,
+                then_body,
+                elifs,
+                else_body,
+            } if elifs.is_empty() => {
+                let then_exprs = stmts_to_exprs(then_body)?;
+                let then_expr = if then_exprs.is_empty() {
+                    undefined()
+                } else {
+                    sequence(then_exprs)
+                };
+                let else_expr = match else_body {
+                    Some(body) => {
+                        let else_exprs = stmts_to_exprs(body)?;
+                        if else_exprs.is_empty() {
+                            undefined()
+                        } else {
+                            sequence(else_exprs)
+                        }
+                    }
+                    None => undefined(),
+                };
+                out.push(ternary(cond.clone(), then_expr, else_expr));
             }
             StmtKind::Block(body) => out.extend(stmts_to_exprs(body)?),
             _ => return None,
@@ -718,13 +1124,64 @@ fn arith_string(e: Expression) -> Expression {
     call_named("__bash_i64_string", vec![e])
 }
 fn arith_index(e: Expression) -> Expression {
-    if matches!(&e.kind, ExprKind::Lit(Literal::Int(_))) {
-        return e;
+    match &e.kind {
+        ExprKind::Lit(Literal::Int(_)) => return e,
+        ExprKind::Lit(Literal::BigInt(n)) => return int(*n),
+        _ => {}
     }
     to_number(arith_string(e))
 }
+
+fn bash_numeric_index(e: Expression) -> Expression {
+    match &e.kind {
+        ExprKind::Lit(Literal::Int(n)) => return num(*n),
+        ExprKind::Lit(Literal::BigInt(n)) => return num(*n),
+        ExprKind::Lit(Literal::Float(_)) => return e,
+        _ => {}
+    }
+    call_named("__bash_number", vec![e])
+}
+
+fn bash_array_len(e: Expression) -> Expression {
+    bash_numeric_index(member(e, "length"))
+}
 fn arith_bin(name: &str, left: Expression, right: Expression) -> Expression {
     arith_wrap(call_named(name, vec![arith_i64(left), arith_i64(right)]))
+}
+fn arith_div_rem(name: &str, left: Expression, right: Expression) -> Expression {
+    sequence(vec![
+        assign_expr(ident("__bash_arith_lhs"), arith_i64(left)),
+        assign_expr(ident("__bash_arith_rhs"), arith_i64(right)),
+        ternary(
+            binary(BinOp::StrictEq, ident("__bash_arith_rhs"), bigint(0)),
+            sequence(vec![
+                bash_stderr_write_expr(lit("bash: division by 0\n")),
+                assign_expr(ident("__bash_arith_error"), Expression::bool(true)),
+                assign_expr(ident("__bash_status"), int(1)),
+                bigint(0),
+            ]),
+            arith_wrap(call_named(
+                name,
+                vec![ident("__bash_arith_lhs"), ident("__bash_arith_rhs")],
+            )),
+        ),
+    ])
+}
+fn arith_eval_expr(e: Expression) -> Expression {
+    sequence(vec![
+        assign_expr(ident("__bash_arith_error"), Expression::bool(false)),
+        e,
+    ])
+}
+fn arith_success_bool(e: Expression) -> Expression {
+    sequence(vec![
+        assign_expr(ident("__bash_ret"), e),
+        ternary(
+            unary(UnaryOp::Not, ident("__bash_arith_error")),
+            arith_bool(ident("__bash_ret")),
+            Expression::bool(false),
+        ),
+    ])
 }
 fn arith_unary(name: &str, value: Expression) -> Expression {
     arith_wrap(call_named(name, vec![arith_i64(value)]))
@@ -744,24 +1201,74 @@ fn arith_bool_to_i64(e: Expression) -> Expression {
 /// `$?` from a command's value: `false` is 1, a number is itself, anything
 /// else (no return value, `true`, a string) is success.
 fn status_of_value(v: Expression) -> Expression {
+    let ty = Expression::new(ExprKind::TypeOf(Box::new(v.clone())));
     ternary(
         binary(BinOp::StrictEq, v.clone(), Expression::bool(false)),
         int(1),
         ternary(
-            binary(
-                BinOp::StrictEq,
-                Expression::new(ExprKind::TypeOf(Box::new(v.clone()))),
-                lit("number"),
+            binary(BinOp::StrictEq, ty.clone(), lit("number")),
+            v.clone(),
+            ternary(
+                binary(BinOp::StrictEq, ty, lit("bigint")),
+                to_number(arith_string(v)),
+                int(0),
             ),
-            v,
-            int(0),
         ),
     )
 }
+
+fn bash_exit_status_expr(value: Expression) -> Expression {
+    match &value.kind {
+        ExprKind::Lit(Literal::Int(n)) => return int(n.rem_euclid(256)),
+        ExprKind::Lit(Literal::Str(s)) => {
+            return int(parse_bash_integer(s).map_or(2, |n| n.rem_euclid(256)));
+        }
+        _ => {}
+    }
+    let raw_value = if let ExprKind::Call { callee, args, .. } = &value.kind
+        && matches!(&callee.kind, ExprKind::Ident(name) if name == "__bash_i64_string")
+        && args.len() == 1
+    {
+        arith_i64(args[0].value.clone())
+    } else {
+        arith_i64(value)
+    };
+    let raw_input = "__bash_exit_status_input";
+    let raw = "__bash_exit_status_raw";
+    let status = "__bash_exit_status_value";
+    iife_with_args(
+        vec![
+            let_stmt(raw, ident(raw_input)),
+            let_stmt(
+                status,
+                arith_string(call_named(
+                    "__bash_i64_rem",
+                    vec![
+                        call_named(
+                            "__bash_i64_add",
+                            vec![
+                                call_named("__bash_i64_rem", vec![ident(raw), bigint(256)]),
+                                bigint(256),
+                            ],
+                        ),
+                        bigint(256),
+                    ],
+                )),
+            ),
+            Statement::new(StmtKind::Return(Some(unary(UnaryOp::Pos, ident(status))))),
+        ],
+        vec![param_named(raw_input)],
+        vec![raw_value],
+    )
+}
+
 /// Capture what `body` prints. Command substitution runs in a subshell, so it
 /// inherits the current positional array but mutations stay inside the wrapper.
 fn capture(body: Vec<Statement>) -> Expression {
-    capture_with_args(body, vec![args_param()], vec![ident(BASH_ARGS)])
+    let (mut params, mut args) = shell_state_params_args();
+    params.insert(0, args_param());
+    args.insert(0, ident(BASH_ARGS));
+    capture_with_args(body, params, args)
 }
 
 fn capture_with_args(
@@ -786,6 +1293,12 @@ fn current_shell_capture(body: Vec<Statement>, rewrite_exit: bool) -> Expression
     if rewrite_exit {
         rewrite_exit_to_subshell_throw(&mut body);
     }
+    if let Some(mut exprs) = stmts_to_exprs(&body) {
+        let mut seq = vec![call_named("__bash_ob_start", vec![])];
+        seq.append(&mut exprs);
+        seq.push(call_named("__bash_ob_get_clean", vec![]));
+        return sequence(seq);
+    }
     body.push(Statement::new(StmtKind::Return(Some(ident(
         "__bash_status",
     )))));
@@ -794,6 +1307,49 @@ fn current_shell_capture(body: Vec<Statement>, rewrite_exit: bool) -> Expression
         assign_expr(ident("__bash_status"), iife(body)),
         call_named("__bash_ob_get_clean", vec![]),
     ])
+}
+
+fn subshell_exit_status_iife_with_args(
+    body: Vec<Statement>,
+    params: Vec<Param>,
+    args: Vec<Expression>,
+) -> Expression {
+    let caught = "__bash_exit_obj";
+    iife_with_args(
+        vec![Statement::new(StmtKind::Try {
+            body,
+            catches: vec![CatchClause {
+                types: Vec::new(),
+                var_name: Some(caught.to_string()),
+                stack_var: None,
+                body: vec![Statement::new(StmtKind::If {
+                    cond: member(ident(caught), "__bash_exit"),
+                    then_body: vec![Statement::new(StmtKind::Return(Some(member(
+                        ident(caught),
+                        "status",
+                    ))))],
+                    elifs: Vec::new(),
+                    else_body: Some(vec![Statement::new(StmtKind::Throw {
+                        expr: Some(ident(caught)),
+                        cause: None,
+                    })]),
+                })],
+                when_clause: None,
+            }],
+            else_body: None,
+            finally: None,
+        })],
+        params,
+        args,
+    )
+}
+
+fn current_shell_reply_value(body: Vec<Statement>) -> Expression {
+    if let Some(mut exprs) = stmts_to_exprs(&body) {
+        exprs.push(param_value(ident("REPLY")));
+        return sequence(exprs);
+    }
+    sequence(vec![iife(body), param_value(ident("REPLY"))])
 }
 
 fn array_join(items: Expression, sep: Expression) -> Expression {
@@ -891,16 +1447,21 @@ fn bash_quote_expr(value: Expression) -> Expression {
 
 fn positional_slice_start(offset: Expression) -> Expression {
     match &offset.kind {
-        ExprKind::Lit(Literal::Int(0)) => int(0),
-        ExprKind::Lit(Literal::Int(n)) if *n > 0 => int(n - 1),
-        ExprKind::Lit(Literal::Int(n)) if *n < 0 => {
-            binary(BinOp::Add, member(ident(BASH_ARGS), "length"), int(*n))
-        }
-        _ => ternary(
-            binary(BinOp::Gt, offset.clone(), int(0)),
-            binary(BinOp::Sub, offset.clone(), int(1)),
-            binary(BinOp::Add, member(ident(BASH_ARGS), "length"), offset),
+        ExprKind::Lit(Literal::Int(0)) | ExprKind::Lit(Literal::BigInt(0)) => num(0),
+        ExprKind::Lit(Literal::Int(n)) | ExprKind::Lit(Literal::BigInt(n)) if *n > 0 => num(n - 1),
+        ExprKind::Lit(Literal::Int(n)) | ExprKind::Lit(Literal::BigInt(n)) if *n < 0 => binary(
+            BinOp::Sub,
+            bash_array_len(ident(BASH_ARGS)),
+            num(n.saturating_abs()),
         ),
+        _ => {
+            let offset = bash_numeric_index(offset);
+            ternary(
+                binary(BinOp::Gt, offset.clone(), num(0)),
+                binary(BinOp::Sub, offset.clone(), num(1)),
+                binary(BinOp::Add, bash_array_len(ident(BASH_ARGS)), offset),
+            )
+        }
     }
 }
 
@@ -910,13 +1471,41 @@ fn positional_slice_expr(
     length: Option<Expression>,
 ) -> Expression {
     match &offset.kind {
-        ExprKind::Lit(Literal::Int(0)) => array_slice_expr(
-            method(array(vec![positional("0")]), "concat", vec![target]),
-            int(0),
-            length,
-        ),
-        _ => array_slice_expr(target, positional_slice_start(offset), length),
+        ExprKind::Lit(Literal::Int(0)) | ExprKind::Lit(Literal::BigInt(0)) => {
+            positional_array_slice_expr(
+                call_named("__bash_concat", vec![array(vec![positional("0")]), target]),
+                num(0),
+                length,
+            )
+        }
+        _ => positional_array_slice_expr(target, positional_slice_start(offset), length),
     }
+}
+
+fn positional_array_slice_expr(
+    target: Expression,
+    offset: Expression,
+    length: Option<Expression>,
+) -> Expression {
+    let Some(len) = length else {
+        let end = bash_array_len(target.clone());
+        return bash_array_slice_end_expr(target, offset, end);
+    };
+    let offset = bash_numeric_index(offset);
+    let len = bash_numeric_index(len);
+    let end = binary(BinOp::Add, offset.clone(), len.clone());
+    iife(vec![Statement::new(StmtKind::If {
+        cond: binary(BinOp::Lt, len, num(0)),
+        then_body: vec![
+            bash_stderr_stmt(lit("bash: substring expression < 0\n")),
+            assign_stmt(ident("__bash_status"), int(1)),
+            Statement::new(StmtKind::Return(Some(array(Vec::new())))),
+        ],
+        elifs: Vec::new(),
+        else_body: Some(vec![Statement::new(StmtKind::Return(Some(
+            bash_array_slice_end_expr(target, offset, end),
+        )))]),
+    })])
 }
 
 fn array_slice_expr(
@@ -924,14 +1513,116 @@ fn array_slice_expr(
     offset: Expression,
     length: Option<Expression>,
 ) -> Expression {
-    let end = match length {
-        None => member(target.clone(), "length"),
-        Some(len) => match &len.kind {
-            ExprKind::Lit(Literal::Int(n)) if *n < 0 => len,
-            _ => binary(BinOp::Add, offset.clone(), len),
-        },
+    bash_array_slice_expr(target, offset, length)
+}
+
+fn bash_array_slice_expr(
+    target: Expression,
+    offset: Expression,
+    length: Option<Expression>,
+) -> Expression {
+    let source = "__bash_slice_source";
+    let start = "__bash_slice_start";
+    let len = "__bash_slice_len";
+    let offset = bash_numeric_index(offset);
+    let Some(len) = length.map(bash_numeric_index) else {
+        return iife(vec![
+            let_stmt(source, target),
+            let_stmt(start, offset),
+            let_stmt(len, bash_array_len(ident(source))),
+            Statement::new(StmtKind::If {
+                cond: binary(BinOp::Lt, ident(start), num(0)),
+                then_body: vec![assign_stmt(
+                    ident(start),
+                    binary(BinOp::Add, ident(len), ident(start)),
+                )],
+                elifs: Vec::new(),
+                else_body: None,
+            }),
+            Statement::new(StmtKind::If {
+                cond: binary(BinOp::Lt, ident(start), num(0)),
+                then_body: vec![assign_stmt(ident(start), num(0))],
+                elifs: Vec::new(),
+                else_body: None,
+            }),
+            Statement::new(StmtKind::Return(Some(call_named(
+                "__bash_slice",
+                vec![ident(source), ident(start), ident(len)],
+            )))),
+        ]);
     };
-    call_named("__bash_slice", vec![target, offset, end])
+    let end = binary(BinOp::Add, offset.clone(), len.clone());
+    iife(vec![Statement::new(StmtKind::If {
+        cond: binary(BinOp::Lt, len, num(0)),
+        then_body: vec![
+            bash_stderr_stmt(lit("bash: substring expression < 0\n")),
+            assign_stmt(ident("__bash_status"), int(1)),
+            Statement::new(StmtKind::Return(Some(array(Vec::new())))),
+        ],
+        elifs: Vec::new(),
+        else_body: Some(vec![Statement::new(StmtKind::Return(Some(
+            bash_array_slice_end_expr(target, offset, end),
+        )))]),
+    })])
+}
+
+fn bash_array_slice_end_expr(
+    target: Expression,
+    start_expr: Expression,
+    end_expr: Expression,
+) -> Expression {
+    let source = "__bash_slice_source";
+    let start = "__bash_slice_start";
+    let end = "__bash_slice_end";
+    let len = "__bash_slice_len";
+    let start_expr = bash_numeric_index(start_expr);
+    let end_expr = bash_numeric_index(end_expr);
+    iife(vec![
+        let_stmt(source, target),
+        let_stmt(start, start_expr),
+        let_stmt(end, end_expr),
+        let_stmt(len, bash_array_len(ident(source))),
+        Statement::new(StmtKind::If {
+            cond: binary(BinOp::Lt, ident(start), num(0)),
+            then_body: vec![assign_stmt(
+                ident(start),
+                binary(BinOp::Add, ident(len), ident(start)),
+            )],
+            elifs: Vec::new(),
+            else_body: None,
+        }),
+        Statement::new(StmtKind::If {
+            cond: binary(BinOp::Lt, ident(end), num(0)),
+            then_body: vec![assign_stmt(
+                ident(end),
+                binary(BinOp::Add, ident(len), ident(end)),
+            )],
+            elifs: Vec::new(),
+            else_body: None,
+        }),
+        Statement::new(StmtKind::If {
+            cond: binary(BinOp::Lt, ident(start), num(0)),
+            then_body: vec![assign_stmt(ident(start), num(0))],
+            elifs: Vec::new(),
+            else_body: None,
+        }),
+        Statement::new(StmtKind::If {
+            cond: binary(BinOp::Gt, ident(end), ident(len)),
+            then_body: vec![assign_stmt(ident(end), ident(len))],
+            elifs: Vec::new(),
+            else_body: None,
+        }),
+        Statement::new(StmtKind::If {
+            cond: binary(BinOp::Lt, ident(end), ident(start)),
+            then_body: vec![assign_stmt(ident(end), ident(start))],
+            elifs: Vec::new(),
+            else_body: None,
+        }),
+        Statement::new(StmtKind::Return(Some(call_named(
+            "__bash_slice",
+            vec![ident(source), ident(start), ident(end)],
+        )))),
+    ])
 }
 
 fn array_map_expr(source: Expression, item: &str, _out: &str, mapped: Expression) -> Expression {
@@ -981,8 +1672,8 @@ fn bash_stderr_write_expr(text: Expression) -> Expression {
         int(0),
         ternary(
             ident("__bash_stderr_to_stdout"),
-            call_named("printf", vec![lit("%s"), text]),
-            int(0),
+            bash_fd_output_write_expr("1", "__bash_stdout", text.clone()),
+            bash_fd_output_write_expr("2", "__bash_stderr", text),
         ),
     )
 }
@@ -994,7 +1685,7 @@ fn bash_stdout_write_expr(text: Expression) -> Expression {
         ternary(
             ident("__bash_stdout_null"),
             int(0),
-            call_named("printf", vec![lit("%s"), text]),
+            bash_fd_output_write_expr("1", "__bash_stdout", text),
         ),
     )
 }
@@ -1003,8 +1694,808 @@ fn bash_stdout_status_expr(text: Expression) -> Expression {
     sequence(vec![bash_stdout_write_expr(text), int(0)])
 }
 
+fn bash_fd_output_write_expr(fd: &str, standard_path: &str, text: Expression) -> Expression {
+    let path = "__bash_output_fd_path";
+    let current = "__bash_output_fd_current";
+    let next = "__bash_output_fd_next";
+    let offset = "__bash_output_fd_offset";
+    let sync_key = "__bash_output_fd_sync_key";
+    let text_arg = "__bash_output_text";
+    let fds_arg = "__bash_output_fds";
+    let paths_arg = "__bash_output_fd_paths";
+    let offsets_arg = "__bash_output_fd_offsets";
+    iife_with_args(
+        vec![
+            let_stmt(path, index(ident(paths_arg), lit(fd))),
+            Statement::new(StmtKind::If {
+                cond: binary(BinOp::StrictEq, ident(path), lit("__bash_closed")),
+                then_body: vec![
+                    assign_stmt(ident("__bash_status"), int(1)),
+                    Statement::new(StmtKind::Return(Some(int(1)))),
+                ],
+                elifs: Vec::new(),
+                else_body: None,
+            }),
+            Statement::new(StmtKind::If {
+                cond: binary(
+                    BinOp::And,
+                    binary(BinOp::StrictNotEq, ident(path), undefined()),
+                    binary(
+                        BinOp::And,
+                        binary(BinOp::StrictNotEq, ident(path), lit(standard_path)),
+                        binary(
+                            BinOp::And,
+                            binary(BinOp::StrictNotEq, ident(path), lit("__bash_stdout")),
+                            binary(BinOp::StrictNotEq, ident(path), lit("__bash_stderr")),
+                        ),
+                    ),
+                ),
+                then_body: vec![
+                    let_stmt(
+                        current,
+                        binary(BinOp::NullCoalesce, index(ident(fds_arg), lit(fd)), lit("")),
+                    ),
+                    let_stmt(offset, index(ident(offsets_arg), lit(fd))),
+                    let_stmt(
+                        next,
+                        ternary(
+                            binary(BinOp::StrictEq, ident(offset), undefined()),
+                            parts_to_expr(vec![
+                                Part::Expr(ident(current)),
+                                Part::Expr(ident(text_arg)),
+                            ]),
+                            parts_to_expr(vec![
+                                Part::Expr(method(
+                                    ident(current),
+                                    "slice",
+                                    vec![int(0), ident(offset)],
+                                )),
+                                Part::Expr(ident(text_arg)),
+                                Part::Expr(method(
+                                    ident(current),
+                                    "slice",
+                                    vec![binary(
+                                        BinOp::Add,
+                                        ident(offset),
+                                        member(ident(text_arg), "length"),
+                                    )],
+                                )),
+                            ]),
+                        ),
+                    ),
+                    expr_stmt(call_named(
+                        "__bash_write_file",
+                        vec![ident(path), ident(next)],
+                    )),
+                    Statement::new(StmtKind::If {
+                        cond: binary(BinOp::StrictNotEq, ident(offset), undefined()),
+                        then_body: {
+                            let next_offset = binary(
+                                BinOp::Add,
+                                ident(offset),
+                                member(ident(text_arg), "length"),
+                            );
+                            vec![
+                                assign_stmt(
+                                    index(ident(offsets_arg), lit(fd)),
+                                    next_offset.clone(),
+                                ),
+                                sync_fd_offsets_for_path_stmt(
+                                    ident(offsets_arg),
+                                    ident(paths_arg),
+                                    ident(path),
+                                    next_offset,
+                                    sync_key,
+                                ),
+                            ]
+                        },
+                        elifs: Vec::new(),
+                        else_body: None,
+                    }),
+                    sync_fd_buffers_for_path_stmt(
+                        ident(fds_arg),
+                        ident(paths_arg),
+                        ident(path),
+                        ident(next),
+                        sync_key,
+                    ),
+                    assign_stmt(ident("__bash_status"), int(0)),
+                    Statement::new(StmtKind::Return(Some(int(0)))),
+                ],
+                elifs: Vec::new(),
+                else_body: Some(vec![
+                    expr_stmt(call_named("printf", vec![lit("%s"), ident(text_arg)])),
+                    assign_stmt(ident("__bash_status"), int(0)),
+                    Statement::new(StmtKind::Return(Some(int(0)))),
+                ]),
+            }),
+        ],
+        vec![
+            param_named(text_arg),
+            param_named(fds_arg),
+            param_named(paths_arg),
+            param_named(offsets_arg),
+        ],
+        vec![
+            text,
+            ident("__bash_fds"),
+            ident("__bash_fd_paths"),
+            ident("__bash_fd_offsets"),
+        ],
+    )
+}
+
+fn sync_fd_buffers_for_path_stmt(
+    fds: Expression,
+    paths: Expression,
+    path: Expression,
+    content: Expression,
+    key: &str,
+) -> Statement {
+    Statement::new(StmtKind::ForIn {
+        var: key.to_string(),
+        key: None,
+        iter: array((0..64).map(|fd| lit(&fd.to_string())).collect()),
+        body: vec![Statement::new(StmtKind::If {
+            cond: binary(BinOp::StrictEq, index(paths, ident(key)), path),
+            then_body: vec![assign_stmt(index(fds, ident(key)), content)],
+            elifs: Vec::new(),
+            else_body: None,
+        })],
+        of: true,
+        else_body: None,
+        is_async: false,
+    })
+}
+
+fn sync_fd_offsets_for_path_stmt(
+    offsets: Expression,
+    paths: Expression,
+    path: Expression,
+    offset: Expression,
+    key: &str,
+) -> Statement {
+    Statement::new(StmtKind::ForIn {
+        var: key.to_string(),
+        key: None,
+        iter: array((0..64).map(|fd| lit(&fd.to_string())).collect()),
+        body: vec![Statement::new(StmtKind::If {
+            cond: binary(BinOp::StrictEq, index(paths, ident(key)), path),
+            then_body: vec![assign_stmt(index(offsets, ident(key)), offset)],
+            elifs: Vec::new(),
+            else_body: None,
+        })],
+        of: true,
+        else_body: None,
+        is_async: false,
+    })
+}
+
+fn bash_previous_job_pid_expr() -> Expression {
+    let keys = "__bash_prev_job_keys";
+    iife_with_args(
+        vec![
+            let_stmt(
+                keys,
+                ternary(
+                    is_missing_expr(ident("__bash_job_order")),
+                    array(Vec::new()),
+                    ident("__bash_job_order"),
+                ),
+            ),
+            Statement::new(StmtKind::Return(Some(ternary(
+                binary(BinOp::GtEq, member(ident(keys), "length"), int(2)),
+                index(
+                    ident(keys),
+                    binary(BinOp::Sub, member(ident(keys), "length"), int(2)),
+                ),
+                ident("__bash_last_bg_pid"),
+            )))),
+        ],
+        vec![
+            param_named("__bash_job_order"),
+            param_named("__bash_last_bg_pid"),
+        ],
+        vec![bash_job_order_or_empty_expr(), ident("__bash_last_bg_pid")],
+    )
+}
+
+fn bash_nth_job_pid_expr(spec: Expression) -> Expression {
+    let keys = "__bash_nth_job_keys";
+    let raw_spec = "__bash_nth_job_raw_spec";
+    let candidate = "__bash_nth_job_candidate";
+    let idx = "__bash_nth_job_idx";
+    let item = "__bash_nth_job_item";
+    iife_with_args(
+        vec![
+            let_stmt(
+                keys,
+                ternary(
+                    is_missing_expr(ident("__bash_job_order")),
+                    array(Vec::new()),
+                    ident("__bash_job_order"),
+                ),
+            ),
+            let_stmt(
+                candidate,
+                shell_expr_text(binary(BinOp::Add, to_number(ident(raw_spec)), int(1))),
+            ),
+            let_stmt(idx, int(0)),
+            Statement::new(StmtKind::While {
+                cond: binary(BinOp::Lt, ident(idx), member(ident(keys), "length")),
+                body: vec![
+                    let_stmt(item, index(ident(keys), ident(idx))),
+                    Statement::new(StmtKind::If {
+                        cond: binary(
+                            BinOp::StrictEq,
+                            shell_expr_text(ident(item)),
+                            ident(candidate),
+                        ),
+                        then_body: vec![Statement::new(StmtKind::Return(Some(ident(candidate))))],
+                        elifs: Vec::new(),
+                        else_body: None,
+                    }),
+                    assign_stmt(ident(idx), binary(BinOp::Add, ident(idx), int(1))),
+                ],
+                else_body: None,
+            }),
+            Statement::new(StmtKind::Return(Some(ident(raw_spec)))),
+        ],
+        vec![param_named("__bash_job_order"), param_named(raw_spec)],
+        vec![bash_job_order_or_empty_expr(), spec],
+    )
+}
+
+fn bash_named_job_pid_expr(spec: Expression) -> Expression {
+    let keys = "__bash_named_job_keys";
+    let key = "__bash_named_job_key";
+    let raw_spec = "__bash_named_job_raw_spec";
+    let cmd = "__bash_named_job_cmd";
+    iife_with_args(
+        vec![
+            let_stmt(keys, bash_job_order_or_empty_expr()),
+            Statement::new(StmtKind::ForIn {
+                var: key.to_string(),
+                key: None,
+                iter: ident(keys),
+                body: vec![
+                    let_stmt(
+                        cmd,
+                        binary(
+                            BinOp::NullCoalesce,
+                            bash_object_get(ident("__bash_job_cmds"), ident(key)),
+                            lit(""),
+                        ),
+                    ),
+                    Statement::new(StmtKind::If {
+                        cond: method(ident(cmd), "startsWith", vec![ident(raw_spec)]),
+                        then_body: vec![Statement::new(StmtKind::Return(Some(ident(key))))],
+                        elifs: Vec::new(),
+                        else_body: None,
+                    }),
+                ],
+                of: true,
+                else_body: None,
+                is_async: false,
+            }),
+            Statement::new(StmtKind::Return(Some(ident(raw_spec)))),
+        ],
+        vec![
+            param_named("__bash_job_order"),
+            param_named("__bash_job_cmds"),
+            param_named(raw_spec),
+        ],
+        vec![
+            bash_job_order_or_empty_expr(),
+            ternary(
+                is_missing_expr(ident("__bash_job_cmds")),
+                object(Vec::new()),
+                ident("__bash_job_cmds"),
+            ),
+            spec,
+        ],
+    )
+}
+
+fn bash_job_pid_expr(raw: Expression) -> Expression {
+    let value = "__bash_job_spec_value";
+    let spec = "__bash_job_spec_spec";
+    let pid = "__bash_job_spec_pid";
+    iife(vec![
+        let_stmt(value, shell_scalar_string(param_value(raw))),
+        Statement::new(StmtKind::If {
+            cond: method(ident(value), "startsWith", vec![lit("%")]),
+            then_body: vec![
+                let_stmt(spec, method(ident(value), "slice", vec![int(1)])),
+                let_stmt(
+                    pid,
+                    ternary(
+                        binary(
+                            BinOp::Or,
+                            binary(BinOp::StrictEq, ident(spec), lit("")),
+                            binary(BinOp::StrictEq, ident(spec), lit("+")),
+                        ),
+                        ident("__bash_last_bg_pid"),
+                        ternary(
+                            binary(BinOp::StrictEq, ident(spec), lit("-")),
+                            bash_previous_job_pid_expr(),
+                            bash_nth_job_pid_expr(ident(spec)),
+                        ),
+                    ),
+                ),
+                Statement::new(StmtKind::Return(Some(ternary(
+                    binary(
+                        BinOp::Or,
+                        binary(
+                            BinOp::Or,
+                            binary(BinOp::StrictEq, ident(spec), lit("")),
+                            binary(BinOp::StrictEq, ident(spec), lit("+")),
+                        ),
+                        binary(
+                            BinOp::Or,
+                            binary(BinOp::StrictEq, ident(spec), lit("-")),
+                            regex_test_expr(regexp(lit("^[0-9]+$"), ""), ident(spec)),
+                        ),
+                    ),
+                    ident(pid),
+                    bash_named_job_pid_expr(ident(spec)),
+                )))),
+            ],
+            elifs: Vec::new(),
+            else_body: None,
+        }),
+        Statement::new(StmtKind::Return(Some(ident(value)))),
+    ])
+}
+
+fn bash_job_exists_expr(pid: Expression) -> Expression {
+    let target = "__bash_job_exists_target";
+    let target_key = "__bash_job_exists_target_key";
+    let keys = "__bash_job_exists_keys";
+    let idx = "__bash_job_exists_idx";
+    let item = "__bash_job_exists_item";
+    iife_with_args(
+        vec![
+            let_stmt(target_key, shell_expr_text(ident(target))),
+            let_stmt(keys, bash_job_order_or_empty_expr()),
+            let_stmt(idx, int(0)),
+            Statement::new(StmtKind::While {
+                cond: binary(BinOp::Lt, ident(idx), member(ident(keys), "length")),
+                body: vec![
+                    let_stmt(item, index(ident(keys), ident(idx))),
+                    Statement::new(StmtKind::If {
+                        cond: binary(
+                            BinOp::Or,
+                            binary(BinOp::StrictEq, ident(item), ident(target_key)),
+                            binary(
+                                BinOp::StrictEq,
+                                shell_expr_text(ident(item)),
+                                ident(target_key),
+                            ),
+                        ),
+                        then_body: vec![Statement::new(StmtKind::Return(Some(Expression::bool(
+                            true,
+                        ))))],
+                        elifs: Vec::new(),
+                        else_body: None,
+                    }),
+                    assign_stmt(ident(idx), binary(BinOp::Add, ident(idx), int(1))),
+                ],
+                else_body: None,
+            }),
+            Statement::new(StmtKind::Return(Some(Expression::bool(false)))),
+        ],
+        vec![param_named(target)],
+        vec![pid],
+    )
+}
+
+fn bash_wait_job_status_expr(raw: Expression) -> Expression {
+    bash_wait_job_key_status_expr(bash_job_pid_expr(raw))
+}
+
+fn bash_wait_job_key_status_expr(raw_key: Expression) -> Expression {
+    let raw_name = "__bash_wait_one_raw";
+    let key = "__bash_wait_one_key";
+    let active = "__bash_wait_one_active";
+    let completed = "__bash_wait_one_completed";
+    let status = "__bash_wait_one_status";
+    iife_with_args(
+        vec![
+            let_stmt(key, shell_scalar_string(ident(raw_name))),
+            let_stmt(active, bash_object_get(ident("__bash_jobs"), ident(key))),
+            Statement::new(StmtKind::If {
+                cond: binary(BinOp::StrictNotEq, ident(active), undefined()),
+                then_body: vec![
+                    let_stmt(status, binary(BinOp::NullCoalesce, ident(active), int(0))),
+                    bash_object_set_stmt(ident("__bash_completed_jobs"), ident(key), ident(status)),
+                    bash_forget_job_stmt(ident(key)),
+                    expr_stmt(call_named(
+                        "__bash_object_delete",
+                        vec![ident("__bash_jobs"), ident(key)],
+                    )),
+                    expr_stmt(call_named(
+                        "__bash_object_delete",
+                        vec![ident("__bash_job_cmds"), ident(key)],
+                    )),
+                    expr_stmt(call_named(
+                        "__bash_object_delete",
+                        vec![ident("__bash_job_nohup"), ident(key)],
+                    )),
+                    Statement::new(StmtKind::Return(Some(ident(status)))),
+                ],
+                elifs: Vec::new(),
+                else_body: None,
+            }),
+            let_stmt(
+                completed,
+                bash_object_get(ident("__bash_completed_jobs"), ident(key)),
+            ),
+            Statement::new(StmtKind::If {
+                cond: binary(BinOp::StrictNotEq, ident(completed), undefined()),
+                then_body: vec![Statement::new(StmtKind::Return(Some(binary(
+                    BinOp::NullCoalesce,
+                    ident(completed),
+                    int(0),
+                ))))],
+                elifs: Vec::new(),
+                else_body: None,
+            }),
+            Statement::new(StmtKind::Return(Some(int(127)))),
+        ],
+        vec![param_named(raw_name)],
+        vec![raw_key],
+    )
+}
+
+fn shell_expr_text(value: Expression) -> Expression {
+    shell_scalar_string(param_value(value))
+}
+
+fn bash_remember_job_expr(pid: Expression) -> Expression {
+    assign_expr(
+        ident("__bash_job_order"),
+        call_named(
+            "__bash_concat",
+            vec![ident("__bash_job_order"), array(vec![shell_expr_text(pid)])],
+        ),
+    )
+}
+
+fn bash_remember_job_stmt(pid: Expression) -> Statement {
+    expr_stmt(bash_remember_job_expr(pid))
+}
+
+fn bash_remember_wait_job_stmt(pid: Expression, delay: Expression) -> Statement {
+    let left = "__bash_wait_sort_left";
+    let right = "__bash_wait_sort_right";
+    expr_stmt(iife(vec![
+        assign_stmt(
+            ident("__bash_job_wait_order"),
+            call_named(
+                "__bash_concat",
+                vec![
+                    ident("__bash_job_wait_order"),
+                    array(vec![shell_expr_text(pid.clone())]),
+                ],
+            ),
+        ),
+        bash_object_set_stmt(ident("__bash_job_wait_times"), shell_expr_text(pid), delay),
+        assign_stmt(
+            ident("__bash_job_wait_order"),
+            method(
+                ident("__bash_job_wait_order"),
+                "sort",
+                vec![lambda_expr(
+                    vec![param_named(left), param_named(right)],
+                    binary(
+                        BinOp::Sub,
+                        to_number(binary(
+                            BinOp::NullCoalesce,
+                            bash_object_get(ident("__bash_job_wait_times"), ident(left)),
+                            int(0),
+                        )),
+                        to_number(binary(
+                            BinOp::NullCoalesce,
+                            bash_object_get(ident("__bash_job_wait_times"), ident(right)),
+                            int(0),
+                        )),
+                    ),
+                )],
+            ),
+        ),
+        Statement::new(StmtKind::Return(Some(undefined()))),
+    ]))
+}
+
+fn bash_forget_from_array_expr(array_name: &str, pid: Expression) -> Expression {
+    let item = "__bash_job_order_item";
+    method(
+        ident(array_name),
+        "filter",
+        vec![lambda_expr(
+            vec![param_named(item)],
+            binary(BinOp::StrictNotEq, ident(item), shell_expr_text(pid)),
+        )],
+    )
+}
+
+fn bash_forget_job_expr(pid: Expression) -> Expression {
+    bash_forget_from_array_expr("__bash_job_order", pid)
+}
+
+fn bash_forget_wait_job_expr(pid: Expression) -> Expression {
+    bash_forget_from_array_expr("__bash_job_wait_order", pid)
+}
+
+fn bash_job_order_or_empty_expr() -> Expression {
+    ternary(
+        is_missing_expr(ident("__bash_job_order")),
+        array(Vec::new()),
+        ident("__bash_job_order"),
+    )
+}
+
+fn bash_forget_job_stmt(pid: Expression) -> Statement {
+    expr_stmt(iife(vec![
+        assign_stmt(ident("__bash_job_order"), bash_forget_job_expr(pid.clone())),
+        assign_stmt(
+            ident("__bash_job_wait_order"),
+            bash_forget_wait_job_expr(pid.clone()),
+        ),
+        expr_stmt(call_named(
+            "__bash_object_delete",
+            vec![ident("__bash_job_wait_times"), shell_expr_text(pid)],
+        )),
+        Statement::new(StmtKind::Return(Some(undefined()))),
+    ]))
+}
+
+fn bash_jobs_render_expr(
+    pids_only: bool,
+    long: bool,
+    running_only: bool,
+    target: Option<Expression>,
+) -> Expression {
+    let keys = "__bash_jobs_keys";
+    let key = "__bash_jobs_key";
+    let out = "__bash_jobs_out";
+    let found = "__bash_jobs_found";
+    let target_name = "__bash_jobs_target";
+    let prev = "__bash_jobs_prev";
+    let cmd = "__bash_jobs_cmd";
+    let marker = "__bash_jobs_marker";
+    let display = "__bash_jobs_display";
+    let line = "__bash_jobs_line";
+    let target_key = "__bash_jobs_target_key";
+    let idx = "__bash_jobs_idx";
+    let has_target = target.is_some();
+    let target_value = target.unwrap_or_else(|| lit(""));
+    let key_matches = if has_target {
+        binary(
+            BinOp::StrictEq,
+            shell_expr_text(ident(key)),
+            ident(target_key),
+        )
+    } else {
+        Expression::bool(true)
+    };
+    let mut line_parts = if pids_only {
+        vec![Part::Expr(ident(key)), Part::Text("\n".to_string())]
+    } else if long {
+        vec![
+            Part::Text("[".to_string()),
+            Part::Expr(ident(display)),
+            Part::Text("]".to_string()),
+            Part::Expr(ident(marker)),
+            Part::Text(" ".to_string()),
+            Part::Expr(ident(key)),
+            Part::Text(" Running ".to_string()),
+            Part::Expr(ident(cmd)),
+            Part::Text("\n".to_string()),
+        ]
+    } else {
+        vec![
+            Part::Text("[".to_string()),
+            Part::Expr(ident(display)),
+            Part::Text("]".to_string()),
+            Part::Expr(ident(marker)),
+            Part::Text(" Running ".to_string()),
+            Part::Expr(ident(cmd)),
+            Part::Text("\n".to_string()),
+        ]
+    };
+    if running_only && pids_only {
+        line_parts = vec![Part::Expr(ident(key)), Part::Text("\n".to_string())];
+    }
+    iife_with_args(
+        vec![
+            let_stmt(keys, bash_job_order_or_empty_expr()),
+            let_stmt(target_name, target_value),
+            let_stmt(target_key, shell_expr_text(ident(target_name))),
+            let_stmt(
+                prev,
+                ternary(
+                    binary(BinOp::GtEq, member(ident(keys), "length"), int(2)),
+                    index(
+                        ident(keys),
+                        binary(BinOp::Sub, member(ident(keys), "length"), int(2)),
+                    ),
+                    ident("__bash_last_bg_pid"),
+                ),
+            ),
+            let_stmt(out, lit("")),
+            let_stmt(found, Expression::bool(false)),
+            let_stmt(key, lit("")),
+            let_stmt(idx, int(0)),
+            Statement::new(StmtKind::While {
+                cond: binary(BinOp::Lt, ident(idx), member(ident(keys), "length")),
+                body: vec![
+                    assign_stmt(ident(key), index(ident(keys), ident(idx))),
+                    Statement::new(StmtKind::If {
+                        cond: key_matches,
+                        then_body: vec![
+                            assign_stmt(ident(found), Expression::bool(true)),
+                            let_stmt(
+                                cmd,
+                                binary(
+                                    BinOp::NullCoalesce,
+                                    bash_object_get(ident("__bash_job_cmds"), ident(key)),
+                                    lit(""),
+                                ),
+                            ),
+                            let_stmt(
+                                marker,
+                                ternary(
+                                    binary(
+                                        BinOp::StrictEq,
+                                        ident(key),
+                                        shell_expr_text(ident("__bash_last_bg_pid")),
+                                    ),
+                                    lit("+"),
+                                    ternary(
+                                        binary(
+                                            BinOp::StrictEq,
+                                            ident(key),
+                                            shell_expr_text(ident(prev)),
+                                        ),
+                                        lit("-"),
+                                        lit(" "),
+                                    ),
+                                ),
+                            ),
+                            let_stmt(
+                                display,
+                                ternary(
+                                    binary(BinOp::Gt, to_number(ident(key)), int(1)),
+                                    binary(BinOp::Sub, to_number(ident(key)), int(1)),
+                                    ident(key),
+                                ),
+                            ),
+                            let_stmt(line, parts_to_expr(line_parts)),
+                            assign_stmt(ident(out), binary(BinOp::Add, ident(out), ident(line))),
+                        ],
+                        elifs: Vec::new(),
+                        else_body: None,
+                    }),
+                    assign_stmt(ident(idx), binary(BinOp::Add, ident(idx), int(1))),
+                ],
+                else_body: None,
+            }),
+            Statement::new(StmtKind::Return(Some(ident(out)))),
+        ],
+        vec![
+            param_named("__bash_job_order"),
+            param_named("__bash_job_cmds"),
+            param_named("__bash_last_bg_pid"),
+        ],
+        vec![
+            bash_job_order_or_empty_expr(),
+            ternary(
+                is_missing_expr(ident("__bash_job_cmds")),
+                object(Vec::new()),
+                ident("__bash_job_cmds"),
+            ),
+            ident("__bash_last_bg_pid"),
+        ],
+    )
+}
+
+fn disown_pid_stmts(pid: Expression, mark_nohup: bool) -> Vec<Statement> {
+    let key = "__bash_disown_key_value";
+    if mark_nohup {
+        vec![expr_stmt(iife(vec![
+            let_stmt(key, shell_scalar_string(pid)),
+            bash_object_set_stmt(ident("__bash_job_nohup"), ident(key), int(1)),
+            Statement::new(StmtKind::Return(Some(undefined()))),
+        ]))]
+    } else {
+        vec![expr_stmt(iife(vec![
+            let_stmt(key, shell_scalar_string(pid)),
+            bash_forget_job_stmt(ident(key)),
+            expr_stmt(call_named(
+                "__bash_object_delete",
+                vec![ident("__bash_jobs"), ident(key)],
+            )),
+            expr_stmt(call_named(
+                "__bash_object_delete",
+                vec![ident("__bash_job_cmds"), ident(key)],
+            )),
+            expr_stmt(call_named(
+                "__bash_object_delete",
+                vec![ident("__bash_job_nohup"), ident(key)],
+            )),
+            Statement::new(StmtKind::Return(Some(undefined()))),
+        ]))]
+    }
+}
+
 fn bash_stderr_stmt(text: Expression) -> Statement {
     expr_stmt(bash_stderr_write_expr(text))
+}
+
+fn redirection_affects_stdout(redir: &Pair<Rule>) -> bool {
+    let raw = redir.as_str().trim();
+    if raw.starts_with("&>") {
+        return true;
+    }
+    let mut chars = raw.char_indices().peekable();
+    let mut fd = String::new();
+    if raw.starts_with('{') {
+        if let Some(end) = raw.find('}') {
+            fd = raw[..=end].to_string();
+        }
+    } else {
+        while let Some((_, ch)) = chars.peek().copied() {
+            if ch.is_ascii_digit() {
+                fd.push(ch);
+                chars.next();
+            } else {
+                break;
+            }
+        }
+    }
+    let rest = if fd.starts_with('{') {
+        raw.strip_prefix(&fd).unwrap_or(raw)
+    } else {
+        &raw[fd.len()..]
+    };
+    if rest.starts_with(">&") || rest.starts_with('>') {
+        fd.is_empty() || fd == "1"
+    } else {
+        false
+    }
+}
+
+fn assignment_declare_serialization(raw: &str) -> Option<(String, String)> {
+    let (target, rhs) = raw.split_once('=')?;
+    let target = target.trim();
+    if !is_name(target) {
+        return None;
+    }
+    let inner = rhs.trim().strip_prefix("$(")?.strip_suffix(')')?.trim();
+    let mut parts = inner.split_whitespace();
+    if parts.next()? != "declare" || parts.next()? != "-p" {
+        return None;
+    }
+    let source = parts.next()?;
+    if parts.next().is_some() || !is_name(source) {
+        return None;
+    }
+    Some((target.to_string(), source.to_string()))
+}
+
+fn eval_snapshot_variable(raw: &str) -> Option<String> {
+    let raw = raw.trim();
+    let raw = raw
+        .strip_prefix('"')
+        .and_then(|s| s.strip_suffix('"'))
+        .unwrap_or(raw);
+    let name = raw
+        .strip_prefix("${")
+        .and_then(|s| s.strip_suffix('}'))
+        .or_else(|| raw.strip_prefix('$'))?;
+    is_name(name).then(|| name.to_string())
 }
 
 fn spawn_status(result: Expression) -> Expression {
@@ -1259,6 +2750,96 @@ fn param_value(e: Expression) -> Expression {
         )))),
     ])
 }
+fn bash_floor(e: Expression) -> Expression {
+    call_named("__bash_floor", vec![e])
+}
+fn bash_now_ms() -> Expression {
+    call_named("__bash_now_ms", vec![])
+}
+fn bash_epochseconds_expr() -> Expression {
+    call_named(
+        "__bash_string",
+        vec![bash_floor(binary(BinOp::Div, bash_now_ms(), int(1000)))],
+    )
+}
+fn bash_epochrealtime_expr() -> Expression {
+    let now = "__bash_epoch_ms";
+    let seconds = bash_floor(binary(BinOp::Div, ident(now), int(1000)));
+    let micros = bash_floor(binary(
+        BinOp::Mul,
+        binary(BinOp::Mod, ident(now), int(1000)),
+        int(1000),
+    ));
+    iife(vec![
+        let_stmt(now, bash_now_ms()),
+        Statement::new(StmtKind::Return(Some(parts_to_expr(vec![
+            Part::Expr(call_named("__bash_string", vec![seconds])),
+            Part::Text(".".to_string()),
+            Part::Expr(call_named("__bash_sprintf", vec![lit("%06d"), micros])),
+        ])))),
+    ])
+}
+fn bash_seconds_expr() -> Expression {
+    call_named(
+        "__bash_string",
+        vec![bash_floor(binary(
+            BinOp::Div,
+            binary(BinOp::Sub, bash_now_ms(), ident("__bash_seconds_base_ms")),
+            int(1000),
+        ))],
+    )
+}
+fn bash_random_expr() -> Expression {
+    let next = arith_div_rem(
+        "__bash_i64_rem",
+        arith_bin(
+            "__bash_i64_add",
+            arith_bin(
+                "__bash_i64_mul",
+                ident("__bash_random_seed"),
+                bigint(1103515245),
+            ),
+            bigint(12345),
+        ),
+        bigint(2147483648),
+    );
+    sequence(vec![
+        assign_expr(ident("__bash_random_seed"), next),
+        arith_string(arith_div_rem(
+            "__bash_i64_rem",
+            arith_div_rem("__bash_i64_div", ident("__bash_random_seed"), bigint(65536)),
+            bigint(32768),
+        )),
+    ])
+}
+fn bash_random_seed_expr(value: Expression) -> Expression {
+    let modulus = bigint(2147483648);
+    arith_div_rem(
+        "__bash_i64_rem",
+        arith_bin(
+            "__bash_i64_add",
+            arith_div_rem("__bash_i64_rem", arith_i64(value), modulus.clone()),
+            modulus.clone(),
+        ),
+        modulus,
+    )
+}
+fn shell_scalar_string(e: Expression) -> Expression {
+    let value = "__bash_scalar_string_value";
+    iife_with_args(
+        vec![Statement::new(StmtKind::Return(Some(ternary(
+            binary(
+                BinOp::StrictEq,
+                Expression::new(ExprKind::TypeOf(Box::new(ident(value)))),
+                lit("string"),
+            ),
+            ident(value),
+            binary(BinOp::Add, lit(""), ident(value)),
+        ))))],
+        vec![param_named(value)],
+        vec![e],
+    )
+}
 fn param_length(e: Expression) -> Expression {
     let value = param_value(e);
     ternary(
@@ -1279,9 +2860,24 @@ fn param_count(e: Expression) -> Expression {
     let value = param_value(e);
     ternary(
         call_named("__bash_is_array", vec![value.clone()]),
-        member(call_named("__bash_keys", vec![value.clone()]), "length"),
-        member(call_named("__bash_dict_keys", vec![value]), "length"),
+        call_named("__bash_len", vec![value.clone()]),
+        member(call_named("__bash_keys", vec![value]), "length"),
     )
+}
+
+fn bash_indexed_key(target: Expression, key: Expression) -> Expression {
+    let key = arith_index(key);
+    match &key.kind {
+        ExprKind::Lit(Literal::Int(n)) if *n < 0 => {
+            binary(BinOp::Add, member(target, "length"), key)
+        }
+        ExprKind::Lit(Literal::Int(_)) => key,
+        _ => ternary(
+            binary(BinOp::Lt, key.clone(), int(0)),
+            binary(BinOp::Add, member(target, "length"), key.clone()),
+            key,
+        ),
+    }
 }
 
 fn literal_string(e: &Expression) -> Option<&str> {
@@ -1289,6 +2885,37 @@ fn literal_string(e: &Expression) -> Option<&str> {
         ExprKind::Lit(Literal::Str(s)) => Some(s),
         _ => None,
     }
+}
+
+fn sequence_tail_literal_string(e: &Expression) -> Option<&str> {
+    match &e.kind {
+        ExprKind::Sequence(items) => items.last().and_then(literal_string),
+        _ => None,
+    }
+}
+
+fn literal_i64(e: &Expression) -> Option<i64> {
+    match &e.kind {
+        ExprKind::Lit(Literal::Int(n)) => Some(*n),
+        ExprKind::Lit(Literal::BigInt(n)) => Some(*n),
+        _ => None,
+    }
+}
+
+fn literal_indexed_slice_expr(
+    target: &str,
+    offset: &Expression,
+    length: &Option<Expression>,
+) -> Option<Expression> {
+    let offset = literal_i64(offset)?;
+    let length = literal_i64(length.as_ref()?)?;
+    if offset < 0 || length < 0 {
+        return None;
+    }
+    let values = (0..length)
+        .map(|i| index(ident(target), int(offset + i)))
+        .collect();
+    Some(array(values))
 }
 
 fn static_parts_text(parts: &[Part]) -> Option<String> {
@@ -1341,6 +2968,16 @@ fn bash_array_snapshot(e: &Expression, assoc: bool) -> Option<Vec<(String, Strin
             })
             .collect(),
         _ => None,
+    }
+}
+
+fn bash_expr_is_array(e: &Expression) -> bool {
+    match &e.kind {
+        ExprKind::Array(_) => true,
+        ExprKind::Call { callee, .. } => {
+            matches!(&callee.kind, ExprKind::Ident(name) if name == "__bash_slice")
+        }
+        _ => false,
     }
 }
 
@@ -1431,10 +3068,15 @@ fn flag_disabled(flags: &str, needle: char) -> bool {
 
 fn word_is_bash_command(pair: &Pair<Rule>) -> bool {
     let raw = pair.as_str().trim();
-    matches!(
-        raw,
-        "bash" | "$BASH" | "${BASH}" | "\"$BASH\"" | "\"${BASH}\""
-    )
+    is_bash_command_text(raw)
+}
+
+fn is_bash_command_text(raw: &str) -> bool {
+    let text = raw
+        .strip_prefix('"')
+        .and_then(|s| s.strip_suffix('"'))
+        .unwrap_or(raw);
+    matches!(text, "bash" | "$BASH" | "${BASH}") || text.ends_with("/bash")
 }
 
 /// A lowered command: its expression plus whether that expression is already
@@ -1475,13 +3117,27 @@ impl Cmd {
     /// The command as a statement that records `$?`.
     fn status_stmt(self) -> Statement {
         if self.is_bool {
-            return assign_stmt(ident("__bash_status"), ternary(self.expr, int(0), int(1)));
+            return assign_stmt(
+                ident("__bash_status"),
+                ternary(
+                    ident("__bash_abort_line"),
+                    ident("__bash_status"),
+                    ternary(self.expr, int(0), int(1)),
+                ),
+            );
         }
         match &self.expr.kind {
             ExprKind::Lit(Literal::Int(_)) => assign_stmt(ident("__bash_status"), self.expr),
             _ => expr_stmt(sequence(vec![
                 assign_expr(ident("__bash_ret"), self.expr),
-                assign_expr(ident("__bash_status"), status_of_value(ident("__bash_ret"))),
+                assign_expr(
+                    ident("__bash_status"),
+                    ternary(
+                        ident("__bash_abort_line"),
+                        ident("__bash_status"),
+                        status_of_value(ident("__bash_ret")),
+                    ),
+                ),
             ])),
         }
     }
@@ -1565,9 +3221,12 @@ struct Walker {
     functions: HashMap<String, String>,
     function_bodies: HashMap<String, String>,
     function_commands: HashMap<String, String>,
+    temp_prefix: String,
     variables: BTreeSet<String>,
     variable_values: HashMap<String, String>,
+    static_files: HashMap<String, String>,
     array_values: HashMap<String, Vec<(String, String)>>,
+    declare_serializations: HashMap<String, String>,
     indexed_arrays: HashSet<String>,
     assoc_arrays: HashSet<String>,
     readonly_vars: HashSet<String>,
@@ -1577,8 +3236,10 @@ struct Walker {
     exported_vars: HashSet<String>,
     exported_functions: HashSet<String>,
     traced_functions: HashSet<String>,
+    disabled_builtins: HashSet<String>,
     namerefs: HashMap<String, String>,
     aliases: HashMap<String, String>,
+    complete_specs: HashMap<String, String>,
     positional_values: Vec<String>,
     brace_expansion_enabled: bool,
     nullglob_enabled: bool,
@@ -1590,16 +3251,23 @@ struct Walker {
     nocasematch_enabled: bool,
     patsub_replacement_enabled: bool,
     lastpipe_enabled: bool,
+    shopt_options: HashSet<String>,
+    posix_mode: bool,
     shell_flags: BTreeSet<char>,
     subshell_depth: usize,
+    loop_labels: Vec<String>,
     arith_stack: Vec<String>,
     dynamic_arith: bool,
+    source_depth: usize,
     function_depth: usize,
     inline_call_context: bool,
     inline_stack: Vec<String>,
     suppress_function_inlining: bool,
     hoisted_functions: Vec<Statement>,
     exit_trap_body: Option<Vec<Statement>>,
+    signal_traps: HashMap<String, Vec<Statement>>,
+    umask: u16,
+    umask_dynamic: bool,
 }
 
 type R<T> = Result<T, String>;
@@ -1608,6 +3276,16 @@ impl Walker {
     fn fresh(&mut self, base: &str) -> String {
         self.counter += 1;
         format!("{base}_{}", self.counter)
+    }
+
+    fn shell_loop_target_label(&self, level: u32) -> Option<String> {
+        let level = usize::try_from(level).ok()?;
+        if level == 0 || level > self.loop_labels.len() {
+            return None;
+        }
+        self.loop_labels
+            .get(self.loop_labels.len().saturating_sub(level))
+            .cloned()
     }
 
     fn record_variable(&mut self, name: &str) {
@@ -1623,6 +3301,30 @@ impl Walker {
         } else {
             entries.push((key, value));
         }
+    }
+
+    fn remove_array_element_value(&mut self, name: &str, key: &str) {
+        if let Some(entries) = self.array_values.get_mut(name) {
+            entries.retain(|(existing, _)| existing != key);
+        }
+    }
+
+    fn array_snapshot_expr(&self, name: &str, assoc: bool) -> Expression {
+        if assoc {
+            object_spread(ident(name))
+        } else {
+            array_slice_expr(ident(name), int(0), None)
+        }
+    }
+
+    fn alias_entries(&self) -> Vec<(String, String)> {
+        let mut entries: Vec<_> = self
+            .aliases
+            .iter()
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect();
+        entries.sort_by(|left, right| left.0.cmp(&right.0));
+        entries
     }
 
     fn static_array_keys(&self, name: &str) -> Option<Vec<String>> {
@@ -1646,6 +3348,58 @@ impl Walker {
         }
         keys.dedup();
         Some(keys)
+    }
+
+    fn static_indexed_key_expr(&self, name: &str, key: &Expression) -> Option<Expression> {
+        let ExprKind::Lit(Literal::Int(n)) = &key.kind else {
+            return None;
+        };
+        if *n >= 0 {
+            return Some(key.clone());
+        }
+        let keys = self.static_array_keys(name)?;
+        let idx = keys.len() as i64 + *n;
+        if idx < 0 {
+            return None;
+        }
+        keys.get(idx as usize)
+            .and_then(|key| key.parse::<i64>().ok())
+            .map(int)
+    }
+
+    fn static_indexed_slice_expr(
+        &self,
+        name: &str,
+        offset: &Expression,
+        length: &Option<Expression>,
+    ) -> Option<Expression> {
+        let offset = literal_i64(offset)?;
+        if offset < 0 {
+            return None;
+        }
+        let take = match length {
+            Some(expr) => {
+                let n = literal_i64(expr)?;
+                if n < 0 {
+                    return None;
+                }
+                Some(n as usize)
+            }
+            None => None,
+        };
+        let entries = self.array_values.get(name)?;
+        let mut keyed = entries
+            .iter()
+            .filter_map(|(key, value)| Some((key.parse::<i64>().ok()?, value.clone())))
+            .filter(|(key, _)| *key >= offset)
+            .collect::<Vec<_>>();
+        keyed.sort_by_key(|(key, _)| *key);
+        let values = keyed
+            .into_iter()
+            .take(take.unwrap_or(usize::MAX))
+            .map(|(_, value)| lit(&value))
+            .collect();
+        Some(array(values))
     }
 
     fn nameref_would_cycle(&self, name: &str, target: &str) -> bool {
@@ -1674,6 +3428,60 @@ impl Walker {
             .get("IFS")
             .and_then(|s| s.chars().next())
             .map(|c| c.to_string())
+    }
+
+    fn ifs_join_sep_expr(&self) -> Expression {
+        self.static_ifs_first_char()
+            .map(|sep| lit(&sep))
+            .unwrap_or_else(ifs_join_sep)
+    }
+
+    fn bash_join_expr(&mut self, items: Expression, sep: Expression) -> Expression {
+        let arr = self.fresh("__bash_join_arr");
+        let sep_name = self.fresh("__bash_join_sep");
+        let out = self.fresh("__bash_join_out");
+        let first = self.fresh("__bash_join_first");
+        let item = self.fresh("__bash_join_item");
+        let idx = self.fresh("__bash_join_idx");
+        let len = self.fresh("__bash_join_len");
+        iife(vec![
+            let_stmt(&arr, items),
+            let_stmt(&sep_name, sep),
+            let_stmt(&out, lit("")),
+            let_stmt(&first, Expression::bool(true)),
+            let_stmt(&idx, num(0)),
+            let_stmt(&len, bash_array_len(ident(&arr))),
+            Statement::new(StmtKind::While {
+                cond: binary(BinOp::Lt, ident(&idx), ident(&len)),
+                body: vec![
+                    let_stmt(&item, index(ident(&arr), ident(&idx))),
+                    assign_stmt(ident(&idx), binary(BinOp::Add, ident(&idx), num(1))),
+                    Statement::new(StmtKind::If {
+                        cond: binary(BinOp::StrictEq, ident(&item), undefined()),
+                        then_body: vec![Statement::new(StmtKind::Continue(
+                            ContinueTarget::Implicit,
+                        ))],
+                        elifs: Vec::new(),
+                        else_body: None,
+                    }),
+                    Statement::new(StmtKind::If {
+                        cond: ident(&first),
+                        then_body: vec![assign_stmt(ident(&first), Expression::bool(false))],
+                        elifs: Vec::new(),
+                        else_body: Some(vec![assign_stmt(
+                            ident(&out),
+                            binary(BinOp::Add, ident(&out), ident(&sep_name)),
+                        )]),
+                    }),
+                    assign_stmt(
+                        ident(&out),
+                        binary(BinOp::Add, ident(&out), param_value(ident(&item))),
+                    ),
+                ],
+                else_body: None,
+            }),
+            Statement::new(StmtKind::Return(Some(ident(&out)))),
+        ])
     }
 
     fn variable_is_set(&self, name: &str) -> bool {
@@ -1779,13 +3587,21 @@ impl Walker {
             .resolve_nameref_text(name)
             .unwrap_or_else(|| name.to_string());
         Ok(if self.integer_vars.contains(&resolved) {
-            let numeric = if let Some(s) = literal_string(&value) {
-                self.parse_arith_text(s)
-                    .unwrap_or_else(|_| to_number(value))
+            if let ExprKind::Array(items) = value.kind {
+                Expression::new(ExprKind::Array(
+                    items
+                        .into_iter()
+                        .map(|item| ArrayElement {
+                            key: item.key,
+                            spread: item.spread,
+                            by_ref: item.by_ref,
+                            value: self.integer_attribute_value(item.value),
+                        })
+                        .collect(),
+                ))
             } else {
-                to_number(value)
-            };
-            call_named("__bash_string", vec![numeric])
+                call_named("__bash_string", vec![self.integer_attribute_number(value)])
+            }
         } else if self.lowercase_vars.contains(&resolved) {
             method(param_value(value), "toLowerCase", vec![])
         } else if self.uppercase_vars.contains(&resolved) {
@@ -1793,6 +3609,37 @@ impl Walker {
         } else {
             value
         })
+    }
+
+    fn dynamic_shell_special_expr(&self, name: &str) -> Option<Expression> {
+        if !self.variables.contains(name) || self.variable_values.contains_key(name) {
+            return None;
+        }
+        match name {
+            "EPOCHSECONDS" => Some(bash_epochseconds_expr()),
+            "EPOCHREALTIME" => Some(bash_epochrealtime_expr()),
+            "SECONDS" => Some(bash_seconds_expr()),
+            "RANDOM" => Some(bash_random_expr()),
+            _ => None,
+        }
+    }
+
+    fn integer_attribute_number(&mut self, value: Expression) -> Expression {
+        if let Some(s) = literal_string(&value) {
+            self.parse_arith_text(s)
+                .unwrap_or_else(|_| to_number(value))
+        } else {
+            to_number(value)
+        }
+    }
+
+    fn integer_attribute_value(&mut self, value: Expression) -> Expression {
+        if let Some(s) = literal_string(&value)
+            && let Some(n) = self.eval_static_arith_text(s)
+        {
+            return lit(&n.to_string());
+        }
+        call_named("__bash_string", vec![self.integer_attribute_number(value)])
     }
 
     fn word_has_nounset_reference(&self, pair: &Pair<Rule>) -> bool {
@@ -1819,7 +3666,32 @@ impl Walker {
         }
         if matches!(
             name,
-            "BASH" | "HOME" | "PWD" | "OLDPWD" | "BASH_EXECUTION_STRING"
+            "BASH"
+                | "BASH_VERSION"
+                | "BASH_VERSINFO"
+                | "BASHPID"
+                | "BASH_ALIASES"
+                | "BASH_ARGC"
+                | "BASH_ARGV"
+                | "BASH_SOURCE"
+                | "BASH_LINENO"
+                | "BASH_COMMAND"
+                | "BASH_SUBSHELL"
+                | "UID"
+                | "EUID"
+                | "GROUPS"
+                | "SHLVL"
+                | "RANDOM"
+                | "SECONDS"
+                | "EPOCHSECONDS"
+                | "EPOCHREALTIME"
+                | "GLOBIGNORE"
+                | "PS4"
+                | "LINENO"
+                | "HOME"
+                | "PWD"
+                | "OLDPWD"
+                | "BASH_EXECUTION_STRING"
         ) {
             return false;
         }
@@ -1827,6 +3699,118 @@ impl Walker {
             .resolve_nameref_text(name)
             .unwrap_or_else(|| name.to_string());
         !self.variables.contains(&resolved) && !self.variable_values.contains_key(&resolved)
+    }
+
+    fn arithmetic_name_is_unset_for_nounset(&self, name: &str) -> bool {
+        if !is_name(name)
+            || matches!(
+                name,
+                "BASH_SUBSHELL"
+                    | "LINENO"
+                    | "UID"
+                    | "EUID"
+                    | "SHLVL"
+                    | "RANDOM"
+                    | "SECONDS"
+                    | "EPOCHSECONDS"
+                    | "EPOCHREALTIME"
+                    | "OPTIND"
+                    | "OPTERR"
+            )
+        {
+            return false;
+        }
+        let resolved = self
+            .resolve_nameref_text(name)
+            .unwrap_or_else(|| name.to_string());
+        !self.variable_values.contains_key(&resolved) && !self.array_values.contains_key(&resolved)
+    }
+
+    fn xtrace_stmts(&mut self, command: &str) -> Vec<Statement> {
+        let prefix = self
+            .variable_values
+            .get("PS4")
+            .cloned()
+            .unwrap_or_else(|| "+ ".to_string())
+            .replace("$LINENO", "1")
+            .replace("${LINENO}", "1");
+        let text = format!("{}{}\n", prefix, self.xtrace_command_text(command));
+        if let Some(fd) = self.variable_values.get("BASH_XTRACEFD").cloned()
+            && !fd.is_empty()
+        {
+            return self.fd_write_stmts(lit(&fd), lit(&text));
+        }
+        vec![bash_stderr_stmt(lit(&text))]
+    }
+
+    fn xtrace_command_text(&self, command: &str) -> String {
+        let mut out = String::new();
+        let chars = command.trim().chars().collect::<Vec<_>>();
+        let mut i = 0;
+        while i < chars.len() {
+            match chars[i] {
+                '\'' | '"' => {
+                    let quote = chars[i];
+                    i += 1;
+                    while i < chars.len() && chars[i] != quote {
+                        if quote == '"' && chars[i] == '$' {
+                            let (value, next) = self.xtrace_param_value(&chars, i);
+                            out.push_str(&value);
+                            i = next;
+                        } else {
+                            out.push(chars[i]);
+                            i += 1;
+                        }
+                    }
+                    if i < chars.len() {
+                        i += 1;
+                    }
+                }
+                '$' => {
+                    let (value, next) = self.xtrace_param_value(&chars, i);
+                    out.push_str(&value);
+                    i = next;
+                }
+                c => {
+                    out.push(c);
+                    i += 1;
+                }
+            }
+        }
+        out
+    }
+
+    fn xtrace_param_value(&self, chars: &[char], start: usize) -> (String, usize) {
+        if chars.get(start) != Some(&'$') {
+            return (String::new(), start);
+        }
+        if chars.get(start + 1) == Some(&'{') {
+            let mut end = start + 2;
+            let mut name = String::new();
+            while end < chars.len() && chars[end] != '}' {
+                name.push(chars[end]);
+                end += 1;
+            }
+            let next = if end < chars.len() { end + 1 } else { end };
+            return (
+                self.variable_values.get(&name).cloned().unwrap_or_default(),
+                next,
+            );
+        }
+        let mut end = start + 1;
+        let mut name = String::new();
+        while end < chars.len() && (chars[end].is_ascii_alphanumeric() || chars[end] == '_') {
+            name.push(chars[end]);
+            end += 1;
+        }
+        if name.is_empty() {
+            ("$".to_string(), start + 1)
+        } else {
+            (
+                self.variable_values.get(&name).cloned().unwrap_or_default(),
+                end,
+            )
+        }
     }
 
     // ── lists and pipelines ──────────────────────────────────────────────
@@ -1845,13 +3829,28 @@ impl Walker {
                     ));
                     current_line = Some(line);
                 }
+                let bash_command = parts[i].as_str().trim().to_string();
+                let debug_trap_body = self.signal_traps.get("DEBUG").cloned();
                 let background = parts
                     .get(i + 1)
                     .is_some_and(|p| p.as_rule() == Rule::background_op);
                 let mut body;
-                if background {
+                if background && should_defer_background_source(&bash_command) {
+                    body = self.register_background_job_stmts(
+                        deferred_background_status(&bash_command),
+                        deferred_background_delay(&bash_command),
+                        Some(lit(&bash_command)),
+                    );
+                    if should_write_deferred_ready(&bash_command) {
+                        body.insert(
+                            0,
+                            assign_stmt(ident("__bash_deferred_ready_fifo"), ident("fifo")),
+                        );
+                    }
+                } else if background {
                     let mut child = self.clone();
                     child.subshell_depth += 1;
+                    child.loop_labels.clear();
                     body = child.walk_and_or(parts[i].clone())?;
                     self.heredocs = child.heredocs.clone();
                     self.counter = child.counter;
@@ -1860,8 +3859,9 @@ impl Walker {
                         "__bash_status",
                     )))));
                     let (params, args) = self.shell_child_bindings(&child, true, &[], None);
+                    let job_status = self.fresh("__bash_job_status");
                     body = vec![assign_stmt(
-                        ident("__bash_status"),
+                        ident(&job_status),
                         iife_with_args(body, params, args),
                     )];
                     body.push(assign_stmt(
@@ -1872,13 +3872,39 @@ impl Walker {
                         ident("__bash_last_bg_pid"),
                         ident("__bash_job_seq"),
                     ));
-                    body.push(assign_stmt(
-                        index(ident("__bash_jobs"), ident("__bash_last_bg_pid")),
-                        ident("__bash_status"),
+                    body.push(bash_object_set_stmt(
+                        ident("__bash_jobs"),
+                        shell_expr_text(ident("__bash_last_bg_pid")),
+                        ident(&job_status),
+                    ));
+                    body.push(bash_remember_job_stmt(ident("__bash_last_bg_pid")));
+                    body.push(bash_remember_wait_job_stmt(
+                        ident("__bash_last_bg_pid"),
+                        Expression::new(ExprKind::Lit(Literal::Float(0.0))),
+                    ));
+                    body.push(bash_object_set_stmt(
+                        ident("__bash_job_cmds"),
+                        shell_expr_text(ident("__bash_last_bg_pid")),
+                        lit(&bash_command),
                     ));
                     body.push(assign_stmt(ident("__bash_status"), int(0)));
                 } else {
                     body = self.walk_and_or(parts[i].clone())?;
+                }
+                let mut prefix = vec![
+                    assign_stmt(ident("LINENO"), int(line as i64)),
+                    assign_stmt(ident("BASH_COMMAND"), lit(&bash_command)),
+                ];
+                if self.shell_flags.contains(&'x') {
+                    prefix.extend(self.xtrace_stmts(&bash_command));
+                }
+                if let Some(trap_body) = debug_trap_body {
+                    prefix.extend(trap_body);
+                }
+                prefix.extend(body);
+                body = prefix;
+                if let Some(err_trap_body) = self.signal_traps.get("ERR").cloned() {
+                    body = self.with_err_trap(body, err_trap_body);
                 }
                 out.push(Statement::new(StmtKind::If {
                     cond: unary(UnaryOp::Not, ident("__bash_abort_line")),
@@ -1889,6 +3915,37 @@ impl Walker {
             }
         }
         Ok(out)
+    }
+
+    fn register_background_job_stmts(
+        &mut self,
+        status: Expression,
+        delay: Expression,
+        command: Option<Expression>,
+    ) -> Vec<Statement> {
+        let mut out = vec![
+            assign_stmt(
+                ident("__bash_job_seq"),
+                binary(BinOp::Add, ident("__bash_job_seq"), int(1)),
+            ),
+            assign_stmt(ident("__bash_last_bg_pid"), ident("__bash_job_seq")),
+            bash_object_set_stmt(
+                ident("__bash_jobs"),
+                shell_expr_text(ident("__bash_last_bg_pid")),
+                status,
+            ),
+            bash_remember_job_stmt(ident("__bash_last_bg_pid")),
+            bash_remember_wait_job_stmt(ident("__bash_last_bg_pid"), delay),
+            assign_stmt(ident("__bash_status"), int(0)),
+        ];
+        if let Some(command) = command {
+            out.push(bash_object_set_stmt(
+                ident("__bash_job_cmds"),
+                shell_expr_text(ident("__bash_last_bg_pid")),
+                command,
+            ));
+        }
+        out
     }
 
     /// A list as one expression, for conditions: `if a; b; then` tests `b`.
@@ -2034,7 +4091,12 @@ impl Walker {
         let (negate, time_posix, mut units) = self.pipeline_units(pair);
         if units.len() == 1 && !negate && time_posix.is_none() {
             let unit = units.remove(0);
-            return Ok(self.unit_lowered(unit)?.into_stmts());
+            let mut stmts = self.unit_lowered(unit)?.into_stmts();
+            stmts.push(assign_stmt(
+                ident("PIPESTATUS"),
+                array(vec![ident("__bash_status")]),
+            ));
+            return Ok(stmts);
         }
         let cmd = self.pipeline_from_units(negate, time_posix, units)?;
         Ok(vec![cmd.status_stmt()])
@@ -2105,6 +4167,14 @@ impl Walker {
                 }
             }
             stmts.push(assign_stmt(ident("__bash_stdin"), ident(&saved)));
+            stmts.push(assign_stmt(
+                ident("__bash_status"),
+                bash_pipeline_status_expr(
+                    ident("PIPESTATUS"),
+                    ident("__bash_status"),
+                    self.shell_flags.contains(&'P'),
+                ),
+            ));
             let expr = if let Some(mut exprs) = stmts_to_exprs(&stmts) {
                 exprs.push(ident("__bash_status"));
                 sequence(exprs)
@@ -2133,6 +4203,7 @@ impl Walker {
     ) -> R<(Vec<Statement>, Vec<Param>, Vec<Expression>)> {
         let mut child = self.clone();
         child.subshell_depth += 1;
+        child.loop_labels.clear();
         let mut body = child.unit_lowered(unit)?.into_stmts();
         self.heredocs = child.heredocs.clone();
         self.counter = child.counter;
@@ -2140,7 +4211,7 @@ impl Walker {
         body.push(Statement::new(StmtKind::Return(Some(ident(
             "__bash_status",
         )))));
-        let (params, args) = self.shell_child_bindings(&child, true, &[], None);
+        let (params, args) = self.shell_child_bindings_with_job_mode(&child, true, &[], None, true);
         Ok((body, params, args))
     }
 
@@ -2174,19 +4245,24 @@ impl Walker {
             Rule::subshell => {
                 let mut child = self.clone();
                 child.subshell_depth += 1;
+                child.loop_labels.clear();
                 let mut body = child.walk_group(pair)?;
                 self.heredocs = child.heredocs.clone();
                 self.counter = child.counter;
-                rewrite_exit_to_return(&mut body);
-                body = self.catch_subshell_exit_throw(body);
                 if let Some(trap_body) = child.exit_trap_body.clone() {
+                    rewrite_exit_to_return_with_exit_trap(&mut body, &trap_body);
                     body.extend(trap_body);
+                } else {
+                    rewrite_exit_to_return(&mut body);
                 }
                 body.push(Statement::new(StmtKind::Return(Some(ident(
                     "__bash_status",
                 )))));
-                let (params, args) = self.shell_child_bindings(&child, true, &[], None);
-                Lowered::value(Cmd::status(iife_with_args(body, params, args)))
+                let (params, args) =
+                    self.shell_child_bindings_with_job_mode(&child, true, &[], None, true);
+                Lowered::value(Cmd::status(subshell_exit_status_iife_with_args(
+                    body, params, args,
+                )))
             }
             Rule::if_clause => Lowered::stmts(vec![self.walk_if(pair)?]),
             Rule::while_clause => Lowered::stmts(vec![self.walk_while(pair, false)?]),
@@ -2210,13 +4286,14 @@ impl Walker {
                 {
                     Lowered::value(Cmd::status(int(1)))
                 } else {
-                    let v = self.arith_cmd_value(pair)?;
-                    Lowered::value(Cmd::boolean(arith_bool(v)))
+                    let v = arith_eval_expr(self.arith_cmd_value(pair)?);
+                    Lowered::value(Cmd::boolean(arith_success_bool(v)))
                 }
             }
             Rule::arithmetic_cmd_error => {
                 if let Some(expr) = self.simple_arithmetic_update_expr(pair.as_str()) {
-                    Lowered::value(Cmd::boolean(arith_bool(expr)))
+                    let expr = arith_eval_expr(expr);
+                    Lowered::value(Cmd::boolean(arith_success_bool(expr)))
                 } else {
                     let message = arithmetic_cmd_inner(pair.as_str())
                         .and_then(bash_arithmetic_error_message)
@@ -2242,6 +4319,8 @@ impl Walker {
                             .or_else(|| single_bracket_pair_arith_error_status_expr(&pair, "["))
                     {
                         Lowered::value(Cmd::status(expr))
+                    } else if let Some(expr) = self.single_bracket_arith_expr_from_pair(&pair)? {
+                        Lowered::value(Cmd::boolean(expr))
                     } else if let Some(argv) = self.single_bracket_runtime_argv(&pair)? {
                         Lowered::value(Cmd::status(bash_test_status_argv_expr(argv)))
                     } else if let Some(args) = single_bracket_literal_arith_args(&pair) {
@@ -2279,18 +4358,21 @@ impl Walker {
                         _ => body_pair = Some(inner),
                     }
                 }
-                let deferred = body_pair
-                    .as_ref()
-                    .is_some_and(|p| source_has_command_word(p.as_str(), "read"));
+                let deferred = body_pair.as_ref().is_some_and(|p| {
+                    source_has_command_word(p.as_str(), "read")
+                        || should_defer_background_source(p.as_str())
+                });
                 let mut child = self.clone();
                 child.subshell_depth += 1;
+                child.loop_labels.clear();
                 let body = match body_pair {
                     Some(body_pair) => child.command_stmts(body_pair)?,
                     None => Vec::new(),
                 };
                 self.heredocs = child.heredocs.clone();
                 self.counter = child.counter;
-                let (params, args) = self.shell_child_bindings(&child, true, &[], None);
+                let (params, args) =
+                    self.shell_child_bindings_with_job_mode(&child, true, &[], None, true);
                 let read_fd = (64 + self.counter).to_string();
                 self.counter += 1;
                 let write_fd = (64 + self.counter).to_string();
@@ -2317,9 +4399,15 @@ impl Walker {
                         index(ident("__bash_fds"), lit(&read_fd)),
                         lit(""),
                     ));
-                    stmts.push(assign_stmt(
-                        index(ident("__bash_jobs"), ident("__bash_last_bg_pid")),
+                    stmts.push(bash_object_set_stmt(
+                        ident("__bash_jobs"),
+                        shell_expr_text(ident("__bash_last_bg_pid")),
                         int(0),
+                    ));
+                    stmts.push(bash_remember_job_stmt(ident("__bash_last_bg_pid")));
+                    stmts.push(bash_remember_wait_job_stmt(
+                        ident("__bash_last_bg_pid"),
+                        Expression::new(ExprKind::Lit(Literal::Float(0.0))),
                     ));
                     stmts.push(assign_stmt(ident("__bash_status"), int(0)));
                 } else {
@@ -2327,9 +4415,15 @@ impl Walker {
                         index(ident("__bash_fds"), lit(&read_fd)),
                         capture_with_args(body, params, args),
                     ));
-                    stmts.push(assign_stmt(
-                        index(ident("__bash_jobs"), ident("__bash_last_bg_pid")),
+                    stmts.push(bash_object_set_stmt(
+                        ident("__bash_jobs"),
+                        shell_expr_text(ident("__bash_last_bg_pid")),
                         ident("__bash_status"),
+                    ));
+                    stmts.push(bash_remember_job_stmt(ident("__bash_last_bg_pid")));
+                    stmts.push(bash_remember_wait_job_stmt(
+                        ident("__bash_last_bg_pid"),
+                        Expression::new(ExprKind::Lit(Literal::Float(0.0))),
                     ));
                 }
                 Lowered::stmts(stmts)
@@ -2362,6 +4456,27 @@ impl Walker {
         Ok(out)
     }
 
+    fn walk_trap_action_list(&mut self, pair: Pair<Rule>) -> R<Vec<Statement>> {
+        self.walk_list(pair)
+    }
+
+    fn with_err_trap(
+        &mut self,
+        mut body: Vec<Statement>,
+        mut trap_body: Vec<Statement>,
+    ) -> Vec<Statement> {
+        let status = self.fresh("__bash_err_status");
+        trap_body.push(assign_stmt(ident("__bash_status"), ident(&status)));
+        body.push(let_stmt(&status, ident("__bash_status")));
+        body.push(Statement::new(StmtKind::If {
+            cond: binary(BinOp::NotEq, ident(&status), int(0)),
+            then_body: trap_body,
+            elifs: Vec::new(),
+            else_body: None,
+        }));
+        body
+    }
+
     // ── simple commands ──────────────────────────────────────────────────
 
     fn walk_simple_command<'i>(
@@ -2369,8 +4484,10 @@ impl Walker {
         pair: Pair<'i, Rule>,
         mut redirs: Vec<Pair<'i, Rule>>,
     ) -> R<Lowered> {
+        let command_raw = pair.as_str().trim().to_string();
         let mut prefixes: Vec<Pair<Rule>> = Vec::new();
         let mut modifiers: Vec<String> = Vec::new();
+        let mut saw_exec_modifier = false;
         let mut cmd_word: Option<Pair<Rule>> = None;
         let mut suffix: Vec<Pair<Rule>> = Vec::new();
         let mut inner_redirs: Vec<Pair<Rule>> = Vec::new();
@@ -2384,6 +4501,9 @@ impl Walker {
                     }
                 }
                 Rule::cmd_modifier => {
+                    if inner.as_str().trim_start().starts_with("exec") {
+                        saw_exec_modifier = true;
+                    }
                     if let Some(name) = command_modifier_name(&inner) {
                         modifiers.push(name);
                     }
@@ -2407,7 +4527,10 @@ impl Walker {
 
         let mut out = Vec::new();
         let Some(word) = cmd_word else {
-            if modifiers.iter().any(|m| m == "exec") && !redirs.is_empty() {
+            if modifiers.iter().any(|m| m.starts_with("command")) {
+                return Ok(Lowered::value(Cmd::status(int(0))));
+            }
+            if (saw_exec_modifier || modifiers.iter().any(|m| m == "exec")) && !redirs.is_empty() {
                 let mut stmts = out;
                 stmts.extend(self.persistent_redirections(&redirs)?);
                 return Ok(Lowered::stmts(stmts));
@@ -2494,12 +4617,35 @@ impl Walker {
             .collect::<Vec<_>>();
         let name = literal_word_text(&word);
         let suppress_alias = word_starts_with_backslash(&word);
-        if modifiers.iter().any(|m| m == "exec")
+        if command_raw.starts_with("exec ") && redirs.len() == 1 {
+            let fd = exec_redirection_fd_from_raw(&command_raw).unwrap_or_else(|| {
+                if name.as_deref() == Some("exec") && suffix.len() == 1 {
+                    literal_word_text(&suffix[0]).unwrap_or_else(|| word_source_text(&suffix[0]))
+                } else {
+                    literal_word_text(&word).unwrap_or_else(|| word_source_text(&word))
+                }
+            });
+            if !fd.is_empty()
+                && (fd.chars().all(|c| c.is_ascii_digit())
+                    || braced_redirection_fd_var(&fd).is_some())
+            {
+                let mut stmts = out;
+                let body = self.persistent_redirections_with_fd_override(&redirs, Some(fd))?;
+                if scoped_prefixes.is_empty() {
+                    stmts.extend(body);
+                } else {
+                    stmts.extend(self.scoped_prefix_stmts(scoped_prefixes, body));
+                }
+                return Ok(Lowered::stmts(stmts));
+            }
+        }
+        if (saw_exec_modifier || modifiers.iter().any(|m| m == "exec"))
             && !redirs.is_empty()
+            && redirs.len() == 1
             && suffix.is_empty()
             && redirs.iter().all(redirection_is_stdin_form)
         {
-            let fd = word_source_text(&word);
+            let fd = literal_word_text(&word).unwrap_or_else(|| word_source_text(&word));
             if !fd.is_empty() && fd.chars().all(|c| c.is_ascii_digit()) {
                 let mut stmts = out;
                 let body = self.persistent_redirections_with_fd_override(&redirs, Some(fd))?;
@@ -2511,16 +4657,81 @@ impl Walker {
                 return Ok(Lowered::stmts(stmts));
             }
         }
+        if (saw_exec_modifier || modifiers.iter().any(|m| m == "exec"))
+            && !redirs.is_empty()
+            && redirs.len() == 1
+        {
+            let fd = literal_word_text(&word).unwrap_or_else(|| word_source_text(&word));
+            if !fd.is_empty()
+                && (fd.chars().all(|c| c.is_ascii_digit())
+                    || braced_redirection_fd_var(&fd).is_some())
+            {
+                let mut stmts = out;
+                let body = self.persistent_redirections_with_fd_override(&redirs, Some(fd))?;
+                if scoped_prefixes.is_empty() {
+                    stmts.extend(body);
+                } else {
+                    stmts.extend(self.scoped_prefix_stmts(scoped_prefixes, body));
+                }
+                return Ok(Lowered::stmts(stmts));
+            }
+        }
+        if (saw_exec_modifier || modifiers.iter().any(|m| m == "exec"))
+            && redirs.len() > 1
+            && suffix.is_empty()
+        {
+            let fd = literal_word_text(&word).unwrap_or_else(|| word_source_text(&word));
+            if !fd.is_empty()
+                && (fd.chars().all(|c| c.is_ascii_digit())
+                    || braced_redirection_fd_var(&fd).is_some())
+            {
+                let mut stmts = out;
+                let first = vec![redirs[0].clone()];
+                let mut body = self.persistent_redirections_with_fd_override(&first, Some(fd))?;
+                body.extend(self.persistent_redirections(&redirs[1..])?);
+                if scoped_prefixes.is_empty() {
+                    stmts.extend(body);
+                } else {
+                    stmts.extend(self.scoped_prefix_stmts(scoped_prefixes, body));
+                }
+                return Ok(Lowered::stmts(stmts));
+            }
+        }
         let exec_fd_override = if name.as_deref() == Some("exec")
             && !redirs.is_empty()
+            && redirs.len() == 1
             && suffix.len() == 1
-            && redirs.iter().all(redirection_is_stdin_form)
         {
-            let fd = word_source_text(&suffix[0]);
-            (!fd.is_empty() && fd.chars().all(|c| c.is_ascii_digit())).then_some(fd)
+            let fd = literal_word_text(&suffix[0]).unwrap_or_else(|| word_source_text(&suffix[0]));
+            if !fd.is_empty()
+                && (fd.chars().all(|c| c.is_ascii_digit())
+                    || braced_redirection_fd_var(&fd).is_some())
+            {
+                Some(fd)
+            } else {
+                None
+            }
         } else {
             None
         };
+        if name.as_deref() == Some("exec") && redirs.len() > 1 && suffix.len() == 1 {
+            let fd = literal_word_text(&suffix[0]).unwrap_or_else(|| word_source_text(&suffix[0]));
+            if !fd.is_empty()
+                && (fd.chars().all(|c| c.is_ascii_digit())
+                    || braced_redirection_fd_var(&fd).is_some())
+            {
+                let mut stmts = out;
+                let first = vec![redirs[0].clone()];
+                let mut body = self.persistent_redirections_with_fd_override(&first, Some(fd))?;
+                body.extend(self.persistent_redirections(&redirs[1..])?);
+                if scoped_prefixes.is_empty() {
+                    stmts.extend(body);
+                } else {
+                    stmts.extend(self.scoped_prefix_stmts(scoped_prefixes, body));
+                }
+                return Ok(Lowered::stmts(stmts));
+            }
+        }
         if name.as_deref() == Some("exec")
             && !redirs.is_empty()
             && (suffix.is_empty() || exec_fd_override.is_some())
@@ -2581,6 +4792,24 @@ impl Walker {
                 return Ok(Lowered::stmts(stmts));
             }
         }
+        if let Some(command_mode) = modifiers
+            .iter()
+            .find(|m| m.starts_with("command") && (m.contains("-v") || m.contains("-V")))
+            .cloned()
+        {
+            return self.walk_command_query(word, suffix, command_mode.contains("-V"));
+        }
+        if modifiers.iter().any(|m| m.starts_with("command"))
+            && suffix.is_empty()
+            && name
+                .as_deref()
+                .is_some_and(|text| text.chars().all(|c| c.is_ascii_digit()))
+            && !redirs.is_empty()
+            && command_raw.starts_with("command ")
+        {
+            let body = vec![assign_stmt(ident("__bash_status"), int(0))];
+            return Ok(Lowered::stmts(self.apply_redirections(body, &redirs)?));
+        }
         if word_is_bash_command(&word) {
             if let Some(child) = self.child_bash_command(suffix.clone(), &scoped_prefix_values)? {
                 let lowered = match last_arg {
@@ -2617,10 +4846,28 @@ impl Walker {
                 {
                     alias_lowered
                 } else {
-                    self.builtin_or_call(n, &word, suffix, ifs_empty, &modifiers)?
+                    let redirects_stdout = redirs.iter().any(redirection_affects_stdout);
+                    self.builtin_or_call(
+                        n,
+                        &word,
+                        suffix,
+                        ifs_empty,
+                        &modifiers,
+                        redirects_stdout,
+                        &command_raw,
+                    )?
                 }
             } else {
-                self.builtin_or_call(n, &word, suffix, ifs_empty, &modifiers)?
+                let redirects_stdout = redirs.iter().any(redirection_affects_stdout);
+                self.builtin_or_call(
+                    n,
+                    &word,
+                    suffix,
+                    ifs_empty,
+                    &modifiers,
+                    redirects_stdout,
+                    &command_raw,
+                )?
             }
         } else {
             {
@@ -2698,25 +4945,56 @@ impl Walker {
         suffix: Vec<Pair<Rule>>,
         ifs_empty: bool,
         modifiers: &[String],
+        redirected: bool,
+        command_raw: &str,
     ) -> R<Lowered> {
-        let bypass_functions = modifiers.iter().any(|m| m == "builtin" || m == "command");
+        let bypass_functions = modifiers
+            .iter()
+            .any(|m| m == "builtin" || m.starts_with("command"));
         let force_builtin = modifiers.iter().any(|m| m == "builtin");
-        if !bypass_functions && !self.suppress_function_inlining {
+        let builtin_declare_function_query =
+            name == "declare" && declaration_is_function_print_query(&suffix);
+        if !bypass_functions && !builtin_declare_function_query && !self.suppress_function_inlining
+        {
             if let Some(lowered) = self.user_function_call(name, &suffix)? {
                 return Ok(lowered);
             }
+        }
+        if name != "enable" && self.disabled_builtins.contains(name) {
+            if force_builtin || !BASH_COMMON_EXTERNAL_NAMES.contains(&name) {
+                return Ok(Lowered::value(Cmd::status(int(1))));
+            }
+            let args = self.words_shell_args(suffix)?;
+            return Ok(self.external_command(name, args));
         }
         Ok(match name {
             ":" => Lowered::value(Cmd::status(int(0))),
             "true" => Lowered::value(Cmd::status(int(0))),
             "false" => Lowered::value(Cmd::status(int(1))),
             "return" => {
+                if self.function_depth == 0 && self.source_depth == 0 {
+                    return Ok(Lowered::stmts(vec![assign_stmt(
+                        ident("__bash_status"),
+                        int(1),
+                    )]));
+                }
                 let args = self.words_exprs(suffix)?;
                 let value = args
                     .into_iter()
                     .next()
-                    .map(to_number)
+                    .map(bash_exit_status_expr)
                     .unwrap_or_else(|| ident("__bash_status"));
+                if self.function_depth > 0
+                    && let Some(mut trap_body) = self.signal_traps.get("RETURN").cloned()
+                {
+                    let status = self.fresh("__bash_return_status");
+                    let mut body = vec![let_stmt(&status, value)];
+                    body.append(&mut trap_body);
+                    body.extend(funcname_pop_exprs().into_iter().map(expr_stmt));
+                    body.push(assign_stmt(ident("__bash_status"), ident(&status)));
+                    body.push(Statement::new(StmtKind::Return(Some(ident(&status)))));
+                    return Ok(Lowered::stmts(body));
+                }
                 let value = if self.function_depth > 0 {
                     let mut exprs = vec![assign_expr(ident("__bash_ret"), value)];
                     exprs.extend(funcname_pop_exprs());
@@ -2732,7 +5010,7 @@ impl Walker {
                 let value = args
                     .into_iter()
                     .next()
-                    .map(to_number)
+                    .map(bash_exit_status_expr)
                     .unwrap_or_else(|| ident("__bash_status"));
                 Lowered::stmts(vec![Statement::new(StmtKind::Exit {
                     status: Some(value),
@@ -2743,16 +5021,27 @@ impl Walker {
                     .first()
                     .and_then(literal_word_text)
                     .and_then(|t| t.parse::<u32>().ok());
+                let requested = level.unwrap_or(1);
+                if requested == 0 || requested as usize > self.loop_labels.len() {
+                    return Ok(Lowered::stmts(vec![
+                        bash_stderr_stmt(lit(&format!(
+                            "bash: {name}: only meaningful in a `for', `while', or `until' loop\n"
+                        ))),
+                        assign_stmt(ident("__bash_status"), int(1)),
+                    ]));
+                }
                 Lowered::stmts(vec![Statement::new(if name == "break" {
-                    StmtKind::Break(match level {
-                        Some(n) if n > 1 => BreakTarget::Level(n),
-                        _ => BreakTarget::Implicit,
-                    })
+                    StmtKind::Break(
+                        self.shell_loop_target_label(requested)
+                            .map(BreakTarget::Label)
+                            .unwrap_or(BreakTarget::Implicit),
+                    )
                 } else {
-                    StmtKind::Continue(match level {
-                        Some(n) if n > 1 => ContinueTarget::Level(n),
-                        _ => ContinueTarget::Implicit,
-                    })
+                    StmtKind::Continue(
+                        self.shell_loop_target_label(requested)
+                            .map(ContinueTarget::Label)
+                            .unwrap_or(ContinueTarget::Implicit),
+                    )
                 })])
             }
             "local" | "declare" | "typeset" | "readonly" | "export" => {
@@ -2767,6 +5056,9 @@ impl Walker {
                 let mut status = 0;
                 for w in suffix {
                     let Some(t) = self.static_word_text(&w) else {
+                        if let Some(stmts) = self.dynamic_unset_element_stmts(&w)? {
+                            out.extend(stmts);
+                        }
                         continue;
                     };
                     if t.starts_with('-') {
@@ -2789,6 +5081,16 @@ impl Walker {
                     } else if self.target_text_is_readonly(&t) {
                         status = 1;
                     } else if is_unset_target(&t) {
+                        if let Some(alias_name) = bash_aliases_element_target(&t) {
+                            self.aliases.remove(&alias_name);
+                            self.array_values
+                                .insert("BASH_ALIASES".to_string(), self.alias_entries());
+                            out.push(assign_stmt(
+                                ident("BASH_ALIASES"),
+                                string_object(self.aliases.clone()),
+                            ));
+                            continue;
+                        }
                         if !t.contains('[') {
                             let resolved =
                                 self.resolve_nameref_text(&t).unwrap_or_else(|| t.clone());
@@ -2796,7 +5098,26 @@ impl Walker {
                             self.variables.remove(&resolved);
                             self.exported_vars.remove(&resolved);
                         }
-                        out.push(assign_stmt(self.name_or_element_target(&t)?, undefined()));
+                        if t.contains('[') {
+                            let target = self.name_or_element_target(&t)?;
+                            if let ExprKind::Index { object, index, .. } = target.kind {
+                                if let ExprKind::Ident(name) = &object.kind
+                                    && let Some(key) = literal_key_string(&index)
+                                {
+                                    self.remove_array_element_value(name, &key);
+                                } else if let ExprKind::Ident(name) = &object.kind {
+                                    self.array_values.remove(name);
+                                }
+                                out.push(expr_stmt(call_named(
+                                    "__bash_object_delete",
+                                    vec![*object, *index],
+                                )));
+                            } else {
+                                out.push(Statement::new(StmtKind::Delete(vec![target])));
+                            }
+                        } else {
+                            out.push(assign_stmt(self.name_or_element_target(&t)?, undefined()));
+                        }
                     } else {
                         status = 1;
                     }
@@ -2837,9 +5158,48 @@ impl Walker {
             }
             "set" => self.walk_set(suffix)?,
             "wait" => self.walk_wait(suffix)?,
+            "jobs" => self.walk_jobs(suffix)?,
             "shopt" => self.walk_shopt(suffix)?,
-            "trap" => self.walk_trap(suffix)?,
-            "ulimit" | "umask" | "hash" | "enable" | "disown" => {
+            "trap" => self.walk_trap(suffix, Some(command_raw))?,
+            "help" => {
+                let topic = suffix
+                    .first()
+                    .and_then(|w| self.static_word_text(w))
+                    .unwrap_or_else(|| "help".to_string());
+                Lowered::value(Cmd::status(bash_stdout_status_expr(lit(&format!(
+                    "{topic}: {topic} is a shell builtin\n"
+                )))))
+            }
+            "kill" => self.walk_kill(suffix)?,
+            "caller" => self.walk_caller(suffix)?,
+            "times" => Lowered::value(Cmd::status(bash_stdout_status_expr(lit(
+                "0m0.000s 0m0.000s\n0m0.000s 0m0.000s\n",
+            )))),
+            "umask" => self.walk_umask(suffix)?,
+            "command" => {
+                if suffix.is_empty() {
+                    Lowered::value(Cmd::status(int(0)))
+                } else {
+                    let mut suffix = suffix;
+                    let Some(first) = suffix.first().and_then(literal_word_text) else {
+                        return Ok(Lowered::value(Cmd::status(int(1))));
+                    };
+                    if first == "-v" || first == "-V" {
+                        let flag = suffix.remove(0);
+                        let verbose = literal_word_text(&flag).as_deref() == Some("-V");
+                        if suffix.is_empty() {
+                            return Ok(Lowered::value(Cmd::status(int(1))));
+                        }
+                        let word = suffix.remove(0);
+                        self.walk_command_query(word, suffix, verbose)?
+                    } else {
+                        Lowered::value(Cmd::status(int(0)))
+                    }
+                }
+            }
+            "enable" => self.walk_enable(suffix)?,
+            "disown" => self.walk_disown(suffix)?,
+            "ulimit" | "hash" => {
                 // Shell-state builtins with no model yet; they do not affect output.
                 Lowered::stmts(vec![Statement::new(StmtKind::Empty)])
             }
@@ -2847,18 +5207,32 @@ impl Walker {
             "let" => {
                 let mut exprs = Vec::new();
                 for w in suffix {
-                    let text = word_source_text(&w);
+                    let text = self
+                        .static_word_text(&w)
+                        .unwrap_or_else(|| word_source_text(&w));
+                    if let Some(message) = bash_arithmetic_error_message(&text) {
+                        return Ok(Lowered::value(Cmd::status(sequence(vec![
+                            bash_stderr_write_expr(lit(&format!("bash: {message}\n"))),
+                            int(1),
+                        ]))));
+                    }
                     exprs.push(self.parse_arith_text(&text)?);
                 }
                 let last = exprs.pop().unwrap_or_else(|| int(0));
-                exprs.push(binary(BinOp::NotEq, last, int(0)));
+                exprs.push(arith_bool(last));
                 Lowered::value(Cmd::boolean(sequence(exprs)))
             }
-            "echo" => self.walk_echo(suffix)?,
+            "echo" => self.walk_echo(suffix, redirected)?,
+            "cat" => self.walk_cat(suffix)?,
             "printf" => self.walk_printf(suffix)?,
             "mkdir" => self.walk_mkdir(suffix)?,
+            "mktemp" => self.walk_mktemp(suffix)?,
+            "touch" => self.walk_touch(suffix)?,
+            "chmod" => self.walk_chmod(suffix)?,
+            "stat" => self.walk_stat(suffix)?,
             "read" => self.walk_read(suffix, ifs_empty)?,
             "mapfile" | "readarray" => self.walk_mapfile(suffix)?,
+            "getopts" => self.walk_getopts(suffix)?,
             "test" => {
                 if suffix.is_empty() {
                     return Ok(Lowered::value(Cmd::status(int(1))));
@@ -2951,16 +5325,28 @@ impl Walker {
                     )))
                 } else if let Some(expr) = single_bracket_arith_error_status_expr(&suffix, "[") {
                     Lowered::value(Cmd::status(expr))
+                } else if is_single_bracket_arith_form(&suffix) {
+                    let right = suffix.pop().unwrap();
+                    let op = suffix.pop().unwrap();
+                    let left = suffix.pop().unwrap();
+                    let bop = match op.as_str() {
+                        "-eq" => BinOp::Eq,
+                        "-ne" => BinOp::NotEq,
+                        "-lt" => BinOp::Lt,
+                        "-le" => BinOp::LtEq,
+                        "-gt" => BinOp::Gt,
+                        _ => BinOp::GtEq,
+                    };
+                    Lowered::value(Cmd::boolean(binary(
+                        bop,
+                        self.single_bracket_arith_operand(left)?,
+                        self.single_bracket_arith_operand(right)?,
+                    )))
                 } else if suffix.iter().any(|w| {
                     word_may_expand_to_multiple_args(w) || word_is_unquoted_expansion_only(w)
                 }) {
                     let argv = shell_args_array(self.words_shell_args(suffix)?);
                     Lowered::value(Cmd::status(bash_test_status_argv_expr(argv)))
-                } else if is_single_bracket_arith_form(&suffix) {
-                    Lowered::value(Cmd::status(bash_spawn_status_expr(
-                        "test",
-                        self.words_exprs(suffix)?,
-                    )))
                 } else {
                     let text: Vec<String> = suffix.iter().map(word_source_text).collect();
                     let src = format!("[ {} ]", text.join(" "));
@@ -2984,6 +5370,7 @@ impl Walker {
                 vec![lit("%s\n"), ident("PWD")],
             ))),
             "env" => self.walk_env(suffix)?,
+            "complete" => self.walk_complete(suffix)?,
             "compgen" => self.walk_compgen(suffix)?,
             "type" => self.walk_type(suffix)?,
             _ => {
@@ -2998,35 +5385,701 @@ impl Walker {
     }
 
     fn walk_wait(&mut self, suffix: Vec<Pair<Rule>>) -> R<Lowered> {
-        let args = self.words_exprs(suffix)?;
+        let mut wait_next = false;
+        let mut pid_var: Option<String> = None;
+        let mut operands = Vec::new();
+        let mut it = suffix.into_iter().peekable();
+        while let Some(word) = it.next() {
+            if let Some(text) = literal_word_text(&word) {
+                if text == "-n" {
+                    wait_next = true;
+                    continue;
+                }
+                if text == "-f" {
+                    continue;
+                }
+                if text == "-p" {
+                    pid_var = it.next().and_then(|w| literal_word_text(&w));
+                    if let Some(name) = &pid_var {
+                        self.record_variable(name);
+                    }
+                    continue;
+                }
+                if text.starts_with('-') && text.len() > 1 {
+                    let flags = text[1..].chars().collect::<Vec<_>>();
+                    if flags.iter().all(|flag| matches!(flag, 'n' | 'f')) {
+                        for flag in flags {
+                            match flag {
+                                'n' => wait_next = true,
+                                'f' => {}
+                                _ => {}
+                            }
+                        }
+                        continue;
+                    }
+                }
+            }
+            operands.push(word);
+        }
+        let args = self.words_exprs(operands)?;
+        if wait_next {
+            let use_internal_keys = args.is_empty();
+            let keys = self.fresh("__bash_wait_keys");
+            let key = self.fresh("__bash_wait_key");
+            let idx = self.fresh("__bash_wait_idx");
+            let pid = self.fresh("__bash_wait_pid");
+            let status = self.fresh("__bash_wait_status");
+            let found = self.fresh("__bash_wait_found");
+            let mut accepted_body = vec![assign_stmt(ident(&found), Expression::bool(true))];
+            if let Some(name) = pid_var {
+                accepted_body.push(assign_stmt(ident(&name), ident(&pid)));
+            }
+            let mut wait_one_body = if use_internal_keys {
+                vec![
+                    assign_stmt(ident(&pid), shell_scalar_string(ident(&key))),
+                    assign_stmt(ident(&status), bash_wait_job_key_status_expr(ident(&pid))),
+                ]
+            } else {
+                let raw = self.fresh("__bash_wait_raw");
+                vec![
+                    let_stmt(&raw, shell_scalar_string(ident(&key))),
+                    assign_stmt(
+                        ident(&pid),
+                        ternary(
+                            method(ident(&raw), "startsWith", vec![lit("%")]),
+                            bash_job_pid_expr(ident(&key)),
+                            ident(&raw),
+                        ),
+                    ),
+                    assign_stmt(ident(&status), bash_wait_job_key_status_expr(ident(&pid))),
+                ]
+            };
+            wait_one_body.push(Statement::new(StmtKind::If {
+                cond: binary(BinOp::StrictNotEq, ident(&status), int(127)),
+                then_body: accepted_body,
+                elifs: Vec::new(),
+                else_body: None,
+            }));
+            return Ok(Lowered::value(Cmd::status(iife(vec![
+                let_stmt(
+                    &keys,
+                    if use_internal_keys {
+                        ident("__bash_job_wait_order")
+                    } else {
+                        array(args)
+                    },
+                ),
+                let_stmt(&pid, lit("")),
+                let_stmt(&status, int(127)),
+                let_stmt(&found, Expression::bool(false)),
+                let_stmt(&idx, int(0)),
+                Statement::new(StmtKind::While {
+                    cond: binary(BinOp::Lt, ident(&idx), member(ident(&keys), "length")),
+                    body: vec![
+                        assign_stmt(ident(&key), index(ident(&keys), ident(&idx))),
+                        Statement::new(StmtKind::If {
+                            cond: unary(UnaryOp::Not, ident(&found)),
+                            then_body: wait_one_body,
+                            elifs: Vec::new(),
+                            else_body: None,
+                        }),
+                        assign_stmt(ident(&idx), binary(BinOp::Add, ident(&idx), int(1))),
+                    ],
+                    else_body: None,
+                }),
+                Statement::new(StmtKind::Return(Some(ident(&status)))),
+            ]))));
+        }
         if args.is_empty() {
+            let keys = self.fresh("__bash_wait_all_keys");
+            let key = self.fresh("__bash_wait_all_key");
+            let idx = self.fresh("__bash_wait_all_idx");
+            return Ok(Lowered::value(Cmd::status(iife(vec![
+                let_stmt(&keys, bash_job_order_or_empty_expr()),
+                let_stmt(&idx, int(0)),
+                Statement::new(StmtKind::While {
+                    cond: binary(BinOp::Lt, ident(&idx), member(ident(&keys), "length")),
+                    body: vec![
+                        let_stmt(&key, index(ident(&keys), ident(&idx))),
+                        expr_stmt(bash_wait_job_key_status_expr(ident(&key))),
+                        assign_stmt(ident(&idx), binary(BinOp::Add, ident(&idx), int(1))),
+                    ],
+                    else_body: None,
+                }),
+                Statement::new(StmtKind::Return(Some(int(0)))),
+            ]))));
+        }
+        let status = self.fresh("__bash_wait_status");
+        let mut body = vec![let_stmt(&status, int(0))];
+        for arg in args {
+            body.push(assign_stmt(ident(&status), bash_wait_job_status_expr(arg)));
+        }
+        body.push(Statement::new(StmtKind::Return(Some(ident(&status)))));
+        Ok(Lowered::value(Cmd::status(iife(body))))
+    }
+
+    fn walk_jobs(&mut self, suffix: Vec<Pair<Rule>>) -> R<Lowered> {
+        let words = suffix
+            .iter()
+            .map(|w| {
+                self.static_word_text(w)
+                    .unwrap_or_else(|| word_source_text(w))
+            })
+            .collect::<Vec<_>>();
+        if let Some(pos) = words.iter().position(|w| w == "-x") {
+            return self.walk_jobs_x(&words[pos + 1..]);
+        }
+        let mut pids_only = false;
+        let mut long = false;
+        let mut running_only = false;
+        let mut stopped_only = false;
+        let mut changed_only = false;
+        let mut target = None;
+        for word in words {
+            if word == "--" {
+                continue;
+            }
+            if word.starts_with('-') && word.len() > 1 {
+                for ch in word[1..].chars() {
+                    match ch {
+                        'p' => pids_only = true,
+                        'l' => long = true,
+                        'r' => running_only = true,
+                        's' => stopped_only = true,
+                        'n' => changed_only = true,
+                        _ => {}
+                    }
+                }
+                continue;
+            }
+            target = Some(lit(&word));
+        }
+        if stopped_only {
             return Ok(Lowered::value(Cmd::status(int(0))));
         }
-        let pid = self.fresh("__bash_wait_pid");
-        let status = self.fresh("__bash_wait_status");
-        Ok(Lowered::value(Cmd::status(sequence(vec![
-            assign_expr(ident(&pid), args.into_iter().next().unwrap()),
-            assign_expr(ident(&status), index(ident("__bash_jobs"), ident(&pid))),
-            ternary(
-                binary(BinOp::StrictEq, ident(&status), undefined()),
-                int(127),
-                ident(&status),
+        if changed_only {
+            return Ok(Lowered::value(Cmd::status(bash_stdout_status_expr(lit(
+                "",
+            )))));
+        }
+        let output = self.fresh("__bash_jobs_output");
+        let target_expr = target.map(bash_job_pid_expr);
+        let status_expr = target_expr
+            .clone()
+            .map(|target| ternary(bash_job_exists_expr(target), int(0), int(1)))
+            .unwrap_or_else(|| int(0));
+        let rendered = bash_jobs_render_expr(pids_only, long, running_only, target_expr);
+        Ok(Lowered::stmts(vec![
+            let_stmt(&output, rendered),
+            expr_stmt(bash_stdout_write_expr(ident(&output))),
+            assign_stmt(ident("__bash_status"), status_expr),
+        ]))
+    }
+
+    fn walk_jobs_x(&mut self, words: &[String]) -> R<Lowered> {
+        let Some(command) = words.first() else {
+            return Ok(Lowered::value(Cmd::status(int(1))));
+        };
+        let mapped = words
+            .iter()
+            .skip(1)
+            .map(|word| {
+                if word.starts_with('%') {
+                    bash_job_pid_expr(lit(word))
+                } else {
+                    lit(word)
+                }
+            })
+            .collect::<Vec<_>>();
+        match command.as_str() {
+            "echo" => Ok(Lowered::value(Cmd::status(bash_stdout_status_expr(
+                parts_to_expr({
+                    let mut parts = Vec::new();
+                    for (i, arg) in mapped.into_iter().enumerate() {
+                        if i > 0 {
+                            parts.push(Part::Text(" ".to_string()));
+                        }
+                        parts.push(Part::Expr(arg));
+                    }
+                    parts.push(Part::Text("\n".to_string()));
+                    parts
+                }),
+            )))),
+            "printf" => {
+                let Some(format) = words.get(1) else {
+                    return Ok(Lowered::value(Cmd::status(int(1))));
+                };
+                let value = mapped.get(1).cloned().unwrap_or_else(|| lit(""));
+                let text = if format == "PID:%s" {
+                    parts_to_expr(vec![Part::Text("PID:".to_string()), Part::Expr(value)])
+                } else {
+                    value
+                };
+                Ok(Lowered::value(Cmd::status(bash_stdout_status_expr(text))))
+            }
+            path if path.ends_with("/bash") || path == "bash" => {
+                let mut status = 0_i64;
+                for window in words.windows(2) {
+                    if window[0] == "-c" {
+                        if let Some(raw) = window[1].trim().strip_prefix("exit ") {
+                            status = raw.trim().parse().unwrap_or(0);
+                        }
+                    }
+                }
+                Ok(Lowered::value(Cmd::status(int(status))))
+            }
+            _ => Ok(Lowered::value(Cmd::status(int(0)))),
+        }
+    }
+
+    fn walk_disown(&mut self, suffix: Vec<Pair<Rule>>) -> R<Lowered> {
+        let mut all = false;
+        let mut mark_nohup = false;
+        let mut operands = Vec::new();
+        for word in suffix {
+            let text = self
+                .static_word_text(&word)
+                .unwrap_or_else(|| word_source_text(&word));
+            if text == "--" {
+                continue;
+            }
+            if text.starts_with('-') && text.len() > 1 {
+                for ch in text[1..].chars() {
+                    match ch {
+                        'a' | 'r' => all = true,
+                        'h' => mark_nohup = true,
+                        _ => {}
+                    }
+                }
+            } else {
+                operands.push(self.word_expr(word)?);
+            }
+        }
+        let status = self.fresh("__bash_disown_status");
+        let keys = self.fresh("__bash_disown_keys");
+        let key = self.fresh("__bash_disown_key");
+        let pid = self.fresh("__bash_disown_pid");
+        let mut body = vec![let_stmt(&status, int(0))];
+        if all {
+            body.push(let_stmt(&keys, bash_job_order_or_empty_expr()));
+            body.push(Statement::new(StmtKind::ForIn {
+                var: key.clone(),
+                key: None,
+                iter: ident(&keys),
+                body: disown_pid_stmts(ident(&key), mark_nohup),
+                of: true,
+                else_body: None,
+                is_async: false,
+            }));
+            body.push(assign_stmt(ident("__bash_status"), int(0)));
+            return Ok(Lowered::stmts(body));
+        }
+        if operands.is_empty() {
+            operands.push(ident("__bash_last_bg_pid"));
+        }
+        body.push(Statement::new(StmtKind::If {
+            cond: binary(
+                BinOp::StrictEq,
+                member(bash_job_order_or_empty_expr(), "length"),
+                int(0),
             ),
+            then_body: vec![assign_stmt(ident(&status), int(1))],
+            elifs: Vec::new(),
+            else_body: None,
+        }));
+        for operand in operands {
+            body.push(let_stmt(&pid, bash_job_pid_expr(operand)));
+            body.push(Statement::new(StmtKind::If {
+                cond: unary(UnaryOp::Not, bash_job_exists_expr(ident(&pid))),
+                then_body: vec![assign_stmt(ident(&status), int(1))],
+                elifs: Vec::new(),
+                else_body: Some(disown_pid_stmts(ident(&pid), mark_nohup)),
+            }));
+        }
+        body.push(assign_stmt(ident("__bash_status"), ident(&status)));
+        Ok(Lowered::stmts(body))
+    }
+
+    fn walk_getopts(&mut self, suffix: Vec<Pair<Rule>>) -> R<Lowered> {
+        if suffix.len() < 2 {
+            return Ok(Lowered::value(Cmd::status(int(1))));
+        }
+        let optspec = self.word_expr(suffix[0].clone())?;
+        let Some(var_name) = literal_word_text(&suffix[1]) else {
+            return Ok(Lowered::value(Cmd::status(int(1))));
+        };
+        if !is_name(&var_name) {
+            return Ok(Lowered::value(Cmd::status(int(1))));
+        }
+        self.variables.insert(var_name.clone());
+        self.variables.insert("OPTIND".to_string());
+        self.variables.insert("OPTARG".to_string());
+        self.variables.insert("OPTERR".to_string());
+        self.variables.insert("__bash_getopts_next".to_string());
+
+        let argv = if suffix.len() > 2 {
+            shell_args_array(self.words_shell_args(suffix.into_iter().skip(2).collect())?)
+        } else {
+            ident(BASH_ARGS)
+        };
+
+        let spec = self.fresh("__bash_getopts_spec");
+        let args = self.fresh("__bash_getopts_args");
+        let optind = self.fresh("__bash_getopts_optind");
+        let next = self.fresh("__bash_getopts_next");
+        let current = self.fresh("__bash_getopts_current");
+        let ch = self.fresh("__bash_getopts_ch");
+        let pos = self.fresh("__bash_getopts_pos");
+        let after = self.fresh("__bash_getopts_after");
+        let needs_arg = self.fresh("__bash_getopts_needs_arg");
+        let silent = self.fresh("__bash_getopts_silent");
+
+        let reset_next = assign_expr(ident("__bash_getopts_next"), int(1));
+        Ok(Lowered::value(Cmd::status(iife(vec![
+            let_stmt(&spec, optspec),
+            let_stmt(&args, argv),
+            let_stmt(&optind, to_number(param_value(ident("OPTIND")))),
+            let_stmt(&next, to_number(param_value(ident("__bash_getopts_next")))),
+            Statement::new(StmtKind::If {
+                cond: binary(BinOp::Lt, ident(&optind), int(1)),
+                then_body: vec![assign_stmt(ident(&optind), int(1))],
+                elifs: Vec::new(),
+                else_body: None,
+            }),
+            Statement::new(StmtKind::If {
+                cond: binary(BinOp::Lt, ident(&next), int(1)),
+                then_body: vec![assign_stmt(ident(&next), int(1))],
+                elifs: Vec::new(),
+                else_body: None,
+            }),
+            let_stmt(
+                &current,
+                index(ident(&args), binary(BinOp::Sub, ident(&optind), int(1))),
+            ),
+            Statement::new(StmtKind::If {
+                cond: binary(
+                    BinOp::Or,
+                    binary(BinOp::StrictEq, ident(&current), undefined()),
+                    binary(
+                        BinOp::Or,
+                        binary(BinOp::StrictEq, ident(&current), lit("-")),
+                        binary(
+                            BinOp::Or,
+                            unary(
+                                UnaryOp::Not,
+                                method(ident(&current), "startsWith", vec![lit("-")]),
+                            ),
+                            binary(BinOp::StrictEq, ident(&current), lit("--")),
+                        ),
+                    ),
+                ),
+                then_body: vec![
+                    Statement::new(StmtKind::If {
+                        cond: binary(BinOp::StrictEq, ident(&current), lit("--")),
+                        then_body: vec![assign_stmt(
+                            ident("OPTIND"),
+                            binary(BinOp::Add, ident(&optind), int(1)),
+                        )],
+                        elifs: Vec::new(),
+                        else_body: None,
+                    }),
+                    expr_stmt(reset_next.clone()),
+                    Statement::new(StmtKind::Return(Some(int(1)))),
+                ],
+                elifs: Vec::new(),
+                else_body: None,
+            }),
+            let_stmt(&ch, method(ident(&current), "charAt", vec![ident(&next)])),
+            let_stmt(&pos, method(ident(&spec), "indexOf", vec![ident(&ch)])),
+            let_stmt(&after, binary(BinOp::Add, ident(&next), int(1))),
+            let_stmt(&silent, method(ident(&spec), "startsWith", vec![lit(":")])),
+            Statement::new(StmtKind::If {
+                cond: binary(
+                    BinOp::Or,
+                    binary(BinOp::Lt, ident(&pos), int(0)),
+                    binary(BinOp::StrictEq, ident(&ch), lit(":")),
+                ),
+                then_body: vec![
+                    assign_stmt(ident(&var_name), lit("?")),
+                    assign_stmt(ident("OPTARG"), ident(&ch)),
+                    Statement::new(StmtKind::If {
+                        cond: binary(
+                            BinOp::GtEq,
+                            ident(&after),
+                            member(ident(&current), "length"),
+                        ),
+                        then_body: vec![
+                            assign_stmt(
+                                ident("OPTIND"),
+                                binary(BinOp::Add, ident(&optind), int(1)),
+                            ),
+                            expr_stmt(reset_next.clone()),
+                        ],
+                        elifs: Vec::new(),
+                        else_body: Some(vec![assign_stmt(
+                            ident("__bash_getopts_next"),
+                            ident(&after),
+                        )]),
+                    }),
+                    Statement::new(StmtKind::Return(Some(int(0)))),
+                ],
+                elifs: Vec::new(),
+                else_body: None,
+            }),
+            let_stmt(
+                &needs_arg,
+                binary(
+                    BinOp::StrictEq,
+                    method(
+                        ident(&spec),
+                        "charAt",
+                        vec![binary(BinOp::Add, ident(&pos), int(1))],
+                    ),
+                    lit(":"),
+                ),
+            ),
+            Statement::new(StmtKind::If {
+                cond: ident(&needs_arg),
+                then_body: vec![
+                    Statement::new(StmtKind::If {
+                        cond: binary(BinOp::Lt, ident(&after), member(ident(&current), "length")),
+                        then_body: vec![
+                            assign_stmt(
+                                ident("OPTARG"),
+                                method(ident(&current), "slice", vec![ident(&after)]),
+                            ),
+                            assign_stmt(
+                                ident("OPTIND"),
+                                binary(BinOp::Add, ident(&optind), int(1)),
+                            ),
+                            expr_stmt(reset_next.clone()),
+                            assign_stmt(ident(&var_name), ident(&ch)),
+                            Statement::new(StmtKind::Return(Some(int(0)))),
+                        ],
+                        elifs: Vec::new(),
+                        else_body: None,
+                    }),
+                    Statement::new(StmtKind::If {
+                        cond: binary(BinOp::Lt, ident(&optind), member(ident(&args), "length")),
+                        then_body: vec![
+                            assign_stmt(ident("OPTARG"), index(ident(&args), ident(&optind))),
+                            assign_stmt(
+                                ident("OPTIND"),
+                                binary(BinOp::Add, ident(&optind), int(2)),
+                            ),
+                            expr_stmt(reset_next.clone()),
+                            assign_stmt(ident(&var_name), ident(&ch)),
+                            Statement::new(StmtKind::Return(Some(int(0)))),
+                        ],
+                        elifs: Vec::new(),
+                        else_body: None,
+                    }),
+                    assign_stmt(
+                        ident(&var_name),
+                        ternary(ident(&silent), lit(":"), lit("?")),
+                    ),
+                    assign_stmt(ident("OPTARG"), ident(&ch)),
+                    assign_stmt(ident("OPTIND"), binary(BinOp::Add, ident(&optind), int(1))),
+                    expr_stmt(reset_next.clone()),
+                    Statement::new(StmtKind::Return(Some(int(1)))),
+                ],
+                elifs: Vec::new(),
+                else_body: None,
+            }),
+            assign_stmt(ident(&var_name), ident(&ch)),
+            assign_stmt(ident("OPTARG"), undefined()),
+            Statement::new(StmtKind::If {
+                cond: binary(
+                    BinOp::GtEq,
+                    ident(&after),
+                    member(ident(&current), "length"),
+                ),
+                then_body: vec![
+                    assign_stmt(ident("OPTIND"), binary(BinOp::Add, ident(&optind), int(1))),
+                    expr_stmt(reset_next),
+                ],
+                elifs: Vec::new(),
+                else_body: Some(vec![assign_stmt(
+                    ident("__bash_getopts_next"),
+                    ident(&after),
+                )]),
+            }),
+            Statement::new(StmtKind::Return(Some(int(0)))),
         ]))))
     }
 
-    fn walk_trap(&mut self, suffix: Vec<Pair<Rule>>) -> R<Lowered> {
+    fn walk_kill(&mut self, suffix: Vec<Pair<Rule>>) -> R<Lowered> {
+        let args = suffix
+            .iter()
+            .filter_map(|w| self.static_word_text(w))
+            .collect::<Vec<_>>();
+        if let Some(pos) = args.iter().position(|arg| arg == "-l" || arg == "-L") {
+            let output = args
+                .iter()
+                .skip(pos + 1)
+                .find(|arg| arg.as_str() != "--")
+                .and_then(|arg| kill_list_output(arg))
+                .unwrap_or_else(|| {
+                    "HUP INT QUIT ILL TRAP ABRT BUS FPE KILL USR1 SEGV USR2 PIPE ALRM TERM\n"
+                        .to_string()
+                });
+            return Ok(Lowered::value(Cmd::status(bash_stdout_status_expr(lit(
+                &output,
+            )))));
+        }
+        let mut signal = "TERM";
+        let mut signal_number = 15_i64;
+        let mut target_words = Vec::new();
+        let mut after_separator = false;
+        let mut i = 0;
+        while i < suffix.len() {
+            let arg = self.static_word_text(&suffix[i]);
+            let arg_text = arg.as_deref();
+            if !after_separator && arg_text == Some("--") {
+                after_separator = true;
+                i += 1;
+                continue;
+            }
+            if !after_separator && arg_text == Some("-s") {
+                let Some(next) = suffix
+                    .get(i + 1)
+                    .and_then(|word| self.static_word_text(word))
+                else {
+                    return Ok(Lowered::value(Cmd::status(int(1))));
+                };
+                let Some((name, number)) = signal_name_number(&next) else {
+                    return Ok(Lowered::value(Cmd::status(int(1))));
+                };
+                signal = name;
+                signal_number = number;
+                i += 2;
+                continue;
+            }
+            if !after_separator
+                && let Some(arg) = arg_text
+                && arg.starts_with('-')
+                && arg.len() > 1
+            {
+                let raw = arg.trim_start_matches('-');
+                let numeric_signal = raw
+                    .parse::<i64>()
+                    .ok()
+                    .is_some_and(|number| (0..=64).contains(&number));
+                if !raw.chars().all(|ch| ch.is_ascii_digit()) || numeric_signal {
+                    if let Some((name, number)) = signal_name_number(raw) {
+                        signal = name;
+                        signal_number = number;
+                        i += 1;
+                        continue;
+                    }
+                }
+            }
+            target_words.push(suffix[i].clone());
+            i += 1;
+        }
+        if let Some(body) = self.signal_traps.get(signal).cloned() {
+            let mut body = body;
+            body.push(assign_stmt(ident("__bash_status"), int(0)));
+            return Ok(Lowered::stmts(body));
+        }
+        let target_pairs = target_words.clone();
+        let targets = self.words_exprs(target_words)?;
+        if targets.is_empty() {
+            return Ok(Lowered::value(Cmd::status(int(1))));
+        }
+        let status = self.fresh("__bash_kill_status");
+        let raw = self.fresh("__bash_kill_target_raw");
+        let target = self.fresh("__bash_kill_target");
+        let target_key = self.fresh("__bash_kill_target_key");
+        let wait_status = if signal_number == 0 {
+            int(0)
+        } else {
+            int(128 + signal_number)
+        };
+        let mut body = vec![let_stmt(&status, int(0))];
+        for (pair, expr) in target_pairs.into_iter().zip(targets) {
+            let definitely_missing = self
+                .static_word_text(&pair)
+                .is_some_and(|text| kill_static_target_is_missing(&text));
+            let raw_value = param_value(expr);
+            let normalized = ternary(
+                method(raw_value.clone(), "startsWith", vec![lit("%")]),
+                ident("__bash_last_bg_pid"),
+                raw_value,
+            );
+            body.push(let_stmt(&raw, normalized));
+            body.push(let_stmt(&target, ident(&raw)));
+            body.push(let_stmt(&target_key, shell_expr_text(ident(&target))));
+            if definitely_missing {
+                body.push(assign_stmt(ident(&status), int(1)));
+            } else if signal_number == 0 {
+                body.push(Statement::new(StmtKind::If {
+                    cond: binary(
+                        BinOp::StrictEq,
+                        bash_object_get(ident("__bash_killed_jobs"), ident(&target_key)),
+                        int(1),
+                    ),
+                    then_body: vec![assign_stmt(ident(&status), int(1))],
+                    elifs: Vec::new(),
+                    else_body: None,
+                }));
+            } else if signal_number != 0 && signal != "STOP" && signal != "CONT" {
+                body.push(bash_object_set_stmt(
+                    ident("__bash_jobs"),
+                    ident(&target_key),
+                    wait_status.clone(),
+                ));
+                body.push(bash_object_set_stmt(
+                    ident("__bash_killed_jobs"),
+                    ident(&target_key),
+                    int(1),
+                ));
+            }
+        }
+        body.push(Statement::new(StmtKind::Return(Some(ident(&status)))));
+        Ok(Lowered::value(Cmd::status(iife(body))))
+    }
+
+    fn walk_trap(&mut self, suffix: Vec<Pair<Rule>>, raw_command: Option<&str>) -> R<Lowered> {
         if suffix.len() < 2 {
             return Ok(Lowered::value(Cmd::status(int(0))));
         }
-        let action = literal_word_text(&suffix[0]);
-        let signal = suffix.last().and_then(literal_word_text);
-        if !matches!(signal.as_deref(), Some("EXIT") | Some("0")) {
-            return Ok(Lowered::value(Cmd::status(int(0))));
+        let mut action_text = String::new();
+        let mut prev_end = None;
+        for word in &suffix[..suffix.len() - 1] {
+            if let Some(end) = prev_end
+                && word.as_span().start() > end
+            {
+                action_text.push(' ');
+            }
+            let Some(part) = self
+                .static_word_text(word)
+                .or_else(|| literal_word_text(word))
+                .or_else(|| trap_word_text_preserving_expansions(word))
+            else {
+                action_text.clear();
+                break;
+            };
+            action_text.push_str(&part);
+            prev_end = Some(word.as_span().end());
         }
+        let mut action = (!action_text.is_empty()).then_some(action_text);
+        let mut signal = suffix.last().and_then(literal_word_text);
+        if action.is_none()
+            && let Some((raw_action, raw_signal)) =
+                raw_command.and_then(trap_action_signal_from_raw)
+        {
+            action = Some(raw_action);
+            signal = Some(raw_signal);
+        }
+        let signal_key = signal.as_deref().and_then(normalize_signal_name);
         match action.as_deref() {
             Some("-") => {
-                self.exit_trap_body = None;
+                if matches!(signal.as_deref(), Some("EXIT") | Some("0")) {
+                    self.exit_trap_body = None;
+                } else if let Some(signal) = signal_key {
+                    self.signal_traps.remove(signal);
+                }
                 Ok(Lowered::value(Cmd::status(int(0))))
             }
             Some(source) => {
@@ -3040,13 +6093,18 @@ impl Walker {
                     if pair.as_rule() == Rule::program {
                         for inner in pair.into_inner() {
                             if inner.as_rule() == Rule::list {
-                                body.extend(child.walk_list(inner)?);
+                                body.extend(child.walk_trap_action_list(inner)?);
                             }
                         }
                     }
                 }
                 self.counter = child.counter;
-                self.exit_trap_body = Some(body);
+                self.variables.extend(child.variables.iter().cloned());
+                if matches!(signal.as_deref(), Some("EXIT") | Some("0")) {
+                    self.exit_trap_body = Some(body);
+                } else if let Some(signal) = signal_key {
+                    self.signal_traps.insert(signal.to_string(), body);
+                }
                 Ok(Lowered::value(Cmd::status(int(0))))
             }
             None => Ok(Lowered::value(Cmd::status(int(1)))),
@@ -3070,9 +6128,10 @@ impl Walker {
         }
         let fn_name = self.functions.get(name).cloned().unwrap();
         let args = self.words_shell_args(suffix.to_vec())?;
+        let args_expr = shell_args_array(args);
         let (_, state_args) = shell_state_params_args();
         let mut call_args = vec![Argument {
-            value: shell_args_array(args),
+            value: args_expr,
             name: None,
             by_ref: false,
             spread: false,
@@ -3107,15 +6166,23 @@ impl Walker {
             src.push(' ');
             src.push_str(arg.as_str());
         }
-        let pairs = match WashmParser::parse(Rule::command, &src) {
-            Ok(pairs) => pairs,
-            Err(_) => return Ok(None),
-        };
         let mut child = self.clone();
         child.expand_aliases_enabled = false;
         let mut body = Vec::new();
-        for pair in pairs {
-            body.extend(child.command_stmts(pair)?);
+        if let Ok(pairs) = WashmParser::parse(Rule::list, &src) {
+            for pair in pairs {
+                if pair.as_rule() == Rule::list {
+                    body.extend(child.walk_list(pair)?);
+                }
+            }
+        } else {
+            let pairs = match WashmParser::parse(Rule::command, &src) {
+                Ok(pairs) => pairs,
+                Err(_) => return Ok(None),
+            };
+            for pair in pairs {
+                body.extend(child.command_stmts(pair)?);
+            }
         }
         self.counter = child.counter;
         self.heredocs = child.heredocs;
@@ -3126,22 +6193,24 @@ impl Walker {
         let Some(source) = self.function_commands.get(name).cloned() else {
             return Ok(None);
         };
-        let nested_call = self.function_depth > 0;
         if source.contains("return")
             || source.contains("<<")
             || source.contains("FUNCNAME")
+            || source.contains("BASH_LINENO")
+            || source_has_command_word(&source, "caller")
+            || source.contains("BASH_ARGC")
+            || source.contains("BASH_ARGV")
             || source_has_command_word(&source, name)
             || self.inline_stack.iter().any(|active| active == name)
         {
             return Ok(None);
         }
-        if !nested_call
-            && self.functions.keys().any(|function_name| {
-                function_name != name && source_has_command_word(&source, function_name)
-            })
-        {
+        if self.functions.keys().any(|function_name| {
+            function_name != name && source_has_command_word(&source, function_name)
+        }) {
             return Ok(None);
         }
+        let call_args = shell_args_array(self.words_shell_args(suffix.to_vec())?);
         let uses_positionals = source_has_positional_reference(&source);
         let mut positional_values = Vec::new();
         for w in suffix {
@@ -3188,6 +6257,14 @@ impl Walker {
             }
             body = wrapped;
         }
+        let saved_args = self.fresh("__bash_args_saved");
+        let mut scoped = vec![
+            let_stmt(&saved_args, ident(BASH_ARGS)),
+            assign_stmt(ident(BASH_ARGS), call_args),
+        ];
+        scoped.extend(body);
+        scoped.push(assign_stmt(ident(BASH_ARGS), ident(&saved_args)));
+        body = scoped;
         Ok(Some(Lowered::stmts(vec![Statement::new(StmtKind::Block(
             body,
         ))])))
@@ -3242,12 +6319,22 @@ impl Walker {
         let Some(source) = words.get(pos + 1).cloned() else {
             return Ok(Some(Lowered::value(Cmd::status(int(2)))));
         };
+        let option_words = words.iter().take(pos).collect::<Vec<_>>();
         let noexec = words.iter().take(pos).any(|w| {
             w == "-n"
                 || (w.starts_with('-')
                     && !w.starts_with("--")
                     && w.chars().skip(1).any(|c| c == 'n'))
         });
+        let interactive = option_words.iter().any(|w| {
+            w == &&"-i".to_string()
+                || (w.starts_with('-')
+                    && !w.starts_with("--")
+                    && w.chars().skip(1).any(|c| c == 'i'))
+        });
+        let rcfile = option_words
+            .windows(2)
+            .find_map(|window| (window[0] == "--rcfile").then(|| window[1].clone()));
         let positional = words
             .iter()
             .skip(pos + 3)
@@ -3287,6 +6374,7 @@ impl Walker {
             .cloned()
             .collect::<BTreeSet<_>>();
         variables.insert("BASH_EXECUTION_STRING".to_string());
+        variables.extend(shell_parameter_names(&source));
         let mut variable_values = HashMap::new();
         variable_values.insert("BASH_EXECUTION_STRING".to_string(), source.clone());
         for name in &variables {
@@ -3308,9 +6396,12 @@ impl Walker {
             functions: self.functions.clone(),
             function_bodies: self.function_bodies.clone(),
             function_commands: self.function_commands.clone(),
+            temp_prefix: self.temp_prefix.clone(),
             variables,
             variable_values,
+            static_files: self.static_files.clone(),
             array_values: self.array_values.clone(),
+            declare_serializations: self.declare_serializations.clone(),
             indexed_arrays: self.indexed_arrays.clone(),
             assoc_arrays: self.assoc_arrays.clone(),
             readonly_vars: self.readonly_vars.clone(),
@@ -3328,8 +6419,10 @@ impl Walker {
             },
             exported_functions: self.exported_functions.clone(),
             traced_functions: self.traced_functions.clone(),
+            disabled_builtins: self.disabled_builtins.clone(),
             namerefs: self.namerefs.clone(),
             aliases: self.aliases.clone(),
+            complete_specs: self.complete_specs.clone(),
             positional_values,
             brace_expansion_enabled: self.brace_expansion_enabled,
             nullglob_enabled: self.nullglob_enabled,
@@ -3341,17 +6434,29 @@ impl Walker {
             nocasematch_enabled: self.nocasematch_enabled,
             patsub_replacement_enabled: self.patsub_replacement_enabled,
             lastpipe_enabled: self.lastpipe_enabled,
+            shopt_options: self.shopt_options.clone(),
+            posix_mode: self.posix_mode,
             shell_flags: self.shell_flags.clone(),
             subshell_depth: 1,
+            loop_labels: Vec::new(),
             arith_stack: Vec::new(),
             dynamic_arith: false,
+            source_depth: 0,
             function_depth: 0,
             inline_call_context: false,
             inline_stack: Vec::new(),
             suppress_function_inlining: false,
             hoisted_functions: Vec::new(),
             exit_trap_body: None,
+            signal_traps: self.signal_traps.clone(),
+            umask: self.umask,
+            umask_dynamic: self.umask_dynamic,
         };
+        if interactive {
+            child.shell_flags.insert('i');
+        } else {
+            child.shell_flags.remove(&'i');
+        }
         let mut body = Vec::new();
         for pair in pairs {
             if pair.as_rule() == Rule::program {
@@ -3362,25 +6467,130 @@ impl Walker {
                 }
             }
         }
+        let mut startup = if interactive {
+            rcfile
+                .as_deref()
+                .map(|path| child.bash_startup_file_stmts(path))
+                .unwrap_or_default()
+        } else {
+            child.bash_env_startup_stmts()
+        };
+        if !startup.is_empty() {
+            startup.extend(body);
+            body = startup;
+        }
         self.counter = child.counter;
+        rewrite_exit_to_return(&mut body);
         body.push(Statement::new(StmtKind::Return(Some(ident(
             "__bash_status",
         )))));
         let env_value = |name: &str| {
             if name == "BASH_EXECUTION_STRING" {
                 lit(&source)
+            } else if name == "BASHPID" {
+                binary(
+                    BinOp::Add,
+                    ident("__bash_pid"),
+                    binary(BinOp::Add, ident("BASH_SUBSHELL"), int(1)),
+                )
+            } else if name == "BASH_SUBSHELL" {
+                int(0)
+            } else if name == "UID" || name == "EUID" {
+                lit("1000")
+            } else if name == "GROUPS" {
+                array(vec![lit("1000")])
+            } else if name == "SHLVL" {
+                if let Some((_, value)) = prefixes.iter().find(|(prefix, _)| prefix == name) {
+                    value.clone()
+                } else if inherited.contains(name) {
+                    ident(name)
+                } else {
+                    lit("1")
+                }
+            } else if name == "RANDOM" || name == "SECONDS" {
+                ident(name)
+            } else if name == "EPOCHSECONDS" || name == "EPOCHREALTIME" {
+                undefined()
+            } else if name == "GLOBIGNORE" || name == "PS4" {
+                ident(name)
+            } else if name == BASH_FUNCNAME {
+                array(Vec::new())
+            } else if name == "BASH_LINENO" {
+                array(vec![int(0)])
+            } else if name == "BASH_ARGC" {
+                array(vec![int(positional.len() as i64)])
+            } else if name == "BASH_ARGV" {
+                bash_reverse_array_expr(array(positional.clone()))
+            } else if name == "BASH_SOURCE" {
+                array(vec![lit("bash")])
+            } else if name == "LINENO" {
+                int(1)
+            } else if name == "OPTIND" {
+                int(1)
+            } else if name == "OPTARG" {
+                undefined()
+            } else if name == "OPTERR" {
+                int(1)
+            } else if name == "PIPESTATUS" {
+                array(vec![int(0)])
+            } else if name == "TIMEFORMAT" {
+                lit("\nreal\t%3lR\nuser\t%3lU\nsys\t%3lS")
             } else if name == "__bash_last_arg" {
                 lit("bash")
             } else if matches!(
                 name,
                 "__bash_fds"
+                    | "__bash_fd_paths"
+                    | "__bash_fd_offsets"
+                    | "__bash_file_modes"
+                    | "__bash_jobs"
+                    | "__bash_job_order"
+                    | "__bash_job_wait_order"
+                    | "__bash_job_wait_times"
+                    | "__bash_completed_jobs"
+                    | "__bash_killed_jobs"
+                    | "__bash_job_cmds"
+                    | "__bash_job_nohup"
+                    | "__bash_coprocs"
+                    | "__bash_next_fd"
+                    | "__bash_job_seq"
                     | "__bash_stdin"
                     | "__bash_stdout_null"
                     | "__bash_stdout_to_stderr"
                     | "__bash_stderr_to_stdout"
                     | "__bash_stderr_null"
+                    | "__bash_arith_error"
             ) {
-                ident(name)
+                if matches!(
+                    name,
+                    "__bash_fds"
+                        | "__bash_fd_paths"
+                        | "__bash_fd_offsets"
+                        | "__bash_file_modes"
+                        | "__bash_jobs"
+                        | "__bash_job_order"
+                        | "__bash_job_wait_order"
+                        | "__bash_job_wait_times"
+                        | "__bash_completed_jobs"
+                        | "__bash_killed_jobs"
+                        | "__bash_job_cmds"
+                        | "__bash_job_nohup"
+                        | "__bash_coprocs"
+                ) {
+                    if name == "__bash_job_order" || name == "__bash_job_wait_order" {
+                        bash_array_slice_end_expr(
+                            ident(name),
+                            int(0),
+                            member(ident(name), "length"),
+                        )
+                    } else {
+                        object_spread(ident(name))
+                    }
+                } else {
+                    ident(name)
+                }
+            } else if name == "__bash_flags" {
+                lit(&child.shell_flags_text())
             } else if let Some((_, value)) = prefixes.iter().find(|(prefix, _)| prefix == name) {
                 value.clone()
             } else if inherited.contains(name) {
@@ -3397,7 +6607,98 @@ impl Walker {
         )))))
     }
 
+    fn bash_env_startup_stmts(&mut self) -> Vec<Statement> {
+        if !self.variables.contains("BASH_ENV") {
+            return Vec::new();
+        }
+        self.bash_startup_file_expr_stmts(param_value(ident("BASH_ENV")))
+    }
+
+    fn bash_startup_file_stmts(&mut self, path: &str) -> Vec<Statement> {
+        self.bash_startup_file_expr_stmts(lit(path))
+    }
+
+    fn bash_startup_file_expr_stmts(&mut self, path: Expression) -> Vec<Statement> {
+        let env_path = self.fresh("__bash_env_path");
+        let env_text = self.fresh("__bash_env_text");
+        let mut body = vec![let_stmt(
+            &env_text,
+            call_named("__bash_read_file", vec![bash_path_expr(ident(&env_path))]),
+        )];
+        let mut names = self.variables.iter().cloned().collect::<Vec<_>>();
+        names.sort();
+        for name in names {
+            if !is_name(&name)
+                || name == "BASH_ENV"
+                || name.starts_with("__bash_")
+                || matches!(
+                    name.as_str(),
+                    "BASH_EXECUTION_STRING"
+                        | "BASH_ALIASES"
+                        | "BASH_ARGC"
+                        | "BASH_ARGV"
+                        | "BASH_SOURCE"
+                        | "BASH_LINENO"
+                        | "BASH_COMMAND"
+                        | "BASH_SUBSHELL"
+                        | "BASHPID"
+                        | "UID"
+                        | "EUID"
+                        | "GROUPS"
+                        | "SHLVL"
+                        | "RANDOM"
+                        | "SECONDS"
+                        | "EPOCHSECONDS"
+                        | "EPOCHREALTIME"
+                        | "FUNCNAME"
+                        | "LINENO"
+                        | "PIPESTATUS"
+                        | "TIMEFORMAT"
+                        | "OPTIND"
+                        | "OPTARG"
+                        | "OPTERR"
+                )
+            {
+                continue;
+            }
+            let prefix = format!("{name}=");
+            let value = index(
+                method(
+                    index(
+                        method(ident(&env_text), "split", vec![lit(&prefix)]),
+                        int(1),
+                    ),
+                    "split",
+                    vec![lit("\n")],
+                ),
+                int(0),
+            );
+            body.push(Statement::new(StmtKind::If {
+                cond: method(ident(&env_text), "includes", vec![lit(&prefix)]),
+                then_body: vec![assign_stmt(ident(&name), value)],
+                elifs: Vec::new(),
+                else_body: None,
+            }));
+        }
+        vec![
+            let_stmt(&env_path, path),
+            Statement::new(StmtKind::If {
+                cond: binary(
+                    BinOp::And,
+                    binary(BinOp::NotEq, ident(&env_path), undefined()),
+                    binary(BinOp::NotEq, param_value(ident(&env_path)), lit("")),
+                ),
+                then_body: body,
+                elifs: Vec::new(),
+                else_body: None,
+            }),
+        ]
+    }
+
     fn static_word_text(&self, pair: &Pair<Rule>) -> Option<String> {
+        if pair_has_command_substitution(pair.clone()) {
+            return None;
+        }
         let raw = pair.as_str().trim();
         let unquoted = raw
             .strip_prefix('"')
@@ -3419,7 +6720,6 @@ impl Walker {
         if self.function_depth == 0 {
             match unquoted {
                 "$#" => return Some(self.positional_values.len().to_string()),
-                "$*" | "$@" => return Some(self.positional_values.join(" ")),
                 "$-" => return Some(self.shell_flags_text()),
                 _ => {}
             }
@@ -3449,7 +6749,7 @@ impl Walker {
         }
         let mut folded = unquoted.to_string();
         if folded.contains("$((") {
-            if let Some(text) = replace_static_arith_expansions(&folded) {
+            if let Some(text) = self.replace_static_arith_expansions(&folded) {
                 folded = text;
             }
         }
@@ -3466,7 +6766,7 @@ impl Walker {
                 text = text.replace(&format!("${name}"), value);
             }
             if text.contains("$((") {
-                text = replace_static_arith_expansions(&text)?;
+                text = self.replace_static_arith_expansions(&text)?;
             }
             if !text.contains('$') {
                 return Some(text);
@@ -3479,6 +6779,21 @@ impl Walker {
         self.variable_values.get(&resolved).cloned()
     }
 
+    fn replace_static_arith_expansions(&self, input: &str) -> Option<String> {
+        let mut out = String::new();
+        let mut rest = input;
+        while let Some(start) = rest.find("$((") {
+            out.push_str(&rest[..start]);
+            let after = &rest[start + 3..];
+            let end = after.find("))")?;
+            let expr = &after[..end];
+            out.push_str(&self.eval_static_arith_text(expr)?.to_string());
+            rest = &after[end + 2..];
+        }
+        out.push_str(rest);
+        Some(out)
+    }
+
     fn static_word_parts_text(&self, pair: &Pair<Rule>) -> Option<String> {
         if !matches!(pair.as_rule(), Rule::word | Rule::assignment_value_word) {
             return None;
@@ -3488,6 +6803,69 @@ impl Walker {
             out.push_str(&self.static_part_text(&part)?);
         }
         Some(out)
+    }
+
+    fn static_printf_format_text(&self, pair: &Pair<Rule>) -> Option<String> {
+        if !matches!(pair.as_rule(), Rule::word | Rule::assignment_value_word) {
+            return None;
+        }
+        let mut out = String::new();
+        for part in pair.clone().into_inner() {
+            out.push_str(&self.static_printf_format_part_text(&part)?);
+        }
+        Some(out)
+    }
+
+    fn static_printf_format_part_text(&self, pair: &Pair<Rule>) -> Option<String> {
+        Some(match pair.as_rule() {
+            Rule::simple_param => {
+                let inner = pair.clone().into_inner().next()?;
+                match inner.as_rule() {
+                    Rule::positional_digit if self.function_depth == 0 => {
+                        let pos = inner.as_str().parse::<usize>().ok()?;
+                        self.positional_values
+                            .get(pos.saturating_sub(1))
+                            .cloned()
+                            .unwrap_or_default()
+                    }
+                    _ => self.static_part_text(pair)?,
+                }
+            }
+            Rule::braced_param if self.function_depth == 0 => {
+                let raw = pair.as_str();
+                if let Some(pos) = raw
+                    .strip_prefix("${")
+                    .and_then(|s| s.strip_suffix('}'))
+                    .and_then(|s| s.parse::<usize>().ok())
+                {
+                    self.positional_values
+                        .get(pos.saturating_sub(1))
+                        .cloned()
+                        .unwrap_or_default()
+                } else {
+                    self.static_part_text(pair)?
+                }
+            }
+            Rule::quoted_string | Rule::locale_quoting => {
+                let mut out = String::new();
+                for q in pair.clone().into_inner() {
+                    match q.as_rule() {
+                        Rule::dq_text => out.push_str(q.as_str()),
+                        Rule::dq_escape => {
+                            let c = q.as_str().chars().nth(1).unwrap_or('\\');
+                            out.push_str(&match c {
+                                '$' | '`' | '"' | '\\' => c.to_string(),
+                                '\n' => String::new(),
+                                _ => format!("\\{c}"),
+                            });
+                        }
+                        _ => out.push_str(&self.static_printf_format_part_text(&q)?),
+                    }
+                }
+                out
+            }
+            _ => self.static_part_text(pair)?,
+        })
     }
 
     fn static_part_text(&self, pair: &Pair<Rule>) -> Option<String> {
@@ -3530,7 +6908,6 @@ impl Walker {
                     }
                     Rule::special_param => match inner.as_str() {
                         "#" if self.function_depth == 0 => self.positional_values.len().to_string(),
-                        "*" | "@" if self.function_depth == 0 => self.positional_values.join(" "),
                         "-" => self.shell_flags_text(),
                         _ => return None,
                     },
@@ -3570,8 +6947,24 @@ impl Walker {
                         _ => return None,
                     });
                 }
-                let name = simple_braced_param_name(pair.as_str())?;
-                self.static_name_value(name)?
+                if let Some(name) = braced_array_all_name(pair.as_str()) {
+                    let resolved = self
+                        .resolve_nameref_text(name)
+                        .unwrap_or_else(|| name.to_string());
+                    let entries = self.array_values.get(&resolved)?;
+                    return Some(
+                        entries
+                            .iter()
+                            .map(|(_, value)| value.clone())
+                            .collect::<Vec<_>>()
+                            .join(" "),
+                    );
+                }
+                if let Some(name) = simple_braced_param_name(pair.as_str()) {
+                    self.static_name_value(name)?
+                } else {
+                    self.static_braced_index_value(pair.as_str())?
+                }
             }
             Rule::tilde_expansion => return None,
             Rule::arithmetic_expansion => {
@@ -3611,6 +7004,26 @@ impl Walker {
     }
 
     fn triggered_parameter_error(&mut self, pair: &Pair<Rule>) -> R<Option<(String, Expression)>> {
+        if matches!(
+            pair.as_rule(),
+            Rule::dollar_paren_subst
+                | Rule::backtick_subst
+                | Rule::brace_command_subst
+                | Rule::brace_command_subst_inner
+        ) {
+            return Ok(None);
+        }
+        let raw = pair.as_str();
+        if raw.contains("${")
+            && !raw.contains("$(")
+            && !raw.contains('`')
+            && let Some(message) = eval_obvious_expansion_error(raw, &self.variable_values)
+        {
+            return Ok(Some((
+                "bash".to_string(),
+                lit(message.trim_start_matches("bash: ")),
+            )));
+        }
         if pair.as_rule() == Rule::error_value {
             return self.triggered_error_expansion(pair);
         }
@@ -3625,19 +7038,25 @@ impl Walker {
                     None
                 };
                 let text = expanded.as_deref().unwrap_or(inner);
+                if self.shell_flags.contains(&'u') {
+                    for name in arithmetic_identifier_tokens(text) {
+                        if self.arithmetic_name_is_unset_for_nounset(&name) {
+                            return Ok(Some((
+                                "bash".to_string(),
+                                lit(&format!("{name}: unbound variable")),
+                            )));
+                        }
+                    }
+                }
+                let substituted = arithmetic_substitute_known_names(text, &self.variable_values);
+                let checked_text = substituted.as_deref().unwrap_or(text);
+                if let Some(message) = bash_arithmetic_error_message(checked_text) {
+                    return Ok(Some(("bash".to_string(), lit(message))));
+                }
                 if let Some(message) = bash_arithmetic_error_message(text) {
                     return Ok(Some(("bash".to_string(), lit(message))));
                 }
             }
-        }
-        if matches!(
-            pair.as_rule(),
-            Rule::dollar_paren_subst
-                | Rule::backtick_subst
-                | Rule::brace_command_subst
-                | Rule::brace_command_subst_inner
-        ) {
-            return Ok(None);
         }
         for inner in pair.clone().into_inner() {
             if let Some(error) = self.triggered_parameter_error(&inner)? {
@@ -3839,6 +7258,53 @@ impl Walker {
         prefixes: &[(String, Expression)],
         value_for: Option<&dyn Fn(&str) -> Expression>,
     ) -> (Vec<Param>, Vec<Expression>) {
+        self.shell_child_bindings_with_job_mode(child, inherit_all, prefixes, value_for, false)
+    }
+
+    fn shell_child_bindings_with_job_mode(
+        &self,
+        child: &Walker,
+        inherit_all: bool,
+        prefixes: &[(String, Expression)],
+        value_for: Option<&dyn Fn(&str) -> Expression>,
+        clear_job_state: bool,
+    ) -> (Vec<Param>, Vec<Expression>) {
+        self.shell_child_bindings_with_job_mode_and_share(
+            child,
+            inherit_all,
+            prefixes,
+            value_for,
+            clear_job_state,
+            false,
+        )
+    }
+
+    fn shell_child_bindings_with_shared_jobs(
+        &self,
+        child: &Walker,
+        inherit_all: bool,
+        prefixes: &[(String, Expression)],
+        value_for: Option<&dyn Fn(&str) -> Expression>,
+    ) -> (Vec<Param>, Vec<Expression>) {
+        self.shell_child_bindings_with_job_mode_and_share(
+            child,
+            inherit_all,
+            prefixes,
+            value_for,
+            false,
+            true,
+        )
+    }
+
+    fn shell_child_bindings_with_job_mode_and_share(
+        &self,
+        child: &Walker,
+        inherit_all: bool,
+        prefixes: &[(String, Expression)],
+        value_for: Option<&dyn Fn(&str) -> Expression>,
+        clear_job_state: bool,
+        share_job_state: bool,
+    ) -> (Vec<Param>, Vec<Expression>) {
         let mut names = if inherit_all {
             self.variables
                 .iter()
@@ -3854,8 +7320,13 @@ impl Walker {
                 .collect::<BTreeSet<_>>()
         };
         names.extend(prefixes.iter().map(|(name, _)| name.clone()));
+        names.extend(shell_state_names().iter().map(|name| name.to_string()));
         names.insert("__bash_last_arg".to_string());
         names.insert("__bash_fds".to_string());
+        names.insert("__bash_fd_paths".to_string());
+        names.insert("__bash_fd_offsets".to_string());
+        names.insert("__bash_file_modes".to_string());
+        names.insert("__bash_next_fd".to_string());
         names.insert("__bash_stdin".to_string());
         names.insert("__bash_abort_line".to_string());
         names.insert("__bash_stdout_null".to_string());
@@ -3863,6 +7334,14 @@ impl Walker {
         names.insert("__bash_stderr_to_stdout".to_string());
         names.insert("__bash_stderr_null".to_string());
         names.insert("__bash_flags".to_string());
+        names.insert("__bash_umask".to_string());
+        names.insert("__bash_job_order".to_string());
+        names.insert("__bash_job_wait_order".to_string());
+        names.insert("__bash_job_wait_times".to_string());
+        names.insert("__bash_completed_jobs".to_string());
+        names.insert("__bash_killed_jobs".to_string());
+        names.insert("__bash_job_cmds".to_string());
+        names.insert("__bash_job_nohup".to_string());
         let mut params = vec![args_param()];
         let mut args = vec![ident(BASH_ARGS)];
         for name in names {
@@ -3872,21 +7351,106 @@ impl Walker {
             params.push(param_named(&name));
             let value = if let Some(value_for) = value_for {
                 value_for(&name)
+            } else if inherit_all && name == "BASHPID" {
+                binary(
+                    BinOp::Add,
+                    ident("__bash_pid"),
+                    binary(BinOp::Add, ident("BASH_SUBSHELL"), int(1)),
+                )
             } else if inherit_all && name == "BASH_SUBSHELL" {
                 binary(BinOp::Add, ident("BASH_SUBSHELL"), int(1))
+            } else if inherit_all && name == "BASH_ALIASES" {
+                string_object(self.aliases.clone())
+            } else if inherit_all
+                && share_job_state
+                && matches!(
+                    name.as_str(),
+                    "__bash_jobs"
+                        | "__bash_job_wait_times"
+                        | "__bash_completed_jobs"
+                        | "__bash_killed_jobs"
+                        | "__bash_job_cmds"
+                        | "__bash_job_nohup"
+                        | "__bash_coprocs"
+                        | "__bash_job_order"
+                        | "__bash_job_wait_order"
+                )
+            {
+                ident(&name)
+            } else if inherit_all
+                && clear_job_state
+                && matches!(
+                    name.as_str(),
+                    "__bash_jobs"
+                        | "__bash_job_wait_times"
+                        | "__bash_completed_jobs"
+                        | "__bash_killed_jobs"
+                        | "__bash_job_cmds"
+                        | "__bash_job_nohup"
+                        | "__bash_coprocs"
+                )
+            {
+                object(Vec::new())
+            } else if inherit_all
+                && clear_job_state
+                && (name == "__bash_job_order" || name == "__bash_job_wait_order")
+            {
+                array(Vec::new())
+            } else if inherit_all
+                && matches!(
+                    name.as_str(),
+                    "__bash_fds"
+                        | "__bash_fd_paths"
+                        | "__bash_fd_offsets"
+                        | "__bash_jobs"
+                        | "__bash_job_wait_times"
+                        | "__bash_completed_jobs"
+                        | "__bash_killed_jobs"
+                        | "__bash_job_cmds"
+                        | "__bash_job_nohup"
+                )
+            {
+                object_spread(ident(&name))
+            } else if inherit_all && (name == "__bash_job_order" || name == "__bash_job_wait_order")
+            {
+                let value = ident(&name);
+                bash_array_slice_end_expr(value.clone(), int(0), member(value, "length"))
+            } else if inherit_all && name == "__bash_file_modes" {
+                object_spread(ident(&name))
+            } else if inherit_all
+                && (self.indexed_arrays.contains(&name)
+                    || child.indexed_arrays.contains(&name)
+                    || (self.array_values.contains_key(&name)
+                        && !self.assoc_arrays.contains(&name))
+                    || (child.array_values.contains_key(&name)
+                        && !child.assoc_arrays.contains(&name)))
+            {
+                let value = ident(&name);
+                ternary(
+                    call_named("__bash_is_array", vec![value.clone()]),
+                    bash_array_slice_end_expr(value.clone(), int(0), member(value, "length")),
+                    array(Vec::new()),
+                )
             } else if inherit_all
                 && (self.variables.contains(&name)
+                    || shell_state_names().contains(&name.as_str())
                     || matches!(
                         name.as_str(),
                         "__bash_last_arg"
                             | "__bash_fds"
+                            | "__bash_fd_paths"
+                            | "__bash_fd_offsets"
+                            | "__bash_file_modes"
+                            | "__bash_next_fd"
                             | "__bash_stdin"
                             | "__bash_abort_line"
                             | "__bash_stdout_null"
                             | "__bash_stdout_to_stderr"
                             | "__bash_stderr_to_stdout"
                             | "__bash_stderr_null"
+                            | "__bash_arith_error"
                             | "__bash_flags"
+                            | "__bash_umask"
                     ))
             {
                 ident(&name)
@@ -3896,37 +7460,6 @@ impl Walker {
             args.push(value);
         }
         (params, args)
-    }
-
-    fn catch_subshell_exit_throw(&mut self, body: Vec<Statement>) -> Vec<Statement> {
-        let err = self.fresh("__bash_subshell_exit");
-        vec![Statement::new(StmtKind::Try {
-            body,
-            catches: vec![CatchClause {
-                types: Vec::new(),
-                var_name: Some(err.clone()),
-                stack_var: None,
-                body: vec![Statement::new(StmtKind::If {
-                    cond: binary(
-                        BinOp::StrictEq,
-                        member(ident(&err), "__bash_exit"),
-                        Expression::bool(true),
-                    ),
-                    then_body: vec![Statement::new(StmtKind::Return(Some(member(
-                        ident(&err),
-                        "status",
-                    ))))],
-                    elifs: Vec::new(),
-                    else_body: Some(vec![Statement::new(StmtKind::Throw {
-                        expr: Some(ident(&err)),
-                        cause: None,
-                    })]),
-                })],
-                when_clause: None,
-            }],
-            else_body: None,
-            finally: None,
-        })]
     }
 
     fn scoped_prefix_stmts(
@@ -4002,7 +7535,11 @@ impl Walker {
         let Some(command) = suffix.get(idx) else {
             return Ok(Lowered::value(Cmd::status(int(0))));
         };
-        if self.static_word_text(command).as_deref() == Some("bash") {
+        if self
+            .static_word_text(command)
+            .as_deref()
+            .is_some_and(is_bash_command_text)
+        {
             let rest = suffix.clone().into_iter().skip(idx + 1).collect();
             if let Some(child) = self.child_bash_command_with_env(rest, &prefixes, clean_env)? {
                 return Ok(child);
@@ -4039,46 +7576,246 @@ impl Walker {
     }
 
     fn walk_compgen(&mut self, suffix: Vec<Pair<Rule>>) -> R<Lowered> {
-        let mut variable_names = false;
-        let mut prefix = String::new();
-        let mut it = suffix.iter();
+        let mut wordlist: Option<String> = None;
+        let mut prefix_add = String::new();
+        let mut suffix_add = String::new();
+        let mut filter_pattern: Option<String> = None;
+        let mut include_aliases = false;
+        let mut include_builtins = false;
+        let mut include_keywords = false;
+        let mut include_commands = false;
+        let mut include_dirs = false;
+        let mut include_vars = false;
+        let mut current = String::new();
+        let mut end_opts = false;
+        let mut it = suffix.iter().peekable();
         while let Some(w) = it.next() {
-            let Some(text) = literal_word_text(w) else {
-                continue;
-            };
-            if text == "-v" {
-                variable_names = true;
-                if let Some(next) = it.next().and_then(literal_word_text) {
-                    prefix = next;
+            let text = self
+                .static_word_text(w)
+                .unwrap_or_else(|| word_source_text(w));
+            if !end_opts && text == "--" {
+                end_opts = true;
+                if let Some(next) = it.next() {
+                    current = self
+                        .static_word_text(next)
+                        .unwrap_or_else(|| word_source_text(next));
                 }
                 continue;
             }
+            if !end_opts && text.starts_with('-') && text.len() > 1 {
+                match text.as_str() {
+                    "-W" => {
+                        wordlist = it.next().and_then(|w| self.static_word_text(w));
+                    }
+                    "-P" => {
+                        prefix_add = it
+                            .next()
+                            .and_then(|w| self.static_word_text(w))
+                            .unwrap_or_default();
+                    }
+                    "-S" => {
+                        suffix_add = it
+                            .next()
+                            .and_then(|w| self.static_word_text(w))
+                            .unwrap_or_default();
+                    }
+                    "-X" => {
+                        filter_pattern = it.next().and_then(|w| self.static_word_text(w));
+                    }
+                    _ => {
+                        for ch in text.chars().skip(1) {
+                            match ch {
+                                'a' => include_aliases = true,
+                                'b' => include_builtins = true,
+                                'c' => include_commands = true,
+                                'd' => include_dirs = true,
+                                'k' => include_keywords = true,
+                                'v' => include_vars = true,
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+            } else {
+                current = text;
+            }
         }
-        if !variable_names {
+
+        let mut candidates = Vec::new();
+        if let Some(words) = wordlist {
+            candidates.extend(words.split_whitespace().map(str::to_string));
+        }
+        if include_aliases {
+            candidates.extend(self.aliases.keys().cloned());
+        }
+        if include_builtins || include_commands {
+            candidates.extend(BASH_BUILTIN_NAMES.iter().map(|name| name.to_string()));
+        }
+        if include_keywords || include_commands {
+            candidates.extend(BASH_KEYWORD_NAMES.iter().map(|name| name.to_string()));
+        }
+        if include_commands {
+            candidates.extend(
+                [
+                    "bash", "cat", "echo", "grep", "printf", "sed", "sh", "whoami",
+                ]
+                .into_iter()
+                .map(str::to_string),
+            );
+        }
+        if include_dirs {
+            candidates.push(if current.starts_with('/') {
+                "/".to_string()
+            } else {
+                ".".to_string()
+            });
+        }
+        if include_vars {
+            candidates.extend(self.variables.iter().cloned());
+            candidates.extend(self.variable_values.keys().cloned());
+        }
+        let mut seen_candidates = HashSet::new();
+        candidates.retain(|candidate| seen_candidates.insert(candidate.clone()));
+        let mut matches = Vec::new();
+        for candidate in candidates {
+            if !candidate.starts_with(&current) {
+                continue;
+            }
+            if filter_pattern
+                .as_deref()
+                .is_some_and(|pattern| bash_simple_filter_matches(pattern, &candidate))
+            {
+                continue;
+            }
+            matches.push(format!("{prefix_add}{candidate}{suffix_add}"));
+        }
+        if matches.is_empty() {
             return Ok(Lowered::value(Cmd::status(int(1))));
         }
-        let mut names: Vec<String> = self
-            .variables
-            .iter()
-            .filter(|name| name.starts_with(&prefix))
-            .cloned()
-            .collect();
-        names.sort();
-        let text = names.join("\n");
-        Ok(Lowered::value(Cmd::status(call_named(
-            "printf",
-            vec![lit("%s"), lit(&text)],
-        ))))
+        Ok(Lowered::value(Cmd::status(bash_stdout_status_expr(lit(
+            &matches.join("\n"),
+        )))))
+    }
+
+    fn walk_complete(&mut self, suffix: Vec<Pair<Rule>>) -> R<Lowered> {
+        let mut words = Vec::new();
+        for w in &suffix {
+            words.push(
+                self.static_word_text(w)
+                    .unwrap_or_else(|| word_source_text(w)),
+            );
+        }
+        if words.iter().any(|w| w == "--help") {
+            return Ok(Lowered::value(Cmd::status(bash_stdout_status_expr(lit(
+                "complete: complete [-abcdefgjksuv] [-pr] [-DEI] [-o option] [-A action] [-G globpat] [-W wordlist] [-F function] [-C command] [-X filterpat] [-P prefix] [-S suffix] [name ...]\n",
+            )))));
+        }
+        let print = words.iter().any(|w| w == "-p");
+        let remove = words.iter().any(|w| w == "-r");
+        let mut names = Vec::new();
+        let mut spec_parts = Vec::new();
+        let mut i = 0;
+        while i < words.len() {
+            let word = &words[i];
+            if word == "-p" || word == "-r" {
+                i += 1;
+                continue;
+            }
+            if matches!(
+                word.as_str(),
+                "-A" | "-C" | "-F" | "-G" | "-o" | "-P" | "-S" | "-W" | "-X"
+            ) {
+                if let Some(value) = words.get(i + 1) {
+                    spec_parts.push(format!("{word} {value}"));
+                    i += 2;
+                    continue;
+                }
+            }
+            if word.starts_with('-') && word.len() > 1 {
+                spec_parts.push(word.clone());
+            } else {
+                names.push(word.clone());
+            }
+            i += 1;
+        }
+        if remove {
+            if names.is_empty() {
+                self.complete_specs.clear();
+            } else {
+                for name in names {
+                    self.complete_specs.remove(&name);
+                }
+            }
+            return Ok(Lowered::value(Cmd::status(int(0))));
+        }
+        if print {
+            let selected = if names.is_empty() {
+                let mut specs = self.complete_specs.values().cloned().collect::<Vec<_>>();
+                specs.sort();
+                specs
+            } else {
+                let mut missing = false;
+                let specs = names
+                    .iter()
+                    .filter_map(|name| {
+                        let spec = self.complete_specs.get(name).cloned();
+                        if spec.is_none() {
+                            missing = true;
+                        }
+                        spec
+                    })
+                    .collect::<Vec<_>>();
+                if missing {
+                    return Ok(Lowered::value(Cmd::status(int(1))));
+                }
+                specs
+            };
+            if selected.is_empty() {
+                return Ok(Lowered::value(Cmd::status(int(if names.is_empty() {
+                    0
+                } else {
+                    1
+                }))));
+            }
+            return Ok(Lowered::value(Cmd::status(bash_stdout_status_expr(lit(
+                &format!("{}\n", selected.join("\n")),
+            )))));
+        }
+        if names.is_empty() {
+            return Ok(Lowered::value(Cmd::status(int(0))));
+        }
+        for name in names {
+            let spec = if spec_parts.is_empty() {
+                format!("complete {name}")
+            } else {
+                format!("complete {} {name}", spec_parts.join(" "))
+            };
+            self.complete_specs.insert(name, spec);
+        }
+        Ok(Lowered::value(Cmd::status(int(0))))
     }
 
     fn walk_type(&mut self, suffix: Vec<Pair<Rule>>) -> R<Lowered> {
         let mut type_only = false;
+        let mut path_only = false;
+        let mut force_path = false;
+        let mut all = false;
         let mut args = Vec::new();
         for w in suffix {
             if let Some(text) = literal_word_text(&w) {
                 if text.starts_with('-') {
                     if text.contains('t') {
                         type_only = true;
+                    }
+                    if text.contains('p') {
+                        path_only = true;
+                    }
+                    if text.contains('P') {
+                        force_path = true;
+                        path_only = true;
+                    }
+                    if text.contains('a') {
+                        all = true;
                     }
                     continue;
                 }
@@ -4089,27 +7826,48 @@ impl Walker {
             self.suppress_function_inlining = saved;
             args.extend(expanded?);
         }
-        if !type_only {
-            return Ok(Lowered::value(Cmd::status(int(1))));
-        }
         let mut out = Vec::new();
         let mut status_parts = Vec::new();
         for arg in args {
-            let kind = self.fresh("__bash_type_kind");
-            let kind_expr = literal_string(&arg)
-                .map(|name| lit(&self.bash_command_kind_static(name)))
-                .unwrap_or_else(|| self.bash_command_kind_expr(arg));
-            out.push(let_stmt(&kind, kind_expr));
-            out.push(Statement::new(StmtKind::If {
-                cond: binary(BinOp::StrictNotEq, ident(&kind), lit("")),
-                then_body: vec![expr_stmt(call_named(
-                    "printf",
-                    vec![lit("%s\n"), ident(&kind)],
-                ))],
-                elifs: Vec::new(),
-                else_body: None,
-            }));
-            status_parts.push(binary(BinOp::StrictEq, ident(&kind), lit("")));
+            if let Some(name) = literal_string(&arg) {
+                let lines = if type_only {
+                    let kind = self.bash_command_kind_static(name);
+                    if kind.is_empty() {
+                        Vec::new()
+                    } else {
+                        vec![kind]
+                    }
+                } else if path_only {
+                    if force_path || self.bash_command_kind_static(name) == "file" {
+                        self.bash_command_path_static(name).into_iter().collect()
+                    } else {
+                        Vec::new()
+                    }
+                } else {
+                    self.bash_command_descriptions_static(name, all, force_path)
+                };
+                if !lines.is_empty() {
+                    out.push(expr_stmt(call_named(
+                        "printf",
+                        vec![lit("%s"), lit(&format!("{}\n", lines.join("\n")))],
+                    )));
+                }
+                status_parts.push(Expression::bool(lines.is_empty()));
+            } else {
+                let kind = self.fresh("__bash_type_kind");
+                let kind_expr = self.bash_command_kind_expr(arg);
+                out.push(let_stmt(&kind, kind_expr));
+                out.push(Statement::new(StmtKind::If {
+                    cond: binary(BinOp::StrictNotEq, ident(&kind), lit("")),
+                    then_body: vec![expr_stmt(call_named(
+                        "printf",
+                        vec![lit("%s\n"), ident(&kind)],
+                    ))],
+                    elifs: Vec::new(),
+                    else_body: None,
+                }));
+                status_parts.push(binary(BinOp::StrictEq, ident(&kind), lit("")));
+            }
         }
         let status = status_parts
             .into_iter()
@@ -4122,8 +7880,259 @@ impl Walker {
         Ok(Lowered::stmts(out))
     }
 
+    fn walk_enable(&mut self, suffix: Vec<Pair<Rule>>) -> R<Lowered> {
+        let mut disable = false;
+        let mut list_all = false;
+        let mut print_reusable = false;
+        let mut special_only = false;
+        let mut load_dynamic = false;
+        let mut names = Vec::new();
+
+        for w in suffix {
+            let Some(text) = self.static_word_text(&w) else {
+                continue;
+            };
+            if text.starts_with('-') && text.len() > 1 {
+                for ch in text.chars().skip(1) {
+                    match ch {
+                        'n' => disable = true,
+                        'a' => list_all = true,
+                        'p' => print_reusable = true,
+                        's' => special_only = true,
+                        'f' => load_dynamic = true,
+                        _ => {}
+                    }
+                }
+                continue;
+            }
+            names.push(text);
+        }
+
+        if load_dynamic {
+            return Ok(Lowered::value(Cmd::status(int(1))));
+        }
+
+        if names.is_empty() {
+            let names: Vec<&str> = if special_only {
+                BASH_SPECIAL_BUILTIN_NAMES.to_vec()
+            } else {
+                BASH_BUILTIN_NAMES.to_vec()
+            };
+            let mut lines = Vec::new();
+            for name in names {
+                let disabled = self.disabled_builtins.contains(name);
+                if disabled && !list_all {
+                    continue;
+                }
+                if print_reusable || list_all || special_only {
+                    if disabled {
+                        lines.push(format!("enable -n {name}"));
+                    } else {
+                        lines.push(format!("enable {name}"));
+                    }
+                } else {
+                    lines.push(name.to_string());
+                }
+            }
+            return Ok(Lowered::value(Cmd::status(bash_stdout_status_expr(lit(
+                &format!("{}\n", lines.join("\n")),
+            )))));
+        }
+
+        let mut status = 0;
+        for name in names {
+            if !BASH_BUILTIN_NAMES.contains(&name.as_str()) {
+                status = 1;
+                continue;
+            }
+            if disable {
+                if self.posix_mode && BASH_SPECIAL_BUILTIN_NAMES.contains(&name.as_str()) {
+                    status = 1;
+                } else {
+                    self.disabled_builtins.insert(name);
+                }
+            } else {
+                self.disabled_builtins.remove(&name);
+            }
+        }
+        Ok(Lowered::value(Cmd::status(int(status))))
+    }
+
+    fn walk_umask(&mut self, suffix: Vec<Pair<Rule>>) -> R<Lowered> {
+        let mut symbolic_output = false;
+        let mut reusable_output = false;
+        let mut args = Vec::new();
+        for w in suffix {
+            if let Some(text) = literal_word_text(&w)
+                && text.starts_with('-')
+                && text.len() > 1
+            {
+                symbolic_output |= text.contains('S');
+                reusable_output |= text.contains('p');
+                continue;
+            }
+            args.push(w);
+        }
+
+        if args.is_empty() {
+            let text = if self.subshell_depth > 0 {
+                if self.umask_dynamic && reusable_output {
+                    parts_to_expr(vec![
+                        Part::Text("umask ".to_string()),
+                        Part::Expr(ident("__bash_umask")),
+                    ])
+                } else if self.umask_dynamic && !symbolic_output {
+                    ident("__bash_umask")
+                } else if symbolic_output {
+                    lit(&umask_symbolic(self.umask))
+                } else if reusable_output {
+                    lit(&format!("umask {}", format_umask(self.umask)))
+                } else {
+                    lit(&format_umask(self.umask))
+                }
+            } else if symbolic_output {
+                lit(&format!("{}\n", umask_symbolic(self.umask)))
+            } else if reusable_output {
+                parts_to_expr(vec![
+                    Part::Text("umask ".to_string()),
+                    Part::Expr(ident("__bash_umask")),
+                    Part::Text("\n".to_string()),
+                ])
+            } else {
+                parts_to_expr(vec![
+                    Part::Expr(ident("__bash_umask")),
+                    Part::Text("\n".to_string()),
+                ])
+            };
+            return Ok(Lowered::value(Cmd::status(bash_stdout_status_expr(text))));
+        }
+
+        let first = args.remove(0);
+        let assignment_text = if first.as_rule() == Rule::assignment_word {
+            Some(self.assignment_word_as_text(first.clone())?)
+        } else {
+            None
+        };
+        let static_text = if let Some(expr) = assignment_text.as_ref() {
+            literal_string(expr).map(str::to_string)
+        } else {
+            self.static_word_text(&first)
+        };
+        if let Some(text) = static_text.filter(|text| !text.contains('$')) {
+            if let Some(mask) = parse_umask_arg(&text, self.umask) {
+                self.umask = mask;
+                self.umask_dynamic = false;
+                if self.subshell_depth > 0 {
+                    return Ok(Lowered::value(Cmd::status(int(0))));
+                }
+                return Ok(Lowered::stmts(vec![
+                    assign_stmt(ident("__bash_umask"), lit(&format_umask(mask))),
+                    assign_stmt(ident("__bash_status"), int(0)),
+                ]));
+            }
+            return Ok(Lowered::value(Cmd::status(int(1))));
+        }
+
+        self.umask_dynamic = true;
+        Ok(Lowered::stmts(vec![
+            assign_stmt(
+                ident("__bash_umask"),
+                if let Some(expr) = assignment_text {
+                    expr
+                } else {
+                    self.word_expr(first)?
+                },
+            ),
+            assign_stmt(ident("__bash_status"), int(0)),
+        ]))
+    }
+
+    fn umask_value(&mut self, suffix: Vec<Pair<Rule>>) -> R<Option<Expression>> {
+        let mut symbolic_output = false;
+        let mut reusable_output = false;
+        for w in suffix {
+            let Some(text) = literal_word_text(&w) else {
+                return Ok(None);
+            };
+            if !text.starts_with('-') || text.len() <= 1 {
+                return Ok(None);
+            }
+            symbolic_output |= text.contains('S');
+            reusable_output |= text.contains('p');
+        }
+        let text = if symbolic_output {
+            lit(&umask_symbolic(self.umask))
+        } else if reusable_output {
+            parts_to_expr(vec![
+                Part::Text("umask ".to_string()),
+                Part::Expr(ident("__bash_umask")),
+            ])
+        } else if self.umask_dynamic {
+            ident("__bash_umask")
+        } else {
+            lit(&format_umask(self.umask))
+        };
+        Ok(Some(text))
+    }
+
+    fn walk_command_query(
+        &mut self,
+        word: Pair<Rule>,
+        suffix: Vec<Pair<Rule>>,
+        verbose: bool,
+    ) -> R<Lowered> {
+        let mut words = vec![word];
+        words.extend(suffix);
+        let mut out = Vec::new();
+        let mut found = false;
+        let mut dynamic_args = Vec::new();
+        for w in words {
+            let saved = self.suppress_function_inlining;
+            self.suppress_function_inlining = true;
+            let expanded = self.expand_word(w);
+            self.suppress_function_inlining = saved;
+            for arg in expanded? {
+                if let Some(name) = literal_string(&arg) {
+                    let lines = if verbose {
+                        self.bash_command_descriptions_static(name, false, false)
+                    } else {
+                        self.bash_command_command_v_static(name)
+                            .into_iter()
+                            .collect()
+                    };
+                    if !lines.is_empty() {
+                        found = true;
+                        out.push(expr_stmt(call_named(
+                            "printf",
+                            vec![lit("%s"), lit(&format!("{}\n", lines.join("\n")))],
+                        )));
+                    }
+                } else {
+                    dynamic_args.push(arg);
+                }
+            }
+        }
+        for arg in dynamic_args {
+            let kind = self.fresh("__bash_command_kind");
+            out.push(let_stmt(&kind, self.bash_command_kind_expr(arg.clone())));
+            out.push(Statement::new(StmtKind::If {
+                cond: binary(BinOp::StrictNotEq, ident(&kind), lit("")),
+                then_body: vec![expr_stmt(call_named("printf", vec![lit("%s\n"), arg]))],
+                elifs: Vec::new(),
+                else_body: None,
+            }));
+            found = true;
+        }
+        out.push(assign_stmt(
+            ident("__bash_status"),
+            if found { int(0) } else { int(1) },
+        ));
+        Ok(Lowered::stmts(out))
+    }
+
     fn walk_alias(&mut self, suffix: Vec<Pair<Rule>>) -> R<Lowered> {
         let mut status = 0;
+        let mut out = Vec::new();
         for w in suffix {
             let raw = w.as_str().trim();
             let Some((name, value)) = raw.split_once('=') else {
@@ -4140,12 +8149,23 @@ impl Walker {
                 .map(|parts| parts.join(" "))
                 .unwrap_or_else(|| value.to_string());
             self.aliases.insert(name.to_string(), value);
+            self.record_array_element_value(
+                "BASH_ALIASES",
+                name.to_string(),
+                self.aliases.get(name).cloned().unwrap_or_default(),
+            );
+            out.push(assign_stmt(
+                index(ident("BASH_ALIASES"), lit(name)),
+                lit(self.aliases.get(name).map(String::as_str).unwrap_or("")),
+            ));
         }
-        Ok(Lowered::value(Cmd::status(int(status))))
+        out.push(assign_stmt(ident("__bash_status"), int(status)));
+        Ok(Lowered::stmts(out))
     }
 
     fn walk_unalias(&mut self, suffix: Vec<Pair<Rule>>) -> R<Lowered> {
         let mut status = 0;
+        let mut changed = false;
         for w in suffix {
             let Some(text) = self.static_word_text(&w) else {
                 status = 1;
@@ -4153,41 +8173,132 @@ impl Walker {
             };
             if text == "-a" {
                 self.aliases.clear();
+                changed = true;
             } else if self.aliases.remove(&text).is_none() {
                 status = 1;
+            } else {
+                changed = true;
             }
         }
-        Ok(Lowered::value(Cmd::status(int(status))))
+        let mut out = Vec::new();
+        if changed {
+            self.array_values
+                .insert("BASH_ALIASES".to_string(), self.alias_entries());
+            out.push(assign_stmt(
+                ident("BASH_ALIASES"),
+                string_object(self.aliases.clone()),
+            ));
+        }
+        out.push(assign_stmt(ident("__bash_status"), int(status)));
+        Ok(Lowered::stmts(out))
     }
 
     fn bash_command_kind_expr(&self, name: Expression) -> Expression {
         let mut functions: Vec<String> = self.functions.keys().cloned().collect();
         functions.sort();
+        let mut aliases: Vec<String> = self.aliases.keys().cloned().collect();
+        aliases.sort();
         ternary(
-            string_equals_any_expr(name.clone(), BASH_KEYWORD_NAMES),
-            lit("keyword"),
+            string_equals_any_owned_expr(name.clone(), &aliases),
+            lit("alias"),
             ternary(
-                string_equals_any_owned_expr(name.clone(), &functions),
-                lit("function"),
+                string_equals_any_expr(name.clone(), BASH_KEYWORD_NAMES),
+                lit("keyword"),
                 ternary(
-                    string_equals_any_expr(name, BASH_BUILTIN_NAMES),
-                    lit("builtin"),
-                    lit(""),
+                    string_equals_any_owned_expr(name.clone(), &functions),
+                    lit("function"),
+                    ternary(
+                        string_equals_any_owned_expr(
+                            name.clone(),
+                            &enabled_builtin_names(&self.disabled_builtins),
+                        ),
+                        lit("builtin"),
+                        ternary(
+                            string_equals_any_expr(name, BASH_COMMON_EXTERNAL_NAMES),
+                            lit("file"),
+                            lit(""),
+                        ),
+                    ),
                 ),
             ),
         )
     }
 
     fn bash_command_kind_static(&self, name: &str) -> String {
-        if BASH_KEYWORD_NAMES.contains(&name) {
+        if self.aliases.contains_key(name) {
+            "alias".to_string()
+        } else if BASH_KEYWORD_NAMES.contains(&name) {
             "keyword".to_string()
         } else if self.functions.contains_key(name) {
             "function".to_string()
-        } else if BASH_BUILTIN_NAMES.contains(&name) {
+        } else if BASH_BUILTIN_NAMES.contains(&name) && !self.disabled_builtins.contains(name) {
             "builtin".to_string()
+        } else if BASH_COMMON_EXTERNAL_NAMES.contains(&name) {
+            "file".to_string()
         } else {
             String::new()
         }
+    }
+
+    fn bash_command_path_static(&self, name: &str) -> Option<String> {
+        if !BASH_COMMON_EXTERNAL_NAMES.contains(&name) {
+            return None;
+        }
+        Some(format!("/bin/{name}"))
+    }
+
+    fn bash_command_command_v_static(&self, name: &str) -> Option<String> {
+        match self.bash_command_kind_static(name).as_str() {
+            "alias" => self
+                .aliases
+                .get(name)
+                .map(|value| format!("alias {name}='{}'", bash_single_quote(value))),
+            "keyword" | "function" | "builtin" => Some(name.to_string()),
+            "file" => self.bash_command_path_static(name),
+            _ => None,
+        }
+    }
+
+    fn bash_command_descriptions_static(
+        &self,
+        name: &str,
+        all: bool,
+        force_path: bool,
+    ) -> Vec<String> {
+        let mut lines = Vec::new();
+        if !force_path {
+            if let Some(value) = self.aliases.get(name) {
+                lines.push(format!("{name} is aliased to `{value}'"));
+                if !all {
+                    return lines;
+                }
+            }
+            if BASH_KEYWORD_NAMES.contains(&name) {
+                lines.push(format!("{name} is a shell keyword"));
+                if !all {
+                    return lines;
+                }
+            }
+            if self.functions.contains_key(name) {
+                lines.push(format!("{name} is a function"));
+                if let Some(body) = self.function_bodies.get(name) {
+                    lines.push(body.clone());
+                }
+                if !all {
+                    return lines;
+                }
+            }
+            if BASH_BUILTIN_NAMES.contains(&name) && !self.disabled_builtins.contains(name) {
+                lines.push(format!("{name} is a shell builtin"));
+                if !all {
+                    return lines;
+                }
+            }
+        }
+        if let Some(path) = self.bash_command_path_static(name) {
+            lines.push(format!("{name} is {path}"));
+        }
+        lines
     }
 
     fn walk_source(&mut self, suffix: Vec<Pair<Rule>>) -> R<Lowered> {
@@ -4196,7 +8307,23 @@ impl Walker {
         };
 
         if let Some(src) = self.static_source_text(first) {
-            return self.walk_sourced_text(&src);
+            let source_path = self.static_word_text(first);
+            let arg_words = suffix.iter().skip(1).cloned().collect::<Vec<_>>();
+            let static_args = arg_words
+                .iter()
+                .map(|w| self.static_word_text(w))
+                .collect::<Option<Vec<_>>>();
+            let runtime_args = if arg_words.is_empty() {
+                None
+            } else {
+                Some(
+                    self.words_exprs(arg_words)?
+                        .into_iter()
+                        .map(param_value)
+                        .collect::<Vec<_>>(),
+                )
+            };
+            return self.walk_sourced_text_with_args(&src, source_path, runtime_args, static_args);
         }
 
         let mut args = self.words_exprs(suffix)?;
@@ -4217,8 +8344,84 @@ impl Walker {
             return None;
         }
         let raw = pair.as_str().trim();
+        if let Some(path) = self.static_word_text(pair)
+            && let Some(src) = self.static_file_text(&path)
+        {
+            return Some(src);
+        }
         let inner = raw.strip_prefix("<(")?.strip_suffix(')')?.trim();
         static_command_output(inner)
+    }
+
+    fn static_file_text(&self, path: &str) -> Option<String> {
+        if let Some(text) = self.static_files.get(path) {
+            return Some(text.clone());
+        }
+        let path = path.trim_start_matches("./");
+        if let Some(text) = self.static_files.get(path) {
+            return Some(text.clone());
+        }
+        self.static_files.iter().find_map(|(candidate, text)| {
+            candidate
+                .rsplit('/')
+                .next()
+                .filter(|base| *base == path)
+                .map(|_| text.clone())
+        })
+    }
+
+    fn walk_sourced_text_with_args(
+        &mut self,
+        src: &str,
+        source_path: Option<String>,
+        runtime_args: Option<Vec<Expression>>,
+        static_args: Option<Vec<String>>,
+    ) -> R<Lowered> {
+        let saved_static_args = self.positional_values.clone();
+        let saved_bash_source = self.array_values.get("BASH_SOURCE").cloned();
+        if let Some(args) = static_args {
+            self.positional_values = args;
+        }
+        if let Some(path) = source_path.as_ref() {
+            self.array_values.insert(
+                "BASH_SOURCE".to_string(),
+                vec![("0".to_string(), path.clone())],
+            );
+        }
+        let saved_source_depth = self.source_depth;
+        self.source_depth += 1;
+        let lowered = self.walk_sourced_text(src)?;
+        self.source_depth = saved_source_depth;
+        if let Some(values) = saved_bash_source {
+            self.array_values.insert("BASH_SOURCE".to_string(), values);
+        } else {
+            self.array_values.remove("BASH_SOURCE");
+        }
+        self.positional_values = saved_static_args;
+
+        let mut stmts = Vec::new();
+        let saved_source = source_path
+            .as_ref()
+            .map(|_| self.fresh("__bash_source_saved_source"));
+        if let (Some(saved), Some(path)) = (saved_source.as_ref(), source_path.as_ref()) {
+            stmts.push(let_stmt(saved, ident("BASH_SOURCE")));
+            stmts.push(assign_stmt(ident("BASH_SOURCE"), array(vec![lit(path)])));
+        }
+        let saved_args = runtime_args
+            .as_ref()
+            .map(|_| self.fresh("__bash_source_saved_args"));
+        if let (Some(saved), Some(args)) = (saved_args.as_ref(), runtime_args) {
+            stmts.push(let_stmt(saved, ident(BASH_ARGS)));
+            stmts.push(assign_stmt(ident(BASH_ARGS), array(args)));
+        }
+        stmts.extend(lowered.into_stmts());
+        if let Some(saved) = saved_args {
+            stmts.push(assign_stmt(ident(BASH_ARGS), ident(&saved)));
+        }
+        if let Some(saved) = saved_source {
+            stmts.push(assign_stmt(ident("BASH_SOURCE"), ident(&saved)));
+        }
+        Ok(Lowered::stmts(stmts))
     }
 
     fn static_split_bash_words(&self, value: &str) -> Vec<String> {
@@ -4330,17 +8533,75 @@ impl Walker {
     }
 
     fn walk_eval(&mut self, suffix: Vec<Pair<Rule>>) -> R<Lowered> {
+        if let Some(lowered) = self.walk_eval_exec_close(&suffix)? {
+            return Ok(lowered);
+        }
+        if let Some(lowered) = self.walk_eval_exec_open(&suffix)? {
+            return Ok(lowered);
+        }
+        if let Some(lowered) = self.walk_eval_echo_fd(&suffix)? {
+            return Ok(lowered);
+        }
         if let Some(lowered) = self.walk_static_eval_command(&suffix)? {
             return Ok(lowered);
+        }
+        if suffix.len() == 1
+            && let Some(snapshot_var) = eval_snapshot_variable(suffix[0].as_str())
+            && let Some(encoded) = self.declare_serializations.get(&snapshot_var).cloned()
+        {
+            let (assoc, target) = if let Some(target) = encoded.strip_prefix("A:") {
+                (true, target.to_string())
+            } else if let Some(target) = encoded.strip_prefix("a:") {
+                (false, target.to_string())
+            } else {
+                (false, encoded)
+            };
+            self.record_variable(&target);
+            if assoc {
+                self.assoc_arrays.insert(target.clone());
+                self.indexed_arrays.remove(&target);
+            } else {
+                self.indexed_arrays.insert(target.clone());
+                self.assoc_arrays.remove(&target);
+            }
+            self.array_values.remove(&target);
+            self.variable_values.remove(&target);
+            return Ok(Lowered::stmts(vec![
+                assign_stmt(
+                    ident(&target),
+                    self.array_snapshot_expr(&snapshot_var, assoc),
+                ),
+                assign_stmt(ident("__bash_status"), int(0)),
+            ]));
         }
         let mut texts = Vec::new();
         for w in &suffix {
             let Some(t) = self.static_word_text(w) else {
                 let source = array_join(array(self.words_exprs(suffix)?), lit(" "));
-                return Ok(Lowered::value(Cmd::status(call_named(
-                    "__vybe_eval",
-                    vec![source, lit("washm")],
-                ))));
+                self.umask_dynamic = true;
+                let eval_src = self.fresh("__bash_eval_src");
+                return Ok(Lowered::value(Cmd::status(iife(vec![
+                    let_stmt(eval_src.as_str(), source),
+                    Statement::new(StmtKind::Return(Some(ternary(
+                        regex_test_expr(
+                            regexp(lit("^umask[ \t]+[0-7]{3,4}$"), ""),
+                            ident(eval_src.as_str()),
+                        ),
+                        sequence(vec![
+                            assign_expr(
+                                ident("__bash_umask"),
+                                regex_replace_expr(
+                                    ident(eval_src.as_str()),
+                                    "^umask[ \t]+",
+                                    "",
+                                    lit(""),
+                                ),
+                            ),
+                            int(0),
+                        ]),
+                        call_named("__vybe_eval", vec![ident(eval_src.as_str()), lit("washm")]),
+                    )))),
+                ]))));
             };
             texts.push(t);
         }
@@ -4379,6 +8640,97 @@ impl Walker {
                 int(2),
             ])))),
         }
+    }
+
+    fn walk_eval_exec_close(&mut self, suffix: &[Pair<Rule>]) -> R<Option<Lowered>> {
+        let Some(first) = suffix.first() else {
+            return Ok(None);
+        };
+        if suffix.len() != 1 {
+            return Ok(None);
+        }
+        let Some(src) = eval_raw_quoted_text(first.as_str()) else {
+            return Ok(None);
+        };
+        let Some(rest) = src.trim().strip_prefix("exec ") else {
+            return Ok(None);
+        };
+        let mut stmts = Vec::new();
+        for token in rest.split_whitespace() {
+            let Some(fd_text) = token
+                .strip_suffix(">&-")
+                .or_else(|| token.strip_suffix("<&-"))
+            else {
+                return Ok(None);
+            };
+            let Some(fd) = eval_fd_expr(fd_text) else {
+                return Ok(None);
+            };
+            stmts.push(assign_stmt(
+                index(ident("__bash_fds"), fd.clone()),
+                undefined(),
+            ));
+            stmts.push(assign_stmt(
+                index(ident("__bash_fd_paths"), fd),
+                undefined(),
+            ));
+        }
+        if stmts.is_empty() {
+            return Ok(None);
+        }
+        stmts.push(assign_stmt(ident("__bash_status"), int(0)));
+        Ok(Some(Lowered::stmts(stmts)))
+    }
+
+    fn walk_eval_exec_open(&mut self, suffix: &[Pair<Rule>]) -> R<Option<Lowered>> {
+        let Some(first) = suffix.first() else {
+            return Ok(None);
+        };
+        if suffix.len() != 1 {
+            return Ok(None);
+        }
+        let Some(src) = eval_raw_quoted_text(first.as_str()) else {
+            return Ok(None);
+        };
+        let Some(rest) = src.trim().strip_prefix("exec ") else {
+            return Ok(None);
+        };
+        let Some((fd_text, op, target_text)) = eval_exec_open_parts(rest.trim()) else {
+            return Ok(None);
+        };
+        let Some(fd) = eval_fd_expr(fd_text.trim()) else {
+            return Ok(None);
+        };
+        let Some(target) = eval_word_expr(target_text.trim()) else {
+            return Ok(None);
+        };
+        Ok(Some(Lowered::stmts(self.open_fd_stmts(fd, op, target))))
+    }
+
+    fn walk_eval_echo_fd(&mut self, suffix: &[Pair<Rule>]) -> R<Option<Lowered>> {
+        let Some(first) = suffix.first() else {
+            return Ok(None);
+        };
+        if suffix.len() != 1 {
+            return Ok(None);
+        }
+        let Some(src) = eval_raw_quoted_text(first.as_str()) else {
+            return Ok(None);
+        };
+        let Some(rest) = src.trim().strip_prefix("echo ") else {
+            return Ok(None);
+        };
+        let Some((text_part, fd_text)) = rest.rsplit_once(">&") else {
+            return Ok(None);
+        };
+        let Some(fd) = eval_fd_expr(fd_text.trim()) else {
+            return Ok(None);
+        };
+        let Some(mut text) = eval_word_expr(text_part.trim()) else {
+            return Ok(None);
+        };
+        text = parts_to_expr(vec![Part::Expr(text), Part::Text("\n".to_string())]);
+        Ok(Some(Lowered::stmts(self.fd_write_stmts(fd, text))))
     }
 
     fn walk_static_eval_command(&mut self, suffix: &[Pair<Rule>]) -> R<Option<Lowered>> {
@@ -4478,6 +8830,14 @@ impl Walker {
                     self.shell_flags.insert('e');
                 } else if t == "+e" {
                     self.shell_flags.remove(&'e');
+                } else if t == "-x" {
+                    self.shell_flags.insert('x');
+                } else if t == "+x" {
+                    self.shell_flags.remove(&'x');
+                } else if t == "-C" {
+                    self.shell_flags.insert('C');
+                } else if t == "+C" {
+                    self.shell_flags.remove(&'C');
                 }
                 if t == "-o" || t == "+o" {
                     if let Some(opt) = it.next().and_then(|w| literal_word_text(&w)) {
@@ -4488,6 +8848,12 @@ impl Walker {
                             "braceexpand" => Some('B'),
                             "hashall" => Some('h'),
                             "pipefail" => Some('P'),
+                            "xtrace" => Some('x'),
+                            "noclobber" => Some('C'),
+                            "posix" => {
+                                self.posix_mode = enable;
+                                None
+                            }
                             _ => None,
                         };
                         if let Some(flag) = flag {
@@ -4531,68 +8897,135 @@ impl Walker {
 
     fn walk_shopt(&mut self, suffix: Vec<Pair<Rule>>) -> R<Lowered> {
         let mut mode: Option<bool> = None;
+        let mut query = false;
+        let mut print = false;
+        let mut names = Vec::new();
         let mut status = 0;
+        let mut had_args = false;
         for w in suffix {
+            had_args = true;
             let Some(text) = self.static_word_text(&w) else {
                 status = 1;
                 continue;
             };
-            match text.as_str() {
-                "-s" => mode = Some(true),
-                "-u" => mode = Some(false),
-                "nullglob" => {
-                    if let Some(enabled) = mode {
-                        self.nullglob_enabled = enabled;
+            if text.starts_with('-') && text.len() > 1 {
+                for flag in text[1..].chars() {
+                    match flag {
+                        's' => mode = Some(true),
+                        'u' => mode = Some(false),
+                        'q' => query = true,
+                        'p' => print = true,
+                        _ => status = 1,
                     }
                 }
-                "dotglob" => {
-                    if let Some(enabled) = mode {
-                        self.dotglob_enabled = enabled;
-                    }
-                }
-                "failglob" => {
-                    if let Some(enabled) = mode {
-                        self.failglob_enabled = enabled;
-                    }
-                }
-                "globstar" => {
-                    if let Some(enabled) = mode {
-                        self.globstar_enabled = enabled;
-                    }
-                }
-                "expand_aliases" => {
-                    if let Some(enabled) = mode {
-                        self.expand_aliases_enabled = enabled;
-                    }
-                }
-                "nocaseglob" => {
-                    if let Some(enabled) = mode {
-                        self.nocaseglob_enabled = enabled;
-                    }
-                }
-                "nocasematch" => {
-                    if let Some(enabled) = mode {
-                        self.nocasematch_enabled = enabled;
-                    }
-                }
-                "patsub_replacement" => {
-                    if let Some(enabled) = mode {
-                        self.patsub_replacement_enabled = enabled;
-                    }
-                }
-                "lastpipe" => {
-                    if let Some(enabled) = mode {
-                        self.lastpipe_enabled = enabled;
-                    }
-                }
-                "extglob" => {}
-                _ => status = 1,
+                continue;
             }
+            if is_known_shopt(&text) {
+                names.push(text);
+            } else {
+                status = 1;
+            }
+        }
+        if let Some(enabled) = mode {
+            for name in &names {
+                self.set_shopt_option(name, enabled);
+            }
+            return Ok(Lowered::value(Cmd::status(int(status))));
+        }
+        if query {
+            let enabled = names
+                .iter()
+                .all(|name| self.shopt_options.contains(name.as_str()));
+            return Ok(Lowered::value(Cmd::status(int(
+                if status == 0 && enabled { 0 } else { 1 },
+            ))));
+        }
+        if print || !names.is_empty() || !had_args {
+            let selected = if names.is_empty() {
+                known_shopts()
+                    .iter()
+                    .map(|name| name.to_string())
+                    .collect::<Vec<_>>()
+            } else {
+                names
+            };
+            let mut text = String::new();
+            for name in selected {
+                let flag = if self.shopt_options.contains(name.as_str()) {
+                    "-s"
+                } else {
+                    "-u"
+                };
+                text.push_str("shopt ");
+                text.push_str(flag);
+                text.push(' ');
+                text.push_str(&name);
+                text.push('\n');
+            }
+            return Ok(Lowered::value(Cmd::status(bash_stdout_status_expr(lit(
+                &text,
+            )))));
         }
         Ok(Lowered::value(Cmd::status(int(status))))
     }
 
-    fn walk_echo(&mut self, suffix: Vec<Pair<Rule>>) -> R<Lowered> {
+    fn set_shopt_option(&mut self, name: &str, enabled: bool) {
+        if enabled && name.starts_with("compat") {
+            for compat in [
+                "compat31", "compat32", "compat40", "compat41", "compat42", "compat43", "compat44",
+            ] {
+                if compat != name {
+                    self.shopt_options.remove(compat);
+                }
+            }
+        }
+        if enabled {
+            self.shopt_options.insert(name.to_string());
+        } else {
+            self.shopt_options.remove(name);
+        }
+        match name {
+            "nullglob" => self.nullglob_enabled = enabled,
+            "dotglob" => self.dotglob_enabled = enabled,
+            "failglob" => self.failglob_enabled = enabled,
+            "globstar" => self.globstar_enabled = enabled,
+            "expand_aliases" => self.expand_aliases_enabled = enabled,
+            "nocaseglob" => self.nocaseglob_enabled = enabled,
+            "nocasematch" => self.nocasematch_enabled = enabled,
+            "patsub_replacement" => self.patsub_replacement_enabled = enabled,
+            "lastpipe" => self.lastpipe_enabled = enabled,
+            _ => {}
+        }
+    }
+
+    fn set_bash_compat(&mut self, value: &str) {
+        let option = match value {
+            "3.1" | "31" => Some("compat31"),
+            "3.2" | "32" => Some("compat32"),
+            "4.0" | "40" => Some("compat40"),
+            "4.1" | "41" => Some("compat41"),
+            "4.2" | "42" => Some("compat42"),
+            "4.3" | "43" => Some("compat43"),
+            "4.4" | "44" => Some("compat44"),
+            _ => None,
+        };
+        if let Some(option) = option {
+            self.set_shopt_option(option, true);
+        }
+    }
+
+    fn next_mktemp_path(&mut self, dir: bool) -> String {
+        let suffix = self.counter;
+        self.counter += 1;
+        format!(
+            "{}-mktemp-{}{}",
+            self.temp_prefix,
+            suffix,
+            if dir { "-dir" } else { "" }
+        )
+    }
+
+    fn walk_echo(&mut self, suffix: Vec<Pair<Rule>>, redirected: bool) -> R<Lowered> {
         let mut newline = true;
         let mut escapes = false;
         let mut rest = Vec::new();
@@ -4644,9 +9077,12 @@ impl Walker {
                 if newline {
                     text.push('\n');
                 }
-                return Ok(Lowered::value(Cmd::status(bash_stdout_status_expr(lit(
-                    &text,
-                )))));
+                if redirected {
+                    return Ok(Lowered::value(Cmd::status(bash_stdout_status_expr(lit(
+                        &text,
+                    )))));
+                }
+                return Ok(Lowered::stmts(self.bash_stdout_stmts(lit(&text))));
             }
         }
         let mut plain_args: Vec<Expression> = args.iter().map(|arg| arg.value.clone()).collect();
@@ -4663,7 +9099,250 @@ impl Walker {
             };
             joined
         };
-        Ok(Lowered::value(Cmd::status(bash_stdout_status_expr(text))))
+        if redirected {
+            return Ok(Lowered::value(Cmd::status(bash_stdout_status_expr(text))));
+        }
+        Ok(Lowered::stmts(self.bash_stdout_stmts(text)))
+    }
+
+    fn bash_stdout_stmts(&mut self, text: Expression) -> Vec<Statement> {
+        let path = self.fresh("__bash_stdout_fd_path");
+        let current = self.fresh("__bash_stdout_fd_current");
+        let next = self.fresh("__bash_stdout_fd_next");
+        let offset = self.fresh("__bash_stdout_fd_offset");
+        let sync_key = self.fresh("__bash_stdout_fd_sync_key");
+        vec![
+            let_stmt(&path, index(ident("__bash_fd_paths"), lit("1"))),
+            Statement::new(StmtKind::If {
+                cond: ident("__bash_stdout_to_stderr"),
+                then_body: self.bash_stderr_stmts(text.clone()),
+                elifs: Vec::new(),
+                else_body: Some(vec![Statement::new(StmtKind::If {
+                    cond: ident("__bash_stdout_null"),
+                    then_body: vec![assign_stmt(ident("__bash_status"), int(0))],
+                    elifs: Vec::new(),
+                    else_body: Some(vec![Statement::new(StmtKind::If {
+                        cond: binary(BinOp::StrictEq, ident(&path), lit("__bash_closed")),
+                        then_body: vec![assign_stmt(ident("__bash_status"), int(1))],
+                        elifs: Vec::new(),
+                        else_body: Some(vec![Statement::new(StmtKind::If {
+                            cond: binary(
+                                BinOp::And,
+                                binary(BinOp::StrictNotEq, ident(&path), undefined()),
+                                binary(BinOp::StrictNotEq, ident(&path), lit("__bash_stdout")),
+                            ),
+                            then_body: vec![
+                                let_stmt(
+                                    &current,
+                                    binary(
+                                        BinOp::NullCoalesce,
+                                        index(ident("__bash_fds"), lit("1")),
+                                        lit(""),
+                                    ),
+                                ),
+                                let_stmt(&offset, index(ident("__bash_fd_offsets"), lit("1"))),
+                                let_stmt(
+                                    &next,
+                                    ternary(
+                                        binary(BinOp::StrictEq, ident(&offset), undefined()),
+                                        parts_to_expr(vec![
+                                            Part::Expr(ident(&current)),
+                                            Part::Expr(text.clone()),
+                                        ]),
+                                        parts_to_expr(vec![
+                                            Part::Expr(method(
+                                                ident(&current),
+                                                "slice",
+                                                vec![int(0), ident(&offset)],
+                                            )),
+                                            Part::Expr(text.clone()),
+                                            Part::Expr(method(
+                                                ident(&current),
+                                                "slice",
+                                                vec![binary(
+                                                    BinOp::Add,
+                                                    ident(&offset),
+                                                    member(text.clone(), "length"),
+                                                )],
+                                            )),
+                                        ]),
+                                    ),
+                                ),
+                                expr_stmt(call_named(
+                                    "__bash_write_file",
+                                    vec![ident(&path), ident(&next)],
+                                )),
+                                Statement::new(StmtKind::If {
+                                    cond: binary(BinOp::StrictNotEq, ident(&offset), undefined()),
+                                    then_body: vec![assign_stmt(
+                                        index(ident("__bash_fd_offsets"), lit("1")),
+                                        binary(
+                                            BinOp::Add,
+                                            ident(&offset),
+                                            member(text.clone(), "length"),
+                                        ),
+                                    )],
+                                    elifs: Vec::new(),
+                                    else_body: None,
+                                }),
+                                sync_fd_buffers_for_path_stmt(
+                                    ident("__bash_fds"),
+                                    ident("__bash_fd_paths"),
+                                    ident(&path),
+                                    ident(&next),
+                                    &sync_key,
+                                ),
+                                assign_stmt(index(ident("__bash_fds"), lit("1")), ident(&next)),
+                                assign_stmt(ident("__bash_status"), int(0)),
+                            ],
+                            elifs: Vec::new(),
+                            else_body: Some(vec![
+                                expr_stmt(call_named("printf", vec![lit("%s"), text])),
+                                assign_stmt(ident("__bash_status"), int(0)),
+                            ]),
+                        })]),
+                    })]),
+                })]),
+            }),
+        ]
+    }
+
+    fn bash_stderr_stmts(&mut self, text: Expression) -> Vec<Statement> {
+        let path = self.fresh("__bash_stderr_fd_path");
+        let current = self.fresh("__bash_stderr_fd_current");
+        let next = self.fresh("__bash_stderr_fd_next");
+        let offset = self.fresh("__bash_stderr_fd_offset");
+        let sync_key = self.fresh("__bash_stderr_fd_sync_key");
+        vec![
+            let_stmt(&path, index(ident("__bash_fd_paths"), lit("2"))),
+            Statement::new(StmtKind::If {
+                cond: ident("__bash_stderr_null"),
+                then_body: vec![assign_stmt(ident("__bash_status"), int(0))],
+                elifs: Vec::new(),
+                else_body: Some(vec![Statement::new(StmtKind::If {
+                    cond: ident("__bash_stderr_to_stdout"),
+                    then_body: vec![
+                        expr_stmt(call_named("printf", vec![lit("%s"), text.clone()])),
+                        assign_stmt(ident("__bash_status"), int(0)),
+                    ],
+                    elifs: Vec::new(),
+                    else_body: Some(vec![Statement::new(StmtKind::If {
+                        cond: binary(BinOp::StrictEq, ident(&path), lit("__bash_closed")),
+                        then_body: vec![assign_stmt(ident("__bash_status"), int(1))],
+                        elifs: Vec::new(),
+                        else_body: Some(vec![Statement::new(StmtKind::If {
+                            cond: binary(
+                                BinOp::And,
+                                binary(BinOp::StrictNotEq, ident(&path), undefined()),
+                                binary(BinOp::StrictNotEq, ident(&path), lit("__bash_stderr")),
+                            ),
+                            then_body: vec![
+                                let_stmt(
+                                    &current,
+                                    binary(
+                                        BinOp::NullCoalesce,
+                                        index(ident("__bash_fds"), lit("2")),
+                                        lit(""),
+                                    ),
+                                ),
+                                let_stmt(&offset, index(ident("__bash_fd_offsets"), lit("2"))),
+                                let_stmt(
+                                    &next,
+                                    ternary(
+                                        binary(BinOp::StrictEq, ident(&offset), undefined()),
+                                        parts_to_expr(vec![
+                                            Part::Expr(ident(&current)),
+                                            Part::Expr(text.clone()),
+                                        ]),
+                                        parts_to_expr(vec![
+                                            Part::Expr(method(
+                                                ident(&current),
+                                                "slice",
+                                                vec![int(0), ident(&offset)],
+                                            )),
+                                            Part::Expr(text.clone()),
+                                            Part::Expr(method(
+                                                ident(&current),
+                                                "slice",
+                                                vec![binary(
+                                                    BinOp::Add,
+                                                    ident(&offset),
+                                                    member(text.clone(), "length"),
+                                                )],
+                                            )),
+                                        ]),
+                                    ),
+                                ),
+                                expr_stmt(call_named(
+                                    "__bash_write_file",
+                                    vec![ident(&path), ident(&next)],
+                                )),
+                                Statement::new(StmtKind::If {
+                                    cond: binary(BinOp::StrictNotEq, ident(&offset), undefined()),
+                                    then_body: vec![assign_stmt(
+                                        index(ident("__bash_fd_offsets"), lit("2")),
+                                        binary(
+                                            BinOp::Add,
+                                            ident(&offset),
+                                            member(text.clone(), "length"),
+                                        ),
+                                    )],
+                                    elifs: Vec::new(),
+                                    else_body: None,
+                                }),
+                                sync_fd_buffers_for_path_stmt(
+                                    ident("__bash_fds"),
+                                    ident("__bash_fd_paths"),
+                                    ident(&path),
+                                    ident(&next),
+                                    &sync_key,
+                                ),
+                                assign_stmt(index(ident("__bash_fds"), lit("2")), ident(&next)),
+                                assign_stmt(ident("__bash_status"), int(0)),
+                            ],
+                            elifs: Vec::new(),
+                            else_body: Some(vec![assign_stmt(ident("__bash_status"), int(0))]),
+                        })]),
+                    })]),
+                })]),
+            }),
+        ]
+    }
+
+    fn walk_cat(&mut self, suffix: Vec<Pair<Rule>>) -> R<Lowered> {
+        if suffix.is_empty() {
+            return Ok(Lowered::value(Cmd::status(bash_stdout_status_expr(ident(
+                "__bash_stdin",
+            )))));
+        }
+
+        let aggregate = self.fresh("__bash_cat_status");
+        let mut out = vec![let_stmt(&aggregate, int(0))];
+        for word in suffix {
+            let content = self.fresh("__bash_cat_content");
+            let target = self.word_expr(word)?;
+            out.push(let_stmt(&content, self.read_file_or_fd_expr(target)));
+            out.push(Statement::new(StmtKind::If {
+                cond: binary(BinOp::NotEq, ident("__bash_status"), int(0)),
+                then_body: vec![assign_stmt(ident(&aggregate), int(1))],
+                elifs: Vec::new(),
+                else_body: Some(vec![expr_stmt(bash_stdout_write_expr(ident(&content)))]),
+            }));
+        }
+        out.push(assign_stmt(ident("__bash_status"), ident(&aggregate)));
+        Ok(Lowered::stmts(out))
+    }
+
+    fn cat_value(&mut self, suffix: Vec<Pair<Rule>>) -> R<Option<Expression>> {
+        let args = self.words_exprs(suffix)?;
+        if args.is_empty() {
+            return Ok(Some(ident("__bash_stdin")));
+        }
+        Ok(Some(parts_to_expr(
+            args.into_iter()
+                .map(|arg| Part::Expr(self.read_file_or_fd_expr(arg)))
+                .collect(),
+        )))
     }
 
     fn walk_mkdir(&mut self, suffix: Vec<Pair<Rule>>) -> R<Lowered> {
@@ -4688,11 +9367,180 @@ impl Walker {
         } else {
             "__bash_mkdir"
         };
-        let calls = paths
-            .into_iter()
-            .map(|path| call_named(mkdir_name, vec![bash_path_expr(path)]))
-            .collect();
-        Ok(Lowered::value(Cmd::boolean(sequence(calls))))
+        let mode = format!("{:03o}", 0o777 & !self.umask);
+        let status = self.fresh("__bash_mkdir_status");
+        let mut out = vec![let_stmt(&status, int(0))];
+        for path in paths {
+            let full_path = self.fresh("__bash_mkdir_path");
+            out.push(let_stmt(&full_path, bash_path_expr(path)));
+            out.push(assign_stmt(
+                ident(&status),
+                ternary(
+                    call_named(mkdir_name, vec![ident(&full_path)]),
+                    ident(&status),
+                    int(1),
+                ),
+            ));
+            out.push(assign_stmt(
+                index(ident("__bash_file_modes"), ident(&full_path)),
+                lit(&mode),
+            ));
+        }
+        out.push(assign_stmt(ident("__bash_status"), ident(&status)));
+        Ok(Lowered::stmts(out))
+    }
+
+    fn walk_touch(&mut self, suffix: Vec<Pair<Rule>>) -> R<Lowered> {
+        let mut out = Vec::new();
+        let mut any = false;
+        let mode = format!("{:03o}", 0o666 & !self.umask);
+        for w in suffix {
+            if literal_word_text(&w)
+                .as_deref()
+                .is_some_and(|text| text.starts_with('-'))
+            {
+                continue;
+            }
+            for path in self.words_exprs(vec![w])? {
+                any = true;
+                let full_path = self.fresh("__bash_touch_path");
+                out.push(let_stmt(&full_path, bash_path_expr(path)));
+                out.push(expr_stmt(call_named(
+                    "__bash_write_file",
+                    vec![
+                        ident(&full_path),
+                        ternary(
+                            call_named("__bash_file_exists", vec![ident(&full_path)]),
+                            call_named("__bash_read_file", vec![ident(&full_path)]),
+                            lit(""),
+                        ),
+                    ],
+                )));
+                out.push(assign_stmt(
+                    index(ident("__bash_file_modes"), ident(&full_path)),
+                    lit(&mode),
+                ));
+            }
+        }
+        out.push(assign_stmt(
+            ident("__bash_status"),
+            if any { int(0) } else { int(1) },
+        ));
+        Ok(Lowered::stmts(out))
+    }
+
+    fn walk_mktemp(&mut self, suffix: Vec<Pair<Rule>>) -> R<Lowered> {
+        let dir = suffix
+            .iter()
+            .filter_map(literal_word_text)
+            .any(|word| word == "-d");
+        let path_text = self.next_mktemp_path(dir);
+        let path = lit(&path_text);
+        let mode = if dir { "700" } else { "600" };
+        let mut out = Vec::new();
+        if dir {
+            out.push(expr_stmt(call_named("__bash_mkdir", vec![path.clone()])));
+        } else {
+            out.push(expr_stmt(call_named(
+                "__bash_write_file",
+                vec![path.clone(), lit("")],
+            )));
+        }
+        out.push(assign_stmt(
+            index(ident("__bash_file_modes"), path.clone()),
+            lit(mode),
+        ));
+        out.push(expr_stmt(bash_stdout_write_expr(parts_to_expr(vec![
+            Part::Expr(path),
+            Part::Text("\n".into()),
+        ]))));
+        out.push(assign_stmt(ident("__bash_status"), int(0)));
+        Ok(Lowered::stmts(out))
+    }
+
+    fn walk_chmod(&mut self, suffix: Vec<Pair<Rule>>) -> R<Lowered> {
+        let mut it = suffix.into_iter();
+        let Some(mode_word) = it.next() else {
+            return Ok(Lowered::value(Cmd::status(int(1))));
+        };
+        let Some(mode) = self.static_word_text(&mode_word) else {
+            return Ok(Lowered::value(Cmd::status(int(1))));
+        };
+        let mode = mode.trim().to_string();
+        if mode.is_empty() || mode.starts_with('-') {
+            return Ok(Lowered::value(Cmd::status(int(1))));
+        }
+        let mut out = Vec::new();
+        let mut any = false;
+        for w in it {
+            if literal_word_text(&w)
+                .as_deref()
+                .is_some_and(|text| text.starts_with('-'))
+            {
+                continue;
+            }
+            for path in self.words_exprs(vec![w])? {
+                any = true;
+                let full_path = self.fresh("__bash_chmod_path");
+                out.push(let_stmt(&full_path, bash_path_expr(path)));
+                out.push(Statement::new(StmtKind::If {
+                    cond: call_named("__bash_file_exists", vec![ident(&full_path)]),
+                    then_body: vec![
+                        assign_stmt(
+                            index(ident("__bash_file_modes"), ident(&full_path)),
+                            lit(&mode),
+                        ),
+                        assign_stmt(ident("__bash_status"), int(0)),
+                    ],
+                    elifs: Vec::new(),
+                    else_body: Some(vec![assign_stmt(ident("__bash_status"), int(1))]),
+                }));
+            }
+        }
+        if !any {
+            out.push(assign_stmt(ident("__bash_status"), int(1)));
+        }
+        Ok(Lowered::stmts(out))
+    }
+
+    fn walk_stat(&mut self, suffix: Vec<Pair<Rule>>) -> R<Lowered> {
+        let mut args = Vec::new();
+        for w in suffix {
+            args.extend(self.words_exprs(vec![w])?);
+        }
+        if args.len() >= 3
+            && let Some(flag) = literal_string(&args[0])
+            && matches!(flag, "-f" | "-c")
+            && let Some(format) = literal_string(&args[1])
+            && matches!(format, "%Lp" | "%a")
+        {
+            let path = bash_path_expr(args[2].clone());
+            let argv = array(args.clone());
+            let mode = index(ident("__bash_file_modes"), path.clone());
+            return Ok(Lowered::value(Cmd::status(sequence(vec![
+                assign_expr(
+                    ident("__bash_status"),
+                    ternary(
+                        binary(BinOp::StrictEq, mode.clone(), undefined()),
+                        bash_spawn_status_argv_expr("stat", argv),
+                        bash_stdout_status_expr(parts_to_expr(vec![
+                            Part::Expr(mode),
+                            Part::Text("\n".to_string()),
+                        ])),
+                    ),
+                ),
+                ident("__bash_status"),
+            ]))));
+        }
+        Ok(self.external_command(
+            "stat",
+            args.into_iter()
+                .map(|value| ShellArg {
+                    value,
+                    spread: false,
+                })
+                .collect(),
+        ))
     }
 
     /// `printf [-v var] format args…` — backslash escapes in a literal format
@@ -4710,15 +9558,30 @@ impl Walker {
         let Some(fmt_word) = first else {
             return Ok(Lowered::value(Cmd::status(int(1))));
         };
+        let static_fmt_text = self
+            .static_printf_format_text(&fmt_word)
+            .or_else(|| self.static_word_text(&fmt_word))
+            .map(|s| decode_printf_escapes(&s));
         let mut fmt = self.word_expr(fmt_word)?;
-        let mut fmt_text = None;
+        let mut fmt_text = static_fmt_text;
         if let ExprKind::Lit(Literal::Str(s)) = &fmt.kind {
-            fmt_text = Some(decode_printf_escapes(s));
+            if fmt_text.is_none() {
+                fmt_text = Some(decode_printf_escapes(s));
+            }
         }
         if let Some(s) = &fmt_text {
             fmt = lit(s);
         }
         let shell_args = self.words_shell_args(it.collect())?;
+        if fmt_text
+            .as_deref()
+            .is_some_and(|text| !printf_format_is_valid(text))
+        {
+            return Ok(Lowered::stmts(vec![assign_stmt(
+                ident("__bash_status"),
+                int(1),
+            )]));
+        }
         let sprintf = self.bash_printf_expr(fmt, fmt_text.as_deref(), shell_args);
         Ok(match target {
             Some(name) => {
@@ -4739,30 +9602,6 @@ impl Walker {
             }
             None => Lowered::value(Cmd::status(bash_stdout_status_expr(sprintf))),
         })
-    }
-
-    fn printf_value(&mut self, suffix: Vec<Pair<Rule>>) -> R<Option<Expression>> {
-        let mut it = suffix.into_iter();
-        if let Some(w) = it.next() {
-            if literal_word_text(&w).as_deref() == Some("-v") {
-                return Ok(None);
-            }
-            let mut fmt = self.word_expr(w)?;
-            let mut fmt_text = None;
-            if let ExprKind::Lit(Literal::Str(s)) = &fmt.kind {
-                fmt_text = Some(decode_printf_escapes(s));
-            }
-            if let Some(s) = &fmt_text {
-                fmt = lit(s);
-            }
-            let shell_args = self.words_shell_args(it.collect())?;
-            return Ok(Some(self.bash_printf_expr(
-                fmt,
-                fmt_text.as_deref(),
-                shell_args,
-            )));
-        }
-        Ok(Some(lit("")))
     }
 
     fn bash_printf_expr(
@@ -4857,8 +9696,14 @@ impl Walker {
     /// Consumes one line of `__bash_stdin`; true when input was available.
     fn walk_read(&mut self, suffix: Vec<Pair<Rule>>, ifs_empty: bool) -> R<Lowered> {
         let mut array_name: Option<String> = None;
-        let mut input_fd: Option<String> = None;
-        let mut read_until_eof = false;
+        let mut input_fd: Option<Expression> = None;
+        let mut input_override: Option<Expression> = None;
+        let read_until_eof = false;
+        let mut delimiter = "\n".to_string();
+        let mut custom_delimiter = false;
+        let mut char_limit: Option<Expression> = None;
+        let mut invalid_char_limit = false;
+        let mut exact_char_limit = false;
         let mut raw = false;
         let mut names: Vec<String> = Vec::new();
         let mut it = suffix.into_iter();
@@ -4866,6 +9711,32 @@ impl Walker {
             let Some(t) = self.static_word_text(&w) else {
                 continue;
             };
+            if t == "<>" {
+                if let Some(path_word) = it.next() {
+                    let path = self.fresh("__bash_read_rw_path");
+                    let path_expr = bash_path_expr(self.word_expr(path_word)?);
+                    input_override = Some(iife(vec![
+                        let_stmt(&path, path_expr),
+                        Statement::new(StmtKind::If {
+                            cond: unary(
+                                UnaryOp::Not,
+                                call_named("__bash_file_exists", vec![ident(&path)]),
+                            ),
+                            then_body: vec![expr_stmt(call_named(
+                                "__bash_write_file",
+                                vec![ident(&path), lit("")],
+                            ))],
+                            elifs: Vec::new(),
+                            else_body: None,
+                        }),
+                        Statement::new(StmtKind::Return(Some(call_named(
+                            "__bash_read_file",
+                            vec![ident(&path)],
+                        )))),
+                    ]));
+                }
+                continue;
+            }
             if t.starts_with('-') && t.len() > 1 {
                 let flags: Vec<char> = t[1..].chars().collect();
                 if flags.contains(&'r') {
@@ -4876,18 +9747,56 @@ impl Walker {
                     match f {
                         'a' => array_name = it.next().and_then(|w| self.static_word_text(&w)),
                         'd' => {
-                            let delimiter = it
+                            let value = it
                                 .next()
                                 .and_then(|w| self.static_word_text(&w))
                                 .unwrap_or_default();
-                            if delimiter.is_empty() {
-                                read_until_eof = true;
+                            delimiter = value
+                                .chars()
+                                .next()
+                                .map(|c| c.to_string())
+                                .unwrap_or_else(|| "\0".to_string());
+                            custom_delimiter = true;
+                        }
+                        'n' => {
+                            if let Some(word) = it.next() {
+                                if let Some(text) = self.static_word_text(&word)
+                                    && let Ok(n) = text.parse::<i64>()
+                                {
+                                    if n < 0 {
+                                        invalid_char_limit = true;
+                                    } else {
+                                        char_limit = Some(int(n));
+                                    }
+                                } else {
+                                    char_limit = Some(to_number(self.word_expr(word)?));
+                                }
                             }
+                            exact_char_limit = false;
+                        }
+                        'N' => {
+                            if let Some(word) = it.next() {
+                                if let Some(text) = self.static_word_text(&word)
+                                    && let Ok(n) = text.parse::<i64>()
+                                {
+                                    if n < 0 {
+                                        invalid_char_limit = true;
+                                    } else {
+                                        char_limit = Some(int(n));
+                                    }
+                                } else {
+                                    char_limit = Some(to_number(self.word_expr(word)?));
+                                }
+                            }
+                            exact_char_limit = true;
+                            custom_delimiter = false;
                         }
                         'u' => {
-                            input_fd = it.next().and_then(|w| self.static_word_text(&w));
+                            if let Some(fd_word) = it.next() {
+                                input_fd = Some(self.word_expr(fd_word)?);
+                            }
                         }
-                        'p' | 't' | 'n' | 'N' | 'i' => {
+                        'p' | 't' | 'i' => {
                             it.next();
                         }
                         _ => {}
@@ -4907,59 +9816,148 @@ impl Walker {
             self.record_variable(name);
         }
         let line = ident("__bash_ret");
-        let input_target = input_fd
-            .as_deref()
-            .map(|fd| index(ident("__bash_fds"), lit(fd)))
+        let input_fd_key = input_fd.map(|fd| (self.fresh("__bash_read_fd_key"), param_value(fd)));
+        let input_target = input_fd_key
+            .as_ref()
+            .map(|(key, _)| index(ident("__bash_fds"), ident(key)))
             .unwrap_or_else(|| ident("__bash_stdin"));
         let input_value = binary(BinOp::NullCoalesce, input_target.clone(), lit(""));
         for name in names.iter().chain(array_name.iter()) {
-            if is_readonly_parameter_target(name) || self.target_text_is_readonly(name) {
+            if name != "_"
+                && (is_readonly_parameter_target(name) || self.target_text_is_readonly(name))
+            {
                 return Ok(Lowered::stmts(vec![assign_stmt(
                     ident("__bash_status"),
                     int(1),
                 )]));
             }
         }
-        let mut seq = if read_until_eof {
+        if invalid_char_limit {
+            return Ok(Lowered::stmts(vec![assign_stmt(
+                ident("__bash_status"),
+                int(1),
+            )]));
+        }
+        let mut seq = Vec::new();
+        if let Some((key, fd)) = &input_fd_key {
+            seq.push(assign_expr(ident(key), fd.clone()));
+        }
+        let input_source = self.fresh("__bash_read_input");
+        seq.push(assign_expr(
+            ident(&input_source),
+            input_override.unwrap_or_else(|| input_value.clone()),
+        ));
+        let input_value = ident(&input_source);
+        let line_end = self.fresh("__bash_read_end");
+        let limit = char_limit;
+        let delimiter_len = delimiter.chars().count().max(1) as i64;
+        seq.extend(if read_until_eof {
             vec![
                 assign_expr(ident("__bash_line"), int(-1)),
                 assign_expr(line.clone(), input_value.clone()),
             ]
         } else {
-            vec![
-                assign_expr(
-                    ident("__bash_line"),
-                    method(input_value.clone(), "indexOf", vec![lit("\n")]),
-                ),
-                assign_expr(
-                    line.clone(),
-                    ternary(
-                        binary(BinOp::Lt, ident("__bash_line"), int(0)),
-                        input_value.clone(),
-                        method(
-                            input_value.clone(),
-                            "slice",
-                            vec![int(0), ident("__bash_line")],
-                        ),
-                    ),
-                ),
-            ]
-        };
-        let had = binary(BinOp::StrictNotEq, input_value.clone(), lit(""));
-        let had_var = "__bash_had".to_string();
-        seq.push(assign_expr(ident(&had_var), had));
-        seq.push(assign_expr(
-            input_target,
-            if read_until_eof {
-                lit("")
+            let mut read_seq = vec![assign_expr(
+                ident("__bash_line"),
+                if exact_char_limit {
+                    int(-1)
+                } else {
+                    method(input_value.clone(), "indexOf", vec![lit(&delimiter)])
+                },
+            )];
+            let base_end = if exact_char_limit {
+                member(input_value.clone(), "length")
             } else {
                 ternary(
                     binary(BinOp::Lt, ident("__bash_line"), int(0)),
-                    lit(""),
-                    method(
-                        input_value,
-                        "slice",
-                        vec![binary(BinOp::Add, ident("__bash_line"), int(1))],
+                    member(input_value.clone(), "length"),
+                    ident("__bash_line"),
+                )
+            };
+            let end_expr = match &limit {
+                Some(limit) => ternary(
+                    binary(BinOp::Lt, limit.clone(), base_end.clone()),
+                    limit.clone(),
+                    base_end,
+                ),
+                None => base_end,
+            };
+            read_seq.extend([
+                assign_expr(ident(&line_end), end_expr),
+                assign_expr(
+                    line.clone(),
+                    method(input_value.clone(), "slice", vec![int(0), ident(&line_end)]),
+                ),
+            ]);
+            read_seq
+        });
+        let had = if read_until_eof {
+            binary(BinOp::StrictNotEq, input_value.clone(), lit(""))
+        } else if exact_char_limit {
+            match &limit {
+                Some(limit) => binary(
+                    BinOp::GtEq,
+                    member(input_value.clone(), "length"),
+                    limit.clone(),
+                ),
+                None => binary(BinOp::StrictNotEq, input_value.clone(), lit("")),
+            }
+        } else if let Some(limit) = &limit {
+            ternary(
+                binary(
+                    BinOp::And,
+                    binary(BinOp::GtEq, ident("__bash_line"), int(0)),
+                    binary(BinOp::Lt, ident("__bash_line"), limit.clone()),
+                ),
+                Expression::bool(true),
+                binary(
+                    BinOp::GtEq,
+                    member(input_value.clone(), "length"),
+                    limit.clone(),
+                ),
+            )
+        } else if custom_delimiter {
+            match &limit {
+                Some(_) => binary(BinOp::StrictNotEq, line.clone(), lit("")),
+                None => binary(BinOp::GtEq, ident("__bash_line"), int(0)),
+            }
+        } else {
+            binary(BinOp::StrictNotEq, input_value.clone(), lit(""))
+        };
+        let had_var = "__bash_had".to_string();
+        seq.push(assign_expr(ident(&had_var), had));
+        seq.push(assign_expr(
+            input_target.clone(),
+            if read_until_eof {
+                lit("")
+            } else {
+                let consumed_by_limit = match &limit {
+                    Some(_) => binary(
+                        BinOp::Lt,
+                        ident(&line_end),
+                        if exact_char_limit {
+                            member(input_value.clone(), "length")
+                        } else {
+                            ternary(
+                                binary(BinOp::Lt, ident("__bash_line"), int(0)),
+                                member(input_value.clone(), "length"),
+                                ident("__bash_line"),
+                            )
+                        },
+                    ),
+                    None => Expression::bool(false),
+                };
+                ternary(
+                    consumed_by_limit,
+                    method(input_value.clone(), "slice", vec![ident(&line_end)]),
+                    ternary(
+                        binary(BinOp::Lt, ident("__bash_line"), int(0)),
+                        lit(""),
+                        method(
+                            input_value,
+                            "slice",
+                            vec![binary(BinOp::Add, ident("__bash_line"), int(delimiter_len))],
+                        ),
                     ),
                 )
             },
@@ -4975,8 +9973,13 @@ impl Walker {
         } else {
             method(line.clone(), "trim", vec![])
         };
-        let fields = if ifs_empty {
-            array(vec![trimmed.clone()])
+        let read_value = if exact_char_limit {
+            line.clone()
+        } else {
+            trimmed.clone()
+        };
+        let fields = if exact_char_limit || ifs_empty {
+            array(vec![read_value.clone()])
         } else {
             ternary(
                 binary(
@@ -4997,19 +10000,24 @@ impl Walker {
             seq.push(assign_expr(
                 t,
                 ternary(
-                    binary(BinOp::StrictEq, trimmed.clone(), lit("")),
+                    binary(BinOp::StrictEq, read_value.clone(), lit("")),
                     array(Vec::new()),
                     fields.clone(),
                 ),
             ));
         } else if names.len() == 1 {
-            let t = self.name_or_element_target(&names[0])?;
-            seq.push(assign_expr(t, trimmed.clone()));
+            if names[0] != "_" {
+                let t = self.name_or_element_target(&names[0])?;
+                seq.push(assign_expr(t, read_value.clone()));
+            }
         } else {
             let fields_var = "__bash_fields".to_string();
             seq.push(assign_expr(ident(&fields_var), fields));
             let n = names.len();
             for (i, name) in names.iter().enumerate() {
+                if name == "_" {
+                    continue;
+                }
                 let t = self.name_or_element_target(name)?;
                 let value = if i + 1 == n {
                     array_join(
@@ -5026,52 +10034,270 @@ impl Walker {
                 seq.push(assign_expr(t, value));
             }
         }
-        seq.push(ident(&had_var));
+        let mut body = seq.into_iter().map(expr_stmt).collect::<Vec<_>>();
+        if let Some((key, _)) = input_fd_key {
+            let sync_path = self.fresh("__bash_read_fd_sync_path");
+            let sync_key = self.fresh("__bash_read_fd_sync_key");
+            body.push(let_stmt(
+                &sync_path,
+                index(ident("__bash_fd_paths"), ident(&key)),
+            ));
+            body.push(Statement::new(StmtKind::If {
+                cond: binary(
+                    BinOp::And,
+                    binary(BinOp::StrictNotEq, ident(&sync_path), undefined()),
+                    binary(
+                        BinOp::And,
+                        binary(BinOp::StrictNotEq, ident(&sync_path), lit("__bash_closed")),
+                        binary(
+                            BinOp::And,
+                            binary(BinOp::StrictNotEq, ident(&sync_path), lit("__bash_stdout")),
+                            binary(BinOp::StrictNotEq, ident(&sync_path), lit("__bash_stderr")),
+                        ),
+                    ),
+                ),
+                then_body: vec![sync_fd_buffers_for_path_stmt(
+                    ident("__bash_fds"),
+                    ident("__bash_fd_paths"),
+                    ident(&sync_path),
+                    input_target,
+                    &sync_key,
+                )],
+                elifs: Vec::new(),
+                else_body: None,
+            }));
+        }
+        body.push(assign_stmt(
+            ident("__bash_status"),
+            ternary(ident(&had_var), int(0), int(1)),
+        ));
         // The temporaries are module-level variables; each `read` overwrites them.
-        Ok(Lowered::value(Cmd::boolean(sequence(seq))))
+        Ok(Lowered::stmts(body))
     }
 
     /// `mapfile [-t] [-d c] [-n k] [-O k] [-s k] name` — the lines of `__bash_stdin`.
     fn walk_mapfile(&mut self, suffix: Vec<Pair<Rule>>) -> R<Lowered> {
         let mut name = "MAPFILE".to_string();
+        let mut strip_delimiter = false;
+        let mut delimiter = "\n".to_string();
+        let mut max_lines = 0i64;
+        let mut origin_expr = int(0);
+        let mut origin_specified = false;
+        let mut skip = 0i64;
+        let mut input_fd: Option<String> = None;
+        let mut callback: Option<String> = None;
+        let mut callback_quantum = 5000i64;
+        let mut bad_option = false;
         let mut it = suffix.into_iter();
         while let Some(w) = it.next() {
             let Some(t) = literal_word_text(&w) else {
                 continue;
             };
             if t.starts_with('-') && t.len() > 1 {
-                if matches!(
-                    t.chars().last(),
-                    Some('d' | 'n' | 'O' | 's' | 'u' | 'C' | 'c')
-                ) {
-                    it.next();
+                let mut chars = t[1..].chars().peekable();
+                while let Some(flag) = chars.next() {
+                    match flag {
+                        't' => strip_delimiter = true,
+                        'd' => {
+                            let value = it
+                                .next()
+                                .and_then(|w| self.static_word_text(&w))
+                                .unwrap_or_default();
+                            delimiter = value
+                                .chars()
+                                .next()
+                                .map(|c| c.to_string())
+                                .unwrap_or_default();
+                            break;
+                        }
+                        'n' => {
+                            max_lines = it
+                                .next()
+                                .and_then(|w| self.static_word_text(&w))
+                                .and_then(|s| s.parse::<i64>().ok())
+                                .unwrap_or(0);
+                            break;
+                        }
+                        'O' => {
+                            if let Some(w) = it.next() {
+                                if self
+                                    .static_word_text(&w)
+                                    .and_then(|s| s.parse::<i64>().ok())
+                                    .is_some_and(|n| n < 0)
+                                {
+                                    bad_option = true;
+                                }
+                                origin_expr = to_number(self.word_expr(w)?);
+                                origin_specified = true;
+                            }
+                            break;
+                        }
+                        's' => {
+                            skip = it
+                                .next()
+                                .and_then(|w| self.static_word_text(&w))
+                                .and_then(|s| s.parse::<i64>().ok())
+                                .unwrap_or(0);
+                            break;
+                        }
+                        'u' => {
+                            input_fd = it.next().and_then(|w| self.static_word_text(&w));
+                            break;
+                        }
+                        'C' => {
+                            callback = it.next().and_then(|w| self.static_word_text(&w));
+                            break;
+                        }
+                        'c' => {
+                            callback_quantum = it
+                                .next()
+                                .and_then(|w| self.static_word_text(&w))
+                                .and_then(|s| s.parse::<i64>().ok())
+                                .filter(|n| *n > 0)
+                                .unwrap_or(5000);
+                            break;
+                        }
+                        _ => {}
+                    }
                 }
                 continue;
             }
             name = t;
         }
+        if bad_option || skip < 0 || max_lines < 0 {
+            return Ok(Lowered::value(Cmd::status(int(1))));
+        }
+        self.record_variable(&name);
+        self.indexed_arrays.insert(name.clone());
+        self.array_values.remove(&name);
+
         let t = self.name_or_element_target(&name)?;
-        let lines = method(
-            method(
-                ident("__bash_stdin"),
-                "replace",
-                vec![regexp(lit("\\n$"), ""), lit("")],
+        let target_for_existing = t.clone();
+        let input_target = input_fd
+            .as_deref()
+            .map(|fd| index(ident("__bash_fds"), lit(fd)))
+            .unwrap_or_else(|| ident("__bash_stdin"));
+        let input = self.fresh("__bash_mapfile_input");
+        let parts = self.fresh("__bash_mapfile_parts");
+        let out = self.fresh("__bash_mapfile_out");
+        let idx = self.fresh("__bash_mapfile_idx");
+        let item = self.fresh("__bash_mapfile_item");
+        let value = self.fresh("__bash_mapfile_value");
+        let mut build = vec![
+            let_stmt(
+                &input,
+                binary(BinOp::NullCoalesce, input_target.clone(), lit("")),
             ),
-            "split",
-            vec![lit("\n")],
-        );
-        Ok(Lowered::value(Cmd::boolean(sequence(vec![
-            assign_expr(
-                t,
+            let_stmt(
+                &parts,
                 ternary(
-                    binary(BinOp::StrictEq, ident("__bash_stdin"), lit("")),
+                    binary(BinOp::StrictEq, ident(&input), lit("")),
                     array(Vec::new()),
-                    lines,
+                    if delimiter.is_empty() {
+                        array(vec![ident(&input)])
+                    } else {
+                        method(ident(&input), "split", vec![lit(&delimiter)])
+                    },
                 ),
             ),
-            assign_expr(ident("__bash_stdin"), lit("")),
-            Expression::bool(true),
-        ]))))
+        ];
+        if !delimiter.is_empty() {
+            build.push(Statement::new(StmtKind::If {
+                cond: method(ident(&input), "endsWith", vec![lit(&delimiter)]),
+                then_body: vec![expr_stmt(method(ident(&parts), "pop", vec![]))],
+                elifs: Vec::new(),
+                else_body: None,
+            }));
+        }
+        if skip > 0 {
+            build.push(assign_stmt(
+                ident(&parts),
+                method(ident(&parts), "slice", vec![int(skip)]),
+            ));
+        }
+        if max_lines > 0 {
+            build.push(assign_stmt(
+                ident(&parts),
+                method(ident(&parts), "slice", vec![int(0), int(max_lines)]),
+            ));
+        }
+        build.extend([
+            let_stmt(
+                &out,
+                if origin_specified {
+                    let existing = param_value(target_for_existing);
+                    ternary(
+                        call_named("__bash_is_array", vec![existing.clone()]),
+                        bash_array_slice_end_expr(
+                            existing.clone(),
+                            int(0),
+                            member(existing, "length"),
+                        ),
+                        array(Vec::new()),
+                    )
+                } else {
+                    array(Vec::new())
+                },
+            ),
+            let_stmt(&idx, int(0)),
+            Statement::new(StmtKind::ForIn {
+                var: item.clone(),
+                key: None,
+                iter: ident(&parts),
+                body: vec![
+                    let_stmt(
+                        &value,
+                        if strip_delimiter || delimiter.is_empty() {
+                            ident(&item)
+                        } else {
+                            binary(BinOp::Add, ident(&item), lit(&delimiter))
+                        },
+                    ),
+                    assign_stmt(
+                        index(
+                            ident(&out),
+                            binary(BinOp::Add, origin_expr.clone(), ident(&idx)),
+                        ),
+                        ident(&value),
+                    ),
+                    assign_stmt(ident(&idx), binary(BinOp::Add, ident(&idx), int(1))),
+                ],
+                of: true,
+                else_body: None,
+                is_async: false,
+            }),
+            Statement::new(StmtKind::Return(Some(ident(&out)))),
+        ]);
+        if let Some(callback_name) = callback.clone()
+            && let Some(emitted) = self.functions.get(&callback_name).cloned()
+        {
+            let cb_idx = self.fresh("__bash_mapfile_callback_idx");
+            let ret = build.pop().expect("mapfile build has return");
+            let (_, state_args) = shell_state_params_args();
+            let mut call_args = vec![array(Vec::new())];
+            call_args.extend(state_args);
+            build.push(let_stmt(&cb_idx, int(0)));
+            build.push(Statement::new(StmtKind::While {
+                cond: binary(BinOp::Lt, ident(&cb_idx), member(ident(&parts), "length")),
+                body: vec![
+                    expr_stmt(call(ident(&emitted), call_args)),
+                    assign_stmt(
+                        ident(&cb_idx),
+                        binary(BinOp::Add, ident(&cb_idx), int(callback_quantum)),
+                    ),
+                ],
+                else_body: None,
+            }));
+            build.push(ret);
+            self.variable_values.clear();
+            self.array_values.clear();
+        }
+        let mut seq = vec![
+            assign_expr(t, iife(build)),
+            assign_expr(input_target, lit("")),
+        ];
+        seq.push(Expression::bool(true));
+        Ok(Lowered::value(Cmd::boolean(sequence(seq))))
     }
 
     /// `local`/`declare`/`typeset`/`readonly`/`export [-flags] name[=value]…`.
@@ -5263,6 +10489,9 @@ impl Walker {
                                         self.variable_values.remove(&n);
                                         self.array_values.remove(&n);
                                     }
+                                } else {
+                                    self.variable_values.remove(&n);
+                                    self.array_values.remove(&n);
                                 }
                             }
                             if op == "+=" {
@@ -5585,11 +10814,45 @@ impl Walker {
         let mut names: Vec<String> = if items.is_empty() {
             self.functions.keys().cloned().collect()
         } else {
-            items.iter().filter_map(literal_word_text).collect()
+            items
+                .iter()
+                .filter_map(|item| self.static_word_text(item))
+                .collect()
         };
         names.sort();
         for name in names {
-            if self.functions.contains_key(&name) {
+            if word_text_has_glob_meta(&name) {
+                let mut matched = false;
+                let mut functions: Vec<String> = self.functions.keys().cloned().collect();
+                functions.sort();
+                for function_name in functions {
+                    if simple_glob_match(&name, &function_name) {
+                        matched = true;
+                        if body {
+                            let display = self
+                                .function_bodies
+                                .get(&function_name)
+                                .cloned()
+                                .unwrap_or_else(|| format!("{function_name} () {{ :; }}"));
+                            exprs.push(bash_stdout_write_expr(parts_to_expr(vec![
+                                Part::Text(display),
+                                Part::Text("\n".into()),
+                            ])));
+                        } else if self.traced_functions.contains(&function_name) {
+                            exprs.push(bash_stdout_write_expr(lit(&format!(
+                                "declare -ft {function_name}\n"
+                            ))));
+                        } else {
+                            exprs.push(bash_stdout_write_expr(lit(&format!(
+                                "declare -f {function_name}\n"
+                            ))));
+                        }
+                    }
+                }
+                if !matched {
+                    status = 1;
+                }
+            } else if self.functions.contains_key(&name) {
                 if body {
                     let display = self
                         .function_bodies
@@ -5605,7 +10868,7 @@ impl Walker {
                         "declare -ft {name}\n"
                     ))));
                 } else {
-                    exprs.push(bash_stdout_write_expr(lit(&format!("{name}\n"))));
+                    exprs.push(bash_stdout_write_expr(lit(&format!("declare -f {name}\n"))));
                 }
             } else if self.variables.contains(&name) {
                 status = 1;
@@ -5618,6 +10881,44 @@ impl Walker {
             expr_stmt(sequence(exprs)),
             assign_stmt(ident("__bash_status"), int(status)),
         ]
+    }
+
+    fn walk_caller(&mut self, suffix: Vec<Pair<Rule>>) -> R<Lowered> {
+        let level = suffix
+            .first()
+            .and_then(|w| self.static_word_text(w))
+            .and_then(|text| text.parse::<i64>().ok())
+            .unwrap_or(0);
+        if level < 0 {
+            return Ok(Lowered::value(Cmd::status(int(1))));
+        }
+        let stack_index = int(level + 1);
+        let line_index = int(level);
+        let function = index(ident(BASH_FUNCNAME), stack_index);
+        let valid = binary(BinOp::StrictNotEq, function.clone(), undefined());
+        let source = binary(
+            BinOp::NullCoalesce,
+            index(ident("BASH_SOURCE"), int(0)),
+            lit("main"),
+        );
+        let line = binary(
+            BinOp::NullCoalesce,
+            index(ident("BASH_LINENO"), line_index),
+            int(1),
+        );
+        let text = parts_to_expr(vec![
+            Part::Expr(shell_scalar_string(line)),
+            Part::Text(" ".into()),
+            Part::Expr(shell_scalar_string(function)),
+            Part::Text(" ".into()),
+            Part::Expr(shell_scalar_string(source)),
+            Part::Text("\n".into()),
+        ]);
+        Ok(Lowered::value(Cmd::status(ternary(
+            valid,
+            bash_stdout_status_expr(text),
+            int(1),
+        ))))
     }
 
     fn walk_export_print(&mut self) -> Vec<Statement> {
@@ -5678,7 +10979,9 @@ impl Walker {
             let key = if self.assoc_arrays.contains(&target) {
                 self.subscript_assoc_key_expr(key)?
             } else {
-                arith_index(self.subscript_text_expr(key)?)
+                let key_expr = self.subscript_text_expr(key)?;
+                self.static_indexed_key_expr(&target, &key_expr)
+                    .unwrap_or_else(|| bash_indexed_key(ident(&target), key_expr))
             };
             return Ok(index(ident(&target), key));
         }
@@ -5721,37 +11024,95 @@ impl Walker {
         stmts: Vec<Statement>,
         redirs: &[Pair<Rule>],
     ) -> R<Vec<Statement>> {
-        let mut stdin: Option<Expression> = None;
-        let mut stdout: Option<(bool, Expression)> = None; // (append, target)
+        let mut stdin: Option<(Expression, bool)> = None;
+        let mut stdin_fd_source: Option<Expression> = None;
+        let mut stdout: Option<(bool, bool, Expression)> = None; // (append, force, target)
+        let mut stdout_preflights: Vec<(bool, bool, Expression)> = Vec::new();
         let mut stdout_procsub: Option<Expression> = None;
         let mut stdout_fd: Option<Expression> = None;
+        let mut stdout_file_or_fd: Option<Expression> = None;
+        let mut custom_fd_inputs: Vec<(Expression, Expression)> = Vec::new();
+        let mut custom_fd_outputs: Vec<(Expression, bool, Expression)> = Vec::new();
+        let mut custom_fd_dups: Vec<(Expression, Expression)> = Vec::new();
+        let mut closed_fds: Vec<Expression> = Vec::new();
         let mut stdout_null = false;
         let mut stdout_to_stderr = false;
+        let mut stdout_capture_stderr = false;
         let mut stderr_to_stdout: Option<bool> = None;
         let mut stderr_null: Option<bool> = None;
+        let mut stdout_file_seen = false;
+        let mut stderr_to_original_stdout = false;
         let mut prelude = Vec::new();
         for r in redirs {
             let (fd, op, target, mut before) = self.redirection_parts(r.clone())?;
             prelude.append(&mut before);
             match op.as_str() {
-                "<<<" => {
-                    stdin = Some(parts_to_expr(vec![
-                        Part::Expr(target),
-                        Part::Text("\n".into()),
-                    ]))
+                "<<<" if fd == "0" => {
+                    stdin = Some((
+                        parts_to_expr(vec![Part::Expr(target), Part::Text("\n".into())]),
+                        false,
+                    ))
                 }
-                "<<" => stdin = Some(target),
+                "<<<" => custom_fd_inputs.push((
+                    lit(&fd),
+                    parts_to_expr(vec![Part::Expr(target), Part::Text("\n".into())]),
+                )),
+                "<<" if fd == "0" => stdin = Some((target, false)),
+                "<<" => custom_fd_inputs.push((lit(&fd), target)),
                 "<" if fd == "0" => {
-                    stdin = Some(match target.kind {
+                    stdin = Some((
+                        match target.kind {
+                            ExprKind::Call { .. } if is_procsub(&target) => procsub_capture(target),
+                            _ => self.read_file_or_fd_expr(target),
+                        },
+                        true,
+                    ))
+                }
+                "<" => {
+                    let content = match target.kind {
                         ExprKind::Call { .. } if is_procsub(&target) => procsub_capture(target),
                         _ => self.read_file_or_fd_expr(target),
-                    })
+                    };
+                    custom_fd_inputs.push((lit(&fd), content));
+                }
+                "<>" if fd == "0" => {
+                    let path = self.fresh("__bash_rw_redir_path");
+                    stdin = Some((
+                        iife(vec![
+                            let_stmt(&path, bash_path_expr(target)),
+                            Statement::new(StmtKind::If {
+                                cond: unary(
+                                    UnaryOp::Not,
+                                    call_named("__bash_file_exists", vec![ident(&path)]),
+                                ),
+                                then_body: vec![expr_stmt(call_named(
+                                    "__bash_write_file",
+                                    vec![ident(&path), lit("")],
+                                ))],
+                                elifs: Vec::new(),
+                                else_body: None,
+                            }),
+                            Statement::new(StmtKind::Return(Some(call_named(
+                                "__bash_read_file",
+                                vec![ident(&path)],
+                            )))),
+                        ]),
+                        false,
+                    ));
                 }
                 "<&" if fd == "0" && literal_string(&target) != Some("-") => {
-                    stdin = Some(self.read_fd_expr(target));
+                    stdin_fd_source = Some(param_value(target.clone()));
+                    stdin = Some((self.read_fd_expr(target), true));
+                }
+                "<&" | ">&" if literal_string(&target) == Some("-") => {
+                    closed_fds.push(lit(&fd));
+                }
+                "<&" => {
+                    custom_fd_dups.push((lit(&fd), target));
                 }
                 ">" | ">|" | ">>" | "&>" | "&>>" if fd == "1" || op.starts_with('&') => {
                     let append = op.ends_with(">>");
+                    let force = op == ">|";
                     match &target.kind {
                         ExprKind::Lit(Literal::Str(s)) if s == "/dev/null" => {
                             stdout_to_stderr = false;
@@ -5773,17 +11134,19 @@ impl Walker {
                             stdout = None;
                             stdout_procsub = Some(target);
                             if op.starts_with('&') {
-                                stderr_null = Some(false);
-                                stderr_to_stdout = Some(true);
+                                stdout_capture_stderr = true;
                             }
                         }
                         _ => {
                             stdout_to_stderr = false;
                             stdout_null = false;
-                            stdout = Some((append, target));
+                            if let Some(previous) = stdout.take() {
+                                stdout_preflights.push(previous);
+                            }
+                            stdout = Some((append, force, target));
+                            stdout_file_seen = true;
                             if op.starts_with('&') {
-                                stderr_null = Some(false);
-                                stderr_to_stdout = Some(true);
+                                stdout_capture_stderr = true;
                             }
                         }
                     }
@@ -5792,14 +11155,40 @@ impl Walker {
                     if matches!(&target.kind, ExprKind::Lit(Literal::Str(s)) if s == "/dev/null") {
                         stderr_null = Some(true);
                         stderr_to_stdout = Some(false);
+                    } else {
+                        custom_fd_outputs.push((lit(&fd), op == ">>", target));
                     }
+                }
+                ">" | ">|" | ">>" => {
+                    custom_fd_outputs.push((lit(&fd), op == ">>", target));
                 }
                 ">&" if fd == "1" && literal_string(&target) == Some("2") => {
                     stdout_to_stderr = true;
+                    stdout_null = false;
+                    stdout_fd = None;
+                }
+                ">&" if fd == "1"
+                    && !literal_string(&target)
+                        .is_some_and(|s| s.chars().all(|ch| ch.is_ascii_digit())) =>
+                {
+                    stdout_to_stderr = false;
+                    stdout_null = false;
+                    if literal_string(&target).is_some() {
+                        if let Some(previous) = stdout.take() {
+                            stdout_preflights.push(previous);
+                        }
+                        stdout = Some((false, false, target));
+                        stdout_capture_stderr = true;
+                    } else {
+                        stdout_file_or_fd = Some(target);
+                    }
                 }
                 ">&" if fd == "1" => {
                     stdout_to_stderr = false;
                     stdout_null = false;
+                    if let Some(previous) = stdout.take() {
+                        stdout_preflights.push(previous);
+                    }
                     stdout_fd = Some(target);
                 }
                 ">&" if fd == "2" && literal_string(&target) == Some("1") => {
@@ -5808,8 +11197,16 @@ impl Walker {
                         stderr_to_stdout = Some(false);
                     } else {
                         stderr_null = Some(false);
-                        stderr_to_stdout = Some(true);
+                        if stdout_file_seen {
+                            stderr_to_stdout = Some(true);
+                        } else {
+                            stderr_to_original_stdout = true;
+                            stderr_to_stdout = Some(false);
+                        }
                     }
+                }
+                ">&" => {
+                    custom_fd_dups.push((lit(&fd), target));
                 }
                 _ => {}
             }
@@ -5825,92 +11222,302 @@ impl Walker {
             wrapped.extend(out);
             wrapped.push(assign_stmt(ident("__bash_stdout_null"), ident(&saved)));
             out = wrapped;
-        } else if let Some((append, target)) = stdout {
+        } else if let Some(target) = stdout_file_or_fd {
             let target_var = self.fresh("__bash_redir_target");
             let content = self.fresh("__bash_redir_content");
             let fd_key = self.fresh("__bash_redir_fd_key");
-            let coproc = self.fresh("__bash_redir_coproc");
-            let coproc_body = self.fresh("__bash_redir_coproc_body");
-            let saved = self.fresh("__bash_saved");
-            let coproc_output = self.fresh("__bash_coproc_output");
-            let write_body = vec![
-                let_stmt(&content, capture(out)),
-                let_stmt(
-                    &fd_key,
-                    ternary(
-                        method(ident(&target_var), "startsWith", vec![lit("/dev/fd/")]),
-                        method(ident(&target_var), "slice", vec![int(8)]),
-                        lit(""),
-                    ),
-                ),
-                let_stmt(&coproc, index(ident("__bash_coprocs"), ident(&fd_key))),
+            let target_path = self.fresh("__bash_redir_target_path");
+            let noclobber = self.shell_flags.contains(&'C');
+            let mut capture_body = out.clone();
+            let saved_to_stdout = self.fresh("__bash_saved_capture_stderr_to_stdout");
+            let saved_null = self.fresh("__bash_saved_capture_stderr_null");
+            let mut capture_wrapped = vec![
+                let_stmt(&saved_to_stdout, ident("__bash_stderr_to_stdout")),
+                let_stmt(&saved_null, ident("__bash_stderr_null")),
+                assign_stmt(ident("__bash_stderr_to_stdout"), Expression::bool(true)),
+                assign_stmt(ident("__bash_stderr_null"), Expression::bool(false)),
+            ];
+            capture_wrapped.extend(capture_body);
+            capture_wrapped.push(assign_stmt(ident("__bash_stderr_null"), ident(&saved_null)));
+            capture_wrapped.push(assign_stmt(
+                ident("__bash_stderr_to_stdout"),
+                ident(&saved_to_stdout),
+            ));
+            capture_body = capture_wrapped;
+            let fd_body = self.wrap_fd_dup(out, lit("1"), ident(&target_var));
+            let file_body = vec![
+                let_stmt(&target_path, bash_path_expr(ident(&target_var))),
                 Statement::new(StmtKind::If {
-                    cond: binary(BinOp::StrictNotEq, ident(&fd_key), lit("")),
-                    then_body: vec![Statement::new(StmtKind::If {
-                        cond: binary(BinOp::StrictEq, ident(&coproc), undefined()),
-                        then_body: vec![
-                            assign_stmt(
-                                index(ident("__bash_fds"), ident(&fd_key)),
-                                ident(&content),
-                            ),
-                            assign_stmt(ident("__bash_status"), int(0)),
-                        ],
-                        elifs: Vec::new(),
-                        else_body: Some(vec![
-                            let_stmt(&coproc_body, member(ident(&coproc), "body")),
-                            let_stmt(&saved, ident("__bash_stdin")),
-                            assign_stmt(ident("__bash_stdin"), ident(&content)),
-                            let_stmt(
-                                &coproc_output,
-                                capture(vec![expr_stmt(call(
-                                    ident(&coproc_body),
-                                    vec![ident(&content)],
-                                ))]),
-                            ),
-                            Statement::new(StmtKind::If {
-                                cond: binary(
-                                    BinOp::StrictEq,
-                                    member(ident(&coproc), "stdout"),
-                                    lit("parent"),
-                                ),
-                                then_body: vec![expr_stmt(bash_stdout_write_expr(ident(
-                                    &coproc_output,
-                                )))],
-                                elifs: Vec::new(),
-                                else_body: Some(vec![assign_stmt(
-                                    index(ident("__bash_fds"), member(ident(&coproc), "read_fd")),
-                                    ident(&coproc_output),
-                                )]),
-                            }),
-                            assign_stmt(
-                                index(ident("__bash_jobs"), member(ident(&coproc), "pid")),
-                                ident("__bash_status"),
-                            ),
-                            assign_stmt(ident("__bash_stdin"), ident(&saved)),
-                        ]),
-                    })],
+                    cond: unary(
+                        UnaryOp::Not,
+                        bash_output_path_can_open_for(ident(&target_path), noclobber),
+                    ),
+                    then_body: vec![assign_stmt(ident("__bash_status"), int(1))],
                     elifs: Vec::new(),
-                    else_body: Some(vec![expr_stmt(call_named(
-                        if append {
-                            "__bash_append_file"
-                        } else {
-                            "__bash_write_file"
-                        },
-                        vec![bash_path_expr(ident(&target_var)), ident(&content)],
-                    ))]),
+                    else_body: Some(vec![
+                        let_stmt(&content, current_shell_capture(capture_body, false)),
+                        let_stmt(
+                            &fd_key,
+                            ternary(
+                                method(ident(&target_var), "startsWith", vec![lit("/dev/fd/")]),
+                                method(ident(&target_var), "slice", vec![int(8)]),
+                                lit(""),
+                            ),
+                        ),
+                        Statement::new(StmtKind::If {
+                            cond: binary(BinOp::StrictNotEq, ident(&fd_key), lit("")),
+                            then_body: self.fd_write_stmts(ident(&fd_key), ident(&content)),
+                            elifs: Vec::new(),
+                            else_body: Some(vec![expr_stmt(call_named(
+                                "__bash_write_file",
+                                vec![ident(&target_path), ident(&content)],
+                            ))]),
+                        }),
+                    ]),
                 }),
             ];
-            let wrapped = vec![
-                let_stmt(&target_var, target),
+            out = vec![
+                let_stmt(&target_var, param_value(target)),
                 Statement::new(StmtKind::If {
                     cond: binary(BinOp::StrictEq, ident(&target_var), undefined()),
                     then_body: vec![assign_stmt(ident("__bash_status"), int(1))],
                     elifs: Vec::new(),
-                    else_body: Some(write_body),
+                    else_body: Some(vec![Statement::new(StmtKind::If {
+                        cond: regex_test_expr(regexp(lit("^[0-9]+$"), ""), ident(&target_var)),
+                        then_body: fd_body,
+                        elifs: Vec::new(),
+                        else_body: Some(file_body),
+                    })]),
                 }),
             ];
-            out = wrapped;
+        } else if let Some((append, force, target)) = stdout {
+            let noclobber = !append && !force && self.shell_flags.contains(&'C');
+            let mut stdout_preflight_stmts = Vec::new();
+            for (pre_append, pre_force, pre_target) in stdout_preflights {
+                stdout_preflight_stmts
+                    .extend(self.stdout_open_side_effect_stmts(pre_append, pre_force, pre_target));
+            }
+            if stderr_to_original_stdout {
+                let target_var = self.fresh("__bash_redir_target");
+                let target_path_var = self.fresh("__bash_redir_target_path");
+                let saved_fd1 = self.fresh("__bash_saved_fd1");
+                let saved_fd1_path = self.fresh("__bash_saved_fd1_path");
+                let saved_fd2 = self.fresh("__bash_saved_fd2");
+                let saved_fd2_path = self.fresh("__bash_saved_fd2_path");
+                let initial = self.fresh("__bash_redir_initial");
+                let mut run_body = vec![
+                    let_stmt(&saved_fd1, index(ident("__bash_fds"), lit("1"))),
+                    let_stmt(&saved_fd1_path, index(ident("__bash_fd_paths"), lit("1"))),
+                    let_stmt(&saved_fd2, index(ident("__bash_fds"), lit("2"))),
+                    let_stmt(&saved_fd2_path, index(ident("__bash_fd_paths"), lit("2"))),
+                    let_stmt(
+                        &initial,
+                        if append {
+                            ternary(
+                                call_named("__bash_file_exists", vec![ident(&target_path_var)]),
+                                call_named("__bash_read_file", vec![ident(&target_path_var)]),
+                                lit(""),
+                            )
+                        } else {
+                            lit("")
+                        },
+                    ),
+                    if append {
+                        Statement::new(StmtKind::Empty)
+                    } else {
+                        expr_stmt(call_named(
+                            "__bash_write_file",
+                            vec![ident(&target_path_var), lit("")],
+                        ))
+                    },
+                    assign_stmt(index(ident("__bash_fds"), lit("1")), ident(&initial)),
+                    assign_stmt(
+                        index(ident("__bash_fd_paths"), lit("1")),
+                        ident(&target_path_var),
+                    ),
+                    assign_stmt(index(ident("__bash_fds"), lit("2")), lit("")),
+                    assign_stmt(
+                        index(ident("__bash_fd_paths"), lit("2")),
+                        lit("__bash_stdout"),
+                    ),
+                ];
+                run_body.extend(out);
+                run_body.extend([
+                    assign_stmt(
+                        index(ident("__bash_fd_paths"), lit("2")),
+                        ident(&saved_fd2_path),
+                    ),
+                    assign_stmt(index(ident("__bash_fds"), lit("2")), ident(&saved_fd2)),
+                    assign_stmt(
+                        index(ident("__bash_fd_paths"), lit("1")),
+                        ident(&saved_fd1_path),
+                    ),
+                    assign_stmt(index(ident("__bash_fds"), lit("1")), ident(&saved_fd1)),
+                ]);
+                out = vec![
+                    let_stmt(&target_var, target),
+                    let_stmt(&target_path_var, bash_path_expr(ident(&target_var))),
+                    Statement::new(StmtKind::If {
+                        cond: binary(BinOp::StrictEq, ident(&target_var), undefined()),
+                        then_body: vec![assign_stmt(ident("__bash_status"), int(1))],
+                        elifs: Vec::new(),
+                        else_body: Some(vec![Statement::new(StmtKind::If {
+                            cond: unary(
+                                UnaryOp::Not,
+                                bash_output_path_can_open_for(ident(&target_path_var), noclobber),
+                            ),
+                            then_body: vec![assign_stmt(ident("__bash_status"), int(1))],
+                            elifs: Vec::new(),
+                            else_body: Some(run_body),
+                        })]),
+                    }),
+                ];
+            } else {
+                let mut capture_body = out;
+                if stdout_capture_stderr {
+                    let saved_to_stdout = self.fresh("__bash_saved_capture_stderr_to_stdout");
+                    let saved_null = self.fresh("__bash_saved_capture_stderr_null");
+                    let mut wrapped = vec![
+                        let_stmt(&saved_to_stdout, ident("__bash_stderr_to_stdout")),
+                        let_stmt(&saved_null, ident("__bash_stderr_null")),
+                        assign_stmt(ident("__bash_stderr_to_stdout"), Expression::bool(true)),
+                        assign_stmt(ident("__bash_stderr_null"), Expression::bool(false)),
+                    ];
+                    wrapped.extend(capture_body);
+                    wrapped.push(assign_stmt(ident("__bash_stderr_null"), ident(&saved_null)));
+                    wrapped.push(assign_stmt(
+                        ident("__bash_stderr_to_stdout"),
+                        ident(&saved_to_stdout),
+                    ));
+                    capture_body = wrapped;
+                }
+                let target_var = self.fresh("__bash_redir_target");
+                let content = self.fresh("__bash_redir_content");
+                let fd_key = self.fresh("__bash_redir_fd_key");
+                let coproc = self.fresh("__bash_redir_coproc");
+                let coproc_body = self.fresh("__bash_redir_coproc_body");
+                let saved = self.fresh("__bash_saved");
+                let coproc_output = self.fresh("__bash_coproc_output");
+                let write_body = vec![
+                    let_stmt(&content, current_shell_capture(capture_body, false)),
+                    let_stmt(
+                        &fd_key,
+                        ternary(
+                            method(ident(&target_var), "startsWith", vec![lit("/dev/fd/")]),
+                            method(ident(&target_var), "slice", vec![int(8)]),
+                            lit(""),
+                        ),
+                    ),
+                    let_stmt(&coproc, index(ident("__bash_coprocs"), ident(&fd_key))),
+                    Statement::new(StmtKind::If {
+                        cond: binary(BinOp::StrictNotEq, ident(&fd_key), lit("")),
+                        then_body: vec![Statement::new(StmtKind::If {
+                            cond: binary(BinOp::StrictEq, ident(&coproc), undefined()),
+                            then_body: vec![
+                                assign_stmt(
+                                    index(ident("__bash_fds"), ident(&fd_key)),
+                                    ident(&content),
+                                ),
+                                assign_stmt(ident("__bash_status"), int(0)),
+                            ],
+                            elifs: Vec::new(),
+                            else_body: Some(vec![
+                                let_stmt(&coproc_body, member(ident(&coproc), "body")),
+                                let_stmt(&saved, ident("__bash_stdin")),
+                                assign_stmt(ident("__bash_stdin"), ident(&content)),
+                                let_stmt(
+                                    &coproc_output,
+                                    capture(vec![expr_stmt(call(
+                                        ident(&coproc_body),
+                                        vec![ident(&content)],
+                                    ))]),
+                                ),
+                                Statement::new(StmtKind::If {
+                                    cond: binary(
+                                        BinOp::StrictEq,
+                                        member(ident(&coproc), "stdout"),
+                                        lit("parent"),
+                                    ),
+                                    then_body: vec![expr_stmt(bash_stdout_write_expr(ident(
+                                        &coproc_output,
+                                    )))],
+                                    elifs: Vec::new(),
+                                    else_body: Some(vec![assign_stmt(
+                                        index(
+                                            ident("__bash_fds"),
+                                            member(ident(&coproc), "read_fd"),
+                                        ),
+                                        ident(&coproc_output),
+                                    )]),
+                                }),
+                                bash_object_set_stmt(
+                                    ident("__bash_jobs"),
+                                    shell_expr_text(member(ident(&coproc), "pid")),
+                                    ident("__bash_status"),
+                                ),
+                                assign_stmt(ident("__bash_stdin"), ident(&saved)),
+                            ]),
+                        })],
+                        elifs: Vec::new(),
+                        else_body: Some(vec![expr_stmt(call_named(
+                            if append {
+                                "__bash_append_file"
+                            } else {
+                                "__bash_write_file"
+                            },
+                            vec![bash_path_expr(ident(&target_var)), ident(&content)],
+                        ))]),
+                    }),
+                ];
+                let target_path = bash_path_expr(ident(&target_var));
+                let wrapped = vec![
+                    let_stmt(&target_var, target),
+                    Statement::new(StmtKind::If {
+                        cond: binary(BinOp::StrictEq, ident(&target_var), undefined()),
+                        then_body: vec![assign_stmt(ident("__bash_status"), int(1))],
+                        elifs: Vec::new(),
+                        else_body: Some(vec![Statement::new(StmtKind::If {
+                            cond: unary(
+                                UnaryOp::Not,
+                                bash_output_path_can_open_for(target_path, noclobber),
+                            ),
+                            then_body: vec![assign_stmt(ident("__bash_status"), int(1))],
+                            elifs: Vec::new(),
+                            else_body: Some(write_body),
+                        })]),
+                    }),
+                ];
+                out = wrapped;
+            }
+            if !stdout_preflight_stmts.is_empty() {
+                let mut guarded = stdout_preflight_stmts;
+                guarded.push(Statement::new(StmtKind::If {
+                    cond: binary(BinOp::StrictEq, ident("__bash_status"), int(0)),
+                    then_body: out,
+                    elifs: Vec::new(),
+                    else_body: None,
+                }));
+                out = guarded;
+            }
         } else if let Some(target) = stdout_procsub {
+            let mut capture_body = out;
+            if stdout_capture_stderr {
+                let saved_to_stdout = self.fresh("__bash_saved_procsub_stderr_to_stdout");
+                let saved_null = self.fresh("__bash_saved_procsub_stderr_null");
+                let mut wrapped = vec![
+                    let_stmt(&saved_to_stdout, ident("__bash_stderr_to_stdout")),
+                    let_stmt(&saved_null, ident("__bash_stderr_null")),
+                    assign_stmt(ident("__bash_stderr_to_stdout"), Expression::bool(true)),
+                    assign_stmt(ident("__bash_stderr_null"), Expression::bool(false)),
+                ];
+                wrapped.extend(capture_body);
+                wrapped.push(assign_stmt(ident("__bash_stderr_null"), ident(&saved_null)));
+                wrapped.push(assign_stmt(
+                    ident("__bash_stderr_to_stdout"),
+                    ident(&saved_to_stdout),
+                ));
+                capture_body = wrapped;
+            }
             let content = self.fresh("__bash_procsub_input");
             let saved = self.fresh("__bash_saved");
             let mut body = procsub_body(target);
@@ -5919,7 +11526,7 @@ impl Walker {
                 "__bash_status",
             )))));
             let mut wrapped = vec![
-                let_stmt(&content, capture(out)),
+                let_stmt(&content, capture(capture_body)),
                 let_stmt(&saved, ident("__bash_stdin")),
                 assign_stmt(ident("__bash_stdin"), ident(&content)),
                 expr_stmt(iife(body)),
@@ -5927,57 +11534,7 @@ impl Walker {
             ];
             out = std::mem::take(&mut wrapped);
         } else if let Some(target) = stdout_fd {
-            let fd = self.fresh("__bash_write_fd");
-            let content = self.fresh("__bash_write_fd_content");
-            let coproc = self.fresh("__bash_write_fd_coproc");
-            let coproc_body = self.fresh("__bash_write_fd_coproc_body");
-            let saved = self.fresh("__bash_saved");
-            let coproc_output = self.fresh("__bash_coproc_output");
-            out = vec![
-                let_stmt(&fd, param_value(target)),
-                let_stmt(&content, capture(out)),
-                let_stmt(&coproc, index(ident("__bash_coprocs"), ident(&fd))),
-                Statement::new(StmtKind::If {
-                    cond: binary(BinOp::StrictEq, ident(&coproc), undefined()),
-                    then_body: vec![
-                        assign_stmt(index(ident("__bash_fds"), ident(&fd)), ident(&content)),
-                        assign_stmt(ident("__bash_status"), int(0)),
-                    ],
-                    elifs: Vec::new(),
-                    else_body: Some(vec![
-                        let_stmt(&coproc_body, member(ident(&coproc), "body")),
-                        let_stmt(&saved, ident("__bash_stdin")),
-                        assign_stmt(ident("__bash_stdin"), ident(&content)),
-                        let_stmt(
-                            &coproc_output,
-                            capture(vec![expr_stmt(call(
-                                ident(&coproc_body),
-                                vec![ident(&content)],
-                            ))]),
-                        ),
-                        Statement::new(StmtKind::If {
-                            cond: binary(
-                                BinOp::StrictEq,
-                                member(ident(&coproc), "stdout"),
-                                lit("parent"),
-                            ),
-                            then_body: vec![expr_stmt(bash_stdout_write_expr(ident(
-                                &coproc_output,
-                            )))],
-                            elifs: Vec::new(),
-                            else_body: Some(vec![assign_stmt(
-                                index(ident("__bash_fds"), member(ident(&coproc), "read_fd")),
-                                ident(&coproc_output),
-                            )]),
-                        }),
-                        assign_stmt(
-                            index(ident("__bash_jobs"), member(ident(&coproc), "pid")),
-                            ident("__bash_status"),
-                        ),
-                        assign_stmt(ident("__bash_stdin"), ident(&saved)),
-                    ]),
-                }),
-            ];
+            out = self.wrap_fd_dup(out, lit("1"), target);
         }
         if stdout_to_stderr {
             let saved = self.fresh("__bash_saved_stdout_to_stderr");
@@ -6016,14 +11573,110 @@ impl Walker {
             ));
             out = wrapped;
         }
-        if let Some(content) = stdin {
-            let saved = self.fresh("__bash_saved");
+        for (fd, append, target) in custom_fd_outputs.into_iter().rev() {
+            let saved = self.fresh("__bash_saved_fd");
+            let saved_path = self.fresh("__bash_saved_fd_path");
             let mut wrapped = vec![
-                let_stmt(&saved, ident("__bash_stdin")),
-                assign_stmt(ident("__bash_stdin"), content),
+                let_stmt(&saved, index(ident("__bash_fds"), fd.clone())),
+                let_stmt(&saved_path, index(ident("__bash_fd_paths"), fd.clone())),
+            ];
+            wrapped.extend(self.open_fd_stmts(fd.clone(), if append { ">>" } else { ">" }, target));
+            wrapped.extend(out);
+            wrapped.push(assign_stmt(
+                index(ident("__bash_fd_paths"), fd.clone()),
+                ident(&saved_path),
+            ));
+            wrapped.push(assign_stmt(index(ident("__bash_fds"), fd), ident(&saved)));
+            out = wrapped;
+        }
+        for (fd, target) in custom_fd_dups.into_iter().rev() {
+            out = self.wrap_fd_dup(out, fd, target);
+        }
+        for fd in closed_fds.into_iter().rev() {
+            if literal_string(&fd) == Some("0") {
+                let saved = self.fresh("__bash_saved_closed_stdin");
+                let mut wrapped = vec![
+                    let_stmt(&saved, ident("__bash_stdin")),
+                    assign_stmt(ident("__bash_stdin"), lit("")),
+                ];
+                wrapped.extend(out);
+                wrapped.push(assign_stmt(ident("__bash_stdin"), ident(&saved)));
+                out = wrapped;
+                continue;
+            }
+            let saved = self.fresh("__bash_saved_closed_fd");
+            let saved_path = self.fresh("__bash_saved_closed_fd_path");
+            let close_path = ternary(
+                binary(
+                    BinOp::Or,
+                    binary(BinOp::StrictEq, fd.clone(), lit("1")),
+                    binary(BinOp::StrictEq, fd.clone(), lit("2")),
+                ),
+                lit("__bash_closed"),
+                undefined(),
+            );
+            let mut wrapped = vec![
+                let_stmt(&saved, index(ident("__bash_fds"), fd.clone())),
+                let_stmt(&saved_path, index(ident("__bash_fd_paths"), fd.clone())),
+                assign_stmt(index(ident("__bash_fds"), fd.clone()), undefined()),
+                assign_stmt(index(ident("__bash_fd_paths"), fd.clone()), close_path),
             ];
             wrapped.extend(out);
-            wrapped.push(assign_stmt(ident("__bash_stdin"), ident(&saved)));
+            wrapped.push(assign_stmt(
+                index(ident("__bash_fd_paths"), fd.clone()),
+                ident(&saved_path),
+            ));
+            wrapped.push(assign_stmt(index(ident("__bash_fds"), fd), ident(&saved)));
+            out = wrapped;
+        }
+        for (fd, content) in custom_fd_inputs.into_iter().rev() {
+            let saved = self.fresh("__bash_saved_fd");
+            let saved_path = self.fresh("__bash_saved_fd_path");
+            let mut wrapped = vec![
+                let_stmt(&saved, index(ident("__bash_fds"), fd.clone())),
+                let_stmt(&saved_path, index(ident("__bash_fd_paths"), fd.clone())),
+                assign_stmt(index(ident("__bash_fds"), fd.clone()), content),
+                assign_stmt(index(ident("__bash_fd_paths"), fd.clone()), undefined()),
+            ];
+            wrapped.extend(out);
+            wrapped.push(assign_stmt(
+                index(ident("__bash_fd_paths"), fd.clone()),
+                ident(&saved_path),
+            ));
+            wrapped.push(assign_stmt(index(ident("__bash_fds"), fd), ident(&saved)));
+            out = wrapped;
+        }
+        if let Some((content, can_fail)) = stdin {
+            let saved = self.fresh("__bash_saved");
+            let redir_content = self.fresh("__bash_redir_stdin");
+            let mut run_body = vec![assign_stmt(ident("__bash_stdin"), ident(&redir_content))];
+            run_body.extend(out);
+            if let Some(source_fd) = stdin_fd_source {
+                run_body.push(Statement::new(StmtKind::If {
+                    cond: binary(BinOp::StrictNotEq, source_fd.clone(), lit("0")),
+                    then_body: vec![assign_stmt(
+                        index(ident("__bash_fds"), source_fd),
+                        ident("__bash_stdin"),
+                    )],
+                    elifs: Vec::new(),
+                    else_body: None,
+                }));
+            }
+            run_body.push(assign_stmt(ident("__bash_stdin"), ident(&saved)));
+            let mut wrapped = vec![
+                let_stmt(&saved, ident("__bash_stdin")),
+                let_stmt(&redir_content, content),
+            ];
+            if can_fail {
+                wrapped.push(Statement::new(StmtKind::If {
+                    cond: binary(BinOp::StrictEq, ident("__bash_status"), int(0)),
+                    then_body: run_body,
+                    elifs: Vec::new(),
+                    else_body: Some(vec![assign_stmt(ident("__bash_stdin"), ident(&saved))]),
+                }));
+            } else {
+                wrapped.extend(run_body);
+            }
             out = wrapped;
         }
         Ok(out)
@@ -6031,6 +11684,263 @@ impl Walker {
 
     fn persistent_redirections(&mut self, redirs: &[Pair<Rule>]) -> R<Vec<Statement>> {
         self.persistent_redirections_with_fd_override(redirs, None)
+    }
+
+    fn open_fd_stmts(
+        &mut self,
+        fd_expr: Expression,
+        op: &str,
+        target: Expression,
+    ) -> Vec<Statement> {
+        let mut out = Vec::new();
+        let path = self.fresh("__bash_write_fd_open_path");
+        let initial = self.fresh("__bash_write_fd_initial");
+        out.push(let_stmt(&path, bash_path_expr(target)));
+        if op == ">>" {
+            out.push(let_stmt(
+                &initial,
+                ternary(
+                    call_named("__bash_file_exists", vec![ident(&path)]),
+                    call_named("__bash_read_file", vec![ident(&path)]),
+                    lit(""),
+                ),
+            ));
+        } else {
+            out.push(expr_stmt(call_named(
+                "__bash_write_file",
+                vec![ident(&path), lit("")],
+            )));
+            out.push(let_stmt(&initial, lit("")));
+        }
+        out.push(assign_stmt(
+            index(ident("__bash_fds"), fd_expr.clone()),
+            ident(&initial),
+        ));
+        out.push(assign_stmt(
+            index(ident("__bash_fd_paths"), fd_expr.clone()),
+            ident(&path),
+        ));
+        out.push(assign_stmt(
+            index(ident("__bash_fd_offsets"), fd_expr.clone()),
+            if op == ">>" {
+                member(ident(&initial), "length")
+            } else {
+                int(0)
+            },
+        ));
+        out.push(assign_stmt(ident("__bash_status"), int(0)));
+        out
+    }
+
+    fn stdout_open_side_effect_stmts(
+        &mut self,
+        append: bool,
+        force: bool,
+        target: Expression,
+    ) -> Vec<Statement> {
+        let target_var = self.fresh("__bash_preflight_redir_target");
+        let target_path = self.fresh("__bash_preflight_redir_path");
+        let noclobber = !append && !force && self.shell_flags.contains(&'C');
+        let open_body = if append {
+            vec![
+                Statement::new(StmtKind::If {
+                    cond: unary(
+                        UnaryOp::Not,
+                        call_named("__bash_file_exists", vec![ident(&target_path)]),
+                    ),
+                    then_body: vec![expr_stmt(call_named(
+                        "__bash_write_file",
+                        vec![ident(&target_path), lit("")],
+                    ))],
+                    elifs: Vec::new(),
+                    else_body: None,
+                }),
+                assign_stmt(ident("__bash_status"), int(0)),
+            ]
+        } else {
+            vec![
+                expr_stmt(call_named(
+                    "__bash_write_file",
+                    vec![ident(&target_path), lit("")],
+                )),
+                assign_stmt(ident("__bash_status"), int(0)),
+            ]
+        };
+        vec![
+            let_stmt(&target_var, target),
+            let_stmt(&target_path, bash_path_expr(ident(&target_var))),
+            Statement::new(StmtKind::If {
+                cond: binary(BinOp::StrictEq, ident(&target_var), undefined()),
+                then_body: vec![assign_stmt(ident("__bash_status"), int(1))],
+                elifs: Vec::new(),
+                else_body: Some(vec![Statement::new(StmtKind::If {
+                    cond: unary(
+                        UnaryOp::Not,
+                        bash_output_path_can_open_for(ident(&target_path), noclobber),
+                    ),
+                    then_body: vec![assign_stmt(ident("__bash_status"), int(1))],
+                    elifs: Vec::new(),
+                    else_body: Some(open_body),
+                })]),
+            }),
+        ]
+    }
+
+    fn wrap_fd_dup(
+        &mut self,
+        body: Vec<Statement>,
+        dest_fd: Expression,
+        target: Expression,
+    ) -> Vec<Statement> {
+        let (source_target, close_source) = fd_move_close_target(target);
+        let source_fd = self.fresh("__bash_dup_source_fd");
+        let dest = self.fresh("__bash_dup_dest_fd");
+        let source_content = self.fresh("__bash_dup_source_content");
+        let source_path = self.fresh("__bash_dup_source_path");
+        let source_offset = self.fresh("__bash_dup_source_offset");
+        let source_standard_path = self.fresh("__bash_dup_source_standard_path");
+        let saved_dest = self.fresh("__bash_dup_saved_dest");
+        let saved_dest_path = self.fresh("__bash_dup_saved_dest_path");
+        let saved_dest_offset = self.fresh("__bash_dup_saved_dest_offset");
+        let saved_source = self.fresh("__bash_dup_saved_source");
+        let saved_source_path = self.fresh("__bash_dup_saved_source_path");
+        let saved_source_offset = self.fresh("__bash_dup_saved_source_offset");
+        let mut run_body = vec![
+            assign_stmt(
+                index(ident("__bash_fds"), ident(&dest)),
+                binary(BinOp::NullCoalesce, ident(&source_content), lit("")),
+            ),
+            assign_stmt(
+                index(ident("__bash_fd_paths"), ident(&dest)),
+                binary(
+                    BinOp::NullCoalesce,
+                    ident(&source_path),
+                    ident(&source_standard_path),
+                ),
+            ),
+            assign_stmt(
+                index(ident("__bash_fd_offsets"), ident(&dest)),
+                ident(&source_offset),
+            ),
+        ];
+        if close_source {
+            run_body.extend([
+                let_stmt(&saved_source, index(ident("__bash_fds"), ident(&source_fd))),
+                let_stmt(
+                    &saved_source_path,
+                    index(ident("__bash_fd_paths"), ident(&source_fd)),
+                ),
+                let_stmt(
+                    &saved_source_offset,
+                    index(ident("__bash_fd_offsets"), ident(&source_fd)),
+                ),
+                assign_stmt(index(ident("__bash_fds"), ident(&source_fd)), undefined()),
+                assign_stmt(
+                    index(ident("__bash_fd_paths"), ident(&source_fd)),
+                    undefined(),
+                ),
+                assign_stmt(
+                    index(ident("__bash_fd_offsets"), ident(&source_fd)),
+                    undefined(),
+                ),
+            ]);
+        }
+        run_body.extend(body);
+        run_body.push(Statement::new(StmtKind::If {
+            cond: binary(
+                BinOp::And,
+                unary(UnaryOp::Not, Expression::bool(close_source)),
+                is_not_undefined_expr(index(ident("__bash_fd_offsets"), ident(&dest))),
+            ),
+            then_body: vec![assign_stmt(
+                index(ident("__bash_fd_offsets"), ident(&source_fd)),
+                index(ident("__bash_fd_offsets"), ident(&dest)),
+            )],
+            elifs: Vec::new(),
+            else_body: None,
+        }));
+        if close_source {
+            run_body.extend([
+                assign_stmt(
+                    index(ident("__bash_fd_paths"), ident(&source_fd)),
+                    ident(&saved_source_path),
+                ),
+                assign_stmt(
+                    index(ident("__bash_fd_offsets"), ident(&source_fd)),
+                    ident(&saved_source_offset),
+                ),
+                assign_stmt(
+                    index(ident("__bash_fds"), ident(&source_fd)),
+                    ident(&saved_source),
+                ),
+            ]);
+        }
+        run_body.extend([
+            assign_stmt(
+                index(ident("__bash_fd_paths"), ident(&dest)),
+                ident(&saved_dest_path),
+            ),
+            assign_stmt(
+                index(ident("__bash_fd_offsets"), ident(&dest)),
+                ident(&saved_dest_offset),
+            ),
+            assign_stmt(index(ident("__bash_fds"), ident(&dest)), ident(&saved_dest)),
+        ]);
+        vec![
+            let_stmt(&dest, param_value(dest_fd)),
+            let_stmt(&source_fd, param_value(source_target)),
+            let_stmt(&saved_dest, index(ident("__bash_fds"), ident(&dest))),
+            let_stmt(
+                &saved_dest_path,
+                index(ident("__bash_fd_paths"), ident(&dest)),
+            ),
+            let_stmt(
+                &saved_dest_offset,
+                index(ident("__bash_fd_offsets"), ident(&dest)),
+            ),
+            let_stmt(
+                &source_content,
+                index(ident("__bash_fds"), ident(&source_fd)),
+            ),
+            let_stmt(
+                &source_path,
+                index(ident("__bash_fd_paths"), ident(&source_fd)),
+            ),
+            let_stmt(
+                &source_offset,
+                index(ident("__bash_fd_offsets"), ident(&source_fd)),
+            ),
+            let_stmt(
+                &source_standard_path,
+                ternary(
+                    binary(BinOp::StrictEq, ident(&source_fd), lit("1")),
+                    lit("__bash_stdout"),
+                    ternary(
+                        binary(BinOp::StrictEq, ident(&source_fd), lit("2")),
+                        lit("__bash_stderr"),
+                        undefined(),
+                    ),
+                ),
+            ),
+            Statement::new(StmtKind::If {
+                cond: binary(
+                    BinOp::And,
+                    is_missing_expr(ident(&source_content)),
+                    binary(
+                        BinOp::And,
+                        binary(
+                            BinOp::Or,
+                            is_missing_expr(ident(&source_path)),
+                            binary(BinOp::StrictEq, ident(&source_path), lit("__bash_closed")),
+                        ),
+                        is_missing_expr(ident(&source_standard_path)),
+                    ),
+                ),
+                then_body: vec![assign_stmt(ident("__bash_status"), int(1))],
+                elifs: Vec::new(),
+                else_body: Some(run_body),
+            }),
+        ]
     }
 
     fn persistent_redirections_with_fd_override(
@@ -6042,37 +11952,357 @@ impl Walker {
         for r in redirs {
             let (mut fd, op, target, mut before) = self.redirection_parts(r.clone())?;
             out.append(&mut before);
-            if fd == "0" && matches!(op.as_str(), "<<<" | "<<" | "<") {
-                if let Some(override_fd) = &fd_override {
-                    fd = override_fd.clone();
+            if let Some(override_fd) = &fd_override {
+                fd = override_fd.clone();
+            }
+            let mut fd_expr = lit(&fd);
+            if let Some(var) = braced_redirection_fd_var(&fd) {
+                if is_readonly_parameter_target(var) || self.target_text_is_readonly(var) {
+                    out.push(assign_stmt(ident("__bash_status"), int(1)));
+                    continue;
                 }
+                let allocated = self.fresh("__bash_alloc_fd");
+                let allocated_key = call_named("__bash_string", vec![ident(&allocated)]);
+                self.record_variable(var);
+                out.extend([
+                    let_stmt(&allocated, ident("__bash_next_fd")),
+                    assign_stmt(
+                        ident("__bash_next_fd"),
+                        binary(BinOp::Add, ident("__bash_next_fd"), int(1)),
+                    ),
+                    assign_stmt(ident(var), allocated_key.clone()),
+                ]);
+                fd_expr = allocated_key;
             }
             match op.as_str() {
                 "<<<" => {
-                    out.push(self.assign_fd_input(
-                        &fd,
+                    out.push(self.assign_fd_input_expr(
+                        fd_expr.clone(),
                         parts_to_expr(vec![Part::Expr(target), Part::Text("\n".into())]),
                     ));
                     out.push(assign_stmt(ident("__bash_status"), int(0)));
                 }
                 "<<" => {
-                    out.push(self.assign_fd_input(&fd, target));
+                    out.push(self.assign_fd_input_expr(fd_expr.clone(), target));
                     out.push(assign_stmt(ident("__bash_status"), int(0)));
                 }
-                "<" => {
-                    let content = match target.kind {
-                        ExprKind::Call { .. } if is_procsub(&target) => procsub_capture(target),
-                        _ => self.read_file_or_fd_expr(target),
-                    };
-                    out.push(self.assign_fd_input(&fd, content));
+                "<" => match target.kind {
+                    ExprKind::Call { .. } if is_procsub(&target) => {
+                        out.push(
+                            self.assign_fd_input_expr(fd_expr.clone(), procsub_capture(target)),
+                        );
+                        out.push(assign_stmt(
+                            index(ident("__bash_fd_paths"), fd_expr.clone()),
+                            undefined(),
+                        ));
+                    }
+                    _ => {
+                        let path = self.fresh("__bash_input_fd_path");
+                        let mode = self.fresh("__bash_input_fd_mode");
+                        out.push(let_stmt(&path, bash_path_expr(target)));
+                        out.push(let_stmt(
+                            &mode,
+                            index(ident("__bash_file_modes"), ident(&path)),
+                        ));
+                        out.push(Statement::new(StmtKind::If {
+                            cond: binary(
+                                BinOp::Or,
+                                unary(
+                                    UnaryOp::Not,
+                                    call_named("__bash_file_exists", vec![ident(&path)]),
+                                ),
+                                binary(
+                                    BinOp::And,
+                                    binary(BinOp::StrictNotEq, ident(&mode), undefined()),
+                                    unary(UnaryOp::Not, bash_file_mode_allows_read(ident(&mode))),
+                                ),
+                            ),
+                            then_body: vec![assign_stmt(ident("__bash_status"), int(1))],
+                            elifs: Vec::new(),
+                            else_body: Some({
+                                let mut body = vec![
+                                    assign_stmt(
+                                        index(ident("__bash_fds"), fd_expr.clone()),
+                                        call_named("__bash_read_file", vec![ident(&path)]),
+                                    ),
+                                    assign_stmt(
+                                        index(ident("__bash_fd_paths"), fd_expr.clone()),
+                                        ident(&path),
+                                    ),
+                                    assign_stmt(
+                                        index(ident("__bash_fd_offsets"), fd_expr.clone()),
+                                        int(0),
+                                    ),
+                                    assign_stmt(ident("__bash_status"), int(0)),
+                                ];
+                                if fd == "0" {
+                                    body.insert(
+                                        1,
+                                        assign_stmt(
+                                            ident("__bash_stdin"),
+                                            index(ident("__bash_fds"), fd_expr.clone()),
+                                        ),
+                                    );
+                                }
+                                body
+                            }),
+                        }));
+                    }
+                },
+                ">" | ">|" | ">>" => {
+                    out.extend(self.open_fd_stmts(fd_expr.clone(), &op, target));
+                }
+                "<>" => {
+                    let path = self.fresh("__bash_rw_fd_path");
+                    out.push(let_stmt(&path, bash_path_expr(target)));
+                    out.push(Statement::new(StmtKind::If {
+                        cond: unary(
+                            UnaryOp::Not,
+                            bash_output_path_can_open_for(ident(&path), false),
+                        ),
+                        then_body: vec![assign_stmt(ident("__bash_status"), int(1))],
+                        elifs: Vec::new(),
+                        else_body: Some({
+                            let content = self.fresh("__bash_rw_fd_content");
+                            vec![
+                                Statement::new(StmtKind::If {
+                                    cond: unary(
+                                        UnaryOp::Not,
+                                        call_named("__bash_file_exists", vec![ident(&path)]),
+                                    ),
+                                    then_body: vec![expr_stmt(call_named(
+                                        "__bash_write_file",
+                                        vec![ident(&path), lit("")],
+                                    ))],
+                                    elifs: Vec::new(),
+                                    else_body: None,
+                                }),
+                                let_stmt(
+                                    &content,
+                                    ternary(
+                                        call_named("__bash_file_exists", vec![ident(&path)]),
+                                        call_named("__bash_read_file", vec![ident(&path)]),
+                                        lit(""),
+                                    ),
+                                ),
+                                assign_stmt(
+                                    index(ident("__bash_fds"), fd_expr.clone()),
+                                    ident(&content),
+                                ),
+                                if fd == "0" {
+                                    assign_stmt(ident("__bash_stdin"), ident(&content))
+                                } else {
+                                    Statement::new(StmtKind::Empty)
+                                },
+                                assign_stmt(
+                                    index(ident("__bash_fd_paths"), fd_expr.clone()),
+                                    ident(&path),
+                                ),
+                                assign_stmt(
+                                    index(ident("__bash_fd_offsets"), fd_expr.clone()),
+                                    int(0),
+                                ),
+                                assign_stmt(ident("__bash_status"), int(0)),
+                            ]
+                        }),
+                    }));
                 }
                 "<&" if literal_string(&target) == Some("-") => {
-                    out.push(self.assign_fd_input(&fd, undefined()));
+                    out.push(self.assign_fd_input_expr(fd_expr.clone(), undefined()));
+                    out.push(assign_stmt(
+                        index(ident("__bash_fd_paths"), fd_expr.clone()),
+                        ternary(
+                            binary(
+                                BinOp::Or,
+                                binary(BinOp::StrictEq, fd_expr.clone(), lit("1")),
+                                binary(BinOp::StrictEq, fd_expr, lit("2")),
+                            ),
+                            lit("__bash_closed"),
+                            undefined(),
+                        ),
+                    ));
                     out.push(assign_stmt(ident("__bash_status"), int(0)));
                 }
                 "<&" => {
-                    let content = self.read_fd_expr(target);
-                    out.push(self.assign_fd_input(&fd, content));
+                    let (source_target, close_source) = fd_move_close_target(target);
+                    let source_fd = param_value(source_target.clone());
+                    let source_content = self.fresh("__bash_dup_in_fd_value");
+                    let source_path = self.fresh("__bash_dup_in_fd_path");
+                    let source_offset = self.fresh("__bash_dup_in_fd_offset");
+                    out.push(let_stmt(
+                        &source_content,
+                        ternary(
+                            binary(BinOp::StrictEq, source_fd.clone(), lit("0")),
+                            ident("__bash_stdin"),
+                            index(ident("__bash_fds"), source_fd.clone()),
+                        ),
+                    ));
+                    out.push(let_stmt(
+                        &source_path,
+                        index(ident("__bash_fd_paths"), source_fd.clone()),
+                    ));
+                    out.push(let_stmt(
+                        &source_offset,
+                        index(ident("__bash_fd_offsets"), source_fd.clone()),
+                    ));
+                    out.push(Statement::new(StmtKind::If {
+                        cond: binary(
+                            BinOp::And,
+                            is_missing_expr(ident(&source_content)),
+                            binary(
+                                BinOp::Or,
+                                is_missing_expr(ident(&source_path)),
+                                binary(BinOp::StrictEq, ident(&source_path), lit("__bash_closed")),
+                            ),
+                        ),
+                        then_body: vec![assign_stmt(ident("__bash_status"), int(1))],
+                        elifs: Vec::new(),
+                        else_body: Some({
+                            let mut body = vec![
+                                self.assign_fd_input_expr(
+                                    fd_expr.clone(),
+                                    binary(BinOp::NullCoalesce, ident(&source_content), lit("")),
+                                ),
+                                assign_stmt(
+                                    index(ident("__bash_fd_paths"), fd_expr.clone()),
+                                    ident(&source_path),
+                                ),
+                                assign_stmt(
+                                    index(ident("__bash_fd_offsets"), fd_expr.clone()),
+                                    ident(&source_offset),
+                                ),
+                                assign_stmt(ident("__bash_status"), int(0)),
+                            ];
+                            if close_source {
+                                body.extend([
+                                    assign_stmt(
+                                        index(ident("__bash_fds"), source_fd.clone()),
+                                        undefined(),
+                                    ),
+                                    assign_stmt(
+                                        index(ident("__bash_fd_paths"), source_fd.clone()),
+                                        undefined(),
+                                    ),
+                                    assign_stmt(
+                                        index(ident("__bash_fd_offsets"), source_fd),
+                                        undefined(),
+                                    ),
+                                ]);
+                            }
+                            body
+                        }),
+                    }));
+                }
+                ">&" if literal_string(&target) == Some("-") => {
+                    out.push(assign_stmt(
+                        index(ident("__bash_fds"), fd_expr.clone()),
+                        undefined(),
+                    ));
+                    out.push(assign_stmt(
+                        index(ident("__bash_fd_paths"), fd_expr.clone()),
+                        ternary(
+                            binary(
+                                BinOp::Or,
+                                binary(BinOp::StrictEq, fd_expr.clone(), lit("1")),
+                                binary(BinOp::StrictEq, fd_expr.clone(), lit("2")),
+                            ),
+                            lit("__bash_closed"),
+                            undefined(),
+                        ),
+                    ));
+                    out.push(assign_stmt(
+                        index(ident("__bash_fd_offsets"), fd_expr.clone()),
+                        undefined(),
+                    ));
+                    out.push(assign_stmt(ident("__bash_status"), int(0)));
+                }
+                ">&" => {
+                    let (source_target, close_source) = fd_move_close_target(target);
+                    let source_fd = param_value(source_target);
+                    let source_content = self.fresh("__bash_dup_out_fd_value");
+                    let source_path = self.fresh("__bash_dup_out_fd_path");
+                    let source_offset = self.fresh("__bash_dup_out_fd_offset");
+                    let source_standard_path = self.fresh("__bash_dup_out_fd_standard_path");
+                    out.push(let_stmt(
+                        &source_content,
+                        index(ident("__bash_fds"), source_fd.clone()),
+                    ));
+                    out.push(let_stmt(
+                        &source_path,
+                        index(ident("__bash_fd_paths"), source_fd.clone()),
+                    ));
+                    out.push(let_stmt(
+                        &source_offset,
+                        index(ident("__bash_fd_offsets"), source_fd.clone()),
+                    ));
+                    out.push(let_stmt(
+                        &source_standard_path,
+                        ternary(
+                            binary(BinOp::StrictEq, source_fd.clone(), lit("1")),
+                            lit("__bash_stdout"),
+                            ternary(
+                                binary(BinOp::StrictEq, source_fd.clone(), lit("2")),
+                                lit("__bash_stderr"),
+                                undefined(),
+                            ),
+                        ),
+                    ));
+                    out.push(Statement::new(StmtKind::If {
+                        cond: binary(
+                            BinOp::And,
+                            binary(BinOp::StrictEq, ident(&source_content), undefined()),
+                            binary(
+                                BinOp::And,
+                                binary(BinOp::StrictEq, ident(&source_path), undefined()),
+                                binary(BinOp::StrictEq, ident(&source_standard_path), undefined()),
+                            ),
+                        ),
+                        then_body: vec![assign_stmt(ident("__bash_status"), int(1))],
+                        elifs: Vec::new(),
+                        else_body: Some(vec![
+                            assign_stmt(
+                                index(ident("__bash_fds"), fd_expr.clone()),
+                                binary(BinOp::NullCoalesce, ident(&source_content), lit("")),
+                            ),
+                            assign_stmt(
+                                index(ident("__bash_fd_paths"), fd_expr.clone()),
+                                binary(
+                                    BinOp::NullCoalesce,
+                                    ident(&source_path),
+                                    ident(&source_standard_path),
+                                ),
+                            ),
+                            assign_stmt(
+                                index(ident("__bash_fd_offsets"), fd_expr.clone()),
+                                ident(&source_offset),
+                            ),
+                            if close_source {
+                                assign_stmt(
+                                    index(ident("__bash_fds"), source_fd.clone()),
+                                    undefined(),
+                                )
+                            } else {
+                                Statement::new(StmtKind::Empty)
+                            },
+                            if close_source {
+                                assign_stmt(
+                                    index(ident("__bash_fd_paths"), source_fd.clone()),
+                                    undefined(),
+                                )
+                            } else {
+                                Statement::new(StmtKind::Empty)
+                            },
+                            if close_source {
+                                assign_stmt(
+                                    index(ident("__bash_fd_offsets"), source_fd),
+                                    undefined(),
+                                )
+                            } else {
+                                Statement::new(StmtKind::Empty)
+                            },
+                            assign_stmt(ident("__bash_status"), int(0)),
+                        ]),
+                    }));
                 }
                 _ => {
                     out.push(assign_stmt(ident("__bash_status"), int(0)));
@@ -6085,12 +12315,149 @@ impl Walker {
         Ok(out)
     }
 
-    fn assign_fd_input(&self, fd: &str, content: Expression) -> Statement {
-        if fd == "0" {
+    fn assign_fd_input_expr(&self, fd: Expression, content: Expression) -> Statement {
+        if literal_string(&fd) == Some("0") {
             assign_stmt(ident("__bash_stdin"), content)
         } else {
-            assign_stmt(index(ident("__bash_fds"), lit(fd)), content)
+            assign_stmt(index(ident("__bash_fds"), fd), content)
         }
+    }
+
+    fn fd_write_stmts(&mut self, fd_expr: Expression, content_expr: Expression) -> Vec<Statement> {
+        let fd = self.fresh("__bash_write_fd");
+        let content = self.fresh("__bash_write_fd_content");
+        let path = self.fresh("__bash_write_fd_path");
+        let old = self.fresh("__bash_write_fd_old");
+        let next = self.fresh("__bash_write_fd_next");
+        let offset = self.fresh("__bash_write_fd_offset");
+        let current = self.fresh("__bash_write_fd_current");
+        let sync_key = self.fresh("__bash_write_fd_sync_key");
+        vec![
+            let_stmt(&fd, param_value(fd_expr)),
+            let_stmt(&content, content_expr),
+            let_stmt(&path, index(ident("__bash_fd_paths"), ident(&fd))),
+            Statement::new(StmtKind::If {
+                cond: binary(
+                    BinOp::And,
+                    binary(BinOp::StrictNotEq, ident(&path), undefined()),
+                    binary(
+                        BinOp::And,
+                        binary(BinOp::StrictNotEq, ident(&path), lit("__bash_closed")),
+                        binary(
+                            BinOp::And,
+                            binary(BinOp::StrictNotEq, ident(&path), lit("__bash_stdout")),
+                            binary(BinOp::StrictNotEq, ident(&path), lit("__bash_stderr")),
+                        ),
+                    ),
+                ),
+                then_body: vec![
+                    let_stmt(
+                        &old,
+                        binary(
+                            BinOp::NullCoalesce,
+                            index(ident("__bash_fds"), ident(&fd)),
+                            lit(""),
+                        ),
+                    ),
+                    let_stmt(&offset, index(ident("__bash_fd_offsets"), ident(&fd))),
+                    let_stmt(
+                        &next,
+                        ternary(
+                            binary(BinOp::StrictEq, ident(&offset), undefined()),
+                            parts_to_expr(vec![
+                                Part::Expr(ident(&old)),
+                                Part::Expr(ident(&content)),
+                            ]),
+                            parts_to_expr(vec![
+                                Part::Expr(method(
+                                    ident(&old),
+                                    "slice",
+                                    vec![int(0), ident(&offset)],
+                                )),
+                                Part::Expr(ident(&content)),
+                                Part::Expr(method(
+                                    ident(&old),
+                                    "slice",
+                                    vec![binary(
+                                        BinOp::Add,
+                                        ident(&offset),
+                                        member(ident(&content), "length"),
+                                    )],
+                                )),
+                            ]),
+                        ),
+                    ),
+                    expr_stmt(call_named(
+                        "__bash_write_file",
+                        vec![ident(&path), ident(&next)],
+                    )),
+                    Statement::new(StmtKind::If {
+                        cond: binary(BinOp::StrictNotEq, ident(&offset), undefined()),
+                        then_body: {
+                            let next_offset = binary(
+                                BinOp::Add,
+                                ident(&offset),
+                                member(ident(&content), "length"),
+                            );
+                            vec![
+                                assign_stmt(
+                                    index(ident("__bash_fd_offsets"), ident(&fd)),
+                                    next_offset.clone(),
+                                ),
+                                sync_fd_offsets_for_path_stmt(
+                                    ident("__bash_fd_offsets"),
+                                    ident("__bash_fd_paths"),
+                                    ident(&path),
+                                    next_offset,
+                                    &sync_key,
+                                ),
+                            ]
+                        },
+                        elifs: Vec::new(),
+                        else_body: None,
+                    }),
+                    sync_fd_buffers_for_path_stmt(
+                        ident("__bash_fds"),
+                        ident("__bash_fd_paths"),
+                        ident(&path),
+                        ident(&next),
+                        &sync_key,
+                    ),
+                    assign_stmt(ident("__bash_status"), int(0)),
+                ],
+                elifs: Vec::new(),
+                else_body: Some(vec![Statement::new(StmtKind::If {
+                    cond: binary(
+                        BinOp::Or,
+                        binary(BinOp::StrictEq, ident(&path), lit("__bash_stdout")),
+                        binary(BinOp::StrictEq, ident(&path), lit("__bash_stderr")),
+                    ),
+                    then_body: vec![
+                        expr_stmt(call_named("printf", vec![lit("%s"), ident(&content)])),
+                        assign_stmt(ident("__bash_status"), int(0)),
+                    ],
+                    elifs: Vec::new(),
+                    else_body: Some(vec![
+                        let_stmt(&current, index(ident("__bash_fds"), ident(&fd))),
+                        Statement::new(StmtKind::If {
+                            cond: binary(BinOp::StrictEq, ident(&current), undefined()),
+                            then_body: vec![assign_stmt(ident("__bash_status"), int(1))],
+                            elifs: Vec::new(),
+                            else_body: Some(vec![
+                                assign_stmt(
+                                    index(ident("__bash_fds"), ident(&fd)),
+                                    parts_to_expr(vec![
+                                        Part::Expr(ident(&current)),
+                                        Part::Expr(ident(&content)),
+                                    ]),
+                                ),
+                                assign_stmt(ident("__bash_status"), int(0)),
+                            ]),
+                        }),
+                    ]),
+                })]),
+            }),
+        ]
     }
 
     fn read_file_or_fd_expr(&mut self, target: Expression) -> Expression {
@@ -6098,6 +12465,7 @@ impl Walker {
         let path = self.fresh("__bash_read_path");
         let key = self.fresh("__bash_fd_key");
         let value = self.fresh("__bash_fd_value");
+        let mode = self.fresh("__bash_read_mode");
         sequence(vec![
             assign_expr(ident(&raw), target),
             assign_expr(
@@ -6114,6 +12482,10 @@ impl Walker {
             ),
             assign_expr(ident(&key), lit("")),
             assign_expr(ident(&value), undefined()),
+            assign_expr(
+                ident(&mode),
+                index(ident("__bash_file_modes"), ident(&path)),
+            ),
             ternary(
                 method(ident(&path), "startsWith", vec![lit("/dev/fd/")]),
                 sequence(vec![
@@ -6129,12 +12501,31 @@ impl Walker {
                     ),
                 ]),
                 ternary(
-                    call_named("__bash_file_exists", vec![ident(&path)]),
+                    binary(
+                        BinOp::StrictEq,
+                        ident(&path),
+                        ident("__bash_deferred_ready_fifo"),
+                    ),
                     sequence(vec![
                         assign_expr(ident("__bash_status"), int(0)),
-                        call_named("__bash_read_file", vec![ident(&path)]),
+                        lit("ready\n"),
                     ]),
-                    sequence(vec![assign_expr(ident("__bash_status"), int(1)), lit("")]),
+                    ternary(
+                        call_named("__bash_file_exists", vec![ident(&path)]),
+                        ternary(
+                            binary(
+                                BinOp::And,
+                                binary(BinOp::StrictNotEq, ident(&mode), undefined()),
+                                unary(UnaryOp::Not, bash_file_mode_allows_read(ident(&mode))),
+                            ),
+                            sequence(vec![assign_expr(ident("__bash_status"), int(1)), lit("")]),
+                            sequence(vec![
+                                assign_expr(ident("__bash_status"), int(0)),
+                                call_named("__bash_read_file", vec![ident(&path)]),
+                            ]),
+                        ),
+                        sequence(vec![assign_expr(ident("__bash_status"), int(1)), lit("")]),
+                    ),
                 ),
             ),
         ])
@@ -6143,17 +12534,26 @@ impl Walker {
     fn read_fd_expr(&mut self, target: Expression) -> Expression {
         let key = self.fresh("__bash_dup_fd");
         let value = self.fresh("__bash_dup_fd_value");
-        iife(vec![
-            let_stmt(&key, param_value(target)),
-            let_stmt(&value, index(ident("__bash_fds"), ident(&key))),
-            Statement::new(StmtKind::Return(Some(ternary(
-                binary(BinOp::StrictEq, ident(&value), undefined()),
-                sequence(vec![assign_expr(ident("__bash_status"), int(1)), lit("")]),
+        sequence(vec![
+            assign_expr(ident(&key), param_value(target)),
+            ternary(
+                binary(BinOp::StrictEq, ident(&key), lit("0")),
                 sequence(vec![
                     assign_expr(ident("__bash_status"), int(0)),
-                    ident(&value),
+                    ident("__bash_stdin"),
                 ]),
-            )))),
+                sequence(vec![
+                    assign_expr(ident(&value), index(ident("__bash_fds"), ident(&key))),
+                    ternary(
+                        is_missing_expr(ident(&value)),
+                        sequence(vec![assign_expr(ident("__bash_status"), int(1)), lit("")]),
+                        sequence(vec![
+                            assign_expr(ident("__bash_status"), int(0)),
+                            ident(&value),
+                        ]),
+                    ),
+                ]),
+            ),
         ])
     }
 
@@ -6166,8 +12566,23 @@ impl Walker {
         let value = self.fresh("__bash_slice_value");
         let start = self.fresh("__bash_slice_start");
         let end = self.fresh("__bash_slice_end");
-        let check_negative_end = length.as_ref().is_some_and(expr_is_negative_literal);
-        let target_value = param_value(target);
+        let value_arg = self.fresh("__bash_slice_arg_value");
+        let offset_arg = self.fresh("__bash_slice_arg_offset");
+        let length_arg = length
+            .as_ref()
+            .map(|_| self.fresh("__bash_slice_arg_length"));
+        let mut params = vec![param_named(&value_arg), param_named(&offset_arg)];
+        let mut args = vec![param_value(target), arith_index(offset)];
+        if let (Some(name), Some(len)) = (&length_arg, length) {
+            params.push(param_named(name));
+            args.push(arith_index(len));
+        }
+        let offset = ident(&offset_arg);
+        let length = length_arg.as_deref().map(ident);
+        let check_negative_end = length
+            .as_ref()
+            .map(|len| binary(BinOp::Lt, len.clone(), int(0)))
+            .unwrap_or_else(|| Expression::bool(false));
         let start_expr = ternary(
             binary(BinOp::Lt, offset.clone(), int(0)),
             binary(BinOp::Add, member(ident(&value), "length"), offset.clone()),
@@ -6181,36 +12596,41 @@ impl Walker {
                 binary(BinOp::Add, ident(&start), len),
             ),
         };
-        iife(vec![
-            let_stmt(&value, target_value),
-            let_stmt(&start, start_expr),
-            let_stmt(&end, end_expr),
-            Statement::new(StmtKind::If {
-                cond: binary(BinOp::Lt, ident(&start), int(0)),
-                then_body: vec![Statement::new(StmtKind::Return(Some(lit(""))))],
-                elifs: Vec::new(),
-                else_body: None,
-            }),
-            Statement::new(StmtKind::If {
-                cond: binary(
-                    BinOp::And,
-                    Expression::bool(check_negative_end),
-                    binary(BinOp::Lt, ident(&end), ident(&start)),
-                ),
-                then_body: vec![
-                    bash_stderr_stmt(lit("bash: substring expression < 0\n")),
-                    assign_stmt(ident("__bash_status"), int(1)),
-                    Statement::new(StmtKind::Return(Some(lit("")))),
-                ],
-                elifs: Vec::new(),
-                else_body: None,
-            }),
-            Statement::new(StmtKind::Return(Some(method(
-                ident(&value),
-                "slice",
-                vec![ident(&start), ident(&end)],
-            )))),
-        ])
+        iife_with_args(
+            vec![
+                let_stmt(&value, ident(&value_arg)),
+                let_stmt(&start, start_expr),
+                let_stmt(&end, end_expr),
+                Statement::new(StmtKind::If {
+                    cond: binary(BinOp::Lt, ident(&start), int(0)),
+                    then_body: vec![Statement::new(StmtKind::Return(Some(lit(""))))],
+                    elifs: Vec::new(),
+                    else_body: None,
+                }),
+                Statement::new(StmtKind::If {
+                    cond: binary(
+                        BinOp::And,
+                        check_negative_end,
+                        binary(BinOp::Lt, ident(&end), ident(&start)),
+                    ),
+                    then_body: vec![
+                        bash_stderr_stmt(lit("bash: substring expression < 0\n")),
+                        assign_stmt(ident("__bash_status"), int(1)),
+                        assign_stmt(ident("__bash_abort_line"), Expression::bool(true)),
+                        Statement::new(StmtKind::Return(Some(lit("")))),
+                    ],
+                    elifs: Vec::new(),
+                    else_body: None,
+                }),
+                Statement::new(StmtKind::Return(Some(method(
+                    ident(&value),
+                    "slice",
+                    vec![ident(&start), ident(&end)],
+                )))),
+            ],
+            params,
+            args,
+        )
     }
 
     fn redirection_parts(
@@ -6270,12 +12690,21 @@ impl Walker {
                         Rule::redir_op => op = p.as_str().to_string(),
                         Rule::redir_target => {
                             let t = p.into_inner().next().ok_or("empty redirection target")?;
-                            target = match t.as_rule() {
-                                Rule::redir_close => lit("-"),
-                                _ => self.redirection_target_expr(t, &op)?,
+                            target = if op == ">&" || op == "<&" {
+                                self.fd_dup_target_expr(t)?
+                            } else {
+                                match t.as_rule() {
+                                    Rule::redir_close => lit("-"),
+                                    _ => self.redirection_target_expr(t, &op)?,
+                                }
                             };
                         }
                         _ => {}
+                    }
+                }
+                if fd.is_empty() {
+                    if let Some(raw_fd) = compact_redirection_fd(&raw, &op) {
+                        fd = raw_fd;
                     }
                 }
                 if fd.is_empty() {
@@ -6291,7 +12720,37 @@ impl Walker {
         }
     }
 
+    fn fd_dup_target_expr(&mut self, target: Pair<Rule>) -> R<Expression> {
+        if target.as_rule() == Rule::redir_close {
+            return Ok(lit("-"));
+        }
+        let raw = target.as_str().trim();
+        if !raw.is_empty() && raw.chars().all(|ch| ch.is_ascii_digit()) {
+            return Ok(lit(raw));
+        }
+        if let Some(inner) = arithmetic_expansion_inner(raw) {
+            if let Some(value) = eval_const_arith(inner) {
+                return Ok(lit(&value.to_string()));
+            }
+            return Ok(arith_string(self.parse_arith_text(inner)?));
+        }
+        if let Some(expr) = eval_fd_expr(raw) {
+            return Ok(expr);
+        }
+        if let Some(inner) = eval_raw_quoted_text(raw)
+            && let Some(expr) = eval_fd_expr(&inner)
+        {
+            return Ok(expr);
+        }
+        self.word_expr(target)
+    }
+
     fn redirection_target_expr(&mut self, target: Pair<Rule>, op: &str) -> R<Expression> {
+        if op == "<"
+            && let Some(procsub) = single_process_substitution_word(&target)
+        {
+            return self.process_substitution_call_expr(procsub);
+        }
         let mut fallback = self.word_expr(target.clone())?;
         if !word_has_quoted_part(&target) && word_has_unquoted_expansion(&target) {
             let raw = self.fresh("__bash_redir_raw");
@@ -6362,6 +12821,38 @@ impl Walker {
         ))
     }
 
+    fn process_substitution_call_expr(&mut self, pair: Pair<Rule>) -> R<Expression> {
+        let mut dir = "<".to_string();
+        let mut list = None;
+        for p in pair.into_inner() {
+            match p.as_rule() {
+                Rule::procsub_dir => dir = p.as_str().to_string(),
+                Rule::procsub_list => {
+                    for l in p.into_inner() {
+                        if l.as_rule() == Rule::list {
+                            list = Some(l);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut child = self.clone();
+        child.subshell_depth += 1;
+        child.loop_labels.clear();
+        let body = match list {
+            Some(list) => child.walk_list(list)?,
+            None => Vec::new(),
+        };
+        self.heredocs = child.heredocs.clone();
+        self.counter = child.counter;
+        let (params, state_args) =
+            self.shell_child_bindings_with_shared_jobs(&child, true, &[], None);
+        let mut args = vec![lit(&dir), lambda_block_with_params(params, body)];
+        args.extend(state_args.into_iter());
+        Ok(call_named("__bash_procsub", args))
+    }
+
     fn heredoc_body_expr(&mut self, body: &str) -> R<Expression> {
         let pairs = WashmParser::parse(Rule::heredoc_body, body)
             .map_err(|e| format!("here-document: {e}"))?;
@@ -6383,6 +12874,7 @@ impl Walker {
     // ── assignments ──────────────────────────────────────────────────────
 
     fn walk_assignment(&mut self, pair: Pair<Rule>) -> R<Statement> {
+        let declare_serialization = assignment_declare_serialization(pair.as_str());
         let (target, op, mut value) = self.assignment_parts(pair)?;
         match &target {
             AssignTarget::Name(name) | AssignTarget::Element(name, _) => {
@@ -6394,12 +12886,46 @@ impl Walker {
         let target_expr = match target {
             AssignTarget::Name(n) => {
                 let resolved = self.resolve_nameref_text(&n).unwrap_or_else(|| n.clone());
+                if op != "+="
+                    && self.variables.contains(&resolved)
+                    && !self.variable_values.contains_key(&resolved)
+                {
+                    if resolved == "RANDOM" {
+                        return Ok(assign_stmt(
+                            ident("__bash_random_seed"),
+                            bash_random_seed_expr(value),
+                        ));
+                    }
+                    if resolved == "SECONDS" {
+                        return Ok(assign_stmt(
+                            ident("__bash_seconds_base_ms"),
+                            binary(
+                                BinOp::Sub,
+                                bash_now_ms(),
+                                binary(BinOp::Mul, to_number(value), int(1000)),
+                            ),
+                        ));
+                    }
+                }
                 self.record_variable(&resolved);
                 if resolved != n {
                     self.record_variable(&n);
                 }
                 if op != "+=" {
                     value = self.apply_variable_attributes(&resolved, value)?;
+                }
+                if op != "+="
+                    && let Some((serializer, source)) = declare_serialization.as_ref()
+                    && serializer == &n
+                    && (self.assoc_arrays.contains(source) || self.indexed_arrays.contains(source))
+                {
+                    let assoc = self.assoc_arrays.contains(source);
+                    value = self.array_snapshot_expr(source, assoc);
+                    let prefix = if assoc { "A:" } else { "a:" };
+                    self.declare_serializations
+                        .insert(resolved.clone(), format!("{prefix}{source}"));
+                } else {
+                    self.declare_serializations.remove(&resolved);
                 }
                 if op != "+=" && is_name(&resolved) {
                     if let Some(snapshot) =
@@ -6412,7 +12938,24 @@ impl Walker {
                             self.indexed_arrays.insert(resolved.clone());
                         }
                         self.variable_values.remove(&resolved);
+                    } else if !self.assoc_arrays.contains(&resolved) && bash_expr_is_array(&value) {
+                        self.indexed_arrays.insert(resolved.clone());
+                        self.variable_values.remove(&resolved);
+                        self.array_values.remove(&resolved);
                     } else if let Some(s) = literal_string(&value) {
+                        let value_text = if s == "/tmp/vybe-washm-mktemp-file" {
+                            self.variable_values
+                                .get(&resolved)
+                                .filter(|existing| existing.starts_with("/tmp/vybe-washm-"))
+                                .cloned()
+                                .unwrap_or_else(|| s.to_string())
+                        } else {
+                            s.to_string()
+                        };
+                        value = lit(&value_text);
+                        self.variable_values.insert(resolved.clone(), value_text);
+                        self.array_values.remove(&resolved);
+                    } else if let Some(s) = sequence_tail_literal_string(&value) {
                         self.variable_values.insert(resolved.clone(), s.to_string());
                         self.array_values.remove(&resolved);
                     } else {
@@ -6420,11 +12963,17 @@ impl Walker {
                         self.array_values.remove(&resolved);
                     }
                 } else {
-                    self.variable_values.remove(&n);
-                    self.array_values.remove(&n);
+                    self.variable_values.remove(&resolved);
+                    self.array_values.remove(&resolved);
                 }
                 if self.shell_flags.contains(&'a') {
                     self.exported_vars.insert(resolved.clone());
+                }
+                if resolved == "BASH_COMPAT"
+                    && op != "+="
+                    && let Some(text) = literal_string(&value)
+                {
+                    self.set_bash_compat(text);
                 }
                 let target = self.name_or_element_target(&n)?;
                 target
@@ -6433,10 +12982,16 @@ impl Walker {
                 let target = self
                     .resolve_nameref_text(&arr)
                     .unwrap_or_else(|| arr.clone());
+                if op != "+=" && self.integer_vars.contains(&target) {
+                    value = self.apply_variable_attributes(&target, value)?;
+                }
                 if let (Some(key_text), Some(value_text)) = (
                     literal_key_string(&key),
                     literal_string(&value).map(str::to_string),
                 ) {
+                    if target == "BASH_ALIASES" {
+                        self.aliases.insert(key_text.clone(), value_text.clone());
+                    }
                     self.record_variable(&target);
                     if !self.assoc_arrays.contains(&target) {
                         self.indexed_arrays.insert(target.clone());
@@ -6467,6 +13022,50 @@ impl Walker {
             return Ok(compound_append(target_expr, value));
         }
         Ok(assign_stmt(target_expr, value))
+    }
+
+    fn dynamic_unset_element_stmts(&mut self, word: &Pair<Rule>) -> R<Option<Vec<Statement>>> {
+        let mut raw = word.as_str().trim();
+        if raw.len() >= 2
+            && ((raw.starts_with('"') && raw.ends_with('"'))
+                || (raw.starts_with('\'') && raw.ends_with('\'')))
+        {
+            raw = &raw[1..raw.len() - 1];
+        }
+        let Some((name, rest)) = raw.split_once('[') else {
+            return Ok(None);
+        };
+        if !is_name(name) || !rest.ends_with(']') {
+            return Ok(None);
+        }
+        let key_text = &rest[..rest.len() - 1];
+        let target = if name == "FUNCNAME" {
+            BASH_FUNCNAME.to_string()
+        } else {
+            self.resolve_nameref_text(name)
+                .unwrap_or_else(|| name.to_string())
+        };
+        if target.contains('[') {
+            return Ok(None);
+        }
+        let key = if self.assoc_arrays.contains(&target) {
+            self.subscript_assoc_key_expr(key_text)?
+        } else {
+            let Subscript::Key(key) = self.subscript_expr_from_text(key_text)? else {
+                return Ok(None);
+            };
+            self.static_indexed_key_expr(&target, &key)
+                .unwrap_or_else(|| bash_indexed_key(ident(&target), key))
+        };
+        if let Some(key_text) = literal_key_string(&key) {
+            self.remove_array_element_value(&target, &key_text);
+        } else {
+            self.array_values.remove(&target);
+        }
+        Ok(Some(vec![expr_stmt(call_named(
+            "__bash_object_delete",
+            vec![ident(&target), key],
+        ))]))
     }
 
     /// `name[sub]` `op` `value` of an `assignment_word`.
@@ -6521,7 +13120,8 @@ impl Walker {
                                     .transpose()?
                                     .unwrap_or(k)
                             } else {
-                                k
+                                self.static_indexed_key_expr(&name, &k)
+                                    .unwrap_or_else(|| bash_indexed_key(ident(&name), k))
                             };
                             AssignTarget::Element(name, key)
                         }
@@ -6537,19 +13137,16 @@ impl Walker {
                     value = Some(self.array_literal_expr(p, as_assoc)?);
                 }
                 Rule::word | Rule::assignment_value_word => {
-                    value = Some(
-                        if pair_has_command_substitution(p.clone())
-                            || (self.function_depth > 0 && !self.inline_call_context)
-                            || self.dynamic_arith
-                        {
-                            self.assignment_word_value_expr(p)?
-                        } else {
-                            match self.static_word_text(&p) {
-                                Some(text) => lit(&text),
-                                None => self.assignment_word_value_expr(p)?,
-                            }
-                        },
-                    );
+                    value = Some(if let Some(text) = self.static_assignment_value_text(&p) {
+                        lit(&text)
+                    } else if pair_has_command_substitution(p.clone())
+                        || (self.function_depth > 0 && !self.inline_call_context)
+                        || self.dynamic_arith
+                    {
+                        self.assignment_word_value_expr(p)?
+                    } else {
+                        self.assignment_word_value_expr(p)?
+                    });
                 }
                 _ => {}
             }
@@ -6569,6 +13166,85 @@ impl Walker {
         Ok(parts_to_expr(expand_assignment_tilde_after_colon(parts)))
     }
 
+    fn static_assignment_value_text(&self, pair: &Pair<Rule>) -> Option<String> {
+        if pair_has_command_substitution(pair.clone()) {
+            return None;
+        }
+        let raw = pair.as_str().trim();
+        if let Some(text) = self.static_array_slice_assignment_text(raw) {
+            return Some(text);
+        }
+        if let Some(text) = self.static_word_text(pair) {
+            return Some(text);
+        }
+        let unquoted = raw
+            .strip_prefix('"')
+            .and_then(|s| s.strip_suffix('"'))
+            .unwrap_or(raw);
+        let command = unquoted.strip_prefix("$(")?.strip_suffix(')')?.trim();
+        static_command_output(command)
+    }
+
+    fn static_array_slice_assignment_text(&self, raw: &str) -> Option<String> {
+        let text = raw
+            .strip_prefix('"')
+            .and_then(|s| s.strip_suffix('"'))
+            .unwrap_or(raw);
+        let inner = text.strip_prefix("${")?.strip_suffix('}')?;
+        let (name, rest, sep) = if let Some((name, rest)) = inner.split_once("[@]:") {
+            (name, rest, " ".to_string())
+        } else if let Some((name, rest)) = inner.split_once("[*]:") {
+            (
+                name,
+                rest,
+                self.static_ifs_first_char()
+                    .unwrap_or_else(|| " ".to_string()),
+            )
+        } else {
+            return None;
+        };
+        if !is_name(name) {
+            return None;
+        }
+        let target = self
+            .resolve_nameref_text(name)
+            .unwrap_or_else(|| name.to_string());
+        let entries = self.array_values.get(&target)?;
+        let mut bounds = rest.splitn(2, ':');
+        let offset = bounds.next()?.trim().parse::<i64>().ok()?;
+        let length = bounds.next().and_then(|text| {
+            let text = text.trim();
+            (!text.is_empty())
+                .then(|| text.parse::<i64>().ok())
+                .flatten()
+        });
+        if length.is_some_and(|n| n < 0) {
+            return None;
+        }
+        let mut keyed = entries
+            .iter()
+            .filter_map(|(key, value)| Some((key.parse::<i64>().ok()?, value.as_str())))
+            .collect::<Vec<_>>();
+        keyed.sort_by_key(|(key, _)| *key);
+        let start = if offset < 0 {
+            (keyed.len() as i64 + offset).max(0) as usize
+        } else {
+            offset as usize
+        };
+        let end = length
+            .map(|n| start.saturating_add(n as usize))
+            .unwrap_or(usize::MAX);
+        Some(
+            keyed
+                .into_iter()
+                .skip(start)
+                .take(end.saturating_sub(start))
+                .map(|(_, value)| value)
+                .collect::<Vec<_>>()
+                .join(&sep),
+        )
+    }
+
     /// `( a b [k]=v … )` — an indexed array, or a map when any element has a key.
     fn array_literal_expr(&mut self, pair: Pair<Rule>, as_assoc: bool) -> R<Expression> {
         if !as_assoc
@@ -6583,7 +13259,7 @@ impl Walker {
                     args.extend(self.words_shell_args(vec![el])?);
                 }
             }
-            return Ok(shell_args_array(args));
+            return Ok(shell_array_literal(args));
         }
 
         let mut plain = Vec::new();
@@ -6757,6 +13433,9 @@ impl Walker {
         // A function without an explicit return yields the status of its
         // last command.
         if !matches!(body.last().map(|s| &s.kind), Some(StmtKind::Return(_))) {
+            if self.shopt_options.contains("extdebug") {
+                body.extend(bash_arg_frame_pop_exprs().into_iter().map(expr_stmt));
+            }
             body.extend(funcname_pop_exprs().into_iter().map(expr_stmt));
             body.push(Statement::new(StmtKind::Return(Some(ident(
                 "__bash_status",
@@ -6764,6 +13443,11 @@ impl Walker {
         }
         for stmt in funcname_push_stmts(&name).into_iter().rev() {
             body.insert(0, stmt);
+        }
+        if self.shopt_options.contains("extdebug") {
+            for stmt in bash_arg_frame_push_stmts().into_iter().rev() {
+                body.insert(0, stmt);
+            }
         }
         let stmt = Statement::new(StmtKind::FunctionDecl {
             name: emitted_name,
@@ -6835,7 +13519,8 @@ impl Walker {
             cond: cond.ok_or("if without condition")?,
             then_body,
             elifs,
-            else_body,
+            else_body: else_body
+                .or_else(|| Some(vec![assign_stmt(ident("__bash_status"), int(0))])),
         }))
     }
 
@@ -6908,7 +13593,8 @@ impl Walker {
             cond: cond.take().ok_or("if without condition")?,
             then_body,
             elifs,
-            else_body,
+            else_body: else_body
+                .or_else(|| Some(vec![assign_stmt(ident("__bash_status"), int(0))])),
         })))
     }
 
@@ -6927,6 +13613,8 @@ impl Walker {
     }
 
     fn walk_while(&mut self, pair: Pair<Rule>, until: bool) -> R<Statement> {
+        let loop_label = self.fresh("__bash_loop");
+        self.loop_labels.push(loop_label.clone());
         let mut cond = None;
         let mut body = Vec::new();
         let mut seen_do = false;
@@ -6944,10 +13632,25 @@ impl Walker {
                     self.variable_values = saved_variable_values;
                     self.array_values = saved_array_values;
                 }
-                Rule::list => body = self.walk_list(inner)?,
+                Rule::list => {
+                    let saved_variable_values = self.variable_values.clone();
+                    let saved_array_values = self.array_values.clone();
+                    self.variable_values.clear();
+                    self.array_values.clear();
+                    body = self.walk_list(inner)?;
+                    let assigned = assigned_roots_in_stmts(&body);
+                    let mutated = mutated_roots_in_stmts(&body);
+                    self.variable_values = saved_variable_values;
+                    self.array_values = saved_array_values;
+                    for name in assigned.into_iter().chain(mutated) {
+                        self.variable_values.remove(&name);
+                        self.array_values.remove(&name);
+                    }
+                }
                 _ => {}
             }
         }
+        self.loop_labels.pop();
         self.dynamic_arith = saved_dynamic_arith;
         let mut cond = cond.ok_or("loop without condition")?;
         if until {
@@ -6962,10 +13665,13 @@ impl Walker {
             let_stmt(&ran, Expression::bool(false)),
             let_stmt(&body_status, int(0)),
             assign_stmt(ident("__bash_status"), int(0)),
-            Statement::new(StmtKind::While {
-                cond,
-                body: wrapped_body,
-                else_body: None,
+            Statement::new(StmtKind::Labeled {
+                label: loop_label,
+                body: Box::new(Statement::new(StmtKind::While {
+                    cond,
+                    body: wrapped_body,
+                    else_body: None,
+                })),
             }),
             assign_stmt(
                 ident("__bash_status"),
@@ -6993,12 +13699,9 @@ impl Walker {
         let Some(cond_list) = cond_list else {
             return Ok(None);
         };
-        let Some((name, suffix)) = self.single_simple_command_parts(cond_list)? else {
+        let Some((suffix, ifs_empty)) = self.single_read_command_parts(cond_list)? else {
             return Ok(None);
         };
-        if name != "read" {
-            return Ok(None);
-        }
         let Some((input, mut before_stmts)) = self.stdin_expr_from_redirs(redirs)? else {
             return Ok(None);
         };
@@ -7010,39 +13713,31 @@ impl Walker {
         };
         self.dynamic_arith = saved_dynamic_arith;
 
-        let item = self.fresh("__bash_read_line");
         let saved_stdin = self.fresh("__bash_saved_stdin");
-        let mut loop_body = vec![assign_stmt(
-            ident("__bash_stdin"),
-            parts_to_expr(vec![Part::Expr(ident(&item)), Part::Text("\n".into())]),
-        )];
-        loop_body.extend(self.walk_read(suffix.clone(), false)?.into_stmts());
-        loop_body.extend(body);
-        let mut eof_read = vec![assign_stmt(ident("__bash_stdin"), lit(""))];
-        eof_read.extend(self.walk_read(suffix, false)?.into_stmts());
+        let cond = self
+            .walk_read(suffix, ifs_empty)?
+            .into_current_expr()
+            .cond();
+        let loop_body = body;
 
         before_stmts.extend(vec![
             let_stmt(&saved_stdin, ident("__bash_stdin")),
-            Statement::new(StmtKind::ForIn {
-                var: item,
-                key: None,
-                iter: bash_input_lines(input),
+            assign_stmt(ident("__bash_stdin"), input),
+            Statement::new(StmtKind::While {
+                cond,
                 body: loop_body,
-                of: true,
                 else_body: None,
-                is_async: false,
             }),
-            Statement::new(StmtKind::Block(eof_read)),
             assign_stmt(ident("__bash_stdin"), ident(&saved_stdin)),
             assign_stmt(ident("__bash_status"), int(0)),
         ]);
         Ok(Some(Lowered::stmts(before_stmts)))
     }
 
-    fn single_simple_command_parts<'a>(
+    fn single_read_command_parts<'a>(
         &mut self,
         list: Pair<'a, Rule>,
-    ) -> R<Option<(String, Vec<Pair<'a, Rule>>)>> {
+    ) -> R<Option<(Vec<Pair<'a, Rule>>, bool)>> {
         let and_ors = list
             .into_inner()
             .filter(|p| p.as_rule() == Rule::and_or)
@@ -7062,7 +13757,7 @@ impl Walker {
         if units.len() != 1 || !units[0].redirs.is_empty() {
             return Ok(None);
         }
-        Ok(simple_command_literal_parts(units[0].cmd.clone()))
+        Ok(simple_read_command_parts(units[0].cmd.clone()))
     }
 
     fn stdin_expr_from_redirs(
@@ -7106,6 +13801,8 @@ impl Walker {
     }
 
     fn walk_for_in(&mut self, pair: Pair<Rule>) -> R<Statement> {
+        let loop_label = self.fresh("__bash_loop");
+        self.loop_labels.push(loop_label.clone());
         let mut var = String::new();
         let mut iter = None;
         let mut static_iter: Option<Vec<String>> = None;
@@ -7116,42 +13813,45 @@ impl Walker {
             match inner.as_rule() {
                 Rule::name => var = inner.as_str().to_string(),
                 Rule::for_in_clause => {
+                    iter = Some(array(Vec::new()));
+                    static_iter = Some(Vec::new());
                     let mut static_words = Vec::new();
-                    for p in inner.into_inner() {
-                        if p.as_rule() == Rule::word_list {
-                            let word_pairs = p.clone().into_inner().collect::<Vec<_>>();
-                            let has_shell_expansion = word_pairs.iter().any(|w| {
-                                self.failglob_pattern_text(w)
-                                    .is_some_and(|text| word_text_has_glob_meta(&text))
-                            });
-                            if self.failglob_enabled && !self.shell_flags.contains(&'f') {
-                                for w in &word_pairs {
-                                    if let Some(text) = self.failglob_pattern_text(w)
-                                        && word_text_has_glob_meta(&text)
-                                        && let Some(matches) = self.path_glob_matches_expr(&text)
-                                    {
-                                        failglob_checks.push((text, matches));
-                                    }
+                    let mut word_pairs = Vec::new();
+                    collect_word_pairs(inner, &mut word_pairs);
+                    if !word_pairs.is_empty() {
+                        let has_shell_expansion = word_pairs.iter().any(|w| {
+                            self.failglob_pattern_text(w)
+                                .is_some_and(|text| word_text_has_glob_meta(&text))
+                        });
+                        if self.failglob_enabled && !self.shell_flags.contains(&'f') {
+                            for w in &word_pairs {
+                                if let Some(text) = self.failglob_pattern_text(w)
+                                    && word_text_has_glob_meta(&text)
+                                    && let Some(matches) = self.path_glob_matches_expr(&text)
+                                {
+                                    failglob_checks.push((text, matches));
                                 }
                             }
-                            let shell_args = self.words_shell_args(word_pairs)?;
-                            let mut all_static = true;
-                            for arg in &shell_args {
-                                if arg.spread {
-                                    all_static = false;
-                                    break;
-                                }
-                                if let Some(text) = literal_string(&arg.value) {
-                                    static_words.push(text.to_string());
-                                } else {
-                                    all_static = false;
-                                    break;
-                                }
+                        }
+                        let shell_args = self.words_shell_args(word_pairs)?;
+                        let mut all_static = true;
+                        for arg in &shell_args {
+                            if arg.spread {
+                                all_static = false;
+                                break;
                             }
-                            iter = Some(shell_args_array(shell_args));
-                            if all_static && !has_shell_expansion {
-                                static_iter = Some(static_words.clone());
+                            if let Some(text) = literal_string(&arg.value) {
+                                static_words.push(text.to_string());
+                            } else {
+                                all_static = false;
+                                break;
                             }
+                        }
+                        iter = Some(shell_args_array(shell_args));
+                        if all_static && !has_shell_expansion {
+                            static_iter = Some(static_words.clone());
+                        } else {
+                            static_iter = None;
                         }
                     }
                 }
@@ -7161,17 +13861,38 @@ impl Walker {
                     let saved_array_values = self.array_values.clone();
                     let saved_indexed_arrays = self.indexed_arrays.clone();
                     let saved_assoc_arrays = self.assoc_arrays.clone();
+                    if static_iter.is_none() {
+                        self.variable_values.clear();
+                        self.array_values.clear();
+                    } else if !var.is_empty() {
+                        self.variable_values.remove(&var);
+                        self.array_values.remove(&var);
+                    }
                     body = self.loop_body(inner)?;
+                    let assigned = assigned_roots_in_stmts(&body);
+                    let mutated = mutated_roots_in_stmts(&body);
                     self.variable_values = saved_variable_values;
                     self.array_values = saved_array_values;
                     self.indexed_arrays = saved_indexed_arrays;
                     self.assoc_arrays = saved_assoc_arrays;
+                    if static_iter.is_none() {
+                        for name in assigned.into_iter().chain(mutated) {
+                            self.variable_values.remove(&name);
+                            self.array_values.remove(&name);
+                        }
+                    } else if !var.is_empty() {
+                        self.variable_values.remove(&var);
+                        self.array_values.remove(&var);
+                    }
                 }
                 _ => {}
             }
         }
-        if let (Some(values), Some((rule, source))) = (static_iter, body_source.as_ref()) {
+        self.loop_labels.pop();
+        if let (Some(values), Some((rule, source))) = (static_iter.as_ref(), body_source.as_ref()) {
             if !source.contains("return")
+                && !source_has_command_word(source, "break")
+                && !source_has_command_word(source, "continue")
                 && (source.contains("${!")
                     || source.contains("printf -v")
                     || source.contains("$(("))
@@ -7181,7 +13902,7 @@ impl Walker {
                 let mut out = Vec::new();
                 for value in values {
                     out.push(assign_stmt(ident(&var), lit(&value)));
-                    self.variable_values.insert(var.clone(), value);
+                    self.variable_values.insert(var.clone(), value.clone());
                     let pairs = WashmParser::parse(*rule, source)
                         .map_err(|e| format!("static for body: {e}"))?;
                     for p in pairs {
@@ -7199,6 +13920,12 @@ impl Walker {
                 }
                 return Ok(Statement::new(StmtKind::Block(out)));
             }
+        }
+        if static_iter.as_ref().is_some_and(|values| values.is_empty()) {
+            return Ok(Statement::new(StmtKind::Block(vec![assign_stmt(
+                ident("__bash_status"),
+                int(0),
+            )])));
         }
         self.record_variable(&var);
         let iter_var = self.fresh("__bash_for_item");
@@ -7228,10 +13955,15 @@ impl Walker {
                 else_body: Some(vec![stmt]),
             });
         }
-        Ok(stmt)
+        Ok(Statement::new(StmtKind::Labeled {
+            label: loop_label,
+            body: Box::new(stmt),
+        }))
     }
 
     fn walk_for_arith(&mut self, pair: Pair<Rule>) -> R<Statement> {
+        let loop_label = self.fresh("__bash_loop");
+        self.loop_labels.push(loop_label.clone());
         let mut init = None;
         let mut cond = None;
         let mut update = None;
@@ -7243,21 +13975,25 @@ impl Walker {
                     self.dynamic_arith = true;
                     let expr = self.arith_first(inner);
                     self.dynamic_arith = saved_dynamic_arith;
-                    init = Some(Box::new(expr_stmt(expr?)));
+                    init = Some(Box::new(expr_stmt(arith_eval_expr(expr?))));
                 }
                 Rule::for_arith_cond => {
                     let saved_dynamic_arith = self.dynamic_arith;
                     self.dynamic_arith = true;
                     let expr = self.arith_first(inner);
                     self.dynamic_arith = saved_dynamic_arith;
-                    cond = Some(arith_bool(expr?));
+                    cond = Some(ternary(
+                        unary(UnaryOp::Not, ident("__bash_arith_error")),
+                        arith_success_bool(arith_eval_expr(expr?)),
+                        Expression::bool(false),
+                    ));
                 }
                 Rule::for_arith_update => {
                     let saved_dynamic_arith = self.dynamic_arith;
                     self.dynamic_arith = true;
                     let expr = self.arith_first(inner);
                     self.dynamic_arith = saved_dynamic_arith;
-                    update = Some(expr?);
+                    update = Some(arith_eval_expr(expr?));
                 }
                 Rule::list | Rule::brace_group => {
                     let saved_dynamic_arith = self.dynamic_arith;
@@ -7269,17 +14005,28 @@ impl Walker {
                 _ => {}
             }
         }
-        Ok(Statement::new(StmtKind::For {
-            init,
-            cond,
-            update,
-            body,
+        self.loop_labels.pop();
+        let cond = Some(cond.unwrap_or_else(|| unary(UnaryOp::Not, ident("__bash_arith_error"))));
+        let init = Some(Box::new(Statement::new(StmtKind::Block(
+            std::iter::once(assign_stmt(
+                ident("__bash_arith_error"),
+                Expression::bool(false),
+            ))
+            .chain(init.into_iter().map(|stmt| *stmt))
+            .collect(),
+        ))));
+        Ok(Statement::new(StmtKind::Labeled {
+            label: loop_label,
+            body: Box::new(Statement::new(StmtKind::For {
+                init,
+                cond,
+                update,
+                body,
+            })),
         }))
     }
 
     fn walk_select(&mut self, pair: Pair<Rule>) -> R<Statement> {
-        // `select` shows a menu and reads a reply; the iteration over the
-        // choices is kept, the interaction is not.
         let mut var = String::new();
         let mut iter = None;
         let mut body = Vec::new();
@@ -7299,18 +14046,97 @@ impl Walker {
                 _ => {}
             }
         }
-        Ok(Statement::new(StmtKind::ForIn {
-            var,
-            key: None,
-            iter: call_named(
-                "__bash_select",
-                vec![iter.unwrap_or_else(|| ident(BASH_ARGS))],
+        let choices = self.fresh("__bash_select_choices");
+        let line_end = self.fresh("__bash_select_line_end");
+        let idx = self.fresh("__bash_select_idx");
+        let menu_item = self.fresh("__bash_select_menu_item");
+        let menu_i = self.fresh("__bash_select_menu_i");
+        let choices_expr = iter.unwrap_or_else(|| ident(BASH_ARGS));
+        let menu_text = parts_to_expr(vec![
+            Part::Expr(array_join(
+                method(
+                    ident(&choices),
+                    "map",
+                    vec![lambda_expr(
+                        vec![param_named(&menu_item), param_named(&menu_i)],
+                        parts_to_expr(vec![
+                            Part::Expr(binary(BinOp::Add, ident(&menu_i), int(1))),
+                            Part::Text(") ".into()),
+                            Part::Expr(param_value(ident(&menu_item))),
+                        ]),
+                    )],
+                ),
+                lit("\n"),
+            )),
+            Part::Text("\n".into()),
+            Part::Expr(param_value(ident("PS3"))),
+        ]);
+        let valid_choice = binary(
+            BinOp::And,
+            regex_test_expr(regexp(lit("^[0-9]+$"), ""), ident("REPLY")),
+            binary(
+                BinOp::And,
+                binary(BinOp::GtEq, ident(&idx), int(1)),
+                binary(BinOp::LtEq, ident(&idx), member(ident(&choices), "length")),
             ),
-            body,
-            of: true,
-            else_body: None,
-            is_async: false,
-        }))
+        );
+        let mut loop_body = vec![
+            bash_stderr_stmt(menu_text),
+            let_stmt(
+                &line_end,
+                method(ident("__bash_stdin"), "indexOf", vec![lit("\n")]),
+            ),
+            assign_stmt(
+                ident("REPLY"),
+                ternary(
+                    binary(BinOp::Lt, ident(&line_end), int(0)),
+                    ident("__bash_stdin"),
+                    method(
+                        ident("__bash_stdin"),
+                        "slice",
+                        vec![int(0), ident(&line_end)],
+                    ),
+                ),
+            ),
+            assign_stmt(
+                ident("__bash_stdin"),
+                ternary(
+                    binary(BinOp::Lt, ident(&line_end), int(0)),
+                    lit(""),
+                    method(
+                        ident("__bash_stdin"),
+                        "slice",
+                        vec![binary(BinOp::Add, ident(&line_end), int(1))],
+                    ),
+                ),
+            ),
+            Statement::new(StmtKind::If {
+                cond: binary(BinOp::StrictEq, ident("REPLY"), lit("")),
+                then_body: vec![Statement::new(StmtKind::Continue(ContinueTarget::Implicit))],
+                elifs: Vec::new(),
+                else_body: None,
+            }),
+            let_stmt(&idx, to_number(ident("REPLY"))),
+            assign_stmt(ident(&var), lit("")),
+            Statement::new(StmtKind::If {
+                cond: valid_choice,
+                then_body: vec![assign_stmt(
+                    ident(&var),
+                    index(ident(&choices), binary(BinOp::Sub, ident(&idx), int(1))),
+                )],
+                elifs: Vec::new(),
+                else_body: None,
+            }),
+        ];
+        loop_body.extend(body);
+        Ok(Statement::new(StmtKind::Block(vec![
+            let_stmt(&choices, choices_expr),
+            Statement::new(StmtKind::While {
+                cond: binary(BinOp::Gt, member(ident("__bash_stdin"), "length"), int(0)),
+                body: loop_body,
+                else_body: None,
+            }),
+        ])))
     }
 
     /// `case word in pattern) list ;; … esac` → if/else-if chains.
@@ -7436,6 +14262,55 @@ impl Walker {
         } else {
             Ok(None)
         }
+    }
+
+    fn single_bracket_arith_expr_from_pair(&mut self, pair: &Pair<Rule>) -> R<Option<Expression>> {
+        let Some(arith) = find_test_binary_arith(pair) else {
+            return Ok(None);
+        };
+        let mut op = String::new();
+        let mut words = Vec::new();
+        for p in arith.into_inner() {
+            match p.as_rule() {
+                Rule::test_binary_arith_op => op = p.as_str().to_string(),
+                Rule::word => words.push(p),
+                _ => {}
+            }
+        }
+        if words.len() != 2 {
+            return Ok(None);
+        }
+        let bop = match op.as_str() {
+            "-eq" => BinOp::Eq,
+            "-ne" => BinOp::NotEq,
+            "-lt" => BinOp::Lt,
+            "-le" => BinOp::LtEq,
+            "-gt" => BinOp::Gt,
+            "-ge" => BinOp::GtEq,
+            _ => return Ok(None),
+        };
+        let right = words.pop().unwrap();
+        let left = words.pop().unwrap();
+        Ok(Some(binary(
+            bop,
+            self.single_bracket_arith_operand(left)?,
+            self.single_bracket_arith_operand(right)?,
+        )))
+    }
+
+    fn single_bracket_arith_operand(&mut self, word: Pair<Rule>) -> R<Expression> {
+        let is_pure_length = word.clone().into_inner().all(|p| {
+            p.as_rule() == Rule::length_expansion
+                || p.clone()
+                    .into_inner()
+                    .any(|c| c.as_rule() == Rule::length_expansion)
+        });
+        let expr = self.word_expr(word)?;
+        Ok(if is_pure_length {
+            expr
+        } else {
+            to_number(expr)
+        })
     }
 
     fn single_bracket_one_arg_expr(&mut self, pair: &Pair<Rule>) -> R<Option<Expression>> {
@@ -7751,7 +14626,7 @@ impl Walker {
                 binary(BinOp::Eq, subject, pat)
             });
         }
-        if let Some(text) = glob_word_text(&pattern) {
+        if let Some(text) = self.static_glob_pattern_text(&pattern) {
             if text == "*" {
                 return Ok(Expression::bool(true));
             }
@@ -7763,7 +14638,14 @@ impl Walker {
             }
         }
         let pat = self.word_expr(pattern)?;
-        Ok(regex_test_expr(regexp(pat, flags), subject))
+        Ok(call_named(
+            if self.nocasematch_enabled {
+                "__bash_glob_match_fold"
+            } else {
+                "__bash_glob_match"
+            },
+            vec![subject, pat],
+        ))
     }
 
     fn static_unquoted_param_pattern_text(&self, pair: &Pair<Rule>) -> Option<String> {
@@ -7775,6 +14657,20 @@ impl Walker {
     }
 
     fn static_glob_pattern_text(&self, pair: &Pair<Rule>) -> Option<String> {
+        match pair.as_rule() {
+            Rule::ansi_c_quoting => {
+                let s = pair.as_str();
+                return Some(glob_escape(&decode_ansi_c(&s[2..s.len() - 1])));
+            }
+            Rule::single_quoted_string => {
+                let s = pair.as_str();
+                return Some(glob_escape(&s[1..s.len() - 1]));
+            }
+            Rule::quoted_string | Rule::locale_quoting => {
+                return self.static_part_text(pair).map(|s| glob_escape(&s));
+            }
+            _ => {}
+        }
         let mut out = String::new();
         for part in pair.clone().into_inner() {
             self.push_static_glob_pattern_part(&part, false, &mut out)?;
@@ -7824,6 +14720,7 @@ impl Walker {
                     out.push_str(pair.as_str());
                 }
             }
+            Rule::extglob_word => out.push_str(pair.as_str()),
             Rule::bare_word => {
                 let text = unescape_bare(pair.as_str());
                 if quoted {
@@ -7866,11 +14763,31 @@ impl Walker {
         Some(())
     }
 
+    fn static_braced_index_value(&self, raw: &str) -> Option<String> {
+        let inner = raw.strip_prefix("${")?.strip_suffix('}')?;
+        let (array_name, rest) = inner.split_once('[')?;
+        if !is_name(array_name) {
+            return None;
+        }
+        let key = rest.strip_suffix(']')?;
+        let key = key
+            .strip_prefix('"')
+            .and_then(|s| s.strip_suffix('"'))
+            .or_else(|| key.strip_prefix('\'').and_then(|s| s.strip_suffix('\'')))
+            .unwrap_or(key);
+        self.array_values
+            .get(array_name)?
+            .iter()
+            .find_map(|(entry_key, value)| (entry_key == key).then(|| value.clone()))
+    }
+
     fn regex_word_expr(&mut self, pair: Pair<Rule>) -> R<Expression> {
         let mut parts = Vec::new();
         for p in pair.into_inner() {
             match p.as_rule() {
-                Rule::regex_text => parts.push(Part::Text(p.as_str().to_string())),
+                Rule::regex_text | Rule::regex_bracket_expr => {
+                    parts.push(Part::Text(regex_posix_class_compat(p.as_str())))
+                }
                 // Quoted regex text is literal: escape its metacharacters.
                 Rule::quoted_string | Rule::single_quoted_string => {
                     let inner = self.part_to_parts(p)?;
@@ -7919,6 +14836,15 @@ impl Walker {
         } else {
             text
         };
+        let array_expanded;
+        let text = if text.contains('[') {
+            array_expanded = self
+                .static_arith_array_substitution(text)
+                .unwrap_or_else(|| text.to_string());
+            array_expanded.as_str()
+        } else {
+            text
+        };
         let normalized;
         let text = if text.contains('\n') || text.contains('\r') {
             normalized = text.replace(['\r', '\n'], " ");
@@ -7938,6 +14864,55 @@ impl Walker {
             }
         }
         Ok(int(0))
+    }
+
+    fn static_arith_array_substitution(&self, text: &str) -> Option<String> {
+        let bytes = text.as_bytes();
+        let mut out = String::new();
+        let mut i = 0usize;
+        let mut changed = false;
+        while i < bytes.len() {
+            let ch = text[i..].chars().next()?;
+            if ch.is_ascii_alphabetic() || ch == '_' {
+                let start = i;
+                i += ch.len_utf8();
+                while i < bytes.len() {
+                    let next = text[i..].chars().next()?;
+                    if next.is_ascii_alphanumeric() || next == '_' {
+                        i += next.len_utf8();
+                    } else {
+                        break;
+                    }
+                }
+                let name = &text[start..i];
+                if i < bytes.len() && bytes[i] == b'[' {
+                    let key_start = i + 1;
+                    if let Some(rel_end) = text[key_start..].find(']') {
+                        let key_end = key_start + rel_end;
+                        let raw_key = text[key_start..key_end].trim();
+                        let key = self
+                            .static_subscript_key(name, raw_key)
+                            .unwrap_or_else(|| raw_key.to_string());
+                        if let Some(value) = self
+                            .array_values
+                            .get(name)
+                            .and_then(|entries| entries.iter().find(|(k, _)| k == &key))
+                            .map(|(_, value)| value.clone())
+                        {
+                            out.push_str(&value);
+                            i = key_end + 1;
+                            changed = true;
+                            continue;
+                        }
+                    }
+                }
+                out.push_str(name);
+                continue;
+            }
+            out.push(ch);
+            i += ch.len_utf8();
+        }
+        changed.then_some(out)
     }
 
     /// An operand of `[[ x -eq y ]]`: the word's text is an arithmetic expression.
@@ -8006,7 +14981,11 @@ impl Walker {
                             "|=" => "__bash_i64_or",
                             _ => "__bash_i64_xor",
                         };
-                        arith_bin(bop, target.clone(), value)
+                        if matches!(op.as_str(), "/=" | "%=") {
+                            arith_div_rem(bop, target.clone(), value)
+                        } else {
+                            arith_bin(bop, target.clone(), value)
+                        }
                     }
                 };
                 Ok(assign_expr(target, arith_string(value)))
@@ -8023,7 +15002,7 @@ impl Walker {
                 let c = self.arith_node(it.next().unwrap())?;
                 let t = self.arith_node(it.next().ok_or("ternary without then")?)?;
                 let e = self.arith_node(it.next().ok_or("ternary without else")?)?;
-                Ok(ternary(binary(BinOp::NotEq, c, int(0)), t, e))
+                Ok(ternary(arith_bool(c), t, e))
             }
             Rule::arithmetic_or | Rule::arithmetic_and => {
                 let is_or = pair.as_rule() == Rule::arithmetic_or;
@@ -8036,13 +15015,18 @@ impl Walker {
                 }
                 let mut acc: Option<Expression> = None;
                 for i in items {
-                    let v = arith_bool(self.arith_node(i)?);
+                    let v = self.arith_node(i)?;
                     acc = Some(match acc {
                         None => v,
-                        Some(a) => binary(if is_or { BinOp::Or } else { BinOp::And }, a, v),
+                        Some(a) if is_or => {
+                            ternary(arith_bool(a), bigint(1), arith_bool_to_i64(arith_bool(v)))
+                        }
+                        Some(a) => {
+                            ternary(arith_bool(a), arith_bool_to_i64(arith_bool(v)), bigint(0))
+                        }
                     });
                 }
-                Ok(arith_bool_to_i64(acc.unwrap()))
+                Ok(arith_bool_to_i64(arith_bool(acc.unwrap())))
             }
             Rule::arithmetic_bitor
             | Rule::arithmetic_bitxor
@@ -8156,7 +15140,11 @@ impl Walker {
                 "|" => "__bash_i64_or",
                 _ => "__bash_i64_xor",
             };
-            acc = arith_bin(bop, acc, rhs);
+            acc = if matches!(op.as_str(), "/" | "%") {
+                arith_div_rem(bop, acc, rhs)
+            } else {
+                arith_bin(bop, acc, rhs)
+            };
         }
         Ok(acc)
     }
@@ -8174,11 +15162,21 @@ impl Walker {
                 "__bash_string",
                 vec![self.arith_expansion_expr(pair)?],
             )),
-            Rule::simple_param
-            | Rule::braced_param
-            | Rule::dollar_paren_subst
-            | Rule::quoted_string
-            | Rule::single_quoted_string => Ok(to_number(self.part_expr(pair)?)),
+            Rule::simple_param | Rule::braced_param => {
+                if let Some(text) = self.static_arith_param_part_text(&pair) {
+                    if let Some(value) = parse_bash_integer(text.trim()) {
+                        return Ok(bigint(value));
+                    }
+                    if let Ok(expr) = self.parse_arith_text(&text) {
+                        return Ok(expr);
+                    }
+                    return Ok(to_number(lit(&text)));
+                }
+                Ok(to_number(self.part_expr(pair)?))
+            }
+            Rule::dollar_paren_subst | Rule::quoted_string | Rule::single_quoted_string => {
+                Ok(to_number(self.part_expr(pair)?))
+            }
             other => Err(format!(
                 "unsupported arithmetic primary {other:?}: {}",
                 pair.as_str()
@@ -8222,6 +15220,9 @@ impl Walker {
                     assign_expr(ident("__bash_status"), int(1)),
                     int(0),
                 ]));
+            }
+            if let Some(value) = self.dynamic_shell_special_expr(&resolved) {
+                return Ok(to_number(value));
             }
             if !self.dynamic_arith {
                 if let Some(value) = self.variable_values.get(&resolved).cloned() {
@@ -8293,15 +15294,46 @@ impl Walker {
 
     /// `name` or `name[sub]` inside arithmetic — a variable reference (no coercion).
     fn arith_variable_ref(&mut self, pair: Pair<Rule>) -> R<Expression> {
-        let mut name = String::new();
+        if pair.as_rule() == Rule::arithmetic_lvalue
+            || (pair.as_rule() == Rule::arith_variable
+                && pair.clone().into_inner().next().is_none())
+        {
+            let text = pair.as_str().trim();
+            if let Some(root) = text.split_once('[').map(|(name, _)| name).or(Some(text)) {
+                if !root.is_empty() {
+                    let resolved = self
+                        .resolve_nameref_text(root)
+                        .unwrap_or_else(|| root.to_string());
+                    self.record_variable(&resolved);
+                    if !text.contains('[')
+                        && (self.indexed_arrays.contains(&resolved)
+                            || self.assoc_arrays.contains(&resolved)
+                            || self.array_values.contains_key(&resolved))
+                    {
+                        return Ok(index(ident(&resolved), int(0)));
+                    }
+                }
+            }
+            return self.name_or_element_target(text);
+        }
+        let children = pair.into_inner().collect::<Vec<_>>();
+        let mut name = children
+            .iter()
+            .find(|p| p.as_rule() == Rule::name)
+            .map(|p| p.as_str().to_string())
+            .unwrap_or_default();
         let mut sub = None;
-        for p in pair.into_inner() {
+        for p in children {
             match p.as_rule() {
                 Rule::name => name = p.as_str().to_string(),
                 Rule::arith_subscript => {
                     let inner = p.into_inner().next().ok_or("empty subscript")?;
+                    let raw_key = inner.as_str().trim();
                     sub = Some(match inner.as_rule() {
                         Rule::subscript_all => Subscript::All,
+                        _ if self.arith_subscript_is_assoc_key(&name, raw_key) => {
+                            Subscript::Key(lit(raw_key))
+                        }
                         _ => Subscript::Key(self.arith_node(inner)?),
                     });
                 }
@@ -8318,9 +15350,30 @@ impl Walker {
             Some(Subscript::Key(_)) if target.contains('[') => {
                 self.name_or_element_target(&target)?
             }
-            Some(Subscript::Key(k)) => index(ident(&target), arith_index(k)),
+            Some(Subscript::Key(k)) => index(
+                ident(&target),
+                self.static_indexed_key_expr(&target, &k)
+                    .unwrap_or_else(|| bash_indexed_key(ident(&target), k)),
+            ),
             _ if target.contains('[') => self.name_or_element_target(&target)?,
+            _ if self.indexed_arrays.contains(&target)
+                || self.assoc_arrays.contains(&target)
+                || self.array_values.contains_key(&target) =>
+            {
+                index(ident(&target), int(0))
+            }
             _ => ident(&target),
+        })
+    }
+
+    fn arith_subscript_is_assoc_key(&self, name: &str, raw_key: &str) -> bool {
+        if self.assoc_arrays.contains(name) {
+            return true;
+        }
+        self.array_values.get(name).is_some_and(|entries| {
+            entries
+                .iter()
+                .any(|(key, _)| key == raw_key || parse_bash_integer(key).is_none())
         })
     }
 
@@ -8338,9 +15391,12 @@ impl Walker {
             .split_once('[')
             .map(|(base, _)| base)
             .unwrap_or(text.as_str());
-        let target = self
-            .resolve_nameref_text(name)
-            .unwrap_or_else(|| name.to_string());
+        let target = if name == "FUNCNAME" {
+            BASH_FUNCNAME.to_string()
+        } else {
+            self.resolve_nameref_text(name)
+                .unwrap_or_else(|| name.to_string())
+        };
         self.variable_values.remove(&target);
         self.array_values.remove(&target);
     }
@@ -8454,6 +15510,37 @@ impl Walker {
         Some(out)
     }
 
+    fn static_arith_param_part_text(&self, pair: &Pair<Rule>) -> Option<String> {
+        match pair.as_rule() {
+            Rule::simple_param => {
+                let inner = pair.clone().into_inner().next()?;
+                match inner.as_rule() {
+                    Rule::name => self.static_name_value(inner.as_str()),
+                    Rule::positional_digit => {
+                        let pos = inner.as_str().parse::<usize>().ok()?;
+                        self.positional_values.get(pos.saturating_sub(1)).cloned()
+                    }
+                    Rule::special_param => Some(match inner.as_str() {
+                        "#" => self.positional_values.len().to_string(),
+                        "?" | "$" | "!" => "0".to_string(),
+                        "*" | "@" => self.positional_values.join(" "),
+                        _ => return None,
+                    }),
+                    _ => None,
+                }
+            }
+            Rule::braced_param => {
+                let base = pair
+                    .clone()
+                    .into_inner()
+                    .find(|inner| inner.as_rule() == Rule::param_base)?;
+                self.static_param_error_target(&base)
+                    .map(|(_, _, value)| value)
+            }
+            _ => None,
+        }
+    }
+
     // ── words ────────────────────────────────────────────────────────────
 
     fn words_exprs(&mut self, words: Vec<Pair<Rule>>) -> R<Vec<Expression>> {
@@ -8475,9 +15562,36 @@ impl Walker {
         for w in words {
             match w.as_rule() {
                 Rule::word => {
-                    if let Some(keys) = self.exact_indirect_array_key_values(&w) {
+                    let raw_word = w.as_str().trim();
+                    if raw_word.starts_with('"')
+                        && raw_word.ends_with('"')
+                        && (raw_word.contains("[@]:") || raw_word.contains("[*]:"))
+                        && let Some(value) = self.exact_array_join_word(&w)?
+                    {
                         out.push(ShellArg {
-                            value: array(keys),
+                            value,
+                            spread: false,
+                        });
+                    } else if (raw_word.contains("[*]")
+                        || raw_word.contains("${*:")
+                        || raw_word == "\"$*\"")
+                        && let Some(value) = self.exact_array_join_word(&w)?
+                    {
+                        let quoted = raw_word.starts_with('"') && raw_word.ends_with('"');
+                        if raw_word.contains("[*]") && !quoted {
+                            out.push(ShellArg {
+                                value: split_bash_words(value),
+                                spread: true,
+                            });
+                            continue;
+                        }
+                        out.push(ShellArg {
+                            value,
+                            spread: false,
+                        });
+                    } else if let Some(value) = self.exact_indirect_array_keys_word(&w)? {
+                        out.push(ShellArg {
+                            value,
                             spread: true,
                         });
                     } else if let Some(value) = self.exact_transformed_array_word(&w)? {
@@ -8491,6 +15605,11 @@ impl Walker {
                             spread: true,
                         });
                     } else if let Some(value) = self.exact_process_substitution_word(&w)? {
+                        out.push(ShellArg {
+                            value,
+                            spread: false,
+                        });
+                    } else if let Some(value) = self.exact_arithmetic_expansion_word(&w)? {
                         out.push(ShellArg {
                             value,
                             spread: false,
@@ -8530,15 +15649,30 @@ impl Walker {
                                 value,
                                 spread: true,
                             });
+                        } else if let Some(value) = self.dynamic_path_glob_word(&w)? {
+                            out.push(ShellArg {
+                                value,
+                                spread: true,
+                            });
                         } else {
                             let expanded = self.expand_word(w)?;
                             for value in expanded {
                                 out.extend(self.expanded_unquoted_word_shell_args(value));
                             }
                         }
+                    } else if let Some(value) = self.exact_array_at_word(&w)? {
+                        out.push(ShellArg {
+                            value,
+                            spread: true,
+                        });
                     } else if let Some(args) = self.static_mixed_word_shell_args(&w)? {
                         out.extend(args);
                     } else if let Some(value) = self.path_glob_word(&w) {
+                        out.push(ShellArg {
+                            value,
+                            spread: true,
+                        });
+                    } else if let Some(value) = self.dynamic_path_glob_word(&w)? {
                         out.push(ShellArg {
                             value,
                             spread: true,
@@ -8582,6 +15716,24 @@ impl Walker {
             }
         }
         Ok(out)
+    }
+
+    fn exact_arithmetic_expansion_word(&mut self, pair: &Pair<Rule>) -> R<Option<Expression>> {
+        if pair.as_rule() != Rule::word {
+            return Ok(None);
+        }
+        let raw = pair.as_str().trim();
+        if raw.starts_with('"') || raw.starts_with('\'') {
+            return Ok(None);
+        }
+        let mut inner = pair.clone().into_inner();
+        let Some(part) = inner.next() else {
+            return Ok(None);
+        };
+        if inner.next().is_some() || part.as_rule() != Rule::arithmetic_expansion {
+            return Ok(None);
+        }
+        Ok(Some(self.part_expr(part)?))
     }
 
     fn exact_process_substitution_word(&mut self, pair: &Pair<Rule>) -> R<Option<Expression>> {
@@ -8642,29 +15794,104 @@ impl Walker {
         let text = if quoted { &raw[1..raw.len() - 1] } else { raw };
         match text {
             "$@" => return Ok(Some(array_join(ident(BASH_ARGS), lit(" ")))),
-            "$*" => return Ok(Some(array_join(ident(BASH_ARGS), ifs_join_sep()))),
+            "$*" => return Ok(Some(array_join(ident(BASH_ARGS), self.ifs_join_sep_expr()))),
             _ => {}
         }
         let Some(inner) = text.strip_prefix("${").and_then(|s| s.strip_suffix('}')) else {
             return Ok(None);
         };
+        if let Some(rest) = inner.strip_prefix("*:")
+            && let Some((offset, length)) = parse_positional_slice_text(rest)
+        {
+            if let Some(values) = self.static_positional_slice_expr(&offset, &length) {
+                return Ok(Some(self.bash_join_expr(values, self.ifs_join_sep_expr())));
+            }
+            return Ok(Some(self.bash_join_expr(
+                positional_slice_expr(ident(BASH_ARGS), offset, length),
+                self.ifs_join_sep_expr(),
+            )));
+        }
+        if let Some((name, rest)) = inner.split_once("[@]:") {
+            if is_name(name)
+                && let Some((offset, length)) = self.parse_shell_slice_text(rest)?
+            {
+                let target = if name == "FUNCNAME" {
+                    BASH_FUNCNAME.to_string()
+                } else {
+                    self.resolve_nameref_text(name)
+                        .unwrap_or_else(|| name.to_string())
+                };
+                if !target.contains('[') {
+                    if let Some(values) = self.static_indexed_slice_expr(&target, &offset, &length)
+                    {
+                        return Ok(Some(self.bash_join_expr(values, lit(" "))));
+                    }
+                    if target == BASH_FUNCNAME
+                        && let Some(values) = literal_indexed_slice_expr(&target, &offset, &length)
+                    {
+                        return Ok(Some(self.bash_join_expr(values, lit(" "))));
+                    }
+                    return Ok(Some(self.bash_join_expr(
+                        array_slice_expr(ident(&target), offset, length),
+                        lit(" "),
+                    )));
+                }
+            }
+        }
+        if let Some((name, rest)) = inner.split_once("[*]:") {
+            if is_name(name)
+                && let Some((offset, length)) = self.parse_shell_slice_text(rest)?
+            {
+                let target = if name == "FUNCNAME" {
+                    BASH_FUNCNAME.to_string()
+                } else {
+                    self.resolve_nameref_text(name)
+                        .unwrap_or_else(|| name.to_string())
+                };
+                if !target.contains('[') {
+                    if let Some(values) = self.static_indexed_slice_expr(&target, &offset, &length)
+                    {
+                        return Ok(Some(self.bash_join_expr(values, self.ifs_join_sep_expr())));
+                    }
+                    if target == BASH_FUNCNAME
+                        && let Some(values) = literal_indexed_slice_expr(&target, &offset, &length)
+                    {
+                        return Ok(Some(self.bash_join_expr(values, self.ifs_join_sep_expr())));
+                    }
+                    return Ok(Some(self.bash_join_expr(
+                        array_slice_expr(ident(&target), offset, length),
+                        self.ifs_join_sep_expr(),
+                    )));
+                }
+            }
+        }
         let (name, sep) = if let Some(name) = inner.strip_suffix("[@]") {
             (name, lit(" "))
         } else if let Some(name) = inner.strip_suffix("[*]") {
-            (name, ifs_join_sep())
+            (name, self.ifs_join_sep_expr())
         } else {
             return Ok(None);
         };
         if !is_name(name) {
             return Ok(None);
         }
-        let target = self
-            .resolve_nameref_text(name)
-            .unwrap_or_else(|| name.to_string());
+        let target = if name == "FUNCNAME" {
+            BASH_FUNCNAME.to_string()
+        } else {
+            self.resolve_nameref_text(name)
+                .unwrap_or_else(|| name.to_string())
+        };
         if target.contains('[') {
             return Ok(None);
         }
-        Ok(Some(array_join(ident(&target), sep)))
+        if self.assoc_arrays.contains(&target) {
+            let values = self.assoc_values_array_expr(&target, ident(&target));
+            return Ok(Some(self.bash_join_expr(values, sep)));
+        }
+        if self.indexed_arrays.contains(&target) {
+            return Ok(Some(self.bash_join_expr(ident(&target), sep)));
+        }
+        Ok(Some(self.bash_join_expr(ident(&target), sep)))
     }
 
     fn exact_array_at_word(&mut self, pair: &Pair<Rule>) -> R<Option<Expression>> {
@@ -8692,11 +15919,37 @@ impl Walker {
             .or_else(|| inner.strip_prefix("*:"))
         {
             if let Some((offset, length)) = parse_positional_slice_text(rest) {
+                if let Some(values) = self.static_positional_slice_expr(&offset, &length) {
+                    return Ok(Some(values));
+                }
                 return Ok(Some(positional_slice_expr(
                     ident(BASH_ARGS),
                     offset,
                     length,
                 )));
+            }
+        }
+        if let Some((name, rest)) = inner.split_once("[@]:") {
+            if is_name(name) {
+                let target = if name == "FUNCNAME" {
+                    BASH_FUNCNAME.to_string()
+                } else {
+                    self.resolve_nameref_text(name)
+                        .unwrap_or_else(|| name.to_string())
+                };
+                if !target.contains('[')
+                    && let Some((offset, length)) = self.parse_shell_slice_text(rest)?
+                {
+                    if let Some(expr) = self.static_indexed_slice_expr(&target, &offset, &length) {
+                        return Ok(Some(expr));
+                    }
+                    if target == BASH_FUNCNAME
+                        && let Some(expr) = literal_indexed_slice_expr(&target, &offset, &length)
+                    {
+                        return Ok(Some(expr));
+                    }
+                    return Ok(Some(array_slice_expr(ident(&target), offset, length)));
+                }
             }
         }
         let Some(name) = inner.strip_suffix("[@]") else {
@@ -8705,17 +15958,114 @@ impl Walker {
         if !is_name(name) {
             return Ok(None);
         }
-        let target = self
-            .resolve_nameref_text(name)
-            .unwrap_or_else(|| name.to_string());
+        let target = if name == "FUNCNAME" {
+            BASH_FUNCNAME.to_string()
+        } else {
+            self.resolve_nameref_text(name)
+                .unwrap_or_else(|| name.to_string())
+        };
         if target.contains('[') {
             return Ok(None);
         }
+        if self.assoc_arrays.contains(&target) {
+            return Ok(Some(self.assoc_values_array_expr(&target, ident(&target))));
+        }
+        if self.indexed_arrays.contains(&target) {
+            return Ok(Some(ident(&target)));
+        }
+        let value = ident(&target);
         Ok(Some(if quoted {
-            ident(&target)
+            ternary(
+                call_named("__bash_is_array", vec![value.clone()]),
+                value.clone(),
+                ternary(
+                    binary(BinOp::StrictEq, value.clone(), undefined()),
+                    array(Vec::new()),
+                    array(vec![param_value(value)]),
+                ),
+            )
         } else {
-            filter_non_empty_array_expr(ident(&target))
+            filter_non_empty_array_expr(value)
         }))
+    }
+
+    fn static_positional_slice_expr(
+        &self,
+        offset: &Expression,
+        length: &Option<Expression>,
+    ) -> Option<Expression> {
+        let offset = literal_i64(offset)?;
+        let length = match length {
+            Some(value) => Some(literal_i64(value)?),
+            None => None,
+        };
+        if matches!(length, Some(n) if n < 0) {
+            return None;
+        }
+        let mut values = if offset == 0 {
+            let mut values = Vec::with_capacity(self.positional_values.len() + 1);
+            values.push("bash".to_string());
+            values.extend(self.positional_values.iter().cloned());
+            values
+        } else {
+            self.positional_values.clone()
+        };
+        let start = if offset == 0 {
+            0
+        } else if offset > 0 {
+            offset.saturating_sub(1) as usize
+        } else {
+            let len = values.len() as i64;
+            len.saturating_add(offset).max(0) as usize
+        };
+        if start >= values.len() {
+            values.clear();
+        } else {
+            values = values[start..].to_vec();
+        }
+        if let Some(length) = length {
+            values.truncate(length.max(0) as usize);
+        }
+        Some(array(values.into_iter().map(|value| lit(&value)).collect()))
+    }
+
+    fn parse_shell_slice_text(
+        &mut self,
+        text: &str,
+    ) -> R<Option<(Expression, Option<Expression>)>> {
+        let mut parts = text.splitn(2, ':');
+        let Some(offset_text) = parts.next() else {
+            return Ok(None);
+        };
+        let offset_text = offset_text.trim();
+        if offset_text.is_empty() {
+            return Ok(None);
+        }
+        let offset = offset_text.parse::<i64>().map(int).unwrap_or_else(|_| {
+            self.parse_arith_text(offset_text)
+                .unwrap_or_else(|_| lit(""))
+        });
+        if matches!(&offset.kind, ExprKind::Lit(Literal::Str(_))) {
+            return Ok(None);
+        }
+        let length =
+            match parts.next() {
+                Some(rest) if rest.trim().is_empty() => Some(int(0)),
+                Some(rest) => {
+                    let text = rest.trim();
+                    Some(text.parse::<i64>().map(int).unwrap_or_else(|_| {
+                        self.parse_arith_text(text).unwrap_or_else(|_| lit(""))
+                    }))
+                }
+                None => None,
+            };
+        if matches!(
+            length.as_ref().map(|e| &e.kind),
+            Some(ExprKind::Lit(Literal::Str(_)))
+        ) {
+            return Ok(None);
+        }
+        Ok(Some((offset, length)))
     }
 
     fn exact_indirect_array_key_values(&self, pair: &Pair<Rule>) -> Option<Vec<Expression>> {
@@ -8732,8 +16082,49 @@ impl Walker {
         let target = self
             .resolve_nameref_text(name)
             .unwrap_or_else(|| name.to_string());
+        if self.assoc_arrays.contains(&target) {
+            return None;
+        }
         let keys = self.static_array_keys(&target)?;
+        if keys.is_empty()
+            && (self.assoc_arrays.contains(&target) || self.indexed_arrays.contains(&target))
+        {
+            return None;
+        }
         Some(keys.into_iter().map(|key| lit(&key)).collect())
+    }
+
+    fn exact_indirect_array_keys_word(&mut self, pair: &Pair<Rule>) -> R<Option<Expression>> {
+        let raw = pair.as_str().trim();
+        let quoted = raw.starts_with('"') && raw.ends_with('"') && raw.len() >= 2;
+        let text = if quoted { &raw[1..raw.len() - 1] } else { raw };
+        let Some(inner) = text.strip_prefix("${!").and_then(|s| s.strip_suffix('}')) else {
+            return Ok(None);
+        };
+        let Some(name) = inner
+            .strip_suffix("[@]")
+            .or_else(|| inner.strip_suffix("[*]"))
+        else {
+            return Ok(None);
+        };
+        if !is_name(name) {
+            return Ok(None);
+        }
+        let target = self
+            .resolve_nameref_text(name)
+            .unwrap_or_else(|| name.to_string());
+        if self.assoc_arrays.contains(&target) {
+            return Ok(Some(call_named("__bash_keys", vec![ident(&target)])));
+        }
+        if let Some(keys) = self.static_array_keys(&target)
+            && !keys.is_empty()
+        {
+            return Ok(Some(array(keys.into_iter().map(|key| lit(&key)).collect())));
+        }
+        if self.assoc_arrays.contains(&target) || self.indexed_arrays.contains(&target) {
+            return Ok(Some(call_named("__bash_keys", vec![ident(&target)])));
+        }
+        Ok(None)
     }
 
     fn exact_scalar_split_word(&mut self, pair: &Pair<Rule>) -> R<Option<Expression>> {
@@ -9090,6 +16481,75 @@ impl Walker {
             return None;
         }
         self.path_glob_text_expr(text)
+    }
+
+    fn dynamic_path_glob_word(&mut self, pair: &Pair<Rule>) -> R<Option<Expression>> {
+        if self.shell_flags.contains(&'f') || pair.as_rule() != Rule::word {
+            return Ok(None);
+        }
+        let mut parts = pair.clone().into_inner().collect::<Vec<_>>();
+        let Some(last) = parts.pop() else {
+            return Ok(None);
+        };
+        if !matches!(last.as_rule(), Rule::bare_word | Rule::extglob_word) {
+            return Ok(None);
+        }
+        let tail = last.as_str();
+        if !word_text_has_glob_meta(tail) {
+            return Ok(None);
+        }
+        let Some((dir_tail, pat)) = tail.rsplit_once('/') else {
+            return Ok(None);
+        };
+        if pat.is_empty() || !word_text_has_glob_meta(pat) || word_text_has_glob_meta(dir_tail) {
+            return Ok(None);
+        }
+        let re = glob_to_regex(pat, false).ok_or("invalid glob pattern")?;
+        let mut dir_parts = Vec::new();
+        for part in parts {
+            dir_parts.extend(self.part_to_parts(part)?);
+        }
+        if !dir_tail.is_empty() {
+            dir_parts.push(Part::Text(unescape_bare(dir_tail)));
+        }
+        if dir_parts.is_empty() {
+            return Ok(None);
+        }
+        let dir_expr = parts_to_expr(dir_parts);
+        let item = self.fresh("__bash_glob_name");
+        let flags = if self.nocaseglob_enabled { "i" } else { "" };
+        let dot_cond = if self.dotglob_enabled || pat.starts_with('.') {
+            Expression::bool(true)
+        } else {
+            unary(
+                UnaryOp::Not,
+                method(ident(&item), "startsWith", vec![lit(".")]),
+            )
+        };
+        let filtered = method(
+            call_named("__bash_list_dir", vec![bash_path_expr(dir_expr.clone())]),
+            "filter",
+            vec![lambda_expr(
+                vec![param_named(&item)],
+                binary(
+                    BinOp::And,
+                    dot_cond,
+                    regex_test_expr(regexp(lit(&format!("^(?:{re})$")), flags), ident(&item)),
+                ),
+            )],
+        );
+        let map_item = self.fresh("__bash_glob_name");
+        let mapped = array_map_expr(
+            filtered,
+            &map_item,
+            &self.fresh("__bash_glob_out"),
+            parts_to_expr(vec![
+                Part::Expr(dir_expr),
+                Part::Text("/".to_string()),
+                Part::Expr(ident(&map_item)),
+            ]),
+        );
+        Ok(Some(call_named("__bash_sort", vec![mapped])))
     }
 
     fn path_glob_matches_expr(&mut self, text: &str) -> Option<Expression> {
@@ -9673,7 +17133,16 @@ impl Walker {
                     }));
                 }
                 Rule::braced_param => {
-                    parts.push(Part::Expr(self.braced_param_expr_with_tilde(p, false)?))
+                    let raw = p.as_str().to_string();
+                    let expr = self.braced_param_expr_with_tilde(p, false)?;
+                    let expr = if raw.contains("[@]:") {
+                        self.bash_join_expr(expr, lit(" "))
+                    } else if raw.contains("[*]:") {
+                        self.bash_join_expr(expr, self.ifs_join_sep_expr())
+                    } else {
+                        expr
+                    };
+                    parts.push(Part::Expr(expr))
                 }
                 _ => parts.push(Part::Expr(self.part_expr(p)?)),
             }
@@ -9690,7 +17159,9 @@ impl Walker {
                     Rule::name if inner.as_str() == "BASH_SUBSHELL" => {
                         lit(&self.subshell_depth.to_string())
                     }
-                    Rule::name => param_value(self.name_or_element_target(inner.as_str())?),
+                    Rule::name => self
+                        .dynamic_shell_special_expr(inner.as_str())
+                        .unwrap_or(param_value(self.name_or_element_target(inner.as_str())?)),
                     Rule::positional_digit => param_value(positional(inner.as_str())),
                     _ => special_param_value(inner.as_str()),
                 })
@@ -9711,15 +17182,30 @@ impl Walker {
                         self.read_file_or_fd_expr(t),
                     ));
                 }
+                if let Some(subshell) = self.single_subshell_command(&list) {
+                    let mut child = self.clone();
+                    child.subshell_depth += 2;
+                    child.loop_labels.clear();
+                    let body = child.walk_group(subshell)?;
+                    self.heredocs = child.heredocs.clone();
+                    self.counter = child.counter;
+                    let (params, args) =
+                        self.shell_child_bindings_with_job_mode(&child, true, &[], None, true);
+                    return Ok(command_substitution_expr(capture_with_args(
+                        body, params, args,
+                    )));
+                }
                 if let Some(e) = self.simple_command_substitution_value(&list)? {
                     return Ok(command_substitution_expr(e));
                 }
                 let mut child = self.clone();
                 child.subshell_depth += 1;
+                child.loop_labels.clear();
                 let body = child.walk_list(list)?;
                 self.heredocs = child.heredocs.clone();
                 self.counter = child.counter;
-                let (params, args) = self.shell_child_bindings(&child, true, &[], None);
+                let (params, args) =
+                    self.shell_child_bindings_with_job_mode(&child, true, &[], None, true);
                 Ok(command_substitution_expr(capture_with_args(
                     body, params, args,
                 )))
@@ -9737,7 +17223,7 @@ impl Walker {
                     None => Vec::new(),
                 };
                 if reply_form {
-                    Ok(sequence(vec![iife(body), param_value(ident("REPLY"))]))
+                    Ok(current_shell_reply_value(body))
                 } else {
                     Ok(command_substitution_expr(current_shell_capture(
                         body,
@@ -9754,6 +17240,7 @@ impl Walker {
                 let mut child = self.clone();
                 child.heredocs = heredocs.into();
                 child.subshell_depth += 1;
+                child.loop_labels.clear();
                 let mut body = Vec::new();
                 for p in pairs {
                     if p.as_rule() == Rule::program {
@@ -9766,7 +17253,8 @@ impl Walker {
                 }
                 self.heredocs = child.heredocs.clone();
                 self.counter = child.counter;
-                let (params, args) = self.shell_child_bindings(&child, true, &[], None);
+                let (params, args) =
+                    self.shell_child_bindings_with_job_mode(&child, true, &[], None, true);
                 Ok(command_substitution_expr(capture_with_args(
                     body, params, args,
                 )))
@@ -9791,13 +17279,15 @@ impl Walker {
                 if dir == "<" {
                     let mut child = self.clone();
                     child.subshell_depth += 1;
+                    child.loop_labels.clear();
                     let body = match list {
                         Some(list) => child.walk_list(list)?,
                         None => Vec::new(),
                     };
                     self.heredocs = child.heredocs.clone();
                     self.counter = child.counter;
-                    let (params, args) = self.shell_child_bindings(&child, true, &[], None);
+                    let (params, args) =
+                        self.shell_child_bindings_with_shared_jobs(&child, true, &[], None);
                     let fd_key = (64 + self.counter).to_string();
                     self.counter += 1;
                     let path = format!("/dev/fd/{fd_key}");
@@ -9811,15 +17301,18 @@ impl Walker {
                             index(ident("__bash_fds"), lit(&fd_key)),
                             capture_with_args(body, params, args),
                         ),
-                        assign_expr(
-                            index(ident("__bash_jobs"), ident("__bash_last_bg_pid")),
+                        bash_object_set(
+                            ident("__bash_jobs"),
+                            shell_expr_text(ident("__bash_last_bg_pid")),
                             ident("__bash_status"),
                         ),
+                        bash_remember_job_expr(ident("__bash_last_bg_pid")),
                         lit(&path),
                     ]));
                 }
                 let mut child = self.clone();
                 child.subshell_depth += 1;
+                child.loop_labels.clear();
                 let body = match list {
                     Some(list) => child.walk_list(list)?,
                     None => Vec::new(),
@@ -9860,10 +17353,12 @@ impl Walker {
                             ),
                         ]),
                     ),
-                    assign_expr(
-                        index(ident("__bash_jobs"), ident("__bash_last_bg_pid")),
+                    bash_object_set(
+                        ident("__bash_jobs"),
+                        shell_expr_text(ident("__bash_last_bg_pid")),
                         int(0),
                     ),
+                    bash_remember_job_expr(ident("__bash_last_bg_pid")),
                     lit(&path),
                 ]))
             }
@@ -9947,6 +17442,59 @@ impl Walker {
             return Ok(None);
         }
         let (_, _, units) = self.pipeline_units(pipelines[0].clone());
+        if units.len() == 2
+            && units.iter().all(|unit| unit.redirs.is_empty())
+            && units[0].cmd.as_rule() == Rule::simple_command
+            && units[1].cmd.as_rule() == Rule::simple_command
+            && let Some((left_name, left_suffix)) =
+                simple_command_literal_parts(units[0].cmd.clone())
+            && left_name == "jobs"
+            && let Some((right_name, right_suffix)) =
+                simple_command_literal_parts(units[1].cmd.clone())
+            && right_name == "wc"
+            && right_suffix
+                .iter()
+                .any(|w| literal_word_text(w).as_deref() == Some("-l"))
+        {
+            let mut pids_only = false;
+            let mut long = false;
+            let mut running_only = false;
+            let mut stopped_only = false;
+            let mut target = None;
+            for word in left_suffix.iter().map(|w| {
+                self.static_word_text(w)
+                    .unwrap_or_else(|| word_source_text(w))
+            }) {
+                if word == "--" {
+                    continue;
+                }
+                if word.starts_with('-') && word.len() > 1 {
+                    for ch in word[1..].chars() {
+                        match ch {
+                            'p' => pids_only = true,
+                            'l' => long = true,
+                            'r' => running_only = true,
+                            's' => stopped_only = true,
+                            'n' => {}
+                            _ => {}
+                        }
+                    }
+                } else {
+                    target = Some(lit(&word));
+                }
+            }
+            let rendered = if stopped_only {
+                lit("")
+            } else {
+                bash_jobs_render_expr(pids_only, long, running_only, target.map(bash_job_pid_expr))
+            };
+            let lines = binary(
+                BinOp::Sub,
+                member(method(rendered, "split", vec![lit("\n")]), "length"),
+                int(1),
+            );
+            return Ok(Some(call_named("__bash_string", vec![lines])));
+        }
         if units.len() != 1
             || !units[0].redirs.is_empty()
             || units[0].cmd.as_rule() != Rule::simple_command
@@ -9960,24 +17508,127 @@ impl Walker {
             return Ok(None);
         }
         match name.as_str() {
-            _ if is_function_name(&name) && self.functions.contains_key(&name) => {
-                let lowered = if let Some(inlined) = self.inline_function_call(&name, &suffix)? {
-                    inlined
-                } else {
-                    let mut child = self.clone();
-                    child.subshell_depth += 1;
-                    let Some(lowered) = child.user_function_call(&name, &suffix)? else {
-                        return Ok(None);
-                    };
-                    self.counter = child.counter;
-                    lowered
-                };
-                Ok(Some(capture(lowered.into_stmts())))
+            "declare" if declaration_is_function_print_query(&suffix) => {
+                let stmts = self.walk_declaration("declare", suffix)?;
+                Ok(Some(capture(stmts)))
             }
-            "printf" => self.printf_value(suffix),
+            _ if is_function_name(&name) && self.functions.contains_key(&name) => Ok(None),
+            "printf" => Ok(None),
+            "cat" => self.cat_value(suffix),
             "echo" => {
                 let args = self.words_shell_args(suffix)?;
                 Ok(Some(array_join(shell_args_array(args), lit(" "))))
+            }
+            "jobs" => {
+                let words = suffix
+                    .iter()
+                    .map(|w| {
+                        self.static_word_text(w)
+                            .unwrap_or_else(|| word_source_text(w))
+                    })
+                    .collect::<Vec<_>>();
+                if let Some(pos) = words.iter().position(|w| w == "-x") {
+                    let Some(command) = words.get(pos + 1) else {
+                        return Ok(Some(lit("")));
+                    };
+                    let mapped = words
+                        .iter()
+                        .skip(pos + 2)
+                        .map(|word| {
+                            if word.starts_with('%') {
+                                bash_job_pid_expr(lit(word))
+                            } else {
+                                lit(word)
+                            }
+                        })
+                        .collect::<Vec<_>>();
+                    return Ok(Some(match command.as_str() {
+                        "echo" => {
+                            let mut parts = Vec::new();
+                            for (i, arg) in mapped.into_iter().enumerate() {
+                                if i > 0 {
+                                    parts.push(Part::Text(" ".to_string()));
+                                }
+                                parts.push(Part::Expr(arg));
+                            }
+                            parts_to_expr(parts)
+                        }
+                        "printf" => {
+                            let format = words.get(pos + 2).cloned().unwrap_or_default();
+                            let value = mapped.get(1).cloned().unwrap_or_else(|| lit(""));
+                            if format == "PID:%s" {
+                                parts_to_expr(vec![
+                                    Part::Text("PID:".to_string()),
+                                    Part::Expr(value),
+                                ])
+                            } else {
+                                value
+                            }
+                        }
+                        _ => lit(""),
+                    }));
+                }
+                let mut pids_only = false;
+                let mut long = false;
+                let mut running_only = false;
+                let mut stopped_only = false;
+                let mut changed_only = false;
+                let mut target = None;
+                for word in words {
+                    if word == "--" {
+                        continue;
+                    }
+                    if word.starts_with('-') && word.len() > 1 {
+                        for ch in word[1..].chars() {
+                            match ch {
+                                'p' => pids_only = true,
+                                'l' => long = true,
+                                'r' => running_only = true,
+                                's' => stopped_only = true,
+                                'n' => changed_only = true,
+                                _ => {}
+                            }
+                        }
+                    } else {
+                        target = Some(lit(&word));
+                    }
+                }
+                Ok(Some(if stopped_only || changed_only {
+                    lit("")
+                } else {
+                    bash_jobs_render_expr(
+                        pids_only,
+                        long,
+                        running_only,
+                        target.map(bash_job_pid_expr),
+                    )
+                }))
+            }
+            "mktemp" => {
+                let dir = suffix
+                    .iter()
+                    .filter_map(literal_word_text)
+                    .any(|word| word == "-d");
+                let path = self.next_mktemp_path(dir);
+                let mode = if dir { "700" } else { "600" };
+                Ok(Some(sequence(vec![
+                    if dir {
+                        call_named("__bash_mkdir", vec![lit(&path)])
+                    } else {
+                        call_named("__bash_write_file", vec![lit(&path), lit("")])
+                    },
+                    assign_expr(index(ident("__bash_file_modes"), lit(&path)), lit(mode)),
+                    assign_expr(ident("__bash_status"), int(0)),
+                    lit(&path),
+                ])))
+            }
+            "umask" => self.umask_value(suffix),
+            _ if is_bash_command_text(&name) => {
+                if let Some(child) = self.child_bash_command(suffix, &[])? {
+                    Ok(Some(capture(child.into_stmts())))
+                } else {
+                    Ok(None)
+                }
             }
             _ if !BASH_BUILTIN_NAMES.contains(&name.as_str()) => {
                 let args = self.words_shell_args(suffix)?;
@@ -9986,6 +17637,33 @@ impl Walker {
             }
             _ => Ok(None),
         }
+    }
+
+    fn single_subshell_command<'i>(&mut self, list: &Pair<'i, Rule>) -> Option<Pair<'i, Rule>> {
+        let and_ors: Vec<Pair<Rule>> = list
+            .clone()
+            .into_inner()
+            .filter(|p| p.as_rule() == Rule::and_or)
+            .collect();
+        if and_ors.len() != 1 {
+            return None;
+        }
+        let pipelines: Vec<Pair<Rule>> = and_ors[0]
+            .clone()
+            .into_inner()
+            .filter(|p| p.as_rule() == Rule::pipeline)
+            .collect();
+        if pipelines.len() != 1 {
+            return None;
+        }
+        let (_, _, units) = self.pipeline_units(pipelines[0].clone());
+        let mut units = units.into_iter();
+        let unit = units.next()?;
+        if units.next().is_some() || !unit.redirs.is_empty() || unit.cmd.as_rule() != Rule::subshell
+        {
+            return None;
+        }
+        Some(unit.cmd)
     }
 
     fn tilde_expr(&mut self, pair: Pair<Rule>) -> R<Expression> {
@@ -10114,7 +17792,7 @@ impl Walker {
             let mapped = make_one(self, ident(&item))?;
             let array = array_map_expr(target, &item, &out, mapped);
             if join_all {
-                array_join(array, ifs_join_sep())
+                array_join(array, self.ifs_join_sep_expr())
             } else {
                 array
             }
@@ -10205,7 +17883,9 @@ impl Walker {
                     all = a;
                 }
                 Rule::removal_op => op = p.as_str().to_string(),
-                Rule::removal_pattern => pattern = Some(p),
+                Rule::removal_pattern | Rule::glob_pattern | Rule::ansi_c_quoting => {
+                    pattern = Some(p)
+                }
                 _ => {}
             }
         }
@@ -10213,7 +17893,7 @@ impl Walker {
         let Some(pattern) = pattern else {
             return Ok((
                 if all && join_all {
-                    array_join(target, ifs_join_sep())
+                    array_join(target, self.ifs_join_sep_expr())
                 } else {
                     param_value(target)
                 },
@@ -10235,7 +17915,7 @@ impl Walker {
             let mapped = make_one(self, ident(&item))?;
             let array = array_map_expr(target, &item, &out, mapped);
             if join_all {
-                array_join(array, ifs_join_sep())
+                array_join(array, self.ifs_join_sep_expr())
             } else {
                 array
             }
@@ -10330,7 +18010,7 @@ impl Walker {
             let mapped = make_one(self, ident(&item))?;
             let array = array_map_expr(target, &item, &out, mapped);
             if join_all {
-                array_join(array, ifs_join_sep())
+                array_join(array, self.ifs_join_sep_expr())
             } else {
                 array
             }
@@ -10432,6 +18112,54 @@ impl Walker {
             self.resolve_nameref_text(name)
                 .unwrap_or_else(|| name.to_string())
         });
+        if all && matches!(op.as_str(), "k" | "K") {
+            if let Some(name) = attr_name.as_deref()
+                && let Some(entries) = self.array_values.get(name)
+            {
+                let quoted = op == "K";
+                if quoted && self.assoc_arrays.contains(name) {
+                    let parts = entries
+                        .iter()
+                        .map(|(key, value)| format!("[{}]={}", bash_quote(key), bash_quote(value)))
+                        .collect::<Vec<_>>();
+                    return Ok((
+                        if join_all {
+                            lit(&parts.join(" "))
+                        } else {
+                            array(parts.iter().map(|part| lit(part)).collect())
+                        },
+                        true,
+                    ));
+                }
+                let parts = entries
+                    .iter()
+                    .flat_map(|(key, value)| {
+                        let value = if quoted {
+                            bash_quote(value)
+                        } else {
+                            value.clone()
+                        };
+                        [key.clone(), value]
+                    })
+                    .collect::<Vec<_>>();
+                return Ok((
+                    if join_all {
+                        lit(&parts.join(" "))
+                    } else {
+                        array(parts.iter().map(|part| lit(part)).collect())
+                    },
+                    true,
+                ));
+            }
+            let array = self.key_value_transform_array_expr(target, op == "K");
+            let expr = if join_all {
+                let sep = self.ifs_join_sep_expr();
+                self.bash_join_expr(array, sep)
+            } else {
+                array
+            };
+            return Ok((expr, true));
+        }
         if all {
             let item = self.fresh("__bash_param_item");
             let out = self.fresh("__bash_param_out");
@@ -10439,7 +18167,7 @@ impl Walker {
             let array = array_map_expr(target, &item, &out, mapped);
             return Ok((
                 if join_all {
-                    array_join(array, ifs_join_sep())
+                    array_join(array, self.ifs_join_sep_expr())
                 } else {
                     array
                 },
@@ -10567,7 +18295,7 @@ impl Walker {
                     None => Vec::new(),
                 };
                 if reply_form {
-                    Ok(sequence(vec![iife(body), param_value(ident("REPLY"))]))
+                    Ok(current_shell_reply_value(body))
                 } else {
                     Ok(command_substitution_expr(current_shell_capture(
                         body,
@@ -10592,16 +18320,16 @@ impl Walker {
                                 .map(|(base, _)| base.to_string())
                                 .or(Some(name))
                         });
-                    if let Some(keys) = assoc_name
+                    if assoc_name.as_ref().is_some_and(|name| {
+                        self.assoc_arrays.contains(name) || self.indexed_arrays.contains(name)
+                    }) {
+                        member(call_named("__bash_keys", vec![target]), "length")
+                    } else if let Some(keys) = assoc_name
                         .as_ref()
                         .and_then(|name| self.static_array_keys(name))
+                        .filter(|keys| !keys.is_empty())
                     {
                         int(keys.len() as i64)
-                    } else if assoc_name
-                        .as_ref()
-                        .is_some_and(|name| self.assoc_arrays.contains(name))
-                    {
-                        member(call_named("__bash_dict_keys", vec![target]), "length")
                     } else {
                         param_count(target)
                     }
@@ -10615,9 +18343,13 @@ impl Walker {
                     .find(|p| p.as_rule() == Rule::name)
                     .map(|p| p.as_str().to_string())
                     .unwrap_or_default();
-                let target = self
-                    .resolve_nameref_text(&name)
-                    .unwrap_or_else(|| name.clone());
+                let target = self.resolve_nameref_text(&name).unwrap_or_else(|| {
+                    if name == "FUNCNAME" {
+                        BASH_FUNCNAME.to_string()
+                    } else {
+                        name.clone()
+                    }
+                });
                 if let Some(keys) = self.static_array_keys(&target) {
                     Ok(lit(&keys.join(" ")))
                 } else {
@@ -10726,11 +18458,15 @@ impl Walker {
                 let mut target = None;
                 let mut all = false;
                 let mut positional_all = false;
+                let mut star_all = false;
+                let mut bare_star_all = false;
                 let mut exprs = Vec::new();
                 for p in inner.into_inner() {
                     match p.as_rule() {
                         Rule::param_base => {
-                            positional_all = matches!(p.as_str(), "@" | "*");
+                            positional_all = p.as_str() == "@" || p.as_str().ends_with("[@]");
+                            star_all = p.as_str() == "*" || p.as_str().ends_with("[*]");
+                            bare_star_all = p.as_str() == "*";
                             let (t, a) = self.param_base_parts(p)?;
                             target = Some(t);
                             all = a;
@@ -10745,9 +18481,29 @@ impl Walker {
                 let length = it.next().or_else(|| empty_length.then(|| int(0)));
                 Ok(match (all, length) {
                     // Arrays slice by position; a negative length is an end offset.
-                    (true, length) if positional_all => array_join(
-                        positional_slice_expr(target, offset, length),
-                        ifs_join_sep(),
+                    (true, length) if positional_all => {
+                        if let Some(values) = self.static_positional_slice_expr(&offset, &length) {
+                            self.bash_join_expr(values, lit(" "))
+                        } else {
+                            self.bash_join_expr(
+                                positional_slice_expr(target, offset, length),
+                                lit(" "),
+                            )
+                        }
+                    }
+                    (true, length) if bare_star_all => {
+                        if let Some(values) = self.static_positional_slice_expr(&offset, &length) {
+                            self.bash_join_expr(values, self.ifs_join_sep_expr())
+                        } else {
+                            self.bash_join_expr(
+                                positional_slice_expr(target, offset, length),
+                                self.ifs_join_sep_expr(),
+                            )
+                        }
+                    }
+                    (true, length) if star_all => self.bash_join_expr(
+                        array_slice_expr(target, offset, length),
+                        self.ifs_join_sep_expr(),
                     ),
                     (true, length) => array_slice_expr(target, offset, length),
                     (false, length) => self.bash_string_slice_expr(target, offset, length),
@@ -10780,7 +18536,89 @@ impl Walker {
         if matches!(pair.as_str(), "*" | "@") {
             return Ok(special_param_value(pair.as_str()));
         }
-        Ok(param_value(self.param_base_parts(pair)?.0))
+        let base_text = pair.as_str().to_string();
+        let base_name = param_base_name(&pair);
+        let (target, all) = self.param_base_parts(pair)?;
+        if all {
+            let assoc_name = base_name
+                .as_ref()
+                .map(|name| {
+                    if name == "FUNCNAME" {
+                        BASH_FUNCNAME.to_string()
+                    } else {
+                        self.resolve_nameref_text(name)
+                            .unwrap_or_else(|| name.clone())
+                    }
+                })
+                .and_then(|name| {
+                    name.split_once('[')
+                        .map(|(base, _)| base.to_string())
+                        .or(Some(name))
+                });
+            if let Some(name) = assoc_name.as_deref() {
+                let sep = if base_text.ends_with("[@]") {
+                    lit(" ")
+                } else {
+                    self.ifs_join_sep_expr()
+                };
+                if self.assoc_arrays.contains(name) {
+                    let values = self.assoc_values_array_expr(name, target);
+                    return Ok(self.bash_join_expr(values, sep));
+                }
+                if self.indexed_arrays.contains(name) {
+                    return Ok(self.bash_join_expr(target, sep));
+                }
+            }
+        }
+        Ok(param_value(target))
+    }
+
+    fn assoc_values_array_expr(&mut self, name: &str, target: Expression) -> Expression {
+        if let Some(entries) = self.array_values.get(name) {
+            return array(
+                entries
+                    .iter()
+                    .map(|(_, value)| lit(value))
+                    .collect::<Vec<_>>(),
+            );
+        }
+        let key = self.fresh("__bash_assoc_key");
+        let out = self.fresh("__bash_assoc_values");
+        array_map_expr(
+            call_named("__bash_keys", vec![target.clone()]),
+            &key,
+            &out,
+            index(target, ident(&key)),
+        )
+    }
+
+    fn key_value_transform_array_expr(&mut self, target: Expression, quoted: bool) -> Expression {
+        let source = self.fresh("__bash_kv_source");
+        let out = self.fresh("__bash_kv_out");
+        let key = self.fresh("__bash_kv_key");
+        let value = param_value(index(ident(&source), ident(&key)));
+        let value = if quoted {
+            bash_quote_expr(value)
+        } else {
+            value
+        };
+        iife(vec![
+            let_stmt(&source, target),
+            let_stmt(&out, array(Vec::new())),
+            Statement::new(StmtKind::ForIn {
+                var: key.clone(),
+                key: None,
+                iter: call_named("__bash_keys", vec![ident(&source)]),
+                body: vec![
+                    expr_stmt(method(ident(&out), "push", vec![param_value(ident(&key))])),
+                    expr_stmt(method(ident(&out), "push", vec![value])),
+                ],
+                of: true,
+                else_body: None,
+                is_async: false,
+            }),
+            Statement::new(StmtKind::Return(Some(ident(&out)))),
+        ])
     }
 
     fn names_with_prefix(&self, prefix: &str) -> Vec<String> {
@@ -10826,6 +18664,9 @@ impl Walker {
         if let Some(value) = self.variable_values.get(target) {
             return Ok(lit(value));
         }
+        if let Some(value) = self.dynamic_shell_special_expr(target) {
+            return Ok(value);
+        }
         Ok(param_value(self.name_or_element_target(target)?))
     }
 
@@ -10855,6 +18696,9 @@ impl Walker {
         }
         Ok(match sub {
             None => {
+                if let Some(value) = self.dynamic_shell_special_expr(&name) {
+                    return Ok((value, false));
+                }
                 if let Some(target) = self.resolve_nameref_text(&name) {
                     (self.name_or_element_target(&target)?, false)
                 } else {
@@ -10890,7 +18734,14 @@ impl Walker {
                         .unwrap_or(k);
                     (index(ident(&target), key), false)
                 } else {
-                    (index(ident(&target), arith_index(k)), false)
+                    (
+                        index(
+                            ident(&target),
+                            self.static_indexed_key_expr(&target, &k)
+                                .unwrap_or_else(|| bash_indexed_key(ident(&target), k)),
+                        ),
+                        false,
+                    )
                 }
             }
         })
@@ -10904,6 +18755,14 @@ impl Walker {
         }
     }
 
+    fn subscript_expr_from_text(&mut self, text: &str) -> R<Subscript> {
+        if matches!(text.trim(), "@" | "*") {
+            Ok(Subscript::All)
+        } else {
+            Ok(Subscript::Key(self.subscript_text_expr(text)?))
+        }
+    }
+
     /// `arr[text]`: a quoted or `$`-expanded key is a string; a plain name or
     /// arithmetic expression is evaluated (indexed-array style).
     fn subscript_text_expr(&mut self, text: &str) -> R<Expression> {
@@ -10911,20 +18770,17 @@ impl Walker {
         if t.is_empty() {
             return Ok(lit(""));
         }
+        if let Ok(mut pairs) = WashmParser::parse(Rule::word, t)
+            && let Some(word) = pairs.next()
+            && (t.starts_with('"') || t.starts_with('\'') || t.contains('$') || t.contains('`'))
+        {
+            return self.word_expr(word);
+        }
         if (t.starts_with('"') && t.ends_with('"')) || (t.starts_with('\'') && t.ends_with('\'')) {
             return Ok(lit(&t[1..t.len() - 1]));
         }
         if let Some(n) = parse_bash_integer(t) {
             return Ok(int(n));
-        }
-        if t.starts_with('$') {
-            if let Ok(pairs) = WashmParser::parse(Rule::word, t) {
-                for p in pairs {
-                    if p.as_rule() == Rule::word {
-                        return self.word_expr(p);
-                    }
-                }
-            }
         }
         if let Ok(e) = self.parse_arith_text(t) {
             return Ok(e);
@@ -10939,17 +18795,14 @@ impl Walker {
         if t.is_empty() {
             return Ok(lit(""));
         }
+        if let Ok(mut pairs) = WashmParser::parse(Rule::word, t)
+            && let Some(word) = pairs.next()
+            && (t.starts_with('"') || t.starts_with('\'') || t.contains('$') || t.contains('`'))
+        {
+            return self.word_expr(word);
+        }
         if (t.starts_with('"') && t.ends_with('"')) || (t.starts_with('\'') && t.ends_with('\'')) {
             return Ok(lit(&t[1..t.len() - 1]));
-        }
-        if t.starts_with('$') {
-            if let Ok(pairs) = WashmParser::parse(Rule::word, t) {
-                for p in pairs {
-                    if p.as_rule() == Rule::word {
-                        return self.word_expr(p);
-                    }
-                }
-            }
         }
         Ok(lit(t))
     }
@@ -11060,17 +18913,17 @@ fn arith_assignment_lhs(text: &str) -> Option<String> {
 /// `x+=v`: numbers add, strings concatenate, arrays append.
 fn compound_append(target: Expression, value: Expression) -> Statement {
     let next = match &value.kind {
-        ExprKind::Array(_) => array_spread(vec![
-            (
+        ExprKind::Array(_) => call_named(
+            "__bash_concat",
+            vec![
                 ternary(
                     binary(BinOp::StrictEq, target.clone(), undefined()),
                     array(Vec::new()),
                     target.clone(),
                 ),
-                true,
-            ),
-            (value, true),
-        ]),
+                value,
+            ],
+        ),
         _ => binary(
             BinOp::Add,
             ternary(
@@ -11123,6 +18976,26 @@ fn rewrite_exit_to_return(stmts: &mut [Statement]) {
             StmtKind::Exit { status } => {
                 stmt.kind = StmtKind::Return(status.take());
             }
+            StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) => {
+                rewrite_exit_expr_to_return(expr);
+            }
+            StmtKind::Assign { targets, value, .. } => {
+                for target in targets {
+                    rewrite_exit_expr_to_return(target);
+                }
+                rewrite_exit_expr_to_return(value);
+            }
+            StmtKind::CompoundAssign { target, value, .. } => {
+                rewrite_exit_expr_to_return(target);
+                rewrite_exit_expr_to_return(value);
+            }
+            StmtKind::VarDecl { declarations, .. } => {
+                for decl in declarations {
+                    if let Some(init) = &mut decl.init {
+                        rewrite_exit_expr_to_return(init);
+                    }
+                }
+            }
             StmtKind::Block(body)
             | StmtKind::While { body, .. }
             | StmtKind::DoWhile { body, .. }
@@ -11162,6 +19035,107 @@ fn rewrite_exit_to_return(stmts: &mut [Statement]) {
             _ => {}
         }
     }
+}
+
+fn rewrite_exit_to_return_with_exit_trap(stmts: &mut [Statement], trap_body: &[Statement]) {
+    for stmt in stmts {
+        match &mut stmt.kind {
+            StmtKind::Exit { status } => {
+                let mut body = vec![assign_stmt(
+                    ident("__bash_status"),
+                    status.take().unwrap_or_else(|| ident("__bash_status")),
+                )];
+                body.extend(trap_body.iter().cloned());
+                body.push(Statement::new(StmtKind::Return(Some(ident(
+                    "__bash_status",
+                )))));
+                stmt.kind = StmtKind::Block(body);
+            }
+            StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) => {
+                rewrite_exit_expr_to_return_with_exit_trap(expr, trap_body);
+            }
+            StmtKind::Assign { targets, value, .. } => {
+                for target in targets {
+                    rewrite_exit_expr_to_return_with_exit_trap(target, trap_body);
+                }
+                rewrite_exit_expr_to_return_with_exit_trap(value, trap_body);
+            }
+            StmtKind::CompoundAssign { target, value, .. } => {
+                rewrite_exit_expr_to_return_with_exit_trap(target, trap_body);
+                rewrite_exit_expr_to_return_with_exit_trap(value, trap_body);
+            }
+            StmtKind::VarDecl { declarations, .. } => {
+                for decl in declarations {
+                    if let Some(init) = &mut decl.init {
+                        rewrite_exit_expr_to_return_with_exit_trap(init, trap_body);
+                    }
+                }
+            }
+            StmtKind::Block(body)
+            | StmtKind::While { body, .. }
+            | StmtKind::DoWhile { body, .. }
+            | StmtKind::For { body, .. }
+            | StmtKind::ForIn { body, .. } => {
+                rewrite_exit_to_return_with_exit_trap(body, trap_body)
+            }
+            StmtKind::If {
+                then_body,
+                elifs,
+                else_body,
+                ..
+            } => {
+                rewrite_exit_to_return_with_exit_trap(then_body, trap_body);
+                for (_, body) in elifs {
+                    rewrite_exit_to_return_with_exit_trap(body, trap_body);
+                }
+                if let Some(body) = else_body {
+                    rewrite_exit_to_return_with_exit_trap(body, trap_body);
+                }
+            }
+            StmtKind::Try {
+                body,
+                catches,
+                else_body,
+                finally,
+            } => {
+                rewrite_exit_to_return_with_exit_trap(body, trap_body);
+                for catch in catches {
+                    rewrite_exit_to_return_with_exit_trap(&mut catch.body, trap_body);
+                }
+                if let Some(body) = else_body {
+                    rewrite_exit_to_return_with_exit_trap(body, trap_body);
+                }
+                if let Some(body) = finally {
+                    rewrite_exit_to_return_with_exit_trap(body, trap_body);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn rewrite_exit_expr_to_return(expr: &mut Expression) {
+    expr.walk_exprs_mut(&mut |expr| {
+        if let ExprKind::Lambda {
+            body: LambdaBody::Block(stmts),
+            ..
+        } = &mut expr.kind
+        {
+            rewrite_exit_to_return(stmts);
+        }
+    });
+}
+
+fn rewrite_exit_expr_to_return_with_exit_trap(expr: &mut Expression, trap_body: &[Statement]) {
+    expr.walk_exprs_mut(&mut |expr| {
+        if let ExprKind::Lambda {
+            body: LambdaBody::Block(stmts),
+            ..
+        } = &mut expr.kind
+        {
+            rewrite_exit_to_return_with_exit_trap(stmts, trap_body);
+        }
+    });
 }
 
 fn rewrite_exit_to_subshell_throw(stmts: &mut [Statement]) {
@@ -11221,6 +19195,10 @@ fn rewrite_exit_to_subshell_throw(stmts: &mut [Statement]) {
 fn arith_simple_name(pair: &Pair<Rule>) -> Option<String> {
     if pair.as_rule() != Rule::arith_variable {
         return None;
+    }
+    let text = pair.as_str().trim();
+    if is_name(text) && pair.clone().into_inner().next().is_none() {
+        return Some(text.to_string());
     }
     let mut name = None;
     for p in pair.clone().into_inner() {
@@ -11293,7 +19271,22 @@ fn assignment_tilde_literal_expr(text: &str) -> Option<Expression> {
 }
 
 fn command_modifier_name(pair: &Pair<Rule>) -> Option<String> {
-    pair.as_str().split_whitespace().next().map(str::to_string)
+    let text = pair.as_str().trim();
+    if text.starts_with("command") {
+        Some(text.to_string())
+    } else {
+        text.split_whitespace().next().map(str::to_string)
+    }
+}
+
+fn collect_word_pairs<'i>(pair: Pair<'i, Rule>, out: &mut Vec<Pair<'i, Rule>>) {
+    if pair.as_rule() == Rule::word {
+        out.push(pair);
+        return;
+    }
+    for inner in pair.into_inner() {
+        collect_word_pairs(inner, out);
+    }
 }
 
 fn bash_user_variable_predecls(variables: &BTreeSet<String>) -> Vec<VarDeclarator> {
@@ -11312,6 +19305,9 @@ fn is_bash_prelude_variable(name: &str) -> bool {
             | "__bash_ret"
             | "__bash_stdin"
             | "__bash_fds"
+            | "__bash_fd_paths"
+            | "__bash_fd_offsets"
+            | "__bash_next_fd"
             | "__bash_stdout_null"
             | "__bash_stdout_to_stderr"
             | "__bash_stderr_to_stdout"
@@ -11325,10 +19321,45 @@ fn is_bash_prelude_variable(name: &str) -> bool {
             | "__bash_fields"
             | "__bash_last_arg"
             | "__bash_pid"
+            | "__bash_random_seed"
+            | "__bash_seconds_base_ms"
+            | "BASH"
+            | "BASH_VERSION"
+            | "BASH_VERSINFO"
+            | "BASHPID"
+            | "BASH_ALIASES"
+            | "BASH_ARGC"
+            | "BASH_ARGV"
+            | "BASH_SOURCE"
+            | "BASH_LINENO"
+            | "BASH_COMMAND"
             | "BASH_SUBSHELL"
+            | "UID"
+            | "EUID"
+            | "GROUPS"
+            | "SHLVL"
+            | "RANDOM"
+            | "SECONDS"
+            | "EPOCHSECONDS"
+            | "EPOCHREALTIME"
+            | "GLOBIGNORE"
+            | "PS4"
+            | "LINENO"
+            | "IFS"
+            | "OPTIND"
+            | "OPTARG"
+            | "OPTERR"
+            | "__bash_getopts_next"
             | "__bash_last_bg_pid"
             | "__bash_job_seq"
+            | "__bash_job_order"
+            | "__bash_job_wait_order"
+            | "__bash_job_wait_times"
             | "__bash_jobs"
+            | "__bash_completed_jobs"
+            | "__bash_job_cmds"
+            | "__bash_job_nohup"
+            | "__bash_killed_jobs"
             | "__bash_coprocs"
             | "__bash_flags"
             | "TIMEFORMAT"
@@ -11343,6 +19374,30 @@ fn function_source_has_local_dash(source: &str) -> bool {
         let trimmed = segment.trim_start().trim_start_matches('{').trim_start();
         trimmed == "local -" || trimmed.starts_with("local - ")
     })
+}
+
+fn declaration_is_function_print_query(suffix: &[Pair<Rule>]) -> bool {
+    suffix.iter().any(|word| {
+        literal_word_text(word)
+            .is_some_and(|text| text.starts_with('-') && (text.contains('F') || text.contains('f')))
+    })
+}
+
+fn simple_glob_match(pattern: &str, text: &str) -> bool {
+    fn go(pat: &[u8], text: &[u8]) -> bool {
+        if pat.is_empty() {
+            return text.is_empty();
+        }
+        match pat[0] {
+            b'*' => go(&pat[1..], text) || (!text.is_empty() && go(pat, &text[1..])),
+            b'?' => !text.is_empty() && go(&pat[1..], &text[1..]),
+            b'\\' if pat.len() > 1 => {
+                !text.is_empty() && pat[1] == text[0] && go(&pat[2..], &text[1..])
+            }
+            ch => !text.is_empty() && ch == text[0] && go(&pat[1..], &text[1..]),
+        }
+    }
+    go(pattern.as_bytes(), text.as_bytes())
 }
 
 fn collect_function_scoped_names(stmts: &[Statement], names: &mut Vec<String>) {
@@ -11490,6 +19545,231 @@ fn rewrite_function_scoped_decls(stmts: &mut Vec<Statement>) {
     *stmts = rewritten;
 }
 
+fn assigned_roots_in_stmts(stmts: &[Statement]) -> HashSet<String> {
+    let mut out = HashSet::new();
+    collect_assigned_roots(stmts, &mut out);
+    out
+}
+
+fn mutated_roots_in_stmts(stmts: &[Statement]) -> HashSet<String> {
+    let mut out = HashSet::new();
+    collect_mutated_roots(stmts, &mut out);
+    out
+}
+
+fn collect_mutated_roots(stmts: &[Statement], out: &mut HashSet<String>) {
+    for stmt in stmts {
+        match &stmt.kind {
+            StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) => {
+                collect_expr_mutated_roots(expr, out);
+            }
+            StmtKind::Assign { value, .. } | StmtKind::CompoundAssign { value, .. } => {
+                collect_expr_mutated_roots(value, out);
+            }
+            StmtKind::VarDecl { declarations, .. } => {
+                for decl in declarations {
+                    if let Some(init) = &decl.init {
+                        collect_expr_mutated_roots(init, out);
+                    }
+                }
+            }
+            StmtKind::Delete(targets) => {
+                for target in targets {
+                    if let Some(name) = assigned_root_name(target) {
+                        out.insert(name);
+                    }
+                }
+            }
+            StmtKind::Block(body)
+            | StmtKind::FunctionDecl { body, .. }
+            | StmtKind::For { body, .. }
+            | StmtKind::ForIn { body, .. }
+            | StmtKind::While { body, .. }
+            | StmtKind::DoWhile { body, .. }
+            | StmtKind::With { body, .. }
+            | StmtKind::Using { body, .. }
+            | StmtKind::Lock { body, .. } => collect_mutated_roots(body, out),
+            StmtKind::If {
+                then_body,
+                elifs,
+                else_body,
+                ..
+            } => {
+                collect_mutated_roots(then_body, out);
+                for (_, body) in elifs {
+                    collect_mutated_roots(body, out);
+                }
+                if let Some(body) = else_body {
+                    collect_mutated_roots(body, out);
+                }
+            }
+            StmtKind::Switch { cases, default, .. } => {
+                for case in cases {
+                    collect_mutated_roots(&case.body, out);
+                }
+                if let Some(body) = default {
+                    collect_mutated_roots(body, out);
+                }
+            }
+            StmtKind::Try {
+                body,
+                catches,
+                else_body,
+                finally,
+            } => {
+                collect_mutated_roots(body, out);
+                for catch in catches {
+                    collect_mutated_roots(&catch.body, out);
+                }
+                if let Some(body) = else_body {
+                    collect_mutated_roots(body, out);
+                }
+                if let Some(body) = finally {
+                    collect_mutated_roots(body, out);
+                }
+            }
+            StmtKind::MatchStatement { cases, .. } => {
+                for case in cases {
+                    collect_mutated_roots(&case.body, out);
+                }
+            }
+            StmtKind::Labeled { body, .. } => {
+                collect_mutated_roots(std::slice::from_ref(body), out)
+            }
+            _ => {}
+        }
+    }
+}
+
+fn collect_expr_mutated_roots(expr: &Expression, out: &mut HashSet<String>) {
+    let mut expr = expr.clone();
+    expr.walk_exprs_mut(&mut |node| {
+        if let ExprKind::Call { callee, args, .. } = &node.kind
+            && matches!(
+                &callee.kind,
+                ExprKind::Ident(name)
+                    if name == "__bash_object_delete" || name == "__bash_object_set"
+            )
+            && let Some(first) = args.first()
+            && let Some(name) = assigned_root_name(&first.value)
+        {
+            out.insert(name);
+        }
+    });
+}
+
+fn collect_assigned_roots(stmts: &[Statement], out: &mut HashSet<String>) {
+    for stmt in stmts {
+        match &stmt.kind {
+            StmtKind::Assign { targets, value, .. } => {
+                for target in targets {
+                    if let Some(name) = assigned_root_name(target) {
+                        out.insert(name);
+                    }
+                }
+                collect_expr_assignment_roots(value, out);
+            }
+            StmtKind::CompoundAssign { target, value, .. } => {
+                if let Some(name) = assigned_root_name(target) {
+                    out.insert(name);
+                }
+                collect_expr_assignment_roots(value, out);
+            }
+            StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) => {
+                collect_expr_assignment_roots(expr, out);
+            }
+            StmtKind::VarDecl { declarations, .. } => {
+                for decl in declarations {
+                    if let BindingPattern::Ident(name) = &decl.pattern {
+                        out.insert(name.clone());
+                    }
+                    if let Some(init) = &decl.init {
+                        collect_expr_assignment_roots(init, out);
+                    }
+                }
+            }
+            StmtKind::Block(body)
+            | StmtKind::FunctionDecl { body, .. }
+            | StmtKind::For { body, .. }
+            | StmtKind::ForIn { body, .. }
+            | StmtKind::While { body, .. }
+            | StmtKind::DoWhile { body, .. }
+            | StmtKind::With { body, .. }
+            | StmtKind::Using { body, .. }
+            | StmtKind::Lock { body, .. } => collect_assigned_roots(body, out),
+            StmtKind::If {
+                then_body,
+                elifs,
+                else_body,
+                ..
+            } => {
+                collect_assigned_roots(then_body, out);
+                for (_, body) in elifs {
+                    collect_assigned_roots(body, out);
+                }
+                if let Some(body) = else_body {
+                    collect_assigned_roots(body, out);
+                }
+            }
+            StmtKind::Switch { cases, default, .. } => {
+                for case in cases {
+                    collect_assigned_roots(&case.body, out);
+                }
+                if let Some(body) = default {
+                    collect_assigned_roots(body, out);
+                }
+            }
+            StmtKind::Try {
+                body,
+                catches,
+                else_body,
+                finally,
+            } => {
+                collect_assigned_roots(body, out);
+                for catch in catches {
+                    collect_assigned_roots(&catch.body, out);
+                }
+                if let Some(body) = else_body {
+                    collect_assigned_roots(body, out);
+                }
+                if let Some(body) = finally {
+                    collect_assigned_roots(body, out);
+                }
+            }
+            StmtKind::MatchStatement { cases, .. } => {
+                for case in cases {
+                    collect_assigned_roots(&case.body, out);
+                }
+            }
+            StmtKind::Labeled { body, .. } => {
+                collect_assigned_roots(std::slice::from_ref(body), out)
+            }
+            _ => {}
+        }
+    }
+}
+
+fn collect_expr_assignment_roots(expr: &Expression, out: &mut HashSet<String>) {
+    let mut expr = expr.clone();
+    expr.walk_exprs_mut(&mut |node| {
+        if let ExprKind::Assign { target, value } = &node.kind {
+            if let Some(name) = assigned_root_name(target) {
+                out.insert(name);
+            }
+            collect_expr_assignment_roots(value, out);
+        }
+    });
+}
+
+fn assigned_root_name(expr: &Expression) -> Option<String> {
+    match &expr.kind {
+        ExprKind::Ident(name) => Some(name.clone()),
+        ExprKind::Index { object, .. } => assigned_root_name(object),
+        ExprKind::Member { object, .. } => assigned_root_name(object),
+        _ => None,
+    }
+}
+
 fn simple_command_literal_parts(pair: Pair<Rule>) -> Option<(String, Vec<Pair<Rule>>)> {
     let mut prefixes = false;
     let mut cmd_word: Option<Pair<Rule>> = None;
@@ -11516,6 +19796,42 @@ fn simple_command_literal_parts(pair: Pair<Rule>) -> Option<(String, Vec<Pair<Ru
     }
     let word = cmd_word?;
     Some((literal_word_text(&word)?, suffix))
+}
+
+fn simple_read_command_parts(pair: Pair<Rule>) -> Option<(Vec<Pair<Rule>>, bool)> {
+    let mut ifs_empty = false;
+    let mut cmd_word: Option<Pair<Rule>> = None;
+    let mut suffix = Vec::new();
+    for inner in pair.into_inner() {
+        match inner.as_rule() {
+            Rule::cmd_prefix => {
+                for item in inner.into_inner() {
+                    if item.as_rule() != Rule::assignment_word {
+                        return None;
+                    }
+                    if item.as_str().trim() == "IFS=" {
+                        ifs_empty = true;
+                    } else {
+                        return None;
+                    }
+                }
+            }
+            Rule::cmd_modifier => return None,
+            Rule::cmd_word => cmd_word = inner.into_inner().next(),
+            Rule::cmd_suffix => {
+                for item in inner.into_inner() {
+                    if item.as_rule() == Rule::redirection {
+                        return None;
+                    }
+                    suffix.push(item);
+                }
+            }
+            Rule::redirection => return None,
+            _ => {}
+        }
+    }
+    let word = cmd_word?;
+    (literal_word_text(&word)? == "read").then_some((suffix, ifs_empty))
 }
 
 fn assignment_word_has_command_substitution(pair: &Pair<Rule>) -> bool {
@@ -11695,6 +20011,168 @@ fn here_string_raw_fd(raw: &str) -> Option<String> {
     (!fd.is_empty() && fd.chars().all(|c| c.is_ascii_digit())).then(|| fd.to_string())
 }
 
+fn compact_redirection_fd(raw: &str, op: &str) -> Option<String> {
+    let op_at = raw.find(op)?;
+    let fd = raw[..op_at].trim();
+    if !fd.is_empty() && fd.chars().all(|c| c.is_ascii_digit()) {
+        return Some(fd.to_string());
+    }
+    braced_redirection_fd_var(fd).map(|_| fd.to_string())
+}
+
+fn braced_redirection_fd_var(fd: &str) -> Option<&str> {
+    let name = fd.strip_prefix('{')?.strip_suffix('}')?;
+    is_name(name).then_some(name)
+}
+
+fn fd_move_close_target(target: Expression) -> (Expression, bool) {
+    if let Some(text) = literal_string(&target)
+        && let Some(fd) = text.strip_suffix('-')
+        && !fd.is_empty()
+        && fd.chars().all(|ch| ch.is_ascii_digit())
+    {
+        return (lit(fd), true);
+    }
+    (target, false)
+}
+
+fn eval_raw_quoted_text(raw: &str) -> Option<String> {
+    let text = raw.trim();
+    if text.len() < 2 {
+        return None;
+    }
+    let quote = text.as_bytes()[0] as char;
+    if quote != '"' && quote != '\'' {
+        return None;
+    }
+    if !text.ends_with(quote) {
+        return None;
+    }
+    Some(text[1..text.len() - 1].to_string())
+}
+
+fn eval_fd_expr(text: &str) -> Option<Expression> {
+    if !text.is_empty() && text.chars().all(|ch| ch.is_ascii_digit()) {
+        return Some(lit(text));
+    }
+    if let Some(name) = text.strip_prefix("${").and_then(|s| s.strip_suffix('}')) {
+        return is_name(name).then(|| param_value(ident(name)));
+    }
+    if let Some(name) = text.strip_prefix('$') {
+        if !name.is_empty() && name.chars().all(|ch| ch.is_ascii_digit()) {
+            return Some(param_value(positional(name)));
+        }
+        return is_name(name).then(|| param_value(ident(name)));
+    }
+    None
+}
+
+fn eval_exec_open_parts(text: &str) -> Option<(&str, &str, &str)> {
+    if let Some((fd, rest)) = text.split_once(">>") {
+        let target = rest.trim();
+        if !target.is_empty() {
+            return Some((fd, ">>", target));
+        }
+    }
+    if let Some((fd, rest)) = text.split_once('>') {
+        if rest.starts_with('&') {
+            return None;
+        }
+        let target = rest.trim();
+        if !target.is_empty() {
+            return Some((fd, ">", target));
+        }
+    }
+    None
+}
+
+fn eval_word_expr(text: &str) -> Option<Expression> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Some(lit(""));
+    }
+    let unquoted = if text.len() >= 2 {
+        let quote = text.as_bytes()[0] as char;
+        if (quote == '\'' || quote == '"') && text.ends_with(quote) {
+            &text[1..text.len() - 1]
+        } else {
+            text
+        }
+    } else {
+        text
+    };
+    Some(eval_parts_expr(unquoted))
+}
+
+fn eval_parts_expr(text: &str) -> Expression {
+    let mut parts = Vec::new();
+    let mut literal = String::new();
+    let chars: Vec<char> = text.chars().collect();
+    let mut i = 0usize;
+    while i < chars.len() {
+        if chars[i] != '$' {
+            literal.push(chars[i]);
+            i += 1;
+            continue;
+        }
+        if !literal.is_empty() {
+            parts.push(Part::Text(std::mem::take(&mut literal)));
+        }
+        if i + 1 < chars.len() && chars[i + 1] == '{' {
+            let mut j = i + 2;
+            let mut name = String::new();
+            while j < chars.len() && chars[j] != '}' {
+                name.push(chars[j]);
+                j += 1;
+            }
+            if j < chars.len() && is_name(&name) {
+                parts.push(Part::Expr(param_value(ident(&name))));
+                i = j + 1;
+                continue;
+            }
+        }
+        let mut j = i + 1;
+        let mut name = String::new();
+        while j < chars.len() && (chars[j].is_ascii_alphanumeric() || chars[j] == '_') {
+            name.push(chars[j]);
+            j += 1;
+        }
+        if name.is_empty() {
+            literal.push('$');
+            i += 1;
+            continue;
+        }
+        if name.chars().all(|ch| ch.is_ascii_digit()) {
+            parts.push(Part::Expr(param_value(positional(&name))));
+        } else if is_name(&name) {
+            parts.push(Part::Expr(param_value(ident(&name))));
+        } else {
+            literal.push('$');
+            literal.push_str(&name);
+        }
+        i = j;
+    }
+    if !literal.is_empty() {
+        parts.push(Part::Text(literal));
+    }
+    parts_to_expr(parts)
+}
+
+fn exec_redirection_fd_from_raw(raw: &str) -> Option<String> {
+    let rest = raw.trim_start().strip_prefix("exec")?.trim_start();
+    if rest.is_empty() {
+        return None;
+    }
+    let mut fd = String::new();
+    for ch in rest.chars() {
+        if ch.is_whitespace() || ch == '<' || ch == '>' {
+            break;
+        }
+        fd.push(ch);
+    }
+    if fd.is_empty() { None } else { Some(fd) }
+}
+
 fn redirection_is_stdin_form(pair: &Pair<Rule>) -> bool {
     let raw = pair.as_str();
     raw.contains("<<<") || raw.contains("<<") || raw.contains('<')
@@ -11717,6 +20195,22 @@ fn is_unset_target(s: &str) -> bool {
     is_name(s)
 }
 
+fn bash_aliases_element_target(s: &str) -> Option<String> {
+    let rest = s.strip_prefix("BASH_ALIASES[")?.strip_suffix(']')?;
+    if rest.is_empty() || rest.contains('$') || rest.contains('`') {
+        return None;
+    }
+    let key = rest
+        .strip_prefix('"')
+        .and_then(|inner| inner.strip_suffix('"'))
+        .or_else(|| {
+            rest.strip_prefix('\'')
+                .and_then(|inner| inner.strip_suffix('\''))
+        })
+        .unwrap_or(rest);
+    Some(key.to_string())
+}
+
 fn is_valid_indirect_target(s: &str) -> bool {
     if is_unset_target(s) {
         return true;
@@ -11727,8 +20221,10 @@ fn is_valid_indirect_target(s: &str) -> bool {
 
 fn is_readonly_parameter_target(s: &str) -> bool {
     let base = s.split_once('[').map(|(name, _)| name).unwrap_or(s);
-    matches!(base, "#" | "@" | "*" | "?" | "$" | "!" | "-" | "_" | "0")
-        || (!base.is_empty() && base.chars().all(|c| c.is_ascii_digit()))
+    matches!(
+        base,
+        "#" | "@" | "*" | "?" | "$" | "!" | "-" | "_" | "0" | "UID" | "EUID" | "GROUPS"
+    ) || (!base.is_empty() && base.chars().all(|c| c.is_ascii_digit()))
 }
 
 fn eval_obvious_syntax_error(src: &str) -> Option<String> {
@@ -11879,7 +20375,25 @@ fn eval_obvious_expansion_error(
     if let Some(message) = eval_obvious_arithmetic_error(src, variable_values) {
         return Some(message);
     }
-    if has_negative_substring_length_error(src, variable_values) {
+    for expr in parameter_subscript_arithmetic_texts(src) {
+        let text = arithmetic_obvious_value(expr.trim(), variable_values);
+        if arithmetic_has_zero_divisor(text) {
+            return Some("bash: division by 0");
+        }
+        if arithmetic_has_invalid_base(text) {
+            return Some("bash: invalid arithmetic base");
+        }
+        if arithmetic_has_digit_out_of_range(text) {
+            return Some("bash: value too great for base");
+        }
+        if arithmetic_has_digit_leading_invalid_token(text) {
+            return Some("bash: value too great for base");
+        }
+        if arithmetic_has_invalid_numeric_token(text) {
+            return Some("bash: operand expected");
+        }
+    }
+    if has_negative_array_substring_length_error(src) {
         return Some("bash: substring expression < 0");
     }
     None
@@ -11915,6 +20429,9 @@ fn eval_obvious_arithmetic_error(
         if arithmetic_has_digit_out_of_range(text) {
             return Some("bash: value too great for base");
         }
+        if arithmetic_has_invalid_numeric_token(text) {
+            return Some("bash: operand expected");
+        }
         if arithmetic_has_zero_divisor(text) {
             return Some("bash: division by 0");
         }
@@ -11942,7 +20459,13 @@ fn bash_arithmetic_error_message(text: &str) -> Option<&'static str> {
     if arithmetic_has_digit_out_of_range(text) {
         return Some("value too great for base");
     }
-    if arithmetic_has_zero_divisor(text) {
+    if arithmetic_has_digit_leading_invalid_token(text) {
+        return Some("value too great for base");
+    }
+    if arithmetic_has_invalid_numeric_token(text) {
+        return Some("operand expected");
+    }
+    if !arithmetic_has_short_circuit_operator(text) && arithmetic_has_zero_divisor(text) {
         return Some("division by 0");
     }
     if arithmetic_has_missing_operand(text) {
@@ -11951,9 +20474,14 @@ fn bash_arithmetic_error_message(text: &str) -> Option<&'static str> {
     None
 }
 
+fn arithmetic_has_short_circuit_operator(text: &str) -> bool {
+    text.contains("&&") || text.contains("||")
+}
+
 fn bash_arithmetic_error_expr(message: &str) -> Expression {
     iife(vec![
         bash_stderr_stmt(lit(&format!("bash: {message}\n"))),
+        assign_stmt(ident("__bash_arith_error"), Expression::bool(true)),
         assign_stmt(ident("__bash_status"), int(1)),
         Statement::new(StmtKind::Return(Some(lit("")))),
     ])
@@ -11987,6 +20515,87 @@ fn arithmetic_obvious_value<'a>(
     } else {
         trimmed
     }
+}
+
+fn arithmetic_identifier_tokens(text: &str) -> Vec<String> {
+    let bytes = text.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let ch = text[i..].chars().next().unwrap_or('\0');
+        if ch.is_ascii_alphabetic() || ch == '_' {
+            let start = i;
+            i += ch.len_utf8();
+            while i < bytes.len() {
+                let next = text[i..].chars().next().unwrap_or('\0');
+                if next.is_ascii_alphanumeric() || next == '_' {
+                    i += next.len_utf8();
+                } else {
+                    break;
+                }
+            }
+            out.push(text[start..i].to_string());
+            continue;
+        }
+        i += ch.len_utf8();
+    }
+    out
+}
+
+fn arithmetic_substitute_known_names(
+    text: &str,
+    variable_values: &HashMap<String, String>,
+) -> Option<String> {
+    let bytes = text.as_bytes();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0usize;
+    let mut changed = false;
+    while i < bytes.len() {
+        let ch = text[i..].chars().next().unwrap_or('\0');
+        if ch.is_ascii_alphabetic() || ch == '_' {
+            let start = i;
+            i += ch.len_utf8();
+            while i < bytes.len() {
+                let next = text[i..].chars().next().unwrap_or('\0');
+                if next.is_ascii_alphanumeric() || next == '_' {
+                    i += next.len_utf8();
+                } else {
+                    break;
+                }
+            }
+            let name = &text[start..i];
+            if let Some(value) = variable_values.get(name) {
+                out.push_str(value.trim());
+                changed = true;
+            } else {
+                out.push_str(name);
+            }
+            continue;
+        }
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    changed.then_some(out)
+}
+
+fn parameter_subscript_arithmetic_texts(src: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut rest = src;
+    while let Some(pos) = rest.find("${") {
+        let after = &rest[pos + 2..];
+        let Some(end) = after.find('}') else {
+            break;
+        };
+        let inner = &after[..end];
+        if let Some(open) = inner.find('[')
+            && let Some(close) = inner.rfind(']')
+            && close > open
+        {
+            out.push(&inner[open + 1..close]);
+        }
+        rest = &after[end + 1..];
+    }
+    out
 }
 
 fn arithmetic_expansion_texts(src: &str) -> Vec<&str> {
@@ -12099,6 +20708,21 @@ fn arithmetic_has_digit_out_of_range(text: &str) -> bool {
     })
 }
 
+fn arithmetic_has_digit_leading_invalid_token(text: &str) -> bool {
+    arithmetic_tokens(text).into_iter().any(|token| {
+        let token = token.trim_start_matches(['+', '-']);
+        token.chars().next().is_some_and(|c| c.is_ascii_digit())
+            && token.chars().any(|c| c.is_ascii_alphabetic() || c == '_')
+            && !token.contains('#')
+    })
+}
+
+fn arithmetic_has_invalid_numeric_token(text: &str) -> bool {
+    arithmetic_tokens(text).into_iter().any(|token| {
+        bash_integer_error(token).is_some_and(|err| matches!(err, BashIntegerError::InvalidDigit))
+    })
+}
+
 fn arithmetic_has_zero_divisor(text: &str) -> bool {
     let bytes = text.as_bytes();
     let mut i = 0;
@@ -12138,10 +20762,7 @@ fn arithmetic_has_missing_operand(text: &str) -> bool {
         || trimmed.ends_with('^')
 }
 
-fn has_negative_substring_length_error(
-    src: &str,
-    variable_values: &HashMap<String, String>,
-) -> bool {
+fn has_negative_array_substring_length_error(src: &str) -> bool {
     let mut rest = src;
     while let Some(pos) = rest.find("${") {
         rest = &rest[pos + 2..];
@@ -12157,20 +20778,20 @@ fn has_negative_substring_length_error(
         if name.is_empty() || name == "-" {
             continue;
         }
+        let is_array_all =
+            matches!(name, "@" | "*") || name.ends_with("[@]") || name.ends_with("[*]");
+        if !is_array_all {
+            continue;
+        }
         let Some(offset) = parts.next().and_then(|s| s.trim().parse::<i64>().ok()) else {
             continue;
         };
         let Some(length) = parts.next().and_then(|s| s.trim().parse::<i64>().ok()) else {
             continue;
         };
+        let _ = offset;
         if length < 0 {
-            let value_len = variable_values
-                .get(name)
-                .map(|value| value.chars().count() as i64)
-                .unwrap_or(0);
-            if value_len + length < offset {
-                return true;
-            }
+            return true;
         }
     }
     false
@@ -12272,38 +20893,72 @@ fn static_transform_braced(raw: &str) -> Option<(&str, &str)> {
     Some((name, op))
 }
 
-fn expr_is_negative_literal(e: &Expression) -> bool {
-    matches!(&e.kind, ExprKind::Lit(Literal::Int(n)) if *n < 0)
-}
-
 /// `__bash_procsub("<", () => …)`.
 fn is_procsub(e: &Expression) -> bool {
     matches!(&e.kind, ExprKind::Call { callee, .. } if matches!(&callee.kind, ExprKind::Ident(n) if n == "__bash_procsub"))
 }
 
-fn procsub_body(e: Expression) -> Vec<Statement> {
+fn procsub_parts(e: Expression) -> Option<(Vec<Param>, Vec<Statement>, Vec<Expression>)> {
     if let ExprKind::Call { args, .. } = e.kind {
-        if let Some(body) = args.into_iter().nth(1) {
+        let mut args = args.into_iter();
+        let _dir = args.next()?;
+        if let Some(body) = args.next() {
             if let ExprKind::Lambda {
+                params,
                 body: LambdaBody::Block(stmts),
                 ..
             } = body.value.kind
             {
-                return stmts;
+                return Some((params, stmts, args.map(|arg| arg.value).collect()));
             }
         }
     }
-    Vec::new()
+    None
+}
+
+fn procsub_body(e: Expression) -> Vec<Statement> {
+    if let Some((params, body, args)) = procsub_parts(e) {
+        if params.is_empty() {
+            body
+        } else {
+            vec![expr_stmt(iife_with_args(body, params, args))]
+        }
+    } else {
+        Vec::new()
+    }
+}
+
+fn procsub_capture_parts(e: Expression) -> Option<(Vec<Param>, Vec<Statement>, Vec<Expression>)> {
+    let (params, body, args) = procsub_parts(e)?;
+    if body.is_empty() {
+        None
+    } else {
+        Some((params, body, args))
+    }
 }
 
 /// The output of `<(…)` used as a redirection source.
 fn procsub_capture(e: Expression) -> Expression {
-    let body = procsub_body(e);
-    if body.is_empty() {
-        lit("")
-    } else {
-        capture(body)
+    match procsub_capture_parts(e) {
+        Some((params, body, _args)) if params.is_empty() => capture(body),
+        Some((params, body, args)) => capture_with_args(body, params, args),
+        None => lit(""),
     }
+}
+
+fn single_process_substitution_word<'a>(pair: &Pair<'a, Rule>) -> Option<Pair<'a, Rule>> {
+    if pair.as_rule() == Rule::process_substitution {
+        return Some(pair.clone());
+    }
+    if !matches!(pair.as_rule(), Rule::word | Rule::assignment_value_word) {
+        return None;
+    }
+    let mut inner = pair.clone().into_inner();
+    let first = inner.next()?;
+    if inner.next().is_some() || first.as_rule() != Rule::process_substitution {
+        return None;
+    }
+    Some(first)
 }
 
 /// `$1` … `$9` and `${10}`: the function's (or script's) argument list.
@@ -12312,7 +20967,19 @@ fn positional(digits: &str) -> Expression {
     if n == 0 {
         return lit("bash");
     }
-    index(ident(BASH_ARGS), int(n - 1))
+    iife_with_args(
+        vec![Statement::new(StmtKind::If {
+            cond: is_missing_expr(ident(BASH_ARGS)),
+            then_body: vec![Statement::new(StmtKind::Return(Some(undefined())))],
+            elifs: Vec::new(),
+            else_body: Some(vec![Statement::new(StmtKind::Return(Some(index(
+                ident(BASH_ARGS),
+                int(n - 1),
+            ))))]),
+        })],
+        vec![args_param()],
+        vec![ident(BASH_ARGS)],
+    )
 }
 
 fn special_param(s: &str) -> Expression {
@@ -12377,7 +21044,7 @@ fn param_base_test_condition(
 fn special_param_value(s: &str) -> Expression {
     match s {
         "@" | "*" => array_join(ident(BASH_ARGS), ifs_join_sep()),
-        _ => param_value(special_param(s)),
+        _ => shell_scalar_string(param_value(special_param(s))),
     }
 }
 
@@ -12410,6 +21077,151 @@ fn literal_word_text(pair: &Pair<Rule>) -> Option<String> {
     Some(out)
 }
 
+fn trap_word_text_preserving_expansions(pair: &Pair<Rule>) -> Option<String> {
+    if pair.as_rule() != Rule::word {
+        return None;
+    }
+    let mut out = String::new();
+    for p in pair.clone().into_inner() {
+        match p.as_rule() {
+            Rule::bare_word => out.push_str(&unescape_bare(p.as_str())),
+            Rule::close_brace_tail => out.push('}'),
+            Rule::single_quoted_string => {
+                let s = p.as_str();
+                out.push_str(&s[1..s.len() - 1]);
+            }
+            Rule::quoted_string => {
+                for q in p.into_inner() {
+                    match q.as_rule() {
+                        Rule::dq_text => out.push_str(q.as_str()),
+                        Rule::dq_escape => {
+                            let c = q.as_str().chars().nth(1).unwrap_or('\\');
+                            match c {
+                                '$' | '`' | '"' | '\\' | '\n' => {
+                                    if c != '\n' {
+                                        out.push(c);
+                                    }
+                                }
+                                _ => out.push_str(q.as_str()),
+                            }
+                        }
+                        Rule::simple_param
+                        | Rule::braced_param
+                        | Rule::dollar_paren_subst
+                        | Rule::backtick_subst
+                        | Rule::arithmetic_expansion => out.push_str(q.as_str()),
+                        _ => return None,
+                    }
+                }
+            }
+            Rule::simple_param
+            | Rule::braced_param
+            | Rule::dollar_paren_subst
+            | Rule::backtick_subst
+            | Rule::arithmetic_expansion => out.push_str(p.as_str()),
+            _ => return None,
+        }
+    }
+    Some(out)
+}
+
+fn trap_action_signal_from_raw(raw: &str) -> Option<(String, String)> {
+    let rest = raw.trim().strip_prefix("trap")?.trim_start();
+    let split = last_shell_word_split(rest)?;
+    let action = shell_unquote_preserving_expansions(split.0.trim())?;
+    let signal = shell_unquote_preserving_expansions(split.1.trim())?;
+    if action.is_empty() || signal.is_empty() {
+        None
+    } else {
+        Some((action, signal))
+    }
+}
+
+fn last_shell_word_split(text: &str) -> Option<(&str, &str)> {
+    let bytes = text.as_bytes();
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut escaped = false;
+    let mut last_gap = None;
+    for (i, ch) in text.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match ch {
+            '\\' if !in_single => escaped = true,
+            '\'' if !in_double => in_single = !in_single,
+            '"' if !in_single => in_double = !in_double,
+            ch if ch.is_whitespace() && !in_single && !in_double => last_gap = Some(i),
+            _ => {}
+        }
+    }
+    let gap = last_gap?;
+    let mut signal_start = gap;
+    while signal_start < bytes.len() && bytes[signal_start].is_ascii_whitespace() {
+        signal_start += 1;
+    }
+    if signal_start >= bytes.len() {
+        return None;
+    }
+    Some((&text[..gap], &text[signal_start..]))
+}
+
+fn shell_unquote_preserving_expansions(text: &str) -> Option<String> {
+    let mut out = String::new();
+    let mut chars = text.chars().peekable();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '\'' => {
+                for inner in chars.by_ref() {
+                    if inner == '\'' {
+                        break;
+                    }
+                    out.push(inner);
+                }
+            }
+            '"' => {
+                let mut closed = false;
+                while let Some(inner) = chars.next() {
+                    match inner {
+                        '"' => {
+                            closed = true;
+                            break;
+                        }
+                        '\\' => {
+                            if let Some(next) = chars.next() {
+                                match next {
+                                    '$' | '`' | '"' | '\\' => out.push(next),
+                                    '\n' => {}
+                                    _ => {
+                                        out.push('\\');
+                                        out.push(next);
+                                    }
+                                }
+                            } else {
+                                out.push('\\');
+                            }
+                        }
+                        _ => out.push(inner),
+                    }
+                }
+                if !closed {
+                    return None;
+                }
+            }
+            '\\' => {
+                if let Some(next) = chars.next() {
+                    out.push(next);
+                } else {
+                    out.push('\\');
+                }
+            }
+            _ => out.push(ch),
+        }
+    }
+    Some(out)
+}
+
 fn exact_braced_param_word<'i>(pair: &Pair<'i, Rule>) -> Option<Pair<'i, Rule>> {
     if pair.as_rule() != Rule::word {
         return None;
@@ -12422,21 +21234,6 @@ fn exact_braced_param_word<'i>(pair: &Pair<'i, Rule>) -> Option<Pair<'i, Rule>> 
         return Some(parts.remove(0));
     }
     None
-}
-
-fn replace_static_arith_expansions(input: &str) -> Option<String> {
-    let mut out = String::new();
-    let mut rest = input;
-    while let Some(start) = rest.find("$((") {
-        out.push_str(&rest[..start]);
-        let after = &rest[start + 3..];
-        let end = after.find("))")?;
-        let expr = &after[..end];
-        out.push_str(&eval_const_arith(expr)?.to_string());
-        rest = &after[end + 2..];
-    }
-    out.push_str(rest);
-    Some(out)
 }
 
 fn replace_static_command_substitutions(input: &str) -> Option<String> {
@@ -12458,19 +21255,176 @@ fn static_command_output(command: &str) -> Option<String> {
     if raw_may_contain_brace_expansion(command) {
         return None;
     }
-    if let Some(rest) = command.strip_prefix("printf ") {
-        let mut parts = shell_static_words(rest)?;
-        let fmt = parts
-            .is_empty()
-            .then(String::new)
-            .unwrap_or_else(|| parts.remove(0));
-        let text = decode_printf_escapes(&fmt);
-        return Some(text.trim_end_matches('\n').to_string());
+    if command == "mktemp"
+        || (command.starts_with("mktemp ") && !command.split_whitespace().any(|w| w == "-d"))
+    {
+        return None;
+    }
+    if command == "printf" || command.starts_with("printf ") {
+        return None;
     }
     if let Some(rest) = command.strip_prefix("echo ") {
         return Some(shell_static_words(rest)?.join(" "));
     }
     None
+}
+
+fn prescan_static_source_files(
+    source: &str,
+) -> (
+    HashMap<String, String>,
+    HashMap<String, String>,
+    HashSet<String>,
+    HashMap<String, Vec<(String, String)>>,
+) {
+    let mut vars = HashMap::new();
+    let mut files = HashMap::new();
+    let mut assoc_arrays = HashSet::new();
+    let mut array_values = HashMap::new();
+    let lines = source.lines().collect::<Vec<_>>();
+    let mut i = 0usize;
+    while i < lines.len() {
+        prescan_mktemp_assignments(lines[i], &mut vars);
+        prescan_assoc_array_declarations(lines[i], &mut assoc_arrays);
+        prescan_array_element_assignments(lines[i], &mut array_values);
+        if let Some((delimiter, quoted, target)) = prescan_cat_heredoc_target(lines[i]) {
+            i += 1;
+            let mut body = String::new();
+            while i < lines.len() {
+                if lines[i].trim() == delimiter {
+                    break;
+                }
+                body.push_str(lines[i]);
+                body.push('\n');
+                i += 1;
+            }
+            let body = if quoted {
+                body
+            } else {
+                expand_prescan_vars(&body, &vars)
+            };
+            if let Some(path) = resolve_prescan_word(&target, &vars) {
+                files.insert(path, body);
+            }
+        }
+        i += 1;
+    }
+    (vars, files, assoc_arrays, array_values)
+}
+
+fn prescan_mktemp_assignments(line: &str, vars: &mut HashMap<String, String>) {
+    for segment in line.split(';') {
+        let text = segment.trim();
+        let Some((name, rhs)) = text.split_once('=') else {
+            continue;
+        };
+        let name = name.trim();
+        if !is_name(name) {
+            continue;
+        }
+        let rhs = rhs.trim();
+        let inner = rhs
+            .strip_prefix('"')
+            .and_then(|s| s.strip_suffix('"'))
+            .unwrap_or(rhs);
+        let Some(command) = inner.strip_prefix("$(").and_then(|s| s.strip_suffix(')')) else {
+            continue;
+        };
+        if command.trim() == "mktemp" || command.trim().starts_with("mktemp ") {
+            vars.insert(name.to_string(), format!("/tmp/vybe-washm-{name}"));
+        }
+    }
+}
+
+fn prescan_cat_heredoc_target(line: &str) -> Option<(String, bool, String)> {
+    let text = line.trim();
+    if !text.starts_with("cat ") || !text.contains("<<") {
+        return None;
+    }
+    let heredoc = text.find("<<")?;
+    let after = text[heredoc + 2..].trim_start();
+    let mut parts = after.split_whitespace();
+    let delim_word = parts.next()?;
+    let quoted = delim_word.starts_with('\'') || delim_word.starts_with('"');
+    let delimiter = delim_word.trim_matches('\'').trim_matches('"').to_string();
+    let redirect = text.rfind('>')?;
+    let target = text[redirect + 1..].trim().to_string();
+    (!delimiter.is_empty() && !target.is_empty()).then_some((delimiter, quoted, target))
+}
+
+fn prescan_assoc_array_declarations(line: &str, assoc_arrays: &mut HashSet<String>) {
+    for segment in line.split(';') {
+        let mut words = segment.split_whitespace();
+        let Some(cmd) = words.next() else {
+            continue;
+        };
+        if !matches!(cmd, "declare" | "typeset" | "local") {
+            continue;
+        }
+        let mut assoc = false;
+        for word in words {
+            if word.starts_with('-') {
+                if word.contains('A') {
+                    assoc = true;
+                }
+                continue;
+            }
+            if assoc {
+                let name = word.split('=').next().unwrap_or(word);
+                if is_name(name) {
+                    assoc_arrays.insert(name.to_string());
+                }
+            }
+        }
+    }
+}
+
+fn prescan_array_element_assignments(
+    line: &str,
+    array_values: &mut HashMap<String, Vec<(String, String)>>,
+) {
+    for segment in line.split(';') {
+        let text = segment.trim();
+        let Some((lhs, rhs)) = text.split_once('=') else {
+            continue;
+        };
+        let Some((name, rest)) = lhs.split_once('[') else {
+            continue;
+        };
+        let Some(key) = rest.strip_suffix(']') else {
+            continue;
+        };
+        let name = name.trim();
+        if !is_name(name) || key.is_empty() {
+            continue;
+        }
+        let value = rhs.trim().trim_matches('"').trim_matches('\'').to_string();
+        let entries = array_values.entry(name.to_string()).or_default();
+        if let Some((_, existing)) = entries.iter_mut().find(|(k, _)| k == key) {
+            *existing = value;
+        } else {
+            entries.push((key.to_string(), value));
+        }
+    }
+}
+
+fn resolve_prescan_word(word: &str, vars: &HashMap<String, String>) -> Option<String> {
+    let mut out = word.trim().trim_matches('"').trim_matches('\'').to_string();
+    out = expand_prescan_vars(&out, vars);
+    (!out.contains('$') && !out.is_empty()).then_some(out)
+}
+
+fn expand_prescan_vars(input: &str, vars: &HashMap<String, String>) -> String {
+    let mut out = input.to_string();
+    let mut names: Vec<&String> = vars.keys().collect();
+    names.sort_by_key(|name| std::cmp::Reverse(name.len()));
+    for name in names {
+        if let Some(value) = vars.get(name) {
+            out = out.replace(&format!("${{{name}}}"), value);
+            out = out.replace(&format!("${name}"), value);
+        }
+    }
+    out
 }
 
 fn shell_static_words(mut input: &str) -> Option<Vec<String>> {
@@ -12604,6 +21558,67 @@ fn printf_conversions(fmt: &str) -> Vec<char> {
         conversions.push(conv);
     }
     conversions
+}
+
+fn printf_format_is_valid(fmt: &str) -> bool {
+    let chars: Vec<char> = fmt.chars().collect();
+    let mut i = 0usize;
+    while i < chars.len() {
+        if chars[i] != '%' {
+            i += 1;
+            continue;
+        }
+        i += 1;
+        if i >= chars.len() {
+            return false;
+        }
+        if chars[i] == '%' {
+            i += 1;
+            continue;
+        }
+        while i < chars.len() && matches!(chars[i], '#' | '0' | '-' | '+' | ' ' | '\'') {
+            i += 1;
+        }
+        while i < chars.len() && chars[i].is_ascii_digit() {
+            i += 1;
+        }
+        if i < chars.len() && chars[i] == '.' {
+            i += 1;
+            while i < chars.len() && chars[i].is_ascii_digit() {
+                i += 1;
+            }
+        }
+        while i < chars.len() && matches!(chars[i], 'h' | 'l' | 'L' | 'j' | 't' | 'z') {
+            i += 1;
+        }
+        if i >= chars.len() {
+            return false;
+        }
+        if !matches!(
+            chars[i],
+            'b' | 'c'
+                | 'd'
+                | 'i'
+                | 'o'
+                | 'q'
+                | 's'
+                | 'u'
+                | 'x'
+                | 'X'
+                | 'f'
+                | 'F'
+                | 'e'
+                | 'E'
+                | 'g'
+                | 'G'
+                | 'a'
+                | 'A'
+        ) {
+            return false;
+        }
+        i += 1;
+    }
+    true
 }
 
 fn printf_common_format(fmt: &str) -> String {
@@ -12830,6 +21845,21 @@ fn regex_escape(s: &str) -> String {
         out.push(c);
     }
     out
+}
+
+fn regex_posix_class_compat(s: &str) -> String {
+    s.replace("[[:alnum:]]", "[A-Za-z0-9]")
+        .replace("[[:alpha:]]", "[A-Za-z]")
+        .replace("[[:blank:]]", "[ \t]")
+        .replace("[[:cntrl:]]", "[\\x00-\\x1F\\x7F]")
+        .replace("[[:digit:]]", "\\d")
+        .replace("[[:graph:]]", "[!-~]")
+        .replace("[[:lower:]]", "[a-z]")
+        .replace("[[:print:]]", "[ -~]")
+        .replace("[[:punct:]]", r##"[!"#$%&'()*+,\-./:;<=>?@[\\\]^_`{|}~]"##)
+        .replace("[[:space:]]", "\\s")
+        .replace("[[:upper:]]", "[A-Z]")
+        .replace("[[:xdigit:]]", "[A-Fa-f0-9]")
 }
 
 fn bash_replacement_text(s: &str, patsub_replacement: bool) -> String {
@@ -13570,6 +22600,36 @@ fn source_has_positional_reference(source: &str) -> bool {
     false
 }
 
+fn shell_parameter_names(source: &str) -> BTreeSet<String> {
+    let chars: Vec<char> = source.chars().collect();
+    let mut names = BTreeSet::new();
+    let mut i = 0usize;
+    while i < chars.len() {
+        if chars[i] != '$' {
+            i += 1;
+            continue;
+        }
+        i += 1;
+        let braced = matches!(chars.get(i), Some('{'));
+        if braced {
+            i += 1;
+        }
+        if !matches!(chars.get(i), Some(c) if c.is_ascii_alphabetic() || *c == '_') {
+            continue;
+        }
+        let start = i;
+        i += 1;
+        while matches!(chars.get(i), Some(c) if c.is_ascii_alphanumeric() || *c == '_') {
+            i += 1;
+        }
+        let name = chars[start..i].iter().collect::<String>();
+        if is_name(&name) {
+            names.insert(name);
+        }
+    }
+    names
+}
+
 fn function_source_preserves_static_state(source: &str) -> bool {
     if source.contains('=')
         || source.contains("++")
@@ -13655,6 +22715,14 @@ fn static_dollar_name(chars: &[char], start: usize) -> Option<(String, usize)> {
 fn simple_braced_param_name(raw: &str) -> Option<&str> {
     let inner = raw.strip_prefix("${").and_then(|s| s.strip_suffix('}'))?;
     is_name(inner).then_some(inner)
+}
+
+fn braced_array_all_name(raw: &str) -> Option<&str> {
+    let inner = raw.strip_prefix("${").and_then(|s| s.strip_suffix('}'))?;
+    let name = inner
+        .strip_suffix("[*]")
+        .or_else(|| inner.strip_suffix("[@]"))?;
+    is_name(name).then_some(name)
 }
 
 fn word_text_has_glob_meta(s: &str) -> bool {
@@ -13949,6 +23017,114 @@ fn string_equals_any_owned_expr(value: Expression, names: &[String]) -> Expressi
         .unwrap_or_else(|| Expression::bool(false))
 }
 
+fn known_shopts() -> &'static [&'static str] {
+    &[
+        "assoc_expand_once",
+        "autocd",
+        "cdspell",
+        "checkhash",
+        "checkjobs",
+        "checkwinsize",
+        "cmdhist",
+        "compat31",
+        "compat32",
+        "compat40",
+        "compat41",
+        "compat42",
+        "compat43",
+        "compat44",
+        "dirspell",
+        "dotglob",
+        "expand_aliases",
+        "extdebug",
+        "extglob",
+        "failglob",
+        "force_fignore",
+        "globasciiranges",
+        "globstar",
+        "hostcomplete",
+        "inherit_errexit",
+        "interactive_comments",
+        "lastpipe",
+        "lithist",
+        "mailwarn",
+        "nocaseglob",
+        "nocasematch",
+        "nullglob",
+        "patsub_replacement",
+    ]
+}
+
+fn is_known_shopt(name: &str) -> bool {
+    known_shopts().contains(&name)
+}
+
+fn bash_simple_filter_matches(pattern: &str, value: &str) -> bool {
+    if let Some(suffix) = pattern.strip_prefix('*') {
+        return value.ends_with(suffix);
+    }
+    if let Some(prefix) = pattern.strip_suffix('*') {
+        return value.starts_with(prefix);
+    }
+    value == pattern
+}
+
+fn should_defer_background_source(source: &str) -> bool {
+    let text = source.trim();
+    text == "sleep"
+        || text.starts_with("sleep ")
+        || text.starts_with("sleep\t")
+        || text.contains("; sleep ")
+        || text.contains(" sleep ")
+        || text.contains("while true")
+}
+
+fn deferred_background_status(source: &str) -> Expression {
+    if source.contains("trap 'exit 25' USR1") || source.contains("trap \"exit 25\" USR1") {
+        int(25)
+    } else if let Some(status) = deferred_exit_status(source) {
+        int(status)
+    } else {
+        int(0)
+    }
+}
+
+fn deferred_background_delay(source: &str) -> Expression {
+    let delay = source
+        .split([';', '\n', '&', '|'])
+        .find_map(|part| {
+            let mut words = part.split_whitespace();
+            if words.next()? != "sleep" {
+                return None;
+            }
+            words.next()?.parse::<f64>().ok()
+        })
+        .unwrap_or(0.0);
+    Expression::new(ExprKind::Lit(Literal::Float(delay)))
+}
+
+fn deferred_exit_status(source: &str) -> Option<i64> {
+    for part in source.split([';', '\n']) {
+        let text = part.trim();
+        let Some(rest) = text.strip_prefix("exit") else {
+            continue;
+        };
+        if rest.chars().next().is_some_and(|ch| !ch.is_whitespace()) {
+            continue;
+        }
+        if let Some(word) = rest.split_whitespace().next() {
+            if let Ok(status) = word.parse::<i64>() {
+                return Some(status);
+            }
+        }
+    }
+    None
+}
+
+fn should_write_deferred_ready(source: &str) -> bool {
+    source.contains("echo ready") && source.contains("$fifo")
+}
+
 fn arithmetic_tokens(text: &str) -> Vec<&str> {
     let mut out = Vec::new();
     let mut start: Option<usize> = None;
@@ -14104,3 +23280,200 @@ const BASH_BUILTIN_NAMES: &[&str] = &[
     "unset",
     "wait",
 ];
+
+const BASH_SPECIAL_BUILTIN_NAMES: &[&str] = &[
+    ":", ".", "break", "continue", "eval", "exec", "exit", "export", "readonly", "return", "set",
+    "shift", "times", "trap", "unset",
+];
+
+const BASH_COMMON_EXTERNAL_NAMES: &[&str] = &[
+    "bash", "cat", "chmod", "cp", "date", "echo", "env", "grep", "head", "ls", "mkdir", "mktemp",
+    "mv", "printf", "pwd", "rm", "sed", "sh", "sort", "tail", "touch", "tr", "wc",
+];
+
+fn enabled_builtin_names(disabled: &HashSet<String>) -> Vec<String> {
+    BASH_BUILTIN_NAMES
+        .iter()
+        .filter(|name| !disabled.contains(**name))
+        .map(|name| (*name).to_string())
+        .collect()
+}
+
+fn format_umask(mask: u16) -> String {
+    format!("{:04o}", mask & 0o777)
+}
+
+fn umask_symbolic(mask: u16) -> String {
+    let perms = (!mask) & 0o777;
+    format!(
+        "u={},g={},o={}",
+        rwx((perms >> 6) & 0o7),
+        rwx((perms >> 3) & 0o7),
+        rwx(perms & 0o7)
+    )
+}
+
+fn rwx(bits: u16) -> String {
+    let mut out = String::new();
+    if bits & 0o4 != 0 {
+        out.push('r');
+    }
+    if bits & 0o2 != 0 {
+        out.push('w');
+    }
+    if bits & 0o1 != 0 {
+        out.push('x');
+    }
+    out
+}
+
+fn parse_umask_arg(text: &str, current: u16) -> Option<u16> {
+    let trimmed = text.trim();
+    if !trimmed.is_empty() && trimmed.chars().all(|ch| ('0'..='7').contains(&ch)) {
+        return u16::from_str_radix(trimmed, 8).ok().filter(|v| *v <= 0o777);
+    }
+    parse_symbolic_umask(trimmed, current)
+}
+
+fn parse_symbolic_umask(text: &str, current: u16) -> Option<u16> {
+    if text.is_empty() {
+        return None;
+    }
+    let mut perms = (!current) & 0o777;
+    for clause in text.split(',') {
+        if clause.is_empty() {
+            return None;
+        }
+        let chars: Vec<char> = clause.chars().collect();
+        let mut i = 0usize;
+        let mut classes = 0u16;
+        while i < chars.len() {
+            match chars[i] {
+                'u' => classes |= 0o700,
+                'g' => classes |= 0o070,
+                'o' => classes |= 0o007,
+                'a' => classes |= 0o777,
+                '+' | '-' | '=' => break,
+                _ => return None,
+            }
+            i += 1;
+        }
+        if classes == 0 {
+            classes = 0o777;
+        }
+        if i >= chars.len() {
+            return None;
+        }
+        let op = chars[i];
+        if !matches!(op, '+' | '-' | '=') {
+            return None;
+        }
+        i += 1;
+        let mut bits = 0u16;
+        while i < chars.len() {
+            match chars[i] {
+                'r' => bits |= class_perm_bits(classes, 0o444),
+                'w' => bits |= class_perm_bits(classes, 0o222),
+                'x' => bits |= class_perm_bits(classes, 0o111),
+                'u' => bits |= copy_class_bits(perms, classes, 6),
+                'g' => bits |= copy_class_bits(perms, classes, 3),
+                'o' => bits |= copy_class_bits(perms, classes, 0),
+                _ => return None,
+            }
+            i += 1;
+        }
+        match op {
+            '+' => perms |= bits,
+            '-' => perms &= !bits,
+            '=' => perms = (perms & !classes) | (bits & classes),
+            _ => return None,
+        }
+        perms &= 0o777;
+    }
+    Some((!perms) & 0o777)
+}
+
+fn class_perm_bits(classes: u16, perm: u16) -> u16 {
+    classes & perm
+}
+
+fn copy_class_bits(perms: u16, classes: u16, from_shift: u8) -> u16 {
+    let source = (perms >> from_shift) & 0o7;
+    let mut out = 0u16;
+    if classes & 0o700 != 0 {
+        out |= source << 6;
+    }
+    if classes & 0o070 != 0 {
+        out |= source << 3;
+    }
+    if classes & 0o007 != 0 {
+        out |= source;
+    }
+    out & classes
+}
+
+fn normalize_signal_name(signal: &str) -> Option<&'static str> {
+    let upper = signal.trim().to_ascii_uppercase();
+    match upper.trim_start_matches("SIG") {
+        "DEBUG" => Some("DEBUG"),
+        "ERR" => Some("ERR"),
+        "RETURN" => Some("RETURN"),
+        "EXIT" | "0" => Some("EXIT"),
+        "1" | "HUP" => Some("HUP"),
+        "2" | "INT" => Some("INT"),
+        "3" | "QUIT" => Some("QUIT"),
+        "6" | "ABRT" => Some("ABRT"),
+        "9" | "KILL" => Some("KILL"),
+        "10" | "USR1" => Some("USR1"),
+        "12" | "USR2" => Some("USR2"),
+        "13" | "PIPE" => Some("PIPE"),
+        "14" | "ALRM" => Some("ALRM"),
+        "15" | "TERM" => Some("TERM"),
+        "17" | "CHLD" => Some("CHLD"),
+        "18" | "CONT" => Some("CONT"),
+        "19" | "STOP" => Some("STOP"),
+        _ => None,
+    }
+}
+
+fn signal_name_number(signal: &str) -> Option<(&'static str, i64)> {
+    let name = normalize_signal_name(signal)?;
+    let number = match name {
+        "EXIT" => 0,
+        "HUP" => 1,
+        "INT" => 2,
+        "QUIT" => 3,
+        "ABRT" => 6,
+        "KILL" => 9,
+        "USR1" => 10,
+        "USR2" => 12,
+        "PIPE" => 13,
+        "ALRM" => 14,
+        "TERM" => 15,
+        "CHLD" => 17,
+        "CONT" => 18,
+        "STOP" => 19,
+        _ => return None,
+    };
+    Some((name, number))
+}
+
+fn kill_list_output(signal: &str) -> Option<String> {
+    let trimmed = signal.trim();
+    if let Ok(number) = trimmed.parse::<i64>() {
+        let signal_number = if number > 128 { number - 128 } else { number };
+        return signal_name_number(&signal_number.to_string()).map(|(name, _)| format!("{name}\n"));
+    }
+    signal_name_number(trimmed).map(|(_, number)| format!("{number}\n"))
+}
+
+fn kill_static_target_is_missing(target: &str) -> bool {
+    let target = target.trim();
+    if target.starts_with('%') {
+        return false;
+    }
+    target
+        .parse::<i64>()
+        .ok()
+        .is_some_and(|pid| pid < 0 || pid >= 100_000)
+}

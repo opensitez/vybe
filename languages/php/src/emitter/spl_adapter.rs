@@ -755,6 +755,8 @@ pub fn emit_array_object_new(chunks: &mut [Chunk], current: usize, argc: u8, lin
             }
         }
     }
+    let construct = chunk.add_import("php:array", "newArrayObject");
+    chunk.emit_call(construct, 1, line);
 }
 
 // ── SplObjectStorage / WeakMap (ecma:map, object-identity keys) ─────────
@@ -1010,7 +1012,7 @@ fn build_map_remove_all_method(chunks: &mut Vec<Chunk>, keep_matches: bool, line
 pub fn emit_spl_objectstorage_new(
     chunks: &mut Vec<Chunk>,
     current: usize,
-    _kind: &str,
+    kind: &str,
     argc: u8,
     line: u32,
 ) {
@@ -1078,6 +1080,18 @@ pub fn emit_spl_objectstorage_new(
     let map_new_i = chunk.add_import("ecma:map".to_string(), "new".to_string());
     chunk.emit_call(map_new_i, 0, line);
     chunk.emit_op_u16(Op::LOCAL_SET, this_slot, line);
+    // Map-backed SPL instances still have their declared PHP class identity.
+    // Typed properties and instanceof use this same class stamp.
+    let type_slot = class_slots::resolve(&ClassSlot::internal("__type"), &PlainNames);
+    chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
+    chunk.emit_string_const(kind, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &type_slot,
+        ValueSource::Stack,
+        line,
+    );
     // Bind methods as named props on the Map object
     bind_methods(chunk, this_slot, binds, line);
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
@@ -1106,13 +1120,13 @@ pub fn emit_spl_pq_new(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: 
 /// methods and a private cursor stored as a named property.
 pub fn emit_array_iterator_new(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
     let binds = iterator_binds(chunks, line);
-    finish_array_iterator_instance(chunks, current, argc, binds, line);
+    finish_array_iterator_instance(chunks, current, argc, binds, "ArrayIterator", line);
 }
 
 pub fn emit_caching_iterator_new(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
     let mut binds = iterator_binds(chunks, line);
     binds.push(("getcache", build_iter_current_method(chunks, line)));
-    finish_array_iterator_instance(chunks, current, argc, binds, line);
+    finish_array_iterator_instance(chunks, current, argc, binds, "CachingIterator", line);
 }
 
 pub fn emit_append_iterator_new(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
@@ -1153,7 +1167,7 @@ pub fn emit_empty_iterator_new(chunks: &mut Vec<Chunk>, current: usize, argc: u8
 
 pub fn emit_infinite_iterator_new(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
     let binds = infinite_iterator_binds(chunks, line);
-    finish_array_iterator_instance(chunks, current, argc, binds, line);
+    finish_array_iterator_instance(chunks, current, argc, binds, "InfiniteIterator", line);
 }
 
 pub fn emit_iterator_iterator_new(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
@@ -1501,6 +1515,7 @@ fn finish_array_iterator_instance(
     current: usize,
     argc: u8,
     binds: Vec<(&'static str, usize)>,
+    type_name: &str,
     line: u32,
 ) {
     let chunk = &mut chunks[current];
@@ -1552,6 +1567,19 @@ fn finish_array_iterator_instance(
     class_slots::emit_class_set(chunk, ObjSource::Stack, &cs_slot, ValueSource::Stack, line);
 
     bind_methods(chunk, this_slot, binds, line);
-
-    chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
+    vybe_compiler::primitives::reflection::emit_stamp_type(chunk, this_slot, type_name, line);
+    vybe_compiler::primitives::reflection::emit_stamp_type_name(chunk, this_slot, type_name, line);
+    vybe_compiler::primitives::reflection::emit_stamp_kind(
+        chunk,
+        this_slot,
+        vybe_compiler::primitives::reflection::ReflectKind::Object,
+        line,
+    );
+    let _ = chunk;
+    for ancestor in [type_name, "Iterator", "Traversable"] {
+        vybe_compiler::primitives::reflection::emit_instanceof_chain(
+            chunks, current, this_slot, ancestor, line,
+        );
+    }
+    chunks[current].emit_op_u16(Op::LOCAL_GET, this_slot, line);
 }

@@ -1,6 +1,10 @@
 use super::{LuaParser, Rule};
+#[cfg(not(feature = "native-parser"))]
 use pest::Parser;
+#[cfg(not(feature = "native-parser"))]
 use pest::iterators::Pair;
+#[cfg(feature = "native-parser")]
+use vybe_parser::compat::Pair;
 use vybe_ast::*;
 
 fn to_span(pair: &Pair<Rule>) -> Span {

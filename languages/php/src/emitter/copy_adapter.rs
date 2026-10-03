@@ -82,188 +82,20 @@ fn helper_loop_end(
     chunk.patch_block(state.block_patch);
 }
 
-fn emit_string_eq_lit(chunk: &mut Chunk, slot: u16, value: &str, line: u32) {
+/// Stack: [] -> [i32 bool]. PHP arrays exclude objects such as ArrayObject,
+/// even when their implementation uses map storage.
+pub(crate) fn emit_php_arrayish_slot(chunk: &mut Chunk, slot: u16, line: u32) {
     lget(chunk, slot, line);
-    push_str(chunk, value, line);
-    call_import(chunk, "wasm:js-string", "equals", 2, line);
-}
-
-/// Stack: [] -> [i32 bool]. True for packed arrays and PHP associative arrays;
-/// false for class objects/callables/scalars.
-fn emit_php_arrayish_slot(chunk: &mut Chunk, slot: u16, line: u32) {
-    let type_slot = alloc_local(chunk);
-
-    lget(chunk, slot, line);
-    call_import(chunk, "ecma:array", "isArray", 1, line);
-    chunk.emit_if_i32(line);
-    chunk.emit_i32_const(1, line);
-    chunk.emit_else(line);
-
-    lget(chunk, slot, line);
-    vybe_compiler::primitives::instructions::recipes::is_object(chunk, line);
-    chunk.emit_if_i32(line);
-
-    lget(chunk, slot, line);
-    push_str(chunk, "__type", line);
-    chunk.emit_op(Op::ARRAY_GET, line);
-    lset(chunk, type_slot, line);
-
-    lget(chunk, type_slot, line);
-    call_import(chunk, "wasm:js-string", "test", 1, line);
-    chunk.emit_if_i32(line);
-    emit_string_eq_lit(chunk, type_slot, "Array", line);
-    emit_string_eq_lit(chunk, type_slot, "Map", line);
-    chunk.emit_op(Op::I32_OR, line);
-    chunk.emit_else(line);
-    chunk.emit_i32_const(0, line);
-    chunk.emit_end(line);
-
-    chunk.emit_else(line);
-    chunk.emit_i32_const(0, line);
-    chunk.emit_end(line);
-
-    chunk.emit_end(line);
-}
-
-fn build_copy_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
-    let helper_idx = chunks.len();
-    let mut c = create_function_chunk("__php_copy_on_assign_impl", 1);
-    c.local_count = c.local_count.max(1);
-    let value_slot = 0;
-    let out_slot = alloc_local(&mut c);
-    let entries_slot = alloc_local(&mut c);
-    let len_slot = alloc_local(&mut c);
-    let i_slot = alloc_local(&mut c);
-    let entry_slot = alloc_local(&mut c);
-    let key_slot = alloc_local(&mut c);
-    let item_slot = alloc_local(&mut c);
-    let copied_slot = alloc_local(&mut c);
-    let packed_slot = alloc_local(&mut c);
-
-    emit_php_arrayish_slot(&mut c, value_slot, line);
-    c.emit_op(Op::I32_EQZ, line);
-    c.emit_if_i32(line);
-    lget(&mut c, value_slot, line);
-    c.emit_op(Op::RETURN, line);
-    c.emit_end(line);
-
-    lget(&mut c, value_slot, line);
-    call_import(&mut c, "ecma:array", "isArray", 1, line);
-    lset(&mut c, packed_slot, line);
-    lget(&mut c, packed_slot, line);
-    c.emit_if_i32(line);
-    vybe_compiler::primitives::collections::emit_array_new_into(&mut chunks[0], &mut c, 0, line);
-    c.emit_else(line);
-    call_import(&mut c, "ecma:map", "new", 0, line);
-    c.emit_end(line);
-    lset(&mut c, out_slot, line);
-
-    lget(&mut c, packed_slot, line);
-    c.emit_if_i32(line);
-    lget(&mut c, value_slot, line);
-    vybe_compiler::primitives::collections::emit_len_into(&mut chunks[0], &mut c, line);
-    lset(&mut c, len_slot, line);
-    c.emit_i32_const(0, line);
-    lset(&mut c, i_slot, line);
-
-    let array_loop = helper_loop_start(&mut c, line);
-    lget(&mut c, i_slot, line);
-    lget(&mut c, len_slot, line);
-    c.emit_op(Op::I32_LT_S, line);
-    c.emit_op(Op::I32_EQZ, line);
-    c.emit_br_if(1, line);
-
-    lget(&mut c, value_slot, line);
-    lget(&mut c, i_slot, line);
-    call_import(&mut c, "ecma:array", "get", 2, line);
-    lset(&mut c, item_slot, line);
-
-    emit_php_arrayish_slot(&mut c, item_slot, line);
-    c.emit_if_i32(line);
-    ref_func(&mut c, helper_idx, line);
-    lget(&mut c, item_slot, line);
-    call_ref(&mut c, 1, line);
-    c.emit_else(line);
-    lget(&mut c, item_slot, line);
-    c.emit_end(line);
-    lset(&mut c, copied_slot, line);
-
-    lget(&mut c, out_slot, line);
-    lget(&mut c, copied_slot, line);
-    call_import(&mut c, "ecma:array", "push", 2, line);
-    c.emit_op(Op::DROP, line);
-
-    bump_i32(&mut c, i_slot, line);
-    helper_loop_end(&mut c, array_loop, line);
-
-    lget(&mut c, out_slot, line);
-    c.emit_op(Op::RETURN, line);
-    c.emit_end(line);
-
-    lget(&mut c, value_slot, line);
-    call_import(&mut c, "ecma:object", "entries", 1, line);
-    lset(&mut c, entries_slot, line);
-    lget(&mut c, entries_slot, line);
-    c.emit_op(Op::ARRAY_LENGTH, line);
-    lset(&mut c, len_slot, line);
-    c.emit_i32_const(0, line);
-    lset(&mut c, i_slot, line);
-
-    let loop_state = helper_loop_start(&mut c, line);
-    lget(&mut c, i_slot, line);
-    lget(&mut c, len_slot, line);
-    c.emit_op(Op::I32_LT_S, line);
-    c.emit_op(Op::I32_EQZ, line);
-    c.emit_br_if(1, line);
-
-    lget(&mut c, entries_slot, line);
-    lget(&mut c, i_slot, line);
-    c.emit_op(Op::ARRAY_GET, line);
-    lset(&mut c, entry_slot, line);
-    lget(&mut c, entry_slot, line);
-    c.emit_i32_const(0, line);
-    c.emit_op(Op::ARRAY_GET, line);
-    lset(&mut c, key_slot, line);
-    lget(&mut c, entry_slot, line);
-    c.emit_i32_const(1, line);
-    c.emit_op(Op::ARRAY_GET, line);
-    lset(&mut c, item_slot, line);
-
-    emit_php_arrayish_slot(&mut c, item_slot, line);
-    c.emit_if_i32(line);
-    ref_func(&mut c, helper_idx, line);
-    lget(&mut c, item_slot, line);
-    call_ref(&mut c, 1, line);
-    c.emit_else(line);
-    lget(&mut c, item_slot, line);
-    c.emit_end(line);
-    lset(&mut c, copied_slot, line);
-
-    lget(&mut c, packed_slot, line);
-    c.emit_if_i32(line);
-    lget(&mut c, out_slot, line);
-    lget(&mut c, copied_slot, line);
-    call_import(&mut c, "ecma:array", "push", 2, line);
-    c.emit_op(Op::DROP, line);
-    c.emit_else(line);
-    lget(&mut c, out_slot, line);
-    lget(&mut c, key_slot, line);
-    lget(&mut c, copied_slot, line);
-    call_import(&mut c, "ecma:array", "set", 3, line);
-    c.emit_op(Op::DROP, line);
-    c.emit_end(line);
-
-    bump_i32(&mut c, i_slot, line);
-    helper_loop_end(&mut c, loop_state, line);
-
-    lget(&mut c, out_slot, line);
-    c.emit_op(Op::RETURN, line);
-
-    chunks.push(c);
-    helper_idx
+    call_import(chunk, "php:array", "isArray", 1, line);
 }
 
 fn build_strict_eq_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
+    if let Some(index) = chunks
+        .iter()
+        .position(|chunk| chunk.name.as_bytes() == b"__php_strict_eq_impl")
+    {
+        return index;
+    }
     let helper_idx = chunks.len();
     let mut c = create_function_chunk("__php_strict_eq_impl", 2);
     c.local_count = c.local_count.max(2);
@@ -392,12 +224,7 @@ fn build_strict_eq_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
 }
 
 pub fn emit_php_copy_on_assign(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32) {
-    let helper_idx = build_copy_helper(chunks, line);
-    let value_slot = alloc_local(&mut chunks[current]);
-    lset(&mut chunks[current], value_slot, line);
-    ref_func(&mut chunks[current], helper_idx, line);
-    lget(&mut chunks[current], value_slot, line);
-    call_ref(&mut chunks[current], 1, line);
+    call_import(&mut chunks[current], "php:array", "copy", 1, line);
 }
 
 pub fn emit_php_strict_eq(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32) {

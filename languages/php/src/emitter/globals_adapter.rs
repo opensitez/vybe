@@ -10,8 +10,6 @@
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
 
-const PHP_GLOBALS_KEY: &str = "__vybe_php_globals";
-
 fn lget(chunk: &mut Chunk, slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
 }
@@ -42,33 +40,37 @@ fn emit_is_null_or_undefined(chunk: &mut Chunk, slot: u16, line: u32) {
 }
 
 /// Leaves the shared PHP globals object on the stack.
-fn emit_php_globals_object(chunks: &mut [Chunk], current: usize, line: u32) {
+pub fn emit_php_globals_object(chunks: &mut [Chunk], current: usize, line: u32) {
     call_import(chunks, current, "ecma:globalThis", "get", 0, line);
-    let global_this = chunks[current].alloc_scratch(1);
-    lset(&mut chunks[current], global_this, line);
-
-    lget(&mut chunks[current], global_this, line);
-    chunks[current].emit_string_const(PHP_GLOBALS_KEY, line);
-    call_import(chunks, current, "ecma:object", "get", 2, line);
-    let store = chunks[current].alloc_scratch(1);
-    lset(&mut chunks[current], store, line);
-
-    emit_is_null_or_undefined(&mut chunks[current], store, line);
-    chunks[current].emit_if(line);
-    call_import(chunks, current, "ecma:object", "new", 0, line);
-    lset(&mut chunks[current], store, line);
-    lget(&mut chunks[current], global_this, line);
-    chunks[current].emit_string_const(PHP_GLOBALS_KEY, line);
-    lget(&mut chunks[current], store, line);
-    call_import(chunks, current, "ecma:object", "set", 3, line);
-    chunks[current].emit_op(Op::DROP, line);
-    chunks[current].emit_end(line);
-
-    lget(&mut chunks[current], store, line);
+    call_import(chunks, current, "php:globals", "store", 1, line);
 }
 
 /// `__php_global_get($name)` -> value-or-null.
 pub fn emit_php_global_get(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    emit_get(chunks, current, argc, line, false);
+}
+
+pub fn emit_php_module_get(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    emit_get(chunks, current, argc, line, true);
+}
+
+fn emit_variable_store(chunks: &mut [Chunk], current: usize, line: u32, module: bool) {
+    if !module {
+        emit_php_globals_object(chunks, current, line);
+        return;
+    }
+    call_import(chunks, current, "vybe:php", "include_scope", 0, line);
+    let scope = chunks[current].alloc_scratch(1);
+    lset(&mut chunks[current], scope, line);
+    emit_is_null_or_undefined(&mut chunks[current], scope, line);
+    chunks[current].emit_if_value(line);
+    emit_php_globals_object(chunks, current, line);
+    chunks[current].emit_else(line);
+    lget(&mut chunks[current], scope, line);
+    chunks[current].emit_end(line);
+}
+
+fn emit_get(chunks: &mut [Chunk], current: usize, argc: u8, line: u32, module: bool) {
     if argc == 0 {
         chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         return;
@@ -76,7 +78,7 @@ pub fn emit_php_global_get(chunks: &mut [Chunk], current: usize, argc: u8, line:
     let key = chunks[current].alloc_scratch(1);
     lset(&mut chunks[current], key, line);
 
-    emit_php_globals_object(chunks, current, line);
+    emit_variable_store(chunks, current, line, module);
     lget(&mut chunks[current], key, line);
     call_import(chunks, current, "ecma:object", "get", 2, line);
     let value = chunks[current].alloc_scratch(1);
@@ -92,6 +94,14 @@ pub fn emit_php_global_get(chunks: &mut [Chunk], current: usize, argc: u8, line:
 
 /// `__php_global_ref($name)` -> reference to the request-global slot.
 pub fn emit_php_global_ref(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    emit_ref(chunks, current, argc, line, false);
+}
+
+pub fn emit_php_module_ref(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    emit_ref(chunks, current, argc, line, true);
+}
+
+fn emit_ref(chunks: &mut [Chunk], current: usize, argc: u8, line: u32, module: bool) {
     if argc == 0 {
         chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         return;
@@ -99,7 +109,7 @@ pub fn emit_php_global_ref(chunks: &mut [Chunk], current: usize, argc: u8, line:
     let key = chunks[current].alloc_scratch(1);
     lset(&mut chunks[current], key, line);
 
-    emit_php_globals_object(chunks, current, line);
+    emit_variable_store(chunks, current, line, module);
     let store = chunks[current].alloc_scratch(1);
     lset(&mut chunks[current], store, line);
 
@@ -108,6 +118,14 @@ pub fn emit_php_global_ref(chunks: &mut [Chunk], current: usize, argc: u8, line:
 
 /// `__php_global_set($name, $value)` -> `$value`.
 pub fn emit_php_global_set(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    emit_set(chunks, current, argc, line, false);
+}
+
+pub fn emit_php_module_set(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    emit_set(chunks, current, argc, line, true);
+}
+
+fn emit_set(chunks: &mut [Chunk], current: usize, argc: u8, line: u32, module: bool) {
     if argc < 2 {
         chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         return;
@@ -117,7 +135,7 @@ pub fn emit_php_global_set(chunks: &mut [Chunk], current: usize, argc: u8, line:
     lset(&mut chunks[current], value, line);
     lset(&mut chunks[current], key, line);
 
-    emit_php_globals_object(chunks, current, line);
+    emit_variable_store(chunks, current, line, module);
     lget(&mut chunks[current], key, line);
     lget(&mut chunks[current], value, line);
     call_import(chunks, current, "ecma:object", "set", 3, line);

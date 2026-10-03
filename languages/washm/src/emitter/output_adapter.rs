@@ -18,6 +18,18 @@ pub fn emit_helper(
         "washm.sprintf_array" => {
             vybe_compiler::primitives::sprintf::emit_sprintf_from_array(chunks, current, line)
         }
+        "washm.glob_match" => vybe_compiler::primitives::strings::emit_glob_match(
+            chunks,
+            current,
+            vybe_compiler::primitives::strings::GlobOptions::exact(),
+            line,
+        ),
+        "washm.glob_match_fold" => vybe_compiler::primitives::strings::emit_glob_match(
+            chunks,
+            current,
+            vybe_compiler::primitives::strings::GlobOptions::folded(),
+            line,
+        ),
         _ => return false,
     }
     true

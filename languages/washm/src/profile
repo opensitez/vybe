@@ -25,7 +25,7 @@ dynamic_numeric_dispatch = true
 dynamic_member_access = true
 relaxed_call_arity = true
 missing_arg_is_undefined = true
-lexical_block_scope = true
+lexical_block_scope = false
 ecma_boolean_operators = true
 ecma_array_method_dispatch = false
 supports_spread_arguments = true
@@ -68,14 +68,21 @@ __bash_mkdir       = { emit = "common:filesystem.mkdir",       min_args = 1, max
 __bash_mkdir_all   = { emit = "common:filesystem.mkdir_all",   min_args = 1, max_args = 1 }
 
 __bash_string = { emit = "host:ecma:string:String", min_args = 1, max_args = 1 }
+__bash_number = { emit = "host:ecma:number:Number", min_args = 1, max_args = 1 }
 __bash_strlen = { emit = "common:strings.length",   min_args = 1, max_args = 1 }
 __bash_len    = { emit = "common:collections.length", min_args = 1, max_args = 1 }
+__bash_array_get = { emit = "host:ecma:array:get", min_args = 2, max_args = 2 }
+__bash_array_set = { emit = "host:ecma:array:set", min_args = 3, max_args = 3 }
 __bash_is_array = { emit = "common:ref_is_array",      min_args = 1, max_args = 1 }
 __bash_keys   = { emit = "common:reflection.keys",     min_args = 1, max_args = 1 }
 __bash_dict_keys = { emit = "common:dict.keys",        min_args = 1, max_args = 1 }
+__bash_object_get = { emit = "host:ecma:object:get", min_args = 2, max_args = 2 }
+__bash_object_set = { emit = "host:ecma:object:set", min_args = 3, max_args = 3 }
+__bash_object_delete = { emit = "host:ecma:object:delete", min_args = 2, max_args = 2 }
 __bash_map_size = { emit = "host:ecma:map:size",       min_args = 1, max_args = 1 }
 __bash_join   = { emit = "common:collections.join",    min_args = 2, max_args = 2 }
 __bash_slice  = { emit = "common:collections.slice",   min_args = 3, max_args = 3 }
+__bash_concat = { emit = "common:collections.concat",  min_args = 2, max_args = 2 }
 __bash_sort   = { emit = "common:collections.sorted",  min_args = 1, max_args = 1 }
 __bash_split  = { emit = "host:ecma:string:split",     min_args = 2, max_args = 2 }
 __bash_re_split = { emit = "host:ecma:regexp:split",   min_args = 2, max_args = 2 }
@@ -83,6 +90,10 @@ __bash_regex_test = { emit = "host:ecma:regexp:test",  min_args = 2, max_args = 
 __bash_regex_exec = { emit = "host:ecma:regexp:exec",  min_args = 2, max_args = 2 }
 __bash_regex_replace = { emit = "host:ecma:regexp:replace", min_args = 3, max_args = 3 }
 __bash_regex_quote = { emit = "host:ecma:regexp:escape", min_args = 1, max_args = 1 }
+__bash_now_ms = { emit = "host:ecma:date:now", min_args = 0, max_args = 0 }
+__bash_floor = { emit = "host:ecma:math:floor", min_args = 1, max_args = 1 }
+__bash_glob_match = { emit = "common:washm.glob_match", min_args = 2, max_args = 2 }
+__bash_glob_match_fold = { emit = "common:washm.glob_match_fold", min_args = 2, max_args = 2 }
 __bash_bigint = { emit = "host:ecma:bigint:BigInt", min_args = 1, max_args = 1 }
 __bash_i64_wrap = { emit = "host:ecma:bigint:asIntN", min_args = 2, max_args = 2 }
 __bash_i64_string = { emit = "host:ecma:bigint:toString", min_args = 1, max_args = 2 }

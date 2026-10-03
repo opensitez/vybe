@@ -6,8 +6,8 @@
 //! threading primitive so PHP uses the same sleep machinery as other
 //! languages while preserving PHP's units and return shape.
 
-use vybe_runtime::opcode::Op;
 use vybe_runtime::Chunk;
+use vybe_runtime::opcode::Op;
 
 pub fn emit_php_sleep(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
     emit_sleep_scaled_to_millis(chunks, current, argc, 1000.0, line);

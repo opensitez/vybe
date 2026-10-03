@@ -16,6 +16,12 @@ pub fn emit_helper(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, l
     // scratch locals and call the host fn directly instead of routing through
     // the `__ecma_regexp_*_pat_first` bundle chunks (just this reorder + call).
     match name {
+        "php.isnumeric" => {
+            vybe_compiler::primitives::references::emit_autoderef_to_stack(chunks, current, line);
+            let index = chunks[current].add_import("php:value", "isNumeric");
+            chunks[current].emit_call(index, 1, line);
+            return true;
+        }
         "php.regex_match_all_pat_first" => {
             emit_regexp_pat_first(chunks, current, "matchAll", line);
             return true;
@@ -83,11 +89,18 @@ pub fn emit_helper(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, l
         _ => {}
     }
     if name == "php.sort_with_comparator" {
+        // PHP usort() discards numeric keys. A prior unset() can leave holes
+        // even when count($array) still equals the number of live elements.
+        // Compact the same array object before the shared in-place sorter.
+        let comparator = chunks[current].alloc_scratch(1);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, comparator, line);
+        let compact = chunks[current].add_import("php:array", "compactForSort");
+        chunks[current].emit_call(compact, 1, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, comparator, line);
         collections::emit_sort_with_comparator(chunks, current, line);
         return true;
     }
     let global = match name {
-        "php.isnumeric" => "__vybe_isnumeric",
         "php.sort_in_place" => "__vybe_sort_in_place",
         _ => return false,
     };
@@ -107,18 +120,48 @@ fn emit_regexp_pat_first(chunks: &mut [Chunk], current: usize, method: &str, lin
     chunks[current].emit_call(idx, 2, line);
 }
 
-/// `preg_replace($pat, $repl, $subject)` →
-/// `ecma:regexp.replaceAll(subject, pat, repl)` (always-global, PHP semantics).
+/// Apply PHP pattern arrays in insertion order, pairing replacement arrays by
+/// position. Scalar replacements use PHP delimiter and backreference semantics.
 fn emit_regexp_replace_pat_first(chunks: &mut [Chunk], current: usize, line: u32) {
-    let base = chunks[current].alloc_scratch(3);
+    let base = chunks[current].alloc_scratch(7);
     chunks[current].emit_op_u16(Op::LOCAL_SET, base + 2, line); // subject (top)
     chunks[current].emit_op_u16(Op::LOCAL_SET, base + 1, line); // repl
     chunks[current].emit_op_u16(Op::LOCAL_SET, base, line); // pat
-    chunks[current].emit_op_u16(Op::LOCAL_GET, base + 2, line); // subject
     chunks[current].emit_op_u16(Op::LOCAL_GET, base, line); // pat
     chunks[current].emit_op_u16(Op::LOCAL_GET, base + 1, line); // repl
-    let idx = chunks[current].add_import("ecma:regexp", "replaceAll");
+    let pairs = chunks[current].add_import("php:regex", "replacementPairs");
+    chunks[current].emit_call(pairs, 2, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, base + 3, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, base + 3, line);
+    chunks[current].emit_op(Op::ARRAY_LENGTH, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, base + 4, line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, base + 5, line);
+    let loop_state = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, base + 5, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, base + 4, line);
+    chunks[current].emit_op(Op::I32_LT_U, line);
+    vybe_compiler::primitives::loops::emit_loop_cond_from_i32(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, base + 3, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, base + 5, line);
+    chunks[current].emit_op(Op::ARRAY_GET, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, base + 6, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, base + 2, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, base + 6, line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op(Op::ARRAY_GET, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, base + 6, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::ARRAY_GET, line);
+    let idx = chunks[current].add_import("php:regex", "replaceAll");
     chunks[current].emit_call(idx, 3, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, base + 2, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, base + 5, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, base + 5, line);
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, loop_state, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, base + 2, line);
 }
 
 fn emit_php_strcasecmp(chunks: &mut [Chunk], current: usize, line: u32) {

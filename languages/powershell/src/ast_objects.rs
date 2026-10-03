@@ -3962,7 +3962,7 @@ fn attribute_ast_object_expr(raw: &str) -> Expression {
             "NamedArguments",
             array_of(attribute_named_args(args.as_deref())),
         ),
-        prop("__WholeText", Expression::string(&format!("[{}]", raw.trim()))),
+        prop("__WholeText", Expression::string(&format!("[{}]", raw.trim())),),
     ]))
 }
 

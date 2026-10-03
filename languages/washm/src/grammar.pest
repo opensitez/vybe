@@ -97,7 +97,7 @@ word_list = { word+ }
 
 // for (( init ; cond ; step )) ; do list ; done
 for_arithmetic = {
-    kw_for ~ "((" ~ eat_ws_nl ~ for_arith_init? ~ ";" ~ eat_ws_nl ~ for_arith_cond? ~ ";" ~ eat_ws_nl ~ for_arith_update? ~ "))" ~
+    kw_for ~ "((" ~ eat_ws_nl ~ for_arith_init? ~ ";" ~ eat_ws_nl ~ for_arith_cond? ~ ";" ~ eat_ws_nl ~ for_arith_update? ~ eat_ws_nl ~ "))" ~
     eat_terminators ~ (do_group | brace_group)
 }
 for_arith_init = { arithmetic_expr }
@@ -178,8 +178,10 @@ test_binary_string = { word ~ eat_ws_nl ~ test_binary_string_op ~ eat_ws_nl ~ wo
 test_binary_string_op = @{ "==" | "!=" | "=" | "<" | ">" }
 
 test_regex_match = { word ~ eat_ws_nl ~ "=~" ~ eat_ws_nl ~ regex_word }
-regex_word = ${ (quoted_string | single_quoted_string | simple_param | braced_param | regex_text)+ }
-regex_text = @{ ( (!(WHITESPACE | NEWLINE | "$" | "\"" | "'" | "]]") ~ ANY) | ("$" ~ !(ASCII_ALPHA | ASCII_DIGIT | "_" | "{" | "(" | "?" | "!" | "@" | "*" | "#" | "-")) )+ }
+regex_word = ${ (quoted_string | single_quoted_string | simple_param | braced_param | regex_bracket_expr | regex_text)+ }
+regex_bracket_expr = @{ "[" ~ (regex_posix_class | !"]" ~ ANY)* ~ "]" }
+regex_posix_class = @{ "[:" ~ (!":]" ~ ANY)* ~ ":]" }
+regex_text = @{ ( (!(WHITESPACE | NEWLINE | "$" | "\"" | "'" | "[" | "]]") ~ ANY) | ("$" ~ !(ASCII_ALPHA | ASCII_DIGIT | "_" | "{" | "(" | "?" | "!" | "@" | "*" | "#" | "-")) )+ }
 
 // ── Functions ────────────────────────────────────────────────────────────────
 function_def = {
@@ -194,6 +196,7 @@ function_body = { compound_command ~ redirection* }
 // [assignments] [modifiers] name [args | redirections]
 simple_command = {
     (cmd_prefix | redirection)+ ~ (cmd_modifier* ~ cmd_word ~ cmd_suffix?)? ~ redirection*
+  | cmd_modifier+ ~ redirection+
   | cmd_modifier* ~ cmd_word ~ cmd_suffix? 
   | redirection+
 }
@@ -351,7 +354,7 @@ replacement_word = ${ (quoted_string | single_quoted_string | simple_param | bra
 // ${var#pat} ${var##pat} ${var%pat} ${var%%pat}
 prefix_suffix_removal = ${ param_base ~ removal_op ~ removal_pattern? }
 removal_op = @{ "##" | "#" | "%%" | "%" }
-removal_pattern = ${ (quoted_string | single_quoted_string | simple_param | braced_param | dollar_paren_subst | brace_text)+ }
+removal_pattern = ${ (quoted_string | single_quoted_string | ansi_c_quoting | simple_param | braced_param | dollar_paren_subst | brace_text)+ }
 
 // ${var^} ${var^^} ${var,} ${var,,} ${var~} ${var~~} [pattern]
 case_modification = ${ param_base ~ case_mod_op ~ removal_pattern? }

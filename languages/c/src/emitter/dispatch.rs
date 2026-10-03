@@ -92,6 +92,8 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, _argc: u8, 
         "c.array_get" => {
             chunks[current].emit_op(Op::ARRAY_GET, line);
         }
+        "c.char_ptr_read" => super::char_pointer::emit_read(&mut chunks[current], line),
+        "c.byte_fill" => super::byte_memory::emit_fill(chunks, current, line),
         "c.array_set" => {
             let value = chunks[current].alloc_scratch(1);
             chunks[current].emit_op_u16(Op::LOCAL_SET, value, line);
@@ -118,22 +120,17 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, _argc: u8, 
         "c.strlen" => strings::emit_cstr_length(chunks, current, line),
         "c.strupr" => strings::emit_to_upper(&mut chunks[current], line),
         "c.strlwr" => strings::emit_to_lower(&mut chunks[current], line),
-        // `strcmp` compares up to the NUL on BOTH sides; `memcmp` deliberately
-        // does not — it is byte-wise over a given length and a NUL is ordinary
-        // content. Sharing one binding made `strcmp` compare whole JS strings,
-        // so a truncated buffer still compared as its untruncated self.
-        "c.strcmp" | "c.strncmp" => {
-            let rhs = chunks[current].alloc_scratch(1);
-            chunks[current].emit_op_u16(vybe_runtime::opcode::Op::LOCAL_SET, rhs, line);
-            strings::emit_cstr_truncate(chunks, current, line);
-            chunks[current].emit_op_u16(vybe_runtime::opcode::Op::LOCAL_GET, rhs, line);
-            strings::emit_cstr_truncate(chunks, current, line);
-            let idx = chunks[current].add_import("wasm:js-string", "compare");
-            chunks[current].emit_call(idx, 2, line);
+        "c.strcmp" => {
+            super::char_pointer::emit_compare(&mut chunks[current], false, true, false, line)
+        }
+        "c.strncmp" => {
+            super::char_pointer::emit_compare(&mut chunks[current], false, true, true, line)
         }
         "c.memcmp" => {
-            let idx = chunks[current].add_import("wasm:js-string", "compare");
-            chunks[current].emit_call(idx, 2, line);
+            super::char_pointer::emit_compare(&mut chunks[current], false, false, true, line)
+        }
+        "c.strncasecmp" => {
+            super::char_pointer::emit_compare(&mut chunks[current], true, true, true, line)
         }
         "c.atoi" | "c.atol" => {
             let idx = chunks[current].add_import("ecma:number", "parseInt");
@@ -141,6 +138,16 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, _argc: u8, 
         }
         "c.qsort" => collections::emit_sort(chunks, current, line),
         "c.struct_array" => emit_struct_array(chunks, current, line),
+        "c.funcptr_call" => {
+            let arg_count = _argc.saturating_sub(1);
+            callable::emit_invoke(
+                chunks,
+                current,
+                arg_count,
+                callable::InvokeKind::MulticastDelegate,
+                line,
+            );
+        }
         _ => return false,
     }
     true

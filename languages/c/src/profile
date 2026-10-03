@@ -37,7 +37,7 @@ self_keyword = "this"
 constructor_name = "constructor"
 case_sensitive = true
 string_indexing = "zero_based"
-entry_point = "main"
+entry_point = "__c_start"
 # Headers ARE imports (`#include <stdio.h>` → `libc.stdio`): builtins under
 # these roots require the activating include, clang-style — implicit
 # declarations are compile errors.
@@ -46,6 +46,7 @@ gated_namespace_roots = ["libc", "sdl"]
 # explicit string joins as `BinOp::Concat`, so normal arithmetic must not pay
 # JS-style dynamic-add dispatch in hot loops.
 dynamic_add = false
+switch_fallthrough = true
 uses_normalize_class = false
 # Route function/method resolution through the common namespace resolver
 # (namespaceplan.md) like JS/PHP/VB — so libc + ecma/wasi calls resolve via
@@ -59,9 +60,24 @@ uses_common_resolver = true
 
 [builtins]
 "__c_u8array_new" = { emit = "host:ecma:uint8array:new", min_args = 1, max_args = 1 }
+"__c_sdl_listen_input" = { emit = "common:libc.sdl.listen_input", min_args = 1, max_args = 1 }
+"__c_sdl_document" = { emit = "host:web:html:activeDocument", min_args = 0, max_args = 0 }
 "__c_array_get" = { emit = "common:c.array_get", min_args = 2, max_args = 2 }
+"__c_is_undefined" = { emit = "host:wasm:js-undefined:test", min_args = 1, max_args = 1 }
+"__c_ref_eq" = { emit = "common:ref_eq", min_args = 2, max_args = 2 }
+"__c_ref_nonnull" = { emit = "common:ref_nonnull", min_args = 1, max_args = 1, i32_condition = true }
+"__c_tag_eq" = { emit = "common:strings.equals_if_string", min_args = 2, max_args = 2, i32_condition = true }
+"__c_tag_ne" = { emit = "common:strings.not_equals_if_string", min_args = 2, max_args = 2, i32_condition = true }
+"__c_string_byte_copy" = { emit = "common:libc.string.byte_copy", min_args = 3, max_args = 3 }
+"__c_binary_byte_copy" = { emit = "common:libc.string.binary_byte_copy", min_args = 3, max_args = 3 }
+"__c_strrchr_linear" = { emit = "common:libc.string.strrchr_linear", min_args = 2, max_args = 2 }
+"__c_is_array" = { emit = "host:ecma:array:isArray", min_args = 1, max_args = 1 }
+"__c_is_buffer_view" = { emit = "host:ecma:arraybuffer:isView", min_args = 1, max_args = 1 }
 "__c_array_set" = { emit = "common:c.array_set", min_args = 3, max_args = 3 }
+"__c_char_ptr_read" = { emit = "common:c.char_ptr_read", min_args = 2, max_args = 2 }
 "__c_ptr_i32_load" = { emit = "common:pointers.linear_i32_load", min_args = 1, max_args = 1 }
+"__c_unsigned32_from_bits" = { emit = "common:bits.as_unsigned32", min_args = 1, max_args = 1 }
+"__c_unsigned32_wrap" = { emit = "common:bits.wrap_unsigned32", min_args = 1, max_args = 1 }
 "__c_ptr_i32_load8_u" = { emit = "common:pointers.linear_i32_load8_u", min_args = 1, max_args = 1 }
 "__c_ptr_i32_load8_s" = { emit = "common:pointers.linear_i32_load8_s", min_args = 1, max_args = 1 }
 "__c_ptr_i32_load16_u" = { emit = "common:pointers.linear_i32_load16_u", min_args = 1, max_args = 1 }
@@ -73,9 +89,15 @@ uses_common_resolver = true
 "__c_ptr_i64_store" = { emit = "common:pointers.linear_i64_store", min_args = 2, max_args = 2 }
 "__c_ptr_memory_size" = { emit = "common:pointers.linear_memory_size", min_args = 0, max_args = 0 }
 "__c_ptr_memory_grow" = { emit = "common:pointers.linear_memory_grow", min_args = 1, max_args = 1 }
+"__c_ptr_memory_copy" = { emit = "common:pointers.linear_memory_copy", min_args = 3, max_args = 3 }
+"__c_ptr_memory_fill" = { emit = "common:pointers.linear_memory_fill", min_args = 3, max_args = 3 }
+"__c_byte_fill" = { emit = "common:c.byte_fill", min_args = 3, max_args = 3 }
+"__c_ptr_byte_copy" = { emit = "common:pointers.byte_copy", min_args = 3, max_args = 3 }
+"__c_ptr_linear_alloc" = { emit = "common:pointers.linear_alloc", min_args = 1, max_args = 1 }
 "__c_struct_array" = { emit = "common:c.struct_array", min_args = 2, max_args = 2 }
 "__c_static_numeric_array" = { emit = "common:c.static_numeric_array", min_args = 1, max_args = 1 }
 "__c_static_json_value" = { emit = "common:c.static_json_value", min_args = 1, max_args = 1 }
+"__c_funcptr_call" = { emit = "common:c.funcptr_call", min_args = 1, max_args = 255 }
 "__c_regexp_new" = { emit = "host:ecma:regexp:new", min_args = 1, max_args = 2 }
 "__c_regexp_exec" = { emit = "host:ecma:regexp:exec", min_args = 2, max_args = 2 }
 
@@ -92,6 +114,7 @@ uses_common_resolver = true
 "sprintf"  = { emit = "common:libc.stdio.sprintf", min_args = 1, max_args = 255 }
 "__c_sprintf" = { emit = "common:libc.stdio.sprintf", min_args = 1, max_args = 255 }
 "__c_vsprintf" = { emit = "common:libc.stdio.vsprintf", min_args = 2, max_args = 2 }
+"__c_string_length" = { emit = "common:str_length", min_args = 1, max_args = 1 }
 "__c_char_code_at" = { emit = "common:str_char_code_at", min_args = 2, max_args = 2 }
 # system() runs a REAL /bin/sh -c through node:child_process; fopen falls
 # back to the real filesystem on a store miss so shell redirects compose.
@@ -100,6 +123,7 @@ uses_common_resolver = true
 # environment via the WASI CLI interface.
 "__c_get_environment" = { emit = "host:wasi:cli/environment:get-environment", min_args = 0, max_args = 0 }
 "__c_fs_exists" = { emit = "host:node:fs:existsSync", min_args = 1, max_args = 1 }
+"__c_fs_stat" = { emit = "host:node:fs:statSync", min_args = 1, max_args = 1 }
 "__c_fs_read" = { emit = "host:node:fs:readFileSync", min_args = 2, max_args = 2 }
 "__c_fs_rm" = { emit = "host:node:fs:rmSync", min_args = 1, max_args = 1 }
 # exec* replaces the process image: at top level the run ENDS with the
@@ -168,12 +192,13 @@ uses_common_resolver = true
 # + canon stream.read. WASM/WASI under the hood; the libc surface is
 # shared across languages via platforms/libc/stdio_adapter.rs.
 "__libc_readline" = { emit = "intrinsic:readline", min_args = 0, max_args = 0 }
-"__libc_char_to_str" = { emit = "host:libc:string:charToStr", min_args = 1, max_args = 1 }
-"__libc_char_ptr_add" = { emit = "host:libc:string:charPtrAdd", min_args = 2, max_args = 2 }
-"__libc_char_ptr_write" = { emit = "host:libc:string:charPtrWrite", min_args = 4, max_args = 4 }
+"__libc_char_to_str" = { emit = "common:libc.string.char_to_str", min_args = 1, max_args = 1 }
+"__libc_char_ptr_add" = { emit = "common:libc.string.pointer_add", min_args = 2, max_args = 2 }
+"__libc_char_ptr_write" = { emit = "common:libc.string.pointer_write", min_args = 4, max_args = 4 }
 "__libc_is_null_ptr" = { emit = "host:libc:string:isNullPtr", min_args = 1, max_args = 1 }
-"__libc_strlen_cstring" = { emit = "host:libc:string:strlenCString", min_args = 1, max_args = 1 }
-"__libc_strncpy_carray" = { emit = "host:libc:string:strncpyCarray", min_args = 3, max_args = 3 }
+"__libc_strlen_cstring" = { emit = "common:libc.string.strlen", min_args = 1, max_args = 1 }
+"__libc_strncpy_carray" = { emit = "common:libc.string.strncpy", min_args = 3, max_args = 3 }
+"__libc_strdup" = { emit = "common:libc.string.strdup", min_args = 1, max_args = 1 }
 
 "__c_write_stdout" = { emit = "intrinsic:write_stdout", min_args = 1, max_args = 1 }
 "__c_write_stderr" = { emit = "intrinsic:write_stderr", min_args = 1, max_args = 1 }
@@ -198,6 +223,8 @@ uses_common_resolver = true
 "strupr"   = { emit = "common:c.strupr",   min_args = 1, max_args = 1 }
 "strlwr"   = { emit = "common:c.strlwr",   min_args = 1, max_args = 1 }
 "memcmp"   = { emit = "common:c.memcmp",        min_args = 3, max_args = 3 }
+"strncasecmp" = { emit = "common:c.strncasecmp", min_args = 3, max_args = 3 }
+"strnicmp" = { emit = "common:c.strncasecmp", min_args = 3, max_args = 3 }
 
 # ── ctype.h ──────────────────────────────────────────────────────────────────
 # The walker inlines every classifier as C-locale ASCII integer arithmetic
@@ -264,6 +291,9 @@ __c_rint    = { emit = "common:math.round_half_even", min_args = 1, max_args = 1
 "powf"     = { emit = "opcode:pow", min_args = 2, max_args = 2 }
 "fmod"     = { emit = "host:ecma:math:fmod",        min_args = 2, max_args = 2 }
 "fmodf"    = { emit = "host:ecma:math:fmod",        min_args = 2, max_args = 2 }
+"__libc_fenv_fmod" = { emit = "common:math.fmod", min_args = 2, max_args = 2 }
+"__libc_fenv_i32_from_f64" = { emit = "opcode:i32_trunc_sat_f64_s", min_args = 1, max_args = 1 }
+"__libc_fenv_f64_from_i32" = { emit = "opcode:f64_convert_i32_s", min_args = 1, max_args = 1 }
 "sin"      = { emit = "host:ecma:math:sin",  min_args = 1, max_args = 1 }
 "sinf"     = { emit = "host:ecma:math:sin",  min_args = 1, max_args = 1 }
 "cos"      = { emit = "host:ecma:math:cos",  min_args = 1, max_args = 1 }
@@ -383,6 +413,8 @@ extra_imports = []
 "strcmp" = "int"
 "strncmp" = "int"
 "memcmp" = "int"
+"strncasecmp" = "int"
+"strnicmp" = "int"
 "__libc_strlen_cstring" = "int"
 
 # Which built-in each of this language's type spellings NAMES — step 4a.

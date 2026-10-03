@@ -44,6 +44,12 @@ fn lset(chunk: &mut Chunk, slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_SET, slot, line);
 }
 
+fn autoderef_local(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
+    lget(&mut chunks[current], slot, line);
+    vybe_compiler::primitives::references::emit_autoderef_to_stack(chunks, current, line);
+    lset(&mut chunks[current], slot, line);
+}
+
 fn call_import(
     chunks: &mut [Chunk],
     current: usize,
@@ -119,6 +125,38 @@ fn emit_slot_is_nonempty_string(chunk: &mut Chunk, slot: u16, line: u32) {
     chunk.emit_op(Op::I32_AND, line);
 }
 
+/// The flat SQL query API returns an empty row array on failure and keeps the
+/// driver message on the connection. Consume it once and expose the same
+/// state through mysqli's result, error, and errno surfaces.
+fn record_mysqli_query_error(
+    chunks: &mut [Chunk],
+    current: usize,
+    dbh_slot: u16,
+    conn_slot: u16,
+    line: u32,
+) -> u16 {
+    lget(&mut chunks[current], conn_slot, line);
+    call_import(chunks, current, "wasi:sql", "lastError", 1, line);
+    let error_slot = alloc_local(&mut chunks[current]);
+    lset(&mut chunks[current], error_slot, line);
+
+    lget(&mut chunks[current], dbh_slot, line);
+    lget(&mut chunks[current], error_slot, line);
+    struct_set_key(&mut chunks[current], &ClassSlot::internal("error"), line);
+
+    emit_slot_is_nonempty_string(&mut chunks[current], error_slot, line);
+    chunks[current].emit_if(line);
+    lget(&mut chunks[current], dbh_slot, line);
+    push_const(&mut chunks[current], Value::F64(1105.0), line);
+    struct_set_key(&mut chunks[current], &ClassSlot::internal("errno"), line);
+    chunks[current].emit_else(line);
+    lget(&mut chunks[current], dbh_slot, line);
+    push_const(&mut chunks[current], Value::F64(0.0), line);
+    struct_set_key(&mut chunks[current], &ClassSlot::internal("errno"), line);
+    chunks[current].emit_end(line);
+    error_slot
+}
+
 fn emit_mysqli_result_fields(
     chunks: &mut [Chunk],
     current: usize,
@@ -133,7 +171,7 @@ fn emit_mysqli_result_fields(
         let idx = chunk.add_import("ecma:array", "isArray");
         chunk.emit_call(idx, 1, line);
         vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
-        chunk.emit_if_value(line);
+        chunk.emit_if(line);
         lget(chunk, rows_slot, line);
     }
     collections::emit_len(chunks, current, line);
@@ -141,12 +179,16 @@ fn emit_mysqli_result_fields(
         let chunk = &mut chunks[current];
         push_const(chunk, Value::F64(0.0), line);
         vybe_compiler::primitives::ops::emit_dyn_gt(chunk, line);
-        chunk.emit_if_value(line);
+        chunk.emit_if(line);
 
         lget(chunk, rows_slot, line);
         push_const(chunk, Value::F64(0.0), line);
         chunk.emit_op(Op::ARRAY_GET, line);
+        // SQL rows carry both numeric and named keys. Field metadata must
+        // count each selected column once, using the associative view.
+        push_const(chunk, Value::F64(2.0), line);
     }
+    call_import(chunks, current, "php:pdo", "fetchRow", 2, line);
     call_import(chunks, current, "ecma:object", "keys", 1, line);
     {
         let chunk = &mut chunks[current];
@@ -272,6 +314,14 @@ fn emit_mysqli_result_object(
     struct_set_key(chunk, &ClassSlot::internal("__fields"), line);
 
     lget(chunk, result_slot, line);
+    lget(chunk, fields_slot, line);
+    collections::emit_len(chunks, current, line);
+    struct_set_key(
+        &mut chunks[current],
+        &ClassSlot::internal("field_count"),
+        line,
+    );
+
     result_slot
 }
 
@@ -279,7 +329,9 @@ fn emit_mysqli_fetch_row_or_null(chunks: &mut [Chunk], current: usize, line: u32
     let chunk = &mut chunks[current];
     let result_slot = alloc_local(chunk);
     lset(chunk, result_slot, line);
+    autoderef_local(chunks, current, result_slot, line);
 
+    let chunk = &mut chunks[current];
     lget(chunk, result_slot, line);
     struct_get_key(chunk, &ClassSlot::internal("__rows"), line);
     let rows_slot = alloc_local(&mut chunks[current]);
@@ -336,13 +388,70 @@ pub fn emit_php_mysqli_report(chunks: &mut [Chunk], current: usize, argc: u8, li
     chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
-pub fn emit_php_mysqli_connect(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+pub fn emit_php_mysqli_options(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    // Connection options configure the underlying MySQL client. The shared
+    // SQL connection is already open by the time mysqli_init() returns, so
+    // options that have no wasi:sql equivalent are accepted as PHP does for
+    // supported option values.
+    let chunk = &mut chunks[current];
+    for _ in 0..argc {
+        chunk.emit_op(Op::DROP, line);
+    }
+    push_const(chunk, Value::Bool(true), line);
+}
+
+pub fn emit_php_mysqli_connect(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
     // For bootstrap capability probes, model mysqli_connect as a successful
     // constructor-shaped connection object.
     emit_php_mysqli_init(chunks, current, argc, line);
 }
 
-pub fn emit_php_mysqli_init(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+fn build_mysqli_query_method(chunks: &mut Vec<Chunk>, line: u32) -> usize {
+    let mut method = Chunk::new("__php_mysqli_query_method");
+    method.arity = 3; // this, SQL, optional result mode
+    method.local_count = 3;
+    chunks.push(method);
+    let idx = chunks.len() - 1;
+    for arg in 0..3 {
+        chunks[idx].emit_op_u16(Op::LOCAL_GET, arg, line);
+    }
+    emit_php_mysqli_query(chunks, idx, 3, line);
+    chunks[idx].emit_op(Op::RETURN, line);
+    idx
+}
+
+fn build_mysqli_escape_method(chunks: &mut Vec<Chunk>, line: u32) -> usize {
+    let mut method = Chunk::new("__php_mysqli_real_escape_string_method");
+    method.arity = 2; // this, string
+    method.local_count = 2;
+    chunks.push(method);
+    let idx = chunks.len() - 1;
+    for arg in 0..2 {
+        chunks[idx].emit_op_u16(Op::LOCAL_GET, arg, line);
+    }
+    emit_php_mysqli_real_escape_string(chunks, idx, 2, line);
+    chunks[idx].emit_op(Op::RETURN, line);
+    idx
+}
+
+fn build_mysqli_select_db_method(chunks: &mut Vec<Chunk>, line: u32) -> usize {
+    let mut method = Chunk::new("__php_mysqli_select_db_method");
+    method.arity = 2; // this, database name
+    method.local_count = 2;
+    chunks.push(method);
+    let idx = chunks.len() - 1;
+    for arg in 0..2 {
+        chunks[idx].emit_op_u16(Op::LOCAL_GET, arg, line);
+    }
+    emit_php_mysqli_select_db(chunks, idx, 2, line);
+    chunks[idx].emit_op(Op::RETURN, line);
+    idx
+}
+
+pub fn emit_php_mysqli_init(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
+    let query_method = build_mysqli_query_method(chunks, line);
+    let escape_method = build_mysqli_escape_method(chunks, line);
+    let select_db_method = build_mysqli_select_db_method(chunks, line);
     let chunk = &mut chunks[current];
     for _ in 0..argc {
         chunk.emit_op(Op::DROP, line);
@@ -359,6 +468,10 @@ pub fn emit_php_mysqli_init(chunks: &mut [Chunk], current: usize, argc: u8, line
     let conn_slot = alloc_local(&mut chunks[current]);
     let chunk = &mut chunks[current];
     lset(chunk, conn_slot, line);
+
+    lget(chunk, conn_slot, line);
+    lget(chunk, conn_slot, line);
+    struct_set_key(chunk, &ClassSlot::internal("__connection"), line);
 
     // Stamp the mysqli class identity + shape fields over the connection.
     lget(chunk, conn_slot, line);
@@ -377,6 +490,25 @@ pub fn emit_php_mysqli_init(chunks: &mut [Chunk], current: usize, argc: u8, line
     lget(chunk, conn_slot, line);
     push_str(chunk, "", line);
     struct_set_key(chunk, &ClassSlot::internal("error"), line);
+
+    lget(chunk, conn_slot, line);
+    push_const(chunk, Value::F64(0.0), line);
+    struct_set_key(chunk, &ClassSlot::internal("errno"), line);
+
+    lget(chunk, conn_slot, line);
+    chunk.emit_op_u16(Op::REF_FUNC, query_method as u16, line);
+    chunk.emit(0, line);
+    struct_set_key(chunk, &ClassSlot::internal("query"), line);
+
+    lget(chunk, conn_slot, line);
+    chunk.emit_op_u16(Op::REF_FUNC, escape_method as u16, line);
+    chunk.emit(0, line);
+    struct_set_key(chunk, &ClassSlot::internal("real_escape_string"), line);
+
+    lget(chunk, conn_slot, line);
+    chunk.emit_op_u16(Op::REF_FUNC, select_db_method as u16, line);
+    chunk.emit(0, line);
+    struct_set_key(chunk, &ClassSlot::internal("select_db"), line);
 
     lget(chunk, conn_slot, line);
 }
@@ -445,6 +577,8 @@ pub fn emit_php_mysqli_real_connect(chunks: &mut [Chunk], current: usize, argc: 
         lset(chunk, slot, line);
     }
     lset(chunk, dbh_slot, line);
+    autoderef_local(chunks, current, dbh_slot, line);
+    let chunk = &mut chunks[current];
 
     // Build MySQL connection URL: mysql://user:password@host:port/database
     let url_slot = alloc_local(chunk);
@@ -547,6 +681,9 @@ pub fn emit_php_mysqli_real_connect(chunks: &mut [Chunk], current: usize, argc: 
     lget(chunk, dbh_slot, line);
     push_str(chunk, "Connection failed", line);
     struct_set_key(chunk, &ClassSlot::internal("error"), line);
+    lget(chunk, dbh_slot, line);
+    push_const(chunk, Value::F64(1.0), line);
+    struct_set_key(chunk, &ClassSlot::internal("errno"), line);
     push_const(chunk, Value::Bool(false), line);
 
     chunk.emit_else(line);
@@ -559,6 +696,12 @@ pub fn emit_php_mysqli_real_connect(chunks: &mut [Chunk], current: usize, argc: 
     lget(chunk, dbh_slot, line);
     push_str(chunk, "", line);
     struct_set_key(chunk, &ClassSlot::internal("connect_error"), line);
+    lget(chunk, dbh_slot, line);
+    push_str(chunk, "", line);
+    struct_set_key(chunk, &ClassSlot::internal("error"), line);
+    lget(chunk, dbh_slot, line);
+    push_const(chunk, Value::F64(0.0), line);
+    struct_set_key(chunk, &ClassSlot::internal("errno"), line);
     lget(chunk, dbh_slot, line);
     lget(chunk, conn_slot, line);
     struct_set_key(chunk, &ClassSlot::internal("__connection"), line);
@@ -582,49 +725,41 @@ pub fn emit_php_mysqli_connect_error(chunks: &mut [Chunk], current: usize, argc:
     global_get_key(chunk, "__php_mysqli_connect_error", line);
 }
 
-/// `mysqli_error($link)` — the last error on THIS connection.
-///
-/// Previously it dropped the link and returned the global connect-error slot,
-/// which is only ever written when `mysqli_connect` fails. A failed
-/// `mysqli_query` therefore left it empty and the failure was invisible — the
-/// same hole PDO had. `wasi:sql.lastError(link)` carries the per-connection
-/// trace; the connect-error global remains the fallback so a failure to connect
-/// (where there is no connection to ask) still reports.
+/// `mysqli_error($link)` reads the error saved by the query adapter. The
+/// adapter keeps the message on the mysqli object, which is also what
+/// `$link->error` and phpMyAdmin's database extension inspect.
 pub fn emit_php_mysqli_error(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     for _ in 1..argc {
         chunks[current].emit_op(Op::DROP, line);
     }
     let link_slot = alloc_local(&mut chunks[current]);
     if argc == 0 {
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     }
     lset(&mut chunks[current], link_slot, line);
+    autoderef_local(chunks, current, link_slot, line);
 
-    let out_slot = alloc_local(&mut chunks[current]);
     lget(&mut chunks[current], link_slot, line);
-    {
-        let idx = chunks[current].add_import("wasi:sql", "lastError");
-        chunks[current].emit_call(idx, 1, line);
-    }
-    lset(&mut chunks[current], out_slot, line);
-
-    emit_slot_is_nonempty_string(&mut chunks[current], out_slot, line);
-    chunks[current].emit_if(line);
-    chunks[current].emit_else(line);
-    // No per-connection trace: fall back to the connect-error global, which is
-    // the only place a failure with no connection can have been recorded.
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_if_value(line);
     global_get_key(&mut chunks[current], "__php_mysqli_connect_error", line);
-    lset(&mut chunks[current], out_slot, line);
+    chunks[current].emit_else(line);
+    lget(&mut chunks[current], link_slot, line);
+    struct_get_key(&mut chunks[current], &ClassSlot::internal("error"), line);
     chunks[current].emit_end(line);
-    lget(&mut chunks[current], out_slot, line);
 }
 
-pub fn emit_php_mysqli_query(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+pub fn emit_php_mysqli_query(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let chunk = &mut chunks[current];
+    if argc > 2 {
+        chunk.emit_op(Op::DROP, line); // optional result mode
+    }
     let sql_slot = alloc_local(chunk);
     let dbh_slot = alloc_local(chunk);
     lset(chunk, sql_slot, line);
     lset(chunk, dbh_slot, line);
+    autoderef_local(chunks, current, dbh_slot, line);
+    let chunk = &mut chunks[current];
     lget(chunk, sql_slot, line);
     {
         let idx = chunk.add_import("ecma:string", "trim");
@@ -668,13 +803,15 @@ pub fn emit_php_mysqli_query(chunks: &mut [Chunk], current: usize, _argc: u8, li
     lget(chunk, dbh_slot, line);
     push_const(chunk, Value::F64(0.0), line);
     struct_set_key(chunk, &ClassSlot::internal("insert_id"), line);
-    lget(chunk, dbh_slot, line);
-    push_str(chunk, "", line);
-    struct_set_key(chunk, &ClassSlot::internal("error"), line);
-
+    let error_slot = record_mysqli_query_error(chunks, current, dbh_slot, conn_slot, line);
+    emit_slot_is_nonempty_string(&mut chunks[current], error_slot, line);
+    chunks[current].emit_if_value(line);
+    push_const(&mut chunks[current], Value::Bool(false), line);
+    chunks[current].emit_else(line);
     let result_slot = emit_mysqli_result_object(chunks, current, rows_slot, line);
+    lget(&mut chunks[current], result_slot, line);
+    chunks[current].emit_end(line);
     let chunk = &mut chunks[current];
-    lget(chunk, result_slot, line);
     chunk.emit_else(line);
 
     lget(chunk, dbh_slot, line);
@@ -696,12 +833,15 @@ pub fn emit_php_mysqli_query(chunks: &mut [Chunk], current: usize, _argc: u8, li
     lget(chunk, dbh_slot, line);
     push_const(chunk, Value::F64(0.0), line);
     struct_set_key(chunk, &ClassSlot::internal("insert_id"), line);
-    lget(chunk, dbh_slot, line);
-    push_str(chunk, "", line);
-    struct_set_key(chunk, &ClassSlot::internal("error"), line);
-    push_const(chunk, Value::Bool(true), line);
+    let error_slot = record_mysqli_query_error(chunks, current, dbh_slot, conn_slot, line);
+    emit_slot_is_nonempty_string(&mut chunks[current], error_slot, line);
+    chunks[current].emit_if_value(line);
+    push_const(&mut chunks[current], Value::Bool(false), line);
+    chunks[current].emit_else(line);
+    push_const(&mut chunks[current], Value::Bool(true), line);
+    chunks[current].emit_end(line);
 
-    chunk.emit_end(line);
+    chunks[current].emit_end(line);
 }
 
 pub fn emit_php_mysqli_prepare(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
@@ -739,6 +879,8 @@ pub fn emit_php_mysqli_select_db(chunks: &mut [Chunk], current: usize, _argc: u8
     let dbh_slot = alloc_local(chunk);
     lset(chunk, db_slot, line);
     lset(chunk, dbh_slot, line);
+    autoderef_local(chunks, current, dbh_slot, line);
+    let chunk = &mut chunks[current];
 
     lget(chunk, dbh_slot, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
@@ -747,12 +889,22 @@ pub fn emit_php_mysqli_select_db(chunks: &mut [Chunk], current: usize, _argc: u8
     push_const(chunk, Value::Bool(false), line);
     chunk.emit_else(line);
     lget(chunk, dbh_slot, line);
+    struct_get_key(chunk, &ClassSlot::internal("__connection"), line);
+    lget(chunk, db_slot, line);
+    let select_database = chunk.add_import("wasi:sql", "selectDatabase");
+    chunk.emit_call(select_database, 2, line);
+    let success_slot = alloc_local(chunk);
+    lset(chunk, success_slot, line);
+    lget(chunk, success_slot, line);
+    chunk.emit_if(line);
+    lget(chunk, dbh_slot, line);
     lget(chunk, db_slot, line);
     struct_set_key(chunk, &ClassSlot::internal("selected_db"), line);
     lget(chunk, dbh_slot, line);
     lget(chunk, db_slot, line);
     struct_set_key(chunk, &ClassSlot::internal("database"), line);
-    push_const(chunk, Value::Bool(true), line);
+    chunk.emit_end(line);
+    lget(chunk, success_slot, line);
     chunk.emit_end(line);
 }
 
@@ -794,37 +946,26 @@ pub fn emit_php_mysqli_ping(chunks: &mut [Chunk], current: usize, _argc: u8, lin
     chunk.emit_end(line);
 }
 
-/// `mysqli_errno($link)` — non-zero when the last call on this connection
-/// failed. MySQL's own codes are not available through `wasi:sql`, so a failure
-/// reports the generic 1105 (`ER_UNKNOWN_ERROR`) rather than inventing a
-/// specific one; `mysqli_error()` carries the text that actually identifies it.
+/// `mysqli_errno($link)` reads the status recorded alongside `mysqli_error`.
+/// The flat SQL API has no MySQL error code, so a failed query uses 1105.
 pub fn emit_php_mysqli_errno(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     for _ in 1..argc {
         chunks[current].emit_op(Op::DROP, line);
     }
     let link_slot = alloc_local(&mut chunks[current]);
     if argc == 0 {
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     }
     lset(&mut chunks[current], link_slot, line);
-
-    let msg_slot = alloc_local(&mut chunks[current]);
+    autoderef_local(chunks, current, link_slot, line);
     lget(&mut chunks[current], link_slot, line);
-    {
-        let idx = chunks[current].add_import("wasi:sql", "lastError");
-        chunks[current].emit_call(idx, 1, line);
-    }
-    lset(&mut chunks[current], msg_slot, line);
-
-    let out_slot = alloc_local(&mut chunks[current]);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_if_value(line);
     global_get_key(&mut chunks[current], "__php_mysqli_connect_errno", line);
-    lset(&mut chunks[current], out_slot, line);
-    emit_slot_is_nonempty_string(&mut chunks[current], msg_slot, line);
-    chunks[current].emit_if(line);
-    push_const(&mut chunks[current], Value::F64(1105.0), line);
-    lset(&mut chunks[current], out_slot, line);
+    chunks[current].emit_else(line);
+    lget(&mut chunks[current], link_slot, line);
+    struct_get_key(&mut chunks[current], &ClassSlot::internal("errno"), line);
     chunks[current].emit_end(line);
-    lget(&mut chunks[current], out_slot, line);
 }
 
 pub fn emit_php_mysqli_affected_rows(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
@@ -1077,21 +1218,35 @@ pub fn emit_php_mysqli_fetch_array(chunks: &mut [Chunk], current: usize, argc: u
         chunk.emit_op(Op::DROP, line);
     }
     emit_mysqli_fetch_row_or_null(chunks, current, line);
+    push_const(&mut chunks[current], Value::F64(4.0), line);
+    call_import(chunks, current, "php:pdo", "fetchRow", 2, line);
+}
+
+pub fn emit_php_mysqli_fetch_row(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    emit_mysqli_fetch_row_or_null(chunks, current, line);
+    push_const(&mut chunks[current], Value::F64(3.0), line);
+    call_import(chunks, current, "php:pdo", "fetchRow", 2, line);
 }
 
 pub fn emit_php_mysqli_fetch_assoc(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     emit_mysqli_fetch_row_or_null(chunks, current, line);
+    push_const(&mut chunks[current], Value::F64(2.0), line);
+    call_import(chunks, current, "php:pdo", "fetchRow", 2, line);
 }
 
 pub fn emit_php_mysqli_fetch_object(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     emit_mysqli_fetch_row_or_null(chunks, current, line);
+    push_const(&mut chunks[current], Value::F64(5.0), line);
+    call_import(chunks, current, "php:pdo", "fetchRow", 2, line);
 }
 
 pub fn emit_php_mysqli_num_rows(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     let chunk = &mut chunks[current];
     let result_slot = alloc_local(chunk);
     lset(chunk, result_slot, line);
+    autoderef_local(chunks, current, result_slot, line);
 
+    let chunk = &mut chunks[current];
     lget(chunk, result_slot, line);
     struct_get_key(chunk, &ClassSlot::internal("__rows"), line);
     collections::emit_len(chunks, current, line);
@@ -1104,7 +1259,9 @@ pub fn emit_php_mysqli_fetch_all(chunks: &mut [Chunk], current: usize, _argc: u8
     }
     let result_slot = alloc_local(chunk);
     lset(chunk, result_slot, line);
+    autoderef_local(chunks, current, result_slot, line);
 
+    let chunk = &mut chunks[current];
     lget(chunk, result_slot, line);
     struct_get_key(chunk, &ClassSlot::internal("__rows"), line);
 }

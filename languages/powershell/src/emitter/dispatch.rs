@@ -72,9 +72,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "powershell.eq" => super::operators::emit_case_folding_eq(chunks, current, false, line),
         "powershell.ne" => super::operators::emit_case_folding_eq(chunks, current, true, line),
         "powershell.get_type" => super::operators::emit_get_type(chunks, current, line),
-        "powershell.wildcard_regex" => {
-            super::operators::emit_wildcard_regex(chunks, current, line)
-        }
+        "powershell.wildcard_regex" => super::operators::emit_wildcard_regex(chunks, current, line),
         "powershell.wildcard_escape" => {
             super::operators::emit_wildcard_escape(chunks, current, line)
         }

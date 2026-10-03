@@ -84,6 +84,16 @@ fn ensure_overlay(chunks: &mut [Chunk], current: usize, line: u32) -> u16 {
     overlay_slot
 }
 
+pub fn emit_php_getcwd(chunks: &mut [Chunk], current: usize, line: u32) {
+    ensure_overlay(chunks, current, line);
+    call_import(chunks, current, "php:environment", "getCwd", 0, line);
+}
+
+pub fn emit_php_chdir(chunks: &mut [Chunk], current: usize, line: u32) {
+    ensure_overlay(chunks, current, line);
+    call_import(chunks, current, "php:environment", "chdir", 1, line);
+}
+
 fn emit_pair_to_map(
     chunks: &mut [Chunk],
     current: usize,

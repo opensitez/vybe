@@ -709,7 +709,7 @@ pub fn emit_php_xmlwriter_start_dtd(
     chunks: &mut Vec<Chunk>,
     current: usize,
     _argc: u8,
-    line: u32,
+    line: u32
 ) {
     let chunk = &mut chunks[current];
     let name_slot = chunk.alloc_scratch(2);

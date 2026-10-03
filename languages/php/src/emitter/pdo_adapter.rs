@@ -116,6 +116,212 @@ fn struct_set_key(chunk: &mut Chunk, key: &ClassSlot, line: u32) {
     class_slots::emit_class_set(chunk, ObjSource::Stack, &slot, ValueSource::Stack, line);
 }
 
+#[derive(Clone, Copy)]
+enum PdoMethodEmitter {
+    Slice(fn(&mut [Chunk], usize, u8, u32)),
+    Vector(fn(&mut Vec<Chunk>, usize, u8, u32)),
+}
+
+impl PdoMethodEmitter {
+    fn emit(self, chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
+        match self {
+            Self::Slice(emit) => emit(chunks, current, argc, line),
+            Self::Vector(emit) => emit(chunks, current, argc, line),
+        }
+    }
+}
+
+type PdoMethod = (&'static str, u8, u8, PdoMethodEmitter);
+
+const PDO_METHODS: &[PdoMethod] = &[
+    ("query", 1, 1, PdoMethodEmitter::Vector(emit_php_pdo_query)),
+    ("exec", 1, 1, PdoMethodEmitter::Slice(emit_php_pdo_exec)),
+    (
+        "prepare",
+        1,
+        1,
+        PdoMethodEmitter::Vector(emit_php_pdo_prepare),
+    ),
+    (
+        "setAttribute",
+        2,
+        2,
+        PdoMethodEmitter::Slice(emit_php_pdo_set_attribute),
+    ),
+    (
+        "getAttribute",
+        1,
+        1,
+        PdoMethodEmitter::Slice(emit_php_pdo_get_attribute),
+    ),
+    (
+        "beginTransaction",
+        0,
+        0,
+        PdoMethodEmitter::Slice(emit_php_pdo_begin_transaction),
+    ),
+    ("commit", 0, 0, PdoMethodEmitter::Slice(emit_php_pdo_commit)),
+    (
+        "rollBack",
+        0,
+        0,
+        PdoMethodEmitter::Slice(emit_php_pdo_rollback),
+    ),
+    (
+        "inTransaction",
+        0,
+        0,
+        PdoMethodEmitter::Slice(emit_php_pdo_in_transaction),
+    ),
+    ("quote", 1, 1, PdoMethodEmitter::Slice(emit_php_pdo_quote)),
+    (
+        "errorCode",
+        0,
+        0,
+        PdoMethodEmitter::Slice(emit_php_pdo_error_code),
+    ),
+    (
+        "errorInfo",
+        0,
+        0,
+        PdoMethodEmitter::Slice(emit_php_pdo_error_info),
+    ),
+    (
+        "lastInsertId",
+        0,
+        1,
+        PdoMethodEmitter::Vector(emit_php_pdo_last_insert_id),
+    ),
+];
+
+const PDO_STATEMENT_METHODS: &[PdoMethod] = &[
+    (
+        "bindParam",
+        2,
+        5,
+        PdoMethodEmitter::Slice(emit_php_pdo_statement_bind_param),
+    ),
+    (
+        "bindValue",
+        2,
+        3,
+        PdoMethodEmitter::Slice(emit_php_pdo_statement_bind_value),
+    ),
+    (
+        "bindColumn",
+        2,
+        3,
+        PdoMethodEmitter::Slice(emit_php_pdo_statement_bind_column),
+    ),
+    (
+        "execute",
+        0,
+        1,
+        PdoMethodEmitter::Slice(emit_php_pdo_statement_execute),
+    ),
+    (
+        "setFetchMode",
+        1,
+        3,
+        PdoMethodEmitter::Slice(emit_php_pdo_statement_set_fetch_mode),
+    ),
+    (
+        "fetch",
+        0,
+        3,
+        PdoMethodEmitter::Slice(emit_php_pdo_statement_fetch),
+    ),
+    (
+        "fetchAll",
+        0,
+        2,
+        PdoMethodEmitter::Slice(emit_php_pdo_statement_fetch_all),
+    ),
+    (
+        "fetchObject",
+        0,
+        2,
+        PdoMethodEmitter::Slice(emit_php_pdo_statement_fetch_object),
+    ),
+    (
+        "fetchColumn",
+        0,
+        1,
+        PdoMethodEmitter::Slice(emit_php_pdo_statement_fetch_column),
+    ),
+    (
+        "rowCount",
+        0,
+        0,
+        PdoMethodEmitter::Slice(emit_php_pdo_statement_row_count),
+    ),
+    (
+        "columnCount",
+        0,
+        0,
+        PdoMethodEmitter::Slice(emit_php_pdo_statement_column_count),
+    ),
+    (
+        "paramCount",
+        0,
+        0,
+        PdoMethodEmitter::Slice(emit_php_pdo_statement_param_count),
+    ),
+];
+
+fn bind_pdo_methods(
+    chunks: &mut Vec<Chunk>,
+    current: usize,
+    object_slot: u16,
+    class: &str,
+    methods: &[PdoMethod],
+    line: u32,
+) {
+    for &(method, min_args, max_args, emitter) in methods {
+        let helper_name = format!("__php_builtin_method_{class}_{method}");
+        let helper = if let Some(index) = chunks.iter().position(|c| c.name == helper_name) {
+            index
+        } else {
+            let index = chunks.len();
+            let arity = max_args + 1;
+            let mut chunk =
+                vybe_compiler::primitives::functions::create_function_chunk(&helper_name, arity);
+            chunk.alloc_scratch(arity as u16);
+            chunks.push(chunk);
+
+            for count in min_args..max_args {
+                lget(&mut chunks[index], count as u16 + 1, line);
+                let test = chunks[index].add_import("wasm:js-undefined", "test");
+                chunks[index].emit_call(test, 1, line);
+                chunks[index].emit_if(line);
+                for slot in 0..=count {
+                    lget(&mut chunks[index], slot as u16, line);
+                }
+                emitter.emit(chunks, index, count + 1, line);
+                chunks[index].emit_op(Op::RETURN, line);
+                chunks[index].emit_end(line);
+            }
+            for slot in 0..=max_args {
+                lget(&mut chunks[index], slot as u16, line);
+            }
+            emitter.emit(chunks, index, arity, line);
+            chunks[index].emit_op(Op::RETURN, line);
+            index
+        };
+        let slot = class_slots::resolve(&ClassSlot::instance(method), &PlainNames);
+        class_slots::emit_class_set(
+            &mut chunks[current],
+            ObjSource::Local(object_slot),
+            &slot,
+            ValueSource::FuncRef {
+                idx: helper as u16,
+                upvalues: 0,
+            },
+            line,
+        );
+    }
+}
+
 #[allow(dead_code)]
 fn global_set_key(chunk: &mut Chunk, key: &str, line: u32) {
     vybe_compiler::primitives::globals::emit_write(chunk, key, line);
@@ -210,7 +416,7 @@ fn normalize_pdo_dsn(
 
     replace_in_slot(chunk, normalized_slot, "mysql:", "", line);
     replace_in_slot(chunk, normalized_slot, "dbname=", "db=", line);
-    replace_in_slot(chunk, normalized_slot, "host=localhost", "host=127.0.0.1", line);
+    replace_in_slot(chunk, normalized_slot, "host=localhost", "host=127.0.0.1", line,);
     append_credentials(chunk, normalized_slot, username_slot, password_slot, line);
 
     chunk.emit_else(line);
@@ -364,20 +570,8 @@ fn emit_empty_array(chunks: &mut [Chunk], current: usize, line: u32) {
     collections::emit_array_new(chunks, current, 0, line);
 }
 
-/// Read THROUGH a bound reference, if that is what the slot holds.
-///
-/// `bindParam`/`bind_param` take their variable by reference — php spells no
-/// `&`, the binder declares it, and the php walker supplies it (see
-/// `mark_php_bound_variable_args`). So what lands in `__bound_params` is a
-/// reference CELL, `{__ref_kind, __value}`, not the value; reading the variable
-/// happens here, at `execute()`, which is exactly when php reads it.
-///
-/// The test is structural, not a kind check: anything that is not null, a
-/// number, a string or a boolean is asked for `__value`, and a `__value` that
-/// comes back undefined means it was an ordinary object and the original stands.
-/// A cell is indistinguishable from any other object at this layer and does not
-/// need to be distinguished — a bound plain object has no meaning for a
-/// `list<string>` parameter channel either way.
+/// Read the live value of either a local reference cell or an indexed
+/// request-global reference through the shared reference implementation.
 fn emit_resolve_bound_reference(
     chunks: &mut [Chunk],
     current: usize,
@@ -385,63 +579,9 @@ fn emit_resolve_bound_reference(
     line: u32,
 ) -> u16 {
     let resolved_slot = alloc_local(&mut chunks[current]);
-    {
-        let chunk = &mut chunks[current];
-        lget(chunk, value_slot, line);
-        lset(chunk, resolved_slot, line);
-
-        // object test: not null AND not number AND not string AND not boolean
-        let obj_test_slot = alloc_local(chunk);
-        lget(chunk, value_slot, line);
-        chunk.emit_op_u16(Op::LOCAL_SET, obj_test_slot, line);
-        // not null
-        lget(chunk, obj_test_slot, line);
-        chunk.emit_op(Op::REF_IS_NULL, line);
-        chunk.emit_op(Op::I32_EQZ, line);
-        // AND not number
-        lget(chunk, obj_test_slot, line);
-        let test_num = chunk.add_import("wasm:js-number", "test");
-        chunk.emit_call(test_num, 1, line);
-        chunk.emit_op(Op::I32_EQZ, line);
-        chunk.emit_op(Op::I32_AND, line);
-        // AND not string
-        lget(chunk, obj_test_slot, line);
-        let test_str = chunk.add_import("wasm:js-string", "test");
-        chunk.emit_call(test_str, 1, line);
-        chunk.emit_op(Op::I32_EQZ, line);
-        chunk.emit_op(Op::I32_AND, line);
-        // AND not boolean
-        lget(chunk, obj_test_slot, line);
-        let test_bool = chunk.add_import("wasm:js-boolean", "test");
-        chunk.emit_call(test_bool, 1, line);
-        chunk.emit_op(Op::I32_EQZ, line);
-        chunk.emit_op(Op::I32_AND, line);
-        chunk.emit_if(line);
-
-        lget(chunk, value_slot, line);
-        struct_get_key(chunk, &ClassSlot::internal("__value"), line);
-    }
-    let inner_slot = alloc_local(&mut chunks[current]);
-    {
-        let chunk = &mut chunks[current];
-        lset(chunk, inner_slot, line);
-
-        lget(chunk, inner_slot, line);
-        {
-            let undef_idx = chunk.add_import("wasm:js-undefined", "test");
-            chunk.emit_call(undef_idx, 1, line);
-        }
-        vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
-        chunk.emit_op(Op::I32_EQZ, line);
-        chunk.emit_if(line);
-
-        lget(chunk, inner_slot, line);
-        lset(chunk, resolved_slot, line);
-
-        chunk.emit_end(line);
-        chunk.emit_end(line);
-    }
-
+    lget(&mut chunks[current], value_slot, line);
+    vybe_compiler::primitives::references::emit_autoderef_to_stack(chunks, current, line);
+    lset(&mut chunks[current], resolved_slot, line);
     resolved_slot
 }
 
@@ -731,7 +871,7 @@ fn emit_apply_named_params_from_entries(
 }
 
 fn emit_new_statement(
-    chunks: &mut [Chunk],
+    chunks: &mut Vec<Chunk>,
     current: usize,
     conn_slot: u16,
     sql_slot: Option<u16>,
@@ -787,7 +927,15 @@ fn emit_new_statement(
     let chunk = &mut chunks[current];
     struct_set_key(chunk, &ClassSlot::internal("__bound_named_pairs"), line);
 
-    lget(chunk, stmt_slot, line);
+    bind_pdo_methods(
+        chunks,
+        current,
+        stmt_slot,
+        "PDOStatement",
+        PDO_STATEMENT_METHODS,
+        line,
+    );
+    lget(&mut chunks[current], stmt_slot, line);
 }
 
 fn emit_mark_queryish_prefix(
@@ -842,7 +990,7 @@ fn emit_select_column_count_from_sql_slot(chunk: &mut Chunk, sql_slot: u16, line
     chunk.emit_end(line);
 }
 
-pub fn emit_php_pdo_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+pub fn emit_php_pdo_new(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
     let chunk = &mut chunks[current];
     let options_slot = if argc >= 4 {
         Some(alloc_local(chunk))
@@ -899,12 +1047,13 @@ pub fn emit_php_pdo_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
     vybe_compiler::primitives::errors::emit_exception_new_finalize(
         chunk,
         "PDOException",
-        line,
+        line
     );
     vybe_compiler::primitives::errors::emit_throw(chunk, line);
     chunk.emit_end(line);
     stamp_pdo_type(chunk, conn_slot, line);
-    lget(chunk, conn_slot, line);
+    bind_pdo_methods(chunks, current, conn_slot, "PDO", PDO_METHODS, line);
+    lget(&mut chunks[current], conn_slot, line);
 }
 
 /// After a `wasi:sql` call, act on whether it FAILED.
@@ -972,7 +1121,7 @@ fn emit_record_failure(chunks: &mut [Chunk], current: usize, conn_slot: u16, lin
     chunks[current].emit_end(line);
 }
 
-pub fn emit_php_pdo_query(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+pub fn emit_php_pdo_query(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32) {
     let chunk = &mut chunks[current];
     let sql_slot = alloc_local(chunk);
     let conn_slot = alloc_local(chunk);
@@ -1013,7 +1162,7 @@ pub fn emit_php_pdo_exec(chunks: &mut [Chunk], current: usize, _argc: u8, line: 
     lget(&mut chunks[current], affected_slot, line);
 }
 
-pub fn emit_php_pdo_prepare(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+pub fn emit_php_pdo_prepare(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32) {
     let chunk = &mut chunks[current];
     let sql_slot = alloc_local(chunk);
     let conn_slot = alloc_local(chunk);
@@ -1940,6 +2089,9 @@ pub fn emit_php_pdo_statement_fetch(chunks: &mut [Chunk], current: usize, argc: 
     chunk.emit_else(line);
 
     lget(chunk, row_slot, line);
+    lget(chunk, eff_slot, line);
+    let fetch_row = chunk.add_import("php:pdo", "fetchRow");
+    chunk.emit_call(fetch_row, 2, line);
     chunk.emit_end(line);
     chunk.emit_end(line);
     chunk.emit_end(line);
@@ -2257,6 +2409,9 @@ pub fn emit_php_pdo_statement_fetch_all(chunks: &mut [Chunk], current: usize, ar
         // mode, so it must not be built at all in that case.
         let Some(cb_slot) = arg_slot else {
             lget(chunk, rows_slot, line);
+            lget(chunk, slot, line);
+            let fetch_rows = chunk.add_import("php:pdo", "fetchRows");
+            chunk.emit_call(fetch_rows, 2, line);
             chunk.emit_end(line);
             chunk.emit_end(line);
             chunk.emit_end(line);
@@ -2364,6 +2519,9 @@ pub fn emit_php_pdo_statement_fetch_all(chunks: &mut [Chunk], current: usize, ar
 
         chunk.emit_else(line);
         lget(chunk, rows_slot, line);
+        lget(chunk, slot, line);
+        let fetch_rows = chunk.add_import("php:pdo", "fetchRows");
+        chunk.emit_call(fetch_rows, 2, line);
         chunk.emit_end(line);
         chunk.emit_end(line);
         chunk.emit_end(line);
@@ -2373,6 +2531,10 @@ pub fn emit_php_pdo_statement_fetch_all(chunks: &mut [Chunk], current: usize, ar
 
     let chunk = &mut chunks[current];
     lget(chunk, rows_slot, line);
+    lget(chunk, stmt_slot, line);
+    struct_get_key(chunk, &ClassSlot::internal("__fetch_mode"), line);
+    let fetch_rows = chunk.add_import("php:pdo", "fetchRows");
+    chunk.emit_call(fetch_rows, 2, line);
 }
 
 pub fn emit_php_pdo_statement_fetch_object(
@@ -2623,7 +2785,7 @@ pub fn emit_php_pdo_error_code(chunks: &mut [Chunk], current: usize, argc: u8, l
 
 /// `$pdo->lastInsertId()` — the id of the last inserted row via
 /// `SELECT last_insert_rowid()`. Stack: `[conn]`/`[conn, name]` → `[id]`.
-pub fn emit_php_pdo_last_insert_id(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+pub fn emit_php_pdo_last_insert_id(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
     let chunk = &mut chunks[current];
     if argc >= 2 {
         chunk.emit_op(Op::DROP, line); // optional sequence-name arg

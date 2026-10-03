@@ -112,8 +112,28 @@ pub fn normalize_class(
                 params,
                 body,
                 base_args,
+                visibility,
                 ..
             } => {
+                // PHP also permits calling a constructor explicitly on an
+                // existing instance (`$this->__construct(...)`). Keep its
+                // ordinary method entry in addition to new-object dispatch.
+                out.push_method(
+                    false,
+                    build_normal_method(
+                        span.clone(),
+                        "__construct",
+                        "__construct",
+                        params.clone(),
+                        None,
+                        body.clone(),
+                        Access::from(*visibility),
+                        false,
+                        false,
+                        false,
+                        Modifiers::default(),
+                    ),
+                );
                 out.push_constructor(NormalConstructor {
                     span: span.clone(),
                     params: params.clone(),
@@ -337,6 +357,7 @@ mod tests {
         let nc = normalize_class(
             dummy_span(),
             "Foo",
+            &[],
             &[],
             &[make_method("__sleep"), make_method("__wakeup")],
             &ClassModifiers::default(),

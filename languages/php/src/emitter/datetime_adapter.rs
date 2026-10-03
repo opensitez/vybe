@@ -253,9 +253,23 @@ fn emit_datetime_ctor(
     };
 
     if argc >= 1 {
-        // Stack: [s] → ecma:date.parse → [ms_or_NaN]. NaN flow-through
-        // is not PHP-compatible: invalid constructor strings throw Exception.
+        // PHP's @seconds syntax is not an ECMA date string.
+        let chunk = &mut chunks[current];
+        let text_slot = alloc_local(chunk);
+        local_set(chunk, text_slot, line);
+        local_get(chunk, text_slot, line);
+        push_str(chunk, "@", line);
+        let starts_with = chunk.add_import("ecma:string", "startsWith");
+        chunk.emit_call(starts_with, 2, line);
+        vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+        chunk.emit_if_value(line);
+        local_get(chunk, text_slot, line);
+        let parse_unix = chunk.add_import("php:datetime", "parseUnix");
+        chunk.emit_call(parse_unix, 1, line);
+        chunk.emit_else(line);
+        local_get(chunk, text_slot, line);
         call_import(chunks, current, "ecma:date", "parse", 1, line);
+        chunks[current].emit_end(line);
     } else {
         call_import(chunks, current, "ecma:date", "now", 0, line);
     }
@@ -835,7 +849,7 @@ fn emit_datetime_create_from_format_impl(
     vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
     chunk.emit_if(line);
     let date_parts_slot = emit_split_slot(chunks, current, value_slot, "-", line);
-    emit_wrap_date_parts(chunks, current, type_tag, date_parts_slot, true, None, false, line);
+    emit_wrap_date_parts(chunks, current, type_tag, date_parts_slot, true, None, false, line,);
     chunks[current].emit_else(line);
 
     // `d/m/Y H:i` → UTC(y, m-1, d, h, i, 0)
@@ -1194,56 +1208,77 @@ fn emit_timezone_offset_seconds_at_ms_from_name_slot(
     vybe_compiler::primitives::datetime::emit_zone_offset_seconds(chunk, line);
 }
 
-fn emit_timezone_offset_string_from_name_slot(chunk: &mut Chunk, name_slot: u16, line: u32) {
+fn emit_timezone_offset_string_from_name_slot(
+    chunk: &mut Chunk,
+    name_slot: u16,
+    line: u32,
+    colon: bool,
+) {
+    let offset = |value: &'static str| -> &'static str {
+        if colon {
+            value
+        } else {
+            match value {
+                "+02:00" => "+0200",
+                "-04:00" => "-0400",
+                "-05:00" => "-0500",
+                "+05:30" => "+0530",
+                "+01:00" => "+0100",
+                "-08:00" => "-0800",
+                "+09:00" => "+0900",
+                _ => "+0000",
+            }
+        }
+    };
     local_get(chunk, name_slot, line);
     push_str(chunk, "+02:00", line);
     vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
     chunk.emit_if_value(line);
-    push_str(chunk, "+02:00", line);
+    push_str(chunk, offset("+02:00"), line);
     chunk.emit_else(line);
     local_get(chunk, name_slot, line);
     push_str(chunk, "-04:00", line);
     vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
     chunk.emit_if_value(line);
-    push_str(chunk, "-04:00", line);
+    push_str(chunk, offset("-04:00"), line);
     chunk.emit_else(line);
     local_get(chunk, name_slot, line);
     push_str(chunk, "-05:00", line);
     vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
     chunk.emit_if_value(line);
-    push_str(chunk, "-05:00", line);
+    push_str(chunk, offset("-05:00"), line);
     chunk.emit_else(line);
     local_get(chunk, name_slot, line);
     push_str(chunk, "+05:30", line);
     vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
     chunk.emit_if_value(line);
-    push_str(chunk, "+05:30", line);
+    push_str(chunk, offset("+05:30"), line);
     chunk.emit_else(line);
     local_get(chunk, name_slot, line);
     push_str(chunk, "Europe/Paris", line);
     vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
     chunk.emit_if_value(line);
-    push_str(chunk, "+01:00", line);
+    push_str(chunk, offset("+01:00"), line);
     chunk.emit_else(line);
     local_get(chunk, name_slot, line);
     push_str(chunk, "America/New_York", line);
     vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
     chunk.emit_if_value(line);
-    push_str(chunk, "-05:00", line);
+    push_str(chunk, offset("-05:00"), line);
     chunk.emit_else(line);
     local_get(chunk, name_slot, line);
     push_str(chunk, "America/Los_Angeles", line);
     vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
     chunk.emit_if_value(line);
-    push_str(chunk, "-08:00", line);
+    push_str(chunk, offset("-08:00"), line);
     chunk.emit_else(line);
     local_get(chunk, name_slot, line);
     push_str(chunk, "Asia/Tokyo", line);
     vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
     chunk.emit_if_value(line);
-    push_str(chunk, "+09:00", line);
+    push_str(chunk, offset("+09:00"), line);
     chunk.emit_else(line);
-    push_str(chunk, "+00:00", line);
+    push_str(chunk, offset("+00:00"), line);
     chunk.emit_end(line);
     chunk.emit_end(line);
     chunk.emit_end(line);
@@ -1376,7 +1411,7 @@ fn emit_iso8601(chunks: &mut [Chunk], current: usize, dt_slot: u16, result_slot:
     let name_slot = alloc_local(&mut chunks[current]);
     emit_timezone_name_from_dt_slot(&mut chunks[current], dt_slot, line);
     local_set(&mut chunks[current], name_slot, line);
-    emit_timezone_offset_string_from_name_slot(&mut chunks[current], name_slot, line);
+    emit_timezone_offset_string_from_name_slot(&mut chunks[current], name_slot, line, true);
     emit_append_to_result(&mut chunks[current], result_slot, line);
 }
 
@@ -2005,7 +2040,33 @@ fn emit_format_code_dispatch(
                 let name_slot = alloc_local(&mut chunks[current]);
                 emit_timezone_name_from_dt_slot(&mut chunks[current], dt_slot, line);
                 local_set(&mut chunks[current], name_slot, line);
-                emit_timezone_offset_string_from_name_slot(&mut chunks[current], name_slot, line);
+                emit_timezone_offset_string_from_name_slot(
+                    &mut chunks[current],
+                    name_slot,
+                    line,
+                    true,
+                );
+                emit_append_to_result(&mut chunks[current], result_slot, line);
+            },
+        );
+        // O: timezone offset without a colon, e.g. +0000.
+        emit_code_arm(
+            chunks,
+            current,
+            matched_slot,
+            c_slot,
+            "O",
+            line,
+            |chunks, current| {
+                let name_slot = alloc_local(&mut chunks[current]);
+                emit_timezone_name_from_dt_slot(&mut chunks[current], dt_slot, line);
+                local_set(&mut chunks[current], name_slot, line);
+                emit_timezone_offset_string_from_name_slot(
+                    &mut chunks[current],
+                    name_slot,
+                    line,
+                    false,
+                );
                 emit_append_to_result(&mut chunks[current], result_slot, line);
             },
         );
@@ -3205,7 +3266,7 @@ pub fn emit_datetime_modify(chunks: &mut [Chunk], current: usize, line: u32) {
         "first day of this month",
         line,
         |chunks, current| {
-            emit_datetime_modify_set_date_from_current_month(chunks, current, dt_slot, 0.0, 1.0, line);
+            emit_datetime_modify_set_date_from_current_month(chunks, current, dt_slot, 0.0, 1.0, line,);
         },
     );
     emit_datetime_modify_keyword_arm(
@@ -3217,7 +3278,7 @@ pub fn emit_datetime_modify(chunks: &mut [Chunk], current: usize, line: u32) {
         "first day of next month",
         line,
         |chunks, current| {
-            emit_datetime_modify_set_date_from_current_month(chunks, current, dt_slot, 1.0, 1.0, line);
+            emit_datetime_modify_set_date_from_current_month(chunks, current, dt_slot, 1.0, 1.0, line,);
         },
     );
     emit_datetime_modify_keyword_arm(
@@ -3229,7 +3290,7 @@ pub fn emit_datetime_modify(chunks: &mut [Chunk], current: usize, line: u32) {
         "last day of last month",
         line,
         |chunks, current| {
-            emit_datetime_modify_set_date_from_current_month(chunks, current, dt_slot, 0.0, 0.0, line);
+            emit_datetime_modify_set_date_from_current_month(chunks, current, dt_slot, 0.0, 0.0, line,);
         },
     );
     emit_datetime_modify_keyword_arm(
@@ -3241,7 +3302,7 @@ pub fn emit_datetime_modify(chunks: &mut [Chunk], current: usize, line: u32) {
         "last day of this month",
         line,
         |chunks, current| {
-            emit_datetime_modify_set_date_from_current_month(chunks, current, dt_slot, 1.0, 0.0, line);
+            emit_datetime_modify_set_date_from_current_month(chunks, current, dt_slot, 1.0, 0.0, line,);
         },
     );
     emit_datetime_modify_keyword_arm(
@@ -3253,7 +3314,7 @@ pub fn emit_datetime_modify(chunks: &mut [Chunk], current: usize, line: u32) {
         "last day of next month",
         line,
         |chunks, current| {
-            emit_datetime_modify_set_date_from_current_month(chunks, current, dt_slot, 2.0, 0.0, line);
+            emit_datetime_modify_set_date_from_current_month(chunks, current, dt_slot, 2.0, 0.0, line,);
         },
     );
 

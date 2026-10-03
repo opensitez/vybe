@@ -10,7 +10,7 @@ use std::sync::Arc;
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
 
-const PHP_INI_ENTRIES: [(&str, &str, &str); 11] = [
+const PHP_INI_ENTRIES: [(&str, &str, &str); 12] = [
     ("display_errors", "__php_ini_display_errors", "1"),
     ("precision", "__php_ini_precision", "14"),
     ("memory_limit", "__php_ini_memory_limit", "128M"),
@@ -21,6 +21,11 @@ const PHP_INI_ENTRIES: [(&str, &str, &str); 11] = [
     ("max_execution_time", "__php_ini_max_execution_time", "0"),
     ("include_path", "__php_ini_include_path", ".:/usr/share/php"),
     ("session.save_path", "__php_ini_session_save_path", ""),
+    (
+        "session.gc_maxlifetime",
+        "__php_ini_session_gc_maxlifetime",
+        "1440",
+    ),
     ("opcache.enable", "__php_ini_opcache_enable", "1"),
 ];
 
