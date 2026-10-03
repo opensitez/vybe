@@ -12,16 +12,16 @@
 //!     snapshot of VM state.
 //!   * No opcode, no execution-semantics change: the debugger observes and gates.
 
-use std::sync::mpsc::{Receiver, Sender};
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use std::sync::mpsc::{Receiver, Sender};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
-use crate::{VMError, Value};
 use crate::opcode::Op;
 use crate::vm::VM;
+use crate::{VMError, Value};
 
 /// Timing and current phase shared with the debugger client. Compiler work can
 /// block the VM thread, so a report must read this without a VM command.
@@ -583,6 +583,7 @@ struct Breakpoint {
     /// Function-entry breakpoints match by name so they also cover chunks
     /// appended by eval, include, or hot reload after the command was set.
     function_name: Option<String>,
+    source: Option<SourceBreakpoint>,
     offset: usize,
     enabled: bool,
     /// Optional condition expression — the breakpoint fires only when it
@@ -597,6 +598,24 @@ struct Breakpoint {
     log_message: Option<String>,
     /// Remove after firing once (run-to-cursor).
     one_shot: bool,
+}
+
+struct SourceBreakpoint {
+    path: String,
+    line: u32,
+    targets: Vec<(usize, usize)>,
+    scanned_chunks: usize,
+}
+
+impl SourceBreakpoint {
+    fn refresh(&mut self, vm: &VM) {
+        if self.scanned_chunks != vm.chunks.len() {
+            self.targets = resolve_source_line_for_file(vm, self.line, Some(&self.path))
+                .map(|(_, targets)| targets)
+                .unwrap_or_default();
+            self.scanned_chunks = vm.chunks.len();
+        }
+    }
 }
 
 /// A data/value watchpoint: pause when the value of `target` (a variable name or
@@ -1014,15 +1033,26 @@ impl Debugger {
         }
 
         // (b) Location breakpoints at this (chunk, offset).
+        // Resolve pending source locations only after module growth or reload,
+        // not by scanning bytecode on every instruction.
+        for breakpoint in &mut self.breakpoints {
+            if let Some(source) = &mut breakpoint.source {
+                source.refresh(vm);
+            }
+        }
         let matched: Vec<u32> = self
             .breakpoints
             .iter()
             .filter(|b| {
                 b.enabled
-                    && b.offset == ip
-                    && (b.chunk_index == chunk_index
-                        || b.function_name.as_deref()
-                            == vm.chunks.get(chunk_index).map(|chunk| chunk.name.as_str()))
+                    && if let Some(source) = &b.source {
+                        source.targets.contains(&(chunk_index, ip))
+                    } else {
+                        b.offset == ip
+                            && (b.chunk_index == chunk_index
+                                || b.function_name.as_deref()
+                                    == vm.chunks.get(chunk_index).map(|chunk| chunk.name.as_str()))
+                    }
             })
             .map(|b| b.id)
             .collect();
@@ -1257,6 +1287,7 @@ impl Debugger {
                     id,
                     chunk_index: usize::MAX,
                     function_name: Some(name.clone()),
+                    source: None,
                     offset: 0,
                     enabled: true,
                     condition,
@@ -1500,10 +1531,18 @@ impl Debugger {
                 self.watches.clear();
                 Control::stay(DebugResponse::Ok)
             }
-            Reload => Control::stay(match vm.debug_reload() {
-                Ok(report) => DebugResponse::Value(report),
-                Err(e) => DebugResponse::Error(e),
-            }),
+            Reload => {
+                let result = vm.debug_reload();
+                for breakpoint in &mut self.breakpoints {
+                    if let Some(source) = &mut breakpoint.source {
+                        source.scanned_chunks = usize::MAX;
+                    }
+                }
+                Control::stay(match result {
+                    Ok(report) => DebugResponse::Value(report),
+                    Err(e) => DebugResponse::Error(e),
+                })
+            }
             StreamOpcodes { enabled } => {
                 self.stream_opcodes = enabled;
                 Control::stay(DebugResponse::Ok)
@@ -1531,10 +1570,34 @@ impl Debugger {
         line: u32,
         condition: Option<String>,
     ) -> Control {
-        // If the `chunk` part doesn't name a real chunk, treat it as a source
-        // file reference (`foo.js:7`) and break on the line across all chunks.
+        // A source filename must never fall back to an unrelated file's line.
+        // Keep it pending when the module has not been included yet.
         let Some(ci) = resolve_chunk(vm, &chunk) else {
-            return self.set_source_line_breakpoint(vm, line, condition);
+            let ChunkRef::Name(path) = chunk else {
+                return Control::stay(DebugResponse::Error(format!("no such chunk: {chunk:?}")));
+            };
+            let path = std::path::Path::new(&path)
+                .canonicalize()
+                .map(|path| path.to_string_lossy().into_owned())
+                .unwrap_or(path);
+            let mut source = SourceBreakpoint {
+                path,
+                line,
+                targets: Vec::new(),
+                scanned_chunks: usize::MAX,
+            };
+            source.refresh(vm);
+            let target = source.targets.first().copied();
+            let label = format!("{}:{}{}", source.path, line,
+                if target.is_none() { " (pending)" } else { "" });
+            let id = self.push_breakpoint(usize::MAX, 0, condition, None, false);
+            self.breakpoints.last_mut().unwrap().source = Some(source);
+            return Control::stay(DebugResponse::BreakpointSet {
+                id,
+                chunk: label,
+                offset: target.map_or(0, |(_, offset)| offset),
+                line: target.and_then(|(ci, offset)| vm.chunks[ci].get_line(offset)).or(Some(line)),
+            });
         };
         match resolve_line_to_offset(&vm.chunks[ci], line) {
             Some(offset) => self.install_breakpoint(vm, ci, offset, condition),
@@ -1624,6 +1687,7 @@ impl Debugger {
             id,
             chunk_index,
             function_name: None,
+            source: None,
             offset,
             enabled: true,
             condition,
@@ -1669,17 +1733,20 @@ impl Debugger {
             .map(|b| BreakpointInfo {
                 id: b.id,
                 chunk_index: b.chunk_index,
-                chunk_name: b.function_name.clone().unwrap_or_else(|| {
+                chunk_name: b.source.as_ref().map(|source| format!("{}:{}{}",
+                    source.path, source.line,
+                    if source.targets.is_empty() { " (pending)" } else { "" }))
+                    .or_else(|| b.function_name.clone()).unwrap_or_else(|| {
                     vm.chunks
                         .get(b.chunk_index)
                         .map(|c| c.name.clone())
                         .unwrap_or_default()
                 }),
                 offset: b.offset,
-                line: vm
+                line: b.source.as_ref().map(|source| source.line).or_else(|| vm
                     .chunks
                     .get(b.chunk_index)
-                    .and_then(|c| c.get_line(b.offset)),
+                    .and_then(|c| c.get_line(b.offset))),
                 enabled: b.enabled,
             })
             .collect()
@@ -1755,11 +1822,24 @@ fn resolve_chunk(vm: &VM, chunk: &ChunkRef) -> Option<usize> {
 /// enclosing function, not the whole `<script>`), so `b 8` lands in the loop
 /// rather than an unrelated chunk that happens to share the slid line.
 fn resolve_source_line(vm: &VM, target: u32) -> Option<(u32, Vec<(usize, usize)>)> {
+    resolve_source_line_for_file(vm, target, None)
+}
+
+fn resolve_source_line_for_file(
+    vm: &VM,
+    target: u32,
+    file: Option<&str>,
+) -> Option<(u32, Vec<(usize, usize)>)> {
     use std::collections::BTreeMap;
     // Per-chunk: line → first instruction offset, in source order.
     let mut per_chunk: Vec<BTreeMap<u32, usize>> = Vec::with_capacity(vm.chunks.len());
     for chunk in vm.chunks.iter() {
         let mut lines: BTreeMap<u32, usize> = BTreeMap::new();
+        if file.is_some_and(|file| !chunk.source_path.as_deref().is_some_and(|path|
+            std::path::Path::new(path).ends_with(std::path::Path::new(file)))) {
+            per_chunk.push(lines);
+            continue;
+        }
         let mut off = 0;
         while off < chunk.code.len() {
             if let Some(line) = chunk.get_line(off) {
@@ -1833,6 +1913,51 @@ fn resolve_source_line(vm: &VM, target: u32) -> Option<(u32, Vec<(usize, usize)>
 }
 
 /// First instruction-start offset whose source line matches `line`.
+#[cfg(test)]
+mod source_breakpoint_tests {
+    use super::*;
+
+    fn chunk(path: &str, line: u32) -> crate::Chunk {
+        let mut chunk = crate::Chunk::new("compile");
+        chunk.source_path = Some(std::sync::Arc::from(path));
+        chunk.emit_op(Op::RETURN, line);
+        chunk
+    }
+
+    #[test]
+    fn source_breakpoints_exclude_other_files_with_the_same_line() {
+        let mut vm = VM::new();
+        vm.chunks = vec![chunk("/project/index.php", 35), chunk("/project/ForLoopNode.php", 35)];
+        assert_eq!(resolve_source_line_for_file(&vm, 35, Some("ForLoopNode.php")),
+            Some((35, vec![(1, 0)])));
+        assert_eq!(resolve_source_line_for_file(&vm, 35, Some("Missing.php")), None);
+        assert_eq!(resolve_source_line(&vm, 35), Some((35, vec![(0, 0), (1, 0)])));
+    }
+
+    #[test]
+    fn pending_source_breakpoints_resolve_after_include_and_reload() {
+        let mut vm = VM::new();
+        vm.chunks = vec![chunk("/project/index.php", 35)];
+        let mut source = SourceBreakpoint {
+            path: "/project/ForLoopNode.php".into(), line: 35,
+            targets: Vec::new(), scanned_chunks: usize::MAX,
+        };
+        source.refresh(&vm);
+        assert!(source.targets.is_empty());
+        vm.chunks.push(chunk("/project/ForLoopNode.php", 35));
+        source.refresh(&vm);
+        assert_eq!(source.targets, vec![(1, 0)]);
+        let mut replacement = crate::Chunk::new("compile");
+        replacement.source_path = Some(std::sync::Arc::from("/project/ForLoopNode.php"));
+        replacement.emit_op(Op::NOP, 34);
+        replacement.emit_op(Op::RETURN, 35);
+        vm.chunks[1] = replacement;
+        source.scanned_chunks = usize::MAX;
+        source.refresh(&vm);
+        assert_eq!(source.targets, vec![(1, 4)]);
+    }
+}
+
 fn resolve_line_to_offset(chunk: &crate::chunk::Chunk, line: u32) -> Option<usize> {
     let mut offset = 0;
     while offset < chunk.code.len() {

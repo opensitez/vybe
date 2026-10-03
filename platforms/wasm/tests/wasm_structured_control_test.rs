@@ -137,6 +137,56 @@ fn multi_value_if_branch_preserves_results_and_drops_temps() {
 }
 
 #[test]
+fn writer_drops_void_if_then_value_before_else() {
+    let mut chunk = Chunk::new("<script>");
+    chunk.local_count = 1;
+    make_i32(&mut chunk, 123);
+    chunk.emit_op_u16(Op::LOCAL_SET, 0, 0);
+    make_i32(&mut chunk, 0);
+    chunk.emit_if(0);
+    chunk.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    chunk.emit_else(0);
+    chunk.emit_end(0);
+    make_i32(&mut chunk, 7);
+    chunk.emit_op(Op::RETURN, 0);
+
+    let wasm = vybe_platform_wasm::write_wasm(&[chunk]);
+    let mut chunks = vybe_platform_wasm::read_wasm(&wasm)
+        .expect("void if then-arm value should be dropped before else");
+    assert_eq!(chunks.len(), 2);
+    let decoded = chunks.remove(1);
+    assert!(decoded.code.windows(4).any(|w| w == Op::ELSE.encode()));
+    assert!(decoded.code.windows(4).any(|w| w == Op::DROP.encode()));
+}
+
+#[test]
+fn writer_drops_nested_value_if_before_outer_void_else() {
+    let mut chunk = Chunk::new("<script>");
+    chunk.local_count = 1;
+    make_i32(&mut chunk, 123);
+    chunk.emit_op_u16(Op::LOCAL_SET, 0, 0);
+    make_i32(&mut chunk, 1);
+    chunk.emit_if(0);
+    make_i32(&mut chunk, 1);
+    chunk.emit_if(0);
+    chunk.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    chunk.emit_else(0);
+    chunk.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    chunk.emit_end(0);
+    chunk.emit_else(0);
+    chunk.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    chunk.emit_end(0);
+    chunk.emit_op_u16(Op::LOCAL_SET, 0, 0);
+    chunk.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    chunk.emit_op(Op::RETURN, 0);
+
+    let wasm = vybe_platform_wasm::write_wasm(&[chunk]);
+    let chunks = vybe_platform_wasm::read_wasm(&wasm)
+        .expect("nested value if should feed following local.set");
+    assert_eq!(chunks.len(), 2);
+}
+
+#[test]
 fn reader_preserves_br_if_depth() {
     let chunk = decoded_function(&[
         0x02, 0x40, // block
@@ -192,7 +242,25 @@ fn vm_rejects_non_numeric_if_condition() {
     let err = VM::new()
         .run(vec![chunk])
         .expect_err("if must require an i32 condition");
-    assert!(err.message.contains("if expected i32 condition"));
+    assert!(err.message.contains("if expected i32 condition"), "{err}");
+}
+
+#[test]
+fn vm_reports_undefined_if_origin_when_requested() {
+    let mut chunk = Chunk::new("<script>");
+    chunk.emit_op_u32(Op::GLOBAL_GET, 0, 0);
+    chunk.emit_if(0);
+    chunk.emit_op(Op::END, 0);
+    chunk.emit_op(Op::RETURN, 0);
+
+    let mut vm = VM::new();
+    vm.record_error_context(true);
+    let err = vm.run(vec![chunk]).expect_err("undefined is not an i32");
+    assert!(err.message.contains("if expected i32 condition"), "{err}");
+    let report = err.to_string();
+    assert!(report.contains("Call stack:"), "{report}");
+    assert!(report.contains("global.get"), "{report}");
+    assert!(report.contains("Undefined"), "{report}");
 }
 
 #[test]

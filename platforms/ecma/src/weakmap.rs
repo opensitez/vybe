@@ -20,6 +20,7 @@
 //!
 //! See `JS_BUILTIN_CONVENTIONS.md` for marshaling rules.
 
+use std::collections::HashSet;
 use std::sync::{Arc, Mutex, OnceLock};
 use vybe_runtime::value::{Object, ObjectKind, Value};
 use vybe_runtime::{HostContext, VM};
@@ -47,14 +48,16 @@ pub fn shared_weakmap_prototype() -> Value {
             .insert("__proto__".into(), crate::object::shared_object_prototype());
         // §24.3.3.5 — `WeakMap.prototype[@@toStringTag]` is "WeakMap".
         obj.properties
-            .insert("@@toStringTag".into(), Value::String(Arc::from("WeakMap")));
+            .insert("@@toStringTag".into(), crate::keys::string_value("WeakMap"));
+        obj.properties.insert(
+            "__nonenum".into(),
+            Value::Object(vybe_runtime::heap::alloc(Object::new_array(vec![
+                crate::keys::string_value("@@toStringTag"),
+            ]))),
+        );
         vybe_runtime::heap::alloc(obj)
     });
-    let value = Value::Object(proto.clone());
-    if let Value::Object(o) = &value {
-        crate::object::track_nonenum(o, "@@toStringTag");
-    }
-    value
+    Value::Object(proto.clone())
 }
 
 /// %WeakSet.prototype% — ECMA-262 §24.4.3. See [`shared_weakmap_prototype`].
@@ -65,14 +68,16 @@ pub fn shared_weakset_prototype() -> Value {
             .insert("__proto__".into(), crate::object::shared_object_prototype());
         // §24.4.3.4 — `WeakSet.prototype[@@toStringTag]` is "WeakSet".
         obj.properties
-            .insert("@@toStringTag".into(), Value::String(Arc::from("WeakSet")));
+            .insert("@@toStringTag".into(), crate::keys::string_value("WeakSet"));
+        obj.properties.insert(
+            "__nonenum".into(),
+            Value::Object(vybe_runtime::heap::alloc(Object::new_array(vec![
+                crate::keys::string_value("@@toStringTag"),
+            ]))),
+        );
         vybe_runtime::heap::alloc(obj)
     });
-    let value = Value::Object(proto.clone());
-    if let Value::Object(o) = &value {
-        crate::object::track_nonenum(o, "@@toStringTag");
-    }
-    value
+    Value::Object(proto.clone())
 }
 
 fn new_weakmap() -> Value {
@@ -89,7 +94,7 @@ fn new_weakmap() -> Value {
     obj.properties
         .insert("__proto__".into(), shared_weakmap_prototype());
     obj.properties
-        .insert("__type".into(), Value::String(Arc::from("WeakMap")));
+        .insert("__type".into(), crate::keys::string_value("WeakMap"));
     Value::Object(vybe_runtime::heap::alloc(obj))
 }
 
@@ -100,7 +105,7 @@ fn new_weakset() -> Value {
     obj.properties
         .insert("__proto__".into(), shared_weakset_prototype());
     obj.properties
-        .insert("__type".into(), Value::String(Arc::from("WeakSet")));
+        .insert("__type".into(), crate::keys::string_value("WeakSet"));
     Value::Object(vybe_runtime::heap::alloc(obj))
 }
 
@@ -403,6 +408,41 @@ fn weakmap_set(mapobj: &Arc<Mutex<Object>>, key: Value, val: Value) {
 
 // ── WeakSet ───────────────────────────────────────────────────────────
 
+// Transient identity index for the existing native array initialization path.
+// It never survives the operation, so the public backing remains authoritative.
+fn weakset_extend(setobj: &Arc<Mutex<Object>>, items: Vec<Value>) -> bool {
+    let mut so = setobj.lock().unwrap();
+    let mut identities = if items.len() > 8 {
+        let mut ids = HashSet::with_capacity(items.len());
+        if let ObjectKind::Array(values) = &so.kind {
+            for value in values {
+                if let Value::Object(obj) = value {
+                    ids.insert(Arc::as_ptr(obj) as usize);
+                }
+            }
+        }
+        Some(ids)
+    } else {
+        None
+    };
+    for item in items {
+        let Value::Object(obj) = &item else { return false; };
+        let fresh = match &mut identities {
+            Some(ids) => ids.insert(Arc::as_ptr(obj) as usize),
+            None => match &so.kind {
+                ObjectKind::Array(values) => key_ptr_find(values, &item).is_none(),
+                _ => true,
+            },
+        };
+        if fresh {
+            if let ObjectKind::Array(values) = &mut so.kind {
+                values.push(item);
+            }
+        }
+    }
+    true
+}
+
 fn register_weakset(vm: &mut VM) {
     vm.register_host_fn(
         "ecma:weakset",
@@ -414,19 +454,8 @@ fn register_weakset(vm: &mut VM) {
                 if let ObjectKind::Array(ref items) = srclock.kind {
                     let items = items.clone();
                     drop(srclock);
-                    let mut so = setobj.lock().unwrap();
-                    for item in items {
-                        if !matches!(item, Value::Object(_)) {
-                            return throw_invalid_weakset_value(ctx);
-                        }
-                        if let ObjectKind::Array(ref vs) = so.kind {
-                            if key_ptr_find(vs, &item).is_some() {
-                                continue;
-                            }
-                        }
-                        if let ObjectKind::Array(ref mut vs) = so.kind {
-                            vs.push(item);
-                        }
+                    if !weakset_extend(setobj, items) {
+                        return throw_invalid_weakset_value(ctx);
                     }
                 }
             }
@@ -445,19 +474,8 @@ fn register_weakset(vm: &mut VM) {
                     if let ObjectKind::Array(ref items) = srclock.kind {
                         let items = items.clone();
                         drop(srclock);
-                        let mut so = setobj.lock().unwrap();
-                        for item in items {
-                            if !matches!(item, Value::Object(_)) {
-                                return throw_invalid_weakset_value(ctx);
-                            }
-                            if let ObjectKind::Array(ref vs) = so.kind {
-                                if key_ptr_find(vs, &item).is_some() {
-                                    continue;
-                                }
-                            }
-                            if let ObjectKind::Array(ref mut vs) = so.kind {
-                                vs.push(item);
-                            }
+                        if !weakset_extend(setobj, items) {
+                            return throw_invalid_weakset_value(ctx);
                         }
                     }
                 }
@@ -535,4 +553,99 @@ fn register_weakset(vm: &mut VM) {
             Value::Bool(false)
         }),
     );
+}
+
+#[cfg(test)]
+mod weakset_batch_speedup_tests {
+    use super::*;
+    use std::hint::black_box;
+    use std::time::{Duration, Instant};
+
+    fn object() -> Value {
+        Value::Object(vybe_runtime::heap::alloc(Object::new()))
+    }
+
+    fn backing(values: Vec<Value>) -> Arc<Mutex<Object>> {
+        vybe_runtime::heap::alloc(Object::new_array(values))
+    }
+
+    fn original_extend(set: &Arc<Mutex<Object>>, items: Vec<Value>) -> bool {
+        let mut so = set.lock().unwrap();
+        for item in items {
+            if !matches!(item, Value::Object(_)) { return false; }
+            if let ObjectKind::Array(values) = &mut so.kind {
+                if key_ptr_find(values, &item).is_none() { values.push(item); }
+            }
+        }
+        true
+    }
+
+    fn assert_same_backing(a: &Arc<Mutex<Object>>, b: &Arc<Mutex<Object>>) {
+        let a = a.lock().unwrap();
+        let b = b.lock().unwrap();
+        let (ObjectKind::Array(a), ObjectKind::Array(b)) = (&a.kind, &b.kind)
+            else { panic!("expected arrays"); };
+        assert_eq!(a.len(), b.len());
+        for (a, b) in a.iter().zip(b) {
+            let (Value::Object(a), Value::Object(b)) = (a, b)
+                else { panic!("expected objects"); };
+            assert!(Arc::ptr_eq(a, b));
+        }
+    }
+
+    #[test]
+    fn batching_preserves_identity_duplicates_and_order() {
+        for count in [0, 1, 8, 9, 32, 256] {
+            let existing = object();
+            let mut items: Vec<Value> = (0..count).map(|_| object()).collect();
+            items.push(existing.clone());
+            if let Some(first) = items.first().cloned() { items.push(first); }
+            let original = backing(vec![existing.clone()]);
+            let optimized = backing(vec![existing]);
+            assert!(original_extend(&original, items.clone()));
+            assert!(weakset_extend(&optimized, items));
+            assert_same_backing(&original, &optimized);
+        }
+    }
+
+    #[test]
+    fn invalid_values_stop_at_the_same_prefix_and_release_lock() {
+        for invalid in [Value::Null, Value::Undefined, Value::I32(1), crate::keys::string_value("x")] {
+            for at in [0, 4, 9] {
+                let mut items: Vec<Value> = (0..16).map(|_| object()).collect();
+                items[at] = invalid.clone();
+                let original = backing(Vec::new());
+                let optimized = backing(Vec::new());
+                assert!(!original_extend(&original, items.clone()));
+                assert!(!weakset_extend(&optimized, items));
+                assert!(optimized.try_lock().is_ok());
+                assert_same_backing(&original, &optimized);
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "native initializer microbenchmark, not complete constructor timing"]
+    fn native_identity_batch_microbenchmark() {
+        for count in [8, 2048] {
+            let items: Vec<Value> = (0..count).map(|_| object()).collect();
+            let repeats = if count == 8 { 100 } else { 2 };
+            let mut old = Duration::ZERO;
+            let mut new = Duration::ZERO;
+            for batch in 0..10 {
+                for old_path in if batch % 2 == 0 { [true, false] } else { [false, true] } {
+                    let start = Instant::now();
+                    for _ in 0..repeats {
+                        let set = backing(Vec::new());
+                        let values = black_box(&items).clone();
+                        assert!(if old_path { original_extend(&set, values) }
+                            else { weakset_extend(&set, values) });
+                        black_box(set);
+                    }
+                    if old_path { old += start.elapsed(); } else { new += start.elapsed(); }
+                }
+            }
+            eprintln!("native WeakSet array initialization, items={count}, calls={}: linear-scans={old:?}, transient-index={new:?}", repeats * 10);
+        }
+    }
 }

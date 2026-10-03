@@ -559,8 +559,8 @@ fn _bytes_shim() -> Bytes {
 mod tests {
     use super::{
         PHP_SESSION_COOKIE_NAME, PHP_SESSION_ID_GLOBAL, PHP_SESSION_STARTED_GLOBAL,
-        PHP_SESSION_USED_GLOBAL,
-        PHP_SESSION_STORE, inject_superglobals, install_wasi_http_request, persist_superglobals,
+        PHP_SESSION_STORE, PHP_SESSION_USED_GLOBAL, inject_superglobals, install_wasi_http_request,
+        persist_superglobals,
     };
     use bytes::Bytes;
     use http::Request;
@@ -1136,7 +1136,9 @@ mod tests {
         let cookie = response
             .headers
             .iter()
-            .find(|(name, value)| name.eq_ignore_ascii_case("set-cookie") && value.starts_with("auth="))
+            .find(|(name, value)| {
+                name.eq_ignore_ascii_case("set-cookie") && value.starts_with("auth=")
+            })
             .map(|(_, value)| value.as_str())
             .expect("auth set-cookie header");
         assert!(cookie.contains("; Path=/"));

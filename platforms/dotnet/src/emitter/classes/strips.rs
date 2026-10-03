@@ -109,9 +109,8 @@ pub fn classes() -> &'static [DotnetClass] {
             ctor_arity: 0,
             widget_host_fn: None,
         },
-        // `ToolStripDropDownItem` is what makes an item OPEN something —
-        // declared so `DropDownItems` resolves, even though drop-downs do not
-        // open yet.
+        // `ToolStripDropDownItem` owns the nested menu reached by
+        // `DropDownItems`; its HTML disclosure opens in either browser engine.
         DotnetClass {
             name: "ToolStripDropDownItem",
             parent: Some("ToolStripItem"),

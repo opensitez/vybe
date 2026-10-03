@@ -653,6 +653,11 @@ fn dotnet_instance_method_return_type(class_name: &str, method_name: &str) -> Op
     // below did nothing until the suffix came off. `.rsplit('.')` strips the
     // namespace and nothing else.
     let class_head = class.split('<').next().unwrap_or(class).trim();
+    if class_head.eq_ignore_ascii_case("CheckedListBox")
+        && method_name.eq_ignore_ascii_case("GetItemChecked")
+    {
+        return Some("Boolean".into());
+    }
     // ⛔ THE CHAIN'S TYPE IS WHAT MAKES `ToString` REACHABLE. `"s".AsMemory()`
     // and `.Slice(…)` both answer a memory view, and without saying so the
     // receiver read back untyped — so `ReadOnlyMemory<char>.ToString()` fell

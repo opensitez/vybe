@@ -610,6 +610,28 @@ fn register_flat_api(vm: &mut VM) {
     sql_fn(
         vm,
         "wasi:sql",
+        "selectDatabase",
+        vec![receiver(), ValType::String],
+        vec![ValType::Bool],
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            let id = get_conn_id(args);
+            let database = arg_str(args, 1);
+            match get_driver(id).and_then(|driver| driver.select_database(&database)) {
+                Ok(()) => {
+                    clear_error(id);
+                    Value::Bool(true)
+                }
+                Err(error) => {
+                    record_error(id, &error);
+                    Value::Bool(false)
+                }
+            }
+        }),
+    );
+
+    sql_fn(
+        vm,
+        "wasi:sql",
         "createCommand",
         vec![receiver()],
         vec![ValType::Any],

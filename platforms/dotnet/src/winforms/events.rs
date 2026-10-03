@@ -136,11 +136,32 @@ pub enum EventType {
 
 impl EventType {
     pub const DOM_EVENT_NAMES: &'static [&'static str] = &[
-        "Click", "DoubleClick", "DblClick", "MouseClick", "MouseDoubleClick",
-        "MouseDown", "MouseUp", "MouseMove", "MouseEnter", "MouseLeave", "MouseWheel",
-        "KeyDown", "KeyUp", "KeyPress", "GotFocus", "LostFocus", "Enter", "Leave",
-        "TextChanged", "SelectedIndexChanged", "SelectedValueChanged", "SelectionChanged",
-        "CheckedChanged", "ValueChanged", "Scroll", "LinkClicked",
+        "Click",
+        "DoubleClick",
+        "DblClick",
+        "MouseClick",
+        "MouseDoubleClick",
+        "MouseDown",
+        "MouseUp",
+        "MouseMove",
+        "MouseEnter",
+        "MouseLeave",
+        "MouseWheel",
+        "KeyDown",
+        "KeyUp",
+        "KeyPress",
+        "GotFocus",
+        "LostFocus",
+        "Enter",
+        "Leave",
+        "TextChanged",
+        "SelectedIndexChanged",
+        "SelectedValueChanged",
+        "SelectionChanged",
+        "CheckedChanged",
+        "ValueChanged",
+        "Scroll",
+        "LinkClicked",
     ];
 
     pub fn dom_event_for_control(&self, control: &str) -> Option<&'static str> {
@@ -148,7 +169,9 @@ impl EventType {
         match self {
             EventType::Click | EventType::MouseClick => Some("click"),
             EventType::LinkClicked if control == "linklabel" => Some("click"),
-            EventType::DoubleClick | EventType::DblClick | EventType::MouseDoubleClick => Some("dblclick"),
+            EventType::DoubleClick | EventType::DblClick | EventType::MouseDoubleClick => {
+                Some("dblclick")
+            }
             EventType::MouseDown => Some("mousedown"),
             EventType::MouseUp => Some("mouseup"),
             EventType::MouseMove => Some("mousemove"),
@@ -687,7 +710,7 @@ impl EventType {
             // ListView / CheckedListBox
             EventType::ItemCheck => matches!(
                 control_type,
-                Some(ControlType::ListView) | Some(ControlType::ListBox)
+                Some(ControlType::ListView) | Some(ControlType::CheckedListBox)
             ),
 
             // MaskedTextBox

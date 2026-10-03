@@ -260,7 +260,7 @@ fn emit_new_stmt(chunks: &mut [Chunk], current: usize, conn: u16, sql: u16, line
     // Rows are fetched on the first `step`, not here — `prepare` in this
     // surface stashes SQL and nothing else.
     lget(&mut chunks[current], stmt, line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     struct_set_key(&mut chunks[current], "__rows", line);
 
     lget(&mut chunks[current], stmt, line);
@@ -268,7 +268,7 @@ fn emit_new_stmt(chunks: &mut [Chunk], current: usize, conn: u16, sql: u16, line
     struct_set_key(&mut chunks[current], "__cursor", line);
 
     lget(&mut chunks[current], stmt, line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     struct_set_key(&mut chunks[current], "__row", line);
 
     // Bound parameters accumulate here and are passed to the host as a params
@@ -307,7 +307,7 @@ pub fn emit_reset(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     push_i32(&mut chunks[current], 0, line);
     struct_set_key(&mut chunks[current], "__cursor", line);
     lget(&mut chunks[current], args[0], line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     struct_set_key(&mut chunks[current], "__rows", line);
     push_i32(&mut chunks[current], SQLITE_OK, line);
 }

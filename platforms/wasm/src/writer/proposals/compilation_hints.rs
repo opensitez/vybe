@@ -69,13 +69,13 @@ pub const INLINING_SECTION_NAME: &str = "metadata.code.inlining";
 /// writer to skip the section entirely).
 pub fn encode_compilation_order_payload(
     chunks: &[Chunk],
+    host_imports_len: usize,
     rt_imports_len: usize,
 ) -> Option<Vec<u8>> {
     if chunks.is_empty() {
         return None;
     }
 
-    let host_imports_len = chunks.first().map(|c| c.imports.len()).unwrap_or(0);
     let func_base = host_imports_len + rt_imports_len;
 
     // Script chunk (idx 0) is the entry — always hot.
@@ -114,8 +114,11 @@ pub fn encode_compilation_order_payload(
 /// The section must appear **before the code section** in the binary
 /// (spec requirement). The caller (`wasm/mod.rs`) is responsible for
 /// emitting this section at the correct position.
-pub fn encode_branch_hint_payload(chunks: &[Chunk], rt_imports_len: usize) -> Option<Vec<u8>> {
-    let host_imports_len = chunks.first().map(|c| c.imports.len()).unwrap_or(0);
+pub fn encode_branch_hint_payload(
+    chunks: &[Chunk],
+    host_imports_len: usize,
+    rt_imports_len: usize,
+) -> Option<Vec<u8>> {
     let func_base = host_imports_len + rt_imports_len;
 
     let mut per_func: Vec<(u32, Vec<(u32, u8)>)> = Vec::new();
@@ -150,8 +153,11 @@ pub fn encode_branch_hint_payload(chunks: &[Chunk], rt_imports_len: usize) -> Op
 /// Encode `metadata.code.inlining`. Mark **leaf functions** (no outgoing
 /// `CALL`/`CALL_REF`/`CALL_INDIRECT`) as "inline eligible" so engines
 /// can inline them aggressively. Priority 0 = strongly inline.
-pub fn encode_inlining_payload(chunks: &[Chunk], rt_imports_len: usize) -> Option<Vec<u8>> {
-    let host_imports_len = chunks.first().map(|c| c.imports.len()).unwrap_or(0);
+pub fn encode_inlining_payload(
+    chunks: &[Chunk],
+    host_imports_len: usize,
+    rt_imports_len: usize,
+) -> Option<Vec<u8>> {
     let func_base = host_imports_len + rt_imports_len;
 
     let mut hints: Vec<(u32, u8)> = Vec::new();

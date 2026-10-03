@@ -49,12 +49,14 @@ use crate::writer::sections::rt_globals;
 use crate::writer::types::WasmTypeContext;
 use vybe_runtime::Chunk;
 use vybe_runtime::Op;
+use vybe_runtime::chunk::Import;
 
 /// Produce the payload of the `"name"` custom section for the given
 /// chunks + declared imports/globals. The caller wraps this in a
 /// `SECTION_CUSTOM` with name `"name"`.
 pub fn encode_name_section_payload(
     chunks: &[Chunk],
+    host_imports: &[Import],
     rt_imports: &[(&str, &str)],
     type_ctx: &WasmTypeContext,
 ) -> Vec<u8> {
@@ -72,17 +74,15 @@ pub fn encode_name_section_payload(
     // Subsection 1: function names — host imports then rt imports then chunks.
     {
         let mut sub = Vec::new();
-        let host_imports_len = chunks.first().map(|c| c.imports.len()).unwrap_or(0);
+        let host_imports_len = host_imports.len();
         let total = host_imports_len + rt_imports.len() + chunks.len();
         write_leb128_u32(&mut sub, total as u32);
         let mut idx: u32 = 0;
         // Host imports
-        if let Some(chunk) = chunks.first() {
-            for imp in &chunk.imports {
-                write_leb128_u32(&mut sub, idx);
-                write_name(&mut sub, &format!("{}.{}", imp.module, imp.name));
-                idx += 1;
-            }
+        for imp in host_imports {
+            write_leb128_u32(&mut sub, idx);
+            write_name(&mut sub, &format!("{}.{}", imp.module, imp.name));
+            idx += 1;
         }
         // Runtime / builtin imports
         for (module, name) in rt_imports {
@@ -104,7 +104,7 @@ pub fn encode_name_section_payload(
     // source-level names here so we use the convention directly.
     {
         let mut sub = Vec::new();
-        let host_imports_len = chunks.first().map(|c| c.imports.len()).unwrap_or(0);
+        let host_imports_len = host_imports.len();
         let func_base = host_imports_len + rt_imports.len();
         write_leb128_u32(&mut sub, chunks.len() as u32);
         for (ci, chunk) in chunks.iter().enumerate() {
@@ -132,7 +132,7 @@ pub fn encode_name_section_payload(
     // Subsection 3: label names — per-function indirect map of
     // block/loop/if labels in the order they appear in the bytecode.
     {
-        let host_imports_len = chunks.first().map(|c| c.imports.len()).unwrap_or(0);
+        let host_imports_len = host_imports.len();
         let func_base = host_imports_len + rt_imports.len();
         let mut per_func: Vec<(u32, Vec<String>)> = Vec::new();
         for (ci, chunk) in chunks.iter().enumerate() {

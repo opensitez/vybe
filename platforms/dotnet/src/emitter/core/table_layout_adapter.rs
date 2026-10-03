@@ -2,8 +2,8 @@
 
 use vybe_compiler::primitives::class_slots::{self, ClassSlot, Dest, ObjSource, PlainNames};
 use vybe_compiler::primitives::{gui, ops, strings};
-use vybe_runtime::opcode::Op;
 use vybe_runtime::Chunk;
+use vybe_runtime::opcode::Op;
 
 fn field(chunk: &mut Chunk, object: u16, name: &str, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, object, line);
@@ -51,7 +51,13 @@ pub fn emit_styles_count(chunk: &mut Chunk, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_SET, axis, line);
     document(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, owner, line);
-    axis_name(chunk, axis, "data-column-style-count", "data-row-style-count", line);
+    axis_name(
+        chunk,
+        axis,
+        "data-column-style-count",
+        "data-row-style-count",
+        line,
+    );
     let getter = chunk.add_import("web:dom", "getAttribute");
     chunk.emit_call(getter, 3, line);
     let number = chunk.add_import("ecma:number", "Number");
@@ -126,7 +132,13 @@ pub fn emit_style_add(chunk: &mut Chunk, line: u32) {
 
     document(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, owner, line);
-    axis_name(chunk, axis, "grid-template-columns", "grid-template-rows", line);
+    axis_name(
+        chunk,
+        axis,
+        "grid-template-columns",
+        "grid-template-rows",
+        line,
+    );
     chunk.emit_op_u16(Op::LOCAL_GET, tracks, line);
     let set_style = chunk.add_import("web:cssom", "setStyleProperty");
     chunk.emit_call(set_style, 4, line);
@@ -138,7 +150,13 @@ pub fn emit_style_add(chunk: &mut Chunk, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_SET, index, line);
     document(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, owner, line);
-    axis_name(chunk, axis, "data-column-style-count", "data-row-style-count", line);
+    axis_name(
+        chunk,
+        axis,
+        "data-column-style-count",
+        "data-row-style-count",
+        line,
+    );
     chunk.emit_op_u16(Op::LOCAL_GET, index, line);
     chunk.emit_i32_const(1, line);
     chunk.emit_op(Op::I32_ADD, line);

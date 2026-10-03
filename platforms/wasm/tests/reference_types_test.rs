@@ -391,20 +391,29 @@ fn table_copy_zero_count_at_table_end_is_noop() {
 }
 
 #[test]
-fn table_init_after_elem_drop_traps() {
-    let mut vm = VM::new();
-
-    let mut chunk = Chunk::new("<script>");
-    chunk.emit_op_idx(Op::ELEM_DROP, 0u32, 0);
-    chunk.emit_i32_const(0, 0); // dst
-    chunk.emit_i32_const(0, 0); // src
-    chunk.emit_i32_const(0, 0); // count
-    chunk.emit_op_idx_idx(Op::TABLE_INIT, 0u32, 0u32, 0);
-    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
-    chunk.emit_op(Op::RETURN, 0);
-
-    let err = vm.run(vec![chunk]).unwrap_err().to_string();
-    assert!(err.contains("table.init") && err.contains("dropped"));
+fn table_init_after_elem_drop_obeys_empty_segment_bounds() {
+    // elem.drop empties an existing segment: copying zero elements at offset
+    // zero remains valid; copying any elements or using a nonzero source traps.
+    for (source, count, succeeds) in [(0, 0, true), (0, 1, false), (1, 0, false)] {
+        let mut vm = VM::new();
+        vm.wasm_tables = vec![vec![Value::Null]];
+        let mut chunk = Chunk::new("<script>");
+        chunk.elem_segments = vec![vec![Value::Null]];
+        chunk.emit_op_idx(Op::ELEM_DROP, 0u32, 0);
+        chunk.emit_i32_const(0, 0); // dst
+        chunk.emit_i32_const(source, 0);
+        chunk.emit_i32_const(count, 0);
+        chunk.emit_op_idx_idx(Op::TABLE_INIT, 0u32, 0u32, 0);
+        chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
+        chunk.emit_op(Op::RETURN, 0);
+        let result = vm.run(vec![chunk]);
+        if succeeds {
+            result.unwrap();
+        } else {
+            let err = result.unwrap_err().to_string();
+            assert!(err.contains("table.init") && err.contains("out of bounds"));
+        }
+    }
 }
 
 // ── ref.eq / ref.is_null / ref.as_non_null ───────────────────────────────

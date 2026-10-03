@@ -5,9 +5,9 @@
 //! `Form.Activate` / `Form.CenterToScreen` reach `web:window` through
 //! `activeDocument().defaultView`.
 
+use vybe_compiler::primitives::class_slots::{self, ClassSlot, Dest, ObjSource, PlainNames};
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::{Op, heaptype};
-use vybe_compiler::primitives::class_slots::{self, ClassSlot, Dest, ObjSource, PlainNames};
 
 /// HTML's `Window` — `alert`/`confirm` and the window verbs, all registered in
 /// `platforms/web/src/window.rs`.
@@ -45,7 +45,7 @@ pub fn emit_form_clientsize_get(chunks: &mut [Chunk], current: usize, line: u32)
         chunk,
         "Size",
         &["width", "height"],
-        line,
+        line
     );
 }
 

@@ -253,6 +253,9 @@ pub fn emit_math(name: &str, chunks: &mut [Chunk], current: usize, line: u32) ->
 }
 
 pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) -> bool {
+    if super::dirent_adapter::emit(name, chunks, current, argc, line) {
+        return true;
+    }
     if super::sdl::emit_sdl(name, chunks, current, argc, line) {
         return true;
     }
@@ -273,6 +276,39 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             super::stdio_format::emit_sprintf(chunks, current, argc, line);
             let idx = chunks[current].add_import("web:console", "log");
             chunks[current].emit_call(idx, 1, line);
+            true
+        }
+        "libc.string.char_to_str" | "libc.string.strlen" => {
+            super::string_memory::emit_read(chunks, current, name.ends_with("char_to_str"), line);
+            true
+        }
+        "libc.string.byte_copy" => {
+            super::string_memory::emit_byte_copy(chunks, current, line);
+            true
+        }
+        "libc.string.binary_byte_copy" => {
+            super::string_memory::emit_binary_byte_copy(chunks, current, line);
+            true
+        }
+        "libc.string.strrchr_linear" => {
+            super::string_memory::emit_strrchr_linear(chunks, current, line);
+            true
+        }
+        "libc.string.strncpy" => {
+            super::string_memory::emit_strncpy(chunks, current, line);
+            true
+        }
+        "libc.string.strdup" => {
+            super::string_memory::emit_strdup(chunks, current, line);
+            true
+        }
+        "libc.string.pointer_add" | "libc.string.pointer_write" => {
+            super::string_memory::emit_pointer(
+                chunks,
+                current,
+                name.ends_with("pointer_write"),
+                line,
+            );
             true
         }
         "libc.stdio.sprintf" => {

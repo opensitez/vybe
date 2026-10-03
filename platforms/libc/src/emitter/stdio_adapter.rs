@@ -529,8 +529,9 @@ impl<'a> PrintfNSplitter<'a> {
     }
 }
 
-/// C walker-compatible lowering: `puts(text)` -> `__c_fputs_h(text + "\n", 1)`.
+/// Decode a C string before appending the newline, regardless of its backing.
 pub fn puts_to_c_fputs(text: Expression) -> Expression {
+    let text = call(ident("__libc_char_to_str"), vec![text]);
     call(
         ident("__c_fputs_h"),
         vec![
@@ -1173,6 +1174,17 @@ pub fn stdin_runtime_helpers() -> Vec<Statement> {
 /// ```text
 /// function __libc_char_to_str(v) {
 ///   if (typeof v === "string") return v.split("\0")[0];
+///   if (typeof v === "number") {
+///     var out = "";
+///     var i = 0;
+///     while (true) {
+///       var c = __c_ptr_i32_load8_u(v + i);
+///       if (c == 0) return out;
+///       out = out + String.fromCharCode(c);
+///       i = i + 1;
+///     }
+///     return out;
+///   }
 ///   var a = v;
 ///   if (v != null && v.__ref_kind === "carray") a = v.__base.slice(v.__idx);
 ///   var r = "";
@@ -1223,7 +1235,55 @@ pub fn char_to_str_runtime_helper() -> Statement {
                     bin(BinOp::NotEq, ident("v"), e(ExprKind::Lit(Literal::Null))),
                     bin(BinOp::Eq, member(ident("v"), "__ref_kind"), lit_str("cell")),
                 ),
-                vec![expr_stmt(assign_expr(ident("v"), member(ident("v"), "__value")))],
+                vec![expr_stmt(assign_expr(
+                    ident("v"),
+                    member(ident("v"), "__value"),
+                ))],
+                None,
+            ),
+            if_stmt(
+                bin(
+                    BinOp::Eq,
+                    e(ExprKind::Unary {
+                        op: UnaryOp::Typeof,
+                        expr: Box::new(ident("v")),
+                    }),
+                    lit_str("number"),
+                ),
+                vec![
+                    var_decl("out", lit_str("")),
+                    var_decl("i", lit_int(0)),
+                    while_stmt(
+                        e(ExprKind::Lit(Literal::Bool(true))),
+                        vec![
+                            var_decl(
+                                "c",
+                                call(
+                                    ident("__c_ptr_i32_load8_u"),
+                                    vec![bin(BinOp::Add, ident("v"), ident("i"))],
+                                ),
+                            ),
+                            if_stmt(
+                                bin(BinOp::Eq, ident("c"), lit_int(0)),
+                                vec![ret(ident("out"))],
+                                None,
+                            ),
+                            expr_stmt(assign_expr(
+                                ident("out"),
+                                bin(
+                                    BinOp::Concat,
+                                    ident("out"),
+                                    call(member(ident("String"), "fromCharCode"), vec![ident("c")]),
+                                ),
+                            )),
+                            expr_stmt(assign_expr(
+                                ident("i"),
+                                bin(BinOp::Add, ident("i"), lit_int(1)),
+                            )),
+                        ],
+                    ),
+                    ret(ident("out")),
+                ],
                 None,
             ),
             var_decl("a", ident("v")),
@@ -1314,7 +1374,10 @@ pub fn strncpy_carray_runtime_helper() -> Statement {
         "__libc_strncpy_carray",
         vec!["dest", "src", "n"],
         vec![
-            var_decl("text", call(ident("__libc_char_to_str"), vec![ident("src")])),
+            var_decl(
+                "text",
+                call(ident("__libc_char_to_str"), vec![ident("src")]),
+            ),
             var_decl(
                 "take",
                 ternary(

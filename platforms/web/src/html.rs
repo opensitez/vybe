@@ -41,7 +41,10 @@ use vybe_runtime::value::{Object, ObjectKind};
 use vybe_runtime::vm::{HostFnDecl, ResourceBinding, ResourceMemberKind};
 use vybe_runtime::{FuncSig, HostContext, Param, VM, ValType, Value};
 
-use crate::engine::{DOCUMENT, DocumentId, DomOp, DomValue, EventOp, EventValue, NodeId, UiEventFields, apply, events};
+use crate::engine::{
+    DOCUMENT, DocumentId, DomOp, DomValue, EventOp, EventValue, NodeId, UiEventFields, apply,
+    events,
+};
 
 /// `(document, node, event type)` → listeners, in registration order.
 type ListenerKey = (DocumentId, NodeId, String);
@@ -140,7 +143,13 @@ pub fn add_event_listener(document: DocumentId, node: NodeId, kind: &str, callba
         .entry((document, node, kind.to_string()))
         .or_default()
         .push(callback);
-    apply(document, DomOp::ObserveEvent { node, kind: kind.to_string() });
+    apply(
+        document,
+        DomOp::ObserveEvent {
+            node,
+            kind: kind.to_string(),
+        },
+    );
 }
 
 /// `EventTarget.removeEventListener` — DOM §2.7.
@@ -197,7 +206,13 @@ pub fn remove_event_listener(document: DocumentId, node: NodeId, kind: &str, cal
     if list.is_empty() {
         all.remove(&key);
         drop(all);
-        apply(document, DomOp::UnobserveEvent { node, kind: kind.to_string() });
+        apply(
+            document,
+            DomOp::UnobserveEvent {
+                node,
+                kind: kind.to_string(),
+            },
+        );
     }
 }
 
@@ -262,8 +277,18 @@ pub fn pending_dispatches(document: DocumentId) -> Vec<(Value, Value)> {
     // The native window supplies raw UI events. Deliver them to the document's
     // EventTarget listeners just as a browser delivers input to a page. A page
     // with no raw-input listeners leaves the polling queue untouched.
-    const INPUT: [&str; 6] = ["keydown", "keyup", "mousedown", "mouseup", "mousemove", "wheel"];
-    if INPUT.iter().any(|kind| !listeners_for(document, DOCUMENT, kind).is_empty()) {
+    const INPUT: [&str; 6] = [
+        "keydown",
+        "keyup",
+        "mousedown",
+        "mouseup",
+        "mousemove",
+        "wheel",
+    ];
+    if INPUT
+        .iter()
+        .any(|kind| !listeners_for(document, DOCUMENT, kind).is_empty())
+    {
         while let EventValue::Event(input) = events(EventOp::Poll) {
             let callbacks = listeners_for(document, DOCUMENT, &input.kind);
             if callbacks.is_empty() {
@@ -272,12 +297,24 @@ pub fn pending_dispatches(document: DocumentId) -> Vec<(Value, Value)> {
             let event = crate::ui_events::event_object(&input);
             if let Value::Object(object) = &event {
                 let mut object = object.lock().unwrap();
-                object.properties.insert("target".into(), Value::F64(DOCUMENT as f64));
-                object.properties.insert("currentTarget".into(), Value::F64(DOCUMENT as f64));
-                object.properties.insert("bubbles".into(), Value::Bool(true));
-                object.properties.insert("cancelable".into(), Value::Bool(true));
+                object
+                    .properties
+                    .insert("target".into(), Value::F64(DOCUMENT as f64));
+                object
+                    .properties
+                    .insert("currentTarget".into(), Value::F64(DOCUMENT as f64));
+                object
+                    .properties
+                    .insert("bubbles".into(), Value::Bool(true));
+                object
+                    .properties
+                    .insert("cancelable".into(), Value::Bool(true));
             }
-            out.extend(callbacks.into_iter().map(|callback| (callback, event.clone())));
+            out.extend(
+                callbacks
+                    .into_iter()
+                    .map(|callback| (callback, event.clone())),
+            );
         }
     }
     out

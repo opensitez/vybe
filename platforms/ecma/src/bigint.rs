@@ -20,6 +20,11 @@ use std::sync::Arc;
 use vybe_runtime::bigint::BigIntVal;
 use vybe_runtime::{HostContext, VM, Value};
 
+#[inline]
+fn owned_string_value(text: String) -> Value {
+    crate::keys::owned_string_value(text)
+}
+
 /// §7.1.14 StringToBigInt — exact at any length. None = invalid → the
 /// caller decides (BigInt() throws SyntaxError; coercions treat as 0).
 pub fn parse_bigint_str(s: &str) -> Option<BigIntVal> {
@@ -101,7 +106,7 @@ pub fn register(vm: &mut VM) {
         "toLocaleString",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let n = to_bigint(args.first().unwrap_or(&Value::Null));
-            Value::String(Arc::from(n.to_string().as_str()))
+            owned_string_value(n.to_string())
         }),
     );
 
@@ -113,7 +118,7 @@ pub fn register(vm: &mut VM) {
             let n = to_bigint(args.first().unwrap_or(&Value::Null));
             let radix = args.get(1).map(|v| v.as_f64() as u32).unwrap_or(10);
             let radix = if (2..=36).contains(&radix) { radix } else { 10 };
-            Value::String(Arc::from(n.to_string_radix(radix).as_str()))
+            owned_string_value(n.to_string_radix(radix))
         }),
     );
 
@@ -125,7 +130,7 @@ pub fn register(vm: &mut VM) {
             let n = to_bigint(args.first().unwrap_or(&Value::Null));
             let radix = args.get(1).map(|v| v.as_f64() as u32).unwrap_or(10);
             let radix = if (2..=36).contains(&radix) { radix } else { 10 };
-            Value::String(Arc::from(n.to_string_radix(radix).as_str()))
+            owned_string_value(n.to_string_radix(radix))
         }),
     );
 

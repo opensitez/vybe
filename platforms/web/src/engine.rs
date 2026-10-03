@@ -17,8 +17,8 @@
 //! Unlike canvas ops these answer back — `createElement` yields a node,
 //! `getAttribute` a string or null — so each `apply` returns a value.
 
-use std::sync::{Arc, OnceLock, RwLock};
 use serde::{Deserialize, Serialize};
+use std::sync::{Arc, OnceLock, RwLock};
 
 /// A document handle. One per browsing context — `window.document`.
 pub type DocumentId = u64;
@@ -341,8 +341,8 @@ pub enum DomOp {
 
     /// Observe a guest listener on this exact EventTarget. The browser engine
     /// owns propagation; the guest registry owns the callback value.
-    ObserveEvent { node: NodeId, kind: String },
-    UnobserveEvent { node: NodeId, kind: String },
+    ObserveEvent { node: NodeId, kind: String ,},
+    UnobserveEvent { node: NodeId, kind: String ,},
 
     /// Drain what the user did, as DOM events (`click`, `input`, `change`).
     /// The surface turns each into an `Event` object and calls the listeners

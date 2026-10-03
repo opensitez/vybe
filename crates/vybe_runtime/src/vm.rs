@@ -931,9 +931,12 @@ impl<'a> HostContext<'a> {
         }
         let registry = unsafe { &*self.type_registry_slot };
         let normalized = class.trim_start_matches('\\').replace('\\', ".");
-        let typedef = registry.types.iter().find(|ty|
-            ty.name.trim_start_matches('\\').replace('\\', ".")
-                .eq_ignore_ascii_case(&normalized))?;
+        let typedef = registry.types.iter().find(|ty| {
+            ty.name
+                .trim_start_matches('\\')
+                .replace('\\', ".")
+                .eq_ignore_ascii_case(&normalized)
+        })?;
         let signature = format!("{}$sig", method.to_ascii_lowercase());
         let instance = typedef.field_defs.iter().any(|field|
             field.name.to_ascii_lowercase().starts_with(&signature));
@@ -1238,7 +1241,7 @@ impl<'a> HostContext<'a> {
     /// Source-declared parameter names, indexed by argument slot, for a
     /// compiled function. An unnamed slot remains `None`; callers must not
     /// infer a parameter name from a compiler-generated local.
-    pub fn source_parameter_names_for_chunk(&self, chunk_name: &str) -> Option<Vec<Option<String>>> {
+    pub fn source_parameter_names_for_chunk(&self, chunk_name: &str,) -> Option<Vec<Option<String>>> {
         if self.chunks_slot.is_null() {
             return None;
         }
@@ -1625,7 +1628,9 @@ impl<'a> HostContext<'a> {
     /// that needed them has finished. A reference held only there must not
     /// suppress a source language's last-reference destructor.
     pub fn is_reachable_from_program(&self, target: &Value) -> bool {
-        let Value::Object(wanted) = target else { return false };
+        let Value::Object(wanted) = target else {
+            return false;
+        };
         if self.stack_slot.is_null()
             || self.frames_slot.is_null()
             || self.chunks_slot.is_null()
@@ -1645,7 +1650,9 @@ impl<'a> HostContext<'a> {
         };
         let mut pending: Vec<Value> = globals.clone();
         for (frame_index, frame) in frames.iter().enumerate() {
-            let Some(chunk) = chunks.get(frame.chunk_index) else { continue };
+            let Some(chunk) = chunks.get(frame.chunk_index) else {
+                continue;
+            };
             let end = frames
                 .get(frame_index + 1)
                 .map_or(stack.len(), |next| next.base)
@@ -1666,7 +1673,9 @@ impl<'a> HostContext<'a> {
         }
         let mut seen = HashSet::new();
         while let Some(value) = pending.pop() {
-            let Value::Object(object) = value else { continue };
+            let Value::Object(object) = value else {
+                continue;
+            };
             if Arc::ptr_eq(&object, wanted) {
                 return true;
             }
@@ -1994,7 +2003,7 @@ pub enum ImportTarget {
     /// Index into VM::host_fns
     Host(usize),
     /// Chunk index + arity — calls a function defined in another component
-    ChunkFn { chunk_index: usize, arity: u8 },
+    ChunkFn { chunk_index: usize, arity: u8 ,},
     /// Runtime global lookup (stdlib functions registered via globals)
     StdlibRedirect(String),
     /// js-string-builtins imported string constant — returns the string value.
@@ -2326,9 +2335,7 @@ impl ResolvedCallTarget {
             ImportTarget::JsUndefined(builtin) => Self::JsUndefined(*builtin),
             ImportTarget::JsString(builtin) => Self::JsString(*builtin),
             ImportTarget::EcmaNumber(builtin, host_idx) => Self::EcmaNumber(*builtin, *host_idx),
-            ImportTarget::EcmaBoolean(builtin, host_idx) => {
-                Self::EcmaBoolean(*builtin, *host_idx)
-            }
+            ImportTarget::EcmaBoolean(builtin, host_idx) => Self::EcmaBoolean(*builtin, *host_idx),
             ImportTarget::EcmaObject(builtin, host_idx) => Self::EcmaObject(*builtin, *host_idx),
             ImportTarget::EcmaArray(builtin, host_idx) => Self::EcmaArray(*builtin, *host_idx),
             ImportTarget::Canon(builtin, type_idx) => Self::Canon(*builtin, *type_idx),
@@ -2342,9 +2349,7 @@ impl ResolvedCallTarget {
     pub(crate) fn from_import_target_owned(target: ImportTarget) -> Self {
         match target {
             ImportTarget::Host(host_idx) => Self::Host(host_idx),
-            ImportTarget::ChunkFn { chunk_index, arity } => {
-                Self::ChunkFn { chunk_index, arity }
-            }
+            ImportTarget::ChunkFn { chunk_index, arity } => Self::ChunkFn { chunk_index, arity },
             ImportTarget::JspiSuspend => Self::JspiSuspend,
             ImportTarget::JspiSuspendEager => Self::JspiSuspendEager,
             ImportTarget::JspiYield => Self::JspiYield,
@@ -4306,9 +4311,15 @@ impl VM {
     pub fn current_source_scope(&self) -> Option<(String, Vec<(u16, String, Value)>)> {
         let frame = self.frames.last()?;
         let chunk = self.chunks.get(frame.chunk_index)?;
-        let locals = chunk.local_names.iter().filter(|entry| entry.is_source())
-            .filter_map(|entry| self.stack.get(frame.base + entry.slot as usize)
-                .map(|value| (entry.slot, entry.name.clone(), value.clone())))
+        let locals = chunk
+            .local_names
+            .iter()
+            .filter(|entry| entry.is_source())
+            .filter_map(|entry| {
+                self.stack
+                    .get(frame.base + entry.slot as usize)
+                    .map(|value| (entry.slot, entry.name.clone(), value.clone()))
+            })
             .collect();
         Some((chunk.name.clone(), locals))
     }
@@ -4774,9 +4785,10 @@ impl VM {
             };
             let line = chunk.get_line(step.offset);
             let instruction = crate::debug::disassemble_instruction(chunk, step.offset).0;
-            let top = step.stack_top.as_ref().map_or("[]".to_string(), |v| {
-                format!("[{}: {}]", v.tag().name(), v)
-            });
+            let top = step
+                .stack_top
+                .as_ref()
+                .map_or("[]".to_string(), |v| format!("[{}: {}]", v.tag().name(), v));
             let _ = write!(
                 out,
                 "\n    {}@{}{} {}  top={}",
@@ -5174,7 +5186,7 @@ impl VM {
     fn checked_memory_end(
         addr: usize,
         size: usize,
-        limit: usize,
+        limit: usize
     ) -> Result<usize, crate::VMError> {
         addr.checked_add(size)
             .filter(|&end| end <= limit)
@@ -5583,8 +5595,11 @@ impl VM {
         // the regions being left and nothing enclosing them.
         let exited = &self.label_stack[new_len..];
         if exited.iter().any(|label| label.is_try) {
-            self.exception_handlers
-                .retain(|h| !exited.iter().any(|label| label.is_try && label.try_group == h.group));
+            self.exception_handlers.retain(|h| {
+                !exited
+                    .iter()
+                    .any(|label| label.is_try && label.try_group == h.group)
+            });
         }
         self.label_stack.truncate(new_len);
     }
@@ -6959,23 +6974,66 @@ impl VM {
                         }
                     }
                 } else if next_ip + 6 < code.len() && Op::from_code_at(code, next_ip) == Op::CALL {
-                    if call_matches(next_ip, 1, |site| matches!(site, NativeCallSiteTarget::JsNumber(JsNumberBuiltin::ToF64)), "wasm:js-number", "toF64") {
+                    if call_matches(
+                        next_ip,
+                        1,
+                        |site| {
+                            matches!(site, NativeCallSiteTarget::JsNumber(JsNumberBuiltin::ToF64))
+                        },
+                        "wasm:js-number",
+                        "toF64",
+                    ) {
                         fast_paths[opcode_start] = LocalFastPath::LocalGetJsNumberToF64 {
                             next_ip: (next_ip + 7) as u32,
                         };
-                    } else if call_matches(next_ip, 1, |site| matches!(site, NativeCallSiteTarget::JsNumber(JsNumberBuiltin::ToI32)), "wasm:js-number", "toI32") {
+                    } else if call_matches(
+                        next_ip,
+                        1,
+                        |site| {
+                            matches!(site, NativeCallSiteTarget::JsNumber(JsNumberBuiltin::ToI32))
+                        },
+                        "wasm:js-number",
+                        "toI32",
+                    ) {
                         fast_paths[opcode_start] = LocalFastPath::LocalGetJsNumberToI32 {
                             next_ip: (next_ip + 7) as u32,
                         };
-                    } else if call_matches(next_ip, 1, |site| matches!(site, NativeCallSiteTarget::JsNumber(JsNumberBuiltin::Test)), "wasm:js-number", "test") {
+                    } else if call_matches(
+                        next_ip,
+                        1,
+                        |site| {
+                            matches!(site, NativeCallSiteTarget::JsNumber(JsNumberBuiltin::Test))
+                        },
+                        "wasm:js-number",
+                        "test",
+                    ) {
                         fast_paths[opcode_start] = LocalFastPath::LocalGetJsNumberTest {
                             next_ip: (next_ip + 7) as u32,
                         };
-                    } else if call_matches(next_ip, 1, |site| matches!(site, NativeCallSiteTarget::JsString(JsStringBuiltin::Test)), "wasm:js-string", "test") {
+                    } else if call_matches(
+                        next_ip,
+                        1,
+                        |site| {
+                            matches!(site, NativeCallSiteTarget::JsString(JsStringBuiltin::Test))
+                        },
+                        "wasm:js-string",
+                        "test",
+                    ) {
                         fast_paths[opcode_start] = LocalFastPath::LocalGetJsStringTest {
                             next_ip: (next_ip + 7) as u32,
                         };
-                    } else if call_matches(next_ip, 1, |site| matches!(site, NativeCallSiteTarget::JsUndefined(JsUndefinedBuiltin::Test)), "wasm:js-undefined", "test") {
+                    } else if call_matches(
+                        next_ip,
+                        1,
+                        |site| {
+                            matches!(
+                                site,
+                                NativeCallSiteTarget::JsUndefined(JsUndefinedBuiltin::Test)
+                            )
+                        },
+                        "wasm:js-undefined",
+                        "test",
+                    ) {
                         fast_paths[opcode_start] = LocalFastPath::LocalGetJsUndefinedTest {
                             next_ip: (next_ip + 7) as u32,
                         };
@@ -9494,38 +9552,38 @@ impl VM {
                 .any(|(old, &new)| new != old as u32);
         if needs_remap {
             for (ci, chunk) in incoming.iter_mut().enumerate() {
-            let code = &mut chunk.code;
-            let mut ip = 0usize;
-            while ip + 3 < code.len() {
-                let group = ((code[ip] as u16) << 8) | code[ip + 1] as u16;
-                let sub = ((code[ip + 2] as u16) << 8) | code[ip + 3] as u16;
-                let Some(op) = crate::opcode::Op::decode(group, sub) else {
-                    ip += 4;
-                    continue;
-                };
-                let operand_start = ip + 4;
-                let operand_len = op.operand_format().size_in(code, operand_start);
-                if (op == crate::opcode::Op::GLOBAL_GET || op == crate::opcode::Op::GLOBAL_SET)
-                    && operand_start + 3 < code.len()
-                {
-                    let old = u32::from_be_bytes([
-                        code[operand_start],
-                        code[operand_start + 1],
-                        code[operand_start + 2],
-                        code[operand_start + 3],
-                    ]);
-                    let mapped = if legacy.is_empty() {
-                        remap.get(old as usize).copied()
-                    } else {
-                        legacy[ci].get(&old).copied()
+                let code = &mut chunk.code;
+                let mut ip = 0usize;
+                while ip + 3 < code.len() {
+                    let group = ((code[ip] as u16) << 8) | code[ip + 1] as u16;
+                    let sub = ((code[ip + 2] as u16) << 8) | code[ip + 3] as u16;
+                    let Some(op) = crate::opcode::Op::decode(group, sub) else {
+                        ip += 4;
+                        continue;
                     };
-                    if let Some(new_idx) = mapped {
-                        let b = new_idx.to_be_bytes();
-                        code[operand_start..operand_start + 4].copy_from_slice(&b);
+                    let operand_start = ip + 4;
+                    let operand_len = op.operand_format().size_in(code, operand_start);
+                    if (op == crate::opcode::Op::GLOBAL_GET || op == crate::opcode::Op::GLOBAL_SET)
+                        && operand_start + 3 < code.len()
+                    {
+                        let old = u32::from_be_bytes([
+                            code[operand_start],
+                            code[operand_start + 1],
+                            code[operand_start + 2],
+                            code[operand_start + 3],
+                        ]);
+                        let mapped = if legacy.is_empty() {
+                            remap.get(old as usize).copied()
+                        } else {
+                            legacy[ci].get(&old).copied()
+                        };
+                        if let Some(new_idx) = mapped {
+                            let b = new_idx.to_be_bytes();
+                            code[operand_start..operand_start + 4].copy_from_slice(&b);
+                        }
                     }
+                    ip = operand_start + operand_len;
                 }
-                ip = operand_start + operand_len;
-            }
             }
         }
 

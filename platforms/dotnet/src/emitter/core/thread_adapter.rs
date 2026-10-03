@@ -159,9 +159,16 @@ fn emit_bind_timers_timer_method(
     class_slots::emit_class_set(chunk, ObjSource::Stack, &key, ValueSource::Stack, line);
 }
 
-fn emit_attach_timers_timer_members(chunks: &mut Vec<Chunk>, current: usize, obj_slot: u16, line: u32) {
-    let start = emit_timers_timer_method_chunk(chunks, "__dotnet_timers_timer_start_method", true, line);
-    let stop = emit_timers_timer_method_chunk(chunks, "__dotnet_timers_timer_stop_method", false, line);
+fn emit_attach_timers_timer_members(
+    chunks: &mut Vec<Chunk>,
+    current: usize,
+    obj_slot: u16,
+    line: u32,
+) {
+    let start =
+        emit_timers_timer_method_chunk(chunks, "__dotnet_timers_timer_start_method", true, line);
+    let stop =
+        emit_timers_timer_method_chunk(chunks, "__dotnet_timers_timer_stop_method", false, line);
     let dispose =
         emit_timers_timer_method_chunk(chunks, "__dotnet_timers_timer_dispose_method", false, line);
     for (name, method) in [
@@ -1165,7 +1172,12 @@ pub fn emit_timers_timer_new(chunks: &mut Vec<Chunk>, current: usize, argc: u8, 
     chunks[current].emit_op_u16(Op::LOCAL_GET, obj, line);
 }
 
-fn emit_timers_timer_set_enabled(chunks: &mut Vec<Chunk>, current: usize, enabled: bool, line: u32) {
+fn emit_timers_timer_set_enabled(
+    chunks: &mut Vec<Chunk>,
+    current: usize,
+    enabled: bool,
+    line: u32,
+) {
     let obj = chunks[current].alloc_scratch(1);
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::LOCAL_SET, obj, line);
@@ -1784,8 +1796,10 @@ pub fn emit_task_when_any_completed(chunks: &mut [Chunk], current: usize, argc: 
 }
 
 fn emit_when_any_preserve_callback(chunks: &mut Vec<Chunk>, line: u32) -> usize {
-    let mut callback =
-        vybe_compiler::primitives::functions::create_function_chunk("__dotnet_when_any_preserve", 1);
+    let mut callback = vybe_compiler::primitives::functions::create_function_chunk(
+        "__dotnet_when_any_preserve",
+        1,
+    );
     callback.capture_base = 1;
     callback.capture_count = 2;
     callback.local_count = 3;

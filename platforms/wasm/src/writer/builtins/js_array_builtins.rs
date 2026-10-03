@@ -33,6 +33,8 @@ pub const IMPORTS: &[&str] = &[
     // ── Property access ─────────────────────────────────────────────
     "get",       // arr[i] (spec: OrdinaryGet with integer key)
     "set",       // arr[i] = v
+    "getValue",  // VM collection read with Value key
+    "setValue",  // VM collection write with Value key
     "length",    // arr.length (getter)
     "setLength", // arr.length = n (truncate or null-fill extend)
     "at",        // arr.at(i) — negative indices handled at language layer
@@ -140,6 +142,20 @@ pub fn write_signature(out: &mut Vec<u8>, name: &str) -> bool {
             write_leb128_u32(out, 3);
             out.push(TYPE_EXTERNREF);
             out.push(TYPE_I32);
+            out.push(TYPE_EXTERNREF);
+            write_leb128_u32(out, 0);
+        }
+        "getValue" => {
+            write_leb128_u32(out, 2);
+            out.push(TYPE_EXTERNREF);
+            out.push(TYPE_EXTERNREF);
+            write_leb128_u32(out, 1);
+            out.push(TYPE_EXTERNREF);
+        }
+        "setValue" => {
+            write_leb128_u32(out, 3);
+            out.push(TYPE_EXTERNREF);
+            out.push(TYPE_EXTERNREF);
             out.push(TYPE_EXTERNREF);
             write_leb128_u32(out, 0);
         }

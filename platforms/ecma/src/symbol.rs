@@ -13,6 +13,7 @@
 //! `Symbol.for(key)` interns through a process-global registry so
 //! repeat lookups return the same `Arc`.
 
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use vybe_runtime::{HostContext, VM, Value};
@@ -62,16 +63,39 @@ fn well_known() -> &'static WellKnown {
 // Process-global Symbol.for(...) registry. Per spec §20.4.2.2 each key
 // maps to one canonical symbol shared across realms (in our case, the
 // VM process).
-static REGISTRY: std::sync::OnceLock<Mutex<HashMap<String, Arc<str>>>> = std::sync::OnceLock::new();
+static REGISTRY: std::sync::OnceLock<Mutex<HashMap<Arc<str>, Arc<str>>>> = std::sync::OnceLock::new();
 static NO_DESCRIPTION_SYMBOLS: std::sync::OnceLock<Mutex<HashSet<usize>>> =
     std::sync::OnceLock::new();
 
-fn registry() -> &'static Mutex<HashMap<String, Arc<str>>> {
+fn registry() -> &'static Mutex<HashMap<Arc<str>, Arc<str>>> {
     REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn symbol_for_key(key: &str) -> Arc<str> {
+    let mut reg = registry().lock().unwrap();
+    if let Some(symbol) = reg.get(key) {
+        return symbol.clone();
+    }
+    let symbol = crate::keys::owned_string_arc(key.to_owned());
+    reg.insert(symbol.clone(), symbol.clone());
+    symbol
+}
+
+fn is_registered_symbol(symbol: &Arc<str>) -> bool {
+    registry()
+        .lock()
+        .unwrap()
+        .get(symbol.as_ref())
+        .is_some_and(|registered| Arc::ptr_eq(symbol, registered))
 }
 
 fn no_description_symbols() -> &'static Mutex<HashSet<usize>> {
     NO_DESCRIPTION_SYMBOLS.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+#[inline]
+fn owned_string_value(text: String) -> Value {
+    crate::keys::owned_string_value(text)
 }
 
 pub fn canonical_property_key(sym: &Arc<str>) -> String {
@@ -124,9 +148,9 @@ pub fn register(vm: &mut VM) {
             let desc = args
                 .first()
                 .filter(|v| !matches!(v, Value::Undefined))
-                .map(|v| format!("{}", v))
+                .map(crate::keys::value_display_string)
                 .unwrap_or_default();
-            let symbol = Arc::<str>::from(desc.as_str());
+            let symbol = Arc::<str>::from(desc);
             if !has_description {
                 no_description_symbols()
                     .lock()
@@ -145,13 +169,11 @@ pub fn register(vm: &mut VM) {
             // Reached as `Symbol.for(k)` — a METHOD call, so argument 0 is the
             // receiver under `Parameter`. See the note on `Symbol` above.
             let args = _ctx.user_args(args, 0);
-            let key = args.first().map(|v| format!("{}", v)).unwrap_or_default();
-            let mut reg = registry().lock().unwrap();
-            let arc = reg
-                .entry(key.clone())
-                .or_insert_with(|| Arc::from(key.as_str()))
-                .clone();
-            Value::Symbol(arc)
+            let key = args
+                .first()
+                .map(crate::keys::value_display_cow)
+                .unwrap_or(Cow::Borrowed(""));
+            Value::Symbol(symbol_for_key(&key))
         }),
     );
 
@@ -162,11 +184,8 @@ pub fn register(vm: &mut VM) {
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let args = _ctx.user_args(args, 0);
             if let Some(Value::Symbol(sym)) = args.first() {
-                let reg = registry().lock().unwrap();
-                for (key, val) in reg.iter() {
-                    if Arc::ptr_eq(sym, val) {
-                        return Value::String(Arc::from(key.as_str()));
-                    }
+                if is_registered_symbol(sym) {
+                    return Value::String(sym.clone());
                 }
             }
             Value::Undefined
@@ -208,7 +227,7 @@ pub fn register(vm: &mut VM) {
             let desc = args
                 .first()
                 .filter(|v| !matches!(v, Value::Undefined))
-                .map(|v| format!("{}", v))
+                .map(crate::keys::value_display_string)
                 .unwrap_or_default();
             let symbol = Arc::<str>::from(desc.as_str());
             if !has_description {
@@ -242,14 +261,13 @@ pub fn register(vm: &mut VM) {
         "toString",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             if let Some(Value::Symbol(sym)) = args.first() {
-                let s = if has_description(sym) {
-                    format!("Symbol({})", sym)
+                return if has_description(sym) {
+                    owned_string_value(format!("Symbol({})", sym))
                 } else {
-                    "Symbol()".to_string()
+                    crate::keys::string_value("Symbol()")
                 };
-                return Value::String(Arc::from(s.as_str()));
             }
-            Value::String(Arc::from("Symbol()"))
+            crate::keys::string_value("Symbol()")
         }),
     );
 
@@ -269,4 +287,33 @@ fn register_constant(vm: &mut VM, name: &'static str, sym: Arc<str>) {
         name,
         Box::new(move |_ctx: &mut HostContext, _args: &[Value]| Value::String(sym.clone())),
     );
+}
+
+#[cfg(test)]
+mod registry_speedup_tests {
+    use super::{is_registered_symbol, symbol_for_key};
+    use std::sync::Arc;
+
+    #[test]
+    fn registry_lookup_preserves_identity_not_just_description() {
+        let first = symbol_for_key("ecma-speedup-registry-identity");
+        let second = symbol_for_key("ecma-speedup-registry-identity");
+        assert!(Arc::ptr_eq(&first, &second));
+        assert!(is_registered_symbol(&first));
+        let fresh: Arc<str> = Arc::from(first.as_ref());
+        assert!(!is_registered_symbol(&fresh));
+        let other = symbol_for_key("ecma-speedup-registry-other");
+        assert!(!Arc::ptr_eq(&first, &other));
+        assert!(is_registered_symbol(&other));
+    }
+
+    #[test]
+    fn empty_and_unicode_registry_keys() {
+        for key in ["", "\u{1f600}-registry-key"] {
+            let symbol = symbol_for_key(key);
+            assert_eq!(symbol.as_ref(), key);
+            assert!(is_registered_symbol(&symbol));
+            assert!(Arc::ptr_eq(&symbol, &symbol_for_key(key)));
+        }
+    }
 }

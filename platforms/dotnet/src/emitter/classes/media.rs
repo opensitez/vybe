@@ -18,7 +18,7 @@ const WEB_BROWSER_METHODS: &[DotnetMethod] = &[
         name: "Navigate",
         arity: 2,
         target: MethodTarget::common("gui.prop_set.src"),
-    },
+    }
 ];
 
 pub fn classes() -> &'static [DotnetClass] {

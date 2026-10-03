@@ -51,12 +51,17 @@ fn setup() -> u64 {
 
 #[test]
 fn native_keyboard_input_reaches_document_listener_with_event_fields() {
+    use vybe_platform_web::engine::{EventOp, UiEventFields, events};
     use vybe_platform_web::html;
     use vybe_runtime::Value;
-    use vybe_platform_web::engine::{EventOp, UiEventFields, events};
 
     let document = setup();
-    html::add_event_listener(document, DOCUMENT, "keydown", Value::String("key-handler".into()));
+    html::add_event_listener(
+        document,
+        DOCUMENT,
+        "keydown",
+        Value::String("key-handler".into()),
+    );
     events(EventOp::Dispatch(UiEventFields {
         kind: "keydown".into(),
         key: "ArrowUp".into(),
@@ -303,12 +308,30 @@ fn dynamic_child_listener_and_ancestor_receive_click_with_distinct_targets() {
     let child = create(doc, "div", "");
     html::add_event_listener(doc, child, "click", Value::String("child".into()));
     html::add_event_listener(doc, parent, "click", Value::String("parent".into()));
-    apply(doc, DomOp::AppendChild { parent: DOCUMENT, child: parent });
+    apply(
+        doc,
+        DomOp::AppendChild {
+            parent: DOCUMENT,
+            child: parent,
+        },
+    );
     apply(doc, DomOp::AppendChild { parent, child });
-    apply(doc, DomOp::SetStyleProperty(parent, "width".into(), "100px".into()));
-    apply(doc, DomOp::SetStyleProperty(parent, "height".into(), "60px".into()));
-    apply(doc, DomOp::SetStyleProperty(child, "width".into(), "80px".into()));
-    apply(doc, DomOp::SetStyleProperty(child, "height".into(), "40px".into()));
+    apply(
+        doc,
+        DomOp::SetStyleProperty(parent, "width".into(), "100px".into()),
+    );
+    apply(
+        doc,
+        DomOp::SetStyleProperty(parent, "height".into(), "60px".into()),
+    );
+    apply(
+        doc,
+        DomOp::SetStyleProperty(child, "width".into(), "80px".into()),
+    );
+    apply(
+        doc,
+        DomOp::SetStyleProperty(child, "height".into(), "40px".into()),
+    );
     click_at(doc, child);
     let calls = html::pending_dispatches(doc);
     assert_eq!(calls.len(), 2);

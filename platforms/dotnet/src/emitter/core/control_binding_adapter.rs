@@ -3,9 +3,9 @@
 use vybe_compiler::primitives::class_slots::{self, Dest, ObjSource, ValueSource};
 use vybe_compiler::primitives::instructions::core_wasm;
 use vybe_compiler::primitives::{collections, globals, loops, ops, strings};
-use vybe_runtime::opcode::heaptype::HT_EXTERN;
-use vybe_runtime::opcode::Op;
 use vybe_runtime::Chunk;
+use vybe_runtime::opcode::Op;
+use vybe_runtime::opcode::heaptype::HT_EXTERN;
 
 use super::bindingsource_adapter;
 use super::object_fields::field_slot;
@@ -370,9 +370,7 @@ pub fn add(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     c.emit_call(set, 3, line);
     c.emit_op(Op::DROP, line);
     for event in ["input", "change"] {
-        vybe_compiler::primitives::gui::emit_add_event_listener(
-            c, control, event, handler, line,
-        );
+        vybe_compiler::primitives::gui::emit_add_event_listener(c, control, event, handler, line);
     }
     c.emit_end(line);
     c.emit_op_u16(Op::LOCAL_GET, control_items, line);

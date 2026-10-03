@@ -5,7 +5,7 @@
 //! `ListView` and `TreeView` inherit directly from `Control` — they have a
 //! richer item model that doesn't fit `ListControl`.
 
-use super::DotnetClass;
+use super::{DotnetClass, DotnetMethod, MethodTarget};
 
 pub fn classes() -> &'static [DotnetClass] {
     &[
@@ -87,6 +87,14 @@ pub fn classes() -> &'static [DotnetClass] {
         },
         DotnetClass {
             name: "ListBoxObjectCollection",
+            parent: None,
+            properties: &[],
+            methods: &[],
+            ctor_arity: 0,
+            widget_host_fn: None,
+        },
+        DotnetClass {
+            name: "CheckedListBoxObjectCollection",
             parent: None,
             properties: &[],
             methods: &[],
@@ -209,12 +217,8 @@ pub fn classes() -> &'static [DotnetClass] {
             ctor_arity: 0,
             widget_host_fn: None,
         },
-        // A CheckedListBox IS a ListBox with per-item checkboxes, so it
-        // inherits the whole list surface by declaring that parent.
-        // `widgets` already has the `checkedlistbox` kind and its default
-        // size; only the descriptor entry was missing, and without it a
-        // designer could NAME the control while every property write on it was
-        // dropped — see [[project_dotnet_strips_and_items_are_menu_elements]].
+        // The item collection is distinct from ListBox options: each item has
+        // independent checked state in addition to selection.
         DotnetClass {
             name: "CheckedListBox",
             parent: Some("ListBox"),
@@ -224,7 +228,13 @@ pub fn classes() -> &'static [DotnetClass] {
                 "CheckedItems",
                 "ThreeDCheckBoxes",
             ],
-            methods: &[],
+            methods: &[DotnetMethod {
+                name: "GetItemChecked",
+                arity: 2,
+                target: MethodTarget::Common {
+                    emit: "dotnet.checked_list_get",
+                },
+            }],
             ctor_arity: 0,
             widget_host_fn: None,
         },

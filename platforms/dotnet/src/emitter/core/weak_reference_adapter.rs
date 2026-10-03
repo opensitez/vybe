@@ -112,7 +112,8 @@ pub fn emit_weakref_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
 pub fn emit_weakref_target(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
     let base = chunk.alloc_scratch(4);
-    let (wr_slot, target_slot, epoch_slot, current_epoch_slot) = (base, base + 1, base + 2, base + 3);
+    let (wr_slot, target_slot, epoch_slot, current_epoch_slot) =
+        (base, base + 1, base + 2, base + 3);
 
     chunk.emit_op_u16(Op::LOCAL_SET, wr_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, wr_slot, line);

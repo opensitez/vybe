@@ -3734,7 +3734,7 @@ fn run_local_i64_compare_const_loop_fixture(
 #[test]
 #[ignore = "runtime perf fixture — invoke with --ignored --nocapture"]
 fn local_i64_eq_const_loop_counters() {
-    run_local_i64_compare_const_loop_fixture("<local-i64-eq-const-loop>", 1234, 1234, Op::I64_EQ, 1);
+    run_local_i64_compare_const_loop_fixture("<local-i64-eq-const-loop>", 1234, 1234, Op::I64_EQ, 1,);
 }
 
 #[test]
@@ -3770,7 +3770,7 @@ fn local_i64_gt_u_const_loop_counters() {
 #[test]
 #[ignore = "runtime perf fixture — invoke with --ignored --nocapture"]
 fn local_i64_le_s_const_loop_counters() {
-    run_local_i64_compare_const_loop_fixture("<local-i64-le-s-const-loop>", -2, -2, Op::I64_LE_S, 1);
+    run_local_i64_compare_const_loop_fixture("<local-i64-le-s-const-loop>", -2, -2, Op::I64_LE_S, 1,);
 }
 
 #[test]
@@ -3850,7 +3850,7 @@ fn local_f32_eq_const_loop_counters() {
 #[test]
 #[ignore = "runtime perf fixture — invoke with --ignored --nocapture"]
 fn local_f32_ne_nan_const_loop_counters() {
-    run_local_f32_compare_const_loop_fixture("<local-f32-ne-nan-const-loop>", f32::NAN, 1.0, Op::F32_NE, 1);
+    run_local_f32_compare_const_loop_fixture("<local-f32-ne-nan-const-loop>", f32::NAN, 1.0, Op::F32_NE, 1,);
 }
 
 #[test]
@@ -3936,7 +3936,7 @@ fn local_f64_eq_const_loop_counters() {
 #[test]
 #[ignore = "runtime perf fixture — invoke with --ignored --nocapture"]
 fn local_f64_ne_nan_const_loop_counters() {
-    run_local_f64_compare_const_loop_fixture("<local-f64-ne-nan-const-loop>", f64::NAN, 1.0, Op::F64_NE, 1);
+    run_local_f64_compare_const_loop_fixture("<local-f64-ne-nan-const-loop>", f64::NAN, 1.0, Op::F64_NE, 1,);
 }
 
 #[test]
@@ -4016,25 +4016,25 @@ fn run_local_f32_binary_const_loop_fixture(
 #[test]
 #[ignore = "runtime perf fixture — invoke with --ignored --nocapture"]
 fn local_f32_add_const_loop_counters() {
-    run_local_f32_binary_const_loop_fixture("<local-f32-add-const-loop>", 1.25, 2.5, Op::F32_ADD, 3.75);
+    run_local_f32_binary_const_loop_fixture("<local-f32-add-const-loop>", 1.25, 2.5, Op::F32_ADD, 3.75,);
 }
 
 #[test]
 #[ignore = "runtime perf fixture — invoke with --ignored --nocapture"]
 fn local_f32_sub_const_loop_counters() {
-    run_local_f32_binary_const_loop_fixture("<local-f32-sub-const-loop>", 5.5, 2.25, Op::F32_SUB, 3.25);
+    run_local_f32_binary_const_loop_fixture("<local-f32-sub-const-loop>", 5.5, 2.25, Op::F32_SUB, 3.25,);
 }
 
 #[test]
 #[ignore = "runtime perf fixture — invoke with --ignored --nocapture"]
 fn local_f32_mul_const_loop_counters() {
-    run_local_f32_binary_const_loop_fixture("<local-f32-mul-const-loop>", 1.5, 4.0, Op::F32_MUL, 6.0);
+    run_local_f32_binary_const_loop_fixture("<local-f32-mul-const-loop>", 1.5, 4.0, Op::F32_MUL, 6.0,);
 }
 
 #[test]
 #[ignore = "runtime perf fixture — invoke with --ignored --nocapture"]
 fn local_f32_div_const_loop_counters() {
-    run_local_f32_binary_const_loop_fixture("<local-f32-div-const-loop>", 7.5, 3.0, Op::F32_DIV, 2.5);
+    run_local_f32_binary_const_loop_fixture("<local-f32-div-const-loop>", 7.5, 3.0, Op::F32_DIV, 2.5,);
 }
 
 fn run_local_f64_binary_const_loop_fixture(
@@ -4090,25 +4090,25 @@ fn run_local_f64_binary_const_loop_fixture(
 #[test]
 #[ignore = "runtime perf fixture — invoke with --ignored --nocapture"]
 fn local_f64_add_const_loop_counters() {
-    run_local_f64_binary_const_loop_fixture("<local-f64-add-const-loop>", 1.25, 2.5, Op::F64_ADD, 3.75);
+    run_local_f64_binary_const_loop_fixture("<local-f64-add-const-loop>", 1.25, 2.5, Op::F64_ADD, 3.75,);
 }
 
 #[test]
 #[ignore = "runtime perf fixture — invoke with --ignored --nocapture"]
 fn local_f64_sub_const_loop_counters() {
-    run_local_f64_binary_const_loop_fixture("<local-f64-sub-const-loop>", 5.5, 2.25, Op::F64_SUB, 3.25);
+    run_local_f64_binary_const_loop_fixture("<local-f64-sub-const-loop>", 5.5, 2.25, Op::F64_SUB, 3.25,);
 }
 
 #[test]
 #[ignore = "runtime perf fixture — invoke with --ignored --nocapture"]
 fn local_f64_mul_const_loop_counters() {
-    run_local_f64_binary_const_loop_fixture("<local-f64-mul-const-loop>", 1.5, 4.0, Op::F64_MUL, 6.0);
+    run_local_f64_binary_const_loop_fixture("<local-f64-mul-const-loop>", 1.5, 4.0, Op::F64_MUL, 6.0,);
 }
 
 #[test]
 #[ignore = "runtime perf fixture — invoke with --ignored --nocapture"]
 fn local_f64_div_const_loop_counters() {
-    run_local_f64_binary_const_loop_fixture("<local-f64-div-const-loop>", 7.5, 3.0, Op::F64_DIV, 2.5);
+    run_local_f64_binary_const_loop_fixture("<local-f64-div-const-loop>", 7.5, 3.0, Op::F64_DIV, 2.5,);
 }
 
 fn run_local_i64_binary_const_loop_fixture(

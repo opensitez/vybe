@@ -7,8 +7,8 @@
 //! becomes a loadable dylib — it is exactly the entry point the host calls
 //! after `dlopen` to hand back the plugin.
 
-use std::sync::{Mutex, OnceLock};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Mutex, OnceLock};
 
 use crate::Chunk;
 use crate::chunk::ReceiverAbi;

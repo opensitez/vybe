@@ -200,7 +200,10 @@ pub fn emit_from_html(chunk: &mut Chunk, line: u32) {
 }
 
 fn from_html_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
-    if let Some(index) = chunks.iter().position(|chunk| chunk.name == "__dotnet_color_from_html") {
+    if let Some(index) = chunks
+        .iter()
+        .position(|chunk| chunk.name == "__dotnet_color_from_html")
+    {
         return index;
     }
     let mut helper = Chunk::new("__dotnet_color_from_html");
@@ -228,13 +231,25 @@ pub fn emit_from_html_call(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
 }
 
 /// Stack: `[element] -> [Color]`.
-pub fn emit_get_control_color(chunks: &mut Vec<Chunk>, current: usize, background: bool, line: u32) {
+pub fn emit_get_control_color(
+    chunks: &mut Vec<Chunk>,
+    current: usize,
+    background: bool,
+    line: u32,
+) {
     let chunk = &mut chunks[current];
     let control = chunk.alloc_scratch(1);
     chunk.emit_op_u16(Op::LOCAL_SET, control, line);
     document(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, control, line);
-    chunk.emit_string_const(if background { "background-color" } else { "color" }, line);
+    chunk.emit_string_const(
+        if background {
+            "background-color"
+        } else {
+            "color"
+        },
+        line,
+    );
     call(chunk, CSSOM, "getStyleProperty", 3, line);
     emit_from_html_call(chunks, current, line);
 }
@@ -253,7 +268,14 @@ pub fn emit_set_control_color(chunk: &mut Chunk, background: bool, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_SET, control, line);
     document(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, control, line);
-    chunk.emit_string_const(if background { "background-color" } else { "color" }, line);
+    chunk.emit_string_const(
+        if background {
+            "background-color"
+        } else {
+            "color"
+        },
+        line,
+    );
     chunk.emit_string_const("rgba(", line);
     for field in ["r", "g", "b"] {
         channel(chunk, color, field, line);

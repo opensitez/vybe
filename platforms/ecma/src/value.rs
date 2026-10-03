@@ -29,28 +29,95 @@
 
 use crate::typedarray::relative_index;
 use crate::typedarray::{
-    new_typed_array, new_view_over_buffer, read_element, ta_live_length, write_element,
+    copy_within_typed_array_bytes, fill_typed_array_bytes, new_typed_array, new_view_over_buffer,
+    read_element, read_element_from_locked_buffer, reverse_typed_array_bytes, ta_live_length,
+    typed_array_values_snapshot, write_array_values_to_typed_array_bytes, write_element,
 };
 use crate::weakmap::{WEAKMAP_TAG, WEAKSET_TAG, WM_KEYS_PROP, key_ptr_find as wm_key_ptr_find};
+use std::borrow::Cow;
 use std::collections::{BTreeSet, HashMap};
+use std::fmt::Write as _;
 use std::sync::{Arc, Mutex};
 use unicode_normalization::UnicodeNormalization;
 use vybe_runtime::value::{Object, ObjectKind, Value};
 use vybe_runtime::{HostContext, VM};
 
 fn make_array(elems: Vec<Value>) -> Value {
-    let mut obj = Object::new_array(elems);
-    obj.properties
-        .insert("__type".into(), Value::String(Arc::from("Array")));
-    Value::Object(vybe_runtime::heap::alloc(obj))
+    Value::Object(vybe_runtime::heap::alloc(Object::new_array(elems)))
+}
+
+fn with_prepended_arg<R>(first: Value, rest: &[Value], f: impl FnOnce(&[Value]) -> R) -> R {
+    if rest.is_empty() {
+        return f(std::slice::from_ref(&first));
+    }
+    if rest.len() <= 8 {
+        let mut inline: [Value; 9] = std::array::from_fn(|_| Value::Undefined);
+        inline[0] = first;
+        for (index, value) in rest.iter().enumerate() {
+            inline[index + 1] = value.clone();
+        }
+        f(&inline[..rest.len() + 1])
+    } else {
+        let mut values = Vec::with_capacity(rest.len() + 1);
+        values.push(first);
+        values.extend_from_slice(rest);
+        f(&values)
+    }
 }
 
 fn utf16_units(text: &str) -> Vec<u16> {
-    text.encode_utf16().collect()
+    if text.len() >= 64 && text.is_ascii() {
+        text.as_bytes().iter().map(|byte| u16::from(*byte)).collect()
+    } else {
+        text.encode_utf16().collect()
+    }
 }
 
 fn utf16_to_string(units: &[u16]) -> String {
     String::from_utf16_lossy(units)
+}
+
+#[inline]
+fn char_value(ch: char) -> Value {
+    crate::keys::char_value(ch)
+}
+
+#[inline]
+fn owned_string_value(text: String) -> Value {
+    crate::keys::owned_string_value(text)
+}
+
+fn push_join_part(out: &mut String, sep: &str, first: &mut bool, part: &str) {
+    if *first {
+        *first = false;
+    } else {
+        out.push_str(sep);
+    }
+    out.push_str(part);
+}
+
+fn push_join_value(out: &mut String, sep: &str, first: &mut bool, value: &Value) {
+    match value {
+        Value::Null | Value::Undefined => push_join_part(out, sep, first, ""),
+        Value::String(text) => push_join_part(out, sep, first, text.as_ref()),
+        other => {
+            push_join_part(out, sep, first, "");
+            let _ = write!(out, "{}", other);
+        }
+    }
+}
+
+fn invoke_cached_callback(
+    ctx: &mut HostContext,
+    callback: &Value,
+    prepared: &Option<crate::function::PreparedBoundCallback>,
+    args: &[Value],
+) -> Value {
+    if let Some(prepared) = prepared {
+        crate::function::invoke_prepared_bound_callback(ctx, prepared, args)
+    } else {
+        ctx.invoke(callback, args)
+    }
 }
 
 pub fn register(vm: &mut VM) {
@@ -63,10 +130,10 @@ pub fn register(vm: &mut VM) {
         "ecma:value",
         "add",
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
-            let a = args.first().cloned().unwrap_or(Value::Undefined);
-            let b = args.get(1).cloned().unwrap_or(Value::Undefined);
-            let pa = to_primitive(ctx, &a, "default");
-            let pb = to_primitive(ctx, &b, "default");
+            let a = args.first().unwrap_or(&Value::Undefined);
+            let b = args.get(1).unwrap_or(&Value::Undefined);
+            let pa = to_primitive(ctx, a, "default");
+            let pb = to_primitive(ctx, b, "default");
             if matches!(pa, Value::Symbol(_)) || matches!(pb, Value::Symbol(_)) {
                 if matches!(pa, Value::String(_) | Value::Symbol(_))
                     || matches!(pb, Value::String(_) | Value::Symbol(_))
@@ -81,7 +148,9 @@ pub fn register(vm: &mut VM) {
             }
             match (&pa, &pb) {
                 (Value::String(_), _) | (_, Value::String(_)) => {
-                    Value::String(Arc::from(format!("{}{}", pa, pb).as_str()))
+                    let left = crate::keys::value_display_cow(&pa);
+                    let right = crate::keys::value_display_cow(&pb);
+                    Value::String(crate::keys::concat2_arc(&left, &right))
                 }
                 _ => {
                     let na = pa.as_f64();
@@ -96,9 +165,9 @@ pub fn register(vm: &mut VM) {
         "ecma:value",
         "abstractEq",
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
-            let a = args.first().cloned().unwrap_or(Value::Undefined);
-            let b = args.get(1).cloned().unwrap_or(Value::Undefined);
-            Value::Bool(abstract_loose_eq(ctx, &a, &b))
+            let a = args.first().unwrap_or(&Value::Undefined);
+            let b = args.get(1).unwrap_or(&Value::Undefined);
+            Value::Bool(abstract_loose_eq(ctx, a, b))
         }),
     );
 
@@ -106,9 +175,9 @@ pub fn register(vm: &mut VM) {
         "ecma:value",
         "abstractNe",
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
-            let a = args.first().cloned().unwrap_or(Value::Undefined);
-            let b = args.get(1).cloned().unwrap_or(Value::Undefined);
-            Value::Bool(!abstract_loose_eq(ctx, &a, &b))
+            let a = args.first().unwrap_or(&Value::Undefined);
+            let b = args.get(1).unwrap_or(&Value::Undefined);
+            Value::Bool(!abstract_loose_eq(ctx, a, b))
         }),
     );
 
@@ -129,8 +198,8 @@ pub fn register(vm: &mut VM) {
         "ecma:value",
         "toNumber",
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
-            let v = args.first().cloned().unwrap_or(Value::Undefined);
-            let p = to_primitive(ctx, &v, "number");
+            let v = args.first().unwrap_or(&Value::Undefined);
+            let p = to_primitive(ctx, v, "number");
             Value::F64(p.as_f64())
         }),
     );
@@ -145,12 +214,12 @@ pub fn register(vm: &mut VM) {
         "ecma:value",
         "toPrimitive",
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
-            let v = args.first().cloned().unwrap_or(Value::Undefined);
+            let v = args.first().unwrap_or(&Value::Undefined);
             let hint = match args.get(1) {
-                Some(Value::String(s)) => s.to_string(),
-                _ => "number".to_string(),
+                Some(Value::String(s)) => s.as_ref(),
+                _ => "number",
             };
-            to_primitive(ctx, &v, &hint)
+            to_primitive(ctx, v, hint)
         }),
     );
 
@@ -201,8 +270,8 @@ pub fn register(vm: &mut VM) {
         "ecma:value",
         "typeof",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            let v = args.first().cloned().unwrap_or(Value::Undefined);
-            let tag = match &v {
+            let v = args.first().unwrap_or(&Value::Undefined);
+            let tag = match v {
                 Value::Undefined => "undefined",
                 Value::Null | Value::TypedNull(_) => "object",
                 Value::Bool(_) => "boolean",
@@ -232,7 +301,7 @@ pub fn register(vm: &mut VM) {
                     }
                 }
             };
-            Value::String(Arc::from(tag))
+            crate::keys::string_value(tag)
         }),
     );
 
@@ -240,29 +309,40 @@ pub fn register(vm: &mut VM) {
         "ecma:value",
         "invokeMethod",
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
-            let receiver = args.first().cloned().unwrap_or(Value::Undefined);
+            let receiver = args.first().unwrap_or(&Value::Undefined);
             let method = match args.get(1) {
-                Some(Value::String(s)) => s.to_string(),
-                Some(other) => format!("{}", other),
+                Some(Value::String(s)) => Cow::Borrowed(s.as_ref()),
+                Some(other) => crate::keys::value_display_cow(other),
                 None => return Value::Undefined,
             };
             // §7.3.14 `Call(F, V, argumentsList)` — argument 2 is the LIST,
             // not the first of N. Reading `&args[2..]` is what made this
             // import variadic and therefore untypeable as a WASM import.
             // A flat tail is still accepted so nothing half-migrated breaks.
-            let listed: Option<Vec<Value>> = match args.get(2) {
-                Some(Value::Object(o)) => match &o.lock().unwrap().kind {
-                    ObjectKind::Array(a) => Some(a.clone()),
-                    _ => None,
-                },
-                _ => None,
-            };
-            let user_args: &[Value] = match &listed {
-                Some(list) => list.as_slice(),
-                None if args.len() > 2 => &args[2..],
-                None => &[],
-            };
-            dispatch(ctx, &receiver, &method, user_args)
+            let mut inline_args: [Value; 8] = std::array::from_fn(|_| Value::Undefined);
+            let mut listed: Option<Vec<Value>> = None;
+            let mut inline_len: Option<usize> = None;
+            if let Some(Value::Object(o)) = args.get(2) {
+                if let ObjectKind::Array(a) = &o.lock().unwrap().kind {
+                    if a.len() <= inline_args.len() {
+                        for (index, value) in a.iter().enumerate() {
+                            inline_args[index] = value.clone();
+                        }
+                        inline_len = Some(a.len());
+                    } else {
+                        listed = Some(a.clone());
+                    }
+                }
+            }
+            if let Some(len) = inline_len {
+                dispatch(ctx, receiver, method.as_ref(), &inline_args[..len])
+            } else if let Some(list) = &listed {
+                dispatch(ctx, receiver, method.as_ref(), list.as_slice())
+            } else if args.len() > 2 {
+                dispatch(ctx, receiver, method.as_ref(), &args[2..])
+            } else {
+                dispatch(ctx, receiver, method.as_ref(), &[])
+            }
         }),
     );
 
@@ -270,10 +350,10 @@ pub fn register(vm: &mut VM) {
         "ecma:value",
         "getMethodForCall",
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
-            let receiver = args.first().cloned().unwrap_or(Value::Undefined);
+            let receiver = args.first().unwrap_or(&Value::Undefined);
             let method = match args.get(1) {
-                Some(Value::String(s)) => s.to_string(),
-                Some(other) => format!("{}", other),
+                Some(Value::String(s)) => Cow::Borrowed(s.as_ref()),
+                Some(other) => crate::keys::value_display_cow(other),
                 None => return Value::Undefined,
             };
             // Argument 2 — OPTIONAL, defaults to binding, so every existing
@@ -297,7 +377,7 @@ pub fn register(vm: &mut VM) {
             let bind_receiver = args
                 .get(2)
                 .map_or(true, |v| !matches!(v, Value::Bool(false)));
-            lookup_method_for_call(ctx, &receiver, &method, bind_receiver)
+            lookup_method_for_call(ctx, receiver, method.as_ref(), bind_receiver)
         }),
     );
 
@@ -305,9 +385,9 @@ pub fn register(vm: &mut VM) {
         "ecma:value",
         "instanceOf",
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
-            let receiver = args.first().cloned().unwrap_or(Value::Undefined);
-            let ctor = args.get(1).cloned().unwrap_or(Value::Undefined);
-            Value::Bool(js_instanceof(ctx, &receiver, &ctor))
+            let receiver = args.first().unwrap_or(&Value::Undefined);
+            let ctor = args.get(1).unwrap_or(&Value::Undefined);
+            Value::Bool(js_instanceof(ctx, receiver, ctor))
         }),
     );
 }
@@ -321,7 +401,7 @@ fn dispatch(ctx: &mut HostContext, receiver: &Value, method: &str, args: &[Value
         Value::String(_) => dispatch_string(ctx, receiver, method, args),
         Value::Symbol(desc) => match method {
             // ECMA-262 §20.4.3.3 Symbol.prototype.toString — "Symbol(<desc>)"
-            "toString" => Value::String(Arc::from(format!("Symbol({})", desc).as_str())),
+            "toString" => Value::String(crate::keys::concat3_arc("Symbol(", desc, ")")),
             // ECMA-262 §20.4.3.4 Symbol.prototype.valueOf — returns the symbol itself
             "valueOf" => receiver.clone(),
             // ECMA-262 §20.4.3.2 Symbol.prototype.description — the raw description string
@@ -336,29 +416,28 @@ fn dispatch(ctx: &mut HostContext, receiver: &Value, method: &str, args: &[Value
         },
         Value::BigInt(n) => dispatch_bigint(n, method, args),
         Value::Object(obj) => {
-            if let Some(tagged) = dispatch_tagged_object(ctx, obj.clone(), method, args) {
-                return tagged;
-            }
             // WeakMap/WeakSet use ObjectKind::Array backing — check their tag before kind dispatch.
             let kind_tag = {
                 let o = obj.lock().unwrap();
-                if o.properties.contains_key(WEAKMAP_TAG) {
-                    5
-                } else if o.properties.contains_key(WEAKSET_TAG) {
-                    6
-                } else {
-                    match &o.kind {
-                        ObjectKind::Array(_) => 1,
-                        ObjectKind::Map(_) => 2,
-                        ObjectKind::Set(_) => 3,
-                        ObjectKind::TypedArray(_) => 4,
-                        ObjectKind::ArrayBuffer(_) => 7,
-                        _ => {
-                            if o.properties.contains_key(crate::arraybuffer::DV_TAG) {
-                                8
-                            } else {
-                                0
-                            }
+                match &o.kind {
+                    ObjectKind::Array(_) => {
+                        if o.properties.contains_key(WEAKMAP_TAG) {
+                            5
+                        } else if o.properties.contains_key(WEAKSET_TAG) {
+                            6
+                        } else {
+                            1
+                        }
+                    }
+                    ObjectKind::Map(_) => 2,
+                    ObjectKind::Set(_) => 3,
+                    ObjectKind::TypedArray(_) => 4,
+                    ObjectKind::ArrayBuffer(_) => 7,
+                    _ => {
+                        if o.properties.contains_key(crate::arraybuffer::DV_TAG) {
+                            8
+                        } else {
+                            0
                         }
                     }
                 }
@@ -376,7 +455,13 @@ fn dispatch(ctx: &mut HostContext, receiver: &Value, method: &str, args: &[Value
                 }
                 8 => crate::arraybuffer::dispatch_dataview_method(ctx, obj.clone(), method, args)
                     .unwrap_or_else(|| dispatch_plain_object(ctx, obj.clone(), method, args)),
-                _ => dispatch_plain_object(ctx, obj.clone(), method, args),
+                _ => {
+                    if let Some(tagged) = dispatch_tagged_object(ctx, obj.clone(), method, args) {
+                        tagged
+                    } else {
+                        dispatch_plain_object(ctx, obj.clone(), method, args)
+                    }
+                }
             }
         }
         _ => Value::Undefined,
@@ -480,13 +565,13 @@ pub fn error_constructor_for(name: &str) -> Value {
     }
     let mut ctor = Object::new();
     ctor.properties
-        .insert("name".into(), Value::String(Arc::from(name)));
+        .insert("name".into(), crate::keys::string_value(name));
     ctor.properties
-        .insert("__type".into(), Value::String(Arc::from("Function")));
+        .insert("__type".into(), crate::keys::string_value("Function"));
     // Marker so `new T(...)` (dynamic construction through this value, e.g.
     // `const T = TypeError; new T(msg, {cause})`) builds a proper Error.
     ctor.properties
-        .insert("__error_ctor_name".into(), Value::String(Arc::from(name)));
+        .insert("__error_ctor_name".into(), crate::keys::string_value(name));
     let value = Value::Object(vybe_runtime::heap::alloc(ctor));
     map.insert(name.to_string(), value.clone());
     value
@@ -565,7 +650,7 @@ fn constructor_of(value: &Value) -> Value {
 fn dispatch_boolean(receiver: &Value, method: &str, _args: &[Value]) -> Value {
     let value = crate::boolean::to_boolean(receiver);
     match method {
-        "toString" => Value::String(Arc::from(if value { "true" } else { "false" })),
+        "toString" => crate::keys::string_value(if value { "true" } else { "false" }),
         "valueOf" => Value::Bool(value),
         _ => Value::Undefined,
     }
@@ -576,7 +661,7 @@ fn dispatch_bigint(n: &vybe_runtime::bigint::BigIntVal, method: &str, args: &[Va
         "toString" => {
             let radix = args.first().map(|v| v.as_i32() as u32).unwrap_or(10);
             let radix = if (2..=36).contains(&radix) { radix } else { 10 };
-            Value::String(Arc::from(n.to_string_radix(radix).as_str()))
+            owned_string_value(n.to_string_radix(radix))
         }
         "valueOf" => Value::bigint(n.clone()),
         _ => Value::Undefined,
@@ -601,15 +686,15 @@ fn dispatch_number(ctx: &mut HostContext, receiver: &Value, method: &str, args: 
             }
             if radix == 10 {
                 if n.is_finite() && n.fract() == 0.0 {
-                    return Value::String(Arc::from(format!("{}", n as i64).as_str()));
+                    return owned_string_value((n as i64).to_string());
                 }
-                return Value::String(Arc::from(format!("{}", n).as_str()));
+                return owned_string_value(n.to_string());
             }
             let int_val = n as i64;
             let negative = int_val < 0;
             let mut v = (int_val as i128).unsigned_abs();
             if v == 0 {
-                return Value::String(Arc::from("0"));
+                return crate::keys::string_value("0");
             }
             let mut out = String::new();
             while v > 0 {
@@ -620,7 +705,7 @@ fn dispatch_number(ctx: &mut HostContext, receiver: &Value, method: &str, args: 
             if negative {
                 out.insert(0, '-');
             }
-            Value::String(Arc::from(out.as_str()))
+            owned_string_value(out)
         }
         "toFixed" => {
             // §21.1.3.3 step 2: RangeError unless 0 ≤ digits ≤ 100.
@@ -634,7 +719,7 @@ fn dispatch_number(ctx: &mut HostContext, receiver: &Value, method: &str, args: 
                 return Value::Undefined;
             }
             let digits = digits_i as usize;
-            Value::String(Arc::from(format!("{:.1$}", n, digits).as_str()))
+            owned_string_value(format!("{:.1$}", n, digits))
         }
         "toExponential" => {
             // §21.1.3.2 step 8: RangeError unless 0 ≤ fractionDigits ≤ 100.
@@ -660,16 +745,16 @@ fn dispatch_number(ctx: &mut HostContext, receiver: &Value, method: &str, args: 
             if parts.len() == 2 {
                 let exp: i32 = parts[1].parse().unwrap_or(0);
                 let sign = if exp >= 0 { "+" } else { "" };
-                Value::String(Arc::from(format!("{}e{}{}", parts[0], sign, exp).as_str()))
+                owned_string_value(format!("{}e{}{}", parts[0], sign, exp))
             } else {
-                Value::String(Arc::from(raw.as_str()))
+                owned_string_value(raw)
             }
         }
         "toPrecision" => {
             // §21.1.3.5 step 8: RangeError unless 1 ≤ precision ≤ 100.
             let prec_i = match args.first() {
                 Some(v) => v.as_i32(),
-                None => return Value::String(Arc::from(format!("{}", n).as_str())),
+                None => return owned_string_value(n.to_string()),
             };
             if !(1..=100).contains(&prec_i) {
                 ctx.throw_value(crate::error::new_error(
@@ -680,17 +765,17 @@ fn dispatch_number(ctx: &mut HostContext, receiver: &Value, method: &str, args: 
                 return Value::Undefined;
             }
             let prec = prec_i as usize;
-            Value::String(Arc::from(format!("{:.prec$}", n, prec = prec).as_str()))
+            owned_string_value(format!("{:.prec$}", n, prec = prec))
         }
         "toLocaleString" => {
             if !n.is_finite() {
-                return Value::String(Arc::from(format!("{}", n).as_str()));
+                return owned_string_value(n.to_string());
             }
             let rounded = (n * 1000.0).round() / 1000.0;
             let neg = rounded < 0.0;
             let abs = rounded.abs();
             let int_part = abs.trunc();
-            let int_str = format!("{}", int_part as u64);
+            let int_str = (int_part as u64).to_string();
             let mut grouped = String::new();
             for (i, c) in int_str.chars().enumerate() {
                 if i > 0 && (int_str.len() - i) % 3 == 0 {
@@ -709,7 +794,7 @@ fn dispatch_number(ctx: &mut HostContext, receiver: &Value, method: &str, args: 
             if neg {
                 grouped.insert(0, '-');
             }
-            Value::String(Arc::from(grouped.as_str()))
+            owned_string_value(grouped)
         }
         "valueOf" => receiver.clone(),
         _ => Value::Undefined,
@@ -731,7 +816,7 @@ fn dispatch_string(ctx: &mut HostContext, receiver: &Value, method: &str, args: 
             if key == "length" {
                 return Value::Bool(method == "hasOwnProperty");
             }
-            if let Ok(idx) = key.parse::<usize>() {
+            if let Some(idx) = crate::keys::non_negative_integer_index_key(&key) {
                 return Value::Bool(idx < s.chars().count());
             }
             Value::Bool(false)
@@ -772,7 +857,7 @@ fn dispatch_string(ctx: &mut HostContext, receiver: &Value, method: &str, args: 
             } else {
                 String::new()
             };
-            Value::String(Arc::from(out.as_str()))
+            owned_string_value(out)
         }
         "substr" => {
             let units = utf16_units(s.as_ref());
@@ -789,7 +874,7 @@ fn dispatch_string(ctx: &mut HostContext, receiver: &Value, method: &str, args: 
                     .saturating_add(value.as_i32().max(0) as usize)
                     .min(units.len()),
             };
-            Value::String(Arc::from(utf16_to_string(&units[start..end]).as_str()))
+            owned_string_value(utf16_to_string(&units[start..end]))
         }
         "includes" => {
             if regex_pattern(args.first()).is_some() {
@@ -820,6 +905,19 @@ fn dispatch_string(ctx: &mut HostContext, receiver: &Value, method: &str, args: 
         "indexOf" => {
             let needle = args.first().map(to_str).unwrap_or_default();
             let from = args.get(1).map(|v| v.as_i32().max(0) as usize).unwrap_or(0);
+            if s.is_ascii() && needle.is_ascii() {
+                if from > s.len() {
+                    return Value::I32(if needle.is_empty() {
+                        s.len() as i32
+                    } else {
+                        -1
+                    });
+                }
+                return match s[from..].find(needle.as_str()) {
+                    Some(byte_idx) => Value::I32((from + byte_idx) as i32),
+                    None => Value::I32(-1),
+                };
+            }
             let hay: String = s.chars().skip(from).collect();
             match hay.find(needle.as_str()) {
                 Some(byte_idx) => {
@@ -831,6 +929,22 @@ fn dispatch_string(ctx: &mut HostContext, receiver: &Value, method: &str, args: 
         }
         "lastIndexOf" => {
             let needle = args.first().map(to_str).unwrap_or_default();
+            if s.is_ascii() && needle.is_ascii() {
+                let len = s.len() as i32;
+                let from_idx = args
+                    .get(1)
+                    .and_then(|v| match v {
+                        Value::Undefined | Value::Null => None,
+                        _ => Some(v.as_i32()),
+                    })
+                    .unwrap_or(len);
+                let from_idx = (from_idx.max(0) as usize).min(s.len());
+                let search_end = (from_idx + needle.len()).min(s.len());
+                return match s[..search_end].rfind(needle.as_str()) {
+                    Some(byte_idx) => Value::I32(byte_idx as i32),
+                    None => Value::I32(-1),
+                };
+            }
             let chars: Vec<char> = s.chars().collect();
             let len = chars.len() as i32;
             let from_idx = args
@@ -850,6 +964,14 @@ fn dispatch_string(ctx: &mut HostContext, receiver: &Value, method: &str, args: 
         }
         "startsWith" => {
             let needle = args.first().map(to_str).unwrap_or_default();
+            if s.is_ascii() && needle.is_ascii() {
+                let pos = args
+                    .get(1)
+                    .map(|v| v.as_i32().max(0) as usize)
+                    .unwrap_or(0)
+                    .min(s.len());
+                return Value::Bool(s[pos..].starts_with(needle.as_str()));
+            }
             let chars: Vec<char> = s.chars().collect();
             let pos = args
                 .get(1)
@@ -861,6 +983,17 @@ fn dispatch_string(ctx: &mut HostContext, receiver: &Value, method: &str, args: 
         }
         "endsWith" => {
             let needle = args.first().map(to_str).unwrap_or_default();
+            if s.is_ascii() && needle.is_ascii() {
+                let end_pos = args
+                    .get(1)
+                    .and_then(|v| match v {
+                        Value::Undefined | Value::Null => None,
+                        _ => Some(v.as_i32()),
+                    })
+                    .map(|n| (n.max(0) as usize).min(s.len()))
+                    .unwrap_or(s.len());
+                return Value::Bool(s[..end_pos].ends_with(needle.as_str()));
+            }
             let chars: Vec<char> = s.chars().collect();
             let end_pos = args
                 .get(1)
@@ -877,32 +1010,55 @@ fn dispatch_string(ctx: &mut HostContext, receiver: &Value, method: &str, args: 
             // §22.1.3.1: UTF-16 code-unit indexing — at(i) on a surrogate
             // pair returns ONE unit (an unpaired half surfaces as U+FFFD,
             // the closest our UTF-8 storage can represent).
+            let i = args.first().map(|v| v.as_i32()).unwrap_or(0);
+            if s.is_ascii() {
+                let len = s.len() as i32;
+                let idx = if i < 0 { len + i } else { i };
+                if idx < 0 || idx >= len {
+                    return Value::Undefined;
+                }
+                let byte = s.as_bytes()[idx as usize];
+                return crate::keys::char_value(byte as char);
+            }
             let units = utf16_units(s.as_ref());
             let len = units.len() as i32;
-            let i = args.first().map(|v| v.as_i32()).unwrap_or(0);
             let idx = if i < 0 { len + i } else { i };
             if idx < 0 || idx >= len {
                 Value::Undefined
             } else {
                 let out = utf16_to_string(&units[idx as usize..idx as usize + 1]);
-                Value::String(Arc::from(out.as_str()))
+                owned_string_value(out)
             }
         }
         "charAt" => {
             // §22.1.3.2: single UTF-16 code unit (see `at` above).
-            let units = utf16_units(s.as_ref());
             let i = args.first().map(|v| v.as_i32()).unwrap_or(0);
+            if s.is_ascii() {
+                if i < 0 {
+                    return crate::keys::string_value("");
+                }
+                return match s.as_bytes().get(i as usize) {
+                    Some(byte) => crate::keys::char_value(*byte as char),
+                    None => crate::keys::string_value(""),
+                };
+            }
+            let units = utf16_units(s.as_ref());
             if i < 0 || (i as usize) >= units.len() {
-                Value::String(Arc::from(""))
+                crate::keys::string_value("")
             } else {
                 let out = utf16_to_string(&units[i as usize..i as usize + 1]);
-                Value::String(Arc::from(out.as_str()))
+                owned_string_value(out)
             }
         }
         "charCodeAt" => {
             let i = args.first().map(|v| v.as_i32()).unwrap_or(0);
             if i < 0 {
                 Value::F64(f64::NAN)
+            } else if s.is_ascii() {
+                s.as_bytes()
+                    .get(i as usize)
+                    .map(|byte| Value::I32(*byte as i32))
+                    .unwrap_or(Value::F64(f64::NAN))
             } else {
                 utf16_units(s.as_ref())
                     .get(i as usize)
@@ -943,10 +1099,10 @@ fn dispatch_string(ctx: &mut HostContext, receiver: &Value, method: &str, args: 
                     return Value::Null;
                 }
             };
-            Value::String(Arc::from(normalized.as_str()))
+            owned_string_value(normalized)
         }
-        "toUpperCase" => Value::String(Arc::from(s.to_uppercase().as_str())),
-        "toLowerCase" => Value::String(Arc::from(s.to_lowercase().as_str())),
+        "toUpperCase" => crate::string::uppercase_value(s.as_ref()),
+        "toLowerCase" => crate::string::lowercase_value(s.as_ref()),
         "localeCompare" => {
             if matches!(args.first(), Some(Value::Symbol(_))) {
                 ctx.throw_value(crate::error::new_error(
@@ -973,9 +1129,30 @@ fn dispatch_string(ctx: &mut HostContext, receiver: &Value, method: &str, args: 
                 std::cmp::Ordering::Greater => 1,
             })
         }
-        "trim" => Value::String(Arc::from(s.trim())),
-        "trimStart" | "trimLeft" => Value::String(Arc::from(s.trim_start())),
-        "trimEnd" | "trimRight" => Value::String(Arc::from(s.trim_end())),
+        "trim" => {
+            let trimmed = s.trim();
+            if trimmed.len() == s.len() {
+                Value::String(s.clone())
+            } else {
+                crate::keys::string_value(trimmed)
+            }
+        }
+        "trimStart" | "trimLeft" => {
+            let trimmed = s.trim_start();
+            if trimmed.len() == s.len() {
+                Value::String(s.clone())
+            } else {
+                crate::keys::string_value(trimmed)
+            }
+        }
+        "trimEnd" | "trimRight" => {
+            let trimmed = s.trim_end();
+            if trimmed.len() == s.len() {
+                Value::String(s.clone())
+            } else {
+                crate::keys::string_value(trimmed)
+            }
+        }
         // §22.1.3.10 / §22.1.3.28 (ES2024). Storage is UTF-8, which cannot
         // hold unpaired surrogates, so every representable string is
         // well-formed; unpaired halves were already replaced with U+FFFD
@@ -995,7 +1172,11 @@ fn dispatch_string(ctx: &mut HostContext, receiver: &Value, method: &str, args: 
                 return Value::Undefined;
             }
             let n = if n.is_nan() { 0 } else { n as usize };
-            Value::String(Arc::from(s.repeat(n).as_str()))
+            match n {
+                0 => crate::keys::string_value(""),
+                1 => Value::String(s.clone()),
+                _ => owned_string_value(s.repeat(n)),
+            }
         }
         "split" => {
             if let Some(result) = args.first().and_then(|value| {
@@ -1007,13 +1188,11 @@ fn dispatch_string(ctx: &mut HostContext, receiver: &Value, method: &str, args: 
             // Detect the RegExp shape (object stamped __type=RegExp) and
             // dispatch through `ecma:regexp` for shared regex semantics.
             if let Some((pat, flags)) = regex_pattern(args.first()) {
-                let mut call_args = Vec::with_capacity(args.len() + 1);
-                call_args.push(Value::String(s.clone()));
                 let _ = (pat, flags);
-                call_args.push(args.first().cloned().unwrap_or(Value::Undefined));
-                call_args.extend_from_slice(&args[1..]);
                 if let Some(result) =
-                    crate::regexp::dispatch_regexp_string_method(ctx, "split", &call_args)
+                    with_prepended_arg(Value::String(s.clone()), args, |call_args| {
+                        crate::regexp::dispatch_regexp_string_method(ctx, "split", call_args)
+                    })
                 {
                     return result;
                 }
@@ -1038,19 +1217,35 @@ fn dispatch_string(ctx: &mut HostContext, receiver: &Value, method: &str, args: 
                 return make_array(Vec::new());
             }
             let parts: Vec<Value> = if sep.is_empty() {
-                let chars = s
-                    .chars()
-                    .map(|c| Value::String(Arc::from(c.to_string().as_str())));
                 match limit {
-                    Some(n) => chars.take(n).collect(),
-                    None => chars.collect(),
+                    Some(n) => {
+                        let mut parts = Vec::with_capacity(s.len().min(n));
+                        for ch in s.chars().take(n) {
+                            parts.push(char_value(ch));
+                        }
+                        parts
+                    }
+                    None => {
+                        let mut parts = Vec::with_capacity(s.len());
+                        for ch in s.chars() {
+                            parts.push(char_value(ch));
+                        }
+                        parts
+                    }
                 }
             } else {
-                let pieces = s.split(sep.as_str()).map(|p| Value::String(Arc::from(p)));
-                match limit {
-                    Some(n) => pieces.take(n).collect(),
-                    None => pieces.collect(),
+                let mut parts = Vec::new();
+                if let Some(n) = limit {
+                    parts.reserve(n.min(16));
+                    for piece in s.split(sep.as_str()).take(n) {
+                        parts.push(crate::keys::string_value(piece));
+                    }
+                } else {
+                    for piece in s.split(sep.as_str()) {
+                        parts.push(crate::keys::string_value(piece));
+                    }
                 }
+                parts
             };
             make_array(parts)
         }
@@ -1072,11 +1267,12 @@ fn dispatch_string(ctx: &mut HostContext, receiver: &Value, method: &str, args: 
                 return result;
             }
             if let Some((pat, flags)) = regex_pattern(args.first()) {
-                let mut call_args = Vec::with_capacity(3);
-                call_args.push(Value::String(s.clone()));
                 let _ = (pat, flags);
-                call_args.push(args.first().cloned().unwrap_or(Value::Undefined));
-                call_args.push(replacement.clone());
+                let call_args = [
+                    Value::String(s.clone()),
+                    args.first().cloned().unwrap_or(Value::Undefined),
+                    replacement.clone(),
+                ];
                 if let Some(result) =
                     crate::regexp::dispatch_regexp_string_method(ctx, "replace", &call_args)
                 {
@@ -1089,30 +1285,36 @@ fn dispatch_string(ctx: &mut HostContext, receiver: &Value, method: &str, args: 
                     | vybe_runtime::value::ObjectKind::HostFunction(_)));
             let find = args.first().map(to_str).unwrap_or_default();
             if is_callable {
+                let prepared_replacement = crate::function::prepare_bound_callback(&replacement);
                 // Plain-string find with callable replacement: replace
                 // first occurrence by invoking the callback once.
-                let result = match s.find(find.as_str()) {
-                    Some(pos) => {
-                        let cb_args = vec![
-                            Value::String(Arc::from(find.as_str())),
-                            Value::I32(pos as i32),
-                            Value::String(s.clone()),
-                        ];
-                        let ret = ctx.invoke(&replacement, &cb_args);
-                        let with = match ret {
-                            Value::String(ref st) => st.to_string(),
-                            other => format!("{}", other),
-                        };
-                        format!("{}{}{}", &s[..pos], with, &s[pos + find.len()..])
-                    }
-                    None => s.to_string(),
+                let Some(pos) = s.find(find.as_str()) else {
+                    return Value::String(s.clone());
                 };
-                return Value::String(Arc::from(result.as_str()));
+                let cb_args = [
+                    crate::keys::string_value(find.as_str()),
+                    Value::I32(pos as i32),
+                    Value::String(s.clone()),
+                ];
+                let ret =
+                    invoke_cached_callback(ctx, &replacement, &prepared_replacement, &cb_args);
+                let mut out = String::with_capacity(s.len());
+                out.push_str(&s[..pos]);
+                match ret {
+                    Value::String(ref st) => out.push_str(st),
+                    other => {
+                        let _ = write!(out, "{}", other);
+                    }
+                }
+                out.push_str(&s[pos + find.len()..]);
+                return owned_string_value(out);
             }
             let with = to_str(&replacement);
-            Value::String(Arc::from(
-                s.replacen(find.as_str(), with.as_str(), 1).as_str(),
-            ))
+            if !s.contains(find.as_str()) {
+                Value::String(s.clone())
+            } else {
+                owned_string_value(s.replacen(find.as_str(), with.as_str(), 1))
+            }
         }
         "replaceAll" => {
             if let Some(result) = args.first().and_then(|value| {
@@ -1129,11 +1331,12 @@ fn dispatch_string(ctx: &mut HostContext, receiver: &Value, method: &str, args: 
                 return result;
             }
             if let Some((pat, flags)) = regex_pattern(args.first()) {
-                let mut call_args = Vec::with_capacity(3);
-                call_args.push(Value::String(s.clone()));
                 let _ = (pat, flags);
-                call_args.push(args.first().cloned().unwrap_or(Value::Undefined));
-                call_args.push(args.get(1).cloned().unwrap_or(Value::Undefined));
+                let call_args = [
+                    Value::String(s.clone()),
+                    args.first().cloned().unwrap_or(Value::Undefined),
+                    args.get(1).cloned().unwrap_or(Value::Undefined),
+                ];
                 if let Some(result) =
                     crate::regexp::dispatch_regexp_string_method(ctx, "replaceAll", &call_args)
                 {
@@ -1145,36 +1348,41 @@ fn dispatch_string(ctx: &mut HostContext, receiver: &Value, method: &str, args: 
             let is_callable = matches!(&replacement, Value::Object(o)
                 if matches!(o.lock().unwrap().kind, ObjectKind::Function(_) | ObjectKind::HostFunction(_)));
             if is_callable && !find.is_empty() {
-                let mut result = String::new();
+                let prepared_replacement = crate::function::prepare_bound_callback(&replacement);
+                let mut result = String::with_capacity(s.len());
                 let mut rest = s.as_ref();
                 let mut offset = 0usize;
                 while let Some(pos) = rest.find(find.as_str()) {
                     result.push_str(&rest[..pos]);
                     let matched = &rest[pos..pos + find.len()];
-                    let cb_result = ctx.invoke(
-                        &replacement,
-                        &[
-                            Value::String(Arc::from(matched)),
-                            Value::I32((offset + pos) as i32),
-                            Value::String(s.clone()),
-                        ],
-                    );
+                    let cb_args = [
+                        crate::keys::string_value(matched),
+                        Value::I32((offset + pos) as i32),
+                        Value::String(s.clone()),
+                    ];
+                    let cb_result =
+                        invoke_cached_callback(ctx, &replacement, &prepared_replacement, &cb_args);
                     result.push_str(&to_str(&cb_result));
                     offset += pos + find.len();
                     rest = &rest[pos + find.len()..];
                 }
                 result.push_str(rest);
-                return Value::String(Arc::from(result.as_str()));
+                return owned_string_value(result);
             }
             let with = to_str(&replacement);
-            Value::String(Arc::from(s.replace(find.as_str(), with.as_str()).as_str()))
+            if !s.contains(find.as_str()) {
+                Value::String(s.clone())
+            } else {
+                owned_string_value(s.replace(find.as_str(), with.as_str()))
+            }
         }
         "match" => {
             // ECMA-262 §22.1.3.13 — receiver=string, arg=regex (or string,
             // which is treated as a regex source).
-            let mut call_args = Vec::with_capacity(2);
-            call_args.push(Value::String(s.clone()));
-            call_args.push(args.first().cloned().unwrap_or(Value::Undefined));
+            let call_args = [
+                Value::String(s.clone()),
+                args.first().cloned().unwrap_or(Value::Undefined),
+            ];
             if let Some(result) =
                 crate::regexp::dispatch_regexp_string_method(ctx, "match", &call_args)
             {
@@ -1184,9 +1392,10 @@ fn dispatch_string(ctx: &mut HostContext, receiver: &Value, method: &str, args: 
             }
         }
         "search" => {
-            let mut call_args = Vec::with_capacity(2);
-            call_args.push(Value::String(s.clone()));
-            call_args.push(args.first().cloned().unwrap_or(Value::Undefined));
+            let call_args = [
+                Value::String(s.clone()),
+                args.first().cloned().unwrap_or(Value::Undefined),
+            ];
             match crate::regexp::dispatch_regexp_string_method(ctx, "search", &call_args) {
                 Some(result) => result,
                 None => Value::I32(-1),
@@ -1197,7 +1406,7 @@ fn dispatch_string(ctx: &mut HostContext, receiver: &Value, method: &str, args: 
             for a in args {
                 out.push_str(&to_str(a));
             }
-            Value::String(Arc::from(out.as_str()))
+            owned_string_value(out)
         }
         "padStart" => pad(&s, args, true),
         "padEnd" => pad(&s, args, false),
@@ -1221,7 +1430,7 @@ fn invoke_string_symbol_hook(
     // `canonical_property_key`), the canonical short key ("symbolsplit"), or
     // the "Symbol(@@split)" wrapper used by ecma:array.set. Try all three.
     let canonical = crate::symbol::canonical_property_key(&Arc::from(raw_symbol));
-    let wrapped = format!("Symbol({})", raw_symbol);
+    let wrapped = crate::keys::concat3_arc("Symbol(", raw_symbol, ")");
     let method = lookup_method_via_proto(obj, raw_symbol)
         .or_else(|| lookup_method_via_proto(obj, &canonical))
         .or_else(|| lookup_method_via_proto(obj, &wrapped))?;
@@ -1246,7 +1455,7 @@ fn pad(s: &str, args: &[Value], start: bool) -> Value {
         .unwrap_or_else(|| " ".to_string());
     let units: Vec<u16> = s.encode_utf16().collect();
     if units.len() >= target {
-        return Value::String(Arc::from(s));
+        return crate::keys::string_value(s);
     }
     let needed = target - units.len();
     let pad_units: Vec<u16> = pad_char.encode_utf16().collect();
@@ -1255,12 +1464,11 @@ fn pad(s: &str, args: &[Value], start: bool) -> Value {
         filler_units.push(pad_units[i % pad_units.len()]);
     }
     let pad_trimmed = String::from_utf16_lossy(&filler_units);
-    let out = if start {
-        format!("{}{}", pad_trimmed, s)
+    if start {
+        Value::String(crate::keys::concat2_arc(&pad_trimmed, s))
     } else {
-        format!("{}{}", s, pad_trimmed)
-    };
-    Value::String(Arc::from(out.as_str()))
+        Value::String(crate::keys::concat2_arc(s, &pad_trimmed))
+    }
 }
 
 // ── Array methods (`Array.prototype.*`) ──────────────────────────────
@@ -1292,7 +1500,7 @@ fn dispatch_array(
             if key == "length" {
                 return Value::Bool(true);
             }
-            if let Ok(idx) = key.parse::<usize>() {
+            if let Some(idx) = crate::keys::non_negative_integer_index_key(&key) {
                 if let ObjectKind::Array(ref v) = o.kind {
                     return Value::Bool(idx < v.len());
                 }
@@ -1305,7 +1513,7 @@ fn dispatch_array(
             if key == "length" {
                 return Value::Bool(false);
             }
-            if let Ok(idx) = key.parse::<usize>() {
+            if let Some(idx) = crate::keys::non_negative_integer_index_key(&key) {
                 if let ObjectKind::Array(ref v) = o.kind {
                     return Value::Bool(idx < v.len());
                 }
@@ -1418,13 +1626,23 @@ fn dispatch_array(
                     .max(0)
                     .min(len) as usize;
                 let e = (if end < 0 { len + end } else { end }).max(0).min(len) as usize;
-                let out: Vec<Value> = if s < e { v[s..e].to_vec() } else { Vec::new() };
+                let out: Vec<Value> = if s < e {
+                    let mut out = Vec::with_capacity(e - s);
+                    for value in &v[s..e] {
+                        out.push(value.clone());
+                    }
+                    out
+                } else {
+                    Vec::new()
+                };
                 let sliced = make_array(out);
                 if let Value::Object(out_obj) = &sliced {
-                    let holes: BTreeSet<usize> = (s..e)
-                        .filter(|index| crate::array::is_array_hole(&o, *index))
-                        .map(|index| index - s)
-                        .collect();
+                    let mut holes = BTreeSet::new();
+                    for index in s..e {
+                        if crate::array::is_array_hole(&o, index) {
+                            holes.insert(index - s);
+                        }
+                    }
                     let mut out_lock = out_obj.lock().unwrap();
                     crate::array::store_hole_indices(&mut out_lock, &holes);
                 }
@@ -1464,7 +1682,10 @@ fn dispatch_array(
                 let t = target.max(0).min(len) as usize;
                 let s = start.max(0).min(len) as usize;
                 let e = end.max(0).min(len) as usize;
-                let slice: Vec<Value> = v[s..e].iter().cloned().collect();
+                let mut slice = Vec::with_capacity(e.saturating_sub(s));
+                for value in &v[s..e] {
+                    slice.push(value.clone());
+                }
                 let max_copy = (len as usize - t).min(slice.len());
                 v[t..t + max_copy].clone_from_slice(&slice[..max_copy]);
                 sync_length(&mut o);
@@ -1554,23 +1775,18 @@ fn dispatch_array(
             let sep = args.first().map(to_str).unwrap_or_else(|| ",".to_string());
             let o = obj.lock().unwrap();
             if let ObjectKind::Array(ref v) = o.kind {
-                let parts: Vec<String> = v
-                    .iter()
-                    .enumerate()
-                    .map(|(index, value)| {
-                        if crate::array::is_array_hole(&o, index) {
-                            String::new()
-                        } else {
-                            match value {
-                                Value::Null | Value::Undefined => String::new(),
-                                other => format!("{}", other),
-                            }
-                        }
-                    })
-                    .collect();
-                return Value::String(Arc::from(parts.join(&sep).as_str()));
+                let mut joined = String::new();
+                let mut first = true;
+                for (index, value) in v.iter().enumerate() {
+                    if crate::array::is_array_hole(&o, index) {
+                        push_join_part(&mut joined, &sep, &mut first, "");
+                    } else {
+                        push_join_value(&mut joined, &sep, &mut first, value);
+                    }
+                }
+                return owned_string_value(joined);
             }
-            Value::String(Arc::from(""))
+            crate::keys::string_value("")
         }
         "reverse" => {
             let mut o = obj.lock().unwrap();
@@ -1582,6 +1798,9 @@ fn dispatch_array(
         }
         "sort" => {
             let compare_fn = args.first().cloned();
+            let prepared_compare = compare_fn
+                .as_ref()
+                .and_then(crate::function::prepare_bound_callback);
             let snapshot = {
                 let o = obj.lock().unwrap();
                 if let ObjectKind::Array(ref v) = o.kind {
@@ -1591,9 +1810,11 @@ fn dispatch_array(
                 }
             };
             let mut values = snapshot;
-            values.sort_by(|a, b| {
-                if let Some(compare_fn) = compare_fn.as_ref() {
-                    let result = ctx.invoke(compare_fn, &[a.clone(), b.clone()]);
+            if let Some(compare_fn) = compare_fn.as_ref() {
+                values.sort_by(|a, b| {
+                    let compare_args = [a.clone(), b.clone()];
+                    let result =
+                        invoke_cached_callback(ctx, compare_fn, &prepared_compare, &compare_args);
                     let order = result.as_f64();
                     if order < 0.0 {
                         std::cmp::Ordering::Less
@@ -1602,10 +1823,19 @@ fn dispatch_array(
                     } else {
                         std::cmp::Ordering::Equal
                     }
-                } else {
-                    format!("{}", a).cmp(&format!("{}", b))
+                });
+            } else {
+                let mut keyed: Vec<(String, Value)> = Vec::with_capacity(values.len());
+                for value in values {
+                    let key = crate::keys::value_display_string(&value);
+                    keyed.push((key, value));
                 }
-            });
+                keyed.sort_by(|a, b| a.0.cmp(&b.0));
+                values = Vec::with_capacity(keyed.len());
+                for (_, value) in keyed {
+                    values.push(value);
+                }
+            }
             let mut o = obj.lock().unwrap();
             if let ObjectKind::Array(ref mut v) = o.kind {
                 *v = values;
@@ -1639,7 +1869,7 @@ fn dispatch_array(
         "splice" => {
             let start = args.first().map(|a| a.as_i32()).unwrap_or(0);
             let del = args.get(1).map(|a| a.as_i32().max(0) as usize).unwrap_or(0);
-            let items: Vec<Value> = args.iter().skip(2).cloned().collect();
+            let items = args.get(2..).unwrap_or(&[]);
             let mut deleted = Vec::new();
             let mut deleted_holes = BTreeSet::new();
             let mut o = obj.lock().unwrap();
@@ -1661,9 +1891,12 @@ fn dispatch_array(
                 let end = (idx + del).min(len);
                 let delete_count = end.saturating_sub(idx);
                 let insert_count = items.len();
-                let old_holes: BTreeSet<usize> = (0..len)
-                    .filter(|index| crate::array::is_array_hole(&o, *index))
-                    .collect();
+                let mut old_holes: BTreeSet<usize> = BTreeSet::new();
+                for index in 0..len {
+                    if crate::array::is_array_hole(&o, index) {
+                        old_holes.insert(index);
+                    }
+                }
                 for offset in 0..delete_count {
                     if old_holes.contains(&(idx + offset)) {
                         deleted_holes.insert(offset);
@@ -1673,23 +1906,19 @@ fn dispatch_array(
                     for _ in idx..end {
                         deleted.push(v.remove(idx));
                     }
-                    for (i, it) in items.into_iter().enumerate() {
+                    for (i, it) in items.iter().cloned().enumerate() {
                         v.insert(idx + i, it);
                     }
                 }
                 let shift = insert_count as isize - delete_count as isize;
-                let remapped: BTreeSet<usize> = old_holes
-                    .into_iter()
-                    .filter_map(|hole| {
-                        if hole < idx {
-                            Some(hole)
-                        } else if hole < end {
-                            None
-                        } else {
-                            Some((hole as isize + shift) as usize)
-                        }
-                    })
-                    .collect();
+                let mut remapped: BTreeSet<usize> = BTreeSet::new();
+                for hole in old_holes {
+                    if hole < idx {
+                        remapped.insert(hole);
+                    } else if hole >= end {
+                        remapped.insert((hole as isize + shift) as usize);
+                    }
+                }
                 crate::array::store_hole_indices(&mut o, &remapped);
                 sync_length(&mut o);
             }
@@ -1703,7 +1932,10 @@ fn dispatch_array(
         "keys" => {
             let o = obj.lock().unwrap();
             if let ObjectKind::Array(ref v) = o.kind {
-                let out: Vec<Value> = (0..v.len()).map(|i| Value::F64(i as f64)).collect();
+                let mut out = Vec::with_capacity(v.len());
+                for i in 0..v.len() {
+                    out.push(Value::F64(i as f64));
+                }
                 return crate::array::make_array_iterator(out);
             }
             crate::array::make_array_iterator(Vec::new())
@@ -1718,11 +1950,13 @@ fn dispatch_array(
         "entries" => {
             let o = obj.lock().unwrap();
             if let ObjectKind::Array(ref v) = o.kind {
-                let out: Vec<Value> = v
-                    .iter()
-                    .enumerate()
-                    .map(|(i, e)| make_array(vec![Value::F64(i as f64), e.clone()]))
-                    .collect();
+                let mut out = Vec::with_capacity(v.len());
+                for (i, e) in v.iter().enumerate() {
+                    out.push(crate::array::make_pair_array(
+                        Value::F64(i as f64),
+                        e.clone(),
+                    ));
+                }
                 return crate::array::make_array_iterator(out);
             }
             crate::array::make_array_iterator(Vec::new())
@@ -1732,12 +1966,17 @@ fn dispatch_array(
                 Some(c) => c.clone(),
                 None => return Value::Undefined,
             };
+            let prepared_callback = crate::function::prepare_bound_callback(&cb);
             let entries = {
                 let o = obj.lock().unwrap();
                 crate::array::present_array_entries(&o)
             };
+            let receiver = Value::Object(obj.clone());
+            let mut callback_args = [Value::Undefined, Value::Undefined, receiver];
             for (i, v) in entries {
-                ctx.invoke(&cb, &[v, Value::I32(i as i32), Value::Object(obj.clone())]);
+                callback_args[0] = v;
+                callback_args[1] = Value::I32(i as i32);
+                invoke_cached_callback(ctx, &cb, &prepared_callback, &callback_args);
             }
             Value::Undefined
         }
@@ -1746,6 +1985,7 @@ fn dispatch_array(
                 Some(c) => c.clone(),
                 None => return make_array(Vec::new()),
             };
+            let prepared_callback = crate::function::prepare_bound_callback(&cb);
             let (length, entries) = {
                 let o = obj.lock().unwrap();
                 let len = if let ObjectKind::Array(ref v) = o.kind {
@@ -1755,20 +1995,27 @@ fn dispatch_array(
                 };
                 (len, crate::array::present_array_entries(&o))
             };
+            let mut mapped: Vec<(usize, Value)> = Vec::with_capacity(entries.len());
+            let receiver = Value::Object(obj.clone());
+            let mut callback_args = [Value::Undefined, Value::Undefined, receiver];
+            for (index, value) in entries {
+                callback_args[0] = value;
+                callback_args[1] = Value::I32(index as i32);
+                mapped.push((
+                    index,
+                    invoke_cached_callback(ctx, &cb, &prepared_callback, &callback_args),
+                ));
+            }
             let out = crate::array::make_holey_array(length);
             if let Value::Object(out_obj) = &out {
                 let mut out_guard = out_obj.lock().unwrap();
-                let clear_indices: Vec<usize> = entries.iter().map(|(index, _)| *index).collect();
-                if let ObjectKind::Array(ref mut values) = out_guard.kind {
-                    for (index, value) in entries {
-                        values[index] = ctx.invoke(
-                            &cb,
-                            &[value, Value::I32(index as i32), Value::Object(obj.clone())],
-                        );
-                    }
+                for (index, _) in &mapped {
+                    crate::array::clear_array_hole(&mut out_guard, *index);
                 }
-                for index in clear_indices {
-                    crate::array::clear_array_hole(&mut out_guard, index);
+                if let ObjectKind::Array(ref mut values) = out_guard.kind {
+                    for (index, value) in mapped {
+                        values[index] = value;
+                    }
                 }
             }
             out
@@ -1778,16 +2025,18 @@ fn dispatch_array(
                 Some(c) => c.clone(),
                 None => return make_array(Vec::new()),
             };
+            let prepared_callback = crate::function::prepare_bound_callback(&cb);
             let entries = {
                 let o = obj.lock().unwrap();
                 crate::array::present_array_entries(&o)
             };
-            let mut out = Vec::new();
+            let mut out = Vec::with_capacity(entries.len());
+            let receiver = Value::Object(obj.clone());
+            let mut callback_args = [Value::Undefined, Value::Undefined, receiver];
             for (i, v) in entries {
-                let keep = ctx.invoke(
-                    &cb,
-                    &[v.clone(), Value::I32(i as i32), Value::Object(obj.clone())],
-                );
+                callback_args[0] = v.clone();
+                callback_args[1] = Value::I32(i as i32);
+                let keep = invoke_cached_callback(ctx, &cb, &prepared_callback, &callback_args);
                 if truthy(&keep) {
                     out.push(v);
                 }
@@ -1799,6 +2048,7 @@ fn dispatch_array(
                 Some(c) => c.clone(),
                 None => return Value::Undefined,
             };
+            let prepared_callback = crate::function::prepare_bound_callback(&cb);
             let has_initial = args.len() > 1;
             let mut acc = if has_initial {
                 args[1].clone()
@@ -1815,11 +2065,18 @@ fn dispatch_array(
                     acc = first;
                 }
             }
+            let receiver = Value::Object(obj.clone());
+            let mut callback_args = [
+                Value::Undefined,
+                Value::Undefined,
+                Value::Undefined,
+                receiver,
+            ];
             for (i, v) in iter {
-                acc = ctx.invoke(
-                    &cb,
-                    &[acc, v, Value::I32(i as i32), Value::Object(obj.clone())],
-                );
+                callback_args[0] = acc;
+                callback_args[1] = v;
+                callback_args[2] = Value::I32(i as i32);
+                acc = invoke_cached_callback(ctx, &cb, &prepared_callback, &callback_args);
             }
             acc
         }
@@ -1828,13 +2085,18 @@ fn dispatch_array(
                 Some(c) => c.clone(),
                 None => return Value::Bool(false),
             };
+            let prepared_callback = crate::function::prepare_bound_callback(&cb);
             let entries = {
                 let o = obj.lock().unwrap();
                 crate::array::present_array_entries(&o)
             };
+            let receiver = Value::Object(obj.clone());
+            let mut callback_args = [Value::Undefined, Value::Undefined, receiver];
             for (i, v) in entries {
-                if truthy(&ctx.invoke(&cb, &[v, Value::I32(i as i32), Value::Object(obj.clone())]))
-                {
+                callback_args[0] = v;
+                callback_args[1] = Value::I32(i as i32);
+                let keep = invoke_cached_callback(ctx, &cb, &prepared_callback, &callback_args);
+                if truthy(&keep) {
                     return Value::Bool(true);
                 }
             }
@@ -1845,13 +2107,18 @@ fn dispatch_array(
                 Some(c) => c.clone(),
                 None => return Value::Bool(true),
             };
+            let prepared_callback = crate::function::prepare_bound_callback(&cb);
             let entries = {
                 let o = obj.lock().unwrap();
                 crate::array::present_array_entries(&o)
             };
+            let receiver = Value::Object(obj.clone());
+            let mut callback_args = [Value::Undefined, Value::Undefined, receiver];
             for (i, v) in entries {
-                if !truthy(&ctx.invoke(&cb, &[v, Value::I32(i as i32), Value::Object(obj.clone())]))
-                {
+                callback_args[0] = v;
+                callback_args[1] = Value::I32(i as i32);
+                let keep = invoke_cached_callback(ctx, &cb, &prepared_callback, &callback_args);
+                if !truthy(&keep) {
                     return Value::Bool(false);
                 }
             }
@@ -1862,15 +2129,18 @@ fn dispatch_array(
                 Some(c) => c.clone(),
                 None => return Value::Undefined,
             };
+            let prepared_callback = crate::function::prepare_bound_callback(&cb);
             let entries = {
                 let o = obj.lock().unwrap();
                 crate::array::present_array_entries(&o)
             };
+            let receiver = Value::Object(obj.clone());
+            let mut callback_args = [Value::Undefined, Value::Undefined, receiver];
             for (i, v) in entries {
-                if truthy(&ctx.invoke(
-                    &cb,
-                    &[v.clone(), Value::I32(i as i32), Value::Object(obj.clone())],
-                )) {
+                callback_args[0] = v.clone();
+                callback_args[1] = Value::I32(i as i32);
+                let keep = invoke_cached_callback(ctx, &cb, &prepared_callback, &callback_args);
+                if truthy(&keep) {
                     return v;
                 }
             }
@@ -1881,13 +2151,18 @@ fn dispatch_array(
                 Some(c) => c.clone(),
                 None => return Value::I32(-1),
             };
+            let prepared_callback = crate::function::prepare_bound_callback(&cb);
             let entries = {
                 let o = obj.lock().unwrap();
                 crate::array::present_array_entries(&o)
             };
+            let receiver = Value::Object(obj.clone());
+            let mut callback_args = [Value::Undefined, Value::Undefined, receiver];
             for (i, v) in entries {
-                if truthy(&ctx.invoke(&cb, &[v, Value::I32(i as i32), Value::Object(obj.clone())]))
-                {
+                callback_args[0] = v;
+                callback_args[1] = Value::I32(i as i32);
+                let keep = invoke_cached_callback(ctx, &cb, &prepared_callback, &callback_args);
+                if truthy(&keep) {
                     return Value::I32(i as i32);
                 }
             }
@@ -1896,23 +2171,18 @@ fn dispatch_array(
         "toString" => {
             let o = obj.lock().unwrap();
             if let ObjectKind::Array(ref v) = o.kind {
-                let parts: Vec<String> = v
-                    .iter()
-                    .enumerate()
-                    .map(|(index, value)| {
-                        if crate::array::is_array_hole(&o, index) {
-                            String::new()
-                        } else {
-                            match value {
-                                Value::Null | Value::Undefined => String::new(),
-                                other => format!("{}", other),
-                            }
-                        }
-                    })
-                    .collect();
-                return Value::String(Arc::from(parts.join(",").as_str()));
+                let mut joined = String::new();
+                let mut first = true;
+                for (index, value) in v.iter().enumerate() {
+                    if crate::array::is_array_hole(&o, index) {
+                        push_join_part(&mut joined, ",", &mut first, "");
+                    } else {
+                        push_join_value(&mut joined, ",", &mut first, value);
+                    }
+                }
+                return owned_string_value(joined);
             }
-            Value::String(Arc::from("[object Object]"))
+            crate::keys::string_value("[object Object]")
         }
         _ => Value::Undefined,
     }
@@ -1949,12 +2219,9 @@ fn concat_spread_elements(value: &Value) -> Option<Vec<Value>> {
                 .unwrap_or(0);
             let mut out = Vec::with_capacity(len);
             for index in 0..len {
-                out.push(
-                    o.properties
-                        .get(&index.to_string())
-                        .cloned()
-                        .unwrap_or(Value::Undefined),
-                );
+                out.push(crate::keys::with_index_key(index, |key| {
+                    o.properties.get(key).cloned().unwrap_or(Value::Undefined)
+                }));
             }
             Some(out)
         }
@@ -1963,6 +2230,7 @@ fn concat_spread_elements(value: &Value) -> Option<Vec<Value>> {
 
 fn array_iterator_result(value: Value, done: bool) -> Value {
     let mut obj = Object::new();
+    obj.properties.reserve(2);
     obj.properties.insert("value".into(), value);
     obj.properties.insert("done".into(), Value::Bool(done));
     Value::Object(vybe_runtime::heap::alloc(obj))
@@ -2033,10 +2301,11 @@ fn dispatch_map(
 ) -> Value {
     match method {
         "get" => {
-            let key = args.first().cloned().unwrap_or(Value::Undefined);
+            let undefined = Value::Undefined;
+            let key = args.first().unwrap_or(&undefined);
             let m = obj.lock().unwrap();
             if let ObjectKind::Map(ref im) = m.kind {
-                return im.get(&key).cloned().unwrap_or(Value::Undefined);
+                return im.get(key).cloned().unwrap_or(Value::Undefined);
             }
             Value::Undefined
         }
@@ -2053,18 +2322,20 @@ fn dispatch_map(
             Value::Object(obj)
         }
         "has" => {
-            let key = args.first().cloned().unwrap_or(Value::Undefined);
+            let undefined = Value::Undefined;
+            let key = args.first().unwrap_or(&undefined);
             let m = obj.lock().unwrap();
             if let ObjectKind::Map(ref im) = m.kind {
-                return Value::Bool(im.contains_key(&key));
+                return Value::Bool(im.contains_key(key));
             }
             Value::Bool(false)
         }
         "delete" => {
-            let key = args.first().cloned().unwrap_or(Value::Undefined);
+            let undefined = Value::Undefined;
+            let key = args.first().unwrap_or(&undefined);
             let mut m = obj.lock().unwrap();
             let removed = if let ObjectKind::Map(ref mut im) = m.kind {
-                im.shift_remove(&key).is_some()
+                im.shift_remove(key).is_some()
             } else {
                 false
             };
@@ -2089,24 +2360,28 @@ fn dispatch_map(
         "keys" => {
             let m = obj.lock().unwrap();
             if let ObjectKind::Map(ref im) = m.kind {
-                return crate::array::make_array_iterator(im.keys().cloned().collect());
+                let mut keys = Vec::with_capacity(im.len());
+                keys.extend(im.keys().cloned());
+                return crate::array::make_array_iterator(keys);
             }
             crate::array::make_array_iterator(Vec::new())
         }
         "values" => {
             let m = obj.lock().unwrap();
             if let ObjectKind::Map(ref im) = m.kind {
-                return crate::array::make_array_iterator(im.values().cloned().collect());
+                let mut values = Vec::with_capacity(im.len());
+                values.extend(im.values().cloned());
+                return crate::array::make_array_iterator(values);
             }
             crate::array::make_array_iterator(Vec::new())
         }
         "iterator" | "entries" => {
             let m = obj.lock().unwrap();
             if let ObjectKind::Map(ref im) = m.kind {
-                let pairs: Vec<Value> = im
-                    .iter()
-                    .map(|(k, v)| make_array(vec![k.clone(), v.clone()]))
-                    .collect();
+                let mut pairs = Vec::with_capacity(im.len());
+                for (k, v) in im {
+                    pairs.push(crate::array::make_pair_array(k.clone(), v.clone()));
+                }
                 return crate::array::make_array_iterator(pairs);
             }
             crate::array::make_array_iterator(Vec::new())
@@ -2115,21 +2390,30 @@ fn dispatch_map(
             let cb = args.first().cloned().unwrap_or(Value::Null);
             let this_arg = args.get(1).cloned();
             let saved_this = this_arg.as_ref().map(|_| ctx.current_js_this());
+            let prepared_callback = crate::function::prepare_bound_callback(&cb);
             let snapshot: Vec<(Value, Value)> = {
                 let m = obj.lock().unwrap();
                 if let ObjectKind::Map(ref im) = m.kind {
-                    im.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+                    let mut snapshot = Vec::with_capacity(im.len());
+                    for (k, v) in im {
+                        snapshot.push((k.clone(), v.clone()));
+                    }
+                    snapshot
                 } else {
                     Vec::new()
                 }
             };
+            let receiver = Value::Object(obj.clone());
+            let mut invoke_args = [Value::Undefined, Value::Undefined, receiver];
             for (k, v) in snapshot {
-                if let Some(this_arg) = this_arg.clone() {
-                    ctx.set_js_this(this_arg);
+                if let Some(this_arg) = &this_arg {
+                    ctx.set_js_this(this_arg.clone());
                 }
-                ctx.invoke(&cb, &[v, k, Value::Object(obj.clone())]);
-                if let Some(saved_this) = saved_this.clone() {
-                    ctx.set_js_this(saved_this);
+                invoke_args[0] = v;
+                invoke_args[1] = k;
+                invoke_cached_callback(ctx, &cb, &prepared_callback, &invoke_args);
+                if let Some(saved_this) = &saved_this {
+                    ctx.set_js_this(saved_this.clone());
                 }
             }
             Value::Undefined
@@ -2157,18 +2441,20 @@ fn dispatch_set(
             Value::Object(obj)
         }
         "has" => {
-            let v = args.first().cloned().unwrap_or(Value::Undefined);
+            let undefined = Value::Undefined;
+            let v = args.first().unwrap_or(&undefined);
             let so = obj.lock().unwrap();
             if let ObjectKind::Set(ref s) = so.kind {
-                return Value::Bool(s.contains(&v));
+                return Value::Bool(s.contains(v));
             }
             Value::Bool(false)
         }
         "delete" => {
-            let v = args.first().cloned().unwrap_or(Value::Undefined);
+            let undefined = Value::Undefined;
+            let v = args.first().unwrap_or(&undefined);
             let mut so = obj.lock().unwrap();
             let removed = if let ObjectKind::Set(ref mut s) = so.kind {
-                s.shift_remove(&v)
+                s.shift_remove(v)
             } else {
                 false
             };
@@ -2193,17 +2479,19 @@ fn dispatch_set(
         "iterator" | "keys" | "values" => {
             let so = obj.lock().unwrap();
             if let ObjectKind::Set(ref s) = so.kind {
-                return crate::array::make_array_iterator(s.iter().cloned().collect());
+                let mut values = Vec::with_capacity(s.len());
+                values.extend(s.iter().cloned());
+                return crate::array::make_array_iterator(values);
             }
             crate::array::make_array_iterator(Vec::new())
         }
         "entries" => {
             let so = obj.lock().unwrap();
             if let ObjectKind::Set(ref s) = so.kind {
-                let pairs: Vec<Value> = s
-                    .iter()
-                    .map(|v| make_array(vec![v.clone(), v.clone()]))
-                    .collect();
+                let mut pairs = Vec::with_capacity(s.len());
+                for v in s {
+                    pairs.push(crate::array::make_pair_array(v.clone(), v.clone()));
+                }
                 return crate::array::make_array_iterator(pairs);
             }
             crate::array::make_array_iterator(Vec::new())
@@ -2213,6 +2501,7 @@ fn dispatch_set(
             {
                 let so = obj.lock().unwrap();
                 if let ObjectKind::Set(ref s) = so.kind {
+                    out.reserve(s.len());
                     for value in s.iter() {
                         out.insert(value.clone());
                     }
@@ -2221,6 +2510,7 @@ fn dispatch_set(
             if let Some(Value::Object(rhs)) = args.first() {
                 let ro = rhs.lock().unwrap();
                 if let ObjectKind::Set(ref s) = ro.kind {
+                    out.reserve(s.len());
                     for value in s.iter() {
                         out.insert(value.clone());
                     }
@@ -2244,6 +2534,7 @@ fn dispatch_set(
             let so = obj.lock().unwrap();
             let ro = rhs.lock().unwrap();
             if let (ObjectKind::Set(lhs), ObjectKind::Set(rhs_set)) = (&so.kind, &ro.kind) {
+                out.reserve(lhs.len().min(rhs_set.len()));
                 for value in lhs.iter() {
                     if rhs_set.contains(value) {
                         out.insert(value.clone());
@@ -2265,6 +2556,7 @@ fn dispatch_set(
             let so = obj.lock().unwrap();
             let ro = rhs.lock().unwrap();
             if let (ObjectKind::Set(lhs), ObjectKind::Set(rhs_set)) = (&so.kind, &ro.kind) {
+                out.reserve(lhs.len());
                 for value in lhs.iter() {
                     if !rhs_set.contains(value) {
                         out.insert(value.clone());
@@ -2286,6 +2578,7 @@ fn dispatch_set(
             let so = obj.lock().unwrap();
             let ro = rhs.lock().unwrap();
             if let (ObjectKind::Set(lhs), ObjectKind::Set(rhs_set)) = (&so.kind, &ro.kind) {
+                out.reserve(lhs.len() + rhs_set.len());
                 for value in lhs.iter() {
                     if !rhs_set.contains(value) {
                         out.insert(value.clone());
@@ -2360,21 +2653,28 @@ fn dispatch_set(
             let cb = args.first().cloned().unwrap_or(Value::Null);
             let this_arg = args.get(1).cloned();
             let saved_this = this_arg.as_ref().map(|_| ctx.current_js_this());
+            let prepared_callback = crate::function::prepare_bound_callback(&cb);
             let snapshot: Vec<Value> = {
                 let so = obj.lock().unwrap();
                 if let ObjectKind::Set(ref s) = so.kind {
-                    s.iter().cloned().collect()
+                    let mut snapshot = Vec::with_capacity(s.len());
+                    snapshot.extend(s.iter().cloned());
+                    snapshot
                 } else {
                     Vec::new()
                 }
             };
+            let receiver = Value::Object(obj.clone());
+            let mut invoke_args = [Value::Undefined, Value::Undefined, receiver];
             for v in snapshot {
-                if let Some(this_arg) = this_arg.clone() {
-                    ctx.set_js_this(this_arg);
+                if let Some(this_arg) = &this_arg {
+                    ctx.set_js_this(this_arg.clone());
                 }
-                ctx.invoke(&cb, &[v.clone(), v, Value::Object(obj.clone())]);
-                if let Some(saved_this) = saved_this.clone() {
-                    ctx.set_js_this(saved_this);
+                invoke_args[0] = v.clone();
+                invoke_args[1] = v;
+                invoke_cached_callback(ctx, &cb, &prepared_callback, &invoke_args);
+                if let Some(saved_this) = &saved_this {
+                    ctx.set_js_this(saved_this.clone());
                 }
             }
             Value::Undefined
@@ -2433,8 +2733,11 @@ fn dispatch_typed_array(
             let o = obj.lock().unwrap();
             if let ObjectKind::TypedArray(ta) = &o.kind {
                 let live = ta_live_length(ta);
+                let bpe = ta.elem.bytes_per_element();
+                let buf = ta.buffer.lock().unwrap();
                 for i in 0..live {
-                    if read_element(ta, i) == target {
+                    let abs = ta.byte_offset + i * bpe;
+                    if read_element_from_locked_buffer(ta.elem, &buf, abs, bpe) == target {
                         return Value::I32(i as i32);
                     }
                 }
@@ -2446,8 +2749,11 @@ fn dispatch_typed_array(
             let o = obj.lock().unwrap();
             if let ObjectKind::TypedArray(ta) = &o.kind {
                 let live = ta_live_length(ta);
+                let bpe = ta.elem.bytes_per_element();
+                let buf = ta.buffer.lock().unwrap();
                 for i in 0..live {
-                    if read_element(ta, i) == target {
+                    let abs = ta.byte_offset + i * bpe;
+                    if read_element_from_locked_buffer(ta.elem, &buf, abs, bpe) == target {
                         return Value::Bool(true);
                     }
                 }
@@ -2457,17 +2763,29 @@ fn dispatch_typed_array(
         "join" | "toLocaleString" => {
             let sep = args
                 .first()
-                .map(|v| format!("{v}"))
-                .unwrap_or_else(|| ",".to_string());
+                .map(|v| match v {
+                    Value::String(text) => Cow::Borrowed(text.as_ref()),
+                    other => crate::keys::value_display_cow(other),
+                })
+                .unwrap_or(Cow::Borrowed(","));
             let o = obj.lock().unwrap();
             if let ObjectKind::TypedArray(ta) = &o.kind {
                 let live = ta_live_length(ta);
-                let parts: Vec<String> = (0..live)
-                    .map(|i| typed_array_element_to_string(read_element(ta, i)))
-                    .collect();
-                return Value::String(Arc::from(parts.join(&sep).as_str()));
+                let bpe = ta.elem.bytes_per_element();
+                let buf = ta.buffer.lock().unwrap();
+                let mut joined = String::new();
+                let mut first = true;
+                for i in 0..live {
+                    push_join_sep(&mut joined, &sep, &mut first);
+                    let abs = ta.byte_offset + i * bpe;
+                    push_typed_array_element_string(
+                        &mut joined,
+                        read_element_from_locked_buffer(ta.elem, &buf, abs, bpe),
+                    );
+                }
+                return owned_string_value(joined);
             }
-            Value::String(Arc::from(""))
+            crate::keys::string_value("")
         }
         "fill" => {
             let val = args.first().cloned().unwrap_or(Value::Undefined);
@@ -2485,6 +2803,9 @@ fn dispatch_typed_array(
                         .map(|v| v.as_i32().max(0) as usize)
                         .unwrap_or(live)
                         .min(live);
+                    if fill_typed_array_bytes(ta, start, end, &val) {
+                        return Value::Object(Arc::clone(&obj));
+                    }
                     for i in start..end {
                         write_element(ta, i, &val);
                     }
@@ -2497,6 +2818,9 @@ fn dispatch_typed_array(
                 let o = obj.lock().unwrap();
                 if let ObjectKind::TypedArray(ta) = &o.kind {
                     let live = ta_live_length(ta);
+                    if reverse_typed_array_bytes(ta, live) {
+                        return Value::Object(Arc::clone(&obj));
+                    }
                     let mut i = 0usize;
                     let mut j = live.saturating_sub(1);
                     while i < j {
@@ -2516,15 +2840,13 @@ fn dispatch_typed_array(
                 let o = obj.lock().unwrap();
                 if let ObjectKind::TypedArray(ta) = &o.kind {
                     let live = ta_live_length(ta);
-                    let mut values: Vec<Value> = (0..live).map(|i| read_element(ta, i)).collect();
+                    let mut values = typed_array_values_snapshot(ta, live);
                     values.sort_by(|a, b| {
                         a.as_f64()
                             .partial_cmp(&b.as_f64())
                             .unwrap_or(std::cmp::Ordering::Equal)
                     });
-                    for (i, v) in values.iter().enumerate() {
-                        write_element(ta, i, v);
-                    }
+                    let _ = write_array_values_to_typed_array_bytes(ta, 0, &values);
                 }
             }
             Value::Object(obj)
@@ -2538,7 +2860,15 @@ fn dispatch_typed_array(
                 let s = relative_index(start, live);
                 let e = relative_index(end, live);
                 let values: Vec<Value> = if s < e {
-                    (s..e).map(|i| read_element(ta, i)).collect()
+                    let len = (e - s) as usize;
+                    let bpe = ta.elem.bytes_per_element();
+                    let buf = ta.buffer.lock().unwrap();
+                    let mut values = Vec::with_capacity(len);
+                    for i in s..e {
+                        let abs = ta.byte_offset + i * bpe;
+                        values.push(read_element_from_locked_buffer(ta.elem, &buf, abs, bpe));
+                    }
+                    values
                 } else {
                     Vec::new()
                 };
@@ -2548,9 +2878,7 @@ fn dispatch_typed_array(
                 if let Value::Object(ref out_obj) = out {
                     let out_locked = out_obj.lock().unwrap();
                     if let ObjectKind::TypedArray(ref out_ta) = out_locked.kind {
-                        for (i, value) in values.iter().enumerate() {
-                            write_element(out_ta, i, value);
-                        }
+                        let _ = write_array_values_to_typed_array_bytes(out_ta, 0, &values);
                     }
                 }
                 crate::typedarray::apply_receiver_species(&out, &obj);
@@ -2560,185 +2888,259 @@ fn dispatch_typed_array(
         }
         "forEach" => {
             let cb = args.first().cloned().unwrap_or(Value::Null);
-            let snapshot: Vec<Value> = {
+            let prepared_callback = crate::function::prepare_bound_callback(&cb);
+            let typed = {
                 let o = obj.lock().unwrap();
                 if let ObjectKind::TypedArray(ta) = &o.kind {
-                    let live = ta_live_length(ta);
-                    (0..live).map(|i| read_element(ta, i)).collect()
+                    Some(ta.clone())
                 } else {
-                    Vec::new()
+                    None
                 }
             };
-            for (i, v) in snapshot.iter().enumerate() {
-                ctx.invoke(
-                    &cb,
-                    &[v.clone(), Value::I32(i as i32), Value::Object(obj.clone())],
-                );
+            let Some(ta) = typed else {
+                return Value::Undefined;
+            };
+            let live = ta_live_length(&ta);
+            let receiver = Value::Object(obj.clone());
+            let mut callback_args = [Value::Undefined, Value::Undefined, receiver];
+            for i in 0..live {
+                let v = read_element(&ta, i);
+                callback_args[0] = v;
+                callback_args[1] = Value::I32(i as i32);
+                invoke_cached_callback(ctx, &cb, &prepared_callback, &callback_args);
             }
             Value::Undefined
         }
         "map" => {
             let cb = args.first().cloned().unwrap_or(Value::Null);
-            let (elem, snapshot): (Option<vybe_runtime::value::TypedElemKind>, Vec<Value>) = {
+            let prepared_callback = crate::function::prepare_bound_callback(&cb);
+            let typed = {
                 let o = obj.lock().unwrap();
                 if let ObjectKind::TypedArray(ta) = &o.kind {
-                    let live = ta_live_length(ta);
-                    (
-                        Some(ta.elem),
-                        (0..live).map(|i| read_element(ta, i)).collect(),
-                    )
+                    Some(ta.clone())
                 } else {
-                    (None, Vec::new())
+                    None
                 }
             };
-            let out: Vec<Value> = snapshot
-                .iter()
-                .enumerate()
-                .map(|(i, v)| {
-                    ctx.invoke(
-                        &cb,
-                        &[v.clone(), Value::I32(i as i32), Value::Object(obj.clone())],
-                    )
-                })
-                .collect();
-            if let Some(elem) = elem {
-                let typed = new_typed_array(elem, out.len());
-                if let Value::Object(ref typed_obj) = typed {
-                    let typed_lock = typed_obj.lock().unwrap();
-                    if let ObjectKind::TypedArray(ref ta) = typed_lock.kind {
-                        for (i, value) in out.iter().enumerate() {
-                            write_element(ta, i, value);
-                        }
-                    }
-                }
-                typed
-            } else {
-                make_array(out)
+            let Some(ta) = typed else {
+                return make_array(Vec::new());
+            };
+            let elem = ta.elem;
+            let live = ta_live_length(&ta);
+            let mut out: Vec<Value> = Vec::with_capacity(live);
+            let receiver = Value::Object(obj.clone());
+            let mut callback_args = [Value::Undefined, Value::Undefined, receiver];
+            for i in 0..live {
+                let v = read_element(&ta, i);
+                callback_args[0] = v;
+                callback_args[1] = Value::I32(i as i32);
+                out.push(invoke_cached_callback(
+                    ctx,
+                    &cb,
+                    &prepared_callback,
+                    &callback_args,
+                ));
             }
+            let typed = new_typed_array(elem, out.len());
+            if let Value::Object(ref typed_obj) = typed {
+                let typed_lock = typed_obj.lock().unwrap();
+                if let ObjectKind::TypedArray(ref ta) = typed_lock.kind {
+                    let _ = write_array_values_to_typed_array_bytes(ta, 0, &out);
+                }
+            }
+            typed
         }
         "filter" => {
             let cb = args.first().cloned().unwrap_or(Value::Null);
-            let snapshot: Vec<Value> = {
+            let prepared_callback = crate::function::prepare_bound_callback(&cb);
+            let typed = {
                 let o = obj.lock().unwrap();
                 if let ObjectKind::TypedArray(ta) = &o.kind {
-                    let live = ta_live_length(ta);
-                    (0..live).map(|i| read_element(ta, i)).collect()
+                    Some(ta.clone())
                 } else {
-                    Vec::new()
+                    None
                 }
             };
-            let out: Vec<Value> = snapshot
-                .iter()
-                .enumerate()
-                .filter(|(i, v)| {
-                    let r = ctx.invoke(
-                        &cb,
-                        &[
-                            (*v).clone(),
-                            Value::I32(*i as i32),
-                            Value::Object(obj.clone()),
-                        ],
-                    );
-                    matches!(r, Value::Bool(true)) || matches!(r, Value::I32(n) if n != 0)
-                })
-                .map(|(_, v)| v.clone())
-                .collect();
+            let Some(ta) = typed else {
+                return make_array(Vec::new());
+            };
+            let live = ta_live_length(&ta);
+            let mut out: Vec<Value> = Vec::with_capacity(live);
+            let receiver = Value::Object(obj.clone());
+            let mut callback_args = [Value::Undefined, Value::Undefined, receiver];
+            for i in 0..live {
+                let v = read_element(&ta, i);
+                callback_args[0] = v.clone();
+                callback_args[1] = Value::I32(i as i32);
+                let r = invoke_cached_callback(ctx, &cb, &prepared_callback, &callback_args);
+                if matches!(r, Value::Bool(true)) || matches!(r, Value::I32(n) if n != 0) {
+                    out.push(v);
+                }
+            }
             make_array(out)
         }
         "some" => {
             let cb = args.first().cloned().unwrap_or(Value::Null);
-            let o = obj.lock().unwrap();
-            if let ObjectKind::TypedArray(ta) = &o.kind {
-                let live = ta_live_length(ta);
-                for i in 0..live {
-                    let v = read_element(ta, i);
-                    let r = ctx.invoke(&cb, &[v, Value::I32(i as i32), Value::Object(obj.clone())]);
-                    if matches!(r, Value::Bool(true)) || matches!(r, Value::I32(n) if n != 0) {
-                        return Value::Bool(true);
-                    }
+            let prepared_callback = crate::function::prepare_bound_callback(&cb);
+            let typed = {
+                let o = obj.lock().unwrap();
+                if let ObjectKind::TypedArray(ta) = &o.kind {
+                    Some(ta.clone())
+                } else {
+                    None
+                }
+            };
+            let Some(ta) = typed else {
+                return Value::Bool(false);
+            };
+            let live = ta_live_length(&ta);
+            let receiver = Value::Object(obj.clone());
+            let mut callback_args = [Value::Undefined, Value::Undefined, receiver];
+            for i in 0..live {
+                let v = read_element(&ta, i);
+                callback_args[0] = v;
+                callback_args[1] = Value::I32(i as i32);
+                let r = invoke_cached_callback(ctx, &cb, &prepared_callback, &callback_args);
+                if matches!(r, Value::Bool(true)) || matches!(r, Value::I32(n) if n != 0) {
+                    return Value::Bool(true);
                 }
             }
             Value::Bool(false)
         }
         "every" => {
             let cb = args.first().cloned().unwrap_or(Value::Null);
-            let o = obj.lock().unwrap();
-            if let ObjectKind::TypedArray(ta) = &o.kind {
-                let live = ta_live_length(ta);
-                for i in 0..live {
-                    let v = read_element(ta, i);
-                    let r = ctx.invoke(&cb, &[v, Value::I32(i as i32), Value::Object(obj.clone())]);
-                    if !matches!(r, Value::Bool(true)) && !matches!(r, Value::I32(n) if n != 0) {
-                        return Value::Bool(false);
-                    }
+            let prepared_callback = crate::function::prepare_bound_callback(&cb);
+            let typed = {
+                let o = obj.lock().unwrap();
+                if let ObjectKind::TypedArray(ta) = &o.kind {
+                    Some(ta.clone())
+                } else {
+                    None
                 }
+            };
+            let Some(ta) = typed else {
                 return Value::Bool(true);
+            };
+            let live = ta_live_length(&ta);
+            let receiver = Value::Object(obj.clone());
+            let mut callback_args = [Value::Undefined, Value::Undefined, receiver];
+            for i in 0..live {
+                let v = read_element(&ta, i);
+                callback_args[0] = v;
+                callback_args[1] = Value::I32(i as i32);
+                let r = invoke_cached_callback(ctx, &cb, &prepared_callback, &callback_args);
+                if !matches!(r, Value::Bool(true)) && !matches!(r, Value::I32(n) if n != 0) {
+                    return Value::Bool(false);
+                }
             }
             Value::Bool(true)
         }
         "find" => {
             let cb = args.first().cloned().unwrap_or(Value::Null);
-            let o = obj.lock().unwrap();
-            if let ObjectKind::TypedArray(ta) = &o.kind {
-                let live = ta_live_length(ta);
-                for i in 0..live {
-                    let v = read_element(ta, i);
-                    let r = ctx.invoke(
-                        &cb,
-                        &[v.clone(), Value::I32(i as i32), Value::Object(obj.clone())],
-                    );
-                    if matches!(r, Value::Bool(true)) || matches!(r, Value::I32(n) if n != 0) {
-                        return v;
-                    }
+            let prepared_callback = crate::function::prepare_bound_callback(&cb);
+            let typed = {
+                let o = obj.lock().unwrap();
+                if let ObjectKind::TypedArray(ta) = &o.kind {
+                    Some(ta.clone())
+                } else {
+                    None
+                }
+            };
+            let Some(ta) = typed else {
+                return Value::Undefined;
+            };
+            let live = ta_live_length(&ta);
+            let receiver = Value::Object(obj.clone());
+            let mut callback_args = [Value::Undefined, Value::Undefined, receiver];
+            for i in 0..live {
+                let v = read_element(&ta, i);
+                callback_args[0] = v.clone();
+                callback_args[1] = Value::I32(i as i32);
+                let r = invoke_cached_callback(ctx, &cb, &prepared_callback, &callback_args);
+                if matches!(r, Value::Bool(true)) || matches!(r, Value::I32(n) if n != 0) {
+                    return v;
                 }
             }
             Value::Undefined
         }
         "findIndex" => {
             let cb = args.first().cloned().unwrap_or(Value::Null);
-            let o = obj.lock().unwrap();
-            if let ObjectKind::TypedArray(ta) = &o.kind {
-                let live = ta_live_length(ta);
-                for i in 0..live {
-                    let v = read_element(ta, i);
-                    let r = ctx.invoke(&cb, &[v, Value::I32(i as i32), Value::Object(obj.clone())]);
-                    if matches!(r, Value::Bool(true)) || matches!(r, Value::I32(n) if n != 0) {
-                        return Value::I32(i as i32);
-                    }
+            let prepared_callback = crate::function::prepare_bound_callback(&cb);
+            let typed = {
+                let o = obj.lock().unwrap();
+                if let ObjectKind::TypedArray(ta) = &o.kind {
+                    Some(ta.clone())
+                } else {
+                    None
+                }
+            };
+            let Some(ta) = typed else {
+                return Value::I32(-1);
+            };
+            let live = ta_live_length(&ta);
+            let receiver = Value::Object(obj.clone());
+            let mut callback_args = [Value::Undefined, Value::Undefined, receiver];
+            for i in 0..live {
+                let v = read_element(&ta, i);
+                callback_args[0] = v;
+                callback_args[1] = Value::I32(i as i32);
+                let r = invoke_cached_callback(ctx, &cb, &prepared_callback, &callback_args);
+                if matches!(r, Value::Bool(true)) || matches!(r, Value::I32(n) if n != 0) {
+                    return Value::I32(i as i32);
                 }
             }
             Value::I32(-1)
         }
         "reduce" => {
             let cb = args.first().cloned().unwrap_or(Value::Null);
-            let o = obj.lock().unwrap();
-            if let ObjectKind::TypedArray(ta) = &o.kind {
-                let live = ta_live_length(ta);
-                let (mut acc, start) = if args.len() >= 2 {
-                    (args[1].clone(), 0)
-                } else if live > 0 {
-                    (read_element(ta, 0), 1)
+            let prepared_callback = crate::function::prepare_bound_callback(&cb);
+            let typed = {
+                let o = obj.lock().unwrap();
+                if let ObjectKind::TypedArray(ta) = &o.kind {
+                    Some(ta.clone())
                 } else {
-                    return Value::Undefined;
-                };
-                for i in start..live {
-                    let v = read_element(ta, i);
-                    acc = ctx.invoke(
-                        &cb,
-                        &[acc, v, Value::I32(i as i32), Value::Object(obj.clone())],
-                    );
+                    None
                 }
-                return acc;
+            };
+            let Some(ta) = typed else {
+                return Value::Undefined;
+            };
+            let live = ta_live_length(&ta);
+            let (mut acc, start) = if args.len() >= 2 {
+                (args[1].clone(), 0)
+            } else if live > 0 {
+                let first = read_element(&ta, 0);
+                (first, 1)
+            } else {
+                return Value::Undefined;
+            };
+            let receiver = Value::Object(obj.clone());
+            let mut callback_args = [
+                Value::Undefined,
+                Value::Undefined,
+                Value::Undefined,
+                receiver,
+            ];
+            for i in start..live {
+                let v = read_element(&ta, i);
+                callback_args[0] = acc;
+                callback_args[1] = v;
+                callback_args[2] = Value::I32(i as i32);
+                acc = invoke_cached_callback(ctx, &cb, &prepared_callback, &callback_args);
             }
-            Value::Undefined
+            acc
         }
         "lastIndexOf" => {
             let target = args.first().cloned().unwrap_or(Value::Undefined);
             let o = obj.lock().unwrap();
             if let ObjectKind::TypedArray(ta) = &o.kind {
                 let live = ta_live_length(ta);
+                let bpe = ta.elem.bytes_per_element();
+                let buf = ta.buffer.lock().unwrap();
                 for i in (0..live).rev() {
-                    if Value::same_value_zero(&read_element(ta, i), &target) {
+                    let abs = ta.byte_offset + i * bpe;
+                    let value = read_element_from_locked_buffer(ta.elem, &buf, abs, bpe);
+                    if Value::same_value_zero(&value, &target) {
                         return Value::I32(i as i32);
                     }
                 }
@@ -2759,9 +3161,10 @@ fn dispatch_typed_array(
                     let s = src.lock().unwrap();
                     match &s.kind {
                         ObjectKind::Array(elems) => elems.clone(),
-                        ObjectKind::TypedArray(src_ta) => (0..ta_live_length(src_ta))
-                            .map(|i| read_element(src_ta, i))
-                            .collect(),
+                        ObjectKind::TypedArray(src_ta) => {
+                            let len = ta_live_length(src_ta);
+                            typed_array_values_snapshot(src_ta, len)
+                        }
                         _ => Vec::new(),
                     }
                 }
@@ -2776,10 +3179,7 @@ fn dispatch_typed_array(
                     ctx.throw_value(err);
                     return Value::Undefined;
                 }
-                for (i, v) in source_values.iter().enumerate() {
-                    let idx = offset + i;
-                    write_element(ta, idx, v);
-                }
+                let _ = write_array_values_to_typed_array_bytes(ta, offset, &source_values);
             }
             Value::Undefined
         }
@@ -2812,11 +3212,7 @@ fn dispatch_typed_array(
                     let t = relative_index(target, live);
                     let s = relative_index(start, live);
                     let e = relative_index(end, live);
-                    let snapshot: Vec<Value> = (s..e).map(|i| read_element(ta, i)).collect();
-                    let max_copy = (live as usize - t).min(snapshot.len());
-                    for (i, v) in snapshot[..max_copy].iter().enumerate() {
-                        write_element(ta, t + i, v);
-                    }
+                    copy_within_typed_array_bytes(ta, t, s, e);
                 }
             }
             Value::Object(obj)
@@ -2827,7 +3223,10 @@ fn dispatch_typed_array(
             let o = obj.lock().unwrap();
             if let ObjectKind::TypedArray(ta) = &o.kind {
                 let live = ta_live_length(ta);
-                let ks: Vec<Value> = (0..live as i32).map(Value::I32).collect();
+                let mut ks = Vec::with_capacity(live);
+                for i in 0..live {
+                    ks.push(Value::I32(i as i32));
+                }
                 return crate::array::make_array_iterator(ks);
             }
             crate::array::make_array_iterator(Vec::new())
@@ -2836,8 +3235,8 @@ fn dispatch_typed_array(
             let o = obj.lock().unwrap();
             if let ObjectKind::TypedArray(ta) = &o.kind {
                 let live = ta_live_length(ta);
-                let vs: Vec<Value> = (0..live).map(|i| read_element(ta, i)).collect();
-                return crate::array::make_array_iterator(vs);
+                let values = typed_array_values_snapshot(ta, live);
+                return crate::array::make_array_iterator(values);
             }
             crate::array::make_array_iterator(Vec::new())
         }
@@ -2845,9 +3244,11 @@ fn dispatch_typed_array(
             let o = obj.lock().unwrap();
             if let ObjectKind::TypedArray(ta) = &o.kind {
                 let live = ta_live_length(ta);
-                let entries: Vec<Value> = (0..live)
-                    .map(|i| make_array(vec![Value::I32(i as i32), read_element(ta, i)]))
-                    .collect();
+                let values = typed_array_values_snapshot(ta, live);
+                let mut entries = Vec::with_capacity(live);
+                for (i, value) in values.into_iter().enumerate() {
+                    entries.push(crate::array::make_pair_array(Value::I32(i as i32), value));
+                }
                 return crate::array::make_array_iterator(entries);
             }
             crate::array::make_array_iterator(Vec::new())
@@ -2856,10 +3257,23 @@ fn dispatch_typed_array(
     }
 }
 
-fn typed_array_element_to_string(value: Value) -> String {
+fn push_join_sep(out: &mut String, sep: &str, first: &mut bool) {
+    if *first {
+        *first = false;
+    } else {
+        out.push_str(sep);
+    }
+}
+
+fn push_typed_array_element_string(out: &mut String, value: Value) {
     match value {
-        Value::BigInt(n) => format!("{}", n),
-        other => format!("{}", other),
+        Value::String(text) => out.push_str(text.as_ref()),
+        Value::BigInt(n) => {
+            let _ = write!(out, "{}", n);
+        }
+        other => {
+            let _ = write!(out, "{}", other);
+        }
     }
 }
 
@@ -2875,12 +3289,18 @@ fn dispatch_plain_object(
     // NOTE: hasOwnProperty / propertyIsEnumerable built-ins live in the
     // tail match BELOW this walk on purpose — §20.1.3: a user-defined
     // override on the object (or its chain) must win over the intrinsic.
-    let cb = {
+    let (cb, boxed_primitive) = {
         let mut found: Option<Value> = None;
+        let mut boxed_primitive: Option<Value> = None;
         let mut current: Option<Arc<Mutex<Object>>> = Some(obj.clone());
+        let mut first = true;
         while let Some(cur) = current {
             let (prop, proto) = {
                 let o = cur.lock().unwrap();
+                if first {
+                    boxed_primitive = o.properties.get("__primitive").cloned();
+                    first = false;
+                }
                 (
                     o.properties.get(method).cloned(),
                     o.properties.get("__proto__").cloned(),
@@ -2897,27 +3317,24 @@ fn dispatch_plain_object(
                 _ => None,
             };
         }
-        found
+        (found, boxed_primitive)
     };
     if let Some(fn_val) = cb {
-        let boxed_primitive = {
-            let o = obj.lock().unwrap();
-            o.properties.get("__primitive").cloned()
-        };
         if let (Some(receiver), Value::Object(func_obj)) = (boxed_primitive, &fn_val) {
             if matches!(func_obj.lock().unwrap().kind, ObjectKind::HostFunction(_)) {
-                let mut call_args = Vec::with_capacity(args.len() + 1);
-                call_args.push(receiver);
-                call_args.extend_from_slice(args);
-                return ctx.invoke(&fn_val, &call_args);
+                return crate::function::invoke_with_prepended_receiver(
+                    ctx, &fn_val, receiver, args,
+                );
             }
         }
         if let Value::Object(func_obj) = &fn_val {
             if matches!(func_obj.lock().unwrap().kind, ObjectKind::HostFunction(_)) {
-                let mut call_args = Vec::with_capacity(args.len() + 1);
-                call_args.push(Value::Object(obj.clone()));
-                call_args.extend_from_slice(args);
-                return ctx.invoke(&fn_val, &call_args);
+                return crate::function::invoke_with_prepended_receiver(
+                    ctx,
+                    &fn_val,
+                    Value::Object(obj.clone()),
+                    args,
+                );
             }
         }
         let saved_this = ctx.current_js_this();
@@ -2925,9 +3342,6 @@ fn dispatch_plain_object(
         let result = ctx.invoke(&fn_val, args);
         ctx.set_js_this(saved_this);
         return result;
-    }
-    if let Some(tagged) = dispatch_tagged_object(ctx, obj.clone(), method, args) {
-        return tagged;
     }
     // §20.1.3 Object.prototype defaults — reached when neither the object,
     // its prototype chain, nor a type tag supplied the method.
@@ -2967,14 +3381,11 @@ fn dispatch_plain_object(
         }
         // §20.1.3.6: "[object <@@toStringTag or Object>]".
         "toString" | "toLocaleString" => {
-            let tag = {
-                let o = obj.lock().unwrap();
-                match o.properties.get("Symbol(toStringTag)") {
-                    Some(Value::String(s)) => s.to_string(),
-                    _ => "Object".to_string(),
-                }
-            };
-            Value::String(Arc::from(format!("[object {}]", tag).as_str()))
+            let o = obj.lock().unwrap();
+            match o.properties.get("Symbol(toStringTag)") {
+                Some(Value::String(s)) => crate::keys::object_tag_value(s.as_ref()),
+                _ => crate::keys::object_tag_value("Object"),
+            }
         }
         // §20.1.3.3: walk the ARGUMENT's prototype chain looking for the
         // receiver.
@@ -3018,42 +3429,74 @@ fn dispatch_tagged_object(
     // (Promise, Date, boxed primitives, etc.) get their prototype methods
     // inline. Run this before generic ObjectKind dispatch so plain objects
     // stamped with `__type=Promise` do not miss `.then/.catch/.finally`.
-    let type_tag = {
+    enum TaggedDispatch {
+        Boolean(Option<Value>),
+        Number(Option<Value>),
+        String(Option<Value>),
+        BigInt(Option<Value>),
+        Symbol(Option<Value>),
+        Date,
+        RegExp,
+        Promise,
+        WeakRef,
+        FinalizationRegistry,
+        Unknown,
+        None,
+    }
+
+    let tagged = {
         let o = obj.lock().unwrap();
-        o.properties.get("__type").map(|v| format!("{}", v))
+        match o.properties.get("__type") {
+            Some(Value::String(tag)) => match tag.as_ref() {
+                "Boolean" => TaggedDispatch::Boolean(o.properties.get("__primitive").cloned()),
+                "Number" => TaggedDispatch::Number(o.properties.get("__primitive").cloned()),
+                "String" => TaggedDispatch::String(o.properties.get("__primitive").cloned()),
+                "BigInt" => TaggedDispatch::BigInt(o.properties.get("__primitive").cloned()),
+                "Symbol" => TaggedDispatch::Symbol(o.properties.get("__primitive").cloned()),
+                "Date" => TaggedDispatch::Date,
+                "RegExp" => TaggedDispatch::RegExp,
+                "Promise" => TaggedDispatch::Promise,
+                "WeakRef" => TaggedDispatch::WeakRef,
+                "FinalizationRegistry" => TaggedDispatch::FinalizationRegistry,
+                _ => TaggedDispatch::Unknown,
+            },
+            _ => TaggedDispatch::None,
+        }
     };
-    if let Some(tag) = type_tag {
-        let primitive = {
-            let o = obj.lock().unwrap();
-            o.properties.get("__primitive").cloned()
-        };
-        if tag == "Boolean" {
+    match tagged {
+        TaggedDispatch::Boolean(primitive) => {
             if let Some(value) = primitive.as_ref() {
                 return Some(dispatch_boolean(value, method, args));
             }
-        } else if tag == "Number" {
+        }
+        TaggedDispatch::Number(primitive) => {
             if let Some(value) = primitive.as_ref() {
                 return Some(dispatch_number(ctx, value, method, args));
             }
-        } else if tag == "String" {
+        }
+        TaggedDispatch::String(primitive) => {
             if let Some(value) = primitive.as_ref() {
                 return Some(dispatch_string(ctx, value, method, args));
             }
-        } else if tag == "Date" {
-            let mut call_args = Vec::with_capacity(args.len() + 1);
-            call_args.push(Value::Object(obj));
-            call_args.extend_from_slice(args);
-            if let Some(result) = crate::date::dispatch_date_method(method, &call_args) {
+        }
+        TaggedDispatch::Date => {
+            if let Some(result) =
+                with_prepended_arg(Value::Object(obj.clone()), args, |call_args| {
+                    crate::date::dispatch_date_method(method, call_args)
+                })
+            {
                 return Some(result);
             }
-        } else if tag == "BigInt" {
+        }
+        TaggedDispatch::BigInt(primitive) => {
             if let Some(Value::BigInt(value)) = primitive {
                 return Some(dispatch_bigint(value.as_ref(), method, args));
             }
-        } else if tag == "Symbol" {
+        }
+        TaggedDispatch::Symbol(primitive) => {
             if let Some(Value::Symbol(desc)) = primitive.as_ref() {
                 return Some(match method {
-                    "toString" => Value::String(Arc::from(format!("Symbol({})", desc).as_str())),
+                    "toString" => Value::String(crate::keys::concat3_arc("Symbol(", desc, ")")),
                     "valueOf" => Value::Symbol(Arc::clone(desc)),
                     "description" => {
                         if !crate::symbol::has_description(desc) {
@@ -3065,29 +3508,39 @@ fn dispatch_tagged_object(
                     _ => Value::Undefined,
                 });
             }
-        } else if tag == "RegExp" {
-            let mut call_args = Vec::with_capacity(args.len() + 1);
-            call_args.push(Value::Object(obj));
-            call_args.extend_from_slice(args);
-            if let Some(result) = crate::regexp::dispatch_regexp_method(ctx, method, &call_args) {
-                return Some(result);
-            }
-        } else if tag == "Promise" {
-            let mut call_args = Vec::with_capacity(args.len() + 1);
-            call_args.push(Value::Object(obj));
-            call_args.extend_from_slice(args);
-            if let Some(result) = crate::promise::dispatch_promise_method(ctx, method, &call_args) {
-                return Some(result);
-            }
-        } else if tag == "WeakRef" {
-            if let Some(result) = crate::weakref::dispatch_weakref_method(obj, method, args) {
-                return Some(result);
-            }
-        } else if tag == "FinalizationRegistry" {
-            if let Some(result) = crate::weakref::dispatch_registry_method(obj, method, args) {
+        }
+        TaggedDispatch::RegExp => {
+            if let Some(result) =
+                with_prepended_arg(Value::Object(obj.clone()), args, |call_args| {
+                    crate::regexp::dispatch_regexp_method(ctx, method, call_args)
+                })
+            {
                 return Some(result);
             }
         }
+        TaggedDispatch::Promise => {
+            if let Some(result) =
+                with_prepended_arg(Value::Object(obj.clone()), args, |call_args| {
+                    crate::promise::dispatch_promise_method(ctx, method, call_args)
+                })
+            {
+                return Some(result);
+            }
+        }
+        TaggedDispatch::WeakRef => {
+            if let Some(result) = crate::weakref::dispatch_weakref_method(obj.clone(), method, args)
+            {
+                return Some(result);
+            }
+        }
+        TaggedDispatch::FinalizationRegistry => {
+            if let Some(result) =
+                crate::weakref::dispatch_registry_method(obj.clone(), method, args)
+            {
+                return Some(result);
+            }
+        }
+        TaggedDispatch::Unknown | TaggedDispatch::None => {}
     }
     None
 }
@@ -3114,10 +3567,12 @@ fn dispatch_error_object_method(
     } else if message.is_empty() {
         name
     } else {
-        format!("{}: {}", name, message)
+        return Some(Value::String(crate::keys::concat3_arc(
+            &name, ": ", &message,
+        )));
     };
 
-    Some(Value::String(Arc::from(rendered.as_str())))
+    Some(owned_string_value(rendered))
 }
 
 fn error_to_string_component(ctx: &mut HostContext, value: Option<Value>, default: &str) -> String {
@@ -3162,10 +3617,12 @@ fn lookup_method_for_call(
     bind_receiver: bool,
 ) -> Value {
     if crate::proxy::is_proxy(receiver).is_some() {
-        let key = Value::String(Arc::from(method));
+        let key = crate::keys::string_value(method);
         let value = crate::proxy::get_dispatch(ctx, receiver, &key);
         return match receiver {
-            Value::Object(obj) => bind_method_receiver(obj.clone(), value, bind_receiver),
+            Value::Object(obj) if bind_receiver => {
+                bind_method_receiver(obj.clone(), value, bind_receiver)
+            }
             _ => value,
         };
     }
@@ -3193,6 +3650,9 @@ fn lookup_method_for_call(
 
         if let Some(value) = found {
             if !matches!(value, Value::Null | Value::Undefined) {
+                if !bind_receiver {
+                    return value;
+                }
                 return bind_method_receiver(receiver_obj.clone(), value, bind_receiver);
             }
         }
@@ -3306,6 +3766,7 @@ fn bind_method_receiver(receiver: Arc<Mutex<Object>>, method: Value, bind_receiv
     combined.extend(existing_bound);
 
     let mut bound_obj = Object::new();
+    bound_obj.properties.reserve(1);
     bound_obj.kind = kind;
     bound_obj.properties.insert(
         "__bound_args".into(),
@@ -3325,7 +3786,7 @@ fn js_instanceof(ctx: &mut HostContext, receiver: &Value, ctor: &Value) -> bool 
             let ctor_lock = ctor_obj.lock().unwrap();
             match ctor_lock.properties.get("name") {
                 Some(Value::String(name)) => Some(name.to_string()),
-                Some(other) => Some(format!("{}", other)),
+                Some(other) => Some(crate::keys::value_display_string(other)),
                 None => None,
             }
         }
@@ -3397,7 +3858,7 @@ fn js_instanceof(ctx: &mut HostContext, receiver: &Value, ctor: &Value) -> bool 
 fn to_str(v: &Value) -> String {
     match v {
         Value::String(s) => s.to_string(),
-        other => format!("{}", other),
+        other => crate::keys::value_display_string(other),
     }
 }
 
@@ -3435,28 +3896,44 @@ fn lookup_method_via_proto(obj: &Arc<Mutex<Object>>, key: &str) -> Option<Value>
 /// callable yields a primitive.
 pub fn to_primitive(ctx: &mut HostContext, v: &Value, hint: &str) -> Value {
     let obj = match v {
-        Value::Object(o) => o.clone(),
+        Value::Object(o) => o,
         _ => return v.clone(),
     };
-    {
+    let (array_joined, tp, is_ordinary, type_tag, primitive, href, exc_message) = {
         let o = obj.lock().unwrap();
-        if let ObjectKind::Array(elems) = &o.kind {
-            let joined = elems
-                .iter()
-                .map(|value| match value {
-                    Value::Null | Value::Undefined => String::new(),
-                    other => format!("{}", other),
-                })
-                .collect::<Vec<_>>()
-                .join(",");
-            return Value::String(Arc::from(joined.as_str()));
-        }
+        let array_joined = if let ObjectKind::Array(elems) = &o.kind {
+            let mut joined = String::new();
+            let mut first = true;
+            for value in elems {
+                push_join_value(&mut joined, ",", &mut first, value);
+            }
+            Some(joined)
+        } else {
+            None
+        };
+        let type_tag = o.properties.get("__type").and_then(|v| match v {
+            Value::String(s) => Some(Arc::clone(s)),
+            _ => None,
+        });
+        (
+            array_joined,
+            o.properties.get("toprimitive").cloned(),
+            matches!(&o.kind, ObjectKind::Ordinary | ObjectKind::Array(_)),
+            type_tag,
+            o.properties.get("__primitive").cloned(),
+            o.properties.get("href").cloned(),
+            o.properties
+                .get("__exception_type")
+                .map(|_| o.properties.get("message").cloned()),
+        )
+    };
+    if let Some(joined) = array_joined {
+        return owned_string_value(joined);
     }
     // ECMA-262 §7.1.1: check [Symbol.toPrimitive] first (stored as "toprimitive")
-    let tp = obj.lock().unwrap().properties.get("toprimitive").cloned();
     if let Some(tp_fn) = tp {
         if !matches!(tp_fn, Value::Null | Value::Undefined) {
-            let hint_val = Value::String(Arc::from(hint));
+            let hint_val = crate::keys::string_value(hint);
             if let Some(result) =
                 crate::function::invoke_bound_callback_if_needed(ctx, &tp_fn, &[hint_val.clone()])
             {
@@ -3467,10 +3944,6 @@ pub fn to_primitive(ctx: &mut HostContext, v: &Value, hint: &str) -> Value {
     }
     // Skip the dance for non-Ordinary objects (Functions, Continuations
     // etc. don't have callable valueOf/toString in our model).
-    let is_ordinary = matches!(
-        obj.lock().unwrap().kind,
-        ObjectKind::Ordinary | ObjectKind::Array(_)
-    );
     if !is_ordinary {
         return v.clone();
     }
@@ -3478,21 +3951,10 @@ pub fn to_primitive(ctx: &mut HostContext, v: &Value, hint: &str) -> Value {
     // dispatch tables (`dispatch_date_method` etc.) rather than the
     // prototype chain. Route through the same channel so `Date - Date`
     // hits ECMA §21.4.4.41 valueOf and yields the ms delta.
-    let type_tag = {
-        let o = obj.lock().unwrap();
-        o.properties.get("__type").and_then(|v| match v {
-            Value::String(s) => Some(s.to_string()),
-            _ => None,
-        })
-    };
     if matches!(
         type_tag.as_deref(),
         Some("Boolean" | "Number" | "String" | "BigInt" | "Symbol")
     ) {
-        let primitive = {
-            let o = obj.lock().unwrap();
-            o.properties.get("__primitive").cloned()
-        };
         if let Some(value) = primitive {
             return value;
         }
@@ -3513,7 +3975,6 @@ pub fn to_primitive(ctx: &mut HostContext, v: &Value, hint: &str) -> Value {
     }
     // WHATWG URL: toString() is a bound HostFunction returning href — return href directly.
     if type_tag.as_deref() == Some("URL") {
-        let href = obj.lock().unwrap().properties.get("href").cloned();
         if let Some(href) = href {
             return href;
         }
@@ -3525,7 +3986,7 @@ pub fn to_primitive(ctx: &mut HostContext, v: &Value, hint: &str) -> Value {
     };
     let receiver = Value::Object(obj.clone());
     for m in methods {
-        let fn_val = match lookup_method_via_proto(&obj, m) {
+        let fn_val = match lookup_method_via_proto(obj, m) {
             Some(v) if !matches!(v, Value::Null | Value::Undefined) => v,
             _ => continue,
         };
@@ -3550,30 +4011,77 @@ pub fn to_primitive(ctx: &mut HostContext, v: &Value, hint: &str) -> Value {
     // shape) stringify as their MESSAGE — Python `str(e)`, f"{e}" etc.
     // JS errors never reach this fallback: Error.prototype.toString
     // (§20.5.3.4) resolves through the prototype in the method loop above.
-    let (tag, exc_message) = {
-        let o = obj.lock().unwrap();
-        (
-            o.properties.get("__type").map(|t| format!("{}", t)),
-            o.properties
-                .get("__exception_type")
-                .map(|_| o.properties.get("message").cloned()),
-        )
-    };
     if let Some(message) = exc_message {
         let msg = match message {
             Some(Value::String(s)) => s.to_string(),
             Some(Value::Null) | Some(Value::Undefined) | None => String::new(),
-            Some(other) => format!("{}", other),
+            Some(other) => crate::keys::value_display_string(&other),
         };
-        return Value::String(Arc::from(msg.as_str()));
+        return owned_string_value(msg);
     }
     // Class instances with a `__type` tag get the spec-shaped
     // `[object <Name>]` rather than `[object]` (the Vybe Display
     // default for Ordinary).
-    match tag {
-        Some(t) if !t.is_empty() => Value::String(Arc::from(format!("[object {}]", t).as_str())),
-        _ => Value::String(Arc::from("[object Object]")),
+    match type_tag {
+        Some(t) if !t.is_empty() => crate::keys::object_tag_value(t.as_ref()),
+        _ => crate::keys::string_value("[object Object]"),
     }
+}
+
+/// Fallible ECMA ToPrimitive for conversions that must stop on user errors.
+/// Property reads and calls share the reflective Get and receiver machinery.
+pub(crate) fn try_to_primitive(
+    ctx: &mut HostContext,
+    value: &Value,
+    hint: &str,
+) -> Result<Value, Value> {
+    if !matches!(value, Value::Object(_)) {
+        return Ok(value.clone());
+    }
+    let exotic = crate::reflect::try_reflect_get(ctx, value, "toprimitive", value.clone())?;
+    if !matches!(exotic, Value::Null | Value::Undefined) {
+        if !crate::function::is_callable(&exotic) {
+            return Err(crate::error::new_error(
+                ctx,
+                "TypeError",
+                "Symbol.toPrimitive is not callable",
+            ));
+        }
+        let result = crate::function::try_invoke_with_explicit_this(
+            ctx,
+            &exotic,
+            value.clone(),
+            &[crate::keys::string_value(hint)],
+        )?;
+        if !matches!(result, Value::Object(_)) {
+            return Ok(result);
+        }
+        return Err(crate::error::new_error(
+            ctx,
+            "TypeError",
+            "Symbol.toPrimitive returned an object",
+        ));
+    }
+    let methods = if hint == "string" {
+        ["toString", "valueOf"]
+    } else {
+        ["valueOf", "toString"]
+    };
+    for name in methods {
+        let method = crate::reflect::try_reflect_get(ctx, value, name, value.clone())?;
+        if crate::function::is_callable(&method) {
+            let result =
+                crate::function::try_invoke_with_explicit_this(ctx, &method, value.clone(), &[])?;
+            if !matches!(result, Value::Object(_)) {
+                return Ok(result);
+            }
+        }
+    }
+    Err(crate::error::new_error(
+        ctx,
+        "TypeError",
+        "Cannot convert object to primitive value",
+    ))
 }
 
 /// If `arg` is a RegExp object (Object stamped with `__type=RegExp`),
@@ -3591,11 +4099,11 @@ fn regex_pattern(arg: Option<&Value>) -> Option<(String, String)> {
     }
     let src = match o.properties.get("source")? {
         Value::String(s) => s.to_string(),
-        other => format!("{}", other),
+        other => crate::keys::value_display_string(other),
     };
     let flags = match o.properties.get("flags") {
         Some(Value::String(s)) => s.to_string(),
-        Some(other) => format!("{}", other),
+        Some(other) => crate::keys::value_display_string(other),
         None => String::new(),
     };
     Some((src, flags))
@@ -3785,5 +4293,113 @@ fn dispatch_weakset(
             Value::Bool(false)
         }
         _ => Value::Undefined,
+    }
+}
+
+#[cfg(test)]
+mod argument_buffer_speedup_tests {
+    use super::with_prepended_arg;
+    use vybe_runtime::Value;
+
+    #[test]
+    #[ignore = "explicit native microbenchmark; timing is not a conformance gate"]
+    fn native_zero_argument_microbenchmark() {
+        use std::hint::black_box;
+        use std::time::Instant;
+
+        fn old_zero_argument_buffer(first: Value) -> i32 {
+            let mut inline: [Value; 9] = std::array::from_fn(|_| Value::Undefined);
+            inline[0] = first;
+            black_box(&inline[..1])[0].as_i32()
+        }
+
+        assert_eq!(old_zero_argument_buffer(Value::I32(99)), 99);
+        assert_eq!(with_prepended_arg(Value::I32(99), &[], |values| values[0].as_i32()), 99);
+        let iterations = 100_000;
+        let started = Instant::now();
+        for _ in 0..iterations {
+            black_box(old_zero_argument_buffer(black_box(Value::I32(99))));
+        }
+        let old = started.elapsed();
+        let started = Instant::now();
+        for _ in 0..iterations {
+            black_box(with_prepended_arg(black_box(Value::I32(99)), &[], |values| {
+                black_box(values)[0].as_i32()
+            }));
+        }
+        let fast = started.elapsed();
+        eprintln!("native zero-argument preparation, n={iterations}: nine-slot-buffer={old:?}, borrowed-single={fast:?}");
+    }
+
+    #[test]
+    fn receiver_and_arguments_are_preserved_at_buffer_boundaries() {
+        for count in [0, 1, 8, 9, 16] {
+            let args: Vec<Value> = (0..count).map(Value::I32).collect();
+            let result = with_prepended_arg(Value::I32(99), &args, |values| {
+                assert_eq!(values.len(), args.len() + 1);
+                assert_eq!(values[0], Value::I32(99));
+                assert_eq!(&values[1..], args.as_slice());
+                values[0].clone()
+            });
+            assert_eq!(result, Value::I32(99));
+        }
+    }
+}
+
+#[cfg(test)]
+mod utf16_allocation_speedup_tests {
+    use super::utf16_units;
+
+    #[test]
+    fn ascii_fast_path_preserves_utf16_output() {
+        let all_ascii: String = (0u8..=127).map(char::from).collect();
+        for text in [all_ascii, String::new(), "a".repeat(63), "a".repeat(64),
+            "ascii".repeat(13), "a".repeat(4096),
+            "\u{1f600}".repeat(1024), "\u{6f22}\u{5b57}".repeat(1024),
+            format!("{}\u{1f600}", "a".repeat(64))] {
+            assert_eq!(utf16_units(&text), text.encode_utf16().collect::<Vec<u16>>());
+        }
+    }
+
+    #[test]
+    #[ignore = "explicit native allocation microbenchmark; timing is not a conformance gate"]
+    fn native_ascii_capacity_microbenchmark() {
+        use std::hint::black_box;
+        use std::time::{Duration, Instant};
+
+        fn time_batch(mut call: impl FnMut()) -> Duration {
+            let started = Instant::now();
+            for _ in 0..100 {
+                call();
+            }
+            started.elapsed()
+        }
+
+        for text in ["a".repeat(16), "a".repeat(64), "a".repeat(4096),
+            "\u{1f600}".repeat(1024), "\u{6f22}\u{5b57}".repeat(1024)] {
+            let original: Vec<u16> = text.encode_utf16().collect();
+            let reserved = utf16_units(&text);
+            assert_eq!(original, reserved);
+            let iterations = 1000;
+            let mut collect = Duration::ZERO;
+            let mut candidate = Duration::ZERO;
+            for batch in 0..10 {
+                let original_call = || {
+                    black_box(black_box(text.as_str()).encode_utf16().collect::<Vec<u16>>());
+                };
+                let candidate_call = || {
+                    black_box(utf16_units(black_box(text.as_str())));
+                };
+                if batch % 2 == 0 {
+                    collect += time_batch(original_call);
+                    candidate += time_batch(candidate_call);
+                } else {
+                    candidate += time_batch(candidate_call);
+                    collect += time_batch(original_call);
+                }
+            }
+            eprintln!("native UTF-16 allocation, n={iterations}, bytes={}, ascii={}: collect={collect:?}, candidate={candidate:?}, capacities={}/{}",
+                text.len(), text.is_ascii(), original.capacity(), reserved.capacity());
+        }
     }
 }

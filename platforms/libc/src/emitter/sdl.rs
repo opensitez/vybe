@@ -34,36 +34,34 @@ fn byte_array_with_length(len: Expression) -> Expression {
 /// Shape mirrors the fields a software renderer touches:
 ///
 /// ```text
-/// { w, h, depth, pixels: Uint8Array(w * h), pitch, format: { palette: [] } }
+/// { w, h, depth, pixels: guest_address(pitch * h), pitch, format }
 /// ```
 ///
-/// `pixels` is byte storage up front. Doom writes through `surface->pixels`
-/// by byte index, so growing a generic array in the inner loop is the wrong
-/// storage model and blocks the shared bytes slot fast path.
+/// Software surface pixels are guest-addressable storage: C may alias them
+/// through byte, word, or wider pointers. Conversion to Canvas ImageData belongs
+/// at the blit boundary, not in the surface's guest-visible allocation.
 pub fn create_rgb_surface(
     w: Expression,
     h: Expression,
     depth: Expression,
     pitch: Expression,
+    masks: [Expression; 4],
 ) -> Expression {
     let pixel_len = expr(ExprKind::Binary {
         op: BinOp::Mul,
-        left: Box::new(w.clone()),
+        left: Box::new(pitch.clone()),
         right: Box::new(h.clone()),
     });
     expr(ExprKind::Object(vec![
         kv("w", w),
         kv("h", h),
-        kv("depth", depth),
+        kv("depth", depth.clone()),
         kv("pitch", pitch),
-        kv("pixels", byte_array_with_length(pixel_len)),
         kv(
-            "format",
-            expr(ExprKind::Object(vec![
-                kv("palette", empty_array()),
-                kv("BytesPerPixel", int(1)),
-            ])),
+            "pixels",
+            call_expr(ident("__c_ptr_linear_alloc"), vec![pixel_len]),
         ),
+        kv("format", surface_format(depth, masks)),
     ]))
 }
 
@@ -73,20 +71,58 @@ pub fn create_rgb_surface_from(
     h: Expression,
     depth: Expression,
     pitch: Expression,
+    masks: [Expression; 4],
 ) -> Expression {
     expr(ExprKind::Object(vec![
         kv("w", w),
         kv("h", h),
-        kv("depth", depth),
+        kv("depth", depth.clone()),
         kv("pitch", pitch),
         kv("pixels", pixels),
-        kv(
-            "format",
-            expr(ExprKind::Object(vec![
-                kv("palette", empty_array()),
-                kv("BytesPerPixel", int(4)),
-            ])),
-        ),
+        kv("format", surface_format(depth, masks)),
+    ]))
+}
+
+fn surface_format(depth: Expression, masks: [Expression; 4]) -> Expression {
+    let bytes = expr(ExprKind::Binary {
+        op: BinOp::Shr,
+        left: Box::new(expr(ExprKind::Binary {
+            op: BinOp::Add,
+            left: Box::new(depth.clone()),
+            right: Box::new(int(7)),
+        })),
+        right: Box::new(int(3)),
+    });
+    let palette = expr(ExprKind::Object(vec![
+        kv("ncolors", int(256)),
+        kv("colors", empty_array()),
+    ]));
+    let mut fields = vec![
+        kv("palette", palette),
+        kv("BitsPerPixel", depth),
+        kv("BytesPerPixel", bytes),
+    ];
+    for (name, value) in ["Rmask", "Gmask", "Bmask", "Amask"].into_iter().zip(masks) {
+        fields.push(kv(name, value));
+    }
+    expr(ExprKind::Object(fields))
+}
+
+pub fn create_rgb_surface_with_format_from(
+    pixels: Expression,
+    w: Expression,
+    h: Expression,
+    depth: Expression,
+    pitch: Expression,
+    format: Expression,
+) -> Expression {
+    expr(ExprKind::Object(vec![
+        kv("pixels", pixels),
+        kv("w", w),
+        kv("h", h),
+        kv("depth", depth),
+        kv("pitch", pitch),
+        kv("format", call_expr(ident("SDL_AllocFormat"), vec![format])),
     ]))
 }
 
@@ -99,6 +135,7 @@ pub fn create_renderer(window: Expression, flags: Expression) -> Expression {
         kv("b", int(0)),
         kv("a", int(255)),
         kv("target", expr(ExprKind::Lit(Literal::Null))),
+        kv("backbuffer", expr(ExprKind::Lit(Literal::Null))),
     ]))
 }
 
@@ -175,15 +212,28 @@ fn emit_cssom_call(chunks: &mut [Chunk], current: usize, func: &str, argc: u8, l
     chunks[current].emit_call(idx, argc, line);
 }
 
-/// Push the document handle every `web:dom` / `web:html` call takes first —
-/// `window.document`, via `web:html:activeDocument()`.
+/// Push the document handle every `web:dom` / `web:html` call takes first.
 ///
 /// NOT a literal 0. Document ids start at 1 (`dom::new_document` increments
 /// before it hands one out), so 0 names no open document and
 /// `dom::with_document` answers `None` — every call silently did nothing, the
 /// canvas was never inserted, and the page had no content to present.
 fn emit_document(chunks: &mut [Chunk], current: usize, line: u32) {
+    vybe_compiler::primitives::globals::emit_read(
+        &mut chunks[current],
+        super::sdl_app::DOCUMENT,
+        line,
+    );
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    vybe_compiler::primitives::globals::emit_read(
+        &mut chunks[current],
+        super::sdl_app::DOCUMENT,
+        line,
+    );
+    chunks[current].emit_else(line);
     emit_html_call(chunks, current, "activeDocument", 0, line);
+    chunks[current].emit_end(line);
 }
 
 /// Push `document.body` — the SDL window's parent element.
@@ -224,11 +274,6 @@ fn emit_window_call(chunks: &mut [Chunk], current: usize, func: &str, argc: u8, 
 /// `button` vs SDL's 1-based, `key`/`code` strings vs `SDLK_*`) is resolved
 /// here, in emitted code. A browser host satisfies the same imports with the
 /// real DOM.
-fn emit_web_events_call(chunks: &mut [Chunk], current: usize, func: &str, argc: u8, line: u32) {
-    let idx = chunks[current].add_import("web:ui-events", func);
-    chunks[current].emit_call(idx, argc, line);
-}
-
 /// Read `obj.<field>` from the DOM event object in `slot`.
 fn emit_dom_field(chunks: &mut [Chunk], current: usize, slot: u16, field: &str, line: u32) {
     vybe_compiler::primitives::class_slots::emit_class_get(
@@ -273,27 +318,146 @@ fn emit_store_field(
     );
 }
 
+fn emit_store_output(chunks: &mut [Chunk], current: usize, pointer: u16, tmp: u16, line: u32) {
+    emit_set_local(chunks, current, tmp, line);
+    vybe_compiler::primitives::references::emit_store_through_pointer(
+        chunks, current, pointer, tmp, line,
+    );
+}
+
 /// `1` when the DOM event's `type` equals `kind`, else `0`.
 fn emit_dom_kind_is(chunks: &mut [Chunk], current: usize, ev: u16, kind: &str, line: u32) {
     emit_dom_field(chunks, current, ev, "type", line);
-    chunks[current].emit_string_const(kind, line);
-    chunks[current].emit_op(Op::EQ, line);
+    let event_type = chunks[current].alloc_scratch(1);
+    emit_set_local(chunks, current, event_type, line);
+    vybe_compiler::primitives::ops::emit_string_slot_eq_literal(
+        &mut chunks[current],
+        event_type,
+        kind,
+        line,
+    );
 }
+
+const DOM_CODE_SCANCODES: &[(&str, i32)] = &[
+    ("Enter", 40),
+    ("Escape", 41),
+    ("Backspace", 42),
+    ("Tab", 43),
+    ("Space", 44),
+    ("ArrowRight", 79),
+    ("ArrowLeft", 80),
+    ("ArrowDown", 81),
+    ("ArrowUp", 82),
+    ("ControlLeft", 224),
+    ("ShiftLeft", 225),
+    ("AltLeft", 226),
+    ("ControlRight", 228),
+    ("ShiftRight", 229),
+    ("AltRight", 230),
+    ("CapsLock", 57),
+    ("F1", 58),
+    ("F2", 59),
+    ("F3", 60),
+    ("F4", 61),
+    ("F5", 62),
+    ("F6", 63),
+    ("F7", 64),
+    ("F8", 65),
+    ("F9", 66),
+    ("F10", 67),
+    ("F11", 68),
+    ("F12", 69),
+    ("Insert", 73),
+    ("Home", 74),
+    ("PageUp", 75),
+    ("Delete", 76),
+    ("End", 77),
+    ("PageDown", 78),
+];
+
+const SDL_SCANCODE_KEYCODES: &[(i32, i32)] = &[
+    (40, 13),
+    (41, 27),
+    (42, 8),
+    (43, 9),
+    (44, 32),
+    (45, 45),
+    (46, 61),
+    (47, 91),
+    (48, 93),
+    (49, 92),
+    (51, 59),
+    (52, 39),
+    (53, 96),
+    (54, 44),
+    (55, 46),
+    (56, 47),
+    (57, 0x40000039),
+    (58, 0x4000003A),
+    (59, 0x4000003B),
+    (60, 0x4000003C),
+    (61, 0x4000003D),
+    (62, 0x4000003E),
+    (63, 0x4000003F),
+    (64, 0x40000040),
+    (65, 0x40000041),
+    (66, 0x40000042),
+    (67, 0x40000043),
+    (68, 0x40000044),
+    (69, 0x40000045),
+    (73, 0x40000049),
+    (74, 0x4000004A),
+    (75, 0x4000004B),
+    (76, 127),
+    (77, 0x4000004D),
+    (78, 0x4000004E),
+    (79, 0x4000004F),
+    (80, 0x40000050),
+    (81, 0x40000051),
+    (82, 0x40000052),
+    (224, 0x400000E0),
+    (225, 0x400000E1),
+    (226, 0x400000E2),
+    (228, 0x400000E4),
+    (229, 0x400000E5),
+    (230, 0x400000E6),
+];
 
 /// Unwrap a C pointer argument to the object it addresses.
 ///
-/// `&e` on a struct reaches a callee either as the struct itself or boxed in
-/// a scalar cell `{__ref_kind:"cell", __value}`. SDL is adapter-only, so the
-/// EMITTED code must unwrap it: reading `.type` straight off a cell yields
-/// undefined, which arrives as zero in every field.
+/// Accept direct records, scalar reference cells, and C structure pointers.
+/// Unwrap the existing backing rather than writing fields on the pointer wrapper.
 fn emit_deref_cell(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
     emit_get_local(chunks, current, slot, line);
     emit_stack_field(chunks, current, "__ref_kind", line);
-    chunks[current].emit_string_const("cell", line);
-    chunks[current].emit_op(Op::EQ, line);
+    let kind = chunks[current].alloc_scratch(1);
+    emit_set_local(chunks, current, kind, line);
+    vybe_compiler::primitives::ops::emit_string_slot_eq_literal(
+        &mut chunks[current],
+        kind,
+        "cell",
+        line,
+    );
     chunks[current].emit_if_value(line);
     emit_get_local(chunks, current, slot, line);
     emit_stack_field(chunks, current, "__value", line);
+    chunks[current].emit_else(line);
+    emit_get_local(chunks, current, slot, line);
+    chunks[current].emit_end(line);
+    emit_set_local(chunks, current, slot, line);
+
+    emit_get_local(chunks, current, slot, line);
+    emit_stack_field(chunks, current, "__ref_kind", line);
+    emit_set_local(chunks, current, kind, line);
+    vybe_compiler::primitives::ops::emit_string_slot_eq_literal(
+        &mut chunks[current],
+        kind,
+        "cstruct",
+        line,
+    );
+    chunks[current].emit_if_value(line);
+    emit_get_local(chunks, current, slot, line);
+    emit_stack_field(chunks, current, "__base", line);
     chunks[current].emit_else(line);
     emit_get_local(chunks, current, slot, line);
     chunks[current].emit_end(line);
@@ -386,6 +550,8 @@ fn emit_sdl_present_image_data(
     h: u16,
     dst_w: u16,
     dst_h: u16,
+    rectangles: Option<(u16, u16)>,
+    cache_owner: Option<u16>,
     line: u32,
 ) {
     let source_canvas = chunks[current].alloc_scratch(1);
@@ -393,6 +559,13 @@ fn emit_sdl_present_image_data(
     let dest_ctx = chunks[current].alloc_scratch(1);
     let tmp = chunks[current].alloc_scratch(1);
 
+    if let Some(owner) = cache_owner {
+        emit_dom_field(chunks, current, owner, "__sdl_upload_canvas", line);
+        emit_set_local(chunks, current, source_canvas, line);
+        emit_get_local(chunks, current, source_canvas, line);
+        chunks[current].emit_op(Op::REF_IS_NULL, line);
+        chunks[current].emit_if(line);
+    }
     emit_document(chunks, current, line);
     chunks[current].emit_string_const("canvas", line);
     chunks[current].emit_string_const("", line);
@@ -409,6 +582,16 @@ fn emit_sdl_present_image_data(
     chunks[current].emit_string_const("2d", line);
     emit_canvas_call(chunks, current, "getContext", 2, line);
     emit_set_local(chunks, current, source_ctx, line);
+    if let Some(owner) = cache_owner {
+        emit_get_local(chunks, current, source_canvas, line);
+        emit_store_field(chunks, current, owner, "__sdl_upload_canvas", tmp, line);
+        emit_get_local(chunks, current, source_ctx, line);
+        emit_store_field(chunks, current, owner, "__sdl_upload_ctx", tmp, line);
+        chunks[current].emit_else(line);
+        emit_dom_field(chunks, current, owner, "__sdl_upload_ctx", line);
+        emit_set_local(chunks, current, source_ctx, line);
+        chunks[current].emit_end(line);
+    }
 
     emit_get_local(chunks, current, source_ctx, line);
     emit_get_local(chunks, current, image_data, line);
@@ -423,12 +606,46 @@ fn emit_sdl_present_image_data(
     emit_set_local(chunks, current, dest_ctx, line);
     emit_get_local(chunks, current, dest_ctx, line);
     emit_get_local(chunks, current, source_canvas, line);
-    chunks[current].emit_f64_const(0.0, line);
-    chunks[current].emit_f64_const(0.0, line);
-    emit_get_local(chunks, current, dst_w, line);
-    emit_get_local(chunks, current, dst_h, line);
-    emit_canvas_call(chunks, current, "drawImage", 6, line);
+    if let Some((source_rect, dest_rect)) = rectangles {
+        emit_sdl_rect_components(chunks, current, source_rect, w, h, line);
+        emit_sdl_rect_components(chunks, current, dest_rect, dst_w, dst_h, line);
+        emit_canvas_call(chunks, current, "drawImage", 10, line);
+    } else {
+        chunks[current].emit_f64_const(0.0, line);
+        chunks[current].emit_f64_const(0.0, line);
+        emit_get_local(chunks, current, dst_w, line);
+        emit_get_local(chunks, current, dst_h, line);
+        emit_canvas_call(chunks, current, "drawImage", 6, line);
+    }
     chunks[current].emit_op(Op::DROP, line);
+}
+
+fn emit_sdl_rect_components(
+    chunks: &mut [Chunk],
+    current: usize,
+    rect: u16,
+    default_w: u16,
+    default_h: u16,
+    line: u32,
+) {
+    for (field, default) in [
+        ("x", None),
+        ("y", None),
+        ("w", Some(default_w)),
+        ("h", Some(default_h)),
+    ] {
+        emit_get_local(chunks, current, rect, line);
+        chunks[current].emit_op(Op::REF_IS_NULL, line);
+        chunks[current].emit_if_value(line);
+        if let Some(slot) = default {
+            emit_get_local(chunks, current, slot, line);
+        } else {
+            chunks[current].emit_i32_const(0, line);
+        }
+        chunks[current].emit_else(line);
+        emit_load_f64_from_struct(chunks, current, rect, field, line);
+        chunks[current].emit_end(line);
+    }
 }
 
 fn emit_sdl_put_rgba_image_data(
@@ -449,7 +666,7 @@ fn emit_sdl_put_rgba_image_data(
     emit_libc_sdl_call(chunks, current, "rgbaImageData", 3, line);
     emit_set_local(chunks, current, image_data, line);
     emit_sdl_present_image_data(
-        chunks, current, surface, image_data, w, h, dst_w, dst_h, line,
+        chunks, current, surface, image_data, w, h, dst_w, dst_h, None, None, line,
     );
 }
 
@@ -473,7 +690,7 @@ fn emit_sdl_put_paletted_image_data(
     emit_libc_sdl_call(chunks, current, "palettedImageData", 4, line);
     emit_set_local(chunks, current, image_data, line);
     emit_sdl_present_image_data(
-        chunks, current, surface, image_data, w, h, dst_w, dst_h, line,
+        chunks, current, surface, image_data, w, h, dst_w, dst_h, None, None, line,
     );
 }
 
@@ -564,13 +781,21 @@ fn emit_pack_color(
 }
 
 pub fn emit_sdl_init(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
-    emit_drop(chunks, current, argc, line);
+    if argc > 0 {
+        let to_i32 = chunks[current].add_import("wasm:js-number", "toI32");
+        chunks[current].emit_call(to_i32, 1, line);
+        chunks[current].emit_i32_const(0x20, line); // SDL_INIT_VIDEO
+        chunks[current].emit_op(Op::I32_AND, line);
+        chunks[current].emit_if(line);
+        emit_document(chunks, current, line);
+        chunks[current].emit_op(Op::DROP, line);
+        chunks[current].emit_end(line);
+    }
     emit_zero_i32(chunks, current, line);
 }
 
 pub fn emit_sdl_init_subsystem(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
-    emit_drop(chunks, current, argc, line);
-    emit_zero_i32(chunks, current, line);
+    emit_sdl_init(chunks, current, argc, line);
 }
 
 pub fn emit_sdl_quit(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -591,6 +816,7 @@ pub fn emit_sdl_quit(chunks: &mut [Chunk], current: usize, line: u32) {
 /// are unitless), not a style declaration.
 pub fn emit_sdl_create_window(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     let canvas = chunks[current].alloc_scratch(1);
+    let surface = chunks[current].alloc_scratch(1);
     let title = chunks[current].alloc_scratch(1);
     let _x = chunks[current].alloc_scratch(1);
     let _y = chunks[current].alloc_scratch(1);
@@ -598,6 +824,7 @@ pub fn emit_sdl_create_window(chunks: &mut [Chunk], current: usize, _argc: u8, l
     let h = chunks[current].alloc_scratch(1);
     let _flags = chunks[current].alloc_scratch(1);
     let tmp = chunks[current].alloc_scratch(1);
+    let ctx = chunks[current].alloc_scratch(1);
 
     emit_set_local(chunks, current, _flags, line);
     emit_set_local(chunks, current, h, line);
@@ -626,6 +853,32 @@ pub fn emit_sdl_create_window(chunks: &mut [Chunk], current: usize, _argc: u8, l
     emit_get_local(chunks, current, h, line);
     emit_store_field(chunks, current, canvas, "height", tmp, line);
 
+    // SDL's software surface is not displayed until UpdateWindowSurface.
+    // A detached canvas holds its pixels without entering the display list.
+    emit_document(chunks, current, line);
+    chunks[current].emit_string_const("canvas", line);
+    chunks[current].emit_string_const("", line);
+    emit_dom_call(chunks, current, "createElement", 3, line);
+    emit_set_local(chunks, current, surface, line);
+    emit_set_attribute(chunks, current, surface, "width", w, line);
+    emit_set_attribute(chunks, current, surface, "height", h, line);
+    emit_get_local(chunks, current, w, line);
+    emit_store_field(chunks, current, surface, "width", tmp, line);
+    emit_get_local(chunks, current, h, line);
+    emit_store_field(chunks, current, surface, "height", tmp, line);
+    emit_get_local(chunks, current, surface, line);
+    chunks[current].emit_string_const("2d", line);
+    emit_canvas_call(chunks, current, "getContext", 2, line);
+    emit_set_local(chunks, current, ctx, line);
+    emit_get_local(chunks, current, ctx, line);
+    emit_store_field(chunks, current, surface, "__sdl_ctx", tmp, line);
+    emit_get_local(chunks, current, surface, line);
+    emit_store_field(chunks, current, canvas, "__sdl_surface", tmp, line);
+    emit_get_local(chunks, current, canvas, line);
+    chunks[current].emit_string_const("2d", line);
+    emit_canvas_call(chunks, current, "getContext", 2, line);
+    emit_store_field(chunks, current, canvas, "__sdl_ctx", tmp, line);
+
     // document.body.appendChild(canvas) — the page now HAS content, which is
     // the same test the window runner starts on (`gui_document::with_live`).
     // Nothing tells the page to run; a document with content is a running one.
@@ -634,6 +887,8 @@ pub fn emit_sdl_create_window(chunks: &mut [Chunk], current: usize, _argc: u8, l
     emit_get_local(chunks, current, canvas, line);
     emit_dom_call(chunks, current, "appendChild", 3, line);
     chunks[current].emit_op(Op::DROP, line);
+
+    super::sdl_app::emit_window_count(chunks, current, 1, line);
 
     emit_get_local(chunks, current, canvas, line);
 }
@@ -652,16 +907,12 @@ pub fn emit_sdl_destroy_window(chunks: &mut [Chunk], current: usize, _argc: u8, 
     emit_get_local(chunks, current, window, line);
     emit_dom_call(chunks, current, "removeChild", 3, line);
     chunks[current].emit_op(Op::DROP, line);
+    super::sdl_app::emit_window_count(chunks, current, -1, line);
     emit_zero_i32(chunks, current, line);
 }
 
-/// `SDL_GetWindowSurface(window)` — the window IS the surface.
-///
-/// `emit_sdl_create_window` hands back the `<canvas>` element, and that element
-/// is what every drawing call needs (`getContext(element, "2d")`). There is no
-/// second object to derive and no name to build: the previous version
-/// concatenated `<window>_surface` because the surface was a separate widget
-/// found by control name, which is exactly the lookup the element removes.
+/// `SDL_GetWindowSurface(window)` returns the detached canvas backing the
+/// window's software surface. UpdateWindowSurface presents it to the page.
 pub fn emit_sdl_get_window_surface(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     let window = chunks[current].alloc_scratch(1);
     emit_set_local(chunks, current, window, line);
@@ -669,7 +920,7 @@ pub fn emit_sdl_get_window_surface(chunks: &mut [Chunk], current: usize, _argc: 
     // rather than the handle itself — the same step `SDL_PollEvent` /
     // `SDL_PushEvent` already take for their event pointers.
     emit_deref_cell(chunks, current, window, line);
-    emit_get_local(chunks, current, window, line);
+    emit_dom_field(chunks, current, window, "__sdl_surface", line);
 }
 
 /// `SDL_BlitPaletted(surface, pixels, w, h, palette [, dstW, dstH])`
@@ -743,9 +994,7 @@ pub fn emit_sdl_fill_rect(chunks: &mut [Chunk], current: usize, _argc: u8, line:
     // `canvas.getContext("2d")` — HTML §4.12.5. The surface IS the element
     // `SDL_CreateWindow` made, so the context binds to a node and no control
     // name is resolved anywhere.
-    emit_get_local(chunks, current, surface, line);
-    chunks[current].emit_string_const("2d", line);
-    emit_canvas_call(chunks, current, "getContext", 2, line);
+    emit_dom_field(chunks, current, surface, "__sdl_ctx", line);
     emit_set_local(chunks, current, ctx, line);
 
     emit_get_local(chunks, current, ctx, line);
@@ -800,9 +1049,7 @@ pub fn emit_sdl_draw_line(chunks: &mut [Chunk], current: usize, _argc: u8, line:
     // `canvas.getContext("2d")` — HTML §4.12.5. The surface IS the element
     // `SDL_CreateWindow` made, so the context binds to a node and no control
     // name is resolved anywhere.
-    emit_get_local(chunks, current, surface, line);
-    chunks[current].emit_string_const("2d", line);
-    emit_canvas_call(chunks, current, "getContext", 2, line);
+    emit_dom_field(chunks, current, surface, "__sdl_ctx", line);
     emit_set_local(chunks, current, ctx, line);
 
     emit_get_local(chunks, current, ctx, line);
@@ -862,9 +1109,7 @@ pub fn emit_sdl_draw_text(chunks: &mut [Chunk], current: usize, _argc: u8, line:
     // `canvas.getContext("2d")` — HTML §4.12.5. The surface IS the element
     // `SDL_CreateWindow` made, so the context binds to a node and no control
     // name is resolved anywhere.
-    emit_get_local(chunks, current, surface, line);
-    chunks[current].emit_string_const("2d", line);
-    emit_canvas_call(chunks, current, "getContext", 2, line);
+    emit_dom_field(chunks, current, surface, "__sdl_ctx", line);
     emit_set_local(chunks, current, context, line);
 
     // Text had NO colour of its own: it inherited whatever fill colour the
@@ -889,17 +1134,36 @@ pub fn emit_sdl_draw_text(chunks: &mut [Chunk], current: usize, _argc: u8, line:
     emit_zero_i32(chunks, current, line);
 }
 
-/// `SDL_UpdateWindowSurface(window)` — nothing to do.
-///
-/// There is no `present` on the web: a page does not push frames, it draws and
-/// the compositor shows them. A document does not need to be told to run: it
-/// runs because it HAS content, which is
-/// the same condition `gui_document::with_live` starts the window runner on,
-/// and `load` fires from `gui_launch::fire_load_event` once it does.
-///
-/// The window argument is still consumed so the stack stays balanced, and the
-/// SDL contract's `0` is returned.
 pub fn emit_sdl_update_window_surface(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    let window = chunks[current].alloc_scratch(1);
+    let surface = chunks[current].alloc_scratch(1);
+    let ctx = chunks[current].alloc_scratch(1);
+    emit_set_local(chunks, current, window, line);
+    emit_deref_cell(chunks, current, window, line);
+    emit_dom_field(chunks, current, window, "__sdl_surface", line);
+    emit_set_local(chunks, current, surface, line);
+    emit_get_local(chunks, current, window, line);
+    emit_dom_field(chunks, current, window, "__sdl_ctx", line);
+    emit_set_local(chunks, current, ctx, line);
+
+    emit_get_local(chunks, current, ctx, line);
+    emit_canvas_call(chunks, current, "save", 1, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    emit_get_local(chunks, current, ctx, line);
+    chunks[current].emit_string_const("copy", line);
+    emit_canvas_call(chunks, current, "setGlobalCompositeOperation", 2, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    emit_get_local(chunks, current, ctx, line);
+    emit_get_local(chunks, current, surface, line);
+    chunks[current].emit_f64_const(0.0, line);
+    chunks[current].emit_f64_const(0.0, line);
+    emit_canvas_call(chunks, current, "drawImage", 4, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    emit_get_local(chunks, current, ctx, line);
+    emit_canvas_call(chunks, current, "restore", 1, line);
     chunks[current].emit_op(Op::DROP, line);
     emit_zero_i32(chunks, current, line);
 }
@@ -967,10 +1231,8 @@ pub fn emit_sdl_get_performance_frequency(
 
 /// `SDL_PollEvent(SDL_Event *e)` → 1 if an event was dequeued, else 0.
 ///
-/// Pure ADAPTER over `web:ui-events.pollEvent()`: takes the W3C event object
-/// and writes SDL's struct view of it. No host function of its own — the
-/// queue belongs to the web platform, and a browser host
-/// serves the same import from the real DOM.
+/// Translate an event delivered by the document's input listeners into SDL's
+/// struct view. The queue is owned by the SDL guest, not by a browser host.
 pub fn emit_sdl_poll_event(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     let store_tmp = chunks[current].alloc_scratch(1);
     let ptr = chunks[current].alloc_scratch(1);
@@ -985,15 +1247,21 @@ pub fn emit_sdl_poll_event(chunks: &mut [Chunk], current: usize, _argc: u8, line
     emit_set_local(chunks, current, ptr, line);
     emit_deref_cell(chunks, current, ptr, line);
 
-    emit_web_events_call(chunks, current, "pollEvent", 0, line);
-    emit_set_local(chunks, current, ev, line);
-
-    // Empty queue → 0.
-    emit_get_local(chunks, current, ev, line);
-    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    vybe_compiler::primitives::globals::emit_read(
+        &mut chunks[current],
+        super::sdl_app::INPUT_QUEUE,
+        line,
+    );
+    vybe_compiler::primitives::collections::emit_len(chunks, current, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if_value(line);
-    emit_zero_i32(chunks, current, line);
-    chunks[current].emit_else(line);
+    vybe_compiler::primitives::globals::emit_read(
+        &mut chunks[current],
+        super::sdl_app::INPUT_QUEUE,
+        line,
+    );
+    vybe_compiler::primitives::collections::emit_shift(chunks, current, line);
+    emit_set_local(chunks, current, ev, line);
 
     // SDL event type from the DOM `type` string.
     emit_dom_kind_is(chunks, current, ev, "keydown", line);
@@ -1043,25 +1311,24 @@ pub fn emit_sdl_poll_event(chunks: &mut [Chunk], current: usize, _argc: u8, line
     emit_dom_field(chunks, current, ev, "keyCode", line);
     emit_set_local(chunks, current, kc, line);
 
-    // sym = (65 <= kc <= 90) ? kc + 32 : kc
-    emit_get_local(chunks, current, kc, line);
-    chunks[current].emit_f64_const(65.0, line);
-    chunks[current].emit_op(Op::F64_GE, line);
-    emit_get_local(chunks, current, kc, line);
-    chunks[current].emit_f64_const(90.0, line);
-    chunks[current].emit_op(Op::F64_LE, line);
-    chunks[current].emit_op(Op::I32_AND, line);
-    chunks[current].emit_if_value(line);
-    emit_get_local(chunks, current, kc, line);
-    chunks[current].emit_f64_const(32.0, line);
-    chunks[current].emit_op(Op::F64_ADD, line);
-    chunks[current].emit_else(line);
-    emit_get_local(chunks, current, kc, line);
-    chunks[current].emit_end(line);
-    emit_store_field(chunks, current, keysym, "sym", store_tmp, line);
-
-    // scancode: letters → 4 + (kc - 65); '1'..'9' → 30 + (kc - 49);
-    // '0' → 39; anything else 0 (Doom reads sym for those).
+    // KeyboardEvent.code identifies the physical key, including left/right
+    // modifiers; keyCode alone cannot distinguish those positions.
+    let sc = chunks[current].alloc_scratch(1);
+    let dom_code = chunks[current].alloc_scratch(1);
+    for &(code, scan) in DOM_CODE_SCANCODES {
+        emit_dom_field(chunks, current, ev, "code", line);
+        emit_set_local(chunks, current, dom_code, line);
+        vybe_compiler::primitives::ops::emit_string_slot_eq_literal(
+            &mut chunks[current],
+            dom_code,
+            code,
+            line,
+        );
+        chunks[current].emit_if_value(line);
+        chunks[current].emit_f64_const(scan as f64, line);
+        chunks[current].emit_else(line);
+    }
+    // Printable fallback: letters 4..29, digits 30..39.
     emit_get_local(chunks, current, kc, line);
     chunks[current].emit_f64_const(65.0, line);
     chunks[current].emit_op(Op::F64_GE, line);
@@ -1086,10 +1353,75 @@ pub fn emit_sdl_poll_event(chunks: &mut [Chunk], current: usize, _argc: u8, line
     chunks[current].emit_f64_const(19.0, line); // 49 - 30
     chunks[current].emit_op(Op::F64_SUB, line);
     chunks[current].emit_else(line);
+    emit_get_local(chunks, current, kc, line);
+    chunks[current].emit_f64_const(48.0, line);
+    chunks[current].emit_op(Op::F64_EQ, line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_f64_const(39.0, line);
+    chunks[current].emit_else(line);
+    emit_get_local(chunks, current, kc, line);
+    chunks[current].emit_f64_const(32.0, line);
+    chunks[current].emit_op(Op::F64_EQ, line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_f64_const(44.0, line);
+    chunks[current].emit_else(line);
     chunks[current].emit_f64_const(0.0, line);
     chunks[current].emit_end(line);
     chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+    for _ in DOM_CODE_SCANCODES {
+        chunks[current].emit_end(line);
+    }
+    emit_set_local(chunks, current, sc, line);
+    emit_get_local(chunks, current, sc, line);
     emit_store_field(chunks, current, keysym, "scancode", store_tmp, line);
+
+    // SDL's non-printable keysyms use the scancode mask, except Delete.
+    emit_get_local(chunks, current, sc, line);
+    chunks[current].emit_f64_const(57.0, line);
+    chunks[current].emit_op(Op::F64_GE, line);
+    emit_get_local(chunks, current, sc, line);
+    chunks[current].emit_f64_const(82.0, line);
+    chunks[current].emit_op(Op::F64_LE, line);
+    chunks[current].emit_op(Op::I32_AND, line);
+    emit_get_local(chunks, current, sc, line);
+    chunks[current].emit_f64_const(76.0, line);
+    chunks[current].emit_op(Op::F64_EQ, line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_op(Op::I32_AND, line);
+    emit_get_local(chunks, current, sc, line);
+    chunks[current].emit_f64_const(224.0, line);
+    chunks[current].emit_op(Op::F64_GE, line);
+    chunks[current].emit_op(Op::I32_OR, line);
+    chunks[current].emit_if_value(line);
+    emit_get_local(chunks, current, sc, line);
+    chunks[current].emit_f64_const(1073741824.0, line);
+    chunks[current].emit_op(Op::F64_ADD, line);
+    chunks[current].emit_else(line);
+    emit_get_local(chunks, current, sc, line);
+    chunks[current].emit_f64_const(76.0, line);
+    chunks[current].emit_op(Op::F64_EQ, line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_f64_const(127.0, line);
+    chunks[current].emit_else(line);
+    emit_get_local(chunks, current, kc, line);
+    chunks[current].emit_f64_const(65.0, line);
+    chunks[current].emit_op(Op::F64_GE, line);
+    emit_get_local(chunks, current, kc, line);
+    chunks[current].emit_f64_const(90.0, line);
+    chunks[current].emit_op(Op::F64_LE, line);
+    chunks[current].emit_op(Op::I32_AND, line);
+    chunks[current].emit_if_value(line);
+    emit_get_local(chunks, current, kc, line);
+    chunks[current].emit_f64_const(32.0, line);
+    chunks[current].emit_op(Op::F64_ADD, line);
+    chunks[current].emit_else(line);
+    emit_get_local(chunks, current, kc, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+    emit_store_field(chunks, current, keysym, "sym", store_tmp, line);
 
     // KMOD_* mask from the DOM's boolean modifiers — the inverse of what the
     // push side does, so a pushed event round-trips its modifiers.
@@ -1098,6 +1430,7 @@ pub fn emit_sdl_poll_event(chunks: &mut [Chunk], current: usize, _argc: u8, line
     emit_set_local(chunks, current, mods, line);
     for (field, mask) in [("shiftKey", 0x1i32), ("ctrlKey", 0x40), ("altKey", 0x100)] {
         emit_dom_field(chunks, current, ev, field, line);
+        vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
         chunks[current].emit_if_value(line);
         emit_get_local(chunks, current, mods, line);
         chunks[current].emit_i32_const(mask, line);
@@ -1142,12 +1475,12 @@ pub fn emit_sdl_poll_event(chunks: &mut [Chunk], current: usize, _argc: u8, line
     emit_store_field(chunks, current, wheel, "y", store_tmp, line);
 
     chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_else(line);
+    emit_zero_i32(chunks, current, line);
     chunks[current].emit_end(line);
 }
 
-/// `SDL_PushEvent(SDL_Event *e)` → 1. `EventTarget.dispatchEvent` in SDL's
-/// dialect: the injected event joins the SAME `web:ui-events` queue real
-/// input arrives on, which is also what makes the pipeline headless-testable.
+/// `SDL_PushEvent(SDL_Event *e)` → 1. Inject into SDL's own event queue.
 pub fn emit_sdl_push_event(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     let store_tmp = chunks[current].alloc_scratch(1);
     let ptr = chunks[current].alloc_scratch(1);
@@ -1190,8 +1523,39 @@ pub fn emit_sdl_push_event(chunks: &mut [Chunk], current: usize, _argc: u8, line
     chunks[current].emit_end(line);
     chunks[current].emit_end(line);
     chunks[current].emit_end(line);
-    emit_web_events_call(chunks, current, "newEvent", 1, line);
+    let kind = chunks[current].alloc_scratch(1);
+    emit_set_local(chunks, current, kind, line);
+    emit_object_new(chunks, current, line);
     emit_set_local(chunks, current, dom, line);
+    emit_get_local(chunks, current, kind, line);
+    emit_store_field(chunks, current, dom, "type", store_tmp, line);
+
+    let scan_v = chunks[current].alloc_scratch(1);
+    emit_get_local(chunks, current, ptr, line);
+    emit_stack_field(chunks, current, "key", line);
+    emit_stack_field(chunks, current, "keysym", line);
+    emit_stack_field(chunks, current, "scancode", line);
+    emit_set_local(chunks, current, scan_v, line);
+    for &(code, scan) in DOM_CODE_SCANCODES {
+        emit_get_local(chunks, current, scan_v, line);
+        chunks[current].emit_f64_const(scan as f64, line);
+        chunks[current].emit_op(Op::F64_EQ, line);
+        chunks[current].emit_if_value(line);
+        chunks[current].emit_string_const(code, line);
+        chunks[current].emit_else(line);
+    }
+    emit_get_local(chunks, current, scan_v, line);
+    chunks[current].emit_f64_const(39.0, line);
+    chunks[current].emit_op(Op::F64_EQ, line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_string_const("Digit0", line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_string_const("", line);
+    chunks[current].emit_end(line);
+    for _ in DOM_CODE_SCANCODES {
+        chunks[current].emit_end(line);
+    }
+    emit_store_field(chunks, current, dom, "code", store_tmp, line);
 
     // key.keysym.sym → keyCode; button.{button,x,y} → button/clientX/clientY.
     // `keyCode` is the browser's legacy UPPERCASE identity (W = 87) while an
@@ -1296,8 +1660,13 @@ pub fn emit_sdl_push_event(chunks: &mut [Chunk], current: usize, _argc: u8, line
     emit_stack_field(chunks, current, "y", line);
     emit_store_field(chunks, current, dom, "clientY", store_tmp, line);
 
+    vybe_compiler::primitives::globals::emit_read(
+        &mut chunks[current],
+        super::sdl_app::INPUT_QUEUE,
+        line,
+    );
     emit_get_local(chunks, current, dom, line);
-    emit_web_events_call(chunks, current, "dispatchEvent", 1, line);
+    vybe_compiler::primitives::collections::emit_push(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_i32_const(1, line);
 }
@@ -1310,29 +1679,37 @@ pub fn emit_sdl_get_mouse_state(chunks: &mut [Chunk], current: usize, argc: u8, 
     for _ in argc..2 {
         chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     }
-    // `pointerState()` is the browser's tracked pointer; SDL's out-params
-    // and 1-based button mask are this adapter's business.
+    // The document listener tracks the latest pointer state for SDL.
     let st = chunks[current].alloc_scratch(1);
     let py = chunks[current].alloc_scratch(1);
     let px = chunks[current].alloc_scratch(1);
     emit_set_local(chunks, current, py, line);
     emit_set_local(chunks, current, px, line);
-    emit_web_events_call(chunks, current, "pointerState", 0, line);
+    vybe_compiler::primitives::globals::emit_read(
+        &mut chunks[current],
+        super::sdl_app::INPUT_STATE,
+        line,
+    );
     emit_set_local(chunks, current, st, line);
     emit_dom_field(chunks, current, st, "clientX", line);
-    emit_store_field(chunks, current, px, "__value", store_tmp, line);
+    emit_store_output(chunks, current, px, store_tmp, line);
     emit_dom_field(chunks, current, st, "clientY", line);
-    emit_store_field(chunks, current, py, "__value", store_tmp, line);
+    emit_store_output(chunks, current, py, store_tmp, line);
     emit_dom_field(chunks, current, st, "buttons", line);
 }
 
 /// `SDL_GetModState()` → KMOD_* mask.
 pub fn emit_sdl_get_mod_state(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     let st = chunks[current].alloc_scratch(1);
-    emit_web_events_call(chunks, current, "pointerState", 0, line);
+    vybe_compiler::primitives::globals::emit_read(
+        &mut chunks[current],
+        super::sdl_app::INPUT_STATE,
+        line,
+    );
     emit_set_local(chunks, current, st, line);
     // KMOD_LSHIFT 0x1 | KMOD_LCTRL 0x40 | KMOD_LALT 0x100 | KMOD_LGUI 0x400
     emit_dom_field(chunks, current, st, "shiftKey", line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if_value(line);
     chunks[current].emit_i32_const(0x1, line);
     chunks[current].emit_else(line);
@@ -1552,14 +1929,54 @@ pub fn emit_sdl_is_text_input_active(chunks: &mut [Chunk], current: usize, argc:
     emit_success_drop(chunks, current, argc, 0, line);
 }
 
-pub fn emit_sdl_get_key_from_scancode(
-    _chunks: &mut [Chunk],
-    _current: usize,
-    _argc: u8,
-    _line: u32,
-) {
-    // Good enough for Doom's fallback paths: printable keys read `keysym.sym`;
-    // this preserves special-key identity rather than failing resolution.
+pub fn emit_sdl_get_key_from_scancode(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    let scan = chunks[current].alloc_scratch(1);
+    emit_set_local(chunks, current, scan, line);
+    for &(scancode, keycode) in SDL_SCANCODE_KEYCODES {
+        emit_get_local(chunks, current, scan, line);
+        chunks[current].emit_f64_const(scancode as f64, line);
+        chunks[current].emit_op(Op::F64_EQ, line);
+        chunks[current].emit_if_value(line);
+        chunks[current].emit_f64_const(keycode as f64, line);
+        chunks[current].emit_else(line);
+    }
+    emit_get_local(chunks, current, scan, line);
+    chunks[current].emit_f64_const(4.0, line);
+    chunks[current].emit_op(Op::F64_GE, line);
+    emit_get_local(chunks, current, scan, line);
+    chunks[current].emit_f64_const(29.0, line);
+    chunks[current].emit_op(Op::F64_LE, line);
+    chunks[current].emit_op(Op::I32_AND, line);
+    chunks[current].emit_if_value(line);
+    emit_get_local(chunks, current, scan, line);
+    chunks[current].emit_f64_const(93.0, line);
+    chunks[current].emit_op(Op::F64_ADD, line);
+    chunks[current].emit_else(line);
+    emit_get_local(chunks, current, scan, line);
+    chunks[current].emit_f64_const(30.0, line);
+    chunks[current].emit_op(Op::F64_GE, line);
+    emit_get_local(chunks, current, scan, line);
+    chunks[current].emit_f64_const(38.0, line);
+    chunks[current].emit_op(Op::F64_LE, line);
+    chunks[current].emit_op(Op::I32_AND, line);
+    chunks[current].emit_if_value(line);
+    emit_get_local(chunks, current, scan, line);
+    chunks[current].emit_f64_const(19.0, line);
+    chunks[current].emit_op(Op::F64_ADD, line);
+    chunks[current].emit_else(line);
+    emit_get_local(chunks, current, scan, line);
+    chunks[current].emit_f64_const(39.0, line);
+    chunks[current].emit_op(Op::F64_EQ, line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_f64_const(48.0, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_f64_const(0.0, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+    for _ in SDL_SCANCODE_KEYCODES {
+        chunks[current].emit_end(line);
+    }
 }
 
 pub fn emit_sdl_get_window_size(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
@@ -1575,10 +1992,10 @@ pub fn emit_sdl_get_window_size(chunks: &mut [Chunk], current: usize, _argc: u8,
 
     emit_get_local(chunks, current, window, line);
     emit_stack_field(chunks, current, "width", line);
-    emit_store_field(chunks, current, wptr, "__value", tmp, line);
+    emit_store_output(chunks, current, wptr, tmp, line);
     emit_get_local(chunks, current, window, line);
     emit_stack_field(chunks, current, "height", line);
-    emit_store_field(chunks, current, hptr, "__value", tmp, line);
+    emit_store_output(chunks, current, hptr, tmp, line);
     emit_zero_i32(chunks, current, line);
 }
 
@@ -1620,11 +2037,11 @@ pub fn emit_sdl_get_renderer_output_size(
     emit_get_local(chunks, current, renderer, line);
     emit_stack_field(chunks, current, "window", line);
     emit_stack_field(chunks, current, "width", line);
-    emit_store_field(chunks, current, wptr, "__value", tmp, line);
+    emit_store_output(chunks, current, wptr, tmp, line);
     emit_get_local(chunks, current, renderer, line);
     emit_stack_field(chunks, current, "window", line);
     emit_stack_field(chunks, current, "height", line);
-    emit_store_field(chunks, current, hptr, "__value", tmp, line);
+    emit_store_output(chunks, current, hptr, tmp, line);
     emit_zero_i32(chunks, current, line);
 }
 
@@ -1650,14 +2067,53 @@ pub fn emit_sdl_set_render_draw_color(chunks: &mut [Chunk], current: usize, _arg
     emit_zero_i32(chunks, current, line);
 }
 
+fn emit_renderer_backbuffer(chunks: &mut [Chunk], current: usize, renderer: u16, line: u32) {
+    let canvas = chunks[current].alloc_scratch(1);
+    let window = chunks[current].alloc_scratch(1);
+    let size = chunks[current].alloc_scratch(1);
+    let tmp = chunks[current].alloc_scratch(1);
+    emit_get_local(chunks, current, renderer, line);
+    emit_stack_field(chunks, current, "window", line);
+    emit_set_local(chunks, current, window, line);
+    emit_get_local(chunks, current, renderer, line);
+    emit_stack_field(chunks, current, "backbuffer", line);
+    emit_set_local(chunks, current, canvas, line);
+    emit_get_local(chunks, current, canvas, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_if(line);
+    emit_document(chunks, current, line);
+    chunks[current].emit_string_const("canvas", line);
+    chunks[current].emit_string_const("", line);
+    emit_dom_call(chunks, current, "createElement", 3, line);
+    emit_set_local(chunks, current, canvas, line);
+    emit_get_local(chunks, current, canvas, line);
+    emit_store_field(chunks, current, renderer, "backbuffer", tmp, line);
+    chunks[current].emit_end(line);
+    for dimension in ["width", "height"] {
+        emit_load_f64_from_struct(chunks, current, window, dimension, line);
+        emit_set_local(chunks, current, size, line);
+        emit_load_f64_from_struct(chunks, current, canvas, dimension, line);
+        emit_get_local(chunks, current, size, line);
+        chunks[current].emit_op(Op::F64_NE, line);
+        chunks[current].emit_if(line);
+        emit_set_attribute(chunks, current, canvas, dimension, size, line);
+        emit_get_local(chunks, current, size, line);
+        emit_store_field(chunks, current, canvas, dimension, tmp, line);
+        chunks[current].emit_end(line);
+    }
+    emit_get_local(chunks, current, canvas, line);
+}
+
 pub fn emit_sdl_render_clear(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     let renderer = chunks[current].alloc_scratch(1);
     let ctx = chunks[current].alloc_scratch(1);
+    let backbuffer = chunks[current].alloc_scratch(1);
     emit_set_local(chunks, current, renderer, line);
     emit_deref_cell(chunks, current, renderer, line);
 
-    emit_get_local(chunks, current, renderer, line);
-    emit_stack_field(chunks, current, "window", line);
+    emit_renderer_backbuffer(chunks, current, renderer, line);
+    emit_set_local(chunks, current, backbuffer, line);
+    emit_get_local(chunks, current, backbuffer, line);
     chunks[current].emit_string_const("2d", line);
     emit_canvas_call(chunks, current, "getContext", 2, line);
     emit_set_local(chunks, current, ctx, line);
@@ -1673,11 +2129,9 @@ pub fn emit_sdl_render_clear(chunks: &mut [Chunk], current: usize, _argc: u8, li
     emit_get_local(chunks, current, ctx, line);
     chunks[current].emit_f64_const(0.0, line);
     chunks[current].emit_f64_const(0.0, line);
-    emit_get_local(chunks, current, renderer, line);
-    emit_stack_field(chunks, current, "window", line);
+    emit_get_local(chunks, current, backbuffer, line);
     emit_stack_field(chunks, current, "width", line);
-    emit_get_local(chunks, current, renderer, line);
-    emit_stack_field(chunks, current, "window", line);
+    emit_get_local(chunks, current, backbuffer, line);
     emit_stack_field(chunks, current, "height", line);
     emit_canvas_call(chunks, current, "fillRect", 5, line);
     chunks[current].emit_op(Op::DROP, line);
@@ -1687,31 +2141,29 @@ pub fn emit_sdl_render_clear(chunks: &mut [Chunk], current: usize, _argc: u8, li
 pub fn emit_sdl_render_copy(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     let renderer = chunks[current].alloc_scratch(1);
     let texture = chunks[current].alloc_scratch(1);
-    let _srcrect = chunks[current].alloc_scratch(1);
-    let _dstrect = chunks[current].alloc_scratch(1);
+    let srcrect = chunks[current].alloc_scratch(1);
+    let dstrect = chunks[current].alloc_scratch(1);
     let pixels = chunks[current].alloc_scratch(1);
-    let indices = chunks[current].alloc_scratch(1);
-    let palette = chunks[current].alloc_scratch(1);
     let source_w = chunks[current].alloc_scratch(1);
     let source_h = chunks[current].alloc_scratch(1);
     let dest_w = chunks[current].alloc_scratch(1);
     let dest_h = chunks[current].alloc_scratch(1);
     let target = chunks[current].alloc_scratch(1);
-    let tmp = chunks[current].alloc_scratch(1);
+    let image_data = chunks[current].alloc_scratch(1);
+    let status = chunks[current].alloc_scratch(1);
 
-    emit_set_local(chunks, current, _dstrect, line);
-    emit_set_local(chunks, current, _srcrect, line);
+    emit_set_local(chunks, current, dstrect, line);
+    emit_set_local(chunks, current, srcrect, line);
     emit_set_local(chunks, current, texture, line);
     emit_set_local(chunks, current, renderer, line);
     emit_deref_cell(chunks, current, renderer, line);
     emit_deref_cell(chunks, current, texture, line);
+    emit_deref_cell(chunks, current, srcrect, line);
+    emit_deref_cell(chunks, current, dstrect, line);
 
     emit_get_local(chunks, current, texture, line);
     emit_stack_field(chunks, current, "pixels", line);
     emit_set_local(chunks, current, pixels, line);
-    emit_get_local(chunks, current, pixels, line);
-    emit_stack_field(chunks, current, "__sdl_indices", line);
-    emit_set_local(chunks, current, indices, line);
 
     emit_get_local(chunks, current, renderer, line);
     emit_stack_field(chunks, current, "target", line);
@@ -1720,64 +2172,80 @@ pub fn emit_sdl_render_copy(chunks: &mut [Chunk], current: usize, _argc: u8, lin
     chunks[current].emit_op(Op::REF_IS_NULL, line);
     chunks[current].emit_if(line);
 
-    emit_get_local(chunks, current, indices, line);
-    let undef = chunks[current].add_import("wasm:js-undefined", "test");
-    chunks[current].emit_call(undef, 1, line);
-    chunks[current].emit_if(line);
-
     emit_load_f64_from_struct(chunks, current, texture, "w", line);
     emit_set_local(chunks, current, source_w, line);
-    emit_load_f64_from_struct(chunks, current, texture, "w", line);
-    emit_set_local(chunks, current, dest_w, line);
     emit_load_f64_from_struct(chunks, current, texture, "h", line);
     emit_set_local(chunks, current, source_h, line);
-    emit_load_f64_from_struct(chunks, current, texture, "h", line);
-    emit_set_local(chunks, current, dest_h, line);
-    emit_get_local(chunks, current, renderer, line);
-    emit_stack_field(chunks, current, "window", line);
-    emit_set_local(chunks, current, target, line);
-    emit_sdl_put_rgba_image_data(
-        chunks, current, target, pixels, source_w, source_h, dest_w, dest_h, line,
-    );
-    chunks[current].emit_else(line);
-
     emit_get_local(chunks, current, pixels, line);
-    emit_stack_field(chunks, current, "__sdl_palette", line);
-    emit_set_local(chunks, current, palette, line);
-    emit_get_local(chunks, current, pixels, line);
-    emit_stack_field(chunks, current, "__sdl_w", line);
-    emit_set_local(chunks, current, source_w, line);
-    emit_get_local(chunks, current, pixels, line);
-    emit_stack_field(chunks, current, "__sdl_h", line);
-    emit_set_local(chunks, current, source_h, line);
-    emit_load_f64_from_struct(chunks, current, texture, "w", line);
-    emit_set_local(chunks, current, dest_w, line);
-    emit_load_f64_from_struct(chunks, current, texture, "h", line);
-    emit_set_local(chunks, current, dest_h, line);
-    emit_get_local(chunks, current, renderer, line);
-    emit_stack_field(chunks, current, "window", line);
-    emit_set_local(chunks, current, target, line);
-    emit_sdl_put_paletted_image_data(
-        chunks, current, target, indices, palette, source_w, source_h, dest_w, dest_h, line,
-    );
-    chunks[current].emit_end(line);
-    chunks[current].emit_else(line);
-
-    emit_get_local(chunks, current, pixels, line);
-    emit_store_field(chunks, current, target, "pixels", tmp, line);
+    emit_get_local(chunks, current, source_w, line);
+    emit_get_local(chunks, current, source_h, line);
     emit_get_local(chunks, current, texture, line);
     emit_stack_field(chunks, current, "format", line);
-    emit_store_field(chunks, current, target, "format", tmp, line);
-    emit_load_f64_from_struct(chunks, current, texture, "w", line);
-    emit_store_field(chunks, current, pixels, "__sdl_w", tmp, line);
-    emit_load_f64_from_struct(chunks, current, texture, "h", line);
-    emit_store_field(chunks, current, pixels, "__sdl_h", tmp, line);
-    chunks[current].emit_end(line);
+    emit_get_local(chunks, current, texture, line);
+    emit_stack_field(chunks, current, "pitch", line);
+    emit_libc_sdl_call(chunks, current, "rgbaImageData", 5, line);
+    emit_set_local(chunks, current, image_data, line);
+
+    emit_renderer_backbuffer(chunks, current, renderer, line);
+    emit_set_local(chunks, current, target, line);
+    emit_load_f64_from_struct(chunks, current, target, "width", line);
+    emit_set_local(chunks, current, dest_w, line);
+    emit_load_f64_from_struct(chunks, current, target, "height", line);
+    emit_set_local(chunks, current, dest_h, line);
+    emit_sdl_present_image_data(
+        chunks,
+        current,
+        target,
+        image_data,
+        source_w,
+        source_h,
+        dest_w,
+        dest_h,
+        Some((srcrect, dstrect)),
+        Some(texture),
+        line,
+    );
     emit_zero_i32(chunks, current, line);
+    emit_set_local(chunks, current, status, line);
+    chunks[current].emit_else(line);
+
+    for slot in [texture, srcrect, target, dstrect] {
+        emit_get_local(chunks, current, slot, line);
+    }
+    emit_sdl_copy_surface_region(chunks, current, true, line);
+    emit_set_local(chunks, current, status, line);
+    chunks[current].emit_end(line);
+    emit_get_local(chunks, current, status, line);
 }
 
-pub fn emit_sdl_render_present(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
-    emit_success_drop(chunks, current, argc, 0, line);
+pub fn emit_sdl_render_present(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    let renderer = chunks[current].alloc_scratch(1);
+    let backbuffer = chunks[current].alloc_scratch(1);
+    let ctx = chunks[current].alloc_scratch(1);
+    emit_set_local(chunks, current, renderer, line);
+    emit_deref_cell(chunks, current, renderer, line);
+    emit_renderer_backbuffer(chunks, current, renderer, line);
+    emit_set_local(chunks, current, backbuffer, line);
+    emit_get_local(chunks, current, renderer, line);
+    emit_stack_field(chunks, current, "window", line);
+    chunks[current].emit_string_const("2d", line);
+    emit_canvas_call(chunks, current, "getContext", 2, line);
+    emit_set_local(chunks, current, ctx, line);
+    emit_get_local(chunks, current, ctx, line);
+    chunks[current].emit_string_const("copy", line);
+    emit_canvas_call(chunks, current, "setGlobalCompositeOperation", 2, line);
+    chunks[current].emit_op(Op::DROP, line);
+    emit_get_local(chunks, current, ctx, line);
+    emit_get_local(chunks, current, backbuffer, line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_i32_const(0, line);
+    emit_canvas_call(chunks, current, "drawImage", 4, line);
+    chunks[current].emit_op(Op::DROP, line);
+    emit_get_local(chunks, current, ctx, line);
+    chunks[current].emit_string_const("source-over", line);
+    emit_canvas_call(chunks, current, "setGlobalCompositeOperation", 2, line);
+    chunks[current].emit_op(Op::DROP, line);
+    emit_zero_i32(chunks, current, line);
 }
 
 pub fn emit_sdl_set_render_target(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
@@ -1851,7 +2319,6 @@ pub fn emit_sdl_set_palette_colors(chunks: &mut [Chunk], current: usize, _argc: 
     let colors = chunks[current].alloc_scratch(1);
     let first = chunks[current].alloc_scratch(1);
     let count = chunks[current].alloc_scratch(1);
-    let tmp = chunks[current].alloc_scratch(1);
 
     emit_set_local(chunks, current, count, line);
     emit_set_local(chunks, current, first, line);
@@ -1859,48 +2326,71 @@ pub fn emit_sdl_set_palette_colors(chunks: &mut [Chunk], current: usize, _argc: 
     emit_set_local(chunks, current, palette, line);
     emit_deref_cell(chunks, current, palette, line);
 
-    emit_get_local(chunks, current, colors, line);
-    emit_store_field(chunks, current, palette, "__sdl_colors", tmp, line);
-    emit_get_local(chunks, current, first, line);
-    emit_store_field(chunks, current, palette, "__sdl_first", tmp, line);
+    // C color arrays may be linear memory. Lift their RGBA bytes at the
+    // adapter boundary; the conversion helper receives values, not addresses.
     emit_get_local(chunks, current, count, line);
-    emit_store_field(chunks, current, palette, "__sdl_count", tmp, line);
-    emit_zero_i32(chunks, current, line);
+    chunks[current].emit_i32_const(256, line);
+    chunks[current].emit_op(Op::I32_LE_U, line);
+    let valid_count = chunks[current].emit_if(line);
+    let size = chunks[current].alloc_scratch(1);
+    emit_get_local(chunks, current, count, line);
+    chunks[current].emit_i32_const(4, line);
+    chunks[current].emit_op(Op::I32_MUL, line);
+    emit_set_local(chunks, current, size, line);
+    emit_sdl_buffer_value(chunks, current, colors, size, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(valid_count);
+
+    for slot in [palette, colors, first, count] {
+        emit_get_local(chunks, current, slot, line);
+    }
+    emit_libc_sdl_call(chunks, current, "setPaletteColors", 4, line);
+}
+
+/// Lift a linear byte span to the managed buffer boundary, retaining existing
+/// managed buffers. All address access belongs to the shared pointer primitive.
+fn emit_sdl_buffer_value(chunks: &mut [Chunk], current: usize, value: u16, size: u16, line: u32) {
+    use vybe_compiler::primitives::{instructions::host, pointers};
+    emit_get_local(chunks, current, value, line);
+    host::emit(&mut chunks[current], "wasm:js-number", "test", 1, line);
+    let linear = chunks[current].emit_if(line);
+    let bytes = chunks[current].alloc_scratch(1);
+    emit_get_local(chunks, current, size, line);
+    host::emit(&mut chunks[current], "ecma:uint8array", "new", 1, line);
+    emit_set_local(chunks, current, bytes, line);
+    emit_get_local(chunks, current, bytes, line);
+    emit_get_local(chunks, current, value, line);
+    emit_get_local(chunks, current, size, line);
+    pointers::emit_byte_copy(chunks, current, line);
+    emit_set_local(chunks, current, value, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(linear);
 }
 
 pub fn emit_sdl_lower_blit(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
-    let src = chunks[current].alloc_scratch(1);
-    let _src_rect = chunks[current].alloc_scratch(1);
-    let dst = chunks[current].alloc_scratch(1);
-    let _dst_rect = chunks[current].alloc_scratch(1);
-    let dst_pixels = chunks[current].alloc_scratch(1);
-    let tmp = chunks[current].alloc_scratch(1);
+    emit_sdl_copy_surface_region(chunks, current, false, line);
+}
 
-    emit_set_local(chunks, current, _dst_rect, line);
+fn emit_sdl_copy_surface_region(chunks: &mut [Chunk], current: usize, scaled: bool, line: u32) {
+    let src = chunks[current].alloc_scratch(1);
+    let src_rect = chunks[current].alloc_scratch(1);
+    let dst = chunks[current].alloc_scratch(1);
+    let dst_rect = chunks[current].alloc_scratch(1);
+
+    emit_set_local(chunks, current, dst_rect, line);
     emit_set_local(chunks, current, dst, line);
-    emit_set_local(chunks, current, _src_rect, line);
+    emit_set_local(chunks, current, src_rect, line);
     emit_set_local(chunks, current, src, line);
     emit_deref_cell(chunks, current, src, line);
     emit_deref_cell(chunks, current, dst, line);
+    emit_deref_cell(chunks, current, src_rect, line);
+    emit_deref_cell(chunks, current, dst_rect, line);
 
-    emit_get_local(chunks, current, dst, line);
-    emit_stack_field(chunks, current, "pixels", line);
-    emit_set_local(chunks, current, dst_pixels, line);
-
-    emit_get_local(chunks, current, src, line);
-    emit_stack_field(chunks, current, "pixels", line);
-    emit_store_field(chunks, current, dst_pixels, "__sdl_indices", tmp, line);
-
-    emit_get_local(chunks, current, src, line);
-    emit_stack_field(chunks, current, "format", line);
-    emit_stack_field(chunks, current, "palette", line);
-    emit_store_field(chunks, current, dst_pixels, "__sdl_palette", tmp, line);
-
-    emit_load_f64_from_struct(chunks, current, src, "w", line);
-    emit_store_field(chunks, current, dst_pixels, "__sdl_w", tmp, line);
-    emit_load_f64_from_struct(chunks, current, src, "h", line);
-    emit_store_field(chunks, current, dst_pixels, "__sdl_h", tmp, line);
-    emit_zero_i32(chunks, current, line);
+    for slot in [src, src_rect, dst, dst_rect] {
+        emit_get_local(chunks, current, slot, line);
+    }
+    chunks[current].emit_i32_const(i32::from(scaled), line);
+    emit_libc_sdl_call(chunks, current, "convertBlit", 5, line);
 }
 
 pub fn emit_sdl_blit_surface(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
@@ -1950,10 +2440,10 @@ pub fn emit_sdl_lock_texture(chunks: &mut [Chunk], current: usize, _argc: u8, li
 
     emit_get_local(chunks, current, texture, line);
     emit_stack_field(chunks, current, "pixels", line);
-    emit_store_field(chunks, current, pixels_ptr, "__value", tmp, line);
+    emit_store_output(chunks, current, pixels_ptr, tmp, line);
     emit_get_local(chunks, current, texture, line);
     emit_stack_field(chunks, current, "pitch", line);
-    emit_store_field(chunks, current, pitch_ptr, "__value", tmp, line);
+    emit_store_output(chunks, current, pitch_ptr, tmp, line);
     emit_zero_i32(chunks, current, line);
 }
 
@@ -2107,6 +2597,10 @@ pub fn emit_sdl(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, line
         return true;
     }
     match name {
+        "libc.sdl.listen_input" => {
+            super::sdl_app::emit_listen_input(chunks, current, line);
+            true
+        }
         "sdl.SDL_Init" | "libc.sdl.SDL_Init" => {
             emit_sdl_init(chunks, current, argc, line);
             true
@@ -2357,6 +2851,10 @@ pub fn emit_sdl(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, line
         }
         "sdl.SDL_SetPaletteColors" | "libc.sdl.SDL_SetPaletteColors" => {
             emit_sdl_set_palette_colors(chunks, current, argc, line);
+            true
+        }
+        "sdl.SDL_AllocFormat" | "libc.sdl.SDL_AllocFormat" => {
+            emit_libc_sdl_call(chunks, current, "allocFormat", argc, line);
             true
         }
         "sdl.SDL_LowerBlit" | "libc.sdl.SDL_LowerBlit" => {

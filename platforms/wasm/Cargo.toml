@@ -9,3 +9,6 @@ license.workspace = true
 inventory = { workspace = true }
 indexmap = { workspace = true }
 vybe_runtime = { workspace = true }
+
+[dev-dependencies]
+wasmparser = "0.244.0"

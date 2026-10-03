@@ -117,7 +117,7 @@ pub fn emit_init(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
 
     for key in ["__conn", "__rows"] {
         lget(&mut chunks[current], handle, line);
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         struct_set_key(&mut chunks[current], key, line);
     }
     for key in ["__cursor", "__affected", "__insert_id"] {
@@ -198,7 +198,7 @@ pub fn emit_close(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         call_import(chunks, current, "wasi:sql", "close", 1, line);
         chunks[current].emit_op(Op::DROP, line);
     }
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 /// `mysql_select_db(mysql, db)` → 0.
@@ -309,7 +309,7 @@ pub fn emit_use_result(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
 /// `mysql_free_result(result)` — void.
 pub fn emit_free_result(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     drop_values(chunks, current, argc, line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 // ── name dispatch ────────────────────────────────────────────────────────────

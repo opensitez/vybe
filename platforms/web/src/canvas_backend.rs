@@ -9,8 +9,8 @@
 //! comes from the runtime: the standard surface owns the contract, not the
 //! machinery.
 
-use std::sync::{Arc, OnceLock, RwLock};
 use serde::{Deserialize, Serialize};
+use std::sync::{Arc, OnceLock, RwLock};
 
 /// One 2D drawing operation, in `CanvasRenderingContext2D` terms.
 ///

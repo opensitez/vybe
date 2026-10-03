@@ -42,14 +42,19 @@
 
 use crate::encoding::*;
 use vybe_runtime::Chunk;
+use vybe_runtime::chunk::Import;
 
 pub const SECTION_NAME: &str = "vybe.jspi";
 
 /// Build the payload for the `vybe.jspi` custom section. Returns
 /// `None` when no chunk is marked async — callers can then skip
 /// emitting the section entirely.
-pub fn encode_payload(chunks: &[Chunk], rt_imports_len: usize) -> Option<Vec<u8>> {
-    let host_imports_len = chunks.first().map(|c| c.imports.len()).unwrap_or(0);
+pub fn encode_payload(
+    chunks: &[Chunk],
+    host_imports: &[Import],
+    rt_imports_len: usize,
+) -> Option<Vec<u8>> {
+    let host_imports_len = host_imports.len();
     let import_base = host_imports_len + rt_imports_len;
 
     let promising: Vec<u32> = chunks
@@ -61,17 +66,12 @@ pub fn encode_payload(chunks: &[Chunk], rt_imports_len: usize) -> Option<Vec<u8>
         .map(|(i, _)| (import_base + i) as u32)
         .collect();
 
-    let suspending: Vec<u32> = chunks
-        .first()
-        .map(|c| {
-            c.imports
-                .iter()
-                .enumerate()
-                .filter(|(_, import)| is_suspending_import(&import.module, &import.name))
-                .map(|(i, _)| i as u32)
-                .collect()
-        })
-        .unwrap_or_default();
+    let suspending: Vec<u32> = host_imports
+        .iter()
+        .enumerate()
+        .filter(|(_, import)| is_suspending_import(&import.module, &import.name))
+        .map(|(i, _)| i as u32)
+        .collect();
 
     if promising.is_empty() && suspending.is_empty() {
         return None;

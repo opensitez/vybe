@@ -45,22 +45,22 @@ pub mod animation;
 pub mod builtin_types; // TypeRegistry vtables for the web surface; run in Plugin::finalize
 pub mod canvas;
 pub mod canvas_backend;
-#[cfg(feature = "engine-webcore")]
-pub mod canvas_backend_webcore;
 #[cfg(feature = "engine-osbrowser")]
 pub mod canvas_backend_osbrowser;
+#[cfg(feature = "engine-webcore")]
+pub mod canvas_backend_webcore;
 pub mod console;
 pub mod crypto;
 pub mod dom_parser;
 pub mod encoding;
 pub mod engine;
+#[cfg(feature = "engine-osbrowser")]
+pub mod engine_osbrowser;
 /// Which engine is live, chosen at run time. See `engine_select`.
 pub mod engine_select;
 /// The Webcore implementation of the browser contract.
 #[cfg(feature = "engine-webcore")]
 pub mod engine_webcore;
-#[cfg(feature = "engine-osbrowser")]
-pub mod engine_osbrowser;
 
 /// Getting a frame out of whichever engine is live. A STOPGAP — see the
 /// module docs for the shape that survives an out-of-process browser.

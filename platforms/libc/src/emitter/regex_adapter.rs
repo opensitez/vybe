@@ -204,7 +204,10 @@ fn literal_regex_t(src: &str, cflags: i64) -> Expression {
         ("__src", str_lit(&translated)),
         ("__flags", str_lit(&flags)),
         ("__nosub", int_lit(if cflags & 8 != 0 { 1 } else { 0 })),
-        ("re_nsub", int_lit(count_ecma_capture_groups(&translated, cflags))),
+        (
+            "re_nsub",
+            int_lit(count_ecma_capture_groups(&translated, cflags)),
+        ),
         ("__err", int_lit(err)),
     ])
 }
@@ -310,14 +313,20 @@ fn regcomp_compile_helper() -> Statement {
     };
     // try { var g = new RegExp(pat + "|", flags); nsub = g.exec("").length - 1; }
     // catch (e) { err = REG_BADPAT; }
-    let probe = new_regexp(bin(BinOp::Concat, ident("pat"), str_lit("|")), ident("flags"));
+    let probe = new_regexp(
+        bin(BinOp::Concat, ident("pat"), str_lit("|")),
+        ident("flags"),
+    );
     let try_body = vec![
         var_decl_stmt("g", probe),
         stmt(StmtKind::Expr(assign_expr(
             ident("nsub"),
             bin(
                 BinOp::Sub,
-                member(call_expr(ident("__c_regexp_exec"), vec![ident("g"), str_lit("")]), "length"),
+                member(
+                    call_expr(ident("__c_regexp_exec"), vec![ident("g"), str_lit("")]),
+                    "length",
+                ),
                 int_lit(1),
             ),
         ))),
@@ -370,21 +379,33 @@ fn regcomp_compile_helper() -> Statement {
 fn regexec_helper() -> Statement {
     let new_re = new_regexp(
         member(ident("preg"), "__src"),
-        bin(BinOp::Concat, member(ident("preg"), "__flags"), str_lit("d")),
+        bin(
+            BinOp::Concat,
+            member(ident("preg"), "__flags"),
+            str_lit("d"),
+        ),
     );
     let notbol_anchor = bin(
         BinOp::And,
         flag_set("eflags", 1),
         bin(
             BinOp::Eq,
-            call_member(member(ident("preg"), "__src"), "indexOf", vec![str_lit("^")]),
+            call_member(
+                member(ident("preg"), "__src"),
+                "indexOf",
+                vec![str_lit("^")],
+            ),
             int_lit(0),
         ),
     );
     let noteol_anchor = bin(
         BinOp::And,
         flag_set("eflags", 2),
-        call_member(member(ident("preg"), "__src"), "endsWith", vec![str_lit("$")]),
+        call_member(
+            member(ident("preg"), "__src"),
+            "endsWith",
+            vec![str_lit("$")],
+        ),
     );
     let sp = index_expr(member(ident("m"), "indices"), ident("i"));
     let fill = if_stmt(

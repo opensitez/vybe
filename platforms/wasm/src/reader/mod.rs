@@ -1,11 +1,22 @@
 //! WASM binary reader — decodes .wasm files into Chunk arrays.
 
 use crate::encoding::*;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use vybe_runtime::chunk::{ActiveDataSegment, ActiveElementSegment, StackSwitchHandler};
+use vybe_runtime::chunk::{
+    ActiveDataSegment, ActiveElementSegment, Import, ReceiverAbi, StackSwitchHandler,
+};
 use vybe_runtime::value::Value;
 use vybe_runtime::{Chunk, Op};
+
+#[derive(Clone, Debug)]
+struct AbiEntry {
+    name: String,
+    arity: u8,
+    local_count: u16,
+    takes_receiver: bool,
+    module_receiver_abi: ReceiverAbi,
+}
 
 #[derive(Default)]
 struct StandardSections {
@@ -111,6 +122,8 @@ fn read_wasm_inner(data: &[u8]) -> Result<Vec<Chunk>, WasmError> {
     }
     let mut pos = 8;
     let mut custom_data: Option<Vec<u8>> = None;
+    let mut abi_data: Option<Vec<u8>> = None;
+    let mut name_data: Option<Vec<u8>> = None;
     let mut sections = StandardSections::default();
     let mut seen_sections = HashSet::new();
     let mut last_known_section = 0u8;
@@ -158,10 +171,15 @@ fn read_wasm_inner(data: &[u8]) -> Result<Vec<Chunk>, WasmError> {
                 // section custom; its id is still part of the format.
                 let mut npos = 0usize;
                 read_name(&section_data, &mut npos)?;
-                // Check if it's our "vybe" custom section
+                // Check if it's one of our custom sections. Unknown custom
+                // sections remain spec-compliant and ignored.
                 let (nlen, nr) = read_leb128_u32(&section_data);
                 if nlen == 4 && section_data.get(nr..nr + 4) == Some(b"vybe") {
                     custom_data = Some(section_data);
+                } else if nlen == 8 && section_data.get(nr..nr + 8) == Some(b"vybe.abi") {
+                    abi_data = Some(section_data);
+                } else if nlen == 4 && section_data.get(nr..nr + 4) == Some(b"name") {
+                    name_data = Some(section_data);
                 }
             }
             SECTION_TYPE => sections.type_section = section_data,
@@ -202,18 +220,24 @@ fn read_wasm_inner(data: &[u8]) -> Result<Vec<Chunk>, WasmError> {
     // function with no body is genuinely malformed — and that is
     // `validate_standard_sections`' job, which runs either way.
     validate_standard_sections(&sections)?;
-    decode_standard_wasm(
+    let mut chunks = decode_standard_wasm(
         &sections.type_section,
         &sections.import_section,
         &sections.func_section,
         &sections.table_section,
         &sections.memory_section,
+        &sections.global_section,
         &sections.export_section,
         &sections.elem_section,
         &sections.code_section,
         &sections.data_section,
         &sections.tag_section,
-    )
+        name_data.as_deref(),
+    )?;
+    if let Some(ref data) = abi_data {
+        apply_abi_section(data, &mut chunks)?;
+    }
+    Ok(chunks)
 }
 
 /// Rejection message for the legacy (pre-3.0) exception-handling proposal.
@@ -430,6 +454,54 @@ fn read_name(data: &[u8], pos: &mut usize) -> Result<String, WasmError> {
         Ok(s) => Ok(s.to_string()),
         Err(_) => Err("malformed UTF-8 encoding".into()),
     }
+}
+
+fn parse_name_section_function_names(data: &[u8]) -> Result<HashMap<u32, String>, WasmError> {
+    let mut pos = 0usize;
+    if read_name(data, &mut pos)? != "name" {
+        return Ok(HashMap::new());
+    }
+
+    let mut names = HashMap::new();
+    while pos < data.len() {
+        let subsection_id = data[pos];
+        pos += 1;
+        let size_start = pos;
+        leb_u32_fits(data, &mut pos)?;
+        let (size, _) = read_leb128_u32(&data[size_start..]);
+        let end = pos
+            .checked_add(size as usize)
+            .ok_or_else(|| "Invalid WASM name section: subsection size overflow".to_string())?;
+        if end > data.len() {
+            return Err("Invalid WASM name section: truncated subsection".into());
+        }
+
+        if subsection_id == 1 {
+            let mut sub_pos = pos;
+            let count = read_vec_len(data, &mut sub_pos)?;
+            for _ in 0..count {
+                if sub_pos >= end {
+                    return Err("Invalid WASM name section: truncated function name map".into());
+                }
+                let idx_start = sub_pos;
+                leb_u32_fits(data, &mut sub_pos)?;
+                let (func_idx, _) = read_leb128_u32(&data[idx_start..]);
+                let name = read_name(data, &mut sub_pos)?;
+                if sub_pos > end {
+                    return Err("Invalid WASM name section: function name out of bounds".into());
+                }
+                names.insert(func_idx, name);
+            }
+            if sub_pos != end {
+                return Err(
+                    "Invalid WASM name section: function name subsection size mismatch".into(),
+                );
+            }
+        }
+        pos = end;
+    }
+
+    Ok(names)
 }
 
 fn parse_import_details(data: &[u8]) -> Result<Vec<ImportDetail>, WasmError> {
@@ -985,6 +1057,7 @@ fn parse_data_segments(data: &[u8]) -> Result<(Vec<Vec<u8>>, Vec<ActiveDataSegme
 
 fn parse_element_segments(
     data: &[u8],
+    import_func_count: usize,
 ) -> Result<(Vec<Vec<Value>>, Vec<ActiveElementSegment>), WasmError> {
     if data.is_empty() {
         return Ok((Vec::new(), Vec::new()));
@@ -1055,11 +1128,11 @@ fn parse_element_segments(
         let mut segment = Vec::with_capacity(len as usize);
         for _ in 0..len {
             if expr_items {
-                segment.push(read_ref_const_expr(data, &mut pos)?);
+                segment.push(read_ref_const_expr(data, &mut pos, import_func_count)?);
             } else {
                 let (func_idx, read) = read_leb128_u32(&data[pos..]);
                 pos += read;
-                segment.push(Value::I32(func_idx as i32));
+                segment.push(wasm_funcidx_to_element_value(func_idx, import_func_count));
             }
         }
         if let Some((table_index, offset)) = active_init {
@@ -1072,6 +1145,17 @@ fn parse_element_segments(
         segments.push(segment);
     }
     Ok((segments, active))
+}
+
+fn wasm_funcidx_to_element_value(func_idx: u32, import_func_count: usize) -> Value {
+    if (func_idx as usize) < import_func_count {
+        // The VM element payload uses I32(n) for a defined-function ordinal.
+        // Imported funcrefs have no chunk ordinal in that representation; keep
+        // them null instead of silently shifting every following local target.
+        Value::Null
+    } else {
+        Value::I32(func_idx.saturating_sub(import_func_count as u32) as i32)
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1475,6 +1559,7 @@ fn validate_instruction_stream(
                 st.push(f.result_arity);
             }
             0x0C | 0x0D => {
+                let branch_offset = pos.saturating_sub(1);
                 let (depth, read) = read_leb128_u32(&code[pos..]);
                 pos += read;
                 let arity = st.label_arity(depth).map_err(|_| {
@@ -1490,7 +1575,14 @@ fn validate_instruction_stream(
                     st.pop(arity, "br_if")?;
                     st.push(arity);
                 } else {
-                    st.pop(arity, "br")?;
+                    st.pop(arity, "br").map_err(|err| {
+                        let trail = recent.iter().cloned().collect::<Vec<_>>().join(" ");
+                        WasmError::invalid(format!(
+                            "{err} at byte offset {branch_offset} depth {depth} label_arity {arity}; height {} frame_count {} recent [{trail}]",
+                            st.height,
+                            st.frames.len()
+                        ))
+                    })?;
                     st.set_unreachable();
                 }
             }
@@ -1837,17 +1929,20 @@ fn validate_instruction_stream(
             0xE2 => {
                 skip_leb128(code, &mut pos); // tag index
                 st.pop(1, "suspend")?;
+                st.push(1);
             }
             0xE3 => {
                 skip_leb128(code, &mut pos); // continuation type index
                 let _ = read_stack_switch_handlers(code, &mut pos);
                 st.pop(2, "resume")?;
+                st.push(1);
             }
             0xE4 => {
                 skip_leb128(code, &mut pos); // continuation type index
                 skip_leb128(code, &mut pos); // tag index
                 let _ = read_stack_switch_handlers(code, &mut pos);
                 st.pop(2, "resume_throw")?;
+                st.push(1);
             }
             0xE5 => {
                 // resume_throw_ref: cont type idx + resumetable. The exnref
@@ -1855,6 +1950,7 @@ fn validate_instruction_stream(
                 skip_leb128(code, &mut pos); // continuation type index
                 let _ = read_stack_switch_handlers(code, &mut pos);
                 st.pop(2, "resume_throw_ref")?;
+                st.push(1);
             }
             0xE6 => {
                 skip_leb128(code, &mut pos); // continuation type index
@@ -2314,11 +2410,13 @@ fn decode_standard_wasm(
     func_sec: &[u8],
     table_sec: &[u8],
     memory_sec: &[u8],
+    global_sec: &[u8],
     export_sec: &[u8],
     elem_sec: &[u8],
     code_sec: &[u8],
     data_sec: &[u8],
     tag_sec: &[u8],
+    name_sec: Option<&[u8]>,
 ) -> Result<Vec<Chunk>, WasmError> {
     // Parse type section to get function signatures
     let types = parse_type_section(type_sec);
@@ -2367,6 +2465,9 @@ fn decode_standard_wasm(
 
     // Parse exports to find function names
     let exports = parse_export_section(export_sec);
+    let func_names = name_sec
+        .and_then(|data| parse_name_section_function_names(data).ok())
+        .unwrap_or_default();
     let mut memory_min_pages = parse_imported_memory_min_pages(import_sec);
     memory_min_pages.extend(parse_memory_section(memory_sec));
     // Per-memory 64-bit index type, aligned with memory_min_pages (imported
@@ -2386,9 +2487,28 @@ fn decode_standard_wasm(
     let mut table_is_64 = vec![false; imported_table_count];
     table_is_64.extend(declared_table_is_64);
     let (data_segments, active_data_segments) = parse_data_segments(data_sec)?;
-    let (elem_segments, active_elem_segments) = parse_element_segments(elem_sec)?;
+    let (elem_segments, active_elem_segments) =
+        parse_element_segments(elem_sec, import_func_count)?;
     let uses_memory64 = section_uses_memory64(memory_sec);
     let uses_table64 = section_uses_table64(table_sec);
+    let global_imports: Vec<Import> = imports
+        .iter()
+        .filter(|(_, _, kind)| *kind == 3)
+        .map(|(module, name, _)| Import {
+            module: module.clone(),
+            name: name.clone(),
+        })
+        .collect();
+    let (total_global_count, _) = parse_global_mutability(global_sec, global_imports.len())
+        .unwrap_or((global_imports.len(), Vec::new()));
+    let mut global_names: Vec<String> = global_imports
+        .iter()
+        .map(|import| vybe_runtime::chunk::imported_global_key(&import.module, &import.name))
+        .collect();
+    for idx in global_names.len()..total_global_count {
+        global_names.push(format!("__wasm_global_{idx}"));
+    }
+    let global_names = Arc::new(global_names);
 
     // Parse code section
     let mut cpos = 0;
@@ -2431,18 +2551,23 @@ fn decode_standard_wasm(
 
         // Get function name from exports
         let func_idx = import_func_count + i;
-        let name = exports
-            .iter()
-            .find(|(_, idx)| *idx == func_idx)
-            .map(|(n, _)| n.clone())
+        let name = func_names
+            .get(&(func_idx as u32))
+            .cloned()
+            .or_else(|| {
+                exports
+                    .iter()
+                    .find(|(_, idx)| *idx == func_idx)
+                    .map(|(n, _)| n.clone())
+            })
             .unwrap_or_else(|| format!("func_{}", i));
 
         // Get arity + result arity from the function's type signature.
         let type_idx = func_type_indices.get(i).copied().unwrap_or(func_idx as u32) as usize;
         let (arity, result_arity) = types
             .get(type_idx)
-            .map(|(params, results)| (params.len() as u8, (results.len() as u8).max(1)))
-            .unwrap_or((0, 1));
+            .map(|(params, results)| (params.len() as u8, results.len() as u8))
+            .unwrap_or((0, 0));
 
         // Translate WASM opcodes to our Chunk format
         let wasm_code = &code_sec[cpos..body_end.saturating_sub(1)]; // -1 for trailing 'end'
@@ -2472,6 +2597,8 @@ fn decode_standard_wasm(
         chunk.elem_segments = elem_segments.clone();
         chunk.active_data_segments = active_data_segments.clone();
         chunk.active_elem_segments = active_elem_segments.clone();
+        chunk.global_imports = global_imports.clone();
+        chunk.globals = global_names.clone();
         chunk.emit_op(Op::RETURN, 0);
         chunks.push(chunk);
 
@@ -2483,7 +2610,10 @@ fn decode_standard_wasm(
     // functions.
     for (module, name, kind) in &imports {
         if *kind == 0 {
-            script.add_import(module, name);
+            script.imports.push(Import {
+                module: module.clone(),
+                name: name.clone(),
+            });
         }
     }
     script.memory_min_pages = memory_min_pages;
@@ -2495,6 +2625,26 @@ fn decode_standard_wasm(
     script.elem_segments = elem_segments;
     script.active_data_segments = active_data_segments;
     script.active_elem_segments = active_elem_segments;
+    script.global_imports = global_imports;
+    script.globals = global_names;
+
+    if let Some((_, start_func_idx)) = exports.iter().find(|(name, _)| name == "_start") {
+        if *start_func_idx >= import_func_count {
+            let argc = func_arities.get(*start_func_idx).copied().unwrap_or(0);
+            let results = func_results.get(*start_func_idx).copied().unwrap_or(0);
+            if argc == 0 {
+                let local_func_idx = start_func_idx - import_func_count;
+                let chunk_idx = 1 + local_func_idx as u16;
+                script.emit_op_u16(Op::REF_FUNC, chunk_idx, 0);
+                script.emit(0, 0); // upvalue count
+                script.emit_op_u8_u8(Op::CALL_REF, 0, results, 0);
+                for _ in 0..results {
+                    script.emit_op(Op::DROP, 0);
+                }
+            }
+        }
+    }
+    script.emit_op(Op::RETURN, 0);
 
     // Insert script as chunk 0
     chunks.insert(0, script);
@@ -2563,7 +2713,10 @@ fn translate_wasm_to_chunk(
     // emitters follow. Imports occupy the front of the module's function
     // index space, so the chunk-local index equals the module funcidx.
     for (module, fn_name) in func_imports {
-        chunk.add_import(module, fn_name);
+        chunk.imports.push(Import {
+            module: module.clone(),
+            name: fn_name.clone(),
+        });
     }
 
     // Import the module's exception tags by a stable name so every function
@@ -2833,6 +2986,13 @@ fn translate_wasm_to_chunk(
                 let import_count = func_imports.len() as u32;
                 if idx < import_count {
                     chunk.emit_call(idx as u16, argc, 0);
+                    if results == 0 {
+                        // A decoded WASM import with no results must leave no
+                        // stack value. Vybe host handlers still return a
+                        // placeholder `Value` internally, so discard it at the
+                        // WASM boundary.
+                        chunk.emit_op(Op::DROP, 0);
+                    }
                 } else {
                     // Local function: funcref model (REF_FUNC + CALL_REF).
                     // Function chunks start at index 1 (script is chunk 0).
@@ -3243,22 +3403,19 @@ fn translate_wasm_to_chunk(
                 }
             }
 
-            // global.get/set — a DECODED module's globals, named by index.
-            // Not routed through `primitives::globals`: that is the compiler's
-            // funnel for a module's own global namespace, and this crate sits
-            // BELOW the compiler. Decoding someone else's module is not the
-            // same operation.
+            // global.get/set — standard WASM carries a raw module globalidx.
+            // Preserve that index directly and attach an index-aligned global
+            // table to the decoded chunks so VM::merge_global_table can map it
+            // into the live VM without inventing a second name ordering.
             0x23 => {
                 let (idx, _) = read_leb128_u32(&wasm[pos..]);
                 skip_leb128(wasm, &mut pos);
-                let ci = chunk.intern_string_constant(&format!("__wasm_global_{}", idx));
-                chunk.emit_op_u32(Op::GLOBAL_GET, ci, 0);
+                chunk.emit_op_u32(Op::GLOBAL_GET, idx, 0);
             }
             0x24 => {
                 let (idx, _) = read_leb128_u32(&wasm[pos..]);
                 skip_leb128(wasm, &mut pos);
-                let ci = chunk.intern_string_constant(&format!("__wasm_global_{}", idx));
-                chunk.emit_op_u32(Op::GLOBAL_SET, ci, 0);
+                chunk.emit_op_u32(Op::GLOBAL_SET, idx, 0);
             }
 
             0x25 => {
@@ -3320,6 +3477,9 @@ fn translate_wasm_to_chunk(
                     // with no VM frame, so `call` + `return` is behaviorally
                     // identical (no stack growth to elide).
                     chunk.emit_call(idx as u16, argc, 0);
+                    if results == 0 {
+                        chunk.emit_op(Op::DROP, 0);
+                    }
                     chunk.emit_op(Op::RETURN, 0);
                 } else {
                     // Local function: funcref model, staged exactly like the
@@ -4135,10 +4295,11 @@ fn validate_comptype(data: &[u8], pos: &mut usize) -> Result<(), WasmError> {
         return Ok(());
     };
     *pos += 1;
-    // A comptype tag is ONE byte — `func` 0x60, `struct` 0x5f, `array` 0x5e —
-    // all below 0x80. A leading continuation bit means the tag was written as a
-    // multi-byte signed LEB (`\xe0\x7f` is -0x20, i.e. 0x60 the long way),
-    // which the spec rejects rather than folding back to the short form.
+    // A comptype tag is ONE byte — `func` 0x60, `struct` 0x5f, `array` 0x5e,
+    // `cont` 0x5d — all below 0x80. A leading continuation bit means the tag
+    // was written as a multi-byte signed LEB (`\xe0\x7f` is -0x20, i.e. 0x60
+    // the long way), which the spec rejects rather than folding back to the
+    // short form.
     if tag & 0x80 != 0 {
         return Err("integer representation too long".into());
     }
@@ -4167,6 +4328,9 @@ fn validate_comptype(data: &[u8], pos: &mut usize) -> Result<(), WasmError> {
         GC_ARRAY => {
             validate_value_type(data, pos)?;
             validate_mutability(data, pos)?;
+        }
+        TYPE_CONT => {
+            leb_u32_fits(data, pos)?;
         }
         // Anything else is not a shape this pass claims to understand.
         _ => {}
@@ -4308,6 +4472,11 @@ fn parse_comptype(data: &[u8], pos: &mut usize, types: &mut Vec<(Vec<u8>, Vec<u8
             if !skip_field_type(data, pos) {
                 return false;
             }
+            types.push((Vec::new(), Vec::new()));
+            true
+        }
+        TYPE_CONT => {
+            skip_leb128(data, pos);
             types.push((Vec::new(), Vec::new()));
             true
         }
@@ -4896,7 +5065,11 @@ fn read_i32_const_expr_as_u64(data: &[u8], pos: &mut usize) -> Result<u64, WasmE
     Ok(value as u64)
 }
 
-fn read_ref_const_expr(data: &[u8], pos: &mut usize) -> Result<Value, WasmError> {
+fn read_ref_const_expr(
+    data: &[u8],
+    pos: &mut usize,
+    import_func_count: usize,
+) -> Result<Value, WasmError> {
     if *pos >= data.len() {
         return Err("Invalid WASM: truncated element expression".into());
     }
@@ -4913,7 +5086,7 @@ fn read_ref_const_expr(data: &[u8], pos: &mut usize) -> Result<Value, WasmError>
         0xD2 => {
             let (func_idx, read) = read_leb128_u32(&data[*pos..]);
             *pos += read;
-            Value::I32(func_idx as i32)
+            wasm_funcidx_to_element_value(func_idx, import_func_count)
         }
         // `global.get x` is a constant expression too, and an element segment
         // may initialise a slot from an imported global.
@@ -5192,6 +5365,100 @@ fn read_blocktype_counts(data: &[u8], pos: &mut usize, types: &[(Vec<u8>, Vec<u8
     }
 }
 
+fn decode_abi_section(data: &[u8]) -> Result<Vec<AbiEntry>, WasmError> {
+    let mut pos = 0usize;
+    let (name_len, read) = read_leb128_u32(&data[pos..]);
+    pos += read;
+    if data.get(pos..pos + name_len as usize) != Some(b"vybe.abi") {
+        return Err("Invalid vybe.abi section name".into());
+    }
+    pos += name_len as usize;
+    let Some(version) = data.get(pos).copied() else {
+        return Err("Invalid vybe.abi: missing version".into());
+    };
+    pos += 1;
+    if version != 1 {
+        return Err(format!("Unsupported vybe.abi version {version}").into());
+    }
+    let (count, read) = read_leb128_u32(&data[pos..]);
+    pos += read;
+    let mut entries = Vec::with_capacity(count as usize);
+    for _ in 0..count {
+        let (name_len, read) = read_leb128_u32(&data[pos..]);
+        pos += read;
+        let name_end = pos
+            .checked_add(name_len as usize)
+            .ok_or_else(|| "Invalid vybe.abi: name overflow".to_string())?;
+        let Some(name_bytes) = data.get(pos..name_end) else {
+            return Err("Invalid vybe.abi: truncated name".into());
+        };
+        let name = std::str::from_utf8(name_bytes)
+            .map_err(|_| WasmError::from("Invalid vybe.abi: non-UTF8 name"))?
+            .to_string();
+        pos = name_end;
+        let Some(arity) = data.get(pos).copied() else {
+            return Err("Invalid vybe.abi: missing arity".into());
+        };
+        pos += 1;
+        let (local_count, read) = read_leb128_u32(&data[pos..]);
+        pos += read;
+        let Some(takes_receiver_raw) = data.get(pos).copied() else {
+            return Err("Invalid vybe.abi: missing receiver flag".into());
+        };
+        pos += 1;
+        let Some(module_abi_raw) = data.get(pos).copied() else {
+            return Err("Invalid vybe.abi: missing module ABI".into());
+        };
+        pos += 1;
+        entries.push(AbiEntry {
+            name,
+            arity,
+            local_count: local_count.min(u16::MAX as u32) as u16,
+            takes_receiver: takes_receiver_raw != 0,
+            module_receiver_abi: if module_abi_raw == 1 {
+                ReceiverAbi::Parameter
+            } else {
+                ReceiverAbi::Ambient
+            },
+        });
+    }
+    Ok(entries)
+}
+
+fn apply_abi_section(data: &[u8], chunks: &mut [Chunk]) -> Result<(), WasmError> {
+    let entries = decode_abi_section(data)?;
+    if let Some(module_abi) = entries.first().map(|entry| entry.module_receiver_abi) {
+        for chunk in chunks.iter_mut() {
+            chunk.module_receiver_abi = module_abi;
+        }
+    }
+    for (source_idx, entry) in entries.iter().enumerate() {
+        let target_idx = chunks
+            .iter()
+            .position(|chunk| chunk.name == entry.name)
+            .or_else(|| {
+                if source_idx == 0 {
+                    chunks.iter().position(|chunk| chunk.name == "_start")
+                } else {
+                    source_idx.checked_add(1).filter(|&idx| idx < chunks.len())
+                }
+            });
+        let Some(target_idx) = target_idx else {
+            continue;
+        };
+        let chunk = &mut chunks[target_idx];
+        // The standard wasm signature does not encode Vybe's receiver-parameter
+        // convention, but decoded bytecode locals still use that convention. If
+        // we leave the wasm arity in place, call_function truncates the receiver
+        // or the final source argument before the body reads its locals.
+        chunk.arity = entry.arity;
+        chunk.local_count = chunk.local_count.max(entry.local_count);
+        chunk.takes_receiver = entry.takes_receiver;
+        chunk.module_receiver_abi = entry.module_receiver_abi;
+    }
+    Ok(())
+}
+
 fn decode_vybe_section(data: &[u8]) -> Result<Vec<Chunk>, WasmError> {
     let mut pos = 0;
     let (name_len, read) = read_leb128_u32(&data[pos..]);
@@ -5255,6 +5522,18 @@ fn decode_vybe_section(data: &[u8]) -> Result<Vec<Chunk>, WasmError> {
         pos += 1;
         let (lc, read) = read_leb128_u32(&data[pos..]);
         pos += read;
+        let (takes_receiver, module_receiver_abi) = if version >= 8 {
+            let takes_receiver = data.get(pos).copied().unwrap_or(0) != 0;
+            pos += 1;
+            let abi = match data.get(pos).copied().unwrap_or(0) {
+                1 => ReceiverAbi::Parameter,
+                _ => ReceiverAbi::Ambient,
+            };
+            pos += 1;
+            (takes_receiver, abi)
+        } else {
+            (false, ReceiverAbi::Ambient)
+        };
 
         // Constants
         let (cc, read) = read_leb128_u32(&data[pos..]);
@@ -5488,6 +5767,8 @@ fn decode_vybe_section(data: &[u8]) -> Result<Vec<Chunk>, WasmError> {
         let mut chunk = Chunk::new(&name);
         chunk.arity = arity;
         chunk.local_count = lc as u16;
+        chunk.takes_receiver = takes_receiver;
+        chunk.module_receiver_abi = module_receiver_abi;
         chunk.constants = constants;
         chunk.imports = imports;
         chunk.code = code;

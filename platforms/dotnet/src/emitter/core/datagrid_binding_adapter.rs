@@ -3,9 +3,9 @@
 use vybe_compiler::primitives::class_slots::{self, Dest, ObjSource};
 use vybe_compiler::primitives::instructions::core_wasm;
 use vybe_compiler::primitives::{collections, globals, loops, ops, strings};
-use vybe_runtime::opcode::heaptype::HT_EXTERN;
-use vybe_runtime::opcode::Op;
 use vybe_runtime::Chunk;
+use vybe_runtime::opcode::Op;
+use vybe_runtime::opcode::heaptype::HT_EXTERN;
 
 use super::datagrid_adapter;
 use super::object_fields::field_slot;

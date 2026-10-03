@@ -15,6 +15,24 @@ use vybe_runtime::value::{Object, ObjectKind};
 use vybe_runtime::{HostContext, VM, Value};
 
 static FUNCTION_PROTOTYPE: OnceLock<Arc<Mutex<Object>>> = OnceLock::new();
+const APPLY_INLINE_ARG_LIMIT: usize = 8;
+
+#[inline]
+fn invoke_bound_host_key() -> &'static (String, String) {
+    static KEY: OnceLock<(String, String)> = OnceLock::new();
+    KEY.get_or_init(|| ("ecma:function".to_string(), "invokeBound".to_string()))
+}
+
+#[inline]
+fn to_string_host_key() -> &'static (String, String) {
+    static KEY: OnceLock<(String, String)> = OnceLock::new();
+    KEY.get_or_init(|| ("ecma:function".to_string(), "toString".to_string()))
+}
+
+#[inline]
+fn owned_string_value(text: String) -> Value {
+    crate::keys::owned_string_value(text)
+}
 
 pub fn shared_function_prototype() -> Value {
     Value::Object(
@@ -25,15 +43,16 @@ pub fn shared_function_prototype() -> Value {
                 // intrinsic kind prototypes (%AsyncFunction.prototype% …)
                 // inherit them through their [[Prototype]] link.
                 let mut proto = Object::new();
+                proto.properties.reserve(3);
                 proto.properties.insert("length".into(), Value::F64(0.0));
                 proto
                     .properties
-                    .insert("name".into(), Value::String(Arc::from("")));
+                    .insert("name".into(), crate::keys::string_value(""));
                 proto.properties.insert(
                     "__nonenum".into(),
                     Value::Object(vybe_runtime::heap::alloc(Object::new_array(vec![
-                        Value::String(Arc::from("length")),
-                        Value::String(Arc::from("name")),
+                        crate::keys::string_value("length"),
+                        crate::keys::string_value("name"),
                     ]))),
                 );
                 vybe_runtime::heap::alloc(proto)
@@ -43,7 +62,8 @@ pub fn shared_function_prototype() -> Value {
 }
 
 pub fn register(vm: &mut VM) {
-    vm.register_free_fn(
+    crate::perf::register_free_fn(
+        vm,
         "ecma:function",
         "invokeBound",
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
@@ -58,7 +78,8 @@ pub fn register(vm: &mut VM) {
             // (`register_free_fn`), no slot is filled for it, and there is
             // no offset to compute. This used to read `receiver_argc()`,
             // asking the CALL a question only the callee's type can answer.
-            let target = args.first().cloned().unwrap_or(Value::Undefined);
+            let undefined = Value::Undefined;
+            let target = args.first().unwrap_or(&undefined);
             let bound_this = args.get(1).cloned().unwrap_or(Value::Undefined);
             let target_proto = args.get(2).cloned().unwrap_or(Value::Undefined);
 
@@ -78,18 +99,24 @@ pub fn register(vm: &mut VM) {
             // Everything past the three captures is `partials ++ callArgs`,
             // which is exactly what §20.2.3.2 hands the target. The receiver
             // sits BEFORE the captures, so it is already skipped by `base`.
-            let call_args = args.get(3..).unwrap_or(&[]).to_vec();
-            invoke_bound_target(ctx, &target, bound_this, target_proto, &call_args)
+            invoke_bound_target(
+                ctx,
+                target,
+                bound_this,
+                target_proto,
+                args.get(3..).unwrap_or(&[]),
+            )
         }),
     );
 
     let invoke_bound_idx = *vm
         .host_registry
-        .get(&("ecma:function".to_string(), "invokeBound".to_string()))
+        .get(invoke_bound_host_key())
         .expect("ecma:function.invokeBound must be registered before bind");
 
     // Function.prototype.name — §20.2.3.3: returns the name property.
-    vm.register_host_fn(
+    crate::perf::register_host_fn(
+        vm,
         "ecma:function",
         "name",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
@@ -103,12 +130,13 @@ pub fn register(vm: &mut VM) {
                     return Value::String(s.clone());
                 }
             }
-            Value::String(Arc::from(""))
+            crate::keys::string_value("")
         }),
     );
 
     // Function.prototype.length — §20.2.3.2: formal parameter count.
-    vm.register_host_fn(
+    crate::perf::register_host_fn(
+        vm,
         "ecma:function",
         "length",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
@@ -133,7 +161,8 @@ pub fn register(vm: &mut VM) {
     );
 
     // Function.prototype.toString — §20.2.3.5.
-    vm.register_host_fn(
+    crate::perf::register_host_fn(
+        vm,
         "ecma:function",
         "toString",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
@@ -151,26 +180,33 @@ pub fn register(vm: &mut VM) {
                         }
                     })
                     .unwrap_or_default();
-                return Value::String(Arc::from(
-                    format!("function {}() {{ [native code] }}", name).as_str(),
+                return Value::String(crate::keys::concat3_arc(
+                    "function ",
+                    &name,
+                    "() { [native code] }",
                 ));
             }
-            Value::String(Arc::from("function () { [native code] }"))
+            crate::keys::string_value("function () { [native code] }")
         }),
     );
 
     // new Function(body) — §20.2.1.1: creates a callable from a body string.
-    vm.register_host_fn(
+    crate::perf::register_host_fn(
+        vm,
         "ecma:function",
         "new",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            let body = args.first().map(|v| format!("{}", v)).unwrap_or_default();
+            let body = args
+                .first()
+                .map(crate::keys::value_display_string)
+                .unwrap_or_default();
             let mut obj = Object::new();
+            obj.properties.reserve(4);
             obj.properties
-                .insert("name".into(), Value::String(Arc::from("anonymous")));
+                .insert("name".into(), crate::keys::string_value("anonymous"));
             obj.properties.insert("length".into(), Value::I32(0));
             obj.properties
-                .insert("__fn_body".into(), Value::String(Arc::from(body.as_str())));
+                .insert("__fn_body".into(), owned_string_value(body));
             obj.properties
                 .insert("__fn_return".into(), Value::Undefined);
             Value::Object(vybe_runtime::heap::alloc(obj))
@@ -178,25 +214,30 @@ pub fn register(vm: &mut VM) {
     );
 
     // new Function(params, body) — §20.2.1.1 with parameters.
-    vm.register_host_fn(
+    crate::perf::register_host_fn(
+        vm,
         "ecma:function",
         "newWithParams",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            let params = args.first().map(|v| format!("{}", v)).unwrap_or_default();
-            let body = args.get(1).map(|v| format!("{}", v)).unwrap_or_default();
+            let params = args
+                .first()
+                .map(crate::keys::value_display_string)
+                .unwrap_or_default();
+            let body = args
+                .get(1)
+                .map(crate::keys::value_display_string)
+                .unwrap_or_default();
             let mut obj = Object::new();
+            obj.properties.reserve(5);
             obj.properties
-                .insert("name".into(), Value::String(Arc::from("anonymous")));
-            obj.properties.insert(
-                "length".into(),
-                Value::I32(if params.is_empty() { 0 } else { 1 }),
-            );
-            obj.properties.insert(
-                "__fn_params".into(),
-                Value::String(Arc::from(params.as_str())),
-            );
+                .insert("name".into(), crate::keys::string_value("anonymous"));
+            let has_params = !params.is_empty();
             obj.properties
-                .insert("__fn_body".into(), Value::String(Arc::from(body.as_str())));
+                .insert("length".into(), Value::I32(if has_params { 1 } else { 0 }));
+            obj.properties
+                .insert("__fn_params".into(), owned_string_value(params));
+            obj.properties
+                .insert("__fn_body".into(), owned_string_value(body));
             obj.properties
                 .insert("__fn_return".into(), Value::Undefined);
             Value::Object(vybe_runtime::heap::alloc(obj))
@@ -204,17 +245,14 @@ pub fn register(vm: &mut VM) {
     );
 
     // bindWithArgs(fn, thisArg, ...args) — like bind with pre-supplied args.
-    vm.register_host_fn(
+    crate::perf::register_host_fn(
+        vm,
         "ecma:function",
         "bindWithArgs",
         Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
-            let target = args.first().cloned().unwrap_or(Value::Undefined);
-            let bound: Vec<Value> = if args.len() > 1 {
-                args[1..].to_vec()
-            } else {
-                Vec::new()
-            };
-            bind_function_with_arity(&target, bound, invoke_bound_idx)
+            let undefined = Value::Undefined;
+            let target = args.first().unwrap_or(&undefined);
+            bind_function_with_arity(target, args.get(1..).unwrap_or(&[]), invoke_bound_idx)
         }),
     );
 
@@ -223,46 +261,118 @@ pub fn register(vm: &mut VM) {
     // The returned function ref carries `__bound_args = [thisArg, ...boundArgs]`
     // and points at the same host fn idx as the receiver (or the same
     // chunk for user functions).
-    vm.register_host_fn(
+    crate::perf::register_host_fn(
+        vm,
         "ecma:function",
         "bind",
         Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
-            let target = args.first().cloned().unwrap_or(Value::Undefined);
-            let bound: Vec<Value> = if args.len() > 1 {
-                args[1..].to_vec()
-            } else {
-                Vec::new()
+            let undefined = Value::Undefined;
+            let target = args.first().unwrap_or(&undefined);
+            bind_function(target, args.get(1..).unwrap_or(&[]), invoke_bound_idx)
+        }),
+    );
+
+    // Initialize an existing derived receiver using a constructor supplied by
+    // a separately compiled module. Constructor helpers use a trailing receiver
+    // after their declared parameters, unlike ordinary method invocation.
+    crate::perf::register_host_fn(
+        vm,
+        "ecma:function",
+        "initialize",
+        Box::new(|ctx, args| {
+            let receiver = args.get(1).cloned().unwrap_or(Value::Undefined);
+            let Some(Value::Object(class)) = args.first() else {
+                return receiver;
             };
-            bind_function(&target, bound, invoke_bound_idx)
+            let metadata = {
+                let class = class.lock().unwrap();
+                class
+                    .properties
+                    .get("__vybe_constructor_initializer")
+                    .cloned()
+                    .zip(
+                        class
+                            .properties
+                            .get("__vybe_constructor_arity")
+                            .map(|value| value.as_f64() as usize),
+                    )
+            };
+            let Some((initializer, arity)) = metadata else {
+                return receiver;
+            };
+            let mut inline_args: [Value; APPLY_INLINE_ARG_LIMIT] =
+                std::array::from_fn(|_| Value::Undefined);
+            if let Some(inline_len) = collect_apply_args_inline(args.get(2), &mut inline_args) {
+                if arity <= APPLY_INLINE_ARG_LIMIT {
+                    let mut inline: [Value; APPLY_INLINE_ARG_LIMIT + 1] =
+                        std::array::from_fn(|_| Value::Undefined);
+                    for index in 0..inline_len.min(arity) {
+                        inline[index] = inline_args[index].clone();
+                    }
+                    inline[arity] = receiver;
+                    return ctx.invoke(&initializer, &inline[..arity + 1]);
+                }
+            }
+            let mut packed = args.get(2).map(collect_apply_args).unwrap_or_default();
+            packed.resize(arity, Value::Undefined);
+            packed.push(receiver);
+            ctx.invoke(&initializer, &packed)
         }),
     );
 
     // Function.prototype.call(this_fn, thisArg, ...args) → result
     //
     // Synchronously invokes the receiver with the given thisArg + args.
-    vm.register_host_fn(
+    crate::perf::register_host_fn(
+        vm,
         "ecma:function",
         "call",
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
-            let target = args.first().cloned().unwrap_or(Value::Undefined);
+            let undefined = Value::Undefined;
+            let target = args.first().unwrap_or(&undefined);
             let this_arg = args.get(1).cloned().unwrap_or(Value::Undefined);
             // §20.2.3.3 `Function.prototype.call ( thisArg, ...args )` — `args`
             // is a REST parameter, so omitting it means EMPTY, not a panic.
             // `Function.prototype.call.call("x")` passes one argument and
             // `&args[2..]` panicked the worker; the two arguments above were
             // already guarded and this one was not.
-            invoke_with_explicit_this(ctx, &target, this_arg, args.get(2..).unwrap_or(&[]))
+            invoke_with_explicit_this(ctx, target, this_arg, args.get(2..).unwrap_or(&[]))
         }),
     );
 
     // Function.prototype.apply(this_fn, thisArg, argsArray) → result
-    vm.register_host_fn(
+    crate::perf::register_host_fn(
+        vm,
         "ecma:function",
         "apply",
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
-            let target = args.first().cloned().unwrap_or(Value::Undefined);
+            let undefined = Value::Undefined;
+            let target = args.first().unwrap_or(&undefined);
             let this_arg = args.get(1).cloned().unwrap_or(Value::Undefined);
-            let invoke_args = args.get(2).map(collect_apply_args).unwrap_or_default();
+            let host_callee = is_host_callee(target);
+            if !host_callee && !is_callable(target) {
+                ctx.throw_value(crate::error::new_error(
+                    ctx,
+                    "TypeError",
+                    "Function.apply target is not callable",
+                ));
+                return Value::Undefined;
+            }
+            let mut inline: [Value; APPLY_INLINE_ARG_LIMIT] =
+                std::array::from_fn(|_| Value::Undefined);
+            let apply_arg = args.get(2).unwrap_or(&undefined);
+            let collected = if matches!(apply_arg, Value::Null | Value::Undefined) {
+                Ok(CollectedApplyArgs::Inline(&inline[..0]))
+            } else {
+                collect_apply_args_once(ctx, Some(apply_arg), &mut inline)
+            };
+            let invoke_args = match collected {
+                Ok(values) => values,
+                Err(error) => {
+                    ctx.throw_value(error);
+                    return Value::Undefined;
+                }
+            };
             // ⛔ A HOST BUILTIN HAS NO `this` — IT READS ARGUMENT 0.
             //
             // `apply` hands `thisArg` to the callee's `this`, which is right
@@ -288,16 +398,7 @@ pub fn register(vm: &mut VM) {
             // through the raw invoke skipped both: `len.apply(null, [1,2])`
             // reported `arguments.length` as `undefined`, and an EMPTY args
             // array threw "Cannot convert undefined or null to object".
-            let host_callee = matches!(
-                &target,
-                Value::Object(o)
-                    if matches!(o.lock().map(|g| matches!(g.kind, ObjectKind::HostFunction(_))), Ok(true))
-            );
-            if host_callee {
-                ctx.invoke_with_receiver(&target, this_arg, &invoke_args)
-            } else {
-                invoke_with_explicit_this(ctx, &target, this_arg, &invoke_args)
-            }
+            invoke_apply_collected_args(ctx, target, this_arg, host_callee, invoke_args.as_slice())
         }),
     );
 
@@ -305,19 +406,21 @@ pub fn register(vm: &mut VM) {
     // anonymous functions assigned under a computed key take the key's
     // string form; symbol keys become "[<description>]" (or "" when the
     // symbol has none). Already-named functions keep their name.
-    vm.register_host_fn(
+    crate::perf::register_host_fn(
+        vm,
         "ecma:function",
         "setFunctionName",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             if let Some(Value::Object(f)) = args.first() {
-                let key = args.get(1).cloned().unwrap_or(Value::Undefined);
+                let undefined = Value::Undefined;
+                let key = args.get(1).unwrap_or(&undefined);
                 let mut o = f.lock().unwrap();
                 let anonymous = match o.properties.get("name") {
                     Some(Value::String(n)) => n.is_empty() || n.starts_with("__anon_fn_"),
                     _ => true,
                 };
                 if anonymous {
-                    let name = match &key {
+                    let name = match key {
                         Value::Symbol(s) => {
                             if crate::symbol::has_description(s) {
                                 format!("[{}]", s)
@@ -325,10 +428,9 @@ pub fn register(vm: &mut VM) {
                                 String::new()
                             }
                         }
-                        other => format!("{}", other),
+                        other => crate::keys::value_display_string(other),
                     };
-                    o.properties
-                        .insert("name".into(), Value::String(Arc::from(name.as_str())));
+                    o.properties.insert("name".into(), owned_string_value(name));
                 }
             }
             Value::Undefined
@@ -338,17 +440,19 @@ pub fn register(vm: &mut VM) {
     // §20.2.3.5 Function.prototype.toString. Source text isn't retained,
     // so every form uses the spec's NativeFunction fallback shape with the
     // function's kind classifier tokens (async / * / =>) and name.
-    vm.register_host_fn(
+    crate::perf::register_host_fn(
+        vm,
         "ecma:function",
         "toString",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            let target = args.first().cloned().unwrap_or(Value::Undefined);
-            Value::String(Arc::from(function_to_string(&target).as_str()))
+            let undefined = Value::Undefined;
+            let target = args.first().unwrap_or(&undefined);
+            owned_string_value(function_to_string(target))
         }),
     );
     let to_string_idx = *vm
         .host_registry
-        .get(&("ecma:function".to_string(), "toString".to_string()))
+        .get(to_string_host_key())
         .expect("ecma:function.toString just registered");
     if let Value::Object(proto) = shared_function_prototype() {
         let mut p = proto.lock().unwrap();
@@ -356,7 +460,7 @@ pub fn register(vm: &mut VM) {
             let mut ts = Object::new();
             ts.kind = ObjectKind::HostFunction(to_string_idx);
             ts.properties
-                .insert("name".into(), Value::String(Arc::from("toString")));
+                .insert("name".into(), crate::keys::string_value("toString"));
             ts.properties.insert("length".into(), Value::F64(0.0));
             ts.properties
                 .insert("__vybe_method_receiver".into(), Value::Bool(true));
@@ -368,7 +472,7 @@ pub fn register(vm: &mut VM) {
             if let Some(Value::Object(ne)) = p.properties.get("__nonenum") {
                 let mut a = ne.lock().unwrap();
                 if let ObjectKind::Array(ref mut elems) = a.kind {
-                    elems.push(Value::String(Arc::from("toString")));
+                    elems.push(crate::keys::string_value("toString"));
                 }
             }
         }
@@ -424,49 +528,97 @@ pub fn invoke_bound_callback_if_needed(
     callback: &Value,
     args: &[Value],
 ) -> Option<Value> {
+    let prepared = prepare_bound_callback(callback)?;
+    Some(invoke_prepared_bound_callback(ctx, &prepared, args))
+}
+
+#[derive(Clone)]
+pub struct PreparedBoundCallback {
+    target: Value,
+    bound_this: Value,
+    target_proto: Value,
+    partials: Vec<Value>,
+}
+
+fn decode_bound_callback(callback: &Value) -> Option<PreparedBoundCallback> {
     let Value::Object(obj) = callback else {
         return None;
     };
 
-    let stored_bound = {
-        let object = obj.lock().unwrap();
-        let name = match object.properties.get("name") {
-            Some(Value::String(text)) => text.to_string(),
-            _ => String::new(),
-        };
-        if !name.starts_with("bound ") {
-            return None;
-        }
-        match object.properties.get("__bound_args") {
-            Some(Value::Object(bound)) => {
-                let bound_object = bound.lock().unwrap();
-                if let ObjectKind::Array(values) = &bound_object.kind {
-                    values.clone()
-                } else {
+    let object = obj.lock().unwrap();
+    match object.properties.get("__bound_args") {
+        Some(Value::Object(bound)) => {
+            if !matches!(object.properties.get("name"), Some(Value::String(text)) if text.starts_with("bound "))
+            {
+                return None;
+            }
+            let bound_object = bound.lock().unwrap();
+            if let ObjectKind::Array(values) = &bound_object.kind {
+                if values.len() < 3 {
                     return None;
                 }
+                Some(PreparedBoundCallback {
+                    target: values[0].clone(),
+                    bound_this: values[1].clone(),
+                    target_proto: values[2].clone(),
+                    partials: values.iter().skip(3).cloned().collect(),
+                })
+            } else {
+                None
             }
-            _ => return None,
         }
-    };
-
-    if stored_bound.len() < 3 {
-        return None;
+        _ => None,
     }
+}
 
-    let target = stored_bound[0].clone();
-    let bound_this = stored_bound[1].clone();
-    let target_proto = stored_bound[2].clone();
-    let mut invoke_args = Vec::with_capacity(stored_bound.len().saturating_sub(3) + args.len());
-    invoke_args.extend(stored_bound.iter().skip(3).cloned());
+pub fn prepare_bound_callback(callback: &Value) -> Option<PreparedBoundCallback> {
+    decode_bound_callback(callback)
+}
+
+pub fn invoke_prepared_bound_callback(
+    ctx: &mut HostContext,
+    prepared: &PreparedBoundCallback,
+    args: &[Value],
+) -> Value {
+    if prepared.partials.is_empty() {
+        return invoke_bound_target(
+            ctx,
+            &prepared.target,
+            prepared.bound_this.clone(),
+            prepared.target_proto.clone(),
+            args,
+        );
+    }
+    let total_len = prepared.partials.len() + args.len();
+    if total_len <= APPLY_INLINE_ARG_LIMIT {
+        let mut inline: [Value; APPLY_INLINE_ARG_LIMIT] = std::array::from_fn(|_| Value::Undefined);
+        let mut index = 0;
+        for value in &prepared.partials {
+            inline[index] = value.clone();
+            index += 1;
+        }
+        for value in args {
+            inline[index] = value.clone();
+            index += 1;
+        }
+        return invoke_bound_target(
+            ctx,
+            &prepared.target,
+            prepared.bound_this.clone(),
+            prepared.target_proto.clone(),
+            &inline[..total_len],
+        );
+    }
+    let mut invoke_args = Vec::with_capacity(prepared.partials.len() + args.len());
+    invoke_args.extend(prepared.partials.iter().cloned());
     invoke_args.extend_from_slice(args);
-    Some(invoke_bound_target(
+    invoke_bound_target(
         ctx,
-        &target,
-        bound_this,
-        target_proto,
+        &prepared.target,
+        prepared.bound_this.clone(),
+        prepared.target_proto.clone(),
         &invoke_args,
-    ))
+    )
 }
 
 pub fn try_invoke_bound_callback_if_needed(
@@ -474,47 +626,44 @@ pub fn try_invoke_bound_callback_if_needed(
     callback: &Value,
     args: &[Value],
 ) -> Option<Result<Value, Value>> {
-    let Value::Object(obj) = callback else {
-        return None;
-    };
-
-    let stored_bound = {
-        let object = obj.lock().unwrap();
-        let name = match object.properties.get("name") {
-            Some(Value::String(text)) => text.to_string(),
-            _ => String::new(),
-        };
-        if !name.starts_with("bound ") {
-            return None;
-        }
-        match object.properties.get("__bound_args") {
-            Some(Value::Object(bound)) => {
-                let bound_object = bound.lock().unwrap();
-                if let ObjectKind::Array(values) = &bound_object.kind {
-                    values.clone()
-                } else {
-                    return None;
-                }
-            }
-            _ => return None,
-        }
-    };
-
-    if stored_bound.len() < 3 {
-        return None;
+    let prepared = decode_bound_callback(callback)?;
+    if prepared.partials.is_empty() {
+        return Some(try_invoke_bound_target(
+            ctx,
+            &prepared.target,
+            prepared.bound_this.clone(),
+            prepared.target_proto.clone(),
+            args,
+        ));
     }
-
-    let target = stored_bound[0].clone();
-    let bound_this = stored_bound[1].clone();
-    let target_proto = stored_bound[2].clone();
-    let mut invoke_args = Vec::with_capacity(stored_bound.len().saturating_sub(3) + args.len());
-    invoke_args.extend(stored_bound.iter().skip(3).cloned());
+    let total_len = prepared.partials.len() + args.len();
+    if total_len <= APPLY_INLINE_ARG_LIMIT {
+        let mut inline: [Value; APPLY_INLINE_ARG_LIMIT] = std::array::from_fn(|_| Value::Undefined);
+        let mut index = 0;
+        for value in &prepared.partials {
+            inline[index] = value.clone();
+            index += 1;
+        }
+        for value in args {
+            inline[index] = value.clone();
+            index += 1;
+        }
+        return Some(try_invoke_bound_target(
+            ctx,
+            &prepared.target,
+            prepared.bound_this.clone(),
+            prepared.target_proto.clone(),
+            &inline[..total_len],
+        ));
+    }
+    let mut invoke_args = Vec::with_capacity(prepared.partials.len() + args.len());
+    invoke_args.extend(prepared.partials.iter().cloned());
     invoke_args.extend_from_slice(args);
     Some(try_invoke_bound_target(
         ctx,
-        &target,
-        bound_this,
-        target_proto,
+        &prepared.target,
+        prepared.bound_this.clone(),
+        prepared.target_proto.clone(),
         &invoke_args,
     ))
 }
@@ -528,12 +677,10 @@ pub fn invoke_with_explicit_this(
     // §10.5.12 [[Call]] on a proxy: the apply trap fires with thisArg
     // (or the target is invoked with it when trapless). Reaches here via
     // Function.prototype.call/apply/bind on proxy-wrapped functions.
-    if let Value::Object(obj) = target {
-        if let Some((proxy_target, handler)) = crate::object::proxy_target_and_handler(obj) {
+    match explicit_this_call_kind(target) {
+        ExplicitThisCallKind::Proxy(proxy_target, handler) => {
             if let Some(trap) = crate::object::proxy_trap(&handler, "apply") {
-                let args_arr = Value::Object(vybe_runtime::heap::alloc(
-                    vybe_runtime::value::Object::new_array(args.to_vec()),
-                ));
+                let args_arr = make_arguments_array(args);
                 return invoke_with_explicit_this(
                     ctx,
                     &trap,
@@ -543,19 +690,14 @@ pub fn invoke_with_explicit_this(
             }
             return invoke_with_explicit_this(ctx, &proxy_target, this_arg, args);
         }
-    }
-    match target {
-        Value::Object(obj)
-            if matches!(obj.lock().unwrap().kind, ObjectKind::HostFunction(_))
-                && obj.lock().unwrap().properties.contains_key("__bound_args") =>
-        {
+        ExplicitThisCallKind::BoundHost => {
             let previous_this = ctx.current_js_this();
             ctx.set_js_this(this_arg);
             let result = ctx.invoke(target, args);
             ctx.set_js_this(previous_this);
             result
         }
-        Value::Object(obj) if matches!(obj.lock().unwrap().kind, ObjectKind::Function(_)) => {
+        ExplicitThisCallKind::Compiled => {
             // Arrows need no special case here: they capture lexical
             // `this` at creation (compiler-emitted upvalue) and never read
             // the ambient binding this sets (§10.2.11).
@@ -565,14 +707,8 @@ pub fn invoke_with_explicit_this(
             ctx.set_js_this(previous_this);
             result
         }
-        _ => {
-            // Magic test-only: plain object with __fn_return acts as a zero-arg callable.
-            if let Value::Object(obj) = target {
-                let o = obj.lock().unwrap();
-                if let Some(ret) = o.properties.get("__fn_return").cloned() {
-                    return ret;
-                }
-            }
+        ExplicitThisCallKind::Constant(value) => value,
+        call_kind => {
             // ⛔ DO NOT PREPEND, AND DO NOT BRANCH ON THE CALLEE'S KIND.
             // The receiver slot of a host callee is filled in exactly ONE
             // place — `call_value_inner` — so prepending here handed the
@@ -600,16 +736,13 @@ pub fn invoke_with_explicit_this(
                 // Under `Parameter` the VM fills the receiver slot; binding the
                 // channel is all this has to do.
                 ctx.invoke_with_receiver(target, this_arg, args)
-            } else if host_function_uses_explicit_receiver(target) {
+            } else if matches!(call_kind, ExplicitThisCallKind::Host(true)) {
                 // ⛔ PLACE THE RECEIVER, DO NOT REBIND THE CHANNEL.
                 // `invoke_with_receiver` brackets the call with its own
                 // receiver binding, and rebinding disturbs an ENCLOSING
                 // method's own receiver. Prepending and leaving the channel
                 // alone is what component-class method bodies depend on.
-                let mut invoke_args = Vec::with_capacity(args.len() + 1);
-                invoke_args.push(this_arg);
-                invoke_args.extend_from_slice(args);
-                ctx.invoke(target, &invoke_args)
+                invoke_with_prepended_receiver(ctx, target, this_arg, args)
             } else {
                 ctx.invoke(target, args)
             }
@@ -623,37 +756,42 @@ pub fn try_invoke_with_explicit_this(
     this_arg: Value,
     args: &[Value],
 ) -> Result<Value, Value> {
-    match target {
-        Value::Object(obj)
-            if matches!(obj.lock().unwrap().kind, ObjectKind::HostFunction(_))
-                && obj.lock().unwrap().properties.contains_key("__bound_args") =>
-        {
+    match explicit_this_call_kind(target) {
+        ExplicitThisCallKind::Proxy(proxy_target, handler) => {
+            if let Some(trap) = crate::object::proxy_trap(&handler, "apply") {
+                let args_arr = make_arguments_array(args);
+                return try_invoke_with_explicit_this(
+                    ctx,
+                    &trap,
+                    handler,
+                    &[proxy_target, this_arg, args_arr],
+                );
+            }
+            return try_invoke_with_explicit_this(ctx, &proxy_target, this_arg, args);
+        }
+        ExplicitThisCallKind::BoundHost => {
             let previous_this = ctx.current_js_this();
             ctx.set_js_this(this_arg);
             let result = ctx.try_invoke(target, args);
             ctx.set_js_this(previous_this);
             result
         }
-        Value::Object(obj) if matches!(obj.lock().unwrap().kind, ObjectKind::Function(_)) => {
+        ExplicitThisCallKind::Compiled => {
             let previous_this = ctx.current_js_this();
             ctx.set_js_this(this_arg);
             let result = try_invoke_compiled_function(ctx, target, args);
             ctx.set_js_this(previous_this);
             result
         }
-        _ => {
-            // Magic test-only: plain object with __fn_return acts as a zero-arg callable.
-            if let Value::Object(obj) = target {
-                let o = obj.lock().unwrap();
-                if let Some(ret) = o.properties.get("__fn_return").cloned() {
-                    return Ok(ret);
-                }
-            }
-            if host_function_uses_explicit_receiver(target) {
-                let mut invoke_args = Vec::with_capacity(args.len() + 1);
-                invoke_args.push(this_arg);
-                invoke_args.extend_from_slice(args);
-                ctx.try_invoke(target, &invoke_args)
+        ExplicitThisCallKind::Constant(value) => Ok(value),
+        call_kind => {
+            if ctx.receiver_is_parameter() {
+                // Match the non-fallible path: the VM places the receiver
+                // under the Parameter ABI. Prepending here would duplicate
+                // it and shift the user's arguments.
+                ctx.try_invoke_with_receiver(target, this_arg, args)
+            } else if matches!(call_kind, ExplicitThisCallKind::Host(true)) {
+                try_invoke_with_prepended_receiver(ctx, target, this_arg, args)
             } else {
                 ctx.try_invoke(target, args)
             }
@@ -705,10 +843,7 @@ fn invoke_bound_target(
             if ctx.receiver_is_parameter() {
                 ctx.invoke_with_receiver(target, bound_this, args)
             } else if host_function_uses_explicit_receiver(target) {
-                let mut invoke_args = Vec::with_capacity(args.len() + 1);
-                invoke_args.push(bound_this);
-                invoke_args.extend_from_slice(args);
-                ctx.invoke(target, &invoke_args)
+                invoke_with_prepended_receiver(ctx, target, bound_this, args)
             } else {
                 ctx.invoke(target, args)
             }
@@ -761,14 +896,55 @@ fn try_invoke_bound_target(
             if ctx.receiver_is_parameter() {
                 ctx.try_invoke_with_receiver(target, bound_this, args)
             } else if host_function_uses_explicit_receiver(target) {
-                let mut invoke_args = Vec::with_capacity(args.len() + 1);
-                invoke_args.push(bound_this);
-                invoke_args.extend_from_slice(args);
-                ctx.try_invoke(target, &invoke_args)
+                try_invoke_with_prepended_receiver(ctx, target, bound_this, args)
             } else {
                 ctx.try_invoke(target, args)
             }
         }
+    }
+}
+
+pub(crate) fn invoke_with_prepended_receiver(
+    ctx: &mut HostContext,
+    target: &Value,
+    receiver: Value,
+    args: &[Value],
+) -> Value {
+    if args.len() <= APPLY_INLINE_ARG_LIMIT {
+        let mut inline: [Value; APPLY_INLINE_ARG_LIMIT + 1] =
+            std::array::from_fn(|_| Value::Undefined);
+        inline[0] = receiver;
+        for (index, arg) in args.iter().enumerate() {
+            inline[index + 1] = arg.clone();
+        }
+        ctx.invoke(target, &inline[..args.len() + 1])
+    } else {
+        let mut invoke_args = Vec::with_capacity(args.len() + 1);
+        invoke_args.push(receiver);
+        invoke_args.extend_from_slice(args);
+        ctx.invoke(target, &invoke_args)
+    }
+}
+
+fn try_invoke_with_prepended_receiver(
+    ctx: &mut HostContext,
+    target: &Value,
+    receiver: Value,
+    args: &[Value],
+) -> Result<Value, Value> {
+    if args.len() <= APPLY_INLINE_ARG_LIMIT {
+        let mut inline: [Value; APPLY_INLINE_ARG_LIMIT + 1] =
+            std::array::from_fn(|_| Value::Undefined);
+        inline[0] = receiver;
+        for (index, arg) in args.iter().enumerate() {
+            inline[index + 1] = arg.clone();
+        }
+        ctx.try_invoke(target, &inline[..args.len() + 1])
+    } else {
+        let mut invoke_args = Vec::with_capacity(args.len() + 1);
+        invoke_args.push(receiver);
+        invoke_args.extend_from_slice(args);
+        ctx.try_invoke(target, &invoke_args)
     }
 }
 
@@ -777,13 +953,22 @@ fn invoke_compiled_function(ctx: &mut HostContext, target: &Value, args: &[Value
         return ctx.invoke(target, args);
     };
 
+    let total_len = fixed_count + 1;
+    if total_len <= APPLY_INLINE_ARG_LIMIT {
+        let mut packed_args: [Value; APPLY_INLINE_ARG_LIMIT] =
+            std::array::from_fn(|_| Value::Undefined);
+        for index in 0..fixed_count {
+            packed_args[index] = args.get(index).cloned().unwrap_or(Value::Undefined);
+        }
+        packed_args[fixed_count] = make_rest_array(args, fixed_count);
+        return ctx.invoke(target, &packed_args[..total_len]);
+    }
+
     let mut packed_args = Vec::with_capacity(fixed_count + 1);
     for index in 0..fixed_count {
         packed_args.push(args.get(index).cloned().unwrap_or(Value::Undefined));
     }
-    packed_args.push(Value::Object(vybe_runtime::heap::alloc(Object::new_array(
-        args.iter().skip(fixed_count).cloned().collect(),
-    ))));
+    packed_args.push(make_rest_array(args, fixed_count));
     ctx.invoke(target, &packed_args)
 }
 
@@ -796,14 +981,32 @@ fn try_invoke_compiled_function(
         return ctx.try_invoke(target, args);
     };
 
+    let total_len = fixed_count + 1;
+    if total_len <= APPLY_INLINE_ARG_LIMIT {
+        let mut packed_args: [Value; APPLY_INLINE_ARG_LIMIT] =
+            std::array::from_fn(|_| Value::Undefined);
+        for index in 0..fixed_count {
+            packed_args[index] = args.get(index).cloned().unwrap_or(Value::Undefined);
+        }
+        packed_args[fixed_count] = make_rest_array(args, fixed_count);
+        return ctx.try_invoke(target, &packed_args[..total_len]);
+    }
+
     let mut packed_args = Vec::with_capacity(fixed_count + 1);
     for index in 0..fixed_count {
         packed_args.push(args.get(index).cloned().unwrap_or(Value::Undefined));
     }
-    packed_args.push(Value::Object(vybe_runtime::heap::alloc(Object::new_array(
-        args.iter().skip(fixed_count).cloned().collect(),
-    ))));
+    packed_args.push(make_rest_array(args, fixed_count));
     ctx.try_invoke(target, &packed_args)
+}
+
+fn make_rest_array(args: &[Value], fixed_count: usize) -> Value {
+    let rest_len = args.len().saturating_sub(fixed_count);
+    let mut rest = Vec::with_capacity(rest_len);
+    for value in args.iter().skip(fixed_count) {
+        rest.push(value.clone());
+    }
+    Value::Object(vybe_runtime::heap::alloc(Object::new_array(rest)))
 }
 
 fn compiled_rest_fixed_arity(target: &Value) -> Option<usize> {
@@ -834,7 +1037,264 @@ fn host_function_uses_explicit_receiver(target: &Value) -> bool {
         )
 }
 
-fn collect_apply_args(value: &Value) -> Vec<Value> {
+enum ExplicitThisCallKind {
+    Proxy(Value, Value),
+    BoundHost,
+    Compiled,
+    Constant(Value),
+    Host(bool),
+    Other,
+}
+
+// Snapshot all dispatch-only metadata under one lock. No snapshot survives
+// this call, and the lock is released before proxy traps or user code run.
+fn explicit_this_call_kind(target: &Value) -> ExplicitThisCallKind {
+    let Value::Object(obj) = target else {
+        return ExplicitThisCallKind::Other;
+    };
+    let object = obj.lock().unwrap();
+    if let (Some(target), Some(handler)) = (
+        object.properties.get("__vybe_proxy_target"),
+        object.properties.get("__vybe_proxy_handler"),
+    ) {
+        return ExplicitThisCallKind::Proxy(target.clone(), handler.clone());
+    }
+    match &object.kind {
+        ObjectKind::HostFunction(_) if object.properties.contains_key("__bound_args") => {
+            ExplicitThisCallKind::BoundHost
+        }
+        ObjectKind::Function(_) => ExplicitThisCallKind::Compiled,
+        _ if object.properties.contains_key("__fn_return") => {
+            ExplicitThisCallKind::Constant(object.properties.get("__fn_return").unwrap().clone())
+        }
+        ObjectKind::HostFunction(_) => ExplicitThisCallKind::Host(matches!(
+            object.properties.get("__vybe_method_receiver"),
+            Some(Value::Bool(true))
+        )),
+        _ => ExplicitThisCallKind::Other,
+    }
+}
+
+fn is_host_callee(target: &Value) -> bool {
+    matches!(
+        target,
+        Value::Object(obj)
+            if matches!(obj.lock().map(|g| {
+                matches!(g.kind, ObjectKind::HostFunction(_))
+                    && !(g.properties.contains_key("__vybe_proxy_target")
+                        && g.properties.contains_key("__vybe_proxy_handler"))
+            }), Ok(true))
+    )
+}
+
+pub(crate) fn is_callable(value: &Value) -> bool {
+    matches!(value, Value::Object(object)
+        if matches!(object.lock().unwrap().kind, ObjectKind::Function(_) | ObjectKind::HostFunction(_)))
+}
+
+fn invoke_apply_collected_args(
+    ctx: &mut HostContext,
+    target: &Value,
+    this_arg: Value,
+    host_callee: bool,
+    invoke_args: &[Value],
+) -> Value {
+    if host_callee && ctx.receiver_is_parameter() {
+        ctx.invoke_with_receiver(target, this_arg, invoke_args)
+    } else {
+        // Ambient host functions do not all declare a receiver. The shared
+        // helper distinguishes receiver-bearing methods from free functions;
+        // forwarding solely by HostFunction kind prepended an extra argument.
+        invoke_with_explicit_this(ctx, target, this_arg, invoke_args)
+    }
+}
+
+#[inline]
+fn make_arguments_array(args: &[Value]) -> Value {
+    if args.is_empty() {
+        crate::array::make_array(Vec::new())
+    } else {
+        Value::Object(vybe_runtime::heap::alloc(Object::new_array(args.to_vec())))
+    }
+}
+
+fn apply_array_like_length(object: &Object) -> usize {
+    apply_array_like_length_value(object.properties.get("length"))
+}
+
+fn apply_array_like_length_value(value: Option<&Value>) -> usize {
+    match value {
+        Some(Value::I32(value)) if *value > 0 => *value as usize,
+        Some(Value::I64(value)) if *value > 0 => *value as usize,
+        Some(Value::F64(value)) if *value > 0.0 => *value as usize,
+        Some(Value::String(text)) => crate::keys::non_negative_integer_index_key(text).unwrap_or(0),
+        _ => 0,
+    }
+}
+
+pub(crate) enum CollectedApplyArgs<'a> {
+    Inline(&'a [Value]),
+    Heap(Vec<Value>),
+}
+
+impl CollectedApplyArgs<'_> {
+    pub(crate) fn as_slice(&self) -> &[Value] {
+        match self {
+            Self::Inline(values) => values,
+            Self::Heap(values) => values,
+        }
+    }
+}
+
+// Select inline storage or a heap snapshot under one source lock. Neither
+// result borrows the source object, so callbacks may mutate it freely.
+pub(crate) fn collect_apply_args_once<'a, const N: usize>(
+    ctx: &mut HostContext,
+    value: Option<&Value>,
+    inline: &'a mut [Value; N],
+) -> Result<CollectedApplyArgs<'a>, Value> {
+    let Some(Value::Object(obj)) = value else {
+        return Err(crate::error::new_error(
+            ctx,
+            "TypeError",
+            "apply argument list must be an object",
+        ));
+    };
+    let object = obj.lock().unwrap();
+    let needs_get = object.properties.contains_key("__vybe_proxy_target")
+        || object
+            .properties
+            .keys()
+            .any(|key| key.starts_with("__get_"));
+    if let ObjectKind::Array(values) = &object.kind {
+        if !needs_get && !object.properties.contains_key("__holes") {
+            if values.len() > N {
+                return Ok(CollectedApplyArgs::Heap(values.clone()));
+            }
+            inline[..values.len()].clone_from_slice(values);
+            return Ok(CollectedApplyArgs::Inline(&inline[..values.len()]));
+        }
+    }
+
+    // Own-data lists have no callbacks while collecting. Missing properties,
+    // accessors, sparse arrays and proxies must perform observable Get calls.
+    if !needs_get
+        && !matches!(object.kind, ObjectKind::Array(_))
+        && object.properties.contains_key("length")
+        && !matches!(object.properties.get("length"), Some(Value::Object(_)))
+    {
+        let length = apply_list_length(ctx, object.properties.get("length").unwrap())?;
+        let element =
+            |index| crate::keys::with_index_key(index, |key| object.properties.get(key).cloned());
+        if length <= N {
+            let mut complete = true;
+            for (index, slot) in inline.iter_mut().enumerate().take(length) {
+                match element(index) {
+                    Some(value) => *slot = value,
+                    None => {
+                        complete = false;
+                        break;
+                    }
+                }
+            }
+            if complete {
+                return Ok(CollectedApplyArgs::Inline(&inline[..length]));
+            }
+        } else {
+            let mut values = reserve_apply_list(ctx, length)?;
+            for index in 0..length {
+                match element(index) {
+                    Some(value) => values.push(value),
+                    None => break,
+                }
+            }
+            if values.len() == length {
+                return Ok(CollectedApplyArgs::Heap(values));
+            }
+        }
+    }
+    drop(object);
+    let source = value.unwrap();
+    let length_value = crate::reflect::try_reflect_get(ctx, source, "length", source.clone())?;
+    let length = apply_list_length(ctx, &length_value)?;
+    let mut heap_values = if length > N {
+        reserve_apply_list(ctx, length)?
+    } else {
+        Vec::new()
+    };
+    let mut element = |index| {
+        crate::keys::with_index_key(index, |key| {
+            crate::reflect::try_reflect_get(ctx, source, key, source.clone())
+        })
+    };
+    if length <= N {
+        for (index, slot) in inline.iter_mut().enumerate().take(length) {
+            *slot = element(index)?;
+        }
+        Ok(CollectedApplyArgs::Inline(&inline[..length]))
+    } else {
+        for index in 0..length {
+            heap_values.push(element(index)?);
+        }
+        Ok(CollectedApplyArgs::Heap(heap_values))
+    }
+}
+
+fn apply_list_length(ctx: &mut HostContext, value: &Value) -> Result<usize, Value> {
+    let length = crate::number::try_to_length(ctx, value)?;
+    usize::try_from(length).map_err(|_| {
+        crate::error::new_error(
+            ctx,
+            "RangeError",
+            "apply argument list exceeds addressable storage",
+        )
+    })
+}
+
+fn reserve_apply_list(ctx: &HostContext, length: usize) -> Result<Vec<Value>, Value> {
+    let mut values = Vec::new();
+    values.try_reserve_exact(length).map_err(|_| {
+        crate::error::new_error(ctx, "RangeError", "Cannot allocate apply argument list")
+    })?;
+    Ok(values)
+}
+
+pub(crate) fn collect_apply_args_inline<const N: usize>(
+    value: Option<&Value>,
+    inline: &mut [Value; N],
+) -> Option<usize> {
+    let Some(Value::Object(obj)) = value else {
+        return Some(0);
+    };
+
+    let object = obj.lock().unwrap();
+    if let ObjectKind::Array(values) = &object.kind {
+        if values.len() > inline.len() {
+            return None;
+        }
+        for (index, value) in values.iter().enumerate() {
+            inline[index] = value.clone();
+        }
+        return Some(values.len());
+    }
+
+    let length = apply_array_like_length(&object);
+    if length > inline.len() {
+        return None;
+    }
+    for (index, slot) in inline.iter_mut().enumerate().take(length) {
+        *slot = crate::keys::with_index_key(index, |key| {
+            object
+                .properties
+                .get(key)
+                .cloned()
+                .unwrap_or(Value::Undefined)
+        });
+    }
+    Some(length)
+}
+
+pub(crate) fn collect_apply_args(value: &Value) -> Vec<Value> {
     let Value::Object(obj) = value else {
         return Vec::new();
     };
@@ -844,27 +1304,23 @@ fn collect_apply_args(value: &Value) -> Vec<Value> {
         return values.clone();
     }
 
-    let length = match object.properties.get("length") {
-        Some(Value::I32(value)) if *value > 0 => *value as usize,
-        Some(Value::I64(value)) if *value > 0 => *value as usize,
-        Some(Value::F64(value)) if *value > 0.0 => *value as usize,
-        Some(Value::String(text)) => text.parse::<usize>().ok().unwrap_or(0),
-        _ => 0,
-    };
-    (0..length)
-        .map(|index| {
+    let length = apply_array_like_length(&object);
+    let mut values = Vec::with_capacity(length);
+    for index in 0..length {
+        values.push(crate::keys::with_index_key(index, |key| {
             object
                 .properties
-                .get(&index.to_string())
+                .get(key)
                 .cloned()
                 .unwrap_or(Value::Undefined)
-        })
-        .collect()
+        }));
+    }
+    values
 }
 
 /// Like `bind_function` but reads `__fn_arity` as a length fallback for
 /// magic fn_obj mocks (tests pass `{__fn_arity: n}` instead of `length`).
-fn bind_function_with_arity(target: &Value, bound: Vec<Value>, invoke_bound_idx: usize) -> Value {
+fn bind_function_with_arity(target: &Value, bound: &[Value], invoke_bound_idx: usize) -> Value {
     let Value::Object(obj) = target else {
         return target.clone();
     };
@@ -897,7 +1353,7 @@ fn bind_function_with_arity(target: &Value, bound: Vec<Value>, invoke_bound_idx:
             .or_else(|| o.properties.get("__fn_name"))
         {
             Some(Value::String(text)) => text.to_string(),
-            Some(other) => format!("{}", other),
+            Some(other) => crate::keys::value_display_string(other),
             None => String::new(),
         };
         let length = match o.properties.get("length") {
@@ -935,13 +1391,20 @@ fn bind_function_with_arity(target: &Value, bound: Vec<Value>, invoke_bound_idx:
     };
 
     if target_proxy_callable && existing_bound.len() >= 2 {
-        let mut stored_bound = Vec::new();
+        let mut stored_bound = Vec::with_capacity(2 + bound.len().saturating_sub(1));
         stored_bound.push(existing_bound[0].clone());
         stored_bound.push(bound.first().cloned().unwrap_or(Value::Undefined));
         stored_bound.extend(bound.iter().skip(1).cloned());
         let consumed_args = stored_bound.len().saturating_sub(2);
 
         let mut wrapper = Object::new();
+        wrapper
+            .properties
+            .reserve(if matches!(target_proto, Value::Null | Value::Undefined) {
+                5
+            } else {
+                6
+            });
         wrapper.kind = target_kind;
         wrapper.properties.insert(
             "__bound_args".into(),
@@ -959,7 +1422,7 @@ fn bind_function_with_arity(target: &Value, bound: Vec<Value>, invoke_bound_idx:
         );
         wrapper.properties.insert(
             "name".into(),
-            Value::String(Arc::from(format!("bound {}", target_name).as_str())),
+            Value::String(crate::keys::concat2_arc("bound ", &target_name)),
         );
         wrapper.properties.insert(
             "length".into(),
@@ -972,23 +1435,31 @@ fn bind_function_with_arity(target: &Value, bound: Vec<Value>, invoke_bound_idx:
     }
 
     // Allow ordinary objects (magic fn_obj descriptors from tests) — don't bail for non-Function.
-    let mut stored_bound = Vec::new();
-    if matches!(target_kind, ObjectKind::HostFunction(idx) if idx == invoke_bound_idx)
-        && existing_bound.len() >= 3
-    {
+    let is_existing_bound_wrapper = matches!(&target_kind, ObjectKind::HostFunction(idx) if *idx == invoke_bound_idx)
+        && existing_bound.len() >= 3;
+    let mut stored_bound = if is_existing_bound_wrapper {
+        Vec::with_capacity(existing_bound.len() + bound.len().saturating_sub(1))
+    } else {
+        Vec::with_capacity(3 + bound.len().saturating_sub(1))
+    };
+    if is_existing_bound_wrapper {
         stored_bound.push(existing_bound[0].clone());
         stored_bound.push(existing_bound[1].clone());
         stored_bound.push(existing_bound[2].clone());
         stored_bound.extend(existing_bound.iter().skip(3).cloned());
-        stored_bound.extend(bound.into_iter().skip(1));
+        stored_bound.extend(bound.iter().skip(1).cloned());
     } else {
         stored_bound.push(target.clone());
         stored_bound.push(bound.first().cloned().unwrap_or(Value::Undefined));
         stored_bound.push(target_proto.clone());
-        stored_bound.extend(bound.into_iter().skip(1));
+        stored_bound.extend(bound.iter().skip(1).cloned());
     }
 
     let mut wrapper = Object::new();
+    wrapper.properties.reserve(
+        4 + usize::from(target_non_ctor)
+            + usize::from(!matches!(target_proto, Value::Null | Value::Undefined)),
+    );
     wrapper.kind = ObjectKind::HostFunction(invoke_bound_idx);
     let consumed_args = stored_bound.len().saturating_sub(3);
     wrapper.properties.insert(
@@ -1013,7 +1484,7 @@ fn bind_function_with_arity(target: &Value, bound: Vec<Value>, invoke_bound_idx:
     }
     wrapper.properties.insert(
         "name".into(),
-        Value::String(Arc::from(format!("bound {}", target_name).as_str())),
+        Value::String(crate::keys::concat2_arc("bound ", &target_name)),
     );
     wrapper.properties.insert(
         "length".into(),
@@ -1028,7 +1499,7 @@ fn bind_function_with_arity(target: &Value, bound: Vec<Value>, invoke_bound_idx:
 /// Build a function ref carrying bound args. Mirrors the convention in
 /// `crate::bound_host_fn_ref` but works on any function-like
 /// Value (HostFunction or user Function).
-fn bind_function(target: &Value, bound: Vec<Value>, invoke_bound_idx: usize) -> Value {
+fn bind_function(target: &Value, bound: &[Value], invoke_bound_idx: usize) -> Value {
     let Value::Object(obj) = target else {
         return target.clone();
     };
@@ -1061,7 +1532,7 @@ fn bind_function(target: &Value, bound: Vec<Value>, invoke_bound_idx: usize) -> 
             .or_else(|| o.properties.get("__fn_name"))
         {
             Some(Value::String(text)) => text.to_string(),
-            Some(other) => format!("{}", other),
+            Some(other) => crate::keys::value_display_string(other),
             None => String::new(),
         };
         let length = match o.properties.get("length") {
@@ -1099,13 +1570,20 @@ fn bind_function(target: &Value, bound: Vec<Value>, invoke_bound_idx: usize) -> 
     };
 
     if target_proxy_callable && existing_bound.len() >= 2 {
-        let mut stored_bound = Vec::new();
+        let mut stored_bound = Vec::with_capacity(2 + bound.len().saturating_sub(1));
         stored_bound.push(existing_bound[0].clone());
         stored_bound.push(bound.first().cloned().unwrap_or(Value::Undefined));
         stored_bound.extend(bound.iter().skip(1).cloned());
         let consumed_args = stored_bound.len().saturating_sub(2);
 
         let mut wrapper = Object::new();
+        wrapper
+            .properties
+            .reserve(if matches!(target_proto, Value::Null | Value::Undefined) {
+                5
+            } else {
+                6
+            });
         wrapper.kind = target_kind;
         wrapper.properties.insert(
             "__bound_args".into(),
@@ -1123,7 +1601,7 @@ fn bind_function(target: &Value, bound: Vec<Value>, invoke_bound_idx: usize) -> 
         );
         wrapper.properties.insert(
             "name".into(),
-            Value::String(Arc::from(format!("bound {}", target_name).as_str())),
+            Value::String(crate::keys::concat2_arc("bound ", &target_name)),
         );
         wrapper.properties.insert(
             "length".into(),
@@ -1136,23 +1614,31 @@ fn bind_function(target: &Value, bound: Vec<Value>, invoke_bound_idx: usize) -> 
     }
 
     // Allow ordinary objects (magic fn_obj descriptors from tests) — don't bail for non-Function.
-    let mut stored_bound = Vec::new();
-    if matches!(target_kind, ObjectKind::HostFunction(idx) if idx == invoke_bound_idx)
-        && existing_bound.len() >= 3
-    {
+    let is_existing_bound_wrapper = matches!(&target_kind, ObjectKind::HostFunction(idx) if *idx == invoke_bound_idx)
+        && existing_bound.len() >= 3;
+    let mut stored_bound = if is_existing_bound_wrapper {
+        Vec::with_capacity(existing_bound.len() + bound.len().saturating_sub(1))
+    } else {
+        Vec::with_capacity(3 + bound.len().saturating_sub(1))
+    };
+    if is_existing_bound_wrapper {
         stored_bound.push(existing_bound[0].clone());
         stored_bound.push(existing_bound[1].clone());
         stored_bound.push(existing_bound[2].clone());
         stored_bound.extend(existing_bound.iter().skip(3).cloned());
-        stored_bound.extend(bound.into_iter().skip(1));
+        stored_bound.extend(bound.iter().skip(1).cloned());
     } else {
         stored_bound.push(target.clone());
         stored_bound.push(bound.first().cloned().unwrap_or(Value::Undefined));
         stored_bound.push(target_proto.clone());
-        stored_bound.extend(bound.into_iter().skip(1));
+        stored_bound.extend(bound.iter().skip(1).cloned());
     }
 
     let mut wrapper = Object::new();
+    wrapper.properties.reserve(
+        4 + usize::from(target_non_ctor)
+            + usize::from(!matches!(target_proto, Value::Null | Value::Undefined)),
+    );
     wrapper.kind = ObjectKind::HostFunction(invoke_bound_idx);
     let consumed_args = stored_bound.len().saturating_sub(3);
     wrapper.properties.insert(
@@ -1177,7 +1663,7 @@ fn bind_function(target: &Value, bound: Vec<Value>, invoke_bound_idx: usize) -> 
     }
     wrapper.properties.insert(
         "name".into(),
-        Value::String(Arc::from(format!("bound {}", target_name).as_str())),
+        Value::String(crate::keys::concat2_arc("bound ", &target_name)),
     );
     wrapper.properties.insert(
         "length".into(),

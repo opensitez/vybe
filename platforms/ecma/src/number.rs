@@ -14,6 +14,7 @@
 //! ships `wasm:js-number` natively + provides `ecma:number` shims
 //! has the full ECMA-262 numeric surface.
 
+use std::borrow::Cow;
 use std::sync::{Arc, Mutex, OnceLock};
 use vybe_runtime::value::Object;
 use vybe_runtime::vm::HostFnDecl;
@@ -80,8 +81,9 @@ pub fn shared_number_prototype() -> Value {
 
 pub fn boxed_number(value: Value) -> Value {
     let mut obj = Object::new();
+    obj.properties.reserve(3);
     obj.properties
-        .insert("__type".into(), Value::String(Arc::from("Number")));
+        .insert("__type".into(), crate::keys::string_value("Number"));
     obj.properties.insert("__primitive".into(), value);
     obj.properties
         .insert("__proto__".into(), shared_number_prototype());
@@ -109,16 +111,21 @@ fn f_arg(args: &[Value], idx: usize) -> Option<f64> {
     }
 }
 
-fn s_arg(args: &[Value], idx: usize) -> String {
+fn s_arg(args: &[Value], idx: usize) -> Cow<'_, str> {
     match args.get(idx) {
-        Some(Value::String(text)) => text.to_string(),
-        Some(other) => format!("{}", other),
-        None => String::new(),
+        Some(Value::String(text)) => Cow::Borrowed(text.as_ref()),
+        Some(other) => crate::keys::value_display_cow(other),
+        None => Cow::Borrowed(""),
     }
 }
 
 fn s_val(text: &str) -> Value {
-    Value::String(Arc::from(text))
+    crate::keys::string_value(text)
+}
+
+#[inline]
+fn s_owned(text: String) -> Value {
+    crate::keys::owned_string_value(text)
 }
 
 pub fn register(vm: &mut VM) {
@@ -139,8 +146,8 @@ fn register_constructor(vm: &mut VM) {
         "ecma:number",
         "Number",
         Box::new(|ctx, args| {
-            let value = args.first().cloned().unwrap_or(Value::Undefined);
-            match coerce_to_number_with_context(ctx, &value) {
+            let value = args.first().unwrap_or(&Value::Undefined);
+            match coerce_to_number_with_context(ctx, value) {
                 Ok(n) => Value::F64(n),
                 Err(error) => {
                     ctx.throw_value(error);
@@ -153,8 +160,8 @@ fn register_constructor(vm: &mut VM) {
         "ecma:number",
         "new",
         Box::new(|ctx, args| {
-            let value = args.first().cloned().unwrap_or(Value::Undefined);
-            match coerce_to_number_with_context(ctx, &value) {
+            let value = args.first().unwrap_or(&Value::Undefined);
+            match coerce_to_number_with_context(ctx, value) {
                 Ok(n) => boxed_number(Value::F64(n)),
                 Err(error) => {
                     ctx.throw_value(error);
@@ -180,6 +187,23 @@ fn coerce_to_number_with_context(ctx: &mut HostContext, value: &Value) -> Result
     }
 }
 
+/// ECMA ToLength uses ToNumber, whose BigInt rule differs from Number(bigint).
+pub(crate) fn try_to_length(ctx: &mut HostContext, value: &Value) -> Result<u64, Value> {
+    let primitive = crate::value::try_to_primitive(ctx, value, "number")?;
+    if matches!(primitive, Value::BigInt(_) | Value::Symbol(_)) {
+        return Err(crate::error::new_error(
+            ctx,
+            "TypeError",
+            "Cannot convert length to a Number",
+        ));
+    }
+    let number = coerce_to_number(&primitive);
+    if number.is_nan() || number <= 0.0 {
+        return Ok(0);
+    }
+    Ok(number.trunc().min(9_007_199_254_740_991.0) as u64)
+}
+
 fn coerce_to_number(value: &Value) -> f64 {
     match value {
         Value::Null => 0.0,
@@ -199,14 +223,19 @@ fn coerce_to_number(value: &Value) -> f64 {
             let o = obj.lock().unwrap();
             match &o.kind {
                 vybe_runtime::value::ObjectKind::Array(elems) => {
-                    let joined: Vec<String> = elems
-                        .iter()
-                        .map(|v| match v {
-                            Value::Null | Value::Undefined => String::new(),
-                            other => format!("{}", other),
-                        })
-                        .collect();
-                    parse_to_number(&joined.join(","))
+                    let mut joined = String::with_capacity(elems.len().saturating_mul(4));
+                    for (index, value) in elems.iter().enumerate() {
+                        if index != 0 {
+                            joined.push(',');
+                        }
+                        if !matches!(value, Value::Null | Value::Undefined) {
+                            match value {
+                                Value::String(text) => joined.push_str(text),
+                                other => joined.push_str(&crate::keys::value_display_string(other)),
+                            }
+                        }
+                    }
+                    parse_to_number(&joined)
                 }
                 _ if matches!(o.properties.get("__type"), Some(Value::String(s)) if s.as_ref() == "Date") => {
                     o.properties
@@ -528,26 +557,68 @@ fn parse_int_ecma(input: &str, radix: u32) -> f64 {
     sign * (acc as f64)
 }
 
-/// ECMA-262 §19.2.5 ParseFloat: skip leading whitespace, parse the
+/// ECMA-262 §19.2.4 ParseFloat: skip leading whitespace, parse the
 /// longest substring that looks like a float; return NaN if the
 /// prefix isn't a valid number start.
 fn parse_float_ecma(input: &str) -> f64 {
-    let trimmed = input.trim_start();
-    if trimmed.is_empty() {
+    let trimmed = input.trim_start_matches(|ch| {
+        matches!(ch,
+            '\t' | '\n' | '\x0b' | '\x0c' | '\r' | ' '
+            | '\u{a0}' | '\u{1680}' | '\u{2000}'..='\u{200a}'
+            | '\u{2028}' | '\u{2029}' | '\u{202f}' | '\u{205f}'
+            | '\u{3000}' | '\u{feff}'
+        )
+    });
+    let bytes = trimmed.as_bytes();
+    let mut end = usize::from(matches!(bytes.first(), Some(b'+' | b'-')));
+    if trimmed[end..].starts_with("Infinity") {
+        return if bytes.first() == Some(&b'-') {
+            f64::NEG_INFINITY
+        } else {
+            f64::INFINITY
+        };
+    }
+    // Most calls contain a complete numeric string. Parse those directly,
+    // without first walking the same digits in the prefix scanner. Restrict
+    // this path to decimal starts so Rust's `inf`/`NaN` extensions cannot
+    // bypass the ECMAScript grammar.
+    if bytes.get(end).is_some_and(|byte| byte.is_ascii_digit() || *byte == b'.') {
+        if let Ok(number) = trimmed.parse::<f64>() {
+            return number;
+        }
+    }
+    let integer_start = end;
+    while bytes.get(end).is_some_and(|byte| byte.is_ascii_digit()) {
+        end += 1;
+    }
+    let mut digits = end - integer_start;
+    if bytes.get(end) == Some(&b'.') {
+        end += 1;
+        let fraction_start = end;
+        while bytes.get(end).is_some_and(|byte| byte.is_ascii_digit()) {
+            end += 1;
+        }
+        digits += end - fraction_start;
+    }
+    if digits == 0 {
         return f64::NAN;
     }
-
-    // Try progressively shorter prefixes until one parses. Slow but
-    // correct; ECMA's algorithm is "longest valid prefix".
-    let bytes = trimmed.as_bytes();
-    let mut end = bytes.len();
-    while end > 0 {
-        if let Ok(n) = trimmed[..end].parse::<f64>() {
-            return n;
+    if matches!(bytes.get(end), Some(b'e' | b'E')) {
+        let exponent_start = end;
+        end += 1;
+        if matches!(bytes.get(end), Some(b'+' | b'-')) {
+            end += 1;
         }
-        end -= 1;
+        let exponent_digits = end;
+        while bytes.get(end).is_some_and(|byte| byte.is_ascii_digit()) {
+            end += 1;
+        }
+        if end == exponent_digits {
+            end = exponent_start;
+        }
     }
-    f64::NAN
+    // Only ASCII grammar bytes were consumed, so this is a UTF-8 boundary.
+    trimmed[..end].parse::<f64>().unwrap_or(f64::NAN)
 }
 
 // ── Number.prototype methods ──────────────────────────────────────
@@ -595,7 +666,7 @@ fn register_prototype(vm: &mut VM) {
                 return s_val(&js_nonfinite_str(n));
             }
             let n = if n == 0.0 { 0.0 } else { n };
-            s_val(&format!("{:.1$}", n, digits))
+            s_owned(format!("{:.1$}", n, digits))
         }),
     );
 
@@ -621,12 +692,12 @@ fn register_prototype(vm: &mut VM) {
             if radix == 10 {
                 // Integer-valued floats print without trailing ".0" per JS.
                 if n.is_finite() && n.fract() == 0.0 {
-                    return s_val(&format!("{}", n as i64));
+                    return s_owned((n as i64).to_string());
                 }
-                return s_val(&format!("{}", n));
+                return s_owned(n.to_string());
             }
             if !n.is_finite() {
-                return s_val(&format!("{}", n));
+                return s_owned(n.to_string());
             }
             // Integer-only radix conversion (ECMA's algorithm for
             // fractional values is quite involved; this covers the
@@ -647,7 +718,7 @@ fn register_prototype(vm: &mut VM) {
             if negative {
                 out.insert(0, '-');
             }
-            s_val(&out)
+            s_owned(out)
         }),
     );
 
@@ -666,10 +737,10 @@ fn register_prototype(vm: &mut VM) {
             let n = match args.first() {
                 Some(Value::F64(f)) => *f,
                 Some(Value::I32(i)) => *i as f64,
-                _ => return Value::String(Arc::from("0")),
+                _ => return crate::keys::string_value("0"),
             };
             if !n.is_finite() {
-                return Value::String(Arc::from(format!("{}", n).as_str()));
+                return s_owned(n.to_string());
             }
             // ECMA-402 §16.2 default formatting: grouped integer part,
             // up to 3 fraction digits.
@@ -677,7 +748,7 @@ fn register_prototype(vm: &mut VM) {
             let neg = rounded < 0.0;
             let abs = rounded.abs();
             let int_part = abs.trunc();
-            let int_str = format!("{}", int_part as u64);
+            let int_str = (int_part as u64).to_string();
             let mut grouped = String::new();
             for (i, c) in int_str.chars().enumerate() {
                 if i > 0 && (int_str.len() - i) % 3 == 0 {
@@ -696,7 +767,7 @@ fn register_prototype(vm: &mut VM) {
             if neg {
                 grouped.insert(0, '-');
             }
-            Value::String(Arc::from(grouped.as_str()))
+            s_owned(grouped)
         }),
     );
 
@@ -730,13 +801,12 @@ fn register_prototype(vm: &mut VM) {
                 Some(Value::I32(d)) => format!("{:.1$e}", n, *d as usize),
                 _ => format!("{:e}", n),
             };
-            let parts: Vec<&str> = raw.splitn(2, 'e').collect();
-            if parts.len() == 2 {
-                let exp: i32 = parts[1].parse().unwrap_or(0);
+            if let Some((mantissa, exponent)) = raw.split_once('e') {
+                let exp: i32 = exponent.parse().unwrap_or(0);
                 let sign = if exp >= 0 { "+" } else { "" };
-                s_val(&format!("{}e{}{}", parts[0], sign, exp))
+                s_owned(format!("{}e{}{}", mantissa, sign, exp))
             } else {
-                s_val(&raw)
+                s_owned(raw)
             }
         }),
     );
@@ -749,7 +819,7 @@ fn register_prototype(vm: &mut VM) {
             let prec_f = match args.get(1) {
                 Some(Value::F64(p)) => *p,
                 Some(Value::I32(p)) => *p as f64,
-                _ => return s_val(&format!("{}", n)),
+                _ => return s_owned(n.to_string()),
             };
             // §21.1.3.5 step 8: RangeError unless 1 ≤ precision ≤ 100.
             if !(1.0..=100.0).contains(&prec_f) || prec_f.is_nan() {
@@ -769,7 +839,7 @@ fn register_prototype(vm: &mut VM) {
                 if prec <= 1 {
                     return s_val("0");
                 }
-                return s_val(&format!("0.{:0<1$}", "", prec - 1));
+                return s_owned(format!("0.{:0<1$}", "", prec - 1));
             }
             // The exponent must come from the value AFTER rounding to
             // `prec` significant digits ((9.99).toPrecision(1) rounds to
@@ -780,10 +850,87 @@ fn register_prototype(vm: &mut VM) {
             let e: i32 = exp_str.parse().unwrap_or(0);
             if e >= prec as i32 || e < -6 {
                 let sign = if e >= 0 { "+" } else { "" };
-                return s_val(&format!("{}e{}{}", mantissa, sign, e));
+                return s_owned(format!("{}e{}{}", mantissa, sign, e));
             }
             let decimal_places = ((prec as i32 - 1 - e).max(0)) as usize;
-            s_val(&format!("{:.1$}", n, decimal_places))
+            s_owned(format!("{:.1$}", n, decimal_places))
         }),
     );
+}
+
+#[cfg(test)]
+mod numeric_parser_speedup_tests {
+    use super::{parse_float_ecma, s_arg};
+    use std::borrow::Cow;
+    use vybe_runtime::Value;
+
+    #[test]
+    #[ignore = "explicit native microbenchmark; timing is not a conformance gate"]
+    fn native_parse_float_microbenchmark() {
+        use std::hint::black_box;
+        use std::time::Instant;
+
+        fn old_prefix_retry(input: &str) -> f64 {
+            let trimmed = input.trim_start();
+            let mut end = trimmed.len();
+            while end > 0 {
+                if let Ok(number) = trimmed[..end].parse::<f64>() {
+                    return number;
+                }
+                end -= 1;
+            }
+            f64::NAN
+        }
+
+        // ASCII only: the old implementation cannot safely handle UTF-8 suffixes.
+        // Include both a normal valid input and long trailing invalid text.
+        let suffix_input = format!("12345678901234567890.125{}", "x".repeat(1024));
+        for input in ["12345.125e-2", suffix_input.as_str()] {
+            assert_eq!(old_prefix_retry(input).to_bits(), parse_float_ecma(input).to_bits());
+            let iterations = 1000;
+            let started = Instant::now();
+            for _ in 0..iterations {
+                black_box(old_prefix_retry(black_box(input)));
+            }
+            let retry = started.elapsed();
+            let started = Instant::now();
+            for _ in 0..iterations {
+                black_box(parse_float_ecma(black_box(input)));
+            }
+            let scanned = started.elapsed();
+            eprintln!(
+                "native parseFloat, n={iterations}, input_bytes={}: prefix-retry={retry:?}, single-scan={scanned:?}",
+                input.len()
+            );
+        }
+    }
+
+    #[test]
+    fn decimal_prefixes_and_incomplete_exponents() {
+        for (input, expected) in [
+            ("12345.125e-2", 123.45125),
+            ("12.5px", 12.5), ("+.5rest", 0.5), ("1.tail", 1.0),
+            ("1e+2tail", 100.0), ("1e+tail", 1.0), ("1e", 1.0),
+            ("0x10", 0.0), ("1_000", 1.0), ("12\u{1f600}", 12.0),
+            ("\u{feff}\u{2028}-2.5", -2.5),
+        ] {
+            assert_eq!(parse_float_ecma(input), expected, "{input:?}");
+        }
+        assert_eq!(parse_float_ecma("-0tail").to_bits(), (-0.0f64).to_bits());
+        assert_eq!(parse_float_ecma("Infinitytail"), f64::INFINITY);
+        assert_eq!(parse_float_ecma("-Infinitytail"), f64::NEG_INFINITY);
+        assert_eq!(parse_float_ecma("1e999"), f64::INFINITY);
+        for input in ["", "+", ".", ".e1", "inf", "infinity", "NaN", "\u{85}1", "\u{1f600}12"] {
+            assert!(parse_float_ecma(input).is_nan(), "{input:?}");
+        }
+    }
+
+    #[test]
+    fn long_invalid_suffix_and_borrowed_input() {
+        let input = format!("3.25{}", "x".repeat(100_000));
+        assert_eq!(parse_float_ecma(&input), 3.25);
+        let args = [crate::keys::string_value(&input)];
+        assert!(matches!(s_arg(&args, 0), Cow::Borrowed(_)));
+        assert_eq!(s_arg(&[Value::I32(42)], 0), "42");
+    }
 }

@@ -83,7 +83,12 @@ mod tests {
     fn groupbox_caption_targets_legend_not_last_control() {
         let mut groupbox = Chunk::new("groupbox_text");
         emit_property(&mut groupbox, "text", true, true, 1);
-        assert!(groupbox.imports.iter().any(|item| item.name == "firstChild"));
+        assert!(
+            groupbox
+                .imports
+                .iter()
+                .any(|item| item.name == "firstChild")
+        );
         assert!(!groupbox.imports.iter().any(|item| item.name == "lastChild"));
 
         let mut checkbox = Chunk::new("checkbox_text");

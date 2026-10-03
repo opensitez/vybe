@@ -67,14 +67,16 @@ fn named_prototype(cell: &'static OnceLock<Arc<Mutex<Object>>>, tag: &'static st
         obj.properties
             .insert("__proto__".into(), crate::object::shared_object_prototype());
         obj.properties
-            .insert("@@toStringTag".into(), Value::String(Arc::from(tag)));
+            .insert("@@toStringTag".into(), crate::keys::string_value(tag));
+        obj.properties.insert(
+            "__nonenum".into(),
+            Value::Object(vybe_runtime::heap::alloc(Object::new_array(vec![
+                crate::keys::string_value("@@toStringTag"),
+            ]))),
+        );
         vybe_runtime::heap::alloc(obj)
     });
-    let value = Value::Object(proto.clone());
-    if let Value::Object(o) = &value {
-        crate::object::track_nonenum(o, "@@toStringTag");
-    }
-    value
+    Value::Object(proto.clone())
 }
 
 /// %WeakRef.prototype% — ECMA-262 §26.1.3.
@@ -95,7 +97,7 @@ fn new_weakref(target: Value) -> Value {
     obj.properties
         .insert("__proto__".into(), shared_weakref_prototype());
     obj.properties
-        .insert("__type".into(), Value::String(Arc::from("WeakRef")));
+        .insert("__type".into(), crate::keys::string_value("WeakRef"));
     obj.properties.insert(WEAKREF_TAG.into(), Value::I32(1));
     obj.properties.insert(WEAKREF_TARGET_PROP.into(), target);
     Value::Object(vybe_runtime::heap::alloc(obj))
@@ -108,7 +110,7 @@ fn new_finalization_registry(callback: Value) -> Value {
         .insert("__proto__".into(), shared_finalization_registry_prototype());
     obj.properties.insert(
         "__type".into(),
-        Value::String(Arc::from("FinalizationRegistry")),
+        crate::keys::string_value("FinalizationRegistry"),
     );
     obj.properties.insert(REGISTRY_TAG.into(), Value::I32(1));
     obj.properties

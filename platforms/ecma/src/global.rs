@@ -1,6 +1,39 @@
-use std::sync::Arc;
+use std::borrow::Cow;
 use vybe_runtime::value::Object;
 use vybe_runtime::{HostContext, VM, Value};
+
+const HEX_UPPER: &[u8; 16] = b"0123456789ABCDEF";
+
+#[inline]
+fn push_percent_byte(out: &mut String, byte: u8) {
+    out.push('%');
+    out.push(HEX_UPPER[(byte >> 4) as usize] as char);
+    out.push(HEX_UPPER[(byte & 0x0f) as usize] as char);
+}
+
+#[inline]
+fn hex_nibble(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+#[inline]
+fn arg_string(value: Option<&Value>) -> Option<Cow<'_, str>> {
+    match value {
+        Some(Value::String(text)) => Some(Cow::Borrowed(text.as_ref())),
+        Some(value) => Some(crate::keys::value_display_cow(value)),
+        None => None,
+    }
+}
+
+#[inline]
+fn owned_string_value(text: String) -> Value {
+    crate::keys::owned_string_value(text)
+}
 
 pub fn register(vm: &mut VM) {
     vm.register_host_fn(
@@ -25,10 +58,8 @@ pub fn register(vm: &mut VM) {
         "ecma:global",
         "parseInt",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            let s = match args.first() {
-                Some(Value::String(s)) => s.trim().to_string(),
-                Some(v) => format!("{}", v),
-                None => return Value::F64(f64::NAN),
+            let Some(s) = arg_string(args.first()) else {
+                return Value::F64(f64::NAN);
             };
             let radix = args.get(1).map(|v| v.as_i32()).unwrap_or(10).max(2).min(36) as u32;
             let s = s.trim_start();
@@ -68,12 +99,12 @@ pub fn register(vm: &mut VM) {
         "parseFloat",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let s = match args.first() {
-                Some(Value::String(s)) => s.trim().to_string(),
+                Some(Value::String(s)) => s.trim(),
                 Some(Value::F64(n)) => return Value::F64(*n),
                 Some(Value::I32(n)) => return Value::F64(*n as f64),
                 _ => return Value::F64(f64::NAN),
             };
-            match s.trim().parse::<f64>() {
+            match s.parse::<f64>() {
                 Ok(n) => Value::F64(n),
                 Err(_) => Value::F64(f64::NAN),
             }
@@ -136,26 +167,25 @@ pub fn register(vm: &mut VM) {
         "ecma:global",
         "encodeURIComponent",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            let s = match args.first() {
-                Some(v) => format!("{}", v),
+            let s = match arg_string(args.first()) {
+                Some(s) => s,
                 None => return Value::Undefined,
             };
-            let encoded: String = s
-                .chars()
-                .map(|c| {
-                    if c.is_alphanumeric()
-                        || matches!(c, '-' | '_' | '.' | '!' | '~' | '*' | '\'' | '(' | ')')
-                    {
-                        c.to_string()
-                    } else {
-                        c.to_string()
-                            .bytes()
-                            .map(|b| format!("%{:02X}", b))
-                            .collect()
+            let mut encoded = String::with_capacity(s.len());
+            for c in s.chars() {
+                if c.is_alphanumeric()
+                    || matches!(c, '-' | '_' | '.' | '!' | '~' | '*' | '\'' | '(' | ')')
+                {
+                    encoded.push(c);
+                } else {
+                    let mut buf = [0u8; 4];
+                    let len = c.encode_utf8(&mut buf).len();
+                    for &byte in &buf[..len] {
+                        push_percent_byte(&mut encoded, byte);
                     }
-                })
-                .collect();
-            Value::String(Arc::from(encoded.as_str()))
+                }
+            }
+            owned_string_value(encoded)
         }),
     );
 
@@ -163,11 +193,11 @@ pub fn register(vm: &mut VM) {
         "ecma:global",
         "decodeURIComponent",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            let s = match args.first() {
-                Some(v) => format!("{}", v),
+            let s = match arg_string(args.first()) {
+                Some(s) => s,
                 None => return Value::Undefined,
             };
-            Value::String(Arc::from(decode_uri(&s).as_str()))
+            owned_string_value(decode_uri(&s))
         }),
     );
 
@@ -175,47 +205,46 @@ pub fn register(vm: &mut VM) {
         "ecma:global",
         "encodeURI",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            let s = match args.first() {
-                Some(v) => format!("{}", v),
+            let s = match arg_string(args.first()) {
+                Some(s) => s,
                 None => return Value::Undefined,
             };
-            let encoded: String = s
-                .chars()
-                .map(|c| {
-                    if c.is_alphanumeric()
-                        || matches!(
-                            c,
-                            '-' | '_'
-                                | '.'
-                                | '!'
-                                | '~'
-                                | '*'
-                                | '\''
-                                | '('
-                                | ')'
-                                | ';'
-                                | ','
-                                | '/'
-                                | '?'
-                                | ':'
-                                | '@'
-                                | '&'
-                                | '='
-                                | '+'
-                                | '$'
-                                | '#'
-                        )
-                    {
-                        c.to_string()
-                    } else {
-                        c.to_string()
-                            .bytes()
-                            .map(|b| format!("%{:02X}", b))
-                            .collect()
+            let mut encoded = String::with_capacity(s.len());
+            for c in s.chars() {
+                if c.is_alphanumeric()
+                    || matches!(
+                        c,
+                        '-' | '_'
+                            | '.'
+                            | '!'
+                            | '~'
+                            | '*'
+                            | '\''
+                            | '('
+                            | ')'
+                            | ';'
+                            | ','
+                            | '/'
+                            | '?'
+                            | ':'
+                            | '@'
+                            | '&'
+                            | '='
+                            | '+'
+                            | '$'
+                            | '#'
+                    )
+                {
+                    encoded.push(c);
+                } else {
+                    let mut buf = [0u8; 4];
+                    let len = c.encode_utf8(&mut buf).len();
+                    for &byte in &buf[..len] {
+                        push_percent_byte(&mut encoded, byte);
                     }
-                })
-                .collect();
-            Value::String(Arc::from(encoded.as_str()))
+                }
+            }
+            owned_string_value(encoded)
         }),
     );
 
@@ -223,11 +252,11 @@ pub fn register(vm: &mut VM) {
         "ecma:global",
         "decodeURI",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            let s = match args.first() {
-                Some(v) => format!("{}", v),
+            let s = match arg_string(args.first()) {
+                Some(s) => s,
                 None => return Value::Undefined,
             };
-            Value::String(Arc::from(decode_uri(&s).as_str()))
+            owned_string_value(decode_uri(&s))
         }),
     );
 }
@@ -252,16 +281,13 @@ fn to_number(v: &Value) -> f64 {
 }
 
 fn decode_uri(s: &str) -> String {
-    let bytes: Vec<u8> = s.as_bytes().to_vec();
-    let mut out = Vec::new();
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let (Some(h), Some(l)) = (
-                (bytes[i + 1] as char).to_digit(16),
-                (bytes[i + 2] as char).to_digit(16),
-            ) {
-                out.push((h * 16 + l) as u8);
+            if let (Some(h), Some(l)) = (hex_nibble(bytes[i + 1]), hex_nibble(bytes[i + 2])) {
+                out.push((h << 4) | l);
                 i += 3;
                 continue;
             }

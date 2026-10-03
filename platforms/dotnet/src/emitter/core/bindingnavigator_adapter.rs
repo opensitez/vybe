@@ -4,7 +4,7 @@ use vybe_compiler::primitives::class_slots::{Dest, ObjSource};
 use vybe_compiler::primitives::instructions::core_wasm;
 use vybe_compiler::primitives::{class_slots, globals, ops, strings};
 use vybe_runtime::opcode::Op;
-use vybe_runtime::{opcode::heaptype::HT_EXTERN, Chunk};
+use vybe_runtime::{Chunk, opcode::heaptype::HT_EXTERN};
 
 use super::bindingsource_adapter::{self, Move};
 use super::object_fields::field_slot;
@@ -189,9 +189,7 @@ pub fn emit_set_source(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
         }
         let handler = callback(chunks, mode, line);
         let c = &mut chunks[current];
-        vybe_compiler::primitives::gui::emit_add_event_listener(
-            c, button, "click", handler, line,
-        );
+        vybe_compiler::primitives::gui::emit_add_event_listener(c, button, "click", handler, line);
     }
     refresh(chunks, current, source, navigator, line);
     chunks[current].emit_ref_null(HT_EXTERN, line);

@@ -686,7 +686,7 @@ pub fn run() {
         );
         runtime_compiler.set_include_cache(
             std::sync::Arc::clone(&cli_compile_cache)
-                as std::sync::Arc<dyn vybe_compiler::dynamic::IncludeCompileCache>,
+                as std::sync::Arc<dyn vybe_compiler::dynamic::IncludeCompileCache>
         );
         match (&eval_source, &eval_language) {
             (Some(source), Some(language_name)) => {
@@ -814,7 +814,7 @@ pub fn run() {
                 use vybe_platform_web::engine::{self, DomOp, DomValue};
                 if let Some(node) = crate::gui_document::node_by_id(control) {
                     let document = crate::gui_document::active();
-                    if let DomValue::Rect { x, y, width, height } =
+                    if let DomValue::Rect { x, y, width, height ,} =
                         engine::apply(document, DomOp::BoundingClientRect(node))
                     {
                         let (client_x, client_y) =
@@ -822,7 +822,7 @@ pub fn run() {
                         for kind in ["mousemove", "mousedown", "mouseup"] {
                             engine::apply(document, DomOp::DispatchPointer {
                                 kind: kind.into(), client_x, client_y, button: 0,
-                            });
+                            },);
                         }
                         let mut clicked = false;
                         let mut result = vybe_runtime::Value::Null;
@@ -877,131 +877,136 @@ pub fn run() {
 
     // ── Run ─────────────────────────────────────────────────────────────────
     loop {
-    let _report_scope = vybe_runtime::debugger::DebugReportScope::enter(vm.debug_report());
-    let mut runtime_compiler =
-        crate::dynamic::RuntimeCompilerService::with_capabilities(&mut vm, dynamic_compile_caps.clone());
-    runtime_compiler.set_include_cache(
-        std::sync::Arc::clone(&cli_compile_cache)
-            as std::sync::Arc<dyn vybe_compiler::dynamic::IncludeCompileCache>,
-    );
+        let _report_scope = vybe_runtime::debugger::DebugReportScope::enter(vm.debug_report());
+        let mut runtime_compiler = crate::dynamic::RuntimeCompilerService::with_capabilities(
+            &mut vm,
+            dynamic_compile_caps.clone(),
+        );
+        runtime_compiler.set_include_cache(std::sync::Arc::clone(&cli_compile_cache)
+            as std::sync::Arc<dyn vybe_compiler::dynamic::IncludeCompileCache>);
 
-    // Link the other languages in first. Each was parsed and compiled by its
-    // own front-end; loading it here puts its functions and classes in the
-    // shared global table and runs its top-level code, so the entry unit
-    // starts with everything already defined.
-    for unit in &secondary_units {
-        eprintln!("[vybex] Linking {} ({})", unit.name, unit.language.name);
-        if let Err(e) = runtime_compiler.run_program_unit(unit) {
-            eprintln!("Error in {} ({}): {e}", unit.name, unit.language.name);
-            std::process::exit(1);
+        // Link the other languages in first. Each was parsed and compiled by its
+        // own front-end; loading it here puts its functions and classes in the
+        // shared global table and runs its top-level code, so the entry unit
+        // starts with everything already defined.
+        for unit in &secondary_units {
+            eprintln!("[vybex] Linking {} ({})", unit.name, unit.language.name);
+            if let Err(e) = runtime_compiler.run_program_unit(unit) {
+                eprintln!("Error in {} ({}): {e}", unit.name, unit.language.name);
+                std::process::exit(1);
+            }
         }
-    }
 
-    let run_result = runtime_compiler.run_compiled(compiled.clone());
-    drop(runtime_compiler);
-    if let Some(report) = vm.debug_report() {
-        report.lock().unwrap().milestone("VM execution complete");
-        use std::io::Write;
-        let _ = std::io::stdout().flush();
-        report.lock().unwrap().milestone("stdout flush complete");
-    }
-    match run_result {
-        Ok(v) => {
-            // A GUI program hasn't really finished when `run_compiled` returns —
-            // the window/event loop is launched below. Under the debugger we
-            // must let that happen (so breakpoints in click handlers fire, via
-            // `vm.invoke` re-entering the instrumented dispatch loop); only
-            // report "exited" for a program with no GUI. Without this, `--debug`
-            // on a GUI app exited before the window ever showed.
-            //
-            // The SAME question the launch gate asks, so the debugger cannot
-            // decide a run is over while the gate goes on to open a window.
-            let gui_should_run = should_present(declared_shell);
-            if debug && !gui_should_run {
-                eprintln!("\n● program exited → {v}");
-                if let Some(baseline) = &restart_baseline {
-                    if vm.debug_wait_after_exit() {
-                        eprintln!("\n↻ restarting with cached includes…");
-                        crate::warm::reset(&mut vm, baseline);
-                        vm.debug_rearm_after_restart();
-                        bundle = match vybe_compiler::projects::load(&source_path) {
-                            Ok(bundle) => bundle,
-                            Err(error) => {
-                                eprintln!("Restart load error: {error}");
-                                std::process::exit(1);
-                            }
-                        };
-                        let mut compiler = crate::dynamic::RuntimeCompilerService::with_capabilities(
-                            &mut vm, dynamic_compile_caps.clone());
-                        compiler.set_include_cache(std::sync::Arc::clone(&cli_compile_cache)
-                            as std::sync::Arc<dyn vybe_compiler::dynamic::IncludeCompileCache>);
-                        compiled = match compiler.compile_bundle(&bundle) {
-                            Ok(compiled) => compiled,
-                            Err(error) => {
-                                eprintln!("Restart compile error: {error}");
-                                std::process::exit(1);
-                            }
-                        };
-                        continue;
+        let run_result = runtime_compiler.run_compiled(compiled.clone());
+        drop(runtime_compiler);
+        if let Some(report) = vm.debug_report() {
+            report.lock().unwrap().milestone("VM execution complete");
+            use std::io::Write;
+            let _ = std::io::stdout().flush();
+            report.lock().unwrap().milestone("stdout flush complete");
+        }
+        match run_result {
+            Ok(v) => {
+                // A GUI program hasn't really finished when `run_compiled` returns —
+                // the window/event loop is launched below. Under the debugger we
+                // must let that happen (so breakpoints in click handlers fire, via
+                // `vm.invoke` re-entering the instrumented dispatch loop); only
+                // report "exited" for a program with no GUI. Without this, `--debug`
+                // on a GUI app exited before the window ever showed.
+                //
+                // The SAME question the launch gate asks, so the debugger cannot
+                // decide a run is over while the gate goes on to open a window.
+                let gui_should_run = should_present(declared_shell);
+                if debug && !gui_should_run {
+                    eprintln!("\n● program exited → {v}");
+                    if let Some(baseline) = &restart_baseline {
+                        if vm.debug_wait_after_exit() {
+                            eprintln!("\n↻ restarting with cached includes…");
+                            crate::warm::reset(&mut vm, baseline);
+                            vm.debug_rearm_after_restart();
+                            bundle = match vybe_compiler::projects::load(&source_path) {
+                                Ok(bundle) => bundle,
+                                Err(error) => {
+                                    eprintln!("Restart load error: {error}");
+                                    std::process::exit(1);
+                                }
+                            };
+                            let mut compiler =
+                                crate::dynamic::RuntimeCompilerService::with_capabilities(
+                                    &mut vm,
+                                    dynamic_compile_caps.clone(),
+                                );
+                            compiler.set_include_cache(std::sync::Arc::clone(&cli_compile_cache)
+                                as std::sync::Arc<dyn vybe_compiler::dynamic::IncludeCompileCache>);
+                            compiled = match compiler.compile_bundle(&bundle) {
+                                Ok(compiled) => compiled,
+                                Err(error) => {
+                                    eprintln!("Restart compile error: {error}");
+                                    std::process::exit(1);
+                                }
+                            };
+                            continue;
+                        }
                     }
+                    std::process::exit(0);
                 }
+                if dap_port.is_some() && !gui_should_run {
+                    // The client sees the socket close and ends the session.
+                    std::process::exit(0);
+                }
+            }
+            Err(e) if e.contains("__debug_quit__") => {
+                eprintln!("\n● debugger quit");
                 std::process::exit(0);
             }
-            if dap_port.is_some() && !gui_should_run {
-                // The client sees the socket close and ends the session.
+            Err(e) if e.contains("__debug_restart__") => {
+                if let Some(baseline) = &restart_baseline {
+                    eprintln!("\n↻ restarting with cached includes…");
+                    crate::warm::reset(&mut vm, baseline);
+                    vm.debug_rearm_after_restart();
+                    bundle = match vybe_compiler::projects::load(&source_path) {
+                        Ok(bundle) => bundle,
+                        Err(error) => {
+                            eprintln!("Restart load error: {error}");
+                            std::process::exit(1);
+                        }
+                    };
+                    let mut compiler = crate::dynamic::RuntimeCompilerService::with_capabilities(
+                        &mut vm,
+                        dynamic_compile_caps.clone(),
+                    );
+                    compiler.set_include_cache(std::sync::Arc::clone(&cli_compile_cache)
+                        as std::sync::Arc<dyn vybe_compiler::dynamic::IncludeCompileCache>);
+                    compiled = match compiler.compile_bundle(&bundle) {
+                        Ok(compiled) => compiled,
+                        Err(error) => {
+                            eprintln!("Restart compile error: {error}");
+                            std::process::exit(1);
+                        }
+                    };
+                    continue;
+                }
+                // Replace this process with a fresh copy (same args) — clean restart.
+                use std::os::unix::process::CommandExt;
+                eprintln!("\n↻ restarting…");
+                let args: Vec<String> = std::env::args().skip(1).collect();
+                let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("vybex"));
+                let _ = std::process::Command::new(exe).args(&args).exec();
                 std::process::exit(0);
             }
-        }
-        Err(e) if e.contains("__debug_quit__") => {
-            eprintln!("\n● debugger quit");
-            std::process::exit(0);
-        }
-        Err(e) if e.contains("__debug_restart__") => {
-            if let Some(baseline) = &restart_baseline {
-                eprintln!("\n↻ restarting with cached includes…");
-                crate::warm::reset(&mut vm, baseline);
-                vm.debug_rearm_after_restart();
-                bundle = match vybe_compiler::projects::load(&source_path) {
-                    Ok(bundle) => bundle,
-                    Err(error) => {
-                        eprintln!("Restart load error: {error}");
-                        std::process::exit(1);
-                    }
-                };
-                let mut compiler = crate::dynamic::RuntimeCompilerService::with_capabilities(
-                    &mut vm, dynamic_compile_caps.clone());
-                compiler.set_include_cache(std::sync::Arc::clone(&cli_compile_cache)
-                    as std::sync::Arc<dyn vybe_compiler::dynamic::IncludeCompileCache>);
-                compiled = match compiler.compile_bundle(&bundle) {
-                    Ok(compiled) => compiled,
-                    Err(error) => {
-                        eprintln!("Restart compile error: {error}");
-                        std::process::exit(1);
-                    }
-                };
-                continue;
+            Err(e) => {
+                eprintln!("Runtime error: {e}");
+                if let Some(history) = vm.debug_recent_instructions() {
+                    eprintln!("  debugger recent instructions:\n{history}");
+                }
+                if let Some(report) = vm.debug_report() {
+                    eprintln!("  debugger timing report:");
+                    crate::debug_repl::print_report(&report, None);
+                }
+                std::process::exit(1);
             }
-            // Replace this process with a fresh copy (same args) — clean restart.
-            use std::os::unix::process::CommandExt;
-            eprintln!("\n↻ restarting…");
-            let args: Vec<String> = std::env::args().skip(1).collect();
-            let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("vybex"));
-            let _ = std::process::Command::new(exe).args(&args).exec();
-            std::process::exit(0);
         }
-        Err(e) => {
-            eprintln!("Runtime error: {e}");
-            if let Some(history) = vm.debug_recent_instructions() {
-                eprintln!("  debugger recent instructions:\n{history}");
-            }
-            if let Some(report) = vm.debug_report() {
-                eprintln!("  debugger timing report:");
-                crate::debug_repl::print_report(&report, None);
-            }
-            std::process::exit(1);
-        }
-    }
-    break;
+        break;
     }
 
     // The status the guest handed `wasi:cli/exit.exit-with-code` — `sys.exit(3)`,

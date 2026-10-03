@@ -11,9 +11,9 @@
 //!     cargo test -p vybe_platform_web --features engine-webcore
 
 use vybe_platform_web::canvas_backend::{
-    apply as paint, backend, query, Op2D, Query2D, Query2DValue, StringAttribute,
+    Op2D, Query2D, Query2DValue, StringAttribute, apply as paint, backend, query,
 };
-use vybe_platform_web::engine::{apply, DomOp, DomValue, DOCUMENT};
+use vybe_platform_web::engine::{DOCUMENT, DomOp, DomValue, apply};
 
 /// `measureText(text).width` on `target`, which must exist.
 fn measured(target: &str, text: &str) -> f32 {

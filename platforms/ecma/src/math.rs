@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use vybe_runtime::vm::HostFnDecl;
 use vybe_runtime::{FuncSig, HostContext, Param, VM, ValType, Value};
 
@@ -75,7 +73,7 @@ pub fn register(vm: &mut VM) {
             };
             let truncated = n.trunc();
             if truncated == 0.0 && truncated.is_sign_negative() {
-                Value::String(Arc::from("-0"))
+                crate::keys::string_value("-0")
             } else {
                 Value::F64(truncated)
             }
@@ -215,6 +213,16 @@ pub fn register(vm: &mut VM) {
     // with ExportEntry::Value so the compiler inlines these as constants.
     vm.register_host_value("ecma:math", "PI", Value::F64(std::f64::consts::PI));
     vm.register_host_value("ecma:math", "E", Value::F64(std::f64::consts::E));
+    vm.register_host_value("ecma:math", "LN2", Value::F64(std::f64::consts::LN_2));
+    vm.register_host_value("ecma:math", "LN10", Value::F64(std::f64::consts::LN_10));
+    vm.register_host_value("ecma:math", "LOG2E", Value::F64(std::f64::consts::LOG2_E));
+    vm.register_host_value("ecma:math", "LOG10E", Value::F64(std::f64::consts::LOG10_E));
+    vm.register_host_value("ecma:math", "SQRT2", Value::F64(std::f64::consts::SQRT_2));
+    vm.register_host_value(
+        "ecma:math",
+        "SQRT1_2",
+        Value::F64(std::f64::consts::FRAC_1_SQRT_2),
+    );
 
     unary(
         vm,
@@ -288,7 +296,7 @@ pub fn register(vm: &mut VM) {
             };
             let rounded = (n as f32) as f64;
             if rounded == 0.0 && rounded.is_sign_negative() {
-                Value::String(Arc::from("-0"))
+                crate::keys::string_value("-0")
             } else {
                 Value::F64(rounded)
             }

@@ -63,7 +63,7 @@ pub fn custom_sections(_chunks: &[Chunk]) -> Vec<(&'static str, Vec<u8>)> {
 
 // ── Binary encoding constants ───────────────────────────────────────
 
-pub const CONT_TYPE_PREFIX: u8 = 0x5D; // (cont $ft) in the type section
+pub const CONT_TYPE_PREFIX: u8 = crate::encoding::TYPE_CONT; // (cont $ft) in the type section
 pub const OP_CONT_NEW: u8 = 0xE0;
 pub const OP_CONT_BIND: u8 = 0xE1;
 pub const OP_SUSPEND: u8 = 0xE2;

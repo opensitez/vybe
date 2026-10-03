@@ -1,6 +1,8 @@
 //! WinForms Font points and style flags mapped to a browser CSS font.
 
-use vybe_compiler::primitives::class_slots::{self, ClassSlot, Dest, ObjSource, PlainNames, ValueSource};
+use vybe_compiler::primitives::class_slots::{
+    self, ClassSlot, Dest, ObjSource, PlainNames, ValueSource,
+};
 use vybe_compiler::primitives::{gui, ops, strings};
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;

@@ -41,6 +41,49 @@ static THENABLE_JOB_IDX: OnceLock<usize> = OnceLock::new();
 // thenable the finally callback returned.
 static PRESERVE_IDX: OnceLock<usize> = OnceLock::new();
 
+#[inline]
+fn promise_host_key(name: &'static str) -> &'static (String, String) {
+    macro_rules! key {
+        ($cell:ident, $host_name:literal) => {{
+            static $cell: OnceLock<(String, String)> = OnceLock::new();
+            $cell.get_or_init(|| ("ecma:promise".to_string(), $host_name.to_string()))
+        }};
+    }
+    match name {
+        "__settle_fulfilled" => key!(SETTLE_FULFILLED_KEY, "__settle_fulfilled"),
+        "__settle_rejected" => key!(SETTLE_REJECTED_KEY, "__settle_rejected"),
+        "__all_element" => key!(ALL_ELEMENT_KEY, "__all_element"),
+        "__allsettled_fulfilled" => key!(ALLSETTLED_FULFILLED_KEY, "__allsettled_fulfilled"),
+        "__allsettled_rejected" => key!(ALLSETTLED_REJECTED_KEY, "__allsettled_rejected"),
+        "__aggregate_reject" => key!(AGGREGATE_REJECT_KEY, "__aggregate_reject"),
+        "__any_fulfilled" => key!(ANY_FULFILLED_KEY, "__any_fulfilled"),
+        "__any_rejected" => key!(ANY_REJECTED_KEY, "__any_rejected"),
+        "__reaction" => key!(REACTION_KEY, "__reaction"),
+        "__resolve" => key!(RESOLVE_KEY, "__resolve"),
+        "__thenable_job" => key!(THENABLE_JOB_KEY, "__thenable_job"),
+        "__preserve" => key!(PRESERVE_KEY, "__preserve"),
+        _ => unreachable!("unknown ecma:promise host key"),
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PromiseState {
+    Pending,
+    Fulfilled,
+    Rejected,
+}
+
+impl PromiseState {
+    #[inline]
+    fn as_str(self) -> &'static str {
+        match self {
+            PromiseState::Pending => "pending",
+            PromiseState::Fulfilled => "fulfilled",
+            PromiseState::Rejected => "rejected",
+        }
+    }
+}
+
 pub fn register(vm: &mut VM) {
     // Internal settle helpers — never called directly from user code.
     // Signature: bound-args=[promise], runtime-arg=value.
@@ -190,7 +233,7 @@ pub fn register(vm: &mut VM) {
         "__reaction",
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
             let result_promise = ctx.capture(args, 0);
-            let state = format!("{}", ctx.capture(args, 1));
+            let state = promise_metadata_state_text(&ctx.capture(args, 1));
             let on_fulfilled = ctx.capture(args, 2);
             let on_rejected = ctx.capture(args, 3);
             let value = ctx
@@ -279,62 +322,56 @@ pub fn register(vm: &mut VM) {
         "__preserve",
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
             let promise = ctx.capture(args, 0);
-            let state = format!("{}", ctx.capture(args, 1));
+            let state = promise_metadata_state_text(&ctx.capture(args, 1));
             let forced = ctx.capture(args, 2);
-            mutate_promise_state(ctx, &promise, &state, forced);
+            mutate_promise_state(ctx, &promise, state, forced);
             Value::Undefined
         }),
     );
 
     let resolve_idx = vm
         .host_registry
-        .get(&("ecma:promise".to_string(), "__settle_fulfilled".to_string()))
+        .get(promise_host_key("__settle_fulfilled"))
         .copied()
         .expect("__settle_fulfilled just registered");
     let reject_idx = vm
         .host_registry
-        .get(&("ecma:promise".to_string(), "__settle_rejected".to_string()))
+        .get(promise_host_key("__settle_rejected"))
         .copied()
         .expect("__settle_rejected just registered");
     let all_element_idx = vm
         .host_registry
-        .get(&("ecma:promise".to_string(), "__all_element".to_string()))
+        .get(promise_host_key("__all_element"))
         .copied()
         .expect("__all_element just registered");
     let allsettled_fulfilled_idx = vm
         .host_registry
-        .get(&(
-            "ecma:promise".to_string(),
-            "__allsettled_fulfilled".to_string(),
-        ))
+        .get(promise_host_key("__allsettled_fulfilled"))
         .copied()
         .expect("__allsettled_fulfilled just registered");
     let allsettled_rejected_idx = vm
         .host_registry
-        .get(&(
-            "ecma:promise".to_string(),
-            "__allsettled_rejected".to_string(),
-        ))
+        .get(promise_host_key("__allsettled_rejected"))
         .copied()
         .expect("__allsettled_rejected just registered");
     let aggregate_reject_idx = vm
         .host_registry
-        .get(&("ecma:promise".to_string(), "__aggregate_reject".to_string()))
+        .get(promise_host_key("__aggregate_reject"))
         .copied()
         .expect("__aggregate_reject just registered");
     let any_fulfilled_idx = vm
         .host_registry
-        .get(&("ecma:promise".to_string(), "__any_fulfilled".to_string()))
+        .get(promise_host_key("__any_fulfilled"))
         .copied()
         .expect("__any_fulfilled just registered");
     let any_rejected_idx = vm
         .host_registry
-        .get(&("ecma:promise".to_string(), "__any_rejected".to_string()))
+        .get(promise_host_key("__any_rejected"))
         .copied()
         .expect("__any_rejected just registered");
     let reaction_idx = vm
         .host_registry
-        .get(&("ecma:promise".to_string(), "__reaction".to_string()))
+        .get(promise_host_key("__reaction"))
         .copied()
         .expect("__reaction just registered");
     let _ = PROMISE_REACTION_HOST_IDX.set(reaction_idx);
@@ -342,20 +379,14 @@ pub fn register(vm: &mut VM) {
     let _ = SETTLE_REJECTED_IDX.set(reject_idx);
     let resolve_through_idx = vm
         .host_registry
-        .get(&("ecma:promise".to_string(), "__resolve".to_string()))
+        .get(promise_host_key("__resolve"))
         .copied()
         .expect("__resolve just registered");
     let _ = RESOLVE_IDX.set(resolve_through_idx);
-    if let Some(&tj) = vm
-        .host_registry
-        .get(&("ecma:promise".to_string(), "__thenable_job".to_string()))
-    {
+    if let Some(&tj) = vm.host_registry.get(promise_host_key("__thenable_job")) {
         let _ = THENABLE_JOB_IDX.set(tj);
     }
-    if let Some(&preserve_idx) = vm
-        .host_registry
-        .get(&("ecma:promise".to_string(), "__preserve".to_string()))
-    {
+    if let Some(&preserve_idx) = vm.host_registry.get(promise_host_key("__preserve")) {
         let _ = PRESERVE_IDX.set(preserve_idx);
     }
 
@@ -458,11 +489,11 @@ pub fn register(vm: &mut VM) {
             for (i, input) in inputs.into_iter().enumerate() {
                 let p = promise_resolve_for_combinator(ctx, input);
                 let (state, value) = read_promise_state(&p);
-                if state == "fulfilled" {
+                if state == PromiseState::Fulfilled {
                     if let Some(done) = aggregate_record_element(&aggregate, i, value) {
                         settle_and_drain(ctx, &[aggregate.clone(), done], "fulfilled");
                     }
-                } else if state == "rejected" {
+                } else if state == PromiseState::Rejected {
                     settle_and_drain(ctx, &[aggregate.clone(), value], "rejected");
                     return aggregate;
                 } else {
@@ -498,10 +529,10 @@ pub fn register(vm: &mut VM) {
             for input in inputs {
                 let p = promise_resolve_for_combinator(ctx, input);
                 let (state, value) = read_promise_state(&p);
-                if state == "fulfilled" {
+                if state == PromiseState::Fulfilled {
                     mutate_promise_state(ctx, &race_promise, "fulfilled", value);
                     return race_promise;
-                } else if state == "rejected" {
+                } else if state == PromiseState::Rejected {
                     mutate_promise_state(ctx, &race_promise, "rejected", value);
                     return race_promise;
                 } else {
@@ -538,7 +569,7 @@ pub fn register(vm: &mut VM) {
             for (i, input) in inputs.into_iter().enumerate() {
                 let p = promise_resolve_for_combinator(ctx, input);
                 let (state, value) = read_promise_state(&p);
-                if state == "fulfilled" {
+                if state == PromiseState::Fulfilled {
                     if let Some(done) = aggregate_record_element(
                         &aggregate,
                         i,
@@ -546,7 +577,7 @@ pub fn register(vm: &mut VM) {
                     ) {
                         settle_and_drain(ctx, &[aggregate.clone(), done], "fulfilled");
                     }
-                } else if state == "rejected" {
+                } else if state == PromiseState::Rejected {
                     if let Some(done) = aggregate_record_element(
                         &aggregate,
                         i,
@@ -602,10 +633,10 @@ pub fn register(vm: &mut VM) {
             for (i, input) in inputs.into_iter().enumerate() {
                 let p = promise_resolve_for_combinator(ctx, input);
                 let (state, value) = read_promise_state(&p);
-                if state == "fulfilled" {
+                if state == PromiseState::Fulfilled {
                     settle_and_drain(ctx, &[aggregate.clone(), value], "fulfilled");
                     return aggregate;
-                } else if state == "rejected" {
+                } else if state == PromiseState::Rejected {
                     if let Some(error) = any_record_rejection(ctx, &aggregate, i, value) {
                         settle_and_drain(ctx, &[aggregate.clone(), error], "rejected");
                     }
@@ -686,20 +717,20 @@ pub fn register(vm: &mut VM) {
             let p = args.first().cloned().unwrap_or(Value::Undefined);
             let (state, value) = read_promise_state(&p);
             let mut obj = Object::new();
-            match state.as_str() {
-                "fulfilled" => {
+            match state {
+                PromiseState::Fulfilled => {
                     obj.properties
-                        .insert("status".into(), Value::String(Arc::from("fulfilled")));
+                        .insert("status".into(), crate::keys::string_value("fulfilled"));
                     obj.properties.insert("value".into(), value);
                 }
-                "rejected" => {
+                PromiseState::Rejected => {
                     obj.properties
-                        .insert("status".into(), Value::String(Arc::from("rejected")));
+                        .insert("status".into(), crate::keys::string_value("rejected"));
                     obj.properties.insert("reason".into(), value);
                 }
-                _ => {
+                PromiseState::Pending => {
                     obj.properties
-                        .insert("status".into(), Value::String(Arc::from("pending")));
+                        .insert("status".into(), crate::keys::string_value("pending"));
                 }
             }
             Value::Object(vybe_runtime::heap::alloc(obj))
@@ -792,13 +823,13 @@ pub fn dispatch_promise_method(
 
 fn then_impl(ctx: &mut HostContext, p: Value, on_fulfilled: Value, on_rejected: Value) -> Value {
     let (state, value) = read_promise_state(&p);
-    match state.as_str() {
-        "fulfilled" | "rejected" => {
+    match state {
+        PromiseState::Fulfilled | PromiseState::Rejected => {
             let result_promise = pending_promise_with_id(ctx);
             queue_promise_reaction(
                 ctx,
                 result_promise.clone(),
-                &state,
+                state.as_str(),
                 on_fulfilled,
                 on_rejected,
                 value,
@@ -806,7 +837,7 @@ fn then_impl(ctx: &mut HostContext, p: Value, on_fulfilled: Value, on_rejected: 
             result_promise
         }
         // Pending: register a reaction to fire when the promise settles.
-        _ => {
+        PromiseState::Pending => {
             let result_promise = pending_promise_with_id(ctx);
             add_reaction(&p, on_fulfilled, on_rejected, result_promise.clone());
             result_promise
@@ -819,8 +850,8 @@ fn finally_impl(ctx: &mut HostContext, p: Value, on_finally: Value) -> Value {
     if !is_callable(&on_finally) {
         return p;
     }
-    match state.as_str() {
-        "fulfilled" | "rejected" => {
+    match state {
+        PromiseState::Fulfilled | PromiseState::Rejected => {
             let result_promise = pending_promise_with_id(ctx);
             let reaction = finally_reaction(result_promise.clone(), state.as_str(), on_finally);
             ctx.queue_ready(reaction, value);
@@ -830,7 +861,7 @@ fn finally_impl(ctx: &mut HostContext, p: Value, on_finally: Value) -> Value {
         // throw) once the promise settles — mirrors then_impl's pending branch.
         // The forwarders make run_reaction invoke onFinally and preserve the
         // original settlement unless onFinally throws (§27.2.5.3).
-        _ => {
+        PromiseState::Pending => {
             let result_promise = pending_promise_with_id(ctx);
             let on_f = finalizer_forwarder(on_finally.clone(), "fulfilled");
             let on_r = finalizer_forwarder(on_finally, "rejected");
@@ -889,7 +920,7 @@ fn promise_reaction(
         "__bound_args".into(),
         Value::Object(vybe_runtime::heap::alloc(Object::new_array(vec![
             result_promise,
-            Value::String(Arc::from(state)),
+            crate::keys::string_value(state),
             on_fulfilled,
             on_rejected,
         ]))),
@@ -916,7 +947,7 @@ fn finalizer_forwarder(on_finally: Value, state: &str) -> Value {
         .insert("__promise_finally".into(), on_finally);
     obj.properties.insert(
         "__promise_finally_state".into(),
-        Value::String(Arc::from(state)),
+        crate::keys::string_value(state),
     );
     obj.kind = ObjectKind::HostFunction(idx);
     Value::Object(vybe_runtime::heap::alloc(obj))
@@ -969,7 +1000,7 @@ fn run_reaction(
                             bound_settler3(
                                 i,
                                 result_promise.clone(),
-                                Value::String(Arc::from(state)),
+                                crate::keys::string_value(state),
                                 value.clone(),
                             )
                         })
@@ -979,10 +1010,10 @@ fn run_reaction(
                         .map(|&i| bound_settler(i, result_promise.clone()))
                         .unwrap_or(Value::Undefined);
                     let (ts, tv) = read_promise_state(&temp);
-                    match ts.as_str() {
-                        "fulfilled" => ctx.queue_ready(preserve, tv),
-                        "rejected" => ctx.queue_ready(reject_fwd, tv),
-                        _ => {
+                    match ts {
+                        PromiseState::Fulfilled => ctx.queue_ready(preserve, tv),
+                        PromiseState::Rejected => ctx.queue_ready(reject_fwd, tv),
+                        PromiseState::Pending => {
                             add_reaction(&temp, preserve, reject_fwd, pending_promise_with_id(ctx))
                         }
                     }
@@ -1053,10 +1084,10 @@ fn resolve_promise_with_value(ctx: &mut HostContext, promise: &Value, value: Val
     }
     if is_promise(&value) {
         let (state, inner) = read_promise_state(&value);
-        match state.as_str() {
-            "fulfilled" => resolve_promise_with_value(ctx, promise, inner),
-            "rejected" => mutate_promise_state(ctx, promise, "rejected", inner),
-            _ => {
+        match state {
+            PromiseState::Fulfilled => resolve_promise_with_value(ctx, promise, inner),
+            PromiseState::Rejected => mutate_promise_state(ctx, promise, "rejected", inner),
+            PromiseState::Pending => {
                 // Pending: forward `value`'s settlement onto `promise` —
                 // fulfillment re-resolves (the settled value could itself
                 // be a thenable), rejection forwards raw.
@@ -1167,16 +1198,12 @@ fn settle_and_drain(ctx: &mut HostContext, args: &[Value], state: &str) {
     let reactions: Vec<Value> = {
         let Value::Object(obj) = &promise else { return };
         let mut o = obj.lock().unwrap();
-        let already = o
-            .properties
-            .get("__state")
-            .map(|v| format!("{}", v) != "pending")
-            .unwrap_or(false);
+        let already = promise_state_is_not_pending(o.properties.get("__state"));
         if already {
             return;
         }
         o.properties
-            .insert("__state".into(), Value::String(Arc::from(state)));
+            .insert("__state".into(), crate::keys::string_value(state));
         o.properties.insert("__value".into(), value.clone());
         // Drain the reactions list before releasing the lock.
         if let Some(Value::Object(arr)) = o.properties.shift_remove("__pending_reactions") {
@@ -1237,23 +1264,14 @@ fn mutate_promise_state(ctx: &mut HostContext, promise: &Value, state: &str, val
     let mut reactions: Vec<Value> = vec![];
     let promise_id = if let Value::Object(obj) = promise {
         let mut o = obj.lock().unwrap();
-        if o.properties
-            .get("__type")
-            .map(|v| format!("{}", v))
-            .as_deref()
-            == Some("Promise")
-        {
-            let already = o
-                .properties
-                .get("__state")
-                .map(|v| format!("{}", v) != "pending")
-                .unwrap_or(false);
+        if promise_type_is_promise(o.properties.get("__type")) {
+            let already = promise_state_is_not_pending(o.properties.get("__state"));
             if already {
                 return;
             }
             o.properties.shift_remove("__resolving_thenable");
             o.properties
-                .insert("__state".into(), Value::String(Arc::from(state)));
+                .insert("__state".into(), crate::keys::string_value(state));
             o.properties.insert("__value".into(), value.clone());
             if let Some(Value::Object(arr)) = o.properties.shift_remove("__pending_reactions") {
                 let mut a = arr.lock().unwrap();
@@ -1349,11 +1367,11 @@ fn settled_descriptor(state: &str, value: Value) -> Value {
     let mut obj = Object::new();
     if state == "rejected" {
         obj.properties
-            .insert("status".into(), Value::String(Arc::from("rejected")));
+            .insert("status".into(), crate::keys::string_value("rejected"));
         obj.properties.insert("reason".into(), value);
     } else {
         obj.properties
-            .insert("status".into(), Value::String(Arc::from("fulfilled")));
+            .insert("status".into(), crate::keys::string_value("fulfilled"));
         obj.properties.insert("value".into(), value);
     }
     Value::Object(vybe_runtime::heap::alloc(obj))
@@ -1423,14 +1441,14 @@ fn any_record_rejection(
     }
 }
 
-fn read_promise_state(v: &Value) -> (String, Value) {
+fn read_promise_state(v: &Value) -> (PromiseState, Value) {
     if let Value::Object(obj) = v {
         let o = obj.lock().unwrap();
         let state = o
             .properties
             .get("__state")
-            .map(|s| format!("{}", s))
-            .unwrap_or_default();
+            .map(promise_metadata_state)
+            .unwrap_or(PromiseState::Pending);
         let value = o
             .properties
             .get("__value")
@@ -1438,7 +1456,46 @@ fn read_promise_state(v: &Value) -> (String, Value) {
             .unwrap_or(Value::Undefined);
         return (state, value);
     }
-    ("fulfilled".to_string(), v.clone())
+    (PromiseState::Fulfilled, v.clone())
+}
+
+#[inline]
+fn promise_metadata_state(value: &Value) -> PromiseState {
+    match value {
+        Value::String(text) => match text.as_ref() {
+            "fulfilled" => PromiseState::Fulfilled,
+            "rejected" => PromiseState::Rejected,
+            _ => PromiseState::Pending,
+        },
+        other => match crate::keys::value_display_string(other).as_str() {
+            "fulfilled" => PromiseState::Fulfilled,
+            "rejected" => PromiseState::Rejected,
+            _ => PromiseState::Pending,
+        },
+    }
+}
+
+#[inline]
+fn promise_metadata_state_text(value: &Value) -> &'static str {
+    promise_metadata_state(value).as_str()
+}
+
+#[inline]
+fn promise_type_is_promise(value: Option<&Value>) -> bool {
+    match value {
+        Some(Value::String(text)) => text.as_ref() == "Promise",
+        Some(other) => crate::keys::value_display_string(other) == "Promise",
+        None => false,
+    }
+}
+
+#[inline]
+fn promise_state_is_not_pending(value: Option<&Value>) -> bool {
+    match value {
+        Some(Value::String(text)) => text.as_ref() != "pending",
+        Some(other) => crate::keys::value_display_string(other) != "pending",
+        None => false,
+    }
 }
 
 fn is_callable(v: &Value) -> bool {
@@ -1463,14 +1520,16 @@ pub fn shared_promise_prototype() -> Value {
             .insert("__proto__".into(), crate::object::shared_object_prototype());
         // §27.2.4.5 — `Promise.prototype[@@toStringTag]` is "Promise".
         obj.properties
-            .insert("@@toStringTag".into(), Value::String(Arc::from("Promise")));
+            .insert("@@toStringTag".into(), crate::keys::string_value("Promise"));
+        obj.properties.insert(
+            "__nonenum".into(),
+            Value::Object(vybe_runtime::heap::alloc(Object::new_array(vec![
+                crate::keys::string_value("@@toStringTag"),
+            ]))),
+        );
         vybe_runtime::heap::alloc(obj)
     });
-    let value = Value::Object(proto.clone());
-    if let Value::Object(o) = &value {
-        crate::object::track_nonenum(o, "@@toStringTag");
-    }
-    value
+    Value::Object(proto.clone())
 }
 
 pub fn make_promise(state: &str, value: Value) -> Value {
@@ -1482,9 +1541,9 @@ pub fn make_promise(state: &str, value: Value) -> Value {
     obj.properties
         .insert("__proto__".into(), shared_promise_prototype());
     obj.properties
-        .insert("__type".into(), Value::String(Arc::from("Promise")));
+        .insert("__type".into(), crate::keys::string_value("Promise"));
     obj.properties
-        .insert("__state".into(), Value::String(Arc::from(state)));
+        .insert("__state".into(), crate::keys::string_value(state));
     obj.properties.insert("__value".into(), value);
     Value::Object(vybe_runtime::heap::alloc(obj))
 }
@@ -1567,9 +1626,7 @@ fn get_then_method(val: &Value) -> Option<Value> {
 fn is_promise(v: &Value) -> bool {
     if let Value::Object(o) = v {
         let lock = o.lock().unwrap();
-        if let Some(t) = lock.properties.get("__type") {
-            return format!("{}", t) == "Promise";
-        }
+        return promise_type_is_promise(lock.properties.get("__type"));
     }
     false
 }

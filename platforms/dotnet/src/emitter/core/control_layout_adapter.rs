@@ -2,8 +2,8 @@
 
 use vybe_compiler::primitives::class_slots::{self, ClassSlot, Dest, ObjSource, PlainNames};
 use vybe_compiler::primitives::{gui, strings};
-use vybe_runtime::opcode::Op;
 use vybe_runtime::Chunk;
+use vybe_runtime::opcode::Op;
 
 fn field(chunk: &mut Chunk, object: u16, name: &str, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, object, line);

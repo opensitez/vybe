@@ -6,7 +6,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::canvas_backend::{
-    self, CanvasBackend, Op2D, Query2D, Query2DValue, TextMetrics2D,
+    self, CanvasBackend, Op2D, Query2D, Query2DValue, TextMetrics2D
 };
 
 struct OsBrowserCanvas;
@@ -30,8 +30,8 @@ enum RemoteQuery {
     Matrix([f32; 6]),
     Floats(Vec<f32>),
     Bytes(Vec<u8>),
-    Pixels { data: Vec<u8>, width: u32, height: u32 },
-    SourceImage { data: Vec<u8>, width: u32, height: u32, origin_clean: bool },
+    Pixels { data: Vec<u8>, width: u32, height: u32 ,},
+    SourceImage { data: Vec<u8>, width: u32, height: u32, origin_clean: bool ,},
     Metrics(TextMetrics2D),
     ContextAttributes {
         alpha: bool,
@@ -51,10 +51,26 @@ impl From<RemoteQuery> for Query2DValue {
             RemoteQuery::Matrix(value) => Self::Matrix(value),
             RemoteQuery::Floats(value) => Self::Floats(value),
             RemoteQuery::Bytes(value) => Self::Bytes(value),
-            RemoteQuery::Pixels { data, width, height } => Self::Pixels { data, width, height },
-            RemoteQuery::SourceImage { data, width, height, origin_clean } => {
-                Self::SourceImage { data, width, height, origin_clean }
-            }
+            RemoteQuery::Pixels {
+                data,
+                width,
+                height,
+            } => Self::Pixels {
+                data,
+                width,
+                height,
+            },
+            RemoteQuery::SourceImage {
+                data,
+                width,
+                height,
+                origin_clean,
+            } => Self::SourceImage {
+                data,
+                width,
+                height,
+                origin_clean,
+            },
             RemoteQuery::Metrics(value) => Self::Metrics(value),
             RemoteQuery::ContextAttributes {
                 alpha, desynchronized, color_space, color_type, will_read_frequently,
@@ -70,7 +86,7 @@ fn send(target: &str, operation: &str, payload: Value) -> Result<Value, String> 
     crate::engine_osbrowser::send(document, operation, json!({
         "target": target,
         "payload": payload,
-    }))
+    }),)
 }
 
 impl CanvasBackend for OsBrowserCanvas {
@@ -87,7 +103,9 @@ impl CanvasBackend for OsBrowserCanvas {
     }
 
     fn query(&self, target: &str, query: Query2D) -> Query2DValue {
-        let Ok(query) = serde_json::to_value(query) else { return Query2DValue::Absent };
+        let Ok(query) = serde_json::to_value(query) else {
+            return Query2DValue::Absent;
+        };
         send(target, "CanvasQuery", query)
             .ok()
             .and_then(|value| serde_json::from_value::<RemoteQuery>(value).ok())

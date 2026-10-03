@@ -7,10 +7,35 @@ const PROXY_TARGET: &str = "__vybe_proxy_target";
 const PROXY_HANDLER: &str = "__vybe_proxy_handler";
 const PROXY_REVOKED: &str = "__vybe_proxy_revoked";
 const PROXY_SET_TRAP_DEPTH: &str = "__vybe_proxy_set_trap_depth";
+const PROXY_APPLY_INLINE_ARG_LIMIT: usize = 8;
+
+#[inline]
+fn proxy_apply_host_key() -> &'static (String, String) {
+    static KEY: std::sync::OnceLock<(String, String)> = std::sync::OnceLock::new();
+    KEY.get_or_init(|| ("ecma:proxy".to_string(), "apply".to_string()))
+}
+
+#[inline]
+fn proxy_call_host_key() -> &'static (String, String) {
+    static KEY: std::sync::OnceLock<(String, String)> = std::sync::OnceLock::new();
+    KEY.get_or_init(|| ("ecma:proxy".to_string(), "call".to_string()))
+}
+
+#[inline]
+fn char_value(ch: char) -> Value {
+    crate::keys::char_value(ch)
+}
+
+#[inline]
+fn owned_string_value(text: String) -> Value {
+    crate::keys::owned_string_value(text)
+}
 
 fn new_proxy(target: Value, handler: Value, call_idx: Option<usize>) -> Value {
     let callable = call_idx.filter(|_| is_callable(&target));
     let mut obj = Object::new();
+    obj.properties
+        .reserve(if callable.is_some() { 11 } else { 4 });
     obj.properties.insert(PROXY_TAG.into(), Value::I32(1));
     obj.properties.insert(PROXY_TARGET.into(), target.clone());
     obj.properties.insert(PROXY_HANDLER.into(), handler);
@@ -20,10 +45,10 @@ fn new_proxy(target: Value, handler: Value, call_idx: Option<usize>) -> Value {
         obj.kind = ObjectKind::HostFunction(idx);
         obj.properties.insert(
             "__host_module".into(),
-            Value::String(Arc::from("ecma:proxy")),
+            crate::keys::string_value("ecma:proxy"),
         );
         obj.properties
-            .insert("__host_name".into(), Value::String(Arc::from("call")));
+            .insert("__host_name".into(), crate::keys::string_value("call"));
         obj.properties
             .insert("__host_idx".into(), Value::F64(idx as f64));
         obj.properties
@@ -87,24 +112,20 @@ fn get_trap(handler: &Value, name: &str) -> Option<Value> {
     }
 }
 
-fn get_target(proxy: &Arc<Mutex<Object>>) -> Value {
-    proxy
-        .lock()
-        .unwrap()
-        .properties
-        .get(PROXY_TARGET)
-        .cloned()
-        .unwrap_or(Value::Undefined)
-}
-
-fn get_handler(proxy: &Arc<Mutex<Object>>) -> Value {
-    proxy
-        .lock()
-        .unwrap()
-        .properties
-        .get(PROXY_HANDLER)
-        .cloned()
-        .unwrap_or(Value::Undefined)
+fn get_target_and_handler(proxy: &Arc<Mutex<Object>>) -> (Value, Value) {
+    let object = proxy.lock().unwrap();
+    (
+        object
+            .properties
+            .get(PROXY_TARGET)
+            .cloned()
+            .unwrap_or(Value::Undefined),
+        object
+            .properties
+            .get(PROXY_HANDLER)
+            .cloned()
+            .unwrap_or(Value::Undefined),
+    )
 }
 
 fn target_get(target: &Value, key: &str) -> Value {
@@ -118,7 +139,7 @@ fn target_get(target: &Value, key: &str) -> Value {
                     if key == "length" {
                         return Value::F64(v.len() as f64);
                     }
-                    if let Ok(i) = key.parse::<usize>() {
+                    if let Some(i) = crate::keys::non_negative_integer_index_key(key) {
                         return v.get(i).cloned().unwrap_or(Value::Undefined);
                     }
                 }
@@ -126,7 +147,7 @@ fn target_get(target: &Value, key: &str) -> Value {
                     if key == "length" {
                         return Value::F64(crate::typedarray::ta_live_length(ta) as f64);
                     }
-                    if let Ok(i) = key.parse::<usize>() {
+                    if let Some(i) = crate::keys::non_negative_integer_index_key(key) {
                         return crate::typedarray::read_element(ta, i);
                     }
                 }
@@ -137,12 +158,8 @@ fn target_get(target: &Value, key: &str) -> Value {
             if key == "length" {
                 return Value::F64(s.chars().count() as f64);
             }
-            if let Ok(i) = key.parse::<usize>() {
-                return s
-                    .chars()
-                    .nth(i)
-                    .map(|c| Value::String(Arc::from(c.to_string().as_str())))
-                    .unwrap_or(Value::Undefined);
+            if let Some(i) = crate::keys::non_negative_integer_index_key(key) {
+                return s.chars().nth(i).map(char_value).unwrap_or(Value::Undefined);
             }
             Value::Undefined
         }
@@ -179,8 +196,7 @@ fn target_set_with_receiver(
                     throw_revoked(ctx);
                     return;
                 }
-                let handler = get_handler(&proto_proxy);
-                let proto_target = get_target(&proto_proxy);
+                let (proto_target, handler) = get_target_and_handler(&proto_proxy);
                 if let Some(trap) = get_trap(&handler, "set") {
                     if is_callable(&trap) {
                         let _ = call_set_trap(
@@ -197,7 +213,7 @@ fn target_set_with_receiver(
         {
             let mut o = obj.lock().unwrap();
             if let ObjectKind::Array(v) = &mut o.kind {
-                if let Ok(i) = key.parse::<usize>() {
+                if let Some(i) = crate::keys::non_negative_integer_index_key(key) {
                     if i >= v.len() {
                         v.resize(i + 1, Value::Undefined);
                     }
@@ -219,12 +235,19 @@ fn target_set_with_receiver(
 }
 
 fn key_string(value: &Value) -> String {
-    match value {
-        Value::String(text) => text.to_string(),
-        // Symbol-keyed properties are stored under the Display form
-        // ("Symbol(desc)") — same convention as ecma:reflect/object.
-        _ => format!("{}", value),
-    }
+    crate::keys::property_key_string(value)
+}
+
+fn with_key_string<R>(value: &Value, f: impl FnOnce(&str) -> R) -> R {
+    crate::keys::with_property_key(value, f)
+}
+
+fn getter_key(key: &str) -> String {
+    crate::keys::getter_property_key(key)
+}
+
+fn setter_key(key: &str) -> String {
+    crate::keys::setter_property_key(key)
 }
 
 fn make_type_error(ctx: &HostContext, message: &str) -> Value {
@@ -263,6 +286,19 @@ fn apply_dispatch(ctx: &mut HostContext, args: &[Value]) -> Value {
                 }
             }
             let this_arg = args.get(1).cloned().unwrap_or(Value::Undefined);
+            let mut inline: [Value; PROXY_APPLY_INLINE_ARG_LIMIT] =
+                std::array::from_fn(|_| Value::Undefined);
+            if let Some(inline_len) = args
+                .get(2)
+                .and_then(|value| array_values_inline(value, &mut inline))
+            {
+                return crate::function::invoke_with_explicit_this(
+                    ctx,
+                    &target,
+                    this_arg,
+                    &inline[..inline_len],
+                );
+            }
             let invoke_args = args.get(2).map(array_values).unwrap_or_default();
             return crate::function::invoke_with_explicit_this(
                 ctx,
@@ -275,23 +311,34 @@ fn apply_dispatch(ctx: &mut HostContext, args: &[Value]) -> Value {
     if proxy_is_revoked(&proxy_obj) {
         return throw_revoked(ctx);
     }
-    let handler = get_handler(&proxy_obj);
-    let target = get_target(&proxy_obj);
+    let (target, handler) = get_target_and_handler(&proxy_obj);
     if !is_callable(&target) {
         ctx.throw_value(make_type_error(ctx, "Proxy target is not callable"));
         return Value::Undefined;
     }
     let this_arg = args.get(1).cloned().unwrap_or(Value::Undefined);
-    let args_list = args
-        .get(2)
-        .cloned()
-        .unwrap_or_else(|| Value::Object(vybe_runtime::heap::alloc(Object::new_array(Vec::new()))));
     if let Some(trap) = get_trap(&handler, "apply") {
         if is_callable(&trap) {
+            let args_list = args.get(2).cloned().unwrap_or_else(|| {
+                Value::Object(vybe_runtime::heap::alloc(Object::new_array(Vec::new())))
+            });
             return call_trap(ctx, &handler, &trap, &[target, this_arg, args_list]);
         }
     }
-    let invoke_args = array_values(&args_list);
+    let mut inline: [Value; PROXY_APPLY_INLINE_ARG_LIMIT] =
+        std::array::from_fn(|_| Value::Undefined);
+    if let Some(inline_len) = args
+        .get(2)
+        .and_then(|value| array_values_inline(value, &mut inline))
+    {
+        return crate::function::invoke_with_explicit_this(
+            ctx,
+            &target,
+            this_arg,
+            &inline[..inline_len],
+        );
+    }
+    let invoke_args = args.get(2).map(array_values).unwrap_or_default();
     crate::function::invoke_with_explicit_this(ctx, &target, this_arg, &invoke_args)
 }
 
@@ -299,15 +346,13 @@ pub fn get_dispatch(ctx: &mut HostContext, value: &Value, key_value: &Value) -> 
     let proxy_obj = match is_proxy(value) {
         Some(p) => p,
         None => {
-            let key = key_string(key_value);
-            return target_get(value, &key);
+            return with_key_string(key_value, |key| target_get(value, key));
         }
     };
     if proxy_is_revoked(&proxy_obj) {
         return throw_revoked(ctx);
     }
-    let handler = get_handler(&proxy_obj);
-    let target = get_target(&proxy_obj);
+    let (target, handler) = get_target_and_handler(&proxy_obj);
     let key = key_string(key_value);
     if let Some(trap) = get_trap(&handler, "get") {
         if is_callable(&trap) {
@@ -399,12 +444,12 @@ fn target_has(target: &Value, key: &str) -> bool {
                     if key == "length" {
                         return true;
                     }
-                    if let Ok(i) = key.parse::<usize>() {
+                    if let Some(i) = crate::keys::non_negative_integer_index_key(key) {
                         return i < v.len() && !crate::array::is_array_hole(&o, i);
                     }
                 }
             }
-            crate::object::proto_walk_get(obj, key).is_some()
+            crate::object::proto_walk_has(obj, key)
         }
         _ => false,
     }
@@ -420,20 +465,20 @@ fn target_own_property_exists(target: &Value, key: &str) -> bool {
             if key == "length" {
                 return true;
             }
-            if let Ok(i) = key.parse::<usize>() {
+            if let Some(i) = crate::keys::non_negative_integer_index_key(key) {
                 return i < values.len() && !crate::array::is_array_hole(&o, i);
             }
         }
         ObjectKind::TypedArray(ta) => {
-            if let Ok(i) = key.parse::<usize>() {
+            if let Some(i) = crate::keys::non_negative_integer_index_key(key) {
                 return i < crate::typedarray::ta_live_length(ta);
             }
         }
         _ => {}
     }
     o.properties.contains_key(key)
-        || o.properties.contains_key(&format!("__get_{}", key))
-        || o.properties.contains_key(&format!("__set_{}", key))
+        || crate::keys::with_getter_property_key(key, |getter| o.properties.contains_key(getter))
+        || crate::keys::with_setter_property_key(key, |setter| o.properties.contains_key(setter))
 }
 
 fn target_nonconfig_data_value(target: &Value, key: &str) -> Option<(Value, bool)> {
@@ -448,13 +493,13 @@ fn target_nonconfig_data_value(target: &Value, key: &str) -> Option<(Value, bool
         if key == "length" {
             return Some((Value::I32(values.len() as i32), true));
         }
-        if let Ok(i) = key.parse::<usize>() {
+        if let Some(i) = crate::keys::non_negative_integer_index_key(key) {
             if i < values.len() && !crate::array::is_array_hole(&o, i) {
                 return Some((values[i].clone(), true));
             }
         }
     }
-    if o.properties.contains_key(&format!("__get_{}", key)) {
+    if crate::keys::with_getter_property_key(key, |getter| o.properties.contains_key(getter)) {
         return None;
     }
     let value = o.properties.get(key).cloned()?;
@@ -469,7 +514,7 @@ fn target_delete(target: &Value, key: &str) -> bool {
             return false;
         }
         if let ObjectKind::Array(values) = &mut o.kind {
-            if let Ok(i) = key.parse::<usize>() {
+            if let Some(i) = crate::keys::non_negative_integer_index_key(key) {
                 if i < values.len() {
                     values[i] = Value::Undefined;
                     crate::array::mark_array_hole(&mut o, i);
@@ -486,10 +531,11 @@ fn target_delete(target: &Value, key: &str) -> bool {
 fn target_own_keys(target: &Value) -> Value {
     if let Value::Object(obj) = target {
         let o = obj.lock().unwrap();
-        let keys = crate::object::ordered_own_string_keys(&o)
-            .into_iter()
-            .map(|key| Value::String(Arc::from(key.as_str())))
-            .collect();
+        let own_keys = crate::object::ordered_own_string_keys(&o);
+        let mut keys = Vec::with_capacity(own_keys.len());
+        for key in own_keys {
+            keys.push(crate::keys::string_value(key.as_str()));
+        }
         return Value::Object(vybe_runtime::heap::alloc(Object::new_array(keys)));
     }
     Value::Object(vybe_runtime::heap::alloc(Object::new_array(Vec::new())))
@@ -506,17 +552,46 @@ fn array_values(value: &Value) -> Vec<Value> {
             .get("length")
             .map(|v| v.as_i32().max(0) as usize)
         {
-            return (0..length)
-                .map(|i| {
-                    o.properties
-                        .get(&i.to_string())
-                        .cloned()
-                        .unwrap_or(Value::Undefined)
-                })
-                .collect();
+            let mut values = Vec::with_capacity(length);
+            for i in 0..length {
+                values.push(crate::keys::with_index_key(i, |key| {
+                    o.properties.get(key).cloned().unwrap_or(Value::Undefined)
+                }));
+            }
+            return values;
         }
     }
     Vec::new()
+}
+
+fn array_values_inline<const N: usize>(value: &Value, inline: &mut [Value; N]) -> Option<usize> {
+    let Value::Object(obj) = value else {
+        return Some(0);
+    };
+    let o = obj.lock().unwrap();
+    if let ObjectKind::Array(values) = &o.kind {
+        if values.len() > inline.len() {
+            return None;
+        }
+        for (index, value) in values.iter().enumerate() {
+            inline[index] = value.clone();
+        }
+        return Some(values.len());
+    }
+    let length = o
+        .properties
+        .get("length")
+        .map(|v| v.as_i32().max(0) as usize)
+        .unwrap_or(0);
+    if length > inline.len() {
+        return None;
+    }
+    for (index, slot) in inline.iter_mut().enumerate().take(length) {
+        *slot = crate::keys::with_index_key(index, |key| {
+            o.properties.get(key).cloned().unwrap_or(Value::Undefined)
+        });
+    }
+    Some(length)
 }
 
 fn desc_bool(desc: &Value, key: &str, default: bool) -> bool {
@@ -617,8 +692,7 @@ pub fn get_own_property_descriptor_dispatch(
     if proxy_is_revoked(&proxy_obj) {
         return Some(throw_revoked(ctx));
     }
-    let handler = get_handler(&proxy_obj);
-    let target = get_target(&proxy_obj);
+    let (target, handler) = get_target_and_handler(&proxy_obj);
     let key = key_string(key_value);
     let target_desc = target_descriptor(&target, &key);
     if let Some(trap) = get_trap(&handler, "getOwnPropertyDescriptor") {
@@ -642,8 +716,7 @@ pub fn define_property_dispatch(
     if proxy_is_revoked(proxy_obj) {
         return Some(throw_revoked(ctx));
     }
-    let handler = get_handler(proxy_obj);
-    let target = get_target(proxy_obj);
+    let (target, handler) = get_target_and_handler(proxy_obj);
     let key = key_string(&key_value);
     let target_desc = target_descriptor(&target, &key);
     if let Some(trap) = get_trap(&handler, "defineProperty") {
@@ -715,8 +788,7 @@ pub fn own_keys_dispatch(ctx: &mut HostContext, value: &Value) -> Option<Value> 
     if proxy_is_revoked(&proxy_obj) {
         return Some(throw_revoked(ctx));
     }
-    let handler = get_handler(&proxy_obj);
-    let target = get_target(&proxy_obj);
+    let (target, handler) = get_target_and_handler(&proxy_obj);
     let result = if let Some(trap) = get_trap(&handler, "ownKeys") {
         if is_callable(&trap) {
             call_trap(ctx, &handler, &trap, std::slice::from_ref(&target))
@@ -832,8 +904,7 @@ fn construct_dispatch_inner(
         if proxy_is_revoked(&proxy_obj) {
             return throw_revoked(ctx);
         }
-        let handler = get_handler(&proxy_obj);
-        let target = get_target(&proxy_obj);
+        let (target, handler) = get_target_and_handler(&proxy_obj);
         if !is_constructor(&target) {
             ctx.throw_value(make_type_error(ctx, "Proxy target is not a constructor"));
             return Value::Undefined;
@@ -898,8 +969,8 @@ fn construct_dispatch_inner(
                 "message".into(),
                 match args.first() {
                     Some(Value::String(s)) => Value::String(s.clone()),
-                    Some(Value::Undefined) | None => Value::String(Arc::from("")),
-                    Some(other) => Value::String(Arc::from(format!("{other}").as_str())),
+                    Some(Value::Undefined) | None => crate::keys::string_value(""),
+                    Some(other) => owned_string_value(crate::keys::value_display_string(other)),
                 },
             );
             // AggregateError takes the iterable of errors as the first arg and
@@ -959,12 +1030,18 @@ fn construct_dispatch_inner(
         }
     }
     let this_obj = Value::Object(vybe_runtime::heap::alloc(this_value));
-    let result = crate::function::invoke_with_explicit_this(
-        ctx,
-        constructor,
-        this_obj.clone(),
-        &array_values(args_list),
-    );
+    let mut inline: [Value; 4] = std::array::from_fn(|_| Value::Undefined);
+    let result = if let Some(inline_len) = array_values_inline(args_list, &mut inline) {
+        crate::function::invoke_with_explicit_this(
+            ctx,
+            constructor,
+            this_obj.clone(),
+            &inline[..inline_len],
+        )
+    } else {
+        let args = array_values(args_list);
+        crate::function::invoke_with_explicit_this(ctx, constructor, this_obj.clone(), &args)
+    };
     if matches!(result, Value::Object(_)) {
         result
     } else {
@@ -978,19 +1055,13 @@ pub fn register(vm: &mut VM) {
         "apply",
         Box::new(|ctx: &mut HostContext, args: &[Value]| apply_dispatch(ctx, args)),
     );
-    let proxy_apply_idx = vm
-        .host_registry
-        .get(&("ecma:proxy".to_string(), "apply".to_string()))
-        .copied();
+    let proxy_apply_idx = vm.host_registry.get(proxy_apply_host_key()).copied();
     vm.register_host_fn(
         "ecma:proxy",
         "call",
         Box::new(|ctx: &mut HostContext, args: &[Value]| callable_proxy_dispatch(ctx, args)),
     );
-    let proxy_call_idx = vm
-        .host_registry
-        .get(&("ecma:proxy".to_string(), "call".to_string()))
-        .copied();
+    let proxy_call_idx = vm.host_registry.get(proxy_call_host_key()).copied();
 
     vm.register_host_fn(
         "ecma:proxy",
@@ -1020,18 +1091,19 @@ pub fn register(vm: &mut VM) {
                 Some(p) => p,
                 None => {
                     let target = args.first().cloned().unwrap_or(Value::Undefined);
-                    let key = args.get(1).map(key_string).unwrap_or_default();
+                    let undefined = Value::Undefined;
+                    let key_ref = args.get(1).unwrap_or(&undefined);
                     let val = args.get(2).cloned().unwrap_or(Value::Undefined);
-                    let key_value = args.get(1).cloned().unwrap_or(Value::Undefined);
-                    target_set(ctx, &target, key_value, &key, val);
-                    return Value::Bool(true);
+                    return with_key_string(key_ref, |key| {
+                        target_set(ctx, &target, key_ref.clone(), key, val);
+                        Value::Bool(true)
+                    });
                 }
             };
             if proxy_is_revoked(&proxy_obj) {
                 return throw_revoked(ctx);
             }
-            let handler = get_handler(&proxy_obj);
-            let target = get_target(&proxy_obj);
+            let (target, handler) = get_target_and_handler(&proxy_obj);
             let key_value = args.get(1).cloned().unwrap_or(Value::Undefined);
             let key = key_string(&key_value);
             let val = args.get(2).cloned().unwrap_or(Value::Undefined);
@@ -1105,15 +1177,15 @@ pub fn register(vm: &mut VM) {
                 Some(p) => p,
                 None => {
                     let target = args.first().cloned().unwrap_or(Value::Undefined);
-                    let key = args.get(1).map(key_string).unwrap_or_default();
-                    return Value::Bool(target_has(&target, &key));
+                    let undefined = Value::Undefined;
+                    let key_ref = args.get(1).unwrap_or(&undefined);
+                    return with_key_string(key_ref, |key| Value::Bool(target_has(&target, key)));
                 }
             };
             if proxy_is_revoked(&proxy_obj) {
                 return throw_revoked(ctx);
             }
-            let handler = get_handler(&proxy_obj);
-            let target = get_target(&proxy_obj);
+            let (target, handler) = get_target_and_handler(&proxy_obj);
             let key_value = args.get(1).cloned().unwrap_or(Value::Undefined);
             let key = key_string(&key_value);
             if let Some(trap) = get_trap(&handler, "has") {
@@ -1147,15 +1219,17 @@ pub fn register(vm: &mut VM) {
                 Some(p) => p,
                 None => {
                     let target = args.first().cloned().unwrap_or(Value::Undefined);
-                    let key = args.get(1).map(key_string).unwrap_or_default();
-                    return Value::Bool(target_delete(&target, &key));
+                    let undefined = Value::Undefined;
+                    let key_ref = args.get(1).unwrap_or(&undefined);
+                    return with_key_string(key_ref, |key| {
+                        Value::Bool(target_delete(&target, key))
+                    });
                 }
             };
             if proxy_is_revoked(&proxy_obj) {
                 return throw_revoked(ctx);
             }
-            let handler = get_handler(&proxy_obj);
-            let target = get_target(&proxy_obj);
+            let (target, handler) = get_target_and_handler(&proxy_obj);
             let key_value = args.get(1).cloned().unwrap_or(Value::Undefined);
             let key = key_string(&key_value);
             if let Some(trap) = get_trap(&handler, "deleteProperty") {
@@ -1202,7 +1276,9 @@ pub fn register(vm: &mut VM) {
                 ));
                 return Value::Undefined;
             };
-            crate::object::own_property_descriptor(&obj, &key_string(&key_value))
+            with_key_string(&key_value, |key| {
+                crate::object::own_property_descriptor(&obj, key)
+            })
         }),
     );
 
@@ -1227,8 +1303,8 @@ pub fn register(vm: &mut VM) {
             let key = key_string(&key_value);
             let mut o = obj.lock().unwrap();
             let exists = o.properties.contains_key(&key)
-                || o.properties.contains_key(&format!("__get_{}", key))
-                || o.properties.contains_key(&format!("__set_{}", key));
+                || o.properties.contains_key(&getter_key(&key))
+                || o.properties.contains_key(&setter_key(&key));
             if !exists && crate::object::is_not_extensible(&o) {
                 return Value::Bool(false);
             }
@@ -1249,11 +1325,11 @@ pub fn register(vm: &mut VM) {
                 return Value::Undefined;
             }
             if let Some(getter) = desc.properties.get("get").cloned() {
-                o.properties.insert(format!("__get_{}", key), getter);
+                o.properties.insert(getter_key(&key), getter);
                 o.properties.shift_remove(&key);
             }
             if let Some(setter) = desc.properties.get("set").cloned() {
-                o.properties.insert(format!("__set_{}", key), setter);
+                o.properties.insert(setter_key(&key), setter);
                 o.properties.shift_remove(&key);
             }
             if has_value || (!has_get && !has_set) {
@@ -1341,8 +1417,7 @@ pub fn register(vm: &mut VM) {
             if proxy_is_revoked(&proxy_obj) {
                 return throw_revoked(ctx);
             }
-            let handler = get_handler(&proxy_obj);
-            let target = get_target(&proxy_obj);
+            let (target, handler) = get_target_and_handler(&proxy_obj);
             let target_extensible = crate::object::value_is_extensible(&target);
             let reported = if let Some(trap) = get_trap(&handler, "isExtensible") {
                 if is_callable(&trap) {
@@ -1386,8 +1461,7 @@ pub fn register(vm: &mut VM) {
             if proxy_is_revoked(&proxy_obj) {
                 return throw_revoked(ctx);
             }
-            let handler = get_handler(&proxy_obj);
-            let target = get_target(&proxy_obj);
+            let (target, handler) = get_target_and_handler(&proxy_obj);
             let success = if let Some(trap) = get_trap(&handler, "preventExtensions") {
                 if is_callable(&trap) {
                     crate::boolean::to_boolean(&call_trap(ctx, &handler, &trap, &[target.clone()]))
@@ -1436,15 +1510,16 @@ pub fn register(vm: &mut VM) {
             let proxy_clone = proxy.clone();
             // revoke is represented as an object with __revoke_target pointing to the proxy
             let mut revoke_obj = Object::new();
+            revoke_obj.properties.reserve(7);
             if let Some(idx) = proxy_apply_idx {
                 revoke_obj.kind = ObjectKind::HostFunction(idx);
                 revoke_obj.properties.insert(
                     "__host_module".into(),
-                    Value::String(Arc::from("ecma:proxy")),
+                    crate::keys::string_value("ecma:proxy"),
                 );
                 revoke_obj
                     .properties
-                    .insert("__host_name".into(), Value::String(Arc::from("apply")));
+                    .insert("__host_name".into(), crate::keys::string_value("apply"));
                 revoke_obj
                     .properties
                     .insert("__host_idx".into(), Value::F64(idx as f64));
@@ -1454,7 +1529,7 @@ pub fn register(vm: &mut VM) {
                 );
                 revoke_obj
                     .properties
-                    .insert("name".into(), Value::String(Arc::from("revoke")));
+                    .insert("name".into(), crate::keys::string_value("revoke"));
                 revoke_obj
                     .properties
                     .insert("length".into(), Value::F64(0.0));

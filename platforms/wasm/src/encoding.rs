@@ -36,6 +36,7 @@ pub const TYPE_VOID: u8 = 0x40;
 // GC type encoding
 pub const GC_STRUCT: u8 = 0x5F; // -0x21: struct composite type
 pub const GC_ARRAY: u8 = 0x5E; // -0x22: array composite type
+pub const TYPE_CONT: u8 = 0x5D; // stack-switching proposal: (cont typeidx)
 pub const GC_SUB: u8 = 0x50; // -0x30: sub (open — further subtyping allowed)
 pub const GC_SUB_FINAL: u8 = 0x4F; // -0x31: sub final
 pub const GC_REC: u8 = 0x4E; // -0x32: recursive type group

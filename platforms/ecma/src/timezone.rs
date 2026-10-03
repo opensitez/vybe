@@ -19,7 +19,6 @@
 use chrono::{Offset, TimeZone as _, Utc};
 use chrono_tz::{TZ_VARIANTS, Tz};
 use std::str::FromStr;
-use std::sync::Arc;
 use vybe_runtime::value::Object;
 use vybe_runtime::{HostContext, VM, Value};
 
@@ -256,7 +255,7 @@ pub fn system_offset_seconds(ms: f64) -> i32 {
 }
 
 fn s(value: &str) -> Value {
-    Value::String(Arc::from(value))
+    crate::keys::string_value(value)
 }
 
 fn arg_str(args: &[Value], idx: usize) -> Option<String> {
@@ -277,7 +276,7 @@ fn arg_ms(args: &[Value], idx: usize) -> f64 {
 fn make_array(items: Vec<Value>) -> Value {
     let mut obj = Object::new_array(items);
     obj.properties
-        .insert("__type".into(), Value::String(Arc::from("Array")));
+        .insert("__type".into(), crate::keys::string_value("Array"));
     obj.properties
         .insert("__proto__".into(), crate::array::shared_array_prototype());
     Value::Object(vybe_runtime::heap::alloc(obj))
@@ -304,7 +303,7 @@ pub fn register(vm: &mut VM) {
             let Some(prefix) = arg_str(args, 0) else {
                 return make_array(vec![]);
             };
-            make_array(identifiers_with_prefix(&prefix).into_iter().map(|n| s(&n)).collect())
+            make_array(identifiers_with_prefix(&prefix).into_iter().map(|n| s(&n)).collect(),)
         }),
     );
 
@@ -315,7 +314,7 @@ pub fn register(vm: &mut VM) {
             let Some(country) = arg_str(args, 0) else {
                 return make_array(vec![]);
             };
-            make_array(identifiers_for_region(&country).into_iter().map(|n| s(&n)).collect())
+            make_array(identifiers_for_region(&country).into_iter().map(|n| s(&n)).collect(),)
         }),
     );
 

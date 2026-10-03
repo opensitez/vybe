@@ -35,14 +35,15 @@ static SEGMENTER_PROTOTYPE: OnceLock<Arc<Mutex<Object>>> = OnceLock::new();
 
 fn bound_host_fn_ref_by_idx(module: &str, name: &str, idx: usize, bound_args: Vec<Value>) -> Value {
     let mut obj = Object::new();
+    obj.properties.reserve(5);
     obj.properties
-        .insert("__host_module".into(), Value::String(Arc::from(module)));
+        .insert("__host_module".into(), crate::keys::string_value(module));
     obj.properties
-        .insert("__host_name".into(), Value::String(Arc::from(name)));
+        .insert("__host_name".into(), crate::keys::string_value(name));
     obj.properties
         .insert("__host_idx".into(), Value::F64(idx as f64));
     obj.properties
-        .insert("name".into(), Value::String(Arc::from(name)));
+        .insert("name".into(), crate::keys::string_value(name));
     obj.properties.insert(
         "__bound_args".into(),
         Value::Object(vybe_runtime::heap::alloc(Object::new_array(bound_args))),
@@ -68,7 +69,17 @@ pub fn register(vm: &mut VM) {
 // ── Common helpers ───────────────────────────────────────────────────
 
 fn s_val(text: &str) -> Value {
-    Value::String(Arc::from(text))
+    crate::keys::string_value(text)
+}
+
+fn s_owned(text: String) -> Value {
+    crate::keys::owned_string_value(text)
+}
+
+#[inline]
+fn collator_compare_host_key() -> &'static (String, String) {
+    static KEY: std::sync::OnceLock<(String, String)> = std::sync::OnceLock::new();
+    KEY.get_or_init(|| ("ecma:intl/collator".to_string(), "compare".to_string()))
 }
 
 pub fn shared_collator_prototype() -> Value {
@@ -151,7 +162,7 @@ fn unicode_extension_keywords(tag: &str) -> std::collections::HashMap<String, St
 fn make_array(elements: Vec<Value>) -> Value {
     let mut obj = Object::new_array(elements);
     obj.properties
-        .insert("__type".into(), Value::String(Arc::from("Array")));
+        .insert("__type".into(), crate::keys::string_value("Array"));
     obj.properties
         .insert("__proto__".into(), crate::array::shared_array_prototype());
     Value::Object(vybe_runtime::heap::alloc(obj))
@@ -394,7 +405,7 @@ fn register_collator(vm: &mut VM) {
 
     let compare_idx = *vm
         .host_registry
-        .get(&("ecma:intl/collator".to_string(), "compare".to_string()))
+        .get(collator_compare_host_key())
         .expect("ecma:intl/collator.compare must be registered");
 
     vm.register_host_fn(
@@ -653,7 +664,7 @@ fn register_number_format(vm: &mut VM) {
             if start_text == end_text {
                 return s_val(&start_text);
             }
-            s_val(&format!("{start_text} – {end_text}"))
+            s_owned(format!("{start_text} – {end_text}"))
         }),
     );
 
@@ -685,7 +696,7 @@ fn register_number_format(vm: &mut VM) {
                         if let Value::Object(obj) = &part {
                             if let Ok(mut o) = obj.lock() {
                                 o.properties
-                                    .insert("source".into(), Value::String(Arc::from(source)));
+                                    .insert("source".into(), crate::keys::string_value(source));
                             }
                         }
                         part
@@ -2439,7 +2450,7 @@ fn format_number_parts_real(nf: &Arc<Mutex<Object>>, value: f64) -> Vec<Value> {
         };
         parts.push(make_object(vec![
             ("type", s_val(part_type)),
-            ("value", s_val(&ch.to_string())),
+            ("value", s_owned(ch.to_string())),
         ]));
         index += 1;
     }
@@ -2463,7 +2474,7 @@ fn format_date_parts_real(dtf: &Arc<Mutex<Object>>, ms: f64) -> Vec<Value> {
     if year_opt == "numeric" && month_opt.is_empty() && day_opt.is_empty() {
         return vec![make_object(vec![
             ("type", s_val("year")),
-            ("value", s_val(&year.to_string())),
+            ("value", s_owned(year.to_string())),
         ])];
     }
 
@@ -3570,7 +3581,7 @@ fn register_static(vm: &mut VM) {
                 .iter()
                 .map(|t| {
                     let langid = parse_langid(t);
-                    s_val(&langid.to_string())
+                    s_owned(langid.to_string())
                 })
                 .collect();
             make_array(canon)
@@ -3593,12 +3604,7 @@ fn register_static(vm: &mut VM) {
                 let mut names: Vec<&str> =
                     chrono_tz::TZ_VARIANTS.iter().map(|tz| tz.name()).collect();
                 names.sort_unstable();
-                return make_array(
-                    names
-                        .into_iter()
-                        .map(|n| Value::String(Arc::from(n)))
-                        .collect(),
-                );
+                return make_array(names.into_iter().map(crate::keys::string_value).collect());
             }
             let values: Vec<&'static str> = match key.as_str() {
                 "calendar" => vec![

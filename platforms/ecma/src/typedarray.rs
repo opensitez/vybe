@@ -37,6 +37,8 @@
 //!
 //! See `JS_BUILTIN_CONVENTIONS.md` for marshaling rules.
 
+use std::borrow::Cow;
+use std::fmt::Write as _;
 use std::sync::{Arc, Mutex, OnceLock};
 
 /// The eleven `%<Type>Array.prototype%` singletons — ECMA-262 §23.2.
@@ -55,28 +57,36 @@ static TYPEDARRAY_PROTOTYPES: OnceLock<
     Mutex<std::collections::HashMap<String, Arc<Mutex<Object>>>>,
 > = OnceLock::new();
 
+#[inline]
+fn owned_string_value(text: String) -> Value {
+    crate::keys::owned_string_value(text)
+}
+
 pub fn shared_typedarray_prototype(name: &str) -> Value {
     let map = TYPEDARRAY_PROTOTYPES.get_or_init(|| Mutex::new(std::collections::HashMap::new()));
     let mut guard = map.lock().unwrap();
-    let proto = guard
-        .entry(name.to_string())
-        .or_insert_with(|| {
-            let mut obj = Object::new();
-            obj.properties
-                .insert("__proto__".into(), crate::object::shared_object_prototype());
-            // §23.2.3.34 — `%TypedArray%.prototype[@@toStringTag]` is an
-            // accessor returning the constructor name.
-            obj.properties
-                .insert("@@toStringTag".into(), Value::String(Arc::from(name)));
-            vybe_runtime::heap::alloc(obj)
-        })
-        .clone();
-    drop(guard);
-    let value = Value::Object(proto);
-    if let Value::Object(o) = &value {
-        crate::object::track_nonenum(o, "@@toStringTag");
-    }
-    value
+    let proto = if let Some(proto) = guard.get(name) {
+        proto.clone()
+    } else {
+        let mut obj = Object::new();
+        obj.properties.reserve(3);
+        obj.properties
+            .insert("__proto__".into(), crate::object::shared_object_prototype());
+        // §23.2.3.34 — `%TypedArray%.prototype[@@toStringTag]` is an
+        // accessor returning the constructor name.
+        obj.properties
+            .insert("@@toStringTag".into(), crate::keys::string_value(name));
+        obj.properties.insert(
+            "__nonenum".into(),
+            Value::Object(vybe_runtime::heap::alloc(Object::new_array(vec![
+                crate::keys::string_value("@@toStringTag"),
+            ]))),
+        );
+        let proto = vybe_runtime::heap::alloc(obj);
+        guard.insert(name.to_owned(), proto.clone());
+        proto
+    };
+    Value::Object(proto)
 }
 
 /// Every typed-array constructor name, for priming and for wiring.
@@ -93,10 +103,10 @@ pub const TYPED_ARRAY_NAMES: &[&str] = &[
     "BigInt64Array",
     "BigUint64Array",
 ];
-use vybe_runtime::VM;
 use vybe_runtime::value::{
     ArrayBufferState, Object, ObjectKind, TypedArrayState, TypedElemKind, Value,
 };
+use vybe_runtime::{HostContext, VM};
 
 // ── Variant wiring ────────────────────────────────────────────────────
 
@@ -140,10 +150,25 @@ pub fn zero_value(elem: TypedElemKind) -> Value {
     }
 }
 
-fn typed_array_element_to_string(value: Value) -> String {
+fn push_typed_array_element_string(out: &mut String, value: Value) {
     match value {
-        Value::BigInt(n) => format!("{}", n),
-        other => format!("{}", other),
+        Value::String(text) => out.push_str(text.as_ref()),
+        Value::BigInt(n) => {
+            let _ = write!(out, "{}", n);
+        }
+        other => {
+            let _ = write!(out, "{}", other);
+        }
+    }
+}
+
+#[inline]
+fn hex_nibble(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
     }
 }
 
@@ -167,11 +192,15 @@ fn is_typed_of(args: &[Value], idx: usize, want: TypedElemKind) -> Option<Arc<Mu
 /// past this view's offset).
 pub fn ta_live_length(ta: &TypedArrayState) -> usize {
     let buf = ta.buffer.lock().unwrap();
+    ta_live_length_for_buffer(ta, buf.len())
+}
+
+fn ta_live_length_for_buffer(ta: &TypedArrayState, buffer_len: usize) -> usize {
     let bpe = ta.elem.bytes_per_element();
-    if ta.byte_offset >= buf.len() {
+    if ta.byte_offset >= buffer_len {
         return 0;
     }
-    let available_bytes = buf.len() - ta.byte_offset;
+    let available_bytes = buffer_len - ta.byte_offset;
     let available_elems = available_bytes / bpe;
     ta.length.min(available_elems)
 }
@@ -197,21 +226,30 @@ pub fn bytes_from_value(v: &Value) -> Vec<u8> {
             let o = obj.lock().unwrap();
             match &o.kind {
                 ObjectKind::TypedArray(ta) => {
-                    let len = ta_live_length(ta);
                     // Byte-shaped views copy straight out of the buffer.
-                    if ta.elem.bytes_per_element() == 1 {
-                        let buf = ta.buffer.lock().unwrap();
+                    let bpe = ta.elem.bytes_per_element();
+                    let buf = ta.buffer.lock().unwrap();
+                    let len = ta_live_length_for_buffer(ta, buf.len());
+                    if bpe == 1 {
                         let start = ta.byte_offset.min(buf.len());
                         let end = (ta.byte_offset + len).min(buf.len());
                         return buf[start..end].to_vec();
                     }
-                    (0..len)
-                        .map(|i| (read_element(ta, i).as_i32() & 0xFF) as u8)
-                        .collect()
+                    let mut bytes = Vec::with_capacity(len);
+                    for i in 0..len {
+                        let abs = ta.byte_offset + i * bpe;
+                        let value = read_element_from_locked_buffer(ta.elem, &buf, abs, bpe);
+                        bytes.push((value.as_i32() & 0xFF) as u8);
+                    }
+                    bytes
                 }
                 ObjectKind::ArrayBuffer(ab) => ab.bytes.lock().unwrap().clone(),
                 ObjectKind::Array(elems) => {
-                    elems.iter().map(|e| (e.as_i32() & 0xFF) as u8).collect()
+                    let mut bytes = Vec::with_capacity(elems.len());
+                    for e in elems {
+                        bytes.push((e.as_i32() & 0xFF) as u8);
+                    }
+                    bytes
                 }
                 _ => Vec::new(),
             }
@@ -228,13 +266,34 @@ pub fn numbers_from_value(v: &Value) -> Vec<f64> {
         Value::Object(obj) => {
             let o = obj.lock().unwrap();
             match &o.kind {
-                ObjectKind::TypedArray(ta) => (0..ta_live_length(ta))
-                    .map(|i| read_element(ta, i).as_f64())
-                    .collect(),
-                ObjectKind::ArrayBuffer(ab) => {
-                    ab.bytes.lock().unwrap().iter().map(|b| *b as f64).collect()
+                ObjectKind::TypedArray(ta) => {
+                    let len = ta_live_length(ta);
+                    let bpe = ta.elem.bytes_per_element();
+                    let buf = ta.buffer.lock().unwrap();
+                    let mut numbers = Vec::with_capacity(len);
+                    for i in 0..len {
+                        let abs = ta.byte_offset + i * bpe;
+                        numbers.push(
+                            read_element_from_locked_buffer(ta.elem, &buf, abs, bpe).as_f64(),
+                        );
+                    }
+                    numbers
                 }
-                ObjectKind::Array(elems) => elems.iter().map(|e| e.as_f64()).collect(),
+                ObjectKind::ArrayBuffer(ab) => {
+                    let bytes = ab.bytes.lock().unwrap();
+                    let mut numbers = Vec::with_capacity(bytes.len());
+                    for b in bytes.iter() {
+                        numbers.push(*b as f64);
+                    }
+                    numbers
+                }
+                ObjectKind::Array(elems) => {
+                    let mut numbers = Vec::with_capacity(elems.len());
+                    for e in elems {
+                        numbers.push(e.as_f64());
+                    }
+                    numbers
+                }
                 _ => Vec::new(),
             }
         }
@@ -246,10 +305,19 @@ pub fn read_element(ta: &TypedArrayState, i: usize) -> Value {
     let bpe = ta.elem.bytes_per_element();
     let buf = ta.buffer.lock().unwrap();
     let abs = ta.byte_offset + i * bpe;
+    read_element_from_locked_buffer(ta.elem, &buf, abs, bpe)
+}
+
+pub(crate) fn read_element_from_locked_buffer(
+    elem: TypedElemKind,
+    buf: &[u8],
+    abs: usize,
+    bpe: usize,
+) -> Value {
     if abs + bpe > buf.len() {
-        return zero_value(ta.elem);
+        return zero_value(elem);
     }
-    match ta.elem {
+    match elem {
         TypedElemKind::I8 => Value::I32(buf[abs] as i8 as i32),
         TypedElemKind::U8 | TypedElemKind::U8Clamped => Value::I32(buf[abs] as i32),
         TypedElemKind::I16 => {
@@ -399,6 +467,188 @@ pub fn write_element(ta: &TypedArrayState, i: usize, v: &Value) {
     }
 }
 
+fn coerced_element_bytes(elem: TypedElemKind, v: &Value) -> ([u8; 8], usize) {
+    let mut out = [0u8; 8];
+    match elem {
+        TypedElemKind::I8 => {
+            out[0] = (v.as_i32() as i8) as u8;
+            (out, 1)
+        }
+        TypedElemKind::U8 => {
+            out[0] = (v.as_i32() & 0xFF) as u8;
+            (out, 1)
+        }
+        TypedElemKind::U8Clamped => {
+            let n = v.as_f64();
+            let clamped = if n.is_nan() {
+                0
+            } else {
+                let n = n.clamp(0.0, 255.0);
+                let floor = n.floor();
+                let frac = n - floor;
+                if frac < 0.5 {
+                    floor as i32
+                } else if frac > 0.5 {
+                    floor as i32 + 1
+                } else {
+                    let floor_i = floor as i32;
+                    if floor_i % 2 == 0 {
+                        floor_i
+                    } else {
+                        floor_i + 1
+                    }
+                }
+            };
+            out[0] = clamped as u8;
+            (out, 1)
+        }
+        TypedElemKind::I16 => {
+            out[..2].copy_from_slice(&(v.as_i32() as i16).to_le_bytes());
+            (out, 2)
+        }
+        TypedElemKind::U16 => {
+            out[..2].copy_from_slice(&((v.as_i32() & 0xFFFF) as u16).to_le_bytes());
+            (out, 2)
+        }
+        TypedElemKind::I32 => {
+            let n = v.as_f64();
+            let val = if n.is_finite() {
+                n.trunc().rem_euclid(4294967296.0) as u32 as i32
+            } else {
+                0
+            };
+            out[..4].copy_from_slice(&val.to_le_bytes());
+            (out, 4)
+        }
+        TypedElemKind::U32 => {
+            let n = v.as_f64();
+            let val = if n.is_finite() {
+                n.trunc().rem_euclid(4294967296.0) as u32
+            } else {
+                0
+            };
+            out[..4].copy_from_slice(&val.to_le_bytes());
+            (out, 4)
+        }
+        TypedElemKind::F32 => {
+            out[..4].copy_from_slice(&(v.as_f64() as f32).to_le_bytes());
+            (out, 4)
+        }
+        TypedElemKind::F64 => {
+            out.copy_from_slice(&v.as_f64().to_le_bytes());
+            (out, 8)
+        }
+        TypedElemKind::BigI64 => {
+            let val = match v {
+                Value::BigInt(n) => n.to_i64_wrapping(),
+                Value::I64(n) => *n,
+                other => other.as_i32() as i64,
+            };
+            out.copy_from_slice(&val.to_le_bytes());
+            (out, 8)
+        }
+        TypedElemKind::BigU64 => {
+            let val = match v {
+                Value::BigInt(n) => n.to_u64_wrapping(),
+                Value::I64(n) => *n as u64,
+                other => other.as_i32() as u64,
+            };
+            out.copy_from_slice(&val.to_le_bytes());
+            (out, 8)
+        }
+    }
+}
+
+pub(crate) fn fill_typed_array_bytes(
+    ta: &TypedArrayState,
+    start: usize,
+    end: usize,
+    value: &Value,
+) -> bool {
+    if start >= end {
+        return true;
+    }
+    let (bytes, bpe) = coerced_element_bytes(ta.elem, value);
+    let mut buf = ta.buffer.lock().unwrap();
+    let first = ta.byte_offset.saturating_add(start.saturating_mul(bpe));
+    let last = ta.byte_offset.saturating_add(end.saturating_mul(bpe));
+    if last > buf.len() {
+        return false;
+    }
+    if bpe == 1 {
+        buf[first..last].fill(bytes[0]);
+        return true;
+    }
+    for offset in (first..last).step_by(bpe) {
+        buf[offset..offset + bpe].copy_from_slice(&bytes[..bpe]);
+    }
+    true
+}
+
+pub(crate) fn write_array_values_to_typed_array_bytes(
+    ta: &TypedArrayState,
+    offset: usize,
+    values: &[Value],
+) -> bool {
+    if values.is_empty() {
+        return true;
+    }
+    let bpe = ta.elem.bytes_per_element();
+    let mut buf = ta.buffer.lock().unwrap();
+    let first = ta.byte_offset.saturating_add(offset.saturating_mul(bpe));
+    let last = first.saturating_add(values.len().saturating_mul(bpe));
+    if last > buf.len() {
+        return false;
+    }
+    match ta.elem {
+        TypedElemKind::I8 => {
+            for (index, value) in values.iter().enumerate() {
+                buf[first + index] = (value.as_i32() as i8) as u8;
+            }
+            return true;
+        }
+        TypedElemKind::U8 => {
+            for (index, value) in values.iter().enumerate() {
+                buf[first + index] = (value.as_i32() & 0xFF) as u8;
+            }
+            return true;
+        }
+        TypedElemKind::U8Clamped => {
+            for (index, value) in values.iter().enumerate() {
+                let n = value.as_f64();
+                let clamped = if n.is_nan() {
+                    0
+                } else {
+                    let n = n.clamp(0.0, 255.0);
+                    let floor = n.floor();
+                    let frac = n - floor;
+                    if frac < 0.5 {
+                        floor as i32
+                    } else if frac > 0.5 {
+                        floor as i32 + 1
+                    } else {
+                        let floor_i = floor as i32;
+                        if floor_i % 2 == 0 {
+                            floor_i
+                        } else {
+                            floor_i + 1
+                        }
+                    }
+                };
+                buf[first + index] = clamped as u8;
+            }
+            return true;
+        }
+        _ => {}
+    }
+    for (index, value) in values.iter().enumerate() {
+        let (bytes, byte_count) = coerced_element_bytes(ta.elem, value);
+        let pos = first + index * bpe;
+        buf[pos..pos + byte_count].copy_from_slice(&bytes[..byte_count]);
+    }
+    true
+}
+
 // ── Construction helpers ──────────────────────────────────────────────
 
 /// Allocate a fresh `length`-element typed array over a brand-new
@@ -418,6 +668,7 @@ pub fn new_typed_array(elem: TypedElemKind, length: usize) -> Value {
         shared: false,
     };
     let mut ab_obj = Object::new();
+    ab_obj.properties.reserve(2);
     ab_obj.kind = ObjectKind::ArrayBuffer(ab_state);
     ab_obj
         .properties
@@ -435,6 +686,7 @@ pub fn new_typed_array(elem: TypedElemKind, length: usize) -> Value {
         length,
     };
     let mut obj = Object::new();
+    obj.properties.reserve(8);
     obj.kind = ObjectKind::TypedArray(state);
     obj.properties
         .insert("buffer".into(), Value::Object(buffer_obj.clone()));
@@ -453,11 +705,11 @@ pub fn new_typed_array(elem: TypedElemKind, length: usize) -> Value {
     );
     obj.properties.insert(
         "__type".into(),
-        Value::String(Arc::from(typed_array_name(elem))),
+        crate::keys::string_value(typed_array_name(elem)),
     );
     obj.properties.insert(
         "tostringtag".into(),
-        Value::String(Arc::from(typed_array_name(elem))),
+        crate::keys::string_value(typed_array_name(elem)),
     );
     Value::Object(vybe_runtime::heap::alloc(obj))
 }
@@ -486,6 +738,7 @@ pub fn new_view_over_buffer(
         length,
     };
     let mut obj = Object::new();
+    obj.properties.reserve(8);
     obj.kind = ObjectKind::TypedArray(state);
     obj.properties
         .insert("buffer".into(), Value::Object(buffer_obj.clone()));
@@ -505,11 +758,11 @@ pub fn new_view_over_buffer(
     );
     obj.properties.insert(
         "__type".into(),
-        Value::String(Arc::from(typed_array_name(elem))),
+        crate::keys::string_value(typed_array_name(elem)),
     );
     obj.properties.insert(
         "tostringtag".into(),
-        Value::String(Arc::from(typed_array_name(elem))),
+        crate::keys::string_value(typed_array_name(elem)),
     );
     Value::Object(vybe_runtime::heap::alloc(obj))
 }
@@ -556,7 +809,7 @@ pub fn apply_constructor_species(result: &Value, ctor: Value) {
         drop(result_lock);
         let mut types_lock = types_obj.lock().unwrap();
         if let ObjectKind::Array(ref mut types) = types_lock.kind {
-            let value = Value::String(Arc::from(name.as_str()));
+            let value = crate::keys::string_value(&name);
             if !types.contains(&value) {
                 types.push(value);
             }
@@ -581,6 +834,272 @@ fn split_static_typed_array_receiver(args: &[Value]) -> (Value, &[Value]) {
         }
     }
     (Value::Undefined, args)
+}
+
+fn copy_same_kind_typed_array_bytes(
+    src: &TypedArrayState,
+    dst: &TypedArrayState,
+    dst_offset: usize,
+    count: usize,
+) -> bool {
+    if src.elem != dst.elem {
+        return false;
+    }
+    let bpe = src.elem.bytes_per_element();
+    let byte_len = count.saturating_mul(bpe);
+    let src_start = src.byte_offset;
+    let dst_start = dst
+        .byte_offset
+        .saturating_add(dst_offset.saturating_mul(bpe));
+    if Arc::ptr_eq(&src.buffer, &dst.buffer) {
+        let mut buf = src.buffer.lock().unwrap();
+        if src_start.saturating_add(byte_len) > buf.len()
+            || dst_start.saturating_add(byte_len) > buf.len()
+        {
+            return false;
+        }
+        buf.copy_within(src_start..src_start + byte_len, dst_start);
+        return true;
+    }
+    let src_buf = src.buffer.lock().unwrap();
+    if src_start.saturating_add(byte_len) > src_buf.len() {
+        return false;
+    }
+    let mut dst_buf = dst.buffer.lock().unwrap();
+    if dst_start.saturating_add(byte_len) > dst_buf.len() {
+        return false;
+    }
+    dst_buf[dst_start..dst_start + byte_len]
+        .copy_from_slice(&src_buf[src_start..src_start + byte_len]);
+    true
+}
+
+fn copy_typed_array_slice_bytes(
+    src: &TypedArrayState,
+    src_offset: usize,
+    dst: &TypedArrayState,
+    count: usize,
+) -> bool {
+    if src.elem != dst.elem {
+        return false;
+    }
+    if count == 0 {
+        return true;
+    }
+    let bpe = src.elem.bytes_per_element();
+    let byte_len = count.saturating_mul(bpe);
+    let src_start = src
+        .byte_offset
+        .saturating_add(src_offset.saturating_mul(bpe));
+    let dst_start = dst.byte_offset;
+    if Arc::ptr_eq(&src.buffer, &dst.buffer) {
+        let mut buf = src.buffer.lock().unwrap();
+        if src_start.saturating_add(byte_len) > buf.len()
+            || dst_start.saturating_add(byte_len) > buf.len()
+        {
+            return false;
+        }
+        buf.copy_within(src_start..src_start + byte_len, dst_start);
+        return true;
+    }
+    let src_buf = src.buffer.lock().unwrap();
+    if src_start.saturating_add(byte_len) > src_buf.len() {
+        return false;
+    }
+    let mut dst_buf = dst.buffer.lock().unwrap();
+    if dst_start.saturating_add(byte_len) > dst_buf.len() {
+        return false;
+    }
+    dst_buf[dst_start..dst_start + byte_len]
+        .copy_from_slice(&src_buf[src_start..src_start + byte_len]);
+    true
+}
+
+pub(crate) fn copy_within_typed_array_bytes(
+    ta: &TypedArrayState,
+    target: usize,
+    start: usize,
+    end: usize,
+) {
+    if start >= end {
+        return;
+    }
+    let live = ta_live_length(ta);
+    let max_copy = live.saturating_sub(target).min(end - start);
+    if max_copy == 0 {
+        return;
+    }
+    let bpe = ta.elem.bytes_per_element();
+    let src_start = ta.byte_offset + start * bpe;
+    let src_end = src_start + max_copy * bpe;
+    let dst_start = ta.byte_offset + target * bpe;
+    let mut buf = ta.buffer.lock().unwrap();
+    if src_end <= buf.len() && dst_start + max_copy * bpe <= buf.len() {
+        buf.copy_within(src_start..src_end, dst_start);
+    }
+}
+
+fn copy_reversed_typed_array_bytes(
+    src: &TypedArrayState,
+    dst: &TypedArrayState,
+    count: usize,
+) -> bool {
+    if src.elem != dst.elem {
+        return false;
+    }
+    let bpe = src.elem.bytes_per_element();
+    let byte_len = count.saturating_mul(bpe);
+    if Arc::ptr_eq(&src.buffer, &dst.buffer) {
+        let src_buf = src.buffer.lock().unwrap();
+        let src_start = src.byte_offset;
+        if src_start.saturating_add(byte_len) > src_buf.len() {
+            return false;
+        }
+        let src_bytes = src_buf[src_start..src_start + byte_len].to_vec();
+        drop(src_buf);
+        let mut dst_buf = dst.buffer.lock().unwrap();
+        let dst_start = dst.byte_offset;
+        if dst_start.saturating_add(byte_len) > dst_buf.len() {
+            return false;
+        }
+        for index in 0..count {
+            let src_pos = (count - 1 - index) * bpe;
+            let dst_pos = dst_start + index * bpe;
+            dst_buf[dst_pos..dst_pos + bpe].copy_from_slice(&src_bytes[src_pos..src_pos + bpe]);
+        }
+        return true;
+    }
+    let src_buf = src.buffer.lock().unwrap();
+    let src_start = src.byte_offset;
+    if src_start.saturating_add(byte_len) > src_buf.len() {
+        return false;
+    }
+    let mut dst_buf = dst.buffer.lock().unwrap();
+    let dst_start = dst.byte_offset;
+    if dst_start.saturating_add(byte_len) > dst_buf.len() {
+        return false;
+    }
+    for index in 0..count {
+        let src_pos = src_start + (count - 1 - index) * bpe;
+        let dst_pos = dst_start + index * bpe;
+        dst_buf[dst_pos..dst_pos + bpe].copy_from_slice(&src_buf[src_pos..src_pos + bpe]);
+    }
+    true
+}
+
+pub(crate) fn reverse_typed_array_bytes(ta: &TypedArrayState, count: usize) -> bool {
+    let bpe = ta.elem.bytes_per_element();
+    let byte_len = count.saturating_mul(bpe);
+    let start = ta.byte_offset;
+    let mut buf = ta.buffer.lock().unwrap();
+    if start.saturating_add(byte_len) > buf.len() {
+        return false;
+    }
+    for index in 0..(count / 2) {
+        let left = start + index * bpe;
+        let right = start + (count - 1 - index) * bpe;
+        for byte in 0..bpe {
+            buf.swap(left + byte, right + byte);
+        }
+    }
+    true
+}
+
+enum TypedArraySearchResult {
+    Ineligible,
+    Found(usize),
+    NotFound,
+}
+
+fn typed_array_integer_search_bytes(
+    ta: &TypedArrayState,
+    needle: &Value,
+    from: usize,
+    reverse: bool,
+) -> TypedArraySearchResult {
+    match ta.elem {
+        TypedElemKind::I8
+        | TypedElemKind::U8
+        | TypedElemKind::U8Clamped
+        | TypedElemKind::I16
+        | TypedElemKind::U16
+        | TypedElemKind::I32
+        | TypedElemKind::U32 => {}
+        _ => return TypedArraySearchResult::Ineligible,
+    }
+    let live = ta_live_length(ta);
+    if from >= live {
+        return TypedArraySearchResult::NotFound;
+    }
+    let numeric_needle = match needle {
+        Value::I32(_) | Value::I64(_) => true,
+        Value::F32(value) => value.is_finite(),
+        Value::F64(value) => value.is_finite(),
+        _ => false,
+    };
+    if !numeric_needle {
+        return TypedArraySearchResult::NotFound;
+    }
+    let (needle_bytes, bpe) = coerced_element_bytes(ta.elem, needle);
+    let start = ta.byte_offset;
+    let byte_len = live.saturating_mul(bpe);
+    let buf = ta.buffer.lock().unwrap();
+    if start.saturating_add(byte_len) > buf.len() {
+        return TypedArraySearchResult::Ineligible;
+    }
+    if reverse {
+        for index in (0..=from.min(live - 1)).rev() {
+            let pos = start + index * bpe;
+            if buf[pos..pos + bpe] == needle_bytes[..bpe] {
+                return TypedArraySearchResult::Found(index);
+            }
+        }
+    } else {
+        for index in from..live {
+            let pos = start + index * bpe;
+            if buf[pos..pos + bpe] == needle_bytes[..bpe] {
+                return TypedArraySearchResult::Found(index);
+            }
+        }
+    }
+    TypedArraySearchResult::NotFound
+}
+
+fn try_fast_typed_array_set(
+    ctx: &mut vybe_runtime::HostContext,
+    args: &[Value],
+    elem: TypedElemKind,
+    offset: usize,
+) -> Option<Value> {
+    let Some(Value::Object(src_obj)) = args.get(1) else {
+        return None;
+    };
+    let src_ta = {
+        let src = src_obj.lock().unwrap();
+        match &src.kind {
+            ObjectKind::TypedArray(ta) if ta.elem == elem => ta.clone(),
+            _ => return None,
+        }
+    };
+    let dst_obj = is_typed_of(args, 0, elem)?;
+    let dst_ta = {
+        let dst = dst_obj.lock().unwrap();
+        match &dst.kind {
+            ObjectKind::TypedArray(ta) => ta.clone(),
+            _ => return None,
+        }
+    };
+    let count = ta_live_length(&src_ta);
+    if offset.saturating_add(count) > ta_live_length(&dst_ta) {
+        let err = crate::error::new_error(ctx, "RangeError", "TypedArray set offset");
+        ctx.throw_value(err);
+        return Some(Value::Undefined);
+    }
+    if copy_same_kind_typed_array_bytes(&src_ta, &dst_ta, offset, count) {
+        Some(Value::Null)
+    } else {
+        None
+    }
 }
 
 // ── Public registration ───────────────────────────────────────────────
@@ -653,6 +1172,82 @@ fn ta_invoke_magic(cb: &Value, args: &[Value]) -> Option<Value> {
     None
 }
 
+fn typed_array_state_from_value(value: Option<&Value>) -> Option<TypedArrayState> {
+    let Some(Value::Object(obj)) = value else {
+        return None;
+    };
+    let object = obj.lock().unwrap();
+    if let ObjectKind::TypedArray(ta) = &object.kind {
+        Some(ta.clone())
+    } else {
+        None
+    }
+}
+
+pub(crate) fn typed_array_values_snapshot(src: &TypedArrayState, len: usize) -> Vec<Value> {
+    let bpe = src.elem.bytes_per_element();
+    let buf = src.buffer.lock().unwrap();
+    if bpe == 1 {
+        let start = src.byte_offset.min(buf.len());
+        let end = start.saturating_add(len).min(buf.len());
+        let bytes = &buf[start..end];
+        return match src.elem {
+            TypedElemKind::I8 => {
+                let mut values = Vec::with_capacity(bytes.len());
+                for byte in bytes {
+                    values.push(Value::I32(*byte as i8 as i32));
+                }
+                values
+            }
+            TypedElemKind::U8 | TypedElemKind::U8Clamped => {
+                let mut values = Vec::with_capacity(bytes.len());
+                for byte in bytes {
+                    values.push(Value::I32(*byte as i32));
+                }
+                values
+            }
+            _ => Vec::new(),
+        };
+    }
+    let mut values = Vec::with_capacity(len);
+    for i in 0..len {
+        let abs = src.byte_offset + i * bpe;
+        values.push(read_element_from_locked_buffer(src.elem, &buf, abs, bpe));
+    }
+    values
+}
+
+fn write_typed_array_source_to_typed_array(
+    dst: &TypedArrayState,
+    offset: usize,
+    src: &TypedArrayState,
+) -> bool {
+    let src_len = ta_live_length(src);
+    if offset.saturating_add(src_len) > ta_live_length(dst) {
+        return false;
+    }
+    if src.elem == dst.elem && copy_same_kind_typed_array_bytes(src, dst, offset, src_len) {
+        return true;
+    }
+    let values = typed_array_values_snapshot(src, src_len);
+    write_array_values_to_typed_array_bytes(dst, offset, &values)
+}
+
+fn ta_invoke_prepared(
+    ctx: &mut HostContext,
+    callback: &Value,
+    prepared: &Option<crate::function::PreparedBoundCallback>,
+    args: &[Value],
+) -> Value {
+    if let Some(value) = ta_invoke_magic(callback, args) {
+        value
+    } else if let Some(prepared) = prepared {
+        crate::function::invoke_prepared_bound_callback(ctx, prepared, args)
+    } else {
+        ctx.invoke(callback, args)
+    }
+}
+
 fn register_uint8_extras(vm: &mut VM) {
     vm.register_host_fn(
         "ecma:uint8array",
@@ -663,15 +1258,20 @@ fn register_uint8_extras(vm: &mut VM) {
                 if let ObjectKind::TypedArray(ref ta) = o.kind {
                     let len = ta_live_length(ta); // locks+releases buf internally
                     let buf = ta.buffer.lock().unwrap();
-                    let bytes: Vec<u8> = (0..len)
-                        .map(|i| buf.get(ta.byte_offset + i).copied().unwrap_or(0))
-                        .collect();
-                    drop(buf);
-                    let encoded = base64_encode(&bytes);
-                    return Value::String(Arc::from(encoded.as_str()));
+                    let end = ta.byte_offset.saturating_add(len);
+                    let encoded = if end <= buf.len() {
+                        base64_encode(&buf[ta.byte_offset..end])
+                    } else {
+                        let mut bytes = Vec::with_capacity(len);
+                        for i in 0..len {
+                            bytes.push(buf.get(ta.byte_offset + i).copied().unwrap_or(0));
+                        }
+                        base64_encode(&bytes)
+                    };
+                    return owned_string_value(encoded);
                 }
             }
-            Value::String(Arc::from(""))
+            crate::keys::string_value("")
         }),
     );
 
@@ -680,7 +1280,7 @@ fn register_uint8_extras(vm: &mut VM) {
         "fromBase64",
         Box::new(|_ctx, args| {
             let text = match args.first() {
-                Some(Value::String(s)) => s.to_string(),
+                Some(Value::String(s)) => s.as_ref(),
                 _ => return new_typed_array(TypedElemKind::U8, 0),
             };
             let bytes = base64_decode(text.trim());
@@ -689,10 +1289,9 @@ fn register_uint8_extras(vm: &mut VM) {
                 let o = obj.lock().unwrap();
                 if let ObjectKind::TypedArray(ref t) = o.kind {
                     let mut buf = t.buffer.lock().unwrap();
-                    for (i, b) in bytes.iter().enumerate() {
-                        if t.byte_offset + i < buf.len() {
-                            buf[t.byte_offset + i] = *b;
-                        }
+                    let end = t.byte_offset.saturating_add(bytes.len());
+                    if end <= buf.len() {
+                        buf[t.byte_offset..end].copy_from_slice(&bytes);
                     }
                 }
             }
@@ -710,14 +1309,24 @@ fn register_uint8_extras(vm: &mut VM) {
                     let len = ta_live_length(ta); // locks+releases buf internally
                     let buf = ta.buffer.lock().unwrap();
                     let mut hex = String::with_capacity(len * 2);
-                    for i in 0..len {
-                        let b = buf.get(ta.byte_offset + i).copied().unwrap_or(0);
-                        hex.push_str(&format!("{:02x}", b));
+                    const HEX: &[u8; 16] = b"0123456789abcdef";
+                    let end = ta.byte_offset.saturating_add(len);
+                    if end <= buf.len() {
+                        for &b in &buf[ta.byte_offset..end] {
+                            hex.push(HEX[(b >> 4) as usize] as char);
+                            hex.push(HEX[(b & 0x0f) as usize] as char);
+                        }
+                    } else {
+                        for i in 0..len {
+                            let b = buf.get(ta.byte_offset + i).copied().unwrap_or(0);
+                            hex.push(HEX[(b >> 4) as usize] as char);
+                            hex.push(HEX[(b & 0x0f) as usize] as char);
+                        }
                     }
-                    return Value::String(Arc::from(hex.as_str()));
+                    return owned_string_value(hex);
                 }
             }
-            Value::String(Arc::from(""))
+            crate::keys::string_value("")
         }),
     );
 
@@ -726,23 +1335,28 @@ fn register_uint8_extras(vm: &mut VM) {
         "fromHex",
         Box::new(|_ctx, args| {
             let text = match args.first() {
-                Some(Value::String(s)) => s.to_string(),
+                Some(Value::String(s)) => s.as_ref(),
                 _ => return new_typed_array(TypedElemKind::U8, 0),
             };
             let s = text.trim();
-            let len = s.len() / 2;
-            let bytes: Vec<u8> = (0..len)
-                .filter_map(|i| u8::from_str_radix(&s[i * 2..i * 2 + 2], 16).ok())
-                .collect();
+            let raw = s.as_bytes();
+            let len = raw.len() / 2;
+            let mut bytes: Vec<u8> = Vec::with_capacity(len);
+            for i in 0..len {
+                let hi = hex_nibble(raw[i * 2]);
+                let lo = hex_nibble(raw[i * 2 + 1]);
+                if let (Some(hi), Some(lo)) = (hi, lo) {
+                    bytes.push((hi << 4) | lo);
+                }
+            }
             let ta = new_typed_array(TypedElemKind::U8, bytes.len());
             if let Value::Object(ref obj) = ta {
                 let o = obj.lock().unwrap();
                 if let ObjectKind::TypedArray(ref t) = o.kind {
                     let mut buf = t.buffer.lock().unwrap();
-                    for (i, b) in bytes.iter().enumerate() {
-                        if t.byte_offset + i < buf.len() {
-                            buf[t.byte_offset + i] = *b;
-                        }
+                    let end = t.byte_offset.saturating_add(bytes.len());
+                    if end <= buf.len() {
+                        buf[t.byte_offset..end].copy_from_slice(&bytes);
                     }
                 }
             }
@@ -776,35 +1390,53 @@ fn base64_encode(bytes: &[u8]) -> String {
 }
 
 fn base64_decode(s: &str) -> Vec<u8> {
-    let table: [u8; 128] = {
-        let mut t = [255u8; 128];
-        for (i, &c) in b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
-            .iter()
-            .enumerate()
-        {
-            t[c as usize] = i as u8;
-        }
-        t
-    };
-    let chars: Vec<u8> = s.bytes().filter(|&b| b != b'=').collect();
-    let mut out = Vec::new();
-    for chunk in chars.chunks(4) {
-        let v: Vec<u8> = chunk
-            .iter()
-            .map(|&b| if b < 128 { table[b as usize] } else { 255 })
-            .filter(|&v| v != 255)
-            .collect();
-        if v.len() >= 2 {
-            out.push((v[0] << 2) | (v[1] >> 4));
-        }
-        if v.len() >= 3 {
-            out.push((v[1] << 4) | (v[2] >> 2));
-        }
-        if v.len() >= 4 {
-            out.push((v[2] << 6) | v[3]);
+    let mut out = Vec::with_capacity(s.len() / 4 * 3);
+    let mut chunk = [0u8; 4];
+    let mut chunk_len = 0usize;
+    for byte in s.bytes().filter(|&b| b != b'=') {
+        chunk[chunk_len] = byte;
+        chunk_len += 1;
+        if chunk_len == 4 {
+            decode_base64_chunk(&chunk, chunk_len, &mut out);
+            chunk_len = 0;
         }
     }
+    if chunk_len > 0 {
+        decode_base64_chunk(&chunk, chunk_len, &mut out);
+    }
     out
+}
+
+fn decode_base64_chunk(chunk: &[u8; 4], chunk_len: usize, out: &mut Vec<u8>) {
+    let mut values = [0u8; 4];
+    let mut value_len = 0usize;
+    for &byte in &chunk[..chunk_len] {
+        if let Some(value) = base64_value(byte) {
+            values[value_len] = value;
+            value_len += 1;
+        }
+    }
+    if value_len >= 2 {
+        out.push((values[0] << 2) | (values[1] >> 4));
+    }
+    if value_len >= 3 {
+        out.push((values[1] << 4) | (values[2] >> 2));
+    }
+    if value_len >= 4 {
+        out.push((values[2] << 6) | values[3]);
+    }
+}
+
+#[inline]
+fn base64_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'A'..=b'Z' => Some(byte - b'A'),
+        b'a'..=b'z' => Some(byte - b'a' + 26),
+        b'0'..=b'9' => Some(byte - b'0' + 52),
+        b'+' => Some(62),
+        b'/' => Some(63),
+        _ => None,
+    }
 }
 
 fn register_variant(vm: &mut VM, elem: TypedElemKind, module: &'static str) {
@@ -876,46 +1508,38 @@ fn register_variant(vm: &mut VM, elem: TypedElemKind, module: &'static str) {
                         }
                         2 => {
                             // Copy from another TypedArray
-                            let values: Vec<Value> = {
+                            let src_ta = {
                                 let o = src.lock().unwrap();
-                                if let ObjectKind::TypedArray(ref ta) = o.kind {
-                                    let live = ta_live_length(ta);
-                                    (0..live).map(|i| read_element(ta, i)).collect()
-                                } else {
-                                    Vec::new()
+                                match &o.kind {
+                                    ObjectKind::TypedArray(ta) => ta.clone(),
+                                    _ => return new_typed_array(elem, 0),
                                 }
                             };
-                            let out = new_typed_array(elem, values.len());
+                            let live = ta_live_length(&src_ta);
+                            let out = new_typed_array(elem, live);
                             if let Value::Object(ref o) = out {
                                 let ol = o.lock().unwrap();
                                 if let ObjectKind::TypedArray(ref t) = ol.kind {
-                                    for (i, v) in values.iter().enumerate() {
-                                        write_element(t, i, v);
-                                    }
+                                    let _ = write_typed_array_source_to_typed_array(t, 0, &src_ta);
                                 }
                             }
                             out
                         }
                         3 => {
                             // Fill from plain Array
-                            let values: Vec<Value> = {
-                                let o = src.lock().unwrap();
-                                if let ObjectKind::Array(ref elems) = o.kind {
-                                    elems.clone()
-                                } else {
-                                    Vec::new()
-                                }
-                            };
-                            let out = new_typed_array(elem, values.len());
-                            if let Value::Object(ref o) = out {
-                                let ol = o.lock().unwrap();
-                                if let ObjectKind::TypedArray(ref t) = ol.kind {
-                                    for (i, v) in values.iter().enumerate() {
-                                        write_element(t, i, v);
+                            let s = src.lock().unwrap();
+                            if let ObjectKind::Array(ref elems) = s.kind {
+                                let out = new_typed_array(elem, elems.len());
+                                if let Value::Object(ref o) = out {
+                                    let ol = o.lock().unwrap();
+                                    if let ObjectKind::TypedArray(ref t) = ol.kind {
+                                        write_array_values_to_typed_array_bytes(t, 0, elems);
                                     }
                                 }
+                                out
+                            } else {
+                                new_typed_array(elem, 0)
                             }
-                            out
                         }
                         _ => new_typed_array(elem, 0),
                     }
@@ -990,15 +1614,11 @@ fn register_variant(vm: &mut VM, elem: TypedElemKind, module: &'static str) {
             if let Some(Value::Object(src)) = args.first() {
                 let s = src.lock().unwrap();
                 if let ObjectKind::Array(ref elems) = s.kind {
-                    let values: Vec<Value> = elems.clone();
-                    drop(s);
-                    let ta_val = new_typed_array(elem, values.len());
+                    let ta_val = new_typed_array(elem, elems.len());
                     if let Value::Object(ref ta_obj) = ta_val {
                         let ta_lock = ta_obj.lock().unwrap();
                         if let ObjectKind::TypedArray(ref ta) = ta_lock.kind {
-                            for (i, v) in values.iter().enumerate() {
-                                write_element(ta, i, v);
-                            }
+                            write_array_values_to_typed_array_bytes(ta, 0, elems);
                         }
                     }
                     return ta_val;
@@ -1014,23 +1634,23 @@ fn register_variant(vm: &mut VM, elem: TypedElemKind, module: &'static str) {
         Box::new(move |_ctx, args| {
             // Copy + coerce elements from another typed array.
             if let Some(Value::Object(src)) = args.first() {
-                let s = src.lock().unwrap();
-                if let ObjectKind::TypedArray(ref src_ta) = s.kind {
-                    let live_len = ta_live_length(src_ta);
-                    let values: Vec<Value> =
-                        (0..live_len).map(|i| read_element(src_ta, i)).collect();
-                    drop(s);
-                    let ta_val = new_typed_array(elem, values.len());
-                    if let Value::Object(ref ta_obj) = ta_val {
-                        let ta_lock = ta_obj.lock().unwrap();
-                        if let ObjectKind::TypedArray(ref ta) = ta_lock.kind {
-                            for (i, v) in values.iter().enumerate() {
-                                write_element(ta, i, v);
-                            }
-                        }
+                let src_ta = {
+                    let s = src.lock().unwrap();
+                    match &s.kind {
+                        ObjectKind::TypedArray(src_ta) => src_ta.clone(),
+                        _ => return new_typed_array(elem, 0),
                     }
-                    return ta_val;
+                };
+                let live_len = ta_live_length(&src_ta);
+                let ta_val = new_typed_array(elem, live_len);
+                if let Value::Object(ref ta_obj) = ta_val {
+                    let ta_lock = ta_obj.lock().unwrap();
+                    if let ObjectKind::TypedArray(ref ta) = ta_lock.kind {
+                        let _ = write_typed_array_source_to_typed_array(ta, 0, &src_ta);
+                        return ta_val.clone();
+                    }
                 }
+                return ta_val;
             }
             new_typed_array(elem, 0)
         }),
@@ -1055,6 +1675,39 @@ fn register_variant(vm: &mut VM, elem: TypedElemKind, module: &'static str) {
                 ctx.throw_value(err);
                 return Value::Undefined;
             }
+            let has_map_fn = match args.get(1) {
+                Some(map_fn) => !matches!(map_fn, Value::Null | Value::Undefined),
+                None => false,
+            };
+            if !has_map_fn {
+                if let Value::Object(src_obj) = &source {
+                    let src_ta = {
+                        let src = src_obj.lock().unwrap();
+                        match &src.kind {
+                            ObjectKind::TypedArray(ta) => Some(ta.clone()),
+                            _ => None,
+                        }
+                    };
+                    if let Some(src_ta) = src_ta {
+                        let live = ta_live_length(&src_ta);
+                        let ta_val = new_typed_array(elem, live);
+                        if let Value::Object(ref ta_obj) = ta_val {
+                            let ta_lock = ta_obj.lock().unwrap();
+                            if let ObjectKind::TypedArray(ref ta) = ta_lock.kind {
+                                let _ = write_typed_array_source_to_typed_array(ta, 0, &src_ta);
+                            }
+                        }
+                        let constructor_receiver =
+                            if matches!(constructor_receiver, Value::Undefined) {
+                                ctx.current_js_this()
+                            } else {
+                                constructor_receiver
+                            };
+                        apply_constructor_species(&ta_val, constructor_receiver);
+                        return ta_val;
+                    }
+                }
+            }
             let mut values =
                 match crate::iterator::try_materialize_iterable_values(ctx, &source, false) {
                     Ok(values) => values,
@@ -1066,7 +1719,7 @@ fn register_variant(vm: &mut VM, elem: TypedElemKind, module: &'static str) {
 
             // Optional mapFn (2nd arg): mapFn(value, index) per element.
             if let Some(map_fn) = args.get(1) {
-                if !matches!(map_fn, Value::Null | Value::Undefined) {
+                if has_map_fn {
                     let callable = matches!(
                         map_fn,
                         Value::Object(obj)
@@ -1085,27 +1738,23 @@ fn register_variant(vm: &mut VM, elem: TypedElemKind, module: &'static str) {
                         return Value::Undefined;
                     }
                     let this_arg = args.get(2).cloned().unwrap_or(Value::Undefined);
-                    values = values
-                        .iter()
-                        .enumerate()
-                        .map(|(i, v)| {
-                            crate::function::invoke_with_explicit_this(
-                                ctx,
-                                map_fn,
-                                this_arg.clone(),
-                                &[v.clone(), Value::I32(i as i32)],
-                            )
-                        })
-                        .collect();
+                    let mut mapped = Vec::with_capacity(values.len());
+                    for (i, v) in values.into_iter().enumerate() {
+                        mapped.push(crate::function::invoke_with_explicit_this(
+                            ctx,
+                            map_fn,
+                            this_arg.clone(),
+                            &[v, Value::I32(i as i32)],
+                        ));
+                    }
+                    values = mapped;
                 }
             }
             let ta_val = new_typed_array(elem, values.len());
             if let Value::Object(ref ta_obj) = ta_val {
                 let ta_lock = ta_obj.lock().unwrap();
                 if let ObjectKind::TypedArray(ref ta) = ta_lock.kind {
-                    for (i, v) in values.iter().enumerate() {
-                        write_element(ta, i, v);
-                    }
+                    write_array_values_to_typed_array_bytes(ta, 0, &values);
                 }
             }
             let constructor_receiver = if matches!(constructor_receiver, Value::Undefined) {
@@ -1123,14 +1772,11 @@ fn register_variant(vm: &mut VM, elem: TypedElemKind, module: &'static str) {
         "of",
         Box::new(move |ctx, args| {
             let (constructor_receiver, args) = split_static_typed_array_receiver(args);
-            let values: Vec<Value> = args.to_vec();
-            let ta_val = new_typed_array(elem, values.len());
+            let ta_val = new_typed_array(elem, args.len());
             if let Value::Object(ref ta_obj) = ta_val {
                 let ta_lock = ta_obj.lock().unwrap();
                 if let ObjectKind::TypedArray(ref ta) = ta_lock.kind {
-                    for (i, v) in values.iter().enumerate() {
-                        write_element(ta, i, v);
-                    }
+                    write_array_values_to_typed_array_bytes(ta, 0, args);
                 }
             }
             let constructor_receiver = if matches!(constructor_receiver, Value::Undefined) {
@@ -1207,17 +1853,19 @@ fn register_variant(vm: &mut VM, elem: TypedElemKind, module: &'static str) {
         module,
         "get",
         Box::new(move |_ctx, args| {
-            let i = args.get(1).map(|v| v.as_i32()).unwrap_or(0);
-            if i < 0 {
+            let Some(i) = args
+                .get(1)
+                .and_then(crate::keys::non_negative_integer_index)
+            else {
                 return Value::Undefined;
-            }
+            };
             if let Some(ta_obj) = is_typed_of(args, 0, elem) {
                 let o = ta_obj.lock().unwrap();
                 if let ObjectKind::TypedArray(ref ta) = o.kind {
-                    if (i as usize) >= ta_live_length(ta) {
+                    if i >= ta_live_length(ta) {
                         return Value::Undefined;
                     }
-                    return read_element(ta, i as usize);
+                    return read_element(ta, i);
                 }
             }
             Value::Undefined
@@ -1262,49 +1910,61 @@ fn register_variant(vm: &mut VM, elem: TypedElemKind, module: &'static str) {
                     return Value::Undefined;
                 }
                 let offset = raw_offset as usize;
-                let source_values: Vec<Value> = match args.get(1) {
-                    Some(Value::Object(src)) => {
-                        let s = src.lock().unwrap();
-                        match &s.kind {
-                            ObjectKind::Array(elems) => elems.clone(),
-                            ObjectKind::TypedArray(src_ta) => (0..ta_live_length(src_ta))
-                                .map(|i| read_element(src_ta, i))
-                                .collect(),
-                            _ => Vec::new(),
+                if let Some(result) = try_fast_typed_array_set(ctx, args, elem, offset) {
+                    return result;
+                }
+                if let Some(Value::Object(src)) = args.get(1) {
+                    let s = src.lock().unwrap();
+                    if let ObjectKind::Array(elems) = &s.kind {
+                        if let Some(ta_obj) = is_typed_of(args, 0, elem) {
+                            let o = ta_obj.lock().unwrap();
+                            if let ObjectKind::TypedArray(ref ta) = o.kind {
+                                let live = ta_live_length(ta);
+                                if offset.saturating_add(elems.len()) > live {
+                                    let err = crate::error::new_error(
+                                        ctx,
+                                        "RangeError",
+                                        "TypedArray set offset",
+                                    );
+                                    ctx.throw_value(err);
+                                    return Value::Undefined;
+                                }
+                                write_array_values_to_typed_array_bytes(ta, offset, elems);
+                            }
                         }
+                        return Value::Null;
                     }
-                    _ => Vec::new(),
-                };
-                if let Some(ta_obj) = is_typed_of(args, 0, elem) {
+                }
+                if let (Some(src_ta), Some(ta_obj)) = (
+                    typed_array_state_from_value(args.get(1)),
+                    is_typed_of(args, 0, elem),
+                ) {
                     let o = ta_obj.lock().unwrap();
                     if let ObjectKind::TypedArray(ref ta) = o.kind {
-                        let live = ta_live_length(ta);
-                        if offset.saturating_add(source_values.len()) > live {
+                        if !write_typed_array_source_to_typed_array(ta, offset, &src_ta) {
                             drop(o);
                             let err =
                                 crate::error::new_error(ctx, "RangeError", "TypedArray set offset");
                             ctx.throw_value(err);
                             return Value::Undefined;
                         }
-                        for (i, v) in source_values.iter().enumerate() {
-                            let idx = offset + i;
-                            write_element(ta, idx, v);
-                        }
                     }
                 }
                 return Value::Null;
             }
             // Single-element set(ta, index, value).
-            let i = args.get(1).map(|v| v.as_i32()).unwrap_or(0);
-            if i < 0 {
+            let Some(i) = args
+                .get(1)
+                .and_then(crate::keys::non_negative_integer_index)
+            else {
                 return Value::Null;
-            }
+            };
             let val = args.get(2).cloned().unwrap_or_else(|| zero_value(elem));
             if let Some(ta_obj) = is_typed_of(args, 0, elem) {
                 let o = ta_obj.lock().unwrap();
                 if let ObjectKind::TypedArray(ref ta) = o.kind {
-                    if (i as usize) < ta_live_length(ta) {
-                        write_element(ta, i as usize, &val);
+                    if i < ta_live_length(ta) {
+                        write_element(ta, i, &val);
                     }
                 }
             }
@@ -1324,33 +1984,43 @@ fn register_variant(vm: &mut VM, elem: TypedElemKind, module: &'static str) {
                 return Value::Undefined;
             }
             let offset = raw_offset as usize;
-            let source_values: Vec<Value> = match args.get(1) {
-                Some(Value::Object(src)) => {
-                    let s = src.lock().unwrap();
-                    match &s.kind {
-                        ObjectKind::Array(elems) => elems.clone(),
-                        ObjectKind::TypedArray(src_ta) => (0..ta_live_length(src_ta))
-                            .map(|i| read_element(src_ta, i))
-                            .collect(),
-                        _ => Vec::new(),
+            if let Some(result) = try_fast_typed_array_set(ctx, args, elem, offset) {
+                return result;
+            }
+            if let Some(Value::Object(src)) = args.get(1) {
+                let s = src.lock().unwrap();
+                if let ObjectKind::Array(elems) = &s.kind {
+                    if let Some(ta_obj) = is_typed_of(args, 0, elem) {
+                        let o = ta_obj.lock().unwrap();
+                        if let ObjectKind::TypedArray(ref ta) = o.kind {
+                            let live = ta_live_length(ta);
+                            if offset.saturating_add(elems.len()) > live {
+                                let err = crate::error::new_error(
+                                    ctx,
+                                    "RangeError",
+                                    "TypedArray set offset",
+                                );
+                                ctx.throw_value(err);
+                                return Value::Undefined;
+                            }
+                            write_array_values_to_typed_array_bytes(ta, offset, elems);
+                        }
                     }
+                    return Value::Null;
                 }
-                _ => Vec::new(),
-            };
-            if let Some(ta_obj) = is_typed_of(args, 0, elem) {
+            }
+            if let (Some(src_ta), Some(ta_obj)) = (
+                typed_array_state_from_value(args.get(1)),
+                is_typed_of(args, 0, elem),
+            ) {
                 let o = ta_obj.lock().unwrap();
                 if let ObjectKind::TypedArray(ref ta) = o.kind {
-                    let live = ta_live_length(ta);
-                    if offset.saturating_add(source_values.len()) > live {
+                    if !write_typed_array_source_to_typed_array(ta, offset, &src_ta) {
                         drop(o);
                         let err =
                             crate::error::new_error(ctx, "RangeError", "TypedArray set offset");
                         ctx.throw_value(err);
                         return Value::Undefined;
-                    }
-                    for (i, v) in source_values.iter().enumerate() {
-                        let idx = offset + i;
-                        write_element(ta, idx, v);
                     }
                 }
             }
@@ -1374,13 +2044,8 @@ fn register_variant(vm: &mut VM, elem: TypedElemKind, module: &'static str) {
                     let t = relative_index(target, live);
                     let s = relative_index(start, live);
                     let e = relative_index(end, live);
-                    // Snapshot the source window before writing so
-                    // overlapping copies (memmove semantics) work.
-                    let snapshot: Vec<Value> = (s..e).map(|i| read_element(ta, i)).collect();
-                    let max_copy = (live as usize - t).min(snapshot.len());
-                    for (i, v) in snapshot[..max_copy].iter().enumerate() {
-                        write_element(ta, t + i, v);
-                    }
+                    copy_within_typed_array_bytes(ta, t, s, e);
+                    return args.first().cloned().unwrap_or(Value::Null);
                 }
             }
             args.first().cloned().unwrap_or(Value::Null)
@@ -1400,6 +2065,9 @@ fn register_variant(vm: &mut VM, elem: TypedElemKind, module: &'static str) {
                     let live = ta_live_length(ta) as i32;
                     let s = relative_index(start, live);
                     let e = relative_index(end, live);
+                    if fill_typed_array_bytes(ta, s, e, &val) {
+                        return args.first().cloned().unwrap_or(Value::Null);
+                    }
                     for i in s..e {
                         write_element(ta, i, &val);
                     }
@@ -1417,6 +2085,9 @@ fn register_variant(vm: &mut VM, elem: TypedElemKind, module: &'static str) {
                 let o = ta_obj.lock().unwrap();
                 if let ObjectKind::TypedArray(ref ta) = o.kind {
                     let live = ta_live_length(ta);
+                    if reverse_typed_array_bytes(ta, live) {
+                        return args.first().cloned().unwrap_or(Value::Null);
+                    }
                     let mut i = 0usize;
                     let mut j = live.saturating_sub(1);
                     while i < j {
@@ -1441,14 +2112,18 @@ fn register_variant(vm: &mut VM, elem: TypedElemKind, module: &'static str) {
                 let o = ta_obj.lock().unwrap();
                 if let ObjectKind::TypedArray(ref ta) = o.kind {
                     let live = ta_live_length(ta);
-                    let values: Vec<Value> = (0..live).rev().map(|i| read_element(ta, i)).collect();
+                    let src_ta = ta.clone();
                     drop(o);
-                    let ta_val = new_typed_array(elem, values.len());
+                    let ta_val = new_typed_array(elem, live);
                     if let Value::Object(ref out) = ta_val {
                         let ol = out.lock().unwrap();
                         if let ObjectKind::TypedArray(ref t) = ol.kind {
-                            for (i, v) in values.iter().enumerate() {
-                                write_element(t, i, v);
+                            if copy_reversed_typed_array_bytes(&src_ta, t, live) {
+                            } else {
+                                for (out_index, src_index) in (0..live).rev().enumerate() {
+                                    let value = read_element(&src_ta, src_index);
+                                    write_element(t, out_index, &value);
+                                }
                             }
                         }
                     }
@@ -1468,15 +2143,20 @@ fn register_variant(vm: &mut VM, elem: TypedElemKind, module: &'static str) {
                 let o = ta_obj.lock().unwrap();
                 if let ObjectKind::TypedArray(ref ta) = o.kind {
                     let live = ta_live_length(ta);
-                    let mut values: Vec<Value> = (0..live).map(|i| read_element(ta, i)).collect();
+                    let bpe = ta.elem.bytes_per_element();
+                    let buf = ta.buffer.lock().unwrap();
+                    let mut values = Vec::with_capacity(live);
+                    for i in 0..live {
+                        let abs = ta.byte_offset + i * bpe;
+                        values.push(read_element_from_locked_buffer(ta.elem, &buf, abs, bpe));
+                    }
+                    drop(buf);
                     values.sort_by(|a, b| {
                         a.as_f64()
                             .partial_cmp(&b.as_f64())
                             .unwrap_or(std::cmp::Ordering::Equal)
                     });
-                    for (i, v) in values.iter().enumerate() {
-                        write_element(ta, i, v);
-                    }
+                    let _ = write_array_values_to_typed_array_bytes(ta, 0, &values);
                 }
             }
             args.first().cloned().unwrap_or(Value::Null)
@@ -1491,7 +2171,14 @@ fn register_variant(vm: &mut VM, elem: TypedElemKind, module: &'static str) {
                 let o = ta_obj.lock().unwrap();
                 if let ObjectKind::TypedArray(ref ta) = o.kind {
                     let live = ta_live_length(ta);
-                    let mut values: Vec<Value> = (0..live).map(|i| read_element(ta, i)).collect();
+                    let bpe = ta.elem.bytes_per_element();
+                    let buf = ta.buffer.lock().unwrap();
+                    let mut values = Vec::with_capacity(live);
+                    for i in 0..live {
+                        let abs = ta.byte_offset + i * bpe;
+                        values.push(read_element_from_locked_buffer(ta.elem, &buf, abs, bpe));
+                    }
+                    drop(buf);
                     values.sort_by(|a, b| {
                         a.as_f64()
                             .partial_cmp(&b.as_f64())
@@ -1502,9 +2189,7 @@ fn register_variant(vm: &mut VM, elem: TypedElemKind, module: &'static str) {
                     if let Value::Object(ref out) = ta_val {
                         let ol = out.lock().unwrap();
                         if let ObjectKind::TypedArray(ref t) = ol.kind {
-                            for (i, v) in values.iter().enumerate() {
-                                write_element(t, i, v);
-                            }
+                            let _ = write_array_values_to_typed_array_bytes(t, 0, &values);
                         }
                     }
                     return ta_val;
@@ -1530,18 +2215,31 @@ fn register_variant(vm: &mut VM, elem: TypedElemKind, module: &'static str) {
                     let live = ta_live_length(ta) as i32;
                     let s = relative_index(start, live);
                     let e = relative_index(end, live);
-                    let values: Vec<Value> = if s < e {
-                        (s..e).map(|i| read_element(ta, i)).collect()
-                    } else {
-                        Vec::new()
-                    };
+                    let count = e.saturating_sub(s);
+                    let src_ta = ta.clone();
                     drop(o);
-                    let ta_val = new_typed_array(elem, values.len());
+                    let ta_val = new_typed_array(elem, count);
+                    if count == 0 {
+                        return ta_val;
+                    }
                     if let Value::Object(ref out) = ta_val {
                         let ol = out.lock().unwrap();
                         if let ObjectKind::TypedArray(ref t) = ol.kind {
-                            for (i, v) in values.iter().enumerate() {
-                                write_element(t, i, v);
+                            if !copy_typed_array_slice_bytes(&src_ta, s, t, count) {
+                                let bpe = src_ta.elem.bytes_per_element();
+                                let buf = src_ta.buffer.lock().unwrap();
+                                let mut values = Vec::with_capacity(count);
+                                for i in s..e {
+                                    let abs = src_ta.byte_offset + i * bpe;
+                                    values.push(read_element_from_locked_buffer(
+                                        src_ta.elem,
+                                        &buf,
+                                        abs,
+                                        bpe,
+                                    ));
+                                }
+                                drop(buf);
+                                let _ = write_array_values_to_typed_array_bytes(t, 0, &values);
                             }
                         }
                     }
@@ -1588,9 +2286,18 @@ fn register_variant(vm: &mut VM, elem: TypedElemKind, module: &'static str) {
             if let Some(ta_obj) = is_typed_of(args, 0, elem) {
                 let o = ta_obj.lock().unwrap();
                 if let ObjectKind::TypedArray(ref ta) = o.kind {
+                    match typed_array_integer_search_bytes(ta, &needle, from, false) {
+                        TypedArraySearchResult::Found(index) => return Value::I32(index as i32),
+                        TypedArraySearchResult::NotFound => return Value::I32(-1),
+                        TypedArraySearchResult::Ineligible => {}
+                    }
                     let live = ta_live_length(ta);
+                    let bpe = ta.elem.bytes_per_element();
+                    let buf = ta.buffer.lock().unwrap();
                     for i in from..live {
-                        if Value::same_value_zero(&read_element(ta, i), &needle) {
+                        let abs = ta.byte_offset + i * bpe;
+                        let value = read_element_from_locked_buffer(ta.elem, &buf, abs, bpe);
+                        if Value::same_value_zero(&value, &needle) {
                             return Value::I32(i as i32);
                         }
                     }
@@ -1609,8 +2316,21 @@ fn register_variant(vm: &mut VM, elem: TypedElemKind, module: &'static str) {
                 let o = ta_obj.lock().unwrap();
                 if let ObjectKind::TypedArray(ref ta) = o.kind {
                     let live = ta_live_length(ta);
+                    if live > 0 {
+                        match typed_array_integer_search_bytes(ta, &needle, live - 1, true) {
+                            TypedArraySearchResult::Found(index) => {
+                                return Value::I32(index as i32);
+                            }
+                            TypedArraySearchResult::NotFound => return Value::I32(-1),
+                            TypedArraySearchResult::Ineligible => {}
+                        }
+                    }
+                    let bpe = ta.elem.bytes_per_element();
+                    let buf = ta.buffer.lock().unwrap();
                     for i in (0..live).rev() {
-                        if Value::same_value_zero(&read_element(ta, i), &needle) {
+                        let abs = ta.byte_offset + i * bpe;
+                        let value = read_element_from_locked_buffer(ta.elem, &buf, abs, bpe);
+                        if Value::same_value_zero(&value, &needle) {
                             return Value::I32(i as i32);
                         }
                     }
@@ -1628,9 +2348,18 @@ fn register_variant(vm: &mut VM, elem: TypedElemKind, module: &'static str) {
             if let Some(ta_obj) = is_typed_of(args, 0, elem) {
                 let o = ta_obj.lock().unwrap();
                 if let ObjectKind::TypedArray(ref ta) = o.kind {
+                    match typed_array_integer_search_bytes(ta, &needle, 0, false) {
+                        TypedArraySearchResult::Found(_) => return Value::Bool(true),
+                        TypedArraySearchResult::NotFound => return Value::Bool(false),
+                        TypedArraySearchResult::Ineligible => {}
+                    }
                     let live = ta_live_length(ta);
+                    let bpe = ta.elem.bytes_per_element();
+                    let buf = ta.buffer.lock().unwrap();
                     for i in 0..live {
-                        if Value::same_value_zero(&read_element(ta, i), &needle) {
+                        let abs = ta.byte_offset + i * bpe;
+                        let value = read_element_from_locked_buffer(ta.elem, &buf, abs, bpe);
+                        if Value::same_value_zero(&value, &needle) {
                             return Value::Bool(true);
                         }
                     }
@@ -1648,19 +2377,33 @@ fn register_variant(vm: &mut VM, elem: TypedElemKind, module: &'static str) {
         Box::new(move |_ctx, args| {
             let sep = args
                 .get(1)
-                .map(|v| format!("{}", v))
-                .unwrap_or_else(|| ",".into());
+                .map(|v| match v {
+                    Value::String(text) => Cow::Borrowed(text.as_ref()),
+                    other => crate::keys::value_display_cow(other),
+                })
+                .unwrap_or(Cow::Borrowed(","));
             if let Some(ta_obj) = is_typed_of(args, 0, elem) {
                 let o = ta_obj.lock().unwrap();
                 if let ObjectKind::TypedArray(ref ta) = o.kind {
                     let live = ta_live_length(ta);
-                    let parts: Vec<String> = (0..live)
-                        .map(|i| typed_array_element_to_string(read_element(ta, i)))
-                        .collect();
-                    return Value::String(Arc::from(parts.join(&sep).as_str()));
+                    let bpe = ta.elem.bytes_per_element();
+                    let buf = ta.buffer.lock().unwrap();
+                    let mut out =
+                        String::with_capacity(live.saturating_mul(sep.len().saturating_add(4)));
+                    for i in 0..live {
+                        if i > 0 {
+                            out.push_str(&sep);
+                        }
+                        let abs = ta.byte_offset + i * bpe;
+                        push_typed_array_element_string(
+                            &mut out,
+                            read_element_from_locked_buffer(ta.elem, &buf, abs, bpe),
+                        );
+                    }
+                    return owned_string_value(out);
                 }
             }
-            Value::String(Arc::from(""))
+            crate::keys::string_value("")
         }),
     );
 
@@ -1672,13 +2415,23 @@ fn register_variant(vm: &mut VM, elem: TypedElemKind, module: &'static str) {
                 let o = ta_obj.lock().unwrap();
                 if let ObjectKind::TypedArray(ref ta) = o.kind {
                     let live = ta_live_length(ta);
-                    let parts: Vec<String> = (0..live)
-                        .map(|i| typed_array_element_to_string(read_element(ta, i)))
-                        .collect();
-                    return Value::String(Arc::from(parts.join(",").as_str()));
+                    let bpe = ta.elem.bytes_per_element();
+                    let buf = ta.buffer.lock().unwrap();
+                    let mut out = String::with_capacity(live.saturating_mul(5));
+                    for i in 0..live {
+                        if i > 0 {
+                            out.push(',');
+                        }
+                        let abs = ta.byte_offset + i * bpe;
+                        push_typed_array_element_string(
+                            &mut out,
+                            read_element_from_locked_buffer(ta.elem, &buf, abs, bpe),
+                        );
+                    }
+                    return owned_string_value(out);
                 }
             }
-            Value::String(Arc::from(""))
+            crate::keys::string_value("")
         }),
     );
 
@@ -1690,13 +2443,23 @@ fn register_variant(vm: &mut VM, elem: TypedElemKind, module: &'static str) {
                 let o = ta_obj.lock().unwrap();
                 if let ObjectKind::TypedArray(ref ta) = o.kind {
                     let live = ta_live_length(ta);
-                    let parts: Vec<String> = (0..live)
-                        .map(|i| typed_array_element_to_string(read_element(ta, i)))
-                        .collect();
-                    return Value::String(Arc::from(parts.join(",").as_str()));
+                    let bpe = ta.elem.bytes_per_element();
+                    let buf = ta.buffer.lock().unwrap();
+                    let mut out = String::with_capacity(live.saturating_mul(5));
+                    for i in 0..live {
+                        if i > 0 {
+                            out.push(',');
+                        }
+                        let abs = ta.byte_offset + i * bpe;
+                        push_typed_array_element_string(
+                            &mut out,
+                            read_element_from_locked_buffer(ta.elem, &buf, abs, bpe),
+                        );
+                    }
+                    return owned_string_value(out);
                 }
             }
-            Value::String(Arc::from(""))
+            crate::keys::string_value("")
         }),
     );
 
@@ -1712,7 +2475,10 @@ fn register_variant(vm: &mut VM, elem: TypedElemKind, module: &'static str) {
                 let o = ta_obj.lock().unwrap();
                 if let ObjectKind::TypedArray(ref ta) = o.kind {
                     let live = ta_live_length(ta);
-                    let ks: Vec<Value> = (0..live as i32).map(Value::I32).collect();
+                    let mut ks = Vec::with_capacity(live);
+                    for i in 0..live {
+                        ks.push(Value::I32(i as i32));
+                    }
                     return crate::array::make_array_iterator(ks);
                 }
             }
@@ -1728,7 +2494,13 @@ fn register_variant(vm: &mut VM, elem: TypedElemKind, module: &'static str) {
                 let o = ta_obj.lock().unwrap();
                 if let ObjectKind::TypedArray(ref ta) = o.kind {
                     let live = ta_live_length(ta);
-                    let vs: Vec<Value> = (0..live).map(|i| read_element(ta, i)).collect();
+                    let bpe = ta.elem.bytes_per_element();
+                    let buf = ta.buffer.lock().unwrap();
+                    let mut vs = Vec::with_capacity(live);
+                    for i in 0..live {
+                        let abs = ta.byte_offset + i * bpe;
+                        vs.push(read_element_from_locked_buffer(ta.elem, &buf, abs, bpe));
+                    }
                     return crate::array::make_array_iterator(vs);
                 }
             }
@@ -1744,14 +2516,16 @@ fn register_variant(vm: &mut VM, elem: TypedElemKind, module: &'static str) {
                 let o = ta_obj.lock().unwrap();
                 if let ObjectKind::TypedArray(ref ta) = o.kind {
                     let live = ta_live_length(ta);
-                    let es: Vec<Value> = (0..live)
-                        .map(|i| {
-                            Value::Object(vybe_runtime::heap::alloc(Object::new_array(vec![
-                                Value::I32(i as i32),
-                                read_element(ta, i),
-                            ])))
-                        })
-                        .collect();
+                    let bpe = ta.elem.bytes_per_element();
+                    let buf = ta.buffer.lock().unwrap();
+                    let mut es = Vec::with_capacity(live);
+                    for i in 0..live {
+                        let abs = ta.byte_offset + i * bpe;
+                        es.push(crate::array::make_pair_array(
+                            Value::I32(i as i32),
+                            read_element_from_locked_buffer(ta.elem, &buf, abs, bpe),
+                        ));
+                    }
                     return crate::array::make_array_iterator(es);
                 }
             }
@@ -1775,23 +2549,24 @@ fn register_variant(vm: &mut VM, elem: TypedElemKind, module: &'static str) {
                     if idx < 0 || idx >= live {
                         return args.first().cloned().unwrap_or(Value::Null);
                     }
-                    let values: Vec<Value> = (0..live as usize)
-                        .map(|k| {
-                            if k as i32 == idx {
-                                val.clone()
-                            } else {
-                                read_element(ta, k)
-                            }
-                        })
-                        .collect();
+                    let mut values = Vec::with_capacity(live as usize);
+                    let bpe = ta.elem.bytes_per_element();
+                    let buf = ta.buffer.lock().unwrap();
+                    for k in 0..live as usize {
+                        if k as i32 == idx {
+                            values.push(val.clone());
+                        } else {
+                            let abs = ta.byte_offset + k * bpe;
+                            values.push(read_element_from_locked_buffer(ta.elem, &buf, abs, bpe));
+                        }
+                    }
+                    drop(buf);
                     drop(o);
                     let ta_val = new_typed_array(elem, values.len());
                     if let Value::Object(ref out) = ta_val {
                         let ol = out.lock().unwrap();
                         if let ObjectKind::TypedArray(ref t) = ol.kind {
-                            for (i, v) in values.iter().enumerate() {
-                                write_element(t, i, v);
-                            }
+                            let _ = write_array_values_to_typed_array_bytes(t, 0, &values);
                         }
                     }
                     return ta_val;
@@ -1808,15 +2583,27 @@ fn register_variant(vm: &mut VM, elem: TypedElemKind, module: &'static str) {
         "forEach",
         Box::new(move |ctx, args| {
             let cb = args.get(1).cloned().unwrap_or(Value::Null);
+            let prepared_callback = crate::function::prepare_bound_callback(&cb);
             if let Some(ta_obj) = is_typed_of(args, 0, elem) {
-                let o = ta_obj.lock().unwrap();
-                if let ObjectKind::TypedArray(ref ta) = o.kind {
-                    let live = ta_live_length(ta);
-                    let vals: Vec<Value> = (0..live).map(|i| read_element(ta, i)).collect();
-                    drop(o);
-                    for v in vals {
-                        let _ = ta_invoke_magic(&cb, &[v.clone()])
-                            .unwrap_or_else(|| ctx.invoke(&cb, &[v]));
+                let typed = typed_array_state_from_value(Some(&Value::Object(ta_obj)));
+                let Some(ta) = typed else {
+                    return Value::Undefined;
+                };
+                let live = ta_live_length(&ta);
+                let mut callback_args = [Value::Undefined];
+                for i in 0..live {
+                    let v = read_element(&ta, i);
+                    callback_args[0] = v;
+                    if let Some(value) = ta_invoke_magic(&cb, &callback_args) {
+                        let _ = value;
+                    } else if let Some(prepared) = &prepared_callback {
+                        let _ = crate::function::invoke_prepared_bound_callback(
+                            ctx,
+                            prepared,
+                            &callback_args,
+                        );
+                    } else {
+                        let _ = ctx.invoke(&cb, &callback_args);
                     }
                 }
             }
@@ -1829,32 +2616,41 @@ fn register_variant(vm: &mut VM, elem: TypedElemKind, module: &'static str) {
         "map",
         Box::new(move |ctx, args| {
             let cb = args.get(1).cloned().unwrap_or(Value::Null);
+            let prepared_callback = crate::function::prepare_bound_callback(&cb);
             if let Some(ta_obj) = is_typed_of(args, 0, elem) {
-                let (live, vals) = {
-                    let o = ta_obj.lock().unwrap();
-                    if let ObjectKind::TypedArray(ref ta) = o.kind {
-                        let live = ta_live_length(ta);
-                        (
-                            live,
-                            (0..live).map(|i| read_element(ta, i)).collect::<Vec<_>>(),
+                let typed = typed_array_state_from_value(Some(&Value::Object(ta_obj)));
+                let Some(ta) = typed else {
+                    return new_typed_array(elem, 0);
+                };
+                let live = ta_live_length(&ta);
+                let out = new_typed_array(elem, live);
+                let out_state = match &out {
+                    Value::Object(out_obj) => {
+                        let ol = out_obj.lock().unwrap();
+                        match &ol.kind {
+                            ObjectKind::TypedArray(t) => Some(t.clone()),
+                            _ => None,
+                        }
+                    }
+                    _ => None,
+                };
+                let mut callback_args = [Value::Undefined];
+                for i in 0..live {
+                    let v = read_element(&ta, i);
+                    callback_args[0] = v;
+                    let mapped_value = if let Some(value) = ta_invoke_magic(&cb, &callback_args) {
+                        value
+                    } else if let Some(prepared) = &prepared_callback {
+                        crate::function::invoke_prepared_bound_callback(
+                            ctx,
+                            prepared,
+                            &callback_args,
                         )
                     } else {
-                        (0, vec![])
-                    }
-                };
-                let mapped: Vec<Value> = vals
-                    .into_iter()
-                    .map(|v| {
-                        ta_invoke_magic(&cb, &[v.clone()]).unwrap_or_else(|| ctx.invoke(&cb, &[v]))
-                    })
-                    .collect();
-                let out = new_typed_array(elem, live);
-                if let Value::Object(ref out_obj) = out {
-                    let ol = out_obj.lock().unwrap();
-                    if let ObjectKind::TypedArray(ref t) = ol.kind {
-                        for (i, v) in mapped.iter().enumerate() {
-                            write_element(t, i, v);
-                        }
+                        ctx.invoke(&cb, &callback_args)
+                    };
+                    if let Some(out_state) = &out_state {
+                        write_element(out_state, i, &mapped_value);
                     }
                 }
                 return out;
@@ -1868,32 +2664,27 @@ fn register_variant(vm: &mut VM, elem: TypedElemKind, module: &'static str) {
         "filter",
         Box::new(move |ctx, args| {
             let pred = args.get(1).cloned().unwrap_or(Value::Null);
+            let prepared_pred = crate::function::prepare_bound_callback(&pred);
             if let Some(ta_obj) = is_typed_of(args, 0, elem) {
-                let vals: Vec<Value> = {
-                    let o = ta_obj.lock().unwrap();
-                    if let ObjectKind::TypedArray(ref ta) = o.kind {
-                        (0..ta_live_length(ta))
-                            .map(|i| read_element(ta, i))
-                            .collect()
-                    } else {
-                        vec![]
-                    }
+                let typed = typed_array_state_from_value(Some(&Value::Object(ta_obj)));
+                let Some(ta) = typed else {
+                    return new_typed_array(elem, 0);
                 };
-                let filtered: Vec<Value> = vals
-                    .into_iter()
-                    .filter(|v| {
-                        ta_invoke_magic(&pred, &[v.clone()])
-                            .unwrap_or_else(|| ctx.invoke(&pred, &[v.clone()]))
-                            .as_bool()
-                    })
-                    .collect();
+                let live = ta_live_length(&ta);
+                let mut filtered: Vec<Value> = Vec::with_capacity(live);
+                let mut invoke_args = [Value::Undefined];
+                for i in 0..live {
+                    let value = read_element(&ta, i);
+                    invoke_args[0] = value.clone();
+                    if ta_invoke_prepared(ctx, &pred, &prepared_pred, &invoke_args).as_bool() {
+                        filtered.push(value);
+                    }
+                }
                 let out = new_typed_array(elem, filtered.len());
                 if let Value::Object(ref out_obj) = out {
                     let ol = out_obj.lock().unwrap();
                     if let ObjectKind::TypedArray(ref t) = ol.kind {
-                        for (i, v) in filtered.iter().enumerate() {
-                            write_element(t, i, v);
-                        }
+                        let _ = write_array_values_to_typed_array_bytes(t, 0, &filtered);
                     }
                 }
                 return out;
@@ -1907,29 +2698,25 @@ fn register_variant(vm: &mut VM, elem: TypedElemKind, module: &'static str) {
         "reduce",
         Box::new(move |ctx, args| {
             let reducer = args.get(1).cloned().unwrap_or(Value::Null);
+            let prepared_reducer = crate::function::prepare_bound_callback(&reducer);
             let init = args.get(2).cloned();
             if let Some(ta_obj) = is_typed_of(args, 0, elem) {
-                let vals: Vec<Value> = {
-                    let o = ta_obj.lock().unwrap();
-                    if let ObjectKind::TypedArray(ref ta) = o.kind {
-                        (0..ta_live_length(ta))
-                            .map(|i| read_element(ta, i))
-                            .collect()
-                    } else {
-                        vec![]
-                    }
+                let Some(ta) = typed_array_state_from_value(Some(&Value::Object(ta_obj))) else {
+                    return Value::Undefined;
                 };
-                let mut iter = vals.into_iter();
+                let live = ta_live_length(&ta);
                 let mut acc = match init {
                     Some(i) => i,
-                    None => match iter.next() {
-                        Some(x) => x,
-                        None => return Value::Undefined,
-                    },
+                    None if live > 0 => read_element(&ta, 0),
+                    None => return Value::Undefined,
                 };
-                for x in iter {
-                    acc = ta_invoke_magic(&reducer, &[acc.clone(), x.clone()])
-                        .unwrap_or_else(|| ctx.invoke(&reducer, &[acc.clone(), x]));
+                let start = if args.get(2).is_some() { 0 } else { 1 };
+                let mut invoke_args = [Value::Undefined, Value::Undefined];
+                for i in start..live {
+                    let x = read_element(&ta, i);
+                    invoke_args[0] = acc.clone();
+                    invoke_args[1] = x;
+                    acc = ta_invoke_prepared(ctx, &reducer, &prepared_reducer, &invoke_args);
                 }
                 return acc;
             }
@@ -1942,29 +2729,25 @@ fn register_variant(vm: &mut VM, elem: TypedElemKind, module: &'static str) {
         "reduceRight",
         Box::new(move |ctx, args| {
             let reducer = args.get(1).cloned().unwrap_or(Value::Null);
+            let prepared_reducer = crate::function::prepare_bound_callback(&reducer);
             let init = args.get(2).cloned();
             if let Some(ta_obj) = is_typed_of(args, 0, elem) {
-                let vals: Vec<Value> = {
-                    let o = ta_obj.lock().unwrap();
-                    if let ObjectKind::TypedArray(ref ta) = o.kind {
-                        (0..ta_live_length(ta))
-                            .map(|i| read_element(ta, i))
-                            .collect()
-                    } else {
-                        vec![]
-                    }
+                let Some(ta) = typed_array_state_from_value(Some(&Value::Object(ta_obj))) else {
+                    return Value::Undefined;
                 };
-                let mut iter = vals.into_iter().rev();
-                let mut acc = match init {
-                    Some(i) => i,
-                    None => match iter.next() {
-                        Some(x) => x,
-                        None => return Value::Undefined,
-                    },
+                let live = ta_live_length(&ta);
+                let (mut acc, mut next_index) = match init {
+                    Some(i) => (i, live.checked_sub(1)),
+                    None if live > 0 => (read_element(&ta, live - 1), live.checked_sub(2)),
+                    None => return Value::Undefined,
                 };
-                for x in iter {
-                    acc = ta_invoke_magic(&reducer, &[acc.clone(), x.clone()])
-                        .unwrap_or_else(|| ctx.invoke(&reducer, &[acc.clone(), x]));
+                let mut invoke_args = [Value::Undefined, Value::Undefined];
+                while let Some(i) = next_index {
+                    let x = read_element(&ta, i);
+                    invoke_args[0] = acc.clone();
+                    invoke_args[1] = x;
+                    acc = ta_invoke_prepared(ctx, &reducer, &prepared_reducer, &invoke_args);
+                    next_index = i.checked_sub(1);
                 }
                 return acc;
             }
@@ -1977,22 +2760,20 @@ fn register_variant(vm: &mut VM, elem: TypedElemKind, module: &'static str) {
         "some",
         Box::new(move |ctx, args| {
             let pred = args.get(1).cloned().unwrap_or(Value::Null);
+            let prepared_pred = crate::function::prepare_bound_callback(&pred);
             if let Some(ta_obj) = is_typed_of(args, 0, elem) {
-                let vals: Vec<Value> = {
-                    let o = ta_obj.lock().unwrap();
-                    if let ObjectKind::TypedArray(ref ta) = o.kind {
-                        (0..ta_live_length(ta))
-                            .map(|i| read_element(ta, i))
-                            .collect()
-                    } else {
-                        vec![]
-                    }
+                let Some(ta) = typed_array_state_from_value(Some(&Value::Object(ta_obj))) else {
+                    return Value::Bool(false);
                 };
-                return Value::Bool(vals.into_iter().any(|v| {
-                    ta_invoke_magic(&pred, &[v.clone()])
-                        .unwrap_or_else(|| ctx.invoke(&pred, &[v.clone()]))
-                        .as_bool()
-                }));
+                let live = ta_live_length(&ta);
+                let mut invoke_args = [Value::Undefined];
+                for i in 0..live {
+                    let value = read_element(&ta, i);
+                    invoke_args[0] = value;
+                    if ta_invoke_prepared(ctx, &pred, &prepared_pred, &invoke_args).as_bool() {
+                        return Value::Bool(true);
+                    }
+                }
             }
             Value::Bool(false)
         }),
@@ -2003,22 +2784,20 @@ fn register_variant(vm: &mut VM, elem: TypedElemKind, module: &'static str) {
         "every",
         Box::new(move |ctx, args| {
             let pred = args.get(1).cloned().unwrap_or(Value::Null);
+            let prepared_pred = crate::function::prepare_bound_callback(&pred);
             if let Some(ta_obj) = is_typed_of(args, 0, elem) {
-                let vals: Vec<Value> = {
-                    let o = ta_obj.lock().unwrap();
-                    if let ObjectKind::TypedArray(ref ta) = o.kind {
-                        (0..ta_live_length(ta))
-                            .map(|i| read_element(ta, i))
-                            .collect()
-                    } else {
-                        vec![]
-                    }
+                let Some(ta) = typed_array_state_from_value(Some(&Value::Object(ta_obj))) else {
+                    return Value::Bool(true);
                 };
-                return Value::Bool(vals.into_iter().all(|v| {
-                    ta_invoke_magic(&pred, &[v.clone()])
-                        .unwrap_or_else(|| ctx.invoke(&pred, &[v.clone()]))
-                        .as_bool()
-                }));
+                let live = ta_live_length(&ta);
+                let mut invoke_args = [Value::Undefined];
+                for i in 0..live {
+                    let value = read_element(&ta, i);
+                    invoke_args[0] = value;
+                    if !ta_invoke_prepared(ctx, &pred, &prepared_pred, &invoke_args).as_bool() {
+                        return Value::Bool(false);
+                    }
+                }
             }
             Value::Bool(true)
         }),
@@ -2029,25 +2808,20 @@ fn register_variant(vm: &mut VM, elem: TypedElemKind, module: &'static str) {
         "find",
         Box::new(move |ctx, args| {
             let pred = args.get(1).cloned().unwrap_or(Value::Null);
+            let prepared_pred = crate::function::prepare_bound_callback(&pred);
             if let Some(ta_obj) = is_typed_of(args, 0, elem) {
-                let vals: Vec<Value> = {
-                    let o = ta_obj.lock().unwrap();
-                    if let ObjectKind::TypedArray(ref ta) = o.kind {
-                        (0..ta_live_length(ta))
-                            .map(|i| read_element(ta, i))
-                            .collect()
-                    } else {
-                        vec![]
-                    }
+                let Some(ta) = typed_array_state_from_value(Some(&Value::Object(ta_obj))) else {
+                    return Value::Undefined;
                 };
-                return vals
-                    .into_iter()
-                    .find(|v| {
-                        ta_invoke_magic(&pred, &[v.clone()])
-                            .unwrap_or_else(|| ctx.invoke(&pred, &[v.clone()]))
-                            .as_bool()
-                    })
-                    .unwrap_or(Value::Undefined);
+                let live = ta_live_length(&ta);
+                let mut invoke_args = [Value::Undefined];
+                for i in 0..live {
+                    let value = read_element(&ta, i);
+                    invoke_args[0] = value.clone();
+                    if ta_invoke_prepared(ctx, &pred, &prepared_pred, &invoke_args).as_bool() {
+                        return value;
+                    }
+                }
             }
             Value::Undefined
         }),
@@ -2058,22 +2832,17 @@ fn register_variant(vm: &mut VM, elem: TypedElemKind, module: &'static str) {
         "findIndex",
         Box::new(move |ctx, args| {
             let pred = args.get(1).cloned().unwrap_or(Value::Null);
+            let prepared_pred = crate::function::prepare_bound_callback(&pred);
             if let Some(ta_obj) = is_typed_of(args, 0, elem) {
-                let vals: Vec<Value> = {
-                    let o = ta_obj.lock().unwrap();
-                    if let ObjectKind::TypedArray(ref ta) = o.kind {
-                        (0..ta_live_length(ta))
-                            .map(|i| read_element(ta, i))
-                            .collect()
-                    } else {
-                        vec![]
-                    }
+                let Some(ta) = typed_array_state_from_value(Some(&Value::Object(ta_obj))) else {
+                    return Value::I32(-1);
                 };
-                for (i, v) in vals.into_iter().enumerate() {
-                    if ta_invoke_magic(&pred, &[v.clone()])
-                        .unwrap_or_else(|| ctx.invoke(&pred, &[v.clone()]))
-                        .as_bool()
-                    {
+                let live = ta_live_length(&ta);
+                let mut invoke_args = [Value::Undefined];
+                for i in 0..live {
+                    let value = read_element(&ta, i);
+                    invoke_args[0] = value;
+                    if ta_invoke_prepared(ctx, &pred, &prepared_pred, &invoke_args).as_bool() {
                         return Value::I32(i as i32);
                     }
                 }
@@ -2087,26 +2856,20 @@ fn register_variant(vm: &mut VM, elem: TypedElemKind, module: &'static str) {
         "findLast",
         Box::new(move |ctx, args| {
             let pred = args.get(1).cloned().unwrap_or(Value::Null);
+            let prepared_pred = crate::function::prepare_bound_callback(&pred);
             if let Some(ta_obj) = is_typed_of(args, 0, elem) {
-                let vals: Vec<Value> = {
-                    let o = ta_obj.lock().unwrap();
-                    if let ObjectKind::TypedArray(ref ta) = o.kind {
-                        (0..ta_live_length(ta))
-                            .map(|i| read_element(ta, i))
-                            .collect()
-                    } else {
-                        vec![]
-                    }
+                let Some(ta) = typed_array_state_from_value(Some(&Value::Object(ta_obj))) else {
+                    return Value::Undefined;
                 };
-                return vals
-                    .into_iter()
-                    .rev()
-                    .find(|v| {
-                        ta_invoke_magic(&pred, &[v.clone()])
-                            .unwrap_or_else(|| ctx.invoke(&pred, &[v.clone()]))
-                            .as_bool()
-                    })
-                    .unwrap_or(Value::Undefined);
+                let live = ta_live_length(&ta);
+                let mut invoke_args = [Value::Undefined];
+                for i in (0..live).rev() {
+                    let value = read_element(&ta, i);
+                    invoke_args[0] = value.clone();
+                    if ta_invoke_prepared(ctx, &pred, &prepared_pred, &invoke_args).as_bool() {
+                        return value;
+                    }
+                }
             }
             Value::Undefined
         }),
@@ -2117,24 +2880,18 @@ fn register_variant(vm: &mut VM, elem: TypedElemKind, module: &'static str) {
         "findLastIndex",
         Box::new(move |ctx, args| {
             let pred = args.get(1).cloned().unwrap_or(Value::Null);
+            let prepared_pred = crate::function::prepare_bound_callback(&pred);
             if let Some(ta_obj) = is_typed_of(args, 0, elem) {
-                let vals: Vec<Value> = {
-                    let o = ta_obj.lock().unwrap();
-                    if let ObjectKind::TypedArray(ref ta) = o.kind {
-                        (0..ta_live_length(ta))
-                            .map(|i| read_element(ta, i))
-                            .collect()
-                    } else {
-                        vec![]
-                    }
+                let Some(ta) = typed_array_state_from_value(Some(&Value::Object(ta_obj))) else {
+                    return Value::I32(-1);
                 };
-                let len = vals.len();
-                for (i, v) in vals.into_iter().rev().enumerate() {
-                    if ta_invoke_magic(&pred, &[v.clone()])
-                        .unwrap_or_else(|| ctx.invoke(&pred, &[v.clone()]))
-                        .as_bool()
-                    {
-                        return Value::I32((len - 1 - i) as i32);
+                let live = ta_live_length(&ta);
+                let mut invoke_args = [Value::Undefined];
+                for i in (0..live).rev() {
+                    let value = read_element(&ta, i);
+                    invoke_args[0] = value;
+                    if ta_invoke_prepared(ctx, &pred, &prepared_pred, &invoke_args).as_bool() {
+                        return Value::I32(i as i32);
                     }
                 }
             }

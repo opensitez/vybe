@@ -30,8 +30,8 @@ use std::sync::{Arc, Mutex, OnceLock};
 use webcore::types::{Document, FormEvent, FormEventKind};
 
 use crate::engine::{
-    DOCUMENT, DocumentId, DomEventRecord, DomOp, DomValue, EventOp, EventValue, NodeId, ScheduleOp, ScheduleValue,
-    PickerOp, UiEventFields, WebEngine, WindowOp, WindowValue,
+    DOCUMENT, DocumentId, DomEventRecord, DomOp, DomValue, EventOp, EventValue, NodeId, PickerOp,
+    ScheduleOp, ScheduleValue, UiEventFields, WebEngine, WindowOp, WindowValue,
 };
 
 fn into_webcore_event(f: UiEventFields) -> webcore::ui_events::UiEvent {
@@ -869,16 +869,18 @@ impl WebEngine for WebCore {
                 WindowValue::None
             }
             WindowOp::ScreenPosition(_) => webcore::embedded_window::screen_position()
-                .map(|(x, y)| WindowValue::Pair(x, y)).unwrap_or(WindowValue::Null),
-            WindowOp::Name(w) => WindowValue::Text(
-                with_document(w, |doc| doc.title()).unwrap_or_default()
-            ),
+                .map(|(x, y)| WindowValue::Pair(x, y))
+                .unwrap_or(WindowValue::Null),
+            WindowOp::Name(w) => {
+                WindowValue::Text(with_document(w, |doc| doc.title()).unwrap_or_default())
+            }
             WindowOp::Alert(message) => {
                 webcore::platform::dialogs::alert(&message);
                 WindowValue::None
             }
-            WindowOp::Confirm(message) =>
-                WindowValue::Bool(webcore::platform::dialogs::confirm(&message)),
+            WindowOp::Confirm(message) => {
+                WindowValue::Bool(webcore::platform::dialogs::confirm(&message))
+            }
         }
     }
 
@@ -925,9 +927,9 @@ impl WebEngine for WebCore {
     fn picker(&self, op: PickerOp) -> Vec<String> {
         use webcore::platform::dialogs;
         let paths = match op {
-            PickerOp::Open { title, filters, directory, multiple } =>
+            PickerOp::Open { title, filters, directory, multiple ,} =>
                 dialogs::open_file(&title, &filters, &directory, multiple),
-            PickerOp::Save { title, filters, directory, suggested } =>
+            PickerOp::Save { title, filters, directory, suggested ,} =>
                 dialogs::save_file(&title, &filters, &directory, &suggested).into_iter().collect(),
             PickerOp::Directory { title, directory } =>
                 dialogs::pick_directory(&title, &directory).into_iter().collect(),
@@ -952,17 +954,17 @@ mod tests {
         let node = match browser.document(document, DomOp::CreateElement {
             tag: "canvas".into(),
             input_type: String::new(),
-        }) {
+        },) {
             DomValue::Node(node) => node,
             other => panic!("expected canvas node, got {other:?}"),
         };
-        browser.document(document, DomOp::AppendChild { parent: DOCUMENT, child: node });
+        browser.document(document, DomOp::AppendChild { parent: DOCUMENT, child: node ,},);
         with_document_resources(document, |_, dirty| *dirty = false);
 
-        browser.document(document, DomOp::SetStyleProperty(node, "color".into(), "red".into()));
+        browser.document(document, DomOp::SetStyleProperty(node, "color".into(), "red".into()),);
         with_document_resources(document, |_, dirty| assert!(!*dirty));
 
-        browser.document(document, DomOp::SetStyleProperty(node, "background-image".into(), "url(second.png)".into()));
+        browser.document(document, DomOp::SetStyleProperty(node, "background-image".into(), "url(second.png)".into()),);
         with_document_resources(document, |_, dirty| assert!(*dirty));
     }
 
@@ -974,7 +976,7 @@ mod tests {
     fn inner_size_tracks_viewport_not_body_style() {
         let browser = WebCore;
         let document = browser.new_document("Viewport test");
-        browser.document(document, DomOp::SetStyleProperty(DOCUMENT, "width".into(), "320px".into()));
+        browser.document(document, DomOp::SetStyleProperty(DOCUMENT, "width".into(), "320px".into()),);
         let size = browser.window(WindowOp::InnerSize(document));
         assert!(matches!(size, WindowValue::Pair(800.0, 600.0)));
 
@@ -989,11 +991,11 @@ mod tests {
         let document = browser.new_document("Click test");
         let DomValue::Node(button) = browser.document(document, DomOp::CreateElement {
             tag: "button".into(), input_type: String::new(),
-        }) else { panic!("button not created") };
-        browser.document(document, DomOp::AppendChild { parent: DOCUMENT, child: button });
-        browser.document(document, DomOp::SetStyleProperty(button, "width".into(), "100px".into()));
-        browser.document(document, DomOp::SetStyleProperty(button, "height".into(), "40px".into()));
-        let DomValue::Rect { x, y, width, height } =
+        },) else { panic!("button not created") };
+        browser.document(document, DomOp::AppendChild { parent: DOCUMENT, child: button ,},);
+        browser.document(document, DomOp::SetStyleProperty(button, "width".into(), "100px".into()),);
+        browser.document(document, DomOp::SetStyleProperty(button, "height".into(), "40px".into()),);
+        let DomValue::Rect { x, y, width, height ,} =
             browser.document(document, DomOp::BoundingClientRect(button))
         else { panic!("button not laid out") };
         assert!(width > 0.0 && height > 0.0);
@@ -1001,11 +1003,98 @@ mod tests {
         for kind in ["mousedown", "mouseup"] {
             browser.document(document, DomOp::DispatchPointer {
                 kind: kind.into(), client_x, client_y, button: 0,
-            });
+            },);
         }
         let DomValue::Events(events) = browser.document(document, DomOp::DrainEvents)
         else { panic!("no DOM event queue") };
         assert_eq!(event_paths(&events), vec![(button, button, "click")]);
+    }
+
+    #[test]
+    fn toolbar_button_click_reaches_its_listener() {
+        let browser = WebCore;
+        let document = browser.new_document("Toolbar click test");
+        let DomValue::Node(menu) = browser.document(
+            document,
+            DomOp::CreateElement {
+                tag: "menu".into(),
+                input_type: String::new(),
+            },
+        ) else {
+            panic!("menu not created")
+        };
+        let DomValue::Node(button) = browser.document(
+            document,
+            DomOp::CreateElement {
+                tag: "button".into(),
+                input_type: String::new(),
+            },
+        ) else {
+            panic!("button not created")
+        };
+        browser.document(
+            document,
+            DomOp::AppendChild {
+                parent: DOCUMENT,
+                child: menu,
+            },
+        );
+        browser.document(
+            document,
+            DomOp::AppendChild {
+                parent: menu,
+                child: button,
+            },
+        );
+        browser.document(
+            document,
+            DomOp::SetStyleProperty(menu, "width".into(), "210px".into()),
+        );
+        browser.document(
+            document,
+            DomOp::SetStyleProperty(menu, "height".into(), "20px".into()),
+        );
+        browser.document(
+            document,
+            DomOp::SetStyleProperty(button, "min-width".into(), "23px".into()),
+        );
+        browser.document(
+            document,
+            DomOp::SetStyleProperty(button, "height".into(), "100%".into()),
+        );
+        browser.document(
+            document,
+            DomOp::ObserveEvent {
+                node: button,
+                kind: "click".into(),
+            },
+        );
+
+        let DomValue::Rect {
+            x,
+            y,
+            width,
+            height,
+        } = browser.document(document, DomOp::BoundingClientRect(button))
+        else {
+            panic!("toolbar button not laid out")
+        };
+        assert!(width > 0.0 && height > 0.0);
+        for kind in ["mousedown", "mouseup"] {
+            browser.document(
+                document,
+                DomOp::DispatchPointer {
+                    kind: kind.into(),
+                    client_x: (x + width / 2.0) as f32,
+                    client_y: (y + height / 2.0) as f32,
+                    button: 0,
+                },
+            );
+        }
+        let DomValue::Events(events) = browser.document(document, DomOp::DrainEvents) else {
+            panic!("no DOM event queue")
+        };
+        assert!(event_paths(&events).contains(&(button, button, "click")));
     }
 
     #[test]
@@ -1014,19 +1103,19 @@ mod tests {
         let document = browser.new_document("Mouse fields test");
         let DomValue::Node(node) = browser.document(document, DomOp::CreateElement {
             tag: "div".into(), input_type: String::new(),
-        }) else { panic!("div not created") };
-        browser.document(document, DomOp::AppendChild { parent: DOCUMENT, child: node });
-        browser.document(document, DomOp::SetStyleProperty(node, "width".into(), "100px".into()));
-        browser.document(document, DomOp::SetStyleProperty(node, "height".into(), "40px".into()));
-        browser.document(document, DomOp::ObserveEvent { node, kind: "mousedown".into() });
-        let DomValue::Rect { x, y, width, height } =
+        },) else { panic!("div not created") };
+        browser.document(document, DomOp::AppendChild { parent: DOCUMENT, child: node ,},);
+        browser.document(document, DomOp::SetStyleProperty(node, "width".into(), "100px".into()),);
+        browser.document(document, DomOp::SetStyleProperty(node, "height".into(), "40px".into()),);
+        browser.document(document, DomOp::ObserveEvent { node, kind: "mousedown".into() ,},);
+        let DomValue::Rect { x, y, width, height ,} =
             browser.document(document, DomOp::BoundingClientRect(node))
         else { panic!("div not laid out") };
         let client_x = (x + width / 2.0) as f32;
         let client_y = (y + height / 2.0) as f32;
         browser.document(document, DomOp::DispatchPointer {
             kind: "mousedown".into(), client_x, client_y, button: 0,
-        });
+        },);
         let DomValue::Events(events) = browser.document(document, DomOp::DrainEvents)
         else { panic!("no DOM event queue") };
         assert_eq!(event_paths(&events), vec![(node, node, "mousedown")]);
@@ -1040,19 +1129,19 @@ mod tests {
         let document = browser.new_document("Div click test");
         let DomValue::Node(parent) = browser.document(document, DomOp::CreateElement {
             tag: "div".into(), input_type: String::new(),
-        }) else { panic!("parent not created") };
+        },) else { panic!("parent not created") };
         let DomValue::Node(child) = browser.document(document, DomOp::CreateElement {
             tag: "div".into(), input_type: String::new(),
-        }) else { panic!("child not created") };
-        browser.document(document, DomOp::AppendChild { parent: DOCUMENT, child: parent });
+        },) else { panic!("child not created") };
+        browser.document(document, DomOp::AppendChild { parent: DOCUMENT, child: parent ,},);
         browser.document(document, DomOp::AppendChild { parent, child });
-        browser.document(document, DomOp::ObserveEvent { node: parent, kind: "click".into() });
-        browser.document(document, DomOp::ObserveEvent { node: child, kind: "click".into() });
-        browser.document(document, DomOp::SetStyleProperty(parent, "width".into(), "100px".into()));
-        browser.document(document, DomOp::SetStyleProperty(parent, "height".into(), "60px".into()));
-        browser.document(document, DomOp::SetStyleProperty(child, "width".into(), "80px".into()));
-        browser.document(document, DomOp::SetStyleProperty(child, "height".into(), "40px".into()));
-        let DomValue::Rect { x, y, width, height } =
+        browser.document(document, DomOp::ObserveEvent { node: parent, kind: "click".into() ,},);
+        browser.document(document, DomOp::ObserveEvent { node: child, kind: "click".into() ,},);
+        browser.document(document, DomOp::SetStyleProperty(parent, "width".into(), "100px".into()),);
+        browser.document(document, DomOp::SetStyleProperty(parent, "height".into(), "60px".into()),);
+        browser.document(document, DomOp::SetStyleProperty(child, "width".into(), "80px".into()),);
+        browser.document(document, DomOp::SetStyleProperty(child, "height".into(), "40px".into()),);
+        let DomValue::Rect { x, y, width, height ,} =
             browser.document(document, DomOp::BoundingClientRect(child))
         else { panic!("child not laid out") };
         assert!(width > 0.0 && height > 0.0);
@@ -1060,7 +1149,7 @@ mod tests {
             browser.document(document, DomOp::DispatchPointer {
                 kind: kind.into(), client_x: (x + width / 2.0) as f32,
                 client_y: (y + height / 2.0) as f32, button: 0,
-            });
+            },);
         }
         let DomValue::Events(events) = browser.document(document, DomOp::DrainEvents)
         else { panic!("no DOM event queue") };
@@ -1068,7 +1157,7 @@ mod tests {
             (child, child, "click"),
             (parent, child, "click"),
         ]);
-        browser.document(document, DomOp::UnobserveEvent { node: child, kind: "click".into() });
+        browser.document(document, DomOp::UnobserveEvent { node: child, kind: "click".into() ,},);
         with_entry(document, |entry| {
             assert!(!entry.observed.contains_key(&(child, "click".into())));
             assert!(!entry.doc.event_targets.node_ids().any(|id| id == child as u32));
@@ -1077,7 +1166,7 @@ mod tests {
             browser.document(document, DomOp::DispatchPointer {
                 kind: kind.into(), client_x: (x + width / 2.0) as f32,
                 client_y: (y + height / 2.0) as f32, button: 0,
-            });
+            },);
         }
         let DomValue::Events(events) = browser.document(document, DomOp::DrainEvents)
         else { panic!("no DOM event queue") };
@@ -1095,29 +1184,29 @@ mod tests {
         let document = browser.new_document("Grid click test");
         let DomValue::Node(grid) = browser.document(document, DomOp::CreateElement {
             tag: "div".into(), input_type: String::new(),
-        }) else { panic!("grid not created") };
+        },) else { panic!("grid not created") };
         let DomValue::Node(cell) = browser.document(document, DomOp::CreateElement {
             tag: "div".into(), input_type: String::new(),
-        }) else { panic!("cell not created") };
-        browser.document(document, DomOp::ObserveEvent { node: cell, kind: "click".into() });
-        browser.document(document, DomOp::AppendChild { parent: DOCUMENT, child: grid });
-        browser.document(document, DomOp::AppendChild { parent: grid, child: cell });
+        },) else { panic!("cell not created") };
+        browser.document(document, DomOp::ObserveEvent { node: cell, kind: "click".into() ,},);
+        browser.document(document, DomOp::AppendChild { parent: DOCUMENT, child: grid ,},);
+        browser.document(document, DomOp::AppendChild { parent: grid, child: cell ,},);
         for (name, value) in [
             ("display", "grid"), ("grid-template-columns", "repeat(7, 1fr)"),
             ("grid-template-rows", "repeat(6, 1fr)"), ("position", "absolute"),
             ("left", "50px"), ("top", "60px"), ("width", "400px"),
             ("height", "340px"), ("background-color", "dodgerblue"),
         ] {
-            browser.document(document, DomOp::SetStyleProperty(grid, name.into(), value.into()));
+            browser.document(document, DomOp::SetStyleProperty(grid, name.into(), value.into()),);
         }
         for (name, value) in [
             ("position", "relative"), ("width", "100%"), ("height", "100%"),
             ("grid-column-start", "1"), ("grid-row-start", "1"),
             ("background-color", "white"),
         ] {
-            browser.document(document, DomOp::SetStyleProperty(cell, name.into(), value.into()));
+            browser.document(document, DomOp::SetStyleProperty(cell, name.into(), value.into()),);
         }
-        let DomValue::Rect { x, y, width, height } =
+        let DomValue::Rect { x, y, width, height ,} =
             browser.document(document, DomOp::BoundingClientRect(cell))
         else { panic!("cell not laid out") };
         assert!(width > 0.0 && height > 0.0);
@@ -1125,7 +1214,7 @@ mod tests {
             browser.document(document, DomOp::DispatchPointer {
                 kind: kind.into(), client_x: (x + width / 2.0) as f32,
                 client_y: (y + height / 2.0) as f32, button: 0,
-            });
+            },);
         }
         let DomValue::Events(events) = browser.document(document, DomOp::DrainEvents)
         else { panic!("no DOM event queue") };
@@ -1138,51 +1227,51 @@ mod tests {
         let document = browser.new_document("Input events");
         let DomValue::Node(button) = browser.document(document, DomOp::CreateElement {
             tag: "button".into(), input_type: String::new(),
-        }) else { panic!("button not created") };
-        browser.document(document, DomOp::AppendChild { parent: DOCUMENT, child: button });
-        browser.document(document, DomOp::SetStyleProperty(button, "width".into(), "100px".into()));
-        browser.document(document, DomOp::SetStyleProperty(button, "height".into(), "40px".into()));
+        },) else { panic!("button not created") };
+        browser.document(document, DomOp::AppendChild { parent: DOCUMENT, child: button ,},);
+        browser.document(document, DomOp::SetStyleProperty(button, "width".into(), "100px".into()),);
+        browser.document(document, DomOp::SetStyleProperty(button, "height".into(), "40px".into()),);
         for kind in ["mousedown", "mouseup", "pointerdown", "pointerup", "click", "wheel",
-                     "mousemove", "pointermove", "mouseover", "mouseout", "mouseenter", "mouseleave"] {
-            browser.document(document, DomOp::ObserveEvent { node: button, kind: kind.into() });
+                     "mousemove", "pointermove", "mouseover", "mouseout", "mouseenter", "mouseleave",] {
+            browser.document(document, DomOp::ObserveEvent { node: button, kind: kind.into() ,},);
         }
         for kind in ["keydown", "keypress", "keyup"] {
-            browser.document(document, DomOp::ObserveEvent { node: DOCUMENT, kind: kind.into() });
+            browser.document(document, DomOp::ObserveEvent { node: DOCUMENT, kind: kind.into() ,},);
         }
-        let DomValue::Rect { x, y, width, height } =
+        let DomValue::Rect { x, y, width, height ,} =
             browser.document(document, DomOp::BoundingClientRect(button))
         else { panic!("button not laid out") };
         let (client_x, client_y) = ((x + width / 2.0) as f32, (y + height / 2.0) as f32);
         for kind in ["mousedown", "mouseup"] {
             browser.document(document, DomOp::DispatchPointer {
                 kind: kind.into(), client_x, client_y, button: 0,
-            });
+            },);
         }
         browser.document(document, DomOp::DispatchPointer {
             kind: "mousemove".into(), client_x, client_y, button: 0,
-        });
+        },);
         let hover_before = with_document(document, |doc| doc.hovered_box).unwrap();
         let outside_hit = with_document(document, |doc| doc.element_from_point(700.0, 500.0)).unwrap();
         assert_eq!(hover_before, button as u32, "unexpected hover target; outside hit: {outside_hit:?}");
         browser.document(document, DomOp::DispatchPointer {
             kind: "mousemove".into(), client_x: 700.0,
             client_y: 500.0, button: 0,
-        });
+        },);
         browser.document(document, DomOp::DispatchWheel(UiEventFields {
             kind: "wheel".into(), client_x: client_x as i32,
             client_y: client_y as i32, delta_y: -30.0,
             ..UiEventFields::default()
-        }));
+        }),);
         for kind in ["keydown", "keypress", "keyup"] {
             browser.document(document, DomOp::DispatchKeyboard(UiEventFields {
                 kind: kind.into(), key: "a".into(), key_code: 65,
                 ..UiEventFields::default()
-            }));
+            }),);
         }
         let DomValue::Events(events) = browser.document(document, DomOp::DrainEvents)
         else { panic!("no DOM event queue") };
         for kind in ["mousedown", "mouseup", "pointerdown", "pointerup", "click", "wheel",
-                     "mousemove", "pointermove", "mouseover", "mouseout", "mouseenter", "mouseleave"] {
+                     "mousemove", "pointermove", "mouseover", "mouseout", "mouseenter", "mouseleave",] {
             assert!(events.iter().any(|event| event.current_target == button && event.kind == kind),
                 "missing {kind}: {events:?}");
         }
@@ -1198,29 +1287,29 @@ mod tests {
         let document = browser.new_document("Form events");
         let DomValue::Node(input) = browser.document(document, DomOp::CreateElement {
             tag: "input".into(), input_type: "text".into(),
-        }) else { panic!("input not created") };
-        browser.document(document, DomOp::AppendChild { parent: DOCUMENT, child: input });
+        },) else { panic!("input not created") };
+        browser.document(document, DomOp::AppendChild { parent: DOCUMENT, child: input ,},);
         for kind in ["input", "change"] {
-            browser.document(document, DomOp::ObserveEvent { node: input, kind: kind.into() });
+            browser.document(document, DomOp::ObserveEvent { node: input, kind: kind.into() ,},);
         }
         browser.document(document, DomOp::Focus(input));
         browser.document(document, DomOp::DispatchKeyboard(UiEventFields {
             kind: "keydown".into(), key: "a".into(), key_code: 65,
             ..UiEventFields::default()
-        }));
+        }),);
         let DomValue::Node(checkbox) = browser.document(document, DomOp::CreateElement {
             tag: "input".into(), input_type: "checkbox".into(),
-        }) else { panic!("checkbox not created") };
-        browser.document(document, DomOp::AppendChild { parent: DOCUMENT, child: checkbox });
-        browser.document(document, DomOp::ObserveEvent { node: checkbox, kind: "change".into() });
-        let DomValue::Rect { x, y, width, height } =
+        },) else { panic!("checkbox not created") };
+        browser.document(document, DomOp::AppendChild { parent: DOCUMENT, child: checkbox ,},);
+        browser.document(document, DomOp::ObserveEvent { node: checkbox, kind: "change".into() ,},);
+        let DomValue::Rect { x, y, width, height ,} =
             browser.document(document, DomOp::BoundingClientRect(checkbox))
         else { panic!("checkbox not laid out") };
         for kind in ["mousedown", "mouseup"] {
             browser.document(document, DomOp::DispatchPointer {
                 kind: kind.into(), client_x: (x + width / 2.0) as f32,
                 client_y: (y + height / 2.0) as f32, button: 0,
-            });
+            },);
         }
         let DomValue::Events(events) = browser.document(document, DomOp::DrainEvents)
         else { panic!("no DOM event queue") };
@@ -1236,17 +1325,17 @@ mod tests {
         let document = browser.new_document("Populated grid");
         let DomValue::Node(grid) = browser.document(document, DomOp::CreateElement {
             tag: "div".into(), input_type: String::new(),
-        }) else { panic!("grid not created") };
-        browser.document(document, DomOp::AppendChild { parent: DOCUMENT, child: grid });
+        },) else { panic!("grid not created") };
+        browser.document(document, DomOp::AppendChild { parent: DOCUMENT, child: grid ,},);
         for (name, value) in [
             ("display", "grid"), ("grid-template-columns", "repeat(7, 1fr)"),
             ("grid-template-rows", "repeat(6, 1fr)"), ("gap", "2px"),
             ("position", "absolute"), ("left", "50px"), ("top", "60px"),
             ("width", "400px"), ("height", "340px"),
         ] {
-            browser.document(document, DomOp::SetStyleProperty(grid, name.into(), value.into()));
+            browser.document(document, DomOp::SetStyleProperty(grid, name.into(), value.into()),);
         }
-        browser.document(document, DomOp::SetAttribute(grid, "tabindex".into(), "1".into()));
+        browser.document(document, DomOp::SetAttribute(grid, "tabindex".into(), "1".into()),);
         for (tag, x, y, width, height) in [
             ("label", 0, 0, 500, 40),
             ("label", 50, 410, 400, 30),
@@ -1254,14 +1343,14 @@ mod tests {
         ] {
             let DomValue::Node(sibling) = browser.document(document, DomOp::CreateElement {
                 tag: tag.into(), input_type: String::new(),
-            }) else { panic!("sibling not created") };
-            browser.document(document, DomOp::AppendChild { parent: DOCUMENT, child: sibling });
+            },) else { panic!("sibling not created") };
+            browser.document(document, DomOp::AppendChild { parent: DOCUMENT, child: sibling ,},);
             for (name, value) in [
                 ("position", "absolute".to_string()),
                 ("left", format!("{x}px")), ("top", format!("{y}px")),
                 ("width", format!("{width}px")), ("height", format!("{height}px")),
             ] {
-                browser.document(document, DomOp::SetStyleProperty(sibling, name.into(), value));
+                browser.document(document, DomOp::SetStyleProperty(sibling, name.into(), value),);
             }
         }
         let mut cells = Vec::new();
@@ -1269,9 +1358,9 @@ mod tests {
             for col in 0..7 {
                 let DomValue::Node(cell) = browser.document(document, DomOp::CreateElement {
                     tag: "div".into(), input_type: String::new(),
-                }) else { panic!("cell not created") };
-                browser.document(document, DomOp::AppendChild { parent: grid, child: cell });
-                browser.document(document, DomOp::ObserveEvent { node: cell, kind: "click".into() });
+                },) else { panic!("cell not created") };
+                browser.document(document, DomOp::AppendChild { parent: grid, child: cell ,},);
+                browser.document(document, DomOp::ObserveEvent { node: cell, kind: "click".into() ,},);
                 for (name, value) in [
                     ("grid-column-start", (col + 1).to_string()),
                     ("grid-row-start", (row + 1).to_string()),
@@ -1289,18 +1378,18 @@ mod tests {
             }
         }
         for cell in cells {
-            let DomValue::Rect { x, y, width, height } =
+            let DomValue::Rect { x, y, width, height ,} =
                 browser.document(document, DomOp::BoundingClientRect(cell))
             else { panic!("cell not laid out") };
             assert!(width > 0.0 && height > 0.0, "cell {cell} has no hit area");
             let (client_x, client_y) = ((x + width / 2.0) as f32, (y + height / 2.0) as f32);
             browser.document(document, DomOp::DispatchPointer {
                 kind: "mousemove".into(), client_x, client_y, button: 0,
-            });
+            },);
             for kind in ["mousedown", "mouseup"] {
                 browser.document(document, DomOp::DispatchPointer {
                     kind: kind.into(), client_x, client_y, button: 0,
-                });
+                },);
             }
             let DomValue::Events(events) = browser.document(document, DomOp::DrainEvents)
             else { panic!("no DOM event queue") };

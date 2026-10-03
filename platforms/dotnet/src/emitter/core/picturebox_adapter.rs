@@ -1,9 +1,11 @@
 //! WinForms PictureBox image sources on the canvas-backed control.
 
-use vybe_compiler::primitives::class_slots::{self, ClassSlot, Dest, ObjSource, PlainNames, ResolvedSlot, ValueSource};
+use vybe_compiler::primitives::class_slots::{
+    self, ClassSlot, Dest, ObjSource, PlainNames, ResolvedSlot, ValueSource,
+};
 use vybe_compiler::primitives::{gui, ops, strings};
-use vybe_runtime::opcode::Op;
 use vybe_runtime::Chunk;
+use vybe_runtime::opcode::Op;
 
 fn stored_property(name: &str) -> ResolvedSlot {
     class_slots::resolve(&ClassSlot::internal(name), &PlainNames)

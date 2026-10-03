@@ -21,12 +21,14 @@ use proposals::{compilation_hints, exception_handling, extended_name_section, js
 
 use crate::encoding::*;
 use vybe_runtime::Chunk;
+use vybe_runtime::chunk::ReceiverAbi;
 
 // ── Writer ──────────────────────────────────────────────────────────────
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct WasmWriteOptions {
     pub include_vybe_metadata: bool,
+    pub include_name_section: bool,
 }
 
 pub fn write_wasm(chunks: &[Chunk]) -> Vec<u8> {
@@ -43,8 +45,9 @@ pub fn write_wasm_with_options(chunks: &[Chunk], options: WasmWriteOptions) -> V
     }
 
     // Collect imports — total_imports = host imports + wasm:js-* builtins
+    let host_imports = sections::collect_host_imports(chunks);
     let rt_imports = sections::collect_rt_imports(chunks);
-    let host_import_count = chunks.first().map(|c| c.imports.len()).unwrap_or(0);
+    let host_import_count = host_imports.len();
     let total_imports = host_import_count + rt_imports.len(); // ALL WASM-level imports
 
     // Imported string constants (js-string-builtins § String constants) — one
@@ -59,7 +62,7 @@ pub fn write_wasm_with_options(chunks: &[Chunk], options: WasmWriteOptions) -> V
 
     // Type section: GC struct types + array type + function types
     let (type_section_data, mut type_ctx) =
-        types::build_type_context(chunks, total_imports, &rt_imports);
+        types::build_type_context(chunks, &host_imports, total_imports, &rt_imports);
 
     // Per-class descriptor singletons live at the END of the global index
     // space, after the imported globals and every module-defined one, so
@@ -80,6 +83,7 @@ pub fn write_wasm_with_options(chunks: &[Chunk], options: WasmWriteOptions) -> V
         SECTION_IMPORT,
         &sections::encode_import_section(
             chunks,
+            &host_imports,
             &rt_imports,
             type_ctx.func_type_base,
             &string_constants,
@@ -188,7 +192,7 @@ pub fn write_wasm_with_options(chunks: &[Chunk], options: WasmWriteOptions) -> V
     // branch_hint custom section — spec §branch-hinting requires this to
     // appear BEFORE the code section (not as a trailing custom section).
     if let Some(bh_payload) =
-        compilation_hints::encode_branch_hint_payload(chunks, rt_imports.len())
+        compilation_hints::encode_branch_hint_payload(chunks, host_import_count, rt_imports.len())
     {
         let mut sec = Vec::new();
         write_name(&mut sec, compilation_hints::BRANCH_HINT_SECTION_NAME);
@@ -200,7 +204,7 @@ pub fn write_wasm_with_options(chunks: &[Chunk], options: WasmWriteOptions) -> V
     write_section(
         &mut out,
         SECTION_CODE,
-        &code::encode_code_section(chunks, &rt_imports, &type_ctx, &tag_plan),
+        &code::encode_code_section(chunks, &host_imports, &rt_imports, &type_ctx, &tag_plan),
     );
 
     if !data_segments.is_empty() {
@@ -212,28 +216,38 @@ pub fn write_wasm_with_options(chunks: &[Chunk], options: WasmWriteOptions) -> V
     }
 
     // ── Trailing custom sections ─────────────────────────────────────
-    // The standard `"name"` custom section (extended-name-section proposal) —
-    // gives DevTools / profilers readable identifiers.
-    let name_payload =
-        extended_name_section::encode_name_section_payload(chunks, &rt_imports, &type_ctx);
-    if !name_payload.is_empty() {
-        let mut sec = Vec::new();
-        write_name(&mut sec, "name");
-        sec.extend_from_slice(&name_payload);
-        write_section(&mut out, SECTION_CUSTOM, &sec);
+    // The standard `"name"` custom section is debug metadata. Keep release
+    // emission lean unless the caller explicitly asks for names.
+    if options.include_name_section {
+        let name_payload = extended_name_section::encode_name_section_payload(
+            chunks,
+            &host_imports,
+            &rt_imports,
+            &type_ctx,
+        );
+        if !name_payload.is_empty() {
+            let mut sec = Vec::new();
+            write_name(&mut sec, "name");
+            sec.extend_from_slice(&name_payload);
+            write_section(&mut out, SECTION_CUSTOM, &sec);
+        }
     }
 
     // Compilation-hints proposal — tell the engine which functions to
     // optimize first. Skip the section when no hints apply.
-    if let Some(co_payload) =
-        compilation_hints::encode_compilation_order_payload(chunks, rt_imports.len())
-    {
+    if let Some(co_payload) = compilation_hints::encode_compilation_order_payload(
+        chunks,
+        host_import_count,
+        rt_imports.len(),
+    ) {
         let mut sec = Vec::new();
         write_name(&mut sec, compilation_hints::COMPILATION_ORDER_SECTION_NAME);
         sec.extend_from_slice(&co_payload);
         write_section(&mut out, SECTION_CUSTOM, &sec);
     }
-    if let Some(in_payload) = compilation_hints::encode_inlining_payload(chunks, rt_imports.len()) {
+    if let Some(in_payload) =
+        compilation_hints::encode_inlining_payload(chunks, host_import_count, rt_imports.len())
+    {
         let mut sec = Vec::new();
         write_name(&mut sec, compilation_hints::INLINING_SECTION_NAME);
         sec.extend_from_slice(&in_payload);
@@ -244,13 +258,39 @@ pub fn write_wasm_with_options(chunks: &[Chunk], options: WasmWriteOptions) -> V
     // function indices) that a JS host should wrap with
     // `WebAssembly.promising(...)` at load time so that Vybe's async
     // functions return real Promises across the JS boundary.
-    if let Some(jspi_payload) = jspi::encode_payload(chunks, rt_imports.len()) {
+    if let Some(jspi_payload) = jspi::encode_payload(chunks, &host_imports, rt_imports.len()) {
         let mut sec = Vec::new();
         write_name(&mut sec, jspi::SECTION_NAME);
         sec.extend_from_slice(&jspi_payload);
         write_section(&mut out, SECTION_CUSTOM, &sec);
     }
 
+    let abi_payload = encode_abi_section(chunks);
+    if !abi_payload.is_empty() {
+        write_section(&mut out, SECTION_CUSTOM, &abi_payload);
+    }
+
+    out
+}
+
+fn encode_abi_section(chunks: &[Chunk]) -> Vec<u8> {
+    if chunks.is_empty() {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    write_name(&mut out, "vybe.abi");
+    out.push(1);
+    write_leb128_u32(&mut out, chunks.len() as u32);
+    for chunk in chunks {
+        write_name(&mut out, &chunk.name);
+        out.push(chunk.arity);
+        write_leb128_u32(&mut out, chunk.local_count as u32);
+        out.push(if chunk.takes_receiver { 1 } else { 0 });
+        out.push(match chunk.module_receiver_abi {
+            ReceiverAbi::Ambient => 0,
+            ReceiverAbi::Parameter => 1,
+        });
+    }
     out
 }
 
@@ -266,7 +306,7 @@ fn encode_custom_section(chunks: &[Chunk]) -> Vec<u8> {
     write_name(&mut out, "vybe");
 
     // Version
-    out.push(7); // Version 7: module global tables are serialized once.
+    out.push(8); // Version 8: receiver ABI metadata is serialized per chunk.
 
     // Number of chunks
     write_leb128_u32(&mut out, chunks.len() as u32);
@@ -274,12 +314,18 @@ fn encode_custom_section(chunks: &[Chunk]) -> Vec<u8> {
     // Global imports and the normalized global table are module-wide metadata.
     // Chunks share this table through an Arc; serializing it per chunk multiplies
     // large C programs by the function count in debug/round-trip builds.
-    let module_global_imports = chunks
-        .first()
-        .map(|chunk| chunk.global_imports.as_slice())
-        .unwrap_or(&[]);
+    let mut module_global_imports = Vec::new();
+    let mut seen_global_imports = std::collections::HashSet::new();
+    for chunk in chunks {
+        for gi in &chunk.global_imports {
+            let key = (gi.module.clone(), gi.name.clone());
+            if seen_global_imports.insert(key) {
+                module_global_imports.push(gi.clone());
+            }
+        }
+    }
     write_leb128_u32(&mut out, module_global_imports.len() as u32);
-    for gi in module_global_imports {
+    for gi in &module_global_imports {
         write_name(&mut out, &gi.module);
         write_name(&mut out, &gi.name);
     }
@@ -297,6 +343,11 @@ fn encode_custom_section(chunks: &[Chunk]) -> Vec<u8> {
         write_name(&mut out, &chunk.name);
         out.push(chunk.arity);
         write_leb128_u32(&mut out, chunk.local_count as u32);
+        out.push(if chunk.takes_receiver { 1 } else { 0 });
+        out.push(match chunk.module_receiver_abi {
+            ReceiverAbi::Ambient => 0,
+            ReceiverAbi::Parameter => 1,
+        });
 
         // Constants
         write_leb128_u32(&mut out, chunk.constants.len() as u32);

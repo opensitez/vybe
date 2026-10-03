@@ -18,11 +18,11 @@
 use std::sync::{Arc, OnceLock};
 
 use vybe_runtime::value::{Object, ObjectKind, TypedElemKind};
-use vybe_runtime::{HostContext, Value, VM};
+use vybe_runtime::{HostContext, VM, Value};
 
 use crate::canvas_backend::{
-    apply, backend, query, GradientDef, GradientKind, Op2D, PathDef, PathOp2D, PatternDef, Query2D,
-    Query2DValue, StringAttribute,
+    GradientDef, GradientKind, Op2D, PathDef, PathOp2D, PatternDef, Query2D, Query2DValue,
+    StringAttribute, apply, backend, query,
 };
 
 /// The surface a context handle draws on.

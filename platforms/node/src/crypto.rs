@@ -167,6 +167,7 @@ fn encode_digest(bytes: &[u8], enc: &str) -> String {
     match enc.to_lowercase().as_str() {
         "hex" => bytes.iter().map(|b| format!("{:02x}", b)).collect(),
         "base64" => base64_encode(bytes),
+        "binary" | "latin1" => bytes.iter().map(|b| char::from(*b)).collect(),
         _ => bytes.iter().map(|b| format!("{:02x}", b)).collect(),
     }
 }

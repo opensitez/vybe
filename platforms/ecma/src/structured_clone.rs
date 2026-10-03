@@ -266,11 +266,11 @@ fn clone_builtin_object(
                 s.properties
                     .get("source")
                     .cloned()
-                    .unwrap_or_else(|| Value::String(Arc::from("(?:)"))),
+                    .unwrap_or_else(|| crate::keys::string_value("(?:)")),
                 s.properties
                     .get("flags")
                     .cloned()
-                    .unwrap_or_else(|| Value::String(Arc::from(""))),
+                    .unwrap_or_else(|| crate::keys::string_value("")),
                 s.properties
                     .get("lastIndex")
                     .cloned()
@@ -286,7 +286,7 @@ fn clone_builtin_object(
         "Date" => {
             let mut obj = Object::new();
             obj.properties
-                .insert("__type".into(), Value::String(Arc::from("Date")));
+                .insert("__type".into(), crate::keys::string_value("Date"));
             obj.properties
                 .insert("__time".into(), time.unwrap_or(Value::F64(f64::NAN)));
             obj.properties
@@ -297,21 +297,17 @@ fn clone_builtin_object(
             let (source, flags, last_index) = regexp_fields?;
             let source_text = match source {
                 Value::String(s) => s.to_string(),
-                other => format!("{}", other),
+                other => crate::keys::value_display_string(&other),
             };
             let flags_text = match flags {
                 Value::String(s) => s.to_string(),
-                other => format!("{}", other),
+                other => crate::keys::value_display_string(&other),
             };
             let mut obj = Object::new();
-            obj.properties.insert(
-                "source".into(),
-                Value::String(Arc::from(source_text.as_str())),
-            );
-            obj.properties.insert(
-                "flags".into(),
-                Value::String(Arc::from(flags_text.as_str())),
-            );
+            obj.properties
+                .insert("source".into(), crate::keys::string_value(&source_text));
+            obj.properties
+                .insert("flags".into(), crate::keys::string_value(&flags_text));
             obj.properties
                 .insert("global".into(), Value::Bool(flags_text.contains('g')));
             obj.properties
@@ -330,7 +326,7 @@ fn clone_builtin_object(
                 .insert("hasIndices".into(), Value::Bool(flags_text.contains('d')));
             obj.properties.insert("lastIndex".into(), last_index);
             obj.properties
-                .insert("__type".into(), Value::String(Arc::from("RegExp")));
+                .insert("__type".into(), crate::keys::string_value("RegExp"));
             obj.properties
                 .insert("__proto__".into(), crate::regexp::shared_regexp_prototype());
             Value::Object(vybe_runtime::heap::alloc(obj))
@@ -344,8 +340,10 @@ fn clone_builtin_object(
         "String" => {
             let text = match primitive {
                 Some(Value::String(s)) => s,
-                Some(value) => Arc::from(format!("{}", value).as_str()),
-                None => Arc::from(""),
+                Some(value) => {
+                    crate::keys::string_arc(crate::keys::value_display_cow(&value).as_ref())
+                }
+                None => crate::keys::string_arc(""),
             };
             crate::string::boxed_string(text)
         }
@@ -423,7 +421,7 @@ fn clone_map(
         .insert("__proto__".into(), crate::map::shared_map_prototype());
     target_obj
         .properties
-        .insert("__type".into(), Value::String(Arc::from("Map")));
+        .insert("__type".into(), crate::keys::string_value("Map"));
     let target_arc = vybe_runtime::heap::alloc(target_obj);
     let target_val = Value::Object(target_arc.clone());
     seen.insert(id, target_val.clone());
@@ -469,7 +467,7 @@ fn clone_set(
         .insert("__proto__".into(), crate::set::shared_set_prototype());
     target_obj
         .properties
-        .insert("__type".into(), Value::String(Arc::from("Set")));
+        .insert("__type".into(), crate::keys::string_value("Set"));
     let target_arc = vybe_runtime::heap::alloc(target_obj);
     let target_val = Value::Object(target_arc.clone());
     seen.insert(id, target_val.clone());
@@ -547,7 +545,7 @@ fn clone_arraybuffer(
         crate::arraybuffer::shared_arraybuffer_prototype(),
     );
     obj.properties
-        .insert("__type".into(), Value::String(Arc::from("ArrayBuffer")));
+        .insert("__type".into(), crate::keys::string_value("ArrayBuffer"));
     let out = Value::Object(vybe_runtime::heap::alloc(obj));
     seen.insert(id, out.clone());
     Ok(out)
@@ -705,7 +703,7 @@ fn clone_dataview(
         crate::arraybuffer::shared_arraybuffer_prototype(),
     );
     obj.properties
-        .insert("__type".into(), Value::String(Arc::from("ArrayBuffer")));
+        .insert("__type".into(), crate::keys::string_value("ArrayBuffer"));
     let buffer_value = Value::Object(vybe_runtime::heap::alloc(obj));
     let out = crate::arraybuffer::new_dataview(buffer_value, 0, byte_length as i32);
     seen.insert(id, out.clone());
@@ -811,20 +809,20 @@ fn should_clone_error_property(o: &Object, key: &str) -> bool {
 
 fn stamp_error_clone(obj: &mut Object, kind: &str, display_name: &str, message: &str) {
     obj.properties
-        .insert("__type".into(), Value::String(Arc::from(kind)));
+        .insert("__type".into(), crate::keys::string_value(kind));
     obj.properties
-        .insert("__exception_type".into(), Value::String(Arc::from(kind)));
+        .insert("__exception_type".into(), crate::keys::string_value(kind));
     obj.properties
-        .insert("name".into(), Value::String(Arc::from(display_name)));
+        .insert("name".into(), crate::keys::string_value(display_name));
     obj.properties
-        .insert("message".into(), Value::String(Arc::from(message)));
+        .insert("message".into(), crate::keys::string_value(message));
     obj.properties.insert(
         "stack".into(),
-        Value::String(Arc::from(format!("{}: {}", display_name, message).as_str())),
+        Value::String(crate::keys::concat3_arc(display_name, ": ", &message)),
     );
     let chain: Vec<Value> = error_ancestors(kind)
         .iter()
-        .map(|n| Value::String(Arc::from(*n)))
+        .map(|n| crate::keys::string_value(n))
         .collect();
     obj.properties.insert(
         "__types".into(),
@@ -850,7 +848,7 @@ fn error_ancestors(kind: &str) -> &'static [&'static str] {
 fn string_prop(o: &Object, key: &str) -> Option<String> {
     match o.properties.get(key) {
         Some(Value::String(s)) => Some(s.to_string()),
-        Some(v) => Some(format!("{}", v)),
+        Some(v) => Some(crate::keys::value_display_string(v)),
         None => None,
     }
 }
@@ -1044,6 +1042,11 @@ fn mark_transferred_views(
     transferred: &[Arc<Mutex<Object>>],
     seen: &mut HashSet<usize>,
 ) {
+    // Without transfers there are no detached views to update. Avoid walking
+    // the entire source graph (and cloning its child handles) in this case.
+    if transferred.is_empty() {
+        return;
+    }
     let transferred_ids: HashSet<usize> = transferred
         .iter()
         .map(|item| Arc::as_ptr(item) as usize)
@@ -1101,5 +1104,68 @@ fn mark_transferred_views_inner(
     };
     for child in children {
         mark_transferred_views_inner(&child, transferred_ids, seen);
+    }
+}
+
+#[cfg(test)]
+mod transfer_walk_speedup_tests {
+    use super::*;
+    use std::hint::black_box;
+    use std::time::{Duration, Instant};
+
+    fn graph(depth: usize) -> Value {
+        let items = if depth == 0 {
+            vec![Value::I32(7)]
+        } else {
+            vec![graph(depth - 1), graph(depth - 1)]
+        };
+        Value::Object(vybe_runtime::heap::alloc(Object::new_array(items)))
+    }
+
+    #[test]
+    fn empty_transfer_list_does_not_visit_source_graph() {
+        let value = graph(4);
+        let mut seen = HashSet::new();
+        mark_transferred_views(&value, &[], &mut seen);
+        assert!(seen.is_empty());
+        let Value::Object(root) = value else { panic!("expected array") };
+        let root = root.lock().unwrap();
+        assert!(matches!(&root.kind, ObjectKind::Array(items) if items.len() == 2));
+    }
+
+    #[test]
+    fn nonempty_transfer_list_still_visits_graph() {
+        let value = graph(4);
+        let item = vybe_runtime::heap::alloc(Object::new());
+        let mut seen = HashSet::new();
+        mark_transferred_views(&value, &[item], &mut seen);
+        assert_eq!(seen.len(), 31);
+    }
+
+    #[test]
+    #[ignore = "native helper microbenchmark, not whole structuredClone timing"]
+    fn native_empty_transfer_walk_microbenchmark() {
+        let value = graph(9);
+        let ids = HashSet::new();
+        let mut old = Duration::ZERO;
+        let mut new = Duration::ZERO;
+        for batch in 0..10 {
+            for old_path in if batch % 2 == 0 { [true, false] } else { [false, true] } {
+                let start = Instant::now();
+                for _ in 0..100 {
+                    let mut seen = HashSet::new();
+                    if old_path {
+                        mark_transferred_views_inner(black_box(&value), &ids, &mut seen);
+                        assert_eq!(seen.len(), 1023);
+                    } else {
+                        mark_transferred_views(black_box(&value), black_box(&[]), &mut seen);
+                        assert!(seen.is_empty());
+                    }
+                    black_box(seen);
+                }
+                if old_path { old += start.elapsed(); } else { new += start.elapsed(); }
+            }
+        }
+        eprintln!("empty transfer post-pass, 1000 calls/1023 nodes: original={old:?}, skipped={new:?}");
     }
 }

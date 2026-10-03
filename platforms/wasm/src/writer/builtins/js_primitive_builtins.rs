@@ -111,6 +111,13 @@ pub fn write_signature(out: &mut Vec<u8>, module: &str, name: &str) -> bool {
             out.push(TYPE_EXTERNREF); out.push(TYPE_EXTERNREF);
             write_leb128_u32(out, 1); out.push(TYPE_I32);
         }
+        ("ecma:value", "abstractEq") => {
+            write_leb128_u32(out, 2);
+            out.push(TYPE_EXTERNREF);
+            out.push(TYPE_EXTERNREF);
+            write_leb128_u32(out, 1);
+            out.push(TYPE_EXTERNREF);
+        }
         _ => return false,
     }
     true

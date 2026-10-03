@@ -1468,7 +1468,11 @@ fn exec_helper() -> Statement {
                 and(
                     bin(BinOp::Eq, ident("p"), str_lit("/bin/sh")),
                     and(
-                        bin(BinOp::GtEq, member(ident("real_args"), "length"), int_lit(2)),
+                        bin(
+                            BinOp::GtEq,
+                            member(ident("real_args"), "length"),
+                            int_lit(2),
+                        ),
                         bin(
                             BinOp::Eq,
                             index_expr(ident("real_args"), int_lit(0)),
@@ -1478,7 +1482,10 @@ fn exec_helper() -> Statement {
                 ),
                 vec![
                     var_decl_stmt("cmd", index_expr(ident("real_args"), int_lit(1))),
-                    var_decl_stmt("redir", call_member(ident("cmd"), "indexOf", vec![str_lit(">&")])),
+                    var_decl_stmt(
+                        "redir",
+                        call_member(ident("cmd"), "indexOf", vec![str_lit(">&")]),
+                    ),
                     if_stmt(
                         bin(BinOp::GtEq, ident("redir"), int_lit(0)),
                         vec![
@@ -2186,7 +2193,12 @@ pub fn header_structs(header: &str) -> Vec<HeaderStruct> {
             ),
             (
                 "SDL_Color",
-                &[("r", "int"), ("g", "int"), ("b", "int"), ("a", "int")],
+                &[
+                    ("r", "unsigned char"),
+                    ("g", "unsigned char"),
+                    ("b", "unsigned char"),
+                    ("a", "unsigned char"),
+                ],
             ),
             (
                 "SDL_RendererInfo",
@@ -2676,7 +2688,11 @@ pub fn fcntl(fd: Expression, cmd: Expression, arg: Option<Expression>) -> Expres
                 assign_expr(
                     index_expr(ident("__c_fd_nonblock"), fd.clone()),
                     ternary(
-                        bin(BinOp::NotEq, bin(BinOp::BitAnd, flags, int_lit(2048)), int_lit(0)),
+                        bin(
+                            BinOp::NotEq,
+                            bin(BinOp::BitAnd, flags, int_lit(2048)),
+                            int_lit(0),
+                        ),
                         int_lit(1),
                         int_lit(0),
                     ),
@@ -2687,7 +2703,10 @@ pub fn fcntl(fd: Expression, cmd: Expression, arg: Option<Expression>) -> Expres
         Some(5) => {
             let target = arg.map(arg_target).unwrap_or_else(null_lit);
             expr(ExprKind::Sequence(vec![
-                assign_expr(member(target.clone(), "l_type"), ident("__c_fcntl_lock_type")),
+                assign_expr(
+                    member(target.clone(), "l_type"),
+                    ident("__c_fcntl_lock_type"),
+                ),
                 assign_expr(member(target, "l_pid"), ident("__c_fcntl_lock_pid")),
                 int_lit(0),
             ]))
@@ -2723,8 +2742,16 @@ pub fn fcntl(fd: Expression, cmd: Expression, arg: Option<Expression>) -> Expres
 
 pub fn flock(fd: Expression, op: Expression) -> Expression {
     let invalid_fd = bin(BinOp::Lt, fd, int_lit(0));
-    let unlock = bin(BinOp::NotEq, bin(BinOp::BitAnd, op.clone(), int_lit(8)), int_lit(0));
-    let exclusive = bin(BinOp::NotEq, bin(BinOp::BitAnd, op.clone(), int_lit(2)), int_lit(0));
+    let unlock = bin(
+        BinOp::NotEq,
+        bin(BinOp::BitAnd, op.clone(), int_lit(8)),
+        int_lit(0),
+    );
+    let exclusive = bin(
+        BinOp::NotEq,
+        bin(BinOp::BitAnd, op.clone(), int_lit(2)),
+        int_lit(0),
+    );
     let nonblock = bin(BinOp::NotEq, bin(BinOp::BitAnd, op, int_lit(4)), int_lit(0));
     ternary(
         invalid_fd,
@@ -2738,7 +2765,10 @@ pub fn flock(fd: Expression, op: Expression) -> Expression {
             ternary(
                 and(
                     nonblock,
-                    and(exclusive.clone(), bin(BinOp::Eq, ident("__c_flock_mode"), int_lit(2))),
+                    and(
+                        exclusive.clone(),
+                        bin(BinOp::Eq, ident("__c_flock_mode"), int_lit(2)),
+                    ),
                 ),
                 int_lit(-1),
                 expr(ExprKind::Sequence(vec![

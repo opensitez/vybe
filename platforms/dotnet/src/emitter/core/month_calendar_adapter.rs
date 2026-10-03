@@ -173,7 +173,10 @@ fn render(c: &mut Chunk, calendar: u16, line: u32) {
         c.emit_op(Op::F64_EQ, line);
         c.emit_op(Op::I32_AND, line);
         c.emit_if(line);
-        c.emit_string_const("background:#2274bf;color:white;border:0;padding:0;font-size:11px;min-width:0", line);
+        c.emit_string_const(
+            "background:#2274bf;color:white;border:0;padding:0;font-size:11px;min-width:0",
+            line,
+        );
         c.emit_else(line);
         c.emit_string_const(
             "background:transparent;color:inherit;border:0;padding:0;font-size:11px;min-width:0",
@@ -290,7 +293,11 @@ pub fn emit_init(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     render(c, calendar, line);
     let handler = callback(chunks, line);
     vybe_compiler::primitives::gui::emit_add_event_listener(
-        &mut chunks[current], calendar, "click", handler, line,
+        &mut chunks[current],
+        calendar,
+        "click",
+        handler,
+        line,
     );
     chunks[current].emit_ref_null(HT_EXTERN, line);
 }

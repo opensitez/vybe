@@ -396,6 +396,9 @@ pub struct Chunk {
     string_constants: std::collections::HashMap<String, u32, FxBuildHasher>,
     pub lines: Vec<u32>,
     pub name: String,
+    /// Compilation-unit provenance for file-qualified debugger breakpoints.
+    /// Shared by the unit's chunks; never consulted by normal execution.
+    pub source_path: Option<std::sync::Arc<str>>,
     pub arity: u8,
     pub local_count: u16,
     /// Debug metadata: every local the compiler defined in this chunk (params
@@ -881,6 +884,7 @@ impl Chunk {
             string_constants: std::collections::HashMap::default(),
             lines: Vec::new(),
             name: name.into(),
+            source_path: None,
             arity: 0,
             local_count: 0,
             local_names: Vec::new(),

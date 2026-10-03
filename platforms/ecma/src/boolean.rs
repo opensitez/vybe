@@ -27,8 +27,9 @@ pub fn shared_boolean_prototype() -> Value {
 
 pub fn boxed_boolean(value: bool) -> Value {
     let mut obj = Object::new();
+    obj.properties.reserve(3);
     obj.properties
-        .insert("__type".into(), Value::String(Arc::from("Boolean")));
+        .insert("__type".into(), crate::keys::string_value("Boolean"));
     obj.properties
         .insert("__primitive".into(), Value::Bool(value));
     obj.properties
@@ -40,7 +41,7 @@ pub fn register(vm: &mut VM) {
     vm.register_free_fn(
         "ecma:boolean",
         "Boolean",
-        Box::new(|ctx: &mut HostContext, args: &[Value]| {
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             Value::Bool(to_boolean(args.first().unwrap_or(&Value::Undefined)))
         }),
     );
@@ -55,13 +56,13 @@ pub fn register(vm: &mut VM) {
         "ecma:boolean",
         "toString",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            Value::String(Arc::from(
+            crate::keys::string_value(
                 if boolean_value(args.first().unwrap_or(&Value::Undefined)) {
                     "true"
                 } else {
                     "false"
                 },
-            ))
+            )
         }),
     );
     vm.register_host_fn(
@@ -101,7 +102,7 @@ fn boolean_value(value: &Value) -> bool {
 
 pub fn to_boolean(v: &Value) -> bool {
     match v {
-        Value::Null | Value::Undefined => false,
+        Value::Null | Value::TypedNull(_) | Value::Undefined => false,
         Value::Bool(b) => *b,
         Value::F64(n) => *n != 0.0 && !n.is_nan(),
         Value::I32(n) => *n != 0,

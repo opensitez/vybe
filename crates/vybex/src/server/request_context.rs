@@ -179,9 +179,9 @@ fn build_cgi_env(
         env.insert("SCRIPT_NAME".into(), script_path.into());
         // PATH_INFO is the suffix after the executing script, not the
         // request path. Directory-index requests have no such suffix.
-        let path_info = path.strip_prefix(script_path).filter(|suffix| {
-            suffix.is_empty() || suffix.starts_with('/')
-        });
+        let path_info = path
+            .strip_prefix(script_path)
+            .filter(|suffix| suffix.is_empty() || suffix.starts_with('/'));
         env.insert("PATH_INFO".into(), path_info.unwrap_or("").into());
         // `PHP_SELF` is NOT set here. It is PHP's spelling of `SCRIPT_NAME`, and
         // one language's vocabulary in the transport is `php_lang.rs` again —

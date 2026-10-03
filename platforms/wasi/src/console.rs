@@ -199,6 +199,7 @@ pub fn register(vm: &mut VM) {
             if !bytes.is_empty() {
                 use std::io::Write;
                 let _ = std::io::stdout().write_all(&bytes);
+                vybe_runtime::debugger::record_stdout_write();
             }
             let (fut, fut_id) = ctx.create_future();
             ctx.resolve_future(fut_id, Value::Null);

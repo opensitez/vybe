@@ -7,7 +7,7 @@
 
 use vybe_ast::{
     Argument, BinOp, BindingPattern, ExprKind, Expression, Literal, Modifiers, Param, PassBy,
-    Statement, StmtKind, VarDeclKind, VarDeclarator,
+    Statement, StmtKind, TypeHint, VarDeclKind, VarDeclarator,
 };
 
 fn e(kind: ExprKind) -> Expression {
@@ -46,6 +46,14 @@ fn bin(op: BinOp, left: Expression, right: Expression) -> Expression {
     })
 }
 
+fn flag_or(left: Expression, right: Expression) -> Expression {
+    let to_i32 = |value| call(ident("__libc_fenv_i32_from_f64"), vec![value]);
+    call(
+        ident("__libc_fenv_f64_from_i32"),
+        vec![bin(BinOp::BitOr, to_i32(left), to_i32(right))],
+    )
+}
+
 fn assign(target: Expression, value: Expression) -> Expression {
     e(ExprKind::Assign {
         target: Box::new(target),
@@ -58,6 +66,19 @@ fn var_decl(name: &str, init: Expression) -> Statement {
         declarations: vec![VarDeclarator {
             pattern: BindingPattern::Ident(name.to_string()),
             type_hint: None,
+            init: Some(init),
+            array_bounds: None,
+            with_events: false,
+        }],
+        kind: VarDeclKind::Var,
+    })
+}
+
+fn numeric_var_decl(name: &str, init: Expression) -> Statement {
+    s(StmtKind::VarDecl {
+        declarations: vec![VarDeclarator {
+            pattern: BindingPattern::Ident(name.to_string()),
+            type_hint: Some(TypeHint::checked("double")),
             init: Some(init),
             array_bounds: None,
             with_events: false,
@@ -109,6 +130,32 @@ fn function(name: &str, params: Vec<&str>, body: Vec<Statement>) -> Statement {
     })
 }
 
+fn numeric_function(name: &str, params: Vec<&str>, body: Vec<Statement>) -> Statement {
+    s(StmtKind::FunctionDecl {
+        name: name.to_string(),
+        params: params
+            .into_iter()
+            .map(|param| Param {
+                name: param.to_string(),
+                type_hint: Some(TypeHint::checked("double")),
+                default: None,
+                pass_by: PassBy::Value,
+                is_rest: false,
+                is_kwargs: false,
+                is_optional: false,
+                is_nullable: false,
+            })
+            .collect(),
+        return_type: Some("double".to_string()),
+        body,
+        modifiers: Modifiers::default(),
+        handles: Vec::new(),
+        is_async: false,
+        is_generator: false,
+        is_sub: false,
+    })
+}
+
 /// math.h domain-error runtime helpers (libc surface, shared across libc-targeting
 /// languages). `__c_sqrt` adds the EDOM side effect (§7.12.1) over the raw
 /// `f64_sqrt` opcode (`__libc_sqrt_raw`, mapped in the profile); the walker
@@ -135,7 +182,7 @@ pub fn domain_error_helpers() -> Vec<Statement> {
                     }))),
                     s(StmtKind::Expr(e(ExprKind::Assign {
                         target: Box::new(ident("__c_fenv_excepts")),
-                        value: Box::new(bin(BinOp::BitOr, ident("__c_fenv_excepts"), lit_int(1))),
+                        value: Box::new(flag_or(ident("__c_fenv_excepts"), lit_int(1))),
                     }))),
                 ],
                 elifs: Vec::new(),
@@ -156,8 +203,7 @@ pub fn fenv_runtime_helpers() -> Vec<Statement> {
     let neg_inf = bin(BinOp::Sub, lit_float(0.0), inf.clone());
     let set_invalid_or_divzero = assign(
         ident("__c_fenv_excepts"),
-        bin(
-            BinOp::BitOr,
+        flag_or(
             ident("__c_fenv_excepts"),
             e(ExprKind::Ternary {
                 cond: Box::new(bin(BinOp::Eq, ident("x"), lit_float(0.0))),
@@ -168,24 +214,20 @@ pub fn fenv_runtime_helpers() -> Vec<Statement> {
     );
     let set_underflow = assign(
         ident("__c_fenv_excepts"),
-        bin(BinOp::BitOr, ident("__c_fenv_excepts"), lit_int(16)),
+        flag_or(ident("__c_fenv_excepts"), lit_int(16)),
     );
     let set_inexact = assign(
         ident("__c_fenv_excepts"),
-        bin(BinOp::BitOr, ident("__c_fenv_excepts"), lit_int(32)),
+        flag_or(ident("__c_fenv_excepts"), lit_int(32)),
     );
     let set_overflow = assign(
         ident("__c_fenv_excepts"),
-        bin(BinOp::BitOr, ident("__c_fenv_excepts"), lit_int(8)),
+        flag_or(ident("__c_fenv_excepts"), lit_int(8)),
     );
     let inexact_division = bin(
         BinOp::And,
         bin(BinOp::NotEq, ident("y"), lit_float(0.0)),
-        bin(
-            BinOp::NotEq,
-            bin(BinOp::Mod, ident("x"), ident("y")),
-            lit_float(0.0),
-        ),
+        bin(BinOp::NotEq, ident("remainder"), lit_float(0.0)),
     );
     let finite_result = bin(
         BinOp::And,
@@ -203,16 +245,32 @@ pub fn fenv_runtime_helpers() -> Vec<Statement> {
     );
     let eps = lit_float(1e-16);
 
-    vec![function(
+    vec![numeric_function(
         "__c_fenv_binary",
         vec!["op", "x", "y"],
         vec![
-            var_decl(
+            numeric_var_decl("round_mode", ident("__c_fenv_round")),
+            numeric_var_decl(
                 "r",
                 e(ExprKind::Ternary {
                     cond: Box::new(bin(BinOp::Eq, ident("op"), lit_int(1))),
                     then: Box::new(bin(BinOp::Div, ident("x"), ident("y"))),
                     else_: Box::new(bin(BinOp::Mul, ident("x"), ident("y"))),
+                }),
+            ),
+            numeric_var_decl(
+                "remainder",
+                e(ExprKind::Ternary {
+                    cond: Box::new(bin(
+                        BinOp::And,
+                        bin(BinOp::Eq, ident("op"), lit_int(1)),
+                        bin(BinOp::NotEq, ident("y"), lit_float(0.0)),
+                    )),
+                    then: Box::new(call(
+                        ident("__libc_fenv_fmod"),
+                        vec![ident("x"), ident("y")],
+                    )),
+                    else_: Box::new(lit_float(0.0)),
                 }),
             ),
             if_stmt(
@@ -228,11 +286,7 @@ pub fn fenv_runtime_helpers() -> Vec<Statement> {
                         ),
                         vec![expr_stmt(set_underflow)],
                         Some(vec![if_stmt(
-                            bin(
-                                BinOp::NotEq,
-                                bin(BinOp::Mod, ident("x"), ident("y")),
-                                lit_float(0.0),
-                            ),
+                            bin(BinOp::NotEq, ident("remainder"), lit_float(0.0)),
                             vec![expr_stmt(set_inexact)],
                             None,
                         )]),
@@ -251,19 +305,19 @@ pub fn fenv_runtime_helpers() -> Vec<Statement> {
             if_stmt(
                 rounding_applies,
                 vec![if_stmt(
-                    bin(BinOp::Eq, ident("__c_fenv_round"), lit_int(2048)),
+                    bin(BinOp::Eq, ident("round_mode"), lit_int(2048)),
                     vec![expr_stmt(assign(
                         ident("r"),
                         bin(BinOp::Add, ident("r"), eps.clone()),
                     ))],
                     Some(vec![if_stmt(
-                        bin(BinOp::Eq, ident("__c_fenv_round"), lit_int(1024)),
+                        bin(BinOp::Eq, ident("round_mode"), lit_int(1024)),
                         vec![expr_stmt(assign(
                             ident("r"),
                             bin(BinOp::Sub, ident("r"), eps.clone()),
                         ))],
                         Some(vec![if_stmt(
-                            bin(BinOp::Eq, ident("__c_fenv_round"), lit_int(3072)),
+                            bin(BinOp::Eq, ident("round_mode"), lit_int(3072)),
                             vec![expr_stmt(assign(
                                 ident("r"),
                                 e(ExprKind::Ternary {

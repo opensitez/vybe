@@ -25,8 +25,8 @@ use std::sync::Arc;
 use vybe_compiler::primitives::class_slots::{self, Dest, ObjSource, ValueSource};
 use vybe_compiler::primitives::collections;
 use vybe_compiler::primitives::ops;
-use vybe_runtime::opcode::heaptype::HT_EXTERN;
 use vybe_runtime::opcode::Op;
+use vybe_runtime::opcode::heaptype::HT_EXTERN;
 use vybe_runtime::{Chunk, Value};
 
 use super::object_fields::field_slot;

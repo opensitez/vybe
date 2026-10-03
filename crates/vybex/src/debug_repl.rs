@@ -23,7 +23,7 @@ pub(crate) struct CliReport {
 }
 impl CliReport {
     pub fn new() -> Self {
-        Self { started: std::time::Instant::now(), report: None }
+        Self { started: std::time::Instant::now(), report: None ,}
     }
 }
 impl Drop for CliReport {
@@ -38,7 +38,7 @@ impl Drop for CliReport {
 
 /// Render the debugger-owned timing snapshot, both on demand and after a
 /// failed run, before the CLI exits and discards the collected phases.
-pub(crate) fn print_report(report: &vybe_runtime::debugger::SharedDebugReport, filter: Option<&str>) {
+pub(crate) fn print_report(report: &vybe_runtime::debugger::SharedDebugReport, filter: Option<&str>,) {
     let report = report.lock().unwrap();
     if report.process_started.is_some() {
         eprintln!("  CLI elapsed milestones (from entry; include debugger waits):");
@@ -73,7 +73,7 @@ pub(crate) fn print_report(report: &vybe_runtime::debugger::SharedDebugReport, f
     let mut completed: Vec<_> = report.completed.iter()
         .filter(|(label, _)| filter.is_none_or(|text| label.contains(text)))
         .cloned().collect();
-    let totals = ["compile ", "compiler total", "prepare source", "lower module", "vm link", "vm validate", "vm relocate", "vm globals", "vm decode", "vm blocks", "vm imports", "vm callsites", "vm types", "vm init globals"];
+    let totals = ["compile ", "compiler total", "prepare source", "lower module", "vm link", "vm validate", "vm relocate", "vm globals", "vm decode", "vm blocks", "vm imports", "vm callsites", "vm types", "vm init globals",];
     for prefix in totals {
         let matches: Vec<_> = completed.iter().filter(|(label, _)| {
             if prefix == "compile " { label.starts_with(prefix) }
@@ -274,7 +274,8 @@ fn print_draws(args: &[&str]) {
             // Report the name a caller would recognise — the `id`/`name` they
             // gave it — falling back to the internal node name.
             let attribute = |name: &str| match engine::apply(
-                document, DomOp::GetAttribute(node, name.into())
+                document,
+                DomOp::GetAttribute(node, name.into()),
             ) {
                 DomValue::Text(value) if !value.is_empty() => Some(value),
                 _ => None,
@@ -289,10 +290,22 @@ fn print_draws(args: &[&str]) {
             let (Ok(sw), Ok(sh)) = (i32::try_from(w), i32::try_from(h)) else {
                 continue;
             };
-            let Query2DValue::Pixels { data, width: w, height: h } =
-                canvas_backend::query(&target, Query2D::GetImageData {
-                    sx: 0, sy: 0, sw, sh,
-                }) else { continue };
+            let Query2DValue::Pixels {
+                data,
+                width: w,
+                height: h,
+            } = canvas_backend::query(
+                &target,
+                Query2D::GetImageData {
+                    sx: 0,
+                    sy: 0,
+                    sw,
+                    sh,
+                },
+            )
+            else {
+                continue;
+            };
             let ink = {
                 let mut inked = 0usize;
                 let (mut x0, mut y0, mut x1, mut y1) = (u32::MAX, u32::MAX, 0u32, 0u32);
@@ -669,14 +682,24 @@ fn parse_command(line: &str) -> Result<DebugCommand, String> {
             name: rest.first().ok_or("usage: bgi <global-name|*|off>")?.to_string(),
         },
         "dis" | "disasm" => {
-            let offset = rest.first().and_then(|s| s.strip_prefix('@'))
-                .map(|s| s.parse::<usize>().map_err(|_| "usage: dis [@offset] [window]"))
+            let offset = rest
+                .first()
+                .and_then(|s| s.strip_prefix('@'))
+                .map(|s| {
+                    s.parse::<usize>()
+                        .map_err(|_| "usage: dis [@offset] [window]")
+                })
                 .transpose()?;
-            let window = rest.get(usize::from(offset.is_some()))
-                .map(|s| s.parse::<usize>().map_err(|_| "usage: dis [@offset] [window]"))
-                .transpose()?.unwrap_or(4);
+            let window = rest
+                .get(usize::from(offset.is_some()))
+                .map(|s| {
+                    s.parse::<usize>()
+                        .map_err(|_| "usage: dis [@offset] [window]")
+                })
+                .transpose()?
+                .unwrap_or(4);
             DebugCommand::Disasm { window, offset }
-        },
+        }
         "targets" => DebugCommand::ControlTargets {
             offset: rest.first().ok_or("usage: targets <offset>")?
                 .parse().map_err(|_| "usage: targets <offset>")?,

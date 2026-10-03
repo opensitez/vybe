@@ -9,29 +9,35 @@
 use vybe_runtime::value::Object;
 use vybe_runtime::{HostContext, VM, Value};
 
-/// Process-global singleton — initialised on first request and
-/// returned identically forever after. Matches §19.3.1 "the same
-/// global object across realms" expectation.
-static GLOBAL_THIS: std::sync::OnceLock<Value> = std::sync::OnceLock::new();
-
-fn global_this() -> Value {
-    GLOBAL_THIS
-        .get_or_init(|| Value::Object(vybe_runtime::heap::alloc(Object::new())))
-        .clone()
-}
-
 pub fn register(vm: &mut VM) {
-    // 0-arg getter — see the existing constants pattern in
-    // `ecma:number.MAX_SAFE_INTEGER` etc.
+    // Keep identity within this VM, while isolating requests served by
+    // separate VMs. PHP also uses this object for its request globals.
+    let global_this = Value::Object(vybe_runtime::heap::alloc(Object::new()));
+    vm.set_global_owned("globalThis", global_this.clone());
     vm.register_host_fn(
         "ecma:globalThis",
         "get",
-        Box::new(|_ctx: &mut HostContext, _args: &[Value]| global_this()),
+        Box::new(move |_ctx: &mut HostContext, _args: &[Value]| global_this.clone()),
     );
 }
 
-/// Returned to namespaces wiring so the existing `vm.set_global_owned("globalThis", ...)`
-/// can use the same singleton instead of constructing its own.
-pub fn shared_singleton() -> Value {
-    global_this()
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn global_this_is_isolated_between_vms() {
+        let mut first = VM::new();
+        register(&mut first);
+        let mut second = VM::new();
+        register(&mut second);
+
+        let Some(Value::Object(first_global)) = first.global("globalThis") else {
+            panic!("first VM has no globalThis object");
+        };
+        let Some(Value::Object(second_global)) = second.global("globalThis") else {
+            panic!("second VM has no globalThis object");
+        };
+        assert!(!std::sync::Arc::ptr_eq(first_global, second_global));
+    }
 }

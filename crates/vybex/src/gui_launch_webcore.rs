@@ -68,23 +68,42 @@ impl EmbeddedPage for Page {
                     client_x: event.client_x as f32,
                     client_y: event.client_y as f32,
                     button: event.button,
-                });
+                },);
             }
             "keydown" | "keyup" | "keypress" => {
-                engine::apply(crate::gui_document::active(), DomOp::DispatchKeyboard(UiEventFields {
-                    kind: event.kind.clone(), key: event.key.clone(), code: event.code.clone(),
-                    key_code: event.key_code, ctrl_key: event.ctrl_key,
-                    shift_key: event.shift_key, alt_key: event.alt_key, meta_key: event.meta_key,
-                    ..UiEventFields::default()
-                }));
-                if event.kind == "keydown" && !event.ctrl_key && !event.meta_key
-                    && event.key.chars().count() == 1 {
-                    engine::apply(crate::gui_document::active(), DomOp::DispatchKeyboard(UiEventFields {
-                        kind: "keypress".into(), key: event.key.clone(), code: event.code.clone(),
-                        key_code: event.key_code, ctrl_key: event.ctrl_key,
-                        shift_key: event.shift_key, alt_key: event.alt_key, meta_key: event.meta_key,
+                engine::apply(
+                    crate::gui_document::active(),
+                    DomOp::DispatchKeyboard(UiEventFields {
+                        kind: event.kind.clone(),
+                        key: event.key.clone(),
+                        code: event.code.clone(),
+                        key_code: event.key_code,
+                        ctrl_key: event.ctrl_key,
+                        shift_key: event.shift_key,
+                        alt_key: event.alt_key,
+                        meta_key: event.meta_key,
                         ..UiEventFields::default()
-                    }));
+                    }),
+                );
+                if event.kind == "keydown"
+                    && !event.ctrl_key
+                    && !event.meta_key
+                    && event.key.chars().count() == 1
+                {
+                    engine::apply(
+                        crate::gui_document::active(),
+                        DomOp::DispatchKeyboard(UiEventFields {
+                            kind: "keypress".into(),
+                            key: event.key.clone(),
+                            code: event.code.clone(),
+                            key_code: event.key_code,
+                            ctrl_key: event.ctrl_key,
+                            shift_key: event.shift_key,
+                            alt_key: event.alt_key,
+                            meta_key: event.meta_key,
+                            ..UiEventFields::default()
+                        }),
+                    );
                 }
             }
             "wheel" => {
@@ -94,7 +113,7 @@ impl EmbeddedPage for Page {
                     ctrl_key: event.ctrl_key, shift_key: event.shift_key,
                     alt_key: event.alt_key, meta_key: event.meta_key,
                     ..UiEventFields::default()
-                }));
+                }),);
             }
             _ => {}
         }
@@ -125,5 +144,5 @@ pub fn launch_gui(vm: vybe_runtime::VM) {
     let (width, height) = crate::gui_document::viewport().unwrap_or((800, 600));
     embedded_window::run(width, height, Page {
         vm: Rc::new(RefCell::new(vm)), loaded: false,
-    });
+    },);
 }

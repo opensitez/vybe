@@ -29,10 +29,12 @@ pub mod global_this; // §19.3  globalThis
 pub mod intl; // §ECMA-402  Internationalization API (sub-modules)
 pub mod iterator; // Stage-3  Iterator helpers
 pub mod json; // §25.5  JSON
+pub mod keys; // shared property-key/index conversion fast paths
 pub mod map; // §24.1  Map
 pub mod math; // §21.3  Math (+ Stage-3 minOf/maxOf/sumPrecise)
 pub mod number; // §21.1  Number + global parseInt/parseFloat/etc.
 pub mod object; // §19.1  Object (keys/values/entries, etc.)
+pub mod perf; // opt-in thread-local import profiling
 pub mod promise; // §27.7  Promise
 pub mod reflect; // §28.1  Reflect
 pub mod regexp; // §22.2  RegExp + String.prototype regex methods
@@ -59,7 +61,6 @@ pub mod proxy; // §28.3 Proxy
 pub mod structured_clone; // HTML spec §2.8 — not ECMA, but JS-runtime-adjacent
 pub mod value; // generic JS-value reflection (Vybe extension)
 
-use std::sync::Arc;
 use vybe_runtime::value::{Object, ObjectKind};
 use vybe_runtime::{VM, Value};
 
@@ -110,7 +111,7 @@ pub fn register(vm: &mut VM) {
     value::register(vm);
 }
 
-/// Force-initialize every process-global shared prototype (and `globalThis`)
+/// Force-initialize every process-global shared prototype
 /// so each is allocated through the tracked heap BEFORE a `VM::snapshot`, and
 /// is therefore captured as part of the baseline the reset restores.
 ///
@@ -162,7 +163,6 @@ pub fn prime_shared_prototypes() {
     let _ = intl::shared_date_time_format_prototype();
     let _ = intl::shared_relative_time_format_prototype();
     let _ = intl::shared_segmenter_prototype();
-    let _ = global_this::shared_singleton();
 }
 
 /// Create a HostFunction Value for a receiver-style instance method.
@@ -173,10 +173,11 @@ pub fn prime_shared_prototypes() {
 /// shared function prototype, so it lives with ecma.
 pub fn receiver_host_fn_ref(module: &str, name: &str, idx: usize) -> Value {
     let mut obj = Object::new();
+    obj.properties.reserve(6);
     obj.properties
-        .insert("__host_module".into(), Value::String(Arc::from(module)));
+        .insert("__host_module".into(), crate::keys::string_value(module));
     obj.properties
-        .insert("__host_name".into(), Value::String(Arc::from(name)));
+        .insert("__host_name".into(), crate::keys::string_value(name));
     obj.properties
         .insert("__host_idx".into(), Value::F64(idx as f64));
     obj.properties
@@ -184,7 +185,7 @@ pub fn receiver_host_fn_ref(module: &str, name: &str, idx: usize) -> Value {
     obj.properties
         .insert("__proto__".into(), function::shared_function_prototype());
     obj.properties
-        .insert("name".into(), Value::String(Arc::from(name)));
+        .insert("name".into(), crate::keys::string_value(name));
     obj.kind = ObjectKind::HostFunction(idx);
     Value::Object(vybe_runtime::heap::alloc(obj))
 }
@@ -200,16 +201,17 @@ pub fn bound_host_fn_ref(vm: &VM, module: &str, name: &str, bound_args: Vec<Valu
         .get(&(module.to_string(), name.to_string()))
     {
         let mut obj = Object::new();
+        obj.properties.reserve(6);
         obj.properties
-            .insert("__host_module".into(), Value::String(Arc::from(module)));
+            .insert("__host_module".into(), crate::keys::string_value(module));
         obj.properties
-            .insert("__host_name".into(), Value::String(Arc::from(name)));
+            .insert("__host_name".into(), crate::keys::string_value(name));
         obj.properties
             .insert("__host_idx".into(), Value::F64(idx as f64));
         obj.properties
             .insert("__proto__".into(), function::shared_function_prototype());
         obj.properties
-            .insert("name".into(), Value::String(Arc::from(name)));
+            .insert("name".into(), crate::keys::string_value(name));
         obj.properties.insert(
             "__bound_args".into(),
             Value::Object(vybe_runtime::heap::alloc(Object::new_array(bound_args))),

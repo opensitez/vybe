@@ -16,8 +16,8 @@ use crate::value::{Function, Object, ObjectKind, TypedArrayState, TypedElemKind,
 use crate::vm::{
     ActiveContinuation, BlockTargets, EcmaArrayBuiltin, EcmaBooleanBuiltin, EcmaNumberBuiltin,
     EcmaObjectBuiltin, ExceptionHandler, ImportTarget, JsBooleanBuiltin, JsNumberBuiltin,
-    JsStringBuiltin, JsUndefinedBuiltin, LabelEntry, LoopSuperop, NativeCallSiteTarget,
-    NativeResultFastPath, LocalFastPath, ResolvedCallTarget, ResumeMode, VM,
+    JsStringBuiltin, JsUndefinedBuiltin, LabelEntry, LocalFastPath, LoopSuperop,
+    NativeCallSiteTarget, NativeResultFastPath, ResolvedCallTarget, ResumeMode, VM,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -434,7 +434,7 @@ impl VM {
                 Value::I64(n) => self.push_fast(Value::F64(n as f64)),
                 _ => {
                     self.raise_js_type_error(
-                        "TypeError: wasm:js-number.toF64 — not a number",
+                        "TypeError: wasm:js-number.toF64 — not a number"
                     )?;
                 }
             },
@@ -449,7 +449,7 @@ impl VM {
                     Value::I64(n) => n as f64,
                     _ => {
                         self.raise_js_type_error(
-                            "TypeError: wasm:js-number.toI32 — not a number",
+                            "TypeError: wasm:js-number.toI32 — not a number"
                         )?;
                         return Ok(());
                     }
@@ -475,7 +475,7 @@ impl VM {
                     }
                     _ => {
                         self.raise_js_type_error(
-                            "TypeError: wasm:js-number.toU32 — not a number",
+                            "TypeError: wasm:js-number.toU32 — not a number"
                         )?;
                         return Ok(());
                     }
@@ -517,7 +517,7 @@ impl VM {
                 }
                 _ => {
                     self.raise_js_type_error(
-                        "TypeError: wasm:js-boolean.cast — not a boolean",
+                        "TypeError: wasm:js-boolean.cast — not a boolean"
                     )?;
                 }
             },
@@ -931,7 +931,7 @@ impl VM {
                                 .properties
                                 .get("length")
                                 .cloned()
-                                .unwrap_or(Value::F64(values.len() as f64)),
+                                .unwrap_or(Value::F64(values.len() as f64))
                         );
                     }
                 }
@@ -948,7 +948,7 @@ impl VM {
                             .properties
                             .get("length")
                             .cloned()
-                            .unwrap_or(Value::F64(values.len() as f64)),
+                            .unwrap_or(Value::F64(values.len() as f64))
                     );
                 }
             }
@@ -1036,9 +1036,7 @@ impl VM {
             }
             crate::value::ObjectKind::Map(map) => {
                 let lookup_key = match key {
-                    Value::String(_) | Value::I32(_) | Value::I64(_) | Value::F64(_) => {
-                        key.clone()
-                    }
+                    Value::String(_) | Value::I32(_) | Value::I64(_) | Value::F64(_) => key.clone(),
                     other => Value::String(std::sync::Arc::from(format!("{}", other))),
                 };
                 if let Some(value) = map.get(&lookup_key) {
@@ -1122,9 +1120,7 @@ impl VM {
             }
             crate::value::ObjectKind::Map(map) => {
                 let map_key = match key {
-                    Value::String(_) | Value::I32(_) | Value::I64(_) | Value::F64(_) => {
-                        key.clone()
-                    }
+                    Value::String(_) | Value::I32(_) | Value::I64(_) | Value::F64(_) => key.clone(),
                     other => Value::String(std::sync::Arc::from(format!("{}", other))),
                 };
                 map.insert(map_key, val);
@@ -2419,7 +2415,7 @@ impl VM {
         if Self::decode_op_at(code, &mut ip)? != Op::END {
             return None;
         }
-        Some((arr_slot, dst_offset_slot, src_slot, len_slot, i_slot, byte_slot))
+        Some((arr_slot, dst_offset_slot, src_slot, len_slot, i_slot, byte_slot,))
     }
 
     fn match_linear_memory_copy_loop(
@@ -3522,7 +3518,7 @@ impl VM {
     fn match_local_unary_loop(
         code: &[u8],
         mut ip: usize,
-        op: Op,
+        op: Op
     ) -> Option<(u16, u16, u16)> {
         if Self::decode_op_at(code, &mut ip)? != Op::LOCAL_GET {
             return None;
@@ -3621,7 +3617,7 @@ impl VM {
 
     fn match_local_i32_accum_const_loop(
         code: &[u8],
-        mut ip: usize,
+        mut ip: usize
     ) -> Option<(u16, i32, Op, u16)> {
         if Self::decode_op_at(code, &mut ip)? != Op::LOCAL_GET {
             return None;
@@ -4333,7 +4329,7 @@ impl VM {
 
     fn match_local_i32_rotl_const_loop(
         code: &[u8],
-        mut ip: usize,
+        mut ip: usize
     ) -> Option<(u16, u16, i32, u16)> {
         if Self::decode_op_at(code, &mut ip)? != Op::LOCAL_GET {
             return None;
@@ -4386,7 +4382,7 @@ impl VM {
 
     fn match_local_i32_rotr_const_loop(
         code: &[u8],
-        mut ip: usize,
+        mut ip: usize
     ) -> Option<(u16, u16, i32, u16)> {
         if Self::decode_op_at(code, &mut ip)? != Op::LOCAL_GET {
             return None;
@@ -4649,7 +4645,7 @@ impl VM {
 
     fn match_local_i64_accum_const_loop(
         code: &[u8],
-        mut ip: usize,
+        mut ip: usize
     ) -> Option<(u16, i64, Op, u16)> {
         if Self::decode_op_at(code, &mut ip)? != Op::LOCAL_GET {
             return None;
@@ -4873,7 +4869,7 @@ impl VM {
         if Self::decode_op_at(code, &mut ip)? != Op::END {
             return None;
         }
-        Some((tableidx, elem_index, elem_slot, acc_slot, counter_slot, call_ip))
+        Some((tableidx, elem_index, elem_slot, acc_slot, counter_slot, call_ip,))
     }
 
     fn match_global_get_local_loop(code: &[u8], mut ip: usize) -> Option<(u32, u16, u16)> {
@@ -5365,7 +5361,7 @@ impl VM {
         fn decode_index_expr(
             code: &[u8],
             ip: &mut usize,
-            i_slot: u16,
+            i_slot: u16
         ) -> Option<Option<u16>> {
             if VM::decode_op_at(code, ip)? != Op::LOCAL_GET {
                 return None;
@@ -5464,7 +5460,7 @@ impl VM {
         if Self::decode_op_at(code, &mut ip)? != Op::END {
             return None;
         }
-        Some((src_slot, src_offset_slot, dst_slot, dst_offset_slot, len_slot, i_slot))
+        Some((src_slot, src_offset_slot, dst_slot, dst_offset_slot, len_slot, i_slot,))
     }
 
     fn match_array_set_const_loop(code: &[u8], mut ip: usize) -> Option<(u16, i32, i32, u16)> {
@@ -5609,34 +5605,44 @@ impl VM {
         }
 
         let code = &self.chunks[chunk_index].code;
-        let superop =
-            if let Some((arr_slot, dst_slot, len_slot, i_slot, byte_slot, mask)) =
-                Self::match_managed_array_to_linear_loop(code, loop_body_start)
-            {
-                LoopSuperop::ManagedArrayToLinear {
-                    arr_slot,
-                    dst_slot,
-                    len_slot,
-                    i_slot,
-                    byte_slot,
-                    mask,
-                }
-            } else if let Some((arr_slot, dst_slot, len_slot, i_slot, byte_slot, mask)) =
-                Self::match_wrapped_managed_array_to_linear_loop(
-                    code,
-                    &self.chunks[chunk_index].imports,
-                    loop_body_start,
-                )
-            {
-                LoopSuperop::ManagedArrayToLinear {
-                    arr_slot,
-                    dst_slot,
-                    len_slot,
-                    i_slot,
-                    byte_slot,
-                    mask,
-                }
-            } else if let Some((
+        let superop = if let Some((arr_slot, dst_slot, len_slot, i_slot, byte_slot, mask)) =
+            Self::match_managed_array_to_linear_loop(code, loop_body_start)
+        {
+            LoopSuperop::ManagedArrayToLinear {
+                arr_slot,
+                dst_slot,
+                len_slot,
+                i_slot,
+                byte_slot,
+                mask,
+            }
+        } else if let Some((arr_slot, dst_slot, len_slot, i_slot, byte_slot, mask)) =
+            Self::match_wrapped_managed_array_to_linear_loop(
+                code,
+                &self.chunks[chunk_index].imports,
+                loop_body_start,
+            )
+        {
+            LoopSuperop::ManagedArrayToLinear {
+                arr_slot,
+                dst_slot,
+                len_slot,
+                i_slot,
+                byte_slot,
+                mask,
+            }
+        } else if let Some((
+            arr_slot,
+            src_offset_slot,
+            dst_slot,
+            len_slot,
+            i_slot,
+            byte_slot,
+            store_value_slot,
+            store_addr_slot,
+        )) = Self::match_managed_array_offset_to_linear_loop(code, loop_body_start)
+        {
+            LoopSuperop::ManagedArrayOffsetToLinear {
                 arr_slot,
                 src_offset_slot,
                 dst_slot,
@@ -5645,41 +5651,40 @@ impl VM {
                 byte_slot,
                 store_value_slot,
                 store_addr_slot,
-            )) = Self::match_managed_array_offset_to_linear_loop(code, loop_body_start)
-            {
-                LoopSuperop::ManagedArrayOffsetToLinear {
-                    arr_slot,
-                    src_offset_slot,
-                    dst_slot,
-                    len_slot,
-                    i_slot,
-                    byte_slot,
-                    store_value_slot,
-                    store_addr_slot,
-                }
-            } else if let Some((arr_slot, src_slot, len_slot, i_slot, byte_slot, mask)) =
-                Self::match_linear_to_managed_array_loop(code, loop_body_start)
-            {
-                LoopSuperop::LinearToManagedArray {
-                    arr_slot,
-                    src_slot,
-                    len_slot,
-                    i_slot,
-                    byte_slot,
-                    mask,
-                }
-            } else if let Some((arr_slot, dst_offset_slot, src_slot, len_slot, i_slot, byte_slot)) =
-                Self::match_linear_to_managed_array_offset_loop(code, loop_body_start)
-            {
-                LoopSuperop::LinearToManagedArrayOffset {
-                    arr_slot,
-                    dst_offset_slot,
-                    src_slot,
-                    len_slot,
-                    i_slot,
-                    byte_slot,
-                }
-            } else if let Some((
+            }
+        } else if let Some((arr_slot, src_slot, len_slot, i_slot, byte_slot, mask)) =
+            Self::match_linear_to_managed_array_loop(code, loop_body_start)
+        {
+            LoopSuperop::LinearToManagedArray {
+                arr_slot,
+                src_slot,
+                len_slot,
+                i_slot,
+                byte_slot,
+                mask,
+            }
+        } else if let Some((arr_slot, dst_offset_slot, src_slot, len_slot, i_slot, byte_slot)) =
+            Self::match_linear_to_managed_array_offset_loop(code, loop_body_start)
+        {
+            LoopSuperop::LinearToManagedArrayOffset {
+                arr_slot,
+                dst_offset_slot,
+                src_slot,
+                len_slot,
+                i_slot,
+                byte_slot,
+            }
+        } else if let Some((
+            src_slot,
+            src_offset_slot,
+            dst_slot,
+            dst_offset_slot,
+            len_slot,
+            i_slot,
+            byte_slot,
+        )) = Self::match_linear_memory_copy_loop(code, loop_body_start)
+        {
+            LoopSuperop::LinearMemoryCopy {
                 src_slot,
                 src_offset_slot,
                 dst_slot,
@@ -5687,19 +5692,18 @@ impl VM {
                 len_slot,
                 i_slot,
                 byte_slot,
-            )) =
-                Self::match_linear_memory_copy_loop(code, loop_body_start)
-            {
-                LoopSuperop::LinearMemoryCopy {
-                    src_slot,
-                    src_offset_slot,
-                    dst_slot,
-                    dst_offset_slot,
-                    len_slot,
-                    i_slot,
-                    byte_slot,
-                }
-            } else if let Some((
+            }
+        } else if let Some((
+            src_slot,
+            src_offset_slot,
+            dst_slot,
+            dst_offset_slot,
+            len_slot,
+            i_slot,
+            value_slot,
+        )) = Self::match_linear_memory_i32_copy_loop(code, loop_body_start)
+        {
+            LoopSuperop::LinearMemoryI32Copy {
                 src_slot,
                 src_offset_slot,
                 dst_slot,
@@ -5707,19 +5711,18 @@ impl VM {
                 len_slot,
                 i_slot,
                 value_slot,
-            )) =
-                Self::match_linear_memory_i32_copy_loop(code, loop_body_start)
-            {
-                LoopSuperop::LinearMemoryI32Copy {
-                    src_slot,
-                    src_offset_slot,
-                    dst_slot,
-                    dst_offset_slot,
-                    len_slot,
-                    i_slot,
-                    value_slot,
-                }
-            } else if let Some((
+            }
+        } else if let Some((
+            src_slot,
+            src_offset_slot,
+            dst_slot,
+            dst_offset_slot,
+            len_slot,
+            i_slot,
+            value_slot,
+        )) = Self::match_linear_memory_i64_copy_loop(code, loop_body_start)
+        {
+            LoopSuperop::LinearMemoryI64Copy {
                 src_slot,
                 src_offset_slot,
                 dst_slot,
@@ -5727,19 +5730,23 @@ impl VM {
                 len_slot,
                 i_slot,
                 value_slot,
-            )) =
-                Self::match_linear_memory_i64_copy_loop(code, loop_body_start)
-            {
-                LoopSuperop::LinearMemoryI64Copy {
-                    src_slot,
-                    src_offset_slot,
-                    dst_slot,
-                    dst_offset_slot,
-                    len_slot,
-                    i_slot,
-                    value_slot,
-                }
-            } else if let Some((
+            }
+        } else if let Some((
+            src_slot,
+            src_offset_slot,
+            dst_slot,
+            dst_offset_slot,
+            len_slot,
+            i_slot,
+            value_slot,
+        )) = Self::match_linear_memory_typed_copy_loop(
+            code,
+            loop_body_start,
+            Op::F32_LOAD,
+            Op::F32_STORE,
+            4,
+        ) {
+            LoopSuperop::LinearMemoryF32Copy {
                 src_slot,
                 src_offset_slot,
                 dst_slot,
@@ -5747,25 +5754,23 @@ impl VM {
                 len_slot,
                 i_slot,
                 value_slot,
-            )) =
-                Self::match_linear_memory_typed_copy_loop(
-                    code,
-                    loop_body_start,
-                    Op::F32_LOAD,
-                    Op::F32_STORE,
-                    4,
-                )
-            {
-                LoopSuperop::LinearMemoryF32Copy {
-                    src_slot,
-                    src_offset_slot,
-                    dst_slot,
-                    dst_offset_slot,
-                    len_slot,
-                    i_slot,
-                    value_slot,
-                }
-            } else if let Some((
+            }
+        } else if let Some((
+            src_slot,
+            src_offset_slot,
+            dst_slot,
+            dst_offset_slot,
+            len_slot,
+            i_slot,
+            value_slot,
+        )) = Self::match_linear_memory_typed_copy_loop(
+            code,
+            loop_body_start,
+            Op::F64_LOAD,
+            Op::F64_STORE,
+            8,
+        ) {
+            LoopSuperop::LinearMemoryF64Copy {
                 src_slot,
                 src_offset_slot,
                 dst_slot,
@@ -5773,25 +5778,23 @@ impl VM {
                 len_slot,
                 i_slot,
                 value_slot,
-            )) =
-                Self::match_linear_memory_typed_copy_loop(
-                    code,
-                    loop_body_start,
-                    Op::F64_LOAD,
-                    Op::F64_STORE,
-                    8,
-                )
-            {
-                LoopSuperop::LinearMemoryF64Copy {
-                    src_slot,
-                    src_offset_slot,
-                    dst_slot,
-                    dst_offset_slot,
-                    len_slot,
-                    i_slot,
-                    value_slot,
-                }
-            } else if let Some((
+            }
+        } else if let Some((
+            src_slot,
+            src_offset_slot,
+            dst_slot,
+            dst_offset_slot,
+            len_slot,
+            i_slot,
+            value_slot,
+        )) = Self::match_linear_memory_typed_copy_loop(
+            code,
+            loop_body_start,
+            Op::I32_LOAD8_S,
+            Op::I32_STORE8,
+            1,
+        ) {
+            LoopSuperop::LinearMemoryNarrowCopy {
                 src_slot,
                 src_offset_slot,
                 dst_slot,
@@ -5799,28 +5802,26 @@ impl VM {
                 len_slot,
                 i_slot,
                 value_slot,
-            )) =
-                Self::match_linear_memory_typed_copy_loop(
-                    code,
-                    loop_body_start,
-                    Op::I32_LOAD8_S,
-                    Op::I32_STORE8,
-                    1,
-                )
-            {
-                LoopSuperop::LinearMemoryNarrowCopy {
-                    src_slot,
-                    src_offset_slot,
-                    dst_slot,
-                    dst_offset_slot,
-                    len_slot,
-                    i_slot,
-                    value_slot,
-                    byte_width: 1,
-                    signed: true,
-                    result_i64: false,
-                }
-            } else if let Some((
+                byte_width: 1,
+                signed: true,
+                result_i64: false,
+            }
+        } else if let Some((
+            src_slot,
+            src_offset_slot,
+            dst_slot,
+            dst_offset_slot,
+            len_slot,
+            i_slot,
+            value_slot,
+        )) = Self::match_linear_memory_typed_copy_loop(
+            code,
+            loop_body_start,
+            Op::I32_LOAD16_S,
+            Op::I32_STORE16,
+            2,
+        ) {
+            LoopSuperop::LinearMemoryNarrowCopy {
                 src_slot,
                 src_offset_slot,
                 dst_slot,
@@ -5828,28 +5829,26 @@ impl VM {
                 len_slot,
                 i_slot,
                 value_slot,
-            )) =
-                Self::match_linear_memory_typed_copy_loop(
-                    code,
-                    loop_body_start,
-                    Op::I32_LOAD16_S,
-                    Op::I32_STORE16,
-                    2,
-                )
-            {
-                LoopSuperop::LinearMemoryNarrowCopy {
-                    src_slot,
-                    src_offset_slot,
-                    dst_slot,
-                    dst_offset_slot,
-                    len_slot,
-                    i_slot,
-                    value_slot,
-                    byte_width: 2,
-                    signed: true,
-                    result_i64: false,
-                }
-            } else if let Some((
+                byte_width: 2,
+                signed: true,
+                result_i64: false,
+            }
+        } else if let Some((
+            src_slot,
+            src_offset_slot,
+            dst_slot,
+            dst_offset_slot,
+            len_slot,
+            i_slot,
+            value_slot,
+        )) = Self::match_linear_memory_typed_copy_loop(
+            code,
+            loop_body_start,
+            Op::I32_LOAD16_U,
+            Op::I32_STORE16,
+            2,
+        ) {
+            LoopSuperop::LinearMemoryNarrowCopy {
                 src_slot,
                 src_offset_slot,
                 dst_slot,
@@ -5857,28 +5856,26 @@ impl VM {
                 len_slot,
                 i_slot,
                 value_slot,
-            )) =
-                Self::match_linear_memory_typed_copy_loop(
-                    code,
-                    loop_body_start,
-                    Op::I32_LOAD16_U,
-                    Op::I32_STORE16,
-                    2,
-                )
-            {
-                LoopSuperop::LinearMemoryNarrowCopy {
-                    src_slot,
-                    src_offset_slot,
-                    dst_slot,
-                    dst_offset_slot,
-                    len_slot,
-                    i_slot,
-                    value_slot,
-                    byte_width: 2,
-                    signed: false,
-                    result_i64: false,
-                }
-            } else if let Some((
+                byte_width: 2,
+                signed: false,
+                result_i64: false,
+            }
+        } else if let Some((
+            src_slot,
+            src_offset_slot,
+            dst_slot,
+            dst_offset_slot,
+            len_slot,
+            i_slot,
+            value_slot,
+        )) = Self::match_linear_memory_typed_copy_loop(
+            code,
+            loop_body_start,
+            Op::I64_LOAD8_S,
+            Op::I64_STORE8,
+            1,
+        ) {
+            LoopSuperop::LinearMemoryNarrowCopy {
                 src_slot,
                 src_offset_slot,
                 dst_slot,
@@ -5886,28 +5883,26 @@ impl VM {
                 len_slot,
                 i_slot,
                 value_slot,
-            )) =
-                Self::match_linear_memory_typed_copy_loop(
-                    code,
-                    loop_body_start,
-                    Op::I64_LOAD8_S,
-                    Op::I64_STORE8,
-                    1,
-                )
-            {
-                LoopSuperop::LinearMemoryNarrowCopy {
-                    src_slot,
-                    src_offset_slot,
-                    dst_slot,
-                    dst_offset_slot,
-                    len_slot,
-                    i_slot,
-                    value_slot,
-                    byte_width: 1,
-                    signed: true,
-                    result_i64: true,
-                }
-            } else if let Some((
+                byte_width: 1,
+                signed: true,
+                result_i64: true,
+            }
+        } else if let Some((
+            src_slot,
+            src_offset_slot,
+            dst_slot,
+            dst_offset_slot,
+            len_slot,
+            i_slot,
+            value_slot,
+        )) = Self::match_linear_memory_typed_copy_loop(
+            code,
+            loop_body_start,
+            Op::I64_LOAD8_U,
+            Op::I64_STORE8,
+            1,
+        ) {
+            LoopSuperop::LinearMemoryNarrowCopy {
                 src_slot,
                 src_offset_slot,
                 dst_slot,
@@ -5915,28 +5910,26 @@ impl VM {
                 len_slot,
                 i_slot,
                 value_slot,
-            )) =
-                Self::match_linear_memory_typed_copy_loop(
-                    code,
-                    loop_body_start,
-                    Op::I64_LOAD8_U,
-                    Op::I64_STORE8,
-                    1,
-                )
-            {
-                LoopSuperop::LinearMemoryNarrowCopy {
-                    src_slot,
-                    src_offset_slot,
-                    dst_slot,
-                    dst_offset_slot,
-                    len_slot,
-                    i_slot,
-                    value_slot,
-                    byte_width: 1,
-                    signed: false,
-                    result_i64: true,
-                }
-            } else if let Some((
+                byte_width: 1,
+                signed: false,
+                result_i64: true,
+            }
+        } else if let Some((
+            src_slot,
+            src_offset_slot,
+            dst_slot,
+            dst_offset_slot,
+            len_slot,
+            i_slot,
+            value_slot,
+        )) = Self::match_linear_memory_typed_copy_loop(
+            code,
+            loop_body_start,
+            Op::I64_LOAD16_S,
+            Op::I64_STORE16,
+            2,
+        ) {
+            LoopSuperop::LinearMemoryNarrowCopy {
                 src_slot,
                 src_offset_slot,
                 dst_slot,
@@ -5944,28 +5937,26 @@ impl VM {
                 len_slot,
                 i_slot,
                 value_slot,
-            )) =
-                Self::match_linear_memory_typed_copy_loop(
-                    code,
-                    loop_body_start,
-                    Op::I64_LOAD16_S,
-                    Op::I64_STORE16,
-                    2,
-                )
-            {
-                LoopSuperop::LinearMemoryNarrowCopy {
-                    src_slot,
-                    src_offset_slot,
-                    dst_slot,
-                    dst_offset_slot,
-                    len_slot,
-                    i_slot,
-                    value_slot,
-                    byte_width: 2,
-                    signed: true,
-                    result_i64: true,
-                }
-            } else if let Some((
+                byte_width: 2,
+                signed: true,
+                result_i64: true,
+            }
+        } else if let Some((
+            src_slot,
+            src_offset_slot,
+            dst_slot,
+            dst_offset_slot,
+            len_slot,
+            i_slot,
+            value_slot,
+        )) = Self::match_linear_memory_typed_copy_loop(
+            code,
+            loop_body_start,
+            Op::I64_LOAD16_U,
+            Op::I64_STORE16,
+            2,
+        ) {
+            LoopSuperop::LinearMemoryNarrowCopy {
                 src_slot,
                 src_offset_slot,
                 dst_slot,
@@ -5973,28 +5964,26 @@ impl VM {
                 len_slot,
                 i_slot,
                 value_slot,
-            )) =
-                Self::match_linear_memory_typed_copy_loop(
-                    code,
-                    loop_body_start,
-                    Op::I64_LOAD16_U,
-                    Op::I64_STORE16,
-                    2,
-                )
-            {
-                LoopSuperop::LinearMemoryNarrowCopy {
-                    src_slot,
-                    src_offset_slot,
-                    dst_slot,
-                    dst_offset_slot,
-                    len_slot,
-                    i_slot,
-                    value_slot,
-                    byte_width: 2,
-                    signed: false,
-                    result_i64: true,
-                }
-            } else if let Some((
+                byte_width: 2,
+                signed: false,
+                result_i64: true,
+            }
+        } else if let Some((
+            src_slot,
+            src_offset_slot,
+            dst_slot,
+            dst_offset_slot,
+            len_slot,
+            i_slot,
+            value_slot,
+        )) = Self::match_linear_memory_typed_copy_loop(
+            code,
+            loop_body_start,
+            Op::I64_LOAD32_S,
+            Op::I64_STORE32,
+            4,
+        ) {
+            LoopSuperop::LinearMemoryNarrowCopy {
                 src_slot,
                 src_offset_slot,
                 dst_slot,
@@ -6002,28 +5991,26 @@ impl VM {
                 len_slot,
                 i_slot,
                 value_slot,
-            )) =
-                Self::match_linear_memory_typed_copy_loop(
-                    code,
-                    loop_body_start,
-                    Op::I64_LOAD32_S,
-                    Op::I64_STORE32,
-                    4,
-                )
-            {
-                LoopSuperop::LinearMemoryNarrowCopy {
-                    src_slot,
-                    src_offset_slot,
-                    dst_slot,
-                    dst_offset_slot,
-                    len_slot,
-                    i_slot,
-                    value_slot,
-                    byte_width: 4,
-                    signed: true,
-                    result_i64: true,
-                }
-            } else if let Some((
+                byte_width: 4,
+                signed: true,
+                result_i64: true,
+            }
+        } else if let Some((
+            src_slot,
+            src_offset_slot,
+            dst_slot,
+            dst_offset_slot,
+            len_slot,
+            i_slot,
+            value_slot,
+        )) = Self::match_linear_memory_typed_copy_loop(
+            code,
+            loop_body_start,
+            Op::I64_LOAD32_U,
+            Op::I64_STORE32,
+            4,
+        ) {
+            LoopSuperop::LinearMemoryNarrowCopy {
                 src_slot,
                 src_offset_slot,
                 dst_slot,
@@ -6031,674 +6018,622 @@ impl VM {
                 len_slot,
                 i_slot,
                 value_slot,
-            )) =
-                Self::match_linear_memory_typed_copy_loop(
-                    code,
-                    loop_body_start,
-                    Op::I64_LOAD32_U,
-                    Op::I64_STORE32,
-                    4,
-                )
-            {
-                LoopSuperop::LinearMemoryNarrowCopy {
-                    src_slot,
-                    src_offset_slot,
-                    dst_slot,
-                    dst_offset_slot,
-                    len_slot,
-                    i_slot,
-                    value_slot,
-                    byte_width: 4,
-                    signed: false,
-                    result_i64: true,
-                }
-            } else if let Some((dst_slot, dst_offset_slot, len_slot, i_slot, value_slot)) =
-                Self::match_linear_memory_typed_fill_loop(
-                    code,
-                    loop_body_start,
-                    Op::I32_STORE,
-                    4,
-                )
-            {
-                LoopSuperop::LinearMemoryTypedFill {
-                    dst_slot,
-                    dst_offset_slot,
-                    len_slot,
-                    i_slot,
-                    value_slot,
-                    byte_width: 4,
-                    value_kind: crate::vm::LinearMemoryTypedFillValue::I32,
-                }
-            } else if let Some((dst_slot, dst_offset_slot, len_slot, i_slot, value_slot)) =
-                Self::match_linear_memory_typed_fill_loop(
-                    code,
-                    loop_body_start,
-                    Op::I32_STORE16,
-                    2,
-                )
-            {
-                LoopSuperop::LinearMemoryTypedFill {
-                    dst_slot,
-                    dst_offset_slot,
-                    len_slot,
-                    i_slot,
-                    value_slot,
-                    byte_width: 2,
-                    value_kind: crate::vm::LinearMemoryTypedFillValue::I32,
-                }
-            } else if let Some((dst_slot, dst_offset_slot, len_slot, i_slot, value_slot)) =
-                Self::match_linear_memory_typed_fill_loop(
-                    code,
-                    loop_body_start,
-                    Op::I64_STORE,
-                    8,
-                )
-            {
-                LoopSuperop::LinearMemoryTypedFill {
-                    dst_slot,
-                    dst_offset_slot,
-                    len_slot,
-                    i_slot,
-                    value_slot,
-                    byte_width: 8,
-                    value_kind: crate::vm::LinearMemoryTypedFillValue::I64,
-                }
-            } else if let Some((dst_slot, dst_offset_slot, len_slot, i_slot, value_slot)) =
-                Self::match_linear_memory_typed_fill_loop(
-                    code,
-                    loop_body_start,
-                    Op::I64_STORE8,
-                    1,
-                )
-            {
-                LoopSuperop::LinearMemoryTypedFill {
-                    dst_slot,
-                    dst_offset_slot,
-                    len_slot,
-                    i_slot,
-                    value_slot,
-                    byte_width: 1,
-                    value_kind: crate::vm::LinearMemoryTypedFillValue::I64,
-                }
-            } else if let Some((dst_slot, dst_offset_slot, len_slot, i_slot, value_slot)) =
-                Self::match_linear_memory_typed_fill_loop(
-                    code,
-                    loop_body_start,
-                    Op::I64_STORE16,
-                    2,
-                )
-            {
-                LoopSuperop::LinearMemoryTypedFill {
-                    dst_slot,
-                    dst_offset_slot,
-                    len_slot,
-                    i_slot,
-                    value_slot,
-                    byte_width: 2,
-                    value_kind: crate::vm::LinearMemoryTypedFillValue::I64,
-                }
-            } else if let Some((dst_slot, dst_offset_slot, len_slot, i_slot, value_slot)) =
-                Self::match_linear_memory_typed_fill_loop(
-                    code,
-                    loop_body_start,
-                    Op::I64_STORE32,
-                    4,
-                )
-            {
-                LoopSuperop::LinearMemoryTypedFill {
-                    dst_slot,
-                    dst_offset_slot,
-                    len_slot,
-                    i_slot,
-                    value_slot,
-                    byte_width: 4,
-                    value_kind: crate::vm::LinearMemoryTypedFillValue::I64,
-                }
-            } else if let Some((dst_slot, dst_offset_slot, len_slot, i_slot, value_slot)) =
-                Self::match_linear_memory_typed_fill_loop(
-                    code,
-                    loop_body_start,
-                    Op::F32_STORE,
-                    4,
-                )
-            {
-                LoopSuperop::LinearMemoryTypedFill {
-                    dst_slot,
-                    dst_offset_slot,
-                    len_slot,
-                    i_slot,
-                    value_slot,
-                    byte_width: 4,
-                    value_kind: crate::vm::LinearMemoryTypedFillValue::F32,
-                }
-            } else if let Some((dst_slot, dst_offset_slot, len_slot, i_slot, value_slot)) =
-                Self::match_linear_memory_typed_fill_loop(
-                    code,
-                    loop_body_start,
-                    Op::F64_STORE,
-                    8,
-                )
-            {
-                LoopSuperop::LinearMemoryTypedFill {
-                    dst_slot,
-                    dst_offset_slot,
-                    len_slot,
-                    i_slot,
-                    value_slot,
-                    byte_width: 8,
-                    value_kind: crate::vm::LinearMemoryTypedFillValue::F64,
-                }
-            } else if let Some((dst_slot, dst_offset_slot, len_slot, i_slot, value_slot)) =
-                Self::match_linear_memory_fill_loop(code, loop_body_start)
-            {
-                LoopSuperop::LinearMemoryFill {
-                    dst_slot,
-                    dst_offset_slot,
-                    len_slot,
-                    i_slot,
-                    value_slot,
-                }
-            } else if let Some((src_slot, src_offset_slot, len_slot, i_slot, acc_slot)) =
-                Self::match_linear_memory_scan_loop(code, loop_body_start)
-            {
-                LoopSuperop::LinearMemoryScan {
-                    src_slot,
-                    src_offset_slot,
-                    len_slot,
-                    i_slot,
-                    acc_slot,
-                }
-            } else if let Some((acc_slot, counter_slot, mul, add)) =
-                Self::match_i32_lcg_loop(code, loop_body_start)
-            {
-                LoopSuperop::I32LcgLoop {
-                    acc_slot,
-                    counter_slot,
-                    mul,
-                    add,
-                }
-            } else if let Some(counter_slot) =
-                Self::match_br_table_noop_countdown_loop(code, loop_body_start)
-            {
-                LoopSuperop::I32CountdownLoop { counter_slot }
-            } else if let Some(counter_slot) = Self::match_i32_countdown_loop(code, loop_body_start)
-            {
-                LoopSuperop::I32CountdownLoop { counter_slot }
-            } else if let Some((src_slot, counter_slot)) =
-                Self::match_local_get_drop_loop(code, loop_body_start)
-            {
-                LoopSuperop::LocalGetDropLoop {
-                    src_slot,
-                    counter_slot,
-                }
-            } else if let Some((src_slot, dst_slot, counter_slot)) =
-                Self::match_local_copy_loop(code, loop_body_start)
-            {
-                LoopSuperop::LocalCopyLoop {
-                    src_slot,
-                    dst_slot,
-                    counter_slot,
-                }
-            } else if let Some((src_slot, dst_slot, counter_slot)) =
-                Self::match_local_unary_loop(code, loop_body_start, Op::I32_EQZ)
-            {
-                LoopSuperop::LocalI32EqzLoop {
-                    src_slot,
-                    dst_slot,
-                    counter_slot,
-                }
-            } else if let Some((src_slot, dst_slot, rhs, counter_slot)) =
-                Self::match_local_i32_compare_const_loop(code, loop_body_start, Op::I32_EQ)
-            {
-                LoopSuperop::LocalI32EqConstLoop {
-                    src_slot,
-                    dst_slot,
-                    rhs,
-                    counter_slot,
-                }
-            } else if let Some((src_slot, dst_slot, rhs, counter_slot)) =
-                Self::match_local_i32_compare_const_loop(code, loop_body_start, Op::I32_NE)
-            {
-                LoopSuperop::LocalI32NeConstLoop {
-                    src_slot,
-                    dst_slot,
-                    rhs,
-                    counter_slot,
-                }
-            } else if let Some((src_slot, dst_slot, rhs, op, counter_slot)) =
-                Self::match_local_i32_ordered_compare_const_loop(code, loop_body_start)
-            {
-                LoopSuperop::LocalI32OrdCmpConstLoop {
-                    src_slot,
-                    dst_slot,
-                    rhs,
-                    op,
-                    counter_slot,
-                }
-            } else if let Some((slot, rhs, op, counter_slot)) =
-                Self::match_local_i32_accum_const_loop(code, loop_body_start)
-            {
-                LoopSuperop::LocalI32AccumConstLoop {
-                    slot,
-                    rhs,
-                    op,
-                    counter_slot,
-                }
-            } else if let Some((src_slot, dst_slot, add, counter_slot)) =
-                Self::match_local_i32_add_const_loop(code, loop_body_start)
-            {
-                LoopSuperop::LocalI32AddConstLoop {
-                    src_slot,
-                    dst_slot,
-                    add,
-                    counter_slot,
-                }
-            } else if let Some((src_slot, dst_slot, sub, counter_slot)) =
-                Self::match_local_i32_sub_const_loop(code, loop_body_start)
-            {
-                LoopSuperop::LocalI32SubConstLoop {
-                    src_slot,
-                    dst_slot,
-                    sub,
-                    counter_slot,
-                }
-            } else if let Some((src_slot, dst_slot, mask, counter_slot)) =
-                Self::match_local_i32_and_const_loop(code, loop_body_start)
-            {
-                LoopSuperop::LocalI32AndConstLoop {
-                    src_slot,
-                    dst_slot,
-                    mask,
-                    counter_slot,
-                }
-            } else if let Some((src_slot, dst_slot, mul, counter_slot)) =
-                Self::match_local_i32_mul_const_loop(code, loop_body_start)
-            {
-                LoopSuperop::LocalI32MulConstLoop {
-                    src_slot,
-                    dst_slot,
-                    mul,
-                    counter_slot,
-                }
-            } else if let Some((src_slot, dst_slot, shift, counter_slot)) =
-                Self::match_local_i32_shl_const_loop(code, loop_body_start)
-            {
-                LoopSuperop::LocalI32ShlConstLoop {
-                    src_slot,
-                    dst_slot,
-                    shift,
-                    counter_slot,
-                }
-            } else if let Some((src_slot, dst_slot, shift, counter_slot)) =
-                Self::match_local_i32_rotl_const_loop(code, loop_body_start)
-            {
-                LoopSuperop::LocalI32RotlConstLoop {
-                    src_slot,
-                    dst_slot,
-                    shift,
-                    counter_slot,
-                }
-            } else if let Some((src_slot, dst_slot, shift, counter_slot)) =
-                Self::match_local_i32_rotr_const_loop(code, loop_body_start)
-            {
-                LoopSuperop::LocalI32RotrConstLoop {
-                    src_slot,
-                    dst_slot,
-                    shift,
-                    counter_slot,
-                }
-            } else if let Some((src_slot, dst_slot, shift, counter_slot)) =
-                Self::match_local_i32_shr_s_const_loop(code, loop_body_start)
-            {
-                LoopSuperop::LocalI32ShrSConstLoop {
-                    src_slot,
-                    dst_slot,
-                    shift,
-                    counter_slot,
-                }
-            } else if let Some((src_slot, dst_slot, shift, counter_slot)) =
-                Self::match_local_i32_shr_u_const_loop(code, loop_body_start)
-            {
-                LoopSuperop::LocalI32ShrUConstLoop {
-                    src_slot,
-                    dst_slot,
-                    shift,
-                    counter_slot,
-                }
-            } else if let Some((src_slot, dst_slot, mask, counter_slot)) =
-                Self::match_local_i32_or_const_loop(code, loop_body_start)
-            {
-                LoopSuperop::LocalI32OrConstLoop {
-                    src_slot,
-                    dst_slot,
-                    mask,
-                    counter_slot,
-                }
-            } else if let Some((src_slot, dst_slot, mask, counter_slot)) =
-                Self::match_local_i32_xor_const_loop(code, loop_body_start)
-            {
-                LoopSuperop::LocalI32XorConstLoop {
-                    src_slot,
-                    dst_slot,
-                    mask,
-                    counter_slot,
-                }
-            } else if let Some((src_slot, dst_slot, rhs, op, counter_slot)) =
-                Self::match_local_i64_compare_const_loop(code, loop_body_start)
-            {
-                LoopSuperop::LocalI64CmpConstLoop {
-                    src_slot,
-                    dst_slot,
-                    rhs,
-                    op,
-                    counter_slot,
-                }
-            } else if let Some((src_slot, dst_slot, rhs_bits, op, counter_slot)) =
-                Self::match_local_f32_compare_const_loop(code, loop_body_start)
-            {
-                LoopSuperop::LocalF32CmpConstLoop {
-                    src_slot,
-                    dst_slot,
-                    rhs_bits,
-                    op,
-                    counter_slot,
-                }
-            } else if let Some((src_slot, dst_slot, rhs_bits, op, counter_slot)) =
-                Self::match_local_f64_compare_const_loop(code, loop_body_start)
-            {
-                LoopSuperop::LocalF64CmpConstLoop {
-                    src_slot,
-                    dst_slot,
-                    rhs_bits,
-                    op,
-                    counter_slot,
-                }
-            } else if let Some((src_slot, dst_slot, rhs_bits, op, counter_slot)) =
-                Self::match_local_f32_binary_const_loop(code, loop_body_start)
-            {
-                LoopSuperop::LocalF32BinaryConstLoop {
-                    src_slot,
-                    dst_slot,
-                    rhs_bits,
-                    op,
-                    counter_slot,
-                }
-            } else if let Some((src_slot, dst_slot, rhs_bits, op, counter_slot)) =
-                Self::match_local_f64_binary_const_loop(code, loop_body_start)
-            {
-                LoopSuperop::LocalF64BinaryConstLoop {
-                    src_slot,
-                    dst_slot,
-                    rhs_bits,
-                    op,
-                    counter_slot,
-                }
-            } else if let Some((slot, rhs, op, counter_slot)) =
-                Self::match_local_i64_accum_const_loop(code, loop_body_start)
-            {
-                LoopSuperop::LocalI64AccumConstLoop {
-                    slot,
-                    rhs,
-                    op,
-                    counter_slot,
-                }
-            } else if let Some((src_slot, dst_slot, add, counter_slot)) =
-                Self::match_local_i64_binary_const_loop(code, loop_body_start, Op::I64_ADD)
-            {
-                LoopSuperop::LocalI64AddConstLoop {
-                    src_slot,
-                    dst_slot,
-                    add,
-                    counter_slot,
-                }
-            } else if let Some((src_slot, dst_slot, sub, counter_slot)) =
-                Self::match_local_i64_binary_const_loop(code, loop_body_start, Op::I64_SUB)
-            {
-                LoopSuperop::LocalI64SubConstLoop {
-                    src_slot,
-                    dst_slot,
-                    sub,
-                    counter_slot,
-                }
-            } else if let Some((src_slot, dst_slot, mask, counter_slot)) =
-                Self::match_local_i64_binary_const_loop(code, loop_body_start, Op::I64_AND)
-            {
-                LoopSuperop::LocalI64AndConstLoop {
-                    src_slot,
-                    dst_slot,
-                    mask,
-                    counter_slot,
-                }
-            } else if let Some((src_slot, dst_slot, mul, counter_slot)) =
-                Self::match_local_i64_binary_const_loop(code, loop_body_start, Op::I64_MUL)
-            {
-                LoopSuperop::LocalI64MulConstLoop {
-                    src_slot,
-                    dst_slot,
-                    mul,
-                    counter_slot,
-                }
-            } else if let Some((src_slot, dst_slot, mask, counter_slot)) =
-                Self::match_local_i64_binary_const_loop(code, loop_body_start, Op::I64_OR)
-            {
-                LoopSuperop::LocalI64OrConstLoop {
-                    src_slot,
-                    dst_slot,
-                    mask,
-                    counter_slot,
-                }
-            } else if let Some((src_slot, dst_slot, shift, counter_slot)) =
-                Self::match_local_i64_binary_const_loop(code, loop_body_start, Op::I64_SHL)
-            {
-                LoopSuperop::LocalI64ShlConstLoop {
-                    src_slot,
-                    dst_slot,
-                    shift,
-                    counter_slot,
-                }
-            } else if let Some((src_slot, dst_slot, shift, counter_slot)) =
-                Self::match_local_i64_binary_const_loop(code, loop_body_start, Op::I64_SHR_S)
-            {
-                LoopSuperop::LocalI64ShrSConstLoop {
-                    src_slot,
-                    dst_slot,
-                    shift,
-                    counter_slot,
-                }
-            } else if let Some((src_slot, dst_slot, shift, counter_slot)) =
-                Self::match_local_i64_binary_const_loop(code, loop_body_start, Op::I64_SHR_U)
-            {
-                LoopSuperop::LocalI64ShrUConstLoop {
-                    src_slot,
-                    dst_slot,
-                    shift,
-                    counter_slot,
-                }
-            } else if let Some((src_slot, dst_slot, shift, counter_slot)) =
-                Self::match_local_i64_binary_const_loop(code, loop_body_start, Op::I64_ROTL)
-            {
-                LoopSuperop::LocalI64RotlConstLoop {
-                    src_slot,
-                    dst_slot,
-                    shift,
-                    counter_slot,
-                }
-            } else if let Some((src_slot, dst_slot, shift, counter_slot)) =
-                Self::match_local_i64_binary_const_loop(code, loop_body_start, Op::I64_ROTR)
-            {
-                LoopSuperop::LocalI64RotrConstLoop {
-                    src_slot,
-                    dst_slot,
-                    shift,
-                    counter_slot,
-                }
-            } else if let Some((src_slot, dst_slot, mask, counter_slot)) =
-                Self::match_local_i64_binary_const_loop(code, loop_body_start, Op::I64_XOR)
-            {
-                LoopSuperop::LocalI64XorConstLoop {
-                    src_slot,
-                    dst_slot,
-                    mask,
-                    counter_slot,
-                }
-            } else if let Some((src_slot, dst_slot, counter_slot)) =
-                Self::match_local_unary_loop(code, loop_body_start, Op::I64_EQZ)
-            {
-                LoopSuperop::LocalI64EqzLoop {
-                    src_slot,
-                    dst_slot,
-                    counter_slot,
-                }
-            } else if let Some((dst_slot, value, counter_slot)) =
-                Self::match_local_set_const_loop(code, loop_body_start)
-            {
-                LoopSuperop::LocalSetConstLoop {
-                    dst_slot,
-                    value,
-                    counter_slot,
-                }
-            } else if let Some((import_idx, acc_slot, counter_slot)) =
-                Self::match_call_i32_add_loop(code, loop_body_start)
-            {
-                LoopSuperop::CallI32AddLoop {
-                    import_idx,
-                    acc_slot,
-                    counter_slot,
-                }
-            } else if let Some((func_slot, acc_slot, counter_slot)) =
-                Self::match_call_ref_i32_add_loop(code, loop_body_start)
-            {
-                LoopSuperop::CallRefI32AddLoop {
-                    func_slot,
-                    acc_slot,
-                    counter_slot,
-                }
-            } else if let Some((tableidx, elem_index, elem_slot, acc_slot, counter_slot, call_ip)) =
-                Self::match_call_indirect_i32_add_loop(code, loop_body_start)
-            {
-                LoopSuperop::CallIndirectI32AddLoop {
-                    tableidx,
-                    elem_index,
-                    elem_slot,
-                    acc_slot,
-                    counter_slot,
-                    call_ip,
-                }
-            } else if let Some((global_idx, dst_slot, counter_slot)) =
-                Self::match_global_get_local_loop(code, loop_body_start)
-            {
-                LoopSuperop::GlobalGetLocalLoop {
-                    global_idx,
-                    dst_slot,
-                    counter_slot,
-                }
-            } else if let Some((global_idx, counter_slot)) =
-                Self::match_global_get_drop_loop(code, loop_body_start)
-            {
-                LoopSuperop::GlobalGetDropLoop {
-                    global_idx,
-                    counter_slot,
-                }
-            } else if let Some((global_idx, value, counter_slot)) =
-                Self::match_global_set_const_loop(code, loop_body_start)
-            {
-                LoopSuperop::GlobalSetConstLoop {
-                    global_idx,
-                    value,
-                    counter_slot,
-                }
-            } else if let Some((global_idx, value_slot, counter_slot)) =
-                Self::match_global_set_local_loop(code, loop_body_start)
-            {
-                LoopSuperop::GlobalSetLocalLoop {
-                    global_idx,
-                    value_slot,
-                    counter_slot,
-                }
-            } else if let Some((obj_slot, name_idx, counter_slot)) =
-                Self::match_struct_get_drop_loop(code, loop_body_start)
-            {
-                LoopSuperop::StructGetDropLoop {
-                    obj_slot,
-                    name_idx,
-                    counter_slot,
-                }
-            } else if let Some((obj_slot, name_idx, dst_slot, counter_slot)) =
-                Self::match_struct_get_local_loop(code, loop_body_start)
-            {
-                LoopSuperop::StructGetLocalLoop {
-                    obj_slot,
-                    name_idx,
-                    dst_slot,
-                    counter_slot,
-                }
-            } else if let Some((obj_slot, value, name_idx, counter_slot)) =
-                Self::match_struct_set_const_loop(code, loop_body_start)
-            {
-                LoopSuperop::StructSetConstLoop {
-                    obj_slot,
-                    value,
-                    name_idx,
-                    counter_slot,
-                }
-            } else if let Some((obj_slot, value_slot, name_idx, counter_slot)) =
-                Self::match_struct_set_local_loop(code, loop_body_start)
-            {
-                LoopSuperop::StructSetLocalLoop {
-                    obj_slot,
-                    value_slot,
-                    name_idx,
-                    counter_slot,
-                }
-            } else if let Some((arr_slot, index, counter_slot)) =
-                Self::match_array_get_drop_loop(code, loop_body_start)
-            {
-                LoopSuperop::ArrayGetDropLoop {
-                    arr_slot,
-                    index,
-                    counter_slot,
-                }
-            } else if let Some((arr_slot, index, dst_slot, counter_slot)) =
-                Self::match_array_get_local_loop(code, loop_body_start)
-            {
-                LoopSuperop::ArrayGetLocalLoop {
-                    arr_slot,
-                    index,
-                    dst_slot,
-                    counter_slot,
-                }
-            } else if let Some((src_slot, src_offset_slot, dst_slot, dst_offset_slot, len_slot, i_slot)) =
-                Self::match_array_copy_loop(code, loop_body_start)
-            {
-                LoopSuperop::ArrayCopyLoop {
-                    src_slot,
-                    src_offset_slot,
-                    dst_slot,
-                    dst_offset_slot,
-                    len_slot,
-                    i_slot,
-                }
-            } else if let Some((arr_slot, index, value, counter_slot)) =
-                Self::match_array_set_const_loop(code, loop_body_start)
-            {
-                LoopSuperop::ArraySetConstLoop {
-                    arr_slot,
-                    index,
-                    value,
-                    counter_slot,
-                }
-            } else if let Some((arr_slot, index, value_slot, counter_slot)) =
-                Self::match_array_set_local_loop(code, loop_body_start)
-            {
-                LoopSuperop::ArraySetLocalLoop {
-                    arr_slot,
-                    index,
-                    value_slot,
-                    counter_slot,
-                }
-            } else {
-                LoopSuperop::None
-            };
+                byte_width: 4,
+                signed: false,
+                result_i64: true,
+            }
+        } else if let Some((dst_slot, dst_offset_slot, len_slot, i_slot, value_slot)) =
+            Self::match_linear_memory_typed_fill_loop(code, loop_body_start, Op::I32_STORE, 4)
+        {
+            LoopSuperop::LinearMemoryTypedFill {
+                dst_slot,
+                dst_offset_slot,
+                len_slot,
+                i_slot,
+                value_slot,
+                byte_width: 4,
+                value_kind: crate::vm::LinearMemoryTypedFillValue::I32,
+            }
+        } else if let Some((dst_slot, dst_offset_slot, len_slot, i_slot, value_slot)) =
+            Self::match_linear_memory_typed_fill_loop(code, loop_body_start, Op::I32_STORE16, 2)
+        {
+            LoopSuperop::LinearMemoryTypedFill {
+                dst_slot,
+                dst_offset_slot,
+                len_slot,
+                i_slot,
+                value_slot,
+                byte_width: 2,
+                value_kind: crate::vm::LinearMemoryTypedFillValue::I32,
+            }
+        } else if let Some((dst_slot, dst_offset_slot, len_slot, i_slot, value_slot)) =
+            Self::match_linear_memory_typed_fill_loop(code, loop_body_start, Op::I64_STORE, 8)
+        {
+            LoopSuperop::LinearMemoryTypedFill {
+                dst_slot,
+                dst_offset_slot,
+                len_slot,
+                i_slot,
+                value_slot,
+                byte_width: 8,
+                value_kind: crate::vm::LinearMemoryTypedFillValue::I64,
+            }
+        } else if let Some((dst_slot, dst_offset_slot, len_slot, i_slot, value_slot)) =
+            Self::match_linear_memory_typed_fill_loop(code, loop_body_start, Op::I64_STORE8, 1)
+        {
+            LoopSuperop::LinearMemoryTypedFill {
+                dst_slot,
+                dst_offset_slot,
+                len_slot,
+                i_slot,
+                value_slot,
+                byte_width: 1,
+                value_kind: crate::vm::LinearMemoryTypedFillValue::I64,
+            }
+        } else if let Some((dst_slot, dst_offset_slot, len_slot, i_slot, value_slot)) =
+            Self::match_linear_memory_typed_fill_loop(code, loop_body_start, Op::I64_STORE16, 2)
+        {
+            LoopSuperop::LinearMemoryTypedFill {
+                dst_slot,
+                dst_offset_slot,
+                len_slot,
+                i_slot,
+                value_slot,
+                byte_width: 2,
+                value_kind: crate::vm::LinearMemoryTypedFillValue::I64,
+            }
+        } else if let Some((dst_slot, dst_offset_slot, len_slot, i_slot, value_slot)) =
+            Self::match_linear_memory_typed_fill_loop(code, loop_body_start, Op::I64_STORE32, 4)
+        {
+            LoopSuperop::LinearMemoryTypedFill {
+                dst_slot,
+                dst_offset_slot,
+                len_slot,
+                i_slot,
+                value_slot,
+                byte_width: 4,
+                value_kind: crate::vm::LinearMemoryTypedFillValue::I64,
+            }
+        } else if let Some((dst_slot, dst_offset_slot, len_slot, i_slot, value_slot)) =
+            Self::match_linear_memory_typed_fill_loop(code, loop_body_start, Op::F32_STORE, 4)
+        {
+            LoopSuperop::LinearMemoryTypedFill {
+                dst_slot,
+                dst_offset_slot,
+                len_slot,
+                i_slot,
+                value_slot,
+                byte_width: 4,
+                value_kind: crate::vm::LinearMemoryTypedFillValue::F32,
+            }
+        } else if let Some((dst_slot, dst_offset_slot, len_slot, i_slot, value_slot)) =
+            Self::match_linear_memory_typed_fill_loop(code, loop_body_start, Op::F64_STORE, 8)
+        {
+            LoopSuperop::LinearMemoryTypedFill {
+                dst_slot,
+                dst_offset_slot,
+                len_slot,
+                i_slot,
+                value_slot,
+                byte_width: 8,
+                value_kind: crate::vm::LinearMemoryTypedFillValue::F64,
+            }
+        } else if let Some((dst_slot, dst_offset_slot, len_slot, i_slot, value_slot)) =
+            Self::match_linear_memory_fill_loop(code, loop_body_start)
+        {
+            LoopSuperop::LinearMemoryFill {
+                dst_slot,
+                dst_offset_slot,
+                len_slot,
+                i_slot,
+                value_slot,
+            }
+        } else if let Some((src_slot, src_offset_slot, len_slot, i_slot, acc_slot)) =
+            Self::match_linear_memory_scan_loop(code, loop_body_start)
+        {
+            LoopSuperop::LinearMemoryScan {
+                src_slot,
+                src_offset_slot,
+                len_slot,
+                i_slot,
+                acc_slot,
+            }
+        } else if let Some((acc_slot, counter_slot, mul, add)) =
+            Self::match_i32_lcg_loop(code, loop_body_start)
+        {
+            LoopSuperop::I32LcgLoop {
+                acc_slot,
+                counter_slot,
+                mul,
+                add,
+            }
+        } else if let Some(counter_slot) =
+            Self::match_br_table_noop_countdown_loop(code, loop_body_start)
+        {
+            LoopSuperop::I32CountdownLoop { counter_slot }
+        } else if let Some(counter_slot) = Self::match_i32_countdown_loop(code, loop_body_start) {
+            LoopSuperop::I32CountdownLoop { counter_slot }
+        } else if let Some((src_slot, counter_slot)) =
+            Self::match_local_get_drop_loop(code, loop_body_start)
+        {
+            LoopSuperop::LocalGetDropLoop {
+                src_slot,
+                counter_slot,
+            }
+        } else if let Some((src_slot, dst_slot, counter_slot)) =
+            Self::match_local_copy_loop(code, loop_body_start)
+        {
+            LoopSuperop::LocalCopyLoop {
+                src_slot,
+                dst_slot,
+                counter_slot,
+            }
+        } else if let Some((src_slot, dst_slot, counter_slot)) =
+            Self::match_local_unary_loop(code, loop_body_start, Op::I32_EQZ)
+        {
+            LoopSuperop::LocalI32EqzLoop {
+                src_slot,
+                dst_slot,
+                counter_slot,
+            }
+        } else if let Some((src_slot, dst_slot, rhs, counter_slot)) =
+            Self::match_local_i32_compare_const_loop(code, loop_body_start, Op::I32_EQ)
+        {
+            LoopSuperop::LocalI32EqConstLoop {
+                src_slot,
+                dst_slot,
+                rhs,
+                counter_slot,
+            }
+        } else if let Some((src_slot, dst_slot, rhs, counter_slot)) =
+            Self::match_local_i32_compare_const_loop(code, loop_body_start, Op::I32_NE)
+        {
+            LoopSuperop::LocalI32NeConstLoop {
+                src_slot,
+                dst_slot,
+                rhs,
+                counter_slot,
+            }
+        } else if let Some((src_slot, dst_slot, rhs, op, counter_slot)) =
+            Self::match_local_i32_ordered_compare_const_loop(code, loop_body_start)
+        {
+            LoopSuperop::LocalI32OrdCmpConstLoop {
+                src_slot,
+                dst_slot,
+                rhs,
+                op,
+                counter_slot,
+            }
+        } else if let Some((slot, rhs, op, counter_slot)) =
+            Self::match_local_i32_accum_const_loop(code, loop_body_start)
+        {
+            LoopSuperop::LocalI32AccumConstLoop {
+                slot,
+                rhs,
+                op,
+                counter_slot,
+            }
+        } else if let Some((src_slot, dst_slot, add, counter_slot)) =
+            Self::match_local_i32_add_const_loop(code, loop_body_start)
+        {
+            LoopSuperop::LocalI32AddConstLoop {
+                src_slot,
+                dst_slot,
+                add,
+                counter_slot,
+            }
+        } else if let Some((src_slot, dst_slot, sub, counter_slot)) =
+            Self::match_local_i32_sub_const_loop(code, loop_body_start)
+        {
+            LoopSuperop::LocalI32SubConstLoop {
+                src_slot,
+                dst_slot,
+                sub,
+                counter_slot,
+            }
+        } else if let Some((src_slot, dst_slot, mask, counter_slot)) =
+            Self::match_local_i32_and_const_loop(code, loop_body_start)
+        {
+            LoopSuperop::LocalI32AndConstLoop {
+                src_slot,
+                dst_slot,
+                mask,
+                counter_slot,
+            }
+        } else if let Some((src_slot, dst_slot, mul, counter_slot)) =
+            Self::match_local_i32_mul_const_loop(code, loop_body_start)
+        {
+            LoopSuperop::LocalI32MulConstLoop {
+                src_slot,
+                dst_slot,
+                mul,
+                counter_slot,
+            }
+        } else if let Some((src_slot, dst_slot, shift, counter_slot)) =
+            Self::match_local_i32_shl_const_loop(code, loop_body_start)
+        {
+            LoopSuperop::LocalI32ShlConstLoop {
+                src_slot,
+                dst_slot,
+                shift,
+                counter_slot,
+            }
+        } else if let Some((src_slot, dst_slot, shift, counter_slot)) =
+            Self::match_local_i32_rotl_const_loop(code, loop_body_start)
+        {
+            LoopSuperop::LocalI32RotlConstLoop {
+                src_slot,
+                dst_slot,
+                shift,
+                counter_slot,
+            }
+        } else if let Some((src_slot, dst_slot, shift, counter_slot)) =
+            Self::match_local_i32_rotr_const_loop(code, loop_body_start)
+        {
+            LoopSuperop::LocalI32RotrConstLoop {
+                src_slot,
+                dst_slot,
+                shift,
+                counter_slot,
+            }
+        } else if let Some((src_slot, dst_slot, shift, counter_slot)) =
+            Self::match_local_i32_shr_s_const_loop(code, loop_body_start)
+        {
+            LoopSuperop::LocalI32ShrSConstLoop {
+                src_slot,
+                dst_slot,
+                shift,
+                counter_slot,
+            }
+        } else if let Some((src_slot, dst_slot, shift, counter_slot)) =
+            Self::match_local_i32_shr_u_const_loop(code, loop_body_start)
+        {
+            LoopSuperop::LocalI32ShrUConstLoop {
+                src_slot,
+                dst_slot,
+                shift,
+                counter_slot,
+            }
+        } else if let Some((src_slot, dst_slot, mask, counter_slot)) =
+            Self::match_local_i32_or_const_loop(code, loop_body_start)
+        {
+            LoopSuperop::LocalI32OrConstLoop {
+                src_slot,
+                dst_slot,
+                mask,
+                counter_slot,
+            }
+        } else if let Some((src_slot, dst_slot, mask, counter_slot)) =
+            Self::match_local_i32_xor_const_loop(code, loop_body_start)
+        {
+            LoopSuperop::LocalI32XorConstLoop {
+                src_slot,
+                dst_slot,
+                mask,
+                counter_slot,
+            }
+        } else if let Some((src_slot, dst_slot, rhs, op, counter_slot)) =
+            Self::match_local_i64_compare_const_loop(code, loop_body_start)
+        {
+            LoopSuperop::LocalI64CmpConstLoop {
+                src_slot,
+                dst_slot,
+                rhs,
+                op,
+                counter_slot,
+            }
+        } else if let Some((src_slot, dst_slot, rhs_bits, op, counter_slot)) =
+            Self::match_local_f32_compare_const_loop(code, loop_body_start)
+        {
+            LoopSuperop::LocalF32CmpConstLoop {
+                src_slot,
+                dst_slot,
+                rhs_bits,
+                op,
+                counter_slot,
+            }
+        } else if let Some((src_slot, dst_slot, rhs_bits, op, counter_slot)) =
+            Self::match_local_f64_compare_const_loop(code, loop_body_start)
+        {
+            LoopSuperop::LocalF64CmpConstLoop {
+                src_slot,
+                dst_slot,
+                rhs_bits,
+                op,
+                counter_slot,
+            }
+        } else if let Some((src_slot, dst_slot, rhs_bits, op, counter_slot)) =
+            Self::match_local_f32_binary_const_loop(code, loop_body_start)
+        {
+            LoopSuperop::LocalF32BinaryConstLoop {
+                src_slot,
+                dst_slot,
+                rhs_bits,
+                op,
+                counter_slot,
+            }
+        } else if let Some((src_slot, dst_slot, rhs_bits, op, counter_slot)) =
+            Self::match_local_f64_binary_const_loop(code, loop_body_start)
+        {
+            LoopSuperop::LocalF64BinaryConstLoop {
+                src_slot,
+                dst_slot,
+                rhs_bits,
+                op,
+                counter_slot,
+            }
+        } else if let Some((slot, rhs, op, counter_slot)) =
+            Self::match_local_i64_accum_const_loop(code, loop_body_start)
+        {
+            LoopSuperop::LocalI64AccumConstLoop {
+                slot,
+                rhs,
+                op,
+                counter_slot,
+            }
+        } else if let Some((src_slot, dst_slot, add, counter_slot)) =
+            Self::match_local_i64_binary_const_loop(code, loop_body_start, Op::I64_ADD)
+        {
+            LoopSuperop::LocalI64AddConstLoop {
+                src_slot,
+                dst_slot,
+                add,
+                counter_slot,
+            }
+        } else if let Some((src_slot, dst_slot, sub, counter_slot)) =
+            Self::match_local_i64_binary_const_loop(code, loop_body_start, Op::I64_SUB)
+        {
+            LoopSuperop::LocalI64SubConstLoop {
+                src_slot,
+                dst_slot,
+                sub,
+                counter_slot,
+            }
+        } else if let Some((src_slot, dst_slot, mask, counter_slot)) =
+            Self::match_local_i64_binary_const_loop(code, loop_body_start, Op::I64_AND)
+        {
+            LoopSuperop::LocalI64AndConstLoop {
+                src_slot,
+                dst_slot,
+                mask,
+                counter_slot,
+            }
+        } else if let Some((src_slot, dst_slot, mul, counter_slot)) =
+            Self::match_local_i64_binary_const_loop(code, loop_body_start, Op::I64_MUL)
+        {
+            LoopSuperop::LocalI64MulConstLoop {
+                src_slot,
+                dst_slot,
+                mul,
+                counter_slot,
+            }
+        } else if let Some((src_slot, dst_slot, mask, counter_slot)) =
+            Self::match_local_i64_binary_const_loop(code, loop_body_start, Op::I64_OR)
+        {
+            LoopSuperop::LocalI64OrConstLoop {
+                src_slot,
+                dst_slot,
+                mask,
+                counter_slot,
+            }
+        } else if let Some((src_slot, dst_slot, shift, counter_slot)) =
+            Self::match_local_i64_binary_const_loop(code, loop_body_start, Op::I64_SHL)
+        {
+            LoopSuperop::LocalI64ShlConstLoop {
+                src_slot,
+                dst_slot,
+                shift,
+                counter_slot,
+            }
+        } else if let Some((src_slot, dst_slot, shift, counter_slot)) =
+            Self::match_local_i64_binary_const_loop(code, loop_body_start, Op::I64_SHR_S)
+        {
+            LoopSuperop::LocalI64ShrSConstLoop {
+                src_slot,
+                dst_slot,
+                shift,
+                counter_slot,
+            }
+        } else if let Some((src_slot, dst_slot, shift, counter_slot)) =
+            Self::match_local_i64_binary_const_loop(code, loop_body_start, Op::I64_SHR_U)
+        {
+            LoopSuperop::LocalI64ShrUConstLoop {
+                src_slot,
+                dst_slot,
+                shift,
+                counter_slot,
+            }
+        } else if let Some((src_slot, dst_slot, shift, counter_slot)) =
+            Self::match_local_i64_binary_const_loop(code, loop_body_start, Op::I64_ROTL)
+        {
+            LoopSuperop::LocalI64RotlConstLoop {
+                src_slot,
+                dst_slot,
+                shift,
+                counter_slot,
+            }
+        } else if let Some((src_slot, dst_slot, shift, counter_slot)) =
+            Self::match_local_i64_binary_const_loop(code, loop_body_start, Op::I64_ROTR)
+        {
+            LoopSuperop::LocalI64RotrConstLoop {
+                src_slot,
+                dst_slot,
+                shift,
+                counter_slot,
+            }
+        } else if let Some((src_slot, dst_slot, mask, counter_slot)) =
+            Self::match_local_i64_binary_const_loop(code, loop_body_start, Op::I64_XOR)
+        {
+            LoopSuperop::LocalI64XorConstLoop {
+                src_slot,
+                dst_slot,
+                mask,
+                counter_slot,
+            }
+        } else if let Some((src_slot, dst_slot, counter_slot)) =
+            Self::match_local_unary_loop(code, loop_body_start, Op::I64_EQZ)
+        {
+            LoopSuperop::LocalI64EqzLoop {
+                src_slot,
+                dst_slot,
+                counter_slot,
+            }
+        } else if let Some((dst_slot, value, counter_slot)) =
+            Self::match_local_set_const_loop(code, loop_body_start)
+        {
+            LoopSuperop::LocalSetConstLoop {
+                dst_slot,
+                value,
+                counter_slot,
+            }
+        } else if let Some((import_idx, acc_slot, counter_slot)) =
+            Self::match_call_i32_add_loop(code, loop_body_start)
+        {
+            LoopSuperop::CallI32AddLoop {
+                import_idx,
+                acc_slot,
+                counter_slot,
+            }
+        } else if let Some((func_slot, acc_slot, counter_slot)) =
+            Self::match_call_ref_i32_add_loop(code, loop_body_start)
+        {
+            LoopSuperop::CallRefI32AddLoop {
+                func_slot,
+                acc_slot,
+                counter_slot,
+            }
+        } else if let Some((tableidx, elem_index, elem_slot, acc_slot, counter_slot, call_ip)) =
+            Self::match_call_indirect_i32_add_loop(code, loop_body_start)
+        {
+            LoopSuperop::CallIndirectI32AddLoop {
+                tableidx,
+                elem_index,
+                elem_slot,
+                acc_slot,
+                counter_slot,
+                call_ip,
+            }
+        } else if let Some((global_idx, dst_slot, counter_slot)) =
+            Self::match_global_get_local_loop(code, loop_body_start)
+        {
+            LoopSuperop::GlobalGetLocalLoop {
+                global_idx,
+                dst_slot,
+                counter_slot,
+            }
+        } else if let Some((global_idx, counter_slot)) =
+            Self::match_global_get_drop_loop(code, loop_body_start)
+        {
+            LoopSuperop::GlobalGetDropLoop {
+                global_idx,
+                counter_slot,
+            }
+        } else if let Some((global_idx, value, counter_slot)) =
+            Self::match_global_set_const_loop(code, loop_body_start)
+        {
+            LoopSuperop::GlobalSetConstLoop {
+                global_idx,
+                value,
+                counter_slot,
+            }
+        } else if let Some((global_idx, value_slot, counter_slot)) =
+            Self::match_global_set_local_loop(code, loop_body_start)
+        {
+            LoopSuperop::GlobalSetLocalLoop {
+                global_idx,
+                value_slot,
+                counter_slot,
+            }
+        } else if let Some((obj_slot, name_idx, counter_slot)) =
+            Self::match_struct_get_drop_loop(code, loop_body_start)
+        {
+            LoopSuperop::StructGetDropLoop {
+                obj_slot,
+                name_idx,
+                counter_slot,
+            }
+        } else if let Some((obj_slot, name_idx, dst_slot, counter_slot)) =
+            Self::match_struct_get_local_loop(code, loop_body_start)
+        {
+            LoopSuperop::StructGetLocalLoop {
+                obj_slot,
+                name_idx,
+                dst_slot,
+                counter_slot,
+            }
+        } else if let Some((obj_slot, value, name_idx, counter_slot)) =
+            Self::match_struct_set_const_loop(code, loop_body_start)
+        {
+            LoopSuperop::StructSetConstLoop {
+                obj_slot,
+                value,
+                name_idx,
+                counter_slot,
+            }
+        } else if let Some((obj_slot, value_slot, name_idx, counter_slot)) =
+            Self::match_struct_set_local_loop(code, loop_body_start)
+        {
+            LoopSuperop::StructSetLocalLoop {
+                obj_slot,
+                value_slot,
+                name_idx,
+                counter_slot,
+            }
+        } else if let Some((arr_slot, index, counter_slot)) =
+            Self::match_array_get_drop_loop(code, loop_body_start)
+        {
+            LoopSuperop::ArrayGetDropLoop {
+                arr_slot,
+                index,
+                counter_slot,
+            }
+        } else if let Some((arr_slot, index, dst_slot, counter_slot)) =
+            Self::match_array_get_local_loop(code, loop_body_start)
+        {
+            LoopSuperop::ArrayGetLocalLoop {
+                arr_slot,
+                index,
+                dst_slot,
+                counter_slot,
+            }
+        } else if let Some((
+            src_slot,
+            src_offset_slot,
+            dst_slot,
+            dst_offset_slot,
+            len_slot,
+            i_slot,
+        )) = Self::match_array_copy_loop(code, loop_body_start)
+        {
+            LoopSuperop::ArrayCopyLoop {
+                src_slot,
+                src_offset_slot,
+                dst_slot,
+                dst_offset_slot,
+                len_slot,
+                i_slot,
+            }
+        } else if let Some((arr_slot, index, value, counter_slot)) =
+            Self::match_array_set_const_loop(code, loop_body_start)
+        {
+            LoopSuperop::ArraySetConstLoop {
+                arr_slot,
+                index,
+                value,
+                counter_slot,
+            }
+        } else if let Some((arr_slot, index, value_slot, counter_slot)) =
+            Self::match_array_set_local_loop(code, loop_body_start)
+        {
+            LoopSuperop::ArraySetLocalLoop {
+                arr_slot,
+                index,
+                value_slot,
+                counter_slot,
+            }
+        } else {
+            LoopSuperop::None
+        };
 
         if std::env::var_os("VYBE_RUNTIME_SUPEROP_TRACE").is_some() {
             eprintln!(
@@ -7723,17 +7658,18 @@ impl VM {
             Some(last)
         };
 
-        let last = if let Some(result) = self.memory.with_buffer_mut_exclusive(|memory| {
-            Ok::<Option<i32>, VMError>(copy_and_last(memory))
-        }) {
+        let last = if let Some(result) = self
+            .memory
+            .with_buffer_mut_exclusive(|memory| Ok::<Option<i32>, VMError>(copy_and_last(memory)))
+        {
             let Some(last) = result? else {
                 return Ok(false);
             };
             last
         } else {
-            let Some(last) = self.memory.with_buffer_mut(|memory| {
-                Ok::<Option<i32>, VMError>(copy_and_last(memory))
-            })?
+            let Some(last) = self
+                .memory
+                .with_buffer_mut(|memory| Ok::<Option<i32>, VMError>(copy_and_last(memory)))?
             else {
                 return Ok(false);
             };
@@ -7833,17 +7769,18 @@ impl VM {
             Some(last)
         };
 
-        let last = if let Some(result) = self.memory.with_buffer_mut_exclusive(|memory| {
-            Ok::<Option<i64>, VMError>(copy_and_last(memory))
-        }) {
+        let last = if let Some(result) = self
+            .memory
+            .with_buffer_mut_exclusive(|memory| Ok::<Option<i64>, VMError>(copy_and_last(memory)))
+        {
             let Some(last) = result? else {
                 return Ok(false);
             };
             last
         } else {
-            let Some(last) = self.memory.with_buffer_mut(|memory| {
-                Ok::<Option<i64>, VMError>(copy_and_last(memory))
-            })?
+            let Some(last) = self
+                .memory
+                .with_buffer_mut(|memory| Ok::<Option<i64>, VMError>(copy_and_last(memory)))?
             else {
                 return Ok(false);
             };
@@ -7939,17 +7876,18 @@ impl VM {
             Some(f32::from_bits(bits))
         };
 
-        let last = if let Some(result) = self.memory.with_buffer_mut_exclusive(|memory| {
-            Ok::<Option<f32>, VMError>(copy_and_last(memory))
-        }) {
+        let last = if let Some(result) = self
+            .memory
+            .with_buffer_mut_exclusive(|memory| Ok::<Option<f32>, VMError>(copy_and_last(memory)))
+        {
             let Some(last) = result? else {
                 return Ok(false);
             };
             last
         } else {
-            let Some(last) = self.memory.with_buffer_mut(|memory| {
-                Ok::<Option<f32>, VMError>(copy_and_last(memory))
-            })?
+            let Some(last) = self
+                .memory
+                .with_buffer_mut(|memory| Ok::<Option<f32>, VMError>(copy_and_last(memory)))?
             else {
                 return Ok(false);
             };
@@ -8050,17 +7988,18 @@ impl VM {
             Some(f64::from_bits(bits))
         };
 
-        let last = if let Some(result) = self.memory.with_buffer_mut_exclusive(|memory| {
-            Ok::<Option<f64>, VMError>(copy_and_last(memory))
-        }) {
+        let last = if let Some(result) = self
+            .memory
+            .with_buffer_mut_exclusive(|memory| Ok::<Option<f64>, VMError>(copy_and_last(memory)))
+        {
             let Some(last) = result? else {
                 return Ok(false);
             };
             last
         } else {
-            let Some(last) = self.memory.with_buffer_mut(|memory| {
-                Ok::<Option<f64>, VMError>(copy_and_last(memory))
-            })?
+            let Some(last) = self
+                .memory
+                .with_buffer_mut(|memory| Ok::<Option<f64>, VMError>(copy_and_last(memory)))?
             else {
                 return Ok(false);
             };
@@ -8160,14 +8099,12 @@ impl VM {
             let last = match (width, signed) {
                 (1, true) => memory[last_offset] as i8 as i64,
                 (1, false) => memory[last_offset] as i64,
-                (2, true) => i16::from_le_bytes([
-                    memory[last_offset],
-                    memory[last_offset + 1],
-                ]) as i64,
-                (2, false) => u16::from_le_bytes([
-                    memory[last_offset],
-                    memory[last_offset + 1],
-                ]) as i64,
+                (2, true) => {
+                    i16::from_le_bytes([memory[last_offset], memory[last_offset + 1]]) as i64
+                }
+                (2, false) => {
+                    u16::from_le_bytes([memory[last_offset], memory[last_offset + 1]]) as i64
+                }
                 (4, true) => i32::from_le_bytes([
                     memory[last_offset],
                     memory[last_offset + 1],
@@ -8186,17 +8123,18 @@ impl VM {
             Some(last)
         };
 
-        let last = if let Some(result) = self.memory.with_buffer_mut_exclusive(|memory| {
-            Ok::<Option<i64>, VMError>(copy_and_last(memory))
-        }) {
+        let last = if let Some(result) = self
+            .memory
+            .with_buffer_mut_exclusive(|memory| Ok::<Option<i64>, VMError>(copy_and_last(memory)))
+        {
             let Some(last) = result? else {
                 return Ok(false);
             };
             last
         } else {
-            let Some(last) = self.memory.with_buffer_mut(|memory| {
-                Ok::<Option<i64>, VMError>(copy_and_last(memory))
-            })?
+            let Some(last) = self
+                .memory
+                .with_buffer_mut(|memory| Ok::<Option<i64>, VMError>(copy_and_last(memory)))?
             else {
                 return Ok(false);
             };
@@ -8321,15 +8259,18 @@ impl VM {
             Some(())
         };
 
-        if let Some(result) = self.memory.with_buffer_mut_exclusive(|memory| {
-            Ok::<Option<()>, VMError>(fill_memory(memory))
-        }) {
+        if let Some(result) = self
+            .memory
+            .with_buffer_mut_exclusive(|memory| Ok::<Option<()>, VMError>(fill_memory(memory)))
+        {
             if result?.is_none() {
                 return Ok(false);
             }
-        } else if self.memory.with_buffer_mut(|memory| {
-            Ok::<Option<()>, VMError>(fill_memory(memory))
-        })?.is_none() {
+        } else if self
+            .memory
+            .with_buffer_mut(|memory| Ok::<Option<()>, VMError>(fill_memory(memory)))?
+            .is_none()
+        {
             return Ok(false);
         }
 
@@ -8469,17 +8410,17 @@ impl VM {
             sum
         } else {
             let Some(sum) = self.memory.with_buffer(|memory| {
-            let Some(end) = start_addr
-                .checked_add(count)
-                .filter(|&end| end <= memory.len())
-            else {
-                return None;
-            };
-            let bytes = &memory[start_addr..end];
+                let Some(end) = start_addr
+                    .checked_add(count)
+                    .filter(|&end| end <= memory.len())
+                else {
+                    return None;
+                };
+                let bytes = &memory[start_addr..end];
                 Some(sum_from_bytes(bytes))
-        }) else {
-            return Ok(false);
-        };
+            }) else {
+                return Ok(false);
+            };
             sum
         };
 
@@ -10727,7 +10668,7 @@ impl VM {
             if (is_gc && src_start.saturating_add(count) > a.len())
                 || (is_gc && dst_start.saturating_add(count) > a.len())
             {
-                return Err(VMError::new("trap: out of bounds array access (array.copy loop)"));
+                return Err(VMError::new("trap: out of bounds array access (array.copy loop)",));
             }
             if src_start.saturating_add(count) > a.len()
                 || dst_start.saturating_add(count) > a.len()
@@ -10758,7 +10699,7 @@ impl VM {
                 }
                 let src_guard = src_obj.lock().unwrap();
                 let mut dst_guard = dst_obj.lock().unwrap();
-                if !self.copy_array_loop_guards_and_values(&src_guard, &mut dst_guard, src_start, dst_start, count)? {
+                if !self.copy_array_loop_guards_and_values(&src_guard, &mut dst_guard, src_start, dst_start, count,)? {
                     return Ok(false);
                 }
             } else {
@@ -10767,7 +10708,7 @@ impl VM {
                 }
                 let mut dst_guard = dst_obj.lock().unwrap();
                 let src_guard = src_obj.lock().unwrap();
-                if !self.copy_array_loop_guards_and_values(&src_guard, &mut dst_guard, src_start, dst_start, count)? {
+                if !self.copy_array_loop_guards_and_values(&src_guard, &mut dst_guard, src_start, dst_start, count,)? {
                     return Ok(false);
                 }
             }
@@ -10830,7 +10771,7 @@ impl VM {
         if (src_is_gc && src_start.saturating_add(count) > src_arr.len())
             || (dst_is_gc && dst_start.saturating_add(count) > dst_arr.len())
         {
-            return Err(VMError::new("trap: out of bounds array access (array.copy loop)"));
+            return Err(VMError::new("trap: out of bounds array access (array.copy loop)",));
         }
         if src_start.saturating_add(count) > src_arr.len()
             || dst_start.saturating_add(count) > dst_arr.len()
@@ -16004,7 +15945,7 @@ impl VM {
                         self.frames[frame_index].ip = opcode_start + 4 + 2;
                         (
                             (operand & 0xff) as usize,
-                            ((operand >> 8) & 0xff) as u32,
+                            ((operand >> 8) & 0xff) as u32
                         )
                     } else {
                         (self.read_leb_u32() as usize, self.read_leb_u32())
@@ -16175,7 +16116,7 @@ impl VM {
                         self.frames[frame_index].ip = opcode_start + 4 + 2;
                         (
                             (operand & 0xff) as usize,
-                            ((operand >> 8) & 0xff) as u32,
+                            ((operand >> 8) & 0xff) as u32
                         )
                     } else {
                         (self.read_leb_u32() as usize, self.read_leb_u32())
@@ -16317,41 +16258,43 @@ impl VM {
                             return Err(VMError::new("trap: null array reference (array.get)"));
                         }
                         match obj {
-                            Value::Object(o) => if let Some(idx) = Self::array_numeric_index(key) {
-                                if let Some(counters) = self.perf_counters.as_mut() {
-                                    counters.record_object_lock();
-                                }
-                                let ob = o.lock().unwrap();
-                                if let ObjectKind::Array(a) = &ob.kind {
-                                    let is_gc = ob.type_id > 0
-                                        && self
-                                            .type_registry
-                                            .get(ob.type_id)
-                                            .is_some_and(|td| td.is_array());
-                                    if is_gc && !matches!(key, Value::I32(_)) {
-                                        return Err(VMError::new(
-                                            "trap: array.get index must be i32",
-                                        ));
+                            Value::Object(o) => {
+                                if let Some(idx) = Self::array_numeric_index(key) {
+                                    if let Some(counters) = self.perf_counters.as_mut() {
+                                        counters.record_object_lock();
                                     }
-                                    if is_gc && idx >= a.len() {
-                                        return Err(VMError::new(
-                                            "trap: out of bounds array access (array.get)",
-                                        ));
-                                    }
-                                    Some(if idx < a.len() {
-                                        unsafe {
-                                            // Bounds and array kind checked above.
-                                            a.get_unchecked(idx).clone()
+                                    let ob = o.lock().unwrap();
+                                    if let ObjectKind::Array(a) = &ob.kind {
+                                        let is_gc = ob.type_id > 0
+                                            && self
+                                                .type_registry
+                                                .get(ob.type_id)
+                                                .is_some_and(|td| td.is_array());
+                                        if is_gc && !matches!(key, Value::I32(_)) {
+                                            return Err(VMError::new(
+                                                "trap: array.get index must be i32",
+                                            ));
                                         }
+                                        if is_gc && idx >= a.len() {
+                                            return Err(VMError::new(
+                                                "trap: out of bounds array access (array.get)",
+                                            ));
+                                        }
+                                        Some(if idx < a.len() {
+                                            unsafe {
+                                                // Bounds and array kind checked above.
+                                                a.get_unchecked(idx).clone()
+                                            }
+                                        } else {
+                                            Value::Undefined
+                                        })
                                     } else {
-                                        Value::Undefined
-                                    })
+                                        None
+                                    }
                                 } else {
                                     None
                                 }
-                            } else {
-                                None
-                            },
+                            }
                             _ => None,
                         }
                     };
@@ -16407,7 +16350,7 @@ impl VM {
                                         Some(typed_array_read(ta, i).unwrap_or(Value::Undefined))
                                     } else if is_gc {
                                         return Err(VMError::new(
-                                            "trap: array.get on a non-array",
+                                            "trap: array.get on a non-array"
                                         ));
                                     } else {
                                         None
@@ -16469,9 +16412,7 @@ impl VM {
                                         | Value::I64(_)
                                         | Value::F64(_)
                                         | Value::BigInt(_) => key.clone(),
-                                        other => {
-                                            Value::String(Arc::from(format!("{}", other)))
-                                        }
+                                        other => Value::String(Arc::from(format!("{}", other))),
                                     };
                                     if let Some(v) = m.get(&lookup_key) {
                                         let v = v.clone();
@@ -16556,7 +16497,7 @@ impl VM {
                         Value::String(s) => {
                             let i = key.as_f64() as usize;
                             if let Some(ch) = s.chars().nth(i) {
-                                self.replace_top_pair_fast(Value::String(Arc::from(ch.to_string().as_str())));
+                                self.replace_top_pair_fast(Value::String(Arc::from(ch.to_string().as_str(),)));
                             } else {
                                 self.replace_top_pair_fast(Value::Null);
                             }
@@ -16629,7 +16570,7 @@ impl VM {
                                 continue;
                             } else if is_gc {
                                 return Err(VMError::new(
-                                    "trap: array.set on a non-array",
+                                    "trap: array.set on a non-array"
                                 ));
                             }
                         } else {
@@ -16684,9 +16625,7 @@ impl VM {
                                     | Value::I32(_)
                                     | Value::I64(_)
                                     | Value::F64(_) => key.clone(),
-                                    other => {
-                                        Value::String(Arc::from(format!("{}", other)))
-                                    }
+                                    other => Value::String(Arc::from(format!("{}", other))),
                                 };
                                 m.insert(map_key, val.clone());
                                 continue;
@@ -16909,17 +16848,21 @@ impl VM {
                     self.replace_f64_unary_fast(f64::sqrt);
                 }
                 Op::F64_MIN => {
-                    self.replace_f64_pair_fast(|a, b| if a.is_nan() || b.is_nan() {
-                        f64::NAN
-                    } else {
-                        a.min(b)
+                    self.replace_f64_pair_fast(|a, b| {
+                        if a.is_nan() || b.is_nan() {
+                            f64::NAN
+                        } else {
+                            a.min(b)
+                        }
                     });
                 }
                 Op::F64_MAX => {
-                    self.replace_f64_pair_fast(|a, b| if a.is_nan() || b.is_nan() {
-                        f64::NAN
-                    } else {
-                        a.max(b)
+                    self.replace_f64_pair_fast(|a, b| {
+                        if a.is_nan() || b.is_nan() {
+                            f64::NAN
+                        } else {
+                            a.max(b)
+                        }
                     });
                 }
                 Op::F64_COPYSIGN => {
@@ -16949,17 +16892,21 @@ impl VM {
                     self.replace_f32_unary_fast(f32::sqrt);
                 }
                 Op::F32_MIN => {
-                    self.replace_f32_pair_fast(|a, b| if a.is_nan() || b.is_nan() {
-                        f32::NAN
-                    } else {
-                        a.min(b)
+                    self.replace_f32_pair_fast(|a, b| {
+                        if a.is_nan() || b.is_nan() {
+                            f32::NAN
+                        } else {
+                            a.min(b)
+                        }
                     });
                 }
                 Op::F32_MAX => {
-                    self.replace_f32_pair_fast(|a, b| if a.is_nan() || b.is_nan() {
-                        f32::NAN
-                    } else {
-                        a.max(b)
+                    self.replace_f32_pair_fast(|a, b| {
+                        if a.is_nan() || b.is_nan() {
+                            f32::NAN
+                        } else {
+                            a.max(b)
+                        }
                     });
                 }
                 Op::F32_COPYSIGN => {
@@ -17449,7 +17396,7 @@ impl VM {
                 Op::RETURN => {
                     let debug_return = self.debug_report().map(|report| {
                         crate::debugger::DebugHostCall::new(
-                            Some(report), "vm:return values".to_string())
+                            Some(report), "vm:return values".to_string(),)
                     });
                     let frame_chunk = self.frame().chunk_index;
                     let frame_label_base = self.frame().label_base;
@@ -19136,22 +19083,22 @@ impl VM {
                                 format!("native-call:wasm:js-boolean:{}", builtin.name()),
                             ),
                             ResolvedCallTarget::JsUndefined(builtin) => counters.record_host_import(
-                                format!("native-call:wasm:js-undefined:{}", builtin.name()),
+                                format!("native-call:wasm:js-undefined:{}", builtin.name())
                             ),
                             ResolvedCallTarget::JsString(builtin) => counters.record_host_import(
                                 format!("native-call:wasm:js-string:{}", builtin.name()),
                             ),
                             ResolvedCallTarget::EcmaNumber(builtin, _) => counters.record_host_import(
-                                format!("native-call:ecma:number:{}", builtin.name()),
+                                format!("native-call:ecma:number:{}", builtin.name())
                             ),
                             ResolvedCallTarget::EcmaBoolean(builtin, _) => counters.record_host_import(
-                                format!("native-call:ecma:boolean:{}", builtin.name()),
+                                format!("native-call:ecma:boolean:{}", builtin.name())
                             ),
                             ResolvedCallTarget::EcmaObject(builtin, _) => counters.record_host_import(
-                                format!("native-call:ecma:object:{}", builtin.name()),
+                                format!("native-call:ecma:object:{}", builtin.name())
                             ),
                             ResolvedCallTarget::EcmaArray(builtin, _) => counters.record_host_import(
-                                format!("native-call:ecma:array:{}", builtin.name()),
+                                format!("native-call:ecma:array:{}", builtin.name())
                             ),
                             _ => {}
                         }
@@ -19577,7 +19524,7 @@ impl VM {
                         5 => {
                             for chunk in src.chunks_exact(2) {
                                 elems.push(Value::I32(
-                                    u16::from_le_bytes([chunk[0], chunk[1]]) as i32,
+                                    u16::from_le_bytes([chunk[0], chunk[1]]) as i32
                                 ));
                             }
                         }
@@ -20063,7 +20010,7 @@ impl VM {
                             self.frames[frame_index].ip = opcode_start + 4 + 2;
                             (
                                 (operand & 0xff) as usize,
-                                ((operand >> 8) & 0xff) as u32,
+                                ((operand >> 8) & 0xff) as u32
                             )
                         } else {
                             (self.read_leb_u32() as usize, self.read_leb_u32())
@@ -21395,7 +21342,7 @@ impl VM {
                         self.read_memory0_u8(addr)?
                     } else {
                         let (addr, memidx) =
-                            self.read_memory_load_addr(frame_index, chunk_index, opcode_start + 4, memarg);
+                            self.read_memory_load_addr(frame_index, chunk_index, opcode_start + 4, memarg,);
                         self.read_cached_memory_u8(memarg, memidx, addr)?
                     };
                     self.replace_top_value_fast(Value::I32(byte as i32));
@@ -21407,7 +21354,7 @@ impl VM {
                         self.write_memory0_u8(addr, val)?;
                     } else {
                         let (addr, memidx) =
-                            self.read_memory_store_addr(frame_index, chunk_index, opcode_start + 4, memarg);
+                            self.read_memory_store_addr(frame_index, chunk_index, opcode_start + 4, memarg,);
                         self.write_cached_memory_u8(memarg, memidx, addr, val)?;
                     }
                     self.truncate_top_pair_fast();
@@ -21627,7 +21574,7 @@ impl VM {
                         );
                         self.read_cached_memory_array::<4>(memarg, memidx, addr)?
                     };
-                    self.replace_top_value_fast(Value::I64(i32::from_le_bytes(bytes) as u32 as i64));
+                    self.replace_top_value_fast(Value::I64(i32::from_le_bytes(bytes) as u32 as i64),);
                 }
                 Op::I64_STORE8 => {
                     let val = self.peek_i64_top_fast() as u8;
@@ -23585,7 +23532,7 @@ impl VM {
                         } else {
                             (
                                 self.read_leb_u32() as usize,
-                                self.read_leb_u32() as usize,
+                                self.read_leb_u32() as usize
                             )
                         };
                     // table64: operands are i64 if either table is 64-bit.
@@ -23890,7 +23837,7 @@ impl VM {
                                 } else if dst_off > src_start {
                                     let (src_region, dst_region) = a.split_at_mut(dst_off);
                                     dst_region[..count]
-                                        .clone_from_slice(&src_region[src_start..src_start + count]);
+                                        .clone_from_slice(&src_region[src_start..src_start + count],);
                                 } else {
                                     // Source and destination are identical.
                                 }
@@ -24496,7 +24443,7 @@ impl VM {
                     for i in 0..2 {
                         let j = i * 4;
                         let v =
-                            i32::from_le_bytes([bytes[j], bytes[j + 1], bytes[j + 2], bytes[j + 3]])
+                            i32::from_le_bytes([bytes[j], bytes[j + 1], bytes[j + 2], bytes[j + 3],])
                                 as i64;
                         write_v128_i64_lane(&mut out, i, v);
                     }
@@ -24509,7 +24456,7 @@ impl VM {
                     for i in 0..2 {
                         let j = i * 4;
                         let v =
-                            u32::from_le_bytes([bytes[j], bytes[j + 1], bytes[j + 2], bytes[j + 3]])
+                            u32::from_le_bytes([bytes[j], bytes[j + 1], bytes[j + 2], bytes[j + 3],])
                                 as u64;
                         write_v128_i64_lane(&mut out, i, v as i64);
                     }
@@ -25655,7 +25602,7 @@ impl VM {
                         let mut out = [0u8; 16];
                         for i in 0..4 {
                             let v = (v128_i16_lane(&va, 4 + i) as i32)
-                                .wrapping_mul(v128_i16_lane(&vb, 4 + i) as i32);
+                                .wrapping_mul(v128_i16_lane(&vb, 4 + i,) as i32);
                             write_v128_i32_lane(&mut out, i, v as i32);
                         }
                         self.push_fast(Value::V128(out));
@@ -25681,7 +25628,7 @@ impl VM {
                         let mut out = [0u8; 16];
                         for i in 0..4 {
                             let v = (v128_u16_lane(&va, 4 + i) as i32)
-                                .wrapping_mul(v128_u16_lane(&vb, 4 + i) as i32);
+                                .wrapping_mul(v128_u16_lane(&vb, 4 + i,) as i32);
                             write_v128_i32_lane(&mut out, i, v as i32);
                         }
                         self.push_fast(Value::V128(out));
@@ -25819,7 +25766,7 @@ impl VM {
                         let mut out = [0u8; 16];
                         for i in 0..2 {
                             let v = (v128_i32_lane(&va, 2 + i) as i64)
-                                .wrapping_mul(v128_i32_lane(&vb, 2 + i) as i64);
+                                .wrapping_mul(v128_i32_lane(&vb, 2 + i,) as i64);
                             write_v128_i64_lane(&mut out, i, v as i64);
                         }
                         self.push_fast(Value::V128(out));
@@ -25845,7 +25792,7 @@ impl VM {
                         let mut out = [0u8; 16];
                         for i in 0..2 {
                             let v = (v128_u32_lane(&va, 2 + i) as i64)
-                                .wrapping_mul(v128_u32_lane(&vb, 2 + i) as i64);
+                                .wrapping_mul(v128_u32_lane(&vb, 2 + i,) as i64);
                             write_v128_i64_lane(&mut out, i, v as i64);
                         }
                         self.push_fast(Value::V128(out));

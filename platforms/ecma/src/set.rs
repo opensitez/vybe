@@ -19,6 +19,24 @@ use vybe_runtime::{FuncSig, HostContext, Param, VM, ValType};
 static SET_ITERATOR_IDX: OnceLock<usize> = OnceLock::new();
 static SET_PROTOTYPE: OnceLock<Arc<Mutex<Object>>> = OnceLock::new();
 
+#[inline]
+fn char_value(ch: char) -> Value {
+    crate::keys::char_value(ch)
+}
+
+fn invoke_prepared_or_direct(
+    ctx: &mut HostContext,
+    callback: &Value,
+    prepared: &Option<crate::function::PreparedBoundCallback>,
+    args: &[Value],
+) -> Value {
+    if let Some(prepared) = prepared {
+        crate::function::invoke_prepared_bound_callback(ctx, prepared, args)
+    } else {
+        ctx.invoke(callback, args)
+    }
+}
+
 /// %Set.prototype% (§24.2.3) — the ONE object every Set instance inherits
 /// from. See `map::shared_map_prototype`; §24.2.4 is the same sentence for
 /// Sets: "Set instances are ordinary objects that inherit properties from
@@ -26,19 +44,22 @@ static SET_PROTOTYPE: OnceLock<Arc<Mutex<Object>>> = OnceLock::new();
 pub fn shared_set_prototype() -> Value {
     let proto = SET_PROTOTYPE.get_or_init(|| {
         let mut obj = Object::new();
+        obj.properties.reserve(3);
         obj.properties
             .insert("__proto__".into(), crate::object::shared_object_prototype());
         // §24.2.3.12 — `Set.prototype[%Symbol.toStringTag%]` is "Set",
         // { [[Writable]]: false, [[Enumerable]]: false, [[Configurable]]: true }.
         obj.properties
-            .insert("@@toStringTag".into(), Value::String(Arc::from("Set")));
+            .insert("@@toStringTag".into(), crate::keys::string_value("Set"));
+        obj.properties.insert(
+            "__nonenum".into(),
+            Value::Object(vybe_runtime::heap::alloc(Object::new_array(vec![
+                crate::keys::string_value("@@toStringTag"),
+            ]))),
+        );
         vybe_runtime::heap::alloc(obj)
     });
-    let value = Value::Object(proto.clone());
-    if let Value::Object(o) = &value {
-        crate::object::track_nonenum(o, "@@toStringTag");
-    }
-    value
+    Value::Object(proto.clone())
 }
 
 fn bound_iterator_method(
@@ -48,13 +69,14 @@ fn bound_iterator_method(
     idx: usize,
 ) -> Value {
     let mut fn_obj = Object::new();
+    fn_obj.properties.reserve(6);
     fn_obj.kind = ObjectKind::HostFunction(idx);
     fn_obj
         .properties
-        .insert("__host_module".into(), Value::String(Arc::from(module)));
+        .insert("__host_module".into(), crate::keys::string_value(module));
     fn_obj
         .properties
-        .insert("__host_name".into(), Value::String(Arc::from(name)));
+        .insert("__host_name".into(), crate::keys::string_value(name));
     fn_obj
         .properties
         .insert("__host_idx".into(), Value::F64(idx as f64));
@@ -64,7 +86,7 @@ fn bound_iterator_method(
     );
     fn_obj
         .properties
-        .insert("name".into(), Value::String(Arc::from(name)));
+        .insert("name".into(), crate::keys::string_value(name));
     fn_obj.properties.insert(
         "__bound_args".into(),
         Value::Object(vybe_runtime::heap::alloc(Object::new_array(vec![
@@ -83,6 +105,11 @@ fn bound_iterator_method(
 /// yields nothing.
 pub fn make_set(values: indexmap::IndexSet<Value>) -> Value {
     let mut obj = Object::new();
+    obj.properties.reserve(if SET_ITERATOR_IDX.get().is_some() {
+        4
+    } else {
+        2
+    });
     obj.kind = ObjectKind::Set(values);
     // §24.2.3.9: `size` is an accessor on the PROTOTYPE — instances have none.
     obj.properties
@@ -90,15 +117,21 @@ pub fn make_set(values: indexmap::IndexSet<Value>) -> Value {
     // __type stamp: see comment on `ecma:map.new`. Without it the
     // TypeRegistry-driven `STRUCT_GET s "add"` lookup misses.
     obj.properties
-        .insert("__type".into(), Value::String(Arc::from("Set")));
+        .insert("__type".into(), crate::keys::string_value("Set"));
     let set = vybe_runtime::heap::alloc(obj);
     if let Some(idx) = SET_ITERATOR_IDX.get() {
-        set.lock().unwrap().properties.insert(
+        let mut guard = set.lock().unwrap();
+        guard.properties.insert(
             "iterator".into(),
             bound_iterator_method(&set, "ecma:set", "values", *idx),
         );
         // `@@iterator` under a string spelling — see the note in `map.rs`.
-        crate::object::track_nonenum(&set, "iterator");
+        guard.properties.insert(
+            "__nonenum".into(),
+            Value::Object(vybe_runtime::heap::alloc(Object::new_array(vec![
+                crate::keys::string_value("iterator"),
+            ]))),
+        );
     }
     Value::Object(set)
 }
@@ -107,42 +140,47 @@ fn new_set() -> Value {
     make_set(indexmap::IndexSet::new())
 }
 
-fn new_set_from_iterable(args: &[Value]) -> Value {
-    let s = new_set();
-    if let Value::Object(setobj) = &s {
-        let items: Vec<Value> = match args.first() {
-            Some(Value::Object(src)) => {
-                let srclock = src.lock().unwrap();
-                match &srclock.kind {
-                    ObjectKind::Array(items) => items.clone(),
-                    _ => Vec::new(),
-                }
-            }
-            Some(Value::String(text)) => text
-                .chars()
-                .map(|ch| Value::String(Arc::from(ch.to_string().as_str())))
-                .collect(),
-            _ => Vec::new(),
-        };
-        let mut so = setobj.lock().unwrap();
-        if let ObjectKind::Set(ref mut iset) = so.kind {
-            for item in items {
-                iset.insert(item);
-            }
-        }
-    }
-    s
+#[inline]
+fn set_values_host_key() -> &'static (String, String) {
+    static KEY: std::sync::OnceLock<(String, String)> = std::sync::OnceLock::new();
+    KEY.get_or_init(|| ("ecma:set".to_string(), "values".to_string()))
 }
 
-fn is_set(args: &[Value], idx: usize) -> Option<Arc<Mutex<Object>>> {
-    if let Some(Value::Object(obj)) = args.get(idx) {
-        let o = obj.lock().unwrap();
-        if matches!(o.kind, ObjectKind::Set(_)) {
-            drop(o);
-            return Some(obj.clone());
+fn set_values_from_iterable_arg(arg: Option<&Value>) -> indexmap::IndexSet<Value> {
+    match arg {
+        Some(Value::Object(src)) => {
+            let source = src.lock().unwrap();
+            if let ObjectKind::Array(items) = &source.kind {
+                let mut set = indexmap::IndexSet::with_capacity(items.len());
+                for item in items {
+                    set.insert(item.clone());
+                }
+                set
+            } else {
+                indexmap::IndexSet::new()
+            }
         }
+        Some(Value::String(text)) => {
+            let mut set = indexmap::IndexSet::with_capacity(text.len());
+            for ch in text.chars() {
+                set.insert(char_value(ch));
+            }
+            set
+        }
+        _ => indexmap::IndexSet::new(),
     }
-    None
+}
+
+fn new_set_from_iterable(args: &[Value]) -> Value {
+    make_set(set_values_from_iterable_arg(args.first()))
+}
+
+#[inline]
+fn object_arg(args: &[Value], idx: usize) -> Option<&Arc<Mutex<Object>>> {
+    match args.get(idx) {
+        Some(Value::Object(obj)) => Some(obj),
+        _ => None,
+    }
 }
 
 fn with_two_sets<R>(
@@ -215,39 +253,14 @@ pub fn register(vm: &mut VM) {
         "fromIterable",
         vec![ValType::Any],
         vec![set_t()],
-        Box::new(|_ctx, args| {
-            let s = new_set();
-            if let Value::Object(setobj) = &s {
-                let items: Vec<Value> = match args.first() {
-                    Some(Value::Object(src)) => {
-                        let srclock = src.lock().unwrap();
-                        match &srclock.kind {
-                            ObjectKind::Array(items) => items.clone(),
-                            _ => Vec::new(),
-                        }
-                    }
-                    Some(Value::String(text)) => text
-                        .chars()
-                        .map(|ch| Value::String(Arc::from(ch.to_string().as_str())))
-                        .collect(),
-                    _ => Vec::new(),
-                };
-                let mut so = setobj.lock().unwrap();
-                if let ObjectKind::Set(ref mut s) = so.kind {
-                    for item in items {
-                        s.insert(item);
-                    }
-                }
-            }
-            s
-        }),
+        Box::new(|_ctx, args| make_set(set_values_from_iterable_arg(args.first()))),
     );
 
     vm.register_host_fn(
         "ecma:set",
         "add",
         Box::new(|_ctx, args| {
-            if let Some(setobj) = is_set(args, 0) {
+            if let Some(Value::Object(setobj)) = args.first() {
                 let v = args.get(1).cloned().unwrap_or(Value::Undefined);
                 {
                     let mut so = setobj.lock().unwrap();
@@ -255,7 +268,7 @@ pub fn register(vm: &mut VM) {
                         s.insert(v);
                     }
                 }
-                return Value::Object(setobj);
+                return Value::Object(setobj.clone());
             }
             Value::Null
         }),
@@ -265,11 +278,12 @@ pub fn register(vm: &mut VM) {
         "ecma:set",
         "has",
         Box::new(|_ctx, args| {
-            if let Some(setobj) = is_set(args, 0) {
-                let v = args.get(1).cloned().unwrap_or(Value::Undefined);
+            if let Some(Value::Object(setobj)) = args.first() {
+                let undefined = Value::Undefined;
+                let v = args.get(1).unwrap_or(&undefined);
                 let so = setobj.lock().unwrap();
                 if let ObjectKind::Set(ref s) = so.kind {
-                    return Value::Bool(s.contains(&v));
+                    return Value::Bool(s.contains(v));
                 }
             }
             Value::Bool(false)
@@ -280,13 +294,14 @@ pub fn register(vm: &mut VM) {
         "ecma:set",
         "delete",
         Box::new(|_ctx, args| {
-            if let Some(setobj) = is_set(args, 0) {
-                let v = args.get(1).cloned().unwrap_or(Value::Undefined);
+            if let Some(Value::Object(setobj)) = args.first() {
+                let undefined = Value::Undefined;
+                let v = args.get(1).unwrap_or(&undefined);
                 let mut so = setobj.lock().unwrap();
                 let removed = if let ObjectKind::Set(ref mut s) = so.kind {
                     // `shift_remove` preserves insertion order of the
                     // remaining members per ECMA-262 §24.2.3.4.
-                    s.shift_remove(&v)
+                    s.shift_remove(v)
                 } else {
                     false
                 };
@@ -302,7 +317,7 @@ pub fn register(vm: &mut VM) {
         vec![set_t()],
         vec![],
         Box::new(|_ctx, args| {
-            if let Some(setobj) = is_set(args, 0) {
+            if let Some(Value::Object(setobj)) = args.first() {
                 let mut so = setobj.lock().unwrap();
                 if let ObjectKind::Set(ref mut s) = so.kind {
                     s.clear();
@@ -318,7 +333,7 @@ pub fn register(vm: &mut VM) {
         vec![set_t()],
         vec![ValType::I32],
         Box::new(|_ctx, args| {
-            if let Some(setobj) = is_set(args, 0) {
+            if let Some(Value::Object(setobj)) = args.first() {
                 let so = setobj.lock().unwrap();
                 if let ObjectKind::Set(ref s) = so.kind {
                     return Value::I32(s.len() as i32);
@@ -333,10 +348,11 @@ pub fn register(vm: &mut VM) {
             "ecma:set",
             name,
             Box::new(|_ctx, args| {
-                if let Some(setobj) = is_set(args, 0) {
+                if let Some(Value::Object(setobj)) = args.first() {
                     let so = setobj.lock().unwrap();
                     if let ObjectKind::Set(ref s) = so.kind {
-                        let snapshot: Vec<Value> = s.iter().cloned().collect();
+                        let mut snapshot = Vec::with_capacity(s.len());
+                        snapshot.extend(s.iter().cloned());
                         return crate::array::make_array_iterator(snapshot);
                     }
                 }
@@ -344,11 +360,7 @@ pub fn register(vm: &mut VM) {
             }),
         );
     }
-    if let Some(idx) = vm
-        .host_registry
-        .get(&("ecma:set".to_string(), "values".to_string()))
-        .copied()
-    {
+    if let Some(idx) = vm.host_registry.get(set_values_host_key()).copied() {
         let _ = SET_ITERATOR_IDX.set(idx);
     }
 
@@ -358,18 +370,13 @@ pub fn register(vm: &mut VM) {
         vec![set_t()],
         vec![ValType::Any],
         Box::new(|_ctx, args| {
-            if let Some(setobj) = is_set(args, 0) {
+            if let Some(Value::Object(setobj)) = args.first() {
                 let so = setobj.lock().unwrap();
                 if let ObjectKind::Set(ref s) = so.kind {
-                    let pairs: Vec<Value> = s
-                        .iter()
-                        .map(|v| {
-                            Value::Object(vybe_runtime::heap::alloc(Object::new_array(vec![
-                                v.clone(),
-                                v.clone(),
-                            ])))
-                        })
-                        .collect();
+                    let mut pairs = Vec::with_capacity(s.len());
+                    for v in s {
+                        pairs.push(crate::array::make_pair_array(v.clone(), v.clone()));
+                    }
                     return crate::array::make_array_iterator(pairs);
                 }
             }
@@ -383,26 +390,33 @@ pub fn register(vm: &mut VM) {
         "ecma:set",
         "forEach",
         Box::new(|ctx, args| {
-            let callback = args.get(1).cloned().unwrap_or(Value::Null);
+            let null = Value::Null;
+            let callback = args.get(1).unwrap_or(&null);
             let this_arg = args.get(2).cloned();
             let saved_this = this_arg.as_ref().map(|_| ctx.current_js_this());
-            if let Some(setobj) = is_set(args, 0) {
+            let prepared_callback = crate::function::prepare_bound_callback(callback);
+            if let Some(Value::Object(setobj)) = args.first() {
                 let snapshot: Vec<Value> = {
                     let so = setobj.lock().unwrap();
                     if let ObjectKind::Set(ref s) = so.kind {
-                        s.iter().cloned().collect()
+                        let mut snapshot = Vec::with_capacity(s.len());
+                        snapshot.extend(s.iter().cloned());
+                        snapshot
                     } else {
                         Vec::new()
                     }
                 };
+                let receiver = Value::Object(setobj.clone());
+                let mut invoke_args = [Value::Undefined, Value::Undefined, receiver];
                 for v in snapshot {
-                    let invoke_args = vec![v.clone(), v, Value::Object(setobj.clone())];
-                    if let Some(this_arg) = this_arg.clone() {
-                        ctx.set_js_this(this_arg);
+                    invoke_args[0] = v.clone();
+                    invoke_args[1] = v;
+                    if let Some(this_arg) = &this_arg {
+                        ctx.set_js_this(this_arg.clone());
                     }
-                    ctx.invoke(&callback, &invoke_args);
-                    if let Some(saved_this) = saved_this.clone() {
-                        ctx.set_js_this(saved_this);
+                    invoke_prepared_or_direct(ctx, callback, &prepared_callback, &invoke_args);
+                    if let Some(saved_this) = &saved_this {
+                        ctx.set_js_this(saved_this.clone());
                     }
                 }
             }
@@ -423,23 +437,19 @@ pub fn register(vm: &mut VM) {
         "union",
         vec![set_t()],
         Box::new(|_ctx, args| {
-            let out = new_set();
-            if let Value::Object(outobj) = &out {
-                let mut o = outobj.lock().unwrap();
-                if let ObjectKind::Set(ref mut os) = o.kind {
-                    for arg_idx in 0..2 {
-                        if let Some(setobj) = is_set(args, arg_idx) {
-                            let so = setobj.lock().unwrap();
-                            if let ObjectKind::Set(ref s) = so.kind {
-                                for v in s.iter() {
-                                    os.insert(v.clone());
-                                }
-                            }
+            let mut out = indexmap::IndexSet::new();
+            for arg_idx in 0..2 {
+                if let Some(setobj) = object_arg(args, arg_idx) {
+                    let so = setobj.lock().unwrap();
+                    if let ObjectKind::Set(ref s) = so.kind {
+                        out.reserve(s.len());
+                        for v in s.iter() {
+                            out.insert(v.clone());
                         }
                     }
                 }
             }
-            out
+            make_set(out)
         }),
     );
 
@@ -448,22 +458,20 @@ pub fn register(vm: &mut VM) {
         "intersection",
         vec![set_t()],
         Box::new(|_ctx, args| {
-            let out = new_set();
-            if let (Some(a), Some(b)) = (is_set(args, 0), is_set(args, 1)) {
-                if let Value::Object(outobj) = &out {
-                    let mut o = outobj.lock().unwrap();
-                    if let ObjectKind::Set(out_s) = &mut o.kind {
-                        with_two_sets(&a, &b, |avs, bvs| {
-                            for v in avs.iter() {
-                                if bvs.contains(v) {
-                                    out_s.insert(v.clone());
-                                }
-                            }
-                        });
+            if let (Some(a), Some(b)) = (object_arg(args, 0), object_arg(args, 1)) {
+                if let Some(out) = with_two_sets(a, b, |avs, bvs| {
+                    let mut out = indexmap::IndexSet::with_capacity(avs.len().min(bvs.len()));
+                    for v in avs.iter() {
+                        if bvs.contains(v) {
+                            out.insert(v.clone());
+                        }
                     }
+                    out
+                }) {
+                    return make_set(out);
                 }
             }
-            out
+            new_set()
         }),
     );
 
@@ -472,22 +480,20 @@ pub fn register(vm: &mut VM) {
         "difference",
         vec![set_t()],
         Box::new(|_ctx, args| {
-            let out = new_set();
-            if let (Some(a), Some(b)) = (is_set(args, 0), is_set(args, 1)) {
-                if let Value::Object(outobj) = &out {
-                    let mut o = outobj.lock().unwrap();
-                    if let ObjectKind::Set(out_s) = &mut o.kind {
-                        with_two_sets(&a, &b, |avs, bvs| {
-                            for v in avs.iter() {
-                                if !bvs.contains(v) {
-                                    out_s.insert(v.clone());
-                                }
-                            }
-                        });
+            if let (Some(a), Some(b)) = (object_arg(args, 0), object_arg(args, 1)) {
+                if let Some(out) = with_two_sets(a, b, |avs, bvs| {
+                    let mut out = indexmap::IndexSet::with_capacity(avs.len());
+                    for v in avs.iter() {
+                        if !bvs.contains(v) {
+                            out.insert(v.clone());
+                        }
                     }
+                    out
+                }) {
+                    return make_set(out);
                 }
             }
-            out
+            new_set()
         }),
     );
 
@@ -496,27 +502,25 @@ pub fn register(vm: &mut VM) {
         "symmetricDifference",
         vec![set_t()],
         Box::new(|_ctx, args| {
-            let out = new_set();
-            if let (Some(a), Some(b)) = (is_set(args, 0), is_set(args, 1)) {
-                if let Value::Object(outobj) = &out {
-                    let mut o = outobj.lock().unwrap();
-                    if let ObjectKind::Set(out_s) = &mut o.kind {
-                        with_two_sets(&a, &b, |avs, bvs| {
-                            for v in avs.iter() {
-                                if !bvs.contains(v) {
-                                    out_s.insert(v.clone());
-                                }
-                            }
-                            for v in bvs.iter() {
-                                if !avs.contains(v) {
-                                    out_s.insert(v.clone());
-                                }
-                            }
-                        });
+            if let (Some(a), Some(b)) = (object_arg(args, 0), object_arg(args, 1)) {
+                if let Some(out) = with_two_sets(a, b, |avs, bvs| {
+                    let mut out = indexmap::IndexSet::with_capacity(avs.len() + bvs.len());
+                    for v in avs.iter() {
+                        if !bvs.contains(v) {
+                            out.insert(v.clone());
+                        }
                     }
+                    for v in bvs.iter() {
+                        if !avs.contains(v) {
+                            out.insert(v.clone());
+                        }
+                    }
+                    out
+                }) {
+                    return make_set(out);
                 }
             }
-            out
+            new_set()
         }),
     );
 
@@ -525,10 +529,10 @@ pub fn register(vm: &mut VM) {
         "isSubsetOf",
         vec![ValType::I32],
         Box::new(|_ctx, args| {
-            if let (Some(a), Some(b)) = (is_set(args, 0), is_set(args, 1)) {
-                if let Some(is_sub) =
-                    with_two_sets(&a, &b, |avs, bvs| avs.iter().all(|v| bvs.contains(v)))
-                {
+            if let (Some(a), Some(b)) = (object_arg(args, 0), object_arg(args, 1)) {
+                if let Some(is_sub) = with_two_sets(a, b, |avs, bvs| {
+                    avs.len() <= bvs.len() && avs.iter().all(|v| bvs.contains(v))
+                }) {
                     return Value::I32(if is_sub { 1 } else { 0 });
                 }
             }
@@ -541,10 +545,10 @@ pub fn register(vm: &mut VM) {
         "isSupersetOf",
         vec![ValType::I32],
         Box::new(|_ctx, args| {
-            if let (Some(a), Some(b)) = (is_set(args, 0), is_set(args, 1)) {
-                if let Some(is_super) =
-                    with_two_sets(&a, &b, |avs, bvs| bvs.iter().all(|v| avs.contains(v)))
-                {
+            if let (Some(a), Some(b)) = (object_arg(args, 0), object_arg(args, 1)) {
+                if let Some(is_super) = with_two_sets(a, b, |avs, bvs| {
+                    avs.len() >= bvs.len() && bvs.iter().all(|v| avs.contains(v))
+                }) {
                     return Value::I32(if is_super { 1 } else { 0 });
                 }
             }
@@ -557,10 +561,15 @@ pub fn register(vm: &mut VM) {
         "isDisjointFrom",
         vec![ValType::I32],
         Box::new(|_ctx, args| {
-            if let (Some(a), Some(b)) = (is_set(args, 0), is_set(args, 1)) {
-                if let Some(disjoint) =
-                    with_two_sets(&a, &b, |avs, bvs| !avs.iter().any(|v| bvs.contains(v)))
-                {
+            if let (Some(a), Some(b)) = (object_arg(args, 0), object_arg(args, 1)) {
+                if let Some(disjoint) = with_two_sets(a, b, |avs, bvs| {
+                    let (smaller, larger) = if avs.len() <= bvs.len() {
+                        (avs, bvs)
+                    } else {
+                        (bvs, avs)
+                    };
+                    !smaller.iter().any(|v| larger.contains(v))
+                }) {
                     return Value::I32(if disjoint { 1 } else { 0 });
                 }
             }
@@ -578,14 +587,16 @@ pub fn register(vm: &mut VM) {
         "unionWith",
         vec![],
         Box::new(|_ctx, args| {
-            if let (Some(a), Some(b)) = (is_set(args, 0), is_set(args, 1)) {
-                if Arc::ptr_eq(&a, &b) {
+            if let (Some(a), Some(b)) = (object_arg(args, 0), object_arg(args, 1)) {
+                if Arc::ptr_eq(a, b) {
                     return Value::Undefined;
                 }
                 let to_add: Vec<Value> = {
                     let block = b.lock().unwrap();
                     if let ObjectKind::Set(ref bvs) = block.kind {
-                        bvs.iter().cloned().collect()
+                        let mut values = Vec::with_capacity(bvs.len());
+                        values.extend(bvs.iter().cloned());
+                        values
                     } else {
                         Vec::new()
                     }
@@ -606,16 +617,16 @@ pub fn register(vm: &mut VM) {
         "intersectWith",
         vec![],
         Box::new(|_ctx, args| {
-            if let (Some(a), Some(b)) = (is_set(args, 0), is_set(args, 1)) {
-                if Arc::ptr_eq(&a, &b) {
+            if let (Some(a), Some(b)) = (object_arg(args, 0), object_arg(args, 1)) {
+                if Arc::ptr_eq(a, b) {
                     return Value::Undefined;
                 }
-                let b_snapshot: Vec<Value> = {
+                let b_snapshot: indexmap::IndexSet<Value> = {
                     let block = b.lock().unwrap();
                     if let ObjectKind::Set(ref bvs) = block.kind {
-                        bvs.iter().cloned().collect()
+                        bvs.clone()
                     } else {
-                        Vec::new()
+                        indexmap::IndexSet::new()
                     }
                 };
                 let mut alock = a.lock().unwrap();
@@ -632,20 +643,20 @@ pub fn register(vm: &mut VM) {
         "exceptWith",
         vec![],
         Box::new(|_ctx, args| {
-            if let (Some(a), Some(b)) = (is_set(args, 0), is_set(args, 1)) {
-                let b_snapshot: Vec<Value> = if Arc::ptr_eq(&a, &b) {
-                    let block = a.lock().unwrap();
-                    if let ObjectKind::Set(ref bvs) = block.kind {
-                        bvs.iter().cloned().collect()
-                    } else {
-                        Vec::new()
+            if let (Some(a), Some(b)) = (object_arg(args, 0), object_arg(args, 1)) {
+                if Arc::ptr_eq(a, b) {
+                    let mut alock = a.lock().unwrap();
+                    if let ObjectKind::Set(ref mut avs) = alock.kind {
+                        avs.clear();
                     }
-                } else {
+                    return Value::Undefined;
+                }
+                let b_snapshot: indexmap::IndexSet<Value> = {
                     let block = b.lock().unwrap();
                     if let ObjectKind::Set(ref bvs) = block.kind {
-                        bvs.iter().cloned().collect()
+                        bvs.clone()
                     } else {
-                        Vec::new()
+                        indexmap::IndexSet::new()
                     }
                 };
                 let mut alock = a.lock().unwrap();
@@ -662,36 +673,34 @@ pub fn register(vm: &mut VM) {
         "symmetricExceptWith",
         vec![],
         Box::new(|_ctx, args| {
-            if let (Some(a), Some(b)) = (is_set(args, 0), is_set(args, 1)) {
-                let b_snapshot: Vec<Value> = if Arc::ptr_eq(&a, &b) {
-                    let block = a.lock().unwrap();
-                    if let ObjectKind::Set(ref bvs) = block.kind {
-                        bvs.iter().cloned().collect()
-                    } else {
-                        Vec::new()
+            if let (Some(a), Some(b)) = (object_arg(args, 0), object_arg(args, 1)) {
+                if Arc::ptr_eq(a, b) {
+                    let mut alock = a.lock().unwrap();
+                    if let ObjectKind::Set(ref mut avs) = alock.kind {
+                        avs.clear();
                     }
-                } else {
+                    return Value::Undefined;
+                }
+                let b_snapshot: indexmap::IndexSet<Value> = {
                     let block = b.lock().unwrap();
                     if let ObjectKind::Set(ref bvs) = block.kind {
-                        bvs.iter().cloned().collect()
+                        bvs.clone()
                     } else {
-                        Vec::new()
+                        indexmap::IndexSet::new()
                     }
                 };
                 let mut alock = a.lock().unwrap();
                 if let ObjectKind::Set(ref mut avs) = alock.kind {
-                    let mut to_remove = Vec::new();
-                    let mut to_add = Vec::new();
-                    for v in &b_snapshot {
-                        if avs.contains(v) {
-                            to_remove.push(v.clone());
-                        } else {
-                            to_add.push(v.clone());
+                    let existing: indexmap::IndexSet<Value> = avs
+                        .iter()
+                        .filter(|v| b_snapshot.contains(*v))
+                        .cloned()
+                        .collect();
+                    avs.retain(|v| !b_snapshot.contains(v));
+                    for v in b_snapshot {
+                        if !existing.contains(&v) {
+                            avs.insert(v);
                         }
-                    }
-                    avs.retain(|v| !to_remove.contains(v));
-                    for v in to_add {
-                        avs.insert(v);
                     }
                 }
             }
@@ -704,10 +713,15 @@ pub fn register(vm: &mut VM) {
         "overlaps",
         vec![ValType::Bool],
         Box::new(|_ctx, args| {
-            if let (Some(a), Some(b)) = (is_set(args, 0), is_set(args, 1)) {
-                if let Some(overlap) =
-                    with_two_sets(&a, &b, |avs, bvs| avs.iter().any(|v| bvs.contains(v)))
-                {
+            if let (Some(a), Some(b)) = (object_arg(args, 0), object_arg(args, 1)) {
+                if let Some(overlap) = with_two_sets(a, b, |avs, bvs| {
+                    let (smaller, larger) = if avs.len() <= bvs.len() {
+                        (avs, bvs)
+                    } else {
+                        (bvs, avs)
+                    };
+                    smaller.iter().any(|v| larger.contains(v))
+                }) {
                     return Value::Bool(overlap);
                 }
             }

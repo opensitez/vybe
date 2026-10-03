@@ -135,7 +135,13 @@ fn callback(chunks: &mut Vec<Chunk>, name: &str, line: u32) -> usize {
         strings::emit_to_string(&mut c, line);
         let width_text = c.alloc_scratch(1);
         c.emit_op_u16(Op::LOCAL_SET, width_text, line);
-        set_attribute(&mut c, control, "data-splitter-start-width", width_text, line);
+        set_attribute(
+            &mut c,
+            control,
+            "data-splitter-start-width",
+            width_text,
+            line,
+        );
         c.emit_end(line);
     } else if name.ends_with("_move") {
         let start = attribute(&mut c, control, "data-splitter-start-x", line);

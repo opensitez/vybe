@@ -55,17 +55,20 @@ static DATAVIEW_PROTOTYPE: OnceLock<Arc<Mutex<Object>>> = OnceLock::new();
 fn named_prototype(cell: &'static OnceLock<Arc<Mutex<Object>>>, tag: &'static str) -> Value {
     let proto = cell.get_or_init(|| {
         let mut obj = Object::new();
+        obj.properties.reserve(3);
         obj.properties
             .insert("__proto__".into(), crate::object::shared_object_prototype());
         obj.properties
-            .insert("@@toStringTag".into(), Value::String(Arc::from(tag)));
+            .insert("@@toStringTag".into(), crate::keys::string_value(tag));
+        obj.properties.insert(
+            "__nonenum".into(),
+            Value::Object(vybe_runtime::heap::alloc(Object::new_array(vec![
+                crate::keys::string_value("@@toStringTag"),
+            ]))),
+        );
         vybe_runtime::heap::alloc(obj)
     });
-    let value = Value::Object(proto.clone());
-    if let Value::Object(o) = &value {
-        crate::object::track_nonenum(o, "@@toStringTag");
-    }
-    value
+    Value::Object(proto.clone())
 }
 
 /// %ArrayBuffer.prototype% — ECMA-262 §25.1.5.
@@ -97,6 +100,7 @@ fn new_arraybuffer(byte_length: i32, max_byte_length: i32, resizable: bool, shar
         shared,
     };
     let mut obj = Object::new();
+    obj.properties.reserve(6);
     obj.kind = ObjectKind::ArrayBuffer(state);
     obj.properties
         .insert("byteLength".into(), Value::I32(n as i32));
@@ -121,7 +125,7 @@ fn new_arraybuffer(byte_length: i32, max_byte_length: i32, resizable: bool, shar
         },
     );
     obj.properties
-        .insert("__type".into(), Value::String(Arc::from(type_name)));
+        .insert("__type".into(), crate::keys::string_value(type_name));
     Value::Object(vybe_runtime::heap::alloc(obj))
 }
 
@@ -168,9 +172,9 @@ fn apply_arraybuffer_receiver_species(result: &Value, receiver: &Arc<Mutex<Objec
             .insert("__proto__".into(), Value::Object(proto));
     }
     if let Some(name) = name {
-        let types = vybe_runtime::heap::alloc(Object::new_array(vec![Value::String(Arc::from(
+        let types = vybe_runtime::heap::alloc(Object::new_array(vec![crate::keys::string_value(
             name.as_str(),
-        ))]));
+        )]));
         result_lock
             .properties
             .insert("__types".into(), Value::Object(types));
@@ -265,8 +269,8 @@ fn register_arraybuffer(vm: &mut VM) {
         "ecma:arraybuffer",
         "byteLength",
         Box::new(|_ctx, args| {
-            if let Some(ab) = is_arraybuffer(args, 0) {
-                return Value::I32(ab_byte_length_of(&ab) as i32);
+            if let Some(Value::Object(ab)) = args.first() {
+                return Value::I32(ab_byte_length_of(ab) as i32);
             }
             Value::I32(0)
         }),
@@ -276,7 +280,7 @@ fn register_arraybuffer(vm: &mut VM) {
         "ecma:arraybuffer",
         "maxByteLength",
         Box::new(|_ctx, args| {
-            if let Some(ab) = is_arraybuffer(args, 0) {
+            if let Some(Value::Object(ab)) = args.first() {
                 let o = ab.lock().unwrap();
                 if let ObjectKind::ArrayBuffer(ref state) = o.kind {
                     return Value::I32(state.max_byte_length as i32);
@@ -290,7 +294,7 @@ fn register_arraybuffer(vm: &mut VM) {
         "ecma:arraybuffer",
         "resizable",
         Box::new(|_ctx, args| {
-            if let Some(ab) = is_arraybuffer(args, 0) {
+            if let Some(Value::Object(ab)) = args.first() {
                 let o = ab.lock().unwrap();
                 if let ObjectKind::ArrayBuffer(ref state) = o.kind {
                     return Value::Bool(state.resizable);
@@ -304,7 +308,7 @@ fn register_arraybuffer(vm: &mut VM) {
         "ecma:arraybuffer",
         "detached",
         Box::new(|_ctx, args| {
-            if let Some(ab) = is_arraybuffer(args, 0) {
+            if let Some(Value::Object(ab)) = args.first() {
                 let o = ab.lock().unwrap();
                 if let ObjectKind::ArrayBuffer(ref state) = o.kind {
                     return Value::Bool(state.detached);
@@ -371,6 +375,7 @@ fn register_arraybuffer(vm: &mut VM) {
                         shared: false,
                     };
                     let mut new_obj = Object::new();
+                    new_obj.properties.reserve(2);
                     new_obj.kind = ObjectKind::ArrayBuffer(new_state);
                     new_obj
                         .properties
@@ -469,6 +474,7 @@ fn register_arraybuffer(vm: &mut VM) {
                     shared: false,
                 };
                 let mut new_obj = Object::new();
+                new_obj.properties.reserve(4);
                 new_obj.kind = ObjectKind::ArrayBuffer(new_state);
                 new_obj
                     .properties
@@ -524,6 +530,7 @@ fn register_arraybuffer(vm: &mut VM) {
                     shared: false,
                 };
                 let mut new_obj = Object::new();
+                new_obj.properties.reserve(4);
                 new_obj.kind = ObjectKind::ArrayBuffer(new_state);
                 new_obj
                     .properties
@@ -665,6 +672,7 @@ fn register_sharedarraybuffer(vm: &mut VM) {
                         shared: true,
                     };
                     let mut new_obj = Object::new();
+                    new_obj.properties.reserve(2);
                     new_obj.kind = ObjectKind::ArrayBuffer(new_state);
                     new_obj
                         .properties
@@ -710,6 +718,7 @@ fn register_sharedarraybuffer(vm: &mut VM) {
 
 pub fn new_dataview(buffer: Value, byte_offset: i32, byte_length: i32) -> Value {
     let mut obj = Object::new();
+    obj.properties.reserve(9);
     obj.properties.insert(DV_TAG.into(), Value::I32(1));
     obj.properties.insert(DV_BUFFER_PROP.into(), buffer.clone());
     obj.properties.insert("buffer".into(), buffer);
@@ -725,7 +734,7 @@ pub fn new_dataview(buffer: Value, byte_offset: i32, byte_length: i32) -> Value 
     obj.properties
         .insert("__proto__".into(), shared_dataview_prototype());
     obj.properties
-        .insert("__type".into(), Value::String(Arc::from("DataView")));
+        .insert("__type".into(), crate::keys::string_value("DataView"));
     Value::Object(vybe_runtime::heap::alloc(obj))
 }
 
@@ -765,17 +774,19 @@ fn dv_resolve(dv: &Arc<Mutex<Object>>) -> Option<(Arc<Mutex<Vec<u8>>>, usize, us
     }
 }
 
-fn dv_read_bytes(dv: &Arc<Mutex<Object>>, offset: i32, count: usize) -> Option<Vec<u8>> {
+fn dv_read_array<const N: usize>(dv: &Arc<Mutex<Object>>, offset: i32) -> Option<[u8; N]> {
     let (bytes_arc, base, view_len) = dv_resolve(dv)?;
-    if offset < 0 || (offset as usize + count) > view_len {
+    if offset < 0 || (offset as usize + N) > view_len {
         return None;
     }
     let bytes = bytes_arc.lock().unwrap();
     let abs = base + offset as usize;
-    if abs + count > bytes.len() {
+    if abs + N > bytes.len() {
         return None;
     }
-    Some(bytes[abs..abs + count].to_vec())
+    let mut out = [0u8; N];
+    out.copy_from_slice(&bytes[abs..abs + N]);
+    Some(out)
 }
 
 /// §25.3.1.1/.2 bounds predicate: is a `count`-byte access at `offset` fully
@@ -891,7 +902,7 @@ fn register_dataview(vm: &mut VM) {
         Box::new(|_ctx, args| {
             let offset = args.get(1).map(|v| v.as_i32()).unwrap_or(0);
             if let Some(dv) = is_dataview(args, 0) {
-                if let Some(bytes) = dv_read_bytes(&dv, offset, 1) {
+                if let Some(bytes) = dv_read_array::<1>(&dv, offset) {
                     return Value::I32(bytes[0] as i8 as i32);
                 }
             }
@@ -905,7 +916,7 @@ fn register_dataview(vm: &mut VM) {
         Box::new(|_ctx, args| {
             let offset = args.get(1).map(|v| v.as_i32()).unwrap_or(0);
             if let Some(dv) = is_dataview(args, 0) {
-                if let Some(bytes) = dv_read_bytes(&dv, offset, 1) {
+                if let Some(bytes) = dv_read_array::<1>(&dv, offset) {
                     return Value::I32(bytes[0] as i32);
                 }
             }
@@ -922,10 +933,12 @@ fn register_dataview(vm: &mut VM) {
                     let offset = args.get(1).map(|v| v.as_i32()).unwrap_or(0);
                     let little_endian = args.get(2).map(|v| v.as_i32()).unwrap_or(0) != 0;
                     if let Some(dv) = is_dataview(args, 0) {
-                        if let Some(bytes) = dv_read_bytes(&dv, offset, $count) {
-                            let mut arr = [0u8; $count];
-                            arr.copy_from_slice(&bytes);
-                            let val: $ty = if little_endian { $le(arr) } else { $be(arr) };
+                        if let Some(bytes) = dv_read_array::<$count>(&dv, offset) {
+                            let val: $ty = if little_endian {
+                                $le(bytes)
+                            } else {
+                                $be(bytes)
+                            };
                             return $wrap(val);
                         }
                         // §25.3.1.1 GetViewValue step 8: getIndex + elementSize
@@ -1187,10 +1200,8 @@ fn register_dataview(vm: &mut VM) {
                 Box::new(|_ctx, args| {
                     let offset = args.get(1).map(|v| v.as_i32()).unwrap_or(0);
                     if let Some(dv) = is_dataview(args, 0) {
-                        if let Some(bytes) = dv_read_bytes(&dv, offset, $count) {
-                            let mut arr = [0u8; $count];
-                            arr.copy_from_slice(&bytes);
-                            let val: $ty = <$ty>::from_le_bytes(arr);
+                        if let Some(bytes) = dv_read_array::<$count>(&dv, offset) {
+                            let val: $ty = <$ty>::from_le_bytes(bytes);
                             return $wrap(val);
                         }
                     }
@@ -1208,10 +1219,8 @@ fn register_dataview(vm: &mut VM) {
                 Box::new(|_ctx, args| {
                     let offset = args.get(1).map(|v| v.as_i32()).unwrap_or(0);
                     if let Some(dv) = is_dataview(args, 0) {
-                        if let Some(bytes) = dv_read_bytes(&dv, offset, $count) {
-                            let mut arr = [0u8; $count];
-                            arr.copy_from_slice(&bytes);
-                            let val: $ty = <$ty>::from_be_bytes(arr);
+                        if let Some(bytes) = dv_read_array::<$count>(&dv, offset) {
+                            let val: $ty = <$ty>::from_be_bytes(bytes);
                             return $wrap(val);
                         }
                     }
@@ -1329,9 +1338,7 @@ fn register_dataview(vm: &mut VM) {
             let offset = args.get(1).map(|v| v.as_i32()).unwrap_or(0);
             let little_endian = args.get(2).map(|v| v.as_bool()).unwrap_or(false);
             if let Some(dv) = is_dataview(args, 0) {
-                if let Some(bytes) = dv_read_bytes(&dv, offset, 2) {
-                    let mut arr = [0u8; 2];
-                    arr.copy_from_slice(&bytes);
+                if let Some(arr) = dv_read_array::<2>(&dv, offset) {
                     let bits = if little_endian {
                         u16::from_le_bytes(arr)
                     } else {
@@ -1447,6 +1454,7 @@ pub fn dispatch_arraybuffer_method(
                     "ArrayBuffer"
                 };
                 let mut new_obj = Object::new();
+                new_obj.properties.reserve(3);
                 new_obj.kind = ObjectKind::ArrayBuffer(new_state);
                 new_obj
                     .properties
@@ -1456,7 +1464,7 @@ pub fn dispatch_arraybuffer_method(
                     .insert("maxByteLength".into(), Value::I32(slice_len as i32));
                 new_obj
                     .properties
-                    .insert("__type".into(), Value::String(Arc::from(type_name)));
+                    .insert("__type".into(), crate::keys::string_value(type_name));
                 let out = Value::Object(vybe_runtime::heap::alloc(new_obj));
                 apply_arraybuffer_receiver_species(&out, &obj);
                 return Some(out);
@@ -1551,6 +1559,7 @@ pub fn dispatch_arraybuffer_method(
                 "ArrayBuffer"
             };
             let mut new_obj = Object::new();
+            new_obj.properties.reserve(5);
             new_obj.kind = ObjectKind::ArrayBuffer(new_state);
             new_obj
                 .properties
@@ -1566,7 +1575,7 @@ pub fn dispatch_arraybuffer_method(
                 .insert("detached".into(), Value::Bool(false));
             new_obj
                 .properties
-                .insert("__type".into(), Value::String(Arc::from(type_name)));
+                .insert("__type".into(), crate::keys::string_value(type_name));
             Some(Value::Object(vybe_runtime::heap::alloc(new_obj)))
         }
         _ => None,
@@ -1610,14 +1619,14 @@ pub fn dispatch_dataview_method(
     match method {
         "getInt8" => {
             let offset = args.first().map(|v| v.as_i32()).unwrap_or(0);
-            if let Some(bytes) = dv_read_bytes(&obj, offset, 1) {
+            if let Some(bytes) = dv_read_array::<1>(&obj, offset) {
                 return Some(Value::I32(bytes[0] as i8 as i32));
             }
             Some(Value::I32(0))
         }
         "getUint8" => {
             let offset = args.first().map(|v| v.as_i32()).unwrap_or(0);
-            if let Some(bytes) = dv_read_bytes(&obj, offset, 1) {
+            if let Some(bytes) = dv_read_array::<1>(&obj, offset) {
                 return Some(Value::I32(bytes[0] as i32));
             }
             Some(Value::I32(0))
@@ -1625,8 +1634,7 @@ pub fn dispatch_dataview_method(
         "getInt16" => {
             let offset = args.first().map(|v| v.as_i32()).unwrap_or(0);
             let le = args.get(1).map(|v| v.as_i32()).unwrap_or(0) != 0;
-            if let Some(bytes) = dv_read_bytes(&obj, offset, 2) {
-                let arr = [bytes[0], bytes[1]];
+            if let Some(arr) = dv_read_array::<2>(&obj, offset) {
                 let v = if le {
                     i16::from_le_bytes(arr)
                 } else {
@@ -1639,8 +1647,7 @@ pub fn dispatch_dataview_method(
         "getUint16" => {
             let offset = args.first().map(|v| v.as_i32()).unwrap_or(0);
             let le = args.get(1).map(|v| v.as_i32()).unwrap_or(0) != 0;
-            if let Some(bytes) = dv_read_bytes(&obj, offset, 2) {
-                let arr = [bytes[0], bytes[1]];
+            if let Some(arr) = dv_read_array::<2>(&obj, offset) {
                 let v = if le {
                     u16::from_le_bytes(arr)
                 } else {
@@ -1653,8 +1660,7 @@ pub fn dispatch_dataview_method(
         "getInt32" => {
             let offset = args.first().map(|v| v.as_i32()).unwrap_or(0);
             let le = args.get(1).map(|v| v.as_i32()).unwrap_or(0) != 0;
-            if let Some(bytes) = dv_read_bytes(&obj, offset, 4) {
-                let arr = [bytes[0], bytes[1], bytes[2], bytes[3]];
+            if let Some(arr) = dv_read_array::<4>(&obj, offset) {
                 let v = if le {
                     i32::from_le_bytes(arr)
                 } else {
@@ -1667,8 +1673,7 @@ pub fn dispatch_dataview_method(
         "getUint32" => {
             let offset = args.first().map(|v| v.as_i32()).unwrap_or(0);
             let le = args.get(1).map(|v| v.as_i32()).unwrap_or(0) != 0;
-            if let Some(bytes) = dv_read_bytes(&obj, offset, 4) {
-                let arr = [bytes[0], bytes[1], bytes[2], bytes[3]];
+            if let Some(arr) = dv_read_array::<4>(&obj, offset) {
                 let v = if le {
                     u32::from_le_bytes(arr)
                 } else {
@@ -1682,8 +1687,7 @@ pub fn dispatch_dataview_method(
         "getFloat32" => {
             let offset = args.first().map(|v| v.as_i32()).unwrap_or(0);
             let le = args.get(1).map(|v| v.as_i32()).unwrap_or(0) != 0;
-            if let Some(bytes) = dv_read_bytes(&obj, offset, 4) {
-                let arr = [bytes[0], bytes[1], bytes[2], bytes[3]];
+            if let Some(arr) = dv_read_array::<4>(&obj, offset) {
                 let v = if le {
                     f32::from_le_bytes(arr)
                 } else {
@@ -1696,10 +1700,7 @@ pub fn dispatch_dataview_method(
         "getFloat64" => {
             let offset = args.first().map(|v| v.as_i32()).unwrap_or(0);
             let le = args.get(1).map(|v| v.as_i32()).unwrap_or(0) != 0;
-            if let Some(bytes) = dv_read_bytes(&obj, offset, 8) {
-                let arr = [
-                    bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
-                ];
+            if let Some(arr) = dv_read_array::<8>(&obj, offset) {
                 let v = if le {
                     f64::from_le_bytes(arr)
                 } else {
@@ -1712,10 +1713,7 @@ pub fn dispatch_dataview_method(
         "getBigInt64" => {
             let offset = args.first().map(|v| v.as_i32()).unwrap_or(0);
             let le = args.get(1).map(|v| v.as_i32()).unwrap_or(0) != 0;
-            if let Some(bytes) = dv_read_bytes(&obj, offset, 8) {
-                let arr = [
-                    bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
-                ];
+            if let Some(arr) = dv_read_array::<8>(&obj, offset) {
                 let v = if le {
                     i64::from_le_bytes(arr)
                 } else {
@@ -1728,10 +1726,7 @@ pub fn dispatch_dataview_method(
         "getBigUint64" => {
             let offset = args.first().map(|v| v.as_i32()).unwrap_or(0);
             let le = args.get(1).map(|v| v.as_i32()).unwrap_or(0) != 0;
-            if let Some(bytes) = dv_read_bytes(&obj, offset, 8) {
-                let arr = [
-                    bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
-                ];
+            if let Some(arr) = dv_read_array::<8>(&obj, offset) {
                 let v = if le {
                     u64::from_le_bytes(arr)
                 } else {

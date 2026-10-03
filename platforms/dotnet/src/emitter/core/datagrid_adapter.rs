@@ -15,8 +15,8 @@
 //! except the one whose result the member call itself yields.
 
 use vybe_compiler::primitives::gui::{CSSOM_MODULE, DOCUMENT_MODULE, HOST_FN_ACTIVE_DOCUMENT};
-use vybe_runtime::opcode::Op;
 use vybe_runtime::Chunk;
+use vybe_runtime::opcode::Op;
 
 /// The node operations live in `web:dom`; `activeDocument` is `web:html`'s.
 /// Two modules, because the DOCUMENT is what the user agent hands you and the

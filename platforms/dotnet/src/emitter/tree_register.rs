@@ -19,9 +19,9 @@
 use std::collections::BTreeMap;
 use std::sync::{Once, OnceLock};
 
+use crate::winforms::EventType;
 use vybe_compiler::component_classes::{ConstructorTarget, MethodBody};
 use vybe_compiler::primitives::namespaces::{self, NamespaceNode, Subtree};
-use crate::winforms::EventType;
 
 /// Inferred member type from the same registered tree used by the compiler.
 pub fn instance_member_return_type(class_name: &str, member: &str) -> Option<String> {
@@ -222,7 +222,9 @@ pub fn register_namespace_tree() {
                                 dom_event
                             ))),
                         );
-                        methods.entry((*event).to_string()).or_insert_with(|| node.clone());
+                        methods
+                            .entry((*event).to_string())
+                            .or_insert_with(|| node.clone());
                         // C# currently lowers `control.Event += handler` to a
                         // lowercase AddHandler name while keeping exact-case
                         // tree lookup. Register both spellings of one role.
@@ -326,12 +328,29 @@ pub fn register_namespace_tree() {
             // failure `self_member_returns` was written for on `Items`.
             if class_is_control {
                 // `Control.Controls` — the declared property name.
-                member_returns.insert("Controls".to_string(), if class.name == "TableLayoutPanel" { "TableLayoutPanel" } else { "Control" }.to_string());
-                member_returns.insert("DataBindings".to_string(), "ControlBindingsCollection".to_string());
+                member_returns.insert(
+                    "Controls".to_string(),
+                    if class.name == "TableLayoutPanel" {
+                        "TableLayoutPanel"
+                    } else {
+                        "Control"
+                    }
+                    .to_string(),
+                );
+                member_returns.insert(
+                    "DataBindings".to_string(),
+                    "ControlBindingsCollection".to_string(),
+                );
             }
             if class.name == "TableLayoutPanel" {
-                member_returns.insert("ColumnStyles".to_string(), "TableLayoutStyleCollection".to_string());
-                member_returns.insert("RowStyles".to_string(), "TableLayoutStyleCollection".to_string());
+                member_returns.insert(
+                    "ColumnStyles".to_string(),
+                    "TableLayoutStyleCollection".to_string(),
+                );
+                member_returns.insert(
+                    "RowStyles".to_string(),
+                    "TableLayoutStyleCollection".to_string(),
+                );
             }
 
             // The descriptor's backing constructor, as a tree node. dotnet
@@ -435,8 +454,18 @@ fn register_bcl_constants() {
     // path builds a SECOND branch that resolves only by folding.
     const ENUMS: &[(&[&str], &[(&str, i32)])] = &[
         (
+            &["System", "Windows", "Forms", "ProgressBarStyle"],
+            &[("Blocks", 0), ("Continuous", 1), ("Marquee", 2)],
+        ),
+        (
             &["System", "Drawing", "FontStyle"],
-            &[("Regular", 0), ("Bold", 1), ("Italic", 2), ("Underline", 4), ("Strikeout", 8)],
+            &[
+                ("Regular", 0),
+                ("Bold", 1),
+                ("Italic", 2),
+                ("Underline", 4),
+                ("Strikeout", 8),
+            ],
         ),
         (
             &["System", "Windows", "Forms", "SizeType"],
@@ -444,13 +473,28 @@ fn register_bcl_constants() {
         ),
         (
             &["System", "Windows", "Forms", "DockStyle"],
-            &[("None", 0), ("Top", 1), ("Bottom", 2), ("Left", 3), ("Right", 4), ("Fill", 5)],
+            &[
+                ("None", 0),
+                ("Top", 1),
+                ("Bottom", 2),
+                ("Left", 3),
+                ("Right", 4),
+                ("Fill", 5),
+            ],
         ),
         (
             &["System", "Drawing", "ContentAlignment"],
-            &[("TopLeft", 1), ("TopCenter", 2), ("TopRight", 4),
-              ("MiddleLeft", 16), ("MiddleCenter", 32), ("MiddleRight", 64),
-              ("BottomLeft", 256), ("BottomCenter", 512), ("BottomRight", 1024)],
+            &[
+                ("TopLeft", 1),
+                ("TopCenter", 2),
+                ("TopRight", 4),
+                ("MiddleLeft", 16),
+                ("MiddleCenter", 32),
+                ("MiddleRight", 64),
+                ("BottomLeft", 256),
+                ("BottomCenter", 512),
+                ("BottomRight", 1024),
+            ],
         ),
         (
             &["System", "Windows", "Forms", "BorderStyle"],
@@ -838,12 +882,25 @@ fn accessor_node(
     if is_control
         && (setting || target.name == vybe_compiler::primitives::gui::HOST_FN_GET_PROPERTY)
     {
+        if matches!(
+            class_name.to_ascii_lowercase().as_str(),
+            "toolstripmenuitem" | "toolstripdropdownitem"
+        ) && prop.eq_ignore_ascii_case("Text")
+        {
+            return NamespaceNode::CommonEmit(format!(
+                "dotnet.menu_item_text_{}",
+                if setting { "set" } else { "get" }
+            ));
+        }
         if class_name.eq_ignore_ascii_case("Form") && prop.eq_ignore_ascii_case("Text") {
-            return NamespaceNode::CommonEmit(if setting {
-                "gui.prop_set.windowtitle"
-            } else {
-                "dotnet.winforms_form_text_get"
-            }.into());
+            return NamespaceNode::CommonEmit(
+                if setting {
+                    "gui.prop_set.windowtitle"
+                } else {
+                    "dotnet.winforms_form_text_get"
+                }
+                .into(),
+            );
         }
         if class_name.eq_ignore_ascii_case("Form") && prop.eq_ignore_ascii_case("ClientSize") {
             return NamespaceNode::CommonEmit(format!(
@@ -851,7 +908,10 @@ fn accessor_node(
                 if setting { "set" } else { "get" }
             ));
         }
-        if matches!(class_name.to_ascii_lowercase().as_str(), "checkbox" | "radiobutton") {
+        if matches!(
+            class_name.to_ascii_lowercase().as_str(),
+            "checkbox" | "radiobutton"
+        ) {
             let member = match prop.to_ascii_lowercase().as_str() {
                 "text" => Some("text"),
                 "checked" | "checkstate" => Some("checked"),
@@ -899,7 +959,10 @@ fn accessor_node(
                 ));
             }
         }
-        if matches!(prop.to_ascii_lowercase().as_str(), "backcolor" | "forecolor") {
+        if matches!(
+            prop.to_ascii_lowercase().as_str(),
+            "backcolor" | "forecolor"
+        ) {
             return NamespaceNode::CommonEmit(format!(
                 "dotnet.control_{}_{}",
                 prop.to_ascii_lowercase(),
@@ -928,11 +991,14 @@ fn accessor_node(
             return NamespaceNode::CommonEmit("dotnet.control_textalign_set".into());
         }
         if prop.eq_ignore_ascii_case("Tag") {
-            return NamespaceNode::CommonEmit(if setting {
-                "dotnet.control_tag_set"
-            } else {
-                "dotnet.control_tag_get"
-            }.into());
+            return NamespaceNode::CommonEmit(
+                if setting {
+                    "dotnet.control_tag_set"
+                } else {
+                    "dotnet.control_tag_get"
+                }
+                .into(),
+            );
         }
         let role = match gui_property_role(prop) {
             "" => prop.to_ascii_lowercase(),
@@ -953,13 +1019,21 @@ fn accessor_node(
             // text child of a `<select>` is invalid markup that would sit
             // among the options.
             "text" if text_is_unpainted(class_name) => "unpaintedtext".to_string(),
-            "text" if html_element_for_control(class_name).is_some_and(|element| {
-                matches!(element.split([';', ':']).next(), Some("input" | "textarea"))
-            }) => "value".to_string(),
-            "text" if html_element_for_control(class_name).is_some_and(|element| {
-                let tag = element.split([';', ':']).next().unwrap_or(element);
-                !matches!(tag, "input" | "textarea" | "select")
-            }) => "textcontent".to_string(),
+            "text"
+                if html_element_for_control(class_name).is_some_and(|element| {
+                    matches!(element.split([';', ':']).next(), Some("input" | "textarea"))
+                }) =>
+            {
+                "value".to_string()
+            }
+            "text"
+                if html_element_for_control(class_name).is_some_and(|element| {
+                    let tag = element.split([';', ':']).next().unwrap_or(element);
+                    !matches!(tag, "input" | "textarea" | "select")
+                }) =>
+            {
+                "textcontent".to_string()
+            }
             r => r.to_string(),
         };
         let prefix = if setting {
@@ -1014,20 +1088,12 @@ fn html_element_for_control(class_name: &str) -> Option<&'static str> {
         // (`control_kind` maps it to the `menustrip` widget, born `Dock::Top`);
         // the `vybe-*` pseudo-tags these used to fall through to matched NO
         // `control_kind` arm, so every WinForms menu came out a 120x20 LABEL
-        // stacked at the origin. plib spells `TMainMenu`/`TPopupMenu`/
-        // `TMenuItem` the same way, and a ToolStrip is what `<menu>` is
-        // specified to be — "a toolbar" — with WinForms' own `Dock=Top` default.
-        // An ITEM is the same `menu` tag as the strip, on purpose — plib says
-        // the same thing about `TMenuItem`. A bar word and the submenu it opens
-        // are one element here, and the strip derives its words from its
-        // children's captions at paint time.
-        "menustrip"
-        | "toolstrip"
-        | "toolstripmenuitem"
-        | "toolstripdropdownitem"
-        | "toolstripbutton"
-        | "toolstriplabel"
-        | "toolstripstatuslabel" => "menu",
+        // stacked at the origin. A strip uses `<menu>` while each item uses
+        // `<details>` with its own caption and nested `<menu>`.
+        "menustrip" | "toolstrip" => "menu",
+        "toolstripmenuitem" | "toolstripdropdownitem" => "details",
+        "toolstripbutton" => "button;@type=button",
+        "toolstriplabel" | "toolstripstatuslabel" => "span",
         // A separator IS a horizontal rule. Held on `menu` until `hr` had a
         // `control_kind` arm, because a tag with no arm is a silent 120x20
         // label — it has one now (`panel`, 200x2), so this is a rule.
@@ -1099,22 +1165,7 @@ fn html_element_for_control(class_name: &str) -> Option<&'static str> {
         // says that. The custom tag was standing in for the DOCKING difference
         // described below, which a declaration can state directly.
         "contextmenustrip" => "menu;display:none;position:absolute",
-        // Declared `vybe-*` custom elements. `control_kind` strips `vybe-` and
-        // looks the remainder up against the widget list, so the TAG carries
-        // the kind and these two land on real widgets that already exist
-        // (`checkedlistbox`; `datagrid` folds onto `datagridview`).
-        // The same list, multi-select: HTML's own way to spell "several of
-        // these at once", and a strict improvement on the `<ul>` this was —
-        // items are shown AND selectable instead of only shown.
-        //
-        // ⚠ Not the whole control. A per-item CHECKBOX is the one thing
-        // `<select>` does not have, and `CheckedIndices`/`CheckedItems` are
-        // declared as property names with nothing registered behind them, so
-        // the checked API answers nothing on either mapping. Wiring it means
-        // deciding whether "checked" reads the selection or the control grows
-        // a `<ul>` of `<input type=checkbox>` — an open question, not something
-        // this mapping settles.
-        "checkedlistbox" => "select;@size=4;@multiple",
+        "checkedlistbox" => "div;overflow:auto;border:1px solid #7a7a7a;background-color:#fff",
         // The legacy grid is the same control and takes the same element, or
         // the two spellings would render differently for no reason.
         "datagrid" => {
@@ -1257,7 +1308,7 @@ fn html_element_for_control(class_name: &str) -> Option<&'static str> {
         }
         // A month grid. Static chrome is declared below; the .NET adapter
         // supplies the current month and handles its delegated click events.
-        "monthcalendar" => "div;border:1px solid #c8c8c8;background-color:#ffffff;overflow:hidden",
+        "monthcalendar" => "div;border:1px solid #c8c8c8;background-color:#ffffff;overflow:hidden;min-height:160px",
 
         // ── Non-visual components and the dialogs ──────────────────────────
         // A Timer, ToolTip or file dialog is a member of the form, not a box
@@ -1382,8 +1433,13 @@ fn control_ctor_spec(
     let control_element = if class_name.eq_ignore_ascii_case("Form") {
         format!("{element};font-family:Segoe UI,Arial,sans-serif;font-size:12px")
     } else {
-        let base = "box-sizing:border-box;margin:0;font-family:Segoe UI,Arial,sans-serif;font-size:12px";
-        let menu = if element.starts_with("menu") { ";padding:0" } else { "" };
+        let base =
+            "box-sizing:border-box;margin:0;font-family:Segoe UI,Arial,sans-serif;font-size:12px";
+        let menu = if element.starts_with("menu") {
+            ";padding:0"
+        } else {
+            ""
+        };
         format!("{element};{base}{menu}{}", winforms_control_css(class_name))
     };
     vybe_compiler::primitives::namespaces::CtorSpec {
@@ -1405,13 +1461,34 @@ fn control_ctor_spec(
 
 fn winforms_control_css(class_name: &str) -> &'static str {
     match class_name.to_ascii_lowercase().as_str() {
-        "button" => ";background-color:#e1e1e1;color:inherit;border:1px solid #adadad;border-radius:0;padding:2px 6px",
-        "textbox" | "maskedtextbox" | "richtextbox" | "combobox" | "listbox" | "checkedlistbox" => ";background-color:#fff;color:inherit;border:1px solid #7a7a7a;border-radius:0;padding:2px 3px",
+        "button" => {
+            ";background-color:#e1e1e1;color:inherit;border:1px solid #adadad;border-radius:0;padding:2px 6px"
+        }
+        "textbox" | "maskedtextbox" | "richtextbox" | "combobox" | "listbox" | "checkedlistbox" => {
+            ";background-color:#fff;color:inherit;border:1px solid #7a7a7a;border-radius:0;padding:2px 3px"
+        }
         "checkbox" | "radiobutton" => ";color:inherit;cursor:default",
         "groupbox" => ";border:1px solid #bdbdbd;padding:8px 6px 6px;min-width:0",
-        "panel" | "flowlayoutpanel" | "tablelayoutpanel" | "splitcontainer" | "tabcontrol" | "tabpage" => ";background-color:#f0f0f0",
-        "datagridview" | "datagrid" | "listview" | "propertygrid" | "treeview" => ";overflow:auto;background-color:#fff;color:inherit",
-        "menustrip" | "toolstrip" | "bindingnavigator" => ";background-color:#f0f0f0;border:1px solid #d0d0d0;color:inherit;overflow:hidden",
+        "panel" | "flowlayoutpanel" | "tablelayoutpanel" | "splitcontainer" | "tabcontrol"
+        | "tabpage" => ";background-color:#f0f0f0",
+        "datagridview" | "datagrid" | "listview" | "propertygrid" | "treeview" => {
+            ";overflow:auto;background-color:#fff;color:inherit"
+        }
+        "menustrip" | "toolstrip" => {
+            ";background-color:#f0f0f0;border:1px solid #d0d0d0;color:inherit;overflow:visible"
+        }
+        "bindingnavigator" => {
+            ";background-color:#f0f0f0;border:1px solid #d0d0d0;color:inherit;overflow:hidden"
+        }
+        "toolstripmenuitem" | "toolstripdropdownitem" => {
+            ";display:inline-block;position:relative;color:inherit;cursor:default"
+        }
+        "toolstripbutton" => {
+            ";height:100%;min-width:23px;padding:0 4px;border:0;border-radius:0;background-color:transparent;color:inherit;cursor:pointer"
+        }
+        "toolstriplabel" | "toolstripstatuslabel" => {
+            ";display:inline-flex;align-items:center;height:100%;padding:0 3px;color:inherit"
+        }
         "statusstrip" => ";background-color:#f0f0f0;border-top:1px solid #d0d0d0;color:inherit",
         "progressbar" => ";border:1px solid #a0a0a0;border-radius:0",
         "webbrowser" => ";border:1px solid #bdbdbd;background-color:#fff",
@@ -1460,6 +1537,12 @@ macro_rules! toolstrip_button {
 
 fn default_markup_for_control(class_name: &str) -> Option<&'static str> {
     Some(match class_name.to_ascii_lowercase().as_str() {
+        "toolstripmenuitem" | "toolstripdropdownitem" => concat!(
+            "<summary style='display:inline-flex;align-items:center;min-height:22px;",
+            "padding:0 7px;list-style:none;white-space:nowrap'></summary>",
+            "<menu style='position:absolute;z-index:10;top:100%;left:0;min-width:120px;",
+            "margin:0;padding:2px 0;border:1px solid #aaa;background:#f0f0f0'></menu>"
+        ),
         "checkbox" => "<input type='checkbox' style='margin:0;flex:none'><span></span>",
         "radiobutton" => "<input type='radio' style='margin:0;flex:none'><span></span>",
         "groupbox" => "<legend style='padding:0 3px'></legend>",
@@ -1647,14 +1730,26 @@ fn shared_emit_accessors(class_name: &str) -> Vec<(String, NamespaceNode)> {
         "tablelayoutpanel" => vec![
             ("ColumnStyles", ro("dotnet.table_column_styles")),
             ("RowStyles", ro("dotnet.table_row_styles")),
-            ("Add", namespaces::overloads(vec![
-                (2, emit(vybe_compiler::primitives::gui::APPEND_CHILD_EMIT)),
-                (4, emit(vybe_compiler::primitives::gui::APPEND_CHILD_AT_EMIT)),
-            ])),
-            ("Clear", namespaces::overloads(vec![(1, emit("dotnet.table_clear_controls"))])),
+            (
+                "Add",
+                namespaces::overloads(vec![
+                    (2, emit(vybe_compiler::primitives::gui::APPEND_CHILD_EMIT)),
+                    (
+                        4,
+                        emit(vybe_compiler::primitives::gui::APPEND_CHILD_AT_EMIT),
+                    ),
+                ]),
+            ),
+            (
+                "Clear",
+                namespaces::overloads(vec![(1, emit("dotnet.table_clear_controls"))]),
+            ),
         ],
         "tablelayoutstylecollection" => vec![
-            ("Add", namespaces::overloads(vec![(2, emit("dotnet.table_style_add"))])),
+            (
+                "Add",
+                namespaces::overloads(vec![(2, emit("dotnet.table_style_add"))]),
+            ),
             ("Count", ro("dotnet.table_style_count")),
         ],
         "stringbuilder" => vec![
@@ -1736,20 +1831,31 @@ fn shared_emit_accessors(class_name: &str) -> Vec<(String, NamespaceNode)> {
         "bindingsource" => vec![
             ("Count", ro("dotnet.bindingsource_count")),
             ("Current", ro("dotnet.bindingsource_current")),
-            ("DataSource", rw("dotnet.bindingsource_data_source_get", "dotnet.bindingsource_data_source_set")),
-            ("Position", rw("dotnet.bindingsource_position_get", "dotnet.bindingsource_position_set")),
+            (
+                "DataSource",
+                rw(
+                    "dotnet.bindingsource_data_source_get",
+                    "dotnet.bindingsource_data_source_set",
+                ),
+            ),
+            (
+                "Position",
+                rw(
+                    "dotnet.bindingsource_position_get",
+                    "dotnet.bindingsource_position_set",
+                ),
+            ),
         ],
         "bindingnavigator" => vec![(
             "BindingSource",
-            rw("dotnet.bindingnavigator_source_get", "dotnet.bindingnavigator_source_set"),
+            rw(
+                "dotnet.bindingnavigator_source_get",
+                "dotnet.bindingnavigator_source_set",
+            ),
         )],
         // ── Strips and their items ─────────────────────────────────────────
-        // `Items` IS the strip: WinForms wraps the contents in a
-        // `ToolStripItemCollection`, but the `<menu>` element already is that
-        // container, so the getter hands back the receiver and allocates
-        // nothing. What makes the NEXT hop work is the declared return type
-        // (see `self_member_returns`) — `ms.Items.Add(x)` looks `Add` up on
-        // `ToolStripMenuItem`, and an item and a strip are the same element.
+        // A strip's `Items` is its own `<menu>`; a menu item's collection is
+        // the nested `<menu>` inside its disclosure element.
         //
         // `Add` is a CHILD append, not an item append: a strip is handed a
         // control the caller built, where a `ListBox` is handed text and makes
@@ -1760,12 +1866,7 @@ fn shared_emit_accessors(class_name: &str) -> Vec<(String, NamespaceNode)> {
         // Arity travels with the node — a bare `CommonEmit` leaf is found as a
         // NAME and then not called, which is how `b.Hide()` once reached
         // "undefined is not callable".
-        "menustrip"
-        | "toolstrip"
-        | "statusstrip"
-        | "contextmenustrip"
-        | "toolstripmenuitem"
-        | "toolstripdropdownitem" => vec![
+        "menustrip" | "toolstrip" | "statusstrip" | "contextmenustrip" => vec![
             ("Items", ro("dotnet.self")),
             ("DropDownItems", ro("dotnet.self")),
             // ⚠ The DECLARED .NET spelling. These read `"add"` / `"capacity"`
@@ -1776,6 +1877,17 @@ fn shared_emit_accessors(class_name: &str) -> Vec<(String, NamespaceNode)> {
             // writes `Add` and now MISSES the exact key, resolving only because
             // `fold_get` tries the fold afterwards. Correct spelling means C#
             // hits directly and VB still folds to it (casesensitivityplan §5d).
+            (
+                "Add",
+                namespaces::overloads(vec![(
+                    2,
+                    emit(vybe_compiler::primitives::gui::APPEND_CHILD_EMIT),
+                )]),
+            ),
+        ],
+        "toolstripmenuitem" | "toolstripdropdownitem" => vec![
+            ("Items", ro("dotnet.menu_item_dropdown_get")),
+            ("DropDownItems", ro("dotnet.menu_item_dropdown_get")),
             (
                 "Add",
                 namespaces::overloads(vec![(
@@ -1797,7 +1909,10 @@ fn shared_emit_accessors(class_name: &str) -> Vec<(String, NamespaceNode)> {
             vec![
                 ("Columns", ro("dotnet.self")),
                 ("Rows", ro("dotnet.self")),
-                ("DataSource", rw("dotnet.datagrid_source_get", "dotnet.datagrid_source_set")),
+                (
+                    "DataSource",
+                    rw("dotnet.datagrid_source_get", "dotnet.datagrid_source_set"),
+                ),
             ]
         }
         // The two collection types the members above read back as. They hold
@@ -1824,20 +1939,72 @@ fn shared_emit_accessors(class_name: &str) -> Vec<(String, NamespaceNode)> {
             ),
         )],
         "listbox" | "combobox" => vec![("Items", ro("dotnet.self"))],
+        "checkedlistbox" => vec![
+            ("Items", ro("dotnet.self")),
+            (
+                "GetItemChecked",
+                namespaces::overloads(vec![(1, emit("dotnet.checked_list_get"))]),
+            ),
+            (
+                "SetItemChecked",
+                namespaces::overloads(vec![(2, emit("dotnet.checked_list_set"))]),
+            ),
+        ],
         "progressbar" => vec![
-            ("Value", rw("dotnet.progress_value_get", "dotnet.progress_value_set")),
-            ("Maximum", rw("dotnet.progress_max_get", "dotnet.progress_max_set")),
+            (
+                "Style",
+                rw("dotnet.progress_style_get", "dotnet.progress_style_set"),
+            ),
+            (
+                "Value",
+                rw("dotnet.progress_value_get", "dotnet.progress_value_set"),
+            ),
+            (
+                "Maximum",
+                rw("dotnet.progress_max_get", "dotnet.progress_max_set"),
+            ),
+            (
+                "Minimum",
+                rw("dotnet.progress_min_get", "dotnet.progress_min_set"),
+            ),
+            (
+                "Step",
+                rw("dotnet.progress_step_get", "dotnet.progress_step_set"),
+            ),
+            (
+                "PerformStep",
+                namespaces::overloads(vec![(1, emit("dotnet.progress_step_once"))]),
+            ),
+            (
+                "Increment",
+                namespaces::overloads(vec![(2, emit("dotnet.progress_increment"))]),
+            ),
         ],
         "numericupdown" => vec![
-            ("Value", rw("dotnet.numeric_value_get", "dotnet.numeric_value_set")),
-            ("Minimum", rw("dotnet.numeric_min_get", "dotnet.numeric_min_set")),
-            ("Maximum", rw("dotnet.numeric_max_get", "dotnet.numeric_max_set")),
-            ("Increment", rw("dotnet.numeric_step_get", "dotnet.numeric_step_set")),
+            (
+                "Value",
+                rw("dotnet.numeric_value_get", "dotnet.numeric_value_set"),
+            ),
+            (
+                "Minimum",
+                rw("dotnet.numeric_min_get", "dotnet.numeric_min_set"),
+            ),
+            (
+                "Maximum",
+                rw("dotnet.numeric_max_get", "dotnet.numeric_max_set"),
+            ),
+            (
+                "Increment",
+                rw("dotnet.numeric_step_get", "dotnet.numeric_step_set"),
+            ),
         ],
         "treeview" => vec![("Nodes", ro("dotnet.self"))],
         "listview" => vec![("Columns", ro("dotnet.self")), ("Items", ro("dotnet.self"))],
         "tabcontrol" => vec![("TabPages", ro("dotnet.self"))],
-        "tabpage" => vec![("Text", rw("dotnet.tab_page_text_get", "dotnet.tab_page_text_set"))],
+        "tabpage" => vec![(
+            "Text",
+            rw("dotnet.tab_page_text_get", "dotnet.tab_page_text_set"),
+        )],
         "tabpagecollection" => vec![(
             "Add",
             namespaces::overloads(vec![(2, emit("dotnet.tab_page_add"))]),
@@ -1845,25 +2012,70 @@ fn shared_emit_accessors(class_name: &str) -> Vec<(String, NamespaceNode)> {
         "splitcontainer" => vec![
             ("Panel1", ro("dotnet.split_panel1")),
             ("Panel2", ro("dotnet.split_panel2")),
-            ("SplitterDistance", rw("dotnet.split_distance_get", "dotnet.split_distance_set")),
+            (
+                "SplitterDistance",
+                rw("dotnet.split_distance_get", "dotnet.split_distance_set"),
+            ),
         ],
-        "treenodecollection" => vec![(
-            "Add",
-            namespaces::overloads(vec![(2, emit("dotnet.tree_add_node"))]),
-        ), ("Count", ro("dotnet.dom_tree_count"))],
-        "listviewcolumnheadercollection" => vec![(
-            "Add",
-            namespaces::overloads(vec![(2, emit("dotnet.datagrid_add_column"))]),
-        ), ("Count", ro("dotnet.dom_list_columns_count"))],
-        "listviewitemcollection" => vec![(
-            "Add",
-            namespaces::overloads(vec![(2, emit("dotnet.listview_add_item"))]),
-        ), ("Count", ro("dotnet.dom_list_items_count"))],
+        "treenodecollection" => vec![
+            (
+                "Add",
+                namespaces::overloads(vec![(2, emit("dotnet.tree_add_node"))]),
+            ),
+            ("Count", ro("dotnet.dom_tree_count")),
+        ],
+        "listviewcolumnheadercollection" => vec![
+            (
+                "Add",
+                namespaces::overloads(vec![(2, emit("dotnet.datagrid_add_column"))]),
+            ),
+            ("Count", ro("dotnet.dom_list_columns_count")),
+        ],
+        "listviewitemcollection" => vec![
+            (
+                "Add",
+                namespaces::overloads(vec![(2, emit("dotnet.listview_add_item"))]),
+            ),
+            ("Count", ro("dotnet.dom_list_items_count")),
+        ],
         "listboxobjectcollection" => vec![
             ("Count", ro("dotnet.select_items_count")),
-            ("Add", namespaces::overloads(vec![(2, emit(vybe_compiler::primitives::gui::APPEND_ITEM_EMIT))])),
-            ("RemoveAt", namespaces::overloads(vec![(2, emit(vybe_compiler::primitives::gui::REMOVE_ITEM_EMIT))])),
-            ("Clear", namespaces::overloads(vec![(1, emit("dotnet.select_items_clear"))])),
+            (
+                "Add",
+                namespaces::overloads(vec![(
+                    2,
+                    emit(vybe_compiler::primitives::gui::APPEND_ITEM_EMIT),
+                )]),
+            ),
+            (
+                "RemoveAt",
+                namespaces::overloads(vec![(
+                    2,
+                    emit(vybe_compiler::primitives::gui::REMOVE_ITEM_EMIT),
+                )]),
+            ),
+            (
+                "Clear",
+                namespaces::overloads(vec![(1, emit("dotnet.select_items_clear"))]),
+            ),
+        ],
+        "checkedlistboxobjectcollection" => vec![
+            ("Count", ro("dotnet.checked_list_count")),
+            (
+                "Add",
+                namespaces::overloads(vec![
+                    (1, emit("dotnet.checked_list_add")),
+                    (2, emit("dotnet.checked_list_add_checked")),
+                ]),
+            ),
+            (
+                "RemoveAt",
+                namespaces::overloads(vec![(1, emit("dotnet.checked_list_remove"))]),
+            ),
+            (
+                "Clear",
+                namespaces::overloads(vec![(0, emit("dotnet.checked_list_clear"))]),
+            ),
         ],
         "controlbindingscollection" => vec![(
             "Add",
@@ -1934,10 +2146,8 @@ pub fn has_shared_emit_accessor(class_name: &str, property_name: &str) -> bool {
 /// back the receiver, and this is what the NEXT hop resolves against. Without
 /// it `ms.Items.Add(x)` resolves `Add` against nothing and calls `undefined`.
 ///
-/// Declaring `ToolStripMenuItem` while the runtime holds the STRIP is sound
-/// only because a strip and an item are the same `<menu>` element with the same
-/// member set — the same deliberate alias plib documents on `TMainMenu.Items`.
-/// Give an item its own tag and this stops being true.
+/// Strip collections and menu-item dropdowns both return `<menu>` elements;
+/// their `Add` surface is the same child append even though their owners differ.
 fn self_member_returns(class_name: &str) -> &'static [(&'static str, &'static str)] {
     match class_name.to_ascii_lowercase().as_str() {
         "menustrip"
@@ -1949,9 +2159,7 @@ fn self_member_returns(class_name: &str) -> &'static [(&'static str, &'static st
             ("Items", "ToolStripMenuItem"),
             ("DropDownItems", "ToolStripMenuItem"),
         ],
-        // ⚠ Two DIFFERENT types, where the strips above alias one. A strip and
-        // its item are the same `<menu>` element, so a single member set serves
-        // both; a column and a row are not the same thing and their `Add`s
+        // A column and a row are not the same thing and their `Add`s
         // build different elements. Declaring one type for both would silently
         // make `Rows.Add` append a `<th>`.
         "datagridview" | "datagrid" => &[
@@ -1959,10 +2167,12 @@ fn self_member_returns(class_name: &str) -> &'static [(&'static str, &'static st
             ("Rows", "DataGridViewRowCollection"),
         ],
         "listbox" | "combobox" => &[("Items", "ListBoxObjectCollection")],
+        "checkedlistbox" => &[("Items", "CheckedListBoxObjectCollection")],
         "treeview" => &[("Nodes", "TreeNodeCollection")],
-        "listview" => &[(
-            "Columns", "ListViewColumnHeaderCollection"
-        ), ("Items", "ListViewItemCollection")],
+        "listview" => &[
+            ("Columns", "ListViewColumnHeaderCollection"),
+            ("Items", "ListViewItemCollection"),
+        ],
         "tabcontrol" => &[("TabPages", "TabPageCollection")],
         "splitcontainer" => &[("Panel1", "Panel"), ("Panel2", "Panel")],
         // ── System.Collections.Immutable ──────────────────────────────────
@@ -2065,6 +2275,34 @@ mod resolve_gap_tests {
     }
 
     #[test]
+    fn toolstrip_button_is_an_interactive_element() {
+        super::register_namespace_tree();
+        let element = super::html_element_for_control("ToolStripButton").unwrap();
+        assert_eq!(element, "button;@type=button");
+        let ctor = super::control_ctor_spec("ToolStripButton", element);
+        let control = ctor.control_fn.unwrap();
+        assert!(control.starts_with("button;@type=button;"));
+        assert!(control.contains("background-color:transparent"));
+        assert_eq!(super::html_element_for_control("ToolStrip"), Some("menu"));
+        assert_eq!(
+            super::html_element_for_control("ToolStripLabel"),
+            Some("span")
+        );
+        assert_eq!(
+            super::html_element_for_control("ToolStripStatusLabel"),
+            Some("span")
+        );
+        let item = super::control_ctor_spec("ToolStripMenuItem", "details");
+        assert!(item.inner_html.as_deref().unwrap().contains("<summary"));
+        assert!(item.inner_html.as_deref().unwrap().contains("<menu"));
+        assert!(
+            super::shared_emit_accessors("ToolStripMenuItem")
+                .iter()
+                .any(|(name, _)| name == "DropDownItems")
+        );
+    }
+
+    #[test]
     fn delegate_combine_is_registered() {
         super::register_namespace_tree();
         match registered_leaf(&["dotnet", "system", "delegate", "combine"]) {
@@ -2087,23 +2325,38 @@ mod resolve_gap_tests {
         super::register_namespace_tree();
         let scope = super::dotnet_scope();
         for (member, getter, setter) in [
-            ("ClientSize", "dotnet.winforms_form_clientsize_get", "dotnet.winforms_form_clientsize_set"),
-            ("Text", "dotnet.winforms_form_text_get", "gui.prop_set.windowtitle"),
+            (
+                "ClientSize",
+                "dotnet.winforms_form_clientsize_get",
+                "dotnet.winforms_form_clientsize_set",
+            ),
+            (
+                "Text",
+                "dotnet.winforms_form_text_get",
+                "gui.prop_set.windowtitle",
+            ),
         ] {
             for spelling in [member.to_string(), member.to_ascii_lowercase()] {
                 let fold = Some(vybe_ast::CaseAlphabet::Ascii);
                 let read = vybe_compiler::primitives::namespaces::lookup_type_property_target(
                     &scope, "Form", &spelling, fold,
                 );
-                let write = vybe_compiler::primitives::namespaces::lookup_type_property_setter_target(
-                    &scope, "Form", &spelling, fold,
+                let write =
+                    vybe_compiler::primitives::namespaces::lookup_type_property_setter_target(
+                        &scope, "Form", &spelling, fold,
+                    );
+                assert!(
+                    matches!(read,
+                    Some(vybe_compiler::component_classes::InstancePropertyTarget::Common { emit })
+                        if emit == getter),
+                    "Form.{spelling} getter did not resolve"
                 );
-                assert!(matches!(read,
+                assert!(
+                    matches!(write,
                     Some(vybe_compiler::component_classes::InstancePropertyTarget::Common { emit })
-                        if emit == getter), "Form.{spelling} getter did not resolve");
-                assert!(matches!(write,
-                    Some(vybe_compiler::component_classes::InstancePropertyTarget::Common { emit })
-                        if emit == setter), "Form.{spelling} setter did not resolve");
+                        if emit == setter),
+                    "Form.{spelling} setter did not resolve"
+                );
             }
         }
     }
@@ -2140,17 +2393,57 @@ mod resolve_gap_tests {
                     if emit == &format!("gui.prop_set.on{expected}")),
                 "{control}.{event}: resolver returned {target:?}"
             );
-            let csharp_lowered = vybe_compiler::primitives::namespaces::lookup_type_property_setter_target(
-                &super::dotnet_scope(),
-                control,
-                &event.to_ascii_lowercase(),
-                None,
-            );
+            let csharp_lowered =
+                vybe_compiler::primitives::namespaces::lookup_type_property_setter_target(
+                    &super::dotnet_scope(),
+                    control,
+                    &event.to_ascii_lowercase(),
+                    None,
+                );
             assert!(
                 matches!(&csharp_lowered,
                     Some(vybe_compiler::component_classes::InstancePropertyTarget::Common { emit })
                     if emit == &format!("gui.prop_set.on{expected}")),
-                "{control}.{}: resolver returned {csharp_lowered:?}", event.to_ascii_lowercase()
+                "{control}.{}: resolver returned {csharp_lowered:?}",
+                event.to_ascii_lowercase()
+            );
+        }
+    }
+
+    #[test]
+    fn checked_list_box_items_resolve_to_its_own_collection() {
+        super::register_namespace_tree();
+        let scope = super::dotnet_scope();
+        assert_eq!(
+            super::instance_member_return_type("CheckedListBox", "Items").as_deref(),
+            Some("CheckedListBoxObjectCollection")
+        );
+        let count = vybe_compiler::primitives::namespaces::lookup_type_property_target(
+            &scope,
+            "CheckedListBoxObjectCollection",
+            "Count",
+            Some(vybe_ast::CaseAlphabet::Ascii),
+        );
+        assert!(
+            matches!(count, Some(vybe_compiler::component_classes::InstancePropertyTarget::Common { emit }) if emit == "dotnet.checked_list_count"),
+            "CheckedListBox.Items.Count getter did not resolve"
+        );
+        for (method, argc, expected) in [
+            ("Add", 1, "dotnet.checked_list_add"),
+            ("Add", 2, "dotnet.checked_list_add_checked"),
+            ("RemoveAt", 1, "dotnet.checked_list_remove"),
+            ("Clear", 0, "dotnet.checked_list_clear"),
+        ] {
+            let target = vybe_compiler::primitives::namespaces::lookup_type_instance_target(
+                &scope,
+                "CheckedListBoxObjectCollection",
+                method,
+                argc,
+                Some(vybe_ast::CaseAlphabet::Ascii),
+            );
+            assert!(
+                matches!(target, Some(vybe_compiler::component_classes::InstanceMethodTarget::Common { emit, .. }) if emit == expected),
+                "{method}/{argc} did not resolve to {expected}"
             );
         }
     }
@@ -2161,30 +2454,54 @@ mod resolve_gap_tests {
         let scope = super::dotnet_scope();
         for (class, property, get, set) in [
             ("TextBox", "DataBindings", "dotnet.self", None),
-            ("DataGridView", "DataSource", "dotnet.datagrid_source_get", Some("dotnet.datagrid_source_set")),
-            ("BindingSource", "DataSource", "dotnet.bindingsource_data_source_get", Some("dotnet.bindingsource_data_source_set")),
+            (
+                "DataGridView",
+                "DataSource",
+                "dotnet.datagrid_source_get",
+                Some("dotnet.datagrid_source_set"),
+            ),
+            (
+                "BindingSource",
+                "DataSource",
+                "dotnet.bindingsource_data_source_get",
+                Some("dotnet.bindingsource_data_source_set"),
+            ),
         ] {
             let read = vybe_compiler::primitives::namespaces::lookup_type_property_target(
                 &scope, class, property, None,
             );
-            assert!(matches!(&read,
+            assert!(
+                matches!(&read,
                 Some(vybe_compiler::component_classes::InstancePropertyTarget::Common { emit })
-                    if emit == get), "{class}.{property} getter: {read:?}");
+                    if emit == get),
+                "{class}.{property} getter: {read:?}"
+            );
             if let Some(set) = set {
-                let write = vybe_compiler::primitives::namespaces::lookup_type_property_setter_target(
-                    &scope, class, property, None,
-                );
-                assert!(matches!(&write,
+                let write =
+                    vybe_compiler::primitives::namespaces::lookup_type_property_setter_target(
+                        &scope, class, property, None,
+                    );
+                assert!(
+                    matches!(&write,
                     Some(vybe_compiler::component_classes::InstancePropertyTarget::Common { emit })
-                        if emit == set), "{class}.{property} setter: {write:?}");
+                        if emit == set),
+                    "{class}.{property} setter: {write:?}"
+                );
             }
         }
         let add = vybe_compiler::primitives::namespaces::lookup_type_instance_target(
-            &scope, "ControlBindingsCollection", "Add", 4, None,
+            &scope,
+            "ControlBindingsCollection",
+            "Add",
+            4,
+            None,
         );
-        assert!(matches!(&add,
+        assert!(
+            matches!(&add,
             Some(vybe_compiler::component_classes::InstanceMethodTarget::Common { emit, .. })
-                if emit == "dotnet.control_binding_add"), "DataBindings.Add: {add:?}");
+                if emit == "dotnet.control_binding_add"),
+            "DataBindings.Add: {add:?}"
+        );
     }
 }
 

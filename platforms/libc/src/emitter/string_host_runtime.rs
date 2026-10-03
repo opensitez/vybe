@@ -15,6 +15,10 @@ pub fn register(vm: &mut VM) {
         "charPtrAdd",
         Box::new(|ctx, args| {
             let target = args.first().cloned().unwrap_or(Value::Null);
+            if matches!(target, Value::I32(_) | Value::I64(_) | Value::F64(_)) {
+                let offset = args.get(1).map(Value::as_i64).unwrap_or(0);
+                return Value::I64(target.as_i64().wrapping_add(offset));
+            }
             let offset = args.get(1).map(|v| v.as_i32().max(0) as usize).unwrap_or(0);
             char_ptr_add(Some(ctx), target, offset)
         }),
@@ -28,6 +32,16 @@ pub fn register(vm: &mut VM) {
             };
             let index = args.get(1).map(|v| v.as_i32().max(0) as usize).unwrap_or(0);
             let code = args.get(2).map(|v| v.as_i32()).unwrap_or(0);
+            if let Some(address) =
+                linear_address(&target).and_then(|start| start.checked_add(index))
+            {
+                ctx.with_linear_memory_mut(|memory| {
+                    if let Some(byte) = memory.get_mut(address) {
+                        *byte = code as u8;
+                    }
+                });
+                return target;
+            }
             let ch = args
                 .get(3)
                 .and_then(char_value)
@@ -45,6 +59,29 @@ pub fn register(vm: &mut VM) {
             };
             let src = args.get(1).cloned().unwrap_or(Value::Null);
             let n = args.get(2).map(|v| v.as_i32().max(0) as usize).unwrap_or(0);
+            if let Some(start) = linear_address(&dest) {
+                let bytes = if let Some(source) =
+                    with_linear_string_bytes(Some(ctx), &src, |bytes| {
+                        bytes.iter().copied().take(n).collect::<Vec<_>>()
+                    }) {
+                    source
+                } else {
+                    c_string_from_value(Some(ctx), &src)
+                        .into_bytes()
+                        .into_iter()
+                        .take(n)
+                        .collect()
+                };
+                if let Some(end) = start.checked_add(n) {
+                    ctx.with_linear_memory_mut(|memory| {
+                        if let Some(target) = memory.get_mut(start..end) {
+                            target.fill(0);
+                            target[..bytes.len()].copy_from_slice(&bytes);
+                        }
+                    });
+                }
+                return dest;
+            }
             strncpy_carray(Some(ctx), &dest, &src, n);
             dest
         }),
@@ -80,6 +117,15 @@ fn char_value(value: &Value) -> Option<char> {
 fn char_ptr_add(ctx: Option<&HostContext<'_>>, target: Value, offset: usize) -> Value {
     if let Some((base, base_offset)) = carray_view(ctx, &target) {
         return carray_ref(base, base_offset.saturating_add(offset));
+    }
+    if let Value::Object(obj) = &target {
+        let is_array = matches!(
+            obj.lock().unwrap().kind,
+            ObjectKind::Array(_) | ObjectKind::TypedArray(_)
+        );
+        if is_array {
+            return carray_ref(target, offset);
+        }
     }
     if let Value::String(s) = target {
         let sliced: String = s.chars().skip(offset).collect();
@@ -192,6 +238,11 @@ fn strncpy_carray(ctx: Option<&HostContext<'_>>, dest: &Value, src: &Value, n: u
 }
 
 fn c_string_from_value(ctx: Option<&HostContext<'_>>, value: &Value) -> String {
+    if let Some(text) = with_linear_string_bytes(ctx, value, |bytes| {
+        String::from_utf8_lossy(bytes).into_owned()
+    }) {
+        return text;
+    }
     match value {
         Value::String(s) => s.split('\0').next().unwrap_or("").to_string(),
         Value::Object(_) => {
@@ -206,6 +257,9 @@ fn c_string_from_value(ctx: Option<&HostContext<'_>>, value: &Value) -> String {
 }
 
 fn c_string_len(ctx: Option<&HostContext<'_>>, value: &Value) -> usize {
+    if let Some(length) = with_linear_string_bytes(ctx, value, <[u8]>::len) {
+        return length;
+    }
     match value {
         Value::String(s) => s.find('\0').unwrap_or(s.len()),
         Value::Object(_) => {
@@ -216,6 +270,27 @@ fn c_string_len(ctx: Option<&HostContext<'_>>, value: &Value) -> usize {
         }
         _ => 0,
     }
+}
+
+fn linear_address(value: &Value) -> Option<usize> {
+    matches!(value, Value::I32(_) | Value::I64(_) | Value::F64(_))
+        .then(|| usize::try_from(value.as_i64()).ok())
+        .flatten()
+}
+
+fn with_linear_string_bytes<R>(
+    ctx: Option<&HostContext<'_>>,
+    value: &Value,
+    f: impl FnOnce(&[u8]) -> R,
+) -> Option<R> {
+    let start = linear_address(value)?;
+    ctx?.with_linear_memory(|memory| {
+        let rest = memory.get(start..)?;
+        Some(f(&rest[..rest
+            .iter()
+            .position(|&byte| byte == 0)
+            .unwrap_or(rest.len())]))
+    })?
 }
 
 fn c_indexed_string_len(ctx: Option<&HostContext<'_>>, value: &Value, offset: usize) -> usize {

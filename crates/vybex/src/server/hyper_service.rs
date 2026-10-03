@@ -157,7 +157,7 @@ async fn handle(
         body_bytes,
         remote,
         Some(path.to_string_lossy().as_ref()),
-        path.strip_prefix(config.root.canonicalize().unwrap_or_else(|_| config.root.clone()))
+        path.strip_prefix(config.root.canonicalize().unwrap_or_else(|_| config.root.clone()),)
             .ok()
             .map(|rel| format!("/{}", rel.to_string_lossy().replace('\\', "/")))
             .as_deref(),

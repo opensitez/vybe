@@ -70,7 +70,9 @@ fn event_queues() -> &'static Mutex<EventQueues> {
 
 fn receive_events() {
     let Ok(session) = session() else { return };
-    let Ok(mut queues) = event_queues().lock() else { return };
+    let Ok(mut queues) = event_queues().lock() else {
+        return;
+    };
     for event in session.drain_events() {
         let mut fields = serde_json::from_value::<UiEventFields>(event.fields).unwrap_or_default();
         fields.kind = event.kind.clone();
@@ -219,17 +221,18 @@ impl WebEngine for OsBrowser {
                 .and_then(|mut q| q.raw.pop_front())
                 .map(EventValue::Event)
                 .unwrap_or(EventValue::Null),
-            EventOp::Pending => EventValue::Count(
-                event_queues().lock().map(|q| q.raw.len()).unwrap_or(0),
-            ),
+            EventOp::Pending => {
+                EventValue::Count(event_queues().lock().map(|q| q.raw.len()).unwrap_or(0))
+            }
             EventOp::Dispatch(event) => {
                 if let Ok(mut q) = event_queues().lock() {
                     q.raw.push_back(event);
                 }
                 EventValue::None
             }
-            EventOp::PointerState => call(0, "Event", EventOp::PointerState)
-                .unwrap_or(EventValue::Null),
+            EventOp::PointerState => {
+                call(0, "Event", EventOp::PointerState).unwrap_or(EventValue::Null)
+            }
         }
     }
 
@@ -239,7 +242,12 @@ impl WebEngine for OsBrowser {
 
     fn picker(&self, op: PickerOp) -> Vec<String> {
         let paths = match op {
-            PickerOp::Open { title, filters, directory, multiple } => {
+            PickerOp::Open {
+                title,
+                filters,
+                directory,
+                multiple,
+            } => {
                 let mut dialog = rfd::FileDialog::new().set_title(&title);
                 if !directory.is_empty() {
                     dialog = dialog.set_directory(&directory);
@@ -254,7 +262,12 @@ impl WebEngine for OsBrowser {
                     dialog.pick_file().into_iter().collect()
                 }
             }
-            PickerOp::Save { title, filters, directory, suggested } => {
+            PickerOp::Save {
+                title,
+                filters,
+                directory,
+                suggested,
+            } => {
                 let mut dialog = rfd::FileDialog::new().set_title(&title);
                 if !directory.is_empty() {
                     dialog = dialog.set_directory(&directory);

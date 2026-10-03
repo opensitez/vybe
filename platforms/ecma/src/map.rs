@@ -28,15 +28,32 @@ fn map_unary(
     results: Vec<ValType>,
     call: Box<dyn Fn(&mut HostContext, &[Value]) -> Value + Send + Sync>,
 ) {
-    vm.register_host(HostFnDecl::new("ecma:map", name, call).with_sig(FuncSig {
-        name: name.to_string(),
-        params: Param::unnamed_list(vec![ValType::Any]),
-        results,
-    }));
+    vm.register_host(
+        HostFnDecl::new("ecma:map", name, crate::perf::wrap("ecma:map", name, call)).with_sig(
+            FuncSig {
+                name: name.to_string(),
+                params: Param::unnamed_list(vec![ValType::Any]),
+                results,
+            },
+        ),
+    );
 }
 
 static MAP_ITERATOR_IDX: OnceLock<usize> = OnceLock::new();
 static MAP_PROTOTYPE: OnceLock<Arc<Mutex<Object>>> = OnceLock::new();
+
+fn invoke_prepared_or_direct(
+    ctx: &mut HostContext,
+    callback: &Value,
+    prepared: &Option<crate::function::PreparedBoundCallback>,
+    args: &[Value],
+) -> Value {
+    if let Some(prepared) = prepared {
+        crate::function::invoke_prepared_bound_callback(ctx, prepared, args)
+    } else {
+        ctx.invoke(callback, args)
+    }
+}
 
 /// %Map.prototype% (§24.1.3) — the ONE object every Map instance inherits
 /// from, in the shape of `object::shared_object_prototype`.
@@ -52,19 +69,22 @@ static MAP_PROTOTYPE: OnceLock<Arc<Mutex<Object>>> = OnceLock::new();
 pub fn shared_map_prototype() -> Value {
     let proto = MAP_PROTOTYPE.get_or_init(|| {
         let mut obj = Object::new();
+        obj.properties.reserve(3);
         obj.properties
             .insert("__proto__".into(), crate::object::shared_object_prototype());
         // §24.1.3.13 — `Map.prototype[@@toStringTag]` is "Map",
         // { [[Writable]]: false, [[Enumerable]]: false, [[Configurable]]: true }.
         obj.properties
-            .insert("@@toStringTag".into(), Value::String(Arc::from("Map")));
+            .insert("@@toStringTag".into(), crate::keys::string_value("Map"));
+        obj.properties.insert(
+            "__nonenum".into(),
+            Value::Object(vybe_runtime::heap::alloc(Object::new_array(vec![
+                crate::keys::string_value("@@toStringTag"),
+            ]))),
+        );
         vybe_runtime::heap::alloc(obj)
     });
-    let value = Value::Object(proto.clone());
-    if let Value::Object(o) = &value {
-        crate::object::track_nonenum(o, "@@toStringTag");
-    }
-    value
+    Value::Object(proto.clone())
 }
 
 fn bound_iterator_method(
@@ -74,13 +94,14 @@ fn bound_iterator_method(
     idx: usize,
 ) -> Value {
     let mut fn_obj = Object::new();
+    fn_obj.properties.reserve(6);
     fn_obj.kind = ObjectKind::HostFunction(idx);
     fn_obj
         .properties
-        .insert("__host_module".into(), Value::String(Arc::from(module)));
+        .insert("__host_module".into(), crate::keys::string_value(module));
     fn_obj
         .properties
-        .insert("__host_name".into(), Value::String(Arc::from(name)));
+        .insert("__host_name".into(), crate::keys::string_value(name));
     fn_obj
         .properties
         .insert("__host_idx".into(), Value::F64(idx as f64));
@@ -90,7 +111,7 @@ fn bound_iterator_method(
     );
     fn_obj
         .properties
-        .insert("name".into(), Value::String(Arc::from(name)));
+        .insert("name".into(), crate::keys::string_value(name));
     fn_obj.properties.insert(
         "__bound_args".into(),
         Value::Object(vybe_runtime::heap::alloc(Object::new_array(vec![
@@ -100,9 +121,14 @@ fn bound_iterator_method(
     Value::Object(vybe_runtime::heap::alloc(fn_obj))
 }
 
-fn new_map_value() -> Value {
+fn new_map_with_capacity(capacity: usize) -> Value {
     let mut obj = Object::new();
-    obj.kind = ObjectKind::Map(IndexMap::new());
+    obj.properties.reserve(if MAP_ITERATOR_IDX.get().is_some() {
+        4
+    } else {
+        2
+    });
+    obj.kind = ObjectKind::Map(IndexMap::with_capacity(capacity));
     // §24.1.3.10: `size` is an accessor on the PROTOTYPE. An instance has no
     // own `size`, so there is nothing to keep in sync either.
     obj.properties
@@ -111,10 +137,11 @@ fn new_map_value() -> Value {
     // (`STRUCT_GET m "set"` → host fn) find the right binding. Without
     // it, JS-shape `m.set(k,v)` would dereference a missing property.
     obj.properties
-        .insert("__type".into(), Value::String(Arc::from("Map")));
+        .insert("__type".into(), crate::keys::string_value("Map"));
     let map = vybe_runtime::heap::alloc(obj);
     if let Some(idx) = MAP_ITERATOR_IDX.get() {
-        map.lock().unwrap().properties.insert(
+        let mut guard = map.lock().unwrap();
+        guard.properties.insert(
             "iterator".into(),
             bound_iterator_method(&map, "ecma:map", "entries", *idx),
         );
@@ -123,20 +150,57 @@ fn new_map_value() -> Value {
         // symbol-keyed method must never reach `for...in`; non-enumerable is how
         // that reads once the key is a String. Same treatment `@@toStringTag`
         // already gets on the prototype.
-        crate::object::track_nonenum(&map, "iterator");
+        guard.properties.insert(
+            "__nonenum".into(),
+            Value::Object(vybe_runtime::heap::alloc(Object::new_array(vec![
+                crate::keys::string_value("iterator"),
+            ]))),
+        );
     }
     Value::Object(map)
 }
 
-fn is_map(args: &[Value], idx: usize) -> Option<Arc<Mutex<Object>>> {
-    if let Some(Value::Object(obj)) = args.get(idx) {
-        let o = obj.lock().unwrap();
-        if matches!(o.kind, ObjectKind::Map(_)) {
-            drop(o);
-            return Some(obj.clone());
+#[inline]
+fn map_entries_host_key() -> &'static (String, String) {
+    static KEY: std::sync::OnceLock<(String, String)> = std::sync::OnceLock::new();
+    KEY.get_or_init(|| ("ecma:map".to_string(), "entries".to_string()))
+}
+
+fn pair_array_capacity(value: Option<&Value>) -> usize {
+    let Some(Value::Object(src)) = value else {
+        return 0;
+    };
+    let source = src.lock().unwrap();
+    match &source.kind {
+        ObjectKind::Array(pairs) => pairs.len(),
+        _ => 0,
+    }
+}
+
+fn insert_entries_from_pair_array(target: &mut IndexMap<Value, Value>, value: Option<&Value>) {
+    let Some(Value::Object(src)) = value else {
+        return;
+    };
+    let source = src.lock().unwrap();
+    let ObjectKind::Array(pairs) = &source.kind else {
+        return;
+    };
+    for pair in pairs {
+        if let Value::Object(pair_obj) = pair {
+            if Arc::ptr_eq(src, pair_obj) {
+                if pairs.len() >= 2 {
+                    target.insert(pairs[0].clone(), pairs[1].clone());
+                }
+                continue;
+            }
+            let pair = pair_obj.lock().unwrap();
+            if let ObjectKind::Array(kv) = &pair.kind {
+                if kv.len() >= 2 {
+                    target.insert(kv[0].clone(), kv[1].clone());
+                }
+            }
         }
     }
-    None
 }
 
 /// Refresh the cached `size` property so user code reading
@@ -147,11 +211,11 @@ fn map_groupby_magic(callback: &Value, item: &Value) -> Option<Value> {
         if o.properties.contains_key("__groupby_even_odd") {
             drop(o);
             let n = item.as_i32();
-            return Some(Value::String(std::sync::Arc::from(if n % 2 == 0 {
+            return Some(crate::keys::string_value(if n % 2 == 0 {
                 "even"
             } else {
                 "odd"
-            })));
+            }));
         }
         drop(o);
     }
@@ -230,25 +294,11 @@ pub fn register(vm: &mut VM) {
         "ecma:map",
         "new",
         Box::new(|_ctx, args| {
-            let m = new_map_value();
-            if let (Value::Object(mapobj), Some(Value::Object(src))) = (&m, args.first()) {
-                let s = src.lock().unwrap();
-                if let ObjectKind::Array(ref pairs) = s.kind {
-                    let pairs = pairs.clone();
-                    drop(s);
-                    let mut mo = mapobj.lock().unwrap();
-                    if let ObjectKind::Map(ref mut im) = mo.kind {
-                        for pair in pairs {
-                            if let Value::Object(p) = pair {
-                                let pl = p.lock().unwrap();
-                                if let ObjectKind::Array(ref kv) = pl.kind {
-                                    if kv.len() >= 2 {
-                                        im.insert(kv[0].clone(), kv[1].clone());
-                                    }
-                                }
-                            }
-                        }
-                    }
+            let m = new_map_with_capacity(pair_array_capacity(args.first()));
+            if let Value::Object(mapobj) = &m {
+                let mut mo = mapobj.lock().unwrap();
+                if let ObjectKind::Map(ref mut im) = mo.kind {
+                    insert_entries_from_pair_array(im, args.first());
                 }
             }
             m
@@ -261,27 +311,11 @@ pub fn register(vm: &mut VM) {
         "fromEntries",
         vec![ValType::Any],
         Box::new(|_ctx, args| {
-            let m = new_map_value();
+            let m = new_map_with_capacity(pair_array_capacity(args.first()));
             if let Value::Object(mapobj) = &m {
-                if let Some(Value::Object(src)) = args.first() {
-                    let s = src.lock().unwrap();
-                    if let ObjectKind::Array(ref pairs) = s.kind {
-                        let pairs = pairs.clone();
-                        drop(s);
-                        let mut mo = mapobj.lock().unwrap();
-                        if let ObjectKind::Map(ref mut im) = mo.kind {
-                            for pair in pairs {
-                                if let Value::Object(p) = pair {
-                                    let pl = p.lock().unwrap();
-                                    if let ObjectKind::Array(ref kv) = pl.kind {
-                                        if kv.len() >= 2 {
-                                            im.insert(kv[0].clone(), kv[1].clone());
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
+                let mut mo = mapobj.lock().unwrap();
+                if let ObjectKind::Map(ref mut im) = mo.kind {
+                    insert_entries_from_pair_array(im, args.first());
                 }
             }
             m
@@ -292,11 +326,12 @@ pub fn register(vm: &mut VM) {
         "ecma:map",
         "get",
         Box::new(|_ctx, args| {
-            if let Some(mapobj) = is_map(args, 0) {
-                let key = args.get(1).cloned().unwrap_or(Value::Undefined);
+            if let Some(Value::Object(mapobj)) = args.first() {
+                let undefined = Value::Undefined;
+                let key = args.get(1).unwrap_or(&undefined);
                 let m = mapobj.lock().unwrap();
                 if let ObjectKind::Map(ref im) = m.kind {
-                    return im.get(&key).cloned().unwrap_or(Value::Undefined);
+                    return im.get(key).cloned().unwrap_or(Value::Undefined);
                 }
             }
             Value::Undefined
@@ -307,7 +342,7 @@ pub fn register(vm: &mut VM) {
         "ecma:map",
         "set",
         Box::new(|_ctx, args| {
-            if let Some(mapobj) = is_map(args, 0) {
+            if let Some(Value::Object(mapobj)) = args.first() {
                 let key = args.get(1).cloned().unwrap_or(Value::Undefined);
                 let val = args.get(2).cloned().unwrap_or(Value::Undefined);
                 {
@@ -316,7 +351,7 @@ pub fn register(vm: &mut VM) {
                         im.insert(key, val);
                     }
                 }
-                return Value::Object(mapobj);
+                return Value::Object(mapobj.clone());
             }
             Value::Null
         }),
@@ -326,11 +361,12 @@ pub fn register(vm: &mut VM) {
         "ecma:map",
         "has",
         Box::new(|_ctx, args| {
-            if let Some(mapobj) = is_map(args, 0) {
-                let key = args.get(1).cloned().unwrap_or(Value::Undefined);
+            if let Some(Value::Object(mapobj)) = args.first() {
+                let undefined = Value::Undefined;
+                let key = args.get(1).unwrap_or(&undefined);
                 let m = mapobj.lock().unwrap();
                 if let ObjectKind::Map(ref im) = m.kind {
-                    return Value::Bool(im.contains_key(&key));
+                    return Value::Bool(im.contains_key(key));
                 }
             }
             Value::Bool(false)
@@ -341,13 +377,14 @@ pub fn register(vm: &mut VM) {
         "ecma:map",
         "delete",
         Box::new(|_ctx, args| {
-            if let Some(mapobj) = is_map(args, 0) {
-                let key = args.get(1).cloned().unwrap_or(Value::Undefined);
+            if let Some(Value::Object(mapobj)) = args.first() {
+                let undefined = Value::Undefined;
+                let key = args.get(1).unwrap_or(&undefined);
                 let mut m = mapobj.lock().unwrap();
                 let removed = if let ObjectKind::Map(ref mut im) = m.kind {
                     // `shift_remove` preserves insertion order of the
                     // remaining entries (matches ECMA-262 §24.1.3.3).
-                    im.shift_remove(&key).is_some()
+                    im.shift_remove(key).is_some()
                 } else {
                     false
                 };
@@ -362,7 +399,7 @@ pub fn register(vm: &mut VM) {
         "clear",
         vec![],
         Box::new(|_ctx, args| {
-            if let Some(mapobj) = is_map(args, 0) {
+            if let Some(Value::Object(mapobj)) = args.first() {
                 let mut m = mapobj.lock().unwrap();
                 if let ObjectKind::Map(ref mut im) = m.kind {
                     im.clear();
@@ -377,7 +414,7 @@ pub fn register(vm: &mut VM) {
         "size",
         vec![ValType::I32],
         Box::new(|_ctx, args| {
-            if let Some(mapobj) = is_map(args, 0) {
+            if let Some(Value::Object(mapobj)) = args.first() {
                 let m = mapobj.lock().unwrap();
                 if let ObjectKind::Map(ref im) = m.kind {
                     return Value::I32(im.len() as i32);
@@ -393,10 +430,11 @@ pub fn register(vm: &mut VM) {
         "keys",
         vec![ValType::Any],
         Box::new(|_ctx, args| {
-            if let Some(mapobj) = is_map(args, 0) {
+            if let Some(Value::Object(mapobj)) = args.first() {
                 let m = mapobj.lock().unwrap();
                 if let ObjectKind::Map(ref im) = m.kind {
-                    let keys: Vec<Value> = im.keys().cloned().collect();
+                    let mut keys = Vec::with_capacity(im.len());
+                    keys.extend(im.keys().cloned());
                     return crate::array::make_array_iterator(keys);
                 }
             }
@@ -409,10 +447,11 @@ pub fn register(vm: &mut VM) {
         "values",
         vec![ValType::Any],
         Box::new(|_ctx, args| {
-            if let Some(mapobj) = is_map(args, 0) {
+            if let Some(Value::Object(mapobj)) = args.first() {
                 let m = mapobj.lock().unwrap();
                 if let ObjectKind::Map(ref im) = m.kind {
-                    let vals: Vec<Value> = im.values().cloned().collect();
+                    let mut vals = Vec::with_capacity(im.len());
+                    vals.extend(im.values().cloned());
                     return crate::array::make_array_iterator(vals);
                 }
             }
@@ -429,7 +468,7 @@ pub fn register(vm: &mut VM) {
         "containsValue",
         Box::new(|_ctx, args| {
             let needle = args.get(1).cloned().unwrap_or(Value::Undefined);
-            if let Some(mapobj) = is_map(args, 0) {
+            if let Some(Value::Object(mapobj)) = args.first() {
                 let m = mapobj.lock().unwrap();
                 if let ObjectKind::Map(ref im) = m.kind {
                     return Value::Bool(im.values().any(|v| v == &needle));
@@ -444,29 +483,20 @@ pub fn register(vm: &mut VM) {
         "entries",
         vec![ValType::Any],
         Box::new(|_ctx, args| {
-            if let Some(mapobj) = is_map(args, 0) {
+            if let Some(Value::Object(mapobj)) = args.first() {
                 let m = mapobj.lock().unwrap();
                 if let ObjectKind::Map(ref im) = m.kind {
-                    let pairs: Vec<Value> = im
-                        .iter()
-                        .map(|(k, v)| {
-                            Value::Object(vybe_runtime::heap::alloc(Object::new_array(vec![
-                                k.clone(),
-                                v.clone(),
-                            ])))
-                        })
-                        .collect();
+                    let mut pairs = Vec::with_capacity(im.len());
+                    for (k, v) in im {
+                        pairs.push(crate::array::make_pair_array(k.clone(), v.clone()));
+                    }
                     return crate::array::make_array_iterator(pairs);
                 }
             }
             crate::array::make_array_iterator(Vec::new())
         }),
     );
-    if let Some(idx) = vm
-        .host_registry
-        .get(&("ecma:map".to_string(), "entries".to_string()))
-        .copied()
-    {
+    if let Some(idx) = vm.host_registry.get(map_entries_host_key()).copied() {
         let _ = MAP_ITERATOR_IDX.set(idx);
     }
 
@@ -476,26 +506,35 @@ pub fn register(vm: &mut VM) {
         "ecma:map",
         "forEach",
         Box::new(|ctx, args| {
-            let callback = args.get(1).cloned().unwrap_or(Value::Null);
+            let null = Value::Null;
+            let callback = args.get(1).unwrap_or(&null);
             let this_arg = args.get(2).cloned();
             let saved_this = this_arg.as_ref().map(|_| ctx.current_js_this());
-            if let Some(mapobj) = is_map(args, 0) {
+            let prepared_callback = crate::function::prepare_bound_callback(callback);
+            if let Some(Value::Object(mapobj)) = args.first() {
                 let snapshot: Vec<(Value, Value)> = {
                     let m = mapobj.lock().unwrap();
                     if let ObjectKind::Map(ref im) = m.kind {
-                        im.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+                        let mut snapshot = Vec::with_capacity(im.len());
+                        for (k, v) in im {
+                            snapshot.push((k.clone(), v.clone()));
+                        }
+                        snapshot
                     } else {
                         Vec::new()
                     }
                 };
+                let receiver = Value::Object(mapobj.clone());
+                let mut invoke_args = [Value::Undefined, Value::Undefined, receiver];
                 for (k, v) in snapshot {
-                    let invoke_args = vec![v, k, Value::Object(mapobj.clone())];
-                    if let Some(this_arg) = this_arg.clone() {
-                        ctx.set_js_this(this_arg);
+                    invoke_args[0] = v;
+                    invoke_args[1] = k;
+                    if let Some(this_arg) = &this_arg {
+                        ctx.set_js_this(this_arg.clone());
                     }
-                    ctx.invoke(&callback, &invoke_args);
-                    if let Some(saved_this) = saved_this.clone() {
-                        ctx.set_js_this(saved_this);
+                    invoke_prepared_or_direct(ctx, callback, &prepared_callback, &invoke_args);
+                    if let Some(saved_this) = &saved_this {
+                        ctx.set_js_this(saved_this.clone());
                     }
                 }
             }
@@ -509,45 +548,43 @@ pub fn register(vm: &mut VM) {
         "ecma:map",
         "groupBy",
         Box::new(|ctx, args| {
-            let callback = args.get(1).cloned().unwrap_or(Value::Null);
-            if !is_callable_value(&callback) {
+            let null = Value::Null;
+            let callback = args.get(1).unwrap_or(&null);
+            if !is_callable_value(callback) {
                 return throw_type_error(ctx, "Map.groupBy callback is not callable");
             }
-            let source = args.first().cloned().unwrap_or(Value::Undefined);
+            let prepared_callback = crate::function::prepare_bound_callback(callback);
+            let undefined = Value::Undefined;
+            let source = args.first().unwrap_or(&undefined);
             let Some(items) =
-                collect_groupby_items(ctx, &source, "Map.groupBy argument is not iterable")
+                collect_groupby_items(ctx, source, "Map.groupBy argument is not iterable")
             else {
                 return Value::Undefined;
             };
-            let out = new_map_value();
+            let mut groups: IndexMap<Value, Vec<Value>> = IndexMap::with_capacity(items.len());
+            let mut invoke_args = [Value::Undefined, Value::I32(0)];
+            for (i, item) in items.into_iter().enumerate() {
+                let key = if let Some(k) = map_groupby_magic(callback, &item) {
+                    k
+                } else {
+                    invoke_args[0] = item.clone();
+                    invoke_args[1] = Value::I32(i as i32);
+                    invoke_prepared_or_direct(ctx, callback, &prepared_callback, &invoke_args)
+                };
+                groups
+                    .entry(key)
+                    .or_insert_with(|| Vec::with_capacity(4))
+                    .push(item);
+            }
+            let out = new_map_with_capacity(groups.len());
             if let Value::Object(outobj) = &out {
-                for (i, item) in items.iter().enumerate() {
-                    let key = if let Some(k) = map_groupby_magic(&callback, item) {
-                        k
-                    } else {
-                        let invoke_args = vec![item.clone(), Value::I32(i as i32)];
-                        ctx.invoke(&callback, &invoke_args)
-                    };
-                    let mut mo = outobj.lock().unwrap();
-                    if let ObjectKind::Map(ref mut im) = mo.kind {
-                        let entry = im.entry(key).or_insert_with(|| {
-                            Value::Object(vybe_runtime::heap::alloc(Object::new_array(Vec::new())))
-                        });
-                        if let Value::Object(group) = entry {
-                            let mut g = group.lock().unwrap();
-                            if let ObjectKind::Array(ref mut v) = g.kind {
-                                v.push(item.clone());
-                            }
-                            // Keep the `length` property in sync — member
-                            // access `group.length` reads the property, and
-                            // `Object::new_array` stamps it at creation (0),
-                            // so a raw `v.push` would leave it stale.
-                            let len = match &g.kind {
-                                ObjectKind::Array(v) => v.len(),
-                                _ => 0,
-                            };
-                            g.properties.insert("length".into(), Value::F64(len as f64));
-                        }
+                let mut mo = outobj.lock().unwrap();
+                if let ObjectKind::Map(ref mut im) = mo.kind {
+                    for (key, values) in groups {
+                        im.insert(
+                            key,
+                            Value::Object(vybe_runtime::heap::alloc(Object::new_array(values))),
+                        );
                     }
                 }
             }
@@ -561,13 +598,15 @@ pub fn register(vm: &mut VM) {
         "getOrInsert",
         Box::new(|_ctx, args| {
             if let Some(Value::Object(mapobj)) = args.first() {
-                let key = args.get(1).cloned().unwrap_or(Value::Undefined);
-                let default = args.get(2).cloned().unwrap_or(Value::Undefined);
+                let undefined = Value::Undefined;
+                let key_ref = args.get(1).unwrap_or(&undefined);
                 let mut mo = mapobj.lock().unwrap();
                 if let ObjectKind::Map(ref mut im) = mo.kind {
-                    if let Some(existing) = im.get(&key) {
+                    if let Some(existing) = im.get(key_ref) {
                         return existing.clone();
                     }
+                    let key = key_ref.clone();
+                    let default = args.get(2).cloned().unwrap_or(Value::Undefined);
                     im.insert(key, default.clone());
                     return default;
                 }
@@ -582,17 +621,20 @@ pub fn register(vm: &mut VM) {
         "getOrInsertComputed",
         Box::new(|ctx, args| {
             if let Some(Value::Object(mapobj)) = args.first() {
-                let key = args.get(1).cloned().unwrap_or(Value::Undefined);
-                let factory = args.get(2).cloned().unwrap_or(Value::Undefined);
+                let undefined = Value::Undefined;
+                let key_ref = args.get(1).unwrap_or(&undefined);
+                let factory_ref = args.get(2).unwrap_or(&undefined);
                 let mut mo = mapobj.lock().unwrap();
                 if let ObjectKind::Map(ref mut im) = mo.kind {
-                    if let Some(existing) = im.get(&key) {
+                    if let Some(existing) = im.get(key_ref) {
                         return existing.clone();
                     }
                     drop(mo);
-                    let value = if let Some(v) = map_factory_magic(&factory) {
+                    let key = key_ref.clone();
+                    let value = if let Some(v) = map_factory_magic(factory_ref) {
                         v
                     } else {
+                        let factory = factory_ref.clone();
                         ctx.invoke(&factory, &[key.clone()])
                     };
                     let mut mo2 = mapobj.lock().unwrap();

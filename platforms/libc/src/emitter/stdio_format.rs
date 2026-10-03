@@ -263,9 +263,21 @@ fn emit_ref_store(c: &mut Chunk, ptr_slot: u16, value_slot: u16, arr_set: u16) {
     let base_slot = c.alloc_scratch(1);
     let idx_slot = c.alloc_scratch(1);
     lg(c, ptr_slot);
-    class_slots::emit_class_get(c, ObjSource::Stack, &base_key, class_slots::Dest::Local(base_slot), 0);
+    class_slots::emit_class_get(
+        c,
+        ObjSource::Stack,
+        &base_key,
+        class_slots::Dest::Local(base_slot),
+        0,
+    );
     lg(c, ptr_slot);
-    class_slots::emit_class_get(c, ObjSource::Stack, &idx_key, class_slots::Dest::Local(idx_slot), 0);
+    class_slots::emit_class_get(
+        c,
+        ObjSource::Stack,
+        &idx_key,
+        class_slots::Dest::Local(idx_slot),
+        0,
+    );
 
     lg(c, base_slot);
     c.emit_ref_type_op(Op::REF_TEST, HeapType::Abstract(HT_STRUCT), 0);

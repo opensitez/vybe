@@ -17,6 +17,8 @@
 use chrono::{
     DateTime, Datelike, Duration, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Timelike, Utc,
 };
+use chrono::format::{Item, StrftimeItems};
+use std::borrow::Cow;
 use std::sync::{Arc, Mutex, OnceLock};
 use vybe_runtime::value::Object;
 use vybe_runtime::{HostContext, VM, Value};
@@ -24,6 +26,8 @@ use vybe_runtime::{HostContext, VM, Value};
 const MODULE: &str = "ecma:date";
 
 static DATE_PROTOTYPE: OnceLock<Arc<Mutex<Object>>> = OnceLock::new();
+static ISO_FORMAT_ITEMS: OnceLock<Vec<Item<'static>>> = OnceLock::new();
+static UTC_FORMAT_ITEMS: OnceLock<Vec<Item<'static>>> = OnceLock::new();
 
 /// Canonical `%Date.prototype%`. A singleton so the global wiring (which
 /// populates the methods) and the `new Date()` constructor (which links
@@ -51,7 +55,22 @@ fn ms_of(dt: DateTime<Utc>) -> f64 {
 }
 
 fn format_utc_string(ms: f64) -> Option<String> {
-    dt_from_ms(ms).map(|dt| dt.format("%a, %d %b %Y %H:%M:%S GMT").to_string())
+    let items = UTC_FORMAT_ITEMS.get_or_init(|| {
+        StrftimeItems::new("%a, %d %b %Y %H:%M:%S GMT").collect()
+    });
+    dt_from_ms(ms).map(|dt| dt.format_with_items(items.iter()).to_string())
+}
+
+fn format_iso_datetime(dt: &DateTime<Utc>) -> String {
+    let items = ISO_FORMAT_ITEMS.get_or_init(|| {
+        StrftimeItems::new("%Y-%m-%dT%H:%M:%S%.3fZ").collect()
+    });
+    dt.format_with_items(items.iter()).to_string()
+}
+
+#[inline]
+fn owned_string_value(text: String) -> Value {
+    crate::keys::owned_string_value(text)
 }
 
 fn component_i64(args: &[Value], idx: usize) -> Result<Option<i64>, ()> {
@@ -96,6 +115,15 @@ fn build_utc_ms(
 }
 
 fn construct_date_from_args(values: &[Value]) -> f64 {
+    // Reject invalid components before integer conversion: Rust's float-to-int
+    // casts turn NaN into zero, which otherwise fabricates a valid 1900 date.
+    if values
+        .iter()
+        .take(7)
+        .any(|value| !value.as_f64().is_finite())
+    {
+        return f64::NAN;
+    }
     let year = values.first().map(|v| v.as_f64() as i32).unwrap_or(1970);
     let constructor_year = if (0..=99).contains(&year) {
         year + 1900
@@ -275,7 +303,7 @@ fn setter_helper(args: &[Value], component: &str) -> f64 {
 /// Returns None for NaN / out-of-range values. Used by JSON.stringify to
 /// serialize Date instances without re-locking the object.
 pub fn format_iso_from_ms(ms: f64) -> Option<String> {
-    dt_from_ms(ms).map(|dt| dt.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string())
+    dt_from_ms(ms).map(|dt| format_iso_datetime(&dt))
 }
 
 /// Dispatch a Date method by name. Used by `ecma:value.invokeMethod` when
@@ -326,45 +354,39 @@ pub fn dispatch_date_method(method: &str, args: &[Value]) -> Option<Value> {
         "toISOString" | "toJSON" => {
             let ms = ms_arg(args, 0);
             match dt_from_ms(ms) {
-                Some(dt) => Value::String(Arc::from(
-                    dt.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string().as_str(),
-                )),
+                Some(dt) => owned_string_value(format_iso_datetime(&dt)),
                 None if method == "toJSON" => Value::Null,
-                None => Value::String(Arc::from("Invalid Date")),
+                None => crate::keys::string_value("Invalid Date"),
             }
         }
         "toUTCString" => {
             let ms = ms_arg(args, 0);
             match format_utc_string(ms) {
-                Some(text) => Value::String(Arc::from(text.as_str())),
-                None => Value::String(Arc::from("Invalid Date")),
+                Some(text) => owned_string_value(text),
+                None => crate::keys::string_value("Invalid Date"),
             }
         }
         "toString" | "toLocaleString" => {
             let ms = ms_arg(args, 0);
             match dt_from_ms(ms) {
-                Some(dt) => Value::String(Arc::from(
-                    dt.format("%a %b %d %Y %H:%M:%S GMT+0000 (UTC)")
-                        .to_string()
-                        .as_str(),
-                )),
-                None => Value::String(Arc::from("Invalid Date")),
+                Some(dt) => {
+                    owned_string_value(dt.format("%a %b %d %Y %H:%M:%S GMT+0000 (UTC)").to_string())
+                }
+                None => crate::keys::string_value("Invalid Date"),
             }
         }
         "toDateString" | "toLocaleDateString" => {
             let ms = ms_arg(args, 0);
             match dt_from_ms(ms) {
-                Some(dt) => Value::String(Arc::from(dt.format("%a %b %d %Y").to_string().as_str())),
-                None => Value::String(Arc::from("Invalid Date")),
+                Some(dt) => owned_string_value(dt.format("%a %b %d %Y").to_string()),
+                None => crate::keys::string_value("Invalid Date"),
             }
         }
         "toTimeString" | "toLocaleTimeString" => {
             let ms = ms_arg(args, 0);
             match dt_from_ms(ms) {
-                Some(dt) => Value::String(Arc::from(
-                    dt.format("%H:%M:%S GMT+0000 (UTC)").to_string().as_str(),
-                )),
-                None => Value::String(Arc::from("Invalid Date")),
+                Some(dt) => owned_string_value(dt.format("%H:%M:%S GMT+0000 (UTC)").to_string()),
+                None => crate::keys::string_value("Invalid Date"),
             }
         }
         // Setters mutate __time on args[0] and return the new ms.
@@ -515,7 +537,8 @@ pub fn register(vm: &mut VM) {
             }
         };
         let mut obj = Object::new();
-        obj.properties.insert("__type".into(), Value::String(Arc::from("Date")));
+        obj.properties.reserve(3);
+        obj.properties.insert("__type".into(), crate::keys::string_value("Date"));
         obj.properties.insert("__time".into(), Value::F64(ms));
         obj.properties
             .insert("__proto__".into(), shared_date_prototype());
@@ -527,7 +550,11 @@ pub fn register(vm: &mut VM) {
         MODULE,
         "parse",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            let s = args.first().map(|v| format!("{}", v)).unwrap_or_default();
+            let s: Cow<'_, str> = match args.first() {
+                Some(Value::String(text)) => Cow::Borrowed(text.as_ref()),
+                Some(value) => crate::keys::value_display_cow(value),
+                None => Cow::Borrowed(""),
+            };
             Value::F64(parse_natural(&s))
         }),
     );
@@ -603,10 +630,10 @@ pub fn register(vm: &mut VM) {
             let ms = ms_arg(args, 0);
             match dt_from_ms(ms) {
                 Some(dt) => {
-                    let s = dt.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
-                    Value::String(Arc::from(s.as_str()))
+                    let s = format_iso_datetime(&dt);
+                    owned_string_value(s)
                 }
-                None => Value::String(Arc::from("Invalid Date")),
+                None => crate::keys::string_value("Invalid Date"),
             }
         }),
     );
@@ -620,9 +647,9 @@ pub fn register(vm: &mut VM) {
             match dt_from_ms(ms) {
                 Some(dt) => {
                     let s = dt.format("%a %b %d %Y %H:%M:%S GMT+0000 (UTC)").to_string();
-                    Value::String(Arc::from(s.as_str()))
+                    owned_string_value(s)
                 }
-                None => Value::String(Arc::from("Invalid Date")),
+                None => crate::keys::string_value("Invalid Date"),
             }
         }),
     );
@@ -633,8 +660,8 @@ pub fn register(vm: &mut VM) {
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let ms = ms_arg(args, 0);
             match format_utc_string(ms) {
-                Some(text) => Value::String(Arc::from(text.as_str())),
-                None => Value::String(Arc::from("Invalid Date")),
+                Some(text) => owned_string_value(text),
+                None => crate::keys::string_value("Invalid Date"),
             }
         }),
     );
@@ -646,8 +673,8 @@ pub fn register(vm: &mut VM) {
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let ms = ms_arg(args, 0);
             match dt_from_ms(ms) {
-                Some(dt) => Value::String(Arc::from(dt.format("%a %b %d %Y").to_string().as_str())),
-                None => Value::String(Arc::from("Invalid Date")),
+                Some(dt) => owned_string_value(dt.format("%a %b %d %Y").to_string()),
+                None => crate::keys::string_value("Invalid Date"),
             }
         }),
     );
@@ -659,10 +686,8 @@ pub fn register(vm: &mut VM) {
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let ms = ms_arg(args, 0);
             match dt_from_ms(ms) {
-                Some(dt) => Value::String(Arc::from(
-                    dt.format("%H:%M:%S GMT+0000 (UTC)").to_string().as_str(),
-                )),
-                None => Value::String(Arc::from("Invalid Date")),
+                Some(dt) => owned_string_value(dt.format("%H:%M:%S GMT+0000 (UTC)").to_string()),
+                None => crate::keys::string_value("Invalid Date"),
             }
         }),
     );
@@ -674,9 +699,7 @@ pub fn register(vm: &mut VM) {
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let ms = ms_arg(args, 0);
             match dt_from_ms(ms) {
-                Some(dt) => Value::String(Arc::from(
-                    dt.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string().as_str(),
-                )),
+                Some(dt) => owned_string_value(format_iso_datetime(&dt)),
                 None => Value::Null,
             }
         }),
@@ -773,7 +796,7 @@ pub fn register(vm: &mut VM) {
         "toLocaleString",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             dispatch_date_method("toString", args)
-                .unwrap_or_else(|| Value::String(Arc::from("Invalid Date")))
+                .unwrap_or_else(|| crate::keys::string_value("Invalid Date"))
         }),
     );
 
@@ -782,7 +805,7 @@ pub fn register(vm: &mut VM) {
         "toLocaleDateString",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             dispatch_date_method("toDateString", args)
-                .unwrap_or_else(|| Value::String(Arc::from("Invalid Date")))
+                .unwrap_or_else(|| crate::keys::string_value("Invalid Date"))
         }),
     );
 
@@ -791,7 +814,71 @@ pub fn register(vm: &mut VM) {
         "toLocaleTimeString",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             dispatch_date_method("toTimeString", args)
-                .unwrap_or_else(|| Value::String(Arc::from("Invalid Date")))
+                .unwrap_or_else(|| crate::keys::string_value("Invalid Date"))
         }),
     );
+}
+
+#[cfg(test)]
+mod date_format_speedup_tests {
+    use super::{dt_from_ms, format_iso_from_ms, format_utc_string};
+
+    fn original_iso(ms: f64) -> Option<String> {
+        dt_from_ms(ms).map(|dt| dt.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string())
+    }
+
+    fn original_utc(ms: f64) -> Option<String> {
+        dt_from_ms(ms).map(|dt| dt.format("%a, %d %b %Y %H:%M:%S GMT").to_string())
+    }
+
+    #[test]
+    fn compiled_formats_preserve_existing_output() {
+        for ms in [0.0, -1.0, -1234567890123.0, 1700000000123.0,
+            253402300799999.0, -62167219200000.0, 8640000000000000.0,
+            f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert_eq!(format_iso_from_ms(ms), original_iso(ms), "ISO {ms}");
+            assert_eq!(format_utc_string(ms), original_utc(ms), "UTC {ms}");
+        }
+    }
+
+    #[test]
+    #[ignore = "explicit native formatting microbenchmark; timing is not a conformance gate"]
+    fn native_compiled_format_microbenchmark() {
+        use std::hint::black_box;
+        use std::time::{Duration, Instant};
+
+        fn time_batch(mut format: impl FnMut()) -> Duration {
+            let started = Instant::now();
+            for _ in 0..100 {
+                format();
+            }
+            started.elapsed()
+        }
+
+        let ms = 1700000000123.0;
+        assert_eq!(format_iso_from_ms(ms), original_iso(ms));
+        assert_eq!(format_utc_string(ms), original_utc(ms));
+        for iso in [true, false] {
+            let mut reparsed = Duration::ZERO;
+            let mut compiled = Duration::ZERO;
+            for batch in 0..10 {
+                let original = || {
+                    black_box(if iso { original_iso(black_box(ms)) }
+                        else { original_utc(black_box(ms)) });
+                };
+                let candidate = || {
+                    black_box(if iso { format_iso_from_ms(black_box(ms)) }
+                        else { format_utc_string(black_box(ms)) });
+                };
+                if batch % 2 == 0 {
+                    reparsed += time_batch(original);
+                    compiled += time_batch(candidate);
+                } else {
+                    compiled += time_batch(candidate);
+                    reparsed += time_batch(original);
+                }
+            }
+            eprintln!("native Date formatting, n=1000, iso={iso}: reparsed={reparsed:?}, compiled={compiled:?}");
+        }
+    }
 }

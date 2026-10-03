@@ -196,7 +196,7 @@ fn exception_description(value: &Value) -> String {
     if let Value::Object(object) = value {
         let (name, message) = {
             let object = object.lock().unwrap();
-            (object.properties.get("name").cloned(), object.properties.get("message").cloned())
+            (object.properties.get("name").cloned(), object.properties.get("message").cloned(),)
         };
         if let Some(Value::String(message)) = message {
             return match name {
@@ -669,9 +669,7 @@ impl VM {
                 // "otherwise the fall-back handler of the call tag is
                 // (tail) called with the arguments" — the same rule an
                 // ordinary funcref gets, so it lives in one place below.
-                None => {
-                    self.call_tag_fallback(tag, funcref, argc)
-                }
+                None => self.call_tag_fallback(tag, funcref, argc),
             };
         }
 
@@ -708,7 +706,7 @@ impl VM {
         &mut self,
         tag: u32,
         funcref: Value,
-        argc: usize,
+        argc: usize
     ) -> Result<(), VMError> {
         let Some((direct_target, dynamic_handler)) = self
             .call_tags
@@ -1061,7 +1059,7 @@ impl VM {
                                 args.extend_from_slice(elems);
                             }
                         }
-                        args.extend_from_slice(&self.stack[arg_start + usize::from(receiver_on_stack)..]);
+                        args.extend_from_slice(&self.stack[arg_start + usize::from(receiver_on_stack)..],);
                         self.stack.truncate(arg_start - 1);
                         // Constant under a given module ABI, because the
                         // layout above is now invariant. Kept only so the
@@ -1331,7 +1329,7 @@ impl VM {
             // The first RESUME appends its value as the generator's control
             // argument. Keep that value out of omitted user-parameter slots:
             // they must receive Undefined so their declared defaults run.
-            args.resize(args.len().max((func.arity as usize).saturating_sub(1)), Value::Undefined);
+            args.resize(args.len().max((func.arity as usize).saturating_sub(1)), Value::Undefined,);
             // Re-wrap the Function value so entry can re-call it later.
             let fn_obj = Object {
                 properties: indexmap::IndexMap::new(),
@@ -1501,7 +1499,9 @@ impl VM {
                 drop(ob); // release borrow before accessing self
                 let mut ancestor = function_proto;
                 for _ in 0..1024 {
-                    let Some(Value::Object(parent)) = ancestor else { break };
+                    let Some(Value::Object(parent)) = ancestor else {
+                        break;
+                    };
                     let parent = parent.lock().unwrap();
                     if let Some(value) = parent.properties.get(name) {
                         return Ok(value.clone());

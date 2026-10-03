@@ -16,20 +16,23 @@ use std::sync::{Arc, Mutex};
 use vybe_runtime::value::{Object, ObjectKind};
 use vybe_runtime::{HostContext, VM, Value};
 
-// Method indices captured at register time so `make_iterator` can attach
-// them as direct properties on every iterator instance — chained
+// Method wrappers captured at register time so `make_iterator` can attach
+// them as direct properties on every iterator instance without allocating
+// a fresh host-function object per method per iterator — chained
 // `Iterator.range(0,5).map(...).filter(...).toArray()` works without
 // TypeRegistry vtable dispatch (the iterator object's type_id stays at
 // the default Object id; method dispatch falls back to property lookup).
-static METHODS: std::sync::OnceLock<Vec<(String, usize)>> = std::sync::OnceLock::new();
+static METHODS: std::sync::OnceLock<Vec<(String, Value)>> = std::sync::OnceLock::new();
+
+#[inline]
+fn char_value(ch: char) -> Value {
+    crate::keys::char_value(ch)
+}
 
 fn attach_iterator_methods(obj: &mut Object) {
     if let Some(methods) = METHODS.get() {
-        for (name, idx) in methods {
-            obj.properties.insert(
-                name.clone(),
-                receiver_host_fn_ref("ecma:iterator", name, *idx),
-            );
+        for (name, method) in methods {
+            obj.properties.insert(name.clone(), method.clone());
         }
     }
 }
@@ -37,7 +40,9 @@ fn attach_iterator_methods(obj: &mut Object) {
 fn make_iterator(values: Vec<Value>) -> Value {
     let mut obj = Object::new();
     obj.properties
-        .insert("__type".into(), Value::String(Arc::from("Iterator")));
+        .reserve(3 + METHODS.get().map_or(0, |methods| methods.len()));
+    obj.properties
+        .insert("__type".into(), crate::keys::string_value("Iterator"));
     obj.kind = ObjectKind::Array(values);
     obj.properties.insert("__index".into(), Value::I32(0));
     attach_iterator_methods(&mut obj);
@@ -47,9 +52,11 @@ fn make_iterator(values: Vec<Value>) -> Value {
 fn make_lazy_map(source: Value, mapper: Value) -> Value {
     let mut obj = Object::new();
     obj.properties
-        .insert("__type".into(), Value::String(Arc::from("Iterator")));
+        .reserve(5 + METHODS.get().map_or(0, |methods| methods.len()));
     obj.properties
-        .insert("__iterator_kind".into(), Value::String(Arc::from("map")));
+        .insert("__type".into(), crate::keys::string_value("Iterator"));
+    obj.properties
+        .insert("__iterator_kind".into(), crate::keys::string_value("map"));
     obj.properties.insert("__source".into(), source);
     obj.properties.insert("__mapper".into(), mapper);
     obj.properties.insert("__index".into(), Value::I32(0));
@@ -64,27 +71,31 @@ pub fn maybe_await_value(value: Value) -> Value {
 pub fn try_maybe_await_value(value: Value) -> Result<Value, Value> {
     if let Value::Object(obj) = &value {
         let lock = obj.lock().unwrap();
-        let is_promise = lock
-            .properties
-            .get("__type")
-            .map(|tag| format!("{}", tag))
-            .as_deref()
-            == Some("Promise");
+        let is_promise = match lock.properties.get("__type") {
+            Some(Value::String(tag)) => tag.as_ref() == "Promise",
+            Some(other) => crate::keys::value_display_string(other) == "Promise",
+            None => false,
+        };
         if is_promise {
-            let state = lock
-                .properties
-                .get("__state")
-                .map(|state| format!("{}", state))
-                .unwrap_or_default();
+            let (is_rejected, is_fulfilled) = match lock.properties.get("__state") {
+                Some(Value::String(state)) => {
+                    (state.as_ref() == "rejected", state.as_ref() == "fulfilled")
+                }
+                Some(other) => {
+                    let state = crate::keys::value_display_string(other);
+                    (state == "rejected", state == "fulfilled")
+                }
+                None => (false, false),
+            };
             let settled = lock
                 .properties
                 .get("__value")
                 .cloned()
                 .unwrap_or(Value::Undefined);
-            if state == "rejected" {
+            if is_rejected {
                 return Err(settled);
             }
-            if state == "fulfilled" {
+            if is_fulfilled {
                 return Ok(settled);
             }
         }
@@ -92,8 +103,7 @@ pub fn try_maybe_await_value(value: Value) -> Result<Value, Value> {
     Ok(maybe_await_value(value))
 }
 
-fn values_from_array_like(obj: &Arc<Mutex<Object>>) -> Option<Vec<Value>> {
-    let o = obj.lock().unwrap();
+fn values_from_array_like(o: &Object) -> Option<Vec<Value>> {
     let ObjectKind::Array(ref vec) = o.kind else {
         return None;
     };
@@ -102,7 +112,12 @@ fn values_from_array_like(obj: &Arc<Mutex<Object>>) -> Option<Vec<Value>> {
         .get("__index")
         .map(|v| v.as_i32().max(0) as usize)
         .unwrap_or(0);
-    Some(vec.iter().skip(start).cloned().collect())
+    if start == 0 {
+        return Some(vec.clone());
+    }
+    let mut values = Vec::with_capacity(vec.len().saturating_sub(start));
+    values.extend(vec.iter().skip(start).cloned());
+    Some(values)
 }
 
 /// ECMA-262 §7.3.18 array-like fallback: a plain (`Ordinary`) object carrying a
@@ -121,12 +136,9 @@ fn values_from_object_array_like(obj: &Arc<Mutex<Object>>) -> Option<Vec<Value>>
     let len = length as usize;
     let mut out = Vec::with_capacity(len.min(4096));
     for i in 0..len {
-        out.push(
-            o.properties
-                .get(&i.to_string())
-                .cloned()
-                .unwrap_or(Value::Undefined),
-        );
+        out.push(crate::keys::with_index_key(i, |key| {
+            o.properties.get(key).cloned().unwrap_or(Value::Undefined)
+        }));
     }
     Some(out)
 }
@@ -141,8 +153,7 @@ fn values_from_materialized(value: Value) -> Vec<Value> {
     Vec::new()
 }
 
-fn lazy_map_parts(obj: &Arc<Mutex<Object>>) -> Option<(Value, Value, usize)> {
-    let o = obj.lock().unwrap();
+fn lazy_map_parts(o: &Object) -> Option<(Value, Value, usize)> {
     let is_map = matches!(
         o.properties.get("__iterator_kind"),
         Some(Value::String(kind)) if kind.as_ref() == "map"
@@ -160,6 +171,33 @@ fn lazy_map_parts(obj: &Arc<Mutex<Object>>) -> Option<(Value, Value, usize)> {
     Some((source, mapper, index))
 }
 
+fn set_iterator_index(object: &mut Object, index: i32) {
+    if let Some(cursor) = object.properties.get_mut("__index") {
+        *cursor = Value::I32(index);
+    } else {
+        object
+            .properties
+            .insert("__index".into(), Value::I32(index));
+    }
+}
+
+fn lazy_source_value_at(ctx: &mut HostContext, source: &Value, index: usize) -> Option<Value> {
+    if let Value::Object(obj) = source {
+        let object = obj.lock().unwrap();
+        if let ObjectKind::Array(values) = &object.kind {
+            let start = object
+                .properties
+                .get("__index")
+                .map(|value| value.as_i32().max(0) as usize)
+                .unwrap_or(0);
+            return values.get(start.saturating_add(index)).cloned();
+        }
+    }
+    materialize_iterable_values(ctx, source, false)
+        .get(index)
+        .cloned()
+}
+
 pub fn materialize_iterable_values(
     ctx: &mut HostContext,
     value: &Value,
@@ -175,24 +213,32 @@ pub fn try_materialize_iterable_values(
 ) -> Result<Vec<Value>, Value> {
     match value {
         Value::Object(obj) => {
-            if let Some((source, mapper, start)) = lazy_map_parts(obj) {
+            let (lazy_map, array_values) = {
+                let object = obj.lock().unwrap();
+                let lazy_map = lazy_map_parts(&object);
+                let array_values = if lazy_map.is_none() {
+                    values_from_array_like(&object)
+                } else {
+                    None
+                };
+                (lazy_map, array_values)
+            };
+            if let Some((source, mapper, start)) = lazy_map {
                 let values = try_materialize_iterable_values(ctx, &source, false)?;
-                let mut mapped = Vec::new();
+                let mut mapped = Vec::with_capacity(values.len().saturating_sub(start));
+                let prepared_mapper = crate::function::prepare_bound_callback(&mapper);
                 for x in values.into_iter().skip(start) {
-                    let mapped_value = match invoke_magic_callback(&mapper, &[x.clone()]) {
-                        Some(value) => value,
-                        None => ctx.try_invoke(&mapper, &[x])?,
-                    };
+                    let mapped_value =
+                        try_invoke_unary_callback_prepared(ctx, &mapper, &prepared_mapper, x)?;
                     mapped.push(mapped_value);
                 }
                 if let Ok(mut o) = obj.lock() {
                     let next = start.saturating_add(mapped.len()).min(i32::MAX as usize);
-                    o.properties
-                        .insert("__index".into(), Value::I32(next as i32));
+                    set_iterator_index(&mut o, next as i32);
                 }
                 return Ok(mapped);
             }
-            if let Some(values) = values_from_array_like(obj) {
+            if let Some(values) = array_values {
                 return Ok(values);
             }
             let first = if prefer_async {
@@ -219,10 +265,13 @@ pub fn try_materialize_iterable_values(
             }
             Ok(Vec::new())
         }
-        Value::String(text) => Ok(text
-            .chars()
-            .map(|ch| Value::String(Arc::from(ch.to_string().as_str())))
-            .collect::<Vec<_>>()),
+        Value::String(text) => {
+            let mut values = Vec::with_capacity(text.len());
+            for ch in text.chars() {
+                values.push(char_value(ch));
+            }
+            Ok(values)
+        }
         _ => Ok(Vec::new()),
     }
 }
@@ -241,8 +290,9 @@ pub fn register(vm: &mut VM) {
             // `{done: true}` immediately. `user_args` is correct under BOTH
             // shapes: it strips nothing when the call carried nothing.
             let user = ctx.user_args(args, 0);
-            let v = user.first().cloned().unwrap_or(Value::Null);
-            make_iterator(materialize_iterable_values(ctx, &v, false))
+            let null = Value::Null;
+            let v = user.first().unwrap_or(&null);
+            make_iterator(materialize_iterable_values(ctx, v, false))
         }),
     );
 
@@ -253,8 +303,9 @@ pub fn register(vm: &mut VM) {
             // See `from` above — this is the shape that actually carried a
             // receiver, and the reason the two twins disagreed.
             let user = ctx.user_args(args, 0);
-            let v = user.first().cloned().unwrap_or(Value::Null);
-            make_iterator(materialize_iterable_values(ctx, &v, true))
+            let null = Value::Null;
+            let v = user.first().unwrap_or(&null);
+            make_iterator(materialize_iterable_values(ctx, v, true))
         }),
     );
 
@@ -276,7 +327,14 @@ pub fn register(vm: &mut VM) {
             if step == 0.0 {
                 return make_iterator(Vec::new());
             }
-            let mut values = Vec::new();
+            let capacity = if step > 0.0 && end > start {
+                ((end - start) / step).ceil().max(0.0) as usize
+            } else if step < 0.0 && start > end {
+                ((start - end) / -step).ceil().max(0.0) as usize
+            } else {
+                0
+            };
+            let mut values = Vec::with_capacity(capacity);
             let mut i = start;
             if step > 0.0 {
                 while i < end {
@@ -300,7 +358,9 @@ pub fn register(vm: &mut VM) {
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let v = materialize_iterable_values(_ctx, args.first().unwrap_or(&Value::Null), false);
             let n = args.get(1).map(|v| v.as_f64() as usize).unwrap_or(0);
-            make_iterator(v.into_iter().take(n).collect())
+            let take_len = v.len().min(n);
+            let out: Vec<Value> = v.into_iter().take(take_len).collect();
+            make_iterator(out)
         }),
     );
 
@@ -311,7 +371,9 @@ pub fn register(vm: &mut VM) {
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let v = materialize_iterable_values(_ctx, args.first().unwrap_or(&Value::Null), false);
             let n = args.get(1).map(|v| v.as_f64() as usize).unwrap_or(0);
-            make_iterator(v.into_iter().skip(n).collect())
+            let skip_len = v.len().min(n);
+            let out: Vec<Value> = v.into_iter().skip(skip_len).collect();
+            make_iterator(out)
         }),
     );
 
@@ -333,14 +395,13 @@ pub fn register(vm: &mut VM) {
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
             let v = materialize_iterable_values(ctx, args.first().unwrap_or(&Value::Null), false);
             let pred = args.get(1).cloned().unwrap_or(Value::Null);
-            let filtered: Vec<Value> = v
-                .into_iter()
-                .filter(|x| {
-                    invoke_magic_callback(&pred, &[x.clone()])
-                        .unwrap_or_else(|| ctx.invoke(&pred, &[x.clone()]))
-                        .as_bool()
-                })
-                .collect();
+            let prepared_pred = crate::function::prepare_bound_callback(&pred);
+            let mut filtered = Vec::with_capacity(v.len());
+            for x in v {
+                if invoke_unary_callback_prepared(ctx, &pred, &prepared_pred, x.clone()).as_bool() {
+                    filtered.push(x);
+                }
+            }
             make_iterator(filtered)
         }),
     );
@@ -352,6 +413,7 @@ pub fn register(vm: &mut VM) {
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
             let v = materialize_iterable_values(ctx, args.first().unwrap_or(&Value::Null), false);
             let reducer = args.get(1).cloned().unwrap_or(Value::Null);
+            let prepared_reducer = crate::function::prepare_bound_callback(&reducer);
             let init = args.get(2).cloned();
             let mut iter = v.into_iter();
             let mut acc = match init {
@@ -362,8 +424,7 @@ pub fn register(vm: &mut VM) {
                 },
             };
             for x in iter {
-                acc = invoke_magic_callback(&reducer, &[acc.clone(), x.clone()])
-                    .unwrap_or_else(|| ctx.invoke(&reducer, &[acc.clone(), x]));
+                acc = invoke_binary_callback_prepared(ctx, &reducer, &prepared_reducer, acc, x);
             }
             acc
         }),
@@ -376,9 +437,9 @@ pub fn register(vm: &mut VM) {
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
             let v = materialize_iterable_values(ctx, args.first().unwrap_or(&Value::Null), false);
             let cb = args.get(1).cloned().unwrap_or(Value::Null);
+            let prepared_cb = crate::function::prepare_bound_callback(&cb);
             for x in v {
-                let _ = invoke_magic_callback(&cb, &[x.clone()])
-                    .unwrap_or_else(|| ctx.invoke(&cb, &[x]));
+                let _ = invoke_unary_callback_prepared(ctx, &cb, &prepared_cb, x);
             }
             Value::Undefined
         }),
@@ -391,11 +452,12 @@ pub fn register(vm: &mut VM) {
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
             let v = materialize_iterable_values(ctx, args.first().unwrap_or(&Value::Null), false);
             let pred = args.get(1).cloned().unwrap_or(Value::Null);
-            Value::Bool(v.into_iter().any(|x| {
-                invoke_magic_callback(&pred, &[x.clone()])
-                    .unwrap_or_else(|| ctx.invoke(&pred, &[x.clone()]))
-                    .as_bool()
-            }))
+            let prepared_pred = crate::function::prepare_bound_callback(&pred);
+            Value::Bool(
+                v.into_iter().any(|x| {
+                    invoke_unary_callback_prepared(ctx, &pred, &prepared_pred, x).as_bool()
+                }),
+            )
         }),
     );
 
@@ -406,11 +468,12 @@ pub fn register(vm: &mut VM) {
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
             let v = materialize_iterable_values(ctx, args.first().unwrap_or(&Value::Null), false);
             let pred = args.get(1).cloned().unwrap_or(Value::Null);
-            Value::Bool(v.into_iter().all(|x| {
-                invoke_magic_callback(&pred, &[x.clone()])
-                    .unwrap_or_else(|| ctx.invoke(&pred, &[x.clone()]))
-                    .as_bool()
-            }))
+            let prepared_pred = crate::function::prepare_bound_callback(&pred);
+            Value::Bool(
+                v.into_iter().all(|x| {
+                    invoke_unary_callback_prepared(ctx, &pred, &prepared_pred, x).as_bool()
+                }),
+            )
         }),
     );
 
@@ -421,13 +484,13 @@ pub fn register(vm: &mut VM) {
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
             let v = materialize_iterable_values(ctx, args.first().unwrap_or(&Value::Null), false);
             let pred = args.get(1).cloned().unwrap_or(Value::Null);
-            v.into_iter()
-                .find(|x| {
-                    invoke_magic_callback(&pred, &[x.clone()])
-                        .unwrap_or_else(|| ctx.invoke(&pred, &[x.clone()]))
-                        .as_bool()
-                })
-                .unwrap_or(Value::Undefined)
+            let prepared_pred = crate::function::prepare_bound_callback(&pred);
+            for x in v {
+                if invoke_unary_callback_prepared(ctx, &pred, &prepared_pred, x.clone()).as_bool() {
+                    return x;
+                }
+            }
+            Value::Undefined
         }),
     );
 
@@ -448,11 +511,13 @@ pub fn register(vm: &mut VM) {
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
             let v = materialize_iterable_values(ctx, args.first().unwrap_or(&Value::Null), false);
             let mapper = args.get(1).cloned().unwrap_or(Value::Null);
-            let mut result = Vec::new();
+            let prepared_mapper = crate::function::prepare_bound_callback(&mapper);
+            let mut result = Vec::with_capacity(v.len());
             for x in v {
-                let mapped = invoke_magic_callback(&mapper, &[x.clone()])
-                    .unwrap_or_else(|| ctx.invoke(&mapper, &[x]));
-                result.extend(materialize_iterable_values(ctx, &mapped, false));
+                let mapped = invoke_unary_callback_prepared(ctx, &mapper, &prepared_mapper, x);
+                let mapped_values = materialize_iterable_values(ctx, &mapped, false);
+                result.reserve(mapped_values.len());
+                result.extend(mapped_values);
             }
             make_iterator(result)
         }),
@@ -463,9 +528,11 @@ pub fn register(vm: &mut VM) {
         "ecma:iterator",
         "concat",
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
-            let mut result = Vec::new();
+            let mut result = Vec::with_capacity(args.len());
             for arg in args {
-                result.extend(materialize_iterable_values(ctx, arg, false));
+                let values = materialize_iterable_values(ctx, arg, false);
+                result.reserve(values.len());
+                result.extend(values);
             }
             make_iterator(result)
         }),
@@ -477,31 +544,32 @@ pub fn register(vm: &mut VM) {
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
             let Some(Value::Object(it)) = args.first() else {
                 let mut result = Object::new();
+                result.properties.reserve(2);
                 result.properties.insert("value".into(), Value::Undefined);
                 result.properties.insert("done".into(), Value::Bool(true));
                 return Value::Object(vybe_runtime::heap::alloc(result));
             };
-            if let Some((source, mapper, index)) = lazy_map_parts(it) {
-                let values = materialize_iterable_values(ctx, &source, false);
-                if let Some(value) = values.get(index).cloned() {
-                    let mapped = invoke_magic_callback(&mapper, &[value.clone()])
-                        .unwrap_or_else(|| ctx.invoke(&mapper, &[value]));
+            let mut lock = it.lock().unwrap();
+            if let Some((source, mapper, index)) = lazy_map_parts(&lock) {
+                drop(lock);
+                if let Some(value) = lazy_source_value_at(ctx, &source, index) {
+                    let mapped = invoke_unary_callback(ctx, &mapper, value);
                     if let Ok(mut lock) = it.lock() {
                         let next = index.saturating_add(1).min(i32::MAX as usize);
-                        lock.properties
-                            .insert("__index".into(), Value::I32(next as i32));
+                        set_iterator_index(&mut lock, next as i32);
                     }
                     let mut result = Object::new();
+                    result.properties.reserve(2);
                     result.properties.insert("value".into(), mapped);
                     result.properties.insert("done".into(), Value::Bool(false));
                     return Value::Object(vybe_runtime::heap::alloc(result));
                 }
                 let mut result = Object::new();
+                result.properties.reserve(2);
                 result.properties.insert("value".into(), Value::Undefined);
                 result.properties.insert("done".into(), Value::Bool(true));
                 return Value::Object(vybe_runtime::heap::alloc(result));
             }
-            let mut lock = it.lock().unwrap();
             let index = lock
                 .properties
                 .get("__index")
@@ -509,15 +577,16 @@ pub fn register(vm: &mut VM) {
                 .unwrap_or(0);
             if let ObjectKind::Array(ref values) = lock.kind {
                 if let Some(value) = values.get(index).cloned() {
-                    lock.properties
-                        .insert("__index".into(), Value::I32(index as i32 + 1));
+                    set_iterator_index(&mut lock, index as i32 + 1);
                     let mut result = Object::new();
+                    result.properties.reserve(2);
                     result.properties.insert("value".into(), value);
                     result.properties.insert("done".into(), Value::Bool(false));
                     return Value::Object(vybe_runtime::heap::alloc(result));
                 }
             }
             let mut result = Object::new();
+            result.properties.reserve(2);
             result.properties.insert("value".into(), Value::Undefined);
             result.properties.insert("done".into(), Value::Bool(true));
             Value::Object(vybe_runtime::heap::alloc(result))
@@ -525,7 +594,7 @@ pub fn register(vm: &mut VM) {
     );
 
     // Capture method indices for instance-property attachment.
-    let methods: Vec<(String, usize)> = [
+    let methods: Vec<(String, Value)> = [
         "next", "take", "drop", "map", "filter", "reduce", "forEach", "some", "every", "find",
         "toArray", "flatMap",
     ]
@@ -534,7 +603,12 @@ pub fn register(vm: &mut VM) {
         vm.host_registry
             .get(&("ecma:iterator".to_string(), name.to_string()))
             .copied()
-            .map(|idx| (name.to_string(), idx))
+            .map(|idx| {
+                (
+                    name.to_string(),
+                    receiver_host_fn_ref("ecma:iterator", name, idx),
+                )
+            })
     })
     .collect();
     let _ = METHODS.set(methods);
@@ -568,15 +642,73 @@ fn invoke_magic_callback(cb: &Value, args: &[Value]) -> Option<Value> {
     if o.properties.contains_key("__flatmap_dup") {
         drop(o);
         if let Some(x) = args.first() {
-            let arr = Object::new_array(vec![x.clone(), x.clone()]);
-            return Some(Value::Object(vybe_runtime::heap::alloc(arr)));
+            return Some(crate::array::make_pair_array(x.clone(), x.clone()));
         }
         return Some(Value::Object(vybe_runtime::heap::alloc(Object::new_array(
-            vec![],
+            Vec::new(),
         ))));
     }
     if o.properties.contains_key("__noop") {
         return Some(Value::Undefined);
     }
     None
+}
+
+fn invoke_unary_callback(ctx: &mut HostContext, cb: &Value, arg: Value) -> Value {
+    let prepared = crate::function::prepare_bound_callback(cb);
+    invoke_unary_callback_prepared(ctx, cb, &prepared, arg)
+}
+
+fn invoke_unary_callback_prepared(
+    ctx: &mut HostContext,
+    cb: &Value,
+    prepared: &Option<crate::function::PreparedBoundCallback>,
+    arg: Value,
+) -> Value {
+    let args = [arg];
+    if let Some(value) = invoke_magic_callback(cb, &args) {
+        value
+    } else if let Some(prepared) = prepared {
+        crate::function::invoke_prepared_bound_callback(ctx, prepared, &args)
+    } else {
+        ctx.invoke(cb, &args)
+    }
+}
+
+fn try_invoke_unary_callback_prepared(
+    ctx: &mut HostContext,
+    cb: &Value,
+    prepared: &Option<crate::function::PreparedBoundCallback>,
+    arg: Value,
+) -> Result<Value, Value> {
+    let args = [arg];
+    match invoke_magic_callback(cb, &args) {
+        Some(value) => Ok(value),
+        None => {
+            if let Some(prepared) = prepared {
+                Ok(crate::function::invoke_prepared_bound_callback(
+                    ctx, prepared, &args,
+                ))
+            } else {
+                ctx.try_invoke(cb, &args)
+            }
+        }
+    }
+}
+
+fn invoke_binary_callback_prepared(
+    ctx: &mut HostContext,
+    cb: &Value,
+    prepared: &Option<crate::function::PreparedBoundCallback>,
+    left: Value,
+    right: Value,
+) -> Value {
+    let args = [left, right];
+    if let Some(value) = invoke_magic_callback(cb, &args) {
+        value
+    } else if let Some(prepared) = prepared {
+        crate::function::invoke_prepared_bound_callback(ctx, prepared, &args)
+    } else {
+        ctx.invoke(cb, &args)
+    }
 }

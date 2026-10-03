@@ -9,6 +9,7 @@ use std::sync::Once;
 use vybe_compiler::primitives::namespaces::{self, NamespaceNode, Subtree};
 
 pub const SDL_COMMON_EMITS: &[(&str, &str)] = &[
+    ("SDL_AllocFormat", "libc.sdl.SDL_AllocFormat"),
     ("SDL_Init", "libc.sdl.SDL_Init"),
     ("SDL_InitSubSystem", "libc.sdl.SDL_InitSubSystem"),
     ("SDL_Quit", "libc.sdl.SDL_Quit"),
@@ -385,6 +386,8 @@ pub fn register_namespace_tree() {
             ("strupr", "c.strupr"),
             ("strlwr", "c.strlwr"),
             ("memcmp", "c.memcmp"),
+            ("strncasecmp", "c.strncasecmp"),
+            ("strnicmp", "c.strncasecmp"),
         ] {
             string.insert(
                 name.to_string(),
@@ -455,6 +458,7 @@ pub fn register_namespace_tree() {
                 "libc.sdl.SDL_CreateRGBSurfaceWithFormatFrom",
             ),
             ("SDL_SetPaletteColors", "libc.sdl.SDL_SetPaletteColors"),
+            ("SDL_AllocFormat", "libc.sdl.SDL_AllocFormat"),
             ("SDL_LockTexture", "libc.sdl.SDL_LockTexture"),
             ("SDL_UnlockTexture", "libc.sdl.SDL_UnlockTexture"),
             ("SDL_LowerBlit", "libc.sdl.SDL_LowerBlit"),
@@ -696,7 +700,15 @@ pub fn register_namespace_tree() {
         }
 
         let mut root = Subtree::new();
+        let mut dirent = Subtree::new();
+        for name in ["opendir", "readdir", "closedir"] {
+            dirent.insert(
+                name.to_string(),
+                NamespaceNode::CommonEmit(format!("libc.dirent.{name}")),
+            );
+        }
         root.insert("math".to_string(), NamespaceNode::Namespace(math));
+        root.insert("dirent".to_string(), NamespaceNode::Namespace(dirent));
         root.insert("stdio".to_string(), NamespaceNode::Namespace(stdio));
         root.insert("string".to_string(), NamespaceNode::Namespace(string));
         root.insert("stdlib".to_string(), NamespaceNode::Namespace(stdlib));

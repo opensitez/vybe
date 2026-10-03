@@ -1,7 +1,7 @@
 //! WinForms list item collections backed by the select element's options.
 
-use vybe_runtime::opcode::Op;
 use vybe_runtime::Chunk;
+use vybe_runtime::opcode::Op;
 
 const DOCUMENT: &str = "web:html";
 

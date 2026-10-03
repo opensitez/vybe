@@ -124,7 +124,7 @@ fn ctor_spec(class: &super::gcl::GclClass) -> CtorSpec {
 /// language already spoke. This is the whole of plib's job here: `Caption` and
 /// `Text` are the same role, `ClientWidth` is `width`. The Pascal word stops
 /// at this function; nothing downstream knows VCL exists.
-fn gui_property_role(owner: &str, prop: &str) -> &'static str {
+fn gui_property_role(owner: &str, class_name: &str, prop: &str) -> &'static str {
     let spelling = prop.to_ascii_lowercase();
     // Spellings VCL reuses for unrelated things. The DECLARING class settles
     // them — `Position` on a form is where the window opens, on a track bar it
@@ -140,6 +140,9 @@ fn gui_property_role(owner: &str, prop: &str) -> &'static str {
         // would want its item count, which is a different question.
         ("TMemo", "count") => return "linecount",
         _ => {}
+    }
+    if spelling == "text" && matches!(class_name, "TEdit" | "TMemo") {
+        return "value";
     }
     match spelling.as_str() {
         "caption" | "text" => "text",
@@ -485,7 +488,7 @@ pub fn register_namespace_tree() {
                 // what source says); only the bound target is canonical.
                 // The role this VCL property fills. Unmapped names keep their
                 // own spelling, which lands on an attribute of that name.
-                let role = match gui_property_role(owner, prop) {
+                let role = match gui_property_role(owner, class.name, prop) {
                     "" => prop.to_ascii_lowercase(),
                     r => r.to_string(),
                 };

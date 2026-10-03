@@ -9,6 +9,7 @@
 
 use crate::encoding::*;
 use vybe_runtime::Chunk;
+use vybe_runtime::chunk::Import;
 
 // Custom Descriptors binary encoding
 const CD_DESCRIPTOR: u8 = 0x4D; // (descriptor $x) prefix
@@ -434,6 +435,7 @@ fn record_raw_params(ctx: &mut WasmTypeContext, func_idx: u32, out: &[u8], sig_s
 
 pub fn build_type_context(
     chunks: &[Chunk],
+    host_imports: &[Import],
     import_count: usize,
     rt_imports: &[(&str, &str)],
 ) -> (Vec<u8>, WasmTypeContext) {
@@ -541,8 +543,8 @@ pub fn build_type_context(
                 {
                     // Layout: group (2) + sub (2) + params (1) + results (1).
                     if bip + 5 < code.len() {
-                        let params = code[bip + 4];
-                        let results = code[bip + 5];
+                        let (params, results) =
+                            crate::writer::code::effective_structured_block_counts(chunk, op, bip);
                         if params > 0 || results >= 2 {
                             block_result_counts.insert((params, results));
                         }
@@ -878,9 +880,11 @@ pub fn build_type_context(
     // below, including typed wasm:js-number and wasm:js-string helpers.
 
     // Import function types — per-import typed signatures
-    // Host imports from chunk 0 — scan CALL_IMPORT bytecode to find actual arity
-    let host_import_count = chunks.first().map(|c| c.imports.len()).unwrap_or(0);
+    // Host imports from the module-level import table. Each chunk carries a
+    // local import table, so CALL immediates are remapped by (module, name).
+    let host_import_count = host_imports.len();
     let mut host_arity: Vec<u8> = vec![0; host_import_count];
+    let host_import_map = crate::writer::sections::host_import_index_map(host_imports);
     for chunk in chunks {
         let mut ip = 0;
         while ip < chunk.code.len() {
@@ -893,7 +897,18 @@ pub fn build_type_context(
                 if op == vybe_runtime::opcode::Op::CALL {
                     let import_idx = ((chunk.code[ip + 4] as u16) << 8) | chunk.code[ip + 5] as u16;
                     let argc = chunk.code[ip + 6];
-                    if (import_idx as usize) < host_import_count {
+                    if let Some(import) = chunk.imports.get(import_idx as usize) {
+                        if let Some(&module_idx) =
+                            host_import_map.get(&(import.module.clone(), import.name.clone()))
+                        {
+                            host_arity[module_idx] = host_arity[module_idx].max(argc);
+                        }
+                    } else if (import_idx as usize) < host_import_count {
+                        // Older lowered helper chunks may refer directly to the
+                        // module-level import table without duplicating those
+                        // entries in their own chunk.imports. The code writer
+                        // preserves that index; the signature scanner must see
+                        // the same call or the import is declared as zero-arg.
                         host_arity[import_idx as usize] = host_arity[import_idx as usize].max(argc);
                     }
                 }
@@ -913,10 +928,8 @@ pub fn build_type_context(
         // `if (result i32)` as an externref and V8 refused the module. Ask the
         // owning proposal module for the real signature; the scan is only the
         // fallback for genuinely untyped host functions.
-        let (module, name) = {
-            let imp = &chunks[0].imports[i];
-            (imp.module.as_str(), imp.name.as_str())
-        };
+        let imp = &host_imports[i];
+        let (module, name) = (imp.module.as_str(), imp.name.as_str());
         let sig_start = out.len();
         if write_proposal_signature(&mut out, module, name) {
             record_result_signature(&mut ctx, i as u32, &out, sig_start);

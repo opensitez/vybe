@@ -532,12 +532,17 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "dotnet.control_backcolor_set" | "dotnet.control_forecolor_set" => {
             crate::emitter::core::color_adapter::emit_set_control_color(
-                &mut chunks[current], name == "dotnet.control_backcolor_set", line,
+                &mut chunks[current],
+                name == "dotnet.control_backcolor_set",
+                line,
             );
         }
         "dotnet.control_backcolor_get" | "dotnet.control_forecolor_get" => {
             crate::emitter::core::color_adapter::emit_get_control_color(
-                chunks, current, name == "dotnet.control_backcolor_get", line,
+                chunks,
+                current,
+                name == "dotnet.control_backcolor_get",
+                line,
             );
         }
         "dotnet.control_font_set" => {
@@ -547,10 +552,16 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             crate::emitter::core::font_adapter::emit_get_control_font(&mut chunks[current], line);
         }
         "dotnet.picturebox_image_location_set" => {
-            crate::emitter::core::picturebox_adapter::emit_set_image_location(&mut chunks[current], line);
+            crate::emitter::core::picturebox_adapter::emit_set_image_location(
+                &mut chunks[current],
+                line,
+            );
         }
         "dotnet.picturebox_size_mode_set" => {
-            crate::emitter::core::picturebox_adapter::emit_set_size_mode(&mut chunks[current], line);
+            crate::emitter::core::picturebox_adapter::emit_set_size_mode(
+                &mut chunks[current],
+                line,
+            );
         }
         "dotnet.picturebox_image_location_get" | "dotnet.picturebox_size_mode_get" => {
             let property = if name.contains("image_location") {
@@ -558,12 +569,26 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             } else {
                 "__dotnet_picturebox_size_mode"
             };
-            crate::emitter::core::picturebox_adapter::emit_get(&mut chunks[current], property, line);
+            crate::emitter::core::picturebox_adapter::emit_get(
+                &mut chunks[current],
+                property,
+                line,
+            );
         }
-        "dotnet.font_name_get" | "dotnet.font_size_get"
-        | "dotnet.font_bold_get" | "dotnet.font_italic_get" => {
-            let property = name.strip_prefix("dotnet.font_").unwrap().strip_suffix("_get").unwrap();
-            crate::emitter::core::font_adapter::emit_get_font_property(&mut chunks[current], property, line);
+        "dotnet.font_name_get"
+        | "dotnet.font_size_get"
+        | "dotnet.font_bold_get"
+        | "dotnet.font_italic_get" => {
+            let property = name
+                .strip_prefix("dotnet.font_")
+                .unwrap()
+                .strip_suffix("_get")
+                .unwrap();
+            crate::emitter::core::font_adapter::emit_get_font_property(
+                &mut chunks[current],
+                property,
+                line,
+            );
         }
         "dotnet.control_borderstyle_set" => {
             crate::emitter::core::border_adapter::emit_set_border_style(&mut chunks[current], line);
@@ -571,19 +596,40 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "dotnet.control_borderstyle_get" => {
             crate::emitter::core::border_adapter::emit_get_border_style(&mut chunks[current], line);
         }
-        "dotnet.checkable_text_get" | "dotnet.checkable_text_set"
-        | "dotnet.checkable_checked_get" | "dotnet.checkable_checked_set"
-        | "dotnet.checkable_enabled_get" | "dotnet.checkable_enabled_set" => {
+        "dotnet.checkable_text_get"
+        | "dotnet.checkable_text_set"
+        | "dotnet.checkable_checked_get"
+        | "dotnet.checkable_checked_set"
+        | "dotnet.checkable_enabled_get"
+        | "dotnet.checkable_enabled_set" => {
             let member = name.strip_prefix("dotnet.checkable_").unwrap();
             let (member, action) = member.rsplit_once('_').unwrap();
             crate::emitter::core::captioned_control_adapter::emit_property(
-                &mut chunks[current], member, action == "set", false, line,
+                &mut chunks[current],
+                member,
+                action == "set",
+                false,
+                line,
             );
         }
         "dotnet.groupbox_text_get" | "dotnet.groupbox_text_set" => {
             crate::emitter::core::captioned_control_adapter::emit_property(
-                &mut chunks[current], "text", name.ends_with("_set"), true, line,
+                &mut chunks[current],
+                "text",
+                name.ends_with("_set"),
+                true,
+                line,
             );
+        }
+        "dotnet.menu_item_text_get" | "dotnet.menu_item_text_set" => {
+            crate::emitter::core::menu_item_adapter::emit_text(
+                &mut chunks[current],
+                name.ends_with("_set"),
+                line,
+            );
+        }
+        "dotnet.menu_item_dropdown_get" => {
+            crate::emitter::core::menu_item_adapter::emit_dropdown(&mut chunks[current], line);
         }
         // A member that IS the receiver — `MenuStrip.Items`. WinForms wraps a
         // strip's contents in a collection object, but in the document the
@@ -598,6 +644,34 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "dotnet.select_items_clear" => {
             crate::emitter::core::select_items_adapter::emit_clear(&mut chunks[current], line);
         }
+        "dotnet.checked_list_add" | "dotnet.checked_list_add_checked" => {
+            crate::emitter::core::checked_list_box_adapter::emit_add(
+                &mut chunks[current],
+                name == "dotnet.checked_list_add_checked",
+                line,
+            );
+        }
+        "dotnet.checked_list_count" => {
+            crate::emitter::core::checked_list_box_adapter::emit_count(&mut chunks[current], line);
+        }
+        "dotnet.checked_list_clear" => {
+            crate::emitter::core::checked_list_box_adapter::emit_clear(&mut chunks[current], line);
+        }
+        "dotnet.checked_list_remove" => {
+            crate::emitter::core::checked_list_box_adapter::emit_remove(&mut chunks[current], line);
+        }
+        "dotnet.checked_list_get" => {
+            crate::emitter::core::checked_list_box_adapter::emit_get_checked(
+                &mut chunks[current],
+                line,
+            );
+        }
+        "dotnet.checked_list_set" => {
+            crate::emitter::core::checked_list_box_adapter::emit_set_checked(
+                &mut chunks[current],
+                line,
+            );
+        }
         // The grid's data surface, built as DOM. See `datagrid_adapter`.
         "dotnet.datagrid_add_column" => {
             crate::emitter::core::datagrid_adapter::emit_add_column(chunks, current, argc, line);
@@ -611,30 +685,52 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "dotnet.listview_add_item" => {
             crate::emitter::core::list_tree_adapter::emit_list_add(chunks, current, line);
         }
-        "dotnet.dom_tree_count" | "dotnet.dom_list_columns_count" | "dotnet.dom_list_items_count" => {
-            let section = if name.ends_with("columns_count") { "columns" }
-                else if name.ends_with("items_count") { "items" } else { "tree" };
-            crate::emitter::core::list_tree_adapter::emit_count(&mut chunks[current], section, line);
+        "dotnet.dom_tree_count"
+        | "dotnet.dom_list_columns_count"
+        | "dotnet.dom_list_items_count" => {
+            let section = if name.ends_with("columns_count") {
+                "columns"
+            } else if name.ends_with("items_count") {
+                "items"
+            } else {
+                "tree"
+            };
+            crate::emitter::core::list_tree_adapter::emit_count(
+                &mut chunks[current],
+                section,
+                line,
+            );
         }
         "dotnet.split_panel1" | "dotnet.split_panel2" => {
             crate::emitter::core::split_container_adapter::emit_panel(
-                &mut chunks[current], name.ends_with('2'), line,
+                &mut chunks[current],
+                name.ends_with('2'),
+                line,
             );
         }
         "dotnet.split_init" => {
             crate::emitter::core::split_container_adapter::emit_init(chunks, current, line);
         }
         "dotnet.split_distance_set" => {
-            crate::emitter::core::split_container_adapter::emit_distance_set(&mut chunks[current], line);
+            crate::emitter::core::split_container_adapter::emit_distance_set(
+                &mut chunks[current],
+                line,
+            );
         }
         "dotnet.split_distance_get" => {
-            crate::emitter::core::split_container_adapter::emit_distance_get(&mut chunks[current], line);
+            crate::emitter::core::split_container_adapter::emit_distance_get(
+                &mut chunks[current],
+                line,
+            );
         }
         "dotnet.bindingnavigator_source_set" => {
             crate::emitter::core::bindingnavigator_adapter::emit_set_source(chunks, current, line);
         }
         "dotnet.bindingnavigator_source_get" => {
-            crate::emitter::core::bindingnavigator_adapter::emit_get_source(&mut chunks[current], line);
+            crate::emitter::core::bindingnavigator_adapter::emit_get_source(
+                &mut chunks[current],
+                line,
+            );
         }
         "dotnet.control_binding_add" => {
             crate::emitter::core::control_binding_adapter::add(chunks, current, line);
@@ -646,48 +742,122 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             crate::emitter::core::datagrid_binding_adapter::get_source(&mut chunks[current], line);
         }
         "dotnet.bindingsource_data_source_get" | "dotnet.bindingsource_position_get" => {
-            let key = if name.contains("position") { "position" } else { "datasource" };
-            crate::emitter::core::bindingsource_adapter::emit_get_field(&mut chunks[current], key, line);
+            let key = if name.contains("position") {
+                "position"
+            } else {
+                "datasource"
+            };
+            crate::emitter::core::bindingsource_adapter::emit_get_field(
+                &mut chunks[current],
+                key,
+                line,
+            );
         }
         "dotnet.bindingsource_data_source_set" => {
-            crate::emitter::core::bindingsource_adapter::emit_bindingsource_set_data_source(chunks, current, line);
+            crate::emitter::core::bindingsource_adapter::emit_bindingsource_set_data_source(
+                chunks, current, line,
+            );
         }
         "dotnet.bindingsource_position_set" => {
-            crate::emitter::core::bindingsource_adapter::emit_bindingsource_set_position(chunks, current, line);
+            crate::emitter::core::bindingsource_adapter::emit_bindingsource_set_position(
+                chunks, current, line,
+            );
         }
         "dotnet.bindingsource_reset_bindings" => {
-            crate::emitter::core::bindingsource_adapter::emit_bindingsource_reset_bindings(chunks, current, line);
+            crate::emitter::core::bindingsource_adapter::emit_bindingsource_reset_bindings(
+                chunks, current, line,
+            );
         }
         "dotnet.tab_page_add" => {
             crate::emitter::core::tab_control_adapter::emit_add_page(chunks, current, line);
         }
         "dotnet.tab_page_text_set" => {
-            crate::emitter::core::tab_control_adapter::emit_page_text_set(&mut chunks[current], line);
+            crate::emitter::core::tab_control_adapter::emit_page_text_set(
+                &mut chunks[current],
+                line,
+            );
         }
         "dotnet.tab_page_text_get" => {
-            crate::emitter::core::tab_control_adapter::emit_page_text_get(&mut chunks[current], line);
+            crate::emitter::core::tab_control_adapter::emit_page_text_get(
+                &mut chunks[current],
+                line,
+            );
         }
-        "dotnet.progress_value_set" | "dotnet.progress_max_set" => {
-            let attribute = if name.contains("value") { "value" } else { "max" };
-            crate::emitter::core::progress_adapter::emit_set_attribute(&mut chunks[current], attribute, line);
+        "dotnet.progress_value_set"
+        | "dotnet.progress_max_set"
+        | "dotnet.progress_min_set"
+        | "dotnet.progress_step_set"
+        | "dotnet.progress_style_set" => {
+            let property = match name {
+                "dotnet.progress_value_set" => "value",
+                "dotnet.progress_max_set" => "maximum",
+                "dotnet.progress_min_set" => "minimum",
+                "dotnet.progress_style_set" => "style",
+                _ => "step",
+            };
+            crate::emitter::core::progress_adapter::emit_set(chunks, current, property, line);
         }
-        "dotnet.progress_value_get" | "dotnet.progress_max_get" => {
-            let attribute = if name.contains("value") { "value" } else { "max" };
-            crate::emitter::core::progress_adapter::emit_get_attribute(&mut chunks[current], attribute, line);
+        "dotnet.progress_value_get"
+        | "dotnet.progress_max_get"
+        | "dotnet.progress_min_get"
+        | "dotnet.progress_step_get"
+        | "dotnet.progress_style_get" => {
+            let property = match name {
+                "dotnet.progress_value_get" => "value",
+                "dotnet.progress_max_get" => "maximum",
+                "dotnet.progress_min_get" => "minimum",
+                "dotnet.progress_style_get" => "style",
+                _ => "step",
+            };
+            crate::emitter::core::progress_adapter::emit_get(&mut chunks[current], property, line);
+        }
+        "dotnet.progress_step_once" | "dotnet.progress_increment" => {
+            crate::emitter::core::progress_adapter::emit_increment(
+                chunks,
+                current,
+                name == "dotnet.progress_increment",
+                line,
+            );
         }
         "dotnet.numeric_value_set" => {
-            crate::emitter::core::numeric_up_down_adapter::emit_set_value(&mut chunks[current], line);
+            crate::emitter::core::numeric_up_down_adapter::emit_set_value(
+                &mut chunks[current],
+                line,
+            );
         }
         "dotnet.numeric_value_get" => {
-            crate::emitter::core::numeric_up_down_adapter::emit_get_value(&mut chunks[current], line);
+            crate::emitter::core::numeric_up_down_adapter::emit_get_value(
+                &mut chunks[current],
+                line,
+            );
         }
         "dotnet.numeric_min_set" | "dotnet.numeric_max_set" | "dotnet.numeric_step_set" => {
-            let attribute = if name.contains("min") { "min" } else if name.contains("max") { "max" } else { "step" };
-            crate::emitter::core::progress_adapter::emit_set_attribute(&mut chunks[current], attribute, line);
+            let attribute = if name.contains("min") {
+                "min"
+            } else if name.contains("max") {
+                "max"
+            } else {
+                "step"
+            };
+            crate::emitter::core::numeric_up_down_adapter::emit_set_bound(
+                &mut chunks[current],
+                attribute,
+                line,
+            );
         }
         "dotnet.numeric_min_get" | "dotnet.numeric_max_get" | "dotnet.numeric_step_get" => {
-            let attribute = if name.contains("min") { "min" } else if name.contains("max") { "max" } else { "step" };
-            crate::emitter::core::numeric_up_down_adapter::emit_get_bound(&mut chunks[current], attribute, line);
+            let attribute = if name.contains("min") {
+                "min"
+            } else if name.contains("max") {
+                "max"
+            } else {
+                "step"
+            };
+            crate::emitter::core::numeric_up_down_adapter::emit_get_bound(
+                &mut chunks[current],
+                attribute,
+                line,
+            );
         }
         "dotnet.winforms_application_run" => {
             crate::emitter::winforms::adapter::emit_application_run(chunks, current, argc, line);
@@ -828,40 +998,69 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
                     &mut chunks[current],
                     ObjSource::Stack,
                     &field_slot(field),
-                    if style.is_some() { ValueSource::Stack } else { ValueSource::ConstBool(false) },
+                    if style.is_some() {
+                        ValueSource::Stack
+                    } else {
+                        ValueSource::ConstBool(false)
+                    },
                     line,
                 );
             }
         }
         "dotnet.table_column_styles" => {
-            crate::emitter::core::table_layout_adapter::emit_styles_get(&mut chunks[current], false, line)
+            crate::emitter::core::table_layout_adapter::emit_styles_get(
+                &mut chunks[current],
+                false,
+                line,
+            )
         }
-        "dotnet.table_row_styles" => {
-            crate::emitter::core::table_layout_adapter::emit_styles_get(&mut chunks[current], true, line)
-        }
+        "dotnet.table_row_styles" => crate::emitter::core::table_layout_adapter::emit_styles_get(
+            &mut chunks[current],
+            true,
+            line,
+        ),
         "dotnet.table_style_count" => {
-            crate::emitter::core::table_layout_adapter::emit_styles_count(&mut chunks[current], line)
+            crate::emitter::core::table_layout_adapter::emit_styles_count(
+                &mut chunks[current],
+                line,
+            )
         }
         "dotnet.table_style_add" => {
             crate::emitter::core::table_layout_adapter::emit_style_add(&mut chunks[current], line)
         }
         "dotnet.table_clear_controls" => {
-            crate::emitter::core::table_layout_adapter::emit_clear_controls(&mut chunks[current], line)
+            crate::emitter::core::table_layout_adapter::emit_clear_controls(
+                &mut chunks[current],
+                line,
+            )
         }
-        "dotnet.table_style_new" if argc == 2 => {
-            emit_value_type_new(&mut chunks[current], "TableLayoutStyle", &["sizetype", "size"], line)
-        }
+        "dotnet.table_style_new" if argc == 2 => emit_value_type_new(
+            &mut chunks[current],
+            "TableLayoutStyle",
+            &["sizetype", "size"],
+            line,
+        ),
         "dotnet.padding_new" if argc == 1 || argc == 4 => {
-            crate::emitter::core::control_layout_adapter::emit_padding_new(&mut chunks[current], argc, line)
+            crate::emitter::core::control_layout_adapter::emit_padding_new(
+                &mut chunks[current],
+                argc,
+                line,
+            )
         }
         "dotnet.control_margin_set" => {
-            crate::emitter::core::control_layout_adapter::emit_margin_set(&mut chunks[current], line)
+            crate::emitter::core::control_layout_adapter::emit_margin_set(
+                &mut chunks[current],
+                line,
+            )
         }
         "dotnet.control_dock_set" => {
             crate::emitter::core::control_layout_adapter::emit_dock_set(&mut chunks[current], line)
         }
         "dotnet.control_textalign_set" => {
-            crate::emitter::core::control_layout_adapter::emit_text_align_set(&mut chunks[current], line)
+            crate::emitter::core::control_layout_adapter::emit_text_align_set(
+                &mut chunks[current],
+                line,
+            )
         }
         "dotnet.control_tag_set" => {
             crate::emitter::core::control_layout_adapter::emit_tag_set(&mut chunks[current], line)
@@ -2862,9 +3061,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             )
         }
         "dotnet.timers_timer_new" => {
-            crate::emitter::core::thread_adapter::emit_timers_timer_new(
-                chunks, current, argc, line,
-            )
+            crate::emitter::core::thread_adapter::emit_timers_timer_new(chunks, current, argc, line)
         }
         "dotnet.timers_timer_start" => {
             crate::emitter::core::thread_adapter::emit_timers_timer_start(chunks, current, line)

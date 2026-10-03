@@ -2,8 +2,8 @@
 
 use vybe_compiler::primitives::instructions::core_wasm;
 use vybe_compiler::primitives::{globals, ops};
-use vybe_runtime::opcode::{heaptype::HT_EXTERN, Op};
 use vybe_runtime::Chunk;
+use vybe_runtime::opcode::{Op, heaptype::HT_EXTERN};
 
 pub fn emit_page_text_set(chunk: &mut Chunk, line: u32) {
     let value = chunk.alloc_scratch(1);
@@ -338,8 +338,6 @@ pub fn emit_add_page(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
 
     let callback = click_callback(chunks, line);
     let c = &mut chunks[current];
-    vybe_compiler::primitives::gui::emit_add_event_listener(
-        c, button, "click", callback, line,
-    );
+    vybe_compiler::primitives::gui::emit_add_event_listener(c, button, "click", callback, line);
     c.emit_ref_null(HT_EXTERN, line);
 }

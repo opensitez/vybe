@@ -106,14 +106,14 @@ pub mod inspect {
     }
 
     pub fn style(node: NodeId, property: &str) -> Option<String> {
-        match engine::apply(super::active(), DomOp::GetStyleProperty(node, property.into())) {
+        match engine::apply(super::active(), DomOp::GetStyleProperty(node, property.into()),) {
             DomValue::Text(value) => Some(value),
             _ => None,
         }
     }
 
     pub fn set_style(node: NodeId, property: &str, value: &str) -> Option<()> {
-        engine::apply(super::active(), DomOp::SetStyleProperty(node, property.into(), value.into()));
+        engine::apply(super::active(), DomOp::SetStyleProperty(node, property.into(), value.into()),);
         Some(())
     }
 
@@ -274,7 +274,7 @@ pub fn controls() -> Vec<DomControl> {
             let tag = text(DomOp::NodeName(node));
             let connected = matches!(apply(document, DomOp::IsConnected(node)), DomValue::Bool(true));
             let rect = match apply(document, DomOp::BoundingClientRect(node)) {
-                DomValue::Rect { x, y, width, height } if connected => Some(DomRect {
+                DomValue::Rect { x, y, width, height ,} if connected => Some(DomRect {
                     x: x as f32, y: y as f32, w: width as f32, h: height as f32,
                 }),
                 _ => None,

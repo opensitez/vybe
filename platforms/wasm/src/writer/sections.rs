@@ -2,6 +2,7 @@
 
 use crate::encoding::*;
 use vybe_runtime::Chunk;
+use vybe_runtime::chunk::Import;
 use vybe_runtime::opcode::{Op, read_leb_u32};
 
 /// Collect all runtime imports needed by the chunks.
@@ -46,12 +47,42 @@ pub fn collect_rt_imports(_chunks: &[Chunk]) -> Vec<(&'static str, &'static str)
         ("ecma:object", "new"),
         ("ecma:object", "get"),
         ("ecma:object", "set"),
+        ("ecma:array", "getValue"),
+        ("ecma:array", "setValue"),
+        ("ecma:array", "length"),
+        ("ecma:value", "abstractEq"),
     ] {
         if seen.insert(key) {
             needed.push(key);
         }
     }
     needed
+}
+
+/// Collect host function imports from every chunk into the single function
+/// index space a standard Wasm module actually has.
+pub fn collect_host_imports(chunks: &[Chunk]) -> Vec<Import> {
+    let mut imports = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for chunk in chunks {
+        for import in &chunk.imports {
+            let key = (import.module.clone(), import.name.clone());
+            if seen.insert(key) {
+                imports.push(import.clone());
+            }
+        }
+    }
+    imports
+}
+
+pub fn host_import_index_map(
+    host_imports: &[Import],
+) -> std::collections::HashMap<(String, String), usize> {
+    host_imports
+        .iter()
+        .enumerate()
+        .map(|(i, import)| ((import.module.clone(), import.name.clone()), i))
+        .collect()
 }
 
 /// `wasm:js-*` globals — imported as externref to give the emitter direct
@@ -74,29 +105,27 @@ pub fn rt_globals() -> &'static [(&'static str, &'static str)] {
 
 pub fn encode_import_section(
     chunks: &[Chunk],
+    host_imports: &[Import],
     rt_imports: &[(&str, &str)],
     func_type_base: u32,
     string_constants: &[String],
     host_globals: &[String],
 ) -> Vec<u8> {
     let mut out = Vec::new();
-    let host_imports = chunks.first().map(|c| c.imports.len()).unwrap_or(0);
     let globals = rt_globals();
-    let total = host_imports
+    let total = host_imports.len()
         + rt_imports.len()
         + globals.len()
         + string_constants.len()
         + host_globals.len();
     write_leb128_u32(&mut out, total as u32);
 
-    // Host imports from chunk 0
-    if let Some(chunk) = chunks.first() {
-        for (i, import) in chunk.imports.iter().enumerate() {
-            write_name(&mut out, &import.module);
-            write_name(&mut out, &import.name);
-            out.push(0x00); // func import
-            write_leb128_u32(&mut out, func_type_base + i as u32);
-        }
+    // Host imports in module-level function-index order.
+    for (i, import) in host_imports.iter().enumerate() {
+        write_name(&mut out, &import.module);
+        write_name(&mut out, &import.name);
+        out.push(0x00); // func import
+        write_leb128_u32(&mut out, func_type_base + i as u32);
     }
 
     // Runtime + builtin function imports (mixed modules: vybe:rt, wasm:js-*, …)
@@ -104,7 +133,7 @@ pub fn encode_import_section(
         write_name(&mut out, module);
         write_name(&mut out, name);
         out.push(0x00); // func import
-        write_leb128_u32(&mut out, func_type_base + (host_imports + i) as u32);
+        write_leb128_u32(&mut out, func_type_base + (host_imports.len() + i) as u32);
     }
 
     // `wasm:js-*` global imports — externref, immutable. Indices follow
@@ -200,17 +229,33 @@ pub fn encode_memory64_section_with(
     out
 }
 
-pub fn encode_export_section(_chunks: &[Chunk], import_count: usize) -> Vec<u8> {
+fn start_chunk_index(chunks: &[Chunk]) -> usize {
+    chunks
+        .iter()
+        .position(|chunk| chunk.name == "<script>" && !chunk.code.is_empty())
+        .or_else(|| {
+            chunks
+                .iter()
+                .position(|chunk| chunk.name == "main" || chunk.name == "__main")
+        })
+        .unwrap_or(0)
+}
+
+pub fn encode_export_section(chunks: &[Chunk], import_count: usize) -> Vec<u8> {
     let mut out = Vec::new();
     write_leb128_u32(&mut out, 2); // export memory + main func
     // Memory
     write_name(&mut out, "memory");
     out.push(0x02); // memory export
     write_leb128_u32(&mut out, 0);
-    // Main function (first chunk after imports)
+    // Main function. Chunk 0 is often a script wrapper, but C-style programs
+    // can leave it empty and put the real entry in `main`.
     write_name(&mut out, "_start");
     out.push(0x00); // func export
-    write_leb128_u32(&mut out, import_count as u32);
+    write_leb128_u32(
+        &mut out,
+        import_count as u32 + start_chunk_index(chunks) as u32,
+    );
     out
 }
 

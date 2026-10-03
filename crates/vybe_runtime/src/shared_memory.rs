@@ -389,7 +389,7 @@ impl SharedMemory {
     pub fn write_array<const N: usize>(
         &self,
         addr: usize,
-        bytes: &[u8; N],
+        bytes: &[u8; N]
     ) -> Result<(), usize> {
         let mut buf = self.buffer.lock().unwrap();
         let Some(end) = addr.checked_add(N).filter(|&end| end <= buf.len()) else {
@@ -486,7 +486,7 @@ impl SharedMemory {
     #[inline(always)]
     pub fn with_buffer_mut_exclusive<R>(
         &mut self,
-        f: impl FnOnce(&mut Vec<u8>) -> R,
+        f: impl FnOnce(&mut Vec<u8>) -> R
     ) -> Option<R> {
         let buf = Arc::get_mut(&mut self.buffer)?.get_mut().ok()?;
         Some(f(buf))

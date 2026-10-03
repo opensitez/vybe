@@ -354,12 +354,7 @@ pub fn emit_aes_transform_new(
     chunks[current].emit_op_u16(Op::LOCAL_GET, obj, line);
 }
 
-pub fn emit_aes_transform_final_block(
-    chunks: &mut [Chunk],
-    current: usize,
-    argc: u8,
-    line: u32,
-) {
+pub fn emit_aes_transform_final_block(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let chunk = &mut chunks[current];
     drop_args(chunk, 2, argc, line);
     let data = chunk.alloc_scratch(1);

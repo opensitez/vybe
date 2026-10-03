@@ -134,16 +134,10 @@ fn write_dom_signature(out: &mut Vec<u8>, name: &str) -> bool {
         "getAttribute" => (3, Some(TYPE_EXTERNREF)),
         "isConnected" => (2, Some(TYPE_I32)),
         "hasAttribute" | "matches" | "contains" => (3, Some(TYPE_I32)),
-        "closest"
-        | "firstChild"
-        | "lastChild"
-        | "nextSibling"
-        | "previousSibling"
-        | "parentNode"
-        | "childNodes"
-        | "children"
-        | "firstElementChild"
-        | "lastElementChild" => (1, Some(TYPE_EXTERNREF)),
+        "closest" | "firstChild" | "lastChild" | "nextSibling" | "previousSibling"
+        | "parentNode" | "childNodes" | "children" | "firstElementChild" | "lastElementChild" => {
+            (1, Some(TYPE_EXTERNREF))
+        }
         "setTextContent" | "setInnerHtml" => (3, None),
         "removeAttribute" => (3, None),
         "toggleAttribute" => (4, None),

@@ -13,7 +13,6 @@
 //! invocation target via the `__call` convention.
 
 use crate::receiver_host_fn_ref;
-use std::sync::Arc;
 use vybe_runtime::value::{Object, ObjectKind};
 use vybe_runtime::{VM, Value};
 
@@ -93,11 +92,9 @@ fn ensure_namespace(vm: &mut VM, path: &[&str]) -> Value {
 /// case-insensitive caller asking for either could get neither.
 fn set_prop(ns: &Value, name: &str, value: Value) {
     if let Value::Object(obj) = ns {
-        {
-            let mut o = obj.lock().unwrap();
-            o.properties.insert(name.to_string(), value);
-        }
-        crate::object::track_nonenum(obj, name);
+        let mut o = obj.lock().unwrap();
+        o.properties.insert(name.to_string(), value);
+        crate::object::track_nonenum_in(&mut o, name);
     }
 }
 
@@ -106,19 +103,17 @@ fn set_prop(ns: &Value, name: &str, value: Value) {
 /// on first write makes `x.constructor === Ctor` hold across parallel VMs.
 fn set_constructor_once(proto: &Value, ctor: Value) -> Value {
     if let Value::Object(obj) = proto {
-        {
-            let mut o = obj.lock().unwrap();
-            if let Some(existing) = o.properties.get("constructor") {
-                return existing.clone();
-            }
-            o.properties.insert("constructor".to_string(), ctor.clone());
+        let mut o = obj.lock().unwrap();
+        if let Some(existing) = o.properties.get("constructor") {
+            return existing.clone();
         }
+        o.properties.insert("constructor".to_string(), ctor.clone());
         // §ClassDefinitionEvaluation installs `constructor` with
         // `DefineMethodProperty(proto, "constructor", F, *false*)` — the
         // trailing *false* IS the [[Enumerable]] attribute. Marked here so the
         // rule holds for every prototype, not only the ones whose call site
         // remembered.
-        crate::object::track_nonenum(obj, "constructor");
+        crate::object::track_nonenum_in(&mut o, "constructor");
     }
     ctor
 }
@@ -131,10 +126,11 @@ fn host_fn_ref(vm: &VM, module: &str, name: &str) -> Value {
         .get(&(module.to_string(), name.to_string()))
     {
         let mut obj = Object::new();
+        obj.properties.reserve(5);
         obj.properties
-            .insert("__host_module".into(), Value::String(Arc::from(module)));
+            .insert("__host_module".into(), crate::keys::string_value(module));
         obj.properties
-            .insert("__host_name".into(), Value::String(Arc::from(name)));
+            .insert("__host_name".into(), crate::keys::string_value(name));
         obj.properties
             .insert("__host_idx".into(), Value::F64(idx as f64));
         obj.properties.insert(
@@ -142,7 +138,7 @@ fn host_fn_ref(vm: &VM, module: &str, name: &str) -> Value {
             crate::function::shared_function_prototype(),
         );
         obj.properties
-            .insert("name".into(), Value::String(Arc::from(name)));
+            .insert("name".into(), crate::keys::string_value(name));
         obj.kind = ObjectKind::HostFunction(idx);
         Value::Object(vybe_runtime::heap::alloc(obj))
     } else {
@@ -162,23 +158,20 @@ fn host_fn_ref(vm: &VM, module: &str, name: &str) -> Value {
 /// it non-configurable makes `ecma:object.delete` (which honors `__nonconfig`)
 /// a no-op, matching the spec and containing the mutation.
 fn set_ctor_prototype(ctor: &Value, proto: Value) {
-    set_prop(ctor, "prototype", proto);
     if let Value::Object(obj) = ctor {
-        crate::object::track_nonconfig(obj, "prototype");
-        crate::object::track_nonenum(obj, "prototype");
+        let mut o = obj.lock().unwrap();
+        o.properties.insert("prototype".to_string(), proto);
+        crate::object::track_nonenum_in(&mut o, "prototype");
+        crate::object::track_nonconfig_in(&mut o, "prototype");
     }
 }
 
 pub fn register(vm: &mut VM) {
     // ── Object / boxed primitive constructors ─────────────────────
     let object = host_fn_ref(vm, "ecma:object", "Object");
-    set_prop(&object, "name", Value::String(Arc::from("Object")));
+    set_prop(&object, "name", crate::keys::string_value("Object"));
     let object_proto = crate::object::shared_object_prototype();
     set_constructor_once(&object_proto, object.clone());
-    if let Value::Object(proto) = &object_proto {
-        crate::object::track_nonenum(proto, "constructor");
-        crate::object::track_nonenum(proto, "constructor");
-    }
     // §20.1.3: the values stored ON %Object.prototype% are the RAW
     // intrinsics. A borrowed `Object.prototype.hasOwnProperty.call(o, k)`
     // must NOT consult `o`'s own override — override dispatch belongs to
@@ -203,11 +196,6 @@ pub fn register(vm: &mut VM) {
             name,
             receiver_host_fn_ref("ecma:object", name, idx),
         );
-        if let Value::Object(proto) = &object_proto {
-            // One spelling — the one the standard declares. There is no
-            // lowercase twin to mark non-enumerable any more.
-            crate::object::track_nonenum(proto, name);
-        }
     }
     set_ctor_prototype(&object, object_proto.clone());
     for name in &[
@@ -232,9 +220,6 @@ pub fn register(vm: &mut VM) {
             set_prop(&value, "length", Value::I32(2));
         }
         set_prop(&object, name, value);
-        if let Value::Object(object_obj) = &object {
-            crate::object::track_nonenum(object_obj, name);
-        }
     }
     set_prop(&object, "groupBy", Value::Bool(true));
     // `Object`, not `object` — the last two hand-written lowercase twins.
@@ -243,7 +228,7 @@ pub fn register(vm: &mut VM) {
     vm.set_global_owned("Object".to_string(), object.clone());
 
     let number = host_fn_ref(vm, "ecma:number", "Number");
-    set_prop(&number, "name", Value::String(Arc::from("Number")));
+    set_prop(&number, "name", crate::keys::string_value("Number"));
     let number_proto = crate::number::shared_number_prototype();
     set_constructor_once(&number_proto, number.clone());
     set_prop(&number_proto, "__proto__", object_proto.clone());
@@ -288,7 +273,7 @@ pub fn register(vm: &mut VM) {
     vm.set_global_owned("number".to_string(), number.clone());
 
     let string = host_fn_ref(vm, "ecma:string", "String");
-    set_prop(&string, "name", Value::String(Arc::from("String")));
+    set_prop(&string, "name", crate::keys::string_value("String"));
     let string_proto = crate::string::shared_string_prototype();
     set_constructor_once(&string_proto, string.clone());
     set_prop(&string_proto, "__proto__", object_proto.clone());
@@ -342,7 +327,7 @@ pub fn register(vm: &mut VM) {
     vm.set_global_owned("string".to_string(), string.clone());
 
     let boolean = host_fn_ref(vm, "ecma:boolean", "Boolean");
-    set_prop(&boolean, "name", Value::String(Arc::from("Boolean")));
+    set_prop(&boolean, "name", crate::keys::string_value("Boolean"));
     let boolean_proto = crate::boolean::shared_boolean_prototype();
     set_constructor_once(&boolean_proto, boolean.clone());
     set_prop(&boolean_proto, "__proto__", object_proto.clone());
@@ -369,7 +354,7 @@ pub fn register(vm: &mut VM) {
     vm.set_global_owned("boolean".to_string(), boolean.clone());
 
     let function = Value::Object(vybe_runtime::heap::alloc(Object::new()));
-    set_prop(&function, "name", Value::String(Arc::from("Function")));
+    set_prop(&function, "name", crate::keys::string_value("Function"));
     let function_proto = crate::function::shared_function_prototype();
     set_constructor_once(&function_proto, function.clone());
     set_prop(&function_proto, "__proto__", object_proto.clone());
@@ -390,7 +375,7 @@ pub fn register(vm: &mut VM) {
     vm.set_global_owned("function".to_string(), function.clone());
 
     let array = host_fn_ref(vm, "ecma:array", "new");
-    set_prop(&array, "name", Value::String(Arc::from("Array")));
+    set_prop(&array, "name", crate::keys::string_value("Array"));
     set_prop(
         &array,
         "__proto__",
@@ -398,9 +383,6 @@ pub fn register(vm: &mut VM) {
     );
     let array_proto = crate::array::shared_array_prototype();
     set_constructor_once(&array_proto, array.clone());
-    if let Value::Object(proto) = &array_proto {
-        crate::object::track_nonenum(proto, "constructor");
-    }
     set_prop(&array_proto, "__proto__", object_proto.clone());
     for name in &[
         "at",
@@ -449,11 +431,6 @@ pub fn register(vm: &mut VM) {
             name,
             receiver_host_fn_ref("ecma:array", name, idx),
         );
-        if let Value::Object(proto) = &array_proto {
-            // One spelling — the one the standard declares. There is no
-            // lowercase twin to mark non-enumerable any more.
-            crate::object::track_nonenum(proto, name);
-        }
     }
     if let Some(idx) = vm
         .host_registry
@@ -465,10 +442,6 @@ pub fn register(vm: &mut VM) {
             "iterator",
             receiver_host_fn_ref("ecma:array", "values", idx),
         );
-        if let Value::Object(proto) = &array_proto {
-            crate::object::track_nonenum(proto, "iterator");
-            crate::object::track_nonenum(proto, "iterator");
-        }
     }
     set_ctor_prototype(&array, array_proto);
     for name in &["from", "fromAsync", "isArray", "of"] {
@@ -520,7 +493,7 @@ pub fn register(vm: &mut VM) {
     ] {
         let ctor = host_fn_ref(vm, module, "new");
         if !matches!(ctor, Value::Null) {
-            set_prop(&ctor, "name", Value::String(Arc::from(global_name)));
+            set_prop(&ctor, "name", crate::keys::string_value(global_name));
             set_prop(
                 &ctor,
                 "__proto__",
@@ -538,9 +511,6 @@ pub fn register(vm: &mut VM) {
             };
             set_prop(&proto, "__proto__", object_proto.clone());
             set_constructor_once(&proto, ctor.clone());
-            if let Value::Object(ref p) = proto {
-                crate::object::track_nonenum(p, "constructor");
-            }
             for method in methods {
                 if let Some(&idx) = vm
                     .host_registry
@@ -557,7 +527,6 @@ pub fn register(vm: &mut VM) {
                     };
                     set_prop(&proto, key, receiver_host_fn_ref(module, method, idx));
                     if let Value::Object(ref p) = proto {
-                        crate::object::track_nonenum(p, key);
                         // An accessor stored as `__get_size` is EXPOSED under
                         // its bare name, so the attribute has to be recorded
                         // against that spelling too — §24.1.3.10 makes `size`
@@ -607,7 +576,7 @@ pub fn register(vm: &mut VM) {
     ] {
         let ctor = host_fn_ref(vm, module, "new");
         if !matches!(ctor, Value::Null) {
-            set_prop(&ctor, "name", Value::String(Arc::from(global_name)));
+            set_prop(&ctor, "name", crate::keys::string_value(global_name));
             set_prop(
                 &ctor,
                 "__proto__",
@@ -624,18 +593,12 @@ pub fn register(vm: &mut VM) {
             };
             set_prop(&proto, "__proto__", object_proto.clone());
             set_constructor_once(&proto, ctor.clone());
-            if let Value::Object(ref pobj) = proto {
-                crate::object::track_nonenum(pobj, "constructor");
-            }
             for method in methods {
                 if let Some(&idx) = vm
                     .host_registry
                     .get(&(module.to_string(), (*method).to_string()))
                 {
                     set_prop(&proto, method, receiver_host_fn_ref(module, method, idx));
-                    if let Value::Object(ref pobj) = proto {
-                        crate::object::track_nonenum(pobj, method);
-                    }
                 }
             }
             // Promise's static combinators live on the CONSTRUCTOR, not the
@@ -667,7 +630,7 @@ pub fn register(vm: &mut VM) {
 
     let date = host_fn_ref(vm, "ecma:date", "new");
     if !matches!(date, Value::Null) {
-        set_prop(&date, "name", Value::String(Arc::from("Date")));
+        set_prop(&date, "name", crate::keys::string_value("Date"));
         set_prop(
             &date,
             "__proto__",
@@ -768,8 +731,11 @@ pub fn register(vm: &mut VM) {
         "dispose",
         "asyncDispose",
     ] {
-        let sentinel = format!("@@{}", name);
-        set_prop(&sym, name, Value::Symbol(Arc::from(sentinel.as_str())));
+        set_prop(
+            &sym,
+            name,
+            Value::Symbol(crate::keys::owned_string_arc(format!("@@{}", name))),
+        );
     }
     vm.set_global_owned("Symbol".to_string(), sym);
     vm.set_global_owned(
@@ -894,7 +860,7 @@ pub fn register(vm: &mut VM) {
     for (global_name, module, bpe) in TYPED_ARRAY_GLOBALS {
         let ctor = host_fn_ref(vm, module, "new");
         if !matches!(ctor, Value::Null) {
-            set_prop(&ctor, "name", Value::String(Arc::from(*global_name)));
+            set_prop(&ctor, "name", crate::keys::string_value(global_name));
             if let Some(&idx) = vm
                 .host_registry
                 .get(&(module.to_string(), "from".to_string()))
@@ -955,9 +921,6 @@ pub fn register(vm: &mut VM) {
                 }
             }
             set_constructor_once(&proto, ctor.clone());
-            if let Value::Object(p) = &proto {
-                crate::object::track_nonenum(p, "constructor");
-            }
             set_ctor_prototype(&ctor, proto);
             // `Array`, not `array`. A lowercase constructor alias makes
             // `new array()` resolve in a case-sensitive language, and gives a
@@ -978,7 +941,7 @@ pub fn register(vm: &mut VM) {
     ] {
         let ctor = host_fn_ref(vm, module, "new");
         if !matches!(ctor, Value::Null) {
-            set_prop(&ctor, "name", Value::String(Arc::from(*global_name)));
+            set_prop(&ctor, "name", crate::keys::string_value(global_name));
             // ⛔ THE SHARED SINGLETON, NOT A FRESH OBJECT. A fresh object here
             // gives the constructor a `prototype` that nothing is an instance
             // of: `typeof DataView.prototype` was `"object"` while
@@ -999,9 +962,6 @@ pub fn register(vm: &mut VM) {
                 }
             }
             set_constructor_once(&proto, ctor.clone());
-            if let Value::Object(p) = &proto {
-                crate::object::track_nonenum(p, "constructor");
-            }
             set_ctor_prototype(&ctor, proto);
             vm.set_global_owned(global_name.to_string(), ctor);
         }
@@ -1013,7 +973,7 @@ pub fn register(vm: &mut VM) {
     // convenience method for functional use: `RegExp.test(/\d+/, str)`.
     let regexp = host_fn_ref(vm, "ecma:regexp", "new");
     if !matches!(regexp, Value::Null) {
-        set_prop(&regexp, "name", Value::String(Arc::from("RegExp")));
+        set_prop(&regexp, "name", crate::keys::string_value("RegExp"));
         set_prop(&regexp, "test", host_fn_ref(vm, "ecma:regexp", "test"));
         // §22.2.6: %RegExp.prototype% — instances link to it via
         // `__proto__` (stamped in ecma:regexp.new), so getPrototypeOf /
@@ -1022,9 +982,6 @@ pub fn register(vm: &mut VM) {
         // the regex as arg 0, exactly what receiver_host_fn_ref prepends).
         let regexp_proto = crate::regexp::shared_regexp_prototype();
         set_constructor_once(&regexp_proto, regexp.clone());
-        if let Value::Object(p) = &regexp_proto {
-            crate::object::track_nonenum(p, "constructor");
-        }
         for name in &["exec", "test", "toString"] {
             let idx = *vm
                 .host_registry
@@ -1035,22 +992,13 @@ pub fn register(vm: &mut VM) {
                 name,
                 receiver_host_fn_ref("ecma:regexp", name, idx),
             );
-            if let Value::Object(p) = &regexp_proto {
-                crate::object::track_nonenum(p, name);
-            }
         }
         set_ctor_prototype(&regexp, regexp_proto);
         vm.set_global_owned("RegExp".to_string(), regexp.clone());
         vm.set_global_owned("regexp".to_string(), regexp);
     }
 
-    // ── globalThis — proper §19.3.1 singleton ──────────────────────
-    // Pulls the shared process-global Object that `ecma:globalThis.get`
-    // also returns, so identity holds across both access patterns.
-    vm.set_global_owned(
-        "globalThis".to_string(),
-        crate::global_this::shared_singleton(),
-    );
+    // `globalThis` was installed with the host getter during registration.
 
     // ── Canonical constructor anchors (`__ctor_<Name>`) ────────────────
     // The user-facing constructor globals (`Array`, `Object`, …) can be

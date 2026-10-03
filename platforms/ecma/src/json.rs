@@ -15,10 +15,20 @@
 //!
 //! See `JS_BUILTIN_CONVENTIONS.md`.
 
+use std::borrow::Cow;
 use std::collections::HashSet;
+use std::fmt::Write as _;
 use std::sync::{Arc, Mutex};
 use vybe_runtime::value::{Object, ObjectKind, TypedElemKind, Value};
 use vybe_runtime::{HostContext, VM};
+
+const HEX_LOWER: &[u8; 16] = b"0123456789abcdef";
+const JSON_PARSE_PREALLOC_LIMIT: usize = 256;
+
+#[inline]
+fn owned_string_value(text: String) -> Value {
+    crate::keys::owned_string_value(text)
+}
 
 pub fn register(vm: &mut VM) {
     vm.register_host_fn(
@@ -29,7 +39,7 @@ pub fn register(vm: &mut VM) {
             let mut state = StringifyState::new(args.get(1), args.get(2));
             let root_holder = make_root_holder(value.clone());
             match serialize_property(ctx, &root_holder, "", value, &mut state, false) {
-                Some(text) => Value::String(Arc::from(text.as_str())),
+                Some(text) => owned_string_value(text),
                 None => Value::Undefined,
             }
         }),
@@ -39,9 +49,9 @@ pub fn register(vm: &mut VM) {
         "ecma:json",
         "parse",
         Box::new(|ctx, args| {
-            let text: String = match args.first() {
-                Some(Value::String(s)) => s.to_string(),
-                Some(other) => format!("{}", other),
+            let text: Cow<'_, str> = match args.first() {
+                Some(Value::String(s)) => Cow::Borrowed(s.as_ref()),
+                Some(other) => crate::keys::value_display_cow(other),
                 None => return Value::Undefined,
             };
             let parsed = match parse_json(&text) {
@@ -66,9 +76,9 @@ pub fn register(vm: &mut VM) {
         "ecma:json",
         "parseOrNull",
         Box::new(|_ctx, args| {
-            let text: String = match args.first() {
-                Some(Value::String(s)) => s.to_string(),
-                Some(other) => format!("{}", other),
+            let text: Cow<'_, str> = match args.first() {
+                Some(Value::String(s)) => Cow::Borrowed(s.as_ref()),
+                Some(other) => crate::keys::value_display_cow(other),
                 None => return Value::Null,
             };
             parse_json(&text).unwrap_or(Value::Null)
@@ -86,7 +96,7 @@ pub fn register(vm: &mut VM) {
             let mut state = StringifyState::new(replacer.as_ref(), space.as_ref());
             let root_holder = make_root_holder(value.clone());
             match serialize_property(ctx, &root_holder, "", value, &mut state, false) {
-                Some(text) => Value::String(Arc::from(text.as_str())),
+                Some(text) => owned_string_value(text),
                 None => Value::Undefined,
             }
         }),
@@ -97,9 +107,9 @@ pub fn register(vm: &mut VM) {
         "ecma:json",
         "parseWithReviver",
         Box::new(|ctx, args| {
-            let text: String = match args.first() {
-                Some(Value::String(s)) => s.to_string(),
-                Some(other) => format!("{}", other),
+            let text: Cow<'_, str> = match args.first() {
+                Some(Value::String(s)) => Cow::Borrowed(s.as_ref()),
+                Some(other) => crate::keys::value_display_cow(other),
                 None => return Value::Undefined,
             };
             let parsed = match parse_json(&text) {
@@ -136,15 +146,17 @@ pub fn register(vm: &mut VM) {
         "rawJSON",
         Box::new(|_ctx, args| {
             let text = match args.first() {
-                Some(Value::String(s)) => s.to_string(),
-                Some(other) => format!("{}", other),
+                Some(Value::String(s)) => Arc::clone(s),
+                Some(other) => {
+                    crate::keys::string_arc(crate::keys::value_display_cow(other).as_ref())
+                }
                 None => return Value::Undefined,
             };
             let mut obj = Object::new();
+            obj.properties.reserve(2);
             obj.properties
-                .insert("__type".into(), Value::String(Arc::from("RawJSON")));
-            obj.properties
-                .insert("rawJSON".into(), Value::String(Arc::from(text.as_str())));
+                .insert("__type".into(), crate::keys::string_value("RawJSON"));
+            obj.properties.insert("rawJSON".into(), Value::String(text));
             Value::Object(vybe_runtime::heap::alloc(obj))
         }),
     );
@@ -156,12 +168,10 @@ pub fn register(vm: &mut VM) {
         Box::new(|_ctx, args| {
             if let Some(Value::Object(obj)) = args.first() {
                 let o = obj.lock().unwrap();
-                if o.properties
-                    .get("__type")
-                    .map(|v| format!("{}", v))
-                    .as_deref()
-                    == Some("RawJSON")
-                {
+                if matches!(
+                    o.properties.get("__type"),
+                    Some(Value::String(tag)) if tag.as_ref() == "RawJSON"
+                ) {
                     return Value::Bool(true);
                 }
             }
@@ -224,7 +234,7 @@ fn transform_json_value(
             ctx,
             replacer,
             holder.clone(),
-            &[Value::String(Arc::from(key)), value],
+            &[crate::keys::string_value(key), value],
         );
     }
 
@@ -286,19 +296,20 @@ fn serialize_object(
     let result = {
         let guard = obj.lock().unwrap();
         // RawJSON objects serialize their embedded literal directly.
-        if guard
-            .properties
-            .get("__type")
-            .map(|v| format!("{}", v))
-            .as_deref()
-            == Some("RawJSON")
-        {
+        if matches!(
+            guard.properties.get("__type"),
+            Some(Value::String(tag)) if tag.as_ref() == "RawJSON"
+        ) {
             if let Some(Value::String(raw)) = guard.properties.get("rawJSON") {
                 return Some(raw.to_string());
             }
         }
         match &guard.kind {
-            ObjectKind::Array(elems) => serialize_array(ctx, obj, elems.clone(), state),
+            ObjectKind::Array(elems) => {
+                let elems = elems.clone();
+                drop(guard);
+                serialize_array(ctx, obj, elems, state)
+            }
             ObjectKind::TypedArray(ta) => Some(stringify_typed_array(ta)),
             ObjectKind::Map(_) | ObjectKind::Set(_) | ObjectKind::ArrayBuffer(_) => {
                 Some("{}".to_string())
@@ -330,28 +341,45 @@ fn serialize_array(
     let stepback = state.indent.clone();
     state.indent.push_str(&state.gap);
 
-    let mut parts = Vec::with_capacity(elems.len());
+    let pretty = !state.gap.is_empty();
+    let element_prefix = if pretty {
+        state.indent.clone() + &state.gap
+    } else {
+        String::new()
+    };
+    let estimated_sep = if pretty { 2 + element_prefix.len() } else { 1 };
+    let mut body = String::with_capacity(elems.len().saturating_mul(estimated_sep + 4));
+    if !pretty {
+        body.push('[');
+    }
+    let mut count = 0usize;
     for (index, value) in elems.into_iter().enumerate() {
-        let key = index.to_string();
-        parts.push(
-            serialize_property(ctx, &holder, &key, value, state, true)
-                .unwrap_or_else(|| "null".to_string()),
-        );
+        let serialized = crate::keys::with_index_key(index, |key| {
+            serialize_property(ctx, &holder, key, value, state, true)
+        })
+        .unwrap_or_else(|| "null".to_string());
+        if count > 0 {
+            if pretty {
+                body.push_str(",\n");
+            } else {
+                body.push(',');
+            }
+        }
+        if pretty {
+            body.push_str(&element_prefix);
+        }
+        body.push_str(&serialized);
+        count += 1;
     }
 
     state.indent = stepback.clone();
-    if state.gap.is_empty() {
-        return Some(format!("[{}]", parts.join(",")));
+    if !pretty {
+        body.push(']');
+        return Some(body);
     }
-    if parts.is_empty() {
+    if count == 0 {
         return Some("[]".to_string());
     }
-
-    let body = parts
-        .iter()
-        .map(|part| format!("{}{}", state.indent.clone() + &state.gap, part))
-        .collect::<Vec<_>>()
-        .join(",\n");
     Some(format!("[\n{}\n{}]", body, stepback))
 }
 
@@ -373,37 +401,41 @@ fn stringify_typed_array(ta: &vybe_runtime::value::TypedArrayState) -> String {
         if i > 0 {
             out.push(',');
         }
-        out.push_str(&format!("\"{}\":", i));
+        let _ = write!(out, "\"{}\":", i);
         let abs = ta.byte_offset + i * bpe;
-        let val_str = match ta.elem {
-            TypedElemKind::I8 => (buf[abs] as i8).to_string(),
-            TypedElemKind::U8 | TypedElemKind::U8Clamped => buf[abs].to_string(),
+        match ta.elem {
+            TypedElemKind::I8 => {
+                let _ = write!(out, "{}", buf[abs] as i8);
+            }
+            TypedElemKind::U8 | TypedElemKind::U8Clamped => {
+                let _ = write!(out, "{}", buf[abs]);
+            }
             TypedElemKind::I16 => {
                 let b = [buf[abs], buf[abs + 1]];
-                i16::from_le_bytes(b).to_string()
+                let _ = write!(out, "{}", i16::from_le_bytes(b));
             }
             TypedElemKind::U16 => {
                 let b = [buf[abs], buf[abs + 1]];
-                u16::from_le_bytes(b).to_string()
+                let _ = write!(out, "{}", u16::from_le_bytes(b));
             }
             TypedElemKind::I32 => {
                 let mut b = [0u8; 4];
                 b.copy_from_slice(&buf[abs..abs + 4]);
-                i32::from_le_bytes(b).to_string()
+                let _ = write!(out, "{}", i32::from_le_bytes(b));
             }
             TypedElemKind::U32 => {
                 let mut b = [0u8; 4];
                 b.copy_from_slice(&buf[abs..abs + 4]);
-                u32::from_le_bytes(b).to_string()
+                let _ = write!(out, "{}", u32::from_le_bytes(b));
             }
             TypedElemKind::F32 => {
                 let mut b = [0u8; 4];
                 b.copy_from_slice(&buf[abs..abs + 4]);
                 let f = f32::from_le_bytes(b);
                 if f.is_nan() || f.is_infinite() {
-                    "null".into()
+                    out.push_str("null");
                 } else {
-                    f.to_string()
+                    let _ = write!(out, "{}", f);
                 }
             }
             TypedElemKind::F64 => {
@@ -411,23 +443,22 @@ fn stringify_typed_array(ta: &vybe_runtime::value::TypedArrayState) -> String {
                 b.copy_from_slice(&buf[abs..abs + 8]);
                 let f = f64::from_le_bytes(b);
                 if f.is_nan() || f.is_infinite() {
-                    "null".into()
+                    out.push_str("null");
                 } else {
-                    f.to_string()
+                    let _ = write!(out, "{}", f);
                 }
             }
             TypedElemKind::BigI64 => {
                 let mut b = [0u8; 8];
                 b.copy_from_slice(&buf[abs..abs + 8]);
-                i64::from_le_bytes(b).to_string()
+                let _ = write!(out, "{}", i64::from_le_bytes(b));
             }
             TypedElemKind::BigU64 => {
                 let mut b = [0u8; 8];
                 b.copy_from_slice(&buf[abs..abs + 8]);
-                u64::from_le_bytes(b).to_string()
+                let _ = write!(out, "{}", u64::from_le_bytes(b));
             }
-        };
-        out.push_str(&val_str);
+        }
     }
     out.push('}');
     out
@@ -443,7 +474,18 @@ fn serialize_ordinary(
     let stepback = state.indent.clone();
     state.indent.push_str(&state.gap);
 
-    let mut parts = Vec::new();
+    let pretty = !state.gap.is_empty();
+    let member_prefix = if pretty {
+        state.indent.clone() + &state.gap
+    } else {
+        String::new()
+    };
+    let estimated_sep = if pretty { 2 + member_prefix.len() } else { 1 };
+    let mut body = String::with_capacity(keys.len().saturating_mul(estimated_sep + 10));
+    if !pretty {
+        body.push('{');
+    }
+    let mut count = 0usize;
     for key in keys {
         let value = {
             let guard = obj.lock().unwrap();
@@ -453,28 +495,35 @@ fn serialize_ordinary(
             continue;
         };
         if let Some(serialized) = serialize_property(ctx, &holder, key, value, state, false) {
-            let member = if state.gap.is_empty() {
-                format!("{}:{}", quote_string(key), serialized)
+            if count > 0 {
+                if pretty {
+                    body.push_str(",\n");
+                } else {
+                    body.push(',');
+                }
+            }
+            if pretty {
+                body.push_str(&member_prefix);
+            }
+            write_quoted_string(key, &mut body);
+            if pretty {
+                body.push_str(": ");
             } else {
-                format!("{}: {}", quote_string(key), serialized)
-            };
-            parts.push(member);
+                body.push(':');
+            }
+            body.push_str(&serialized);
+            count += 1;
         }
     }
 
     state.indent = stepback.clone();
-    if state.gap.is_empty() {
-        return format!("{{{}}}", parts.join(","));
+    if !pretty {
+        body.push('}');
+        return body;
     }
-    if parts.is_empty() {
+    if count == 0 {
         return "{}".to_string();
     }
-
-    let body = parts
-        .iter()
-        .map(|part| format!("{}{}", state.indent.clone() + &state.gap, part))
-        .collect::<Vec<_>>()
-        .join(",\n");
     format!("{{\n{}\n{}}}", body, stepback)
 }
 
@@ -500,33 +549,37 @@ fn ordinary_ordered_keys(o: &Object) -> Vec<String> {
         )
     });
 
-    let live: Vec<String> = o.properties.keys().cloned().collect();
     match tracked {
         Some(mut keys) => {
-            let mut seen: HashSet<String> = keys.iter().cloned().collect();
-            for key in live {
-                if seen.insert(key.clone()) {
-                    keys.push(key);
+            let mut seen: HashSet<&str> = HashSet::with_capacity(keys.len());
+            seen.extend(keys.iter().map(String::as_str));
+            let mut extras = Vec::with_capacity(o.properties.len().saturating_sub(keys.len()));
+            for key in o.properties.keys() {
+                if seen.insert(key.as_str()) {
+                    extras.push(key.clone());
                 }
             }
+            keys.extend(extras);
             keys
         }
-        None => live,
+        None => o.properties.keys().cloned().collect(),
     }
 }
 
 fn object_serialization_keys(o: &Object, property_list: Option<&Vec<String>>) -> Vec<String> {
     let ordered = ordinary_ordered_keys(o);
     if let Some(list) = property_list {
-        return list
-            .iter()
-            .filter(|key| is_serializable_object_key(o, key) && o.properties.contains_key(*key))
-            .cloned()
-            .collect();
+        let mut keys = Vec::with_capacity(list.len());
+        for key in list {
+            if is_serializable_object_key(o, key) && o.properties.contains_key(key) {
+                keys.push(key.clone());
+            }
+        }
+        return keys;
     }
 
-    let mut indices = Vec::new();
-    let mut others = Vec::new();
+    let mut indices = Vec::with_capacity(ordered.len());
+    let mut others = Vec::with_capacity(ordered.len());
     for key in ordered {
         if !is_serializable_object_key(o, &key) {
             continue;
@@ -571,18 +624,7 @@ fn is_non_enumerable(o: &Object, key: &str) -> bool {
 }
 
 fn json_array_index(key: &str) -> Option<u32> {
-    if key.is_empty() || (key.len() > 1 && key.starts_with('0')) {
-        return None;
-    }
-    let parsed = key.parse::<u32>().ok()?;
-    if parsed == u32::MAX {
-        return None;
-    }
-    if parsed.to_string() == key {
-        Some(parsed)
-    } else {
-        None
-    }
+    crate::keys::canonical_array_index_key(key)
 }
 
 fn build_gap(space: Option<&Value>) -> String {
@@ -626,8 +668,8 @@ fn collect_property_list(value: &Value) -> Option<Vec<String>> {
         return None;
     };
 
-    let mut keys = Vec::new();
-    let mut seen = HashSet::new();
+    let mut keys = Vec::with_capacity(elems.len());
+    let mut seen = HashSet::with_capacity(elems.len());
     for elem in elems {
         let Some(key) = replacer_property_key(elem) else {
             continue;
@@ -640,11 +682,18 @@ fn collect_property_list(value: &Value) -> Option<Vec<String>> {
 }
 
 fn replacer_property_key(value: &Value) -> Option<String> {
-    match unbox_json_wrapper(value.clone()) {
+    match value {
         Value::String(text) => Some(text.to_string()),
         Value::I32(n) => Some(n.to_string()),
         Value::I64(n) => Some(n.to_string()),
-        Value::F64(n) if n.is_finite() => Some(json_number_string(n)),
+        Value::F64(n) if n.is_finite() => Some(json_number_string(*n)),
+        Value::Object(_) => match unbox_json_wrapper(value.clone()) {
+            Value::String(text) => Some(text.to_string()),
+            Value::I32(n) => Some(n.to_string()),
+            Value::I64(n) => Some(n.to_string()),
+            Value::F64(n) if n.is_finite() => Some(json_number_string(n)),
+            _ => None,
+        },
         _ => None,
     }
 }
@@ -711,7 +760,7 @@ fn apply_to_json(ctx: &mut HostContext, value: &Value, key: &str) -> Option<Valu
                 ctx,
                 &method,
                 value.clone(),
-                &[Value::String(Arc::from(key))],
+                &[crate::keys::string_value(key)],
             ));
         }
     }
@@ -734,6 +783,20 @@ fn make_root_holder(value: Value) -> Value {
 
 fn quote_string(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
+    write_quoted_string(s, &mut out);
+    out
+}
+
+fn write_quoted_string(s: &str, out: &mut String) {
+    if !s
+        .bytes()
+        .any(|byte| byte == b'"' || byte == b'\\' || byte < 0x20)
+    {
+        out.push('"');
+        out.push_str(s);
+        out.push('"');
+        return;
+    }
     out.push('"');
     for c in s.chars() {
         match c {
@@ -745,13 +808,17 @@ fn quote_string(s: &str) -> String {
             '\x08' => out.push_str("\\b"),
             '\x0C' => out.push_str("\\f"),
             c if (c as u32) < 0x20 => {
-                out.push_str(&format!("\\u{:04x}", c as u32));
+                let code = c as u32;
+                out.push_str("\\u");
+                out.push(HEX_LOWER[((code >> 12) & 0x0f) as usize] as char);
+                out.push(HEX_LOWER[((code >> 8) & 0x0f) as usize] as char);
+                out.push(HEX_LOWER[((code >> 4) & 0x0f) as usize] as char);
+                out.push(HEX_LOWER[(code & 0x0f) as usize] as char);
             }
             c => out.push(c),
         }
     }
     out.push('"');
-    out
 }
 
 // ── Parse ──────────────────────────────────────────────────────────────
@@ -825,14 +892,19 @@ fn internalize_json_property(
                 }
             };
             for index in 0..len {
-                let idx_key = index.to_string();
-                let revived =
-                    internalize_json_property(ctx, &Value::Object(obj.clone()), &idx_key, reviver);
-                if matches!(revived, Value::Undefined) {
-                    delete_holder_property(&Value::Object(obj.clone()), &idx_key);
-                } else {
-                    set_holder_property(&Value::Object(obj.clone()), &idx_key, revived);
-                }
+                crate::keys::with_index_key(index, |idx_key| {
+                    let revived = internalize_json_property(
+                        ctx,
+                        &Value::Object(obj.clone()),
+                        idx_key,
+                        reviver,
+                    );
+                    if matches!(revived, Value::Undefined) {
+                        delete_holder_property(&Value::Object(obj.clone()), idx_key);
+                    } else {
+                        set_holder_property(&Value::Object(obj.clone()), idx_key, revived);
+                    }
+                });
             }
         } else {
             let keys = {
@@ -864,7 +936,7 @@ fn internalize_json_property(
         ctx,
         reviver,
         holder.clone(),
-        &[Value::String(Arc::from(key)), value],
+        &[crate::keys::string_value(key), value],
     )
 }
 
@@ -895,7 +967,11 @@ fn set_holder_property(holder: &Value, key: &str, value: Value) {
             }
         }
     }
-    guard.properties.insert(key.to_string(), value);
+    if let Some(slot) = guard.properties.get_mut(key) {
+        *slot = value;
+    } else {
+        guard.properties.insert(key.to_string(), value);
+    }
 }
 
 fn delete_holder_property(holder: &Value, key: &str) {
@@ -983,9 +1059,7 @@ impl<'a> Parser<'a> {
         match self.peek()? {
             b'{' => self.parse_object(),
             b'[' => self.parse_array(),
-            b'"' => self
-                .parse_string()
-                .map(|s| Value::String(Arc::from(s.as_str()))),
+            b'"' => self.parse_string().map(|s| crate::keys::string_value(&s)),
             b't' | b'f' => self.parse_bool(),
             b'n' => self.parse_null(),
             b'-' | b'0'..=b'9' => self.parse_number(),
@@ -1061,7 +1135,34 @@ impl<'a> Parser<'a> {
             return None;
         }
         self.pos += 1;
-        let mut out = String::new();
+        let start = self.pos;
+        while self.pos < self.src.len() {
+            match self.src[self.pos] {
+                b'"' => {
+                    let text = std::str::from_utf8(&self.src[start..self.pos])
+                        .ok()?
+                        .to_owned();
+                    self.pos += 1;
+                    return Some(text);
+                }
+                b'\\' => break,
+                byte if byte < 0x20 => return None,
+                byte if byte < 0x80 => {
+                    self.pos += 1;
+                }
+                _ => {
+                    let remaining = &self.src[self.pos..];
+                    let char_len = utf8_char_len(remaining[0]);
+                    if char_len == 0 || self.pos + char_len > self.src.len() {
+                        return None;
+                    }
+                    std::str::from_utf8(&remaining[..char_len]).ok()?;
+                    self.pos += char_len;
+                }
+            }
+        }
+        let mut out = String::with_capacity(self.pos.saturating_sub(start));
+        out.push_str(std::str::from_utf8(&self.src[start..self.pos]).ok()?);
         while self.pos < self.src.len() {
             let c = self.src[self.pos];
             match c {
@@ -1136,7 +1237,7 @@ impl<'a> Parser<'a> {
             return None;
         }
         self.pos += 1;
-        let mut elems: Vec<Value> = Vec::new();
+        let mut elems: Vec<Value> = Vec::with_capacity(self.collection_capacity_hint());
         self.skip_whitespace();
         if self.peek() == Some(b']') {
             self.pos += 1;
@@ -1168,9 +1269,10 @@ impl<'a> Parser<'a> {
             return None;
         }
         self.pos += 1;
+        let capacity_hint = self.collection_capacity_hint();
         let mut obj = Object::new();
-        let mut tracked_keys: Vec<Value> = Vec::new();
-        let mut seen_keys: HashSet<String> = HashSet::new();
+        obj.properties.reserve(capacity_hint);
+        let mut tracked_keys: Vec<Value> = Vec::with_capacity(capacity_hint);
         self.skip_whitespace();
         if self.peek() == Some(b'}') {
             self.pos += 1;
@@ -1185,8 +1287,8 @@ impl<'a> Parser<'a> {
             }
             self.pos += 1;
             let val = self.parse_value()?;
-            if seen_keys.insert(key.clone()) {
-                tracked_keys.push(Value::String(Arc::from(key.as_str())));
+            if !obj.properties.contains_key(&key) {
+                tracked_keys.push(crate::keys::string_value(&key));
             }
             obj.properties.insert(key, val);
             self.skip_whitespace();
@@ -1206,6 +1308,15 @@ impl<'a> Parser<'a> {
             Value::Object(vybe_runtime::heap::alloc(Object::new_array(tracked_keys))),
         );
         Some(Value::Object(vybe_runtime::heap::alloc(obj)))
+    }
+
+    #[inline]
+    fn collection_capacity_hint(&self) -> usize {
+        self.src
+            .len()
+            .saturating_sub(self.pos)
+            .saturating_div(4)
+            .min(JSON_PARSE_PREALLOC_LIMIT)
     }
 }
 

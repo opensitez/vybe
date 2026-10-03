@@ -76,16 +76,18 @@ fn is_magic_int32(args: &[Value], idx: usize) -> bool {
 
 fn magic_load_i32(obj: &Arc<Mutex<Object>>, idx: usize) -> i32 {
     let o = obj.lock().unwrap();
-    match o.properties.get(&idx.to_string()) {
+    crate::keys::with_index_key(idx, |key| match o.properties.get(key) {
         Some(Value::I32(v)) => *v,
         Some(Value::F64(v)) => *v as i32,
         _ => 0,
-    }
+    })
 }
 
 fn magic_store_i32(obj: &Arc<Mutex<Object>>, idx: usize, val: i32) {
     let mut o = obj.lock().unwrap();
-    o.properties.insert(idx.to_string(), Value::I32(val));
+    crate::keys::with_index_key(idx, |key| {
+        o.properties.insert(key.to_string(), Value::I32(val));
+    });
 }
 
 fn atomic_load(buf: &Arc<Mutex<Vec<u8>>>, byte_offset: usize, idx: usize, bpe: usize) -> i64 {
@@ -334,12 +336,12 @@ pub fn register(vm: &mut VM) {
                 0
             };
             if actual != expected {
-                return Value::String(Arc::from("not-equal"));
+                return crate::keys::string_value("not-equal");
             }
             if timeout_ms <= 0.0 {
-                return Value::String(Arc::from("timed-out"));
+                return crate::keys::string_value("timed-out");
             }
-            Value::String(Arc::from("ok"))
+            crate::keys::string_value("ok")
         }),
     );
 
@@ -387,7 +389,7 @@ pub fn register(vm: &mut VM) {
             let mut obj = vybe_runtime::value::Object::new();
             obj.properties.insert("async".into(), Value::Bool(true));
             obj.properties
-                .insert("value".into(), Value::String(Arc::from(result_str)));
+                .insert("value".into(), crate::keys::string_value(result_str));
             Value::Object(Arc::new(std::sync::Mutex::new(obj)))
         }),
     );

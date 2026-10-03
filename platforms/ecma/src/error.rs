@@ -15,7 +15,6 @@
 //! the VM. AggregateError additionally takes an iterable of errors as
 //! its first arg (message becomes arg1).
 
-use std::sync::Arc;
 use vybe_runtime::value::{Object, ObjectKind};
 use vybe_runtime::{HostContext, VM, Value};
 
@@ -59,7 +58,10 @@ pub fn register(vm: &mut VM) {
         "ecma:error",
         "ErrorWithCause",
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
-            let message = args.first().map(|v| format!("{}", v)).unwrap_or_default();
+            let message = args
+                .first()
+                .map(crate::keys::value_display_string)
+                .unwrap_or_default();
             let cause = options_cause(args.get(1));
             let mut obj = Object::new();
             stamp_error_object(&mut obj, "Error", &message, cause);
@@ -77,23 +79,26 @@ pub fn register(vm: &mut VM) {
             let errors = args.get(1).cloned().unwrap_or_else(|| {
                 Value::Object(vybe_runtime::heap::alloc(Object::new_array(vec![])))
             });
-            let message = args.get(2).map(|v| format!("{}", v)).unwrap_or_default();
+            let message = args
+                .get(2)
+                .map(crate::keys::value_display_string)
+                .unwrap_or_default();
             let cause = options_cause(args.get(3));
             if let Value::Object(ref obj) = this {
                 let mut o = obj.lock().unwrap();
                 o.properties
-                    .insert("__type".into(), Value::String(Arc::from("AggregateError")));
+                    .insert("__type".into(), crate::keys::string_value("AggregateError"));
                 o.properties.insert(
                     "__exception_type".into(),
-                    Value::String(Arc::from("AggregateError")),
+                    crate::keys::string_value("AggregateError"),
                 );
                 o.properties
-                    .insert("name".into(), Value::String(Arc::from("AggregateError")));
+                    .insert("name".into(), crate::keys::string_value("AggregateError"));
                 o.properties
-                    .insert("message".into(), Value::String(Arc::from(message.as_str())));
+                    .insert("message".into(), crate::keys::string_value(&message));
                 o.properties.insert(
                     "stack".into(),
-                    Value::String(Arc::from(format!("AggregateError: {}", message).as_str())),
+                    Value::String(crate::keys::concat2_arc("AggregateError: ", &message)),
                 );
                 if let Some(c) = cause {
                     o.properties.insert("cause".into(), c);
@@ -133,7 +138,10 @@ pub fn register(vm: &mut VM) {
             let this = args.first().cloned().unwrap_or(Value::Null);
             let error = args.get(1).cloned().unwrap_or(Value::Undefined);
             let suppressed = args.get(2).cloned().unwrap_or(Value::Undefined);
-            let message = args.get(3).map(|v| format!("{}", v)).unwrap_or_default();
+            let message = args
+                .get(3)
+                .map(crate::keys::value_display_string)
+                .unwrap_or_default();
             if let Value::Object(ref obj) = this {
                 let mut o = obj.lock().unwrap();
                 stamp_error_object(&mut o, "SuppressedError", &message, None);
@@ -156,21 +164,20 @@ pub fn register(vm: &mut VM) {
                 let name = o
                     .properties
                     .get("name")
-                    .map(|v| format!("{}", v))
+                    .map(crate::keys::value_display_string)
                     .unwrap_or_else(|| "Error".to_string());
                 let message = o
                     .properties
                     .get("message")
-                    .map(|v| format!("{}", v))
+                    .map(crate::keys::value_display_string)
                     .unwrap_or_default();
-                let result = if message.is_empty() {
-                    name
+                if message.is_empty() {
+                    return crate::keys::string_value(&name);
                 } else {
-                    format!("{}: {}", name, message)
-                };
-                return Value::String(Arc::from(result.as_str()));
+                    return Value::String(crate::keys::concat3_arc(&name, ": ", &message));
+                }
             }
-            Value::String(Arc::from("Error"))
+            crate::keys::string_value("Error")
         }),
     );
 }
@@ -199,24 +206,25 @@ fn link_error_prototype(ctx: &HostContext, obj: &mut Object, kind: &str) {
 }
 
 fn stamp_error_object(obj: &mut Object, kind: &str, message: &str, cause: Option<Value>) {
+    obj.properties.reserve(if cause.is_some() { 7 } else { 6 });
     obj.properties
-        .insert("__type".into(), Value::String(Arc::from(kind)));
+        .insert("__type".into(), crate::keys::string_value(kind));
     obj.properties
-        .insert("__exception_type".into(), Value::String(Arc::from(kind)));
+        .insert("__exception_type".into(), crate::keys::string_value(kind));
     obj.properties
-        .insert("name".into(), Value::String(Arc::from(kind)));
+        .insert("name".into(), crate::keys::string_value(kind));
     obj.properties
-        .insert("message".into(), Value::String(Arc::from(message)));
+        .insert("message".into(), crate::keys::string_value(message));
     obj.properties.insert(
         "stack".into(),
-        Value::String(Arc::from(format!("{}: {}", kind, message).as_str())),
+        Value::String(crate::keys::concat3_arc(kind, ": ", &message)),
     );
     if let Some(c) = cause {
         obj.properties.insert("cause".into(), c);
     }
     let chain: Vec<Value> = error_ancestors(kind)
         .iter()
-        .map(|n| Value::String(Arc::from(*n)))
+        .map(|n| crate::keys::string_value(n))
         .collect();
     let chain_arr = vybe_runtime::value::Object::new_array(chain);
     obj.properties.insert(
@@ -251,14 +259,20 @@ fn make_error(ctx: &HostContext, kind: &str, args: &[Value]) -> Value {
     //   Compiler: args[0] = this (Object), args[1] = message, args[2] = options
     //   Direct:   args[0] = message (non-Object), args[1] = options
     if let Some(Value::Object(obj)) = args.first() {
-        let message = args.get(1).map(|v| format!("{}", v)).unwrap_or_default();
+        let message = args
+            .get(1)
+            .map(crate::keys::value_display_string)
+            .unwrap_or_default();
         let cause = options_cause(args.get(2));
         let mut o = obj.lock().unwrap();
         stamp_error_object(&mut o, kind, &message, cause);
         link_error_prototype(ctx, &mut o, kind);
         return Value::Object(obj.clone());
     }
-    let message = args.first().map(|v| format!("{}", v)).unwrap_or_default();
+    let message = args
+        .first()
+        .map(crate::keys::value_display_string)
+        .unwrap_or_default();
     let cause = options_cause(args.get(1));
     let mut obj = Object::new();
     stamp_error_object(&mut obj, kind, &message, cause);

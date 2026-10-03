@@ -37,7 +37,7 @@ impl VM {
                     // Lazy-locals convention: an unwritten captured slot may
                     // lie beyond the materialized stack.
                     upvalue.location = UpvalueLocation::Closed(
-                        stack.get(idx).cloned().unwrap_or(Value::Null),
+                        stack.get(idx).cloned().unwrap_or(Value::Null)
                     );
                     return false;
                 }
@@ -56,9 +56,11 @@ mod tests {
         let mut vm = VM::new();
         vm.stack = (0..20_000).map(Value::I32).collect();
         let upvalues: Vec<_> = (0..20_000)
-            .map(|idx| Arc::new(Mutex::new(Upvalue {
-                location: UpvalueLocation::Open(idx),
-            })))
+            .map(|idx| {
+                Arc::new(Mutex::new(Upvalue {
+                    location: UpvalueLocation::Open(idx),
+                }))
+            })
             .collect();
         vm.open_upvalues = upvalues.clone();
 

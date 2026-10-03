@@ -10,11 +10,760 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::OnceLock;
 use vybe_ast::{
     Argument, ArrayElement, BinOp, BindingPattern, ExprKind, Expression, Literal, ObjectProperty,
-    Statement, StmtKind, VarDeclKind, VarDeclarator,
+    Statement, StmtKind, UnaryOp, VarDeclKind, VarDeclarator,
 };
 
 fn float_lit(value: f64) -> Expression {
     expr(ExprKind::Lit(Literal::Float(value)))
+}
+
+fn bool_lit(value: bool) -> Expression {
+    expr(ExprKind::Lit(Literal::Bool(value)))
+}
+
+fn binary_expr(op: BinOp, left: Expression, right: Expression) -> Expression {
+    expr(ExprKind::Binary {
+        op,
+        left: Box::new(left),
+        right: Box::new(right),
+    })
+}
+
+fn typeof_expr(value: Expression) -> Expression {
+    expr(ExprKind::Unary {
+        op: UnaryOp::Typeof,
+        expr: Box::new(value),
+    })
+}
+
+fn return_stmt(value: Expression) -> Statement {
+    stmt(StmtKind::Return(Some(value)))
+}
+
+fn let_decl_stmt(name: &str, init: Expression) -> Statement {
+    stmt(StmtKind::VarDecl {
+        declarations: vec![VarDeclarator {
+            pattern: BindingPattern::Ident(name.to_string()),
+            type_hint: None,
+            init: Some(init),
+            array_bounds: None,
+            with_events: false,
+        }],
+        kind: VarDeclKind::Let,
+    })
+}
+
+fn object_field_available(object: Expression, field: Expression) -> Expression {
+    let object_is_object = binary_expr(BinOp::Eq, typeof_expr(object.clone()), str_lit("object"));
+    let object_not_null = non_null_object(object.clone());
+    let field_defined = binary_expr(
+        BinOp::NotEq,
+        typeof_expr(index_expr(object, field)),
+        str_lit("undefined"),
+    );
+    binary_expr(
+        BinOp::And,
+        binary_expr(BinOp::And, object_is_object, object_not_null),
+        field_defined,
+    )
+}
+
+fn non_null_object(object: Expression) -> Expression {
+    call_expr(ident("__c_ref_nonnull"), vec![object])
+}
+
+fn struct_view_backing_available(ptr: Expression) -> Expression {
+    let backing = member(ptr.clone(), "__c_pointer");
+    binary_expr(
+        BinOp::And,
+        binary_expr(
+            BinOp::And,
+            binary_expr(BinOp::Eq, typeof_expr(ptr.clone()), str_lit("object")),
+            non_null_object(ptr),
+        ),
+        binary_expr(BinOp::NotEq, typeof_expr(backing), str_lit("undefined")),
+    )
+}
+
+fn c_runtime_byte_at(base: Expression, idx: Expression, offset: i64) -> Expression {
+    let index = if offset == 0 {
+        idx
+    } else {
+        binary_expr(BinOp::Add, idx, int_lit(offset))
+    };
+    call_expr(ident("__c_array_get"), vec![base, index])
+}
+
+fn c_runtime_le_u32(base: Expression, idx: Expression) -> Expression {
+    let b0 = c_runtime_byte_at(base.clone(), idx.clone(), 0);
+    let b1 = binary_expr(
+        BinOp::Shl,
+        c_runtime_byte_at(base.clone(), idx.clone(), 1),
+        int_lit(8),
+    );
+    let b2 = binary_expr(
+        BinOp::Shl,
+        c_runtime_byte_at(base.clone(), idx.clone(), 2),
+        int_lit(16),
+    );
+    let b3 = binary_expr(BinOp::Shl, c_runtime_byte_at(base, idx, 3), int_lit(24));
+    binary_expr(
+        BinOp::BitOr,
+        binary_expr(BinOp::BitOr, b0, b1),
+        binary_expr(BinOp::BitOr, b2, b3),
+    )
+}
+
+fn c_runtime_write_le_u32(base: Expression, idx: Expression, value: Expression) -> Expression {
+    expr(ExprKind::Sequence(vec![
+        call_expr(
+            ident("__c_array_set"),
+            vec![
+                base.clone(),
+                idx.clone(),
+                binary_expr(BinOp::BitAnd, value.clone(), int_lit(0xff)),
+            ],
+        ),
+        call_expr(
+            ident("__c_array_set"),
+            vec![
+                base.clone(),
+                binary_expr(BinOp::Add, idx.clone(), int_lit(1)),
+                binary_expr(
+                    BinOp::BitAnd,
+                    binary_expr(BinOp::Shr, value.clone(), int_lit(8)),
+                    int_lit(0xff),
+                ),
+            ],
+        ),
+        call_expr(
+            ident("__c_array_set"),
+            vec![
+                base.clone(),
+                binary_expr(BinOp::Add, idx.clone(), int_lit(2)),
+                binary_expr(
+                    BinOp::BitAnd,
+                    binary_expr(BinOp::Shr, value.clone(), int_lit(16)),
+                    int_lit(0xff),
+                ),
+            ],
+        ),
+        call_expr(
+            ident("__c_array_set"),
+            vec![
+                base,
+                binary_expr(BinOp::Add, idx, int_lit(3)),
+                binary_expr(
+                    BinOp::BitAnd,
+                    binary_expr(BinOp::Shr, value, int_lit(24)),
+                    int_lit(0xff),
+                ),
+            ],
+        ),
+    ]))
+}
+
+fn c_runtime_pointer_slot_key(addr: Expression) -> Expression {
+    binary_expr(
+        BinOp::Concat,
+        str_lit(""),
+        expr(ExprKind::Cast {
+            expr: Box::new(addr),
+            type_name: "uint32".to_string(),
+        }),
+    )
+}
+
+fn c_runtime_linear_pointer_store(addr: Expression, value: Expression) -> Expression {
+    let key = c_runtime_pointer_slot_key(addr.clone());
+    expr(ExprKind::Ternary {
+        cond: Box::new(binary_expr(
+            BinOp::Eq,
+            typeof_expr(value.clone()),
+            str_lit("object"),
+        )),
+        then: Box::new(expr(ExprKind::Sequence(vec![
+            call_expr(
+                ident("__c_array_set"),
+                vec![ident("__c_linear_ptr_slots"), key.clone(), value.clone()],
+            ),
+            call_expr(ident("__c_ptr_i32_store"), vec![addr.clone(), int_lit(0)]),
+        ]))),
+        else_: Box::new(expr(ExprKind::Sequence(vec![
+            call_expr(
+                ident("__c_array_set"),
+                vec![ident("__c_linear_ptr_slots"), key, null_lit()],
+            ),
+            call_expr(ident("__c_ptr_i32_store"), vec![addr, value]),
+        ]))),
+    })
+}
+
+fn c_runtime_linear_load(addr: Expression) -> Expression {
+    expr(ExprKind::Ternary {
+        cond: Box::new(binary_expr(BinOp::Eq, ident("width"), int_lit(1))),
+        then: Box::new(expr(ExprKind::Ternary {
+            cond: Box::new(ident("unsigned")),
+            then: Box::new(call_expr(ident("__c_ptr_i32_load8_u"), vec![addr.clone()])),
+            else_: Box::new(call_expr(ident("__c_ptr_i32_load8_s"), vec![addr.clone()])),
+        })),
+        else_: Box::new(expr(ExprKind::Ternary {
+            cond: Box::new(binary_expr(BinOp::Eq, ident("width"), int_lit(2))),
+            then: Box::new(expr(ExprKind::Ternary {
+                cond: Box::new(ident("unsigned")),
+                then: Box::new(call_expr(ident("__c_ptr_i32_load16_u"), vec![addr.clone()])),
+                else_: Box::new(call_expr(ident("__c_ptr_i32_load16_s"), vec![addr.clone()])),
+            })),
+            else_: Box::new(call_expr(ident("__c_ptr_i32_load"), vec![addr])),
+        })),
+    })
+}
+
+fn c_runtime_carray_load(base: Expression, idx: Expression) -> Expression {
+    expr(ExprKind::Ternary {
+        cond: Box::new(binary_expr(BinOp::Eq, ident("width"), int_lit(1))),
+        then: Box::new(c_runtime_byte_at(base.clone(), idx.clone(), 0)),
+        else_: Box::new(expr(ExprKind::Ternary {
+            cond: Box::new(binary_expr(BinOp::Eq, ident("width"), int_lit(2))),
+            then: Box::new(binary_expr(
+                BinOp::BitOr,
+                c_runtime_byte_at(base.clone(), idx.clone(), 0),
+                binary_expr(
+                    BinOp::Shl,
+                    c_runtime_byte_at(base.clone(), idx.clone(), 1),
+                    int_lit(8),
+                ),
+            )),
+            else_: Box::new(c_runtime_le_u32(base, idx)),
+        })),
+    })
+}
+
+fn c_runtime_signed_scalar(raw: Expression) -> Expression {
+    expr(ExprKind::Ternary {
+        cond: Box::new(ident("unsigned")),
+        then: Box::new(raw.clone()),
+        else_: Box::new(expr(ExprKind::Ternary {
+            cond: Box::new(binary_expr(BinOp::Eq, ident("width"), int_lit(1))),
+            then: Box::new(expr(ExprKind::Ternary {
+                cond: Box::new(binary_expr(BinOp::GtEq, raw.clone(), int_lit(128))),
+                then: Box::new(binary_expr(BinOp::Sub, raw.clone(), int_lit(256))),
+                else_: Box::new(raw.clone()),
+            })),
+            else_: Box::new(expr(ExprKind::Ternary {
+                cond: Box::new(binary_expr(BinOp::Eq, ident("width"), int_lit(2))),
+                then: Box::new(expr(ExprKind::Ternary {
+                    cond: Box::new(binary_expr(BinOp::GtEq, raw.clone(), int_lit(32768))),
+                    then: Box::new(binary_expr(BinOp::Sub, raw.clone(), int_lit(65536))),
+                    else_: Box::new(raw.clone()),
+                })),
+                else_: Box::new(raw),
+            })),
+        })),
+    })
+}
+
+fn build_hybrid_indexed_scalar_load_fn() -> Statement {
+    let ptr = ident("ptr");
+    let index = ident("index");
+    let base = member(ptr.clone(), "__base");
+    let idx = member(ptr.clone(), "__idx");
+    function_stmt(
+        "__c_hybrid_indexed_scalar_load",
+        vec!["ptr", "index", "width", "unsigned"],
+        vec![
+            if_stmt(
+                binary_expr(
+                    BinOp::Eq,
+                    member(ptr.clone(), "__byte_backed"),
+                    expr(ExprKind::Lit(vybe_ast::Literal::Bool(true))),
+                ),
+                vec![
+                    let_decl_stmt(
+                        "raw",
+                        c_runtime_carray_load(
+                            base.clone(),
+                            binary_expr(
+                                BinOp::Add,
+                                idx.clone(),
+                                binary_expr(BinOp::Mul, index.clone(), ident("width")),
+                            ),
+                        ),
+                    ),
+                    return_stmt(c_runtime_signed_scalar(ident("raw"))),
+                ],
+                None,
+            ),
+            if_stmt(
+                binary_expr(
+                    BinOp::Eq,
+                    member(ptr.clone(), "__ref_kind"),
+                    str_lit("carray"),
+                ),
+                vec![return_stmt(call_expr(
+                    ident("__c_array_get"),
+                    vec![base, binary_expr(BinOp::Add, idx, index.clone())],
+                ))],
+                None,
+            ),
+            return_stmt(index_expr(ptr, index)),
+        ],
+    )
+}
+
+fn build_hybrid_struct_field_write_ptr_fn() -> Statement {
+    let ptr = ident("ptr");
+    let field = ident("field");
+    let offset = ident("offset");
+    let value = ident("value");
+    let ptr_is_object = binary_expr(BinOp::Eq, typeof_expr(ptr.clone()), str_lit("object"));
+    let ptr_not_null = non_null_object(ptr.clone());
+    let valid_object = binary_expr(BinOp::And, ptr_is_object.clone(), ptr_not_null);
+    let ref_kind = member(ptr.clone(), "__ref_kind");
+    let base = member(ptr.clone(), "__base");
+    let idx = binary_expr(BinOp::Add, member(ptr.clone(), "__idx"), offset.clone());
+    let dyn_field = index_expr(ptr.clone(), field.clone());
+    let value_is_object = binary_expr(BinOp::Eq, typeof_expr(value.clone()), str_lit("object"));
+    let write_carray_ptr = |base: Expression, idx: Expression| {
+        expr(ExprKind::Ternary {
+            cond: Box::new(value_is_object.clone()),
+            then: Box::new(call_expr(
+                ident("__c_array_set"),
+                vec![base.clone(), idx.clone(), value.clone()],
+            )),
+            else_: Box::new(c_runtime_write_le_u32(base, idx, value.clone())),
+        })
+    };
+    function_stmt(
+        "__c_hybrid_struct_field_write_ptr",
+        vec!["ptr", "field", "offset", "value"],
+        vec![
+            if_stmt(
+                binary_expr(BinOp::Eq, typeof_expr(ptr.clone()), str_lit("number")),
+                vec![
+                    stmt(StmtKind::Expr(c_runtime_linear_pointer_store(
+                        binary_expr(BinOp::Add, ptr.clone(), offset.clone()),
+                        value.clone(),
+                    ))),
+                    return_stmt(value.clone()),
+                ],
+                None,
+            ),
+            if_stmt(
+                struct_view_backing_available(ptr.clone()),
+                vec![return_stmt(call_expr(
+                    ident("__c_hybrid_struct_field_write_ptr"),
+                    vec![
+                        member(ptr.clone(), "__c_pointer"),
+                        field.clone(),
+                        offset.clone(),
+                        value.clone(),
+                    ],
+                ))],
+                None,
+            ),
+            if_stmt(
+                binary_expr(
+                    BinOp::And,
+                    valid_object.clone(),
+                    binary_expr(BinOp::Eq, ref_kind.clone(), str_lit("cstruct")),
+                ),
+                vec![
+                    stmt(StmtKind::Expr(assign_expr(
+                        index_expr(base.clone(), field.clone()),
+                        value.clone(),
+                    ))),
+                    return_stmt(value.clone()),
+                ],
+                None,
+            ),
+            if_stmt(
+                binary_expr(
+                    BinOp::And,
+                    valid_object.clone(),
+                    binary_expr(BinOp::Eq, ref_kind, str_lit("carray")),
+                ),
+                vec![
+                    let_decl_stmt(
+                        "elem",
+                        call_expr(
+                            ident("__c_array_get"),
+                            vec![base.clone(), member(ptr.clone(), "__idx")],
+                        ),
+                    ),
+                    if_stmt(
+                        object_field_available(ident("elem"), field.clone()),
+                        vec![
+                            stmt(StmtKind::Expr(assign_expr(
+                                index_expr(ident("elem"), field.clone()),
+                                value.clone(),
+                            ))),
+                            return_stmt(value.clone()),
+                        ],
+                        None,
+                    ),
+                    stmt(StmtKind::Expr(write_carray_ptr(base, idx))),
+                    return_stmt(value.clone()),
+                ],
+                None,
+            ),
+            if_stmt(
+                binary_expr(
+                    BinOp::And,
+                    valid_object.clone(),
+                    binary_expr(
+                        BinOp::NotEq,
+                        typeof_expr(dyn_field.clone()),
+                        str_lit("undefined"),
+                    ),
+                ),
+                vec![
+                    stmt(StmtKind::Expr(assign_expr(dyn_field, value.clone()))),
+                    return_stmt(value.clone()),
+                ],
+                None,
+            ),
+            if_stmt(
+                valid_object,
+                vec![
+                    stmt(StmtKind::Expr(write_carray_ptr(ptr.clone(), offset))),
+                    return_stmt(value.clone()),
+                ],
+                None,
+            ),
+            return_stmt(value),
+        ],
+    )
+}
+
+fn build_hybrid_struct_field_load_fn() -> Statement {
+    let ptr = ident("ptr");
+    let field = ident("field");
+    let offset = ident("offset");
+    let ptr_is_object = binary_expr(BinOp::Eq, typeof_expr(ptr.clone()), str_lit("object"));
+    let ptr_not_null = non_null_object(ptr.clone());
+    let valid_object = binary_expr(BinOp::And, ptr_is_object.clone(), ptr_not_null);
+    let ref_kind = member(ptr.clone(), "__ref_kind");
+    let base = member(ptr.clone(), "__base");
+    let idx = binary_expr(BinOp::Add, member(ptr.clone(), "__idx"), offset.clone());
+    let dyn_field = index_expr(ptr.clone(), field.clone());
+    let mut function = function_stmt(
+        "__c_hybrid_struct_field_load",
+        vec!["ptr", "field", "offset", "width", "unsigned"],
+        vec![
+            if_stmt(
+                binary_expr(BinOp::Eq, typeof_expr(ptr.clone()), str_lit("number")),
+                vec![return_stmt(c_runtime_linear_load(binary_expr(
+                    BinOp::Add,
+                    ptr.clone(),
+                    offset.clone(),
+                )))],
+                None,
+            ),
+            if_stmt(
+                struct_view_backing_available(ptr.clone()),
+                vec![return_stmt(call_expr(
+                    ident("__c_hybrid_struct_field_load"),
+                    vec![
+                        member(ptr.clone(), "__c_pointer"),
+                        field.clone(),
+                        offset.clone(),
+                        ident("width"),
+                        ident("unsigned"),
+                    ],
+                ))],
+                None,
+            ),
+            if_stmt(
+                binary_expr(
+                    BinOp::And,
+                    valid_object.clone(),
+                    binary_expr(BinOp::Eq, ref_kind.clone(), str_lit("cstruct")),
+                ),
+                vec![return_stmt(index_expr(base.clone(), field.clone()))],
+                None,
+            ),
+            if_stmt(
+                binary_expr(
+                    BinOp::And,
+                    valid_object.clone(),
+                    binary_expr(BinOp::Eq, ref_kind, str_lit("carray")),
+                ),
+                vec![
+                    let_decl_stmt(
+                        "elem",
+                        call_expr(
+                            ident("__c_array_get"),
+                            vec![base.clone(), member(ptr.clone(), "__idx")],
+                        ),
+                    ),
+                    if_stmt(
+                        object_field_available(ident("elem"), field.clone()),
+                        vec![return_stmt(index_expr(ident("elem"), field.clone()))],
+                        None,
+                    ),
+                    let_decl_stmt("raw_carray", c_runtime_carray_load(base, idx)),
+                    return_stmt(c_runtime_signed_scalar(ident("raw_carray"))),
+                ],
+                None,
+            ),
+            if_stmt(
+                binary_expr(
+                    BinOp::And,
+                    valid_object.clone(),
+                    binary_expr(
+                        BinOp::NotEq,
+                        typeof_expr(dyn_field.clone()),
+                        str_lit("undefined"),
+                    ),
+                ),
+                vec![return_stmt(dyn_field)],
+                None,
+            ),
+            if_stmt(
+                valid_object,
+                vec![
+                    let_decl_stmt("raw_plain", c_runtime_carray_load(ptr.clone(), offset)),
+                    return_stmt(c_runtime_signed_scalar(ident("raw_plain"))),
+                ],
+                None,
+            ),
+            return_stmt(null_lit()),
+        ],
+    );
+    if let StmtKind::FunctionDecl { params, .. } = &mut function.kind {
+        params[3].type_hint = Some(vybe_ast::TypeHint::checked("int"));
+    }
+    function
+}
+
+fn build_hybrid_struct_field_ptr_fn() -> Statement {
+    let ptr = ident("ptr");
+    let field = ident("field");
+    let offset = ident("offset");
+    let ptr_is_object = binary_expr(BinOp::Eq, typeof_expr(ptr.clone()), str_lit("object"));
+    let ptr_not_null = non_null_object(ptr.clone());
+    let valid_object = binary_expr(BinOp::And, ptr_is_object.clone(), ptr_not_null);
+    let ref_kind = member(ptr.clone(), "__ref_kind");
+    let base = member(ptr.clone(), "__base");
+    let idx = binary_expr(BinOp::Add, member(ptr.clone(), "__idx"), offset.clone());
+    let dyn_field = index_expr(ptr.clone(), field.clone());
+    let carray_ptr = |base: Expression, idx: Expression| {
+        expr(ExprKind::Object(vec![
+            ObjectProperty::KeyValue {
+                key: str_lit("__ref_kind"),
+                value: str_lit("carray"),
+            },
+            ObjectProperty::KeyValue {
+                key: str_lit("__base"),
+                value: base,
+            },
+            ObjectProperty::KeyValue {
+                key: str_lit("__idx"),
+                value: idx,
+            },
+            ObjectProperty::KeyValue {
+                key: str_lit("__byte_backed"),
+                value: expr(ExprKind::Lit(vybe_ast::Literal::Bool(true))),
+            },
+        ]))
+    };
+    function_stmt(
+        "__c_hybrid_struct_field_ptr",
+        vec!["ptr", "field", "offset"],
+        vec![
+            if_stmt(
+                binary_expr(BinOp::Eq, typeof_expr(ptr.clone()), str_lit("number")),
+                vec![return_stmt(binary_expr(
+                    BinOp::Add,
+                    ptr.clone(),
+                    offset.clone(),
+                ))],
+                None,
+            ),
+            if_stmt(
+                struct_view_backing_available(ptr.clone()),
+                vec![return_stmt(call_expr(
+                    ident("__c_hybrid_struct_field_ptr"),
+                    vec![
+                        member(ptr.clone(), "__c_pointer"),
+                        field.clone(),
+                        offset.clone(),
+                    ],
+                ))],
+                None,
+            ),
+            if_stmt(
+                binary_expr(
+                    BinOp::And,
+                    valid_object.clone(),
+                    binary_expr(BinOp::Eq, ref_kind.clone(), str_lit("cstruct")),
+                ),
+                vec![return_stmt(index_expr(base.clone(), field.clone()))],
+                None,
+            ),
+            if_stmt(
+                binary_expr(
+                    BinOp::And,
+                    valid_object.clone(),
+                    binary_expr(BinOp::Eq, ref_kind, str_lit("carray")),
+                ),
+                vec![
+                    let_decl_stmt(
+                        "elem",
+                        call_expr(
+                            ident("__c_array_get"),
+                            vec![base.clone(), member(ptr.clone(), "__idx")],
+                        ),
+                    ),
+                    if_stmt(
+                        object_field_available(ident("elem"), field.clone()),
+                        vec![return_stmt(index_expr(ident("elem"), field.clone()))],
+                        None,
+                    ),
+                    return_stmt(carray_ptr(base, idx)),
+                ],
+                None,
+            ),
+            if_stmt(
+                binary_expr(
+                    BinOp::And,
+                    valid_object.clone(),
+                    binary_expr(
+                        BinOp::NotEq,
+                        typeof_expr(dyn_field.clone()),
+                        str_lit("undefined"),
+                    ),
+                ),
+                vec![return_stmt(dyn_field)],
+                None,
+            ),
+            if_stmt(
+                valid_object,
+                vec![return_stmt(carray_ptr(ptr.clone(), offset))],
+                None,
+            ),
+            return_stmt(null_lit()),
+        ],
+    )
+}
+
+fn build_hybrid_struct_field_read_ptr_fn() -> Statement {
+    let ptr = ident("ptr");
+    let field = ident("field");
+    let offset = ident("offset");
+    let ptr_is_object = binary_expr(BinOp::Eq, typeof_expr(ptr.clone()), str_lit("object"));
+    let ptr_not_null = non_null_object(ptr.clone());
+    let valid_object = binary_expr(BinOp::And, ptr_is_object.clone(), ptr_not_null);
+    let ref_kind = member(ptr.clone(), "__ref_kind");
+    let base = member(ptr.clone(), "__base");
+    let idx = binary_expr(BinOp::Add, member(ptr.clone(), "__idx"), offset.clone());
+    let dyn_field = index_expr(ptr.clone(), field.clone());
+    let carray_ptr = |base: Expression, idx: Expression| {
+        expr(ExprKind::Object(vec![
+            ObjectProperty::KeyValue {
+                key: str_lit("__ref_kind"),
+                value: str_lit("carray"),
+            },
+            ObjectProperty::KeyValue {
+                key: str_lit("__base"),
+                value: base,
+            },
+            ObjectProperty::KeyValue {
+                key: str_lit("__idx"),
+                value: idx,
+            },
+        ]))
+    };
+    let carray_pointer_value = |base: Expression, idx: Expression| {
+        let first = call_expr(ident("__c_array_get"), vec![base.clone(), idx.clone()]);
+        expr(ExprKind::Ternary {
+            cond: Box::new(binary_expr(
+                BinOp::Eq,
+                typeof_expr(first.clone()),
+                str_lit("object"),
+            )),
+            then: Box::new(first),
+            else_: Box::new(carray_ptr(base.clone(), c_runtime_le_u32(base, idx))),
+        })
+    };
+    function_stmt(
+        "__c_hybrid_struct_field_read_ptr",
+        vec!["ptr", "field", "offset"],
+        vec![
+            if_stmt(
+                binary_expr(BinOp::Eq, typeof_expr(ptr.clone()), str_lit("number")),
+                vec![return_stmt(call_expr(
+                    ident("__c_ptr_i32_load"),
+                    vec![binary_expr(BinOp::Add, ptr.clone(), offset.clone())],
+                ))],
+                None,
+            ),
+            if_stmt(
+                struct_view_backing_available(ptr.clone()),
+                vec![return_stmt(call_expr(
+                    ident("__c_hybrid_struct_field_read_ptr"),
+                    vec![
+                        member(ptr.clone(), "__c_pointer"),
+                        field.clone(),
+                        offset.clone(),
+                    ],
+                ))],
+                None,
+            ),
+            if_stmt(
+                binary_expr(
+                    BinOp::And,
+                    valid_object.clone(),
+                    binary_expr(BinOp::Eq, ref_kind.clone(), str_lit("cstruct")),
+                ),
+                vec![return_stmt(index_expr(base.clone(), field.clone()))],
+                None,
+            ),
+            if_stmt(
+                binary_expr(
+                    BinOp::And,
+                    valid_object.clone(),
+                    binary_expr(BinOp::Eq, ref_kind, str_lit("carray")),
+                ),
+                vec![
+                    let_decl_stmt(
+                        "elem",
+                        call_expr(
+                            ident("__c_array_get"),
+                            vec![base.clone(), member(ptr.clone(), "__idx")],
+                        ),
+                    ),
+                    if_stmt(
+                        object_field_available(ident("elem"), field.clone()),
+                        vec![return_stmt(index_expr(ident("elem"), field.clone()))],
+                        None,
+                    ),
+                    return_stmt(carray_pointer_value(base, idx)),
+                ],
+                None,
+            ),
+            if_stmt(
+                binary_expr(
+                    BinOp::And,
+                    valid_object.clone(),
+                    binary_expr(
+                        BinOp::NotEq,
+                        typeof_expr(dyn_field.clone()),
+                        str_lit("undefined"),
+                    ),
+                ),
+                vec![return_stmt(dyn_field)],
+                None,
+            ),
+            if_stmt(
+                valid_object,
+                vec![return_stmt(carray_pointer_value(ptr.clone(), offset))],
+                None,
+            ),
+            return_stmt(null_lit()),
+        ],
+    )
 }
 
 /// Return only the legacy AST helpers reachable from the already-normalized C
@@ -49,7 +798,12 @@ pub fn runtime_support_for(body: &[Statement]) -> Vec<Statement> {
         };
         for idx in indices {
             if selected.insert(*idx) {
-                collect_stmt_refs(&support.prelude[*idx..=*idx], &mut work);
+                let refs = support.index.references[*idx].get_or_init(|| {
+                    let mut refs = Vec::new();
+                    collect_stmt_ref(&support.prelude[*idx], &mut refs);
+                    refs
+                });
+                work.extend(refs.iter().cloned());
             }
         }
     }
@@ -67,17 +821,23 @@ struct RuntimeSupport {
 
 struct RuntimeIndex {
     definitions: HashMap<String, Vec<usize>>,
+    references: Vec<OnceLock<Vec<String>>>,
 }
 
 impl RuntimeIndex {
     fn new(prelude: &[Statement]) -> Self {
         let mut definitions: HashMap<String, Vec<usize>> = HashMap::new();
+        let mut references = Vec::with_capacity(prelude.len());
         for (idx, stmt) in prelude.iter().enumerate() {
             for name in stmt_defined_names(stmt) {
                 definitions.entry(name).or_default().push(idx);
             }
+            references.push(OnceLock::new());
         }
-        Self { definitions }
+        Self {
+            definitions,
+            references,
+        }
     }
 }
 
@@ -711,6 +1471,11 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
                 })))),
             ],
         ),
+        build_hybrid_struct_field_load_fn(),
+        build_hybrid_indexed_scalar_load_fn(),
+        build_hybrid_struct_field_ptr_fn(),
+        build_hybrid_struct_field_read_ptr_fn(),
+        build_hybrid_struct_field_write_ptr_fn(),
         stmt(StmtKind::VarDecl {
             declarations: vec![VarDeclarator {
                 pattern: BindingPattern::Ident(store_name.to_string()),
@@ -2066,9 +2831,56 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
     // never fired for never-created paths (undefined ≠ 0 under strict Eq),
     // which is why remove/rename grew literal name-pattern hacks.
     out.push(function_stmt(
+        "__c_fs_is_file",
+        vec!["path"],
+        vec![
+            if_stmt(
+                expr(ExprKind::Binary {
+                    op: BinOp::Eq,
+                    left: Box::new(call_expr(ident("__c_fs_exists"), vec![ident("path")])),
+                    right: Box::new(int_lit(0)),
+                }),
+                vec![stmt(StmtKind::Return(Some(int_lit(0))))],
+                None,
+            ),
+            var_decl_stmt("st", call_expr(ident("__c_fs_stat"), vec![ident("path")])),
+            if_stmt(
+                expr(ExprKind::Binary {
+                    op: BinOp::Or,
+                    left: Box::new(expr(ExprKind::Binary {
+                        op: BinOp::Eq,
+                        left: Box::new(ident("st")),
+                        right: Box::new(null_lit()),
+                    })),
+                    right: Box::new(expr(ExprKind::Binary {
+                        op: BinOp::Eq,
+                        left: Box::new(ident("st")),
+                        right: Box::new(expr(ExprKind::Lit(Literal::Undefined))),
+                    })),
+                }),
+                vec![stmt(StmtKind::Return(Some(int_lit(0))))],
+                None,
+            ),
+            stmt(StmtKind::Return(Some(expr(ExprKind::Ternary {
+                cond: Box::new(expr(ExprKind::Binary {
+                    op: BinOp::Eq,
+                    left: Box::new(member(ident("st"), "__type")),
+                    right: Box::new(int_lit(1)),
+                })),
+                then: Box::new(int_lit(1)),
+                else_: Box::new(int_lit(0)),
+            })))),
+        ],
+    ));
+
+    out.push(function_stmt(
         "__c_path_present",
         vec!["path"],
         vec![
+            stmt(StmtKind::Expr(assign_expr(
+                ident("path"),
+                call_expr(ident("__libc_char_to_str"), vec![ident("path")]),
+            ))),
             if_stmt(
                 expr(ExprKind::Binary {
                     op: BinOp::NotEq,
@@ -2753,6 +3565,20 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
         ],
     ));
 
+    let mut stdout_has_buffered = function_stmt(
+        "__c_stdout_has_buffered",
+        vec![],
+        vec![stmt(StmtKind::Return(Some(expr(ExprKind::Binary {
+            op: BinOp::Gt,
+            left: Box::new(member(ident(buffer_name), "length")),
+            right: Box::new(int_lit(0)),
+        }))))],
+    );
+    if let StmtKind::FunctionDecl { return_type, .. } = &mut stdout_has_buffered.kind {
+        *return_type = Some("int".to_string());
+    }
+    out.push(stdout_has_buffered);
+
     out.push(function_stmt(
         "__c_file_new",
         vec!["path", "mode"],
@@ -2767,7 +3593,7 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
                 expr(ExprKind::NullCoalesce {
                     left: Box::new(ident("existing")),
                     right: Box::new(expr(ExprKind::Ternary {
-                        cond: Box::new(call_expr(ident("__c_fs_exists"), vec![ident("path")])),
+                        cond: Box::new(call_expr(ident("__c_fs_is_file"), vec![ident("path")])),
                         then: Box::new(call_expr(
                             ident("__c_fs_read"),
                             vec![
@@ -3451,6 +4277,46 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
                 }),
             ),
             var_decl_stmt(
+                "append_mode",
+                expr(ExprKind::Ternary {
+                    cond: Box::new(expr(ExprKind::Binary {
+                        op: BinOp::GtEq,
+                        left: Box::new(call_member(ident("mode"), "indexOf", vec![str_lit("a")])),
+                        right: Box::new(int_lit(0)),
+                    })),
+                    then: Box::new(int_lit(1)),
+                    else_: Box::new(int_lit(0)),
+                }),
+            ),
+            var_decl_stmt(
+                "readonly_mode",
+                expr(ExprKind::Ternary {
+                    cond: Box::new(expr(ExprKind::Binary {
+                        op: BinOp::And,
+                        left: Box::new(expr(ExprKind::Binary {
+                            op: BinOp::Eq,
+                            left: Box::new(call_member(
+                                ident("mode"),
+                                "indexOf",
+                                vec![str_lit("w")],
+                            )),
+                            right: Box::new(int_lit(-1)),
+                        })),
+                        right: Box::new(expr(ExprKind::Binary {
+                            op: BinOp::Eq,
+                            left: Box::new(call_member(
+                                ident("mode"),
+                                "indexOf",
+                                vec![str_lit("a")],
+                            )),
+                            right: Box::new(int_lit(-1)),
+                        })),
+                    })),
+                    then: Box::new(int_lit(1)),
+                    else_: Box::new(int_lit(0)),
+                }),
+            ),
+            var_decl_stmt(
                 "content",
                 index_expr(ident("__c_file_store"), ident("path")),
             ),
@@ -3489,7 +4355,10 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
                                 })),
                                 right: Box::new(int_lit(0)),
                             })),
-                            right: Box::new(call_expr(ident("__c_fs_exists"), vec![ident("path")])),
+                            right: Box::new(call_expr(
+                                ident("__c_fs_is_file"),
+                                vec![ident("path")],
+                            )),
                         })),
                         then: Box::new(call_expr(
                             ident("__c_fs_read"),
@@ -3569,7 +4438,24 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
                         })),
                     })),
                 }),
-                vec![stmt(StmtKind::Return(Some(null_lit())))],
+                vec![
+                    stmt(StmtKind::Expr(assign_expr(
+                        ident("errno"),
+                        expr(ExprKind::Ternary {
+                            cond: Box::new(expr(ExprKind::Binary {
+                                op: BinOp::NotEq,
+                                left: Box::new(call_expr(
+                                    ident("__c_path_present"),
+                                    vec![ident("path")],
+                                )),
+                                right: Box::new(int_lit(0)),
+                            })),
+                            then: Box::new(int_lit(21)),
+                            else_: Box::new(int_lit(2)),
+                        }),
+                    ))),
+                    stmt(StmtKind::Return(Some(null_lit()))),
+                ],
                 None,
             ),
             stmt(StmtKind::Expr(assign_expr(
@@ -4040,7 +4926,10 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
             stmt(StmtKind::Expr(assign_expr(
                 index_expr(
                     index_expr(ident("__c_file_ungot"), ident("handle")),
-                    member(index_expr(ident("__c_file_ungot"), ident("handle")), "length"),
+                    member(
+                        index_expr(ident("__c_file_ungot"), ident("handle")),
+                        "length",
+                    ),
                 ),
                 ident("code"),
             ))),
@@ -4643,6 +5532,168 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
     ));
 
     out.push(function_stmt(
+        "__c_fread_into_linear_h",
+        vec!["ptr", "size", "count", "handle"],
+        vec![
+            if_stmt(
+                expr(ExprKind::Binary {
+                    op: BinOp::Or,
+                    left: Box::new(expr(ExprKind::Binary {
+                        op: BinOp::LtEq,
+                        left: Box::new(ident("size")),
+                        right: Box::new(int_lit(0)),
+                    })),
+                    right: Box::new(expr(ExprKind::Binary {
+                        op: BinOp::LtEq,
+                        left: Box::new(ident("count")),
+                        right: Box::new(int_lit(0)),
+                    })),
+                }),
+                vec![stmt(StmtKind::Return(Some(int_lit(0))))],
+                None,
+            ),
+            if_stmt(
+                expr(ExprKind::Binary {
+                    op: BinOp::And,
+                    left: Box::new(expr(ExprKind::Binary {
+                        op: BinOp::NotEq,
+                        left: Box::new(index_expr(ident("__c_file_binary"), ident("handle"))),
+                        right: Box::new(int_lit(0)),
+                    })),
+                    right: Box::new(expr(ExprKind::Binary {
+                        op: BinOp::Eq,
+                        left: Box::new(member(
+                            index_expr(ident("__c_file_ungot"), ident("handle")),
+                            "length",
+                        )),
+                        right: Box::new(int_lit(0)),
+                    })),
+                }),
+                vec![
+                    var_decl_stmt(
+                        "content",
+                        index_expr(ident("__c_file_content"), ident("handle")),
+                    ),
+                    var_decl_stmt("pos", index_expr(ident("__c_file_pos"), ident("handle"))),
+                    var_decl_stmt(
+                        "end",
+                        expr(ExprKind::Binary {
+                            op: BinOp::Add,
+                            left: Box::new(ident("pos")),
+                            right: Box::new(expr(ExprKind::Binary {
+                                op: BinOp::Mul,
+                                left: Box::new(ident("size")),
+                                right: Box::new(ident("count")),
+                            })),
+                        }),
+                    ),
+                    if_stmt(
+                        expr(ExprKind::Binary {
+                            op: BinOp::Gt,
+                            left: Box::new(ident("end")),
+                            right: Box::new(member(ident("content"), "length")),
+                        }),
+                        vec![stmt(StmtKind::Expr(assign_expr(
+                            ident("end"),
+                            member(ident("content"), "length"),
+                        )))],
+                        None,
+                    ),
+                    if_stmt(
+                        expr(ExprKind::Binary {
+                            op: BinOp::LtEq,
+                            left: Box::new(ident("end")),
+                            right: Box::new(ident("pos")),
+                        }),
+                        vec![
+                            stmt(StmtKind::Expr(assign_expr(
+                                index_expr(ident("__c_file_eof"), ident("handle")),
+                                int_lit(1),
+                            ))),
+                            stmt(StmtKind::Return(Some(int_lit(0)))),
+                        ],
+                        None,
+                    ),
+                    stmt(StmtKind::Expr(call_expr(
+                        ident("__c_binary_byte_copy"),
+                        vec![
+                            ident("ptr"),
+                            expr(ExprKind::Object(vec![
+                                ObjectProperty::KeyValue {
+                                    key: str_lit("__ref_kind"),
+                                    value: str_lit("carray"),
+                                },
+                                ObjectProperty::KeyValue {
+                                    key: str_lit("__base"),
+                                    value: ident("content"),
+                                },
+                                ObjectProperty::KeyValue {
+                                    key: str_lit("__idx"),
+                                    value: ident("pos"),
+                                },
+                            ])),
+                            expr(ExprKind::Binary {
+                                op: BinOp::Sub,
+                                left: Box::new(ident("end")),
+                                right: Box::new(ident("pos")),
+                            }),
+                        ],
+                    ))),
+                    stmt(StmtKind::Expr(assign_expr(
+                        index_expr(ident("__c_file_pos"), ident("handle")),
+                        ident("end"),
+                    ))),
+                    stmt(StmtKind::Expr(assign_expr(
+                        index_expr(ident("__c_file_eof"), ident("handle")),
+                        expr(ExprKind::Ternary {
+                            cond: Box::new(expr(ExprKind::Binary {
+                                op: BinOp::GtEq,
+                                left: Box::new(ident("end")),
+                                right: Box::new(member(ident("content"), "length")),
+                            })),
+                            then: Box::new(int_lit(1)),
+                            else_: Box::new(int_lit(0)),
+                        }),
+                    ))),
+                    stmt(StmtKind::Return(Some(expr(ExprKind::Binary {
+                        op: BinOp::Div,
+                        left: Box::new(expr(ExprKind::Binary {
+                            op: BinOp::Sub,
+                            left: Box::new(ident("end")),
+                            right: Box::new(ident("pos")),
+                        })),
+                        right: Box::new(ident("size")),
+                    })))),
+                ],
+                None,
+            ),
+            var_decl_stmt(
+                "data",
+                call_expr(
+                    ident("__c_fread_h"),
+                    vec![
+                        ident("handle"),
+                        expr(ExprKind::Binary {
+                            op: BinOp::Mul,
+                            left: Box::new(ident("size")),
+                            right: Box::new(ident("count")),
+                        }),
+                    ],
+                ),
+            ),
+            stmt(StmtKind::Expr(call_expr(
+                ident("__c_binary_byte_copy"),
+                vec![ident("ptr"), ident("data"), member(ident("data"), "length")],
+            ))),
+            stmt(StmtKind::Return(Some(expr(ExprKind::Binary {
+                op: BinOp::Div,
+                left: Box::new(member(ident("data"), "length")),
+                right: Box::new(ident("size")),
+            })))),
+        ],
+    ));
+
+    out.push(function_stmt(
         "__c_fread_into_array_h",
         vec!["dst_base", "dst_idx", "size", "count", "handle"],
         vec![
@@ -4677,50 +5728,27 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
                     ],
                 ),
             ),
-            var_decl_stmt("i", float_lit(0.0)),
-            stmt(StmtKind::While {
-                cond: expr(ExprKind::Binary {
-                    op: BinOp::Lt,
-                    left: Box::new(ident("i")),
-                    right: Box::new(member(ident("data"), "length")),
-                }),
-                body: vec![
-                    stmt(StmtKind::Expr(assign_expr(
-                        index_expr(
-                            ident("dst_base"),
-                            expr(ExprKind::Binary {
-                                op: BinOp::Add,
-                                left: Box::new(ident("dst_idx")),
-                                right: Box::new(ident("i")),
-                            }),
-                        ),
-                        expr(ExprKind::Ternary {
-                            cond: Box::new(expr(ExprKind::Binary {
-                                op: BinOp::Eq,
-                                left: Box::new(expr(ExprKind::Unary {
-                                    op: vybe_ast::UnaryOp::Typeof,
-                                    expr: Box::new(ident("data")),
-                                })),
-                                right: Box::new(str_lit("string")),
-                            })),
-                            then: Box::new(call_expr(
-                                ident("__c_char_code_at"),
-                                vec![ident("data"), ident("i")],
-                            )),
-                            else_: Box::new(index_expr(ident("data"), ident("i"))),
-                        }),
-                    ))),
-                    stmt(StmtKind::Expr(assign_expr(
-                        ident("i"),
-                        expr(ExprKind::Binary {
-                            op: BinOp::Add,
-                            left: Box::new(ident("i")),
-                            right: Box::new(float_lit(1.0)),
-                        }),
-                    ))),
+            stmt(StmtKind::Expr(call_expr(
+                ident("__c_binary_byte_copy"),
+                vec![
+                    expr(ExprKind::Object(vec![
+                        ObjectProperty::KeyValue {
+                            key: str_lit("__ref_kind"),
+                            value: str_lit("carray"),
+                        },
+                        ObjectProperty::KeyValue {
+                            key: str_lit("__base"),
+                            value: ident("dst_base"),
+                        },
+                        ObjectProperty::KeyValue {
+                            key: str_lit("__idx"),
+                            value: ident("dst_idx"),
+                        },
+                    ])),
+                    ident("data"),
+                    member(ident("data"), "length"),
                 ],
-                else_body: None,
-            }),
+            ))),
             stmt(StmtKind::Return(Some(expr(ExprKind::Binary {
                 op: BinOp::Div,
                 left: Box::new(member(ident("data"), "length")),
@@ -4803,7 +5831,10 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
                             right: Box::new(member(ident("fields"), "length")),
                         }),
                         body: vec![
-                            var_decl_stmt("spec", index_expr(ident("fields"), ident("field_index"))),
+                            var_decl_stmt(
+                                "spec",
+                                index_expr(ident("fields"), ident("field_index")),
+                            ),
                             var_decl_stmt("field_name", index_expr(ident("spec"), int_lit(0))),
                             var_decl_stmt("field_kind", index_expr(ident("spec"), int_lit(1))),
                             var_decl_stmt(
@@ -4865,8 +5896,12 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
                                                             ident("data"),
                                                             expr(ExprKind::Binary {
                                                                 op: BinOp::Add,
-                                                                left: Box::new(ident("field_offset")),
-                                                                right: Box::new(ident("byte_index")),
+                                                                left: Box::new(ident(
+                                                                    "field_offset",
+                                                                )),
+                                                                right: Box::new(ident(
+                                                                    "byte_index",
+                                                                )),
                                                             }),
                                                         ],
                                                     )),
@@ -4935,8 +5970,12 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
                                                             ident("data"),
                                                             expr(ExprKind::Binary {
                                                                 op: BinOp::Add,
-                                                                left: Box::new(ident("field_offset")),
-                                                                right: Box::new(ident("byte_index")),
+                                                                left: Box::new(ident(
+                                                                    "field_offset",
+                                                                )),
+                                                                right: Box::new(ident(
+                                                                    "byte_index",
+                                                                )),
                                                             }),
                                                         ],
                                                     )),
