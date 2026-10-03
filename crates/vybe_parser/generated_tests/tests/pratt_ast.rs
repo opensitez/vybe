@@ -206,3 +206,240 @@ fn generated_grammar_tokens_feed_pratt_directly_into_common_ast() {
     assert!(expression("1 +").is_err());
     assert!(expression("999999999999999999999999999999").is_err());
 }
+
+/// Native-source path: no token vector, capture tree, AST cloning or final walk.
+/// Composition inverses restore moved common-AST children on speculation.
+struct NativeAst<'a> {
+    ast: Ast<'a>,
+    values: vybe_parser::arena::OwnedArena<Expression>,
+}
+impl Builder for NativeAst<'_> {
+    fn supports_pratt(&self, rule: usize) -> bool {
+        use vybe_parser::program::Program;
+        Some(rule) == vybe_parser_generated_tests::islands::Parser.rule_id("expr")
+    }
+    fn checkpoint(&self) -> usize {
+        self.values.checkpoint()
+    }
+    fn rollback(&mut self, mark: usize) {
+        self.values.rollback(mark);
+    }
+    fn begin(&mut self, _: usize, _: usize) {}
+    fn finish(&mut self, _: usize, _: Span, _: &str) {}
+    fn try_finish(
+        &mut self,
+        rule: usize,
+        span: Span,
+        _: &str,
+    ) -> Result<(), vybe_parser::builder::BuildError> {
+        use vybe_parser::program::Program;
+        if Some(rule) == vybe_parser_generated_tests::islands::Parser.rule_id("number") {
+            let value = self
+                .ast
+                .atom(span)
+                .map_err(|e| vybe_parser::builder::BuildError {
+                    span: e.span,
+                    message: e.message.into(),
+                })?;
+            let id = self.values.alloc(value);
+            self.values.push(id);
+        }
+        Ok(())
+    }
+    fn try_reduce(
+        &mut self,
+        rule: usize,
+        fixity: Fixity,
+        span: Span,
+    ) -> Result<(), vybe_parser::builder::BuildError> {
+        use vybe_parser::program::Program;
+        fn split_prefix(parent: Expression) -> Expression {
+            match parent.kind {
+                ExprKind::Unary { expr, .. } => *expr,
+                _ => unreachable!("invalid composition inverse"),
+            }
+        }
+        fn split_binary(parent: Expression) -> (Expression, Expression) {
+            match parent.kind {
+                ExprKind::Binary { left, right, .. } => (*left, *right),
+                _ => unreachable!("invalid composition inverse"),
+            }
+        }
+        if fixity == Fixity::Postfix {
+            return Err(vybe_parser::builder::BuildError {
+                span,
+                message: "postfix is outside this common AST fixture".into(),
+            });
+        }
+        let right = self.values.pop().unwrap();
+        let id = match fixity {
+            Fixity::Prefix => {
+                let start = self
+                    .ast
+                    .index
+                    .position(span.start, vybe_parser::source::Encoding::Scalar)
+                    .unwrap();
+                self.values.unary(
+                    right,
+                    |right| {
+                        let range = vybe_ast::Span {
+                            start_line: start.line + 1,
+                            start_col: start.character + 1,
+                            ..right.span
+                        };
+                        Expression::with_span(
+                            ExprKind::Unary {
+                                op: UnaryOp::Neg,
+                                expr: Box::new(right),
+                            },
+                            range,
+                        )
+                    },
+                    split_prefix,
+                )
+            }
+            _ => {
+                let left = self.values.pop().unwrap();
+                let name = vybe_parser_generated_tests::islands::Parser.rule(rule).name;
+                let op = match name {
+                    "plus" => BinOp::Add,
+                    "minus" => BinOp::Sub,
+                    "star" => BinOp::Mul,
+                    "power" => BinOp::Pow,
+                    _ => unreachable!(),
+                };
+                self.values.binary(
+                    left,
+                    right,
+                    |left, right| {
+                        let range = vybe_ast::Span {
+                            start_line: left.span.start_line,
+                            start_col: left.span.start_col,
+                            end_line: right.span.end_line,
+                            end_col: right.span.end_col,
+                        };
+                        Expression::with_span(
+                            ExprKind::Binary {
+                                op,
+                                left: Box::new(left),
+                                right: Box::new(right),
+                            },
+                            range,
+                        )
+                    },
+                    split_binary,
+                )
+            }
+        };
+        self.values.push(id);
+        Ok(())
+    }
+}
+
+#[test]
+fn generated_native_pratt_constructs_common_ast_and_restores_failed_reductions() {
+    use vybe_parser::program::Program;
+    use vybe_parser_generated_tests::islands::Parser;
+    let target = Parser.rule_id("expr").unwrap();
+    assert_eq!(Parser.source_pratt(target).unwrap().operators.len(), 6);
+    for (source, expected) in [
+        ("-2 ^ 2 + 3 * 4", "(Add (neg (Pow 2 2)) (Mul 3 4))"),
+        ("2 ^ 3 ^ 4", "(Pow 2 (Pow 3 4))"),
+        ("(1 + 2) * 3", "(Mul (Add 1 2) 3)"),
+        ("1 +\n 23", "(Add 1 23)"),
+    ] {
+        let mut builder = NativeAst {
+            ast: Ast {
+                source,
+                index: vybe_parser::source::Index::new(source),
+            },
+            values: Default::default(),
+        };
+        // First alternative builds/reduces then fails; lookahead suppresses
+        // construction. Both paths must leave exactly one common AST root.
+        for entry in ["fallback", "probe"] {
+            builder.values = Default::default();
+            builder.ast = Ast {
+                source,
+                index: vybe_parser::source::Index::new(source),
+            };
+            build_program(
+                &Parser,
+                entry,
+                source,
+                MatchOptions::default(),
+                &mut builder,
+            )
+            .unwrap();
+            assert_eq!(builder.values.values().len(), 1);
+            let expression = builder.values.get(builder.values.values()[0]);
+            assert_eq!(shape(expression), expected);
+            if source.contains('\n') {
+                assert_eq!((expression.span.end_line, expression.span.end_col), (2, 4));
+            }
+            let mark = builder.checkpoint();
+            builder.ast = Ast {
+                source: "1*2+",
+                index: vybe_parser::source::Index::new("1*2+"),
+            };
+            assert!(
+                build_program(
+                    &Parser,
+                    "program",
+                    "1*2+",
+                    MatchOptions::default(),
+                    &mut builder
+                )
+                .is_err()
+            );
+            assert_eq!(builder.checkpoint(), mark);
+            assert_eq!(builder.values.values().len(), 1);
+            assert_eq!(
+                shape(builder.values.get(builder.values.values()[0])),
+                expected
+            );
+            let arena = std::mem::take(&mut builder.values);
+            let root = arena.values()[0];
+            let owned_expression: Expression = arena.into_root(root);
+            assert_eq!(shape(&owned_expression), expected);
+        }
+    }
+}
+
+#[test]
+fn native_common_ast_errors_are_located_and_transactional() {
+    use vybe_parser_generated_tests::islands::Parser;
+    for (source, offset, message) in [
+        (
+            "1 + 999999999999999999999999",
+            4,
+            "integer literal is out of range",
+        ),
+        ("1!", 1, "postfix is outside this common AST fixture"),
+    ] {
+        let mut builder = NativeAst {
+            ast: Ast {
+                source,
+                index: vybe_parser::source::Index::new(source),
+            },
+            values: Default::default(),
+        };
+        let sentinel = builder.values.alloc(Expression::int(42));
+        builder.values.push(sentinel);
+        let mark = builder.checkpoint();
+        let error = build_program(
+            &Parser,
+            "program",
+            source,
+            MatchOptions::default(),
+            &mut builder,
+        )
+        .unwrap_err();
+        assert_eq!(error.kind, vybe_parser::ParseErrorKind::BuildFailure);
+        assert_eq!(error.offset, offset);
+        assert_eq!(error.message, message);
+        assert_eq!(builder.checkpoint(), mark);
+        assert_eq!(builder.values.values(), &[sentinel]);
+        assert_eq!(shape(builder.values.get(sentinel)), "42");
+    }
+}

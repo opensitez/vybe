@@ -1,0 +1,16 @@
+WHITESPACE = _{ " " | "\t" | "\n" }
+number = @{ ASCII_DIGIT+ }
+plus = @{ "+" }
+minus = @{ "-" }
+star = @{ "*" }
+power = @{ "^" }
+bang = @{ "!" }
+atom = { number | "(" ~ expr ~ ")" }
+postfix = { atom ~ bang* }
+pow = { postfix ~ (power ~ unary)* }
+unary = { (minus ~ unary) | pow }
+mul = { unary ~ (star ~ unary)* }
+expr = { mul ~ ((plus | minus) ~ mul)* }
+program = { SOI ~ expr ~ EOI }
+probe = { SOI ~ &expr ~ expr ~ EOI }
+fallback = { SOI ~ ((expr ~ "x") | expr) ~ EOI }

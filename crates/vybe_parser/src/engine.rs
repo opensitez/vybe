@@ -29,6 +29,7 @@ pub enum ParseErrorKind {
     DepthLimit,
     NonProgress,
     InvalidStack,
+    BuildFailure,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -52,6 +53,16 @@ impl fmt::Display for ParseError {
     }
 }
 impl std::error::Error for ParseError {}
+impl From<crate::builder::BuildError> for ParseError {
+    fn from(error: crate::builder::BuildError) -> Self {
+        Self {
+            kind: ParseErrorKind::BuildFailure,
+            offset: error.span.start,
+            expected: Vec::new(),
+            message: error.message,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Recognition {
@@ -194,22 +205,44 @@ struct Repetition {
 }
 
 #[derive(Clone, Copy)]
-struct PendingOperator { operator: crate::program::BoundOperator, span: Span }
-enum OperatorUndo { Remove, Restore(PendingOperator) }
+struct PendingOperator {
+    operator: crate::program::BoundOperator,
+    span: Span,
+}
+enum OperatorUndo {
+    Remove,
+    Restore(PendingOperator),
+}
 struct PrattFrame {
     target: RuleId,
     env: Env,
     operators: Vec<PendingOperator>,
     undo: Vec<OperatorUndo>,
-    attempt: Option<Checkpoint>,
+    attempt: Option<(Checkpoint, usize)>,
 }
 
 enum Task {
-    PrattOperand { frame: Box<PrattFrame>, candidate: usize },
-    PrattAfterPrefix { frame: Box<PrattFrame>, candidate: usize, checkpoint: Checkpoint },
+    PrattOperand {
+        frame: Box<PrattFrame>,
+        candidate: usize,
+    },
+    PrattAfterPrefix {
+        frame: Box<PrattFrame>,
+        candidate: usize,
+        checkpoint: Checkpoint,
+    },
     PrattAfterAtom(Box<PrattFrame>),
-    PrattFollowing { frame: Box<PrattFrame>, candidate: usize, checkpoint: Checkpoint },
-    PrattAfterFollowing { frame: Box<PrattFrame>, candidate: usize, checkpoint: Checkpoint, start: usize },
+    PrattFollowing {
+        frame: Box<PrattFrame>,
+        candidate: usize,
+        checkpoint: Checkpoint,
+    },
+    PrattAfterFollowing {
+        frame: Box<PrattFrame>,
+        candidate: usize,
+        checkpoint: Checkpoint,
+        start: usize,
+    },
     RunBuiltin(Builtin, Env),
     Eval(ExprId, Env),
     FinishExpr(Checkpoint),
@@ -420,28 +453,49 @@ impl<'g, 'i, P: Program, B: Builder, const CAPTURE: bool> State<'g, 'i, P, B, CA
             },
         }
     }
-    fn pratt_push(&self, frame: &mut PrattFrame, operator: PendingOperator) -> Result<(), ParseError> {
+    fn pratt_push(
+        &self,
+        frame: &mut PrattFrame,
+        operator: PendingOperator,
+    ) -> Result<(), ParseError> {
         if frame.operators.len() >= self.options.max_rule_depth {
-            return Err(self.error(ParseErrorKind::DepthLimit, "source expression operator nesting limit exceeded"));
+            return Err(self.error(
+                ParseErrorKind::DepthLimit,
+                "source expression operator nesting limit exceeded",
+            ));
         }
         frame.operators.push(operator);
         frame.undo.push(OperatorUndo::Remove);
         Ok(())
     }
-    fn pratt_reduce(&mut self, env: Env, operator: PendingOperator) {
+    fn pratt_reduce(&mut self, env: Env, operator: PendingOperator) -> Result<(), ParseError> {
         if env.semantic && !env.predicate && !env.skipping {
-            self.builder.reduce(operator.operator.rule, operator.operator.fixity, operator.span);
+            self.builder.try_reduce(
+                operator.operator.rule,
+                operator.operator.fixity,
+                operator.span,
+            )?;
         }
+        Ok(())
     }
-    fn pratt_finish(&mut self, mut frame: Box<PrattFrame>) {
-        while let Some(operator) = frame.operators.pop() { self.pratt_reduce(frame.env, operator); }
+    fn pratt_finish(&mut self, mut frame: PrattFrame) -> Result<(), ParseError> {
+        while let Some(operator) = frame.operators.pop() {
+            self.pratt_reduce(frame.env, operator)?;
+        }
         self.matched = true;
+        Ok(())
     }
     fn pratt_following(&mut self, frame: Box<PrattFrame>) {
         let checkpoint = self.checkpoint();
         let env = frame.env;
-        self.tasks.push(Task::PrattFollowing { frame, candidate: 0, checkpoint });
-        if env.allows_skip() { self.tasks.push(Task::Skip(env)); }
+        self.tasks.push(Task::PrattFollowing {
+            frame,
+            candidate: 0,
+            checkpoint,
+        });
+        if env.allows_skip() {
+            self.tasks.push(Task::Skip(env));
+        }
     }
     fn literal(&mut self, text: &'g str, insensitive: bool, env: Env) {
         let remaining = &self.source[self.offset..];
@@ -460,14 +514,77 @@ impl<'g, 'i, P: Program, B: Builder, const CAPTURE: bool> State<'g, 'i, P, B, CA
             self.failure(env, Expected::Literal(text));
         }
     }
+    fn charge_step(&mut self) -> Result<(), ParseError> {
+        if self.steps >= self.options.max_steps {
+            return Err(self.error(
+                ParseErrorKind::WorkLimit,
+                "source parse work limit exceeded",
+            ));
+        }
+        self.steps += 1;
+        Ok(())
+    }
+    fn ascii_repeat(
+        &mut self,
+        builtin: Builtin,
+        accepts: fn(u8) -> bool,
+        env: Env,
+        min: u32,
+        max: Option<u32>,
+    ) -> Result<(), ParseError> {
+        let mut count = 0;
+        loop {
+            // Virtual Repeat task. Keep precisely the same budget boundaries
+            // and offsets as the continuation engine, even on resource errors.
+            self.charge_step()?;
+            if max.is_some_and(|max| count >= max) {
+                self.matched = true;
+                break;
+            }
+            self.charge_step()?; // RepeatAfterSkip (no skip in atomic mode)
+            self.charge_step()?; // Eval builtin
+            if self
+                .source
+                .as_bytes()
+                .get(self.offset)
+                .copied()
+                .is_some_and(accepts)
+            {
+                self.offset += 1;
+                self.matched = true;
+            } else {
+                self.failure(env, Expected::Builtin(builtin));
+            }
+            self.charge_step()?; // RepeatAfterChild
+            if !self.matched {
+                self.matched = count >= min;
+                break;
+            }
+            count += 1;
+        }
+        Ok(())
+    }
     fn execute(&mut self, task: Task) -> Result<(), ParseError> {
         match task {
             Task::PrattOperand { frame, candidate } => {
                 let spec = self.grammar.source_pratt(frame.target).unwrap();
-                if let Some((candidate, operator)) = spec.operators.iter().enumerate().skip(candidate).find(|(_, op)| op.fixity == crate::pratt::Fixity::Prefix) {
+                if let Some((candidate, operator)) = spec
+                    .operators
+                    .iter()
+                    .enumerate()
+                    .skip(candidate)
+                    .find(|(_, op)| op.fixity == crate::pratt::Fixity::Prefix)
+                {
                     let operator = *operator;
-                    let env = Env { semantic: false, ..frame.env };
-                    self.tasks.push(Task::PrattAfterPrefix { frame, candidate, checkpoint: self.checkpoint() });
+                    let env = Env {
+                        semantic: false,
+                        ..frame.env
+                    };
+                    self.tasks.push(Task::PrattAfterPrefix {
+                        frame,
+                        candidate,
+                        checkpoint: self.checkpoint(),
+                    });
                     self.tasks.push(Task::EnterRule(operator.rule, env));
                 } else {
                     let atom = spec.atom;
@@ -476,68 +593,165 @@ impl<'g, 'i, P: Program, B: Builder, const CAPTURE: bool> State<'g, 'i, P, B, CA
                     self.tasks.push(Task::EnterRule(atom, env));
                 }
             }
-            Task::PrattAfterPrefix { mut frame, candidate, checkpoint } => {
+            Task::PrattAfterPrefix {
+                mut frame,
+                candidate,
+                checkpoint,
+            } => {
                 if self.matched {
-                    if self.offset == checkpoint.offset { return Err(self.error(ParseErrorKind::NonProgress, "Pratt prefix succeeded without consuming input")); }
-                    let operator = self.grammar.source_pratt(frame.target).unwrap().operators[candidate];
-                    self.pratt_push(&mut frame, PendingOperator { operator, span: Span { start: checkpoint.offset, end: self.offset } })?;
+                    if self.offset == checkpoint.offset {
+                        return Err(self.error(
+                            ParseErrorKind::NonProgress,
+                            "Pratt prefix succeeded without consuming input",
+                        ));
+                    }
+                    let operator =
+                        self.grammar.source_pratt(frame.target).unwrap().operators[candidate];
+                    self.pratt_push(
+                        &mut frame,
+                        PendingOperator {
+                            operator,
+                            span: Span {
+                                start: checkpoint.offset,
+                                end: self.offset,
+                            },
+                        },
+                    )?;
                     let env = frame.env;
-                    self.tasks.push(Task::PrattOperand { frame, candidate: 0 });
-                    if env.allows_skip() { self.tasks.push(Task::Skip(env)); }
-                } else { self.tasks.push(Task::PrattOperand { frame, candidate: candidate + 1 }); }
+                    self.tasks.push(Task::PrattOperand {
+                        frame,
+                        candidate: 0,
+                    });
+                    if env.allows_skip() {
+                        self.tasks.push(Task::Skip(env));
+                    }
+                } else {
+                    self.tasks.push(Task::PrattOperand {
+                        frame,
+                        candidate: candidate + 1,
+                    });
+                }
             }
             Task::PrattAfterAtom(mut frame) => {
                 if self.matched {
                     frame.attempt = None;
                     frame.undo.clear();
                     self.pratt_following(frame);
-                } else if let Some(checkpoint) = frame.attempt.take() {
+                } else if let Some((checkpoint, candidate)) = frame.attempt.take() {
                     // A grammar repetition rolls back a consumed infix whose
                     // RHS failed. Restore popped operator metadata as well as
                     // builder values/input; eager reductions may have happened.
                     self.restore(checkpoint);
                     while let Some(undo) = frame.undo.pop() {
-                        match undo { OperatorUndo::Remove => { frame.operators.pop().unwrap(); }, OperatorUndo::Restore(op) => frame.operators.push(op) }
+                        match undo {
+                            OperatorUndo::Remove => {
+                                frame.operators.pop().unwrap();
+                            }
+                            OperatorUndo::Restore(op) => frame.operators.push(op),
+                        }
                     }
-                    self.pratt_finish(frame);
+                    // A shorter operator can have consumed the prefix of a
+                    // later alternative (Lua '~' versus '~='). Its failed RHS
+                    // must allow the remaining ordered candidates to run.
+                    let env = frame.env;
+                    self.tasks.push(Task::PrattFollowing {
+                        frame,
+                        candidate: candidate + 1,
+                        checkpoint,
+                    });
+                    if env.allows_skip() {
+                        self.tasks.push(Task::Skip(env));
+                    }
                 }
                 // Initial operand failure leaves matched=false. FinishRule
                 // restores the expression's complete transactional checkpoint.
             }
-            Task::PrattFollowing { frame, candidate, checkpoint } => {
+            Task::PrattFollowing {
+                frame,
+                candidate,
+                mut checkpoint,
+            } => {
                 let spec = self.grammar.source_pratt(frame.target).unwrap();
-                if let Some((candidate, operator)) = spec.operators.iter().enumerate().skip(candidate).find(|(_, op)| op.fixity != crate::pratt::Fixity::Prefix) {
+                if candidate == 0 && spec.trailing_trivia == crate::islands::TrailingTrivia::Consume
+                {
+                    checkpoint = self.checkpoint();
+                }
+                if let Some((candidate, operator)) = spec
+                    .operators
+                    .iter()
+                    .enumerate()
+                    .skip(candidate)
+                    .find(|(_, op)| op.fixity != crate::pratt::Fixity::Prefix)
+                {
                     let operator = *operator;
-                    let env = Env { semantic: false, ..frame.env };
-                    self.tasks.push(Task::PrattAfterFollowing { frame, candidate, checkpoint, start: self.offset });
+                    let env = Env {
+                        semantic: false,
+                        ..frame.env
+                    };
+                    self.tasks.push(Task::PrattAfterFollowing {
+                        frame,
+                        candidate,
+                        checkpoint,
+                        start: self.offset,
+                    });
                     self.tasks.push(Task::EnterRule(operator.rule, env));
                 } else {
                     self.restore(checkpoint); // keep trailing trivia for caller
-                    self.pratt_finish(frame);
+                    self.pratt_finish(*frame)?;
                 }
             }
-            Task::PrattAfterFollowing { mut frame, candidate, checkpoint, start } => {
+            Task::PrattAfterFollowing {
+                mut frame,
+                candidate,
+                checkpoint,
+                start,
+            } => {
                 if !self.matched {
-                    self.tasks.push(Task::PrattFollowing { frame, candidate: candidate + 1, checkpoint });
+                    self.tasks.push(Task::PrattFollowing {
+                        frame,
+                        candidate: candidate + 1,
+                        checkpoint,
+                    });
                 } else {
-                    if self.offset == start { return Err(self.error(ParseErrorKind::NonProgress, "Pratt operator succeeded without consuming input")); }
-                    let operator = self.grammar.source_pratt(frame.target).unwrap().operators[candidate];
-                    while frame.operators.last().is_some_and(|top| top.operator.precedence > operator.precedence || (top.operator.precedence == operator.precedence && operator.fixity != crate::pratt::Fixity::InfixRight)) {
+                    if self.offset == start {
+                        return Err(self.error(
+                            ParseErrorKind::NonProgress,
+                            "Pratt operator succeeded without consuming input",
+                        ));
+                    }
+                    let operator =
+                        self.grammar.source_pratt(frame.target).unwrap().operators[candidate];
+                    while frame.operators.last().is_some_and(|top| {
+                        top.operator.precedence > operator.precedence
+                            || (top.operator.precedence == operator.precedence
+                                && operator.fixity != crate::pratt::Fixity::InfixRight)
+                    }) {
                         let top = frame.operators.pop().unwrap();
                         frame.undo.push(OperatorUndo::Restore(top));
-                        self.pratt_reduce(frame.env, top);
+                        self.pratt_reduce(frame.env, top)?;
                     }
-                    let pending = PendingOperator { operator, span: Span { start, end: self.offset } };
+                    let pending = PendingOperator {
+                        operator,
+                        span: Span {
+                            start,
+                            end: self.offset,
+                        },
+                    };
                     if operator.fixity == crate::pratt::Fixity::Postfix {
-                        self.pratt_reduce(frame.env, pending);
+                        self.pratt_reduce(frame.env, pending)?;
                         frame.undo.clear();
                         self.pratt_following(frame);
                     } else {
                         self.pratt_push(&mut frame, pending)?;
-                        frame.attempt = Some(checkpoint);
+                        frame.attempt = Some((checkpoint, candidate));
                         let env = frame.env;
-                        self.tasks.push(Task::PrattOperand { frame, candidate: 0 });
-                        if env.allows_skip() { self.tasks.push(Task::Skip(env)); }
+                        self.tasks.push(Task::PrattOperand {
+                            frame,
+                            candidate: 0,
+                        });
+                        if env.allows_skip() {
+                            self.tasks.push(Task::Skip(env));
+                        }
                     }
                 }
             }
@@ -587,13 +801,24 @@ impl<'g, 'i, P: Program, B: Builder, const CAPTURE: bool> State<'g, 'i, P, B, CA
                         expression,
                         min,
                         max,
-                    } => self.tasks.push(Task::Repeat(Repetition {
-                        child: expression,
-                        env,
-                        min,
-                        max,
-                        count: 0,
-                    })),
+                    } => {
+                        if self.grammar.fast_ascii_repetitions()
+                            && env.mode != Atomicity::Normal
+                            && let Instruction::Builtin(builtin) =
+                                self.grammar.instruction(expression)
+                            && let Some(accepts) = crate::lexical::ascii_predicate(builtin)
+                        {
+                            self.ascii_repeat(builtin, accepts, env, min, max)?;
+                        } else {
+                            self.tasks.push(Task::Repeat(Repetition {
+                                child: expression,
+                                env,
+                                min,
+                                max,
+                                count: 0,
+                            }));
+                        }
+                    }
                     Instruction::Predicate {
                         expression,
                         positive,
@@ -630,6 +855,29 @@ impl<'g, 'i, P: Program, B: Builder, const CAPTURE: bool> State<'g, 'i, P, B, CA
                 }
             }
             Task::EnterRule(rule, incoming) => {
+                if incoming.skipping
+                    && let Some(prefix) = self.grammar.trivia_failure_prefix(rule)
+                    && self
+                        .source
+                        .as_bytes()
+                        .get(self.offset)
+                        .is_none_or(|byte| !prefix.contains(*byte))
+                    && self
+                        .rule_depth
+                        .checked_add(prefix.depth + 1)
+                        .is_some_and(|depth| depth <= self.options.max_rule_depth)
+                    && self
+                        .steps
+                        .checked_add(prefix.steps + 1)
+                        .is_some_and(|steps| steps <= self.options.max_steps)
+                {
+                    // Only a certified pure failure is bypassed. Reserve the
+                    // full original cost/depth; tight limits use real tasks so
+                    // work-versus-depth error ordering is unchanged.
+                    self.steps += prefix.steps + 1; // expression + FinishRule
+                    self.matched = false;
+                    return Ok(());
+                }
                 if self.rule_depth >= self.options.max_rule_depth {
                     return Err(self.error(
                         ParseErrorKind::DepthLimit,
@@ -671,9 +919,10 @@ impl<'g, 'i, P: Program, B: Builder, const CAPTURE: bool> State<'g, 'i, P, B, CA
                 } else {
                     None
                 };
-                let builder_rule = (!incoming.predicate && !incoming.skipping && incoming.semantic).then_some(rule);
+                let builder_rule = (!incoming.predicate && !incoming.skipping && incoming.semantic)
+                    .then_some(rule);
                 if builder_rule.is_some() {
-                    self.builder.begin(rule, self.offset);
+                    self.builder.try_begin(rule, self.offset)?;
                 }
                 self.tasks.push(Task::FinishRule {
                     checkpoint,
@@ -681,13 +930,29 @@ impl<'g, 'i, P: Program, B: Builder, const CAPTURE: bool> State<'g, 'i, P, B, CA
                     builder_rule,
                 });
                 let env = Env {
-                        mode,
-                        scope: definition.scope,
-                        ..incoming
-                    };
-                if !CAPTURE && incoming.semantic && self.builder.supports_pratt(rule) && self.grammar.source_pratt(rule).is_some() {
-                    self.tasks.push(Task::PrattOperand { frame: Box::new(PrattFrame { target: rule, env, operators: Vec::new(), undo: Vec::new(), attempt: None }), candidate: 0 });
-                } else { self.tasks.push(Task::Eval(definition.expression, env)); }
+                    mode,
+                    scope: definition.scope,
+                    ..incoming
+                };
+                if !CAPTURE
+                    && incoming.semantic
+                    && !incoming.skipping
+                    && self.builder.supports_pratt(rule)
+                    && self.grammar.source_pratt(rule).is_some()
+                {
+                    self.tasks.push(Task::PrattOperand {
+                        frame: Box::new(PrattFrame {
+                            target: rule,
+                            env,
+                            operators: Vec::new(),
+                            undo: Vec::new(),
+                            attempt: None,
+                        }),
+                        candidate: 0,
+                    });
+                } else {
+                    self.tasks.push(Task::Eval(definition.expression, env));
+                }
             }
             Task::FinishRule {
                 checkpoint,
@@ -704,14 +969,14 @@ impl<'g, 'i, P: Program, B: Builder, const CAPTURE: bool> State<'g, 'i, P, B, CA
                 if self.matched
                     && let Some(rule) = builder_rule
                 {
-                    self.builder.finish(
+                    self.builder.try_finish(
                         rule,
                         Span {
                             start: checkpoint.offset,
                             end: self.offset,
                         },
                         self.source,
-                    );
+                    )?;
                 }
             }
             Task::Sequence { right, env } => {

@@ -15,6 +15,7 @@ vybe_parser = { path = ".." }
 
 [build-dependencies]
 vybe_parser_codegen = { path = "../codegen" }
+vybe_parser = { path = ".." }
 
 [dev-dependencies]
 vybe_ast = { path = "../../vybe_ast" }

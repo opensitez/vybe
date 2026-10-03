@@ -11,7 +11,11 @@ type Shape = Vec<(String, usize, usize, usize)>;
 #[test]
 fn migration_pair_positions_match_reference_unicode_and_line_boundaries() {
     #[derive(Clone, Copy)]
-    enum Rules { Program, Cell, Eoi }
+    enum Rules {
+        Program,
+        Cell,
+        Eoi,
+    }
     impl vybe_parser::compat::RuleIdentity for Rules {
         fn from_capture(rule: vybe_parser::CaptureRule) -> Option<Self> {
             match rule {
@@ -24,11 +28,28 @@ fn migration_pair_positions_match_reference_unicode_and_line_boundaries() {
     }
     let grammar = compile("program = { SOI ~ cell* ~ EOI } cell = { ANY }").unwrap();
     for input in ["", "aé😀", "a\rb", "a\r\nb", "\n\r\n\r😀\n"] {
-        let root = grammar.parse_source("program", input).unwrap().into_typed_pairs::<Rules>().next().unwrap();
+        let root = grammar
+            .parse_source("program", input)
+            .unwrap()
+            .into_typed_pairs::<Rules>()
+            .next()
+            .unwrap();
         for pair in root.into_inner() {
             let span = pair.as_span();
-            assert_eq!(span.start_pos().line_col(), pest::Position::new(input, span.start()).unwrap().line_col(), "start {:?} {}", input, span.start());
-            assert_eq!(span.end_pos().line_col(), pest::Position::new(input, span.end()).unwrap().line_col(), "end {:?} {}", input, span.end());
+            assert_eq!(
+                span.start_pos().line_col(),
+                pest::Position::new(input, span.start()).unwrap().line_col(),
+                "start {:?} {}",
+                input,
+                span.start()
+            );
+            assert_eq!(
+                span.end_pos().line_col(),
+                pest::Position::new(input, span.end()).unwrap().line_col(),
+                "end {:?} {}",
+                input,
+                span.end()
+            );
         }
     }
 }
@@ -151,6 +172,48 @@ mod lua {
     #[derive(Parser)]
     #[grammar = "../../../languages/lua/src/grammar.pest"]
     struct Lua;
+    #[test]
+    fn generated_pratt_expression_island_matches_black_box_reference() {
+        use vybe_parser_generated_tests::lua_pratt;
+        let operators = [
+            "+", "-", "*", "/", "//", "%", "^", "..", "<<", ">>", "&", "~", "|", "<=", ">=", "~=",
+            "==", "<", ">", "and", "or",
+        ];
+        for a in operators {
+            for b in operators {
+                for suffix in ["c", "", "-", "not", "(c)"] {
+                    let expression = format!("a {a} b {b} {suffix}");
+                    let chunk = format!("return {expression}");
+                    for (reference_rule, generated_rule, source) in [
+                        (Rule::expr, lua_pratt::Rule::expr, expression.as_str()),
+                        (Rule::chunk, lua_pratt::Rule::chunk, chunk.as_str()),
+                    ] {
+                        match (
+                            Lua::parse(reference_rule, source),
+                            lua_pratt::Parser.recognize(generated_rule, source),
+                        ) {
+                            (Ok(mut reference), Ok(ours)) => assert_eq!(
+                                reference.next().unwrap().as_span().end(),
+                                ours.consumed,
+                                "{source}"
+                            ),
+                            (Err(reference), Err(ours)) => {
+                                assert_eq!(ours.kind, vybe_parser::ParseErrorKind::Syntax);
+                                let offset = match reference.location {
+                                    pest::error::InputLocation::Pos(offset)
+                                    | pest::error::InputLocation::Span((offset, _)) => offset,
+                                };
+                                assert_eq!(offset, ours.offset, "{source}");
+                            }
+                            (reference, ours) => {
+                                panic!("{source}: reference={reference:?}; ours={ours:?}")
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
     #[test]
     fn actual_lua_grammar_source_trees_match() {
         let grammar = compile(include_str!("../../../../languages/lua/src/grammar.pest")).unwrap();

@@ -76,6 +76,7 @@ pub struct CompiledGrammar {
     pub(crate) scopes: Vec<crate::program::Scope>,
     pub(crate) rule_scopes: Vec<usize>,
     pub(crate) pratt: Vec<Option<crate::program::OwnedPratt>>,
+    pub(crate) trivia_failure: Vec<Option<crate::lexical::FailurePrefix>>,
 }
 
 impl CompiledGrammar {
@@ -104,6 +105,7 @@ impl CompiledGrammar {
     }
     pub(crate) fn refresh_analysis(&mut self) {
         self.analysis = crate::analysis::analyze(self);
+        self.trivia_failure = crate::lexical::trivia_failure_prefixes(self);
     }
 }
 
@@ -154,6 +156,7 @@ pub fn resolve(syntax: GrammarSyntax) -> Result<CompiledGrammar, Vec<Diagnostic>
     if diagnostics.is_empty() {
         let mut grammar = CompiledGrammar {
             pratt: vec![None; syntax.rules.len()],
+            trivia_failure: vec![None; syntax.rules.len()],
             rule_scopes: vec![0; syntax.rules.len()],
             syntax,
             references,
@@ -170,7 +173,7 @@ pub fn resolve(syntax: GrammarSyntax) -> Result<CompiledGrammar, Vec<Diagnostic>
             whitespace_class,
             whitespace_prefix_class,
         };
-        grammar.analysis = crate::analysis::analyze(&grammar);
+        grammar.refresh_analysis();
         Ok(grammar)
     } else {
         Err(diagnostics)

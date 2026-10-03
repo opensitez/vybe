@@ -16,3 +16,4 @@ pest_derive = "=2.8.6"
 
 [dev-dependencies]
 vybe_parser_generated_tests = { path = "../generated_tests" }
+vybe_ast = { path = "../../vybe_ast" }

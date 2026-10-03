@@ -9,6 +9,31 @@ use vybe_parser_generated_tests::lua;
 #[grammar = "../../../languages/lua/src/grammar.pest"]
 struct ReferenceParser;
 
+#[derive(Debug)]
+struct WithoutTriviaCertificate<P>(P);
+impl<P: vybe_parser::program::Program> vybe_parser::program::Program
+    for WithoutTriviaCertificate<P>
+{
+    fn rule_id(&self, name: &str) -> Option<usize> {
+        self.0.rule_id(name)
+    }
+    fn rule(&self, id: usize) -> vybe_parser::program::RuleSpec<'_> {
+        self.0.rule(id)
+    }
+    fn instruction(&self, id: usize) -> vybe_parser::program::Instruction<'_> {
+        self.0.instruction(id)
+    }
+    fn scope(&self, id: usize) -> vybe_parser::program::Scope {
+        self.0.scope(id)
+    }
+    fn fast_ascii_repetitions(&self) -> bool {
+        self.0.fast_ascii_repetitions()
+    }
+    fn source_pratt(&self, rule: usize) -> Option<vybe_parser::program::SourcePratt<'_>> {
+        self.0.source_pratt(rule)
+    }
+}
+
 fn measure(mut action: impl FnMut(), count: usize) -> (f64, f64) {
     for _ in 0..10 {
         action();
@@ -27,6 +52,7 @@ fn main() {
     let grammar_source = include_str!("../../../../languages/lua/src/grammar.pest");
     let grammar = vybe_parser::compile(grammar_source).unwrap();
     let count = 101;
+    ascii_baseline(count);
     println!(
         "Lua baseline: 10 warmups, {count} samples, median/p95 µs, rustc={}, target={}",
         option_env!("RUSTC_VERSION").unwrap_or("record with rustc -V"),
@@ -110,5 +136,99 @@ fn main() {
                 count
             )
         );
+        let baseline = WithoutTriviaCertificate(lua::Parser);
+        let options = vybe_parser::MatchOptions::default();
+        assert_eq!(
+            lua::Parser.recognize(lua::Rule::chunk, &source).unwrap(),
+            vybe_parser::engine::recognize_program(&baseline, "chunk", &source, options).unwrap()
+        );
+        println!(
+            "  without trivia certificate {:?}",
+            measure(
+                || {
+                    black_box(
+                        vybe_parser::engine::recognize_program(
+                            &baseline,
+                            "chunk",
+                            black_box(&source),
+                            options,
+                        )
+                        .unwrap(),
+                    );
+                },
+                count
+            )
+        );
+        let pratt = vybe_parser_generated_tests::lua_pratt::Parser;
+        let entry = vybe_parser_generated_tests::lua_pratt::Rule::chunk;
+        assert_eq!(
+            pratt.recognize(entry, &source).unwrap().consumed,
+            source.len()
+        );
+        println!(
+            "  Pratt recognize   {:?}",
+            measure(
+                || {
+                    black_box(pratt.recognize(entry, black_box(&source)).unwrap());
+                },
+                count
+            )
+        );
     }
+}
+
+fn ascii_baseline(count: usize) {
+    use vybe_parser::{
+        MatchOptions,
+        engine::recognize_program,
+        program::{Instruction, Program, RuleSpec, Scope},
+    };
+    #[derive(Debug)]
+    struct Baseline<'a>(&'a vybe_parser::CompiledGrammar);
+    impl Program for Baseline<'_> {
+        fn rule_id(&self, name: &str) -> Option<usize> {
+            self.0.rule_id(name)
+        }
+        fn rule(&self, id: usize) -> RuleSpec<'_> {
+            self.0.rule(id)
+        }
+        fn instruction(&self, id: usize) -> Instruction<'_> {
+            self.0.instruction(id)
+        }
+        fn scope(&self, id: usize) -> Scope {
+            self.0.scope(id)
+        }
+    }
+    let grammar = vybe_parser::compile("root = @{ ASCII_DIGIT+ ~ EOI }").unwrap();
+    let input = "1234567890".repeat(409);
+    let ordinary = Baseline(&grammar);
+    let options = MatchOptions::default();
+    assert_eq!(
+        recognize_program(&grammar, "root", &input, options),
+        recognize_program(&ordinary, "root", &input, options)
+    );
+    println!(
+        "ASCII digit repetition: {} bytes, 10 warmups, {count} samples, median/p95 µs",
+        input.len()
+    );
+    println!(
+        "  continuation {:?}",
+        measure(
+            || {
+                black_box(
+                    recognize_program(&ordinary, "root", black_box(&input), options).unwrap(),
+                );
+            },
+            count
+        )
+    );
+    println!(
+        "  byte scanner {:?}",
+        measure(
+            || {
+                black_box(recognize_program(&grammar, "root", black_box(&input), options).unwrap());
+            },
+            count
+        )
+    );
 }

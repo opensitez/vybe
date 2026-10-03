@@ -1,8 +1,14 @@
 pub mod fixtures {
     include!(concat!(env!("OUT_DIR"), "/fixtures.rs"));
 }
+pub mod islands {
+    include!(concat!(env!("OUT_DIR"), "/islands.rs"));
+}
 pub mod lua {
     include!(concat!(env!("OUT_DIR"), "/lua.rs"));
+}
+pub mod lua_pratt {
+    include!(concat!(env!("OUT_DIR"), "/lua_pratt.rs"));
 }
 pub mod ast {
     include!(concat!(env!("OUT_DIR"), "/ast.rs"));

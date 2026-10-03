@@ -1,7 +1,61 @@
+#[path = "build_support/lua_walker.rs"]
+mod lua_walker;
 use std::{env, fs, path::PathBuf};
 
 fn main() {
     let out = PathBuf::from(env::var_os("OUT_DIR").unwrap());
+    lua_walker::generate(&out);
+    println!("cargo:rerun-if-changed=../tests/islands.grammar");
+    let source = fs::read_to_string("../tests/islands.grammar").unwrap();
+    let mut grammar = vybe_parser::compile(&source).unwrap();
+    use vybe_parser::{
+        islands::{Operator, TrailingTrivia},
+        pratt::Fixity,
+    };
+    grammar
+        .bind_pratt(
+            "expr",
+            "atom",
+            &[
+                Operator {
+                    rule: "minus",
+                    precedence: 25,
+                    fixity: Fixity::Prefix,
+                },
+                Operator {
+                    rule: "power",
+                    precedence: 30,
+                    fixity: Fixity::InfixRight,
+                },
+                Operator {
+                    rule: "bang",
+                    precedence: 40,
+                    fixity: Fixity::Postfix,
+                },
+                Operator {
+                    rule: "star",
+                    precedence: 20,
+                    fixity: Fixity::InfixLeft,
+                },
+                Operator {
+                    rule: "plus",
+                    precedence: 10,
+                    fixity: Fixity::InfixLeft,
+                },
+                Operator {
+                    rule: "minus",
+                    precedence: 10,
+                    fixity: Fixity::InfixLeft,
+                },
+            ],
+            TrailingTrivia::Consume,
+        )
+        .unwrap();
+    fs::write(
+        out.join("islands.rs"),
+        vybe_parser_codegen::emit(&grammar).unwrap(),
+    )
+    .unwrap();
     println!("cargo:rerun-if-changed=tests/modular_outer.grammar");
     println!("cargo:rerun-if-changed=tests/modular_inner.grammar");
     let outer = fs::read_to_string("tests/modular_outer.grammar").unwrap();
@@ -37,6 +91,41 @@ fn main() {
         let generated = vybe_parser_codegen::generate(&source)
             .unwrap_or_else(|errors| panic!("{path}: {errors:?}"));
         fs::write(out.join(format!("{name}.rs")), generated).unwrap();
+        if name == "lua" {
+            let mut grammar = vybe_parser::compile(&source).unwrap();
+            let mut operators = vec![Operator {
+                rule: "unop",
+                precedence: 25,
+                fixity: Fixity::Prefix,
+            }];
+            for (rule, precedence, fixity) in [
+                ("pow_op", 30, Fixity::InfixRight),
+                ("mul_op", 20, Fixity::InfixLeft),
+                ("additive_op", 19, Fixity::InfixLeft),
+                ("CONCAT", 18, Fixity::InfixRight),
+                ("shift_op", 17, Fixity::InfixLeft),
+                ("AMP", 16, Fixity::InfixLeft),
+                ("TILDE", 15, Fixity::InfixLeft),
+                ("PIPE", 14, Fixity::InfixLeft),
+                ("compare_op", 13, Fixity::InfixLeft),
+                ("KW_AND", 12, Fixity::InfixLeft),
+                ("KW_OR", 11, Fixity::InfixLeft),
+            ] {
+                operators.push(Operator {
+                    rule,
+                    precedence,
+                    fixity,
+                });
+            }
+            grammar
+                .bind_pratt("expr", "postfix", &operators, TrailingTrivia::Consume)
+                .unwrap();
+            fs::write(
+                out.join("lua_pratt.rs"),
+                vybe_parser_codegen::emit(&grammar).unwrap(),
+            )
+            .unwrap();
+        }
     }
     let mut modules = String::new();
     if env::var_os("CARGO_FEATURE_ALL_GRAMMARS").is_some() {

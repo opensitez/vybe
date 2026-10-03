@@ -1,0 +1,22 @@
+pub const VALID: &[&str] = &[
+    "",
+    "local x = 1 + 2 * 3; return x",
+    "local a,b = f(); return a,b",
+    "function f(a, ...) return a, ... end; f(2)",
+    "local function f(a) return a+1 end; return f(3)",
+    "for i=1,3 do print(i) end",
+    "for k,v in pairs(t) do print(k,v) end",
+    "for i=1,3 do f=function() return i end end",
+    "if a then f() elseif b then g() else h() end",
+    "while a do a=a-1 end; repeat a=a+1 until a>3",
+    "local t = {x=1, [2]=3, 4}; return t.x, t[2]",
+    "function t:m(x) return self.x+x end; t:m(1)",
+    "local s = [==[long string]==]; return #s",
+    "local f=function(a) return a end; return f(1)",
+    "return not a and b or c, -2^2, a .. b .. c, a ~= b",
+    "::again:: goto again",
+    "do local x=1 end",
+    "return 0xff, 1.25e-2, 'a\\n', true, nil",
+    "-- comment\nlocal s='é😀'; return s",
+];
+pub const INVALID: &[&str] = &["local x=", "return 1+", "function(", "if a then"];

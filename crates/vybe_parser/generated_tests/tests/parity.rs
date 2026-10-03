@@ -78,3 +78,41 @@ fn generated_real_lua_grammar_parity() {
         Some(lua::Rule::chunk)
     );
 }
+
+#[test]
+fn generated_lua_pratt_recognition_preserves_operator_ambiguity_and_partial_input() {
+    use vybe_parser_generated_tests::lua_pratt;
+    let operators = [
+        "+", "-", "*", "/", "//", "%", "^", "..", "<<", ">>", "&", "~", "|", "<=", ">=", "~=",
+        "==", "<", ">", "and", "or",
+    ];
+    for a in operators {
+        for b in operators {
+            for suffix in ["c", "", "-", "not", "(c)"] {
+                let input = format!("a {a} b {b} {suffix}");
+                for entry in ["expr", "chunk"] {
+                    let plain =
+                        recognize_program(&lua::Parser, entry, &input, MatchOptions::default())
+                            .map(|r| r.consumed)
+                            .map_err(|e| (e.kind, e.offset));
+                    let pratt = recognize_program(
+                        &lua_pratt::Parser,
+                        entry,
+                        &input,
+                        MatchOptions::default(),
+                    )
+                    .map(|r| r.consumed)
+                    .map_err(|e| (e.kind, e.offset));
+                    assert_eq!(plain, pratt, "{entry}: {input}");
+                }
+            }
+        }
+    }
+    // The compatibility/capture path must still expose every original wrapper.
+    let input = "return -a^2 + b ~= c and f(3)";
+    let a = lua::Parser.parse(lua::Rule::chunk, input).unwrap();
+    let b = lua_pratt::Parser
+        .parse(lua_pratt::Rule::chunk, input)
+        .unwrap();
+    assert_eq!(shape(&a), shape(&b));
+}

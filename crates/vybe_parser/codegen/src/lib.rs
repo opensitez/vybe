@@ -94,6 +94,29 @@ pub fn emit(grammar: &CompiledGrammar) -> Result<String, Vec<Diagnostic>> {
         writeln!(out, "        {name:?} => Some({id}),").unwrap();
     }
     out.push_str("        _ => None,\n    }}\n");
+    out.push_str("    fn fast_ascii_repetitions(&self) -> bool { true }\n");
+    if (0..grammar.syntax().rules.len()).any(|id| grammar.trivia_failure_prefix(id).is_some()) {
+        out.push_str("    fn trivia_failure_prefix(&self, rule: usize) -> Option<::vybe_parser::lexical::FailurePrefix> { match rule {\n");
+        for id in 0..grammar.syntax().rules.len() {
+            if let Some(prefix) = grammar.trivia_failure_prefix(id) {
+                writeln!(out, "        {id} => Some(::vybe_parser::lexical::FailurePrefix {{ bytes: {:?}, steps: {}, depth: {} }}),", prefix.bytes, prefix.steps, prefix.depth).unwrap();
+            }
+        }
+        out.push_str("        _ => None,\n    }}\n");
+    }
+    if (0..grammar.syntax().rules.len()).any(|id| grammar.source_pratt(id).is_some()) {
+        out.push_str("    fn source_pratt(&self, rule: usize) -> Option<::vybe_parser::program::SourcePratt<'_>> { match rule {\n");
+        for id in 0..grammar.syntax().rules.len() {
+            if let Some(spec) = grammar.source_pratt(id) {
+                writeln!(out, "        {id} => Some(::vybe_parser::program::SourcePratt {{ atom: {}, trailing_trivia: ::vybe_parser::islands::TrailingTrivia::{:?}, operators: &[", spec.atom, spec.trailing_trivia).unwrap();
+                for operator in spec.operators {
+                    writeln!(out, "            ::vybe_parser::program::BoundOperator {{ rule: {}, precedence: {}, fixity: ::vybe_parser::pratt::Fixity::{:?} }},", operator.rule, operator.precedence, operator.fixity).unwrap();
+                }
+                out.push_str("        ] }),\n");
+            }
+        }
+        out.push_str("        _ => None,\n    }}\n");
+    }
     if let Some(class) = grammar.whitespace_class() {
         writeln!(out, "    fn whitespace_class(&self) -> Option<::vybe_parser::lexical::ByteClass> {{ Some(::vybe_parser::lexical::ByteClass({:?})) }}", class.0).unwrap();
     }

@@ -20,11 +20,23 @@ pub struct Scope {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct BoundOperator { pub rule: RuleId, pub precedence: u16, pub fixity: crate::pratt::Fixity }
+pub struct BoundOperator {
+    pub rule: RuleId,
+    pub precedence: u16,
+    pub fixity: crate::pratt::Fixity,
+}
 #[derive(Debug, Clone, Copy)]
-pub struct SourcePratt<'a> { pub atom: RuleId, pub operators: &'a [BoundOperator] }
+pub struct SourcePratt<'a> {
+    pub atom: RuleId,
+    pub operators: &'a [BoundOperator],
+    pub trailing_trivia: crate::islands::TrailingTrivia,
+}
 #[derive(Debug, Clone)]
-pub(crate) struct OwnedPratt { pub atom: RuleId, pub operators: Vec<BoundOperator> }
+pub(crate) struct OwnedPratt {
+    pub atom: RuleId,
+    pub operators: Vec<BoundOperator>,
+    pub trailing_trivia: crate::islands::TrailingTrivia,
+}
 
 #[derive(Debug, Clone, Copy)]
 pub enum Instruction<'a> {
@@ -68,10 +80,20 @@ pub enum Instruction<'a> {
 /// dispatch/literals and need no grammar parsing, allocation, or name resolution
 /// at source-parse startup. Implementations must provide valid arena IDs.
 pub trait Program: std::fmt::Debug {
+    fn trivia_failure_prefix(&self, _: RuleId) -> Option<crate::lexical::FailurePrefix> {
+        None
+    }
+    /// Enable certified atomic repetitions of one ASCII builtin. The scanner
+    /// retains the ordinary execution path's work accounting and diagnostics.
+    fn fast_ascii_repetitions(&self) -> bool {
+        false
+    }
     fn rule_id(&self, name: &str) -> Option<RuleId>;
     fn rule(&self, rule: RuleId) -> RuleSpec<'_>;
     fn instruction(&self, expression: ExprId) -> Instruction<'_>;
-    fn source_pratt(&self, _: RuleId) -> Option<SourcePratt<'_>> { None }
+    fn source_pratt(&self, _: RuleId) -> Option<SourcePratt<'_>> {
+        None
+    }
     fn scope(&self, id: usize) -> Scope {
         assert_eq!(id, 0, "program has no such scope");
         Scope {
@@ -94,8 +116,18 @@ pub trait Program: std::fmt::Debug {
 }
 
 impl Program for CompiledGrammar {
+    fn trivia_failure_prefix(&self, rule: RuleId) -> Option<crate::lexical::FailurePrefix> {
+        self.trivia_failure[rule]
+    }
+    fn fast_ascii_repetitions(&self) -> bool {
+        true
+    }
     fn source_pratt(&self, rule: RuleId) -> Option<SourcePratt<'_>> {
-        self.pratt.get(rule)?.as_ref().map(|spec| SourcePratt { atom: spec.atom, operators: &spec.operators })
+        self.pratt.get(rule)?.as_ref().map(|spec| SourcePratt {
+            atom: spec.atom,
+            operators: &spec.operators,
+            trailing_trivia: spec.trailing_trivia,
+        })
     }
     fn scope(&self, id: usize) -> Scope {
         self.scopes[id]
