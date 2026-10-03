@@ -16,7 +16,7 @@
 //!   --portable, -p    Minimal WASI runtime only (no Vybe host optimizations)
 //!   --trace, -t       Enable bytecode trace output
 //!   --chunk <name>    Limit --dump/--trace output to a specific chunk
-//!   --engine NAME     Browser engine: `webcore` (default) or `widgets`.
+//!   --engine NAME     Browser engine: `webcore` (default) or `osbrowser`.
 //!                     Also settable with VYBE_ENGINE; the flag wins.
 //!   --capture FILE    Render one GUI frame to a PNG instead of opening a window
 //!   --capture-control N  Crop --capture to a single control
@@ -206,6 +206,7 @@ pub fn register_plugins(
 }
 
 pub fn run() {
+    let mut cli_report = crate::debug_repl::CliReport::new();
     let args: Vec<String> = std::env::args().collect();
     let mut dump = false;
     let mut dump_ast = false;
@@ -223,6 +224,7 @@ pub fn run() {
     let mut portable = false;
     let mut trace = false;
     let mut debug = false;
+    let mut debug_report = false;
     let mut dap_port: Option<u16> = None;
     let mut watch = false;
     // `--capture <png>` renders one GUI frame offscreen instead of opening a
@@ -244,6 +246,7 @@ pub fn run() {
     let mut serve_no_sandbox = false;
     let mut serve_cold = false;
     let mut serve_no_cache = false;
+    let mut serve_debug_request = 1usize;
     let mut serve_pool: usize = 0;
     let mut serve_bind: Option<String> = None;
     let mut serve_positional: Vec<String> = Vec::new();
@@ -290,6 +293,7 @@ pub fn run() {
             "--portable" | "-p" => portable = true,
             "--trace" | "-t" => trace = true,
             "--debug" | "-g" => debug = true,
+            "--debug-report" => debug_report = true,
             "--dap-port" => {
                 let Some(p) = iter.next() else {
                     eprintln!("Missing value for --dap-port");
@@ -307,7 +311,7 @@ pub fn run() {
             // starting anyway would silently give you the other engine.
             "--engine" => {
                 let Some(name) = iter.next() else {
-                    eprintln!("Missing value for --engine (try: widgets, webcore)");
+                    eprintln!("Missing value for --engine (try: webcore, osbrowser)");
                     std::process::exit(1);
                 };
                 let Some(engine) = vybe_platform_web::engine_select::Engine::parse(name) else {
@@ -349,6 +353,13 @@ pub fn run() {
             "--no-sandbox" => serve_no_sandbox = true,
             "--cold" => serve_cold = true,
             "--no-cache" => serve_no_cache = true,
+            "--debug-request" => {
+                let Some(n) = iter.next().and_then(|v| v.parse::<usize>().ok()).filter(|n| *n > 0) else {
+                    eprintln!("--debug-request requires a positive request number");
+                    std::process::exit(1);
+                };
+                serve_debug_request = n;
+            }
             "--pool" => {
                 let Some(n) = iter.next().and_then(|v| v.parse::<usize>().ok()) else {
                     eprintln!("--pool requires a positive count");
@@ -390,7 +401,15 @@ pub fn run() {
     if serve {
         let mut config = crate::server::ServeConfig::default();
         config.no_sandbox = serve_no_sandbox || !sandbox;
+        config.debug = debug;
+        config.debug_request = serve_debug_request;
+        // Explicit --cold keeps its normal meaning. A selected warm request
+        // can be debugged after that worker resets, which is essential for
+        // diagnosing state that leaks across requests.
         config.cold = serve_cold;
+        if debug {
+            config.timeout_secs = 3600; // paused time is controlled by the REPL
+        }
         config.pool = serve_pool;
         config.no_cache = serve_no_cache;
         // Positional parsing: first token that looks like an addr is bind;
@@ -444,13 +463,31 @@ pub fn run() {
     // `init`), so this must precede the compile below; the same pass registers
     // the platform host fns the runtime needs. Portable mode adds its minimal
     // `wasi:cli` stubs on top.
+    // An in-process debugger restart uses VM::snapshot/reset_to. Track the
+    // plugin-created globalThis and prototypes from the start, as warm::boot
+    // does, or PHP request globals survive the reset and the second run skips
+    // wp-blog-header.php altogether.
+    if debug {
+        vybe_runtime::heap::enable_tracking();
+    }
     let mut vm = VM::new();
+    if debug_report && !debug && dap_port.is_none() {
+        let (_, commands) = std::sync::mpsc::channel();
+        let (events, _) = std::sync::mpsc::channel();
+        vm.attach_debugger(commands, events, false);
+        let report = vm.debug_report().unwrap();
+        report.lock().unwrap().process_started = Some(cli_report.started);
+        cli_report.report = Some(report);
+    }
     if sandbox {
         eprintln!("[sandbox] Restricted mode: no filesystem, network, or database access");
     } else if portable {
         eprintln!("[portable] Running with WASM stdlib only — no Vybe host optimizations");
     }
     register_plugins(&mut vm, &dynamic_compile_caps);
+    if let Some(report) = vm.debug_report() {
+        report.lock().unwrap().milestone("plugin registration complete");
+    }
     if portable {
         vm.register_host_fn(
             "wasi:cli",
@@ -572,6 +609,8 @@ pub fn run() {
             None => vybe_compiler::bundle::EntryPoint::Function(spec.clone()),
         };
     }
+    let cli_compile_cache = std::sync::Arc::new(crate::server::compile_cache::CompileCache::new());
+
     eprintln!(
         "[vybex] Project '{}', sources={}, entry={:?}",
         bundle.name,
@@ -639,10 +678,15 @@ pub fn run() {
     // finishes, so a bundle shows one section per unit.
     vybe_compiler::primitives::set_dump_classes(dump_classes);
     eprintln!("[vybex] Preparing and compiling module...");
-    let compiled = {
+    let entry_compile_started = std::time::Instant::now();
+    let mut compiled = {
         let mut runtime_compiler = crate::dynamic::RuntimeCompilerService::with_capabilities(
             &mut vm,
             dynamic_compile_caps.clone(),
+        );
+        runtime_compiler.set_include_cache(
+            std::sync::Arc::clone(&cli_compile_cache)
+                as std::sync::Arc<dyn vybe_compiler::dynamic::IncludeCompileCache>,
         );
         match (&eval_source, &eval_language) {
             (Some(source), Some(language_name)) => {
@@ -667,6 +711,10 @@ pub fn run() {
             },
         }
     };
+    let entry_compile_elapsed = entry_compile_started.elapsed();
+    if let Some(report) = vm.debug_report() {
+        report.lock().unwrap().milestone("entry compilation complete");
+    }
 
     // ── --check: report success and exit WITHOUT running ────────────────────
     // Reaching here means every unit parsed and compiled; any parse/compile
@@ -701,6 +749,7 @@ pub fn run() {
             &compiled.chunks,
             vybe_platform_wasm::writer::WasmWriteOptions {
                 include_vybe_metadata: emit_vybe_metadata,
+                include_name_section: emit_vybe_metadata,
             },
         );
         let out_path = source_path.with_extension("wasm");
@@ -746,7 +795,9 @@ pub fn run() {
         }));
 
         // Install the event simulator, so the debugger can fire a click or a
-        // window-close with no OS window.
+        // window-close with no OS window. Webcore clicks go through native
+        // hit-testing and dispatch; direct listener invocation would conceal
+        // pointer-targeting failures in dynamically built controls.
         //
         // `OnClick := h` IS `addEventListener("click", h)` for every frontend,
         // so the wiring is on the ELEMENT and a listener is invoked the way the
@@ -756,6 +807,37 @@ pub fn run() {
         // (`gui_launch::dispatch_document_events`), so the two cannot drift.
         //
         vm.set_event_fire_hook(Box::new(move |vm, control, event| {
+            if event == "click"
+                && vybe_platform_web::engine_select::live()
+                    == Some(vybe_platform_web::engine_select::Engine::WebCore)
+            {
+                use vybe_platform_web::engine::{self, DomOp, DomValue};
+                if let Some(node) = crate::gui_document::node_by_id(control) {
+                    let document = crate::gui_document::active();
+                    if let DomValue::Rect { x, y, width, height } =
+                        engine::apply(document, DomOp::BoundingClientRect(node))
+                    {
+                        let (client_x, client_y) =
+                            ((x + width / 2.0) as f32, (y + height / 2.0) as f32);
+                        for kind in ["mousemove", "mousedown", "mouseup"] {
+                            engine::apply(document, DomOp::DispatchPointer {
+                                kind: kind.into(), client_x, client_y, button: 0,
+                            });
+                        }
+                        let mut clicked = false;
+                        let mut result = vybe_runtime::Value::Null;
+                        for pending in crate::gui_document::drain() {
+                            clicked |= pending.kind == "click";
+                            result = vm.invoke_callback(&pending.callback, &[pending.event]);
+                        }
+                        return if clicked {
+                            Ok(result)
+                        } else {
+                            Err(format!("Webcore did not dispatch a click at `{control}`"))
+                        };
+                    }
+                }
+            }
             // A DOM type is lowercase where the debugger's word is `Click`;
             // `listeners_for` folds the case, so they are the same event.
             if let Some(node) = crate::gui_document::node_by_id(control) {
@@ -776,11 +858,32 @@ pub fn run() {
         } else {
             crate::debug_repl::attach(&mut vm);
         }
+        if let Some(report) = vm.debug_report() {
+            report.lock().unwrap().process_started = Some(cli_report.started);
+            report.lock().unwrap().completed.push((
+                format!("compile entry {}", source_path.display()),
+                entry_compile_elapsed,
+            ));
+        }
     }
 
+    // The debugger can restart against this clean VM while retaining the
+    // compiler service's include cache. A source edit still recompiles its
+    // entry and invalidates changed include dependencies.
+    let in_process_restart = debug && dap_port.is_none() && eval_source.is_none()
+        && secondary_units.is_empty() && entry_override.is_none()
+        && bundle.language.name == "php";
+    let restart_baseline = in_process_restart.then(|| vm.snapshot());
+
     // ── Run ─────────────────────────────────────────────────────────────────
+    loop {
+    let _report_scope = vybe_runtime::debugger::DebugReportScope::enter(vm.debug_report());
     let mut runtime_compiler =
-        crate::dynamic::RuntimeCompilerService::with_capabilities(&mut vm, dynamic_compile_caps);
+        crate::dynamic::RuntimeCompilerService::with_capabilities(&mut vm, dynamic_compile_caps.clone());
+    runtime_compiler.set_include_cache(
+        std::sync::Arc::clone(&cli_compile_cache)
+            as std::sync::Arc<dyn vybe_compiler::dynamic::IncludeCompileCache>,
+    );
 
     // Link the other languages in first. Each was parsed and compiled by its
     // own front-end; loading it here puts its functions and classes in the
@@ -794,7 +897,15 @@ pub fn run() {
         }
     }
 
-    match runtime_compiler.run_compiled(compiled) {
+    let run_result = runtime_compiler.run_compiled(compiled.clone());
+    drop(runtime_compiler);
+    if let Some(report) = vm.debug_report() {
+        report.lock().unwrap().milestone("VM execution complete");
+        use std::io::Write;
+        let _ = std::io::stdout().flush();
+        report.lock().unwrap().milestone("stdout flush complete");
+    }
+    match run_result {
         Ok(v) => {
             // A GUI program hasn't really finished when `run_compiled` returns —
             // the window/event loop is launched below. Under the debugger we
@@ -808,6 +919,32 @@ pub fn run() {
             let gui_should_run = should_present(declared_shell);
             if debug && !gui_should_run {
                 eprintln!("\n● program exited → {v}");
+                if let Some(baseline) = &restart_baseline {
+                    if vm.debug_wait_after_exit() {
+                        eprintln!("\n↻ restarting with cached includes…");
+                        crate::warm::reset(&mut vm, baseline);
+                        vm.debug_rearm_after_restart();
+                        bundle = match vybe_compiler::projects::load(&source_path) {
+                            Ok(bundle) => bundle,
+                            Err(error) => {
+                                eprintln!("Restart load error: {error}");
+                                std::process::exit(1);
+                            }
+                        };
+                        let mut compiler = crate::dynamic::RuntimeCompilerService::with_capabilities(
+                            &mut vm, dynamic_compile_caps.clone());
+                        compiler.set_include_cache(std::sync::Arc::clone(&cli_compile_cache)
+                            as std::sync::Arc<dyn vybe_compiler::dynamic::IncludeCompileCache>);
+                        compiled = match compiler.compile_bundle(&bundle) {
+                            Ok(compiled) => compiled,
+                            Err(error) => {
+                                eprintln!("Restart compile error: {error}");
+                                std::process::exit(1);
+                            }
+                        };
+                        continue;
+                    }
+                }
                 std::process::exit(0);
             }
             if dap_port.is_some() && !gui_should_run {
@@ -820,6 +957,30 @@ pub fn run() {
             std::process::exit(0);
         }
         Err(e) if e.contains("__debug_restart__") => {
+            if let Some(baseline) = &restart_baseline {
+                eprintln!("\n↻ restarting with cached includes…");
+                crate::warm::reset(&mut vm, baseline);
+                vm.debug_rearm_after_restart();
+                bundle = match vybe_compiler::projects::load(&source_path) {
+                    Ok(bundle) => bundle,
+                    Err(error) => {
+                        eprintln!("Restart load error: {error}");
+                        std::process::exit(1);
+                    }
+                };
+                let mut compiler = crate::dynamic::RuntimeCompilerService::with_capabilities(
+                    &mut vm, dynamic_compile_caps.clone());
+                compiler.set_include_cache(std::sync::Arc::clone(&cli_compile_cache)
+                    as std::sync::Arc<dyn vybe_compiler::dynamic::IncludeCompileCache>);
+                compiled = match compiler.compile_bundle(&bundle) {
+                    Ok(compiled) => compiled,
+                    Err(error) => {
+                        eprintln!("Restart compile error: {error}");
+                        std::process::exit(1);
+                    }
+                };
+                continue;
+            }
             // Replace this process with a fresh copy (same args) — clean restart.
             use std::os::unix::process::CommandExt;
             eprintln!("\n↻ restarting…");
@@ -830,8 +991,17 @@ pub fn run() {
         }
         Err(e) => {
             eprintln!("Runtime error: {e}");
+            if let Some(history) = vm.debug_recent_instructions() {
+                eprintln!("  debugger recent instructions:\n{history}");
+            }
+            if let Some(report) = vm.debug_report() {
+                eprintln!("  debugger timing report:");
+                crate::debug_repl::print_report(&report, None);
+            }
             std::process::exit(1);
         }
+    }
+    break;
     }
 
     // The status the guest handed `wasi:cli/exit.exit-with-code` — `sys.exit(3)`,
@@ -886,7 +1056,7 @@ fn should_present(declared: Option<vybe_compiler::ast::AppShell>) -> bool {
         // Opening the context is deliberate: `active_document` creates on first
         // use, so a program that never touches the DOM never has one and stays
         // a console program.
-        None => vybe_platform_web::html::has_browsing_context(),
+        None => vybe_platform_web::html::has_guest_browsing_context(),
     }
 }
 
@@ -961,11 +1131,25 @@ fn run_wasm(
         vm.set_trace_chunk_filter(chunk_filter.map(|s| s.to_string()));
     }
 
+    let runtime_perf = std::env::var("VYBE_RUNTIME_PERF")
+        .map_or(false, |v| v == "1" || v.eq_ignore_ascii_case("true"));
+    if runtime_perf {
+        vm.record_runtime_perf(true);
+    }
+
     match vm.run(chunks) {
         Ok(_) => {}
         Err(e) => {
             eprintln!("Runtime error: {e}");
             std::process::exit(1);
+        }
+    }
+
+    if runtime_perf {
+        if let Some(counters) = vm.take_runtime_perf() {
+            eprintln!("{}", counters.format_report());
+            eprintln!("{}", counters.bridge_summary());
+            eprintln!("{}", counters.host_import_summary(20));
         }
     }
 
@@ -1028,10 +1212,12 @@ fn print_usage() {
     eprintln!("  -p, --portable    Minimal WASI runtime (no Vybe host)");
     eprintln!("  -t, --trace       Enable bytecode trace output");
     eprintln!("  -g, --debug       Step debugger: pause on entry, REPL on stdin (h for help)");
+    eprintln!("      --debug-request N  With --serve --debug, inspect script request N (default 1)");
+    eprintln!("      --debug-report Run without pauses; print debugger timings after CLI teardown");
     eprintln!("      --dap-port N  Debug Adapter Protocol server on 127.0.0.1:N (VS Code attach)");
     eprintln!("  -W, --watch       Re-run on source change (Phase-1 hot reload)");
     eprintln!("      --chunk NAME  Limit --dump/--trace output to a chunk name or index");
-    eprintln!("      --engine NAME Browser engine: webcore (default) or widgets");
+    eprintln!("      --engine NAME Browser engine: webcore (default) or osbrowser");
     eprintln!("                    Also settable with VYBE_ENGINE; the flag wins");
     eprintln!("      --serve       Start HTTP server for a directory (see httpserver.md)");
     eprintln!("      --bind ADDR   With --serve: bind to ADDR instead of 127.0.0.1:8080");

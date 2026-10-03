@@ -37,6 +37,7 @@ use vybe_runtime::capabilities::{Capabilities, Capability};
 const PHP_SESSION_COOKIE_NAME: &str = "PHPSESSID";
 const PHP_SESSION_ID_GLOBAL: &str = "__php_session_id";
 const PHP_SESSION_STARTED_GLOBAL: &str = "__php_session_started";
+const PHP_SESSION_USED_GLOBAL: &str = "__php_session_used";
 const PHP_SESSION_NEEDS_COOKIE_GLOBAL: &str = "__php_session_needs_cookie";
 const PHP_SESSION_DESTROYED_GLOBAL: &str = "__php_session_destroyed";
 
@@ -50,6 +51,7 @@ pub async fn serve(
     ctx: Arc<RequestContext>,
     response_rx: std::sync::mpsc::Receiver<vybe_platform_node::http::ResponseMessage>,
     no_sandbox: bool,
+    debug: bool,
     timeout_secs: u64,
     shutdown: Option<Arc<tokio::sync::Notify>>,
     pool: Option<Arc<super::vm_pool::VmPool>>,
@@ -65,6 +67,7 @@ pub async fn serve(
             let job = super::vm_pool::Job {
                 script,
                 ctx: vm_ctx,
+                debug,
             };
             if let Err(e) = pool.submit(job) {
                 return bytes_response(
@@ -77,7 +80,7 @@ pub async fn serve(
         // `--cold`: the pre-pool path, one whole VM per request.
         None => {
             tokio::task::spawn_blocking(move || {
-                run_vm(&script, vm_ctx, no_sandbox, cache.as_ref());
+                run_vm(&script, vm_ctx, no_sandbox, debug, cache.as_ref());
             });
         }
     }
@@ -220,6 +223,7 @@ fn run_vm(
     script_path: &Path,
     ctx: Arc<RequestContext>,
     no_sandbox: bool,
+    debug: bool,
     cache: Option<&Arc<super::compile_cache::CompileCache>>,
 ) {
     use vybe_runtime::VM;
@@ -250,6 +254,9 @@ fn run_vm(
         return;
     }
     register_response_stdout(&mut vm);
+    if debug {
+        crate::debug_repl::attach(&mut vm);
+    }
 
     // The cache DOES apply here: `--cold` isolates the VM pool, `--no-cache`
     // isolates the cache. A `--cold` that also silently disabled the cache
@@ -409,7 +416,11 @@ fn inject_superglobals(vm: &mut vybe_runtime::VM, ctx: &Arc<RequestContext>) {
     // PHP variables and functions live in separate namespaces; the
     // walker preserves the `$` sigil on variable identifiers so a
     // function `foo` and a variable `$foo` don't collide.
-    vm.set_global_owned("$_SESSION", session);
+    vm.set_global_owned("$_SESSION", session.clone());
+    vm.set_global_owned(
+        vybe_compiler::primitives::http_session::SESSION_DATA_GLOBAL.to_string(),
+        session,
+    );
     vm.set_global_owned(
         PHP_SESSION_ID_GLOBAL.to_string(),
         Value::String(StdArc::from(session_id.as_str())),
@@ -427,6 +438,7 @@ fn inject_superglobals(vm: &mut vybe_runtime::VM, ctx: &Arc<RequestContext>) {
         Value::String(StdArc::from(PHP_SESSION_COOKIE_NAME)),
     );
     vm.set_global_owned(PHP_SESSION_STARTED_GLOBAL.to_string(), Value::Bool(false));
+    vm.set_global_owned(PHP_SESSION_USED_GLOBAL.to_string(), Value::Bool(false));
     vm.set_global_owned(
         PHP_SESSION_NEEDS_COOKIE_GLOBAL.to_string(),
         Value::Bool(session_cookie.is_none()),
@@ -484,7 +496,7 @@ fn persist_superglobals(vm: &vybe_runtime::VM, _ctx: &Arc<RequestContext>) {
     }
 
     let started = matches!(
-        vm.global(PHP_SESSION_STARTED_GLOBAL),
+        vm.global(PHP_SESSION_USED_GLOBAL),
         Some(vybe_runtime::Value::Bool(true))
     );
     if !started {
@@ -496,7 +508,10 @@ fn persist_superglobals(vm: &vybe_runtime::VM, _ctx: &Arc<RequestContext>) {
         _ => return,
     };
 
-    let Some(vybe_runtime::Value::Object(obj)) = vm.global("$_SESSION") else {
+    let session_value = vm
+        .global(vybe_compiler::primitives::http_session::SESSION_DATA_GLOBAL)
+        .or_else(|| vm.global("$_SESSION"));
+    let Some(vybe_runtime::Value::Object(obj)) = session_value else {
         return;
     };
     let guard = obj.lock().unwrap();
@@ -544,6 +559,7 @@ fn _bytes_shim() -> Bytes {
 mod tests {
     use super::{
         PHP_SESSION_COOKIE_NAME, PHP_SESSION_ID_GLOBAL, PHP_SESSION_STARTED_GLOBAL,
+        PHP_SESSION_USED_GLOBAL,
         PHP_SESSION_STORE, inject_superglobals, install_wasi_http_request, persist_superglobals,
     };
     use bytes::Bytes;
@@ -790,14 +806,15 @@ mod tests {
         );
 
         let (out, _ctx) = run_php_request(
-            r#"<?php echo $_SERVER['SCRIPT_NAME']; echo $_SERVER['PHP_SELF'];"#,
+            r#"<?php echo $_SERVER['SCRIPT_NAME']; echo $_SERVER['PHP_SELF']; echo '[' . $_SERVER['PATH_INFO'] . ']';"#,
             built.ctx,
         );
         assert_eq!(
             out,
             vec![
                 "/genie/index.php".to_string(),
-                "/genie/index.php".to_string()
+                "/genie/index.php".to_string(),
+                "[]".to_string()
             ]
         );
     }
@@ -931,6 +948,112 @@ mod tests {
     }
 
     #[test]
+    fn session_regenerate_id_sends_new_cookie_and_preserves_data() {
+        let first_ctx = build_ctx(
+            "GET",
+            "http://localhost:8080/index.php",
+            &[("Host", "localhost:8080")],
+            b"",
+        );
+        let (_out, first_ctx, first_vm) = run_php_request_vm(
+            r#"<?php session_start(); $_SESSION['user'] = 'alice'; session_regenerate_id();"#,
+            Arc::clone(&first_ctx),
+        );
+        let new_id = first_vm
+            .global(PHP_SESSION_ID_GLOBAL)
+            .map(value_as_string)
+            .expect("regenerated session id");
+        let cookie = {
+            let response = first_ctx.response.lock().expect("lock response");
+            response
+                .headers
+                .iter()
+                .filter(|(name, _)| name.eq_ignore_ascii_case("set-cookie"))
+                .filter(|(_, value)| cookie_pair_value(value, PHP_SESSION_COOKIE_NAME).is_some())
+                .map(|(_, value)| value.clone())
+                .last()
+                .expect("regenerated session cookie")
+        };
+        assert_eq!(
+            cookie_pair_value(&cookie, PHP_SESSION_COOKIE_NAME),
+            Some(new_id.clone())
+        );
+        persist_superglobals(&first_vm, &first_ctx);
+
+        let second_ctx = build_ctx(
+            "GET",
+            "http://localhost:8080/index.php",
+            &[("Host", "localhost:8080"), ("Cookie", &cookie)],
+            b"",
+        );
+        let (out, _) = run_php_request(
+            r#"<?php session_start(); echo $_SESSION['user'];"#,
+            second_ctx,
+        );
+        assert_eq!(out, vec!["alice".to_string()]);
+    }
+
+    #[test]
+    fn session_write_close_persists_data_for_redirect() {
+        let first_ctx = build_ctx(
+            "GET",
+            "http://localhost:8080/index.php",
+            &[("Host", "localhost:8080")],
+            b"",
+        );
+        let (_out, first_ctx, first_vm) = run_php_request_vm(
+            r#"<?php session_start(); session_regenerate_id(); session_unset();
+                $_SESSION['browser_access_time']['default'] = 42;
+                session_write_close();"#,
+            Arc::clone(&first_ctx),
+        );
+        assert_eq!(
+            first_vm.global(PHP_SESSION_STARTED_GLOBAL),
+            Some(&Value::Bool(false))
+        );
+        assert_eq!(
+            first_vm.global(PHP_SESSION_USED_GLOBAL),
+            Some(&Value::Bool(true))
+        );
+        let cookie = {
+            let response = first_ctx.response.lock().expect("lock response");
+            response
+                .headers
+                .iter()
+                .filter(|(name, _)| name.eq_ignore_ascii_case("set-cookie"))
+                .filter(|(_, value)| cookie_pair_value(value, PHP_SESSION_COOKIE_NAME).is_some())
+                .map(|(_, value)| value.clone())
+                .last()
+                .expect("regenerated session cookie")
+        };
+        persist_superglobals(&first_vm, &first_ctx);
+        let session_id = cookie_pair_value(&cookie, PHP_SESSION_COOKIE_NAME).expect("session id");
+        assert_eq!(
+            first_vm.global(PHP_SESSION_ID_GLOBAL).map(value_as_string),
+            Some(session_id.clone())
+        );
+        let neutral = first_vm
+            .global(vybe_compiler::primitives::http_session::SESSION_DATA_GLOBAL)
+            .expect("neutral session data");
+        assert!(matches!(neutral, Value::Object(object) if matches!(object.lock().unwrap().kind, vybe_runtime::value::ObjectKind::Map(_))), "neutral session is not a map: {neutral:?}");
+        let persisted = PHP_SESSION_STORE.get(&session_id).expect("persisted closed session");
+        assert!(persisted.contains_key("browser_access_time"));
+        drop(persisted);
+
+        let second_ctx = build_ctx(
+            "GET",
+            "http://localhost:8080/index.php",
+            &[("Host", "localhost:8080"), ("Cookie", &cookie)],
+            b"",
+        );
+        let (out, _) = run_php_request(
+            r#"<?php session_start(); echo $_SESSION['browser_access_time']['default'];"#,
+            second_ctx,
+        );
+        assert_eq!(out, vec!["42".to_string()]);
+    }
+
+    #[test]
     fn session_destroy_removes_persisted_state_and_clears_cookie() {
         let first_ctx = build_ctx(
             "GET",
@@ -995,6 +1118,30 @@ mod tests {
         assert!(response.headers.iter().any(|(name, value)| {
             name.eq_ignore_ascii_case("set-cookie") && value.starts_with("a=b")
         }));
+    }
+
+    #[test]
+    fn response_headers_omit_empty_cookie_domain() {
+        let ctx = build_ctx(
+            "GET",
+            "http://localhost:8080/index.php",
+            &[("Host", "localhost:8080")],
+            b"",
+        );
+        let (_out, ctx) = run_php_request(
+            r#"<?php setcookie('auth', 'ok', ['path' => '/', 'domain' => '', 'samesite' => 'Strict']);"#,
+            ctx,
+        );
+        let response = ctx.response.lock().expect("lock response");
+        let cookie = response
+            .headers
+            .iter()
+            .find(|(name, value)| name.eq_ignore_ascii_case("set-cookie") && value.starts_with("auth="))
+            .map(|(_, value)| value.as_str())
+            .expect("auth set-cookie header");
+        assert!(cookie.contains("; Path=/"));
+        assert!(cookie.contains("; SameSite=Strict"));
+        assert!(!cookie.contains("Domain="));
     }
 
     #[test]
@@ -1077,16 +1224,16 @@ fn install_wasi_http_request(vm: &mut vybe_runtime::VM, ctx: &Arc<RequestContext
 /// server identity, peer address or protocol version. Those come from the
 /// transport — under their standard CGI names, so the map is language-neutral
 /// and `primitives/http_request_env` merges it without renaming anything.
-/// The message-derived keys (`REQUEST_METHOD`, `PATH_INFO`, `HTTP_*`, …) are
-/// NOT set here: the primitive derives them from `wasi:http` so every language
-/// gets them, including ones that never run under this server.
+/// Message-derived keys (`REQUEST_METHOD`, `HTTP_*`, …) come from `wasi:http`.
+/// `PATH_INFO` comes from the transport because it depends on the resolved
+/// script name.
 fn publish_server_env(vm: &mut vybe_runtime::VM, ctx: &Arc<RequestContext>) {
     use indexmap::IndexMap;
     use vybe_runtime::Value;
     use vybe_runtime::value::{Object, ObjectKind};
 
-    // No key list: `build_cgi_env` builds the deployment half and NOTHING else,
-    // so publishing it whole is publishing exactly those keys. The literal
+    // No key list: `build_cgi_env` builds the deployment half plus PATH_INFO,
+    // so publishing it whole preserves the resolved script suffix. The literal
     // 18-name filter that used to sit here was a second copy of that function's
     // key set, kept in step by hand.
     let mut entries: IndexMap<Value, Value> = IndexMap::new();
@@ -1184,7 +1331,18 @@ fn take_wasi_http_response(vm: &vybe_runtime::VM, ctx: &Arc<RequestContext>) {
     if response.headers_sent {
         return;
     }
-    response.status = status;
+    let has_node_response_head = response.status != 200 || !response.headers.is_empty();
+    let has_wasi_response_head = status != 200 || !headers.is_empty();
+
+    // Languages may still use the Node-compatible response adapter for
+    // familiar stdlib calls (`header()`, `setcookie()`, Express-style code),
+    // while newer code can write the published `wasi:http` response directly.
+    // A freshly-created WASI response defaults to `200` with no headers; do not
+    // let that default erase an already-populated Node response head on scripts
+    // that only set headers and then exit, such as PHP redirects.
+    if !has_node_response_head || has_wasi_response_head {
+        response.status = status;
+    }
     for (name, raw) in headers {
         // `field-value` is `list<u8>` in the WIT — bytes, not text. A header
         // that is not UTF-8 is dropped rather than replaced with U+FFFD, which

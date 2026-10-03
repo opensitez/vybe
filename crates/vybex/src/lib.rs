@@ -8,6 +8,8 @@ pub mod debug_repl;
 pub mod gui_capture;
 pub mod gui_document;
 pub mod gui_launch;
+pub mod gui_launch_webcore;
+pub mod gui_launch_osbrowser;
 pub mod server;
 pub mod warm;
 pub mod watch;

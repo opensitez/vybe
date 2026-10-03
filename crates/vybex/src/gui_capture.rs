@@ -16,7 +16,7 @@
 //! name is its `id` — so a capture asks the same tree a window paints and the
 //! debugger inspects.
 
-use widgets::{FontSystem, Pixmap, RenderContext, SwashCache, fill_background};
+use tiny_skia::{Color, Pixmap};
 
 /// Paint the document into `pixmap`.
 ///
@@ -27,12 +27,8 @@ use widgets::{FontSystem, Pixmap, RenderContext, SwashCache, fill_background};
 /// wrong one — a frame rendered with fonts other than the ones the engine
 /// measured with lays text out to the wrong width.
 pub fn render_into(pixmap: &mut Pixmap, scale: f32) {
-    fill_background(pixmap, 240, 240, 240, 255);
+    pixmap.fill(Color::from_rgba8(240, 240, 240, 255));
     // Through `platforms/web`, which forwards to whichever engine is live.
-    // This used to call `widgets::dom` directly — around the intermediary
-    // rather than through it — so `--engine webcore` swapped the engine and
-    // left the renderer pointed at the toolkit's empty tree.
-    //
     // `gui_document::active()` rather than `html::active_document()`: the
     // debugger reads from its own REPL thread, where that thread-local is a
     // different, empty document entirely.
@@ -77,7 +73,7 @@ fn crop(src: &Pixmap, x: f32, y: f32, w: f32, h: f32) -> Option<Pixmap> {
 /// surface is named after the window title, so it can be
 /// `vybe sdl adapter - signal monitor_surface` and the user types
 /// `--capture-control surface`.
-fn control_rect(name: &str) -> Result<widgets::LayoutRect, String> {
+fn control_rect(name: &str) -> Result<crate::gui_document::DomRect, String> {
     let controls = crate::gui_document::controls();
     let needle = name.to_lowercase();
 
@@ -146,8 +142,6 @@ pub fn capture_to_png(path: &str, control: Option<&str>, scale: f32) -> Result<(
     let ph = (h * scale).round().max(1.0) as u32;
     let mut pixmap = Pixmap::new(pw, ph).ok_or_else(|| format!("bad frame size {pw}x{ph}"))?;
 
-    let mut font_system = FontSystem::new();
-    let mut swash_cache = SwashCache::new();
     render_into(&mut pixmap, scale);
 
     let shot = match control {

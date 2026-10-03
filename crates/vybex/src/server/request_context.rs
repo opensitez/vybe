@@ -119,12 +119,10 @@ fn split_host_port(host_hdr: &str, default_port: u16) -> (String, u16) {
 /// path, server identity or peer address. Those come from the transport, under
 /// their standard CGI names so the map stays language-neutral.
 ///
-/// The MESSAGE-derived keys — `REQUEST_METHOD`, `QUERY_STRING`, `REQUEST_URI`,
-/// `PATH_INFO`, `CONTENT_TYPE`, `CONTENT_LENGTH`, every `HTTP_*` — are NOT
-/// built here. `primitives/http_request_env::emit_environ` derives them from
-/// `wasi:http`, so every language gets them including ones that never run
-/// under this server. This function used to compute all of them too and then
-/// have `publish_server_env` throw them away.
+/// Message-derived keys such as `REQUEST_METHOD`, `QUERY_STRING`,
+/// `REQUEST_URI`, `CONTENT_TYPE`, `CONTENT_LENGTH`, and `HTTP_*` come from
+/// `wasi:http`. `PATH_INFO` is the exception: it is relative to the resolved
+/// script, which only this transport knows.
 #[allow(clippy::too_many_arguments)]
 fn build_cgi_env(
     uri_raw: &str,
@@ -179,6 +177,12 @@ fn build_cgi_env(
         env.insert("SCRIPT_FILENAME".into(), sf.into());
         env.insert("PATH_TRANSLATED".into(), sf.into());
         env.insert("SCRIPT_NAME".into(), script_path.into());
+        // PATH_INFO is the suffix after the executing script, not the
+        // request path. Directory-index requests have no such suffix.
+        let path_info = path.strip_prefix(script_path).filter(|suffix| {
+            suffix.is_empty() || suffix.starts_with('/')
+        });
+        env.insert("PATH_INFO".into(), path_info.unwrap_or("").into());
         // `PHP_SELF` is NOT set here. It is PHP's spelling of `SCRIPT_NAME`, and
         // one language's vocabulary in the transport is `php_lang.rs` again —
         // the PHP superglobal prelude derives it.

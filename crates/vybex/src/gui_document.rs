@@ -4,7 +4,7 @@
 //! and it lowers control creation to `web:dom.createElement`, control
 //! properties to `web:dom` / `web:html` / `web:cssom`, and `OnClick := h` to
 //! `addEventListener("click", h)`. VCL, WinForms, Flutter and SDL all end up in
-//! the SAME `widgets` document, so nothing in this module is
+//! the same active browser document, so nothing in this module is
 //! framework-specific and nothing in it may become so.
 //!
 //! `GuiState` still owns what is not a DOM element — form lifecycle flags,
@@ -21,11 +21,19 @@
 //! they drift apart — the window rendering the document while the debugger
 //! reports on an empty `GuiState` is exactly the state this fixes.
 
-use vybe_platform_web::engine::{DocumentId, NodeId};
+use vybe_platform_web::engine::{DocumentId, NodeId, UiEventFields};
 use vybe_platform_web::html;
 use vybe_runtime::Value;
-use widgets::LayoutRect;
-use widgets::dom::Document;
+
+pub(crate) fn fn_arity(val: &Value) -> usize {
+    match val {
+        Value::Object(object) => match &object.lock().unwrap().kind {
+            vybe_runtime::value::ObjectKind::Function(function) => function.arity as usize,
+            _ => 0,
+        },
+        _ => 0,
+    }
+}
 
 /// This agent's ambient document — `window.document`.
 ///
@@ -48,31 +56,16 @@ pub fn active() -> DocumentId {
 /// runs, so the handle it opens here IS the one the guest goes on to use.
 pub fn pin() {
     PINNED.store(
-        html::active_document(),
+        html::active_document_for_debugger(),
         std::sync::atomic::Ordering::Relaxed,
     );
 }
 
 static PINNED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-/// Borrow the document, but only if the guest actually built its UI in it.
-///
-/// `html::active_document()` CREATES a document on first call, so its existence
-/// proves nothing: a designer form that never touched `web:*` would get a fresh
-/// empty one and we would happily route the mouse at it. Having controls is the
-/// test, and it is the same question `render_into` asks before it picks a form
-/// to paint.
-pub fn with_live<T>(f: impl FnOnce(&mut Document) -> T) -> Option<T> {
-    widgets::dom::with_document(active(), |document| {
-        (document.form().control_count() > 0).then(|| f(document))
-    })
-    .flatten()
-}
-
 /// Did the guest build a UI in its document?
 ///
-/// The same test [`with_live`] gates on, asked without borrowing: a document
-/// with content is a running one. This is what tells the runner to present a
+/// A document with content is a running one. This tells the runner to present a
 /// window for a program that never asked to be run — which is every frontend,
 /// since a page is not told to run.
 ///
@@ -96,8 +89,8 @@ pub fn has_content() -> bool {
 /// program cannot reach, and would then "prove" behaviour that never happens in
 /// a real run — the same mistake as a probe that calls a handler directly.
 pub mod inspect {
-    use super::{NodeId, with_live};
-    use widgets::dom::Document;
+    use super::NodeId;
+    use vybe_platform_web::engine::{self, DomOp, DomValue};
 
     /// The INDENTED form, which is what a person reading a dump wants.
     ///
@@ -106,28 +99,30 @@ pub mod inspect {
     /// line as a debugger's output. The two callers want different things and
     /// now ask for them by name.
     pub fn outer_html(node: NodeId) -> Option<String> {
-        with_live(|d| d.outer_html_pretty(node))
+        match engine::apply(super::active(), DomOp::OuterHtml(node)) {
+            DomValue::Text(html) => Some(html),
+            _ => None,
+        }
     }
 
     pub fn style(node: NodeId, property: &str) -> Option<String> {
-        with_live(|d| d.get_style_property(node, property))
+        match engine::apply(super::active(), DomOp::GetStyleProperty(node, property.into())) {
+            DomValue::Text(value) => Some(value),
+            _ => None,
+        }
     }
 
     pub fn set_style(node: NodeId, property: &str, value: &str) -> Option<()> {
-        with_live(|d| d.set_style_property(node, property, value))
+        engine::apply(super::active(), DomOp::SetStyleProperty(node, property.into(), value.into()));
+        Some(())
     }
 
     /// Every declaration on the element, in the order they serialise.
     pub fn declarations(node: NodeId) -> Option<Vec<(String, String)>> {
-        with_live(|d: &mut Document| {
-            d.style(node)
-                .map(|s| {
-                    s.iter()
-                        .map(|(k, v)| (k.to_string(), v.to_string()))
-                        .collect()
-                })
-                .unwrap_or_default()
-        })
+        match engine::apply(super::active(), DomOp::StyleDeclarations(node)) {
+            DomValue::Properties(properties) => Some(properties),
+            _ => None,
+        }
     }
 
     pub fn attribute(node: NodeId, name: &str) -> Option<String> {
@@ -154,11 +149,15 @@ pub mod inspect {
     }
 
     pub fn text(node: NodeId) -> Option<String> {
-        with_live(|d| d.text_content(node))
+        match engine::apply(super::active(), DomOp::TextContent(node)) {
+            DomValue::Text(value) => Some(value),
+            _ => None,
+        }
     }
 
     pub fn set_text(node: NodeId, value: &str) -> Option<()> {
-        with_live(|d| d.set_text_content(node, value))
+        engine::apply(super::active(), DomOp::SetTextContent(node, value.into()));
+        Some(())
     }
 }
 
@@ -180,11 +179,8 @@ pub fn html() -> Option<String> {
 /// The live tree as the ENGINE has it — through the seam, so it answers for
 /// whichever engine is installed.
 ///
-/// `with_live` borrows `widgets::dom` directly, which is the toolkit
-/// whether or not the toolkit is the live engine. Every GUI command in the step
-/// debugger went through it, so under `--engine webcore` they reported an empty
-/// tree for a document webcore had built perfectly well — the debugger was
-/// inspecting the engine that was NOT running.
+/// The step debugger asks the selected engine for this tree, so it sees the
+/// same document the user sees.
 ///
 /// `outerHTML` on the document is the one question that needs no toolkit type
 /// to answer, which is why the structure dump is the first of them to move.
@@ -207,11 +203,7 @@ pub fn engine_html() -> String {
 /// actually set. `GuiState.width`/`height` keep their defaults and a 280×400
 /// form opened at 800×600.
 pub fn viewport() -> Option<(u32, u32)> {
-    // `window.innerWidth` / `innerHeight` — asked through the seam, in the
-    // vocabulary both engines already answer, rather than by borrowing the
-    // toolkit's document. Under `--engine webcore` the toolkit's is empty, so
-    // this reported "no live document to capture" for a form webcore had laid
-    // out perfectly well.
+    // `window.innerWidth` / `innerHeight` come from the active engine.
     if !vybe_platform_web::present::has_content(active()) {
         return None;
     }
@@ -239,7 +231,7 @@ pub struct DomControl {
     /// A created-and-never-inserted control is styled, named, addressable and
     /// absent, and it is the single most common way a GUI silently renders
     /// nothing. [`DomControl::connected`] separates the two.
-    pub rect: Option<LayoutRect>,
+    pub rect: Option<DomRect>,
     /// Is the element actually in the document?
     ///
     /// Distinguishes "created and never appended" from "appended but not yet
@@ -252,49 +244,62 @@ pub struct DomControl {
     pub events: Vec<String>,
 }
 
+#[derive(Clone, Copy)]
+pub struct DomRect {
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+}
+
 /// Every element the guest put in the document, with its geometry, its
 /// observable properties and its wired listeners.
 pub fn controls() -> Vec<DomControl> {
+    use vybe_platform_web::engine::{DomOp, DomValue, apply};
     let document = active();
     let mut listener_types: std::collections::HashMap<NodeId, Vec<String>> =
         std::collections::HashMap::new();
     for (node, kind, _) in html::document_listeners(document) {
         listener_types.entry(node).or_default().push(kind);
     }
-    with_live(|d| {
-        // Every element, not only the named ones — `Name` is optional, and a
-        // form that builds its buttons in a loop has none.
-        let named: std::collections::HashMap<NodeId, String> =
-            d.elements_with_id().into_iter().collect();
-        let mut out = Vec::new();
-        for node in d.elements() {
-            let id = named.get(&node).cloned().unwrap_or_default();
-            // The widget the element renders as is named after the node — the
-            // convention `Document::node_for_widget` parses back the other way.
-            let rect = d.get_bounding_client_rect(node);
-            let tag = d.node(node).map(|n| n.tag.clone()).unwrap_or_default();
+    let DomValue::Nodes(nodes) = apply(document, DomOp::QuerySelectorAll("*".into())) else {
+        return Vec::new();
+    };
+    nodes.into_iter().map(|node| {
+            let text = |op| match apply(document, op) {
+                DomValue::Text(value) => value,
+                _ => String::new(),
+            };
+            let id = text(DomOp::GetAttribute(node, "id".into()));
+            let tag = text(DomOp::NodeName(node));
+            let connected = matches!(apply(document, DomOp::IsConnected(node)), DomValue::Bool(true));
+            let rect = match apply(document, DomOp::BoundingClientRect(node)) {
+                DomValue::Rect { x, y, width, height } if connected => Some(DomRect {
+                    x: x as f32, y: y as f32, w: width as f32, h: height as f32,
+                }),
+                _ => None,
+            };
             let mut properties = Vec::new();
-            let text = d.text_content(node);
-            if !text.is_empty() {
-                properties.push(("textContent".to_string(), text));
+            let content = text(DomOp::TextContent(node));
+            if !content.is_empty() {
+                properties.push(("textContent".to_string(), content));
             }
-            let value = d.value(node);
+            let value = text(DomOp::Value(node));
             if !value.is_empty() {
                 properties.push(("value".to_string(), value));
             }
-            if d.checked(node) {
+            if matches!(apply(document, DomOp::Checked(node)), DomValue::Bool(true)) {
                 properties.push(("checked".to_string(), "true".to_string()));
             }
             for css in ["left", "top", "width", "height"] {
-                let v = d.get_style_property(node, css);
+                let v = text(DomOp::GetStyleProperty(node, css.into()));
                 if !v.is_empty() {
                     properties.push((css.to_string(), v));
                 }
             }
             let mut events = listener_types.get(&node).cloned().unwrap_or_default();
             events.sort();
-            let connected = d.is_connected(node);
-            out.push(DomControl {
+            DomControl {
                 node,
                 id,
                 tag,
@@ -302,11 +307,8 @@ pub fn controls() -> Vec<DomControl> {
                 connected,
                 properties,
                 events,
-            });
-        }
-        out
-    })
-    .unwrap_or_default()
+            }
+    }).collect()
 }
 
 /// Resolve a control name the way a debugger user types it — the `id`
@@ -355,7 +357,10 @@ pub fn listeners_for(node: NodeId, kind: &str) -> Vec<Value> {
 /// drained path builds, so a simulated click is indistinguishable from a real
 /// one to the handler.
 pub fn event_object(kind: &str, target: NodeId) -> Value {
-    html::event_object(&kind.to_ascii_lowercase(), target)
+    html::event_object(
+        &UiEventFields { kind: kind.to_ascii_lowercase(), ..Default::default() },
+        target,
+    )
 }
 
 /// One drained interaction, ready to hand to the VM.
@@ -391,9 +396,7 @@ pub fn drain() -> Vec<Dispatch> {
             .map(|v| v.as_f64() as NodeId)
             .unwrap_or(0);
         // Through the web surface, not around it. `getAttribute` is a DOM
-        // operation `platforms/web` already exposes, and reaching past it into
-        // `widgets::dom` made this crate a second driver of a document
-        // web is supposed to own.
+        // operation `platforms/web` already exposes.
         let sender = match vybe_platform_web::engine::apply(
             document,
             vybe_platform_web::engine::DomOp::GetAttribute(node, "id".to_string()),

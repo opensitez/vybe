@@ -16,6 +16,7 @@ use super::config::ServeConfig;
 #[derive(Debug)]
 pub enum Resolution {
     File(PathBuf),
+    DirectoryRedirect,
     NotFound,
     Forbidden,
 }
@@ -60,6 +61,9 @@ pub fn resolve(url_path: &str, config: &ServeConfig) -> Resolution {
         for index in &config.index_files {
             let candidate = canonical.join(index);
             if candidate.is_file() {
+                if !url_path.ends_with('/') {
+                    return Resolution::DirectoryRedirect;
+                }
                 return Resolution::File(candidate);
             }
         }

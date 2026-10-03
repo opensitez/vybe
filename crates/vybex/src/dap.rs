@@ -373,6 +373,7 @@ fn dap_stop_reason(r: &PauseReason) -> &'static str {
         PauseReason::Interrupt => "pause",
         PauseReason::Watchpoint { .. } => "data breakpoint",
         PauseReason::Exception { .. } => "exception",
+        PauseReason::HostCall { .. } => "breakpoint",
     }
 }
 

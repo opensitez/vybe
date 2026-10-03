@@ -12,7 +12,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use bytes::Bytes;
-use http::{Method, Request, Response};
+use http::{HeaderValue, Method, Request, Response};
 use http_body_util::BodyExt;
 use hyper::body::Incoming;
 
@@ -107,6 +107,23 @@ async fn handle(
 
     let path = match resolution {
         super::directory::Resolution::File(p) => p,
+        super::directory::Resolution::DirectoryRedirect => {
+            let mut location = format!("{url_path}/");
+            if let Some(query) = req.uri().query() {
+                location.push('?');
+                location.push_str(query);
+            }
+            let Ok(location) = HeaderValue::from_str(&location) else {
+                return super::errors::error_403(&url_path);
+            };
+            let mut response = super::response_stream::bytes_response(
+                308,
+                "text/plain; charset=utf-8",
+                Vec::new(),
+            );
+            response.headers_mut().insert(http::header::LOCATION, location);
+            return response;
+        }
         super::directory::Resolution::NotFound => return super::errors::error_404(&url_path),
         super::directory::Resolution::Forbidden => return super::errors::error_403(&url_path),
     };
@@ -140,7 +157,7 @@ async fn handle(
         body_bytes,
         remote,
         Some(path.to_string_lossy().as_ref()),
-        path.strip_prefix(&config.root)
+        path.strip_prefix(config.root.canonicalize().unwrap_or_else(|_| config.root.clone()))
             .ok()
             .map(|rel| format!("/{}", rel.to_string_lossy().replace('\\', "/")))
             .as_deref(),
@@ -149,11 +166,14 @@ async fn handle(
         scheme,
     );
 
+    let debug = config.debug &&
+        config.debug_seen.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1 == config.debug_request;
     super::script::serve(
         path,
         built.ctx,
         built.response_rx,
         config.no_sandbox,
+        debug,
         config.timeout_secs,
         config.shutdown.clone(),
         pool,

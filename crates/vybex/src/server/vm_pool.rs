@@ -72,6 +72,7 @@ const STACK_BYTES: usize = 32 * 1024 * 1024;
 pub struct Job {
     pub script: PathBuf,
     pub ctx: Arc<RequestContext>,
+    pub debug: bool,
 }
 
 pub struct VmPool {
@@ -159,6 +160,9 @@ fn worker_loop(
             // still have been draining when its job function returned, and the
             // reset drops the `wasi:http` tables that drain reads from.
             crate::warm::reset(&mut vm, &baseline);
+            if job.debug {
+                crate::debug_repl::attach(&mut vm);
+            }
             let _guard = vybe_platform_node::http::install_context(Arc::clone(&job.ctx));
             super::script::run_request(&mut vm, &job.script, &job.ctx, &caps, cache.as_ref());
         }));

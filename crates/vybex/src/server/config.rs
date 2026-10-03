@@ -11,6 +11,11 @@ pub struct ServeConfig {
     /// If true, scripts run with `Capabilities::all()`. Otherwise
     /// they use the restricted sandbox capability set.
     pub no_sandbox: bool,
+    /// Attach the step debugger to each request (served with a fresh VM).
+    pub debug: bool,
+    /// One-based script request to attach the debugger to.
+    pub debug_request: usize,
+    pub debug_seen: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     /// Maximum request body size in bytes.
     pub max_body: usize,
     /// Maximum total header size in bytes.
@@ -48,6 +53,9 @@ impl Default for ServeConfig {
             bind: "127.0.0.1:8080".into(),
             root: PathBuf::from("."),
             no_sandbox: true,
+            debug: false,
+            debug_request: 1,
+            debug_seen: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             max_body: 10 * 1024 * 1024,
             max_header: 16 * 1024,
             timeout_secs: 30,

@@ -7,7 +7,7 @@
 //! The VM stays on the main thread (it is not `Send`); these worker threads hold
 //! only channel endpoints, exactly like the browser debug server pattern.
 
-use std::io::{BufRead, Write};
+use std::io::{BufRead, IsTerminal, Write};
 use std::sync::mpsc::{Sender, channel};
 use std::thread;
 
@@ -16,12 +16,127 @@ use vybe_runtime::debugger::{
 };
 use vybe_runtime::{DebugCommand, DebugRequest, VM};
 
+/// Created before CLI locals, so its destructor measures their teardown too.
+pub(crate) struct CliReport {
+    pub started: std::time::Instant,
+    pub report: Option<vybe_runtime::debugger::SharedDebugReport>,
+}
+impl CliReport {
+    pub fn new() -> Self {
+        Self { started: std::time::Instant::now(), report: None }
+    }
+}
+impl Drop for CliReport {
+    fn drop(&mut self) {
+        if let Some(report) = &self.report {
+            let _ = std::io::stdout().flush();
+            report.lock().unwrap().milestone("CLI teardown complete (before process exit)");
+            print_report(report, None);
+        }
+    }
+}
+
+/// Render the debugger-owned timing snapshot, both on demand and after a
+/// failed run, before the CLI exits and discards the collected phases.
+pub(crate) fn print_report(report: &vybe_runtime::debugger::SharedDebugReport, filter: Option<&str>) {
+    let report = report.lock().unwrap();
+    if report.process_started.is_some() {
+        eprintln!("  CLI elapsed milestones (from entry; include debugger waits):");
+        for (label, duration) in &report.milestones {
+            eprintln!("    {:>8.3}s  {label}", duration.as_secs_f64());
+        }
+        if let Some(first) = report.first_output {
+            eprintln!("    {:>8.3}s  first stdout write (may be buffered)", first.as_secs_f64());
+        }
+        if let Some(last) = report.last_output {
+            eprintln!("    {:>8.3}s  last stdout write (may be buffered)", last.as_secs_f64());
+        }
+        eprintln!("    {:>8.3}s  debugger pause time", report.paused.as_secs_f64());
+    }
+    eprintln!("  instructions: {}  current: {}", report.instructions, report.location.as_deref().unwrap_or("before execution"));
+    use std::sync::atomic::Ordering;
+    let live = &report.live;
+    eprintln!("  live: {}  chunk #{}@{} {:?}",
+        live.instructions.load(Ordering::Relaxed),
+        live.chunk.load(Ordering::Relaxed),
+        live.ip.load(Ordering::Relaxed),
+        vybe_runtime::opcode::Op(live.op.load(Ordering::Relaxed)));
+    if let Some((name, start)) = &report.active_host {
+        eprintln!("  host   {:>8.3}s  {name}", start.elapsed().as_secs_f64());
+        if let Some(args) = &report.active_host_args {
+            eprintln!("  host args: [{}]", args.join(", "));
+        }
+    }
+    for (label, start) in &report.active {
+        eprintln!("  active {:>8.3}s  {label}", start.elapsed().as_secs_f64());
+    }
+    let mut completed: Vec<_> = report.completed.iter()
+        .filter(|(label, _)| filter.is_none_or(|text| label.contains(text)))
+        .cloned().collect();
+    let totals = ["compile ", "compiler total", "prepare source", "lower module", "vm link", "vm validate", "vm relocate", "vm globals", "vm decode", "vm blocks", "vm imports", "vm callsites", "vm types", "vm init globals"];
+    for prefix in totals {
+        let matches: Vec<_> = completed.iter().filter(|(label, _)| {
+            if prefix == "compile " { label.starts_with(prefix) }
+            else { label == prefix }
+        }).collect();
+        if !matches.is_empty() {
+            let seconds: f64 = matches.iter().map(|(_, duration)| duration.as_secs_f64()).sum();
+            eprintln!("  total {:>8.3}s  {:>5}  {prefix}", seconds, matches.len());
+        }
+    }
+    let mut phases = std::collections::HashMap::<&str, (usize, f64)>::new();
+    for (label, duration) in &completed {
+        if label.starts_with("include ") || label.starts_with("compile ") || label.starts_with("function ") {
+            continue;
+        }
+        let total = phases.entry(label.as_str()).or_default();
+        total.0 += 1;
+        total.1 += duration.as_secs_f64();
+    }
+    let mut phases: Vec<_> = phases.into_iter().collect();
+    phases.sort_by(|a, b| b.1.1.total_cmp(&a.1.1));
+    eprintln!("  grouped phases (nested timings overlap):");
+    for (label, (count, seconds)) in phases.into_iter().take(20) {
+        eprintln!("  total {seconds:>8.3}s  {count:>5}  {label}");
+    }
+    let mut hot: Vec<_> = report.function_samples.iter().collect();
+    hot.sort_by(|a, b| b.1.cmp(a.1));
+    if !hot.is_empty() {
+        eprintln!("  sampled functions (1 sample / 4096 VM instructions):");
+        for (name, samples) in hot.into_iter().take(12) {
+            eprintln!("  {:>8}  {name}", samples);
+        }
+    }
+    let mut hosts: Vec<_> = report.host_samples.iter().collect();
+    hosts.sort_by(|a, b| b.1.1.cmp(&a.1.1));
+    if !hosts.is_empty() {
+        eprintln!("  sampled host wall time (1 call in 64; observed, nested work included):");
+        for (name, (samples, elapsed)) in hosts.into_iter().take(12) {
+            eprintln!("  {:>8.3}s  {:>6} samples  {name}", elapsed.as_secs_f64(), samples);
+        }
+    }
+    let mut lines: Vec<_> = report.line_samples.iter().collect();
+    lines.sort_by(|a, b| b.1.cmp(a.1));
+    if !lines.is_empty() {
+        eprintln!("  sampled source lines:");
+        for (line, samples) in lines.into_iter().take(12) {
+            eprintln!("  {:>8}  {line}", samples);
+        }
+    }
+    completed.sort_by(|a, b| b.1.cmp(&a.1));
+    eprintln!("  completed: {} phases", completed.len());
+    for (label, elapsed) in completed.iter().take(12) {
+        eprintln!("  {:>8.3}s  {label}", elapsed.as_secs_f64());
+    }
+}
+
 /// Attach a debugger to `vm` and spawn the REPL worker threads. Call this before
 /// running the VM; it pauses on entry so breakpoints can be set first.
 pub fn attach(vm: &mut VM) {
     let (cmd_tx, cmd_rx) = channel::<DebugRequest>();
     let (evt_tx, evt_rx) = channel::<DebugEvent>();
     vm.attach_debugger(cmd_rx, evt_tx, /* pause_on_entry */ true);
+    let report = vm.debug_report().expect("attached debugger has a report");
     // Runs on the VM's thread, before the guest does — so the document opened
     // here is the one the guest will build in, and `widgets` can read it from
     // the REPL thread.
@@ -37,6 +152,7 @@ pub fn attach(vm: &mut VM) {
     // Stdin reader: parse a line → command → send → print the reply.
     thread::spawn(move || {
         let stdin = std::io::stdin();
+        let interactive = stdin.is_terminal();
         let mut lines = stdin.lock().lines();
         banner();
         loop {
@@ -50,6 +166,11 @@ pub fn attach(vm: &mut VM) {
             // the live document, which is safe whether the VM is paused or
             // running, so they never round-trip through the VM.
             let head = line.split_whitespace().next().unwrap_or("");
+            if head == "report" {
+                let filter = line.split_once(' ').map(|(_, text)| text.trim()).filter(|text| !text.is_empty());
+                print_report(&report, filter);
+                continue;
+            }
             if matches!(head, "widgets" | "controls") {
                 print_document_widgets();
                 continue;
@@ -85,26 +206,20 @@ pub fn attach(vm: &mut VM) {
                 let rest: Vec<&str> = line.split_whitespace().skip(1).collect();
                 if rest.first() == Some(&"canvas") {
                     let on = rest.get(1) != Some(&"off");
-                    widgets::canvas::set_trace_enabled(on);
+                    webcore::canvas::set_trace_enabled(on);
                     eprintln!("  canvas tracing {}", if on { "on" } else { "off" });
                     continue;
                 }
             }
             match parse_command(line) {
                 Ok(command) => {
-                    // **A resume does not answer.** `send_and_print` blocks on
-                    // the reply, and `Continue`'s reply arrives when the VM
-                    // next PAUSES — which for a GUI program that runs until the
-                    // window closes is never. The REPL thread sat in `recv()`
-                    // and every command typed afterwards was never read, so
-                    // `html`, `widgets` and `capture` looked like they did
-                    // nothing while the program was running. They are all
-                    // client-side and were ready to answer the whole time.
-                    //
-                    // The pause, when it comes, is printed by the event thread
-                    // above — that is what it is for.
-                    let resumes = matches!(command, DebugCommand::Continue);
-                    if resumes {
+                    // Interactive GUI sessions must accept client-side commands
+                    // while running. A piped session instead needs `continue`
+                    // to wait for the next stop before reading another command;
+                    // otherwise `bt`/`locals` race ahead into the running VM.
+                    let async_continue =
+                        interactive && matches!(command, DebugCommand::Continue | DebugCommand::Pause);
+                    if async_continue {
                         if cmd_tx
                             .send(DebugRequest {
                                 command,
@@ -151,20 +266,38 @@ fn print_draws(args: &[&str]) {
 
     // **A drawing surface is a `<canvas>` ELEMENT in the document.**
     let mut found: Vec<(String, Ink)> = Vec::new();
-    crate::gui_document::with_live(|document| {
-        for node in document.get_elements_by_tag_name("canvas") {
+    use vybe_platform_web::canvas_backend::{self, Query2D, Query2DValue};
+    use vybe_platform_web::engine::{self, DomOp, DomValue};
+    let document = crate::gui_document::active();
+    if let DomValue::Nodes(nodes) = engine::apply(document, DomOp::ElementsByTag("canvas".into())) {
+        for node in nodes {
             // Report the name a caller would recognise — the `id`/`name` they
             // gave it — falling back to the internal node name.
-            let label = document
-                .get_attribute(node, "id")
-                .or_else(|| document.get_attribute(node, "name"))
+            let attribute = |name: &str| match engine::apply(
+                document, DomOp::GetAttribute(node, name.into())
+            ) {
+                DomValue::Text(value) if !value.is_empty() => Some(value),
+                _ => None,
+            };
+            let label = attribute("id").or_else(|| attribute("name"))
                 .unwrap_or_else(|| format!("n{node}"));
-            let Some(ink) = document.with_canvas_bitmap(node, |bitmap| {
-                let (w, h) = (bitmap.width(), bitmap.height());
+            let (w, h) = match engine::apply(document, DomOp::CanvasSize(node)) {
+                DomValue::Pair(w, h) => (w as u32, h as u32),
+                _ => continue,
+            };
+            let target = format!("d{document}:n{node}");
+            let (Ok(sw), Ok(sh)) = (i32::try_from(w), i32::try_from(h)) else {
+                continue;
+            };
+            let Query2DValue::Pixels { data, width: w, height: h } =
+                canvas_backend::query(&target, Query2D::GetImageData {
+                    sx: 0, sy: 0, sw, sh,
+                }) else { continue };
+            let ink = {
                 let mut inked = 0usize;
                 let (mut x0, mut y0, mut x1, mut y1) = (u32::MAX, u32::MAX, 0u32, 0u32);
-                for (i, px) in bitmap.pixels().iter().enumerate() {
-                    if px.alpha() == 0 {
+                for (i, px) in data.chunks_exact(4).enumerate() {
+                    if px[3] == 0 {
                         continue;
                     }
                     inked += 1;
@@ -180,12 +313,10 @@ fn print_draws(args: &[&str]) {
                     inked,
                     bounds: (inked > 0).then_some((x0, y0, x1, y1)),
                 }
-            }) else {
-                continue;
             };
             found.push((label, ink));
         }
-    });
+    }
 
     if found.is_empty() {
         eprintln!("  (no canvases exist)");
@@ -469,6 +600,7 @@ fn parse_command(line: &str) -> Result<DebugCommand, String> {
     let rest: Vec<&str> = parts.collect();
     Ok(match cmd {
         "c" | "cont" | "continue" => DebugCommand::Continue,
+        "pause" | "interrupt" => DebugCommand::Pause,
         "s" | "step" => DebugCommand::StepInto,
         "n" | "next" => DebugCommand::StepOver,
         "o" | "out" | "fin" | "finish" => DebugCommand::StepOut,
@@ -530,8 +662,24 @@ fn parse_command(line: &str) -> Result<DebugCommand, String> {
         "globals" | "g" => DebugCommand::Globals {
             prefix: rest.first().map(|s| s.to_string()),
         },
-        "dis" | "disasm" => DebugCommand::Disasm {
-            window: rest.first().and_then(|s| s.parse().ok()).unwrap_or(4),
+        "trace-global-inits" => DebugCommand::TraceGlobalInits {
+            enabled: rest.first() != Some(&"off"),
+        },
+        "bgi" => DebugCommand::BreakGlobalInit {
+            name: rest.first().ok_or("usage: bgi <global-name|*|off>")?.to_string(),
+        },
+        "dis" | "disasm" => {
+            let offset = rest.first().and_then(|s| s.strip_prefix('@'))
+                .map(|s| s.parse::<usize>().map_err(|_| "usage: dis [@offset] [window]"))
+                .transpose()?;
+            let window = rest.get(usize::from(offset.is_some()))
+                .map(|s| s.parse::<usize>().map_err(|_| "usage: dis [@offset] [window]"))
+                .transpose()?.unwrap_or(4);
+            DebugCommand::Disasm { window, offset }
+        },
+        "targets" => DebugCommand::ControlTargets {
+            offset: rest.first().ok_or("usage: targets <offset>")?
+                .parse().map_err(|_| "usage: targets <offset>")?,
         },
         "chunks" => DebugCommand::Chunks,
         "frame" | "fr" => DebugCommand::Frame {
@@ -596,6 +744,16 @@ fn parse_command(line: &str) -> Result<DebugCommand, String> {
                 .map(|i| rest[i + 1..].join(" "))
                 .filter(|c| !c.trim().is_empty());
             DebugCommand::BreakFunction { name, condition }
+        }
+        "bh" | "break-host" => {
+            let name = rest.first().ok_or("usage: bh <module>:<name> [invalid]|off")?;
+            if rest.len() > 1 && !matches!(rest.get(1), Some(&"nonstring") | Some(&"invalid")) {
+                return Err("usage: bh <module>:<name> [invalid]|off".into());
+            }
+            DebugCommand::BreakHost {
+                name: (*name != "off").then(|| (*name).to_string()),
+                bad_type_only: matches!(rest.get(1), Some(&"nonstring") | Some(&"invalid")),
+            }
         }
         "logpoint" | "lp" => {
             let line = rest
@@ -899,6 +1057,7 @@ fn reason_str(r: &PauseReason) -> String {
                 "exception".into()
             }
         }
+        PauseReason::HostCall { name } => format!("host call {name}"),
     }
 }
 
@@ -916,9 +1075,10 @@ fn print_help() {
     eprintln!(
         "  control:  c continue · s step-in · n step-over · o step-out · si stepi · q quit\n\
          \x20 breaks:   b <line> · b <file>:<line> · b <chunk>@<offset> · [if <cond>] · bl · bd <id> · enable/disable\n\
-         \x20 breaks+:  bf <fn> · lp <line> <msg with {{expr}}> logpoint · rt <line> run-to · ignore <id> <n> · catch throw|uncaught|off\n\
+         \x20 breaks+:  bf <fn> · bh <module>:<name> [invalid]|off · lp <line> <msg with {{expr}}> logpoint · rt <line> run-to · ignore <id> <n> · catch throw|uncaught|off\n\
          \x20 data:     wp <name> watchpoint · wps list · unwp clear · fibers/threads · restart\n\
-         \x20 inspect:  bt backtrace · locals [frame] · stack · g/globals [prefix] · dis [n] · chunks\n\
+         \x20 inspect:  bt backtrace · locals [frame] · stack · g/globals [prefix] · dis [@offset] [n] · targets <offset> · chunks\n\
+         \x20 loader:   trace-global-inits on|off · bgi <global-name|*|off>  break before init\n\
          \x20 frame:    fr/frame [n]  EVERY slot incl. compiler+capture, with local_count/capture_base\n\
          \x20 vars:     p <name>[.field][idx] or p <expr> · set <name> = <literal> · watch <expr> · watches · unwatch\n\
          \x20 gui:      widgets/controls · click <control> · fire <control> <event> · close [control]\n\
