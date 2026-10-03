@@ -1,6 +1,6 @@
 // Widget gallery — exercises the Flutter→vybe_widgets adapter across the
 // interactive control family (Checkbox, Slider, TextField, Radio, Dropdown,
-// progress, buttons). Each Flutter widget maps onto its real vybe:gui control.
+// progress, buttons). Flutter controls are lowered to HTML through platforms/web.
 import 'package:flutter/material.dart';
 
 void main() {

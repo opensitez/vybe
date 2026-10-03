@@ -65,9 +65,12 @@ public class Calculator : Form
 
     private void HandleClick(object sender, object e)
     {
-        // Dispatch by button name
-        var name = sender;
-        OnButtonClick("" + name);
+        // Dispatch by button name. `sender` is the control the handler is
+        // attached to, so its `Name` is the key — `"" + sender` would be
+        // `Control.ToString()`, which .NET renders as
+        // "System.Windows.Forms.Button, Text: 7" and never matches a case.
+        Button btn = (Button)sender;
+        OnButtonClick(btn.Name);
     }
 
     private void UpdateDisplay()

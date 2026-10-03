@@ -4,7 +4,6 @@
 using System;
 using System.Windows.Forms;
 using System.Drawing;
-using System.Collections.Generic;
 
 public class TodoApp : Form
 {
@@ -12,7 +11,6 @@ public class TodoApp : Form
     private ListBox lstTodos;
     private Button btnAdd;
     private Button btnRemove;
-    private List<string> todos = new List<string>();
 
     public TodoApp()
     {
@@ -33,6 +31,7 @@ public class TodoApp : Form
         btnAdd.Location = new Point(260, 10);
         btnAdd.Size = new Size(70, 25);
         this.Controls.Add(btnAdd);
+        btnAdd.Click += this.OnAddClick;
 
         // Todo list
         lstTodos = new ListBox();
@@ -48,6 +47,17 @@ public class TodoApp : Form
         btnRemove.Location = new Point(10, 355);
         btnRemove.Size = new Size(120, 30);
         this.Controls.Add(btnRemove);
+        btnRemove.Click += this.OnRemoveClick;
+    }
+
+    private void OnAddClick(object sender, object e)
+    {
+        AddTodo();
+    }
+
+    private void OnRemoveClick(object sender, object e)
+    {
+        RemoveSelected();
     }
 
     public void AddTodo()
@@ -55,15 +65,18 @@ public class TodoApp : Form
         var text = txtInput.Text;
         if (text != "")
         {
-            todos.Add(text);
+            lstTodos.Items.Add(text);
             txtInput.Text = "";
-            Console.WriteLine("Added: " + text);
         }
     }
 
     public void RemoveSelected()
     {
-        Console.WriteLine("Remove selected todo");
+        int index = lstTodos.SelectedIndex;
+        if (index >= 0)
+        {
+            lstTodos.Items.RemoveAt(index);
+        }
     }
 }
 
