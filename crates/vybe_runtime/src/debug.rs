@@ -12,7 +12,10 @@ use crate::opcode::{Op, OperandFormat, read_leb_u32, read_leb_u64};
 /// and made a caller edit the price of naming a global.
 pub fn disassemble(chunk: &Chunk) -> String {
     let mut out = String::new();
-    out.push_str(&format!("== {} ==\n", chunk.name));
+    out.push_str(&format!(
+        "== {} == arity={} locals={} takes_receiver={} abi={:?}\n",
+        chunk.name, chunk.arity, chunk.local_count, chunk.takes_receiver, chunk.module_receiver_abi
+    ));
     let mut offset = 0;
     while offset < chunk.code.len() {
         let (text, next) = disassemble_instruction(chunk, offset);

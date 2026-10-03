@@ -151,7 +151,7 @@ fn global_get_missing_returns_undefined() {
     let mut chunk = Chunk::new("<script>");
     chunk.local_count = 1;
     let idx = chunk.add_constant(Value::String(Arc::from("nonexistent")));
-    chunk.emit_op_u16(Op::GLOBAL_GET, idx, 0);
+    chunk.emit_op_u32(Op::GLOBAL_GET, idx, 0);
     let result = vm.run(vec![chunk]).unwrap();
     assert!(matches!(result, Value::Undefined));
 }
@@ -163,8 +163,8 @@ fn global_set_then_get_roundtrip() {
     chunk.local_count = 1;
     let name = chunk.add_constant(Value::String(Arc::from("x")));
     chunk.emit_f64_const(42.0, 0);
-    chunk.emit_op_u16(Op::GLOBAL_SET, name, 0);
-    chunk.emit_op_u16(Op::GLOBAL_GET, name, 0);
+    chunk.emit_op_u32(Op::GLOBAL_SET, name, 0);
+    chunk.emit_op_u32(Op::GLOBAL_GET, name, 0);
     let result = vm.run(vec![chunk]).unwrap();
     assert_eq!(result.as_f64(), 42.0);
 }
@@ -176,7 +176,7 @@ fn globals_persist_after_run() {
     chunk.local_count = 1;
     let name = chunk.add_constant(Value::String(Arc::from("saved")));
     chunk.emit_f64_const(99.0, 0);
-    chunk.emit_op_u16(Op::GLOBAL_SET, name, 0);
+    chunk.emit_op_u32(Op::GLOBAL_SET, name, 0);
     chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     vm.run(vec![chunk]).unwrap();
     assert_eq!(vm.global("saved").unwrap().as_f64(), 99.0);
@@ -190,7 +190,7 @@ fn globals_persist_across_multiple_runs() {
     c1.local_count = 1;
     let n1 = c1.add_constant(Value::String(Arc::from("x")));
     c1.emit_f64_const(10.0, 0);
-    c1.emit_op_u16(Op::GLOBAL_SET, n1, 0);
+    c1.emit_op_u32(Op::GLOBAL_SET, n1, 0);
     c1.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     vm.run(vec![c1]).unwrap();
 
@@ -198,7 +198,7 @@ fn globals_persist_across_multiple_runs() {
     let mut c2 = Chunk::new("<script>");
     c2.local_count = 1;
     let n2 = c2.add_constant(Value::String(Arc::from("x")));
-    c2.emit_op_u16(Op::GLOBAL_GET, n2, 0);
+    c2.emit_op_u32(Op::GLOBAL_GET, n2, 0);
     let result = vm.run(vec![c2]).unwrap();
     assert_eq!(result.as_f64(), 10.0);
 }
@@ -299,7 +299,7 @@ fn invoke_function_defined_in_run() {
     let name = main.add_constant(Value::String(Arc::from("double")));
     main.emit_op_u16(Op::REF_FUNC, 1, 0);
     main.emit(0, 0);
-    main.emit_op_u16(Op::GLOBAL_SET, name, 0);
+    main.emit_op_u32(Op::GLOBAL_SET, name, 0);
     main.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
 
     vm.run(vec![main, f]).unwrap();
@@ -335,10 +335,10 @@ fn invoke_multiple_times_globals_accumulate() {
     f.arity = 0;
     f.local_count = 0;
     let name = f.add_constant(Value::String(Arc::from("n")));
-    f.emit_op_u16(Op::GLOBAL_GET, name, 0);
+    f.emit_op_u32(Op::GLOBAL_GET, name, 0);
     f.emit_f64_const(1.0, 0);
     f.emit_op(Op::F64_ADD, 0);
-    f.emit_op_u16(Op::GLOBAL_SET, name, 0);
+    f.emit_op_u32(Op::GLOBAL_SET, name, 0);
     f.emit_op(Op::RETURN, 0);
 
     let mut main = Chunk::new("<script>");
@@ -346,10 +346,10 @@ fn invoke_multiple_times_globals_accumulate() {
     let n = main.add_constant(Value::String(Arc::from("n")));
     let fn_name = main.add_constant(Value::String(Arc::from("inc")));
     main.emit_f64_const(0.0, 0);
-    main.emit_op_u16(Op::GLOBAL_SET, n, 0);
+    main.emit_op_u32(Op::GLOBAL_SET, n, 0);
     main.emit_op_u16(Op::REF_FUNC, 1, 0);
     main.emit(0, 0);
-    main.emit_op_u16(Op::GLOBAL_SET, fn_name, 0);
+    main.emit_op_u32(Op::GLOBAL_SET, fn_name, 0);
     main.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
 
     vm.run(vec![main, f]).unwrap();

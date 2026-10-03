@@ -825,7 +825,7 @@ fn invoke_preserves_globals() {
     setter.local_count = 1;
     let name_idx = setter.add_constant(Value::String(Arc::from("counter")));
     setter.emit_op_u16(Op::LOCAL_GET, 0, 0);
-    setter.emit_op_u16(Op::GLOBAL_SET, name_idx, 0);
+    setter.emit_op_u32(Op::GLOBAL_SET, name_idx, 0);
     setter.emit_op(Op::RETURN, 0);
 
     // chunk 2: get_global() => returns global "counter"
@@ -833,7 +833,7 @@ fn invoke_preserves_globals() {
     getter.arity = 0;
     getter.local_count = 1;
     let gname = getter.add_constant(Value::String(Arc::from("counter")));
-    getter.emit_op_u16(Op::GLOBAL_GET, gname, 0);
+    getter.emit_op_u32(Op::GLOBAL_GET, gname, 0);
     getter.emit_op(Op::RETURN, 0);
 
     let mut vm = VM::new();
@@ -996,14 +996,14 @@ fn globals_persist_after_function_returns() {
     main.emit_op_u8_u8(Op::CALL_REF, 0, 1, 0);
     main.emit_op(Op::DROP, 0);
     let gname = main.add_constant(Value::String(Arc::from("val")));
-    main.emit_op_u16(Op::GLOBAL_GET, gname, 0);
+    main.emit_op_u32(Op::GLOBAL_GET, gname, 0);
 
     let mut func = Chunk::new("set_val");
     func.arity = 0;
     func.local_count = 1;
     let name_idx = func.add_constant(Value::String(Arc::from("val")));
     func.emit_i32_const(42, 0);
-    func.emit_op_u16(Op::GLOBAL_SET, name_idx, 0);
+    func.emit_op_u32(Op::GLOBAL_SET, name_idx, 0);
     func.emit_op(Op::RETURN, 0);
 
     let result = run_chunks(vec![main, func]);
@@ -1019,7 +1019,7 @@ fn global_get_undefined_returns_undefined() {
     let mut chunk = Chunk::new("test");
     chunk.local_count = 1;
     let name_idx = chunk.add_constant(Value::String(Arc::from("nonexistent")));
-    chunk.emit_op_u16(Op::GLOBAL_GET, name_idx, 0);
+    chunk.emit_op_u32(Op::GLOBAL_GET, name_idx, 0);
 
     let result = run_chunks(vec![chunk]);
     assert_undefined(&result);
@@ -1035,8 +1035,8 @@ fn global_set_get_roundtrip() {
     chunk.local_count = 1;
     let name_idx = chunk.add_constant(Value::String(Arc::from("myVar")));
     chunk.emit_string_const("hello world", 0);
-    chunk.emit_op_u16(Op::GLOBAL_SET, name_idx, 0);
-    chunk.emit_op_u16(Op::GLOBAL_GET, name_idx, 0);
+    chunk.emit_op_u32(Op::GLOBAL_SET, name_idx, 0);
+    chunk.emit_op_u32(Op::GLOBAL_GET, name_idx, 0);
 
     let result = run_chunks(vec![chunk]);
     assert_string(&result, "hello world");
@@ -1066,14 +1066,14 @@ fn multiple_functions_sharing_globals() {
     func_a.local_count = 1;
     let name_a = func_a.add_constant(Value::String(Arc::from("shared")));
     func_a.emit_i32_const(10, 0);
-    func_a.emit_op_u16(Op::GLOBAL_SET, name_a, 0);
+    func_a.emit_op_u32(Op::GLOBAL_SET, name_a, 0);
     func_a.emit_op(Op::RETURN, 0);
 
     let mut func_b = Chunk::new("func_b");
     func_b.arity = 0;
     func_b.local_count = 1;
     let name_b = func_b.add_constant(Value::String(Arc::from("shared")));
-    func_b.emit_op_u16(Op::GLOBAL_GET, name_b, 0);
+    func_b.emit_op_u32(Op::GLOBAL_GET, name_b, 0);
     func_b.emit_i32_const(5, 0);
     func_b.emit_op(Op::I32_ADD, 0);
     func_b.emit_op(Op::RETURN, 0);

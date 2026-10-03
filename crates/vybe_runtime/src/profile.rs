@@ -1046,6 +1046,8 @@ pub struct BuiltinDef {
     pub emit: BuiltinEmit,
     pub min_args: u8,
     pub max_args: u8,
+    /// The emitted call leaves a raw WASM i32 usable directly as a condition.
+    pub i32_condition: bool,
 
     /// The protocol slot this method implements, from `slot = "len"` —
     /// `builtinslotplan.md` step 4b.
@@ -1167,6 +1169,7 @@ impl LanguageProfile {
             emit: BuiltinEmit::HostCall(module.to_string(), func.to_string()),
             min_args: 0,
             max_args: u8::MAX,
+            i32_condition: false,
             slot: None,
         })
     }
@@ -1911,6 +1914,7 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
                                 emit,
                                 min_args,
                                 max_args,
+                                i32_condition: t.get("i32_condition").and_then(|v| v.as_bool()).unwrap_or(false),
                                 slot,
                             },
                         );
@@ -2187,6 +2191,7 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
                                     emit,
                                     min_args,
                                     max_args,
+                                    i32_condition: t.get("i32_condition").and_then(|v| v.as_bool()).unwrap_or(false),
                                     slot,
                                 });
                             }
@@ -2209,6 +2214,7 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
                             emit,
                             min_args,
                             max_args,
+                            i32_condition: t.get("i32_condition").and_then(|v| v.as_bool()).unwrap_or(false),
                             slot,
                         });
                     }

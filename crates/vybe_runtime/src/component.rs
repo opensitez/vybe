@@ -495,6 +495,9 @@ impl Linker {
         // call_import indices must refer to the unified table.
         {
             let mut unified_imports: Vec<crate::chunk::Import> = Vec::new();
+            // Keys borrow the immutable component import declarations. Only
+            // first occurrences need to be copied into the merged table.
+            let mut import_indices: HashMap<(&str, &str), u16> = HashMap::new();
 
             // For each component, build a mapping: old_import_idx → new_import_idx
             let mut remap_tables: Vec<Vec<u16>> = Vec::new();
@@ -508,15 +511,13 @@ impl Linker {
                     &comp.chunks[0].imports[..]
                 };
                 for imp in comp_imports {
-                    // Find or insert in unified table
-                    let existing = unified_imports
-                        .iter()
-                        .position(|u| u.module == imp.module && u.name == imp.name);
-                    let new_idx = if let Some(idx) = existing {
-                        idx as u16
+                    let key = (imp.module.as_str(), imp.name.as_str());
+                    let new_idx = if let Some(&idx) = import_indices.get(&key) {
+                        idx
                     } else {
                         let idx = unified_imports.len() as u16;
                         unified_imports.push(imp.clone());
+                        import_indices.insert(key, idx);
                         idx
                     };
                     remap.push(new_idx);
@@ -528,6 +529,13 @@ impl Linker {
             for (comp_idx, comp) in self.components.iter().enumerate() {
                 let offset = component_offsets[comp_idx];
                 let remap = &remap_tables[comp_idx];
+                if remap
+                    .iter()
+                    .enumerate()
+                    .all(|(old, &new)| old == usize::from(new))
+                {
+                    continue;
+                }
                 for ci in 0..comp.chunks.len() {
                     let merged_ci = offset + ci;
                     let code = &mut all_chunks[merged_ci].code;

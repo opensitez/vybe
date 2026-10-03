@@ -13,246 +13,353 @@ use crate::error::VMError;
 use crate::value::Value;
 use crate::vm::VM;
 
+#[inline(always)]
+fn lane_i32(bytes: &[u8; 16], lane: usize) -> i32 {
+    let i = lane * 4;
+    i32::from_le_bytes([bytes[i], bytes[i + 1], bytes[i + 2], bytes[i + 3]])
+}
+
+#[inline(always)]
+fn lane_i64(bytes: &[u8; 16], lane: usize) -> i64 {
+    let i = lane * 8;
+    i64::from_le_bytes([
+        bytes[i],
+        bytes[i + 1],
+        bytes[i + 2],
+        bytes[i + 3],
+        bytes[i + 4],
+        bytes[i + 5],
+        bytes[i + 6],
+        bytes[i + 7],
+    ])
+}
+
+#[inline(always)]
+fn lane_f32(bytes: &[u8; 16], lane: usize) -> f32 {
+    let i = lane * 4;
+    f32::from_le_bytes([bytes[i], bytes[i + 1], bytes[i + 2], bytes[i + 3]])
+}
+
+#[inline(always)]
+fn lane_f64(bytes: &[u8; 16], lane: usize) -> f64 {
+    let i = lane * 8;
+    f64::from_le_bytes([
+        bytes[i],
+        bytes[i + 1],
+        bytes[i + 2],
+        bytes[i + 3],
+        bytes[i + 4],
+        bytes[i + 5],
+        bytes[i + 6],
+        bytes[i + 7],
+    ])
+}
+
+#[inline(always)]
+fn write_i16_lane(out: &mut [u8; 16], lane: usize, value: i16) {
+    let i = lane * 2;
+    let bytes = value.to_le_bytes();
+    out[i] = bytes[0];
+    out[i + 1] = bytes[1];
+}
+
+#[inline(always)]
+fn write_i32_lane(out: &mut [u8; 16], lane: usize, value: i32) {
+    let i = lane * 4;
+    let bytes = value.to_le_bytes();
+    out[i] = bytes[0];
+    out[i + 1] = bytes[1];
+    out[i + 2] = bytes[2];
+    out[i + 3] = bytes[3];
+}
+
+#[inline(always)]
+fn write_u32_lane(out: &mut [u8; 16], lane: usize, value: u32) {
+    let i = lane * 4;
+    let bytes = value.to_le_bytes();
+    out[i] = bytes[0];
+    out[i + 1] = bytes[1];
+    out[i + 2] = bytes[2];
+    out[i + 3] = bytes[3];
+}
+
+#[inline(always)]
+fn write_i64_lane(out: &mut [u8; 16], lane: usize, value: i64) {
+    let i = lane * 8;
+    let bytes = value.to_le_bytes();
+    out[i] = bytes[0];
+    out[i + 1] = bytes[1];
+    out[i + 2] = bytes[2];
+    out[i + 3] = bytes[3];
+    out[i + 4] = bytes[4];
+    out[i + 5] = bytes[5];
+    out[i + 6] = bytes[6];
+    out[i + 7] = bytes[7];
+}
+
+#[inline(always)]
+fn write_u64_lane(out: &mut [u8; 16], lane: usize, value: u64) {
+    let i = lane * 8;
+    let bytes = value.to_le_bytes();
+    out[i] = bytes[0];
+    out[i + 1] = bytes[1];
+    out[i + 2] = bytes[2];
+    out[i + 3] = bytes[3];
+    out[i + 4] = bytes[4];
+    out[i + 5] = bytes[5];
+    out[i + 6] = bytes[6];
+    out[i + 7] = bytes[7];
+}
+
+#[inline(always)]
+fn write_f32_lane(out: &mut [u8; 16], lane: usize, value: f32) {
+    write_u32_lane(out, lane, value.to_bits());
+}
+
+#[inline(always)]
+fn write_f64_lane(out: &mut [u8; 16], lane: usize, value: f64) {
+    write_u64_lane(out, lane, value.to_bits());
+}
+
 impl VM {
+    #[inline(always)]
     pub(crate) fn simd_i32x4_binop(&mut self, f: impl Fn(i32, i32) -> i32) -> Result<(), VMError> {
-        let b = self.pop();
-        let a = self.pop();
-        if let (Value::V128(va), Value::V128(vb)) = (a, b) {
+        if let Some((va, vb)) = self.pop_v128_pair_fast() {
             let mut out = [0u8; 16];
             for i in 0..4 {
-                let la = i32::from_le_bytes(va[i * 4..i * 4 + 4].try_into().unwrap());
-                let lb = i32::from_le_bytes(vb[i * 4..i * 4 + 4].try_into().unwrap());
-                out[i * 4..i * 4 + 4].copy_from_slice(&f(la, lb).to_le_bytes());
+                let la = lane_i32(&va, i);
+                let lb = lane_i32(&vb, i);
+                write_i32_lane(&mut out, i, f(la, lb));
             }
-            self.push(Value::V128(out))
+            { self.push_fast(Value::V128(out)); Ok(()) }
         } else {
-            self.push(Value::V128([0; 16]))
+            { self.push_fast(Value::V128([0; 16])); Ok(()) }
         }
     }
+    #[inline(always)]
     pub(crate) fn simd_f64x2_binop(&mut self, f: impl Fn(f64, f64) -> f64) -> Result<(), VMError> {
-        let b = self.pop();
-        let a = self.pop();
-        if let (Value::V128(va), Value::V128(vb)) = (a, b) {
+        if let Some((va, vb)) = self.pop_v128_pair_fast() {
             let mut out = [0u8; 16];
             for i in 0..2 {
-                let la = f64::from_le_bytes(va[i * 8..i * 8 + 8].try_into().unwrap());
-                let lb = f64::from_le_bytes(vb[i * 8..i * 8 + 8].try_into().unwrap());
-                out[i * 8..i * 8 + 8].copy_from_slice(&f(la, lb).to_le_bytes());
+                let la = lane_f64(&va, i);
+                let lb = lane_f64(&vb, i);
+                write_f64_lane(&mut out, i, f(la, lb));
             }
-            self.push(Value::V128(out))
+            { self.push_fast(Value::V128(out)); Ok(()) }
         } else {
-            self.push(Value::V128([0; 16]))
+            { self.push_fast(Value::V128([0; 16])); Ok(()) }
         }
     }
+    #[inline(always)]
     pub(crate) fn simd_f64x2_cmp(&mut self, f: impl Fn(f64, f64) -> bool) -> Result<(), VMError> {
-        let b = self.pop();
-        let a = self.pop();
-        if let (Value::V128(va), Value::V128(vb)) = (a, b) {
+        if let Some((va, vb)) = self.pop_v128_pair_fast() {
             let mut out = [0u8; 16];
             for i in 0..2 {
-                let la = f64::from_le_bytes(va[i * 8..i * 8 + 8].try_into().unwrap());
-                let lb = f64::from_le_bytes(vb[i * 8..i * 8 + 8].try_into().unwrap());
+                let la = lane_f64(&va, i);
+                let lb = lane_f64(&vb, i);
                 let mask: u64 = if f(la, lb) { u64::MAX } else { 0 };
-                out[i * 8..i * 8 + 8].copy_from_slice(&mask.to_le_bytes());
+                write_u64_lane(&mut out, i, mask);
             }
-            self.push(Value::V128(out))
+            { self.push_fast(Value::V128(out)); Ok(()) }
         } else {
-            self.push(Value::V128([0; 16]))
+            { self.push_fast(Value::V128([0; 16])); Ok(()) }
         }
     }
+    #[inline(always)]
     pub(crate) fn simd_f32x4_binop(&mut self, f: impl Fn(f32, f32) -> f32) -> Result<(), VMError> {
-        let b = self.pop();
-        let a = self.pop();
-        if let (Value::V128(va), Value::V128(vb)) = (a, b) {
+        if let Some((va, vb)) = self.pop_v128_pair_fast() {
             let mut out = [0u8; 16];
             for i in 0..4 {
-                let la = f32::from_le_bytes(va[i * 4..i * 4 + 4].try_into().unwrap());
-                let lb = f32::from_le_bytes(vb[i * 4..i * 4 + 4].try_into().unwrap());
-                out[i * 4..i * 4 + 4].copy_from_slice(&f(la, lb).to_le_bytes());
+                let la = lane_f32(&va, i);
+                let lb = lane_f32(&vb, i);
+                write_f32_lane(&mut out, i, f(la, lb));
             }
-            self.push(Value::V128(out))
+            { self.push_fast(Value::V128(out)); Ok(()) }
         } else {
-            self.push(Value::V128([0; 16]))
+            { self.push_fast(Value::V128([0; 16])); Ok(()) }
         }
     }
+    #[inline(always)]
     pub(crate) fn simd_i8x16_binop(&mut self, f: impl Fn(u8, u8) -> u8) -> Result<(), VMError> {
-        let b = self.pop();
-        let a = self.pop();
-        if let (Value::V128(va), Value::V128(vb)) = (a, b) {
+        if let Some((va, vb)) = self.pop_v128_pair_fast() {
             let mut out = [0u8; 16];
             for i in 0..16 {
                 out[i] = f(va[i], vb[i]);
             }
-            self.push(Value::V128(out))
+            { self.push_fast(Value::V128(out)); Ok(()) }
         } else {
-            self.push(Value::V128([0; 16]))
+            { self.push_fast(Value::V128([0; 16])); Ok(()) }
         }
     }
+    #[inline(always)]
     pub(crate) fn simd_i16x8_binop(&mut self, f: impl Fn(i16, i16) -> i16) -> Result<(), VMError> {
-        let b = self.pop();
-        let a = self.pop();
-        if let (Value::V128(va), Value::V128(vb)) = (a, b) {
+        if let Some((va, vb)) = self.pop_v128_pair_fast() {
             let mut out = [0u8; 16];
             for i in 0..8 {
                 let la = i16::from_le_bytes([va[i * 2], va[i * 2 + 1]]);
                 let lb = i16::from_le_bytes([vb[i * 2], vb[i * 2 + 1]]);
-                out[i * 2..i * 2 + 2].copy_from_slice(&f(la, lb).to_le_bytes());
+                write_i16_lane(&mut out, i, f(la, lb));
             }
-            self.push(Value::V128(out))
+            { self.push_fast(Value::V128(out)); Ok(()) }
         } else {
-            self.push(Value::V128([0; 16]))
+            { self.push_fast(Value::V128([0; 16])); Ok(()) }
         }
     }
+    #[inline(always)]
     pub(crate) fn simd_i8x16_unop(&mut self, f: impl Fn(u8) -> u8) -> Result<(), VMError> {
-        if let Value::V128(a) = self.pop() {
+        if let Some(a) = self.pop_v128_fast() {
             let mut out = [0u8; 16];
             for i in 0..16 {
                 out[i] = f(a[i]);
             }
-            self.push(Value::V128(out))
+            { self.push_fast(Value::V128(out)); Ok(()) }
         } else {
-            self.push(Value::V128([0; 16]))
+            { self.push_fast(Value::V128([0; 16])); Ok(()) }
         }
     }
+    #[inline(always)]
     pub(crate) fn simd_i16x8_unop(&mut self, f: impl Fn(i16) -> i16) -> Result<(), VMError> {
-        if let Value::V128(a) = self.pop() {
+        if let Some(a) = self.pop_v128_fast() {
             let mut out = [0u8; 16];
             for i in 0..8 {
                 let v = i16::from_le_bytes([a[i * 2], a[i * 2 + 1]]);
-                out[i * 2..i * 2 + 2].copy_from_slice(&f(v).to_le_bytes());
+                write_i16_lane(&mut out, i, f(v));
             }
-            self.push(Value::V128(out))
+            { self.push_fast(Value::V128(out)); Ok(()) }
         } else {
-            self.push(Value::V128([0; 16]))
+            { self.push_fast(Value::V128([0; 16])); Ok(()) }
         }
     }
+    #[inline(always)]
     pub(crate) fn simd_i32x4_unop(&mut self, f: impl Fn(i32) -> i32) -> Result<(), VMError> {
-        if let Value::V128(a) = self.pop() {
+        if let Some(a) = self.pop_v128_fast() {
             let mut out = [0u8; 16];
             for i in 0..4 {
-                let v = i32::from_le_bytes(a[i * 4..i * 4 + 4].try_into().unwrap());
-                out[i * 4..i * 4 + 4].copy_from_slice(&f(v).to_le_bytes());
+                let v = lane_i32(&a, i);
+                write_i32_lane(&mut out, i, f(v));
             }
-            self.push(Value::V128(out))
+            { self.push_fast(Value::V128(out)); Ok(()) }
         } else {
-            self.push(Value::V128([0; 16]))
+            { self.push_fast(Value::V128([0; 16])); Ok(()) }
         }
     }
+    #[inline(always)]
     pub(crate) fn simd_i64x2_unop(&mut self, f: impl Fn(i64) -> i64) -> Result<(), VMError> {
-        if let Value::V128(a) = self.pop() {
+        if let Some(a) = self.pop_v128_fast() {
             let mut out = [0u8; 16];
             for i in 0..2 {
-                let v = i64::from_le_bytes(a[i * 8..i * 8 + 8].try_into().unwrap());
-                out[i * 8..i * 8 + 8].copy_from_slice(&f(v).to_le_bytes());
+                let v = lane_i64(&a, i);
+                write_i64_lane(&mut out, i, f(v));
             }
-            self.push(Value::V128(out))
+            { self.push_fast(Value::V128(out)); Ok(()) }
         } else {
-            self.push(Value::V128([0; 16]))
+            { self.push_fast(Value::V128([0; 16])); Ok(()) }
         }
     }
+    #[inline(always)]
     pub(crate) fn simd_f32x4_unop(&mut self, f: impl Fn(f32) -> f32) -> Result<(), VMError> {
-        if let Value::V128(a) = self.pop() {
+        if let Some(a) = self.pop_v128_fast() {
             let mut out = [0u8; 16];
             for i in 0..4 {
-                let v = f32::from_le_bytes(a[i * 4..i * 4 + 4].try_into().unwrap());
-                out[i * 4..i * 4 + 4].copy_from_slice(&f(v).to_le_bytes());
+                let v = lane_f32(&a, i);
+                write_f32_lane(&mut out, i, f(v));
             }
-            self.push(Value::V128(out))
+            { self.push_fast(Value::V128(out)); Ok(()) }
         } else {
-            self.push(Value::V128([0; 16]))
+            { self.push_fast(Value::V128([0; 16])); Ok(()) }
         }
     }
+    #[inline(always)]
     pub(crate) fn simd_f64x2_unop(&mut self, f: impl Fn(f64) -> f64) -> Result<(), VMError> {
-        if let Value::V128(a) = self.pop() {
+        if let Some(a) = self.pop_v128_fast() {
             let mut out = [0u8; 16];
             for i in 0..2 {
-                let v = f64::from_le_bytes(a[i * 8..i * 8 + 8].try_into().unwrap());
-                out[i * 8..i * 8 + 8].copy_from_slice(&f(v).to_le_bytes());
+                let v = lane_f64(&a, i);
+                write_f64_lane(&mut out, i, f(v));
             }
-            self.push(Value::V128(out))
+            { self.push_fast(Value::V128(out)); Ok(()) }
         } else {
-            self.push(Value::V128([0; 16]))
+            { self.push_fast(Value::V128([0; 16])); Ok(()) }
         }
     }
+    #[inline(always)]
     pub(crate) fn simd_i64x2_binop(&mut self, f: impl Fn(i64, i64) -> i64) -> Result<(), VMError> {
-        let b = self.pop();
-        let a = self.pop();
-        if let (Value::V128(va), Value::V128(vb)) = (a, b) {
+        if let Some((va, vb)) = self.pop_v128_pair_fast() {
             let mut out = [0u8; 16];
             for i in 0..2 {
-                let la = i64::from_le_bytes(va[i * 8..i * 8 + 8].try_into().unwrap());
-                let lb = i64::from_le_bytes(vb[i * 8..i * 8 + 8].try_into().unwrap());
-                out[i * 8..i * 8 + 8].copy_from_slice(&f(la, lb).to_le_bytes());
+                let la = lane_i64(&va, i);
+                let lb = lane_i64(&vb, i);
+                write_i64_lane(&mut out, i, f(la, lb));
             }
-            self.push(Value::V128(out))
+            { self.push_fast(Value::V128(out)); Ok(()) }
         } else {
-            self.push(Value::V128([0; 16]))
+            { self.push_fast(Value::V128([0; 16])); Ok(()) }
         }
     }
+    #[inline(always)]
     pub(crate) fn simd_f32x4_cmp(&mut self, f: impl Fn(f32, f32) -> bool) -> Result<(), VMError> {
-        let b = self.pop();
-        let a = self.pop();
-        if let (Value::V128(va), Value::V128(vb)) = (a, b) {
+        if let Some((va, vb)) = self.pop_v128_pair_fast() {
             let mut out = [0u8; 16];
             for i in 0..4 {
-                let la = f32::from_le_bytes(va[i * 4..i * 4 + 4].try_into().unwrap());
-                let lb = f32::from_le_bytes(vb[i * 4..i * 4 + 4].try_into().unwrap());
+                let la = lane_f32(&va, i);
+                let lb = lane_f32(&vb, i);
                 let mask: u32 = if f(la, lb) { u32::MAX } else { 0 };
-                out[i * 4..i * 4 + 4].copy_from_slice(&mask.to_le_bytes());
+                write_u32_lane(&mut out, i, mask);
             }
-            self.push(Value::V128(out))
+            { self.push_fast(Value::V128(out)); Ok(()) }
         } else {
-            self.push(Value::V128([0; 16]))
+            { self.push_fast(Value::V128([0; 16])); Ok(()) }
         }
     }
+    #[inline(always)]
     pub(crate) fn simd_i64x2_cmp(&mut self, f: impl Fn(i64, i64) -> bool) -> Result<(), VMError> {
-        let b = self.pop();
-        let a = self.pop();
-        if let (Value::V128(va), Value::V128(vb)) = (a, b) {
+        if let Some((va, vb)) = self.pop_v128_pair_fast() {
             let mut out = [0u8; 16];
             for i in 0..2 {
-                let la = i64::from_le_bytes(va[i * 8..i * 8 + 8].try_into().unwrap());
-                let lb = i64::from_le_bytes(vb[i * 8..i * 8 + 8].try_into().unwrap());
+                let la = lane_i64(&va, i);
+                let lb = lane_i64(&vb, i);
                 let mask: u64 = if f(la, lb) { u64::MAX } else { 0 };
-                out[i * 8..i * 8 + 8].copy_from_slice(&mask.to_le_bytes());
+                write_u64_lane(&mut out, i, mask);
             }
-            self.push(Value::V128(out))
+            { self.push_fast(Value::V128(out)); Ok(()) }
         } else {
-            self.push(Value::V128([0; 16]))
+            { self.push_fast(Value::V128([0; 16])); Ok(()) }
         }
     }
+    #[inline(always)]
     pub(crate) fn simd_i8x16_testop(&mut self, f: impl Fn(u8) -> bool) -> Result<(), VMError> {
-        if let Value::V128(a) = self.pop() {
+        if let Some(a) = self.pop_v128_fast() {
             let result = a.iter().all(|&b| f(b));
-            self.push(Value::I32(if result { 1 } else { 0 }))
+            { self.push_fast(Value::I32(if result { 1 } else { 0 })); Ok(()) }
         } else {
-            self.push(Value::I32(0))
+            { self.push_fast(Value::I32(0)); Ok(()) }
         }
     }
+    #[inline(always)]
     pub(crate) fn simd_i16x8_testop(&mut self, f: impl Fn(i16) -> bool) -> Result<(), VMError> {
-        if let Value::V128(a) = self.pop() {
+        if let Some(a) = self.pop_v128_fast() {
             let result = (0..8).all(|i| f(i16::from_le_bytes([a[i * 2], a[i * 2 + 1]])));
-            self.push(Value::I32(if result { 1 } else { 0 }))
+            { self.push_fast(Value::I32(if result { 1 } else { 0 })); Ok(()) }
         } else {
-            self.push(Value::I32(0))
+            { self.push_fast(Value::I32(0)); Ok(()) }
         }
     }
+    #[inline(always)]
     pub(crate) fn simd_i32x4_testop(&mut self, f: impl Fn(i32) -> bool) -> Result<(), VMError> {
-        if let Value::V128(a) = self.pop() {
-            let result =
-                (0..4).all(|i| f(i32::from_le_bytes(a[i * 4..i * 4 + 4].try_into().unwrap())));
-            self.push(Value::I32(if result { 1 } else { 0 }))
+        if let Some(a) = self.pop_v128_fast() {
+            let result = (0..4).all(|i| f(lane_i32(&a, i)));
+            { self.push_fast(Value::I32(if result { 1 } else { 0 })); Ok(()) }
         } else {
-            self.push(Value::I32(0))
+            { self.push_fast(Value::I32(0)); Ok(()) }
         }
     }
+    #[inline(always)]
     pub(crate) fn simd_i64x2_testop(&mut self, f: impl Fn(i64) -> bool) -> Result<(), VMError> {
-        if let Value::V128(a) = self.pop() {
-            let result =
-                (0..2).all(|i| f(i64::from_le_bytes(a[i * 8..i * 8 + 8].try_into().unwrap())));
-            self.push(Value::I32(if result { 1 } else { 0 }))
+        if let Some(a) = self.pop_v128_fast() {
+            let result = (0..2).all(|i| f(lane_i64(&a, i)));
+            { self.push_fast(Value::I32(if result { 1 } else { 0 })); Ok(()) }
         } else {
-            self.push(Value::I32(0))
+            { self.push_fast(Value::I32(0)); Ok(()) }
         }
     }
 

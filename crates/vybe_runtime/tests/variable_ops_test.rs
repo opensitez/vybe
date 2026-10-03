@@ -134,8 +134,8 @@ fn global_set_and_get_roundtrip() {
     let mut c = Chunk::new("<script>");
     let name_k = c.add_constant(Value::String(Arc::from("__x")));
     push_i32(&mut c, 42);
-    c.emit_op_u16(Op::GLOBAL_SET, name_k, 0);
-    c.emit_op_u16(Op::GLOBAL_GET, name_k, 0);
+    c.emit_op_u32(Op::GLOBAL_SET, name_k, 0);
+    c.emit_op_u32(Op::GLOBAL_GET, name_k, 0);
     c.emit_op(Op::RETURN, 0);
     let r = VM::new().run(vec![c]).expect("run failed");
     assert_eq!(r.as_i32(), 42);
@@ -149,7 +149,7 @@ fn global_initialized_via_global_init() {
         init: vybe_runtime::chunk::ConstExpr::Value(Value::I32(99)),
     });
     let name_k = c.add_constant(Value::String(Arc::from("__g")));
-    c.emit_op_u16(Op::GLOBAL_GET, name_k, 0);
+    c.emit_op_u32(Op::GLOBAL_GET, name_k, 0);
     c.emit_op(Op::RETURN, 0);
     let r = VM::new().run(vec![c]).expect("run failed");
     assert_eq!(r.as_i32(), 99);
@@ -164,8 +164,8 @@ fn global_set_overwrites_init_value() {
     });
     let name_k = c.add_constant(Value::String(Arc::from("__h")));
     push_i32(&mut c, 100);
-    c.emit_op_u16(Op::GLOBAL_SET, name_k, 0);
-    c.emit_op_u16(Op::GLOBAL_GET, name_k, 0);
+    c.emit_op_u32(Op::GLOBAL_SET, name_k, 0);
+    c.emit_op_u32(Op::GLOBAL_GET, name_k, 0);
     c.emit_op(Op::RETURN, 0);
     let r = VM::new().run(vec![c]).expect("run failed");
     assert_eq!(r.as_i32(), 100);
@@ -175,7 +175,7 @@ fn global_set_overwrites_init_value() {
 fn missing_global_get_returns_undefined() {
     let mut c = Chunk::new("<script>");
     let name_k = c.add_constant(Value::String(Arc::from("__missing")));
-    c.emit_op_u16(Op::GLOBAL_GET, name_k, 0);
+    c.emit_op_u32(Op::GLOBAL_GET, name_k, 0);
     c.emit_op(Op::RETURN, 0);
     let r = VM::new().run(vec![c]).expect("run failed");
     assert!(matches!(r, Value::Undefined));
@@ -187,8 +187,8 @@ fn global_set_consumes_value_and_stores() {
     let mut c = Chunk::new("<script>");
     let name_k = c.add_constant(Value::String(Arc::from("__stack")));
     push_i32(&mut c, 12);
-    c.emit_op_u16(Op::GLOBAL_SET, name_k, 0);
-    c.emit_op_u16(Op::GLOBAL_GET, name_k, 0);
+    c.emit_op_u32(Op::GLOBAL_SET, name_k, 0);
+    c.emit_op_u32(Op::GLOBAL_GET, name_k, 0);
     c.emit_op(Op::RETURN, 0);
     let r = VM::new().run(vec![c]).expect("run failed");
     assert_eq!(r.as_i32(), 12);
@@ -248,7 +248,7 @@ fn wasm_global_set_consumes_value_from_stack() {
     let name_k = c.add_constant(Value::String(Arc::from("__g_pop_test")));
     push_i32(&mut c, 10);
     push_i32(&mut c, 20);
-    c.emit_op_u16(Op::GLOBAL_SET, name_k, 0);
+    c.emit_op_u32(Op::GLOBAL_SET, name_k, 0);
     c.emit_op(Op::RETURN, 0);
     let r = VM::new().run(vec![c]).expect("run failed");
     assert_eq!(

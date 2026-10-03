@@ -304,6 +304,145 @@ impl SharedMemory {
         Ok(())
     }
 
+    /// Fixed-size read for VM scalar opcodes.
+    ///
+    /// Returns the memory limit on bounds failure so the VM can preserve its
+    /// exact trap wording.
+    #[inline(always)]
+    pub fn read_array<const N: usize>(&self, addr: usize) -> Result<[u8; N], usize> {
+        let buf = self.buffer.lock().unwrap();
+        let Some(end) = addr.checked_add(N).filter(|&end| end <= buf.len()) else {
+            return Err(buf.len());
+        };
+        let mut out = [0u8; N];
+        out.copy_from_slice(&buf[addr..end]);
+        Ok(out)
+    }
+
+    /// Fixed-size read without locking when this memory buffer is not shared.
+    ///
+    /// Returns `None` when another handle exists and the caller must use the
+    /// normal locked path. This preserves WASM shared-memory correctness while
+    /// making the overwhelmingly common single-VM path avoid a mutex per scalar
+    /// load.
+    #[inline(always)]
+    pub fn read_array_exclusive<const N: usize>(
+        &mut self,
+        addr: usize,
+    ) -> Option<Result<[u8; N], usize>> {
+        let buf = Arc::get_mut(&mut self.buffer)?.get_mut().ok()?;
+        let Some(end) = addr.checked_add(N).filter(|&end| end <= buf.len()) else {
+            return Some(Err(buf.len()));
+        };
+        let mut out = [0u8; N];
+        out.copy_from_slice(&buf[addr..end]);
+        Some(Ok(out))
+    }
+
+    /// Borrow a checked byte slice without locking when this memory buffer is
+    /// not shared.
+    ///
+    /// Returns `None` when another handle exists and the caller must use the
+    /// normal locked path.
+    #[inline(always)]
+    pub fn with_bytes_exclusive<R>(
+        &mut self,
+        addr: usize,
+        size: usize,
+        f: impl FnOnce(&[u8]) -> R,
+    ) -> Option<Result<R, usize>> {
+        let buf = Arc::get_mut(&mut self.buffer)?.get_mut().ok()?;
+        let Some(end) = addr.checked_add(size).filter(|&end| end <= buf.len()) else {
+            return Some(Err(buf.len()));
+        };
+        Some(Ok(f(&buf[addr..end])))
+    }
+
+    /// Single-byte read for VM scalar opcodes.
+    ///
+    /// Returns the memory limit on bounds failure so the VM can preserve its
+    /// exact trap wording.
+    #[inline(always)]
+    pub fn read_u8_checked(&self, addr: usize) -> Result<u8, usize> {
+        let buf = self.buffer.lock().unwrap();
+        if addr >= buf.len() {
+            return Err(buf.len());
+        }
+        Ok(buf[addr])
+    }
+
+    /// Single-byte read without locking when this memory buffer is not shared.
+    #[inline(always)]
+    pub fn read_u8_checked_exclusive(&mut self, addr: usize) -> Option<Result<u8, usize>> {
+        let buf = Arc::get_mut(&mut self.buffer)?.get_mut().ok()?;
+        if addr >= buf.len() {
+            return Some(Err(buf.len()));
+        }
+        Some(Ok(buf[addr]))
+    }
+
+    /// Fixed-size write for VM scalar opcodes.
+    ///
+    /// Returns the memory limit on bounds failure so the VM can preserve its
+    /// exact trap wording.
+    #[inline(always)]
+    pub fn write_array<const N: usize>(
+        &self,
+        addr: usize,
+        bytes: &[u8; N],
+    ) -> Result<(), usize> {
+        let mut buf = self.buffer.lock().unwrap();
+        let Some(end) = addr.checked_add(N).filter(|&end| end <= buf.len()) else {
+            return Err(buf.len());
+        };
+        buf[addr..end].copy_from_slice(bytes);
+        Ok(())
+    }
+
+    /// Fixed-size write without locking when this memory buffer is not shared.
+    #[inline(always)]
+    pub fn write_array_exclusive<const N: usize>(
+        &mut self,
+        addr: usize,
+        bytes: &[u8; N],
+    ) -> Option<Result<(), usize>> {
+        let buf = Arc::get_mut(&mut self.buffer)?.get_mut().ok()?;
+        let Some(end) = addr.checked_add(N).filter(|&end| end <= buf.len()) else {
+            return Some(Err(buf.len()));
+        };
+        buf[addr..end].copy_from_slice(bytes);
+        Some(Ok(()))
+    }
+
+    /// Single-byte write for VM scalar opcodes.
+    ///
+    /// Returns the memory limit on bounds failure so the VM can preserve its
+    /// exact trap wording.
+    #[inline(always)]
+    pub fn write_u8_checked(&self, addr: usize, value: u8) -> Result<(), usize> {
+        let mut buf = self.buffer.lock().unwrap();
+        if addr >= buf.len() {
+            return Err(buf.len());
+        }
+        buf[addr] = value;
+        Ok(())
+    }
+
+    /// Single-byte write without locking when this memory buffer is not shared.
+    #[inline(always)]
+    pub fn write_u8_checked_exclusive(
+        &mut self,
+        addr: usize,
+        value: u8,
+    ) -> Option<Result<(), usize>> {
+        let buf = Arc::get_mut(&mut self.buffer)?.get_mut().ok()?;
+        if addr >= buf.len() {
+            return Some(Err(buf.len()));
+        }
+        buf[addr] = value;
+        Some(Ok(()))
+    }
+
     /// Bulk read into a slice. Returns number of bytes read.
     pub fn read_bytes(&self, addr: usize, dst: &mut [u8]) -> usize {
         let buf = self.buffer.lock().unwrap();
@@ -329,14 +468,28 @@ impl SharedMemory {
 
     /// Get raw access for operations that need the full buffer.
     /// Caller holds the lock for the duration.
+    #[inline(always)]
     pub fn with_buffer<R>(&self, f: impl FnOnce(&[u8]) -> R) -> R {
         let buf = self.buffer.lock().unwrap();
         f(&buf)
     }
 
+    #[inline(always)]
     pub fn with_buffer_mut<R>(&self, f: impl FnOnce(&mut Vec<u8>) -> R) -> R {
         let mut buf = self.buffer.lock().unwrap();
         f(&mut buf)
+    }
+
+    /// Get full-buffer mutable access without locking when the memory buffer is
+    /// uniquely owned. Returns `None` once the memory has been cloned/shared,
+    /// in which case callers must use the normal locked helper.
+    #[inline(always)]
+    pub fn with_buffer_mut_exclusive<R>(
+        &mut self,
+        f: impl FnOnce(&mut Vec<u8>) -> R,
+    ) -> Option<R> {
+        let buf = Arc::get_mut(&mut self.buffer)?.get_mut().ok()?;
+        Some(f(buf))
     }
 
     // ── Atomic i32 operations (lock-free per WASM spec) ─────────────────

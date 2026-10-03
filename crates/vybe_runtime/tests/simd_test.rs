@@ -847,8 +847,8 @@ fn simd_store_lane_memory(op: Op, lane: u8, addr: i32, vec: [u8; 16], mem_size: 
     let mut vm = VM::new();
     vm.memory.resize(mem_size, 0);
     let mut c = Chunk::new("<script>");
-    emit_v128_const(&mut c, vec);
     push_i32(&mut c, addr);
+    emit_v128_const(&mut c, vec);
     c.emit_op(op, 0);
     c.emit(lane, 0);
     push_i32(&mut c, 0);
@@ -949,8 +949,8 @@ fn simd_store_lane_variants_oob_trap() {
 
     for (op, mem_size) in cases {
         assert_simd_oob(*mem_size, |c| {
-            emit_v128_const(c, [1; 16]);
             push_i32(c, 0);
+            emit_v128_const(c, [1; 16]);
             c.emit_op(*op, 0);
             c.emit(0u8, 0);
             push_i32(c, 0);
@@ -3174,10 +3174,10 @@ fn v128_store16_lane() {
     let r = as_v128(mem_run(
         |_| {},
         |c| {
+            push_i32(c, 4); // addr
             // Build v128 with 0x1234 in lane 0
             push_i32(c, 0x1234);
             c.emit_op(Op::I16X8_SPLAT, 0);
-            push_i32(c, 4); // addr
             c.emit_op(Op::V128_STORE16_LANE, 0);
             c.emit(0u8, 0); // store lane 0 to addr 4
             // load it back
@@ -3199,9 +3199,9 @@ fn v128_store32_lane() {
     let r = as_v128(mem_run(
         |_| {},
         |c| {
+            push_i32(c, 0); // addr
             push_i32(c, 42);
             c.emit_op(Op::I32X4_SPLAT, 0);
-            push_i32(c, 0); // addr
             c.emit_op(Op::V128_STORE32_LANE, 0);
             c.emit(0u8, 0);
             push_i32(c, 0);
@@ -3216,9 +3216,9 @@ fn v128_store64_lane() {
     let r = as_v128(mem_run(
         |_| {},
         |c| {
+            push_i32(c, 0);
             c.emit_i64_const(99, 0);
             c.emit_op(Op::I64X2_SPLAT, 0);
-            push_i32(c, 0);
             c.emit_op(Op::V128_STORE64_LANE, 0);
             c.emit(0u8, 0);
             push_i32(c, 0);

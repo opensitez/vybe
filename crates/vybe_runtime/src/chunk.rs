@@ -415,12 +415,20 @@ pub struct Chunk {
     /// Each entry is a (module, name) pair.
     /// CallHost operand indexes into this table.
     pub imports: Vec<Import>,
+    /// Deduplication index for `imports`; the vector remains the ordered ABI.
+    import_indices: std::collections::HashMap<
+        String, std::collections::HashMap<String, u16, FxBuildHasher>, FxBuildHasher,
+    >,
+    indexed_import_count: usize,
     /// Imported **globals** — a separate index space from `imports`, exactly
     /// as in WASM, where each import kind numbers independently and only
     /// function imports are reachable by `call`. Keeping them apart is what
     /// stops a declared global from shifting the function indices that
     /// `CALL_IMPORT` operands carry.
     pub global_imports: Vec<Import>,
+    /// Lookup index for the ordered global import table. Unlike `imports`,
+    /// global imports are only extended through `add_global_import`.
+    global_import_indices: std::collections::HashMap<(String, String), u16, FxBuildHasher>,
     /// The module's GLOBAL INDEX SPACE — `global_imports` first, then
     /// module-defined globals, exactly as WASM numbers them.
     /// `GLOBAL_GET`/`GLOBAL_SET` operands index THIS, not a per-chunk constant
@@ -547,6 +555,9 @@ pub struct Chunk {
     /// statement would `local.set` a value into a slot typed for something
     /// else. `statements.rs` carries the matching floor.
     pub i64_scratch_slot: Option<u16>,
+    /// Cached externref temporary used by the non-nested autoderef emitter.
+    /// The compiler keeps this slot above the per-statement reclaim floor.
+    pub autoderef_scratch_slot: Option<u16>,
     /// `call_indirect` / `return_call_indirect` bytecode offset → the DECLARED
     /// functype at that call site, as its source spelling (`"i32,f64->i32"`).
     ///
@@ -876,7 +887,10 @@ impl Chunk {
             user_code_offset: None,
             dup_slot: None,
             imports: Vec::new(),
+            import_indices: std::collections::HashMap::default(),
+            indexed_import_count: 0,
             global_imports: Vec::new(),
+            global_import_indices: std::collections::HashMap::default(),
             globals: Arc::new(Vec::new()),
             canon_section: Arc::new(Vec::new()),
             canon_functypes: Arc::new(Vec::new()),
@@ -896,6 +910,7 @@ impl Chunk {
             block_i32_results: std::collections::HashSet::new(),
             i64_locals: std::collections::HashSet::new(),
             i64_scratch_slot: None,
+            autoderef_scratch_slot: None,
             call_indirect_sigs: std::collections::HashMap::new(),
             call_indirect_canon: std::collections::HashMap::new(),
             type_imports: Vec::new(),
@@ -940,36 +955,48 @@ impl Chunk {
             .map(|i| (i.module.clone(), i.name.clone()))
     }
 
-    pub fn add_import(&mut self, module: impl Into<String>, name: impl Into<String>) -> u16 {
-        let import = Import {
-            module: module.into(),
-            name: name.into(),
-        };
-        // Deduplicate — return existing index if already imported
-        for (i, existing) in self.imports.iter().enumerate() {
-            if *existing == import {
-                return i as u16;
+    pub fn add_import(&mut self, module: impl AsRef<str>, name: impl AsRef<str>) -> u16 {
+        // Linkers and tests may replace the public vector directly. Rebuild
+        // after a length change, while the normal emission path stays O(1).
+        if self.indexed_import_count != self.imports.len() {
+            self.import_indices.clear();
+            for (i, import) in self.imports.iter().enumerate() {
+                self.import_indices
+                    .entry(import.module.clone())
+                    .or_default()
+                    .entry(import.name.clone())
+                    .or_insert(i as u16);
             }
+            self.indexed_import_count = self.imports.len();
         }
-        self.imports.push(import);
-        (self.imports.len() - 1) as u16
+        let module = module.as_ref();
+        let name = name.as_ref();
+        // Most emission sites reuse an import. Borrow both keys so a hit
+        // allocates no strings; the ordered vector still owns the ABI names.
+        if let Some(&index) = self.import_indices.get(module).and_then(|names| names.get(name)) {
+            return index;
+        }
+        let index = self.imports.len() as u16;
+        self.imports.push(Import { module: module.to_owned(), name: name.to_owned() });
+        self.import_indices.entry(module.to_owned()).or_default().insert(name.to_owned(), index);
+        self.indexed_import_count = self.imports.len();
+        index
     }
 
     /// Declare an imported **global** and return its index in the global
     /// import space. Deduplicated on `(module, name)` — two references to the
     /// same import are the same global, as in WASM.
     pub fn add_global_import(&mut self, module: impl Into<String>, name: impl Into<String>) -> u16 {
-        let import = Import {
-            module: module.into(),
-            name: name.into(),
-        };
-        for (i, existing) in self.global_imports.iter().enumerate() {
-            if *existing == import {
-                return i as u16;
-            }
+        let module = module.into();
+        let name = name.into();
+        let key = (module.clone(), name.clone());
+        if let Some(&index) = self.global_import_indices.get(&key) {
+            return index;
         }
-        self.global_imports.push(import);
-        (self.global_imports.len() - 1) as u16
+        let index = self.global_imports.len() as u16;
+        self.global_imports.push(Import { module, name });
+        self.global_import_indices.insert(key, index);
+        index
     }
 
     /// Intern a string in the constant pool. The pool is read-only at run
@@ -1090,15 +1117,17 @@ impl Chunk {
         self.lines.push(line);
     }
 
+    fn emit_bytes<const N: usize>(&mut self, bytes: [u8; N], line: u32) {
+        self.code.extend_from_slice(&bytes);
+        self.lines.extend_from_slice(&[line; N]);
+    }
+
     /// Emit an opcode's 4 bytes. Ops WITH immediates legitimately come through
     /// here too — `emit_i32_const` is `emit_op(I32_CONST)` + `emit_leb_i32`,
     /// and `core_wasm::i32_const` does the same — so this cannot assert that
     /// the op is operand-less.
     pub fn emit_op(&mut self, op: Op, line: u32) {
-        let bytes = op.encode();
-        for b in bytes {
-            self.emit(b, line);
-        }
+        self.emit_bytes(op.encode(), line);
     }
 
     /// Emit `ref.null <heaptype>` — the spec instruction, immediate included.
@@ -1179,9 +1208,9 @@ impl Chunk {
     }
 
     pub fn emit_op_u16(&mut self, op: Op, operand: u16, line: u32) {
-        self.emit_op(op, line);
-        self.emit((operand >> 8) as u8, line);
-        self.emit((operand & 0xff) as u8, line);
+        let [a, b, c, d] = op.encode();
+        let [e, f] = operand.to_be_bytes();
+        self.emit_bytes([a, b, c, d, e, f], line);
     }
 
     /// Emit an op with a fixed-width big-endian `u32` immediate.
@@ -1189,10 +1218,9 @@ impl Chunk {
     /// Fixed width so the operand can be rewritten in place — see
     /// [`OperandFormat::U32`].
     pub fn emit_op_u32(&mut self, op: Op, operand: u32, line: u32) {
-        self.emit_op(op, line);
-        for b in operand.to_be_bytes() {
-            self.emit(b, line);
-        }
+        let [a, b, c, d] = op.encode();
+        let [e, f, g, h] = operand.to_be_bytes();
+        self.emit_bytes([a, b, c, d, e, f, g, h], line);
     }
 
     /// Emit an op whose immediate is a spec INDEX — a LEB128 `u32`.
@@ -1218,8 +1246,8 @@ impl Chunk {
     }
 
     pub fn emit_op_u8(&mut self, op: Op, operand: u8, line: u32) {
-        self.emit_op(op, line);
-        self.emit(operand, line);
+        let [a, b, c, d] = op.encode();
+        self.emit_bytes([a, b, c, d, operand], line);
     }
 
     /// `array.new_fixed $t N` — BOTH immediates, in spec order.
@@ -1250,42 +1278,28 @@ impl Chunk {
     /// Same immediates as [`Chunk::emit_struct_new`]: the descriptor is a
     /// STACK operand (pushed last, above the field values), not an immediate.
     pub fn emit_struct_new_desc(&mut self, typeidx: u16, count: u16, line: u32) {
-        self.emit_op(Op::STRUCT_NEW_DESC, line);
-        self.emit((typeidx >> 8) as u8, line);
-        self.emit((typeidx & 0xff) as u8, line);
-        self.emit((count >> 8) as u8, line);
-        self.emit((count & 0xff) as u8, line);
+        self.emit_op_u16_u16(Op::STRUCT_NEW_DESC, typeidx, count, line);
     }
 
     pub fn emit_struct_new(&mut self, typeidx: u16, count: u16, line: u32) {
-        self.emit_op(Op::STRUCT_NEW, line);
-        self.emit((typeidx >> 8) as u8, line);
-        self.emit((typeidx & 0xff) as u8, line);
-        self.emit((count >> 8) as u8, line);
-        self.emit((count & 0xff) as u8, line);
+        self.emit_op_u16_u16(Op::STRUCT_NEW, typeidx, count, line);
     }
 
     pub fn emit_array_new_fixed(&mut self, typeidx: u16, count: u16, line: u32) {
-        self.emit_op(Op::ARRAY_NEW_FIXED, line);
-        self.emit((typeidx >> 8) as u8, line);
-        self.emit((typeidx & 0xff) as u8, line);
-        self.emit((count >> 8) as u8, line);
-        self.emit((count & 0xff) as u8, line);
+        self.emit_op_u16_u16(Op::ARRAY_NEW_FIXED, typeidx, count, line);
     }
 
     pub fn emit_op_u8_u8(&mut self, op: Op, first: u8, second: u8, line: u32) {
-        self.emit_op(op, line);
-        self.emit(first, line);
-        self.emit(second, line);
+        let [a, b, c, d] = op.encode();
+        self.emit_bytes([a, b, c, d, first, second], line);
     }
 
     /// Two u16 BE immediates (U16_U16 ops: table.init, table.copy, …).
     pub fn emit_op_u16_u16(&mut self, op: Op, first: u16, second: u16, line: u32) {
-        self.emit_op(op, line);
-        self.emit((first >> 8) as u8, line);
-        self.emit((first & 0xff) as u8, line);
-        self.emit((second >> 8) as u8, line);
-        self.emit((second & 0xff) as u8, line);
+        let [a, b, c, d] = op.encode();
+        let [e, f] = first.to_be_bytes();
+        let [g, h] = second.to_be_bytes();
+        self.emit_bytes([a, b, c, d, e, f, g, h], line);
     }
 
     pub fn emit_leb_u32(&mut self, mut value: u32, line: u32) {
@@ -1559,6 +1573,15 @@ impl Chunk {
         let slot = self.alloc_scratch(1);
         self.i64_scratch_slot = Some(slot);
         self.i64_locals.insert(slot);
+        slot
+    }
+
+    pub fn autoderef_scratch(&mut self) -> u16 {
+        if let Some(slot) = self.autoderef_scratch_slot {
+            return slot;
+        }
+        let slot = self.alloc_scratch(1);
+        self.autoderef_scratch_slot = Some(slot);
         slot
     }
 

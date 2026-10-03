@@ -28,7 +28,7 @@ fn push_arg(chunk: &mut Chunk, v: Value) -> Option<(String, Value)> {
                 TEST_GLOBAL_SEQ.fetch_add(1, Ordering::Relaxed)
             );
             let ci = chunk.intern_string_constant(&name);
-            chunk.emit_op_u16(Op::GLOBAL_GET, ci, 0);
+            chunk.emit_op_u32(Op::GLOBAL_GET, ci, 0);
             return Some((name, other));
         }
     }

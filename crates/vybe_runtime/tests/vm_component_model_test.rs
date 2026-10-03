@@ -1,37 +1,20 @@
-use std::sync::Arc;
 /// Tests for Component Model: canon lift, canon lower, type_import, type_export.
 use vybe_runtime::{Chunk, TypeDef, VM, Value};
 
 #[test]
-fn canon_lift_stamps_type_id() {
+fn bare_canon_lift_requires_canon_section_row() {
     let mut vm = VM::new();
-    let mut td = TypeDef::new("Animal");
-    td.add_field("name");
-    let tid = vm.type_registry.register(td);
-
     let mut chunk = Chunk::new("<script>");
-    chunk.local_count = 2;
 
-    // Create a plain object (type_id = 0)
-    let _name_c = chunk.add_constant(Value::String(Arc::from("name")));
-    chunk.emit_string_const("Rex", 0);
-    chunk.emit_array_new_fixed(0, 1, 0);
-
-    // canon lift with Animal type — a VM-implemented import under module
-    // "canon" (the CM defines canon built-ins as functions, not
-    // instructions); the typeidx rides the stack above the value.
+    // `canon lift` is not a type-stamping stub. It is an instantiation-time
+    // built-in produced by a `(canon lift ...)` row, so the import must name
+    // that row as `lift@<canonidx>`.
     let lift = chunk.add_import("canon", "lift");
-    chunk.emit_i32_const(tid as i32, 0);
-    chunk.emit_call(lift, 2, 0);
+    chunk.emit_call(lift, 0, 0);
 
-    let result = vm.run(vec![chunk]).unwrap();
-    match &result {
-        Value::Object(obj) => {
-            let o = obj.lock().unwrap();
-            assert_eq!(o.type_id, tid, "canon_lift should stamp type_id");
-        }
-        other => panic!("expected Object, got {:?}", other),
-    }
+    let err = vm.run(vec![chunk]).unwrap_err();
+    assert!(err.message.contains("canon lift: no canonidx"));
+    assert!(err.message.contains("lift@<canonidx>"));
 }
 
 // ── Linker type resolution ──────────────────────────────────

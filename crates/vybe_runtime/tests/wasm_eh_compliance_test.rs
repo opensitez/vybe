@@ -212,7 +212,7 @@ fn catch_ignores_payload_stamps_tag_identity_only() {
     let outer = emit_try_table(&mut c, &[(KIND_CATCH, t_type_error)]);
     let inner = emit_try_table(&mut c, &[(KIND_CATCH, t_exception)]);
     let payload_ci = c.intern_string_constant(&payload_global);
-    c.emit_op_u16(Op::GLOBAL_GET, payload_ci, 0);
+    c.emit_op_u32(Op::GLOBAL_GET, payload_ci, 0);
     emit_throw(&mut c, t_type_error);
     push_str(&mut c, "not-thrown");
     ret(&mut c);

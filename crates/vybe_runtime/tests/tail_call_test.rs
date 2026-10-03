@@ -33,7 +33,7 @@ fn return_call_ref_delivers_callee_result() {
     });
     {
         let fn_name = main.add_constant(Value::String(Arc::from("__double")));
-        main.emit_op_u16(opcode::Op::GLOBAL_GET, fn_name, 0); // push func ref
+        main.emit_op_u32(opcode::Op::GLOBAL_GET, fn_name, 0); // push func ref
         main.emit_i32_const(21, 0); // push arg 21
         main.emit_op_u8_u8(opcode::Op::RETURN_CALL_REF, 1, 1, 0); // tail-call, argc=1
     }
@@ -76,7 +76,7 @@ fn return_call_delivers_callee_result() {
     });
     {
         let fn_name = main.add_constant(Value::String(Arc::from("__add_one")));
-        main.emit_op_u16(opcode::Op::GLOBAL_GET, fn_name, 0);
+        main.emit_op_u32(opcode::Op::GLOBAL_GET, fn_name, 0);
         main.emit_i32_const(41, 0);
         main.emit_op_u8_u8(opcode::Op::RETURN_CALL, 1, 1, 0);
     }
@@ -133,7 +133,7 @@ fn return_call_indirect_via_function_table() {
         main.emit_i32_const(0, 0); // table slot
         main.emit_op_u16(opcode::Op::REF_FUNC, 1, 0);
         main.emit(0u8, 0); // upvalue_count = 0
-        main.emit_op_u16(opcode::Op::TABLE_SET, 0, 0);
+        main.emit_op_u8(opcode::Op::TABLE_SET, 0, 0);
 
         // Spec `return_call_indirect`: `[args… i32]` — the table index is on
         // TOP of the stack, above the args. Push the argument first, then the
@@ -196,7 +196,7 @@ fn return_call_chain_does_not_overflow() {
         countdown.emit_op(opcode::Op::END, 0);
 
         // else: tail-call countdown(n-1)
-        countdown.emit_op_u16(opcode::Op::GLOBAL_GET, fn_name, 0);
+        countdown.emit_op_u32(opcode::Op::GLOBAL_GET, fn_name, 0);
         countdown.emit_op_u16(opcode::Op::LOCAL_GET, 0, 0);
         countdown.emit_i32_const(1, 0);
         countdown.emit_op(opcode::Op::I32_SUB, 0);
@@ -211,7 +211,7 @@ fn return_call_chain_does_not_overflow() {
     });
     {
         let fn_name = main.add_constant(Value::String(Arc::from("__countdown")));
-        main.emit_op_u16(opcode::Op::GLOBAL_GET, fn_name, 0);
+        main.emit_op_u32(opcode::Op::GLOBAL_GET, fn_name, 0);
         main.emit_i32_const(10_000, 0);
         main.emit_op_u8_u8(opcode::Op::RETURN_CALL_REF, 1, 1, 0);
     }

@@ -26,27 +26,47 @@ impl VM {
     }
 
     pub(crate) fn close_upvalues(&mut self, from: usize) {
-        let mut i = 0;
-        while i < self.open_upvalues.len() {
-            let should_close = matches!(
-                self.open_upvalues[i].lock().unwrap().location,
-                UpvalueLocation::Open(idx) if idx >= from
-            );
-            if should_close {
-                let uv = self.open_upvalues.remove(i);
-                let mut u = uv.lock().unwrap();
-                if let UpvalueLocation::Open(idx) = u.location {
-                    // Lazy-locals convention: a captured slot that was never
-                    // written may lie beyond the materialized stack — it
-                    // closes over Null, same as a LOCAL_GET of an untouched
-                    // local (see the matching read in calls.rs).
-                    u.location = UpvalueLocation::Closed(
-                        self.stack.get(idx).cloned().unwrap_or(Value::Null),
-                    );
-                }
-            } else {
-                i += 1;
-            }
+        if self.open_upvalues.is_empty() {
+            return;
         }
+        let stack = &self.stack;
+        self.open_upvalues.retain(|uv| {
+            let mut upvalue = uv.lock().unwrap();
+            if let UpvalueLocation::Open(idx) = upvalue.location {
+                if idx >= from {
+                    // Lazy-locals convention: an unwritten captured slot may
+                    // lie beyond the materialized stack.
+                    upvalue.location = UpvalueLocation::Closed(
+                        stack.get(idx).cloned().unwrap_or(Value::Null),
+                    );
+                    return false;
+                }
+            }
+            true
+        });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn closes_many_upvalues_in_one_pass_and_keeps_outer_slots() {
+        let mut vm = VM::new();
+        vm.stack = (0..20_000).map(Value::I32).collect();
+        let upvalues: Vec<_> = (0..20_000)
+            .map(|idx| Arc::new(Mutex::new(Upvalue {
+                location: UpvalueLocation::Open(idx),
+            })))
+            .collect();
+        vm.open_upvalues = upvalues.clone();
+
+        vm.close_upvalues(10_000);
+
+        assert_eq!(vm.open_upvalues.len(), 10_000);
+        assert!(matches!(upvalues[9_999].lock().unwrap().location, UpvalueLocation::Open(9_999)));
+        assert!(matches!(upvalues[10_000].lock().unwrap().location, UpvalueLocation::Closed(Value::I32(10_000))));
+        assert!(matches!(upvalues[19_999].lock().unwrap().location, UpvalueLocation::Closed(Value::I32(19_999))));
     }
 }

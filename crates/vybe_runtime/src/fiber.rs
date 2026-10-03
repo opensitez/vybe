@@ -91,6 +91,7 @@ pub struct SavedFrame {
     pub chunk_index: usize,
     pub ip: usize,
     pub base: usize,
+    pub local_frame_size: usize,
     pub label_base: usize,
     pub upvalues: Vec<Arc<Mutex<Upvalue>>>,
 }

@@ -157,6 +157,31 @@ impl Op {
         Op(((group as u32) << 16) | sub as u32)
     }
 
+    /// Decode the runtime bytecode's fixed-width opcode encoding.
+    ///
+    /// This is the inverse of [`Op::encode`]. It deliberately does not validate:
+    /// the hot dispatch loop consumes bytecode already emitted/loaded by Vybe,
+    /// and validation belongs at construction/load boundaries rather than every
+    /// executed instruction.
+    #[inline]
+    pub const fn from_encoded(bytes: [u8; 4]) -> Self {
+        Op(u32::from_be_bytes(bytes))
+    }
+
+    /// Decode directly from a bytecode slice at `offset`.
+    ///
+    /// The caller is responsible for ensuring four bytes are present. This is
+    /// the hot dispatch path, where chunk validation already proved instruction
+    /// boundaries; avoiding the temporary array keeps the fixed-width opcode
+    /// advantage as direct as possible.
+    #[inline]
+    pub fn from_code_at(code: &[u8], offset: usize) -> Self {
+        Op(((code[offset] as u32) << 24)
+            | ((code[offset + 1] as u32) << 16)
+            | ((code[offset + 2] as u32) << 8)
+            | code[offset + 3] as u32)
+    }
+
     /// Group (u16). Maps to WASM prefix bytes: 0x00=core, 0xF0=canon, 0xFB=GC, etc.
     #[inline]
     pub const fn group(self) -> u16 {
@@ -196,9 +221,20 @@ impl Op {
 
     /// Decode from group + sub into a validated opcode.
     pub fn decode(group: u16, sub: u16) -> Option<Op> {
-        let op = Op::new(group as u16, sub as u16);
-        if op.wasm_name_opt().is_some() {
-            Some(op)
+        let valid = match group {
+            0x00 => core_ops::valid(sub),
+            0xFB => gc::valid(sub),
+            0xFC => misc::valid(sub),
+            0xFD if sub >= 256 => relaxed_simd::valid(sub),
+            0xFD => simd::valid(sub),
+            0xFE => threads::valid(sub),
+            0xF0 => canon::valid(sub),
+            0xF1 => call_tags::valid(sub),
+            0xFF => vm_internal::valid(sub),
+            _ => false,
+        };
+        if valid {
+            Some(Op::new(group, sub))
         } else {
             None
         }
@@ -458,6 +494,9 @@ impl OperandFormat {
 
     /// Operand size for formats whose size depends on operand bytes.
     pub fn size_in(self, code: &[u8], operand_start: usize) -> usize {
+        if self == Self::None {
+            return 0;
+        }
         match self {
             Self::U32Leb => leb_u32_size(code, operand_start),
             Self::U32Leb_U32Leb => {
@@ -594,9 +633,17 @@ pub fn leb_u32_size(code: &[u8], start: usize) -> usize {
     len
 }
 
+#[inline(always)]
 pub fn read_leb_u32(code: &[u8], ip: &mut usize) -> u32 {
+    let byte = code.get(*ip).copied().unwrap_or(0);
+    if byte & 0x80 == 0 {
+        *ip += 1;
+        return byte as u32;
+    }
+    *ip += 1;
     let mut result = 0u32;
-    let mut shift = 0u32;
+    let mut shift = 7u32;
+    result |= (byte & 0x7f) as u32;
     loop {
         let byte = code.get(*ip).copied().unwrap_or(0);
         *ip += 1;
@@ -612,9 +659,21 @@ pub fn read_leb_u32(code: &[u8], ip: &mut usize) -> u32 {
     result
 }
 
+#[inline(always)]
 pub fn read_leb_i32(code: &[u8], ip: &mut usize) -> i32 {
+    let byte = code.get(*ip).copied().unwrap_or(0);
+    if byte & 0x80 == 0 {
+        *ip += 1;
+        return if byte & 0x40 == 0 {
+            byte as i32
+        } else {
+            ((byte as u32) | !0x7f) as i32
+        };
+    }
+    *ip += 1;
     let mut result = 0u32;
-    let mut shift = 0u32;
+    let mut shift = 7u32;
+    result |= (byte & 0x7f) as u32;
     let mut byte;
     loop {
         byte = code.get(*ip).copied().unwrap_or(0);
@@ -634,9 +693,21 @@ pub fn read_leb_i32(code: &[u8], ip: &mut usize) -> i32 {
     result as i32
 }
 
+#[inline(always)]
 pub fn read_leb_i64(code: &[u8], ip: &mut usize) -> i64 {
+    let byte = code.get(*ip).copied().unwrap_or(0);
+    if byte & 0x80 == 0 {
+        *ip += 1;
+        return if byte & 0x40 == 0 {
+            byte as i64
+        } else {
+            ((byte as u64) | !0x7f) as i64
+        };
+    }
+    *ip += 1;
     let mut result = 0u64;
-    let mut shift = 0u32;
+    let mut shift = 7u32;
+    result |= (byte & 0x7f) as u64;
     let mut byte;
     loop {
         byte = code.get(*ip).copied().unwrap_or(0);
@@ -670,16 +741,46 @@ pub fn br_table_size(code: &[u8], operand_start: usize) -> usize {
 /// from a table of [sub] name => format entries.
 macro_rules! opcode_category {
     ( $( [$sub:literal] $name:ident => $fmt:ident, $wasm_name:literal; )* ) => {
+        // A direct numeric validity lookup avoids resolving a mnemonic for
+        // every instruction scanned by validation, relocation and linking.
+            static VALID_SUBCODES: [u64; 1024] = {
+            let mut bits = [0u64; 1024];
+            $( bits[($sub as usize) >> 6] |= 1u64 << (($sub as usize) & 63); )*
+            bits
+        };
+
+        #[inline]
+        pub(super) fn valid(sub: u16) -> bool {
+            VALID_SUBCODES[(sub as usize) >> 6] & (1u64 << ((sub as usize) & 63)) != 0
+        }
+
         pub(super) fn name(sub: u16) -> Option<&'static str> {
             match sub {
                 $( $sub => Some($wasm_name), )*
                 _ => None }
         }
 
+        const MAX_SUBCODE: usize = {
+            let mut max = 0usize;
+            $( if ($sub as usize) > max { max = $sub as usize; } )*
+            max
+        };
+
+        // Validation and linking ask for the format of every decoded opcode.
+        // Generate the indexed lookup from the same declarations as `valid`
+        // instead of comparing against the mnemonic list for each instruction.
+        static FORMAT_SUBCODES: [super::OperandFormat; MAX_SUBCODE + 1] = {
+            let mut formats = [super::OperandFormat::None; MAX_SUBCODE + 1];
+            $( formats[$sub as usize] = super::OperandFormat::$fmt; )*
+            formats
+        };
+
+        #[inline]
         pub(super) fn operand_format(sub: u16) -> super::OperandFormat {
-            match sub {
-                $( $sub => super::OperandFormat::$fmt, )*
-                _ => super::OperandFormat::None }
+            FORMAT_SUBCODES
+                .get(sub as usize)
+                .copied()
+                .unwrap_or(super::OperandFormat::None)
         }
 
         /// Reverse of `name`: the WASM mnemonic → sub-opcode. Generated from the

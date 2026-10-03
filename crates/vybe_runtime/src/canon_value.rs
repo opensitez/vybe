@@ -203,8 +203,7 @@ pub fn store_with(
         }
         ValType::S16 | ValType::U16 => {
             let n = v.as_i32() as u16;
-            let _ = memory.store_u8(addr, (n & 0xff) as u8);
-            let _ = memory.store_u8(addr + 1, (n >> 8) as u8);
+            let _ = memory.write_array(addr, &n.to_le_bytes());
         }
         ValType::I32 => {
             let _ = memory.store_i32(addr, v.as_i32());
@@ -229,9 +228,11 @@ pub fn store_with(
         // elem_size_flags(labels))` — the PACKED width, not four bytes.
         ValType::Flags(labels) => {
             let packed = pack_flags(v, labels);
-            for k in 0..crate::canon_layout::flags_bytes(labels.len()) {
-                let _ = memory.store_u8(addr + k as usize, (packed >> (8 * k)) as u8);
-            }
+            let bytes = packed.to_le_bytes();
+            memory.write_bytes(
+                addr,
+                &bytes[..crate::canon_layout::flags_bytes(labels.len()) as usize],
+            );
         }
         // A handle is its i32 index into the handle table.
         ValType::Own(_)
@@ -381,9 +382,7 @@ pub fn read_utf8(
         });
     }
     let mut bytes = vec![0u8; len];
-    for (i, slot) in bytes.iter_mut().enumerate() {
-        *slot = memory.load_u8(ptr + i).unwrap_or(0);
-    }
+    memory.read_bytes(ptr, &mut bytes);
     String::from_utf8(bytes).map_err(|_| CanonError::Unsupported("string is not valid UTF-8"))
 }
 
@@ -397,11 +396,7 @@ fn load_variant_parts(
     let addr = ptr as usize;
     let case = match crate::canon_layout::variant_discriminant_size(cases) {
         1 => memory.load_u8(addr).unwrap_or(0) as u32,
-        2 => {
-            let low = memory.load_u8(addr).unwrap_or(0) as u32;
-            let high = memory.load_u8(addr + 1).unwrap_or(0) as u32;
-            low | (high << 8)
-        }
+        2 => load_u16(memory, addr) as u32,
         _ => memory.load_i32(addr).unwrap_or(0) as u32,
     };
     let payload = match cases.get(case as usize) {
@@ -432,9 +427,7 @@ fn write_bytes(
             memory_len: memory.len(),
         });
     }
-    for (i, byte) in bytes.iter().enumerate() {
-        let _ = memory.store_u8(ptr as usize + i, *byte);
-    }
+    memory.write_bytes(ptr as usize, bytes);
     Ok(())
 }
 
@@ -503,10 +496,7 @@ fn store_variant_parts(
             let _ = memory.store_u8(addr, case as u8);
         }
         2 => {
-            // No `store_u16`; the two bytes are little-endian like every other
-            // canonical integer.
-            let _ = memory.store_u8(addr, (case & 0xff) as u8);
-            let _ = memory.store_u8(addr + 1, ((case >> 8) & 0xff) as u8);
+            let _ = memory.write_array(addr, &(case as u16).to_le_bytes());
         }
         _ => {
             let _ = memory.store_i32(addr, case as i32);
@@ -584,8 +574,11 @@ pub fn load(
         // read only the packed width, then one bit per label.
         ValType::Flags(labels) => {
             let mut packed: u32 = 0;
-            for k in 0..crate::canon_layout::flags_bytes(labels.len()) {
-                packed |= (memory.load_u8(addr + k as usize).unwrap_or(0) as u32) << (8 * k);
+            let count = crate::canon_layout::flags_bytes(labels.len()) as usize;
+            let mut bytes = [0u8; 4];
+            memory.read_bytes(addr, &mut bytes[..count]);
+            for (k, byte) in bytes[..count].iter().enumerate() {
+                packed |= (*byte as u32) << (8 * k);
             }
             unpack_flags(packed, labels)
         }
@@ -988,7 +981,7 @@ pub fn load_pair_public(
     match t {
         ValType::String => {
             let text = read_utf8(memory, at as usize, len as usize)?;
-            Ok(Value::String(std::sync::Arc::from(text.as_str())))
+            Ok(Value::String(std::sync::Arc::from(text)))
         }
         ValType::List(elem) => {
             let stride = elem_size(elem);
@@ -1042,9 +1035,10 @@ pub fn store_pair_public(
 
 /// Two bytes, little-endian — the memory has no 16-bit primitive.
 fn load_u16(memory: &crate::shared_memory::SharedMemory, addr: usize) -> u16 {
-    let lo = memory.load_u8(addr).unwrap_or(0) as u16;
-    let hi = memory.load_u8(addr + 1).unwrap_or(0) as u16;
-    lo | (hi << 8)
+    memory
+        .read_array::<2>(addr)
+        .map(u16::from_le_bytes)
+        .unwrap_or(0)
 }
 
 /// `convert_i32_to_char` — `CanonicalABI.md:2456`.

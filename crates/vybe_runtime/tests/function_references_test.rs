@@ -18,7 +18,7 @@ fn global_init_reffunc_creates_function_object() {
         init: ConstExpr::RefFunc(1),
     });
     let name_c = script.add_constant(Value::String(Arc::from("__fn")));
-    script.emit_op_u16(opcode::Op::GLOBAL_GET, name_c, 0);
+    script.emit_op_u32(opcode::Op::GLOBAL_GET, name_c, 0);
 
     let mut func_chunk = Chunk::new("f");
     func_chunk.arity = 0;
@@ -44,7 +44,7 @@ fn call_ref_invokes_referenced_function() {
         init: ConstExpr::RefFunc(1),
     });
     let name_c = script.add_constant(Value::String(Arc::from("__identity")));
-    script.emit_op_u16(opcode::Op::GLOBAL_GET, name_c, 0);
+    script.emit_op_u32(opcode::Op::GLOBAL_GET, name_c, 0);
     script.emit_i32_const(7, 0);
     script.emit_op_u8_u8(opcode::Op::CALL_REF, 1, 1, 0);
 
@@ -91,7 +91,7 @@ fn call_ref_with_multiple_args() {
         init: ConstExpr::RefFunc(1),
     });
     let name_c = script.add_constant(Value::String(Arc::from("__add")));
-    script.emit_op_u16(opcode::Op::GLOBAL_GET, name_c, 0);
+    script.emit_op_u32(opcode::Op::GLOBAL_GET, name_c, 0);
     script.emit_i32_const(10, 0);
     script.emit_i32_const(32, 0);
     script.emit_op_u8_u8(opcode::Op::CALL_REF, 2, 1, 0);

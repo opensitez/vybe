@@ -1,5 +1,5 @@
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex, Weak as ArcWeak};
 
@@ -11,6 +11,24 @@ use crate::opcode::Op;
 use crate::shared_memory::SharedMemory;
 use crate::value::{Object, ObjectKind, Upvalue, Value};
 
+const ERROR_HISTORY_LEN: usize = 32;
+
+pub(crate) struct ErrorStep {
+    chunk_index: usize,
+    offset: usize,
+    stack_top: Option<Value>,
+}
+
+pub(crate) const DECODED_MEMARG_FALLBACK: u32 = u32::MAX;
+pub(crate) const DECODED_MEMARG_PRESENT: u32 = 0x8000_0000;
+pub(crate) const DECODED_MEMARG_LEN_SHIFT: u32 = 24;
+pub(crate) const DECODED_MEMARG_OFFSET_MASK: u32 = 0x00ff_ffff;
+pub(crate) const DECODED_BULK_MEMORY_FALLBACK: u32 = u32::MAX;
+pub(crate) const DECODED_BULK_MEMORY_SRC_SHIFT: u32 = 8;
+pub(crate) const DECODED_BULK_MEMORY_LEN_SHIFT: u32 = 24;
+pub(crate) const DECODED_ONE_BYTE_LEB_PRESENT: u32 = 0x8000_0000;
+pub(crate) const DECODED_ONE_BYTE_LEB_VALUE_MASK: u32 = 0xff;
+
 // Heap-OOM guard for the iterative frame Vec (vybe's WASM recursion is
 // iterative — `call` pushes a CallFrame and the single `run` loop continues —
 // so this bounds heap growth, NOT the native OS stack). WASM imposes no
@@ -20,7 +38,7 @@ use crate::value::{Object, ObjectKind, Upvalue, Value};
 // recursion; 16_384 is comparable to a JS engine's frame budget while a
 // CallFrame is only tens of bytes (well under memory pressure).
 pub(crate) const MAX_FRAMES: usize = 16_384;
-pub(crate) const MAX_STACK: usize = 65536;
+pub(crate) const MAX_STACK: usize = 1_048_576;
 
 /// Spec element-count bound for a 32-bit table: a table32's size must fit the
 /// index type, i.e. `2^32 - 1` elements (WASM 3.0, limits of `i32` tabletypes).
@@ -61,6 +79,693 @@ pub enum SuspensionKind {
     Jspi,
     Future,
     StreamRead,
+}
+
+/// Optional low-overhead runtime counters for performance work.
+///
+/// Disabled by default. When enabled, dispatch increments plain integer fields
+/// without printing from the hot loop. This is intentionally small and focused
+/// on the currently confirmed Doom-adjacent byte-copy bridge.
+#[derive(Clone, Debug, Default)]
+pub struct RuntimePerfCounters {
+    pub dispatches: u64,
+    pub max_stack_depth: usize,
+    pub max_frame_depth: usize,
+    pub object_locks: u64,
+    pub i32_load: u64,
+    pub i32_store: u64,
+    pub i32_load8_u: u64,
+    pub i32_load8_s: u64,
+    pub i32_store8: u64,
+    pub i64_load: u64,
+    pub i64_store: u64,
+    pub i64_load8_u: u64,
+    pub i64_load8_s: u64,
+    pub i64_store8: u64,
+    pub f32_load: u64,
+    pub f32_store: u64,
+    pub f32_eq: u64,
+    pub f32_ne: u64,
+    pub f32_lt: u64,
+    pub f32_gt: u64,
+    pub f32_le: u64,
+    pub f32_ge: u64,
+    pub f32_add: u64,
+    pub f32_sub: u64,
+    pub f32_mul: u64,
+    pub f32_div: u64,
+    pub f64_load: u64,
+    pub f64_store: u64,
+    pub f64_eq: u64,
+    pub f64_ne: u64,
+    pub f64_lt: u64,
+    pub f64_gt: u64,
+    pub f64_le: u64,
+    pub f64_ge: u64,
+    pub f64_add: u64,
+    pub f64_sub: u64,
+    pub f64_mul: u64,
+    pub f64_div: u64,
+    pub local_get: u64,
+    pub local_set: u64,
+    pub i32_add: u64,
+    pub i32_and: u64,
+    pub i32_eq: u64,
+    pub i32_ne: u64,
+    pub i32_lt_s: u64,
+    pub i32_lt_u: u64,
+    pub i32_gt_s: u64,
+    pub i32_gt_u: u64,
+    pub i32_le_s: u64,
+    pub i32_le_u: u64,
+    pub i32_ge_s: u64,
+    pub i32_eqz: u64,
+    pub i32_mul: u64,
+    pub i32_or: u64,
+    pub i32_rotl: u64,
+    pub i32_rotr: u64,
+    pub i32_shl: u64,
+    pub i32_shr_s: u64,
+    pub i32_shr_u: u64,
+    pub i32_xor: u64,
+    pub i32_ge_u: u64,
+    pub i64_add: u64,
+    pub i64_and: u64,
+    pub i64_mul: u64,
+    pub i64_or: u64,
+    pub i64_rotl: u64,
+    pub i64_rotr: u64,
+    pub i64_shl: u64,
+    pub i64_shr_s: u64,
+    pub i64_shr_u: u64,
+    pub i64_sub: u64,
+    pub i64_xor: u64,
+    pub i64_eq: u64,
+    pub i64_ne: u64,
+    pub i64_lt_s: u64,
+    pub i64_lt_u: u64,
+    pub i64_gt_s: u64,
+    pub i64_gt_u: u64,
+    pub i64_le_s: u64,
+    pub i64_le_u: u64,
+    pub i64_ge_s: u64,
+    pub i64_ge_u: u64,
+    pub i64_eqz: u64,
+    pub br: u64,
+    pub br_if: u64,
+    pub br_if_taken: u64,
+    pub br_if_not_taken: u64,
+    pub array_get: u64,
+    pub array_get_dense: u64,
+    pub array_set: u64,
+    pub array_set_dense: u64,
+    pub array_copy: u64,
+    pub memory_copy: u64,
+    pub memory_copy_bytes: u64,
+    pub memory_fill: u64,
+    pub memory_fill_bytes: u64,
+    pub super_managed_to_linear: u64,
+    pub super_linear_to_managed: u64,
+    pub super_linear_copy: u64,
+    pub super_linear_fill: u64,
+    pub super_linear_scan: u64,
+    pub super_local_copy_loop: u64,
+    pub super_local_i32_eq_const_loop: u64,
+    pub super_local_i32_ne_const_loop: u64,
+    pub super_local_i32_ord_cmp_const_loop: u64,
+    pub super_local_i32_eqz_loop: u64,
+    pub super_local_get_drop_loop: u64,
+    pub super_local_i32_add_const_loop: u64,
+    pub super_local_i32_and_const_loop: u64,
+    pub super_local_i32_mul_const_loop: u64,
+    pub super_local_i32_or_const_loop: u64,
+    pub super_local_i32_rotl_const_loop: u64,
+    pub super_local_i32_rotr_const_loop: u64,
+    pub super_local_i32_shl_const_loop: u64,
+    pub super_local_i32_shr_s_const_loop: u64,
+    pub super_local_i32_shr_u_const_loop: u64,
+    pub super_local_i32_sub_const_loop: u64,
+    pub super_local_i32_accum_const_loop: u64,
+    pub super_local_i32_xor_const_loop: u64,
+    pub super_local_i64_add_const_loop: u64,
+    pub super_local_i64_and_const_loop: u64,
+    pub super_local_i64_mul_const_loop: u64,
+    pub super_local_i64_or_const_loop: u64,
+    pub super_local_i64_rotl_const_loop: u64,
+    pub super_local_i64_rotr_const_loop: u64,
+    pub super_local_i64_shl_const_loop: u64,
+    pub super_local_i64_shr_s_const_loop: u64,
+    pub super_local_i64_shr_u_const_loop: u64,
+    pub super_local_i64_sub_const_loop: u64,
+    pub super_local_i64_accum_const_loop: u64,
+    pub super_local_i64_xor_const_loop: u64,
+    pub super_local_i64_cmp_const_loop: u64,
+    pub super_local_i64_eqz_loop: u64,
+    pub super_local_f32_cmp_const_loop: u64,
+    pub super_local_f64_cmp_const_loop: u64,
+    pub super_local_f32_binary_const_loop: u64,
+    pub super_local_f64_binary_const_loop: u64,
+    pub super_local_set_const_loop: u64,
+    pub super_i32_lcg_loop: u64,
+    pub super_i32_countdown_loop: u64,
+    pub super_call_i32_add_loop: u64,
+    pub super_call_ref_i32_add_loop: u64,
+    pub super_call_indirect_i32_add_loop: u64,
+    pub super_global_get_drop_loop: u64,
+    pub super_global_get_local_loop: u64,
+    pub super_global_set_const_loop: u64,
+    pub super_global_set_local_loop: u64,
+    pub super_struct_get_drop_loop: u64,
+    pub super_struct_get_local_loop: u64,
+    pub super_struct_set_const_loop: u64,
+    pub super_struct_set_local_loop: u64,
+    pub super_array_get_drop_loop: u64,
+    pub super_array_get_local_loop: u64,
+    pub super_array_copy_loop: u64,
+    pub super_array_set_const_loop: u64,
+    pub super_array_set_local_loop: u64,
+    pub simd_ops: u64,
+    pub function_call: u64,
+    pub call: u64,
+    pub call_indirect: u64,
+    pub call_ref: u64,
+    pub host_call: u64,
+    pub call_target_host: u64,
+    pub call_target_chunk: u64,
+    pub call_target_js_builtin: u64,
+    pub call_target_ecma_builtin: u64,
+    pub call_target_canon: u64,
+    pub call_target_slow: u64,
+    pub host_imports: Vec<(String, u64)>,
+    pub native_next_ops: Vec<(String, u64)>,
+    pub native_windows: Vec<(String, u64)>,
+    pub local_windows: Vec<(String, u64)>,
+}
+
+impl RuntimePerfCounters {
+    #[inline(always)]
+    pub fn record_op(&mut self, op: Op) {
+        self.dispatches = self.dispatches.saturating_add(1);
+        if op.group() == 0xFD {
+            self.simd_ops = self.simd_ops.saturating_add(1);
+        }
+        match op {
+            Op::I32_LOAD => self.i32_load = self.i32_load.saturating_add(1),
+            Op::I32_STORE => self.i32_store = self.i32_store.saturating_add(1),
+            Op::I32_LOAD8_U => self.i32_load8_u = self.i32_load8_u.saturating_add(1),
+            Op::I32_LOAD8_S => self.i32_load8_s = self.i32_load8_s.saturating_add(1),
+            Op::I32_STORE8 => self.i32_store8 = self.i32_store8.saturating_add(1),
+            Op::I64_LOAD => self.i64_load = self.i64_load.saturating_add(1),
+            Op::I64_STORE => self.i64_store = self.i64_store.saturating_add(1),
+            Op::I64_LOAD8_U => self.i64_load8_u = self.i64_load8_u.saturating_add(1),
+            Op::I64_LOAD8_S => self.i64_load8_s = self.i64_load8_s.saturating_add(1),
+            Op::I64_STORE8 => self.i64_store8 = self.i64_store8.saturating_add(1),
+            Op::F32_LOAD => self.f32_load = self.f32_load.saturating_add(1),
+            Op::F32_STORE => self.f32_store = self.f32_store.saturating_add(1),
+            Op::F32_EQ => self.f32_eq = self.f32_eq.saturating_add(1),
+            Op::F32_NE => self.f32_ne = self.f32_ne.saturating_add(1),
+            Op::F32_LT => self.f32_lt = self.f32_lt.saturating_add(1),
+            Op::F32_GT => self.f32_gt = self.f32_gt.saturating_add(1),
+            Op::F32_LE => self.f32_le = self.f32_le.saturating_add(1),
+            Op::F32_GE => self.f32_ge = self.f32_ge.saturating_add(1),
+            Op::F32_ADD => self.f32_add = self.f32_add.saturating_add(1),
+            Op::F32_SUB => self.f32_sub = self.f32_sub.saturating_add(1),
+            Op::F32_MUL => self.f32_mul = self.f32_mul.saturating_add(1),
+            Op::F32_DIV => self.f32_div = self.f32_div.saturating_add(1),
+            Op::F64_LOAD => self.f64_load = self.f64_load.saturating_add(1),
+            Op::F64_STORE => self.f64_store = self.f64_store.saturating_add(1),
+            Op::F64_EQ => self.f64_eq = self.f64_eq.saturating_add(1),
+            Op::F64_NE => self.f64_ne = self.f64_ne.saturating_add(1),
+            Op::F64_LT => self.f64_lt = self.f64_lt.saturating_add(1),
+            Op::F64_GT => self.f64_gt = self.f64_gt.saturating_add(1),
+            Op::F64_LE => self.f64_le = self.f64_le.saturating_add(1),
+            Op::F64_GE => self.f64_ge = self.f64_ge.saturating_add(1),
+            Op::F64_ADD => self.f64_add = self.f64_add.saturating_add(1),
+            Op::F64_SUB => self.f64_sub = self.f64_sub.saturating_add(1),
+            Op::F64_MUL => self.f64_mul = self.f64_mul.saturating_add(1),
+            Op::F64_DIV => self.f64_div = self.f64_div.saturating_add(1),
+            Op::LOCAL_GET => self.local_get = self.local_get.saturating_add(1),
+            Op::LOCAL_SET => self.local_set = self.local_set.saturating_add(1),
+            Op::I32_ADD => self.i32_add = self.i32_add.saturating_add(1),
+            Op::I32_AND => self.i32_and = self.i32_and.saturating_add(1),
+            Op::I32_EQ => self.i32_eq = self.i32_eq.saturating_add(1),
+            Op::I32_NE => self.i32_ne = self.i32_ne.saturating_add(1),
+            Op::I32_LT_S => self.i32_lt_s = self.i32_lt_s.saturating_add(1),
+            Op::I32_LT_U => self.i32_lt_u = self.i32_lt_u.saturating_add(1),
+            Op::I32_GT_S => self.i32_gt_s = self.i32_gt_s.saturating_add(1),
+            Op::I32_GT_U => self.i32_gt_u = self.i32_gt_u.saturating_add(1),
+            Op::I32_LE_S => self.i32_le_s = self.i32_le_s.saturating_add(1),
+            Op::I32_LE_U => self.i32_le_u = self.i32_le_u.saturating_add(1),
+            Op::I32_GE_S => self.i32_ge_s = self.i32_ge_s.saturating_add(1),
+            Op::I32_EQZ => self.i32_eqz = self.i32_eqz.saturating_add(1),
+            Op::I32_MUL => self.i32_mul = self.i32_mul.saturating_add(1),
+            Op::I32_OR => self.i32_or = self.i32_or.saturating_add(1),
+            Op::I32_ROTL => self.i32_rotl = self.i32_rotl.saturating_add(1),
+            Op::I32_ROTR => self.i32_rotr = self.i32_rotr.saturating_add(1),
+            Op::I32_SHL => self.i32_shl = self.i32_shl.saturating_add(1),
+            Op::I32_SHR_S => self.i32_shr_s = self.i32_shr_s.saturating_add(1),
+            Op::I32_SHR_U => self.i32_shr_u = self.i32_shr_u.saturating_add(1),
+            Op::I32_XOR => self.i32_xor = self.i32_xor.saturating_add(1),
+            Op::I32_GE_U => self.i32_ge_u = self.i32_ge_u.saturating_add(1),
+            Op::I64_ADD => self.i64_add = self.i64_add.saturating_add(1),
+            Op::I64_AND => self.i64_and = self.i64_and.saturating_add(1),
+            Op::I64_MUL => self.i64_mul = self.i64_mul.saturating_add(1),
+            Op::I64_OR => self.i64_or = self.i64_or.saturating_add(1),
+            Op::I64_ROTL => self.i64_rotl = self.i64_rotl.saturating_add(1),
+            Op::I64_ROTR => self.i64_rotr = self.i64_rotr.saturating_add(1),
+            Op::I64_SHL => self.i64_shl = self.i64_shl.saturating_add(1),
+            Op::I64_SHR_S => self.i64_shr_s = self.i64_shr_s.saturating_add(1),
+            Op::I64_SHR_U => self.i64_shr_u = self.i64_shr_u.saturating_add(1),
+            Op::I64_SUB => self.i64_sub = self.i64_sub.saturating_add(1),
+            Op::I64_XOR => self.i64_xor = self.i64_xor.saturating_add(1),
+            Op::I64_EQ => self.i64_eq = self.i64_eq.saturating_add(1),
+            Op::I64_NE => self.i64_ne = self.i64_ne.saturating_add(1),
+            Op::I64_LT_S => self.i64_lt_s = self.i64_lt_s.saturating_add(1),
+            Op::I64_LT_U => self.i64_lt_u = self.i64_lt_u.saturating_add(1),
+            Op::I64_GT_S => self.i64_gt_s = self.i64_gt_s.saturating_add(1),
+            Op::I64_GT_U => self.i64_gt_u = self.i64_gt_u.saturating_add(1),
+            Op::I64_LE_S => self.i64_le_s = self.i64_le_s.saturating_add(1),
+            Op::I64_LE_U => self.i64_le_u = self.i64_le_u.saturating_add(1),
+            Op::I64_GE_S => self.i64_ge_s = self.i64_ge_s.saturating_add(1),
+            Op::I64_GE_U => self.i64_ge_u = self.i64_ge_u.saturating_add(1),
+            Op::I64_EQZ => self.i64_eqz = self.i64_eqz.saturating_add(1),
+            Op::BR => self.br = self.br.saturating_add(1),
+            Op::BR_IF => self.br_if = self.br_if.saturating_add(1),
+            Op::ARRAY_GET => self.array_get = self.array_get.saturating_add(1),
+            Op::ARRAY_SET => self.array_set = self.array_set.saturating_add(1),
+            Op::ARRAY_COPY => self.array_copy = self.array_copy.saturating_add(1),
+            Op::MEMORY_COPY => self.memory_copy = self.memory_copy.saturating_add(1),
+            Op::MEMORY_FILL => self.memory_fill = self.memory_fill.saturating_add(1),
+            Op::CALL => self.call = self.call.saturating_add(1),
+            Op::CALL_INDIRECT => self.call_indirect = self.call_indirect.saturating_add(1),
+            Op::CALL_REF => self.call_ref = self.call_ref.saturating_add(1),
+            _ => {}
+        }
+    }
+
+    #[inline(always)]
+    pub fn record_stack_depth(&mut self, depth: usize) {
+        self.max_stack_depth = self.max_stack_depth.max(depth);
+    }
+
+    #[inline(always)]
+    pub fn record_frame_depth(&mut self, depth: usize) {
+        self.max_frame_depth = self.max_frame_depth.max(depth);
+    }
+
+    #[inline(always)]
+    pub fn record_object_lock(&mut self) {
+        self.object_locks = self.object_locks.saturating_add(1);
+    }
+
+    #[inline(always)]
+    pub fn record_host_import(&mut self, name: String) {
+        if let Some((_, count)) = self.host_imports.iter_mut().find(|(entry, _)| *entry == name) {
+            *count = count.saturating_add(1);
+        } else {
+            self.host_imports.push((name, 1));
+        }
+    }
+
+    #[inline(always)]
+    pub fn record_native_next_op(&mut self, name: String) {
+        if let Some((_, count)) = self
+            .native_next_ops
+            .iter_mut()
+            .find(|(entry, _)| *entry == name)
+        {
+            *count = count.saturating_add(1);
+        } else {
+            self.native_next_ops.push((name, 1));
+        }
+    }
+
+    #[inline(always)]
+    pub fn record_native_window(&mut self, name: String) {
+        if let Some((_, count)) = self
+            .native_windows
+            .iter_mut()
+            .find(|(entry, _)| *entry == name)
+        {
+            *count = count.saturating_add(1);
+        } else {
+            self.native_windows.push((name, 1));
+        }
+    }
+
+    #[inline(always)]
+    pub fn record_local_window(&mut self, name: String) {
+        if let Some((_, count)) = self
+            .local_windows
+            .iter_mut()
+            .find(|(entry, _)| *entry == name)
+        {
+            *count = count.saturating_add(1);
+        } else {
+            self.local_windows.push((name, 1));
+        }
+    }
+
+    #[inline(always)]
+    pub fn record_memory_copy_bytes(&mut self, count: usize) {
+        self.memory_copy_bytes = self.memory_copy_bytes.saturating_add(count as u64);
+    }
+
+    #[inline(always)]
+    pub fn record_memory_fill_bytes(&mut self, count: usize) {
+        self.memory_fill_bytes = self.memory_fill_bytes.saturating_add(count as u64);
+    }
+
+    pub fn format_report(&self) -> String {
+        format!(
+            concat!(
+                "dispatches={}\n",
+                "max_stack_depth={}\n",
+                "max_frame_depth={}\n",
+                "object_locks={}\n",
+                "i32_load={} i32_store={}\n",
+                "i32_load8_u={} i32_load8_s={} i32_store8={}\n",
+                "i64_load={} i64_store={}\n",
+                "i64_load8_u={} i64_load8_s={} i64_store8={}\n",
+                "f32_load={} f32_store={} f32_eq={} f32_ne={} f32_lt={} f32_gt={} f32_le={} f32_ge={} f32_add={} f32_sub={} f32_mul={} f32_div={} f64_load={} f64_store={} f64_eq={} f64_ne={} f64_lt={} f64_gt={} f64_le={} f64_ge={} f64_add={} f64_sub={} f64_mul={} f64_div={}\n",
+                "local_get={} local_set={}\n",
+                "i32_add={} i32_and={} i32_eq={} i32_ne={} i32_lt_s={} i32_lt_u={} i32_gt_s={} i32_gt_u={} i32_le_s={} i32_le_u={} i32_ge_s={} i32_eqz={} i32_mul={} i32_or={} i32_rotl={} i32_rotr={} i32_shl={} i32_shr_s={} i32_shr_u={} i32_xor={} i32_ge_u={}\n",
+                "i64_add={} i64_and={} i64_mul={} i64_or={} i64_rotl={} i64_rotr={} i64_shl={} i64_shr_s={} i64_shr_u={} i64_sub={} i64_xor={} i64_eq={} i64_ne={} i64_lt_s={} i64_lt_u={} i64_gt_s={} i64_gt_u={} i64_le_s={} i64_le_u={} i64_ge_s={} i64_ge_u={} i64_eqz={}\n",
+                "br={} br_if={} br_if_taken={} br_if_not_taken={}\n",
+                "array_get={} array_get_dense={}\n",
+                "array_set={} array_set_dense={}\n",
+                "array_copy={}\n",
+                "memory_copy={} memory_copy_bytes={} memory_fill={} memory_fill_bytes={}\n",
+                "super_managed_to_linear={} super_linear_to_managed={} super_linear_copy={} super_linear_fill={} super_linear_scan={} super_local_copy_loop={} super_local_i32_eq_const_loop={} super_local_i32_ne_const_loop={} super_local_i32_ord_cmp_const_loop={} super_local_i32_eqz_loop={} super_local_get_drop_loop={} super_local_i32_add_const_loop={} super_local_i32_and_const_loop={} super_local_i32_mul_const_loop={} super_local_i32_or_const_loop={} super_local_i32_rotl_const_loop={} super_local_i32_rotr_const_loop={} super_local_i32_shl_const_loop={} super_local_i32_shr_s_const_loop={} super_local_i32_shr_u_const_loop={} super_local_i32_sub_const_loop={} super_local_i32_accum_const_loop={} super_local_i32_xor_const_loop={} super_local_i64_add_const_loop={} super_local_i64_and_const_loop={} super_local_i64_mul_const_loop={} super_local_i64_or_const_loop={} super_local_i64_rotl_const_loop={} super_local_i64_rotr_const_loop={} super_local_i64_shl_const_loop={} super_local_i64_shr_s_const_loop={} super_local_i64_shr_u_const_loop={} super_local_i64_sub_const_loop={} super_local_i64_accum_const_loop={} super_local_i64_xor_const_loop={} super_local_i64_cmp_const_loop={} super_local_i64_eqz_loop={} super_local_f32_cmp_const_loop={} super_local_f64_cmp_const_loop={} super_local_f32_binary_const_loop={} super_local_f64_binary_const_loop={} super_local_set_const_loop={} super_i32_lcg_loop={} super_i32_countdown_loop={} super_call_i32_add_loop={} super_call_ref_i32_add_loop={} super_call_indirect_i32_add_loop={} super_global_get_drop_loop={} super_global_get_local_loop={} super_global_set_const_loop={} super_global_set_local_loop={} super_struct_get_drop_loop={} super_struct_get_local_loop={} super_struct_set_const_loop={} super_struct_set_local_loop={} super_array_get_drop_loop={} super_array_get_local_loop={} super_array_copy_loop={} super_array_set_const_loop={} super_array_set_local_loop={}\n",
+                "simd_ops={}\n",
+                "function_call={} call={} call_indirect={} call_ref={} host_call={}\n",
+                "call_targets: host={} chunk={} js_builtin={} ecma_builtin={} canon={} slow={}"
+            ),
+            self.dispatches,
+            self.max_stack_depth,
+            self.max_frame_depth,
+            self.object_locks,
+            self.i32_load,
+            self.i32_store,
+            self.i32_load8_u,
+            self.i32_load8_s,
+            self.i32_store8,
+            self.i64_load,
+            self.i64_store,
+            self.i64_load8_u,
+            self.i64_load8_s,
+            self.i64_store8,
+            self.f32_load,
+            self.f32_store,
+            self.f32_eq,
+            self.f32_ne,
+            self.f32_lt,
+            self.f32_gt,
+            self.f32_le,
+            self.f32_ge,
+            self.f32_add,
+            self.f32_sub,
+            self.f32_mul,
+            self.f32_div,
+            self.f64_load,
+            self.f64_store,
+            self.f64_eq,
+            self.f64_ne,
+            self.f64_lt,
+            self.f64_gt,
+            self.f64_le,
+            self.f64_ge,
+            self.f64_add,
+            self.f64_sub,
+            self.f64_mul,
+            self.f64_div,
+            self.local_get,
+            self.local_set,
+            self.i32_add,
+            self.i32_and,
+            self.i32_eq,
+            self.i32_ne,
+            self.i32_lt_s,
+            self.i32_lt_u,
+            self.i32_gt_s,
+            self.i32_gt_u,
+            self.i32_le_s,
+            self.i32_le_u,
+            self.i32_ge_s,
+            self.i32_eqz,
+            self.i32_mul,
+            self.i32_or,
+            self.i32_rotl,
+            self.i32_rotr,
+            self.i32_shl,
+            self.i32_shr_s,
+            self.i32_shr_u,
+            self.i32_xor,
+            self.i32_ge_u,
+            self.i64_add,
+            self.i64_and,
+            self.i64_mul,
+            self.i64_or,
+            self.i64_rotl,
+            self.i64_rotr,
+            self.i64_shl,
+            self.i64_shr_s,
+            self.i64_shr_u,
+            self.i64_sub,
+            self.i64_xor,
+            self.i64_eq,
+            self.i64_ne,
+            self.i64_lt_s,
+            self.i64_lt_u,
+            self.i64_gt_s,
+            self.i64_gt_u,
+            self.i64_le_s,
+            self.i64_le_u,
+            self.i64_ge_s,
+            self.i64_ge_u,
+            self.i64_eqz,
+            self.br,
+            self.br_if,
+            self.br_if_taken,
+            self.br_if_not_taken,
+            self.array_get,
+            self.array_get_dense,
+            self.array_set,
+            self.array_set_dense,
+            self.array_copy,
+            self.memory_copy,
+            self.memory_copy_bytes,
+            self.memory_fill,
+            self.memory_fill_bytes,
+            self.super_managed_to_linear,
+            self.super_linear_to_managed,
+            self.super_linear_copy,
+            self.super_linear_fill,
+            self.super_linear_scan,
+            self.super_local_copy_loop,
+            self.super_local_i32_eq_const_loop,
+            self.super_local_i32_ne_const_loop,
+            self.super_local_i32_ord_cmp_const_loop,
+            self.super_local_i32_eqz_loop,
+            self.super_local_get_drop_loop,
+            self.super_local_i32_add_const_loop,
+            self.super_local_i32_and_const_loop,
+            self.super_local_i32_mul_const_loop,
+            self.super_local_i32_or_const_loop,
+            self.super_local_i32_rotl_const_loop,
+            self.super_local_i32_rotr_const_loop,
+            self.super_local_i32_shl_const_loop,
+            self.super_local_i32_shr_s_const_loop,
+            self.super_local_i32_shr_u_const_loop,
+            self.super_local_i32_sub_const_loop,
+            self.super_local_i32_accum_const_loop,
+            self.super_local_i32_xor_const_loop,
+            self.super_local_i64_add_const_loop,
+            self.super_local_i64_and_const_loop,
+            self.super_local_i64_mul_const_loop,
+            self.super_local_i64_or_const_loop,
+            self.super_local_i64_rotl_const_loop,
+            self.super_local_i64_rotr_const_loop,
+            self.super_local_i64_shl_const_loop,
+            self.super_local_i64_shr_s_const_loop,
+            self.super_local_i64_shr_u_const_loop,
+            self.super_local_i64_sub_const_loop,
+            self.super_local_i64_accum_const_loop,
+            self.super_local_i64_xor_const_loop,
+            self.super_local_i64_cmp_const_loop,
+            self.super_local_i64_eqz_loop,
+            self.super_local_f32_cmp_const_loop,
+            self.super_local_f64_cmp_const_loop,
+            self.super_local_f32_binary_const_loop,
+            self.super_local_f64_binary_const_loop,
+            self.super_local_set_const_loop,
+            self.super_i32_lcg_loop,
+            self.super_i32_countdown_loop,
+            self.super_call_i32_add_loop,
+            self.super_call_ref_i32_add_loop,
+            self.super_call_indirect_i32_add_loop,
+            self.super_global_get_drop_loop,
+            self.super_global_get_local_loop,
+            self.super_global_set_const_loop,
+            self.super_global_set_local_loop,
+            self.super_struct_get_drop_loop,
+            self.super_struct_get_local_loop,
+            self.super_struct_set_const_loop,
+            self.super_struct_set_local_loop,
+            self.super_array_get_drop_loop,
+            self.super_array_get_local_loop,
+            self.super_array_copy_loop,
+            self.super_array_set_const_loop,
+            self.super_array_set_local_loop,
+            self.simd_ops,
+            self.function_call,
+            self.call,
+            self.call_indirect,
+            self.call_ref,
+            self.host_call,
+            self.call_target_host,
+            self.call_target_chunk,
+            self.call_target_js_builtin,
+            self.call_target_ecma_builtin,
+            self.call_target_canon,
+            self.call_target_slow
+        )
+    }
+
+    pub fn bridge_summary(&self) -> String {
+        let dense_get_percent = if self.array_get == 0 {
+            0.0
+        } else {
+            100.0 * self.array_get_dense as f64 / self.array_get as f64
+        };
+        let dense_set_percent = if self.array_set == 0 {
+            0.0
+        } else {
+            100.0 * self.array_set_dense as f64 / self.array_set as f64
+        };
+        format!(
+            concat!(
+                "bridge_summary: ",
+                "dense_get={:.1}% ",
+                "dense_set={:.1}% ",
+                "byte_loads={} ",
+                "byte_stores={} ",
+                "array_ops={} ",
+                "superinstructions={}"
+            ),
+            dense_get_percent,
+            dense_set_percent,
+            self.i32_load8_u.saturating_add(self.i32_load8_s),
+            self.i32_store8,
+            self.array_get
+                .saturating_add(self.array_set)
+                .saturating_add(self.array_copy),
+            self.super_managed_to_linear
+                .saturating_add(self.super_linear_to_managed)
+                .saturating_add(self.super_linear_copy)
+                .saturating_add(self.super_linear_fill)
+                .saturating_add(self.super_linear_scan)
+                .saturating_add(self.super_local_copy_loop)
+                .saturating_add(self.super_local_i32_eq_const_loop)
+                .saturating_add(self.super_local_i32_ne_const_loop)
+                .saturating_add(self.super_local_i32_ord_cmp_const_loop)
+                .saturating_add(self.super_local_i32_eqz_loop)
+                .saturating_add(self.super_local_get_drop_loop)
+                .saturating_add(self.super_local_i32_add_const_loop)
+                .saturating_add(self.super_local_i32_and_const_loop)
+                .saturating_add(self.super_local_i32_mul_const_loop)
+                .saturating_add(self.super_local_i32_or_const_loop)
+                .saturating_add(self.super_local_i32_rotl_const_loop)
+                .saturating_add(self.super_local_i32_rotr_const_loop)
+                .saturating_add(self.super_local_i32_shl_const_loop)
+                .saturating_add(self.super_local_i32_shr_s_const_loop)
+                .saturating_add(self.super_local_i32_shr_u_const_loop)
+                .saturating_add(self.super_local_i32_sub_const_loop)
+                .saturating_add(self.super_local_i32_accum_const_loop)
+                .saturating_add(self.super_local_i32_xor_const_loop)
+                .saturating_add(self.super_local_i64_add_const_loop)
+                .saturating_add(self.super_local_i64_and_const_loop)
+                .saturating_add(self.super_local_i64_mul_const_loop)
+                .saturating_add(self.super_local_i64_or_const_loop)
+                .saturating_add(self.super_local_i64_rotl_const_loop)
+                .saturating_add(self.super_local_i64_rotr_const_loop)
+                .saturating_add(self.super_local_i64_shl_const_loop)
+                .saturating_add(self.super_local_i64_shr_s_const_loop)
+                .saturating_add(self.super_local_i64_shr_u_const_loop)
+                .saturating_add(self.super_local_i64_sub_const_loop)
+                .saturating_add(self.super_local_i64_accum_const_loop)
+                .saturating_add(self.super_local_i64_xor_const_loop)
+                .saturating_add(self.super_local_i64_cmp_const_loop)
+                .saturating_add(self.super_local_i64_eqz_loop)
+                .saturating_add(self.super_local_f32_cmp_const_loop)
+                .saturating_add(self.super_local_f64_cmp_const_loop)
+                .saturating_add(self.super_local_f32_binary_const_loop)
+                .saturating_add(self.super_local_f64_binary_const_loop)
+                .saturating_add(self.super_local_set_const_loop)
+                .saturating_add(self.super_i32_lcg_loop)
+                .saturating_add(self.super_i32_countdown_loop)
+                .saturating_add(self.super_call_i32_add_loop)
+                .saturating_add(self.super_call_ref_i32_add_loop)
+                .saturating_add(self.super_call_indirect_i32_add_loop)
+                .saturating_add(self.super_global_get_drop_loop)
+                .saturating_add(self.super_global_get_local_loop)
+                .saturating_add(self.super_global_set_const_loop)
+                .saturating_add(self.super_global_set_local_loop)
+                .saturating_add(self.super_struct_get_drop_loop)
+                .saturating_add(self.super_struct_get_local_loop)
+                .saturating_add(self.super_struct_set_const_loop)
+                .saturating_add(self.super_struct_set_local_loop)
+                .saturating_add(self.super_array_get_drop_loop)
+                .saturating_add(self.super_array_get_local_loop)
+                .saturating_add(self.super_array_copy_loop)
+                .saturating_add(self.super_array_set_const_loop)
+                .saturating_add(self.super_array_set_local_loop)
+        )
+    }
+
+    pub fn host_import_summary(&self, limit: usize) -> String {
+        if self.host_imports.is_empty() {
+            return "host_imports: none".to_string();
+        }
+        let mut entries = self.host_imports.clone();
+        entries.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        let mut out = format!("host_imports_top{}:", limit);
+        for (name, count) in entries.into_iter().take(limit) {
+            out.push('\n');
+            out.push_str(&format!("  {} {}", count, name));
+        }
+        if !self.native_next_ops.is_empty() {
+            let mut next_entries = self.native_next_ops.clone();
+            next_entries.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+            out.push('\n');
+            out.push_str(&format!("native_next_ops_top{}:", limit));
+            for (name, count) in next_entries.into_iter().take(limit) {
+                out.push('\n');
+                out.push_str(&format!("  {} {}", count, name));
+            }
+        }
+        if !self.native_windows.is_empty() {
+            let mut window_entries = self.native_windows.clone();
+            window_entries.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+            out.push('\n');
+            out.push_str(&format!("native_windows_top{}:", limit));
+            for (name, count) in window_entries.into_iter().take(limit) {
+                out.push('\n');
+                out.push_str(&format!("  {} {}", count, name));
+            }
+        }
+        if !self.local_windows.is_empty() {
+            let mut window_entries = self.local_windows.clone();
+            window_entries.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+            out.push('\n');
+            out.push_str(&format!("local_windows_top{}:", limit));
+            for (name, count) in window_entries.into_iter().take(limit) {
+                out.push('\n');
+                out.push_str(&format!("  {} {}", count, name));
+            }
+        }
+        out
+    }
 }
 
 /// Restricted context passed to host functions.
@@ -127,6 +832,9 @@ pub struct HostContext<'a> {
     /// Null when no VM is attached (HostContext::empty()).
     #[allow(dead_code)]
     stack_slot: *const Vec<Value>,
+    /// Active frames for language object-lifetime checks. Valid only during a
+    /// host call, alongside `stack_slot` and `chunks_slot`.
+    frames_slot: *const Vec<CallFrame>,
     /// Raw pointer to the CM3 handle table, so host functions receiving a
     /// canon `stream<u8>` / `future<T>` i32 handle (CanonicalABI lowering)
     /// can resolve it to the EventLoop stream/future id — and so a host
@@ -212,6 +920,27 @@ impl<'a> HostContext<'a> {
                 (name, enumerable)
             })
             .collect()
+    }
+
+    /// Method metadata for a PHP class whose constructor object may live in a
+    /// dynamically included module rather than in the current module globals.
+    /// Instance methods carry a `$sig` dispatch slot; static methods do not.
+    pub fn class_method_kind(&self, class: &str, method: &str) -> Option<(bool, bool)> {
+        if self.type_registry_slot.is_null() {
+            return None;
+        }
+        let registry = unsafe { &*self.type_registry_slot };
+        let normalized = class.trim_start_matches('\\').replace('\\', ".");
+        let typedef = registry.types.iter().find(|ty|
+            ty.name.trim_start_matches('\\').replace('\\', ".")
+                .eq_ignore_ascii_case(&normalized))?;
+        let signature = format!("{}$sig", method.to_ascii_lowercase());
+        let instance = typedef.field_defs.iter().any(|field|
+            field.name.to_ascii_lowercase().starts_with(&signature));
+        let present = typedef.field_defs.iter().any(|field|
+            field.name.eq_ignore_ascii_case(method))
+            || typedef.methods.keys().any(|name| name.eq_ignore_ascii_case(method));
+        Some((instance, present && !instance))
     }
 
     pub fn func_handles_call_tag(&self, func: &Value, tag: &str) -> bool {
@@ -504,6 +1233,26 @@ impl<'a> HostContext<'a> {
     /// stay identical to compiled ones.
     pub fn get_global(&self, name: &str) -> Value {
         unsafe { self.slot_get(name) }
+    }
+
+    /// Source-declared parameter names, indexed by argument slot, for a
+    /// compiled function. An unnamed slot remains `None`; callers must not
+    /// infer a parameter name from a compiler-generated local.
+    pub fn source_parameter_names_for_chunk(&self, chunk_name: &str) -> Option<Vec<Option<String>>> {
+        if self.chunks_slot.is_null() {
+            return None;
+        }
+        // SAFETY: the chunk table is valid for the duration of this host call.
+        let chunks = unsafe { &*self.chunks_slot };
+        let chunk = chunks.iter().rev().find(|chunk| chunk.name == chunk_name)?;
+        let mut names = vec![None; chunk.arity as usize];
+        for local in &chunk.local_names {
+            let slot = local.slot as usize;
+            if slot < names.len() && local.is_source() && names[slot].is_none() {
+                names[slot] = Some(local.name.clone());
+            }
+        }
+        Some(names)
     }
 
     /// Resolve a name through the index slot, then read the value slot.
@@ -870,6 +1619,88 @@ impl<'a> HostContext<'a> {
         }
     }
 
+    /// Whether `target` is still reachable from a source binding, a global, or
+    /// an active expression. Compiler spill locals are deliberately excluded:
+    /// their slots persist until frame exit even after the source expression
+    /// that needed them has finished. A reference held only there must not
+    /// suppress a source language's last-reference destructor.
+    pub fn is_reachable_from_program(&self, target: &Value) -> bool {
+        let Value::Object(wanted) = target else { return false };
+        if self.stack_slot.is_null()
+            || self.frames_slot.is_null()
+            || self.chunks_slot.is_null()
+            || self.globals_slot.is_null()
+        {
+            return true;
+        }
+        // SAFETY: all four pointers are borrowed from the awake VM for the
+        // duration of this host call. This method reads them only.
+        let (stack, frames, chunks, globals) = unsafe {
+            (
+                &*self.stack_slot,
+                &*self.frames_slot,
+                &*self.chunks_slot,
+                &*self.globals_slot,
+            )
+        };
+        let mut pending: Vec<Value> = globals.clone();
+        for (frame_index, frame) in frames.iter().enumerate() {
+            let Some(chunk) = chunks.get(frame.chunk_index) else { continue };
+            let end = frames
+                .get(frame_index + 1)
+                .map_or(stack.len(), |next| next.base)
+                .min(stack.len());
+            let locals_end = frame
+                .base
+                .saturating_add(chunk.local_count as usize)
+                .min(end);
+            for local in &chunk.local_names {
+                if local.is_source() {
+                    if let Some(value) = stack.get(frame.base + local.slot as usize) {
+                        pending.push(value.clone());
+                    }
+                }
+            }
+            // The expression stack is live even if it has no source name.
+            pending.extend(stack[locals_end..end].iter().cloned());
+        }
+        let mut seen = HashSet::new();
+        while let Some(value) = pending.pop() {
+            let Value::Object(object) = value else { continue };
+            if Arc::ptr_eq(&object, wanted) {
+                return true;
+            }
+            let id = Arc::as_ptr(&object) as usize;
+            if !seen.insert(id) {
+                continue;
+            }
+            let Ok(data) = object.lock() else { continue };
+            pending.extend(data.properties.values().cloned());
+            pending.extend(data.fields.iter().cloned());
+            match &data.kind {
+                ObjectKind::Array(values) => pending.extend(values.iter().cloned()),
+                ObjectKind::Map(values) => {
+                    for (key, value) in values {
+                        pending.push(key.clone());
+                        pending.push(value.clone());
+                    }
+                }
+                ObjectKind::Set(values) => pending.extend(values.iter().cloned()),
+                ObjectKind::Function(function) => {
+                    for upvalue in &function.upvalues {
+                        if let Ok(upvalue) = upvalue.lock() {
+                            if let crate::value::UpvalueLocation::Closed(value) = &upvalue.location {
+                                pending.push(value.clone());
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        false
+    }
+
     /// Create an empty context (for host functions that don't need callbacks).
     pub fn empty() -> Self {
         HostContext {
@@ -884,6 +1715,7 @@ impl<'a> HostContext<'a> {
             globals_slot: std::ptr::null_mut(),
             global_index_slot: std::ptr::null_mut(),
             stack_slot: std::ptr::null(),
+            frames_slot: std::ptr::null(),
             handle_table_slot: std::ptr::null_mut(),
             shared_memory_slot: std::ptr::null(),
             type_registry_slot: std::ptr::null(),
@@ -902,6 +1734,31 @@ impl<'a> HostContext<'a> {
         // SAFETY: set from &self.memory in make_host_context; the VM outlives
         // the host call, same contract as the other slots.
         unsafe { (*self.shared_memory_slot).all_others_parked() }
+    }
+
+    /// Borrow memory 0 for the duration of a synchronous host operation.
+    /// The shared-memory lock prevents a concurrent grow from invalidating the slice.
+    pub fn with_linear_memory<R>(&self, f: impl FnOnce(&[u8]) -> R) -> Option<R> {
+        if let Some(memory) = self.memory.as_deref() {
+            return Some(f(memory));
+        }
+        if self.shared_memory_slot.is_null() {
+            return None;
+        }
+        // SAFETY: make_host_context points this at VM.memory for the host call's lifetime.
+        Some(unsafe { (*self.shared_memory_slot).with_buffer(f) })
+    }
+
+    /// Mutably borrow memory 0 without exposing its growable backing Vec.
+    pub fn with_linear_memory_mut<R>(&mut self, f: impl FnOnce(&mut [u8]) -> R) -> Option<R> {
+        if let Some(memory) = self.memory.as_deref_mut() {
+            return Some(f(memory));
+        }
+        if self.shared_memory_slot.is_null() {
+            return None;
+        }
+        // SAFETY: make_host_context points this at VM.memory for the host call's lifetime.
+        Some(unsafe { (*self.shared_memory_slot).with_buffer_mut(|bytes| f(bytes.as_mut_slice())) })
     }
 }
 
@@ -1167,6 +2024,26 @@ pub enum ImportTarget {
     /// wasi-libc pthread_create pattern). No thread OPCODE exists — this
     /// import is the whole surface.
     WasiThreadSpawn,
+    /// `wasm:js-number` primitive builtins are VM-native proposal imports.
+    /// They remain registered as host functions for module/export visibility,
+    /// but hot `call` dispatch should not allocate a HostContext or cross the
+    /// host-function wrapper for simple primitive conversions.
+    JsNumber(JsNumberBuiltin),
+    /// `wasm:js-boolean` primitive builtins are VM-native for the same reason
+    /// as `wasm:js-number`: preserve the proposal import surface, avoid the
+    /// generic host-call bridge in hot dynamic-code paths.
+    JsBoolean(JsBooleanBuiltin),
+    /// `wasm:js-undefined` primitive builtins are VM-native proposal imports.
+    JsUndefined(JsUndefinedBuiltin),
+    /// Cheap `wasm:js-string` builtins are VM-native; complex string helpers
+    /// remain ordinary registered host functions until they are worth moving.
+    JsString(JsStringBuiltin),
+    /// Hot ECMA host imports with a VM-native fast path and the original
+    /// registered host function kept as fallback for semantic edge cases.
+    EcmaNumber(EcmaNumberBuiltin, usize),
+    EcmaBoolean(EcmaBooleanBuiltin, usize),
+    EcmaObject(EcmaObjectBuiltin, usize),
+    EcmaArray(EcmaArrayBuiltin, usize),
     /// Component Model canonical built-in (module "canon"), VM-implemented —
     /// see [`CanonBuiltin`]. Args/results ride the operand stack; the
     /// builtin body pops what it needs.
@@ -1175,11 +2052,413 @@ pub enum ImportTarget {
     Canon(CanonBuiltin, Option<u32>),
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum JsNumberBuiltin {
+    Test,
+    TestI32,
+    TestU32,
+    FromF64,
+    FromI32,
+    FromU32,
+    ToF64,
+    ToI32,
+    ToU32,
+}
+
+impl JsNumberBuiltin {
+    #[inline(always)]
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::Test => "test",
+            Self::TestI32 => "testI32",
+            Self::TestU32 => "testU32",
+            Self::FromF64 => "fromF64",
+            Self::FromI32 => "fromI32",
+            Self::FromU32 => "fromU32",
+            Self::ToF64 => "toF64",
+            Self::ToI32 => "toI32",
+            Self::ToU32 => "toU32",
+        }
+    }
+
+    pub fn by_name(name: &str) -> Option<Self> {
+        match name {
+            "test" => Some(Self::Test),
+            "testI32" => Some(Self::TestI32),
+            "testU32" => Some(Self::TestU32),
+            "fromF64" => Some(Self::FromF64),
+            "fromI32" => Some(Self::FromI32),
+            "fromU32" => Some(Self::FromU32),
+            "toF64" => Some(Self::ToF64),
+            "toI32" => Some(Self::ToI32),
+            "toU32" => Some(Self::ToU32),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum JsBooleanBuiltin {
+    Test,
+    Cast,
+    FromI32,
+}
+
+impl JsBooleanBuiltin {
+    #[inline(always)]
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::Test => "test",
+            Self::Cast => "cast",
+            Self::FromI32 => "fromI32",
+        }
+    }
+
+    pub fn by_name(name: &str) -> Option<Self> {
+        match name {
+            "test" => Some(Self::Test),
+            "cast" => Some(Self::Cast),
+            "fromI32" => Some(Self::FromI32),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum JsUndefinedBuiltin {
+    Test,
+}
+
+impl JsUndefinedBuiltin {
+    #[inline(always)]
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::Test => "test",
+        }
+    }
+
+    pub fn by_name(name: &str) -> Option<Self> {
+        match name {
+            "test" => Some(Self::Test),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum JsStringBuiltin {
+    Test,
+    Cast,
+    Length,
+    FromI32,
+    FromU32,
+    FromI64,
+    FromU64,
+    FromF64,
+}
+
+impl JsStringBuiltin {
+    #[inline(always)]
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::Test => "test",
+            Self::Cast => "cast",
+            Self::Length => "length",
+            Self::FromI32 => "fromI32",
+            Self::FromU32 => "fromU32",
+            Self::FromI64 => "fromI64",
+            Self::FromU64 => "fromU64",
+            Self::FromF64 => "fromF64",
+        }
+    }
+
+    pub fn by_name(name: &str) -> Option<Self> {
+        match name {
+            "test" => Some(Self::Test),
+            "cast" => Some(Self::Cast),
+            "length" => Some(Self::Length),
+            "fromI32" => Some(Self::FromI32),
+            "fromU32" => Some(Self::FromU32),
+            "fromI64" => Some(Self::FromI64),
+            "fromU64" => Some(Self::FromU64),
+            "fromF64" => Some(Self::FromF64),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EcmaBooleanBuiltin {
+    ToBoolean,
+}
+
+impl EcmaBooleanBuiltin {
+    #[inline(always)]
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::ToBoolean => "toBoolean",
+        }
+    }
+
+    pub fn by_name(name: &str) -> Option<Self> {
+        match name {
+            "toBoolean" => Some(Self::ToBoolean),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EcmaObjectBuiltin {
+    Get,
+}
+
+impl EcmaObjectBuiltin {
+    #[inline(always)]
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::Get => "get",
+        }
+    }
+
+    pub fn by_name(name: &str) -> Option<Self> {
+        match name {
+            "get" => Some(Self::Get),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EcmaNumberBuiltin {
+    Number,
+}
+
+impl EcmaNumberBuiltin {
+    #[inline(always)]
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::Number => "Number",
+        }
+    }
+
+    pub fn by_name(name: &str) -> Option<Self> {
+        match name {
+            "Number" => Some(Self::Number),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EcmaArrayBuiltin {
+    GetValue,
+    Set,
+    Length,
+    IsArray,
+    Slice,
+}
+
+impl EcmaArrayBuiltin {
+    #[inline(always)]
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::GetValue => "getValue",
+            Self::Set => "set",
+            Self::Length => "length",
+            Self::IsArray => "isArray",
+            Self::Slice => "slice",
+        }
+    }
+
+    pub fn by_name(name: &str) -> Option<Self> {
+        match name {
+            "getValue" => Some(Self::GetValue),
+            "set" => Some(Self::Set),
+            "length" => Some(Self::Length),
+            "isArray" => Some(Self::IsArray),
+            "slice" => Some(Self::Slice),
+            _ => None,
+        }
+    }
+}
+
+/// Copy-oriented view of an import target for hot `call` dispatch.
+///
+/// Most VM-implemented imports are just small indexes or marker variants.
+/// Keep those clone-free on the cached call path and reserve `ImportTarget`
+/// ownership for the redirect/string cases that actually carry heap data.
+#[derive(Clone)]
+pub(crate) enum ResolvedCallTarget {
+    Host(usize),
+    ChunkFn { chunk_index: usize, arity: u8 },
+    JspiSuspend,
+    JspiSuspendEager,
+    JspiYield,
+    WasiThreadSpawn,
+    JsNumber(JsNumberBuiltin),
+    JsBoolean(JsBooleanBuiltin),
+    JsUndefined(JsUndefinedBuiltin),
+    JsString(JsStringBuiltin),
+    EcmaNumber(EcmaNumberBuiltin, usize),
+    EcmaBoolean(EcmaBooleanBuiltin, usize),
+    EcmaObject(EcmaObjectBuiltin, usize),
+    EcmaArray(EcmaArrayBuiltin, usize),
+    Canon(CanonBuiltin, Option<u32>),
+    Slow(ImportTarget),
+}
+
+impl ResolvedCallTarget {
+    #[inline(always)]
+    pub(crate) fn from_import_target_ref(target: &ImportTarget) -> Self {
+        match target {
+            ImportTarget::Host(host_idx) => Self::Host(*host_idx),
+            ImportTarget::ChunkFn { chunk_index, arity } => Self::ChunkFn {
+                chunk_index: *chunk_index,
+                arity: *arity,
+            },
+            ImportTarget::JspiSuspend => Self::JspiSuspend,
+            ImportTarget::JspiSuspendEager => Self::JspiSuspendEager,
+            ImportTarget::JspiYield => Self::JspiYield,
+            ImportTarget::WasiThreadSpawn => Self::WasiThreadSpawn,
+            ImportTarget::JsNumber(builtin) => Self::JsNumber(*builtin),
+            ImportTarget::JsBoolean(builtin) => Self::JsBoolean(*builtin),
+            ImportTarget::JsUndefined(builtin) => Self::JsUndefined(*builtin),
+            ImportTarget::JsString(builtin) => Self::JsString(*builtin),
+            ImportTarget::EcmaNumber(builtin, host_idx) => Self::EcmaNumber(*builtin, *host_idx),
+            ImportTarget::EcmaBoolean(builtin, host_idx) => {
+                Self::EcmaBoolean(*builtin, *host_idx)
+            }
+            ImportTarget::EcmaObject(builtin, host_idx) => Self::EcmaObject(*builtin, *host_idx),
+            ImportTarget::EcmaArray(builtin, host_idx) => Self::EcmaArray(*builtin, *host_idx),
+            ImportTarget::Canon(builtin, type_idx) => Self::Canon(*builtin, *type_idx),
+            ImportTarget::StdlibRedirect(_) | ImportTarget::StringConst(_) => {
+                Self::Slow(target.clone())
+            }
+        }
+    }
+
+    #[inline(always)]
+    pub(crate) fn from_import_target_owned(target: ImportTarget) -> Self {
+        match target {
+            ImportTarget::Host(host_idx) => Self::Host(host_idx),
+            ImportTarget::ChunkFn { chunk_index, arity } => {
+                Self::ChunkFn { chunk_index, arity }
+            }
+            ImportTarget::JspiSuspend => Self::JspiSuspend,
+            ImportTarget::JspiSuspendEager => Self::JspiSuspendEager,
+            ImportTarget::JspiYield => Self::JspiYield,
+            ImportTarget::WasiThreadSpawn => Self::WasiThreadSpawn,
+            ImportTarget::JsNumber(builtin) => Self::JsNumber(builtin),
+            ImportTarget::JsBoolean(builtin) => Self::JsBoolean(builtin),
+            ImportTarget::JsUndefined(builtin) => Self::JsUndefined(builtin),
+            ImportTarget::JsString(builtin) => Self::JsString(builtin),
+            ImportTarget::EcmaNumber(builtin, host_idx) => Self::EcmaNumber(builtin, host_idx),
+            ImportTarget::EcmaBoolean(builtin, host_idx) => Self::EcmaBoolean(builtin, host_idx),
+            ImportTarget::EcmaObject(builtin, host_idx) => Self::EcmaObject(builtin, host_idx),
+            ImportTarget::EcmaArray(builtin, host_idx) => Self::EcmaArray(builtin, host_idx),
+            ImportTarget::Canon(builtin, type_idx) => Self::Canon(builtin, type_idx),
+            ImportTarget::StdlibRedirect(_) | ImportTarget::StringConst(_) => Self::Slow(target),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum NativeCallSiteTarget {
+    JsNumber(JsNumberBuiltin),
+    JsBoolean(JsBooleanBuiltin),
+    JsUndefined(JsUndefinedBuiltin),
+    JsString(JsStringBuiltin),
+    EcmaNumber(EcmaNumberBuiltin, usize),
+    EcmaBoolean(EcmaBooleanBuiltin, usize),
+    EcmaObject(EcmaObjectBuiltin, usize),
+    EcmaArray(EcmaArrayBuiltin, usize),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum NativeResultFastPath {
+    None,
+    EndLocalSet { slot: u16, next_ip: u32 },
+    EcmaBooleanToI32 { next_ip: u32 },
+    I32Eqz { next_ip: u32 },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LocalFastPath {
+    None,
+    LocalGetGlobalGet {
+        global_idx: u32,
+        next_ip: u32,
+    },
+    LocalGetAnyConvertRefTest {
+        heap_type: i32,
+        nullable: bool,
+        next_ip: u32,
+    },
+    LocalGetJsNumberToF64 {
+        next_ip: u32,
+    },
+    LocalGetJsNumberToI32 {
+        next_ip: u32,
+    },
+    LocalGetJsNumberTest {
+        next_ip: u32,
+    },
+    LocalGetJsStringTest {
+        next_ip: u32,
+    },
+    LocalGetJsUndefinedTest {
+        next_ip: u32,
+    },
+    LocalGetLocalSet {
+        target_slot: u16,
+        next_ip: u32,
+    },
+    LocalGetLocalGetSet {
+        second_slot: u16,
+        target_slot: u16,
+        next_ip: u32,
+    },
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ObjectGetInlineCache {
+    pub(crate) object_ptr: usize,
+    pub(crate) key: String,
+    pub(crate) index: usize,
+}
+
+impl NativeCallSiteTarget {
+    #[inline(always)]
+    pub(crate) fn from_resolved(target: &ResolvedCallTarget) -> Option<Self> {
+        match target {
+            ResolvedCallTarget::JsNumber(builtin) => Some(Self::JsNumber(*builtin)),
+            ResolvedCallTarget::JsBoolean(builtin) => Some(Self::JsBoolean(*builtin)),
+            ResolvedCallTarget::JsUndefined(builtin) => Some(Self::JsUndefined(*builtin)),
+            ResolvedCallTarget::JsString(builtin) => Some(Self::JsString(*builtin)),
+            ResolvedCallTarget::EcmaNumber(builtin, fallback_host_idx) => {
+                Some(Self::EcmaNumber(*builtin, *fallback_host_idx))
+            }
+            ResolvedCallTarget::EcmaBoolean(builtin, fallback_host_idx) => {
+                Some(Self::EcmaBoolean(*builtin, *fallback_host_idx))
+            }
+            ResolvedCallTarget::EcmaObject(builtin, fallback_host_idx) => {
+                Some(Self::EcmaObject(*builtin, *fallback_host_idx))
+            }
+            ResolvedCallTarget::EcmaArray(builtin, fallback_host_idx) => {
+                Some(Self::EcmaArray(*builtin, *fallback_host_idx))
+            }
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct CallFrame {
     pub(crate) chunk_index: usize,
     pub(crate) ip: usize,
     pub(crate) base: usize,
+    pub(crate) local_frame_size: usize,
     pub(crate) label_base: usize,
     pub(crate) upvalues: Vec<Arc<Mutex<Upvalue>>>,
 }
@@ -1497,6 +2776,7 @@ pub struct VM {
     pub global_index: HashMap<String, u32>,
     pub(crate) open_upvalues: Vec<Arc<Mutex<Upvalue>>>,
     pub(crate) host_fns: Vec<HostFn>,
+    pub(crate) host_call_args: Vec<Value>,
     /// Parallel to `host_fns`: does that function's TYPE have a receiver as
     /// parameter 0? See [`HostFnDecl::takes_receiver`]. Defaults to `true`, so
     /// a plain `register_host_fn` keeps the shape it has always had.
@@ -1519,6 +2799,17 @@ pub struct VM {
     /// (one per function) but they all share the same imports list, which
     /// the compiler stores on `chunks[0]` by convention.
     pub(crate) import_table: Vec<ImportTarget>,
+    /// Cached dispatch view of `import_table`, parallel by import index.
+    /// `import_table` remains the authoritative resolver artifact; this avoids
+    /// rebuilding a `ResolvedCallTarget` for every hot `call` instruction.
+    pub(crate) resolved_import_table: Vec<ResolvedCallTarget>,
+    /// Per-chunk import resolution cache. Outer index is chunk index; inner
+    /// index is chunk-local import index. `None` = uncached, `Some(None)` =
+    /// resolved miss, `Some(Some(target))` = resolved target.
+    pub(crate) chunk_import_cache: Vec<Vec<Option<Option<ImportTarget>>>>,
+    /// Per-chunk call-target cache parallel to `chunk_import_cache`.
+    /// This avoids rebuilding `ResolvedCallTarget` for hot chunk import calls.
+    pub(crate) chunk_call_target_cache: Vec<Vec<Option<Option<ResolvedCallTarget>>>>,
     /// Exception handler stack (WASM exception proposal).
     pub(crate) exception_handlers: Vec<ExceptionHandler>,
     /// Resolved tag ENTITIES (spec EH): identity is the index. Entity 0 is
@@ -1642,8 +2933,13 @@ pub struct VM {
     /// instantiation from the script chunk's `memory_is_64`. Read by every
     /// load/store to pick the address width (memory64 adds no new opcodes).
     pub(crate) memory_is_64: Vec<bool>,
+    /// Cached index type for memory 0, the overwhelmingly common load/store
+    /// target. Kept in sync with `memory_is_64` at instantiation.
+    pub(crate) memory0_is_64: bool,
     /// Per-table 64-bit index type (table64), populated at instantiation.
     pub(crate) table_is_64: Vec<bool>,
+    /// Cached index type for table 0, the common function-reference table.
+    pub(crate) table0_is_64: bool,
     /// The module's function index space (imports then defined funcs) —
     /// populated by `ref.func` and host-fn registration, read by call-by-index
     /// and `return_call_indirect`. This is NOT a WASM table: a `(table …)` is a
@@ -1671,6 +2967,8 @@ pub struct VM {
     /// concrete measurements of how much typed-slot lowering can save.
     /// Off by default — zero dispatch cost when `None`.
     pub type_recorder: Option<crate::type_recorder::TypeRecorder>,
+    /// Optional runtime hot-path counters. Off by default.
+    pub perf_counters: Option<RuntimePerfCounters>,
     /// Stack-switching: continuations currently running. Each `RESUME`
     /// pushes an entry (with the caller's pre-resume fiber); `SUSPEND`
     /// pops the topmost entry, captures the runnable fiber into the
@@ -1728,9 +3026,53 @@ pub struct VM {
     pub(crate) exec_floors: Vec<usize>,
     /// Block label stack for structured control flow.
     pub label_stack: Vec<LabelEntry>,
-    /// Per-chunk block tables: chunk_index → (opcode_start → BlockTargets).
-    /// Lazily populated on first BLOCK/LOOP/IF/ELSE dispatch in each chunk.
-    pub(crate) block_tables: HashMap<usize, HashMap<usize, BlockTargets>>,
+    /// Per-chunk structured-control target cache, indexed by byte offset.
+    /// Entries are `Some` only for BLOCK/IF/ELSE/TRY_TABLE starts that need
+    /// pre-scanned END/ELSE targets on the hot dispatch path.
+    pub(crate) block_targets: Vec<Vec<Option<BlockTargets>>>,
+    /// Per-chunk loop-superinstruction cache, indexed by loop-body byte offset.
+    /// `Unknown` means the loop has not been classified yet; `None` means it
+    /// was checked once and should not be re-decoded on future iterations.
+    pub(crate) loop_superops: Vec<Vec<LoopSuperop>>,
+    /// Per-chunk `br_table` target cache, indexed by opcode byte offset.
+    /// `br_table` operands are variable-width LEB vectors; without this cache a
+    /// hot switch decodes the whole table on every dispatch.
+    pub(crate) br_table_targets: Vec<Vec<Option<BrTableTargets>>>,
+    /// Per-chunk decoded opcode cache, indexed by byte offset. Entries are
+    /// populated only for valid instruction starts; dispatch indexes this with
+    /// the current `ip`, which validation has already proven is an instruction
+    /// boundary.
+    pub(crate) decoded_ops: Vec<Vec<Op>>,
+    /// Per-chunk first-operand cache, indexed by byte offset in parallel with
+    /// `decoded_ops`. This is intentionally a raw `u32`: hot fixed-width
+    /// operands such as locals/globals should not re-read bytecode every time
+    /// through the dispatch loop, and WASM indices are `u32` by definition.
+    pub(crate) decoded_operands: Vec<Vec<u32>>,
+    /// Per-chunk wide operand cache, indexed by byte offset in parallel with
+    /// `decoded_ops`. Used for fixed-width operands that do not fit in the
+    /// compact `u32` cache, currently `f64.const`.
+    pub(crate) decoded_operands64: Vec<Vec<u64>>,
+    /// Per-call-site native dispatch specialization, indexed by opcode byte
+    /// offset. This is interpreter metadata only: bytecode stays the canonical
+    /// WASM call immediate, but repeated calls to VM-native JS/ECMA imports
+    /// skip import resolution and jump straight to the existing builtin helper.
+    pub(crate) native_call_sites: Vec<Vec<Option<NativeCallSiteTarget>>>,
+    /// Per-call-site result-consumer specialization, indexed by opcode byte
+    /// offset. This recognizes small stack-shape patterns after a VM-native
+    /// import call once at chunk load time so hot native call arms avoid
+    /// repeatedly peeking at following opcodes.
+    pub(crate) native_result_fast_paths: Vec<Vec<NativeResultFastPath>>,
+    /// Per-op local fast-path metadata, indexed by byte offset. This keeps
+    /// profitable local/global adjacent fusions out of the generic hot arms:
+    /// the code walker classifies the bytecode once, then dispatch performs a
+    /// single metadata load instead of re-reading following opcodes.
+    pub(crate) local_fast_paths: Vec<Vec<LocalFastPath>>,
+    /// Tiny ECMA own-property lookup cache. Each entry stores only the property
+    /// index, then verifies the object identity and key at that index under the
+    /// object lock before reading the current value. That avoids stale-value
+    /// bugs when a property is overwritten and misses safely when shape changes
+    /// move/remove it.
+    pub(crate) object_get_cache: [Option<ObjectGetInlineCache>; 16],
     /// Callback invoker for host functions (cached allocation).
     pub(crate) callback_invoker: Option<Box<dyn FnMut(&Value, &[Value]) -> Value>>,
     /// Where this VM currently lives, in a cell the VM does NOT own inline.
@@ -1788,6 +3130,8 @@ pub struct VM {
     /// Optional chunk-name filter for execution trace output.
     /// When set, only matching chunks emit trace lines.
     pub(crate) trace_chunk_filter: Option<String>,
+    /// Bounded instruction history, allocated only for opt-in error diagnosis.
+    pub(crate) error_history: Option<VecDeque<ErrorStep>>,
     /// `VYBE_DEBUG_AC=1`, read ONCE at construction. The dispatch loop's
     /// AC diagnostics must never call `env::var` per instruction: `getenv`
     /// takes libc's process-global lock, and an ungated read on every host
@@ -1796,7 +3140,10 @@ pub struct VM {
     /// sample — all child time in `__findenv_locked`).
     pub(crate) dbg_ac: bool,
     /// Attached step debugger (see `debugger.rs`). `None` in normal runs.
-    pub(crate) debugger: Option<crate::debugger::Debugger>,
+    // Dispatch temporarily removes the debugger to let it borrow the VM. Keep
+    // the state at a stable address: moving its vectors/channels/report state
+    // out and back on every instruction is unnecessary debugger overhead.
+    pub(crate) debugger: Option<Box<crate::debugger::Debugger>>,
     /// Compiler-backed expression evaluator for the debugger. Installed by the
     /// shell (`vybex`) since compilation lives above this crate. Given the live
     /// VM (read-only), an expression string, and the paused frame's locals as
@@ -1974,6 +3321,7 @@ pub struct VmSnapshot {
     func_table: Vec<Value>,
     case_aliases: HashMap<String, String>,
     import_table: Vec<ImportTarget>,
+    resolved_import_table: Vec<ResolvedCallTarget>,
     // Per-run module payloads that `run()` overwrites only when the new script
     // HAS them (`if !empty`) — so a later run without segments would otherwise
     // inherit the prior tenant's embedded data/element bytes. Security: restore
@@ -2036,6 +3384,464 @@ pub struct BlockTargets {
     pub end_ip: usize,
 }
 
+#[derive(Debug, Clone)]
+pub struct BrTableTargets {
+    pub depths: Vec<usize>,
+    pub default_depth: usize,
+    pub uniform_depth: Option<usize>,
+    pub end_ip: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LoopSuperop {
+    Unknown,
+    None,
+    ManagedArrayToLinear {
+        arr_slot: u16,
+        dst_slot: u16,
+        len_slot: u16,
+        i_slot: u16,
+        byte_slot: u16,
+        mask: i32,
+    },
+    ManagedArrayOffsetToLinear {
+        arr_slot: u16,
+        src_offset_slot: u16,
+        dst_slot: u16,
+        len_slot: u16,
+        i_slot: u16,
+        byte_slot: u16,
+        store_value_slot: Option<u16>,
+        store_addr_slot: Option<u16>,
+    },
+    LinearToManagedArray {
+        arr_slot: u16,
+        src_slot: u16,
+        len_slot: u16,
+        i_slot: u16,
+        byte_slot: u16,
+        mask: i32,
+    },
+    LinearToManagedArrayOffset {
+        arr_slot: u16,
+        dst_offset_slot: u16,
+        src_slot: u16,
+        len_slot: u16,
+        i_slot: u16,
+        byte_slot: u16,
+    },
+    LinearMemoryCopy {
+        src_slot: u16,
+        src_offset_slot: Option<u16>,
+        dst_slot: u16,
+        dst_offset_slot: Option<u16>,
+        len_slot: u16,
+        i_slot: u16,
+        byte_slot: u16,
+    },
+    LinearMemoryI32Copy {
+        src_slot: u16,
+        src_offset_slot: Option<u16>,
+        dst_slot: u16,
+        dst_offset_slot: Option<u16>,
+        len_slot: u16,
+        i_slot: u16,
+        value_slot: u16,
+    },
+    LinearMemoryI64Copy {
+        src_slot: u16,
+        src_offset_slot: Option<u16>,
+        dst_slot: u16,
+        dst_offset_slot: Option<u16>,
+        len_slot: u16,
+        i_slot: u16,
+        value_slot: u16,
+    },
+    LinearMemoryF32Copy {
+        src_slot: u16,
+        src_offset_slot: Option<u16>,
+        dst_slot: u16,
+        dst_offset_slot: Option<u16>,
+        len_slot: u16,
+        i_slot: u16,
+        value_slot: u16,
+    },
+    LinearMemoryF64Copy {
+        src_slot: u16,
+        src_offset_slot: Option<u16>,
+        dst_slot: u16,
+        dst_offset_slot: Option<u16>,
+        len_slot: u16,
+        i_slot: u16,
+        value_slot: u16,
+    },
+    LinearMemoryNarrowCopy {
+        src_slot: u16,
+        src_offset_slot: Option<u16>,
+        dst_slot: u16,
+        dst_offset_slot: Option<u16>,
+        len_slot: u16,
+        i_slot: u16,
+        value_slot: u16,
+        byte_width: u8,
+        signed: bool,
+        result_i64: bool,
+    },
+    LinearMemoryTypedFill {
+        dst_slot: u16,
+        dst_offset_slot: Option<u16>,
+        len_slot: u16,
+        i_slot: u16,
+        value_slot: u16,
+        byte_width: u8,
+        value_kind: LinearMemoryTypedFillValue,
+    },
+    LinearMemoryFill {
+        dst_slot: u16,
+        dst_offset_slot: Option<u16>,
+        len_slot: u16,
+        i_slot: u16,
+        value_slot: u16,
+    },
+    LinearMemoryScan {
+        src_slot: u16,
+        src_offset_slot: Option<u16>,
+        len_slot: u16,
+        i_slot: u16,
+        acc_slot: u16,
+    },
+    I32LcgLoop {
+        acc_slot: u16,
+        counter_slot: u16,
+        mul: i32,
+        add: i32,
+    },
+    I32CountdownLoop {
+        counter_slot: u16,
+    },
+    LocalCopyLoop {
+        src_slot: u16,
+        dst_slot: u16,
+        counter_slot: u16,
+    },
+    LocalI32EqzLoop {
+        src_slot: u16,
+        dst_slot: u16,
+        counter_slot: u16,
+    },
+    LocalI32EqConstLoop {
+        src_slot: u16,
+        dst_slot: u16,
+        rhs: i32,
+        counter_slot: u16,
+    },
+    LocalI32NeConstLoop {
+        src_slot: u16,
+        dst_slot: u16,
+        rhs: i32,
+        counter_slot: u16,
+    },
+    LocalI32OrdCmpConstLoop {
+        src_slot: u16,
+        dst_slot: u16,
+        rhs: i32,
+        op: Op,
+        counter_slot: u16,
+    },
+    LocalI32AddConstLoop {
+        src_slot: u16,
+        dst_slot: u16,
+        add: i32,
+        counter_slot: u16,
+    },
+    LocalI32AndConstLoop {
+        src_slot: u16,
+        dst_slot: u16,
+        mask: i32,
+        counter_slot: u16,
+    },
+    LocalI32MulConstLoop {
+        src_slot: u16,
+        dst_slot: u16,
+        mul: i32,
+        counter_slot: u16,
+    },
+    LocalI32OrConstLoop {
+        src_slot: u16,
+        dst_slot: u16,
+        mask: i32,
+        counter_slot: u16,
+    },
+    LocalI32RotlConstLoop {
+        src_slot: u16,
+        dst_slot: u16,
+        shift: i32,
+        counter_slot: u16,
+    },
+    LocalI32RotrConstLoop {
+        src_slot: u16,
+        dst_slot: u16,
+        shift: i32,
+        counter_slot: u16,
+    },
+    LocalI32ShlConstLoop {
+        src_slot: u16,
+        dst_slot: u16,
+        shift: i32,
+        counter_slot: u16,
+    },
+    LocalI32ShrSConstLoop {
+        src_slot: u16,
+        dst_slot: u16,
+        shift: i32,
+        counter_slot: u16,
+    },
+    LocalI32ShrUConstLoop {
+        src_slot: u16,
+        dst_slot: u16,
+        shift: i32,
+        counter_slot: u16,
+    },
+    LocalI32SubConstLoop {
+        src_slot: u16,
+        dst_slot: u16,
+        sub: i32,
+        counter_slot: u16,
+    },
+    LocalI32AccumConstLoop {
+        slot: u16,
+        rhs: i32,
+        op: Op,
+        counter_slot: u16,
+    },
+    LocalI32XorConstLoop {
+        src_slot: u16,
+        dst_slot: u16,
+        mask: i32,
+        counter_slot: u16,
+    },
+    LocalI64AddConstLoop {
+        src_slot: u16,
+        dst_slot: u16,
+        add: i64,
+        counter_slot: u16,
+    },
+    LocalI64AndConstLoop {
+        src_slot: u16,
+        dst_slot: u16,
+        mask: i64,
+        counter_slot: u16,
+    },
+    LocalI64MulConstLoop {
+        src_slot: u16,
+        dst_slot: u16,
+        mul: i64,
+        counter_slot: u16,
+    },
+    LocalI64OrConstLoop {
+        src_slot: u16,
+        dst_slot: u16,
+        mask: i64,
+        counter_slot: u16,
+    },
+    LocalI64RotlConstLoop {
+        src_slot: u16,
+        dst_slot: u16,
+        shift: i64,
+        counter_slot: u16,
+    },
+    LocalI64RotrConstLoop {
+        src_slot: u16,
+        dst_slot: u16,
+        shift: i64,
+        counter_slot: u16,
+    },
+    LocalI64ShlConstLoop {
+        src_slot: u16,
+        dst_slot: u16,
+        shift: i64,
+        counter_slot: u16,
+    },
+    LocalI64ShrSConstLoop {
+        src_slot: u16,
+        dst_slot: u16,
+        shift: i64,
+        counter_slot: u16,
+    },
+    LocalI64ShrUConstLoop {
+        src_slot: u16,
+        dst_slot: u16,
+        shift: i64,
+        counter_slot: u16,
+    },
+    LocalI64SubConstLoop {
+        src_slot: u16,
+        dst_slot: u16,
+        sub: i64,
+        counter_slot: u16,
+    },
+    LocalI64AccumConstLoop {
+        slot: u16,
+        rhs: i64,
+        op: Op,
+        counter_slot: u16,
+    },
+    LocalI64XorConstLoop {
+        src_slot: u16,
+        dst_slot: u16,
+        mask: i64,
+        counter_slot: u16,
+    },
+    LocalI64CmpConstLoop {
+        src_slot: u16,
+        dst_slot: u16,
+        rhs: i64,
+        op: Op,
+        counter_slot: u16,
+    },
+    LocalI64EqzLoop {
+        src_slot: u16,
+        dst_slot: u16,
+        counter_slot: u16,
+    },
+    LocalF32CmpConstLoop {
+        src_slot: u16,
+        dst_slot: u16,
+        rhs_bits: u32,
+        op: Op,
+        counter_slot: u16,
+    },
+    LocalF64CmpConstLoop {
+        src_slot: u16,
+        dst_slot: u16,
+        rhs_bits: u64,
+        op: Op,
+        counter_slot: u16,
+    },
+    LocalF32BinaryConstLoop {
+        src_slot: u16,
+        dst_slot: u16,
+        rhs_bits: u32,
+        op: Op,
+        counter_slot: u16,
+    },
+    LocalF64BinaryConstLoop {
+        src_slot: u16,
+        dst_slot: u16,
+        rhs_bits: u64,
+        op: Op,
+        counter_slot: u16,
+    },
+    LocalGetDropLoop {
+        src_slot: u16,
+        counter_slot: u16,
+    },
+    LocalSetConstLoop {
+        dst_slot: u16,
+        value: i32,
+        counter_slot: u16,
+    },
+    CallI32AddLoop {
+        import_idx: u16,
+        acc_slot: u16,
+        counter_slot: u16,
+    },
+    CallRefI32AddLoop {
+        func_slot: u16,
+        acc_slot: u16,
+        counter_slot: u16,
+    },
+    CallIndirectI32AddLoop {
+        tableidx: u16,
+        elem_index: i32,
+        elem_slot: Option<u16>,
+        acc_slot: u16,
+        counter_slot: u16,
+        call_ip: usize,
+    },
+    GlobalGetLocalLoop {
+        global_idx: u32,
+        dst_slot: u16,
+        counter_slot: u16,
+    },
+    GlobalGetDropLoop {
+        global_idx: u32,
+        counter_slot: u16,
+    },
+    GlobalSetConstLoop {
+        global_idx: u32,
+        value: i32,
+        counter_slot: u16,
+    },
+    GlobalSetLocalLoop {
+        global_idx: u32,
+        value_slot: u16,
+        counter_slot: u16,
+    },
+    StructGetDropLoop {
+        obj_slot: u16,
+        name_idx: u32,
+        counter_slot: u16,
+    },
+    StructGetLocalLoop {
+        obj_slot: u16,
+        name_idx: u32,
+        dst_slot: u16,
+        counter_slot: u16,
+    },
+    StructSetConstLoop {
+        obj_slot: u16,
+        value: i32,
+        name_idx: u32,
+        counter_slot: u16,
+    },
+    StructSetLocalLoop {
+        obj_slot: u16,
+        value_slot: u16,
+        name_idx: u32,
+        counter_slot: u16,
+    },
+    ArrayGetDropLoop {
+        arr_slot: u16,
+        index: i32,
+        counter_slot: u16,
+    },
+    ArrayGetLocalLoop {
+        arr_slot: u16,
+        index: i32,
+        dst_slot: u16,
+        counter_slot: u16,
+    },
+    ArrayCopyLoop {
+        src_slot: u16,
+        src_offset_slot: Option<u16>,
+        dst_slot: u16,
+        dst_offset_slot: Option<u16>,
+        len_slot: u16,
+        i_slot: u16,
+    },
+    ArraySetConstLoop {
+        arr_slot: u16,
+        index: i32,
+        value: i32,
+        counter_slot: u16,
+    },
+    ArraySetLocalLoop {
+        arr_slot: u16,
+        index: i32,
+        value_slot: u16,
+        counter_slot: u16,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LinearMemoryTypedFillValue {
+    I32,
+    I64,
+    F32,
+    F64,
+}
+
 impl VM {
     /// The receiver this VM hands a callee that declares one — §10.2.1
     /// `[[Call]](thisArgument, argumentsList)` argument 0.
@@ -2055,10 +3861,12 @@ impl VM {
 
     /// Immutable borrow of the table at `tableidx`. Index 0 maps to
     /// WASM tables in `wasm_tables`, indexed directly (table 0 = `wasm_tables[0]`).
+    #[inline(always)]
     pub(crate) fn table_ref(&self, idx: usize) -> Option<&Vec<Value>> {
         self.wasm_tables.get(idx)
     }
     /// Mutable borrow of the WASM table at `tableidx`.
+    #[inline(always)]
     pub(crate) fn table_mut(&mut self, idx: usize) -> Option<&mut Vec<Value>> {
         self.wasm_tables.get_mut(idx)
     }
@@ -2080,14 +3888,34 @@ impl VM {
         self.type_recorder.take()
     }
 
+    /// Turn on runtime performance counters for the next run.
+    /// Passing `false` disables and discards any existing counters.
+    pub fn record_runtime_perf(&mut self, enabled: bool) {
+        self.perf_counters = enabled.then(RuntimePerfCounters::default);
+    }
+
+    /// Retain a bounded instruction history for unhandled error reports.
+    pub fn record_error_context(&mut self, enabled: bool) {
+        self.error_history = enabled.then(|| VecDeque::with_capacity(ERROR_HISTORY_LEN));
+        self.instrumented = self.trace || self.debugger.is_some() || enabled;
+    }
+
+    /// Take ownership of the current runtime performance counters.
+    pub fn take_runtime_perf(&mut self) -> Option<RuntimePerfCounters> {
+        self.perf_counters.take()
+    }
+
     pub fn new() -> Self {
+        let trace = std::env::var("VYBE_TRACE").map_or(false, |v| v == "1" || v == "true");
+        let error_context = std::env::var("VYBE_ERROR_CONTEXT")
+            .map_or(false, |v| v == "1" || v == "true");
         VM {
             host_receiver: Value::Undefined,
             host_originated_call: false,
             suppress_receiver_prepend: false,
             chunks: Vec::new(),
-            frames: Vec::new(),
-            stack: Vec::with_capacity(256),
+            frames: Vec::with_capacity(64),
+            stack: Vec::with_capacity(1024),
             globals: vec![Value::Undefined],
             globals_assigned: vec![true],
             global_index: {
@@ -2097,10 +3925,14 @@ impl VM {
             },
             open_upvalues: Vec::new(),
             host_fns: Vec::new(),
+            host_call_args: Vec::with_capacity(16),
             host_fn_takes_receiver: Vec::new(),
             host_registry: HashMap::new(),
             modules: HashMap::new(),
             import_table: Vec::<ImportTarget>::new(),
+            resolved_import_table: Vec::new(),
+            chunk_import_cache: Vec::new(),
+            chunk_call_target_cache: Vec::new(),
             exception_handlers: Vec::new(),
             tag_entities: vec![TagEntity {
                 debug_name: "vybe:exception".into(),
@@ -2133,12 +3965,15 @@ impl VM {
             elem_segments: Vec::new(),
             active_memory: 0,
             memory_is_64: Vec::new(),
+            memory0_is_64: false,
             table_is_64: Vec::new(),
+            table0_is_64: false,
             func_table: Vec::new(),
             funcref_cache: std::collections::HashMap::new(),
             wasm_tables: Vec::new(),
             wasm_table_maxes: Vec::new(),
             type_recorder: None,
+            perf_counters: None,
             active_continuations: Vec::new(),
             cur_fiber_id: 0,
             cur_fiber_result_promise: None,
@@ -2150,7 +3985,16 @@ impl VM {
             exec_floors: Vec::new(),
             next_fiber_id: 1,
             label_stack: Vec::new(),
-            block_tables: HashMap::new(),
+            block_targets: Vec::new(),
+            loop_superops: Vec::new(),
+            br_table_targets: Vec::new(),
+            decoded_ops: Vec::new(),
+            decoded_operands: Vec::new(),
+            decoded_operands64: Vec::new(),
+            native_call_sites: Vec::new(),
+            native_result_fast_paths: Vec::new(),
+            local_fast_paths: Vec::new(),
+            object_get_cache: std::array::from_fn(|_| None),
             callback_invoker: None,
             invoker_vm_slot: Box::new(std::cell::Cell::new(std::ptr::null_mut())),
             last_exception: None,
@@ -2160,14 +4004,15 @@ impl VM {
             finalizers: Vec::new(),
             thread_handles: HashMap::new(),
             next_thread_id: 1,
-            trace: std::env::var("VYBE_TRACE").map_or(false, |v| v == "1" || v == "true"),
+            trace,
             trace_chunk_filter: std::env::var("VYBE_TRACE_CHUNK").ok(),
+            error_history: error_context.then(|| VecDeque::with_capacity(ERROR_HISTORY_LEN)),
             dbg_ac: std::env::var("VYBE_DEBUG_AC").is_ok(),
             debugger: None,
             eval_hook: None,
             reload_hook: None,
             event_fire_hook: None,
-            instrumented: std::env::var("VYBE_TRACE").map_or(false, |v| v == "1" || v == "true"),
+            instrumented: trace || error_context,
             handle_table: crate::handle_table::HandleTable::new(),
             // Seeded with the primitive component types so a CORE module can
             // name one by index. A real component supplies its own type
@@ -2239,6 +4084,7 @@ impl VM {
             func_table: self.func_table.clone(),
             case_aliases: self.case_aliases.clone(),
             import_table: self.import_table.clone(),
+            resolved_import_table: self.resolved_import_table.clone(),
             data_segments: self.data_segments.clone(),
             elem_segments: self.elem_segments.clone(),
             module_type_names: self.module_type_names.clone(),
@@ -2299,8 +4145,17 @@ impl VM {
         //     constants — security: no earlier tenant's bytes survive) + the
         //     chunk-parallel structures that grow with it. Everything below the
         //     boot length is baseline (prelude) and stays. Other per-chunk caches
-        //     keyed by index (block_tables, funcref_cache) are cleared in step 5.
+        //     keyed by index (funcref_cache) are cleared in step 5.
         self.chunks.truncate(snap.chunks_len);
+        self.decoded_ops.truncate(snap.chunks_len);
+        self.decoded_operands.truncate(snap.chunks_len);
+        self.decoded_operands64.truncate(snap.chunks_len);
+        self.native_call_sites.truncate(snap.chunks_len);
+        self.native_result_fast_paths.truncate(snap.chunks_len);
+        self.local_fast_paths.truncate(snap.chunks_len);
+        self.block_targets.truncate(snap.chunks_len);
+        self.loop_superops.truncate(snap.chunks_len);
+        self.br_table_targets.truncate(snap.chunks_len);
         self.chunk_tag_maps.truncate(snap.chunk_tag_maps_len);
         self.tag_entities.truncate(snap.tag_entities_len);
         self.call_tags.truncate(snap.call_tags_len);
@@ -2354,6 +4209,9 @@ impl VM {
         self.func_table = snap.func_table.clone();
         self.case_aliases = snap.case_aliases.clone();
         self.import_table = snap.import_table.clone();
+        self.resolved_import_table = snap.resolved_import_table.clone();
+        self.chunk_import_cache.clear();
+        self.chunk_call_target_cache.clear();
         // Security: restore per-run module payloads to boot (else a prior
         // script's data/element bytes or module identity could survive a reset
         // whose next script happens not to declare its own).
@@ -2367,6 +4225,9 @@ impl VM {
         // 5. Transient execution state — always empty between top-level runs.
         self.stack.clear();
         self.frames.clear();
+        if let Some(history) = &mut self.error_history {
+            history.clear();
+        }
         self.open_upvalues.clear();
         self.exception_handlers.clear();
         self.exec_floors.clear();
@@ -2378,7 +4239,6 @@ impl VM {
         // for reset-between-runs; a hung script thread is the embedder's concern.
         self.thread_handles.clear();
         self.funcref_cache.clear();
-        self.block_tables.clear(); // code-derived cache; rebuilds lazily.
         // 6. Event loop: reset the SHARED RefCell contents in place so host fns
         //    holding an `Rc` clone see the drained loop (reassigning the Rc would
         //    desync them). Drops all queued ready work + pending fibers.
@@ -2407,7 +4267,7 @@ impl VM {
     /// Can also be enabled via `VYBE_TRACE=1` environment variable.
     pub fn set_trace(&mut self, enabled: bool) {
         self.trace = enabled;
-        self.instrumented = self.trace || self.debugger.is_some();
+        self.instrumented = self.trace || self.debugger.is_some() || self.error_history.is_some();
     }
 
     /// Attach a step debugger. The dispatch loop will call into it at every
@@ -2419,18 +4279,68 @@ impl VM {
         evt_tx: std::sync::mpsc::Sender<crate::debugger::DebugEvent>,
         pause_on_entry: bool,
     ) {
-        self.debugger = Some(crate::debugger::Debugger::new(
+        self.debugger = Some(Box::new(crate::debugger::Debugger::new(
             cmd_rx,
             evt_tx,
             pause_on_entry,
-        ));
+        )));
         self.instrumented = true;
+    }
+
+    /// Shared debugger timing state, readable while the VM thread compiles an
+    /// include. No state is allocated when no debugger is attached.
+    pub fn debug_report(&self) -> Option<crate::debugger::SharedDebugReport> {
+        self.debugger.as_ref().map(|debugger| debugger.report.clone())
+    }
+
+    #[inline(always)]
+    pub(crate) fn prune_exception_handlers_to_live_frames(&mut self, live: usize) {
+        if !self.exception_handlers.is_empty() {
+            self.exception_handlers
+                .retain(|handler| handler.frame_depth <= live);
+        }
+    }
+
+    /// Source bindings for an embedder that evaluates code in the caller's
+    /// lexical scope (for example PHP include). Compiler temporaries are excluded.
+    pub fn current_source_scope(&self) -> Option<(String, Vec<(u16, String, Value)>)> {
+        let frame = self.frames.last()?;
+        let chunk = self.chunks.get(frame.chunk_index)?;
+        let locals = chunk.local_names.iter().filter(|entry| entry.is_source())
+            .filter_map(|entry| self.stack.get(frame.base + entry.slot as usize)
+                .map(|value| (entry.slot, entry.name.clone(), value.clone())))
+            .collect();
+        Some((chunk.name.clone(), locals))
+    }
+
+    /// Write back an existing caller binding after nested evaluation returns.
+    pub fn set_current_source_local(&mut self, slot: u16, value: Value) {
+        if let Some(frame) = self.frames.last() {
+            if let Some(target) = self.stack.get_mut(frame.base + slot as usize) {
+                *target = value;
+            }
+        }
+    }
+
+    /// Bounded instruction history owned by the attached step debugger.
+    pub fn debug_recent_instructions(&self) -> Option<String> {
+        self.debugger.as_ref().map(|debugger| debugger.recent_instruction_report(self))
+    }
+
+    pub fn debug_rearm_after_restart(&mut self) {
+        if let Some(debugger) = &mut self.debugger {
+            debugger.rearm_after_restart();
+        }
+    }
+
+    pub fn debug_wait_after_exit(&mut self) -> bool {
+        self.debugger.as_mut().is_some_and(|debugger| debugger.wait_after_exit())
     }
 
     /// Detach the debugger and (unless tracing) leave the hot path uninstrumented.
     pub fn detach_debugger(&mut self) {
         self.debugger = None;
-        self.instrumented = self.trace;
+        self.instrumented = self.trace || self.error_history.is_some();
     }
 
     /// Install the debugger's compiler-backed expression evaluator (see the
@@ -2598,8 +4508,56 @@ impl VM {
             reloaded.push(self.chunks[i].name.clone());
             if current_live.contains(&i) {
                 let old = self.chunks[i].clone();
+                let old_decoded = self
+                    .decoded_ops
+                    .get(i)
+                    .cloned()
+                    .unwrap_or_else(|| Self::build_decoded_ops_for_chunk(&old));
+                let old_operands = self
+                    .decoded_operands
+                    .get(i)
+                    .cloned()
+                    .unwrap_or_else(|| Self::build_decoded_operands_for_chunk(&old));
+                let old_operands64 = self
+                    .decoded_operands64
+                    .get(i)
+                    .cloned()
+                    .unwrap_or_else(|| Self::build_decoded_operands64_for_chunk(&old));
+                let old_block_targets = self
+                    .block_targets
+                    .get(i)
+                    .cloned()
+                    .unwrap_or_else(|| Self::build_block_targets_for_chunk(&old));
+                let old_loop_superops = self
+                    .loop_superops
+                    .get(i)
+                    .cloned()
+                    .unwrap_or_else(|| Self::build_loop_superops_for_chunk(&old));
+                let old_br_tables = self
+                    .br_table_targets
+                    .get(i)
+                    .cloned()
+                    .unwrap_or_else(|| Self::build_br_table_targets_for_chunk(&old));
                 let relocated = self.chunks.len();
                 self.chunks.push(old);
+                self.decoded_ops.push(old_decoded);
+                self.decoded_operands.push(old_operands);
+                self.decoded_operands64.push(old_operands64);
+                self.native_call_sites
+                    .push(Self::build_native_call_sites_for_chunk(&self.chunks[i]));
+                self.native_result_fast_paths
+                    .push(Self::build_native_result_fast_paths_for_chunk(
+                        &self.chunks[i],
+                        self.native_call_sites.get(i).map(Vec::as_slice),
+                    ));
+                self.local_fast_paths
+                    .push(Self::build_local_fast_paths_for_chunk(
+                        &self.chunks[i],
+                        self.native_call_sites.get(i).map(Vec::as_slice),
+                    ));
+                self.block_targets.push(old_block_targets);
+                self.loop_superops.push(old_loop_superops);
+                self.br_table_targets.push(old_br_tables);
                 // The relocated copy is the SAME module, so it keeps the same
                 // type index base — `chunk_type_base` is parallel to `chunks`.
                 let base = self.chunk_type_base.get(i).copied().unwrap_or(0);
@@ -2612,10 +4570,49 @@ impl VM {
                 }
             }
             std::mem::swap(&mut self.chunks[i], &mut new_chunks[i]);
-            // Pre-scanned BLOCK/LOOP/IF jump targets are keyed by chunk index and
-            // derived from code bytes — drop this index's so they rebuild for the
-            // new body. (The relocated old index builds its own lazily.)
-            self.block_tables.remove(&i);
+            if self.decoded_ops.len() <= i {
+                self.decoded_ops.resize_with(i + 1, Vec::new);
+            }
+            self.decoded_ops[i] = Self::build_decoded_ops_for_chunk(&self.chunks[i]);
+            if self.decoded_operands.len() <= i {
+                self.decoded_operands.resize_with(i + 1, Vec::new);
+            }
+            self.decoded_operands[i] = Self::build_decoded_operands_for_chunk(&self.chunks[i]);
+            if self.decoded_operands64.len() <= i {
+                self.decoded_operands64.resize_with(i + 1, Vec::new);
+            }
+            self.decoded_operands64[i] =
+                Self::build_decoded_operands64_for_chunk(&self.chunks[i]);
+            if self.native_call_sites.len() <= i {
+                self.native_call_sites.resize_with(i + 1, Vec::new);
+            }
+            self.native_call_sites[i] = Self::build_native_call_sites_for_chunk(&self.chunks[i]);
+            if self.native_result_fast_paths.len() <= i {
+                self.native_result_fast_paths.resize_with(i + 1, Vec::new);
+            }
+            self.native_result_fast_paths[i] = Self::build_native_result_fast_paths_for_chunk(
+                &self.chunks[i],
+                self.native_call_sites.get(i).map(Vec::as_slice),
+            );
+            if self.local_fast_paths.len() <= i {
+                self.local_fast_paths.resize_with(i + 1, Vec::new);
+            }
+            self.local_fast_paths[i] = Self::build_local_fast_paths_for_chunk(
+                &self.chunks[i],
+                self.native_call_sites.get(i).map(Vec::as_slice),
+            );
+            if self.block_targets.len() <= i {
+                self.block_targets.resize_with(i + 1, Vec::new);
+            }
+            self.block_targets[i] = Self::build_block_targets_for_chunk(&self.chunks[i]);
+            if self.loop_superops.len() <= i {
+                self.loop_superops.resize_with(i + 1, Vec::new);
+            }
+            self.loop_superops[i] = Self::build_loop_superops_for_chunk(&self.chunks[i]);
+            if self.br_table_targets.len() <= i {
+                self.br_table_targets.resize_with(i + 1, Vec::new);
+            }
+            self.br_table_targets[i] = Self::build_br_table_targets_for_chunk(&self.chunks[i]);
         }
         // A reloaded body may reference string constants the old one never
         // did, and chunks arrive here by SWAP rather than by the paths that
@@ -2751,6 +4748,64 @@ impl VM {
                 }
             })
             .collect()
+    }
+
+    pub(crate) fn record_error_step(&mut self, chunk_index: usize, offset: usize) {
+        if let Some(history) = &mut self.error_history {
+            if history.len() == ERROR_HISTORY_LEN {
+                history.pop_front();
+            }
+            history.push_back(ErrorStep {
+                chunk_index,
+                offset,
+                stack_top: self.stack.last().cloned(),
+            });
+        }
+    }
+
+    fn error_context(&self) -> Option<String> {
+        use std::fmt::Write;
+
+        let history = self.error_history.as_ref()?;
+        let mut out = String::from("  Recent instructions (stack top before each opcode):");
+        for step in history {
+            let Some(chunk) = self.chunks.get(step.chunk_index) else {
+                continue;
+            };
+            let line = chunk.get_line(step.offset);
+            let instruction = crate::debug::disassemble_instruction(chunk, step.offset).0;
+            let top = step.stack_top.as_ref().map_or("[]".to_string(), |v| {
+                format!("[{}: {}]", v.tag().name(), v)
+            });
+            let _ = write!(
+                out,
+                "\n    {}@{}{} {}  top={}",
+                chunk.name,
+                step.offset,
+                line.map_or(String::new(), |n| format!(" line {n}")),
+                instruction,
+                top
+            );
+        }
+        if let Some(frame) = self.frames.last() {
+            if let Some(chunk) = self.chunks.get(frame.chunk_index) {
+                let mut count = 0;
+                for local in chunk.local_names.iter().filter(|local| local.is_source()) {
+                    let Some(value) = self.stack.get(frame.base + local.slot as usize) else {
+                        continue;
+                    };
+                    if count == 0 {
+                        out.push_str("\n  Current source locals:");
+                    }
+                    let _ = write!(out, "\n    {} = {}: {}", local.name, value.tag().name(), value);
+                    count += 1;
+                    if count == 24 {
+                        break;
+                    }
+                }
+            }
+        }
+        Some(out)
     }
 
     /// Dump disassembled bytecode for all chunks. Useful for debugging
@@ -2889,6 +4944,7 @@ impl VM {
     }
 
     /// Get the size (in bytes) of a memory by spec memory index.
+    #[inline(always)]
     pub(crate) fn mem_len(&self, memidx: usize) -> usize {
         if memidx == 0 {
             self.memory.len()
@@ -2996,39 +5052,59 @@ impl VM {
     }
 
     pub(crate) fn read_memory_bytes(
-        &self,
+        &mut self,
         memidx: usize,
         addr: usize,
         size: usize,
     ) -> Result<Vec<u8>, crate::VMError> {
         if memidx == 0 {
-            self.memory.with_buffer(|buf| {
-                if addr.saturating_add(size) > buf.len() {
-                    Err(crate::VMError::new(format!(
-                        "trap: out of bounds memory access: addr={} size={} limit={}",
-                        addr,
-                        size,
-                        buf.len()
-                    )))
-                } else {
-                    Ok(buf[addr..addr + size].to_vec())
-                }
-            })
+            if let Some(result) = self
+                .memory
+                .with_bytes_exclusive(addr, size, |bytes| bytes.to_vec())
+            {
+                result.map_err(|limit| Self::memory_oob(addr, size, limit))
+            } else {
+                self.memory.with_buffer(|buf| {
+                    let end = Self::checked_memory_end(addr, size, buf.len())?;
+                    Ok(buf[addr..end].to_vec())
+                })
+            }
         } else {
             let mem = self.extra_mem(memidx);
-            if addr.saturating_add(size) > mem.len() {
-                Err(crate::VMError::new(format!(
-                    "trap: out of bounds memory access: addr={} size={} limit={}",
-                    addr,
-                    size,
-                    mem.len()
-                )))
-            } else {
-                Ok(mem[addr..addr + size].to_vec())
-            }
+            let end = Self::checked_memory_end(addr, size, mem.len())?;
+            Ok(mem[addr..end].to_vec())
         }
     }
 
+    #[inline]
+    pub(crate) fn with_memory_bytes<R>(
+        &mut self,
+        memidx: usize,
+        addr: usize,
+        size: usize,
+        f: impl FnOnce(&[u8]) -> Result<R, crate::VMError>,
+    ) -> Result<R, crate::VMError> {
+        if memidx == 0 {
+            let mut f = Some(f);
+            if let Some(result) = self.memory.with_bytes_exclusive(addr, size, |bytes| {
+                f.take().expect("memory byte callback already used")(bytes)
+            }) {
+                result.map_err(|limit| Self::memory_oob(addr, size, limit))?
+            } else {
+                let f = f.expect("memory byte callback was consumed before fallback");
+                self.memory.with_buffer(|buf| {
+                    let end = Self::checked_memory_end(addr, size, buf.len())?;
+                    f(&buf[addr..end])
+                })
+            }
+        } else {
+            let mem = self.extra_mem(memidx);
+            let end = Self::checked_memory_end(addr, size, mem.len())?;
+            f(&mem[addr..end])
+        }
+    }
+
+    #[inline(always)]
     pub(crate) fn write_memory_bytes(
         &mut self,
         memidx: usize,
@@ -3036,49 +5112,458 @@ impl VM {
         bytes: &[u8],
     ) -> Result<(), crate::VMError> {
         if memidx == 0 {
-            self.memory.with_buffer_mut(|buf| {
-                if addr.saturating_add(bytes.len()) > buf.len() {
-                    Err(crate::VMError::new(format!(
-                        "trap: out of bounds memory access: addr={} size={} limit={}",
-                        addr,
-                        bytes.len(),
-                        buf.len()
-                    )))
-                } else {
-                    buf[addr..addr + bytes.len()].copy_from_slice(bytes);
+            if let Some(result) = self.memory.with_buffer_mut_exclusive(|buf| {
+                let end = Self::checked_memory_end(addr, bytes.len(), buf.len())?;
+                buf[addr..end].copy_from_slice(bytes);
+                Ok(())
+            }) {
+                result
+            } else {
+                self.memory.with_buffer_mut(|buf| {
+                    let end = Self::checked_memory_end(addr, bytes.len(), buf.len())?;
+                    buf[addr..end].copy_from_slice(bytes);
                     Ok(())
-                }
-            })
+                })
+            }
         } else {
             let mem = self.extra_mem_mut(memidx);
-            if addr.saturating_add(bytes.len()) > mem.len() {
-                Err(crate::VMError::new(format!(
-                    "trap: out of bounds memory access: addr={} size={} limit={}",
-                    addr,
-                    bytes.len(),
-                    mem.len()
-                )))
-            } else {
-                mem[addr..addr + bytes.len()].copy_from_slice(bytes);
-                Ok(())
-            }
+            let end = Self::checked_memory_end(addr, bytes.len(), mem.len())?;
+            mem[addr..end].copy_from_slice(bytes);
+            Ok(())
         }
     }
 
+    #[inline]
+    pub(crate) fn with_memory_bytes_mut<R>(
+        &mut self,
+        memidx: usize,
+        addr: usize,
+        size: usize,
+        f: impl FnOnce(&mut [u8]) -> Result<R, crate::VMError>,
+    ) -> Result<R, crate::VMError> {
+        if memidx == 0 {
+            let mut f = Some(f);
+            if let Some(result) = self.memory.with_buffer_mut_exclusive(|buf| {
+                let end = Self::checked_memory_end(addr, size, buf.len())?;
+                f.take().expect("memory byte callback already used")(&mut buf[addr..end])
+            }) {
+                result
+            } else {
+                let f = f.expect("memory byte callback was consumed before fallback");
+                self.memory.with_buffer_mut(|buf| {
+                    let end = Self::checked_memory_end(addr, size, buf.len())?;
+                    f(&mut buf[addr..end])
+                })
+            }
+        } else {
+            let mem = self.extra_mem_mut(memidx);
+            let end = Self::checked_memory_end(addr, size, mem.len())?;
+            f(&mut mem[addr..end])
+        }
+    }
+
+    #[cold]
+    pub(crate) fn memory_oob(addr: usize, size: usize, limit: usize) -> crate::VMError {
+        crate::VMError::new(format!(
+            "trap: out of bounds memory access: addr={} size={} limit={}",
+            addr, size, limit
+        ))
+    }
+
+    #[inline(always)]
+    fn checked_memory_end(
+        addr: usize,
+        size: usize,
+        limit: usize,
+    ) -> Result<usize, crate::VMError> {
+        addr.checked_add(size)
+            .filter(|&end| end <= limit)
+            .ok_or_else(|| Self::memory_oob(addr, size, limit))
+    }
+
+    #[inline(always)]
+    pub(crate) fn read_memory_array<const N: usize>(
+        &mut self,
+        memidx: usize,
+        addr: usize,
+    ) -> Result<[u8; N], crate::VMError> {
+        if memidx == 0 {
+            self.read_memory0_array::<N>(addr)
+        } else {
+            let mem = self.extra_mem(memidx);
+            let end = Self::checked_memory_end(addr, N, mem.len())?;
+            let mut out = [0u8; N];
+            out.copy_from_slice(&mem[addr..end]);
+            Ok(out)
+        }
+    }
+
+    #[inline(always)]
+    pub(crate) fn read_memory0_array<const N: usize>(
+        &mut self,
+        addr: usize,
+    ) -> Result<[u8; N], crate::VMError> {
+        if let Some(result) = self.memory.read_array_exclusive::<N>(addr) {
+            result.map_err(|limit| Self::memory_oob(addr, N, limit))
+        } else {
+            self.memory
+                .read_array::<N>(addr)
+                .map_err(|limit| Self::memory_oob(addr, N, limit))
+        }
+    }
+
+    #[inline(always)]
+    pub(crate) fn read_cached_memory_array<const N: usize>(
+        &mut self,
+        cached_memarg: u32,
+        memidx: usize,
+        addr: usize,
+    ) -> Result<[u8; N], crate::VMError> {
+        if cached_memarg != DECODED_MEMARG_FALLBACK {
+            self.read_memory0_array::<N>(addr)
+        } else {
+            self.read_memory_array::<N>(memidx, addr)
+        }
+    }
+
+    #[inline(always)]
+    pub(crate) fn read_memory_u8(
+        &mut self,
+        memidx: usize,
+        addr: usize,
+    ) -> Result<u8, crate::VMError> {
+        if memidx == 0 {
+            self.read_memory0_u8(addr)
+        } else {
+            let mem = self.extra_mem(memidx);
+            Self::checked_memory_end(addr, 1, mem.len())?;
+            Ok(mem[addr])
+        }
+    }
+
+    #[inline(always)]
+    pub(crate) fn read_memory0_u8(&mut self, addr: usize) -> Result<u8, crate::VMError> {
+        if let Some(result) = self.memory.read_u8_checked_exclusive(addr) {
+            result.map_err(|limit| Self::memory_oob(addr, 1, limit))
+        } else {
+            self.memory
+                .read_u8_checked(addr)
+                .map_err(|limit| Self::memory_oob(addr, 1, limit))
+        }
+    }
+
+    #[inline(always)]
+    pub(crate) fn read_cached_memory_u8(
+        &mut self,
+        cached_memarg: u32,
+        memidx: usize,
+        addr: usize,
+    ) -> Result<u8, crate::VMError> {
+        if cached_memarg != DECODED_MEMARG_FALLBACK {
+            self.read_memory0_u8(addr)
+        } else {
+            self.read_memory_u8(memidx, addr)
+        }
+    }
+
+    #[inline(always)]
+    pub(crate) fn write_memory_array<const N: usize>(
+        &mut self,
+        memidx: usize,
+        addr: usize,
+        bytes: &[u8; N],
+    ) -> Result<(), crate::VMError> {
+        if memidx == 0 {
+            self.write_memory0_array(addr, bytes)
+        } else {
+            let mem = self.extra_mem_mut(memidx);
+            let end = Self::checked_memory_end(addr, N, mem.len())?;
+            mem[addr..end].copy_from_slice(bytes);
+            Ok(())
+        }
+    }
+
+    #[inline(always)]
+    pub(crate) fn write_memory0_array<const N: usize>(
+        &mut self,
+        addr: usize,
+        bytes: &[u8; N],
+    ) -> Result<(), crate::VMError> {
+        if let Some(result) = self.memory.write_array_exclusive(addr, bytes) {
+            result.map_err(|limit| Self::memory_oob(addr, N, limit))
+        } else {
+            self.memory
+                .write_array(addr, bytes)
+                .map_err(|limit| Self::memory_oob(addr, N, limit))
+        }
+    }
+
+    #[inline(always)]
+    pub(crate) fn write_cached_memory_array<const N: usize>(
+        &mut self,
+        cached_memarg: u32,
+        memidx: usize,
+        addr: usize,
+        bytes: &[u8; N],
+    ) -> Result<(), crate::VMError> {
+        if cached_memarg != DECODED_MEMARG_FALLBACK {
+            self.write_memory0_array(addr, bytes)
+        } else {
+            self.write_memory_array(memidx, addr, bytes)
+        }
+    }
+
+    #[inline(always)]
+    pub(crate) fn write_memory_u8(
+        &mut self,
+        memidx: usize,
+        addr: usize,
+        value: u8,
+    ) -> Result<(), crate::VMError> {
+        if memidx == 0 {
+            self.write_memory0_u8(addr, value)
+        } else {
+            let mem = self.extra_mem_mut(memidx);
+            Self::checked_memory_end(addr, 1, mem.len())?;
+            mem[addr] = value;
+            Ok(())
+        }
+    }
+
+    #[inline(always)]
+    pub(crate) fn write_memory0_u8(
+        &mut self,
+        addr: usize,
+        value: u8,
+    ) -> Result<(), crate::VMError> {
+        if let Some(result) = self.memory.write_u8_checked_exclusive(addr, value) {
+            result.map_err(|limit| Self::memory_oob(addr, 1, limit))
+        } else {
+            self.memory
+                .write_u8_checked(addr, value)
+                .map_err(|limit| Self::memory_oob(addr, 1, limit))
+        }
+    }
+
+    #[inline(always)]
+    pub(crate) fn write_cached_memory_u8(
+        &mut self,
+        cached_memarg: u32,
+        memidx: usize,
+        addr: usize,
+        value: u8,
+    ) -> Result<(), crate::VMError> {
+        if cached_memarg != DECODED_MEMARG_FALLBACK {
+            self.write_memory0_u8(addr, value)
+        } else {
+            self.write_memory_u8(memidx, addr, value)
+        }
+    }
+
+    pub(crate) fn write_memory_array_slice(
+        &mut self,
+        memidx: usize,
+        addr: usize,
+        bytes: &[u8],
+    ) -> Result<(), crate::VMError> {
+        if memidx == 0 {
+            if let Some(result) = self.memory.with_buffer_mut_exclusive(|memory| {
+                let end = Self::checked_memory_end(addr, bytes.len(), memory.len())?;
+                memory[addr..end].copy_from_slice(bytes);
+                Ok(())
+            }) {
+                return result;
+            }
+            return self.memory.with_buffer_mut(|memory| {
+                let end = Self::checked_memory_end(addr, bytes.len(), memory.len())?;
+                memory[addr..end].copy_from_slice(bytes);
+                Ok(())
+            });
+        }
+        let mem = self.extra_mem_mut(memidx);
+        let end = Self::checked_memory_end(addr, bytes.len(), mem.len())?;
+        mem[addr..end].copy_from_slice(bytes);
+        Ok(())
+    }
+
+    pub(crate) fn read_memory_array_slice(
+        &mut self,
+        memidx: usize,
+        addr: usize,
+        len: usize,
+    ) -> Result<Vec<u8>, crate::VMError> {
+        if memidx == 0 {
+            if let Some(result) = self
+                .memory
+                .with_bytes_exclusive(addr, len, |bytes| bytes.to_vec())
+            {
+                return result.map_err(|limit| Self::memory_oob(addr, len, limit));
+            }
+            return self.memory.with_buffer(|memory| {
+                let end = Self::checked_memory_end(addr, len, memory.len())?;
+                Ok(memory[addr..end].to_vec())
+            });
+        }
+        let mem = self.extra_mem(memidx);
+        let end = Self::checked_memory_end(addr, len, mem.len())?;
+        Ok(mem[addr..end].to_vec())
+    }
+
+    #[inline(always)]
+    pub(crate) fn copy_memory_bytes(
+        &mut self,
+        dst_mem: usize,
+        dst: usize,
+        src_mem: usize,
+        src: usize,
+        count: usize,
+    ) -> Result<(), crate::VMError> {
+        if dst_mem == 0 && src_mem == 0 {
+            if let Some(result) = self.memory.with_buffer_mut_exclusive(|memory| {
+                let src_end = Self::checked_memory_end(src, count, memory.len())?;
+                Self::checked_memory_end(dst, count, memory.len())?;
+                memory.copy_within(src..src_end, dst);
+                Ok(())
+            }) {
+                return result;
+            }
+            return self.memory.with_buffer_mut(|memory| {
+                let src_end = Self::checked_memory_end(src, count, memory.len())?;
+                Self::checked_memory_end(dst, count, memory.len())?;
+                memory.copy_within(src..src_end, dst);
+                Ok(())
+            });
+        }
+        if src_mem == 0 {
+            let extra_memories = &mut self.extra_memories;
+            if let Some(result) = self.memory.with_bytes_exclusive(src, count, |source| {
+                let Some(destination) = extra_memories.get_mut(dst_mem - 1) else {
+                    return Err(crate::VMError::new(format!(
+                        "trap: out of bounds memory access: addr={dst} size={count} limit=0"
+                    )));
+                };
+                let dst_limit = destination.len();
+                let dst_end = Self::checked_memory_end(dst, count, dst_limit)?;
+                destination[dst..dst_end].copy_from_slice(source);
+                Ok(())
+            }) {
+                return result.map_err(|limit| Self::memory_oob(src, count, limit))?;
+            }
+            return self.memory.with_buffer(|source| {
+                let src_end = Self::checked_memory_end(src, count, source.len())?;
+                let Some(destination) = extra_memories.get_mut(dst_mem - 1) else {
+                    return Err(crate::VMError::new(format!(
+                        "trap: out of bounds memory access: addr={dst} size={count} limit=0"
+                    )));
+                };
+                let dst_limit = destination.len();
+                let dst_end = Self::checked_memory_end(dst, count, dst_limit)?;
+                destination[dst..dst_end].copy_from_slice(&source[src..src_end]);
+                Ok(())
+            });
+        }
+        if dst_mem == 0 {
+            let extra_memories = &self.extra_memories;
+            let source_mem = extra_memories.get(src_mem - 1).map(Vec::as_slice).unwrap_or(&[]);
+            let src_limit = source_mem.len();
+            let src_end = Self::checked_memory_end(src, count, src_limit)?;
+            let source = &source_mem[src..src_end];
+            if let Some(result) = self.memory.with_buffer_mut_exclusive(|dest| {
+                let dst_end = Self::checked_memory_end(dst, count, dest.len())?;
+                dest[dst..dst_end].copy_from_slice(source);
+                Ok(())
+            }) {
+                return result;
+            }
+            return self.memory.with_buffer_mut(|dest| {
+                let dst_end = Self::checked_memory_end(dst, count, dest.len())?;
+                dest[dst..dst_end].copy_from_slice(source);
+                Ok(())
+            });
+        }
+        let src_limit = self.mem_len(src_mem);
+        let dst_limit = self.mem_len(dst_mem);
+        let src_end = Self::checked_memory_end(src, count, src_limit)?;
+        let dst_end = Self::checked_memory_end(dst, count, dst_limit)?;
+        if dst_mem == src_mem {
+            self.extra_mem_mut(dst_mem).copy_within(src..src_end, dst);
+        } else {
+            let src_idx = src_mem - 1;
+            let dst_idx = dst_mem - 1;
+            if src_idx < dst_idx {
+                let (left, right) = self.extra_memories.split_at_mut(dst_idx);
+                right[0][dst..dst_end].copy_from_slice(&left[src_idx][src..src_end]);
+            } else {
+                let (left, right) = self.extra_memories.split_at_mut(src_idx);
+                left[dst_idx][dst..dst_end].copy_from_slice(&right[0][src..src_end]);
+            }
+        }
+        Ok(())
+    }
+
+    #[inline(always)]
+    pub(crate) fn fill_memory_bytes(
+        &mut self,
+        memidx: usize,
+        dst: usize,
+        count: usize,
+        value: u8,
+    ) -> Result<(), crate::VMError> {
+        if memidx == 0 {
+            if let Some(result) = self.memory.with_buffer_mut_exclusive(|memory| {
+                let end = Self::checked_memory_end(dst, count, memory.len())?;
+                memory[dst..end].fill(value);
+                Ok(())
+            }) {
+                return result;
+            }
+            return self.memory.with_buffer_mut(|memory| {
+                let end = Self::checked_memory_end(dst, count, memory.len())?;
+                memory[dst..end].fill(value);
+                Ok(())
+            });
+        }
+        let limit = self.mem_len(memidx);
+        let end = Self::checked_memory_end(dst, count, limit)?;
+        self.extra_mem_mut(memidx)[dst..end].fill(value);
+        Ok(())
+    }
+
+    #[inline(always)]
     pub(crate) fn branch_to_label(&mut self, depth: usize, entry: LabelEntry) {
         if let Some(frame) = self.frames.last_mut() {
             frame.ip = entry.target;
         }
 
+        if depth == 0 && entry.is_loop && !entry.is_try && entry.result_arity == 0 {
+            self.stack.truncate(entry.stack_height);
+            return;
+        }
+        if depth == 0 && !entry.is_loop && !entry.is_try && entry.result_arity == 0 {
+            self.stack.truncate(entry.stack_height);
+            self.label_stack.pop();
+            return;
+        }
+
         let arity = entry.result_arity as usize;
-        let keep = if arity == 0 {
-            Vec::new()
+        if arity == 0 {
+            self.stack.truncate(entry.stack_height);
+        } else if arity == 1 {
+            let keep = self.stack.pop().expect("branch result missing");
+            self.stack.truncate(entry.stack_height);
+            self.push_fast(keep);
+        } else if arity == 2 {
+            let b = self.stack.pop().expect("branch result missing");
+            let a = self.stack.pop().expect("branch result missing");
+            self.stack.truncate(entry.stack_height);
+            self.push_fast(a);
+            self.push_fast(b);
         } else {
             let split = self.stack.len().saturating_sub(arity);
-            self.stack.split_off(split)
-        };
-        self.stack.truncate(entry.stack_height);
-        self.stack.extend(keep);
+            let keep = self.stack.split_off(split);
+            self.stack.truncate(entry.stack_height);
+            self.stack.extend(keep);
+        }
 
         let len = self.label_stack.len();
         let new_len = if entry.is_loop {
@@ -3096,19 +5581,16 @@ impl VM {
         // Every try_table still open inside the exited range has its own label
         // in this slice, so naming each exited label's group removes exactly
         // the regions being left and nothing enclosing them.
-        let exited_groups: Vec<u64> = self.label_stack[new_len..]
-            .iter()
-            .filter(|label| label.is_try)
-            .map(|label| label.try_group)
-            .collect();
-        if !exited_groups.is_empty() {
+        let exited = &self.label_stack[new_len..];
+        if exited.iter().any(|label| label.is_try) {
             self.exception_handlers
-                .retain(|h| !exited_groups.contains(&h.group));
+                .retain(|h| !exited.iter().any(|label| label.is_try && label.try_group == h.group));
         }
         self.label_stack.truncate(new_len);
     }
 
     /// Get a reference to a specific extra memory by index (index > 0 only).
+    #[inline(always)]
     pub(crate) fn extra_mem(&self, idx: usize) -> &[u8] {
         if idx == 0 || idx - 1 >= self.extra_memories.len() {
             &[]
@@ -3118,6 +5600,7 @@ impl VM {
     }
 
     /// Get a mutable reference to a specific extra memory by index (index > 0 only).
+    #[inline(always)]
     pub(crate) fn extra_mem_mut(&mut self, idx: usize) -> &mut Vec<u8> {
         let i = idx - 1;
         if i >= self.extra_memories.len() {
@@ -3452,6 +5935,8 @@ impl VM {
     }
 
     fn insert_host_module_export(&mut self, module: &str, name: &str, export: ExportEntry) {
+        self.chunk_import_cache.clear();
+        self.chunk_call_target_cache.clear();
         self.insert_module_export(module, name, export.clone());
         if let Some((alias_module, alias_name)) = Self::canonical_subinterface_alias(module, name) {
             self.insert_module_export(&alias_module, &alias_name, export);
@@ -3569,6 +6054,7 @@ impl VM {
             globals_slot: globals_ptr,
             global_index_slot: global_index_ptr,
             stack_slot: &self.stack as *const Vec<Value>,
+            frames_slot: &self.frames as *const Vec<CallFrame>,
             handle_table_slot: &mut self.handle_table as *mut crate::handle_table::HandleTable,
             shared_memory_slot: &self.memory as *const crate::shared_memory::SharedMemory,
             type_registry_slot: &self.type_registry as *const crate::typedef::TypeRegistry,
@@ -3731,6 +6217,7 @@ impl VM {
 
     pub fn invoke_callback(&mut self, func_ref: &Value, args: &[Value]) -> Value {
         let saved_frame_depth = self.frames.len();
+        let saved_label_depth = self.label_stack.len();
         // Save the stack height so we can restore it after the callback returns,
         // giving the callback an isolated value stack (WASM call-frame semantics).
         let saved_stack_len = self.stack.len();
@@ -3797,7 +6284,10 @@ impl VM {
         // charged a receiver slot it was never given.
         self.host_originated_call = true;
         // Call the function (pushes a new frame for compiled fns; inline for host fns)
-        if self.call_value(args.len() + receiver_argc).is_err() {
+        if let Err(error) = self.call_value(args.len() + receiver_argc) {
+            if self.last_exception.is_none() && !error.is_suspension() {
+                self.last_exception = Some(crate::calls::make_runtime_error(&error.to_string()));
+            }
             self.stack.truncate(saved_stack_len);
             return Value::Null;
         }
@@ -3814,10 +6304,20 @@ impl VM {
         // pre-call height so the caller's expression stack is not polluted.
         let result = match self.execute_until(saved_frame_depth + 1) {
             Ok(val) => val,
-            Err(_) => {
+            Err(error) => {
+                // A callback error crosses a host boundary. Preserve an
+                // already-raised language exception, or surface the VM error
+                // instead of silently making the callback return null.
+                if self.last_exception.is_none() && !error.is_suspension() {
+                    self.last_exception = Some(crate::calls::make_runtime_error(&error.to_string()));
+                }
                 while self.frames.len() > saved_frame_depth {
+                    let base = self.frames.last().unwrap().base;
+                    self.close_upvalues(base);
                     self.frames.pop();
                 }
+                self.label_stack.truncate(saved_label_depth);
+                self.prune_exception_handlers_to_live_frames(saved_frame_depth);
                 Value::Null
             }
         };
@@ -3882,6 +6382,55 @@ impl VM {
         self.run_linked_impl(chunks, resolved_imports, true)
     }
 
+    /// Instantiate globals for either loader path. Dynamic modules use
+    /// `run_linked_impl`, while standalone modules use `run`; both must apply
+    /// the same constant expressions before their script frame executes.
+    fn initialize_global_inits(&mut self, script_idx: usize) -> Result<(), VMError> {
+        let inits = self.chunks[script_idx].global_inits.clone();
+        if !inits.is_empty() {
+            if let Some(mut debugger) = self.debugger.take() {
+                let result = debugger.before_global_inits(self, script_idx);
+                self.debugger = Some(debugger);
+                result?;
+            }
+        }
+        for gi in &inits {
+            if let Some(mut debugger) = self.debugger.take() {
+                let result = debugger.on_global_init(self, script_idx, &gi.name, &gi.init);
+                self.debugger = Some(debugger);
+                result?;
+            }
+            // Preserve values installed by the host or by earlier modules.
+            let unwritten = match self.global_index.get(&gi.name) {
+                Some(&i) => !self
+                    .globals_assigned
+                    .get(i as usize)
+                    .copied()
+                    .unwrap_or(true),
+                None => true,
+            };
+            if unwritten {
+                // Bytecode REF_FUNC operands are rebased during linking, but
+                // constant expressions are stored outside the bytecode.
+                let init = match &gi.init {
+                    crate::chunk::ConstExpr::RefFunc(index) => {
+                        crate::chunk::ConstExpr::RefFunc((*index as usize + script_idx) as _)
+                    }
+                    _ => gi.init.clone(),
+                };
+                let val = self.eval_const_expr(&init);
+                self.set_global(&gi.name, val);
+            }
+            if self.debugger.is_some() {
+                let value = self.global(&gi.name).cloned().unwrap_or(Value::Null);
+                if let Some(debugger) = self.debugger.as_mut() {
+                    debugger.on_global_init_result(&gi.name, unwritten, &value);
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Validate every instruction of every incoming chunk BEFORE any of it
     /// can execute — the WASM spec's own architecture (validation is a phase
     /// preceding instantiation), applied to every bytecode source alike: our
@@ -3926,6 +6475,703 @@ impl VM {
         Ok(())
     }
 
+    fn build_decoded_ops_for_chunk(chunk: &Chunk) -> Vec<Op> {
+        let code = &chunk.code;
+        let mut decoded = vec![Op::NOP; code.len()];
+        let mut ip = 0usize;
+        while ip + 3 < code.len() {
+            let opcode_start = ip;
+            let op = Op::from_code_at(code, opcode_start);
+            decoded[opcode_start] = op;
+            if op == Op::REF_FUNC {
+                ip += 4 + 2 + 1;
+                if ip - 1 < code.len() {
+                    let uv_count = (code[ip - 1] & 0x7f) as usize;
+                    ip += uv_count * 3;
+                }
+                continue;
+            }
+            ip += 4;
+            ip += op.operand_format().size_in(code, ip);
+        }
+        decoded
+    }
+
+    fn build_decoded_operands_for_chunk(chunk: &Chunk) -> Vec<u32> {
+        let code = &chunk.code;
+        let mut decoded = vec![0u32; code.len()];
+        let mut ip = 0usize;
+        while ip + 3 < code.len() {
+            let opcode_start = ip;
+            let op = Op::from_code_at(code, opcode_start);
+            let operand_start = opcode_start + 4;
+            decoded[opcode_start] = match op {
+                Op::LOCAL_GET | Op::LOCAL_SET | Op::LOCAL_TEE
+                    if operand_start + 1 < code.len() =>
+                {
+                    ((code[operand_start] as u32) << 8) | code[operand_start + 1] as u32
+                }
+                Op::CALL if operand_start + 2 < code.len() => {
+                    (((code[operand_start] as u32) << 8) | code[operand_start + 1] as u32)
+                        | ((code[operand_start + 2] as u32) << 16)
+                }
+                Op::CALL_INDIRECT | Op::RETURN_CALL_INDIRECT
+                    if operand_start + 2 < code.len() =>
+                {
+                    (code[operand_start] as u32)
+                        | ((code[operand_start + 1] as u32) << 8)
+                        | ((code[operand_start + 2] as u32) << 16)
+                }
+                Op::RETURN_CALL if operand_start + 1 < code.len() => {
+                    (code[operand_start] as u32) | ((code[operand_start + 1] as u32) << 8)
+                }
+                Op::CALL_REF | Op::RETURN_CALL_REF if operand_start + 1 < code.len() => {
+                    (code[operand_start] as u32) | ((code[operand_start + 1] as u32) << 8)
+                }
+                Op::CALL_WITH_TAG | Op::CALL_RETURN_WITH_TAG
+                    if operand_start + 2 < code.len() =>
+                {
+                    (((code[operand_start] as u32) << 8) | code[operand_start + 1] as u32)
+                        | ((code[operand_start + 2] as u32) << 16)
+                }
+                Op::BLOCK | Op::LOOP | Op::IF if operand_start + 1 < code.len() => {
+                    (code[operand_start] as u32) | ((code[operand_start + 1] as u32) << 8)
+                }
+                Op::GLOBAL_GET | Op::GLOBAL_SET if operand_start + 3 < code.len() => {
+                    ((code[operand_start] as u32) << 24)
+                        | ((code[operand_start + 1] as u32) << 16)
+                        | ((code[operand_start + 2] as u32) << 8)
+                        | code[operand_start + 3] as u32
+                }
+                Op::I32_LOAD
+                | Op::I64_LOAD
+                | Op::F32_LOAD
+                | Op::F64_LOAD
+                | Op::I32_LOAD8_S
+                | Op::I32_LOAD8_U
+                | Op::I32_LOAD16_S
+                | Op::I32_LOAD16_U
+                | Op::I64_LOAD8_S
+                | Op::I64_LOAD8_U
+                | Op::I64_LOAD16_S
+                | Op::I64_LOAD16_U
+                | Op::I64_LOAD32_S
+                | Op::I64_LOAD32_U
+                | Op::I32_STORE
+                | Op::I64_STORE
+                | Op::F32_STORE
+                | Op::F64_STORE
+                | Op::I32_STORE8
+                | Op::I32_STORE16
+                | Op::I64_STORE8
+                | Op::I64_STORE16
+                | Op::I64_STORE32
+                    if operand_start < code.len() =>
+                {
+                    if code[operand_start] & 0x80 == 0 {
+                        0
+                    } else {
+                        let mut mem_ip = operand_start;
+                        let align = crate::opcode::read_leb_u32(code, &mut mem_ip);
+                        let memory64_offset = align & 0x100 != 0;
+                        let offset = if memory64_offset {
+                            crate::opcode::read_leb_u64(code, &mut mem_ip)
+                        } else {
+                            crate::opcode::read_leb_u32(code, &mut mem_ip) as u64
+                        };
+                        let explicit_memidx = align & 0x40 != 0;
+                        if explicit_memidx {
+                            let _ = crate::opcode::read_leb_u32(code, &mut mem_ip);
+                        }
+                        let len = mem_ip.saturating_sub(operand_start);
+                        if memory64_offset
+                            || explicit_memidx
+                            || offset > DECODED_MEMARG_OFFSET_MASK as u64
+                            || len > 0x7f
+                        {
+                            DECODED_MEMARG_FALLBACK
+                        } else {
+                            DECODED_MEMARG_PRESENT
+                                | ((len as u32) << DECODED_MEMARG_LEN_SHIFT)
+                                | (offset as u32)
+                        }
+                    }
+                }
+                Op::MEMORY_FILL if operand_start < code.len() => {
+                    if code[operand_start] & 0x80 == 0 {
+                        ((1u32) << DECODED_BULK_MEMORY_LEN_SHIFT) | code[operand_start] as u32
+                    } else {
+                        DECODED_BULK_MEMORY_FALLBACK
+                    }
+                }
+                Op::MEMORY_SIZE | Op::MEMORY_GROW if operand_start < code.len() => {
+                    if code[operand_start] & 0x80 == 0 {
+                        ((1u32) << DECODED_BULK_MEMORY_LEN_SHIFT) | code[operand_start] as u32
+                    } else {
+                        DECODED_BULK_MEMORY_FALLBACK
+                    }
+                }
+                Op::MEMORY_COPY | Op::MEMORY_INIT if operand_start + 1 < code.len() => {
+                    if code[operand_start] & 0x80 == 0 && code[operand_start + 1] & 0x80 == 0 {
+                        ((2u32) << DECODED_BULK_MEMORY_LEN_SHIFT)
+                            | ((code[operand_start + 1] as u32) << DECODED_BULK_MEMORY_SRC_SHIFT)
+                            | code[operand_start] as u32
+                    } else {
+                        DECODED_BULK_MEMORY_FALLBACK
+                    }
+                }
+                Op::TABLE_SIZE | Op::TABLE_GROW | Op::TABLE_FILL if operand_start < code.len() => {
+                    if code[operand_start] & 0x80 == 0 {
+                        ((1u32) << DECODED_BULK_MEMORY_LEN_SHIFT) | code[operand_start] as u32
+                    } else {
+                        DECODED_BULK_MEMORY_FALLBACK
+                    }
+                }
+                Op::TABLE_COPY | Op::TABLE_INIT if operand_start + 1 < code.len() => {
+                    if code[operand_start] & 0x80 == 0 && code[operand_start + 1] & 0x80 == 0 {
+                        ((2u32) << DECODED_BULK_MEMORY_LEN_SHIFT)
+                            | ((code[operand_start + 1] as u32) << DECODED_BULK_MEMORY_SRC_SHIFT)
+                            | code[operand_start] as u32
+                    } else {
+                        DECODED_BULK_MEMORY_FALLBACK
+                    }
+                }
+                Op::ELEM_DROP | Op::DATA_DROP if operand_start < code.len() => {
+                    if code[operand_start] & 0x80 == 0 {
+                        ((1u32) << DECODED_BULK_MEMORY_LEN_SHIFT) | code[operand_start] as u32
+                    } else {
+                        DECODED_BULK_MEMORY_FALLBACK
+                    }
+                }
+                Op::STRUCT_GET | Op::STRUCT_SET | Op::STRUCT_GET_S | Op::STRUCT_GET_U
+                    if operand_start + 1 < code.len() =>
+                {
+                    if code[operand_start] & 0x80 == 0 && code[operand_start + 1] & 0x80 == 0 {
+                        DECODED_ONE_BYTE_LEB_PRESENT
+                            | code[operand_start] as u32
+                            | ((code[operand_start + 1] as u32) << 8)
+                    } else {
+                        0
+                    }
+                }
+                Op::I32_CONST | Op::I64_CONST | Op::BR | Op::BR_IF | Op::TABLE_GET | Op::TABLE_SET
+                    if operand_start < code.len() && code[operand_start] & 0x80 == 0 =>
+                {
+                    DECODED_ONE_BYTE_LEB_PRESENT | code[operand_start] as u32
+                }
+                Op::V128_LOAD8_LANE
+                | Op::V128_LOAD16_LANE
+                | Op::V128_LOAD32_LANE
+                | Op::V128_LOAD64_LANE
+                | Op::V128_STORE8_LANE
+                | Op::V128_STORE16_LANE
+                | Op::V128_STORE32_LANE
+                | Op::V128_STORE64_LANE
+                    if operand_start < code.len() =>
+                {
+                    if code[operand_start] & 0x80 == 0 {
+                        code[operand_start] as u32
+                    } else {
+                        let mut mem_ip = operand_start;
+                        let align = crate::opcode::read_leb_u32(code, &mut mem_ip);
+                        let memory64_offset = align & 0x100 != 0;
+                        if memory64_offset {
+                            let _ = crate::opcode::read_leb_u64(code, &mut mem_ip);
+                        } else {
+                            let _ = crate::opcode::read_leb_u32(code, &mut mem_ip);
+                        }
+                        if align & 0x40 != 0 {
+                            let _ = crate::opcode::read_leb_u32(code, &mut mem_ip);
+                        }
+                        code.get(mem_ip).copied().unwrap_or(0) as u32
+                    }
+                }
+                Op::I8X16_EXTRACT_LANE_S
+                | Op::I8X16_EXTRACT_LANE_U
+                | Op::I8X16_REPLACE_LANE
+                | Op::I16X8_EXTRACT_LANE_S
+                | Op::I16X8_EXTRACT_LANE_U
+                | Op::I16X8_REPLACE_LANE
+                | Op::I32X4_EXTRACT_LANE
+                | Op::I32X4_REPLACE_LANE
+                | Op::I64X2_EXTRACT_LANE
+                | Op::I64X2_REPLACE_LANE
+                | Op::F32X4_EXTRACT_LANE
+                | Op::F32X4_REPLACE_LANE
+                | Op::F64X2_EXTRACT_LANE
+                | Op::F64X2_REPLACE_LANE
+                    if operand_start < code.len() =>
+                {
+                    code[operand_start] as u32
+                }
+                Op::F32_CONST if operand_start + 3 < code.len() => u32::from_le_bytes([
+                    code[operand_start],
+                    code[operand_start + 1],
+                    code[operand_start + 2],
+                    code[operand_start + 3],
+                ]),
+                _ => 0,
+            };
+            if op == Op::REF_FUNC {
+                ip += 4 + 2 + 1;
+                if ip - 1 < code.len() {
+                    let uv_count = (code[ip - 1] & 0x7f) as usize;
+                    ip += uv_count * 3;
+                }
+                continue;
+            }
+            ip += 4;
+            ip += op.operand_format().size_in(code, ip);
+        }
+        decoded
+    }
+
+    fn build_decoded_operands64_for_chunk(chunk: &Chunk) -> Vec<u64> {
+        let code = &chunk.code;
+        let mut decoded = vec![0u64; code.len()];
+        let mut ip = 0usize;
+        while ip + 3 < code.len() {
+            let opcode_start = ip;
+            let op = Op::from_code_at(code, opcode_start);
+            let operand_start = opcode_start + 4;
+            if op == Op::F64_CONST && operand_start + 7 < code.len() {
+                decoded[opcode_start] = u64::from_le_bytes([
+                    code[operand_start],
+                    code[operand_start + 1],
+                    code[operand_start + 2],
+                    code[operand_start + 3],
+                    code[operand_start + 4],
+                    code[operand_start + 5],
+                    code[operand_start + 6],
+                    code[operand_start + 7],
+                ]);
+            }
+            if op == Op::REF_FUNC {
+                ip += 4 + 2 + 1;
+                if ip - 1 < code.len() {
+                    let uv_count = (code[ip - 1] & 0x7f) as usize;
+                    ip += uv_count * 3;
+                }
+                continue;
+            }
+            ip += 4;
+            ip += op.operand_format().size_in(code, ip);
+        }
+        decoded
+    }
+
+    fn build_native_call_sites_for_chunk(chunk: &Chunk) -> Vec<Option<NativeCallSiteTarget>> {
+        vec![None; chunk.code.len()]
+    }
+
+    fn build_native_result_fast_path_at(
+        chunk: &Chunk,
+        native_call_sites: &[Option<NativeCallSiteTarget>],
+        opcode_start: usize,
+    ) -> NativeResultFastPath {
+        let code = &chunk.code;
+        let call_native_matches =
+            |ip: usize, argc: u8, matches_target: fn(NativeCallSiteTarget) -> bool| -> bool {
+            if ip + 6 >= code.len() || Op::from_code_at(code, ip) != Op::CALL {
+                return false;
+            }
+            code[ip + 6] == argc
+                && native_call_sites
+                    .get(ip)
+                    .copied()
+                    .flatten()
+                    .is_some_and(matches_target)
+        };
+        if opcode_start + 3 >= code.len() || Op::from_code_at(code, opcode_start) != Op::CALL {
+            return NativeResultFastPath::None;
+        }
+        let after_call_ip = opcode_start + 7;
+        let after_end_ip = after_call_ip + 4;
+        if call_native_matches(opcode_start, 1, |site| {
+            matches!(
+                site,
+                NativeCallSiteTarget::JsNumber(JsNumberBuiltin::ToI32)
+            )
+        }) && after_call_ip + 3 < code.len()
+            && Op::from_code_at(code, after_call_ip) == Op::I32_EQZ
+        {
+            return NativeResultFastPath::I32Eqz {
+                next_ip: (after_call_ip + 4) as u32,
+            };
+        }
+        if call_native_matches(opcode_start, 1, |site| {
+            matches!(
+                site,
+                NativeCallSiteTarget::EcmaBoolean(EcmaBooleanBuiltin::ToBoolean, _)
+            )
+        }) && call_native_matches(after_call_ip, 1, |site| {
+            matches!(
+                site,
+                NativeCallSiteTarget::JsBoolean(JsBooleanBuiltin::Cast)
+            )
+        }) {
+            let after_cast_ip = after_call_ip + 7;
+            let next_ip = if call_native_matches(after_cast_ip, 1, |site| {
+                matches!(
+                    site,
+                    NativeCallSiteTarget::JsNumber(JsNumberBuiltin::FromI32)
+                )
+            }) {
+                after_cast_ip + 7
+            } else {
+                after_cast_ip
+            };
+            return NativeResultFastPath::EcmaBooleanToI32 {
+                next_ip: next_ip as u32,
+            };
+        }
+        if after_end_ip + 5 < code.len()
+            && Op::from_code_at(code, after_call_ip) == Op::END
+            && Op::from_code_at(code, after_end_ip) == Op::LOCAL_SET
+        {
+            let slot = ((code[after_end_ip + 4] as u16) << 8) | code[after_end_ip + 5] as u16;
+            return NativeResultFastPath::EndLocalSet {
+                slot,
+                next_ip: (after_end_ip + 6) as u32,
+            };
+        }
+        NativeResultFastPath::None
+    }
+
+    fn build_native_result_fast_paths_for_chunk(
+        chunk: &Chunk,
+        native_call_sites: Option<&[Option<NativeCallSiteTarget>]>,
+    ) -> Vec<NativeResultFastPath> {
+        let code = &chunk.code;
+        let empty_sites: &[Option<NativeCallSiteTarget>] = &[];
+        let native_call_sites = native_call_sites.unwrap_or(empty_sites);
+        let mut fast_paths = vec![NativeResultFastPath::None; code.len()];
+        let mut ip = 0usize;
+        while ip + 3 < code.len() {
+            let opcode_start = ip;
+            let op = Op::from_code_at(code, opcode_start);
+            if op == Op::CALL {
+                fast_paths[opcode_start] =
+                    Self::build_native_result_fast_path_at(chunk, native_call_sites, opcode_start);
+            }
+            if op == Op::REF_FUNC {
+                ip += 4 + 2 + 1;
+                if ip - 1 < code.len() {
+                    let uv_count = (code[ip - 1] & 0x7f) as usize;
+                    ip += uv_count * 3;
+                }
+                continue;
+            }
+            ip += 4;
+            ip += op.operand_format().size_in(code, ip);
+        }
+        fast_paths
+    }
+
+    fn build_local_fast_paths_for_chunk(
+        chunk: &Chunk,
+        native_call_sites: Option<&[Option<NativeCallSiteTarget>]>,
+    ) -> Vec<LocalFastPath> {
+        let code = &chunk.code;
+        let native_call_sites = native_call_sites.unwrap_or(&[]);
+        let mut fast_paths = vec![LocalFastPath::None; code.len()];
+        let call_matches =
+            |ip: usize, argc: u8, matches_target: fn(NativeCallSiteTarget) -> bool, module: &str, name: &str| -> bool {
+                if ip + 6 >= code.len() || Op::from_code_at(code, ip) != Op::CALL || code[ip + 6] != argc {
+                    return false;
+                }
+                if native_call_sites
+                    .get(ip)
+                    .copied()
+                    .flatten()
+                    .is_some_and(matches_target)
+                {
+                    return true;
+                }
+                let fn_idx = ((code[ip + 4] as usize) << 8) | code[ip + 5] as usize;
+                chunk
+                    .imports
+                    .get(fn_idx)
+                    .is_some_and(|import| import.module == module && import.name == name)
+            };
+        let decode_sleb_i32 = |mut ip: usize| -> Option<(i32, usize)> {
+            let byte = *code.get(ip)?;
+            ip += 1;
+            if byte & 0x80 == 0 {
+                let value = if byte & 0x40 == 0 {
+                    byte as i32
+                } else {
+                    ((byte as u32) | !0x7f) as i32
+                };
+                return Some((value, ip));
+            }
+            let mut result = (byte & 0x7f) as u32;
+            let mut shift = 7u32;
+            loop {
+                let byte = *code.get(ip)?;
+                ip += 1;
+                result |= ((byte & 0x7f) as u32) << shift;
+                shift += 7;
+                if byte & 0x80 == 0 {
+                    if shift < 32 && (byte & 0x40) != 0 {
+                        result |= !0u32 << shift;
+                    }
+                    return Some((result as i32, ip));
+                }
+            }
+        };
+        let mut ip = 0usize;
+        while ip + 3 < code.len() {
+            let opcode_start = ip;
+            let op = Op::from_code_at(code, opcode_start);
+            if op == Op::LOCAL_GET {
+                let next_ip = opcode_start + 6;
+                if next_ip + 7 < code.len() && Op::from_code_at(code, next_ip) == Op::GLOBAL_GET {
+                    let operand_start = next_ip + 4;
+                    let global_idx = ((code[operand_start] as u32) << 24)
+                        | ((code[operand_start + 1] as u32) << 16)
+                        | ((code[operand_start + 2] as u32) << 8)
+                        | code[operand_start + 3] as u32;
+                    let after_global_ip = next_ip + 8;
+                    let next_dispatch_ip = if after_global_ip + 3 < code.len()
+                        && Op::from_code_at(code, after_global_ip) == Op::NOP
+                    {
+                        after_global_ip + 4
+                    } else {
+                        after_global_ip
+                    };
+                    fast_paths[opcode_start] = LocalFastPath::LocalGetGlobalGet {
+                        global_idx,
+                        next_ip: next_dispatch_ip as u32,
+                    };
+                } else if next_ip + 7 < code.len()
+                    && Op::from_code_at(code, next_ip) == Op::ANY_CONVERT_EXTERN
+                {
+                    let test_ip = next_ip + 4;
+                    let test_op = Op::from_code_at(code, test_ip);
+                    if matches!(test_op, Op::REF_TEST | Op::REF_TEST_NULL) {
+                        if let Some((heap_type, after_test_ip)) = decode_sleb_i32(test_ip + 4) {
+                            fast_paths[opcode_start] = LocalFastPath::LocalGetAnyConvertRefTest {
+                                heap_type,
+                                nullable: test_op == Op::REF_TEST_NULL,
+                                next_ip: after_test_ip as u32,
+                            };
+                        }
+                    }
+                } else if next_ip + 6 < code.len() && Op::from_code_at(code, next_ip) == Op::CALL {
+                    if call_matches(next_ip, 1, |site| matches!(site, NativeCallSiteTarget::JsNumber(JsNumberBuiltin::ToF64)), "wasm:js-number", "toF64") {
+                        fast_paths[opcode_start] = LocalFastPath::LocalGetJsNumberToF64 {
+                            next_ip: (next_ip + 7) as u32,
+                        };
+                    } else if call_matches(next_ip, 1, |site| matches!(site, NativeCallSiteTarget::JsNumber(JsNumberBuiltin::ToI32)), "wasm:js-number", "toI32") {
+                        fast_paths[opcode_start] = LocalFastPath::LocalGetJsNumberToI32 {
+                            next_ip: (next_ip + 7) as u32,
+                        };
+                    } else if call_matches(next_ip, 1, |site| matches!(site, NativeCallSiteTarget::JsNumber(JsNumberBuiltin::Test)), "wasm:js-number", "test") {
+                        fast_paths[opcode_start] = LocalFastPath::LocalGetJsNumberTest {
+                            next_ip: (next_ip + 7) as u32,
+                        };
+                    } else if call_matches(next_ip, 1, |site| matches!(site, NativeCallSiteTarget::JsString(JsStringBuiltin::Test)), "wasm:js-string", "test") {
+                        fast_paths[opcode_start] = LocalFastPath::LocalGetJsStringTest {
+                            next_ip: (next_ip + 7) as u32,
+                        };
+                    } else if call_matches(next_ip, 1, |site| matches!(site, NativeCallSiteTarget::JsUndefined(JsUndefinedBuiltin::Test)), "wasm:js-undefined", "test") {
+                        fast_paths[opcode_start] = LocalFastPath::LocalGetJsUndefinedTest {
+                            next_ip: (next_ip + 7) as u32,
+                        };
+                    }
+                } else if next_ip + 5 < code.len() && Op::from_code_at(code, next_ip) == Op::LOCAL_SET {
+                    let target_slot =
+                        ((code[next_ip + 4] as u16) << 8) | code[next_ip + 5] as u16;
+                    fast_paths[opcode_start] = LocalFastPath::LocalGetLocalSet {
+                        target_slot,
+                        next_ip: (next_ip + 6) as u32,
+                    };
+                } else if next_ip + 11 < code.len()
+                    && Op::from_code_at(code, next_ip) == Op::LOCAL_GET
+                    && Op::from_code_at(code, next_ip + 6) == Op::LOCAL_SET
+                {
+                    let second_slot =
+                        ((code[next_ip + 4] as u16) << 8) | code[next_ip + 5] as u16;
+                    let target_slot =
+                        ((code[next_ip + 10] as u16) << 8) | code[next_ip + 11] as u16;
+                    fast_paths[opcode_start] = LocalFastPath::LocalGetLocalGetSet {
+                        second_slot,
+                        target_slot,
+                        next_ip: (next_ip + 12) as u32,
+                    };
+                }
+            }
+            if op == Op::REF_FUNC {
+                ip += 4 + 2 + 1;
+                if ip - 1 < code.len() {
+                    let uv_count = (code[ip - 1] & 0x7f) as usize;
+                    ip += uv_count * 3;
+                }
+                continue;
+            }
+            ip += 4;
+            ip += op.operand_format().size_in(code, ip);
+        }
+        fast_paths
+    }
+
+    fn prefill_native_call_sites_for_current_imports(
+        &mut self,
+        first_new_chunk: usize,
+    ) -> Result<(), VMError> {
+        let mut calls = Vec::new();
+        // Earlier chunks already have their call-site caches. Rescanning all
+        // accumulated code for every dynamic include makes linking quadratic
+        // in the number of included modules.
+        for chunk_index in first_new_chunk..self.chunks.len() {
+            let Some(decoded_ops) = self.decoded_ops.get(chunk_index) else {
+                continue;
+            };
+            let Some(decoded_operands) = self.decoded_operands.get(chunk_index) else {
+                continue;
+            };
+            let len = decoded_ops.len().min(decoded_operands.len());
+            for opcode_start in 0..len {
+                if decoded_ops[opcode_start] == Op::CALL {
+                    calls.push((
+                        chunk_index,
+                        opcode_start,
+                        (decoded_operands[opcode_start] & 0xffff) as usize,
+                    ));
+                }
+            }
+        }
+
+        for (chunk_index, opcode_start, import_idx) in calls {
+            let target = match self.resolve_chunk_call_target(chunk_index, import_idx)? {
+                Some(target) => target,
+                None => {
+                    let Some(target) = self.resolved_import_table.get(import_idx) else {
+                        continue;
+                    };
+                    target.clone()
+                }
+            };
+            if let Some(native_target) = NativeCallSiteTarget::from_resolved(&target) {
+                self.cache_native_call_site(chunk_index, opcode_start, native_target);
+            }
+        }
+        for chunk_index in first_new_chunk..self.chunks.len() {
+            if self.native_result_fast_paths.len() <= chunk_index {
+                self.native_result_fast_paths
+                    .resize_with(chunk_index + 1, Vec::new);
+            }
+            self.native_result_fast_paths[chunk_index] =
+                Self::build_native_result_fast_paths_for_chunk(
+                    &self.chunks[chunk_index],
+                    self.native_call_sites.get(chunk_index).map(Vec::as_slice),
+                );
+        }
+        Ok(())
+    }
+
+    fn build_block_targets_for_chunk(chunk: &Chunk) -> Vec<Option<BlockTargets>> {
+        let mut targets = vec![None; chunk.code.len()];
+        for (opcode_start, block_targets) in crate::dispatch::build_block_table(&chunk.code) {
+            if opcode_start < targets.len() {
+                targets[opcode_start] = Some(block_targets);
+            }
+        }
+        targets
+    }
+
+    fn build_loop_superops_for_chunk(chunk: &Chunk) -> Vec<LoopSuperop> {
+        let _ = chunk;
+        // classify_loop_superop grows this cache only when a loop is visited.
+        Vec::new()
+    }
+
+    fn build_br_table_targets_for_chunk(chunk: &Chunk) -> Vec<Option<BrTableTargets>> {
+        let code = &chunk.code;
+        let mut targets = Vec::new();
+        let mut ip = 0usize;
+        while ip + 3 < code.len() {
+            let opcode_start = ip;
+            let op = Op::from_code_at(code, opcode_start);
+            ip += 4;
+            if op == Op::BR_TABLE {
+                let mut table_ip = ip;
+                let count = crate::opcode::read_leb_u32(code, &mut table_ip) as usize;
+                let mut depths = Vec::with_capacity(count);
+                for _ in 0..count {
+                    depths.push(crate::opcode::read_leb_u32(code, &mut table_ip) as usize);
+                }
+                let default_depth = crate::opcode::read_leb_u32(code, &mut table_ip) as usize;
+                let uniform_depth = depths
+                    .iter()
+                    .all(|depth| *depth == default_depth)
+                    .then_some(default_depth);
+                if targets.is_empty() {
+                    targets.resize_with(code.len(), || None);
+                }
+                targets[opcode_start] = Some(BrTableTargets {
+                    depths,
+                    default_depth,
+                    uniform_depth,
+                    end_ip: table_ip,
+                });
+                ip = table_ip;
+                continue;
+            }
+            if op == Op::REF_FUNC {
+                ip += 2 + 1;
+                if ip - 1 < code.len() {
+                    let uv_count = (code[ip - 1] & 0x7f) as usize;
+                    ip += uv_count * 3;
+                }
+                continue;
+            }
+            ip += op.operand_format().size_in(code, ip);
+        }
+        targets
+    }
+
+    fn extend_decoded_ops_for_chunks(&mut self, chunks: &[Chunk]) {
+        let first_new_chunk = self.native_call_sites.len();
+        self.decoded_ops
+            .extend(chunks.iter().map(Self::build_decoded_ops_for_chunk));
+        self.decoded_operands
+            .extend(chunks.iter().map(Self::build_decoded_operands_for_chunk));
+        self.decoded_operands64
+            .extend(chunks.iter().map(Self::build_decoded_operands64_for_chunk));
+        self.native_call_sites
+            .extend(chunks.iter().map(Self::build_native_call_sites_for_chunk));
+        self.native_result_fast_paths.extend(
+            chunks
+                .iter()
+                .map(|chunk| Self::build_native_result_fast_paths_for_chunk(chunk, None)),
+        );
+        self.local_fast_paths.extend(chunks.iter().enumerate().map(|(index, chunk)| {
+            Self::build_local_fast_paths_for_chunk(
+                chunk,
+                self.native_call_sites
+                    .get(first_new_chunk + index)
+                    .map(Vec::as_slice),
+            )
+        }));
+    }
+
+    fn extend_block_targets_for_chunks(&mut self, chunks: &[Chunk]) {
+        self.block_targets
+            .extend(chunks.iter().map(Self::build_block_targets_for_chunk));
+    }
+
+    fn extend_loop_superops_for_chunks(&mut self, chunks: &[Chunk]) {
+        self.loop_superops
+            .extend(chunks.iter().map(Self::build_loop_superops_for_chunk));
+    }
+
+    fn extend_br_table_targets_for_chunks(&mut self, chunks: &[Chunk]) {
+        self.br_table_targets
+            .extend(chunks.iter().map(Self::build_br_table_targets_for_chunk));
+    }
+
     fn run_linked_impl(
         &mut self,
         chunks: Vec<Chunk>,
@@ -3935,10 +7181,15 @@ impl VM {
         if chunks.is_empty() {
             return Ok(Value::Null);
         }
-        Self::validate_chunk_code(&chunks)?;
+        let link_phase = crate::debugger::DebugPhase::new(self.debug_report(), "vm link");
+        {
+            let _phase = crate::debugger::DebugPhase::new(self.debug_report(), "vm validate");
+            Self::validate_chunk_code(&chunks)?;
+        }
         let script_idx = self.chunks.len();
         // Offset ref_func indices
         let mut adjusted = chunks;
+        let relocate_phase = crate::debugger::DebugPhase::new(self.debug_report(), "vm relocate");
         if script_idx > 0 {
             for chunk in &mut adjusted {
                 let code = &mut chunk.code;
@@ -3973,12 +7224,26 @@ impl VM {
                 }
             }
         }
+        drop(relocate_phase);
         // Rewrite the incoming set's global operands into THIS VM's index
         // space before the chunks join it — each set was compiled against
         // its own table.
-        self.merge_global_table(&mut adjusted);
+        {
+            let _phase = crate::debugger::DebugPhase::new(self.debug_report(), "vm globals");
+            self.merge_global_table(&mut adjusted);
+        }
         self.merge_canon_section(&adjusted)?;
         self.merge_canon_types(&adjusted)?;
+        {
+            let _phase = crate::debugger::DebugPhase::new(self.debug_report(), "vm decode");
+            self.extend_decoded_ops_for_chunks(&adjusted);
+        }
+        {
+            let _phase = crate::debugger::DebugPhase::new(self.debug_report(), "vm blocks");
+            self.extend_block_targets_for_chunks(&adjusted);
+            self.extend_loop_superops_for_chunks(&adjusted);
+            self.extend_br_table_targets_for_chunks(&adjusted);
+        }
         self.chunks.extend(adjusted);
         // ⛔ EVERY CHUNK OF THIS UNIT POINTS AT THIS UNIT'S TABLE. `link.rs`
         // remapped their `CALL` operands into `chunks[script_idx].imports`, so
@@ -3999,7 +7264,16 @@ impl VM {
         } else {
             None
         };
+        let saved_resolved_import_table = if nested {
+            Some(self.resolved_import_table.clone())
+        } else {
+            None
+        };
         self.import_table.clear();
+        self.resolved_import_table.clear();
+        self.chunk_import_cache.clear();
+        self.chunk_call_target_cache.clear();
+        let imports_phase = crate::debugger::DebugPhase::new(self.debug_report(), "vm imports");
         for target in resolved_imports {
             match target {
                 ImportTarget::ChunkFn { chunk_index, arity } => {
@@ -4035,6 +7309,34 @@ impl VM {
                 ImportTarget::WasiThreadSpawn => {
                     self.import_table.push(ImportTarget::WasiThreadSpawn);
                 }
+                ImportTarget::JsNumber(builtin) => {
+                    self.import_table.push(ImportTarget::JsNumber(builtin));
+                }
+                ImportTarget::JsBoolean(builtin) => {
+                    self.import_table.push(ImportTarget::JsBoolean(builtin));
+                }
+                ImportTarget::JsUndefined(builtin) => {
+                    self.import_table.push(ImportTarget::JsUndefined(builtin));
+                }
+                ImportTarget::JsString(builtin) => {
+                    self.import_table.push(ImportTarget::JsString(builtin));
+                }
+                ImportTarget::EcmaNumber(builtin, host_idx) => {
+                    self.import_table
+                        .push(ImportTarget::EcmaNumber(builtin, host_idx));
+                }
+                ImportTarget::EcmaBoolean(builtin, host_idx) => {
+                    self.import_table
+                        .push(ImportTarget::EcmaBoolean(builtin, host_idx));
+                }
+                ImportTarget::EcmaObject(builtin, host_idx) => {
+                    self.import_table
+                        .push(ImportTarget::EcmaObject(builtin, host_idx));
+                }
+                ImportTarget::EcmaArray(builtin, host_idx) => {
+                    self.import_table
+                        .push(ImportTarget::EcmaArray(builtin, host_idx));
+                }
                 ImportTarget::JspiYield => {
                     self.import_table.push(ImportTarget::JspiYield);
                 }
@@ -4046,11 +7348,18 @@ impl VM {
                 }
             }
         }
+        self.rebuild_resolved_import_table();
+        drop(imports_phase);
+        {
+            let _phase = crate::debugger::DebugPhase::new(self.debug_report(), "vm callsites");
+            self.prefill_native_call_sites_for_current_imports(script_idx)?;
+        }
 
         // Load type table. This program is its OWN module — a dynamically
         // compiled one numbers its types from 1 just like the host program,
         // so it gets its own base rather than continuing the caller's space.
         {
+            let _phase = crate::debugger::DebugPhase::new(self.debug_report(), "vm types");
             let type_base = self.module_type_ids.len();
             self.set_chunk_type_base(script_idx, type_base);
             let types = self.chunks[script_idx].types.clone();
@@ -4078,6 +7387,13 @@ impl VM {
             }
         }
 
+        {
+            let _phase = crate::debugger::DebugPhase::new(self.debug_report(), "vm init globals");
+            self.initialize_global_inits(script_idx)?;
+        }
+
+        drop(link_phase);
+
         // Execute
         let saved_frame_depth = self.frames.len();
         let saved_stack_len = self.stack.len();
@@ -4085,6 +7401,7 @@ impl VM {
             chunk_index: script_idx,
             ip: 0,
             base: self.stack.len(),
+            local_frame_size: self.chunks[script_idx].local_count as usize,
             label_base: self.label_stack.len(),
             upvalues: Vec::new(),
         });
@@ -4100,10 +7417,17 @@ impl VM {
             self.stack.truncate(saved_stack_len);
             if let Some(import_table) = saved_import_table {
                 self.import_table = import_table;
+                self.chunk_import_cache.clear();
+                self.chunk_call_target_cache.clear();
+            }
+            if let Some(resolved_import_table) = saved_resolved_import_table {
+                self.resolved_import_table = resolved_import_table;
             }
             result
         } else {
-            self.execute()
+            let result = self.execute();
+            self.pending_exit = false;
+            result
         }
     }
 
@@ -4140,6 +7464,19 @@ impl VM {
         self.close_upvalues(0);
         self.stack.clear();
         self.frames.clear();
+        let max_incoming_locals = chunks
+            .iter()
+            .map(|chunk| chunk.local_count as usize)
+            .max()
+            .unwrap_or(0);
+        let desired_stack_capacity = (max_incoming_locals + 64).max(1024);
+        if self.stack.capacity() < desired_stack_capacity {
+            self.stack
+                .reserve(desired_stack_capacity - self.stack.capacity());
+        }
+        if self.frames.capacity() < 64 {
+            self.frames.reserve(64 - self.frames.capacity());
+        }
         let script_idx = self.chunks.len(); // offset for new chunks
         // Offset ref_func indices in the new chunks so they point to correct positions
         let mut adjusted = chunks;
@@ -4186,6 +7523,10 @@ impl VM {
         self.merge_global_table(&mut adjusted);
         self.merge_canon_section(&adjusted)?;
         self.merge_canon_types(&adjusted)?;
+        self.extend_decoded_ops_for_chunks(&adjusted);
+        self.extend_block_targets_for_chunks(&adjusted);
+        self.extend_loop_superops_for_chunks(&adjusted);
+        self.extend_br_table_targets_for_chunks(&adjusted);
         self.chunks.extend(adjusted);
         // ⛔ EVERY CHUNK OF THIS UNIT POINTS AT THIS UNIT'S TABLE. `link.rs`
         // remapped their `CALL` operands into `chunks[script_idx].imports`, so
@@ -4211,8 +7552,10 @@ impl VM {
         let declared_memories = self.chunks[script_idx].memory_min_pages.clone();
         let declared_memory_maxes = self.chunks[script_idx].memory_max_pages.clone();
         self.memory_is_64 = self.chunks[script_idx].memory_is_64.clone();
+        self.memory0_is_64 = self.memory_is_64.first().copied().unwrap_or(false);
         self.instantiate_declared_memories(&declared_memories, &declared_memory_maxes)?;
         self.table_is_64 = self.chunks[script_idx].table_is_64.clone();
+        self.table0_is_64 = self.table_is_64.first().copied().unwrap_or(false);
         let declared_tables = self.chunks[script_idx].table_min_sizes.clone();
         self.wasm_table_maxes = self.chunks[script_idx]
             .table_max_sizes
@@ -4244,16 +7587,7 @@ impl VM {
                                 };
                                 let chunk_idx = defined_func_base + func_idx as usize;
                                 if chunk_idx < self.chunks.len() {
-                                    let chunk = &self.chunks[chunk_idx];
-                                    let func = crate::value::Function {
-                                        name: Some(chunk.name.clone()),
-                                        arity: chunk.arity,
-                                        chunk_index: chunk_idx,
-                                        upvalues: Vec::new(),
-                                    };
-                                    let mut obj = Object::new();
-                                    obj.kind = ObjectKind::Function(func);
-                                    Value::Object(crate::heap::alloc(obj))
+                                    self.make_funcref(chunk_idx)
                                 } else {
                                     Value::Null
                                 }
@@ -4270,23 +7604,48 @@ impl VM {
             let bytes = self
                 .data_segments
                 .get(init.data_index as usize)
-                .ok_or_else(|| crate::VMError::new("active data segment payload missing"))?
-                .clone();
+                .ok_or_else(|| crate::VMError::new("active data segment payload missing"))?;
             let offset = usize::try_from(init.offset)
                 .map_err(|_| crate::VMError::new("active data segment offset out of range"))?;
-            self.write_memory_bytes(init.memory_index as usize, offset, &bytes)?;
+            let memidx = init.memory_index as usize;
+            if memidx == 0 {
+                self.memory.with_buffer_mut(|memory| {
+                    if offset.saturating_add(bytes.len()) > memory.len() {
+                        Err(crate::VMError::new(format!(
+                            "trap: out of bounds memory access: addr={} size={} limit={}",
+                            offset,
+                            bytes.len(),
+                            memory.len()
+                        )))
+                    } else {
+                        memory[offset..offset + bytes.len()].copy_from_slice(bytes);
+                        Ok(())
+                    }
+                })?;
+            } else {
+                let mem = &mut self.extra_memories[memidx - 1];
+                if offset.saturating_add(bytes.len()) > mem.len() {
+                    return Err(crate::VMError::new(format!(
+                        "trap: out of bounds memory access: addr={} size={} limit={}",
+                        offset,
+                        bytes.len(),
+                        mem.len()
+                    )));
+                }
+                mem[offset..offset + bytes.len()].copy_from_slice(bytes);
+            }
         }
         let active_elem_segments = self.chunks[script_idx].active_elem_segments.clone();
         for init in active_elem_segments {
             let values = self
                 .elem_segments
                 .get(init.elem_index as usize)
-                .ok_or_else(|| crate::VMError::new("active element segment payload missing"))?
-                .clone();
+                .ok_or_else(|| crate::VMError::new("active element segment payload missing"))?;
             let offset = usize::try_from(init.offset)
                 .map_err(|_| crate::VMError::new("active element segment offset out of range"))?;
             let table = self
-                .table_mut(init.table_index as usize)
+                .wasm_tables
+                .get_mut(init.table_index as usize)
                 .ok_or_else(|| crate::VMError::new("active element segment table missing"))?;
             if offset.saturating_add(values.len()) > table.len() {
                 return Err(crate::VMError::new(
@@ -4302,11 +7661,16 @@ impl VM {
         // (imports are added to chunks[0] by all compilers). For multi-module programs,
         // different modules may have different imports. We resolve the union.
         self.import_table.clear();
+        self.resolved_import_table.clear();
+        self.chunk_import_cache.clear();
+        self.chunk_call_target_cache.clear();
         let script_imports = self.chunks[script_idx].imports.clone();
         for import in &script_imports {
             let target = self.resolve_import_target(&import.module, &import.name)?;
             self.import_table.push(target);
         }
+        self.rebuild_resolved_import_table();
+        self.prefill_native_call_sites_for_current_imports(script_idx)?;
 
         // Load type table from the script chunk (WASM GC type section).
         // Registers user-defined class types and their vtable methods.
@@ -4355,25 +7719,7 @@ impl VM {
         // stdlib chunks installed via global_inits are the portable
         // implementation that runs on standard WASM VMs; on Vybe they yield
         // to the optimized native version.
-        {
-            let inits = self.chunks[script_idx].global_inits.clone();
-            for gi in &inits {
-                // Apply only to a slot nobody has written — a host-installed
-                // native or a real program value both count as written.
-                let unwritten = match self.global_index.get(&gi.name) {
-                    Some(&i) => !self
-                        .globals_assigned
-                        .get(i as usize)
-                        .copied()
-                        .unwrap_or(true),
-                    None => true,
-                };
-                if unwritten {
-                    let val = self.eval_const_expr(&gi.init);
-                    self.set_global(&gi.name, val);
-                }
-            }
-        }
+        self.initialize_global_inits(script_idx)?;
 
         // ⚠ ELEMENT SEGMENTS INSTANTIATE **AFTER** GLOBALS AND THE TYPE TABLE.
         //
@@ -4413,14 +7759,13 @@ impl VM {
             chunk_index: script_idx,
             ip: 0,
             base: 0,
+            local_frame_size: self.chunks[script_idx].local_count as usize,
             label_base: self.label_stack.len(),
             upvalues: Vec::new(),
         });
 
         let local_count = self.chunks[script_idx].local_count as usize;
-        for _ in 0..local_count {
-            self.stack.push(Value::Null);
-        }
+        self.stack.resize(self.stack.len() + local_count, Value::Null);
 
         // Run synchronous code
         let result = self.execute_with_async()?;
@@ -4516,58 +7861,871 @@ impl VM {
         Ok(())
     }
 
+    /// Push without the stack-growth guard.
+    ///
+    /// Use only when the opcode has already popped at least as many values as
+    /// it will push, so this operation cannot be the first one to exceed
+    /// `MAX_STACK`.
+    #[inline(always)]
+    pub(crate) fn push_fast(&mut self, value: Value) {
+        self.stack.push(value);
+    }
+
     pub(crate) fn stack_floor(&self) -> usize {
         self.frames
             .last()
-            .map(|frame| {
-                let chunk = &self.chunks[frame.chunk_index];
-                frame.base + (chunk.local_count as usize).max(chunk.arity as usize)
-            })
+            .map(|frame| frame.base + frame.local_frame_size)
             .unwrap_or(0)
     }
 
+    #[inline(always)]
     pub(crate) fn pop(&mut self) -> Value {
         self.stack.pop().expect("stack underflow")
     }
 
+    #[inline(always)]
+    pub(crate) fn pop_fast(&mut self) -> Value {
+        let len = self.stack.len();
+        debug_assert!(len > 0, "stack underflow");
+        unsafe {
+            let value = std::ptr::read(self.stack.as_ptr().add(len - 1));
+            self.stack.set_len(len - 1);
+            value
+        }
+    }
+
+    #[inline(always)]
+    pub(crate) fn clone_top_fast(&self) -> Value {
+        let len = self.stack.len();
+        debug_assert!(len > 0, "stack underflow");
+        unsafe { self.stack.get_unchecked(len - 1).clone() }
+    }
+
+    #[inline(always)]
+    pub(crate) fn drop_top_above_floor_fast(&mut self, floor: usize) {
+        let len = self.stack.len();
+        if len > floor {
+            unsafe {
+                std::ptr::drop_in_place(self.stack.as_mut_ptr().add(len - 1));
+                self.stack.set_len(len - 1);
+            }
+        }
+    }
+
+    #[inline(always)]
+    pub(crate) fn remove_stack_slot_fast(&mut self, idx: usize) {
+        let len = self.stack.len();
+        if idx >= len {
+            panic!("stack slot out of bounds");
+        }
+        unsafe {
+            // Remove one initialized Value from the middle of the stack while
+            // preserving the order of the tail. This is `Vec::remove`'s
+            // operation specialized for the VM stack: drop the removed slot,
+            // memmove the tail left, then shorten the Vec without dropping the
+            // duplicated last element.
+            let ptr = self.stack.as_mut_ptr().add(idx);
+            std::ptr::drop_in_place(ptr);
+            std::ptr::copy(ptr.add(1), ptr, len - idx - 1);
+            self.stack.set_len(len - 1);
+        }
+    }
+
+    #[inline(always)]
+    pub(crate) fn replace_top_value_fast(&mut self, value: Value) {
+        let len = self.stack.len();
+        if len == 0 { panic!("stack underflow"); }
+        unsafe {
+            *self.stack.get_unchecked_mut(len - 1) = value;
+        }
+    }
+
+    #[inline(always)]
+    pub(crate) fn replace_ref_is_null_fast(&mut self) {
+        let len = self.stack.len();
+        if len == 0 { panic!("stack underflow"); }
+        let is_null = {
+            let value = unsafe { self.stack.get_unchecked(len - 1) };
+            value.is_null_ref() || matches!(value, Value::Undefined)
+        };
+        unsafe {
+            *self.stack.get_unchecked_mut(len - 1) = Value::I32(if is_null { 1 } else { 0 });
+        }
+    }
+
+    #[inline(always)]
+    pub(crate) fn replace_top_checked_fast(
+        &mut self,
+        f: impl FnOnce(&Value) -> Result<Value, crate::VMError>,
+    ) -> Result<(), crate::VMError> {
+        let len = self.stack.len();
+        if len == 0 { panic!("stack underflow"); }
+        let idx = len - 1;
+        let value = f(unsafe { self.stack.get_unchecked(idx) })?;
+        unsafe {
+            *self.stack.get_unchecked_mut(idx) = value;
+        }
+        Ok(())
+    }
+
+    #[inline(always)]
+    pub(crate) fn select_top_fast(&mut self) {
+        let len = self.stack.len();
+        if len < 3 { panic!("stack underflow"); }
+        let cond = unsafe { self.stack.get_unchecked(len - 1).as_i32() };
+        if cond != 0 {
+            self.stack.truncate(len - 2);
+        } else {
+            unsafe {
+                let ptr = self.stack.as_mut_ptr();
+                let selected = std::ptr::read(ptr.add(len - 2));
+                std::ptr::drop_in_place(ptr.add(len - 3));
+                std::ptr::drop_in_place(ptr.add(len - 1));
+                std::ptr::write(ptr.add(len - 3), selected);
+                self.stack.set_len(len - 2);
+            }
+        }
+    }
+
+    #[inline(always)]
+    pub(crate) fn replace_top_pair_fast(&mut self, value: Value) {
+        let len = self.stack.len();
+        if len < 2 { panic!("stack underflow"); }
+        unsafe {
+            *self.stack.get_unchecked_mut(len - 2) = value;
+        }
+        self.stack.truncate(len - 1);
+    }
+
+    #[inline(always)]
+    pub(crate) fn truncate_top_pair_fast(&mut self) {
+        let len = self.stack.len();
+        if len < 2 { panic!("stack underflow"); }
+        self.stack.truncate(len - 2);
+    }
+
+    #[inline(always)]
+    pub(crate) fn pop_v128_fast(&mut self) -> Option<[u8; 16]> {
+        match self.stack.pop().expect("stack underflow") {
+            Value::V128(bytes) => Some(bytes),
+            _ => None,
+        }
+    }
+
+    #[inline(always)]
+    pub(crate) fn pop_v128_pair_fast(&mut self) -> Option<([u8; 16], [u8; 16])> {
+        let len = self.stack.len();
+        if len < 2 {
+            panic!("stack underflow");
+        }
+        let result = match unsafe {
+            (
+                self.stack.get_unchecked(len - 2),
+                self.stack.get_unchecked(len - 1),
+            )
+        } {
+            (Value::V128(a), Value::V128(b)) => Some((*a, *b)),
+            _ => None,
+        };
+        self.stack.truncate(len - 2);
+        result
+    }
+
+    #[inline(always)]
+    pub(crate) fn pop_v128_triple_fast(&mut self) -> Option<([u8; 16], [u8; 16], [u8; 16])> {
+        let len = self.stack.len();
+        if len < 3 {
+            panic!("stack underflow");
+        }
+        let result = match unsafe {
+            (
+                self.stack.get_unchecked(len - 3),
+                self.stack.get_unchecked(len - 2),
+                self.stack.get_unchecked(len - 1),
+            )
+        } {
+            (Value::V128(a), Value::V128(b), Value::V128(c)) => Some((*a, *b, *c)),
+            _ => None,
+        };
+        self.stack.truncate(len - 3);
+        result
+    }
+
+    #[inline(always)]
+    pub(crate) fn pop_i32_fast(&mut self) -> i32 {
+        match self.stack.pop().expect("stack underflow") {
+            Value::I32(n) => n,
+            other => other.as_i32(),
+        }
+    }
+
+    #[inline(always)]
+    pub(crate) fn replace_i32_unary_fast(&mut self, f: impl FnOnce(i32) -> i32) {
+        let len = self.stack.len();
+        if len == 0 { panic!("stack underflow"); }
+        let idx = len - 1;
+        let value = match unsafe { self.stack.get_unchecked(idx) } {
+            Value::I32(n) => *n,
+            other => other.as_i32(),
+        };
+        unsafe {
+            *self.stack.get_unchecked_mut(idx) = Value::I32(f(value));
+        }
+    }
+
+    #[inline(always)]
+    pub(crate) fn replace_i32_unary_with_i64_fast(&mut self, f: impl FnOnce(i32) -> i64) {
+        let len = self.stack.len();
+        if len == 0 { panic!("stack underflow"); }
+        let idx = len - 1;
+        let value = match unsafe { self.stack.get_unchecked(idx) } {
+            Value::I32(n) => *n,
+            other => other.as_i32(),
+        };
+        unsafe {
+            *self.stack.get_unchecked_mut(idx) = Value::I64(f(value));
+        }
+    }
+
+    #[inline(always)]
+    pub(crate) fn replace_i32_unary_with_f32_fast(&mut self, f: impl FnOnce(i32) -> f32) {
+        let len = self.stack.len();
+        if len == 0 { panic!("stack underflow"); }
+        let idx = len - 1;
+        let value = match unsafe { self.stack.get_unchecked(idx) } {
+            Value::I32(n) => *n,
+            other => other.as_i32(),
+        };
+        unsafe {
+            *self.stack.get_unchecked_mut(idx) = Value::F32(f(value));
+        }
+    }
+
+    #[inline(always)]
+    pub(crate) fn replace_i32_unary_with_f64_fast(&mut self, f: impl FnOnce(i32) -> f64) {
+        let len = self.stack.len();
+        if len == 0 { panic!("stack underflow"); }
+        let idx = len - 1;
+        let value = match unsafe { self.stack.get_unchecked(idx) } {
+            Value::I32(n) => *n,
+            other => other.as_i32(),
+        };
+        unsafe {
+            *self.stack.get_unchecked_mut(idx) = Value::F64(f(value));
+        }
+    }
+
+    #[inline(always)]
+    pub(crate) fn pop_i32_pair_fast(&mut self) -> (i32, i32) {
+        let len = self.stack.len();
+        if len < 2 { panic!("stack underflow"); }
+        let (a, b) = match unsafe {
+            (
+                self.stack.get_unchecked(len - 2),
+                self.stack.get_unchecked(len - 1),
+            )
+        } {
+            (Value::I32(a), Value::I32(b)) => (*a, *b),
+            (a, b) => (a.as_i32(), b.as_i32()),
+        };
+        self.stack.truncate(len - 2);
+        (a, b)
+    }
+
+    #[inline(always)]
+    pub(crate) fn replace_i32_pair_fast(&mut self, f: impl FnOnce(i32, i32) -> i32) {
+        let len = self.stack.len();
+        if len < 2 { panic!("stack underflow"); }
+        let (a, b) = match unsafe {
+            (
+                self.stack.get_unchecked(len - 2),
+                self.stack.get_unchecked(len - 1),
+            )
+        } {
+            (Value::I32(a), Value::I32(b)) => (*a, *b),
+            (a, b) => (a.as_i32(), b.as_i32()),
+        };
+        unsafe {
+            *self.stack.get_unchecked_mut(len - 2) = Value::I32(f(a, b));
+        }
+        self.stack.truncate(len - 1);
+    }
+
+    #[inline(always)]
+    pub(crate) fn replace_i32_pair_checked_fast(
+        &mut self,
+        f: impl FnOnce(i32, i32) -> Result<i32, crate::VMError>,
+    ) -> Result<(), crate::VMError> {
+        let len = self.stack.len();
+        if len < 2 { panic!("stack underflow"); }
+        let (a, b) = match unsafe {
+            (
+                self.stack.get_unchecked(len - 2),
+                self.stack.get_unchecked(len - 1),
+            )
+        } {
+            (Value::I32(a), Value::I32(b)) => (*a, *b),
+            (a, b) => (a.as_i32(), b.as_i32()),
+        };
+        let result = f(a, b)?;
+        unsafe {
+            *self.stack.get_unchecked_mut(len - 2) = Value::I32(result);
+        }
+        self.stack.truncate(len - 1);
+        Ok(())
+    }
+
+    #[inline(always)]
+    pub(crate) fn pop_i64_fast(&mut self) -> i64 {
+        match self.stack.pop().expect("stack underflow") {
+            Value::I64(n) => n,
+            other => other.as_i64(),
+        }
+    }
+
+    #[inline(always)]
+    pub(crate) fn replace_i64_unary_fast(&mut self, f: impl FnOnce(i64) -> i64) {
+        let len = self.stack.len();
+        if len == 0 { panic!("stack underflow"); }
+        let idx = len - 1;
+        let value = match unsafe { self.stack.get_unchecked(idx) } {
+            Value::I64(n) => *n,
+            other => other.as_i64(),
+        };
+        unsafe {
+            *self.stack.get_unchecked_mut(idx) = Value::I64(f(value));
+        }
+    }
+
+    #[inline(always)]
+    pub(crate) fn replace_i64_unary_with_i32_fast(&mut self, f: impl FnOnce(i64) -> i32) {
+        let len = self.stack.len();
+        if len == 0 { panic!("stack underflow"); }
+        let idx = len - 1;
+        let value = match unsafe { self.stack.get_unchecked(idx) } {
+            Value::I64(n) => *n,
+            other => other.as_i64(),
+        };
+        unsafe {
+            *self.stack.get_unchecked_mut(idx) = Value::I32(f(value));
+        }
+    }
+
+    #[inline(always)]
+    pub(crate) fn replace_i64_unary_with_f32_fast(&mut self, f: impl FnOnce(i64) -> f32) {
+        let len = self.stack.len();
+        if len == 0 { panic!("stack underflow"); }
+        let idx = len - 1;
+        let value = match unsafe { self.stack.get_unchecked(idx) } {
+            Value::I64(n) => *n,
+            other => other.as_i64(),
+        };
+        unsafe {
+            *self.stack.get_unchecked_mut(idx) = Value::F32(f(value));
+        }
+    }
+
+    #[inline(always)]
+    pub(crate) fn replace_i64_unary_with_f64_fast(&mut self, f: impl FnOnce(i64) -> f64) {
+        let len = self.stack.len();
+        if len == 0 { panic!("stack underflow"); }
+        let idx = len - 1;
+        let value = match unsafe { self.stack.get_unchecked(idx) } {
+            Value::I64(n) => *n,
+            other => other.as_i64(),
+        };
+        unsafe {
+            *self.stack.get_unchecked_mut(idx) = Value::F64(f(value));
+        }
+    }
+
+    #[inline(always)]
+    pub(crate) fn pop_i64_pair_fast(&mut self) -> (i64, i64) {
+        let len = self.stack.len();
+        if len < 2 { panic!("stack underflow"); }
+        let (a, b) = match unsafe {
+            (
+                self.stack.get_unchecked(len - 2),
+                self.stack.get_unchecked(len - 1),
+            )
+        } {
+            (Value::I64(a), Value::I64(b)) => (*a, *b),
+            (a, b) => (a.as_i64(), b.as_i64()),
+        };
+        self.stack.truncate(len - 2);
+        (a, b)
+    }
+
+    #[inline(always)]
+    pub(crate) fn replace_i64_pair_fast(&mut self, f: impl FnOnce(i64, i64) -> i64) {
+        let len = self.stack.len();
+        if len < 2 { panic!("stack underflow"); }
+        let (a, b) = match unsafe {
+            (
+                self.stack.get_unchecked(len - 2),
+                self.stack.get_unchecked(len - 1),
+            )
+        } {
+            (Value::I64(a), Value::I64(b)) => (*a, *b),
+            (a, b) => (a.as_i64(), b.as_i64()),
+        };
+        unsafe {
+            *self.stack.get_unchecked_mut(len - 2) = Value::I64(f(a, b));
+        }
+        self.stack.truncate(len - 1);
+    }
+
+    #[inline(always)]
+    pub(crate) fn replace_i64_pair_checked_fast(
+        &mut self,
+        f: impl FnOnce(i64, i64) -> Result<i64, crate::VMError>,
+    ) -> Result<(), crate::VMError> {
+        let len = self.stack.len();
+        if len < 2 { panic!("stack underflow"); }
+        let (a, b) = match unsafe {
+            (
+                self.stack.get_unchecked(len - 2),
+                self.stack.get_unchecked(len - 1),
+            )
+        } {
+            (Value::I64(a), Value::I64(b)) => (*a, *b),
+            (a, b) => (a.as_i64(), b.as_i64()),
+        };
+        let result = f(a, b)?;
+        unsafe {
+            *self.stack.get_unchecked_mut(len - 2) = Value::I64(result);
+        }
+        self.stack.truncate(len - 1);
+        Ok(())
+    }
+
+    #[inline(always)]
+    pub(crate) fn replace_i64_pair_with_i32_fast(&mut self, f: impl FnOnce(i64, i64) -> i32) {
+        let len = self.stack.len();
+        if len < 2 { panic!("stack underflow"); }
+        let (a, b) = match unsafe {
+            (
+                self.stack.get_unchecked(len - 2),
+                self.stack.get_unchecked(len - 1),
+            )
+        } {
+            (Value::I64(a), Value::I64(b)) => (*a, *b),
+            (a, b) => (a.as_i64(), b.as_i64()),
+        };
+        unsafe {
+            *self.stack.get_unchecked_mut(len - 2) = Value::I32(f(a, b));
+        }
+        self.stack.truncate(len - 1);
+    }
+
+    #[inline(always)]
+    pub(crate) fn pop_f32_fast(&mut self) -> f32 {
+        match self.stack.pop().expect("stack underflow") {
+            Value::F32(n) => n,
+            other => other.as_f32(),
+        }
+    }
+
+    #[inline(always)]
+    pub(crate) fn replace_f32_unary_fast(&mut self, f: impl FnOnce(f32) -> f32) {
+        let len = self.stack.len();
+        if len == 0 { panic!("stack underflow"); }
+        let idx = len - 1;
+        let value = match unsafe { self.stack.get_unchecked(idx) } {
+            Value::F32(n) => *n,
+            other => other.as_f32(),
+        };
+        unsafe {
+            *self.stack.get_unchecked_mut(idx) = Value::F32(f(value));
+        }
+    }
+
+    #[inline(always)]
+    pub(crate) fn replace_f32_unary_with_i32_fast(&mut self, f: impl FnOnce(f32) -> i32) {
+        let len = self.stack.len();
+        if len == 0 { panic!("stack underflow"); }
+        let idx = len - 1;
+        let value = match unsafe { self.stack.get_unchecked(idx) } {
+            Value::F32(n) => *n,
+            other => other.as_f32(),
+        };
+        unsafe {
+            *self.stack.get_unchecked_mut(idx) = Value::I32(f(value));
+        }
+    }
+
+    #[inline(always)]
+    pub(crate) fn replace_f32_unary_with_i64_fast(&mut self, f: impl FnOnce(f32) -> i64) {
+        let len = self.stack.len();
+        if len == 0 { panic!("stack underflow"); }
+        let idx = len - 1;
+        let value = match unsafe { self.stack.get_unchecked(idx) } {
+            Value::F32(n) => *n,
+            other => other.as_f32(),
+        };
+        unsafe {
+            *self.stack.get_unchecked_mut(idx) = Value::I64(f(value));
+        }
+    }
+
+    #[inline(always)]
+    pub(crate) fn replace_f32_unary_with_f64_fast(&mut self, f: impl FnOnce(f32) -> f64) {
+        let len = self.stack.len();
+        if len == 0 { panic!("stack underflow"); }
+        let idx = len - 1;
+        let value = match unsafe { self.stack.get_unchecked(idx) } {
+            Value::F32(n) => *n,
+            other => other.as_f32(),
+        };
+        unsafe {
+            *self.stack.get_unchecked_mut(idx) = Value::F64(f(value));
+        }
+    }
+
+    #[inline(always)]
+    pub(crate) fn pop_f32_pair_fast(&mut self) -> (f32, f32) {
+        let len = self.stack.len();
+        if len < 2 { panic!("stack underflow"); }
+        let (a, b) = match unsafe {
+            (
+                self.stack.get_unchecked(len - 2),
+                self.stack.get_unchecked(len - 1),
+            )
+        } {
+            (Value::F32(a), Value::F32(b)) => (*a, *b),
+            (a, b) => (a.as_f32(), b.as_f32()),
+        };
+        self.stack.truncate(len - 2);
+        (a, b)
+    }
+
+    #[inline(always)]
+    pub(crate) fn replace_f32_pair_fast(&mut self, f: impl FnOnce(f32, f32) -> f32) {
+        let len = self.stack.len();
+        if len < 2 { panic!("stack underflow"); }
+        let (a, b) = match unsafe {
+            (
+                self.stack.get_unchecked(len - 2),
+                self.stack.get_unchecked(len - 1),
+            )
+        } {
+            (Value::F32(a), Value::F32(b)) => (*a, *b),
+            (a, b) => (a.as_f32(), b.as_f32()),
+        };
+        unsafe {
+            *self.stack.get_unchecked_mut(len - 2) = Value::F32(f(a, b));
+        }
+        self.stack.truncate(len - 1);
+    }
+
+    #[inline(always)]
+    pub(crate) fn replace_f32_pair_with_i32_fast(&mut self, f: impl FnOnce(f32, f32) -> i32) {
+        let len = self.stack.len();
+        if len < 2 { panic!("stack underflow"); }
+        let (a, b) = match unsafe {
+            (
+                self.stack.get_unchecked(len - 2),
+                self.stack.get_unchecked(len - 1),
+            )
+        } {
+            (Value::F32(a), Value::F32(b)) => (*a, *b),
+            (a, b) => (a.as_f32(), b.as_f32()),
+        };
+        unsafe {
+            *self.stack.get_unchecked_mut(len - 2) = Value::I32(f(a, b));
+        }
+        self.stack.truncate(len - 1);
+    }
+
+    #[inline(always)]
+    pub(crate) fn pop_f64_fast(&mut self) -> f64 {
+        match self.stack.pop().expect("stack underflow") {
+            Value::F64(n) => n,
+            other => other.as_f64(),
+        }
+    }
+
+    #[inline(always)]
+    pub(crate) fn replace_f64_unary_fast(&mut self, f: impl FnOnce(f64) -> f64) {
+        let len = self.stack.len();
+        if len == 0 { panic!("stack underflow"); }
+        let idx = len - 1;
+        let value = match unsafe { self.stack.get_unchecked(idx) } {
+            Value::F64(n) => *n,
+            other => other.as_f64(),
+        };
+        unsafe {
+            *self.stack.get_unchecked_mut(idx) = Value::F64(f(value));
+        }
+    }
+
+    #[inline(always)]
+    pub(crate) fn replace_f64_unary_with_i32_fast(&mut self, f: impl FnOnce(f64) -> i32) {
+        let len = self.stack.len();
+        if len == 0 { panic!("stack underflow"); }
+        let idx = len - 1;
+        let value = match unsafe { self.stack.get_unchecked(idx) } {
+            Value::F64(n) => *n,
+            other => other.as_f64(),
+        };
+        unsafe {
+            *self.stack.get_unchecked_mut(idx) = Value::I32(f(value));
+        }
+    }
+
+    #[inline(always)]
+    pub(crate) fn replace_f64_unary_with_i64_fast(&mut self, f: impl FnOnce(f64) -> i64) {
+        let len = self.stack.len();
+        if len == 0 { panic!("stack underflow"); }
+        let idx = len - 1;
+        let value = match unsafe { self.stack.get_unchecked(idx) } {
+            Value::F64(n) => *n,
+            other => other.as_f64(),
+        };
+        unsafe {
+            *self.stack.get_unchecked_mut(idx) = Value::I64(f(value));
+        }
+    }
+
+    #[inline(always)]
+    pub(crate) fn replace_f64_unary_with_f32_fast(&mut self, f: impl FnOnce(f64) -> f32) {
+        let len = self.stack.len();
+        if len == 0 { panic!("stack underflow"); }
+        let idx = len - 1;
+        let value = match unsafe { self.stack.get_unchecked(idx) } {
+            Value::F64(n) => *n,
+            other => other.as_f64(),
+        };
+        unsafe {
+            *self.stack.get_unchecked_mut(idx) = Value::F32(f(value));
+        }
+    }
+
+    #[inline(always)]
+    pub(crate) fn pop_f64_pair_fast(&mut self) -> (f64, f64) {
+        let len = self.stack.len();
+        if len < 2 { panic!("stack underflow"); }
+        let (a, b) = match unsafe {
+            (
+                self.stack.get_unchecked(len - 2),
+                self.stack.get_unchecked(len - 1),
+            )
+        } {
+            (Value::F64(a), Value::F64(b)) => (*a, *b),
+            (a, b) => (a.as_f64(), b.as_f64()),
+        };
+        self.stack.truncate(len - 2);
+        (a, b)
+    }
+
+    #[inline(always)]
+    pub(crate) fn replace_f64_pair_fast(&mut self, f: impl FnOnce(f64, f64) -> f64) {
+        let len = self.stack.len();
+        if len < 2 { panic!("stack underflow"); }
+        let (a, b) = match unsafe {
+            (
+                self.stack.get_unchecked(len - 2),
+                self.stack.get_unchecked(len - 1),
+            )
+        } {
+            (Value::F64(a), Value::F64(b)) => (*a, *b),
+            (a, b) => (a.as_f64(), b.as_f64()),
+        };
+        unsafe {
+            *self.stack.get_unchecked_mut(len - 2) = Value::F64(f(a, b));
+        }
+        self.stack.truncate(len - 1);
+    }
+
+    #[inline(always)]
+    pub(crate) fn replace_f64_pair_with_i32_fast(&mut self, f: impl FnOnce(f64, f64) -> i32) {
+        let len = self.stack.len();
+        if len < 2 { panic!("stack underflow"); }
+        let (a, b) = match unsafe {
+            (
+                self.stack.get_unchecked(len - 2),
+                self.stack.get_unchecked(len - 1),
+            )
+        } {
+            (Value::F64(a), Value::F64(b)) => (*a, *b),
+            (a, b) => (a.as_f64(), b.as_f64()),
+        };
+        unsafe {
+            *self.stack.get_unchecked_mut(len - 2) = Value::I32(f(a, b));
+        }
+        self.stack.truncate(len - 1);
+    }
+
+    #[inline(always)]
+    pub(crate) fn pop_ecma_i32_fast(&mut self) -> i32 {
+        match self.stack.pop().expect("stack underflow") {
+            Value::I32(n) => n,
+            other => other.to_ecma_int32(),
+        }
+    }
+
+    #[inline(always)]
+    pub(crate) fn pop_ecma_i32_pair_fast(&mut self) -> (i32, i32) {
+        let len = self.stack.len();
+        if len < 2 { panic!("stack underflow"); }
+        let (a, b) = match unsafe {
+            (
+                self.stack.get_unchecked(len - 2),
+                self.stack.get_unchecked(len - 1),
+            )
+        } {
+            (Value::I32(a), Value::I32(b)) => (*a, *b),
+            (a, b) => (a.to_ecma_int32(), b.to_ecma_int32()),
+        };
+        self.stack.truncate(len - 2);
+        (a, b)
+    }
+
+    #[inline(always)]
+    pub(crate) fn replace_ecma_i32_pair_fast(&mut self, f: impl FnOnce(i32, i32) -> i32) {
+        let len = self.stack.len();
+        if len < 2 { panic!("stack underflow"); }
+        let (a, b) = match unsafe {
+            (
+                self.stack.get_unchecked(len - 2),
+                self.stack.get_unchecked(len - 1),
+            )
+        } {
+            (Value::I32(a), Value::I32(b)) => (*a, *b),
+            (a, b) => (a.to_ecma_int32(), b.to_ecma_int32()),
+        };
+        unsafe {
+            *self.stack.get_unchecked_mut(len - 2) = Value::I32(f(a, b));
+        }
+        self.stack.truncate(len - 1);
+    }
+
+    #[inline(always)]
     pub(crate) fn peek(&self, distance: usize) -> &Value {
         &self.stack[self.stack.len() - 1 - distance]
     }
 
+    #[inline(always)]
+    pub(crate) fn peek_i32_top_fast(&self) -> i32 {
+        let len = self.stack.len();
+        if len == 0 { panic!("stack underflow"); }
+        match unsafe { self.stack.get_unchecked(len - 1) } {
+            Value::I32(n) => *n,
+            other => other.as_i32(),
+        }
+    }
+
+    #[inline(always)]
+    pub(crate) fn peek_i32_next_fast(&self) -> i32 {
+        let len = self.stack.len();
+        if len < 2 { panic!("stack underflow"); }
+        match unsafe { self.stack.get_unchecked(len - 2) } {
+            Value::I32(n) => *n,
+            other => other.as_i32(),
+        }
+    }
+
+    #[inline(always)]
+    pub(crate) fn peek_i64_top_fast(&self) -> i64 {
+        let len = self.stack.len();
+        if len == 0 { panic!("stack underflow"); }
+        match unsafe { self.stack.get_unchecked(len - 1) } {
+            Value::I64(n) => *n,
+            other => other.as_i64(),
+        }
+    }
+
+    #[inline(always)]
+    pub(crate) fn peek_i64_next_fast(&self) -> i64 {
+        let len = self.stack.len();
+        if len < 2 { panic!("stack underflow"); }
+        match unsafe { self.stack.get_unchecked(len - 2) } {
+            Value::I64(n) => *n,
+            other => other.as_i64(),
+        }
+    }
+
+    #[inline(always)]
+    pub(crate) fn peek_f32_top_fast(&self) -> f32 {
+        let len = self.stack.len();
+        if len == 0 { panic!("stack underflow"); }
+        match unsafe { self.stack.get_unchecked(len - 1) } {
+            Value::F32(n) => *n,
+            other => other.as_f32(),
+        }
+    }
+
+    #[inline(always)]
+    pub(crate) fn peek_f64_top_fast(&self) -> f64 {
+        let len = self.stack.len();
+        if len == 0 { panic!("stack underflow"); }
+        match unsafe { self.stack.get_unchecked(len - 1) } {
+            Value::F64(n) => *n,
+            other => other.as_f64(),
+        }
+    }
+
     // -- Frame --
 
+    #[inline(always)]
     pub(crate) fn frame(&self) -> &CallFrame {
         self.frames.last().expect("no frame")
     }
 
+    #[inline(always)]
     pub(crate) fn frame_mut(&mut self) -> &mut CallFrame {
         self.frames.last_mut().expect("no frame")
     }
 
+    #[inline(always)]
     pub(crate) fn read_byte(&mut self) -> u8 {
-        let f = self.frame();
-        let byte = self.chunks[f.chunk_index].code[f.ip];
-        self.frame_mut().ip += 1;
+        let frame = self.frames.last_mut().expect("no frame");
+        let chunk_index = frame.chunk_index;
+        let ip = frame.ip;
+        let byte = self.chunks[chunk_index].code[ip];
+        frame.ip = ip + 1;
         byte
     }
 
-    pub(crate) fn read_u16(&mut self) -> u16 {
-        let hi = self.read_byte() as u16;
-        let lo = self.read_byte() as u16;
-        (hi << 8) | lo
+    #[inline(always)]
+    pub(crate) fn read_code_array<const N: usize>(&mut self) -> [u8; N] {
+        let frame = self.frames.last_mut().expect("no frame");
+        let chunk_index = frame.chunk_index;
+        let ip = frame.ip;
+        let code = &self.chunks[chunk_index].code;
+        let mut out = [0u8; N];
+        out.copy_from_slice(&code[ip..ip + N]);
+        frame.ip = ip + N;
+        out
     }
 
+    #[inline(always)]
+    pub(crate) fn read_u16(&mut self) -> u16 {
+        let frame = self.frames.last_mut().expect("no frame");
+        let chunk_index = frame.chunk_index;
+        let ip = frame.ip;
+        let code = &self.chunks[chunk_index].code;
+        frame.ip = ip + 2;
+        ((code[ip] as u16) << 8) | code[ip + 1] as u16
+    }
+
+    #[inline(always)]
     pub(crate) fn read_i16(&mut self) -> i16 {
         self.read_u16() as i16
     }
 
     /// Read a fixed-width big-endian `u32` immediate, advancing `ip`.
+    #[inline(always)]
     pub(crate) fn read_u32(&mut self) -> u32 {
-        let a = self.read_byte() as u32;
-        let b = self.read_byte() as u32;
-        let c = self.read_byte() as u32;
-        let d = self.read_byte() as u32;
-        (a << 24) | (b << 16) | (c << 8) | d
+        let frame = self.frames.last_mut().expect("no frame");
+        let chunk_index = frame.chunk_index;
+        let ip = frame.ip;
+        let code = &self.chunks[chunk_index].code;
+        frame.ip = ip + 4;
+        ((code[ip] as u32) << 24)
+            | ((code[ip + 1] as u32) << 16)
+            | ((code[ip + 2] as u32) << 8)
+            | code[ip + 3] as u32
     }
 
     /// Read an unsigned LEB128 `u32` immediate, advancing `ip`.
@@ -4575,25 +8733,54 @@ impl VM {
     /// Every index in WASM is a `u32` (`syntax idx = u32`), so this is the
     /// reader for an index operand — `read_u16` is for the shapes that carry a
     /// genuinely 16-bit field, never for an index.
+    #[inline(always)]
     pub(crate) fn read_leb_u32(&mut self) -> u32 {
-        let mut result: u32 = 0;
-        let mut shift = 0u32;
+        let frame = self.frames.last_mut().expect("no frame");
+        let chunk_index = frame.chunk_index;
+        let mut ip = frame.ip;
+        let code = &self.chunks[chunk_index].code;
+        let byte = code[ip];
+        if byte & 0x80 == 0 {
+            frame.ip = ip + 1;
+            return byte as u32;
+        }
+        ip += 1;
+        let mut result: u32 = (byte & 0x7f) as u32;
+        let mut shift = 7u32;
         loop {
-            let byte = self.read_byte();
+            let byte = code[ip];
+            ip += 1;
             result |= ((byte & 0x7f) as u32) << shift;
             if byte & 0x80 == 0 {
                 break;
             }
             shift += 7;
         }
+        frame.ip = ip;
         result
     }
 
+    #[inline(always)]
     pub(crate) fn read_leb_i32(&mut self) -> i32 {
-        let mut result: u32 = 0;
-        let mut shift = 0u32;
+        let frame = self.frames.last_mut().expect("no frame");
+        let chunk_index = frame.chunk_index;
+        let mut ip = frame.ip;
+        let code = &self.chunks[chunk_index].code;
+        let byte = code[ip];
+        if byte & 0x80 == 0 {
+            frame.ip = ip + 1;
+            return if byte & 0x40 == 0 {
+                byte as i32
+            } else {
+                ((byte as u32) | !0x7f) as i32
+            };
+        }
+        ip += 1;
+        let mut result: u32 = (byte & 0x7f) as u32;
+        let mut shift = 7u32;
         loop {
-            let byte = self.read_byte();
+            let byte = code[ip];
+            ip += 1;
             result |= ((byte & 0x7f) as u32) << shift;
             shift += 7;
             if byte & 0x80 == 0 {
@@ -4603,14 +8790,31 @@ impl VM {
                 break;
             }
         }
+        frame.ip = ip;
         result as i32
     }
 
+    #[inline(always)]
     pub(crate) fn read_leb_i64(&mut self) -> i64 {
-        let mut result: u64 = 0;
-        let mut shift = 0u32;
+        let frame = self.frames.last_mut().expect("no frame");
+        let chunk_index = frame.chunk_index;
+        let mut ip = frame.ip;
+        let code = &self.chunks[chunk_index].code;
+        let byte = code[ip];
+        if byte & 0x80 == 0 {
+            frame.ip = ip + 1;
+            return if byte & 0x40 == 0 {
+                byte as i64
+            } else {
+                ((byte as u64) | !0x7f) as i64
+            };
+        }
+        ip += 1;
+        let mut result: u64 = (byte & 0x7f) as u64;
+        let mut shift = 7u32;
         loop {
-            let byte = self.read_byte();
+            let byte = code[ip];
+            ip += 1;
             result |= ((byte & 0x7f) as u64) << shift;
             shift += 7;
             if byte & 0x80 == 0 {
@@ -4620,22 +8824,38 @@ impl VM {
                 break;
             }
         }
+        frame.ip = ip;
         result as i64
     }
 
+    #[inline(always)]
     pub(crate) fn read_f32(&mut self) -> f32 {
-        let mut bytes = [0u8; 4];
-        for b in &mut bytes {
-            *b = self.read_byte();
-        }
+        let frame = self.frames.last_mut().expect("no frame");
+        let chunk_index = frame.chunk_index;
+        let ip = frame.ip;
+        let code = &self.chunks[chunk_index].code;
+        let bytes = [code[ip], code[ip + 1], code[ip + 2], code[ip + 3]];
+        frame.ip = ip + 4;
         f32::from_le_bytes(bytes)
     }
 
+    #[inline(always)]
     pub(crate) fn read_f64(&mut self) -> f64 {
-        let mut bytes = [0u8; 8];
-        for b in &mut bytes {
-            *b = self.read_byte();
-        }
+        let frame = self.frames.last_mut().expect("no frame");
+        let chunk_index = frame.chunk_index;
+        let ip = frame.ip;
+        let code = &self.chunks[chunk_index].code;
+        let bytes = [
+            code[ip],
+            code[ip + 1],
+            code[ip + 2],
+            code[ip + 3],
+            code[ip + 4],
+            code[ip + 5],
+            code[ip + 6],
+            code[ip + 7],
+        ];
+        frame.ip = ip + 8;
         f64::from_le_bytes(bytes)
     }
 
@@ -4830,11 +9050,12 @@ impl VM {
                 // `ref.func $f` lowers to `Member { module_class, f }` — so the
                 // handler resolves through the chunk table and is materialised
                 // as a callable here, once, rather than looked up per call.
-                let fallback = decl
-                    .fallback
-                    .as_ref()
-                    .and_then(|f| self.chunk_index_for_func(f))
-                    .map(|ci| self.function_value_for_chunk(ci));
+                let fallback = if let Some(fallback_name) = decl.fallback.as_ref() {
+                    self.chunk_index_for_func(fallback_name)
+                        .map(|ci| self.function_value_for_chunk(ci))
+                } else {
+                    None
+                };
                 // `(canon)` interns per signature; everything else is
                 // `call_tag.new` — a FRESH identity. A missing fall-back does
                 // NOT make a tag canonical: the Overview puts the `?` on
@@ -5246,19 +9467,15 @@ impl VM {
         // So derive the table from the operands themselves and remap anyway.
         // There is no third case: either a set carries a table or it names its
         // globals in constants, and both are handled.
-        let per_chunk_names: Vec<Vec<(u32, String)>> = incoming
-            .iter()
-            .map(|c| Self::global_operand_names(c))
-            .collect();
-
         let mut remap: Vec<u32> = Vec::with_capacity(table.len());
         for name in table.iter() {
             remap.push(self.global_slot_for(name));
         }
 
         let legacy: Vec<std::collections::HashMap<u32, u32>> = if table.is_empty() {
-            per_chunk_names
+            incoming
                 .iter()
+                .map(Self::global_operand_names)
                 .map(|names| {
                     names
                         .iter()
@@ -5270,7 +9487,13 @@ impl VM {
             Vec::new()
         };
 
-        for (ci, chunk) in incoming.iter_mut().enumerate() {
+        let needs_remap = table.is_empty()
+            || remap
+                .iter()
+                .enumerate()
+                .any(|(old, &new)| new != old as u32);
+        if needs_remap {
+            for (ci, chunk) in incoming.iter_mut().enumerate() {
             let code = &mut chunk.code;
             let mut ip = 0usize;
             while ip + 3 < code.len() {
@@ -5303,6 +9526,7 @@ impl VM {
                 }
                 ip = operand_start + operand_len;
             }
+            }
         }
 
         // The operands now index the VM's authoritative space, so the table
@@ -5332,8 +9556,13 @@ impl VM {
     }
 
     pub(crate) fn bind_imported_globals(&mut self) {
-        let bindings: Vec<(String, Arc<str>)> = self
-            .chunks
+        // The last chunk belongs to the unit just linked. Earlier units were
+        // bound when they entered the VM; revisiting every accumulated chunk
+        // on each PHP include makes this work quadratic in the include count.
+        let first_new_chunk = self.chunk_import_owner.last().copied().unwrap_or(0);
+        let linked_chunks = &self.chunks[first_new_chunk..];
+        let string_bindings: Vec<(String, Arc<str>)> = self
+            .chunks[first_new_chunk..]
             .iter()
             .flat_map(|chunk| chunk.global_imports.iter())
             .filter(|import| import.module == crate::chunk::STRING_CONSTANTS_MODULE)
@@ -5344,8 +9573,28 @@ impl VM {
                 )
             })
             .collect();
-        for (key, value) in bindings {
+        for (key, value) in string_bindings {
             self.set_global(&key, Value::String(value));
+        }
+        let primitive_bindings: Vec<(String, Value)> = self
+            .chunks[first_new_chunk..]
+            .iter()
+            .flat_map(|chunk| chunk.global_imports.iter())
+            .filter_map(|import| {
+                let value = match (import.module.as_str(), import.name.as_str()) {
+                    ("wasm:js-undefined", "value") => Value::Undefined,
+                    ("wasm:js-boolean", "true") => Value::Bool(true),
+                    ("wasm:js-boolean", "false") => Value::Bool(false),
+                    _ => return None,
+                };
+                Some((
+                    crate::chunk::imported_global_key(&import.module, &import.name),
+                    value,
+                ))
+            })
+            .collect();
+        for (key, value) in primitive_bindings {
+            self.set_global(&key, value);
         }
     }
 
@@ -5370,6 +9619,54 @@ impl VM {
         }
         if module == "wasi:threads" && name == "thread-spawn" {
             return Ok(ImportTarget::WasiThreadSpawn);
+        }
+        if module == "wasm:js-number" {
+            if let Some(builtin) = JsNumberBuiltin::by_name(name) {
+                return Ok(ImportTarget::JsNumber(builtin));
+            }
+        }
+        if module == "wasm:js-boolean" {
+            if let Some(builtin) = JsBooleanBuiltin::by_name(name) {
+                return Ok(ImportTarget::JsBoolean(builtin));
+            }
+        }
+        if module == "wasm:js-undefined" {
+            if let Some(builtin) = JsUndefinedBuiltin::by_name(name) {
+                return Ok(ImportTarget::JsUndefined(builtin));
+            }
+        }
+        if module == "wasm:js-string" {
+            if let Some(builtin) = JsStringBuiltin::by_name(name) {
+                return Ok(ImportTarget::JsString(builtin));
+            }
+        }
+        if module == "ecma:boolean" {
+            if let Some(builtin) = EcmaBooleanBuiltin::by_name(name) {
+                if let Some(idx) = self.resolve_host_function_index(module, name) {
+                    return Ok(ImportTarget::EcmaBoolean(builtin, idx));
+                }
+            }
+        }
+        if module == "ecma:number" {
+            if let Some(builtin) = EcmaNumberBuiltin::by_name(name) {
+                if let Some(idx) = self.resolve_host_function_index(module, name) {
+                    return Ok(ImportTarget::EcmaNumber(builtin, idx));
+                }
+            }
+        }
+        if module == "ecma:object" {
+            if let Some(builtin) = EcmaObjectBuiltin::by_name(name) {
+                if let Some(idx) = self.resolve_host_function_index(module, name) {
+                    return Ok(ImportTarget::EcmaObject(builtin, idx));
+                }
+            }
+        }
+        if module == "ecma:array" {
+            if let Some(builtin) = EcmaArrayBuiltin::by_name(name) {
+                if let Some(idx) = self.resolve_host_function_index(module, name) {
+                    return Ok(ImportTarget::EcmaArray(builtin, idx));
+                }
+            }
         }
         if module == "wasm:string-constants" {
             return Ok(ImportTarget::StringConst(Arc::from(name)));
@@ -5415,10 +9712,18 @@ impl VM {
     }
 
     pub(crate) fn resolve_chunk_import(
-        &self,
+        &mut self,
         chunk_index: usize,
         import_idx: usize,
     ) -> Result<Option<ImportTarget>, VMError> {
+        if let Some(cached) = self
+            .chunk_import_cache
+            .get(chunk_index)
+            .and_then(|row| row.get(import_idx))
+            .and_then(|slot| slot.as_ref())
+        {
+            return Ok(cached.clone());
+        }
         // The chunk's own table when it has one; otherwise its MODULE's —
         // `link.rs` keeps the unified table on the module's first chunk only.
         let owner = self
@@ -5436,10 +9741,173 @@ impl VM {
                     .and_then(|chunk| chunk.imports.get(import_idx))
             })
         else {
-            return Ok(None);
+            let resolved = self.import_table.get(import_idx).cloned();
+            if self.chunk_import_cache.len() <= chunk_index {
+                self.chunk_import_cache
+                    .resize_with(chunk_index + 1, Vec::new);
+            }
+            let row = &mut self.chunk_import_cache[chunk_index];
+            if row.len() <= import_idx {
+                row.resize_with(import_idx + 1, || None);
+            }
+            row[import_idx] = Some(resolved.clone());
+            return Ok(resolved);
         };
-        self.resolve_import_target(&import.module, &import.name)
-            .map(Some)
+        let resolved = self
+            .resolve_import_target(&import.module, &import.name)
+            .map(Some)?;
+        if self.chunk_import_cache.len() <= chunk_index {
+            self.chunk_import_cache
+                .resize_with(chunk_index + 1, Vec::new);
+        }
+        let row = &mut self.chunk_import_cache[chunk_index];
+        if row.len() <= import_idx {
+            row.resize_with(import_idx + 1, || None);
+        }
+        row[import_idx] = Some(resolved.clone());
+        Ok(resolved)
+    }
+
+    pub(crate) fn resolve_chunk_call_target(
+        &mut self,
+        chunk_index: usize,
+        import_idx: usize,
+    ) -> Result<Option<ResolvedCallTarget>, VMError> {
+        if let Some(cached) = self
+            .chunk_call_target_cache
+            .get(chunk_index)
+            .and_then(|row| row.get(import_idx))
+            .and_then(|slot| slot.as_ref())
+        {
+            return Ok(cached.clone());
+        }
+
+        if let Some(cached) = self
+            .chunk_import_cache
+            .get(chunk_index)
+            .and_then(|row| row.get(import_idx))
+            .and_then(|slot| slot.as_ref())
+        {
+            let resolved = cached
+                .as_ref()
+                .map(ResolvedCallTarget::from_import_target_ref);
+            if self.chunk_call_target_cache.len() <= chunk_index {
+                self.chunk_call_target_cache
+                    .resize_with(chunk_index + 1, Vec::new);
+            }
+            let row = &mut self.chunk_call_target_cache[chunk_index];
+            if row.len() <= import_idx {
+                row.resize_with(import_idx + 1, || None);
+            }
+            row[import_idx] = Some(resolved.clone());
+            return Ok(resolved);
+        }
+
+        let owner = self
+            .chunk_import_owner
+            .get(chunk_index)
+            .copied()
+            .unwrap_or(chunk_index);
+        let has_chunk_import = self
+            .chunks
+            .get(chunk_index)
+            .and_then(|chunk| chunk.imports.get(import_idx))
+            .or_else(|| {
+                self.chunks
+                    .get(owner)
+                    .and_then(|chunk| chunk.imports.get(import_idx))
+            })
+            .is_some();
+
+        if !has_chunk_import {
+            if self.chunk_import_cache.len() <= chunk_index {
+                self.chunk_import_cache
+                    .resize_with(chunk_index + 1, Vec::new);
+            }
+            let row = &mut self.chunk_import_cache[chunk_index];
+            if row.len() <= import_idx {
+                row.resize_with(import_idx + 1, || None);
+            }
+            row[import_idx] = Some(None);
+            if self.chunk_call_target_cache.len() <= chunk_index {
+                self.chunk_call_target_cache
+                    .resize_with(chunk_index + 1, Vec::new);
+            }
+            let call_row = &mut self.chunk_call_target_cache[chunk_index];
+            if call_row.len() <= import_idx {
+                call_row.resize_with(import_idx + 1, || None);
+            }
+            call_row[import_idx] = Some(None);
+            return Ok(None);
+        }
+
+        let resolved = self
+            .resolve_chunk_import(chunk_index, import_idx)?
+            .map(ResolvedCallTarget::from_import_target_owned);
+        if self.chunk_call_target_cache.len() <= chunk_index {
+            self.chunk_call_target_cache
+                .resize_with(chunk_index + 1, Vec::new);
+        }
+        let row = &mut self.chunk_call_target_cache[chunk_index];
+        if row.len() <= import_idx {
+            row.resize_with(import_idx + 1, || None);
+        }
+        row[import_idx] = Some(resolved.clone());
+        Ok(resolved)
+    }
+
+    #[inline(always)]
+    pub(crate) fn cache_native_call_site(
+        &mut self,
+        chunk_index: usize,
+        opcode_start: usize,
+        target: NativeCallSiteTarget,
+    ) {
+        if self.native_call_sites.len() <= chunk_index {
+            self.native_call_sites
+                .resize_with(chunk_index + 1, Vec::new);
+        }
+        let row = &mut self.native_call_sites[chunk_index];
+        if row.len() <= opcode_start {
+            row.resize_with(opcode_start + 1, || None);
+        }
+        row[opcode_start] = Some(target);
+        let Some(chunk) = self.chunks.get(chunk_index) else {
+            return;
+        };
+        let Some(native_sites) = self.native_call_sites.get(chunk_index) else {
+            return;
+        };
+        if self.native_result_fast_paths.len() <= chunk_index {
+            self.native_result_fast_paths
+                .resize_with(chunk_index + 1, Vec::new);
+        }
+        if self.native_result_fast_paths[chunk_index].len() < chunk.code.len() {
+            self.native_result_fast_paths[chunk_index]
+                .resize(chunk.code.len(), NativeResultFastPath::None);
+        }
+        for candidate in [
+            Some(opcode_start),
+            opcode_start.checked_sub(7),
+            opcode_start.checked_sub(14),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if candidate < chunk.code.len() {
+                self.native_result_fast_paths[chunk_index][candidate] =
+                    Self::build_native_result_fast_path_at(chunk, native_sites, candidate);
+            }
+        }
+    }
+
+    #[inline]
+    pub(crate) fn rebuild_resolved_import_table(&mut self) {
+        self.resolved_import_table = self
+            .import_table
+            .iter()
+            .map(ResolvedCallTarget::from_import_target_ref)
+            .collect();
     }
 
     pub(crate) fn constant_str(&self, index: u32) -> String {
@@ -5488,12 +9956,18 @@ impl VM {
 
     pub(crate) fn execute(&mut self) -> Result<Value, VMError> {
         self.execute_until(0).map_err(|e| {
-            if e.call_stack.is_empty() {
+            let e = if e.call_stack.is_empty() {
                 let stack = self.capture_call_stack();
                 e.with_stack(stack)
             } else {
                 e
+            };
+            if e.diagnostic.is_none() {
+                if let Some(context) = self.error_context() {
+                    return e.with_diagnostic(context);
+                }
             }
+            e
         })
     }
 }
@@ -5552,6 +10026,22 @@ mod invoker_tests {
 mod reset_tests {
     use super::*;
     use crate::value::Object;
+
+    #[test]
+    fn reset_keeps_decoded_caches_parallel_after_reload() {
+        let mut vm = VM::new();
+        let snap = vm.snapshot();
+        for _ in 0..2 {
+            let added = [Chunk::new("reload")];
+            vm.extend_decoded_ops_for_chunks(&added);
+            vm.chunks.extend(added);
+            assert_eq!(vm.local_fast_paths.len(), vm.chunks.len());
+            assert_eq!(vm.native_result_fast_paths.len(), vm.chunks.len());
+            vm.reset_to(&snap);
+            assert_eq!(vm.local_fast_paths.len(), vm.chunks.len());
+            assert_eq!(vm.native_result_fast_paths.len(), vm.chunks.len());
+        }
+    }
 
     /// End-to-end proof of VM hot-reset: after `reset_to`, a baseline global
     /// survives with its boot contents, a script-added global is gone, a

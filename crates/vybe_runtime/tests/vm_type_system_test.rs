@@ -5,7 +5,8 @@
 //! - Subtype checking (is_subtype) with inheritance chains
 //! - Method resolution through vtable (resolve_method)
 //! - ref_test opcode with registered types
-//! - Cross-language instanceof using __type and __types properties
+//! - ref.test stays structural; language-level __type/__types checks are
+//!   compiler-emitted name checks, not VM opcode behavior.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -257,7 +258,7 @@ fn make_typed_object_with_id(type_id: usize, type_name: &str) -> Value {
 }
 
 #[test]
-fn test_ref_test_opcode_with_type_string() {
+fn test_ref_test_opcode_ignores_type_string_property() {
     // Create a VM with types registered
     let mut vm = VM::new();
     let control_id = vm
@@ -267,7 +268,8 @@ fn test_ref_test_opcode_with_type_string() {
         .type_registry
         .register(TypeDef::new("Button").with_parent(control_id));
 
-    // Build a chunk that: push a Button object, ref_test "control"
+    // Build a chunk that: push a dynamic Button-shaped object, ref_test "control".
+    // The runtime opcode must not inspect language-level `__type` properties.
     let mut chunk = Chunk::new("<test>");
     // Push a Button object (using __type property)
     let obj = make_typed_object("Button");
@@ -277,7 +279,7 @@ fn test_ref_test_opcode_with_type_string() {
     );
     vm.set_global_owned(name.clone(), obj);
     let ci = chunk.intern_string_constant(&name);
-    chunk.emit_op_u16(Op::GLOBAL_GET, ci, 0);
+    chunk.emit_op_u32(Op::GLOBAL_GET, ci, 0);
     // ref_test with "control" type name
     declare_type(&mut chunk, "control");
     chunk.emit_ref_type_op(Op::REF_TEST, TYPE_ONE, 0);
@@ -285,8 +287,8 @@ fn test_ref_test_opcode_with_type_string() {
 
     let result = vm.run(vec![chunk]).unwrap();
     assert!(
-        is_wasm_true(&result),
-        "Button should be a subtype of Control, got {:?}",
+        is_wasm_false(&result),
+        "dynamic __type property must not satisfy structural ref.test, got {:?}",
         result
     );
 }
@@ -310,7 +312,7 @@ fn test_ref_test_opcode_with_type_id() {
     );
     vm.set_global_owned(name.clone(), obj);
     let ci = chunk.intern_string_constant(&name);
-    chunk.emit_op_u16(Op::GLOBAL_GET, ci, 0);
+    chunk.emit_op_u32(Op::GLOBAL_GET, ci, 0);
     declare_type(&mut chunk, "control");
     chunk.emit_ref_type_op(Op::REF_TEST, TYPE_ONE, 0);
     chunk.emit_op(Op::RETURN, 0);
@@ -345,7 +347,7 @@ fn test_ref_test_opcode_negative() {
     );
     vm.set_global_owned(name.clone(), obj);
     let ci = chunk.intern_string_constant(&name);
-    chunk.emit_op_u16(Op::GLOBAL_GET, ci, 0);
+    chunk.emit_op_u32(Op::GLOBAL_GET, ci, 0);
     declare_type(&mut chunk, "button");
     chunk.emit_ref_type_op(Op::REF_TEST, TYPE_ONE, 0);
     chunk.emit_op(Op::RETURN, 0);
@@ -360,7 +362,9 @@ fn test_ref_test_opcode_negative() {
 
 #[test]
 fn test_ref_test_with_js_types_array() {
-    // JS classes use __types array for inheritance chain
+    // JS classes use __types array for inheritance chains, but that is a
+    // language-level instanceof adapter. WASM `ref.test` itself is structural
+    // and must not inspect object properties.
     let mut vm = VM::new();
 
     let mut chunk = Chunk::new("<test>");
@@ -386,21 +390,21 @@ fn test_ref_test_with_js_types_array() {
         Value::Object(Arc::new(std::sync::Mutex::new(obj))),
     );
     let ci = chunk.intern_string_constant(&name);
-    chunk.emit_op_u16(Op::GLOBAL_GET, ci, 0);
+    chunk.emit_op_u32(Op::GLOBAL_GET, ci, 0);
     declare_type(&mut chunk, "animal");
     chunk.emit_ref_type_op(Op::REF_TEST, TYPE_ONE, 0);
     chunk.emit_op(Op::RETURN, 0);
 
     let result = vm.run(vec![chunk]).unwrap();
     assert!(
-        is_wasm_true(&result),
-        "Dog (via __types) should match Animal, got {:?}",
+        is_wasm_false(&result),
+        "__types property must not satisfy structural ref.test, got {:?}",
         result
     );
 }
 
 #[test]
-fn test_ref_test_primitives() {
+fn test_ref_test_concrete_type_does_not_match_primitive_string() {
     let mut vm = VM::new();
 
     // String is "string"
@@ -412,8 +416,8 @@ fn test_ref_test_primitives() {
 
     let result = vm.run(vec![chunk]).unwrap();
     assert!(
-        is_wasm_true(&result),
-        "String should match 'string', got {:?}",
+        is_wasm_false(&result),
+        "primitive string must not match a concrete struct type index, got {:?}",
         result
     );
 }

@@ -874,7 +874,7 @@ fn invoke_preserves_globals() {
     // Set global "counter" = 0
     main_chunk.emit_i32_const(0, 0);
     let g = main_chunk.add_constant(Value::String(Arc::from("counter")));
-    main_chunk.emit_op_u16(Op::GLOBAL_SET, g, 0);
+    main_chunk.emit_op_u32(Op::GLOBAL_SET, g, 0);
     main_chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
 
     // chunk 1: reads global "counter", adds 1, sets it, returns it
@@ -882,13 +882,13 @@ fn invoke_preserves_globals() {
     func.arity = 0;
     func.local_count = 1;
     let gc = func.add_constant(Value::String(Arc::from("counter")));
-    func.emit_op_u16(Op::GLOBAL_GET, gc, 0);
+    func.emit_op_u32(Op::GLOBAL_GET, gc, 0);
     func.emit_i32_const(1, 0);
     func.emit_op(Op::I32_ADD, 0);
     let gc2 = func.add_constant(Value::String(Arc::from("counter")));
-    func.emit_op_u16(Op::GLOBAL_SET, gc2, 0);
+    func.emit_op_u32(Op::GLOBAL_SET, gc2, 0);
     let gc3 = func.add_constant(Value::String(Arc::from("counter")));
-    func.emit_op_u16(Op::GLOBAL_GET, gc3, 0);
+    func.emit_op_u32(Op::GLOBAL_GET, gc3, 0);
     func.emit_op(Op::RETURN, 0);
 
     vm.run(vec![main_chunk, func]).unwrap();
@@ -971,7 +971,7 @@ fn invoke_modifies_global() {
     main_chunk.local_count = 1;
     main_chunk.emit_string_const("none", 0);
     let g = main_chunk.add_constant(Value::String(Arc::from("status")));
-    main_chunk.emit_op_u16(Op::GLOBAL_SET, g, 0);
+    main_chunk.emit_op_u32(Op::GLOBAL_SET, g, 0);
     main_chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
 
     // chunk 1: sets global "status" = "done", returns Null
@@ -980,7 +980,7 @@ fn invoke_modifies_global() {
     func.local_count = 1;
     func.emit_string_const("done", 0);
     let gs = func.add_constant(Value::String(Arc::from("status")));
-    func.emit_op_u16(Op::GLOBAL_SET, gs, 0);
+    func.emit_op_u32(Op::GLOBAL_SET, gs, 0);
     func.emit_op(Op::RETURN, 0);
 
     // chunk 2: reads global "status" and returns it
@@ -988,7 +988,7 @@ fn invoke_modifies_global() {
     reader.arity = 0;
     reader.local_count = 1;
     let gr = reader.add_constant(Value::String(Arc::from("status")));
-    reader.emit_op_u16(Op::GLOBAL_GET, gr, 0);
+    reader.emit_op_u32(Op::GLOBAL_GET, gr, 0);
     reader.emit_op(Op::RETURN, 0);
 
     vm.run(vec![main_chunk, func, reader]).unwrap();
@@ -1067,7 +1067,7 @@ fn invoke_twice_globals_updated() {
     main_chunk.local_count = 1;
     main_chunk.emit_i32_const(0, 0);
     let g = main_chunk.add_constant(Value::String(Arc::from("acc")));
-    main_chunk.emit_op_u16(Op::GLOBAL_SET, g, 0);
+    main_chunk.emit_op_u32(Op::GLOBAL_SET, g, 0);
     main_chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
 
     // chunk 1: (n) => acc = acc + n; return acc
@@ -1075,13 +1075,13 @@ fn invoke_twice_globals_updated() {
     func.arity = 1;
     func.local_count = 1;
     let ga = func.add_constant(Value::String(Arc::from("acc")));
-    func.emit_op_u16(Op::GLOBAL_GET, ga, 0);
+    func.emit_op_u32(Op::GLOBAL_GET, ga, 0);
     func.emit_op_u16(Op::LOCAL_GET, 0, 0);
     func.emit_op(Op::I32_ADD, 0);
     let ga2 = func.add_constant(Value::String(Arc::from("acc")));
-    func.emit_op_u16(Op::GLOBAL_SET, ga2, 0);
+    func.emit_op_u32(Op::GLOBAL_SET, ga2, 0);
     let ga3 = func.add_constant(Value::String(Arc::from("acc")));
-    func.emit_op_u16(Op::GLOBAL_GET, ga3, 0);
+    func.emit_op_u32(Op::GLOBAL_GET, ga3, 0);
     func.emit_op(Op::RETURN, 0);
 
     vm.run(vec![main_chunk, func]).unwrap();
@@ -1354,7 +1354,7 @@ fn callback_modifies_global_subsequent_reads() {
     // Set global "state" = "initial"
     main_chunk.emit_string_const("initial", 0);
     let gs = main_chunk.add_constant(Value::String(Arc::from("state")));
-    main_chunk.emit_op_u16(Op::GLOBAL_SET, gs, 0);
+    main_chunk.emit_op_u32(Op::GLOBAL_SET, gs, 0);
 
     // Register callback (chunk 1)
     main_chunk.emit_op_u16(Op::REF_FUNC, 1, 0);
@@ -1369,7 +1369,7 @@ fn callback_modifies_global_subsequent_reads() {
     cb.local_count = 1;
     cb.emit_string_const("updated", 0);
     let gs2 = cb.add_constant(Value::String(Arc::from("state")));
-    cb.emit_op_u16(Op::GLOBAL_SET, gs2, 0);
+    cb.emit_op_u32(Op::GLOBAL_SET, gs2, 0);
     cb.emit_op(Op::RETURN, 0);
 
     // chunk 2: reads global "state"
@@ -1377,7 +1377,7 @@ fn callback_modifies_global_subsequent_reads() {
     reader.arity = 0;
     reader.local_count = 1;
     let gr = reader.add_constant(Value::String(Arc::from("state")));
-    reader.emit_op_u16(Op::GLOBAL_GET, gr, 0);
+    reader.emit_op_u32(Op::GLOBAL_GET, gr, 0);
     reader.emit_op(Op::RETURN, 0);
 
     vm.run(vec![main_chunk, cb, reader]).unwrap();
@@ -1502,7 +1502,7 @@ fn call_value_on_undefined_errors() {
         );
         vm.set_global_owned(name.clone(), Value::Undefined);
         let ci = main.intern_string_constant(&name);
-        main.emit_op_u16(Op::GLOBAL_GET, ci, 0);
+        main.emit_op_u32(Op::GLOBAL_GET, ci, 0);
     }
     main.emit_op_u8_u8(Op::CALL_REF, 0, 1, 0);
 

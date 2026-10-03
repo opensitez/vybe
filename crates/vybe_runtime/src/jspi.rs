@@ -142,6 +142,7 @@ impl VM {
                 chunk_index: f.chunk_index,
                 ip: f.ip,
                 base: f.base,
+                local_frame_size: f.local_frame_size,
                 label_base: f.label_base,
                 upvalues: f.upvalues,
             })
@@ -171,6 +172,7 @@ impl VM {
                 chunk_index: f.chunk_index,
                 ip: f.ip,
                 base: f.base,
+                local_frame_size: f.local_frame_size,
                 label_base: f.label_base,
                 upvalues: f.upvalues,
             })
@@ -453,6 +455,7 @@ impl VM {
                 chunk_index: f.chunk_index,
                 ip: f.ip,
                 base: f.base - call_base,
+                local_frame_size: f.local_frame_size,
                 label_base: f.label_base - label_floor,
                 upvalues: f.upvalues,
             })
@@ -614,6 +617,7 @@ impl VM {
                 chunk_index: f.chunk_index,
                 ip: f.ip,
                 base: f.base,
+                local_frame_size: f.local_frame_size,
                 label_base: f.label_base,
                 upvalues: f.upvalues,
             })

@@ -12,7 +12,26 @@
 
 use crate::value::ObjectKind;
 use crate::{HostContext, VM, Value};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+
+/// One immutable string's UTF-16 view, retained per VM host registration.
+/// Sequential indexed reads must not transcode the entire string per character.
+#[derive(Default)]
+struct Utf16View {
+    source: Option<Arc<str>>,
+    units: Vec<u16>,
+}
+
+impl Utf16View {
+    fn units(&mut self, source: &Arc<str>) -> &[u16] {
+        if !self.source.as_ref().is_some_and(|old| Arc::ptr_eq(old, source)) {
+            self.units.clear();
+            self.units.extend(source.encode_utf16());
+            self.source = Some(source.clone());
+        }
+        &self.units
+    }
+}
 
 fn trap(ctx: &mut HostContext, msg: &str) {
     ctx.throw_value(Value::String(Arc::from(msg)));
@@ -23,6 +42,7 @@ fn is_string(v: &Value) -> bool {
 }
 
 pub fn register(vm: &mut VM) {
+    let indexed_view = Arc::new(Mutex::new(Utf16View::default()));
     // test(externref) -> i32
     // Returns 1 if string, 0 otherwise (null also returns 0 per spec).
     vm.register_host_fn(
@@ -72,7 +92,7 @@ pub fn register(vm: &mut VM) {
         "concat",
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
             let a = match args.first() {
-                Some(Value::String(s)) => s.clone(),
+                Some(Value::String(s)) => s,
                 _ => {
                     trap(
                         ctx,
@@ -82,7 +102,7 @@ pub fn register(vm: &mut VM) {
                 }
             };
             let b = match args.get(1) {
-                Some(Value::String(s)) => s.clone(),
+                Some(Value::String(s)) => s,
                 _ => {
                     trap(
                         ctx,
@@ -91,7 +111,16 @@ pub fn register(vm: &mut VM) {
                     return Value::Null;
                 }
             };
-            Value::String(Arc::from(format!("{}{}", a, b).as_str()))
+            if a.is_empty() {
+                return Value::String(b.clone());
+            }
+            if b.is_empty() {
+                return Value::String(a.clone());
+            }
+            let mut result = String::with_capacity(a.len() + b.len());
+            result.push_str(a);
+            result.push_str(b);
+            Value::String(Arc::from(result))
         }),
     );
 
@@ -197,10 +226,11 @@ pub fn register(vm: &mut VM) {
     // charCodeAt(externref, i32) -> i32
     // index treated as u32. Returns the UTF-16 code unit at that position.
     // Traps on null/non-string, traps if index >= length.
+    let char_view = indexed_view.clone();
     vm.register_host_fn(
         "wasm:js-string",
         "charCodeAt",
-        Box::new(|ctx: &mut HostContext, args: &[Value]| {
+        Box::new(move |ctx: &mut HostContext, args: &[Value]| {
             let s = match args.first() {
                 Some(Value::String(s)) => s.clone(),
                 _ => {
@@ -208,7 +238,8 @@ pub fn register(vm: &mut VM) {
                     return Value::Null;
                 }
             };
-            let units: Vec<u16> = s.encode_utf16().collect();
+            let mut view = char_view.lock().unwrap();
+            let units = view.units(&s);
             let idx = (args.get(1).map(|v| v.as_i32()).unwrap_or(0) as u32) as usize;
             if idx >= units.len() {
                 trap(
@@ -227,7 +258,7 @@ pub fn register(vm: &mut VM) {
     vm.register_host_fn(
         "wasm:js-string",
         "codePointAt",
-        Box::new(|ctx: &mut HostContext, args: &[Value]| {
+        Box::new(move |ctx: &mut HostContext, args: &[Value]| {
             let s = match args.first() {
                 Some(Value::String(s)) => s.clone(),
                 _ => {
@@ -235,7 +266,8 @@ pub fn register(vm: &mut VM) {
                     return Value::Null;
                 }
             };
-            let units: Vec<u16> = s.encode_utf16().collect();
+            let mut view = indexed_view.lock().unwrap();
+            let units = view.units(&s);
             let idx = (args.get(1).map(|v| v.as_i32()).unwrap_or(0) as u32) as usize;
             if idx >= units.len() {
                 trap(
@@ -409,9 +441,10 @@ pub fn register(vm: &mut VM) {
         "wasm:js-string",
         "fromI32",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            Value::String(Arc::from(
-                format!("{}", args.first().map(|v| v.as_i32()).unwrap_or(0)).as_str(),
-            ))
+            Value::String(Arc::from(format!(
+                "{}",
+                args.first().map(|v| v.as_i32()).unwrap_or(0)
+            )))
         }),
     );
 
@@ -421,7 +454,7 @@ pub fn register(vm: &mut VM) {
         "fromU32",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let n = args.first().map(|v| v.as_i32()).unwrap_or(0) as u32;
-            Value::String(Arc::from(format!("{}", n).as_str()))
+            Value::String(Arc::from(format!("{}", n)))
         }),
     );
 
@@ -430,9 +463,10 @@ pub fn register(vm: &mut VM) {
         "wasm:js-string",
         "fromI64",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            Value::String(Arc::from(
-                format!("{}", args.first().map(|v| v.as_i64()).unwrap_or(0)).as_str(),
-            ))
+            Value::String(Arc::from(format!(
+                "{}",
+                args.first().map(|v| v.as_i64()).unwrap_or(0)
+            )))
         }),
     );
 
@@ -442,7 +476,7 @@ pub fn register(vm: &mut VM) {
         "fromU64",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let n = args.first().map(|v| v.as_i64()).unwrap_or(0) as u64;
-            Value::String(Arc::from(format!("{}", n).as_str()))
+            Value::String(Arc::from(format!("{}", n)))
         }),
     );
 
@@ -463,7 +497,7 @@ pub fn register(vm: &mut VM) {
             } else {
                 format!("{}", n)
             };
-            Value::String(Arc::from(s.as_str()))
+            Value::String(Arc::from(s))
         }),
     );
 }

@@ -8,6 +8,7 @@
 //! after `dlopen` to hand back the plugin.
 
 use std::sync::{Mutex, OnceLock};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::Chunk;
 use crate::chunk::ReceiverAbi;
@@ -56,12 +57,18 @@ fn registry() -> &'static Mutex<Vec<LanguageDef>> {
     REGISTRY.get_or_init(|| Mutex::new(Vec::new()))
 }
 
+static LANGUAGE_GENERATION: AtomicUsize = AtomicUsize::new(0);
+static PLATFORM_GENERATION: AtomicUsize = AtomicUsize::new(0);
+static LANGUAGE_TREES_GENERATION: AtomicUsize = AtomicUsize::new(0);
+static PLATFORM_TREES_GENERATION: AtomicUsize = AtomicUsize::new(0);
+
 /// Register a language. Idempotent by `name`, so a language crate can safely
 /// call this from its own initialiser (or its dylib entry point).
 pub fn register_language(def: LanguageDef) {
     let mut r = registry().lock().unwrap();
     if !r.iter().any(|p| p.name == def.name) {
         r.push(def);
+        LANGUAGE_GENERATION.fetch_add(1, Ordering::Release);
     }
 }
 
@@ -162,6 +169,7 @@ pub fn register_platform(def: PlatformDef) {
     let mut r = platform_registry().lock().unwrap();
     if !r.iter().any(|p| p.name == def.name) {
         r.push(def);
+        PLATFORM_GENERATION.fetch_add(1, Ordering::Release);
     }
 }
 
@@ -226,6 +234,10 @@ pub fn platform_read_binary_module(data: &[u8]) -> Option<Result<Vec<Chunk>, Str
 
 /// Mount every registered platform's namespace tree.
 pub fn register_all_platform_trees() {
+    let generation = PLATFORM_GENERATION.load(Ordering::Acquire);
+    if PLATFORM_TREES_GENERATION.load(Ordering::Acquire) == generation {
+        return;
+    }
     let fns: Vec<fn()> = all_platforms()
         .iter()
         .filter_map(|p| p.register_tree)
@@ -233,14 +245,20 @@ pub fn register_all_platform_trees() {
     for f in fns {
         f();
     }
+    PLATFORM_TREES_GENERATION.store(generation, Ordering::Release);
 }
 
 /// Mount every registered language's namespace tree.
 pub fn register_all_trees() {
+    let generation = LANGUAGE_GENERATION.load(Ordering::Acquire);
+    if LANGUAGE_TREES_GENERATION.load(Ordering::Acquire) == generation {
+        return;
+    }
     let fns: Vec<fn()> = all().iter().filter_map(|p| p.register_tree).collect();
     for f in fns {
         f();
     }
+    LANGUAGE_TREES_GENERATION.store(generation, Ordering::Release);
 }
 
 // ── Optional language hooks ─────────────────────────────────────────────────
@@ -295,6 +313,13 @@ pub struct VariableNamespace {
 /// See `builtinslotplan.md` §3i. Do not re-add a hook for a question of the
 /// form "what does operator X do to built-in type Y" — that is a slot.
 pub struct LanguageHooks {
+    /// Convert a compiled function literal into a language closure object.
+    /// The input and output are callable values on the operand stack.
+    pub function_literal: Option<fn(&mut Chunk, u32)>,
+    /// Consume `[old_value, destructor]` after a source variable is rebound.
+    /// Languages with reference-counted object finalization can decide whether
+    /// another program-visible reference still owns the old value.
+    pub rebind_finalizer: Option<fn(&mut Chunk, u32)>,
     /// See [`VariableNamespace`]. `None` (the default) = one namespace.
     pub variable_namespace: Option<&'static VariableNamespace>,
     /// ⛔ TAKES THE RECEIVER ABI. These emit CALLS — to a registered resolver

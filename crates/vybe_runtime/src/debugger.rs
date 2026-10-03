@@ -13,10 +13,203 @@
 //!   * No opcode, no execution-semantics change: the debugger observes and gates.
 
 use std::sync::mpsc::{Receiver, Sender};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+use std::cell::RefCell;
+use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
-use crate::VMError;
+use crate::{VMError, Value};
 use crate::opcode::Op;
 use crate::vm::VM;
+
+/// Timing and current phase shared with the debugger client. Compiler work can
+/// block the VM thread, so a report must read this without a VM command.
+#[derive(Default)]
+pub struct DebugReport {
+    pub process_started: Option<Instant>,
+    pub milestones: Vec<(String, Duration)>,
+    pub first_output: Option<Duration>,
+    pub last_output: Option<Duration>,
+    pub paused: Duration,
+    pub active: Vec<(String, Instant)>,
+    pub completed: Vec<(String, Duration)>,
+    pub active_host: Option<(Arc<str>, Instant)>,
+    pub active_host_args: Option<Vec<String>>,
+    pub location: Option<String>,
+    pub instructions: u64,
+    /// One function sample per 4096 executed VM instructions.
+    pub function_samples: HashMap<String, u64>,
+    /// One completed host call in 64, measured at the existing debugger
+    /// boundary. Durations are reported separately from VM instruction samples.
+    pub host_samples: HashMap<Arc<str>, (u64, Duration)>,
+    pub host_sample_tick: u64,
+    /// Source-line samples expose hot statements without an external profiler.
+    pub line_samples: HashMap<String, u64>,
+    pub live: Arc<DebugLiveInstruction>,
+}
+
+#[derive(Default)]
+pub struct DebugLiveInstruction {
+    pub chunk: AtomicUsize,
+    pub ip: AtomicUsize,
+    pub op: AtomicU32,
+    pub instructions: AtomicU64,
+}
+
+pub type SharedDebugReport = Arc<Mutex<DebugReport>>;
+
+impl DebugReport {
+    pub fn milestone(&mut self, name: &str) {
+        if let Some(start) = self.process_started {
+            self.milestones.push((name.to_string(), start.elapsed()));
+        }
+    }
+}
+
+/// Called by the stdout host after a nonempty write; includes execute inside
+/// the same debugger report scope as their caller.
+pub fn record_stdout_write() {
+    CURRENT_REPORT.with(|slot| {
+        if let Some(report) = slot.borrow().as_ref() {
+            let mut report = report.lock().unwrap();
+            if let Some(start) = report.process_started {
+                let elapsed = start.elapsed();
+                report.first_output.get_or_insert(elapsed);
+                report.last_output = Some(elapsed);
+            }
+        }
+    });
+}
+
+struct DebugPauseTime(SharedDebugReport, Instant);
+impl Drop for DebugPauseTime {
+    fn drop(&mut self) {
+        self.0.lock().unwrap().paused += self.1.elapsed();
+    }
+}
+
+thread_local! {
+    static CURRENT_REPORT: RefCell<Option<SharedDebugReport>> = const { RefCell::new(None) };
+}
+
+/// Makes compiler phases visible to the attached debugger on this VM thread.
+pub struct DebugReportScope(Option<SharedDebugReport>);
+
+impl DebugReportScope {
+    pub fn enter(report: Option<SharedDebugReport>) -> Self {
+        let previous = CURRENT_REPORT.with(|slot| slot.replace(report));
+        Self(previous)
+    }
+}
+
+impl Drop for DebugReportScope {
+    fn drop(&mut self) {
+        CURRENT_REPORT.with(|slot| { slot.replace(self.0.take()); });
+    }
+}
+
+pub struct DebugPhase {
+    report: Option<SharedDebugReport>,
+    label: String,
+    start: Instant,
+}
+
+/// Shows a blocking host call to `report` without retaining a timing entry
+/// for every ordinary host call in a long-running program.
+pub struct DebugHostCall {
+    report: Option<SharedDebugReport>,
+    previous: Option<(Arc<str>, Instant)>,
+    previous_args: Option<Vec<String>>,
+}
+
+impl DebugHostCall {
+    pub fn new(report: Option<SharedDebugReport>, name: impl Into<Arc<str>>) -> Self {
+        let (previous, previous_args) = if let Some(report) = &report {
+            let mut report = report.lock().unwrap();
+            let previous = report.active_host.replace((name.into(), Instant::now()));
+            (previous, report.active_host_args.take())
+        } else {
+            (None, None)
+        };
+        Self { report, previous, previous_args }
+    }
+
+    /// Snapshot only scalar arguments before the host call starts. Object
+    /// formatting could take locks or traverse arbitrarily large guest data.
+    pub fn args(&self, args: &[Value]) {
+        if let Some(report) = &self.report {
+            let preview = args.iter().take(8).map(|value| match value {
+                Value::I32(v) => v.to_string(),
+                Value::I64(v) => v.to_string(),
+                Value::F64(v) => v.to_string(),
+                Value::String(v) => format!("string(len={})", v.len()),
+                Value::Null => "null".to_string(),
+                Value::Undefined => "undefined".to_string(),
+                Value::Object(obj) => format!("object({:p})", Arc::as_ptr(obj)),
+                other => format!("{:?}", std::mem::discriminant(other)),
+            }).collect();
+            report.lock().unwrap().active_host_args = Some(preview);
+        }
+    }
+
+    pub fn stage(&self, name: &str) {
+        if let Some(report) = &self.report {
+            report.lock().unwrap().active_host = Some((Arc::from(name), Instant::now()));
+        }
+    }
+}
+
+impl Drop for DebugHostCall {
+    fn drop(&mut self) {
+        if let Some(report) = &self.report {
+            let mut report = report.lock().unwrap();
+            report.host_sample_tick += 1;
+            if report.host_sample_tick % 64 == 0 {
+                if let Some((name, elapsed)) = report.active_host.as_ref()
+                    .map(|(name, start)| (name.clone(), start.elapsed())) {
+                    let sample = report.host_samples.entry(name).or_default();
+                    sample.0 += 1;
+                    sample.1 += elapsed;
+                }
+            }
+            report.active_host = self.previous.take();
+            report.active_host_args = self.previous_args.take();
+        }
+    }
+}
+
+impl DebugPhase {
+    pub fn current(label: impl Into<String>) -> Self {
+        let report = CURRENT_REPORT.with(|slot| slot.borrow().clone());
+        Self::new(report, label)
+    }
+    pub fn current_lazy(label: impl FnOnce() -> String) -> Self {
+        let report = CURRENT_REPORT.with(|slot| slot.borrow().clone());
+        let label = if report.is_some() { label() } else { String::new() };
+        Self::new(report, label)
+    }
+    pub fn new(report: Option<SharedDebugReport>, label: impl Into<String>) -> Self {
+        let label = label.into();
+        let start = Instant::now();
+        if let Some(report) = &report {
+            report.lock().unwrap().active.push((label.clone(), start));
+        }
+        Self { report, label, start }
+    }
+}
+
+impl Drop for DebugPhase {
+    fn drop(&mut self) {
+        if let Some(report) = &self.report {
+            let mut report = report.lock().unwrap();
+            if let Some(index) = report.active.iter().rposition(|(label, _)| label == &self.label) {
+                report.active.remove(index);
+            }
+            report.completed.push((self.label.clone(), self.start.elapsed()));
+        }
+    }
+}
 
 // ─── Protocol: client → VM ──────────────────────────────────────────────────
 
@@ -77,6 +270,8 @@ pub enum DebugCommand {
         name: String,
         condition: Option<String>,
     },
+    /// Break before a call to the named imported host function.
+    BreakHost { name: Option<String>, bad_type_only: bool },
     /// Logpoint: log a message (with `{expr}` interpolation) at a source line and
     /// keep running — never pauses.
     Logpoint {
@@ -129,10 +324,17 @@ pub enum DebugCommand {
     Globals {
         prefix: Option<String>,
     },
-    /// Disassemble a window of instructions around the current ip.
+    /// Report module global initializer decisions and resolved values.
+    TraceGlobalInits { enabled: bool },
+    /// Pause before a named global initializer (`*` matches all names).
+    BreakGlobalInit { name: String },
+    /// Disassemble around the current ip or an explicit offset in this chunk.
     Disasm {
         window: usize,
+        offset: Option<usize>,
     },
+    /// Show structured-control branches whose destination is near an offset.
+    ControlTargets { offset: usize },
     /// List chunks (index, name, arity).
     Chunks,
     /// The FRAME'S SHAPE: every slot the frame actually has, compiler-owned
@@ -262,6 +464,7 @@ pub enum PauseReason {
     Exception {
         uncaught: bool,
     },
+    HostCall { name: String },
 }
 
 #[derive(Debug, Clone)]
@@ -377,6 +580,9 @@ impl SlotOwner {
 struct Breakpoint {
     id: u32,
     chunk_index: usize,
+    /// Function-entry breakpoints match by name so they also cover chunks
+    /// appended by eval, include, or hot reload after the command was set.
+    function_name: Option<String>,
     offset: usize,
     enabled: bool,
     /// Optional condition expression — the breakpoint fires only when it
@@ -418,6 +624,11 @@ enum RunMode {
 /// The execution-side debugger. Held as `Option<Debugger>` on the VM and taken
 /// out for the duration of each `on_instruction` call to avoid borrow conflicts.
 pub struct Debugger {
+    pub report: SharedDebugReport,
+    host_names: HashMap<usize, Arc<str>>,
+    live: Arc<DebugLiveInstruction>,
+    sampled_instructions: u64,
+    recent_instructions: VecDeque<(usize, usize, Op)>,
     cmd_rx: Receiver<DebugRequest>,
     evt_tx: Sender<DebugEvent>,
     breakpoints: Vec<Breakpoint>,
@@ -426,8 +637,11 @@ pub struct Debugger {
     next_wp_id: u32,
     break_on_throw: bool,
     break_on_uncaught: bool,
+    break_host: Option<(String, bool)>,
     mode: RunMode,
     stream_opcodes: bool,
+    trace_global_inits: bool,
+    break_global_inits: Vec<String>,
     watches: Vec<String>,
     /// Set once the first instruction has been seen (so PauseNext doesn't fire
     /// on the same instruction it was requested from).
@@ -453,6 +667,81 @@ pub struct Debugger {
 }
 
 impl Debugger {
+    /// Host indices are stable within this VM. Resolve their display names
+    /// once instead of scanning the entire plugin registry on every host call.
+    pub(crate) fn host_name(&mut self, index: usize, registry: &HashMap<(String, String), usize>) -> Arc<str> {
+        self.host_names.entry(index).or_insert_with(|| {
+            registry.iter().find(|(_, id)| **id == index)
+                .map(|((module, name), _)| Arc::from(format!("{module}:{name}")))
+                .unwrap_or_else(|| Arc::from(format!("host #{index}")))
+        }).clone()
+    }
+    /// Keep a finished CLI session available for an in-process restart. The
+    /// reader thread closes the channel on piped EOF, so scripted debugger
+    /// runs still exit promptly after their output.
+    pub(crate) fn wait_after_exit(&mut self) -> bool {
+        while let Ok(req) = self.cmd_rx.recv() {
+            match req.command {
+                DebugCommand::Restart => {
+                    let _ = req.reply.send(DebugResponse::Ok);
+                    return true;
+                }
+                DebugCommand::Quit => {
+                    let _ = req.reply.send(DebugResponse::Ok);
+                    return false;
+                }
+                _ => {
+                    let _ = req.reply.send(DebugResponse::Error(
+                        "program exited; use restart or q".to_string(),
+                    ));
+                }
+            }
+        }
+        false
+    }
+    /// Prepare an attached debugger for another run in the same VM. The
+    /// transport and user breakpoints survive; instruction history belongs to
+    /// the previous generation of chunks and must be discarded.
+    pub(crate) fn rearm_after_restart(&mut self) {
+        self.mode = RunMode::PauseNext;
+        self.armed = false;
+        self.prelude_skip_done = false;
+        self.defer_cmds_until_pause = false;
+        self.pending_reply = None;
+        self.recent_instructions.clear();
+        self.host_names.clear();
+        self.sampled_instructions = 0;
+        let mut report = self.report.lock().unwrap();
+        if report.process_started.is_some() {
+            report.process_started = Some(Instant::now());
+        }
+        report.milestones.clear();
+        report.first_output = None;
+        report.last_output = None;
+        report.paused = Duration::ZERO;
+        report.live.instructions.store(0, Ordering::Relaxed);
+        report.live.chunk.store(0, Ordering::Relaxed);
+        report.live.ip.store(0, Ordering::Relaxed);
+        report.live.op.store(0, Ordering::Relaxed);
+        report.active.clear();
+        report.completed.clear();
+        report.active_host = None;
+        report.location = None;
+        report.instructions = 0;
+        report.function_samples.clear();
+        report.host_samples.clear();
+        report.host_sample_tick = 0;
+        report.line_samples.clear();
+    }
+    pub(crate) fn recent_instruction_report(&self, vm: &VM) -> String {
+        self.recent_instructions.iter().map(|(chunk_index, ip, op)| {
+            let chunk = vm.chunks.get(*chunk_index);
+            let name = chunk.map_or("<unknown>", |chunk| chunk.name.as_str());
+            let line = chunk.and_then(|chunk| chunk.get_line(*ip)).unwrap_or(0);
+            format!("  {name}@{ip} {op:?} line {line}")
+        }).collect::<Vec<_>>().join("\n")
+    }
+
     /// Create a debugger. `pause_on_entry` stops before the first instruction so
     /// the client can set breakpoints (like `node --inspect-brk`).
     pub fn new(
@@ -460,7 +749,14 @@ impl Debugger {
         evt_tx: Sender<DebugEvent>,
         pause_on_entry: bool,
     ) -> Self {
+        let report = Arc::new(Mutex::new(DebugReport::default()));
+        let live = report.lock().unwrap().live.clone();
         Debugger {
+            report,
+            host_names: HashMap::new(),
+            live,
+            sampled_instructions: 0,
+            recent_instructions: VecDeque::with_capacity(32),
             cmd_rx,
             evt_tx,
             breakpoints: Vec::new(),
@@ -469,18 +765,84 @@ impl Debugger {
             next_wp_id: 1,
             break_on_throw: false,
             break_on_uncaught: false,
+            break_host: None,
             mode: if pause_on_entry {
                 RunMode::PauseNext
             } else {
                 RunMode::Running
             },
             stream_opcodes: false,
+            trace_global_inits: false,
+            break_global_inits: Vec::new(),
             watches: Vec::new(),
             armed: false,
             skip_system: true,
             prelude_skip_done: false,
             pending_reply: None,
             defer_cmds_until_pause: false,
+        }
+    }
+
+    /// Observe instantiation outside the bytecode dispatch loop. The loader
+    /// calls this before each initializer, so the normal REPL can break and
+    /// inspect the live VM without an external debugger.
+    pub(crate) fn on_global_init(
+        &mut self,
+        vm: &mut VM,
+        chunk_index: usize,
+        name: &str,
+        init: &crate::chunk::ConstExpr,
+    ) -> Result<(), VMError> {
+        let breaks = self
+            .break_global_inits
+            .iter()
+            .any(|wanted| wanted == "*" || wanted == name);
+        if self.trace_global_inits || breaks {
+            let current = vm.global(name).map(render_value).unwrap_or_else(|| "<missing>".into());
+            let assigned = vm
+                .global_index
+                .get(name)
+                .and_then(|&i| vm.globals_assigned.get(i as usize))
+                .copied()
+                .unwrap_or(false);
+            let _ = self.evt_tx.send(DebugEvent::Log {
+                message: format!(
+                    "global-init before name={name} expr={init:?} current={current} assigned={assigned}"
+                ),
+            });
+        }
+        if breaks {
+            self.enter_pause(vm, chunk_index, 0, PauseReason::Interrupt)?;
+        }
+        Ok(())
+    }
+
+    /// The ordinary entry pause happens at the first instruction, after
+    /// instantiation. Pause earlier when the entry module has initializers so
+    /// `bgi` and `trace-global-inits` can be configured before they run.
+    pub(crate) fn before_global_inits(
+        &mut self,
+        vm: &mut VM,
+        chunk_index: usize,
+    ) -> Result<(), VMError> {
+        if vm.frames.is_empty() && !self.prelude_skip_done {
+            self.prelude_skip_done = true;
+            self.enter_pause(vm, chunk_index, 0, PauseReason::Entry)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn on_global_init_result(&mut self, name: &str, applied: bool, value: &crate::Value) {
+        if self.trace_global_inits
+            || self
+                .break_global_inits
+                .iter()
+                .any(|wanted| wanted == "*" || wanted == name)
+        {
+            let action = if applied { "applied" } else { "skipped (already assigned)" };
+            let _ = self.evt_tx.send(DebugEvent::Log {
+                message: format!("global-init {action} name={name} value={}", render_value(value)),
+            });
         }
     }
 
@@ -491,6 +853,38 @@ impl Debugger {
             return Ok(());
         }
         let chunk_index = vm.frames.last().unwrap().chunk_index;
+        self.sampled_instructions += 1;
+        // A free-running debugger only needs to poll for commands every 64
+        // instructions. Keep pauses precise once requested, while avoiding
+        // four atomics and recent-history bookkeeping on every ordinary op.
+        let free_running = matches!(self.mode, RunMode::Running)
+            && self.breakpoints.is_empty()
+            && self.watchpoints.is_empty()
+            && !self.break_on_throw
+            && !self.break_on_uncaught
+            && self.break_host.is_none()
+            && !self.stream_opcodes;
+        if free_running && self.sampled_instructions % 64 != 0 {
+            return Ok(());
+        }
+        if self.recent_instructions.len() == 32 {
+            self.recent_instructions.pop_front();
+        }
+        self.recent_instructions.push_back((chunk_index, ip, op));
+        self.live.chunk.store(chunk_index, Ordering::Relaxed);
+        self.live.ip.store(ip, Ordering::Relaxed);
+        self.live.op.store(op.0, Ordering::Relaxed);
+        self.live.instructions.store(self.sampled_instructions, Ordering::Relaxed);
+        if self.sampled_instructions == 1 || self.sampled_instructions % 4096 == 0 {
+            let name = vm.chunks.get(chunk_index).map_or("<unknown>", |chunk| chunk.name.as_str());
+            let mut report = self.report.lock().unwrap();
+            report.location = Some(format!("{name}@{ip} (depth {})", vm.frames.len()));
+            report.instructions = self.sampled_instructions;
+            *report.function_samples.entry(name.to_string()).or_default() += 1;
+            if let Some(line) = vm.chunks.get(chunk_index).and_then(|chunk| chunk.get_line(ip)) {
+                *report.line_samples.entry(format!("{name}:{line}")).or_default() += 1;
+            }
+        }
 
         // 0. Prelude skip (once, on the very first instruction). If the entry
         //    pause is requested and the script chunk marked where user code
@@ -516,6 +910,11 @@ impl Debugger {
             }
         }
 
+        // In free running mode with no active stop conditions, only the
+        // command channel needs polling. Keep the live frame/IP and recent
+        // instruction ring exact above, but amortize the channel and
+        // breakpoint machinery over 64 instructions. An asynchronous pause
+        // is still serviced within a tiny fraction of a millisecond.
         // 1. Live opcode stream (filterable VYBE_TRACE replacement).
         if self.stream_opcodes {
             let name = vm
@@ -566,7 +965,29 @@ impl Debugger {
 
         // 3. Decide whether to stop here (with side effects: hit counts,
         //    logpoints, one-shot removal, watchpoint snapshots).
-        if let Some(reason) = self.decide_stop(vm, chunk_index, ip, op) {
+        let host_stop = self.break_host.as_ref().and_then(|(wanted, bad_type_only)| {
+            if op != Op::CALL { return None; }
+            if *bad_type_only {
+                let valid_operand = if wanted == "wasm:js-number:toF64" {
+                    matches!(vm.stack.last(), Some(
+                        crate::Value::I32(_) | crate::Value::I64(_)
+                        | crate::Value::F32(_) | crate::Value::F64(_)
+                    ))
+                } else {
+                    matches!(vm.stack.last(), Some(crate::Value::String(_)))
+                };
+                if valid_operand { return None; }
+            }
+            let chunk = vm.chunks.get(chunk_index)?;
+            let bytes = chunk.code.get(ip + 4..ip + 6)?;
+            let import_idx = u16::from_be_bytes([bytes[0], bytes[1]]) as usize;
+            let owner = vm.chunk_import_owner.get(chunk_index).copied().unwrap_or(chunk_index);
+            let import = chunk.imports.get(import_idx)
+                .or_else(|| vm.chunks.get(owner)?.imports.get(import_idx))?;
+            let name = format!("{}:{}", import.module, import.name);
+            (wanted == &name).then_some(PauseReason::HostCall { name })
+        });
+        if let Some(reason) = host_stop.or_else(|| self.decide_stop(vm, chunk_index, ip, op)) {
             self.enter_pause(vm, chunk_index, ip, reason)?;
         }
         self.armed = true;
@@ -596,7 +1017,13 @@ impl Debugger {
         let matched: Vec<u32> = self
             .breakpoints
             .iter()
-            .filter(|b| b.enabled && b.chunk_index == chunk_index && b.offset == ip)
+            .filter(|b| {
+                b.enabled
+                    && b.offset == ip
+                    && (b.chunk_index == chunk_index
+                        || b.function_name.as_deref()
+                            == vm.chunks.get(chunk_index).map(|chunk| chunk.name.as_str()))
+            })
             .map(|b| b.id)
             .collect();
         for id in matched {
@@ -684,8 +1111,13 @@ impl Debugger {
         reason: PauseReason,
     ) -> Result<(), VMError> {
         self.mode = RunMode::Paused;
+        let _pause_time = DebugPauseTime(self.report.clone(), Instant::now());
         let location = location_at(vm, chunk_index, ip);
-        let frame_summary = frame_summary(vm);
+        let frame_summary = if vm.frames.is_empty() {
+            "module initialization (no call frame yet)".to_string()
+        } else {
+            frame_summary(vm)
+        };
         // Evaluate watch expressions against this frame (clone the list first so
         // `vm` isn't aliased by a borrow of `self.watches` during eval).
         let watch_exprs = self.watches.clone();
@@ -810,10 +1242,8 @@ impl Debugger {
             BreakFunction { name, condition } => {
                 // A function name is NOT unique: overrides across a class
                 // hierarchy compile to separate chunks that share a name (e.g.
-                // three `whoami` chunks for A/B/C). Breaking on only the first
-                // match silently misses the one that actually runs. Install on
-                // EVERY chunk with this name so the breakpoint fires wherever
-                // control lands.
+                // three `whoami` chunks for A/B/C). A name-based breakpoint
+                // covers every matching chunk, including ones loaded later.
                 let matches: Vec<usize> = vm
                     .chunks
                     .iter()
@@ -821,27 +1251,45 @@ impl Debugger {
                     .filter(|(_, c)| c.name == *name)
                     .map(|(i, _)| i)
                     .collect();
-                if matches.is_empty() {
-                    Control::stay(DebugResponse::Error(format!("no function named '{name}'")))
+                let id = self.next_bp_id;
+                self.next_bp_id += 1;
+                self.breakpoints.push(Breakpoint {
+                    id,
+                    chunk_index: usize::MAX,
+                    function_name: Some(name.clone()),
+                    offset: 0,
+                    enabled: true,
+                    condition,
+                    ignore_count: 0,
+                    hit_count: 0,
+                    log_message: None,
+                    one_shot: false,
+                });
+                let line = matches
+                    .first()
+                    .and_then(|&ci| vm.chunks.get(ci))
+                    .and_then(|chunk| chunk.get_line(0));
+                let chunk = if matches.is_empty() {
+                    format!("{name} (pending)")
+                } else if matches.len() > 1 {
+                    format!("{name} (×{})", matches.len())
                 } else {
-                    let mut last_id = 0;
-                    for ci in &matches {
-                        last_id = self.push_breakpoint(*ci, 0, condition.clone(), None, false);
-                    }
-                    let ci0 = matches[0];
-                    let line = vm.chunks.get(ci0).and_then(|c| c.get_line(0));
-                    let chunk = if matches.len() > 1 {
-                        format!("{name} (×{})", matches.len())
-                    } else {
-                        name.clone()
-                    };
-                    Control::stay(DebugResponse::BreakpointSet {
-                        id: last_id,
-                        chunk,
-                        offset: 0,
-                        line,
-                    })
-                }
+                    name
+                };
+                Control::stay(DebugResponse::BreakpointSet {
+                    id,
+                    chunk,
+                    offset: 0,
+                    line,
+                })
+            }
+            BreakHost { name, bad_type_only } => {
+                self.break_host = name.clone().map(|name| (name, bad_type_only));
+                Control::stay(DebugResponse::Value(match name {
+                    Some(name) => format!("host breakpoint set at {name}{}",
+                        if bad_type_only { " (invalid operand)" } else { "" }),
+                    None => "host breakpoint cleared".to_string(),
+                }))
             }
             Logpoint { line, message } => {
                 let Some((actual, targets)) = resolve_source_line(vm, line) else {
@@ -983,10 +1431,45 @@ impl Debugger {
             Globals { prefix } => {
                 Control::stay(DebugResponse::Globals(globals(vm, prefix.as_deref())))
             }
-            Disasm { window } => Control::stay(DebugResponse::Disasm {
-                current_ip: ip,
-                lines: disasm_window(vm, chunk_index, ip, window),
+            TraceGlobalInits { enabled } => {
+                self.trace_global_inits = enabled;
+                Control::stay(DebugResponse::Value(format!(
+                    "global initializer trace {}",
+                    if enabled { "on" } else { "off" }
+                )))
+            }
+            BreakGlobalInit { name } => {
+                if name == "off" {
+                    self.break_global_inits.clear();
+                    Control::stay(DebugResponse::Value("global initializer breakpoints cleared".into()))
+                } else {
+                    if !self.break_global_inits.contains(&name) {
+                        self.break_global_inits.push(name.clone());
+                    }
+                    Control::stay(DebugResponse::Value(format!("break on global initializer `{name}`")))
+                }
+            }
+            Disasm { window, offset } => Control::stay(DebugResponse::Disasm {
+                current_ip: offset.unwrap_or(ip),
+                lines: disasm_window(vm, chunk_index, offset.unwrap_or(ip), window),
             }),
+            ControlTargets { offset } => {
+                let mut matches = Vec::new();
+                if let Some(chunk) = vm.chunks.get(chunk_index) {
+                    for (source, targets) in crate::dispatch::build_block_table(&chunk.code) {
+                        let near_end = targets.end_ip.abs_diff(offset) <= 8;
+                        let near_else = targets.else_ip.is_some_and(|at| (at + 4).abs_diff(offset) <= 8);
+                        if near_end || near_else {
+                            let (instruction, _) = crate::debug::disassemble_instruction(chunk, source);
+                            matches.push(format!("{source}: {instruction} -> else {:?}, end {}", targets.else_ip.map(|at| at + 4), targets.end_ip));
+                        }
+                    }
+                }
+                matches.sort();
+                Control::stay(DebugResponse::Value(if matches.is_empty() {
+                    format!("no structured-control target within 8 bytes of {offset}")
+                } else { matches.join("\n") }))
+            }
             Chunks => Control::stay(DebugResponse::Chunks(chunk_list(vm))),
             Frame { frame } => Control::stay(match frame_shape(vm, frame) {
                 Ok(shape) => DebugResponse::Frame(shape),
@@ -1140,6 +1623,7 @@ impl Debugger {
         self.breakpoints.push(Breakpoint {
             id,
             chunk_index,
+            function_name: None,
             offset,
             enabled: true,
             condition,
@@ -1185,11 +1669,12 @@ impl Debugger {
             .map(|b| BreakpointInfo {
                 id: b.id,
                 chunk_index: b.chunk_index,
-                chunk_name: vm
-                    .chunks
-                    .get(b.chunk_index)
-                    .map(|c| c.name.clone())
-                    .unwrap_or_default(),
+                chunk_name: b.function_name.clone().unwrap_or_else(|| {
+                    vm.chunks
+                        .get(b.chunk_index)
+                        .map(|c| c.name.clone())
+                        .unwrap_or_default()
+                }),
                 offset: b.offset,
                 line: vm
                     .chunks
@@ -1556,7 +2041,16 @@ fn globals(vm: &VM, prefix: Option<&str>) -> Vec<(String, String)> {
         .globals_by_name()
         .into_iter()
         .filter(|(k, _)| prefix.map(|p| k.starts_with(p)).unwrap_or(true))
-        .map(|(k, v)| (k, render_value(&v)))
+        .map(|(k, v)| {
+            let assigned = vm
+                .global_index
+                .get(&k)
+                .and_then(|&i| vm.globals_assigned.get(i as usize))
+                .copied()
+                .unwrap_or(false);
+            let value = render_value(&v);
+            (k, if assigned { value } else { format!("{value} [unassigned]") })
+        })
         .collect();
     out.sort_by(|a, b| a.0.cmp(&b.0));
     out
@@ -1577,7 +2071,7 @@ fn disasm_window(vm: &VM, chunk_index: usize, current_ip: usize, window: usize) 
         }
         offset = next;
     }
-    let cur_idx = instrs.iter().position(|&o| o == current_ip).unwrap_or(0);
+    let cur_idx = instrs.partition_point(|&o| o <= current_ip).saturating_sub(1);
     let start = cur_idx.saturating_sub(window);
     let end = (cur_idx + window + 1).min(instrs.len());
     instrs[start..end]
@@ -1646,10 +2140,30 @@ fn chunk_list(vm: &VM) -> Vec<ChunkInfo> {
 
 /// Bounded rendering of a value so a huge graph can't flood the wire.
 fn render_value(v: &crate::Value) -> String {
-    let s = format!("{}", v);
+    // Snapshot first: a map can contain itself, so never format a child
+    // while holding the parent's lock. Keep nested objects shallow.
+    let entries = if let crate::Value::Object(object) = v {
+        let object = object.lock().unwrap();
+        if let crate::value::ObjectKind::Map(entries) = &object.kind {
+            Some((entries.len(), entries.iter().take(6)
+                .map(|(key, value)| (key.clone(), value.clone())).collect::<Vec<_>>()))
+        } else { None }
+    } else { None };
+    let s = if let Some((len, entries)) = entries {
+        let item = |value: &crate::Value| match value {
+            crate::Value::Object(_) => "[object]".to_string(),
+            crate::Value::String(value) => format!("{value:?}"),
+            _ => value.to_string(),
+        };
+        format!("Map({len}) {{{}{}}}", entries.iter()
+            .map(|(key, value)| format!("{}: {}", item(key), item(value)))
+            .collect::<Vec<_>>().join(", "), if len > entries.len() { ", …" } else { "" })
+    } else { format!("{}", v) };
     const CAP: usize = 200;
     if s.len() > CAP {
-        format!("{}…", &s[..CAP])
+        let mut end = CAP;
+        while !s.is_char_boundary(end) { end -= 1; }
+        format!("{}…", &s[..end])
     } else {
         s
     }
@@ -1718,25 +2232,41 @@ fn gather_frame_locals(vm: &VM) -> Vec<(String, crate::Value)> {
 /// Read a variable's live value in the innermost frame: a local (resolved via
 /// the compiler's debug names) or, failing that, a global.
 fn read_named_value(vm: &VM, name: &str) -> Option<crate::Value> {
-    if let Some(frame) = vm.frames.last() {
-        if let Some(chunk) = vm.chunks.get(frame.chunk_index) {
-            if let Some(entry) = chunk.local_names.iter().rev().find(|e| e.name == name) {
-                let idx = frame.base + entry.slot as usize;
-                if let Some(v) = vm.stack.get(idx) {
-                    return Some(v.clone());
+    let alternate = if let Some(bare) = name.strip_prefix('$') {
+        bare.to_string()
+    } else {
+        format!("${name}")
+    };
+    for candidate in [name, alternate.as_str()] {
+        if let Some(frame) = vm.frames.last() {
+            if let Some(chunk) = vm.chunks.get(frame.chunk_index) {
+                if let Some(entry) = chunk.local_names.iter().rev().find(|e| e.name == candidate) {
+                    let idx = frame.base + entry.slot as usize;
+                    if let Some(v) = vm.stack.get(idx) {
+                        return Some(v.clone());
+                    }
                 }
             }
         }
+        if let Some(value) = vm.global(candidate) {
+            return Some(value.clone());
+        }
     }
-    vm.global(name).cloned()
+    // PHP's top-level variables live in compiler-managed global cells rather
+    // than the source spelling. Keep this mapping at the debugger boundary so
+    // a structural `p $name` never falls into expression evaluation.
+    let bare = name.strip_prefix('$').unwrap_or(name);
+    vm.global(&format!("__php_var_{bare}")).cloned()
 }
 
-/// Parse `base.field[0].other` into a base name + a list of accessors. Only
-/// identifiers, `.field`, and `[integer]` are recognized — this is structural
-/// drill-down, NOT expression evaluation.
+/// Parse `base.field[0].other` (or PHP `$base->field`) into a base name and
+/// accessors. This is structural drill-down, NOT expression evaluation.
 fn parse_path(path: &str) -> Result<(String, Vec<Access>), String> {
     let bytes = path.as_bytes();
     let mut i = 0;
+    if bytes.first() == Some(&b'$') {
+        i = 1;
+    }
     let start = i;
     while i < bytes.len() && (bytes[i] == b'_' || bytes[i].is_ascii_alphanumeric()) {
         i += 1;
@@ -1744,18 +2274,27 @@ fn parse_path(path: &str) -> Result<(String, Vec<Access>), String> {
     if i == start {
         return Err(format!("`{path}` is not a variable name"));
     }
-    let base = path[start..i].to_string();
+    // Keep a leading `$`: PHP locals and globals can coexist with a bare
+    // callable of the same name, and the debugger must prefer the variable.
+    let base = path[..i].to_string();
     let mut accessors = Vec::new();
     while i < bytes.len() {
         match bytes[i] {
-            b'.' => {
+            b'.' | b'-' => {
+                let php_arrow = bytes[i] == b'-';
                 i += 1;
+                if php_arrow {
+                    if bytes.get(i) != Some(&b'>') {
+                        return Err("expected `->` after `-`".into());
+                    }
+                    i += 1;
+                }
                 let s = i;
                 while i < bytes.len() && (bytes[i] == b'_' || bytes[i].is_ascii_alphanumeric()) {
                     i += 1;
                 }
                 if i == s {
-                    return Err("expected a field name after `.`".into());
+                    return Err("expected a field name after property access".into());
                 }
                 accessors.push(Access::Field(path[s..i].to_string()));
             }
@@ -1783,18 +2322,32 @@ fn parse_path(path: &str) -> Result<(String, Vec<Access>), String> {
 
 /// One navigation step into an object property or array element. Pure read; no
 /// prototype chain, no coercion — a debugger drill-down.
-fn navigate(val: &crate::Value, acc: &Access) -> Result<crate::Value, String> {
+fn navigate(vm: &VM, val: &crate::Value, acc: &Access) -> Result<crate::Value, String> {
     let crate::Value::Object(o) = val else {
         return Err(format!("`{}` is not indexable", render_value(val)));
     };
+    if let Access::Field(field) = acc {
+        let obj = o.lock().unwrap();
+        if let crate::value::ObjectKind::Map(entries) = &obj.kind {
+            let key = crate::Value::String(std::sync::Arc::from(field.as_str()));
+            if let Some(value) = entries.get(&key) {
+                return Ok(value.clone());
+            }
+        }
+        if let Some(value) = obj.properties.get(field).cloned() {
+            return Ok(value);
+        }
+        drop(obj);
+        return vm.resolve_property(val, field).map_err(|e| e.to_string());
+    }
     let obj = o.lock().unwrap();
     match acc {
-        Access::Field(f) => obj
-            .properties
-            .get(f)
-            .cloned()
-            .ok_or_else(|| format!("no field `{f}`")),
+        Access::Field(_) => unreachable!(),
         Access::Index(i) => match &obj.kind {
+            crate::value::ObjectKind::Map(entries) => entries
+                .get(&crate::Value::I64(*i as i64))
+                .or_else(|| entries.get(&crate::Value::String(std::sync::Arc::from(i.to_string()))))
+                .cloned().ok_or_else(|| format!("key {i} not found")),
             crate::value::ObjectKind::Array(elems) => elems
                 .get(*i)
                 .cloned()
@@ -1814,7 +2367,7 @@ fn eval_path(vm: &VM, path: &str) -> Result<String, String> {
     let mut val =
         read_named_value(vm, &base).ok_or_else(|| format!("no variable `{base}` in scope"))?;
     for acc in &accessors {
-        val = navigate(&val, acc)?;
+        val = navigate(vm, &val, acc)?;
     }
     Ok(render_value(&val))
 }
@@ -1850,6 +2403,40 @@ fn parse_literal(s: &str) -> crate::Value {
 /// `SetVar`: write a literal into a named local (innermost frame) or global.
 fn set_var(vm: &mut VM, name: &str, literal: &str) -> Result<String, String> {
     let new_val = parse_literal(literal);
+    // Use the same structural paths as `p`, so request inputs and nested
+    // runtime state can be adjusted without compiling a diagnostic script.
+    if let Ok((base, accessors)) = parse_path(name) {
+        if let Some((last, parents)) = accessors.split_last() {
+            let mut parent = read_named_value(vm, &base)
+                .ok_or_else(|| format!("no variable `{base}` in scope"))?;
+            for access in parents {
+                parent = navigate(vm, &parent, access)?;
+            }
+            let old = navigate(vm, &parent, last).unwrap_or(crate::Value::Undefined);
+            let crate::Value::Object(object) = parent else {
+                return Err("assignment parent is not an object or array".into());
+            };
+            let mut object = object.lock().unwrap();
+            match (last, &mut object.kind) {
+                (Access::Field(field), crate::value::ObjectKind::Map(entries)) => {
+                    entries.insert(crate::Value::String(field.as_str().into()), new_val.clone());
+                }
+                (Access::Index(index), crate::value::ObjectKind::Map(entries)) => {
+                    entries.insert(crate::Value::I64(*index as i64), new_val.clone());
+                }
+                (Access::Index(index), crate::value::ObjectKind::Array(elements)) => {
+                    let target = elements.get_mut(*index).ok_or("index out of range")?;
+                    *target = new_val.clone();
+                }
+                (Access::Field(field), _) => object.set(field.clone(), new_val.clone()),
+                (Access::Index(index), _) => {
+                    let target = object.fields.get_mut(*index).ok_or("index out of range")?;
+                    *target = new_val.clone();
+                }
+            }
+            return Ok(format!("{name}: {} → {}", render_value(&old), render_value(&new_val)));
+        }
+    }
     // Local in the innermost frame (resolved via debug names).
     if let Some(frame) = vm.frames.last() {
         let slot = vm.chunks.get(frame.chunk_index).and_then(|c| {

@@ -8,6 +8,8 @@ pub struct VMError {
     /// Call stack at the point of error: (chunk_name, offset, line).
     /// Most recent frame first (like a stack trace).
     pub call_stack: Vec<StackFrame>,
+    /// Optional, bounded debugger context for an unhandled failure.
+    pub diagnostic: Option<String>,
 }
 
 /// A single frame in the error call stack.
@@ -24,6 +26,7 @@ impl VMError {
             message: msg.into(),
             line: None,
             call_stack: Vec::new(),
+            diagnostic: None,
         }
     }
 
@@ -34,6 +37,11 @@ impl VMError {
 
     pub fn with_stack(mut self, stack: Vec<StackFrame>) -> Self {
         self.call_stack = stack;
+        self
+    }
+
+    pub fn with_diagnostic(mut self, diagnostic: String) -> Self {
+        self.diagnostic = Some(diagnostic);
         self
     }
 
@@ -49,6 +57,11 @@ impl VMError {
     /// trap messages prefixed or they become uncatchable at the host boundary.
     pub fn is_trap(&self) -> bool {
         self.message.starts_with(TRAP_PREFIX)
+    }
+
+    pub(crate) fn is_suspension(&self) -> bool {
+        ["__await__:", "__jspi__:", "__future__:", "__stream_read__:"]
+            .iter().any(|prefix| self.message.starts_with(prefix))
     }
 }
 
@@ -71,6 +84,9 @@ impl fmt::Display for VMError {
                 }
                 write!(f, ")")?;
             }
+        }
+        if let Some(diagnostic) = &self.diagnostic {
+            write!(f, "\n{diagnostic}")?;
         }
         Ok(())
     }

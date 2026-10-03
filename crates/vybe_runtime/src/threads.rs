@@ -46,70 +46,65 @@ impl VM {
                 Ok(true)
             }
             _ if op == Op::MEMORY_ATOMIC_NOTIFY => {
-                let count = self.pop().as_i32();
+                let count = self.pop_i32_fast();
                 let (_, addr) = self.pop_atomic_addr(AtomicWidth::W32)?;
-                self.push(Value::I32(self.memory.notify(addr, count)))?;
+                self.push_fast(Value::I32(self.memory.notify(addr, count)));
                 Ok(true)
             }
             _ if op == Op::MEMORY_ATOMIC_WAIT32 => {
-                let timeout = self.pop().as_i64();
-                let expected = self.pop().as_i32();
+                let timeout = self.pop_i64_fast();
+                let expected = self.pop_i32_fast();
                 let (_, addr) = self.pop_atomic_addr(AtomicWidth::W32)?;
-                self.push(Value::I32(self.memory.wait32(addr, expected, timeout)))?;
+                self.push_fast(Value::I32(self.memory.wait32(addr, expected, timeout)));
                 Ok(true)
             }
             _ if op == Op::MEMORY_ATOMIC_WAIT64 => {
-                let timeout = self.pop().as_i64();
-                let expected = self.pop().as_i64();
+                let timeout = self.pop_i64_fast();
+                let expected = self.pop_i64_fast();
                 let (_, addr) = self.pop_atomic_addr(AtomicWidth::W64)?;
-                self.push(Value::I32(self.memory.wait64(addr, expected, timeout)))?;
+                self.push_fast(Value::I32(self.memory.wait64(addr, expected, timeout)));
                 Ok(true)
             }
             _ if op == Op::I32_ATOMIC_LOAD => {
                 let (memidx, addr) = self.pop_atomic_addr(AtomicWidth::W32)?;
                 let raw = self.atomic_load(memidx, addr, AtomicWidth::W32)?;
-                self.push(Value::I32(raw as u32 as i32))?;
+                self.push_fast(Value::I32(raw as u32 as i32));
                 Ok(true)
             }
             _ if op == Op::I64_ATOMIC_LOAD => {
                 let (memidx, addr) = self.pop_atomic_addr(AtomicWidth::W64)?;
                 let raw = self.atomic_load(memidx, addr, AtomicWidth::W64)?;
-                self.push(Value::I64(raw as i64))?;
+                self.push_fast(Value::I64(raw as i64));
                 Ok(true)
             }
             _ if op == Op::I32_ATOMIC_LOAD8_U => {
                 let (memidx, addr) = self.pop_atomic_addr(AtomicWidth::W8)?;
-                self.push(Value::I32(
-                    self.atomic_load(memidx, addr, AtomicWidth::W8)? as i32
-                ))?;
+                let raw = self.atomic_load(memidx, addr, AtomicWidth::W8)?;
+                self.push_fast(Value::I32(raw as i32));
                 Ok(true)
             }
             _ if op == Op::I32_ATOMIC_LOAD16_U => {
                 let (memidx, addr) = self.pop_atomic_addr(AtomicWidth::W16)?;
-                self.push(Value::I32(
-                    self.atomic_load(memidx, addr, AtomicWidth::W16)? as i32,
-                ))?;
+                let raw = self.atomic_load(memidx, addr, AtomicWidth::W16)?;
+                self.push_fast(Value::I32(raw as i32));
                 Ok(true)
             }
             _ if op == Op::I64_ATOMIC_LOAD8_U => {
                 let (memidx, addr) = self.pop_atomic_addr(AtomicWidth::W8)?;
-                self.push(Value::I64(
-                    self.atomic_load(memidx, addr, AtomicWidth::W8)? as i64
-                ))?;
+                let raw = self.atomic_load(memidx, addr, AtomicWidth::W8)?;
+                self.push_fast(Value::I64(raw as i64));
                 Ok(true)
             }
             _ if op == Op::I64_ATOMIC_LOAD16_U => {
                 let (memidx, addr) = self.pop_atomic_addr(AtomicWidth::W16)?;
-                self.push(Value::I64(
-                    self.atomic_load(memidx, addr, AtomicWidth::W16)? as i64,
-                ))?;
+                let raw = self.atomic_load(memidx, addr, AtomicWidth::W16)?;
+                self.push_fast(Value::I64(raw as i64));
                 Ok(true)
             }
             _ if op == Op::I64_ATOMIC_LOAD32_U => {
                 let (memidx, addr) = self.pop_atomic_addr(AtomicWidth::W32)?;
-                self.push(Value::I64(
-                    self.atomic_load(memidx, addr, AtomicWidth::W32)? as i64,
-                ))?;
+                let raw = self.atomic_load(memidx, addr, AtomicWidth::W32)?;
+                self.push_fast(Value::I64(raw as i64));
                 Ok(true)
             }
             _ if op == Op::I32_ATOMIC_STORE => self.atomic_store_i32(AtomicWidth::W32),
@@ -263,7 +258,7 @@ impl VM {
     fn pop_atomic_addr(&mut self, width: AtomicWidth) -> Result<(usize, usize), VMError> {
         let (offset, memidx, memory64) = self.read_atomic_memarg();
         let addr = if memory64 {
-            let base = self.pop().as_i64();
+            let base = self.pop_i64_fast();
             if base < 0 {
                 return Err(VMError::new("trap: atomic memory64 negative address"));
             }
@@ -273,7 +268,7 @@ impl VM {
             usize::try_from(addr)
                 .map_err(|_| VMError::new("trap: atomic memory64 address out of range"))?
         } else {
-            let base = self.pop().as_i32() as u32 as usize;
+            let base = self.pop_i32_fast() as u32 as usize;
             base.checked_add(offset as usize)
                 .ok_or_else(|| VMError::new("trap: atomic address overflow"))?
         };
@@ -324,13 +319,21 @@ impl VM {
         Ok(())
     }
 
-    fn atomic_load(&self, memidx: usize, addr: usize, width: AtomicWidth) -> Result<u64, VMError> {
-        let bytes = self.read_memory_bytes(memidx, addr, width.bytes())?;
+    fn atomic_load(
+        &mut self,
+        memidx: usize,
+        addr: usize,
+        width: AtomicWidth,
+    ) -> Result<u64, VMError> {
         Ok(match width {
-            AtomicWidth::W8 => bytes[0] as u64,
-            AtomicWidth::W16 => u16::from_le_bytes(bytes.try_into().unwrap()) as u64,
-            AtomicWidth::W32 => u32::from_le_bytes(bytes.try_into().unwrap()) as u64,
-            AtomicWidth::W64 => u64::from_le_bytes(bytes.try_into().unwrap()),
+            AtomicWidth::W8 => self.read_memory_u8(memidx, addr)? as u64,
+            AtomicWidth::W16 => {
+                u16::from_le_bytes(self.read_memory_array::<2>(memidx, addr)?) as u64
+            }
+            AtomicWidth::W32 => {
+                u32::from_le_bytes(self.read_memory_array::<4>(memidx, addr)?) as u64
+            }
+            AtomicWidth::W64 => u64::from_le_bytes(self.read_memory_array::<8>(memidx, addr)?),
         })
     }
 
@@ -342,73 +345,157 @@ impl VM {
         value: u64,
     ) -> Result<(), VMError> {
         match width {
-            AtomicWidth::W8 => self.write_memory_bytes(memidx, addr, &[value as u8]),
+            AtomicWidth::W8 => self.write_memory_u8(memidx, addr, value as u8),
             AtomicWidth::W16 => {
-                self.write_memory_bytes(memidx, addr, &(value as u16).to_le_bytes())
+                self.write_memory_array::<2>(memidx, addr, &(value as u16).to_le_bytes())
             }
             AtomicWidth::W32 => {
-                self.write_memory_bytes(memidx, addr, &(value as u32).to_le_bytes())
+                self.write_memory_array::<4>(memidx, addr, &(value as u32).to_le_bytes())
             }
-            AtomicWidth::W64 => self.write_memory_bytes(memidx, addr, &value.to_le_bytes()),
+            AtomicWidth::W64 => self.write_memory_array::<8>(memidx, addr, &value.to_le_bytes()),
+        }
+    }
+
+    fn atomic_update_raw(
+        &mut self,
+        memidx: usize,
+        addr: usize,
+        width: AtomicWidth,
+        update: impl FnOnce(u64) -> Option<u64>,
+    ) -> Result<u64, VMError> {
+        let size = width.bytes();
+        let mut update = Some(update);
+        if memidx == 0 {
+            if let Some(result) = self.memory.with_buffer_mut_exclusive(|memory| {
+                let end = atomic_checked_end(addr, size, memory.len())?;
+                let old = read_atomic_value(&memory[addr..end], width);
+                if let Some(new) = update
+                    .take()
+                    .expect("atomic update callback already used")(old)
+                {
+                    write_atomic_value(&mut memory[addr..end], width, new);
+                }
+                Ok(old)
+            }) {
+                result
+            } else {
+                let update = update.expect("atomic update callback was consumed before fallback");
+                self.memory.with_buffer_mut(|memory| {
+                    let end = atomic_checked_end(addr, size, memory.len())?;
+                    let old = read_atomic_value(&memory[addr..end], width);
+                    if let Some(new) = update(old) {
+                        write_atomic_value(&mut memory[addr..end], width, new);
+                    }
+                    Ok(old)
+                })
+            }
+        } else {
+            let memory = self.extra_mem_mut(memidx);
+            let end = atomic_checked_end(addr, size, memory.len())?;
+            let old = read_atomic_value(&memory[addr..end], width);
+            if let Some(new) = update
+                .take()
+                .expect("atomic update callback already used")(old)
+            {
+                write_atomic_value(&mut memory[addr..end], width, new);
+            }
+            Ok(old)
         }
     }
 
     fn atomic_store_i32(&mut self, width: AtomicWidth) -> Result<bool, VMError> {
-        let value = self.pop().as_i32() as u32 as u64;
+        let value = self.pop_i32_fast() as u32 as u64;
         let (memidx, addr) = self.pop_atomic_addr(width)?;
         self.atomic_store_raw(memidx, addr, width, value)?;
         Ok(true)
     }
 
     fn atomic_store_i64(&mut self, width: AtomicWidth) -> Result<bool, VMError> {
-        let value = self.pop().as_i64() as u64;
+        let value = self.pop_i64_fast() as u64;
         let (memidx, addr) = self.pop_atomic_addr(width)?;
         self.atomic_store_raw(memidx, addr, width, value)?;
         Ok(true)
     }
 
     fn atomic_rmw_i32(&mut self, width: AtomicWidth, op: AtomicRmw) -> Result<bool, VMError> {
-        let value = self.pop().as_i32() as u32 as u64;
+        let value = self.pop_i32_fast() as u32 as u64;
         let (memidx, addr) = self.pop_atomic_addr(width)?;
-        let old = self.atomic_load(memidx, addr, width)?;
-        let new = apply_rmw(old, value, width, op);
-        self.atomic_store_raw(memidx, addr, width, new)?;
-        self.push(Value::I32((old & width_mask(width)) as u32 as i32))?;
+        let old = self.atomic_update_raw(memidx, addr, width, |old| {
+            Some(apply_rmw(old, value, width, op))
+        })?;
+        self.push_fast(Value::I32((old & width_mask(width)) as u32 as i32));
         Ok(true)
     }
 
     fn atomic_rmw_i64(&mut self, width: AtomicWidth, op: AtomicRmw) -> Result<bool, VMError> {
-        let value = self.pop().as_i64() as u64;
+        let value = self.pop_i64_fast() as u64;
         let (memidx, addr) = self.pop_atomic_addr(width)?;
-        let old = self.atomic_load(memidx, addr, width)?;
-        let new = apply_rmw(old, value, width, op);
-        self.atomic_store_raw(memidx, addr, width, new)?;
-        self.push(Value::I64((old & width_mask(width)) as i64))?;
+        let old = self.atomic_update_raw(memidx, addr, width, |old| {
+            Some(apply_rmw(old, value, width, op))
+        })?;
+        self.push_fast(Value::I64((old & width_mask(width)) as i64));
         Ok(true)
     }
 
     fn atomic_cmpxchg_i32(&mut self, width: AtomicWidth) -> Result<bool, VMError> {
-        let replacement = self.pop().as_i32() as u32 as u64;
-        let expected = self.pop().as_i32() as u32 as u64;
+        let replacement = self.pop_i32_fast() as u32 as u64;
+        let expected = self.pop_i32_fast() as u32 as u64;
         let (memidx, addr) = self.pop_atomic_addr(width)?;
-        let old = self.atomic_load(memidx, addr, width)?;
-        if old & width_mask(width) == expected & width_mask(width) {
-            self.atomic_store_raw(memidx, addr, width, replacement)?;
-        }
-        self.push(Value::I32((old & width_mask(width)) as u32 as i32))?;
+        let mask = width_mask(width);
+        let old = self.atomic_update_raw(memidx, addr, width, |old| {
+            if old & mask == expected & mask {
+                Some(replacement)
+            } else {
+                None
+            }
+        })?;
+        self.push_fast(Value::I32((old & width_mask(width)) as u32 as i32));
         Ok(true)
     }
 
     fn atomic_cmpxchg_i64(&mut self, width: AtomicWidth) -> Result<bool, VMError> {
-        let replacement = self.pop().as_i64() as u64;
-        let expected = self.pop().as_i64() as u64;
+        let replacement = self.pop_i64_fast() as u64;
+        let expected = self.pop_i64_fast() as u64;
         let (memidx, addr) = self.pop_atomic_addr(width)?;
-        let old = self.atomic_load(memidx, addr, width)?;
-        if old & width_mask(width) == expected & width_mask(width) {
-            self.atomic_store_raw(memidx, addr, width, replacement)?;
-        }
-        self.push(Value::I64((old & width_mask(width)) as i64))?;
+        let mask = width_mask(width);
+        let old = self.atomic_update_raw(memidx, addr, width, |old| {
+            if old & mask == expected & mask {
+                Some(replacement)
+            } else {
+                None
+            }
+        })?;
+        self.push_fast(Value::I64((old & width_mask(width)) as i64));
         Ok(true)
+    }
+}
+
+fn atomic_checked_end(addr: usize, size: usize, limit: usize) -> Result<usize, VMError> {
+    addr.checked_add(size)
+        .filter(|&end| end <= limit)
+        .ok_or_else(|| {
+            VMError::new(format!(
+                "trap: out of bounds memory access (atomic): addr={} size={} limit={}",
+                addr, size, limit
+            ))
+        })
+}
+
+fn read_atomic_value(bytes: &[u8], width: AtomicWidth) -> u64 {
+    match width {
+        AtomicWidth::W8 => bytes[0] as u64,
+        AtomicWidth::W16 => u16::from_le_bytes(bytes.try_into().unwrap()) as u64,
+        AtomicWidth::W32 => u32::from_le_bytes(bytes.try_into().unwrap()) as u64,
+        AtomicWidth::W64 => u64::from_le_bytes(bytes.try_into().unwrap()),
+    }
+}
+
+fn write_atomic_value(bytes: &mut [u8], width: AtomicWidth, value: u64) {
+    match width {
+        AtomicWidth::W8 => bytes[0] = value as u8,
+        AtomicWidth::W16 => bytes.copy_from_slice(&(value as u16).to_le_bytes()),
+        AtomicWidth::W32 => bytes.copy_from_slice(&(value as u32).to_le_bytes()),
+        AtomicWidth::W64 => bytes.copy_from_slice(&value.to_le_bytes()),
     }
 }
 

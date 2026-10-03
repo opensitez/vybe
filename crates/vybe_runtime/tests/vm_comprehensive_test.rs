@@ -345,8 +345,8 @@ fn global_get_set() {
     chunk.local_count = 1;
     let name_idx = chunk.add_constant(Value::String(Arc::from("myGlobal")));
     chunk.emit_i32_const(55, 0);
-    chunk.emit_op_u16(Op::GLOBAL_SET, name_idx, 0); // keeps on stack
-    chunk.emit_op_u16(Op::GLOBAL_GET, name_idx, 0);
+    chunk.emit_op_u32(Op::GLOBAL_SET, name_idx, 0); // keeps on stack
+    chunk.emit_op_u32(Op::GLOBAL_GET, name_idx, 0);
 
     let result = run_chunks(vec![chunk]);
     assert_i32(&result, 55);
@@ -927,6 +927,7 @@ fn br_unconditional() {
     assert_i32(&run_chunks(vec![chunk]), 1);
 }
 
+
 #[test]
 fn br_if_taken() {
     let mut chunk = Chunk::new("test");
@@ -1055,7 +1056,7 @@ fn ref_is_null_on_undefined() {
         );
         vm.set_global_owned(name.clone(), Value::Undefined);
         let ci = chunk.intern_string_constant(&name);
-        chunk.emit_op_u16(Op::GLOBAL_GET, ci, 0);
+        chunk.emit_op_u32(Op::GLOBAL_GET, ci, 0);
     }
     chunk.emit_op(Op::REF_IS_NULL, 0);
     assert_bool(&vm.run(vec![chunk]).unwrap(), true);
@@ -1074,7 +1075,7 @@ fn invoke_simple_function() {
     main.emit_op_u16(Op::REF_FUNC, 1, 0);
     main.emit(0, 0);
     let name = main.add_constant(Value::String(Arc::from("myFunc")));
-    main.emit_op_u16(Op::GLOBAL_SET, name, 0);
+    main.emit_op_u32(Op::GLOBAL_SET, name, 0);
 
     let mut func = Chunk::new("myFunc");
     func.arity = 1;
@@ -1099,7 +1100,7 @@ fn invoke_with_multiple_args() {
     main.emit_op_u16(Op::REF_FUNC, 1, 0);
     main.emit(0, 0);
     let name = main.add_constant(Value::String(Arc::from("add")));
-    main.emit_op_u16(Op::GLOBAL_SET, name, 0);
+    main.emit_op_u32(Op::GLOBAL_SET, name, 0);
 
     let mut func = Chunk::new("add");
     func.arity = 2;
@@ -1126,7 +1127,7 @@ fn invoke_returning_string() {
     main.emit_op_u16(Op::REF_FUNC, 1, 0);
     main.emit(0, 0);
     let name = main.add_constant(Value::String(Arc::from("greet")));
-    main.emit_op_u16(Op::GLOBAL_SET, name, 0);
+    main.emit_op_u32(Op::GLOBAL_SET, name, 0);
 
     let mut func = Chunk::new("greet");
     func.arity = 0;

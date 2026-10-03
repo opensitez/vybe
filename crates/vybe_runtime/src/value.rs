@@ -69,9 +69,11 @@ pub enum ValueTag {
 
 impl ValueTag {
     pub const COUNT: usize = 14;
+    #[inline(always)]
     pub fn as_usize(self) -> usize {
         self as usize
     }
+    #[inline(always)]
     pub fn name(self) -> &'static str {
         match self {
             ValueTag::Null => "Null",
@@ -96,6 +98,7 @@ impl Value {
     /// Compact tag identifying this variant. Used by the type recorder
     /// to index into per-slot counter arrays — avoids a HashMap-per-slot
     /// and keeps recording cheap enough to leave on during test runs.
+    #[inline(always)]
     pub fn tag(&self) -> ValueTag {
         match self {
             Value::Null => ValueTag::Null,
@@ -119,6 +122,7 @@ impl Value {
 impl Value {
     /// Extract f64 or panic. VM arithmetic ops require the compiler
     /// to have already ensured the operand is numeric.
+    #[inline(always)]
     pub fn as_f64(&self) -> f64 {
         match self {
             Value::F64(n) => *n,
@@ -139,6 +143,7 @@ impl Value {
     }
 
     /// Extract as f32 (rounding through single precision).
+    #[inline(always)]
     pub fn as_f32(&self) -> f32 {
         match self {
             Value::F32(n) => *n,
@@ -146,6 +151,7 @@ impl Value {
         }
     }
 
+    #[inline(always)]
     pub fn as_i32(&self) -> i32 {
         match self {
             Value::I32(n) => *n,
@@ -167,6 +173,7 @@ impl Value {
     /// ECMA-262 ToInt32 (§7.1.6): truncate to integer, reduce modulo 2^32,
     /// then interpret as signed 32-bit. This wraps instead of saturating,
     /// matching the semantics required by JS bitwise operators.
+    #[inline(always)]
     pub fn to_ecma_int32(&self) -> i32 {
         let n = self.as_f64();
         if n.is_nan() || n.is_infinite() {
@@ -176,6 +183,7 @@ impl Value {
     }
 
     /// ECMA-262 ToUint32 (§7.1.7): same as ToInt32 but interpret as unsigned.
+    #[inline(always)]
     pub fn to_ecma_uint32(&self) -> u32 {
         self.to_ecma_int32() as u32
     }
@@ -195,6 +203,7 @@ impl Value {
         Value::BigInt(Arc::new(v))
     }
 
+    #[inline(always)]
     pub fn as_i64(&self) -> i64 {
         match self {
             Value::I64(n) => *n,
@@ -214,17 +223,19 @@ impl Value {
         }
     }
 
+    #[inline(always)]
     pub fn as_bool(&self) -> bool {
         matches!(self, Value::Bool(true))
     }
 
     /// Whether this is a null reference — plain `Null` OR a WASM GC typed null.
     /// `ref.is_null`, `br_on_null`, `ref.cast`, etc. treat both as null.
-    #[inline]
+    #[inline(always)]
     pub fn is_null_ref(&self) -> bool {
         matches!(self, Value::Null | Value::TypedNull(_))
     }
 
+    #[inline(always)]
     pub fn as_str(&self) -> &str {
         match self {
             Value::String(s) => s,
@@ -313,6 +324,14 @@ impl Value {
                         .get("__call__")
                         .cloned()
                         .or_else(|| oa.properties.get("call").cloned());
+                    if wrapper_call_a.is_none()
+                        && !matches!(
+                            &oa.kind,
+                            ObjectKind::Function(_) | ObjectKind::HostFunction(_)
+                        )
+                    {
+                        return false;
+                    }
                     let wrapper_call_b = ob
                         .properties
                         .get("__call__")
@@ -596,8 +615,13 @@ impl fmt::Display for Value {
                 let obj = o.lock().unwrap();
                 match &obj.kind {
                     ObjectKind::Array(elems) => {
-                        let parts: Vec<String> = elems.iter().map(|v| format!("{}", v)).collect();
-                        write!(f, "{}", parts.join(","))
+                        for (index, value) in elems.iter().enumerate() {
+                            if index != 0 {
+                                f.write_str(",")?;
+                            }
+                            write!(f, "{value}")?;
+                        }
+                        Ok(())
                     }
                     ObjectKind::Map(m) => {
                         // ECMA-262 §24.1.3.13: no canonical toString for
@@ -951,7 +975,7 @@ impl Object {
                 if idx >= elems.len() {
                     elems.resize(idx + 1, Value::Null);
                 }
-                elems[idx] = value.clone();
+                elems[idx] = value;
                 self.properties
                     .insert("length".into(), Value::F64(elems.len() as f64));
                 return;

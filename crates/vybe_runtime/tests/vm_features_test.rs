@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use vybe_runtime::chunk::{CompositeKind, TypeEntry};
 use vybe_runtime::value::*;
 use vybe_runtime::*;
 
@@ -16,11 +17,38 @@ fn make_vm_with_chunk(build: impl FnOnce(&mut Chunk)) -> VM {
 // ============================================================
 
 #[test]
+fn one_byte_negative_sleb_constants_preserve_sign() {
+    let mut i32_chunk = Chunk::new("<i32-negative-sleb>");
+    i32_chunk.emit_i32_const(-1, 0);
+    let mut vm = VM::new();
+    assert_eq!(vm.run(vec![i32_chunk]).unwrap(), Value::I32(-1));
+
+    let mut i64_chunk = Chunk::new("<i64-negative-sleb>");
+    i64_chunk.emit_i64_const(-1, 0);
+    let mut vm = VM::new();
+    assert_eq!(vm.run(vec![i64_chunk]).unwrap(), Value::I64(-1));
+}
+
+#[test]
+fn f32_const_preserves_raw_bits() {
+    let bits = 0x7fc0_1234u32;
+    let mut chunk = Chunk::new("<f32-const-bits>");
+    chunk.emit_f32_const(f32::from_bits(bits), 0);
+
+    let mut vm = VM::new();
+    match vm.run(vec![chunk]).unwrap() {
+        Value::F32(value) => assert_eq!(value.to_bits(), bits),
+        other => panic!("expected f32 value, got {:?}", other),
+    }
+}
+
+#[test]
 fn memory_grow_and_size() {
     let mut chunk = Chunk::new("<test>");
     // Grow by 1 page (64KB)
     chunk.emit_f64_const(1.0, 0);
-    chunk.emit_op_u16(Op::MEMORY_GROW, 0, 0);
+    chunk.emit_op(Op::MEMORY_GROW, 0);
+    chunk.emit_leb_u32(0, 0);
     // Result should be 0 (old size)
     chunk.emit_op_u16(Op::MEMORY_SIZE, 0, 0);
     // Size should now be 1
@@ -35,7 +63,8 @@ fn memory_i32_store_load() {
     let mut chunk = Chunk::new("<test>");
     // Grow 1 page
     chunk.emit_f64_const(1.0, 0);
-    chunk.emit_op_u16(Op::MEMORY_GROW, 0, 0);
+    chunk.emit_op(Op::MEMORY_GROW, 0);
+    chunk.emit_leb_u32(0, 0);
     chunk.emit_op(Op::DROP, 0);
 
     // Store 42 at address 100
@@ -59,7 +88,8 @@ fn memory_i32_store_load() {
 fn memory_f64_store_load() {
     let mut chunk = Chunk::new("<test>");
     chunk.emit_f64_const(1.0, 0);
-    chunk.emit_op_u16(Op::MEMORY_GROW, 0, 0);
+    chunk.emit_op(Op::MEMORY_GROW, 0);
+    chunk.emit_leb_u32(0, 0);
     chunk.emit_op(Op::DROP, 0);
 
     chunk.emit_f64_const(0.0, 0);
@@ -81,7 +111,8 @@ fn memory_f64_store_load() {
 fn memory_byte_store_load() {
     let mut chunk = Chunk::new("<test>");
     chunk.emit_f64_const(1.0, 0);
-    chunk.emit_op_u16(Op::MEMORY_GROW, 0, 0);
+    chunk.emit_op(Op::MEMORY_GROW, 0);
+    chunk.emit_leb_u32(0, 0);
     chunk.emit_op(Op::DROP, 0);
 
     // Store byte 0xFF at address 0
@@ -124,6 +155,71 @@ fn pack_unpack() {
     }
 }
 
+fn gc_array_chunk(name: &str) -> Chunk {
+    let mut chunk = Chunk::new(name);
+    chunk.types.push(TypeEntry {
+        name: "Arr".into(),
+        kind: CompositeKind::Array,
+        ..Default::default()
+    });
+    chunk
+}
+
+#[test]
+fn gc_array_get_accepts_i32_index_from_typed_caller() {
+    let mut chunk = gc_array_chunk("<gc-array-get-i32>");
+    chunk.emit_i32_const(11, 0);
+    chunk.emit_i32_const(22, 0);
+    chunk.emit_array_new_fixed(1, 2, 0);
+    chunk.emit_i32_const(1, 0);
+    chunk.emit_op(Op::ARRAY_GET, 0);
+    chunk.emit_op(Op::RETURN, 0);
+
+    let result = VM::new().run(vec![chunk]).expect("gc array get failed");
+    assert_eq!(result.as_i32(), 22);
+}
+
+#[test]
+fn gc_array_get_rejects_non_i32_runtime_index() {
+    let mut chunk = gc_array_chunk("<gc-array-get-i64-index>");
+    chunk.emit_i32_const(11, 0);
+    chunk.emit_i32_const(22, 0);
+    chunk.emit_array_new_fixed(1, 2, 0);
+    chunk.emit_i64_const(1, 0);
+    chunk.emit_op(Op::ARRAY_GET, 0);
+    chunk.emit_op(Op::RETURN, 0);
+
+    let err = VM::new()
+        .run(vec![chunk])
+        .expect_err("gc array get must reject non-i32 indexes");
+    assert!(
+        err.message.contains("array.get"),
+        "wrong trap for non-i32 gc array index: {}",
+        err.message
+    );
+}
+
+#[test]
+fn gc_array_set_rejects_non_i32_runtime_index() {
+    let mut chunk = gc_array_chunk("<gc-array-set-f64-index>");
+    chunk.emit_i32_const(11, 0);
+    chunk.emit_i32_const(22, 0);
+    chunk.emit_array_new_fixed(1, 2, 0);
+    chunk.emit_f64_const(1.0, 0);
+    chunk.emit_i32_const(99, 0);
+    chunk.emit_op(Op::ARRAY_SET, 0);
+    chunk.emit_op(Op::RETURN, 0);
+
+    let err = VM::new()
+        .run(vec![chunk])
+        .expect_err("gc array set must reject non-i32 indexes");
+    assert!(
+        err.message.contains("array.set"),
+        "wrong trap for non-i32 gc array set index: {}",
+        err.message
+    );
+}
+
 // ============================================================
 // Function table (call_indirect)
 // ============================================================
@@ -152,7 +248,7 @@ fn call_indirect_basic() {
     script.emit(0, 0); // 0 upvalues
     // Store result (closure) as global "add_fn"
     let add_name = script.add_constant(Value::String(Arc::from("add_fn")));
-    script.emit_op_u16(Op::GLOBAL_SET, add_name, 0);
+    script.emit_op_u32(Op::GLOBAL_SET, add_name, 0);
 
     // Push table index 0 + args, call_indirect
     // First we need to populate func_table at runtime...

@@ -9,7 +9,7 @@
 
 use crate::error::VMError;
 use crate::value::{Function, Object, ObjectKind, TypedArrayState, TypedElemKind, Value};
-use crate::vm::{CallFrame, MAX_FRAMES, VM};
+use crate::vm::{CallFrame, MAX_FRAMES, MAX_STACK, VM};
 use std::sync::{Arc, Mutex};
 
 /// True when a continuation's entry Function points at an async chunk —
@@ -103,36 +103,57 @@ fn read_typed_array_element(ta: &TypedArrayState, index: usize) -> Value {
         TypedElemKind::I16 => Value::I32(i16::from_le_bytes([buf[abs], buf[abs + 1]]) as i32),
         TypedElemKind::U16 => Value::I32(u16::from_le_bytes([buf[abs], buf[abs + 1]]) as i32),
         TypedElemKind::I32 => {
-            let mut bytes = [0u8; 4];
-            bytes.copy_from_slice(&buf[abs..abs + 4]);
+            let bytes = [buf[abs], buf[abs + 1], buf[abs + 2], buf[abs + 3]];
             Value::I32(i32::from_le_bytes(bytes))
         }
         TypedElemKind::U32 => {
-            let mut bytes = [0u8; 4];
-            bytes.copy_from_slice(&buf[abs..abs + 4]);
+            let bytes = [buf[abs], buf[abs + 1], buf[abs + 2], buf[abs + 3]];
             Value::I32(u32::from_le_bytes(bytes) as i32)
         }
         TypedElemKind::F32 => {
-            let mut bytes = [0u8; 4];
-            bytes.copy_from_slice(&buf[abs..abs + 4]);
+            let bytes = [buf[abs], buf[abs + 1], buf[abs + 2], buf[abs + 3]];
             Value::F64(f32::from_le_bytes(bytes) as f64)
         }
         TypedElemKind::F64 => {
-            let mut bytes = [0u8; 8];
-            bytes.copy_from_slice(&buf[abs..abs + 8]);
+            let bytes = [
+                buf[abs],
+                buf[abs + 1],
+                buf[abs + 2],
+                buf[abs + 3],
+                buf[abs + 4],
+                buf[abs + 5],
+                buf[abs + 6],
+                buf[abs + 7],
+            ];
             Value::F64(f64::from_le_bytes(bytes))
         }
         // §10.4.5: BigInt64/BigUint64 elements ARE BigInts — the elem
         // stamp picks the signed/unsigned reading of the same 64 bits
         // (js-types JS-API: ToBigInt64 / ToBigUint64).
         TypedElemKind::BigI64 => {
-            let mut bytes = [0u8; 8];
-            bytes.copy_from_slice(&buf[abs..abs + 8]);
+            let bytes = [
+                buf[abs],
+                buf[abs + 1],
+                buf[abs + 2],
+                buf[abs + 3],
+                buf[abs + 4],
+                buf[abs + 5],
+                buf[abs + 6],
+                buf[abs + 7],
+            ];
             Value::bigint_i64(i64::from_le_bytes(bytes))
         }
         TypedElemKind::BigU64 => {
-            let mut bytes = [0u8; 8];
-            bytes.copy_from_slice(&buf[abs..abs + 8]);
+            let bytes = [
+                buf[abs],
+                buf[abs + 1],
+                buf[abs + 2],
+                buf[abs + 3],
+                buf[abs + 4],
+                buf[abs + 5],
+                buf[abs + 6],
+                buf[abs + 7],
+            ];
             Value::bigint_u64(u64::from_le_bytes(bytes))
         }
     }
@@ -160,7 +181,7 @@ fn make_stack_overflow_error() -> Value {
 /// `WebAssembly.RuntimeError` is what the WebAssembly JS Interface names for
 /// exactly this, and the shape mirrors `make_stack_overflow_error` above —
 /// which already surfaces a VM-level condition as a catchable ECMA error.
-fn make_runtime_error(message: &str) -> Value {
+pub(crate) fn make_runtime_error(message: &str) -> Value {
     let mut obj = Object::new();
     let name = Value::String(Arc::from("RuntimeError"));
     obj.properties.insert("name".into(), name.clone());
@@ -169,6 +190,22 @@ fn make_runtime_error(message: &str) -> Value {
     obj.properties
         .insert("message".into(), Value::String(Arc::from(message)));
     Value::Object(crate::heap::alloc(obj))
+}
+
+fn exception_description(value: &Value) -> String {
+    if let Value::Object(object) = value {
+        let (name, message) = {
+            let object = object.lock().unwrap();
+            (object.properties.get("name").cloned(), object.properties.get("message").cloned())
+        };
+        if let Some(Value::String(message)) = message {
+            return match name {
+                Some(Value::String(name)) => format!("{name}: {message}"),
+                _ => message.to_string(),
+            };
+        }
+    }
+    value.to_string()
 }
 
 /// A catchable ECMA `TypeError`.
@@ -331,7 +368,7 @@ impl VM {
                     let val = escape_value(&payload, tag_entity);
                     self.last_exception = Some(val.clone());
                     let stack = self.capture_call_stack();
-                    return Err(VMError::new(format!("{}", val)).with_stack(stack));
+                    return Err(VMError::new(exception_description(&val)).with_stack(stack));
                 }
             }
             // Remove the matched clause AND its sibling clauses (same
@@ -407,7 +444,7 @@ impl VM {
             self.last_exception = Some(val.clone());
             let stack = self.capture_call_stack();
             let msg = if tag_entity == 0 {
-                format!("{}", val)
+                exception_description(&val)
             } else {
                 let tag_name = self
                     .tag_entities
@@ -474,7 +511,7 @@ impl VM {
             self.call_value(2).ok()?;
             // Execute until the function returns
             self.execute_until(self.frames.len()).ok()?;
-            Some(self.pop())
+            Some(self.pop_fast())
         } else {
             None
         }
@@ -482,6 +519,58 @@ impl VM {
 
     pub(crate) fn call_value(&mut self, argc: usize) -> Result<(), VMError> {
         self.call_value_inner(argc, false)
+    }
+
+    #[inline(always)]
+    pub(crate) fn try_call_function_ref_fast(&mut self, argc: usize) -> Result<bool, VMError> {
+        let callee_idx = self.stack.len() - 1 - argc;
+        let target = match self.stack.get(callee_idx) {
+            Some(Value::Object(obj)) => {
+                let o = obj.lock().unwrap();
+                match &o.kind {
+                    ObjectKind::Function(func) if func.upvalues.is_empty() => {
+                        (func.chunk_index, func.arity, None)
+                    }
+                    ObjectKind::Function(func) => {
+                        (func.chunk_index, func.arity, Some(func.clone()))
+                    }
+                    _ => return Ok(false),
+                }
+            }
+            _ => return Ok(false),
+        };
+        let (chunk_index, arity, func) = target;
+
+        // Match `call_value_inner`'s one-shot flag consumption. For bytecode
+        // Function refs the consumed value has no semantic branch after this
+        // point; host/dynamic callables fall back to `call_value_inner`.
+        let _from_host = std::mem::take(&mut self.host_originated_call);
+
+        if !self.func_switches.is_empty() && self.func_switches.contains_key(&chunk_index) {
+            return Err(VMError::new(
+                "call: a func_switch has no type and cannot be called \
+                 directly — reach it with call_with_tag"
+                    .to_string(),
+            ));
+        }
+
+        if argc == 0 {
+            self.pop_fast();
+        } else if argc == 1 {
+            // Stack shape for `call_ref` is `[... callee arg0]`. Removing the
+            // callee while preserving one argument only needs a pop+overwrite,
+            // not a tail memmove.
+            let arg0 = self.pop_fast();
+            self.stack[callee_idx] = arg0;
+        } else {
+            self.remove_stack_slot_fast(callee_idx);
+        }
+        if let Some(func) = func {
+            self.call_function(&func, argc)?;
+        } else {
+            self.call_chunk_function(chunk_index, arity, argc)?;
+        }
+        Ok(true)
     }
 
     /// `call_with_tag $call_tag` — Call Tags proposal.
@@ -500,7 +589,8 @@ impl VM {
     /// program instead of calling under the wrong shape, which is exactly how
     /// the ECMA accessor dispatch came to write into nowhere for years.
     pub(crate) fn call_with_tag(&mut self, tag: u32, argc: usize) -> Result<(), VMError> {
-        let Some(tag_def) = self.call_tags.get(tag as usize).cloned() else {
+        let Some(tag_params) = self.call_tags.get(tag as usize).map(|tag_def| tag_def.params)
+        else {
             return Err(VMError::new(format!(
                 "call_with_tag: undefined call tag {tag}"
             )));
@@ -509,10 +599,11 @@ impl VM {
         // The tag's own type is checked against the call site before anything
         // is dispatched — `$call_tag : [ti*] -> [to*]` is a declaration, so a
         // mismatched argument count is a malformed call, not a missed handler.
-        if tag_def.params as usize != argc {
+        if tag_params as usize != argc {
+            let tag_debug_name = self.call_tag_debug_name(tag);
             return Err(VMError::new(format!(
                 "call_with_tag: tag '{}' takes {} argument(s), called with {argc}",
-                tag_def.debug_name, tag_def.params
+                tag_debug_name, tag_params
             )));
         }
 
@@ -521,108 +612,157 @@ impl VM {
             .pop()
             .ok_or_else(|| VMError::new("call_with_tag: missing funcref".to_string()))?;
 
-        let handled = match &funcref {
+        let bytecode_chunk = match &funcref {
             Value::Object(obj) => {
-                let chunk_index = {
-                    let o = obj.lock().unwrap();
-                    match &o.kind {
-                        ObjectKind::Function(f) => Some(f.chunk_index),
-                        // A host function has no wasm signature to derive a
-                        // canonical tag from, and the Overview's JS-interop rule
-                        // is that such a value answers every tag through its
-                        // interop handler — so it handles whatever it is given.
-                        ObjectKind::HostFunction(_) => None,
-                        _ => {
-                            return Err(VMError::new(format!(
-                                "call_with_tag: not a function reference (tag '{}')",
-                                tag_def.debug_name
-                            )));
-                        }
+                let o = obj.lock().unwrap();
+                match &o.kind {
+                    ObjectKind::Function(f) => Some(f.chunk_index),
+                    // A host function has no wasm signature to derive a
+                    // canonical tag from, and the Overview's JS-interop rule
+                    // is that such a value answers every tag through its
+                    // interop handler — so it handles whatever it is given.
+                    ObjectKind::HostFunction(_) => None,
+                    _ => {
+                        let tag_debug_name = self.call_tag_debug_name(tag);
+                        return Err(VMError::new(format!(
+                            "call_with_tag: not a function reference (tag '{}')",
+                            tag_debug_name
+                        )));
                     }
-                };
-                match chunk_index {
-                    Some(ci) => self.func_handles_call_tag(ci, tag),
-                    None => true,
                 }
             }
             Value::Null => {
+                let tag_debug_name = self.call_tag_debug_name(tag);
                 return Err(VMError::new(format!(
                     "call_with_tag: null function reference (tag '{}')",
-                    tag_def.debug_name
+                    tag_debug_name
                 )));
             }
             other => {
+                let tag_debug_name = self.call_tag_debug_name(tag);
                 return Err(VMError::new(format!(
                     "call_with_tag: not a function reference (tag '{}'), got {other:?}",
-                    tag_def.debug_name
+                    tag_debug_name
                 )));
             }
         };
-
         // A `func_switch` is not called — it SELECTS. Resolve it to the arm
         // matching the tag (following `$func_switch?` forwards) and call that,
         // so a subclass descriptor can forward inherited tags to its parent's
         // funcref without re-listing them.
-        if let Value::Object(obj) = &funcref {
-            let chunk_index = {
-                let o = obj.lock().unwrap();
-                match &o.kind {
-                    ObjectKind::Function(f) => Some(f.chunk_index),
-                    _ => None,
+        if let Some(ci) = bytecode_chunk
+            && !self.func_switches.is_empty() && self.func_switches.contains_key(&ci)
+        {
+            return match self.resolve_func_switch(ci, tag) {
+                Some(target) => {
+                    if !self.func_switches.is_empty() && self.func_switches.contains_key(&target) {
+                        return Err(VMError::new(
+                            "call: a func_switch has no type and cannot be called \
+                             directly — reach it with call_with_tag"
+                                .to_string(),
+                        ));
+                    }
+                    let arity = self.chunks[target].arity;
+                    self.call_chunk_function(target, arity, argc)?;
+                    Ok(())
+                }
+                // "otherwise the fall-back handler of the call tag is
+                // (tail) called with the arguments" — the same rule an
+                // ordinary funcref gets, so it lives in one place below.
+                None => {
+                    self.call_tag_fallback(tag, funcref, argc)
                 }
             };
-            if let Some(ci) = chunk_index
-                && self.func_switches.contains_key(&ci)
-            {
-                return match self.resolve_func_switch(ci, tag) {
-                    Some(target) => {
-                        let target_fn = self.function_value_for_chunk(target);
-                        let callee_idx = self.stack.len() - argc;
-                        self.stack.insert(callee_idx, target_fn);
-                        self.call_value(argc)
-                    }
-                    // "otherwise the fall-back handler of the call tag is
-                    // (tail) called with the arguments" — the same rule an
-                    // ordinary funcref gets, so it lives in one place below.
-                    None => self.call_tag_fallback(&tag_def, funcref, argc),
-                };
-            }
         }
 
+        let handled = match bytecode_chunk {
+            Some(ci) => self.func_handles_call_tag(ci, tag),
+            None => true,
+        };
+
         if handled {
+            if let Some((chunk_index, arity, func)) = Self::bytecode_funcref_target(&funcref) {
+                if let Some(func) = func {
+                    self.call_function(&func, argc)?;
+                } else {
+                    self.call_chunk_function(chunk_index, arity, argc)?;
+                }
+                return Ok(());
+            }
             // `call_value_inner` wants the callee BELOW its arguments; the
             // proposal puts it above. Move it, rather than teaching the shared
             // call path a second stack layout.
             let callee_idx = self.stack.len() - argc;
             self.stack.insert(callee_idx, funcref);
-            return self.call_value(argc);
+            if !self.try_call_function_ref_fast(argc)? {
+                self.call_value(argc)?;
+            }
+            return Ok(());
         }
 
-        self.call_tag_fallback(&tag_def, funcref, argc)
+        self.call_tag_fallback(tag, funcref, argc)
     }
 
     /// The unhandled-tag rule, shared by ordinary funcrefs and `func_switch`.
     fn call_tag_fallback(
         &mut self,
-        tag_def: &crate::vm::CallTagDef,
+        tag: u32,
         funcref: Value,
         argc: usize,
     ) -> Result<(), VMError> {
-        match tag_def.fallback.clone() {
-            Some(handler) => {
-                // `$func : [ti* funcref] -> [to*]` — the arguments stay exactly
-                // where they are and the funcref becomes the extra trailing
-                // argument, so the handler sees which funcref refused the tag.
-                self.stack.push(funcref);
-                let callee_idx = self.stack.len() - (argc + 1);
-                self.stack.insert(callee_idx, handler);
-                self.call_value(argc + 1)
-            }
-            None => Err(VMError::new(format!(
+        let Some((direct_target, dynamic_handler)) = self
+            .call_tags
+            .get(tag as usize)
+            .and_then(|tag_def| tag_def.fallback.as_ref())
+            .map(|handler| {
+                let direct_target = Self::bytecode_funcref_target(handler);
+                let dynamic_handler = if direct_target.is_none() {
+                    Some(handler.clone())
+                } else {
+                    None
+                };
+                (direct_target, dynamic_handler)
+            })
+        else {
+            let tag_debug_name = self.call_tag_debug_name(tag);
+            return Err(VMError::new(format!(
                 "call_with_tag: funcref does not handle call tag '{}'",
-                tag_def.debug_name
-            ))),
+                tag_debug_name
+            )));
+        };
+
+        // `$func : [ti* funcref] -> [to*]` — the arguments stay exactly
+        // where they are and the funcref becomes the extra trailing
+        // argument, so the handler sees which funcref refused the tag.
+        self.stack.push(funcref);
+        if let Some((chunk_index, arity, func)) = direct_target {
+            if !self.func_switches.is_empty() && self.func_switches.contains_key(&chunk_index) {
+                return Err(VMError::new(
+                    "call: a func_switch has no type and cannot be called \
+                     directly — reach it with call_with_tag"
+                        .to_string(),
+                ));
+            }
+            if let Some(func) = func {
+                self.call_function(&func, argc + 1)?;
+            } else {
+                self.call_chunk_function(chunk_index, arity, argc + 1)?;
+            }
+            return Ok(());
         }
+        let handler = dynamic_handler.expect("dynamic fallback handler was cloned");
+        let callee_idx = self.stack.len() - (argc + 1);
+        self.stack.insert(callee_idx, handler);
+        if !self.try_call_function_ref_fast(argc + 1)? {
+            self.call_value(argc + 1)?;
+        }
+        Ok(())
+    }
+
+    fn call_tag_debug_name(&self, tag: u32) -> String {
+        self.call_tags
+            .get(tag as usize)
+            .map_or_else(|| tag.to_string(), |tag_def| tag_def.debug_name.clone())
     }
 
     /// Walk a `func_switch`'s arms for `tag`, following `$func_switch?`
@@ -642,23 +782,8 @@ impl VM {
     }
 
     /// A callable `Value` for a chunk index, for dispatching a resolved arm.
-    pub(crate) fn function_value_for_chunk(&self, chunk_index: usize) -> Value {
-        let (name, arity) = self
-            .chunks
-            .get(chunk_index)
-            .map(|c| (Some(c.name.clone()), c.arity))
-            .unwrap_or((None, 0));
-        Value::Object(crate::heap::alloc(Object {
-            properties: indexmap::IndexMap::new(),
-            kind: ObjectKind::Function(crate::value::Function {
-                name,
-                arity,
-                chunk_index,
-                upvalues: Vec::new(),
-            }),
-            type_id: 0,
-            fields: Vec::new(),
-        }))
+    pub(crate) fn function_value_for_chunk(&mut self, chunk_index: usize) -> Value {
+        self.make_funcref(chunk_index)
     }
 
     /// Like `call_value` but bypasses the generator intercept — used
@@ -681,7 +806,13 @@ impl VM {
                 let o = obj.lock().unwrap();
                 match &o.kind {
                     ObjectKind::Function(func) => {
-                        let func = func.clone();
+                        let chunk_index = func.chunk_index;
+                        let arity = func.arity;
+                        let func = if func.upvalues.is_empty() {
+                            None
+                        } else {
+                            Some(func.clone())
+                        };
                         drop(o);
                         // ⛔ A `func_switch` HAS NO TYPE AND CANNOT BE DIRECTLY
                         // CALLED — Design §Functions: "The new function has no
@@ -702,19 +833,37 @@ impl VM {
                         // ARM and calls that chunk, never the switch, so
                         // `test_func_switch_dispatch` and `..._forward` are
                         // unaffected — they are this check's controls.
-                        if self.func_switches.contains_key(&func.chunk_index) {
+                        if !self.func_switches.is_empty() && self.func_switches.contains_key(&chunk_index) {
                             return Err(VMError::new(
                                 "call: a func_switch has no type and cannot be called \
                                  directly — reach it with call_with_tag"
                                     .to_string(),
                             ));
                         }
-                        // Remove callee from stack (WASM convention: only args, no callee)
-                        self.stack.remove(callee_idx);
-                        if bypass_generator {
+                        // Remove callee from stack (WASM convention: only args, no callee).
+                        // For the common zero-arg case the callee is already
+                        // the top value, so avoid Vec::remove's shifting path.
+                        if argc == 0 {
+                            self.stack.pop();
+                        } else {
+                            self.remove_stack_slot_fast(callee_idx);
+                        }
+                        if let Some(func) = func {
+                            if bypass_generator {
+                                self.call_function_direct(&func, argc)?;
+                            } else {
+                                self.call_function(&func, argc)?;
+                            }
+                        } else if bypass_generator {
+                            let func = Function {
+                                name: None,
+                                arity,
+                                chunk_index,
+                                upvalues: Vec::new(),
+                            };
                             self.call_function_direct(&func, argc)?;
                         } else {
-                            self.call_function(&func, argc)?;
+                            self.call_chunk_function(chunk_index, arity, argc)?;
                         }
                     }
                     ObjectKind::HostFunction(idx) => {
@@ -725,16 +874,9 @@ impl VM {
                         // invocation. This is the standard ECMA-262 §20.2.3.2
                         // semantics applied to host fns — callers build bound
                         // refs with `bound_host_fn_ref` in vybe_host.
-                        let bound: Vec<Value> = match o.properties.get("__bound_args") {
-                            Some(Value::Object(arr)) => {
-                                let a = arr.lock().unwrap();
-                                if let ObjectKind::Array(ref elems) = a.kind {
-                                    elems.clone()
-                                } else {
-                                    Vec::new()
-                                }
-                            }
-                            _ => Vec::new(),
+                        let bound_args = match o.properties.get("__bound_args") {
+                            Some(Value::Object(arr)) => Some(arr.clone()),
+                            _ => None,
                         };
                         drop(o);
                         // ⛔ RECEIVER FIRST, THEN THE BOUND CAPTURES, THEN THE
@@ -816,8 +958,87 @@ impl VM {
                         // this on the declaration instead left the receiver in
                         // front of the real arguments and `const g = eval;
                         // g("3+4")` evaluated the receiver.
-                        let stack_args: Vec<Value> = self.stack[self.stack.len() - argc..].to_vec();
-                        let mut args: Vec<Value> = Vec::with_capacity(bound.len() + argc + 1);
+                        let arg_start = self.stack.len() - argc;
+                        let pass_count = argc - usize::from(receiver_on_stack);
+                        if bound_args.is_none() && !param_abi && pass_count <= 4 {
+                            let host_fn = std::sync::Arc::as_ptr(&self.host_fns[idx]);
+                            macro_rules! call_host_fn {
+                                ($ctx:expr, $args:expr) => {{
+                                    // SAFETY: `host_fn` points at the function
+                                    // object owned by `self.host_fns[idx]`.
+                                    // That Arc remains in the VM host table for
+                                    // the duration of this scoped call branch;
+                                    // no reference escapes the branch. This is
+                                    // the same clone-free host-call pattern used
+                                    // by direct import CALL dispatch.
+                                    unsafe { (&*host_fn)($ctx, $args) }
+                                }};
+                            }
+                            let result = match pass_count {
+                                0 => {
+                                    if receiver_on_stack {
+                                        self.pop_fast();
+                                    }
+                                    self.pop_fast();
+                                    let mut ctx = self.make_host_context();
+                                    call_host_fn!(&mut ctx, &[])
+                                }
+                                1 => {
+                                    let arg0 = self.pop_fast();
+                                    if receiver_on_stack {
+                                        self.pop_fast();
+                                    }
+                                    self.pop_fast();
+                                    let mut ctx = self.make_host_context();
+                                    call_host_fn!(&mut ctx, std::slice::from_ref(&arg0))
+                                }
+                                2 => {
+                                    let arg1 = self.pop_fast();
+                                    let arg0 = self.pop_fast();
+                                    if receiver_on_stack {
+                                        self.pop_fast();
+                                    }
+                                    self.pop_fast();
+                                    let args = [arg0, arg1];
+                                    let mut ctx = self.make_host_context();
+                                    call_host_fn!(&mut ctx, &args)
+                                }
+                                3 => {
+                                    let arg2 = self.pop_fast();
+                                    let arg1 = self.pop_fast();
+                                    let arg0 = self.pop_fast();
+                                    if receiver_on_stack {
+                                        self.pop_fast();
+                                    }
+                                    self.pop_fast();
+                                    let args = [arg0, arg1, arg2];
+                                    let mut ctx = self.make_host_context();
+                                    call_host_fn!(&mut ctx, &args)
+                                }
+                                _ => {
+                                    let arg3 = self.pop_fast();
+                                    let arg2 = self.pop_fast();
+                                    let arg1 = self.pop_fast();
+                                    let arg0 = self.pop_fast();
+                                    if receiver_on_stack {
+                                        self.pop_fast();
+                                    }
+                                    self.pop_fast();
+                                    let args = [arg0, arg1, arg2, arg3];
+                                    let mut ctx = self.make_host_context();
+                                    call_host_fn!(&mut ctx, &args)
+                                }
+                            };
+                            if let Some(exc) = self.last_exception.take() {
+                                self.raise_exception_value(exc)?;
+                                return Ok(());
+                            }
+                            self.push(result)?;
+                            return Ok(());
+                        }
+                        let mut args = std::mem::take(&mut self.host_call_args);
+                        args.clear();
+                        args.reserve(argc + 1);
                         if param_abi {
                             // A bytecode call site put the receiver on the
                             // stack. Host plumbing did not, so the receiver is
@@ -828,32 +1049,37 @@ impl VM {
                             // exactly once, here, and nothing downstream has to
                             // ask which kind of call it was.
                             args.push(if receiver_on_stack {
-                                stack_args[0].clone()
+                                self.stack[arg_start].clone()
                             } else {
                                 self.host_receiver.clone()
                             });
                         }
-                        args.extend(bound);
-                        args.extend(
-                            stack_args
-                                .iter()
-                                .skip(usize::from(receiver_on_stack))
-                                .cloned(),
-                        );
-                        for _ in 0..argc {
-                            self.stack.pop();
+                        if let Some(arr) = bound_args {
+                            let a = arr.lock().unwrap();
+                            if let ObjectKind::Array(elems) = &a.kind {
+                                args.reserve(elems.len());
+                                args.extend_from_slice(elems);
+                            }
                         }
-                        self.stack.pop();
+                        args.extend_from_slice(&self.stack[arg_start + usize::from(receiver_on_stack)..]);
+                        self.stack.truncate(arg_start - 1);
                         // Constant under a given module ABI, because the
                         // layout above is now invariant. Kept only so the
                         // remaining `user_args`/`capture` readers keep
                         // compiling while they are converted to fixed indices;
                         // it describes a CONSTANT, not a per-call fact.
-                        let host_fn = self.host_fns[idx].clone();
+                        let host_fn = std::sync::Arc::as_ptr(&self.host_fns[idx]);
                         let result = {
                             let mut ctx = self.make_host_context();
-                            host_fn(&mut ctx, &args)
+                            // SAFETY: `host_fn` points at the function object
+                            // owned by `self.host_fns[idx]`. The call is
+                            // strictly scoped here after argument materialization
+                            // and before `args` is returned to VM scratch
+                            // storage, so no borrowed function reference escapes.
+                            unsafe { (&*host_fn)(&mut ctx, &args) }
                         };
+                        args.clear();
+                        self.host_call_args = args;
                         if let Some(exc) = self.last_exception.take() {
                             self.raise_exception_value(exc)?;
                             return Ok(());
@@ -866,9 +1092,9 @@ impl VM {
 
                         let args: Vec<Value> = self.stack[self.stack.len() - argc..].to_vec();
                         for _ in 0..argc {
-                            self.stack.pop();
+                            self.pop_fast();
                         }
-                        self.stack.pop();
+                        self.pop_fast();
 
                         let mut last = Value::Null;
                         for handler in handlers {
@@ -884,7 +1110,7 @@ impl VM {
                             if self.frames.len() > depth {
                                 last = self.execute_until(depth)?;
                             } else {
-                                last = self.pop();
+                                last = self.pop_fast();
                             }
                         }
                         self.push(last)?;
@@ -941,6 +1167,16 @@ impl VM {
         self.call_function_inner(func, argc, false)
     }
 
+    #[inline(always)]
+    pub(crate) fn call_chunk_function(
+        &mut self,
+        chunk_index: usize,
+        arity: u8,
+        argc: usize,
+    ) -> Result<(), VMError> {
+        self.call_chunk_function_inner(chunk_index, arity, argc, false)
+    }
+
     /// Direct entry-body call that bypasses the `is_generator`
     /// intercept — used from `RESUME` / `GEN_NEXT` when we want the
     /// generator's body to execute (rather than re-wrap as a nested
@@ -951,6 +1187,102 @@ impl VM {
         argc: usize,
     ) -> Result<(), VMError> {
         self.call_function_inner(func, argc, true)
+    }
+
+    #[inline(always)]
+    fn prepare_call_stack(
+        &mut self,
+        arity: usize,
+        argc: usize,
+        local_count: usize,
+    ) -> Result<(usize, usize), VMError> {
+        let base = self.stack.len() - argc;
+        let total = local_count.max(arity);
+        let Some(final_len) = base.checked_add(total) else {
+            return Err(VMError::new("trap: call stack exhausted"));
+        };
+        if final_len > MAX_STACK {
+            return Err(VMError::new("trap: call stack exhausted"));
+        }
+
+        if argc == arity {
+            if self.stack.len() < final_len {
+                self.stack.resize(final_len, Value::Null);
+            }
+            return Ok((base, total));
+        }
+
+        if argc > arity {
+            self.stack.truncate(base + arity);
+        }
+        let args_end = base + arity;
+        if self.stack.len() < args_end {
+            self.stack.resize(args_end, Value::Undefined);
+        }
+        if self.stack.len() < final_len {
+            self.stack.resize(final_len, Value::Null);
+        }
+        Ok((base, total))
+    }
+
+    #[inline(always)]
+    fn push_call_frame(
+        &mut self,
+        chunk_index: usize,
+        base: usize,
+        local_frame_size: usize,
+        upvalues: Vec<Arc<Mutex<crate::value::Upvalue>>>,
+    ) {
+        if let Some(counters) = self.perf_counters.as_mut() {
+            counters.function_call = counters.function_call.saturating_add(1);
+        }
+        self.frames.push(CallFrame {
+            chunk_index,
+            ip: 0,
+            base,
+            local_frame_size,
+            label_base: self.label_stack.len(),
+            upvalues,
+        });
+    }
+
+    #[inline(always)]
+    fn call_chunk_function_inner(
+        &mut self,
+        chunk_index: usize,
+        arity: u8,
+        argc: usize,
+        bypass_generator: bool,
+    ) -> Result<(), VMError> {
+        if self.frames.len() >= MAX_FRAMES {
+            return self.raise_exception_value(make_stack_overflow_error());
+        }
+
+        if chunk_index >= self.chunks.len() {
+            return Err(VMError::new(format!(
+                "function references unavailable chunk {chunk_index}"
+            )));
+        }
+
+        let chunk = &self.chunks[chunk_index];
+        let is_async = chunk.is_async;
+        let is_generator = chunk.is_generator;
+        let local_count = chunk.local_count as usize;
+
+        if !bypass_generator && (is_async || is_generator) {
+            let func = Function {
+                name: None,
+                arity,
+                chunk_index,
+                upvalues: Vec::new(),
+            };
+            return self.call_function_inner(&func, argc, bypass_generator);
+        }
+
+        let arity = arity as usize;
+        let (base, total) = self.prepare_call_stack(arity, argc, local_count)?;
+        self.push_call_frame(chunk_index, base, total, Vec::new());
+        Ok(())
     }
 
     fn call_function_inner(
@@ -966,6 +1298,11 @@ impl VM {
         }
 
         let chunk_index = func.chunk_index;
+        if chunk_index >= self.chunks.len() {
+            return Err(VMError::new(format!(
+                "function references unavailable chunk {chunk_index}"
+            )));
+        }
         // JSPI promising boundary: calling an async function is delimited at
         // this call. The body runs inline until it returns (result Promise on
         // the stack) or suspends at an `await`, in which case only the async
@@ -989,11 +1326,12 @@ impl VM {
         if !bypass_generator && self.chunks[chunk_index].is_generator {
             use crate::value::{ContinuationPhase, ContinuationState};
             // Collect args — they'll be bound into the continuation.
-            let mut args: Vec<Value> = Vec::with_capacity(argc);
-            for _ in 0..argc {
-                args.push(self.pop());
-            }
-            args.reverse();
+            let args_start = self.stack.len().saturating_sub(argc);
+            let mut args = self.stack.split_off(args_start);
+            // The first RESUME appends its value as the generator's control
+            // argument. Keep that value out of omitted user-parameter slots:
+            // they must receive Undefined so their declared defaults run.
+            args.resize(args.len().max((func.arity as usize).saturating_sub(1)), Value::Undefined);
             // Re-wrap the Function value so entry can re-call it later.
             let fn_obj = Object {
                 properties: indexmap::IndexMap::new(),
@@ -1035,31 +1373,8 @@ impl VM {
         let arity = func.arity as usize;
         // WASM-compliant: slot 0 = first arg (not callee).
         // The caller must remove the callee from the stack before this call.
-        let base = self.stack.len() - argc;
-
-        // Arity validation: pad missing args, truncate extras (dynamic language semantics).
-        //
-        // Missing positional args land as `Undefined` per ECMA-262 §10.2.1.1
-        // (matches V8 / QuickJS internals). Distinct from `Null` so callers
-        // can tell `f()` from `f(null)` — required for spec-compliant default
-        // parameters. WASM core dispatch is fixed-arity; padding with
-        // Undefined is the standard JS-engine convention used by every
-        // browser-grade JS-on-WASM implementation.
-        if argc > arity {
-            for _ in 0..(argc - arity) {
-                self.pop();
-            }
-        }
-        for _ in argc..arity {
-            self.push(Value::Undefined)?;
-        }
-
         let local_count = self.chunks[chunk_index].local_count as usize;
-        let total = local_count.max(arity);
-        let have = self.stack.len() - base;
-        for _ in have..total {
-            self.push(Value::Null)?;
-        }
+        let (base, total) = self.prepare_call_stack(arity, argc, local_count)?;
 
         let capture_count = self.chunks[chunk_index].capture_count as usize;
         let capture_base = self.chunks[chunk_index].capture_base as usize;
@@ -1081,13 +1396,7 @@ impl VM {
         }
 
         let upvalues = func.upvalues.clone();
-        self.frames.push(CallFrame {
-            chunk_index,
-            ip: 0,
-            base,
-            label_base: self.label_stack.len(),
-            upvalues,
-        });
+        self.push_call_frame(chunk_index, base, total, upvalues);
         Ok(())
     }
 
@@ -1178,9 +1487,27 @@ impl VM {
                     }
                 }
 
+                // Constructor functions inherit static members through their
+                // parent class object. Follow that data-property chain before
+                // consulting the type vtable, which cannot see a parent that
+                // was installed by a later runtime include.
+                let function_proto = if matches!(ob.kind, ObjectKind::Function(_) | ObjectKind::HostFunction(_)) {
+                    ob.properties.get("__proto__").cloned()
+                } else {
+                    None
+                };
                 // 3. TypeRegistry vtable
                 let type_id = ob.type_id;
                 drop(ob); // release borrow before accessing self
+                let mut ancestor = function_proto;
+                for _ in 0..1024 {
+                    let Some(Value::Object(parent)) = ancestor else { break };
+                    let parent = parent.lock().unwrap();
+                    if let Some(value) = parent.properties.get(name) {
+                        return Ok(value.clone());
+                    }
+                    ancestor = parent.properties.get("__proto__").cloned();
+                }
 
                 // ⛔ THE VTABLE IS A THIRD MECHANISM, beside `properties` and
                 // `__proto__`, with its own inheritance walk — and under ECMA
