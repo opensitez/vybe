@@ -112,6 +112,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
     }
 
     normalize_vb_partial_classes(&mut body);
+    normalize_vb_class_events_after_partial_merge(&mut body);
     // ⛔ `normalize_vb_user_name_members` is NOT called. It renamed every user
     // `Name` member to `vb_user_Name` and un-renamed it at each read — but only
     // where it could NAME the receiver's type, which `vb_user_name_receiver_type`
@@ -205,6 +206,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
             // supplies the receiver as a leading argument, unlike prototype
             // dispatch (JS/Dart) or bind-on-access (Python).
             method_receiver: Some(vybe_ast::MethodReceiver::CallSite),
+            method_bindings_live: Some(false),
             // VB/.NET instance fields participate in the shared object
             // surface: reflection, structural value equality, and object
             // adapters must see the same values that field reads/writes see.
@@ -10106,6 +10108,18 @@ fn rewrite_vb_interface_dispatch_type_hint_member(
 }
 
 fn normalize_vb_partial_classes(body: &mut Vec<Statement>) {
+    // A designer's `Partial Class` can pair with a code-behind `Class` that
+    // omits Partial. Merge both before member-name normalization so methods
+    // can resolve fields declared in either half.
+    let partial_names: HashSet<String> = body
+        .iter()
+        .filter_map(|stmt| match &stmt.kind {
+            StmtKind::ClassDecl {
+                name, modifiers, ..
+            } if modifiers.is_partial => Some(name.to_ascii_lowercase()),
+            _ => None,
+        })
+        .collect();
     let mut seen: HashMap<String, usize> = HashMap::new();
     let mut merged = Vec::new();
     for mut stmt in body.drain(..) {
@@ -10113,9 +10127,11 @@ fn normalize_vb_partial_classes(body: &mut Vec<Statement>) {
             normalize_vb_partial_classes(body);
         }
         let merge_key = match &stmt.kind {
-            StmtKind::ClassDecl {
-                name, modifiers, ..
-            } if modifiers.is_partial => Some(name.to_ascii_lowercase()),
+            StmtKind::ClassDecl { name, .. }
+                if partial_names.contains(&name.to_ascii_lowercase()) =>
+            {
+                Some(name.to_ascii_lowercase())
+            }
             _ => None,
         };
         let Some(key) = merge_key else {
@@ -10156,24 +10172,12 @@ fn normalize_vb_partial_classes(body: &mut Vec<Statement>) {
                 target_members.extend(members);
                 target_decorators.extend(decorators);
                 modifiers.is_partial = false;
+                merge_vb_partial_default_constructors(target_members);
             }
         } else {
             // ⚠ `is_partial` stays TRUE here, and that is the whole point.
             //
-            // This pass only ever sees the parts that spell `Partial`, so a
-            // lone one has nothing here to merge with — but VB requires the
-            // keyword on every part BUT ONE, and the part that omits it is the
-            // code-behind half of every designer form. Its match is
-            // `Public Class Form1`, which this pass never indexed.
-            //
-            // The shared merger handles exactly that: `merge_partial_classes`
-            // keys on the NAME, so it unites a partial with a plain declaration
-            // — but it only runs when some class in the module still claims to
-            // be partial. Clearing the flag here turned that gate off, so
-            // `Form1.vb` and `Form1.Designer.vb` stayed two declarations, one
-            // won, and `btn0_Click`/`HandleClick`/`ResetGame` were never
-            // compiled at all. The flag is cleared only where this pass has
-            // genuinely finished the merge, above.
+            // A lone partial remains marked for the shared class merger.
             seen.insert(key, merged.len());
             merged.push(stmt);
         }
@@ -10184,6 +10188,81 @@ fn normalize_vb_partial_classes(body: &mut Vec<Statement>) {
         }
     }
     *body = merged;
+}
+
+fn merge_vb_partial_default_constructors(members: &mut Vec<ClassMember>) {
+    let defaults: Vec<usize> = members
+        .iter()
+        .enumerate()
+        .filter_map(|(index, member)| match member {
+            ClassMember::Constructor { name: None, params, .. } if params.is_empty() => {
+                Some(index)
+            }
+            _ => None,
+        })
+        .collect();
+    if defaults.len() < 2 {
+        return;
+    }
+    let primary = defaults
+        .iter()
+        .copied()
+        .find(|&index| matches!(
+            &members[index],
+            ClassMember::Constructor { body, .. }
+                if matches!(body.first().map(|stmt| &stmt.kind),
+                    Some(StmtKind::Expr(expr)) if matches!(expr.kind, ExprKind::SuperCall { .. }))
+        ))
+        .unwrap_or(defaults[0]);
+    let mut extra_body = Vec::new();
+    for &index in &defaults {
+        if index == primary {
+            continue;
+        }
+        if let ClassMember::Constructor { body, .. } = &mut members[index] {
+            extra_body.extend(std::mem::take(body).into_iter().filter(|stmt| match &stmt.kind {
+                StmtKind::Expr(expr) if matches!(expr.kind, ExprKind::SuperCall { .. }) => false,
+                StmtKind::Assign { targets, .. }
+                    if targets.first().is_some_and(vb_is_control_identity_target) => false,
+                _ => true,
+            }));
+        }
+    }
+    if let ClassMember::Constructor { body, .. } = &mut members[primary] {
+        body.extend(extra_body);
+    }
+    for &index in defaults.iter().rev() {
+        if index != primary {
+            members.remove(index);
+        }
+    }
+}
+
+fn normalize_vb_class_events_after_partial_merge(body: &mut [Statement]) {
+    for stmt in body {
+        match &mut stmt.kind {
+            StmtKind::NamespaceDecl { body, .. } | StmtKind::Block(body) => {
+                normalize_vb_class_events_after_partial_merge(body);
+            }
+            StmtKind::ClassDecl { members, .. } => {
+                for member in members.iter_mut() {
+                    if let ClassMember::NestedType(nested) = member {
+                        normalize_vb_class_events_after_partial_merge(std::slice::from_mut(nested.as_mut()));
+                    }
+                }
+                normalize_vb_withevents_assignments(members, true);
+                inject_handles_into_constructor(members);
+            }
+            StmtKind::ModuleDecl { members, .. } => {
+                for member in members {
+                    if let ClassMember::NestedType(nested) = member {
+                        normalize_vb_class_events_after_partial_merge(std::slice::from_mut(nested.as_mut()));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 fn normalize_vb_partial_methods(members: &mut Vec<ClassMember>) {
@@ -34206,6 +34285,11 @@ fn vb_infer_expr_type(expr: &Expression, locals: &HashMap<String, String>) -> Op
                 {
                     return Some(return_type.to_string());
                 }
+                if let Some(return_type) =
+                    vybe_platform_dotnet::emitter::tree_register::instance_member_return_type(&receiver_type, field)
+                {
+                    return Some(return_type);
+                }
                 if let Some(return_type) = vybe_platform_dotnet::emitter::surface()
                     .lookup_instance_method_return_type(&receiver_type, field, 0)
                 {
@@ -43615,6 +43699,7 @@ fn normalize_vb_dotnet_collection_expr(expr: &mut Expression, locals: &HashMap<S
                 // reflection accessor chain is left alone.
                 if field.eq_ignore_ascii_case("GetValue")
                     && !args.is_empty()
+                    && !vb_callee_ends(callee, &["Array", "GetValue"])
                     && !vb_expr_is_reflection_accessor(object)
                 {
                     if let ExprKind::Ident(name) = &object.kind {
@@ -43640,6 +43725,7 @@ fn normalize_vb_dotnet_collection_expr(expr: &mut Expression, locals: &HashMap<S
                 }
                 if field.eq_ignore_ascii_case("SetValue")
                     && args.len() >= 2
+                    && !vb_callee_ends(callee, &["Array", "SetValue"])
                     && !vb_expr_is_reflection_accessor(object)
                 {
                     let value = args[0].value.clone();
@@ -57927,7 +58013,16 @@ fn parse_module_decl(pair: Pair<Rule>) -> Result<Statement, String> {
             _ => {}
         }
     }
-    normalize_vb_withevents_assignments(&mut members);
+    // VB modules contain only shared members, even when `Shared` is omitted.
+    for member in &mut members {
+        if let ClassMember::Method(stmt) = member {
+            if let StmtKind::FunctionDecl { modifiers, .. } = &mut stmt.kind {
+                modifiers.is_static = true;
+                modifiers.is_shared = true;
+            }
+        }
+    }
+    normalize_vb_withevents_assignments(&mut members, false);
     Ok(Statement::with_span(
         StmtKind::ModuleDecl {
             name,
@@ -60730,28 +60825,14 @@ fn parse_class_decl(pair: Pair<Rule>) -> Result<Statement, String> {
                         BindingPattern::Ident(n) => n,
                         _ => String::new(),
                     };
-                    let mut modifiers = Modifiers::default();
-                    modifiers.visibility = vis;
-                    modifiers.is_static = true;
-                    modifiers.is_shared = true;
-                    modifiers.is_readonly = true;
-                    let mut member = ClassMember::Field {
-                        name: name.clone(),
-                        type_hint: decl.type_hint.clone().as_deref().map(str::to_string),
-                        init: Some(init.clone()),
-                        modifiers,
-                        with_events: false,
-                        array_bounds: None,
-                        storage: None,
-                    };
-                    apply_vb_pending_member_decorators(&mut member, &mut pending_member_decorators);
-                    members.push(member);
-                    members.push(ClassMember::Const {
+                    let mut member = ClassMember::Const {
                         name,
                         type_hint: decl.type_hint.as_deref().map(str::to_string),
                         value: init,
                         visibility: vis,
-                    });
+                    };
+                    apply_vb_pending_member_decorators(&mut member, &mut pending_member_decorators);
+                    members.push(member);
                 }
             }
             Rule::dim_statement => {
@@ -60816,6 +60897,7 @@ fn parse_class_decl(pair: Pair<Rule>) -> Result<Statement, String> {
         }
     }
 
+    normalize_vb_class_array_bound_constants(&mut members);
     normalize_vb_generic_constraint_param_hints(&mut members, &generic_constraint_bounds);
     resolve_vb_this_constructor_chains(&mut members);
     expand_vb_array_field_bounds_from_usage(&mut members);
@@ -60823,15 +60905,6 @@ fn parse_class_decl(pair: Pair<Rule>) -> Result<Statement, String> {
     normalize_vb_implicit_property_self(&name, &mut members);
     normalize_vb_myclass_calls(&mut members, &name, uses_myclass);
     normalize_vb_interface_event_alias_raises(&mut members);
-    normalize_vb_withevents_assignments(&mut members);
-
-    // Inject canonical AddHandler statements at the END of the constructor
-    // body for every class method that has a `Handles` clause. This is the
-    // walker normalization that turns VB-specific `Handles ctrl.Event` into
-    // the same canonical `StmtKind::AddHandler` that C# `+=` (and JS / Dart /
-    // Python frontends) will produce. The compiler then has a single emit
-    // path for events regardless of source language.
-    inject_handles_into_constructor(&mut members);
     inject_vb_safehandle_inherited_finalizer(&mut members, &parents);
 
     // Inject implicit `MyBase.New()` at the START of every constructor body
@@ -60876,6 +60949,40 @@ fn parse_class_decl(pair: Pair<Rule>) -> Result<Statement, String> {
         },
         span,
     ))
+}
+
+fn normalize_vb_class_array_bound_constants(members: &mut [ClassMember]) {
+    let constants: HashMap<String, Expression> = members
+        .iter()
+        .filter_map(|member| match member {
+            ClassMember::Const { name, value, .. } if matches!(value.kind, ExprKind::Lit(_)) => {
+                Some((name.to_ascii_lowercase(), value.clone()))
+            }
+            _ => None,
+        })
+        .collect();
+    if constants.is_empty() {
+        return;
+    }
+    let mut replace = |expr: &mut Expression| {
+        if let ExprKind::Ident(name) = &expr.kind
+            && let Some(value) = constants.get(&name.to_ascii_lowercase())
+        {
+            expr.kind = value.kind.clone();
+        }
+    };
+    for member in members {
+        if let ClassMember::Field {
+            init, array_bounds: Some(bounds), ..
+        } = member {
+            for bound in bounds {
+                bound.walk_exprs_mut(&mut replace);
+            }
+            if let Some(init) = init {
+                init.walk_exprs_mut(&mut replace);
+            }
+        }
+    }
 }
 
 fn inject_vb_safehandle_inherited_finalizer(members: &mut Vec<ClassMember>, parents: &[String]) {
@@ -61450,6 +61557,11 @@ fn vb_is_control_identity_target(expr: &Expression) -> bool {
     )
 }
 
+struct VbMemberArrayField {
+    bounds: Vec<Expression>,
+    element_type: Option<String>,
+}
+
 fn normalize_vb_member_array_assignments(members: &mut [ClassMember]) {
     let array_fields = members
         .iter()
@@ -61457,6 +61569,7 @@ fn normalize_vb_member_array_assignments(members: &mut [ClassMember]) {
             let ClassMember::Field {
                 name,
                 array_bounds: Some(bounds),
+                type_hint,
                 modifiers,
                 ..
             } = member
@@ -61466,7 +61579,10 @@ fn normalize_vb_member_array_assignments(members: &mut [ClassMember]) {
             if modifiers.is_static || modifiers.is_shared || bounds.is_empty() {
                 return None;
             }
-            Some((name.to_ascii_lowercase(), bounds.clone()))
+            Some((name.to_ascii_lowercase(), VbMemberArrayField {
+                bounds: bounds.clone(),
+                element_type: type_hint.as_ref().map(ToString::to_string),
+            }))
         })
         .collect::<HashMap<_, _>>();
     if array_fields.is_empty() {
@@ -61527,7 +61643,7 @@ fn normalize_vb_member_array_assignments_in_statement(stmt: &mut Statement) {
 
 fn normalize_vb_member_array_assignment_statements(
     body: &mut Vec<Statement>,
-    array_fields: &HashMap<String, Vec<Expression>>,
+    array_fields: &HashMap<String, VbMemberArrayField>,
 ) {
     for stmt in body {
         normalize_vb_member_array_assignment_statement(stmt, array_fields);
@@ -61536,7 +61652,7 @@ fn normalize_vb_member_array_assignment_statements(
 
 fn normalize_vb_member_array_assignment_statement(
     stmt: &mut Statement,
-    array_fields: &HashMap<String, Vec<Expression>>,
+    array_fields: &HashMap<String, VbMemberArrayField>,
 ) {
     match &mut stmt.kind {
         StmtKind::Assign { targets, value, .. } if targets.len() == 1 => {
@@ -61673,7 +61789,7 @@ fn normalize_vb_member_array_assignment_statement(
 
 fn normalize_vb_member_array_assignment_expr(
     expr: &mut Expression,
-    array_fields: &HashMap<String, Vec<Expression>>,
+    array_fields: &HashMap<String, VbMemberArrayField>,
 ) {
     match &mut expr.kind {
         ExprKind::Call { callee, args, .. } => {
@@ -61777,7 +61893,7 @@ fn normalize_vb_member_array_assignment_expr(
 fn vb_member_array_set_call(
     target: &Expression,
     value: Expression,
-    array_fields: &HashMap<String, Vec<Expression>>,
+    array_fields: &HashMap<String, VbMemberArrayField>,
 ) -> Option<Expression> {
     if let ExprKind::Call { callee, args, .. } = &target.kind
         && let Some((root, indices, bounds)) =
@@ -61798,7 +61914,7 @@ fn vb_member_array_compound_set_call(
     target: &Expression,
     op: CompoundOp,
     value: Expression,
-    array_fields: &HashMap<String, Vec<Expression>>,
+    array_fields: &HashMap<String, VbMemberArrayField>,
 ) -> Option<Expression> {
     let op = vb_compound_op_to_bin_op(op)?;
     let mut indices = Vec::new();
@@ -61819,26 +61935,43 @@ fn vb_member_array_compound_set_call(
 fn vb_member_array_get_call(
     callee: &Expression,
     args: &[Argument],
-    array_fields: &HashMap<String, Vec<Expression>>,
+    array_fields: &HashMap<String, VbMemberArrayField>,
 ) -> Option<Expression> {
     let (root, indices, bounds) = vb_member_array_call_parts(callee, args, array_fields)?;
+    let element_type = if let ExprKind::Member { field, .. } = &callee.kind {
+        array_fields.get(&field.to_ascii_lowercase())?.element_type.as_deref()
+    } else {
+        None
+    };
     if indices.len() > 1 && bounds.len() > 1 {
-        return Some(vb_array_get_value_expr(
+        let read = vb_array_get_value_expr(
             root,
             vb_flat_array_index_expr(indices, bounds),
-        ));
+        );
+        return Some(vb_typed_array_element(read, element_type));
     }
     let mut current = root;
     for index in indices {
         current = vb_array_get_value_expr(current, index);
     }
-    Some(current)
+    Some(vb_typed_array_element(current, element_type))
+}
+
+fn vb_typed_array_element(read: Expression, element_type: Option<&str>) -> Expression {
+    if let Some(type_name) = element_type {
+        Expression::new(ExprKind::Cast {
+            expr: Box::new(read),
+            type_name: type_name.to_string(),
+        })
+    } else {
+        read
+    }
 }
 
 fn vb_member_array_call_parts<'a>(
     callee: &Expression,
     args: &[Argument],
-    array_fields: &'a HashMap<String, Vec<Expression>>,
+    array_fields: &'a HashMap<String, VbMemberArrayField>,
 ) -> Option<(Expression, Vec<Expression>, &'a [Expression])> {
     if args.is_empty() || args.iter().any(|arg| arg.name.is_some() || arg.spread) {
         return None;
@@ -61851,13 +61984,13 @@ fn vb_member_array_call_parts<'a>(
     }
     let bounds = array_fields.get(&field.to_ascii_lowercase())?;
     let indices = args.iter().map(|arg| arg.value.clone()).collect::<Vec<_>>();
-    Some((member_expr((**object).clone(), field), indices, bounds))
+    Some((member_expr((**object).clone(), field), indices, &bounds.bounds))
 }
 
 fn vb_member_array_setter_method_call(
     callee: &Expression,
     args: &[Argument],
-    array_fields: &HashMap<String, Vec<Expression>>,
+    array_fields: &HashMap<String, VbMemberArrayField>,
 ) -> Option<Expression> {
     if args.len() < 2 {
         return None;
@@ -61876,7 +62009,7 @@ fn vb_member_array_setter_method_call(
         .map(|arg| arg.value.clone())
         .collect::<Vec<_>>();
     let root = member_expr((**object).clone(), array_field);
-    Some(vb_array_field_set_call(root, indices, bounds, value))
+    Some(vb_array_field_set_call(root, indices, &bounds.bounds, value))
 }
 
 fn vb_compound_op_to_bin_op(op: CompoundOp) -> Option<BinOp> {
@@ -61903,7 +62036,7 @@ fn vb_compound_op_to_bin_op(op: CompoundOp) -> Option<BinOp> {
 
 fn vb_this_array_field_bounds<'a>(
     root: &Expression,
-    array_fields: &'a HashMap<String, Vec<Expression>>,
+    array_fields: &'a HashMap<String, VbMemberArrayField>,
 ) -> Option<&'a [Expression]> {
     let ExprKind::Member { object, field, .. } = &root.kind else {
         return None;
@@ -61913,12 +62046,12 @@ fn vb_this_array_field_bounds<'a>(
     }
     array_fields
         .get(&field.to_ascii_lowercase())
-        .map(Vec::as_slice)
+        .map(|field| field.bounds.as_slice())
 }
 
 fn vb_member_array_flat_index_expr(
     expr: &Expression,
-    array_fields: &HashMap<String, Vec<Expression>>,
+    array_fields: &HashMap<String, VbMemberArrayField>,
 ) -> Option<Expression> {
     let mut indices = Vec::new();
     let root = vb_collect_index_expr_root(expr, &mut indices)?;
@@ -61926,11 +62059,19 @@ fn vb_member_array_flat_index_expr(
     if indices.len() <= 1 || bounds.len() <= 1 {
         return None;
     }
-    Some(Expression::new(ExprKind::Index {
+    let element_type = if let ExprKind::Member { field, .. } = &root.kind {
+        array_fields
+            .get(&field.to_ascii_lowercase())
+            .and_then(|array| array.element_type.as_deref())
+    } else {
+        None
+    };
+    let read = Expression::new(ExprKind::Index {
         object: Box::new(root),
         index: Box::new(vb_flat_array_index_expr(indices, bounds)),
         null_safe: false,
-    }))
+    });
+    Some(vb_typed_array_element(read, element_type))
 }
 
 fn vb_array_field_set_call(
@@ -62091,7 +62232,19 @@ fn vb_dotnet_descriptor_parent_skips_mybase_new(parent_name: &str) -> bool {
         && vybe_compiler::primitives::gui::canonical_control_name(parent_name).is_empty()
 }
 
-fn normalize_vb_withevents_assignments(members: &mut Vec<ClassMember>) {
+#[derive(Clone)]
+struct VbWithEventsBinding {
+    event: String,
+    method: String,
+    params: Vec<Param>,
+    handler_field: String,
+}
+
+fn vb_withevents_setter_name(field: &str) -> String {
+    format!("__vb_withevents_set_{}", field.to_ascii_lowercase())
+}
+
+fn normalize_vb_withevents_assignments(members: &mut Vec<ClassMember>, class_setters: bool) {
     let with_events: HashSet<String> = members
         .iter()
         .filter_map(|member| match member {
@@ -62105,13 +62258,19 @@ fn normalize_vb_withevents_assignments(members: &mut Vec<ClassMember>) {
         return;
     }
 
-    let mut bindings: HashMap<String, Vec<(String, String)>> = HashMap::new();
+    let mut bindings: HashMap<String, Vec<VbWithEventsBinding>> = HashMap::new();
     let mut seen_bindings: HashSet<(String, String, String)> = HashSet::new();
+    let mut handler_fields = Vec::new();
     for member in members.iter() {
         let ClassMember::Method(stmt) = member else {
             continue;
         };
-        let StmtKind::FunctionDecl { name, handles, .. } = &stmt.kind else {
+        let StmtKind::FunctionDecl {
+            name,
+            handles,
+            params,
+            ..
+        } = &stmt.kind else {
             continue;
         };
         if name.starts_with("__vb_myclass_") {
@@ -62128,10 +62287,14 @@ fn normalize_vb_withevents_assignments(members: &mut Vec<ClassMember>) {
             if with_events.contains(&field_key)
                 && seen_bindings.insert((field_key.clone(), event_key, method_key))
             {
-                bindings
-                    .entry(field_key)
-                    .or_default()
-                    .push((event, name.clone()));
+                let handler_field = format!("__vb_withevents_handler_{}", handler_fields.len());
+                handler_fields.push(handler_field.clone());
+                bindings.entry(field_key).or_default().push(VbWithEventsBinding {
+                    event,
+                    method: name.clone(),
+                    params: params.clone(),
+                    handler_field,
+                });
             }
         }
     }
@@ -62155,6 +62318,59 @@ fn normalize_vb_withevents_assignments(members: &mut Vec<ClassMember>) {
             }
             ClassMember::NestedType(stmt) => normalize_vb_withevents_stmt(stmt, &bindings),
             _ => {}
+        }
+    }
+    for name in handler_fields {
+        members.push(ClassMember::Field {
+            name,
+            type_hint: None,
+            init: None,
+            modifiers: Modifiers {
+                visibility: Visibility::Private,
+                ..Modifiers::default()
+            },
+            with_events: false,
+            array_bounds: None,
+            storage: None,
+        });
+    }
+    if class_setters {
+        for field in bindings.keys() {
+            let mut assignment = Statement::new(StmtKind::Assign {
+                targets: vec![Expression::new(ExprKind::Member {
+                    object: Box::new(Expression::ident("Me")),
+                    field: field.clone(),
+                    null_safe: false,
+                })],
+                value: Expression::ident("__vb_new_value"),
+                by_ref: false,
+            });
+            normalize_vb_withevents_stmt(&mut assignment, &bindings);
+            members.push(ClassMember::Method(Box::new(Statement::new(
+                StmtKind::FunctionDecl {
+                    name: vb_withevents_setter_name(field),
+                    params: vec![Param {
+                        name: "__vb_new_value".to_string(),
+                        type_hint: None,
+                        default: None,
+                        pass_by: PassBy::Value,
+                        is_rest: false,
+                        is_kwargs: false,
+                        is_optional: false,
+                        is_nullable: false,
+                    }],
+                    return_type: None,
+                    body: vec![assignment],
+                    modifiers: Modifiers {
+                        visibility: Visibility::Internal,
+                        ..Modifiers::default()
+                    },
+                    handles: Vec::new(),
+                    is_async: false,
+                    is_generator: false,
+                    is_sub: true,
+                },
+            ))));
         }
     }
 }
@@ -62633,15 +62849,13 @@ fn vb_external_withevents_assignment_block(
     class_bindings: &HashMap<String, HashMap<String, Vec<(String, String)>>>,
     locals: &HashMap<String, String>,
 ) -> Option<Vec<Statement>> {
-    let (target, value, original) = match &stmt.kind {
-        StmtKind::Assign { targets, value, .. } if targets.len() == 1 => {
-            (&targets[0], value, stmt.kind.clone())
-        }
+    let (target, value) = match &stmt.kind {
+        StmtKind::Assign { targets, value, .. } if targets.len() == 1 => (&targets[0], value),
         StmtKind::Expr(expr) => {
             let ExprKind::Assign { target, value } = &expr.kind else {
                 return None;
             };
-            (target.as_ref(), value.as_ref(), stmt.kind.clone())
+            (target.as_ref(), value.as_ref())
         }
         _ => return None,
     };
@@ -62652,62 +62866,20 @@ fn vb_external_withevents_assignment_block(
         return None;
     };
     let receiver_type = locals.get(&receiver_name.to_ascii_lowercase())?;
-    let bindings = class_bindings
+    class_bindings
         .get(receiver_type)?
         .get(&field.to_ascii_lowercase())?;
-    let mut block = Vec::new();
-    block.extend(vb_withevents_external_handler_block(
-        object, field, bindings, false,
-    ));
-    block.push(Statement::new(original));
-    block.extend(vb_withevents_external_handler_block(
-        object, field, bindings, true,
-    ));
-    Some(block)
-}
-
-fn vb_withevents_external_handler_block(
-    receiver: &Expression,
-    field: &str,
-    bindings: &[(String, String)],
-    add: bool,
-) -> Vec<Statement> {
-    let target = Expression::new(ExprKind::Member {
-        object: Box::new(receiver.clone()),
-        field: field.to_string(),
-        null_safe: false,
-    });
-    let mut then_body = Vec::new();
-    for (event, method) in bindings {
-        let handler = Expression::new(ExprKind::FuncRef(format!(
-            "{}.{method}",
-            dotted_expr_name(receiver).unwrap_or_else(|| "Me".to_string())
-        )));
-        let kind = if add {
-            StmtKind::AddHandler {
-                control: target.clone(),
-                event: event.clone(),
-                handler,
-            }
-        } else {
-            StmtKind::RemoveHandler {
-                control: target.clone(),
-                event: event.clone(),
-                handler,
-            }
-        };
-        then_body.push(Statement::new(kind));
-    }
-    vec![Statement::new(StmtKind::If {
-        cond: Expression::new(ExprKind::Binary {
-            op: BinOp::IsNot,
-            left: Box::new(target),
-            right: Box::new(Expression::null()),
-        }),
-        then_body,
-        elifs: Vec::new(),
-        else_body: None,
-    })]
+    Some(vec![Statement::new(StmtKind::Expr(Expression::new(
+        ExprKind::Call {
+            callee: Box::new(Expression::new(ExprKind::Member {
+                object: Box::new(object.as_ref().clone()),
+                field: vb_withevents_setter_name(field),
+                null_safe: false,
+            })),
+            args: vec![Argument::positional(value.clone())],
+            optional: false,
+        },
+    )))])
 }
 
 fn withevents_field_name(expr: &Expression) -> Option<String> {
@@ -62725,7 +62897,7 @@ fn withevents_field_name(expr: &Expression) -> Option<String> {
 
 fn normalize_vb_withevents_statements(
     stmts: &mut Vec<Statement>,
-    bindings: &HashMap<String, Vec<(String, String)>>,
+    bindings: &HashMap<String, Vec<VbWithEventsBinding>>,
 ) {
     for stmt in stmts {
         normalize_vb_withevents_stmt(stmt, bindings);
@@ -62734,7 +62906,7 @@ fn normalize_vb_withevents_statements(
 
 fn normalize_vb_withevents_stmt(
     stmt: &mut Statement,
-    bindings: &HashMap<String, Vec<(String, String)>>,
+    bindings: &HashMap<String, Vec<VbWithEventsBinding>>,
 ) {
     match &mut stmt.kind {
         StmtKind::Assign { targets, value, .. } if targets.len() == 1 => {
@@ -62747,6 +62919,22 @@ fn normalize_vb_withevents_stmt(
                         by_ref: false,
                     };
                     let mut body = Vec::new();
+                    for binding in field_bindings {
+                        let handler = vb_withevents_cached_handler(binding);
+                        body.push(Statement::new(StmtKind::Assign {
+                            targets: vec![handler.clone()],
+                            value: Expression::new(ExprKind::NullCoalesce {
+                                left: Box::new(handler),
+                                right: Box::new(vb_addressof_callable_ref(
+                                    &format!("Me.{}", binding.method),
+                                    Some(Expression::ident("Me")),
+                                    binding.method.clone(),
+                                    binding.params.clone(),
+                                )),
+                            }),
+                            by_ref: false,
+                        }));
+                    }
                     body.extend(vb_withevents_handler_block(&target, field_bindings, false));
                     body.push(Statement::new(original));
                     body.extend(vb_withevents_handler_block(&target, field_bindings, true));
@@ -62798,24 +62986,32 @@ fn normalize_vb_withevents_stmt(
     }
 }
 
+fn vb_withevents_cached_handler(binding: &VbWithEventsBinding) -> Expression {
+    Expression::new(ExprKind::Member {
+        object: Box::new(Expression::ident("Me")),
+        field: binding.handler_field.clone(),
+        null_safe: false,
+    })
+}
+
 fn vb_withevents_handler_block(
     target: &Expression,
-    bindings: &[(String, String)],
+    bindings: &[VbWithEventsBinding],
     add: bool,
 ) -> Vec<Statement> {
     let mut then_body = Vec::new();
-    for (event, method) in bindings {
-        let handler = Expression::new(ExprKind::FuncRef(format!("Me.{method}")));
+    for binding in bindings {
+        let handler = vb_withevents_cached_handler(binding);
         let kind = if add {
             StmtKind::AddHandler {
                 control: target.clone(),
-                event: event.clone(),
+                event: binding.event.clone(),
                 handler,
             }
         } else {
             StmtKind::RemoveHandler {
                 control: target.clone(),
-                event: event.clone(),
+                event: binding.event.clone(),
                 handler,
             }
         };
@@ -62881,12 +63077,13 @@ fn inject_handles_into_constructor(members: &mut Vec<ClassMember>) {
 
     // First pass: collect (handler_method_name, handles_list) and clear them
     // off the methods so the compile_function_decl path doesn't re-emit.
-    let mut to_inject: Vec<(String, Vec<String>)> = Vec::new();
+    let mut to_inject: Vec<(String, Vec<String>, Vec<Param>)> = Vec::new();
     for m in members.iter_mut() {
         if let ClassMember::Method(stmt) = m {
             if let StmtKind::FunctionDecl {
                 name: mname,
                 handles,
+                params,
                 modifiers,
                 ..
             } = &mut stmt.kind
@@ -62906,7 +63103,7 @@ fn inject_handles_into_constructor(members: &mut Vec<ClassMember>) {
                         constructor_handles.push(handle);
                     }
                     if !constructor_handles.is_empty() {
-                        to_inject.push((mname.clone(), constructor_handles));
+                        to_inject.push((mname.clone(), constructor_handles, params.clone()));
                     }
                 }
             }
@@ -62916,11 +63113,54 @@ fn inject_handles_into_constructor(members: &mut Vec<ClassMember>) {
         return;
     }
 
+    let has_form_load = to_inject.iter().any(|(_, handles, _)| {
+        handles.iter().any(|handle| {
+            let (control, event) = split_event_target(handle);
+            event.eq_ignore_ascii_case("load")
+                && matches!(&control.kind, ExprKind::Ident(name) if name.eq_ignore_ascii_case("me") || name.eq_ignore_ascii_case("mybase"))
+        })
+    });
+    if has_form_load
+        && !members.iter().any(|member| {
+            matches!(member, ClassMember::Event { name, .. } if name == "__winforms_load")
+        })
+    {
+        members.push(ClassMember::Event {
+            name: "__winforms_load".to_string(),
+            type_hint: None,
+            params: Vec::new(),
+            visibility: Visibility::Private,
+        });
+    }
+
     // Build the AddHandler statements.
     let mut new_stmts: Vec<Statement> = Vec::new();
-    for (method_name, handles) in &to_inject {
+    for (method_name, handles, params) in &to_inject {
         for h in handles {
             let (control, event) = split_event_target(h);
+            if event.eq_ignore_ascii_case("load")
+                && matches!(&control.kind, ExprKind::Ident(name) if name.eq_ignore_ascii_case("me") || name.eq_ignore_ascii_case("mybase"))
+            {
+                let target = Expression::new(ExprKind::Member {
+                    object: Box::new(Expression::ident("Me")),
+                    field: "__winforms_load".to_string(),
+                    null_safe: false,
+                });
+                let handler = vb_addressof_callable_ref(
+                    &format!("Me.{method_name}"),
+                    Some(Expression::ident("Me")),
+                    method_name.clone(),
+                    params.clone(),
+                );
+                new_stmts.push(Statement::new(
+                    vybe_compiler::primitives::events::add_handler_stmt(
+                        target,
+                        String::new(),
+                        handler,
+                    ),
+                ));
+                continue;
+            }
             let control = match control.kind {
                 ExprKind::Ident(name)
                     if !name.eq_ignore_ascii_case("me")

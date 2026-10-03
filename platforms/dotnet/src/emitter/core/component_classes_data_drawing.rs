@@ -4,6 +4,14 @@ use vybe_compiler::component_classes::{ClassType, ConstructorDef, MethodBody, Me
 pub(super) fn exports() -> Vec<DotnetClassExport> {
     vec![
         DotnetClassExport::new(
+            "dotnet.System.Drawing",
+            ClassType::new("ColorTranslator").with_method(MethodDef::static_method(
+                "FromHtml",
+                1,
+                MethodBody::Common("dotnet.color_from_html".into()),
+            )),
+        ),
+        DotnetClassExport::new(
             "dotnet.System.Data",
             ClassType::new("DataTable")
                 .with_constructor(
@@ -106,7 +114,7 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 .with_method(MethodDef::new(
                     "ResetBindings",
                     0,
-                    MethodBody::Common("dotnet.winforms_noop".into()),
+                    MethodBody::Common("dotnet.bindingsource_reset_bindings".into()),
                 )),
         ),
         DotnetClassExport::new(

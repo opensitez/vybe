@@ -224,6 +224,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
             // supplies the receiver as a leading argument, unlike prototype
             // dispatch (JS/Dart) or bind-on-access (Python).
             method_receiver: Some(vybe_ast::MethodReceiver::CallSite),
+            method_bindings_live: Some(false),
             // Every callable declares a leading receiver parameter, not only
             // methods — ECMA-262 §10.2.1 `[[Call]](thisArgument,
             // argumentsList)`. A plain `f()` passes `undefined` (§10.2.1.1).

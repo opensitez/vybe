@@ -25,8 +25,8 @@ use std::sync::Arc;
 use vybe_compiler::primitives::class_slots::{self, Dest, ObjSource, ValueSource};
 use vybe_compiler::primitives::collections;
 use vybe_compiler::primitives::ops;
-use vybe_runtime::opcode::Op;
 use vybe_runtime::opcode::heaptype::HT_EXTERN;
+use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
 
 use super::object_fields::field_slot;
@@ -53,6 +53,10 @@ fn reserve_slot(chunk: &mut Chunk) -> u16 {
 
 fn struct_get(chunk: &mut Chunk, object_local: u16, key: &str, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, object_local, line);
+    class_slots::emit_class_get(chunk, ObjSource::Stack, &field_slot(key), Dest::Stack, line);
+}
+
+pub fn emit_get_field(chunk: &mut Chunk, key: &str, line: u32) {
     class_slots::emit_class_get(chunk, ObjSource::Stack, &field_slot(key), Dest::Stack, line);
 }
 
@@ -110,6 +114,18 @@ pub fn emit_bindingsource_new(chunks: &mut [Chunk], current: usize, _argc: u8, l
     );
     set_field(chunk, FILTER_KEY, |c, l| c.emit_string_const("", l), line);
     set_field(chunk, SORT_KEY, |c, l| c.emit_string_const("", l), line);
+    set_field(
+        chunk,
+        "__bindings",
+        |c, l| c.emit_array_new_fixed(0, 0, l),
+        line,
+    );
+    set_field(
+        chunk,
+        "__grids",
+        |c, l| c.emit_array_new_fixed(0, 0, l),
+        line,
+    );
 }
 
 /// The list the cursor walks, from whatever the data source is.
@@ -224,7 +240,8 @@ pub fn emit_bindingsource_move(chunks: &mut [Chunk], current: usize, mode: Move,
     chunk.emit_end(line);
 
     struct_set_from_local(chunk, bs_slot, POSITION_KEY, pos_slot, line);
-    chunk.emit_ref_null(HT_EXTERN, line);
+    super::control_binding_adapter::refresh(chunks, current, bs_slot, line);
+    chunks[current].emit_ref_null(HT_EXTERN, line);
 }
 
 /// `bs.Count` — how many rows the source has.
@@ -239,6 +256,72 @@ pub fn emit_bindingsource_count(chunks: &mut [Chunk], current: usize, line: u32)
     };
     emit_rows(chunks, current, bs_slot, line);
     collections::emit_len(chunks, current, line);
+}
+
+/// Stack: [source, data] -> [null].
+pub fn emit_bindingsource_set_data_source(chunks: &mut [Chunk], current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    let data = reserve_slot(chunk);
+    chunk.emit_op_u16(Op::LOCAL_SET, data, line);
+    let source = reserve_slot(chunk);
+    chunk.emit_op_u16(Op::LOCAL_SET, source, line);
+    struct_set_from_local(chunk, source, DATA_SOURCE_KEY, data, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, source, line);
+    chunk.emit_f64_const(0.0, line);
+    class_slots::emit_class_set(
+        chunk,
+        ObjSource::Stack,
+        &field_slot(POSITION_KEY),
+        ValueSource::Stack,
+        line,
+    );
+    super::control_binding_adapter::refresh(chunks, current, source, line);
+    chunks[current].emit_ref_null(HT_EXTERN, line);
+}
+
+/// Stack: [source, position] -> [null].
+pub fn emit_bindingsource_set_position(chunks: &mut [Chunk], current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    let position = reserve_slot(chunk);
+    chunk.emit_op_u16(Op::LOCAL_SET, position, line);
+    let source = reserve_slot(chunk);
+    chunk.emit_op_u16(Op::LOCAL_SET, source, line);
+    let count = emit_count_to_slot(chunks, current, source, line);
+    let chunk = &mut chunks[current];
+    chunk.emit_op_u16(Op::LOCAL_GET, position, line);
+    chunk.emit_f64_const(0.0, line);
+    ops::emit_dyn_lt(chunk, line);
+    chunk.emit_if(line);
+    chunk.emit_f64_const(0.0, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, position, line);
+    chunk.emit_end(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, position, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, count, line);
+    ops::emit_dyn_ge(chunk, line);
+    chunk.emit_if(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, count, line);
+    chunk.emit_f64_const(-1.0, line);
+    ops::emit_dyn_add(chunk, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, position, line);
+    chunk.emit_end(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, position, line);
+    chunk.emit_f64_const(0.0, line);
+    ops::emit_dyn_lt(chunk, line);
+    chunk.emit_if(line);
+    chunk.emit_f64_const(0.0, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, position, line);
+    chunk.emit_end(line);
+    struct_set_from_local(chunk, source, POSITION_KEY, position, line);
+    super::control_binding_adapter::refresh(chunks, current, source, line);
+    chunks[current].emit_ref_null(HT_EXTERN, line);
+}
+
+/// Stack: [source] -> [null].
+pub fn emit_bindingsource_reset_bindings(chunks: &mut [Chunk], current: usize, line: u32) {
+    let source = reserve_slot(&mut chunks[current]);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, source, line);
+    super::control_binding_adapter::refresh(chunks, current, source, line);
+    chunks[current].emit_ref_null(HT_EXTERN, line);
 }
 
 /// `bs.Current` — the row at the cursor, or `null` when the source is empty.

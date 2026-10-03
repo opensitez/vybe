@@ -17,10 +17,18 @@
 //! once VB/C# routing is fully migrated).
 
 use std::collections::BTreeMap;
-use std::sync::Once;
+use std::sync::{Once, OnceLock};
 
 use vybe_compiler::component_classes::{ConstructorTarget, MethodBody};
 use vybe_compiler::primitives::namespaces::{self, NamespaceNode, Subtree};
+use crate::winforms::EventType;
+
+/// Inferred member type from the same registered tree used by the compiler.
+pub fn instance_member_return_type(class_name: &str, member: &str) -> Option<String> {
+    static SCOPE: OnceLock<[String; 1]> = OnceLock::new();
+    let scope = SCOPE.get_or_init(|| ["dotnet".to_string()]);
+    namespaces::lookup_type_member_return(scope, class_name, member, namespaces::FOLD_ASCII)
+}
 
 /// Register every component class descriptor as a `Type` node at
 /// `<interface path>.<class name>` — statics become `CommonEmit`/host-fn
@@ -158,7 +166,7 @@ pub fn register_namespace_tree() {
             // why a user-declared `Class Point` works and why the platform
             // `Point.X` role capturing it looked like object aliasing.
             for p in inherited_properties(&class.name) {
-                if !is_control {
+                if !is_control && class.name != "Font" {
                     continue;
                 }
                 let node = namespaces::property(
@@ -175,6 +183,9 @@ pub fn register_namespace_tree() {
                 // `null` to the expression machinery, so `btn.Text.Length` or
                 // `if (c.Enabled)` had nothing to work on.
                 if is_control {
+                    if p.name == "Font" {
+                        property_returns.insert(p.name.to_string(), "Font".to_string());
+                    }
                     if let Some(value_type) = vybe_compiler::primitives::gui::property_value_type(
                         match gui_property_role(&p.name) {
                             "" => p.name.to_ascii_lowercase(),
@@ -184,11 +195,40 @@ pub fn register_namespace_tree() {
                     ) {
                         property_returns.insert(p.name.to_string(), value_type.to_string());
                     }
+                } else if class.name == "Font" {
+                    let value_type = match p.name.as_str() {
+                        "Name" => "string",
+                        "Size" => "Single",
+                        "Bold" | "Italic" => "Boolean",
+                        _ => continue,
+                    };
+                    property_returns.insert(p.name.to_string(), value_type.to_string());
                 }
                 methods
                     .entry(p.name.to_string())
                     .or_insert_with(|| node.clone());
                 statics.entry(p.name.to_string()).or_insert(node);
+            }
+            if class_is_control {
+                for event in EventType::DOM_EVENT_NAMES {
+                    if let Some(dom_event) = EventType::from_name(event)
+                        .and_then(|kind| kind.dom_event_for_control(&class.name))
+                    {
+                        let node = namespaces::property(
+                            None,
+                            Some(NamespaceNode::CommonEmit(format!(
+                                "{}on{}",
+                                vybe_compiler::primitives::gui::PROP_SET_EMIT,
+                                dom_event
+                            ))),
+                        );
+                        methods.entry((*event).to_string()).or_insert_with(|| node.clone());
+                        // C# currently lowers `control.Event += handler` to a
+                        // lowercase AddHandler name while keeping exact-case
+                        // tree lookup. Register both spellings of one role.
+                        methods.entry(event.to_ascii_lowercase()).or_insert(node);
+                    }
+                }
             }
             for (name, node) in shared_emit_accessors(&class.name) {
                 methods.insert(name, node);
@@ -224,6 +264,18 @@ pub fn register_namespace_tree() {
                 statics.insert(
                     "MaxValue".into(),
                     NamespaceNode::CommonEmit("dotnet.datetime_max_value".into()),
+                );
+            }
+            if class_is_control && class.name.eq_ignore_ascii_case("MonthCalendar") {
+                statics.insert(
+                    "__gui_init".into(),
+                    NamespaceNode::CommonEmit("dotnet.monthcalendar_init".into()),
+                );
+            }
+            if class_is_control && class.name.eq_ignore_ascii_case("SplitContainer") {
+                statics.insert(
+                    "__gui_init".into(),
+                    NamespaceNode::CommonEmit("dotnet.split_init".into()),
                 );
             }
             // Declare return types with the class, so the compiler reads them
@@ -274,7 +326,12 @@ pub fn register_namespace_tree() {
             // failure `self_member_returns` was written for on `Items`.
             if class_is_control {
                 // `Control.Controls` — the declared property name.
-                member_returns.insert("Controls".to_string(), "Control".to_string());
+                member_returns.insert("Controls".to_string(), if class.name == "TableLayoutPanel" { "TableLayoutPanel" } else { "Control" }.to_string());
+                member_returns.insert("DataBindings".to_string(), "ControlBindingsCollection".to_string());
+            }
+            if class.name == "TableLayoutPanel" {
+                member_returns.insert("ColumnStyles".to_string(), "TableLayoutStyleCollection".to_string());
+                member_returns.insert("RowStyles".to_string(), "TableLayoutStyleCollection".to_string());
             }
 
             // The descriptor's backing constructor, as a tree node. dotnet
@@ -377,6 +434,28 @@ fn register_bcl_constants() {
     // main loop builds `System`/`Drawing`/`Color` that way, and a lowercase
     // path builds a SECOND branch that resolves only by folding.
     const ENUMS: &[(&[&str], &[(&str, i32)])] = &[
+        (
+            &["System", "Drawing", "FontStyle"],
+            &[("Regular", 0), ("Bold", 1), ("Italic", 2), ("Underline", 4), ("Strikeout", 8)],
+        ),
+        (
+            &["System", "Windows", "Forms", "SizeType"],
+            &[("AutoSize", 0), ("Absolute", 1), ("Percent", 2)],
+        ),
+        (
+            &["System", "Windows", "Forms", "DockStyle"],
+            &[("None", 0), ("Top", 1), ("Bottom", 2), ("Left", 3), ("Right", 4), ("Fill", 5)],
+        ),
+        (
+            &["System", "Drawing", "ContentAlignment"],
+            &[("TopLeft", 1), ("TopCenter", 2), ("TopRight", 4),
+              ("MiddleLeft", 16), ("MiddleCenter", 32), ("MiddleRight", 64),
+              ("BottomLeft", 256), ("BottomCenter", 512), ("BottomRight", 1024)],
+        ),
+        (
+            &["System", "Windows", "Forms", "BorderStyle"],
+            &[("None", 0), ("FixedSingle", 1), ("Fixed3D", 2)],
+        ),
         (
             &["System", "Runtime", "InteropServices", "GCHandleType"],
             &[
@@ -753,9 +832,108 @@ fn accessor_node(
     class_name: &str,
 ) -> NamespaceNode {
     let setting = target.name == vybe_compiler::primitives::gui::HOST_FN_SET_PROPERTY;
+    if class_name == "Font" && !setting {
+        return NamespaceNode::CommonEmit(format!("dotnet.font_{}_get", prop.to_ascii_lowercase()));
+    }
     if is_control
         && (setting || target.name == vybe_compiler::primitives::gui::HOST_FN_GET_PROPERTY)
     {
+        if class_name.eq_ignore_ascii_case("Form") && prop.eq_ignore_ascii_case("Text") {
+            return NamespaceNode::CommonEmit(if setting {
+                "gui.prop_set.windowtitle"
+            } else {
+                "dotnet.winforms_form_text_get"
+            }.into());
+        }
+        if class_name.eq_ignore_ascii_case("Form") && prop.eq_ignore_ascii_case("ClientSize") {
+            return NamespaceNode::CommonEmit(format!(
+                "dotnet.winforms_form_clientsize_{}",
+                if setting { "set" } else { "get" }
+            ));
+        }
+        if matches!(class_name.to_ascii_lowercase().as_str(), "checkbox" | "radiobutton") {
+            let member = match prop.to_ascii_lowercase().as_str() {
+                "text" => Some("text"),
+                "checked" | "checkstate" => Some("checked"),
+                "enabled" => Some("enabled"),
+                _ => None,
+            };
+            if let Some(member) = member {
+                return NamespaceNode::CommonEmit(format!(
+                    "dotnet.checkable_{member}_{}",
+                    if setting { "set" } else { "get" }
+                ));
+            }
+        }
+        if class_name.eq_ignore_ascii_case("GroupBox") && prop.eq_ignore_ascii_case("Text") {
+            return NamespaceNode::CommonEmit(format!(
+                "dotnet.groupbox_text_{}",
+                if setting { "set" } else { "get" }
+            ));
+        }
+        if class_name.eq_ignore_ascii_case("WebBrowser") {
+            let html_attribute = match prop.to_ascii_lowercase().as_str() {
+                "url" => Some("src"),
+                "documenttext" => Some("srcdoc"),
+                _ => None,
+            };
+            if let Some(attribute) = html_attribute {
+                let prefix = if setting {
+                    vybe_compiler::primitives::gui::PROP_SET_EMIT
+                } else {
+                    vybe_compiler::primitives::gui::PROP_GET_EMIT
+                };
+                return NamespaceNode::CommonEmit(format!("{prefix}{attribute}"));
+            }
+        }
+        if class_name.eq_ignore_ascii_case("PictureBox") {
+            let property = match prop.to_ascii_lowercase().as_str() {
+                "imagelocation" => Some("image_location"),
+                "sizemode" => Some("size_mode"),
+                _ => None,
+            };
+            if let Some(property) = property {
+                return NamespaceNode::CommonEmit(format!(
+                    "dotnet.picturebox_{property}_{}",
+                    if setting { "set" } else { "get" }
+                ));
+            }
+        }
+        if matches!(prop.to_ascii_lowercase().as_str(), "backcolor" | "forecolor") {
+            return NamespaceNode::CommonEmit(format!(
+                "dotnet.control_{}_{}",
+                prop.to_ascii_lowercase(),
+                if setting { "set" } else { "get" }
+            ));
+        }
+        if prop.eq_ignore_ascii_case("BorderStyle") {
+            return NamespaceNode::CommonEmit(format!(
+                "dotnet.control_borderstyle_{}",
+                if setting { "set" } else { "get" }
+            ));
+        }
+        if prop.eq_ignore_ascii_case("Font") {
+            return NamespaceNode::CommonEmit(format!(
+                "dotnet.control_font_{}",
+                if setting { "set" } else { "get" }
+            ));
+        }
+        if setting && prop.eq_ignore_ascii_case("Margin") {
+            return NamespaceNode::CommonEmit("dotnet.control_margin_set".into());
+        }
+        if setting && prop.eq_ignore_ascii_case("Dock") {
+            return NamespaceNode::CommonEmit("dotnet.control_dock_set".into());
+        }
+        if setting && prop.eq_ignore_ascii_case("TextAlign") {
+            return NamespaceNode::CommonEmit("dotnet.control_textalign_set".into());
+        }
+        if prop.eq_ignore_ascii_case("Tag") {
+            return NamespaceNode::CommonEmit(if setting {
+                "dotnet.control_tag_set"
+            } else {
+                "dotnet.control_tag_get"
+            }.into());
+        }
         let role = match gui_property_role(prop) {
             "" => prop.to_ascii_lowercase(),
             // **Most controls INHERIT `Text` and never draw it.** A designer
@@ -775,6 +953,13 @@ fn accessor_node(
             // text child of a `<select>` is invalid markup that would sit
             // among the options.
             "text" if text_is_unpainted(class_name) => "unpaintedtext".to_string(),
+            "text" if html_element_for_control(class_name).is_some_and(|element| {
+                matches!(element.split([';', ':']).next(), Some("input" | "textarea"))
+            }) => "value".to_string(),
+            "text" if html_element_for_control(class_name).is_some_and(|element| {
+                let tag = element.split([';', ':']).next().unwrap_or(element);
+                !matches!(tag, "input" | "textarea" | "select")
+            }) => "textcontent".to_string(),
             r => r.to_string(),
         };
         let prefix = if setting {
@@ -816,8 +1001,8 @@ fn html_element_for_control(class_name: &str) -> Option<&'static str> {
         // it takes `document.body` instead.
         "form" => "body",
         "button" => "button",
-        "checkbox" => "input:checkbox",
-        "radiobutton" => "input:radio",
+        "checkbox" => "label;display:inline-flex;align-items:center;gap:4px",
+        "radiobutton" => "label;display:inline-flex;align-items:center;gap:4px",
         "textbox" => "input:text",
         "maskedtextbox" => "input:text",
         "richtextbox" => "textarea",
@@ -869,9 +1054,9 @@ fn html_element_for_control(class_name: &str) -> Option<&'static str> {
         // HTML has these outright, and they carry real semantics a `<div>`
         // cannot: a range input is keyboard-operable and `<progress>` is
         // announced as a progress indicator.
-        "progressbar" => "progress",
+        "progressbar" => "progress;@value=0;@max=100",
         "trackbar" => "input:range",
-        "numericupdown" => "input:number",
+        "numericupdown" => "input:number;@min=0;@max=100;@step=1;@value=0",
         // A PictureBox IS a drawing surface, and HTML spells that `<canvas>`.
         // `classes/media.rs` says the same thing from the other side: that
         // surface "is exactly what the `widgets::Canvas` widget provides".
@@ -976,7 +1161,7 @@ fn html_element_for_control(class_name: &str) -> Option<&'static str> {
         "tabcontrol" => {
             "div;display:flex;flex-direction:column;border:1px solid #c8c8c8;background-color:#ffffff"
         }
-        "tabpage" => "section",
+        "tabpage" => "section;position:relative;width:100%;height:100%;box-sizing:border-box",
         // A Timer is a `components` member like the providers below: present and
         // scriptable, never painted.
         "timer" => "div;display:none",
@@ -1068,10 +1253,11 @@ fn html_element_for_control(class_name: &str) -> Option<&'static str> {
         // and `Items` append into. The other view modes are a `display`
         // difference over the same items, not a different control.
         "listview" => {
-            "table;border-collapse:collapse;border:1px solid #c8c8c8;background-color:#ffffff"
+            "table;display:block;border-collapse:collapse;border:1px solid #c8c8c8;background-color:#ffffff"
         }
-        // A month grid — the chrome is declared in `default_markup_for_control`.
-        "monthcalendar" => "div;border:1px solid #c8c8c8;background-color:#ffffff",
+        // A month grid. Static chrome is declared below; the .NET adapter
+        // supplies the current month and handles its delegated click events.
+        "monthcalendar" => "div;border:1px solid #c8c8c8;background-color:#ffffff;overflow:hidden",
 
         // ── Non-visual components and the dialogs ──────────────────────────
         // A Timer, ToolTip or file dialog is a member of the form, not a box
@@ -1189,16 +1375,48 @@ fn control_ctor_spec(
     class_name: &str,
     element: &str,
 ) -> vybe_compiler::primitives::namespaces::CtorSpec {
+    // WinForms Size describes the outside of a control. HTML's content-box
+    // default adds borders and padding after that size, making adjacent
+    // designer coordinates overlap. Keep the native element, but size its
+    // border box and remove browser margins that WinForms never requested.
+    let control_element = if class_name.eq_ignore_ascii_case("Form") {
+        format!("{element};font-family:Segoe UI,Arial,sans-serif;font-size:12px")
+    } else {
+        let base = "box-sizing:border-box;margin:0;font-family:Segoe UI,Arial,sans-serif;font-size:12px";
+        let menu = if element.starts_with("menu") { ";padding:0" } else { "" };
+        format!("{element};{base}{menu}{}", winforms_control_css(class_name))
+    };
     vybe_compiler::primitives::namespaces::CtorSpec {
         params: Vec::new(),
         fields: Vec::new(),
         field_gui: Vec::new(),
         ancestry: control_ancestry(class_name),
-        control_fn: Some(element.to_string()),
-        inner_html: default_markup_for_control(class_name).map(str::to_string),
+        control_fn: Some(control_element),
+        inner_html: if class_name.eq_ignore_ascii_case("MonthCalendar") {
+            Some(month_calendar_markup())
+        } else {
+            default_markup_for_control(class_name).map(str::to_string)
+        },
         // A WinForms control IS its element at construction; nothing to inflate.
         nest_coerce: None,
         value_equality: false,
+    }
+}
+
+fn winforms_control_css(class_name: &str) -> &'static str {
+    match class_name.to_ascii_lowercase().as_str() {
+        "button" => ";background-color:#e1e1e1;color:inherit;border:1px solid #adadad;border-radius:0;padding:2px 6px",
+        "textbox" | "maskedtextbox" | "richtextbox" | "combobox" | "listbox" | "checkedlistbox" => ";background-color:#fff;color:inherit;border:1px solid #7a7a7a;border-radius:0;padding:2px 3px",
+        "checkbox" | "radiobutton" => ";color:inherit;cursor:default",
+        "groupbox" => ";border:1px solid #bdbdbd;padding:8px 6px 6px;min-width:0",
+        "panel" | "flowlayoutpanel" | "tablelayoutpanel" | "splitcontainer" | "tabcontrol" | "tabpage" => ";background-color:#f0f0f0",
+        "datagridview" | "datagrid" | "listview" | "propertygrid" | "treeview" => ";overflow:auto;background-color:#fff;color:inherit",
+        "menustrip" | "toolstrip" | "bindingnavigator" => ";background-color:#f0f0f0;border:1px solid #d0d0d0;color:inherit;overflow:hidden",
+        "statusstrip" => ";background-color:#f0f0f0;border-top:1px solid #d0d0d0;color:inherit",
+        "progressbar" => ";border:1px solid #a0a0a0;border-radius:0",
+        "webbrowser" => ";border:1px solid #bdbdbd;background-color:#fff",
+        "linklabel" => ";color:#0066cc;text-decoration:underline;cursor:pointer",
+        _ => "",
     }
 }
 
@@ -1235,13 +1453,23 @@ fn control_ctor_spec(
 /// the markup below is built with it.
 macro_rules! toolstrip_button {
     () => {
-        "min-width:23px;height:22px;padding:0 4px;border:none;\
-         border-radius:0;background-color:transparent"
+        "min-width:23px;height:100%;box-sizing:border-box;padding:0 4px;border:none;\
+         border-radius:0;background-color:transparent;font-size:12px"
     };
 }
 
 fn default_markup_for_control(class_name: &str) -> Option<&'static str> {
     Some(match class_name.to_ascii_lowercase().as_str() {
+        "checkbox" => "<input type='checkbox' style='margin:0;flex:none'><span></span>",
+        "radiobutton" => "<input type='radio' style='margin:0;flex:none'><span></span>",
+        "groupbox" => "<legend style='padding:0 3px'></legend>",
+        "datagridview" | "datagrid" => concat!(
+            "<thead style='background:#f0f0f0'><tr>",
+            "<th scope='col' style='width:24px;height:23px;box-sizing:border-box;",
+            "border:1px solid #c8c8c8;padding:0'></th>",
+            "</tr></thead><tbody></tbody>"
+        ),
+        "listview" => "<thead style='background:#f0f0f0'><tr></tr></thead><tbody></tbody>",
         // The standard items, in WinForms' order: move-first, move-previous,
         // the position box reading "N of M", move-next, move-last.
         //
@@ -1261,7 +1489,7 @@ fn default_markup_for_control(class_name: &str) -> Option<&'static str> {
             toolstrip_button!(),
             "'>&#9664;</button>",
             "<input type='text' class='vybe-nav-position' value='0 of 0'",
-            " style='width:64px;text-align:center;margin:0 4px;height:21px;border-radius:0",
+            " style='width:64px;text-align:center;margin:0 4px;height:100%;box-sizing:border-box;font-size:12px;border-radius:0",
             ";border:1px solid #7a7a7a;background-color:#ffffff'>",
             "<button type='button' class='vybe-nav vybe-nav-next' style='",
             toolstrip_button!(),
@@ -1270,20 +1498,40 @@ fn default_markup_for_control(class_name: &str) -> Option<&'static str> {
             toolstrip_button!(),
             "'>&#9654;|</button>"
         ),
+        "tabcontrol" => concat!(
+            "<div class='vybe-tabs' role='tablist' style='display:flex;align-items:end;",
+            "min-height:25px;gap:2px;padding:2px 3px 0;border-bottom:1px solid #b5b5b5'></div>",
+            "<div class='vybe-tab-pages' style='flex:1;min-height:0;overflow:auto'></div>"
+        ),
         // Two panes and the splitter between them. `Panel1`/`Panel2` resolve to
         // these, so they must exist before any code adds a control to one.
         "splitcontainer" => concat!(
-            "<div class='vybe-split-panel1' style='flex:1 1 50%;overflow:auto'></div>",
-            "<div class='vybe-splitter' style='flex:0 0 4px;background-color:#c8c8c8;cursor:col-resize'></div>",
-            "<div class='vybe-split-panel2' style='flex:1 1 50%;overflow:auto'></div>"
+            "<div class='vybe-split-panel1' style='position:relative;flex:1 1 50%;overflow:auto'></div>",
+            "<div class='vybe-splitter' data-splitter='true' style='flex:0 0 4px;background-color:#c8c8c8;cursor:col-resize'></div>",
+            "<div class='vybe-split-panel2' style='position:relative;flex:1 1 50%;overflow:auto'></div>"
         ),
-        // ⛔ No `monthcalendar` arm. A calendar has no static spelling: the
-        // month it opens on is the date the program RUNS. That makes it
-        // BEHAVIOUR, and behaviour belongs to `platforms/web`, which owns the
-        // relationship with the browser — this crate declares only what the
-        // control IS.
+        // MonthCalendar has its own generated static markup; its dynamic date
+        // state is initialized by the registered .NET control adapter.
         _ => return None,
     })
+}
+
+fn month_calendar_markup() -> String {
+    let mut html = String::from(concat!(
+        "<div class='vybe-cal-header' style='display:flex;align-items:center;height:22px;background:#e9edf2'>",
+        "<button type='button' class='vybe-cal-prev' data-action='prev' style='width:24px;height:20px;border:0;background:transparent'>&#8249;</button>",
+        "<span class='vybe-cal-title' style='flex:1;text-align:center;font-weight:600'></span>",
+        "<button type='button' class='vybe-cal-next' data-action='next' style='width:24px;height:20px;border:0;background:transparent'>&#8250;</button>",
+        "</div>",
+        "<div class='vybe-cal-weekdays' style='display:grid;grid-template-columns:repeat(7,1fr);text-align:center;font-size:10px;height:16px'>",
+        "<span>Su</span><span>Mo</span><span>Tu</span><span>We</span><span>Th</span><span>Fr</span><span>Sa</span></div>",
+        "<div class='vybe-cal-days' style='display:grid;grid-template-columns:repeat(7,1fr);grid-template-rows:repeat(6,1fr);height:calc(100% - 38px)'>"
+    ));
+    for _ in 0..42 {
+        html.push_str("<button type='button' class='vybe-cal-day' style='border:0;background:transparent;padding:0;font-size:11px;min-width:0'></button>");
+    }
+    html.push_str("</div>");
+    html
 }
 
 /// Does this class DESCEND FROM `Control` — i.e. is it a control at all?
@@ -1396,6 +1644,19 @@ fn shared_emit_accessors(class_name: &str) -> Vec<(String, NamespaceNode)> {
     let rw = |g: &str, s: &str| namespaces::property(Some(emit(g)), Some(emit(s)));
     let ro = |g: &str| namespaces::property(Some(emit(g)), None);
     let entries: &[(&str, NamespaceNode)] = &match class_name.to_ascii_lowercase().as_str() {
+        "tablelayoutpanel" => vec![
+            ("ColumnStyles", ro("dotnet.table_column_styles")),
+            ("RowStyles", ro("dotnet.table_row_styles")),
+            ("Add", namespaces::overloads(vec![
+                (2, emit(vybe_compiler::primitives::gui::APPEND_CHILD_EMIT)),
+                (4, emit(vybe_compiler::primitives::gui::APPEND_CHILD_AT_EMIT)),
+            ])),
+            ("Clear", namespaces::overloads(vec![(1, emit("dotnet.table_clear_controls"))])),
+        ],
+        "tablelayoutstylecollection" => vec![
+            ("Add", namespaces::overloads(vec![(2, emit("dotnet.table_style_add"))])),
+            ("Count", ro("dotnet.table_style_count")),
+        ],
         "stringbuilder" => vec![
             // The INDEXER, as the data it always was. `sb[i]` and `sb[i] = c`
             // were a hand-written pair in the shared compiler, selected by a
@@ -1475,7 +1736,13 @@ fn shared_emit_accessors(class_name: &str) -> Vec<(String, NamespaceNode)> {
         "bindingsource" => vec![
             ("Count", ro("dotnet.bindingsource_count")),
             ("Current", ro("dotnet.bindingsource_current")),
+            ("DataSource", rw("dotnet.bindingsource_data_source_get", "dotnet.bindingsource_data_source_set")),
+            ("Position", rw("dotnet.bindingsource_position_get", "dotnet.bindingsource_position_set")),
         ],
+        "bindingnavigator" => vec![(
+            "BindingSource",
+            rw("dotnet.bindingnavigator_source_get", "dotnet.bindingnavigator_source_set"),
+        )],
         // ── Strips and their items ─────────────────────────────────────────
         // `Items` IS the strip: WinForms wraps the contents in a
         // `ToolStripItemCollection`, but the `<menu>` element already is that
@@ -1527,7 +1794,11 @@ fn shared_emit_accessors(class_name: &str) -> Vec<(String, NamespaceNode)> {
         // Aliasing them to one `Add` the way the strips do would make a column
         // and a row the same thing, which is exactly what they are not.
         "datagridview" | "datagrid" => {
-            vec![("Columns", ro("dotnet.self")), ("Rows", ro("dotnet.self"))]
+            vec![
+                ("Columns", ro("dotnet.self")),
+                ("Rows", ro("dotnet.self")),
+                ("DataSource", rw("dotnet.datagrid_source_get", "dotnet.datagrid_source_set")),
+            ]
         }
         // The two collection types the members above read back as. They hold
         // nothing and are never constructed — they exist so that `Add` has
@@ -1551,6 +1822,52 @@ fn shared_emit_accessors(class_name: &str) -> Vec<(String, NamespaceNode)> {
                     .map(|argc| (argc, emit("dotnet.datagrid_add_row")))
                     .collect(),
             ),
+        )],
+        "listbox" | "combobox" => vec![("Items", ro("dotnet.self"))],
+        "progressbar" => vec![
+            ("Value", rw("dotnet.progress_value_get", "dotnet.progress_value_set")),
+            ("Maximum", rw("dotnet.progress_max_get", "dotnet.progress_max_set")),
+        ],
+        "numericupdown" => vec![
+            ("Value", rw("dotnet.numeric_value_get", "dotnet.numeric_value_set")),
+            ("Minimum", rw("dotnet.numeric_min_get", "dotnet.numeric_min_set")),
+            ("Maximum", rw("dotnet.numeric_max_get", "dotnet.numeric_max_set")),
+            ("Increment", rw("dotnet.numeric_step_get", "dotnet.numeric_step_set")),
+        ],
+        "treeview" => vec![("Nodes", ro("dotnet.self"))],
+        "listview" => vec![("Columns", ro("dotnet.self")), ("Items", ro("dotnet.self"))],
+        "tabcontrol" => vec![("TabPages", ro("dotnet.self"))],
+        "tabpage" => vec![("Text", rw("dotnet.tab_page_text_get", "dotnet.tab_page_text_set"))],
+        "tabpagecollection" => vec![(
+            "Add",
+            namespaces::overloads(vec![(2, emit("dotnet.tab_page_add"))]),
+        )],
+        "splitcontainer" => vec![
+            ("Panel1", ro("dotnet.split_panel1")),
+            ("Panel2", ro("dotnet.split_panel2")),
+            ("SplitterDistance", rw("dotnet.split_distance_get", "dotnet.split_distance_set")),
+        ],
+        "treenodecollection" => vec![(
+            "Add",
+            namespaces::overloads(vec![(2, emit("dotnet.tree_add_node"))]),
+        ), ("Count", ro("dotnet.dom_tree_count"))],
+        "listviewcolumnheadercollection" => vec![(
+            "Add",
+            namespaces::overloads(vec![(2, emit("dotnet.datagrid_add_column"))]),
+        ), ("Count", ro("dotnet.dom_list_columns_count"))],
+        "listviewitemcollection" => vec![(
+            "Add",
+            namespaces::overloads(vec![(2, emit("dotnet.listview_add_item"))]),
+        ), ("Count", ro("dotnet.dom_list_items_count"))],
+        "listboxobjectcollection" => vec![
+            ("Count", ro("dotnet.select_items_count")),
+            ("Add", namespaces::overloads(vec![(2, emit(vybe_compiler::primitives::gui::APPEND_ITEM_EMIT))])),
+            ("RemoveAt", namespaces::overloads(vec![(2, emit(vybe_compiler::primitives::gui::REMOVE_ITEM_EMIT))])),
+            ("Clear", namespaces::overloads(vec![(1, emit("dotnet.select_items_clear"))])),
+        ],
+        "controlbindingscollection" => vec![(
+            "Add",
+            namespaces::overloads(vec![(4, emit("dotnet.control_binding_add"))]),
         )],
         _ => vec![],
     };
@@ -1586,18 +1903,21 @@ fn shared_emit_accessors(class_name: &str) -> Vec<(String, NamespaceNode)> {
         // `Controls` and `Add`, in the spelling .NET declares — see the note
         // on the strips above.
         out.push(("Controls".to_string(), ro("dotnet.self")));
+        out.push(("DataBindings".to_string(), ro("dotnet.self")));
         // Arity counts the receiver, as every other node here does — a bare
         // `CommonEmit` leaf is found as a NAME and then not called, which is
         // the fault already recorded on `Hide`.
-        out.push((
-            "Add".to_string(),
-            namespaces::overloads(vec![(
-                2,
-                NamespaceNode::CommonEmit(
-                    vybe_compiler::primitives::gui::APPEND_CHILD_EMIT.to_string(),
-                ),
-            )]),
-        ));
+        if !class_name.eq_ignore_ascii_case("TableLayoutPanel") {
+            out.push((
+                "Add".to_string(),
+                namespaces::overloads(vec![(
+                    2,
+                    NamespaceNode::CommonEmit(
+                        vybe_compiler::primitives::gui::APPEND_CHILD_EMIT.to_string(),
+                    ),
+                )]),
+            ));
+        }
     }
     out
 }
@@ -1638,6 +1958,13 @@ fn self_member_returns(class_name: &str) -> &'static [(&'static str, &'static st
             ("Columns", "DataGridViewColumnCollection"),
             ("Rows", "DataGridViewRowCollection"),
         ],
+        "listbox" | "combobox" => &[("Items", "ListBoxObjectCollection")],
+        "treeview" => &[("Nodes", "TreeNodeCollection")],
+        "listview" => &[(
+            "Columns", "ListViewColumnHeaderCollection"
+        ), ("Items", "ListViewItemCollection")],
+        "tabcontrol" => &[("TabPages", "TabPageCollection")],
+        "splitcontainer" => &[("Panel1", "Panel"), ("Panel2", "Panel")],
         // ── System.Collections.Immutable ──────────────────────────────────
         //
         // A persistent collection's whole surface CHAINS: every "mutation"
@@ -1754,6 +2081,111 @@ mod resolve_gap_tests {
             "guid.parse not registered"
         );
     }
+
+    #[test]
+    fn form_clientsize_uses_window_adapter() {
+        super::register_namespace_tree();
+        let scope = super::dotnet_scope();
+        for (member, getter, setter) in [
+            ("ClientSize", "dotnet.winforms_form_clientsize_get", "dotnet.winforms_form_clientsize_set"),
+            ("Text", "dotnet.winforms_form_text_get", "gui.prop_set.windowtitle"),
+        ] {
+            for spelling in [member.to_string(), member.to_ascii_lowercase()] {
+                let fold = Some(vybe_ast::CaseAlphabet::Ascii);
+                let read = vybe_compiler::primitives::namespaces::lookup_type_property_target(
+                    &scope, "Form", &spelling, fold,
+                );
+                let write = vybe_compiler::primitives::namespaces::lookup_type_property_setter_target(
+                    &scope, "Form", &spelling, fold,
+                );
+                assert!(matches!(read,
+                    Some(vybe_compiler::component_classes::InstancePropertyTarget::Common { emit })
+                        if emit == getter), "Form.{spelling} getter did not resolve");
+                assert!(matches!(write,
+                    Some(vybe_compiler::component_classes::InstancePropertyTarget::Common { emit })
+                        if emit == setter), "Form.{spelling} setter did not resolve");
+            }
+        }
+    }
+
+    #[test]
+    fn winforms_event_roles_are_control_specific() {
+        super::register_namespace_tree();
+        for (control, event, expected) in [
+            ("TextBox", "TextChanged", "input"),
+            ("ComboBox", "SelectedIndexChanged", "change"),
+            ("CheckBox", "CheckedChanged", "change"),
+            ("TrackBar", "ValueChanged", "input"),
+            ("Button", "Click", "click"),
+        ] {
+            let leaf = registered_leaf(&["dotnet", "System", "Windows", "Forms", control, event]);
+            match leaf {
+                Some(NamespaceNode::Property { set: Some(set), .. }) => match *set {
+                    NamespaceNode::CommonEmit(name) => {
+                        assert_eq!(name, format!("gui.prop_set.on{expected}"));
+                    }
+                    other => panic!("{control}.{event}: expected event role, got {other:?}"),
+                },
+                other => panic!("{control}.{event}: expected event property, got {other:?}"),
+            }
+            let target = vybe_compiler::primitives::namespaces::lookup_type_property_setter_target(
+                &super::dotnet_scope(),
+                control,
+                event,
+                None,
+            );
+            assert!(
+                matches!(&target,
+                    Some(vybe_compiler::component_classes::InstancePropertyTarget::Common { emit })
+                    if emit == &format!("gui.prop_set.on{expected}")),
+                "{control}.{event}: resolver returned {target:?}"
+            );
+            let csharp_lowered = vybe_compiler::primitives::namespaces::lookup_type_property_setter_target(
+                &super::dotnet_scope(),
+                control,
+                &event.to_ascii_lowercase(),
+                None,
+            );
+            assert!(
+                matches!(&csharp_lowered,
+                    Some(vybe_compiler::component_classes::InstancePropertyTarget::Common { emit })
+                    if emit == &format!("gui.prop_set.on{expected}")),
+                "{control}.{}: resolver returned {csharp_lowered:?}", event.to_ascii_lowercase()
+            );
+        }
+    }
+
+    #[test]
+    fn winforms_binding_members_resolve_through_dotnet_tree() {
+        super::register_namespace_tree();
+        let scope = super::dotnet_scope();
+        for (class, property, get, set) in [
+            ("TextBox", "DataBindings", "dotnet.self", None),
+            ("DataGridView", "DataSource", "dotnet.datagrid_source_get", Some("dotnet.datagrid_source_set")),
+            ("BindingSource", "DataSource", "dotnet.bindingsource_data_source_get", Some("dotnet.bindingsource_data_source_set")),
+        ] {
+            let read = vybe_compiler::primitives::namespaces::lookup_type_property_target(
+                &scope, class, property, None,
+            );
+            assert!(matches!(&read,
+                Some(vybe_compiler::component_classes::InstancePropertyTarget::Common { emit })
+                    if emit == get), "{class}.{property} getter: {read:?}");
+            if let Some(set) = set {
+                let write = vybe_compiler::primitives::namespaces::lookup_type_property_setter_target(
+                    &scope, class, property, None,
+                );
+                assert!(matches!(&write,
+                    Some(vybe_compiler::component_classes::InstancePropertyTarget::Common { emit })
+                        if emit == set), "{class}.{property} setter: {write:?}");
+            }
+        }
+        let add = vybe_compiler::primitives::namespaces::lookup_type_instance_target(
+            &scope, "ControlBindingsCollection", "Add", 4, None,
+        );
+        assert!(matches!(&add,
+            Some(vybe_compiler::component_classes::InstanceMethodTarget::Common { emit, .. })
+                if emit == "dotnet.control_binding_add"), "DataBindings.Add: {add:?}");
+    }
 }
 
 #[cfg(test)]
@@ -1772,6 +2204,7 @@ mod ctor_parity_tests {
             let got = vybe_compiler::primitives::namespaces::lookup_type_ctor_target(
                 &scope,
                 &export.class.name,
+                None,
             );
             if got.as_ref() != Some(&want) {
                 gaps.push(format!(
@@ -1809,6 +2242,7 @@ mod member_parity_tests {
                     &export.class.name,
                     &m.name,
                     m.arity(),
+                    None,
                 );
                 if want.is_some() && got != want {
                     gaps.push(format!(
@@ -1852,12 +2286,14 @@ mod property_parity_tests {
                             &scope,
                             &export.class.name,
                             &p.name,
+                            None,
                         )
                     } else {
                         vybe_compiler::primitives::namespaces::lookup_type_property_target(
                             &scope,
                             &export.class.name,
                             &p.name,
+                            None,
                         )
                     };
                     if want.is_some() && got != want {

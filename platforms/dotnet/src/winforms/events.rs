@@ -135,6 +135,59 @@ pub enum EventType {
 }
 
 impl EventType {
+    pub const DOM_EVENT_NAMES: &'static [&'static str] = &[
+        "Click", "DoubleClick", "DblClick", "MouseClick", "MouseDoubleClick",
+        "MouseDown", "MouseUp", "MouseMove", "MouseEnter", "MouseLeave", "MouseWheel",
+        "KeyDown", "KeyUp", "KeyPress", "GotFocus", "LostFocus", "Enter", "Leave",
+        "TextChanged", "SelectedIndexChanged", "SelectedValueChanged", "SelectionChanged",
+        "CheckedChanged", "ValueChanged", "Scroll", "LinkClicked",
+    ];
+
+    pub fn dom_event_for_control(&self, control: &str) -> Option<&'static str> {
+        let control = control.to_ascii_lowercase();
+        match self {
+            EventType::Click | EventType::MouseClick => Some("click"),
+            EventType::LinkClicked if control == "linklabel" => Some("click"),
+            EventType::DoubleClick | EventType::DblClick | EventType::MouseDoubleClick => Some("dblclick"),
+            EventType::MouseDown => Some("mousedown"),
+            EventType::MouseUp => Some("mouseup"),
+            EventType::MouseMove => Some("mousemove"),
+            EventType::MouseEnter => Some("mouseenter"),
+            EventType::MouseLeave => Some("mouseleave"),
+            EventType::MouseWheel => Some("wheel"),
+            EventType::KeyDown => Some("keydown"),
+            EventType::KeyUp => Some("keyup"),
+            EventType::KeyPress => Some("keypress"),
+            EventType::GotFocus | EventType::Enter => Some("focusin"),
+            EventType::LostFocus | EventType::Leave => Some("focusout"),
+            EventType::TextChanged => match control.as_str() {
+                "textbox" | "maskedtextbox" | "richtextbox" => Some("input"),
+                "combobox" | "listbox" => Some("change"),
+                _ => None,
+            },
+            EventType::SelectedIndexChanged
+            | EventType::SelectedValueChanged
+            | EventType::SelectionChanged => match control.as_str() {
+                "combobox" | "listbox" | "checkedlistbox" | "tabcontrol" => Some("change"),
+                _ => None,
+            },
+            EventType::CheckedChanged => match control.as_str() {
+                "checkbox" | "radiobutton" => Some("change"),
+                _ => None,
+            },
+            EventType::ValueChanged => match control.as_str() {
+                "trackbar" | "numericupdown" => Some("input"),
+                "datetimepicker" | "monthcalendar" | "hscrollbar" | "vscrollbar" => Some("change"),
+                _ => None,
+            },
+            EventType::Scroll => match control.as_str() {
+                "trackbar" | "hscrollbar" | "vscrollbar" => Some("input"),
+                _ => Some("scroll"),
+            },
+            _ => None,
+        }
+    }
+
     pub fn as_str(&self) -> &str {
         match self {
             EventType::Click => "Click",

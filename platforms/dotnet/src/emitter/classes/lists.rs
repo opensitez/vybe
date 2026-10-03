@@ -86,6 +86,22 @@ pub fn classes() -> &'static [DotnetClass] {
             widget_host_fn: None,
         },
         DotnetClass {
+            name: "ListBoxObjectCollection",
+            parent: None,
+            properties: &[],
+            methods: &[],
+            ctor_arity: 0,
+            widget_host_fn: None,
+        },
+        DotnetClass {
+            name: "ControlBindingsCollection",
+            parent: None,
+            properties: &[],
+            methods: &[],
+            ctor_arity: 0,
+            widget_host_fn: None,
+        },
+        DotnetClass {
             name: "ListView",
             parent: Some("Control"),
             properties: &[
@@ -132,6 +148,22 @@ pub fn classes() -> &'static [DotnetClass] {
             widget_host_fn: None,
         },
         DotnetClass {
+            name: "ListViewColumnHeaderCollection",
+            parent: None,
+            properties: &[],
+            methods: &[],
+            ctor_arity: 0,
+            widget_host_fn: None,
+        },
+        DotnetClass {
+            name: "ListViewItemCollection",
+            parent: None,
+            properties: &[],
+            methods: &[],
+            ctor_arity: 0,
+            widget_host_fn: None,
+        },
+        DotnetClass {
             name: "TreeView",
             parent: Some("Control"),
             properties: &[
@@ -167,6 +199,14 @@ pub fn classes() -> &'static [DotnetClass] {
             methods: &[],
             ctor_arity: 0,
             // `<ul>` — nesting is what makes it a tree.
+            widget_host_fn: None,
+        },
+        DotnetClass {
+            name: "TreeNodeCollection",
+            parent: None,
+            properties: &[],
+            methods: &[],
+            ctor_arity: 0,
             widget_host_fn: None,
         },
         // A CheckedListBox IS a ListBox with per-item checkboxes, so it

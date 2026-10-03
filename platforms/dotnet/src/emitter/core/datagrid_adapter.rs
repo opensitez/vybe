@@ -8,20 +8,15 @@
 //! adapters compose `web:html`'s `createElement` / `setTextContent` /
 //! `appendChild`, the same three calls a script would make.
 //!
-//! ⚠ A `<th>` is appended to the TABLE, not to a header row this builds. CSS
-//! 2.1 §17.2.1 generates an ANONYMOUS row box around cells that sit directly
-//! in a table, so the header row exists without anyone declaring it — which is
-//! the whole reason these adapters need no find-or-create and therefore no
-//! branching. `widgets` implements that rule
-//! (`flow_layout::ANONYMOUS_ROW`); without it every `Columns.Add` would render
-//! nothing.
+//! The constructor supplies a real thead/tbody, so columns and rows stay in
+//! their semantic table sections in both browser engines.
 //!
 //! Every host call pushes exactly one value, so each is followed by a `DROP`
 //! except the one whose result the member call itself yields.
 
 use vybe_compiler::primitives::gui::{CSSOM_MODULE, DOCUMENT_MODULE, HOST_FN_ACTIVE_DOCUMENT};
-use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
+use vybe_runtime::Chunk;
 
 /// The node operations live in `web:dom`; `activeDocument` is `web:html`'s.
 /// Two modules, because the DOCUMENT is what the user agent hands you and the
@@ -40,7 +35,7 @@ fn document(chunks: &mut [Chunk], current: usize, line: u32) {
 }
 
 /// `createElement(tag)` into `slot`. Leaves the stack as it found it.
-fn create_into(chunks: &mut [Chunk], current: usize, slot: u16, tag: &str, line: u32) {
+pub(super) fn create_into(chunks: &mut [Chunk], current: usize, slot: u16, tag: &str, line: u32) {
     document(chunks, current, line);
     chunks[current].emit_string_const(tag, line);
     // `createElement`'s second argument is the input TYPE, which only an
@@ -49,6 +44,26 @@ fn create_into(chunks: &mut [Chunk], current: usize, slot: u16, tag: &str, line:
     chunks[current].emit_string_const("", line);
     call_import(chunks, current, "createElement", 3, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, slot, line);
+}
+
+pub(super) fn child_into(
+    chunks: &mut [Chunk],
+    current: usize,
+    parent: u16,
+    child: u16,
+    first: bool,
+    line: u32,
+) {
+    document(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, parent, line);
+    call_import(
+        chunks,
+        current,
+        if first { "firstChild" } else { "lastChild" },
+        2,
+        line,
+    );
+    chunks[current].emit_op_u16(Op::LOCAL_SET, child, line);
 }
 
 /// The cell styling a `DataGridView` draws and a `<table>` does not.
@@ -62,7 +77,7 @@ fn create_into(chunks: &mut [Chunk], current: usize, slot: u16, tag: &str, line:
 /// It goes through `setStyleProperty`, so it cascades and serialises into the
 /// `style` attribute like any author declaration — an author or a later
 /// `GridColor` write overrides it exactly as a browser would let them.
-fn style_cell(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
+pub(super) fn style_cell(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
     for (property, value) in [("border", "1px solid #c8c8c8"), ("padding", "3px 6px")] {
         document(chunks, current, line);
         chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
@@ -75,7 +90,13 @@ fn style_cell(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
 }
 
 /// `node.textContent = <whatever is in `text_slot`>`.
-fn set_text(chunks: &mut [Chunk], current: usize, node_slot: u16, text_slot: u16, line: u32) {
+pub(super) fn set_text(
+    chunks: &mut [Chunk],
+    current: usize,
+    node_slot: u16,
+    text_slot: u16,
+    line: u32,
+) {
     document(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, node_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, text_slot, line);
@@ -84,7 +105,13 @@ fn set_text(chunks: &mut [Chunk], current: usize, node_slot: u16, text_slot: u16
 }
 
 /// `parent.appendChild(child)`, result dropped.
-fn append(chunks: &mut [Chunk], current: usize, parent_slot: u16, child_slot: u16, line: u32) {
+pub(super) fn append(
+    chunks: &mut [Chunk],
+    current: usize,
+    parent_slot: u16,
+    child_slot: u16,
+    line: u32,
+) {
     document(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, parent_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, child_slot, line);
@@ -103,8 +130,8 @@ fn append(chunks: &mut [Chunk], current: usize, parent_slot: u16, child_slot: u1
 /// Stack in `[grid, …]`, out `[column]` — the `<th>` itself, so a caller that
 /// keeps the result has the element the column IS.
 pub fn emit_add_column(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
-    let base = chunks[current].alloc_scratch(3);
-    let (grid, header, cell) = (base, base + 1, base + 2);
+    let base = chunks[current].alloc_scratch(5);
+    let (grid, header, cell, head, row) = (base, base + 1, base + 2, base + 3, base + 4);
 
     // The header text is the LAST argument in both overloads, so it is on top
     // whichever one was written.
@@ -114,10 +141,12 @@ pub fn emit_add_column(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
     }
     chunks[current].emit_op_u16(Op::LOCAL_SET, grid, line);
 
+    child_into(chunks, current, grid, head, true, line);
+    child_into(chunks, current, head, row, true, line);
     create_into(chunks, current, cell, "th", line);
     set_text(chunks, current, cell, header, line);
     style_cell(chunks, current, cell, line);
-    append(chunks, current, grid, cell, line);
+    append(chunks, current, row, cell, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, cell, line);
 }
 
@@ -130,9 +159,9 @@ pub fn emit_add_column(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
 /// Stack in `[grid, v1, …, vn]`, out `[row]`.
 pub fn emit_add_row(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let values = argc.saturating_sub(1) as usize;
-    let base = chunks[current].alloc_scratch(3 + values as u16);
-    let (grid, row, cell) = (base, base + 1, base + 2);
-    let value_base = base + 3;
+    let base = chunks[current].alloc_scratch(4 + values as u16);
+    let (grid, row, cell, body) = (base, base + 1, base + 2, base + 3);
+    let value_base = base + 4;
 
     // Popped LAST-first, so the slots end up in written order.
     for index in (0..values).rev() {
@@ -140,7 +169,11 @@ pub fn emit_add_row(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     }
     chunks[current].emit_op_u16(Op::LOCAL_SET, grid, line);
 
+    child_into(chunks, current, grid, body, false, line);
     create_into(chunks, current, row, "tr", line);
+    create_into(chunks, current, cell, "th", line);
+    style_cell(chunks, current, cell, line);
+    append(chunks, current, row, cell, line);
     for index in 0..values {
         create_into(chunks, current, cell, "td", line);
         set_text(chunks, current, cell, value_base + index as u16, line);
@@ -150,6 +183,6 @@ pub fn emit_add_row(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     // The row joins the table LAST. Appending it first would make the table
     // re-measure its columns once per cell, and every one of those passes would
     // be against a row that was still being filled.
-    append(chunks, current, grid, row, line);
+    append(chunks, current, body, row, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, row, line);
 }

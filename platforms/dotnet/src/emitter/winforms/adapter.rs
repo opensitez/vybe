@@ -1,16 +1,67 @@
 //! WinForms application and window verbs, lowered to the web platform.
 //!
-//! `Application.Run` and the layout no-ops emit nothing at all;
+//! `Application.Run` raises the form's WASM lifecycle event; layout no-ops emit nothing;
 //! `MessageBox.Show` is `window.alert`; `Form.Close` / `Application.Exit` /
 //! `Form.Activate` / `Form.CenterToScreen` reach `web:window` through
 //! `activeDocument().defaultView`.
 
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::{Op, heaptype};
+use vybe_compiler::primitives::class_slots::{self, ClassSlot, Dest, ObjSource, PlainNames};
 
 /// HTML's `Window` — `alert`/`confirm` and the window verbs, all registered in
 /// `platforms/web/src/window.rs`.
 const WINDOW_MODULE: &str = "web:window";
+
+/// A form's client area is the browsing context's viewport, not a CSS box on
+/// the body. Stack: `[form, Size]` -> `[Size]`.
+pub fn emit_form_clientsize_set(chunks: &mut [Chunk], current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    let size = chunk.alloc_scratch(1);
+    chunk.emit_op_u16(Op::LOCAL_SET, size, line);
+    chunk.emit_op(Op::DROP, line);
+    emit_default_view(chunk, line);
+    for field in ["width", "height"] {
+        chunk.emit_op_u16(Op::LOCAL_GET, size, line);
+        let slot = class_slots::resolve(&ClassSlot::internal(field), &PlainNames);
+        class_slots::emit_class_get(chunk, ObjSource::Stack, &slot, Dest::Stack, line);
+    }
+    let resize = chunk.add_import(WINDOW_MODULE, "resizeTo");
+    chunk.emit_call(resize, 3, line);
+    chunk.emit_op(Op::DROP, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, size, line);
+}
+
+/// Stack: `[form]` -> `[Size]`.
+pub fn emit_form_clientsize_get(chunks: &mut [Chunk], current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    chunk.emit_op(Op::DROP, line);
+    for axis in ["innerWidth", "innerHeight"] {
+        emit_default_view(chunk, line);
+        let getter = chunk.add_import(WINDOW_MODULE, axis);
+        chunk.emit_call(getter, 1, line);
+    }
+    crate::emitter::dispatch::emit_value_type_new(
+        chunk,
+        "Size",
+        &["width", "height"],
+        line,
+    );
+}
+
+/// A form caption is the document title, not text content on its body.
+/// Stack: `[form]` -> `[title]`.
+pub fn emit_form_text_get(chunks: &mut [Chunk], current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    chunk.emit_op(Op::DROP, line);
+    let active = chunk.add_import(
+        vybe_compiler::primitives::gui::DOCUMENT_MODULE,
+        vybe_compiler::primitives::gui::HOST_FN_ACTIVE_DOCUMENT,
+    );
+    chunk.emit_call(active, 0, line);
+    let title = chunk.add_import(vybe_compiler::primitives::gui::DOCUMENT_MODULE, "title");
+    chunk.emit_call(title, 1, line);
+}
 
 /// `MessageBox.Show(text[, caption[, buttons…]])` → `window.alert(text)`.
 ///
@@ -51,41 +102,28 @@ pub fn emit_message_box_show(chunks: &mut [Chunk], current: usize, argc: u8, lin
     chunks[current].emit_call(idx, 1, line);
 }
 
-/// `Application.Run(form)` — **the event loop is the user agent's**.
-///
-/// A page is not told to run. It runs because it HAS a document: the browsing
-/// context is the window, the UA owns the loop, and a script that finishes
-/// leaves a live page behind. There is no `Application.Run` in the web platform
-/// to be compliant WITH, so the compliant lowering is to emit no call at all —
-/// the same answer `dotnet.self` gives, for the same reason.
-///
-/// The three things the retired implementation did are all answered by the
-/// document now:
-///
-/// - "should this present?" → `should_present` asks `has_browsing_context()`
-///   FIRST. A WinForms program reaches `activeDocument` to build any control at
-///   all, so it has a context and still presents.
-/// - The window's size, read off the form object's `width`/`height` → those are
-///   CSS on the body, and `gui_launch` already prefers
-///   `gui_document::viewport()` with `GuiState`'s pair only as the fallback
-///   "for a form built without a document". Verified, not assumed: TicTacToe
-///   captures at its declared 220x320 `ClientSize`, NOT the 800x600
-///   `GuiState::new` default — so the viewport was already supplying it.
-/// - `form_object` (seeds the `__f` global, the receiver a HOST-invoked handler
-///   gets) → dead for a converted frontend. Events reach `web:dom`'s
-///   `addEventListener`, and that path invokes the callback with a DOM event
-///   object without consulting `__f` at all.
-///
-/// ⚠ The arguments are still EVALUATED — `Application.Run(New Form1())` builds
-/// its form, and that construction is the whole program. Only the call goes
-/// away: the args are dropped and one value is pushed, because every host call
-/// pushes exactly one value and the statement that wraps this emits one `DROP`.
+/// `Application.Run(form)` starts the constructed form in WASM. The browser
+/// owns presentation and input, while the form's Load event is raised here.
 pub fn emit_application_run(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let chunk = &mut chunks[current];
-    for _ in 0..argc {
+    for _ in 1..argc {
         chunk.emit_op(Op::DROP, line);
     }
-    chunk.emit_ref_null(heaptype::HT_EXTERN, line);
+    if argc != 0 {
+        let form = chunk.alloc_scratch(1);
+        chunk.emit_op_u16(Op::LOCAL_SET, form, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, form, line);
+        let load = class_slots::resolve(&ClassSlot::internal("__winforms_load"), &PlainNames);
+        class_slots::emit_class_get(chunk, ObjSource::Stack, &load, Dest::Stack, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, form, line);
+        let empty_args = chunk.add_import("ecma:object", "new");
+        chunk.emit_call(empty_args, 0, line);
+        vybe_compiler::primitives::callable::emit_multicast_delegate_invoke(
+            chunks, current, 2, line,
+        );
+        chunks[current].emit_op(Op::DROP, line);
+    }
+    chunks[current].emit_ref_null(heaptype::HT_EXTERN, line);
 }
 
 /// `Form.Close()` → `window.close()` on this document's browsing context.

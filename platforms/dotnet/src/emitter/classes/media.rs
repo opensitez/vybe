@@ -11,7 +11,15 @@
 //! `getContext("2d")` on that same element. No factory stands in between,
 //! which is what makes the whole path answerable by a real browser.
 
-use super::DotnetClass;
+use super::{DotnetClass, DotnetMethod, MethodTarget};
+
+const WEB_BROWSER_METHODS: &[DotnetMethod] = &[
+    DotnetMethod {
+        name: "Navigate",
+        arity: 2,
+        target: MethodTarget::common("gui.prop_set.src"),
+    },
+];
 
 pub fn classes() -> &'static [DotnetClass] {
     &[
@@ -62,10 +70,9 @@ pub fn classes() -> &'static [DotnetClass] {
                 "Version",
                 "WebBrowserShortcutsEnabled",
             ],
-            methods: &[],
+            methods: WEB_BROWSER_METHODS,
             ctor_arity: 0,
-            // `<iframe>` — see `html_element_for_control`. Renders as a plain
-            // box until `widgets` grows a `webbrowser` kind.
+            // `<iframe>` — navigation and document text use its src/srcdoc.
             widget_host_fn: None,
         },
     ]

@@ -81,6 +81,14 @@ pub fn classes() -> &'static [DotnetClass] {
             widget_host_fn: None,
         },
         DotnetClass {
+            name: "TabPageCollection",
+            parent: None,
+            properties: &[],
+            methods: &[],
+            ctor_arity: 0,
+            widget_host_fn: None,
+        },
+        DotnetClass {
             name: "SplitContainer",
             parent: Some("ContainerControl"),
             properties: &[
@@ -125,6 +133,38 @@ pub fn classes() -> &'static [DotnetClass] {
             ],
             methods: &[],
             ctor_arity: 0,
+            widget_host_fn: None,
+        },
+        DotnetClass {
+            name: "ColumnStyle",
+            parent: None,
+            properties: &["SizeType", "Width"],
+            methods: &[],
+            ctor_arity: 2,
+            widget_host_fn: None,
+        },
+        DotnetClass {
+            name: "RowStyle",
+            parent: None,
+            properties: &["SizeType", "Height"],
+            methods: &[],
+            ctor_arity: 2,
+            widget_host_fn: None,
+        },
+        DotnetClass {
+            name: "TableLayoutStyleCollection",
+            parent: None,
+            properties: &["Count"],
+            methods: &[],
+            ctor_arity: 0,
+            widget_host_fn: None,
+        },
+        DotnetClass {
+            name: "Padding",
+            parent: None,
+            properties: &["Left", "Top", "Right", "Bottom", "All"],
+            methods: &[],
+            ctor_arity: 1,
             widget_host_fn: None,
         },
         // ── Declared at last: the designer knew them, the descriptor did not ──

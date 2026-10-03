@@ -94,6 +94,8 @@ pub(crate) fn common_ctor_for(class: &str) -> Option<&'static str> {
         "PointF" => Some("dotnet.pointf_new"),
         "RectangleF" => Some("dotnet.rectanglef_new"),
         "Font" => Some("dotnet.font_new"),
+        "ColumnStyle" | "RowStyle" => Some("dotnet.table_style_new"),
+        "Padding" => Some("dotnet.padding_new"),
         "Color" => Some("dotnet.color_new"),
         "Pen" => Some("dotnet.pen_new"),
         "SolidBrush" => Some("dotnet.solid_brush_new"),
@@ -172,6 +174,17 @@ fn class_to_component_class(class: &DotnetClass) -> ClassType {
     // Declaring the field ORDER is not declaring a constructor.
     for field in super::super::classes::drawing::fields_for(class.name) {
         out = out.with_field(*field);
+    }
+    if matches!(class.name, "ColumnStyle" | "RowStyle") {
+        out = out.with_field("sizetype").with_field("size");
+    }
+    if class.name == "TableLayoutStyleCollection" {
+        out = out.with_field("owner").with_field("axis");
+    }
+    if class.name == "Padding" {
+        for field in ["left", "top", "right", "bottom"] {
+            out = out.with_field(field);
+        }
     }
 
     for prop in class.properties {
@@ -254,8 +267,24 @@ fn class_to_component_class(class: &DotnetClass) -> ClassType {
         }
     }
 
+    if class.name == "Color" {
+        for arity in [3, 4] {
+            out = out.with_method(MethodDef::static_method(
+                "FromArgb",
+                arity,
+                MethodBody::Common("dotnet.color_from_argb".to_string()),
+            ));
+        }
+    }
+
     if let Some(emit) = common_ctor_for(class.name) {
         out = out.with_constructor(ConstructorDef::new(class.ctor_arity).with_common_backing(emit));
+        if class.name == "Font" {
+            out = out.with_constructor(ConstructorDef::new(3).with_common_backing(emit));
+        }
+        if class.name == "Padding" {
+            out = out.with_constructor(ConstructorDef::new(4).with_common_backing(emit));
+        }
     } else if crate::emitter::tree_register::is_element_mapped(class.name) {
         // An element-mapped class is CONSTRUCTIBLE without any host factory:
         // the element mapping is what materializes it, and the
