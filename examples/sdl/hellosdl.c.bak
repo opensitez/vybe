@@ -130,11 +130,6 @@ int main(void) {
     Uint32 amber   = SDL_MapRGB(0, 240, 176,  80);
     Uint32 green   = SDL_MapRGB(0, 122, 208, 128);
 
-    // NOTE ON TIMING: vybe:gui presents AFTER the program returns —
-    // SDL_UpdateWindowSurface marks the frame boundary but does not pump the
-    // window, and SDL_Delay blocks the thread the UI needs. So a long loop just
-    // stalls with a spinner and only the LAST frame is ever shown. Keep the
-    // loop short until per-frame presentation exists.
     for (Sint32 frame = 0; frame < 1; frame = frame + 1) {
         // ── Background and header ──────────────────────────────────────────
         fill(surface, 0, 0, WIN_W, WIN_H, bg);

@@ -13,19 +13,27 @@ int main(void) {
     SDL_Surface *screen;
     SDL_Event e;
     int running = 1;
+    int dirty = 0;
 
     SDL_Init(SDL_INIT_VIDEO);
     win = SDL_CreateWindow("vybe calc", SDL_WINDOWPOS_CENTERED,
                            SDL_WINDOWPOS_CENTERED, CALC_W, CALC_H, 0);
     screen = SDL_GetWindowSurface(win);
     calc_reset(&c);
+    ui_render(screen, &c);
+    SDL_UpdateWindowSurface(win);
 
     while (running) {
         while (SDL_PollEvent(&e)) {
+            if (e.type == SDL_KEYDOWN || e.type == SDL_MOUSEBUTTONDOWN)
+                dirty = 1;
             running = ui_handle_event(&c, &e);
         }
-        ui_render(screen, &c);
-        SDL_UpdateWindowSurface(win);
+        if (dirty) {
+            ui_render_display(screen, &c);
+            SDL_UpdateWindowSurface(win);
+            dirty = 0;
+        }
         SDL_Delay(16);
     }
     SDL_Quit();

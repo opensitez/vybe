@@ -18,5 +18,6 @@ int ui_handle_event(struct Calc *c, SDL_Event *e);
 void ui_press(struct Calc *c, char key);
 
 void ui_render(SDL_Surface *screen, const struct Calc *c);
+void ui_render_display(SDL_Surface *screen, const struct Calc *c);
 
 #endif

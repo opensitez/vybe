@@ -1,46 +1,26 @@
 // examples/sdl/paletted.c
 //
 // The frame path a software renderer needs, in the shape Doom uses:
-// an 8-bit palette-indexed buffer plus a 256-entry palette, expanded to RGBA
-// and presented once per frame. This is `I_FinishUpdate` reduced to its
-// essentials — see `sdlplan.md`.
+// an 8-bit surface and SDL_Color palette, converted into a locked ARGB8888
+// texture by SDL_LowerBlit, then presented by SDL_RenderCopy.
+// Uses only standard SDL2 APIs. Pass --once for a single-frame smoke test.
 //
 // Renders a plasma field at Doom's native 320x200 and upscales it to the
 // window, so it also shows whether scaling stays crisp (nearest-neighbour)
 // rather than blurred (bilinear).
 
-#include <stdint.h>
-
-typedef uint32_t Uint32;
-typedef int32_t Sint32;
-typedef void *SDL_Window;
-typedef void *SDL_Surface;
-
-#define SDL_INIT_VIDEO 0x00000020
-#define SDL_WINDOW_SHOWN 0x00000004
-
-extern int SDL_Init(Uint32 flags);
-extern void SDL_Quit(void);
-extern SDL_Window *SDL_CreateWindow(const char *title, Sint32 x, Sint32 y,
-                                    Sint32 w, Sint32 h, Uint32 flags);
-extern SDL_Surface *SDL_GetWindowSurface(SDL_Window *window);
-extern int SDL_ShowWindow(SDL_Window *window);
-extern int SDL_UpdateWindowSurface(SDL_Window *window);
-
-// Vybe frame path: pixels are palette indices, palette entries are 0xRRGGBB.
-extern int SDL_BlitPaletted(SDL_Surface *surface, unsigned char *pixels,
-                            Sint32 w, Sint32 h, Uint32 *palette,
-                            Sint32 dst_w, Sint32 dst_h);
+#include <assert.h>
+#include <string.h>
+#include <SDL.h>
 
 #define SCREEN_W 320
 #define SCREEN_H 200
 #define WIN_W 960
 #define WIN_H 600
 
-static unsigned char screen[SCREEN_W * SCREEN_H];
-static Uint32 palette[256];
+static SDL_Color palette[256];
 
-int main(void) {
+int main(int argc, char **argv) {
     if (SDL_Init(SDL_INIT_VIDEO) != 0) {
         return 1;
     }
@@ -51,8 +31,19 @@ int main(void) {
         SDL_Quit();
         return 1;
     }
-    SDL_Surface *surface = SDL_GetWindowSurface(window);
-    SDL_ShowWindow(window);
+    SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "nearest");
+    SDL_Renderer *renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_SOFTWARE);
+    assert(renderer != NULL);
+    SDL_Surface *surface = SDL_CreateRGBSurface(0, SCREEN_W, SCREEN_H, 8, 0, 0, 0, 0);
+    assert(surface != NULL);
+    SDL_Surface *argb = SDL_CreateRGBSurfaceWithFormatFrom(
+        NULL, SCREEN_W, SCREEN_H, 32, 0, SDL_PIXELFORMAT_ARGB8888);
+    assert(argb != NULL);
+    SDL_Texture *texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ARGB8888,
+        SDL_TEXTUREACCESS_STREAMING, SCREEN_W, SCREEN_H);
+    assert(texture != NULL);
+    unsigned char *screen = surface->pixels;
+    int pitch = surface->pitch;
 
     // A fire-ish ramp: black → red → orange → yellow → white, the kind of
     // palette a software renderer actually ships.
@@ -65,7 +56,10 @@ int main(void) {
         Sint32 b = (i - 176) * 4;
         if (b < 0) { b = 0; }
         if (b > 255) { b = 255; }
-        palette[i] = (Uint32)((r << 16) | (g << 8) | b);
+        palette[i].r = (Uint8) r;
+        palette[i].g = (Uint8) g;
+        palette[i].b = (Uint8) b;
+        palette[i].a = 255;
     }
 
     // Plasma: integer-only, no math.h. Concentric interference from two
@@ -79,7 +73,7 @@ int main(void) {
             Sint32 ex = x - 40;
             Sint32 ey = y - 30;
             Sint32 d2 = (ex * ex + ey * ey) / 64;
-            screen[y * SCREEN_W + x] = (unsigned char)((d1 + d2) & 0xFF);
+            screen[y * pitch + x] = (unsigned char)((d1 + d2) & 0xFF);
         }
     }
 
@@ -88,12 +82,31 @@ int main(void) {
     for (Sint32 y = 0; y < 32; y = y + 1) {
         for (Sint32 x = 0; x < 32; x = x + 1) {
             unsigned char v = (unsigned char)(((x / 4) + (y / 4)) % 2 ? 255 : 0);
-            screen[y * SCREEN_W + x] = v;
+            screen[y * pitch + x] = v;
         }
     }
 
-    SDL_BlitPaletted(surface, screen, SCREEN_W, SCREEN_H, palette, WIN_W, WIN_H);
-    SDL_UpdateWindowSurface(window);
+    assert(SDL_SetPaletteColors(surface->format->palette, palette, 0, 256) == 0);
+    SDL_Rect rect = {0, 0, SCREEN_W, SCREEN_H};
+    assert(SDL_LockTexture(texture, NULL, &argb->pixels, &argb->pitch) == 0);
+    assert(SDL_LowerBlit(surface, &rect, argb, &rect) == 0);
+    SDL_UnlockTexture(texture);
+    assert(SDL_RenderCopy(renderer, texture, NULL, NULL) == 0);
+    SDL_RenderPresent(renderer);
+
+    int running = !(argc > 1 && strcmp(argv[1], "--once") == 0);
+    while (running) {
+        SDL_Event event;
+        while (SDL_PollEvent(&event)) {
+            if (event.type == SDL_QUIT) running = 0;
+        }
+        SDL_Delay(16);
+    }
+    SDL_DestroyTexture(texture);
+    SDL_FreeSurface(argb);
+    SDL_FreeSurface(surface);
+    SDL_DestroyRenderer(renderer);
+    SDL_DestroyWindow(window);
     SDL_Quit();
     return 0;
 }

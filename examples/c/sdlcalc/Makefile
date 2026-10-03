@@ -8,6 +8,7 @@
 #   make clean
 
 VYBEX ?= ../../../target/debug/vybex
+VYBEXREL ?= ../../../target/release/vybex
 SRCS  := main.c calc.c ui.c
 TSRCS := selftest.c calc.c ui.c
 HDRS  := calc.h ui.h
@@ -16,6 +17,9 @@ HDRS  := calc.h ui.h
 
 run: $(SRCS) $(HDRS)
 	$(VYBEX) $(SRCS)
+
+demorel: $(SRCS) $(HDRS)
+	$(VYBEXREL) $(SRCS)
 
 test: $(TSRCS) $(HDRS)
 	$(VYBEX) --entry self_test $(TSRCS)
@@ -27,8 +31,7 @@ calc.wasm: $(SRCS) $(HDRS)
 wasm: calc.wasm
 
 # One-frame demo: window shows the rendered calculator (display = 3.75)
-# after the program returns. Interactive `make run` needs the per-frame
-# presentation work (JSPI) — the last pre-Doom architecture item.
+# after the program returns.
 demo: demo.c calc.c ui.c $(HDRS)
 	$(VYBEX) demo.c calc.c ui.c
 

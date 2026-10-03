@@ -63,8 +63,17 @@ int ui_handle_event(struct Calc *c, SDL_Event *e) {
     return 1;
 }
 
-void ui_render(SDL_Surface *screen, const struct Calc *c) {
+void ui_render_display(SDL_Surface *screen, const struct Calc *c) {
     char text[64];
+    SDL_Rect r;
+
+    r.x = PAD; r.y = PAD; r.w = CALC_W - PAD * 2; r.h = DISPLAY_H;
+    SDL_FillRect(screen, &r, SDL_MapRGB(0, 12, 40, 22));
+    calc_display(c, text, sizeof(text));
+    SDL_DrawText(screen, text, PAD * 2, PAD + DISPLAY_H / 2 - 8, SDL_MapRGB(0, 120, 255, 150));
+}
+
+void ui_render(SDL_Surface *screen, const struct Calc *c) {
     SDL_Rect r;
     int cw = cell_w(), ch = cell_h();
     int top = DISPLAY_H + PAD * 2;
@@ -72,12 +81,7 @@ void ui_render(SDL_Surface *screen, const struct Calc *c) {
 
     r.x = 0; r.y = 0; r.w = CALC_W; r.h = CALC_H;
     SDL_FillRect(screen, &r, SDL_MapRGB(0, 28, 30, 34));
-
-    /* display strip */
-    r.x = PAD; r.y = PAD; r.w = CALC_W - PAD * 2; r.h = DISPLAY_H;
-    SDL_FillRect(screen, &r, SDL_MapRGB(0, 12, 40, 22));
-    calc_display(c, text, sizeof(text));
-    SDL_DrawText(screen, text, PAD * 2, PAD + DISPLAY_H / 2 - 8, SDL_MapRGB(0, 120, 255, 150));
+    ui_render_display(screen, c);
 
     for (row = 0; row < ROWS; row++) {
         for (col = 0; col < COLS; col++) {
