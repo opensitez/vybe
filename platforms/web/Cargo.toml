@@ -9,12 +9,16 @@ license.workspace = true
 inventory = { workspace = true }
 vybe_runtime = { workspace = true }
 vybe_platform_ecma = { workspace = true }
+osbrowser = { workspace = true, optional = true }
+rfd = { workspace = true, optional = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
 # The engine behind `web:canvas` / `web:dom`. The web platform binds it
 # DIRECTLY — no adapter crate in between, no second surface to keep in sync.
-widgets = { workspace = true, optional = true }
 # The OTHER engine behind the same seam. `engine.rs` names neither, so both can
 # be compiled in at once and the choice is which one calls `set_engine`.
 webcore = { workspace = true, optional = true }
+tiny-skia = "0.12"
 
 # WHATWG / W3C web-platform support crates (moved from vybe_host).
 sha2 = { workspace = true }
@@ -24,13 +28,6 @@ quick-xml = { workspace = true }
 form_urlencoded = { workspace = true }
 
 [features]
-default = []
-gui = ["widgets"]
-# The webcore engine, additive to `gui`: `WindowOp`, `EventOp` and `ScheduleOp`
-# are host bookkeeping that webcore does not have, so the webcore engine still
-# delegates those to `widgets` and only `document()` changes hands.
-engine-webcore = ["gui", "webcore"]
-
-[dev-dependencies]
-# The seam tests drive the widget DOM directly.
-widgets = { workspace = true }
+default = ["engine-webcore"]
+engine-webcore = ["webcore"]
+engine-osbrowser = ["osbrowser", "rfd"]

@@ -1,29 +1,17 @@
 //! webcore as the engine behind `web:*`.
 //!
-//! The sibling of `engine_widgets.rs`, against the same trait. `engine.rs`
-//! names neither engine, so which one is live is decided by which `install()`
-//! runs — that is what makes them swappable.
+//! Implements the shared `engine.rs` contract for the in-process browser.
 //!
 //! WHAT THIS FILE OWNS AND WHAT IT DELEGATES
 //!
 //! `DocumentId` is ONE namespace shared by `document()` and `window()`:
 //! `WindowOp::Open`, `Document`, `DefaultView` and `AdoptTopLevel` all mint or
-//! return one. If `widgets` answered those while webcore answered
-//! `document()`, the ids handed back would point into the widget document
-//! table and every following `apply()` would miss — two document tables over
-//! one id space. So webcore owns the whole browsing context: all of `DomOp`
+//! return one. WebCore owns the whole browsing context: all of `DomOp`
 //! and the id-minting `WindowOp`s.
 //!
-//! `EventOp` is NOT among them, which looks wrong until you follow the two
-//! queues. `DomOp::DrainEvents` is per-document and carries DOM listener
-//! events. `EventOp::Poll`/`Pending` read `widgets::ui_events::queue()`,
-//! a PROCESS-WIDE queue of raw input that the winit shell in `gui_launch.rs`
-//! pushes into. Different queues, different producers — so `EventOp`
-//! delegates, and swapping the DOM engine does not disturb input delivery.
-//!
-//! What else is delegated is the part that is not DOM at all: the scheduler,
-//! window geometry and chrome, and pointer state. Host bookkeeping, identical
-//! under either engine.
+//! `DomOp::DrainEvents` is per-document listener dispatch. `EventOp` is raw
+//! browser input, held by webcore's own queue. Scheduling also belongs to the
+//! selected browser, never to the other engine.
 //!
 //! TWO IMPEDANCE MISMATCHES, HANDLED HERE RATHER THAN IN EITHER ENGINE
 //!
@@ -33,8 +21,8 @@
 //!    and `from_hb` below translate between the two spellings.
 //!
 //! 2. webcore dispatches events to callbacks synchronously; the seam pulls
-//!    them with `DrainEvents`. A queue fed by webcore's global form-event
-//!    callback bridges the two, so neither engine changes shape.
+//!    them with `DrainEvents`. DOM listeners and form callbacks feed the queue,
+//!    so neither engine changes shape.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -42,9 +30,29 @@ use std::sync::{Arc, Mutex, OnceLock};
 use webcore::types::{Document, FormEvent, FormEventKind};
 
 use crate::engine::{
-    DOCUMENT, DocumentId, DomOp, DomValue, EventOp, EventValue, NodeId, ScheduleOp, ScheduleValue,
-    WebEngine, WindowOp, WindowValue,
+    DOCUMENT, DocumentId, DomEventRecord, DomOp, DomValue, EventOp, EventValue, NodeId, ScheduleOp, ScheduleValue,
+    PickerOp, UiEventFields, WebEngine, WindowOp, WindowValue,
 };
+
+fn into_webcore_event(f: UiEventFields) -> webcore::ui_events::UiEvent {
+    webcore::ui_events::UiEvent {
+        kind: f.kind, key: f.key, code: f.code, key_code: f.key_code,
+        client_x: f.client_x, client_y: f.client_y, button: f.button,
+        buttons: f.buttons, delta_y: f.delta_y, ctrl_key: f.ctrl_key,
+        shift_key: f.shift_key, alt_key: f.alt_key, meta_key: f.meta_key,
+        repeat: f.repeat,
+    }
+}
+
+fn from_webcore_event(f: webcore::ui_events::UiEvent) -> UiEventFields {
+    UiEventFields {
+        kind: f.kind, key: f.key, code: f.code, key_code: f.key_code,
+        client_x: f.client_x, client_y: f.client_y, button: f.button,
+        buttons: f.buttons, delta_y: f.delta_y, ctrl_key: f.ctrl_key,
+        shift_key: f.shift_key, alt_key: f.alt_key, meta_key: f.meta_key,
+        repeat: f.repeat,
+    }
+}
 
 trait WebcoreDocumentLayoutCompat {
     fn flush_layout(&mut self);
@@ -74,10 +82,13 @@ const DEFAULT_VIEWPORT_H: f32 = 600.0;
 /// One document plus the queue its events land in.
 struct Entry {
     doc: Document,
+    resources_dirty: bool,
     /// Shared with the form-event callback installed on `doc`, which is why
     /// this is an `Arc` and not a plain field: the callback outlives the
     /// borrow that registered it.
     events: Arc<Mutex<VecDeque<(NodeId, String)>>>,
+    targeted_events: Arc<Mutex<VecDeque<DomEventRecord>>>,
+    observed: HashMap<(NodeId, String), u32>,
 }
 
 #[derive(Default)]
@@ -88,19 +99,24 @@ struct Docs {
 
 /// `Document` is `Send` (webcore declares it for its parallel cascade) but not
 /// `Sync` — a `Mutex` around it is both, which is what the trait requires.
-/// Same shape `widgets::dom` uses for its own document table.
 fn docs() -> &'static Mutex<Docs> {
     static DOCS: OnceLock<Mutex<Docs>> = OnceLock::new();
     DOCS.get_or_init(|| Mutex::new(Docs::default()))
 }
 
-/// Borrow a document. Mirrors `engine_widgets::with_document` so the window
-/// runner can reach a form the same way under either engine.
+/// Borrow a WebCore document for in-process presentation.
 pub fn with_document<T>(id: DocumentId, f: impl FnOnce(&mut Document) -> T) -> Option<T> {
     let map = docs().lock().ok()?;
     let entry = map.entries.get(&id)?;
     let mut entry = entry.lock().ok()?;
     Some(f(&mut entry.doc))
+}
+
+pub fn with_document_resources<T>(
+    id: DocumentId,
+    f: impl FnOnce(&mut Document, &mut bool) -> T,
+) -> Option<T> {
+    with_entry(id, |entry| f(&mut entry.doc, &mut entry.resources_dirty))
 }
 
 fn with_entry<T>(id: DocumentId, f: impl FnOnce(&mut Entry) -> T) -> Option<T> {
@@ -147,8 +163,7 @@ fn content_node(doc: &Document, node: NodeId) -> u32 {
 
 /// Where a node addressed to the DOCUMENT actually goes: the **body**.
 ///
-/// The same rule `widgets::dom::Document::content_parent` states, because
-/// it is the DOM's rule rather than either engine's: a Document takes exactly
+/// A Document takes exactly
 /// one element child, so `document.appendChild(<p>)` is a
 /// `HierarchyRequestError` in a browser. A caller that says "the document"
 /// means the body. `<html>`/`<head>`/`<body>` ARE the document's structure, so
@@ -188,8 +203,6 @@ fn event_names(kind: &FormEventKind) -> Vec<&'static str> {
     match kind {
         FormEventKind::Input(_) => vec!["input"],
         FormEventKind::Change(_) => vec!["change"],
-        // Ticking a checkbox is a click AND a change in HTML, and a listener
-        // may be registered under either. Both are queued.
         FormEventKind::Toggle(_) => vec!["click", "change"],
         FormEventKind::Click(_) => vec!["click"],
         FormEventKind::Submit(_) => vec!["submit"],
@@ -230,13 +243,17 @@ impl WebEngine for WebCore {
              <style>html, body {{ height: 100%; margin: 0; }}</style>\
              </head><body></body></html>"
         );
-        let doc = webcore::load_html(&html, DEFAULT_VIEWPORT_W);
+        let mut doc = webcore::load_html(&html, DEFAULT_VIEWPORT_W);
+        doc.set_viewport(DEFAULT_VIEWPORT_W, DEFAULT_VIEWPORT_H);
 
         let events: Arc<Mutex<VecDeque<(NodeId, String)>>> = Arc::new(Mutex::new(VecDeque::new()));
 
         let mut entry = Entry {
             doc,
+            resources_dirty: true,
             events: Arc::clone(&events),
+            targeted_events: Arc::new(Mutex::new(VecDeque::new())),
+            observed: HashMap::new(),
         };
 
         // The bridge: webcore calls this synchronously as interactions happen,
@@ -285,6 +302,26 @@ impl WebEngine for WebCore {
 
     fn document(&self, document: DocumentId, op: DomOp) -> DomValue {
         with_entry(document, |entry| {
+            if matches!(
+                &op,
+                DomOp::AppendChild { .. }
+                    | DomOp::RemoveChild { .. }
+                    | DomOp::InsertBefore { .. }
+                    | DomOp::ReplaceChild { .. }
+                    | DomOp::SetInnerHtml { .. }
+                    | DomOp::SetOuterHtml { .. }
+                    | DomOp::InsertAdjacentHtml { .. }
+            ) || matches!(
+                &op,
+                DomOp::SetAttribute(_, name, _) | DomOp::RemoveAttribute(_, name)
+                    if matches!(name.as_str(), "src" | "srcset" | "poster" | "style")
+            ) || matches!(
+                &op,
+                DomOp::SetStyleProperty(_, name, _)
+                    if matches!(name.as_str(), "background" | "background-image" | "mask" | "mask-image")
+            ) {
+                entry.resources_dirty = true;
+            }
             let doc = &mut entry.doc;
             match op {
                 // ── Creation ──
@@ -436,7 +473,7 @@ impl WebEngine for WebCore {
                 DomOp::InnerHtml(n) => DomValue::Text(doc.inner_html(to_hb(doc, n))),
                 // Parsing re-enters `apply` to build the tree, which would be a
                 // second borrow of the document held here. Dispatched before
-                // the lock instead — same split `engine_widgets` makes.
+                // the lock instead.
                 DomOp::SetInnerHtml { .. } => DomValue::None,
                 DomOp::OuterHtml(n) => DomValue::Text(doc.outer_html(to_hb(doc, n))),
                 // Both markup setters are dispatched before the lock, for the
@@ -497,6 +534,15 @@ impl WebEngine for WebCore {
                     doc.get_style_property(content_node(doc, n), &p)
                         .unwrap_or_default(),
                 ),
+                DomOp::StyleDeclarations(n) => {
+                    let node = content_node(doc, n);
+                    DomValue::Properties((0..doc.style_property_len(node))
+                        .filter_map(|index| {
+                            let name = doc.style_property_item(node, index)?;
+                            let value = doc.get_style_property(node, &name)?;
+                            Some((name, value))
+                        }).collect())
+                }
                 // The RESOLVED value. Geometry comes off the laid-out rect;
                 // everything else falls back to the declared value, matching
                 // the floor `widgets` sets.
@@ -558,11 +604,60 @@ impl WebEngine for WebCore {
                 }
 
                 // ── Events ──
-                // webcore hit-tests, dispatches the DOM event and — for a click
-                // on a control — calls `on_form_event`, which is the callback
-                // this file installed at `new_document`. So the input arrives
-                // here and comes back out of `DrainEvents` with no further
-                // wiring: the bridge was already built, nothing was crossing it.
+                DomOp::ObserveEvent { node, kind } => {
+                    let key = (node, kind.clone());
+                    if !entry.observed.contains_key(&key) {
+                        let target = to_hb(doc, node);
+                        let root = doc.root.node_id;
+                        let sink = Arc::clone(&entry.targeted_events);
+                        let listener = doc.add_event_listener(
+                            target,
+                            &kind,
+                            Box::new(move |event, _| {
+                                if let Ok(mut queue) = sink.lock() {
+                                    let actual = if event.target == root {
+                                        DOCUMENT
+                                    } else {
+                                        event.target as NodeId
+                                    };
+                                    queue.push_back(DomEventRecord {
+                                        current_target: node,
+                                        target: actual,
+                                        kind: event.event_type.clone(),
+                                        fields: UiEventFields {
+                                            kind: event.event_type.clone(),
+                                            key: event.key().to_owned(),
+                                            code: event.code().to_owned(),
+                                            client_x: event.client_x().round() as i32,
+                                            client_y: event.client_y().round() as i32,
+                                            button: event.button() as i32,
+                                            buttons: event.buttons() as i32,
+                                            delta_y: event.delta_y() as f64,
+                                            ctrl_key: event.ctrl_key(),
+                                            shift_key: event.shift_key(),
+                                            alt_key: event.alt_key(),
+                                            meta_key: event.meta_key(),
+                                            repeat: event.repeat(),
+                                            ..UiEventFields::default()
+                                        },
+                                    });
+                                }
+                            }),
+                            webcore::dom::events::ListenerOptions::default(),
+                        );
+                        entry.observed.insert(key, listener);
+                    }
+                    DomValue::None
+                }
+                DomOp::UnobserveEvent { node, kind } => {
+                    if let Some(listener) = entry.observed.remove(&(node, kind)) {
+                        doc.remove_event_listener(listener);
+                    }
+                    DomValue::None
+                }
+                // Webcore hit-tests and dispatches to listeners attached at
+                // their registered nodes. Form callbacks also report raw
+                // control interaction for consumers without DOM listeners.
                 DomOp::DispatchPointer {
                     kind,
                     client_x,
@@ -580,14 +675,77 @@ impl WebEngine for WebCore {
                     // not a button webcore knows and is treated as the primary
                     // one, which is what it does with an unrecognised device.
                     let button = u8::try_from(button).unwrap_or(0);
-                    DomValue::Bool(doc.process_mouse_event(etype, (client_x, client_y), button))
+                    let point = (client_x + doc.scroll_x, client_y + doc.scroll_y);
+                    let mut changed = if etype == HtmlEventType::MouseMove {
+                        doc.dispatch_over_out(point)
+                    } else {
+                        false
+                    };
+                    changed |= doc.process_mouse_event(etype, point, button);
+                    let pointer = match etype {
+                        HtmlEventType::MouseDown => HtmlEventType::PointerDown,
+                        HtmlEventType::MouseUp => HtmlEventType::PointerUp,
+                        _ => HtmlEventType::PointerMove,
+                    };
+                    changed |= doc.process_mouse_event(pointer, point, button);
+                    if etype == HtmlEventType::MouseUp && button == 2 {
+                        changed |= doc.process_mouse_event(HtmlEventType::ContextMenu, point, button);
+                    }
+                    DomValue::Bool(changed)
+                }
+                DomOp::DispatchKeyboard(event) => {
+                    use webcore::dom::HtmlEventType;
+                    let kind = match event.kind.as_str() {
+                        "keyup" => HtmlEventType::KeyUp,
+                        "keypress" => HtmlEventType::KeyPress,
+                        _ => HtmlEventType::KeyDown,
+                    };
+                    doc.process_key_event(
+                        kind,
+                        event.key_code as u32,
+                        event.key.chars().next(),
+                        event.ctrl_key,
+                        event.shift_key,
+                        event.alt_key,
+                        event.meta_key,
+                    );
+                    DomValue::None
+                }
+                DomOp::DispatchWheel(event) => {
+                    let client = (event.client_x as f32, event.client_y as f32);
+                    let point = (client.0 + doc.scroll_x, client.1 + doc.scroll_y);
+                    let mut wheel = webcore::dom::HtmlEvent::new(webcore::dom::HtmlEventType::Wheel);
+                    wheel.client_pos = client;
+                    wheel.doc_pos = point;
+                    wheel.delta_y = event.delta_y as f32;
+                    wheel.target = doc.element_from_point(client.0, client.1).unwrap_or(0);
+                    let (_, wheel) = doc.dispatch_input_event(wheel);
+                    let changed = !wheel.default_prevented
+                        && doc.process_wheel_event_xy(point, 0.0, -(event.delta_y as f32));
+                    DomValue::Bool(changed)
                 }
                 DomOp::DrainEvents => {
-                    let drained: Vec<(NodeId, String)> = match entry.events.lock() {
+                    let mut targeted: Vec<DomEventRecord> = match entry.targeted_events.lock() {
                         Ok(mut q) => q.drain(..).collect(),
                         Err(_) => Vec::new(),
                     };
-                    DomValue::Events(drained)
+                    let fallback: Vec<(NodeId, String)> = match entry.events.lock() {
+                        Ok(mut q) => q.drain(..).collect(),
+                        Err(_) => Vec::new(),
+                    };
+                    for (node, kind) in fallback {
+                        if !targeted.iter().any(|event| {
+                            event.current_target == node && event.target == node && event.kind == kind
+                        }) {
+                            targeted.push(DomEventRecord {
+                                current_target: node,
+                                target: node,
+                                fields: UiEventFields { kind: kind.clone(), ..UiEventFields::default() },
+                                kind,
+                            });
+                        }
+                    }
+                    DomValue::Events(targeted)
                 }
 
                 // ── HTMLDialogElement ──
@@ -621,12 +779,15 @@ impl WebEngine for WebCore {
                         },
                     }
                 }
-                DomOp::CanvasSize(node) => match {
-                    doc.flush_layout();
-                    doc.get_bounding_client_rect(to_hb(doc, node))
-                } {
-                    Some(r) => DomValue::Pair(f64::from(r.w), f64::from(r.h)),
-                    None => DomValue::None,
+                DomOp::CanvasSize(node) => {
+                    let node = to_hb(doc, node);
+                    if !doc.local_name(node).eq_ignore_ascii_case("canvas") {
+                        return DomValue::None;
+                    }
+                    let dimension = |name: &str, default: u32| doc.get_attribute(node, name)
+                        .and_then(|value| value.trim().parse::<u32>().ok())
+                        .unwrap_or(default);
+                    DomValue::Pair(dimension("width", 300) as f64, dimension("height", 150) as f64)
                 },
 
                 // ── Not yet covered by this engine ──
@@ -677,44 +838,474 @@ impl WebEngine for WebCore {
             // A page that declares no size keeps the default: that is a window
             // the user agent chose, and it is what an ordinary HTML page gets.
             WindowOp::InnerSize(w) => {
-                let declared = with_document(w, |doc| {
-                    let body = content_node(doc, DOCUMENT);
-                    let axis = |property: &str| {
-                        doc.get_style_property(body, property)
-                            .and_then(|value| value.trim().strip_suffix("px")?.parse::<f32>().ok())
-                            .filter(|px| *px >= 1.0)
-                    };
-                    (axis("width"), axis("height"))
-                });
-                match declared {
-                    Some((Some(width), Some(height))) => {
-                        WindowValue::Pair(width as f64, height as f64)
-                    }
-                    _ => WindowValue::Pair(DEFAULT_VIEWPORT_W as f64, DEFAULT_VIEWPORT_H as f64),
-                }
+                let (width, height) = with_document(w, |doc| (doc.viewport_w, doc.viewport_h))
+                    .unwrap_or((DEFAULT_VIEWPORT_W, DEFAULT_VIEWPORT_H));
+                WindowValue::Pair(width as f64, height as f64)
             }
-            // Geometry, chrome and the message boxes are host concerns, not
-            // DOM — identical under either engine, so they delegate.
-            other => crate::engine_widgets::Widgets.window(other),
+            WindowOp::Focus(_) => {
+                webcore::embedded_window::focus();
+                WindowValue::None
+            }
+            WindowOp::Screen(w) => {
+                let size = webcore::embedded_window::screen_size().or_else(|| {
+                    if let WindowValue::Pair(width, height) = self.window(WindowOp::InnerSize(w)) {
+                        Some((width, height))
+                    } else { None }
+                });
+                size.map(|(width, height)| WindowValue::Pair(width, height))
+                    .unwrap_or(WindowValue::Null)
+            }
+            WindowOp::ResizeTo(w, width, height) => {
+                with_document(w, |doc| doc.set_viewport(width as f32, height as f32));
+                webcore::embedded_window::resize_to(width, height);
+                WindowValue::None
+            }
+            WindowOp::ViewportChanged(w, width, height) => {
+                with_document(w, |doc| doc.set_viewport(width as f32, height as f32));
+                WindowValue::None
+            }
+            WindowOp::MoveTo(_, x, y) => {
+                webcore::embedded_window::move_to(x, y);
+                WindowValue::None
+            }
+            WindowOp::ScreenPosition(_) => webcore::embedded_window::screen_position()
+                .map(|(x, y)| WindowValue::Pair(x, y)).unwrap_or(WindowValue::Null),
+            WindowOp::Name(w) => WindowValue::Text(
+                with_document(w, |doc| doc.title()).unwrap_or_default()
+            ),
+            WindowOp::Alert(message) => {
+                webcore::platform::dialogs::alert(&message);
+                WindowValue::None
+            }
+            WindowOp::Confirm(message) =>
+                WindowValue::Bool(webcore::platform::dialogs::confirm(&message)),
         }
     }
 
     fn events(&self, op: EventOp) -> EventValue {
-        // All four delegate. This is the RAW INPUT queue — process-wide, filled
-        // by the winit shell — not the per-document DOM queue that
-        // `DomOp::DrainEvents` serves. Nothing about it changes with the DOM
-        // engine, so re-implementing it here would fork input delivery for no
-        // gain.
-        crate::engine_widgets::Widgets.events(op)
+        match op {
+            EventOp::Dispatch(event) => {
+                webcore::ui_events::push(into_webcore_event(event));
+                EventValue::None
+            }
+            EventOp::Poll => webcore::ui_events::poll()
+                .map(from_webcore_event).map(EventValue::Event).unwrap_or(EventValue::Null),
+            EventOp::Pending => EventValue::Count(webcore::ui_events::pending()),
+            EventOp::PointerState => {
+                let state = webcore::ui_events::pointer_state();
+                EventValue::Pointer {
+                    client_x: state.client_x, client_y: state.client_y,
+                    buttons: state.buttons, ctrl_key: state.ctrl_key,
+                    shift_key: state.shift_key, alt_key: state.alt_key,
+                    meta_key: state.meta_key,
+                }
+            }
+        }
     }
 
     fn schedule(&self, op: ScheduleOp) -> ScheduleValue {
-        // Timers and frames are wall-clock bookkeeping with no DOM in them.
-        crate::engine_widgets::Widgets.schedule(op)
+        use webcore::scheduling;
+        match op {
+            ScheduleOp::SetTimer(delay) => ScheduleValue::Id(scheduling::set_timer(delay)),
+            ScheduleOp::ClearTimer(id) => ScheduleValue::Bool(scheduling::clear_timer(id)),
+            ScheduleOp::TakeDueTimer => scheduling::take_due_timer()
+                .map(ScheduleValue::Id).unwrap_or(ScheduleValue::Null),
+            ScheduleOp::RequestFrame => ScheduleValue::Id(scheduling::request_frame()),
+            ScheduleOp::CancelFrame(id) => ScheduleValue::Bool(scheduling::cancel_frame(id)),
+            ScheduleOp::TakeDueFrame => scheduling::take_due_frame()
+                .map(ScheduleValue::Id).unwrap_or(ScheduleValue::Null),
+            ScheduleOp::TimerDelayMs => scheduling::timer_delay_ms()
+                .map(ScheduleValue::Ms).unwrap_or(ScheduleValue::Null),
+            ScheduleOp::FrameDelayMs => scheduling::frame_delay_ms()
+                .map(ScheduleValue::Ms).unwrap_or(ScheduleValue::Null),
+            ScheduleOp::Now => ScheduleValue::Ms(scheduling::now_ms()),
+        }
+    }
+
+    fn picker(&self, op: PickerOp) -> Vec<String> {
+        use webcore::platform::dialogs;
+        let paths = match op {
+            PickerOp::Open { title, filters, directory, multiple } =>
+                dialogs::open_file(&title, &filters, &directory, multiple),
+            PickerOp::Save { title, filters, directory, suggested } =>
+                dialogs::save_file(&title, &filters, &directory, &suggested).into_iter().collect(),
+            PickerOp::Directory { title, directory } =>
+                dialogs::pick_directory(&title, &directory).into_iter().collect(),
+        };
+        paths.into_iter().map(|path| path.to_string_lossy().into_owned()).collect()
     }
 }
 
 /// Install webcore as the web engine.
 pub fn install() {
     crate::engine::set_engine(Arc::new(WebCore));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_image_mutations_restart_resource_fetches() {
+        let browser = WebCore;
+        let document = browser.new_document("Image update");
+        let node = match browser.document(document, DomOp::CreateElement {
+            tag: "canvas".into(),
+            input_type: String::new(),
+        }) {
+            DomValue::Node(node) => node,
+            other => panic!("expected canvas node, got {other:?}"),
+        };
+        browser.document(document, DomOp::AppendChild { parent: DOCUMENT, child: node });
+        with_document_resources(document, |_, dirty| *dirty = false);
+
+        browser.document(document, DomOp::SetStyleProperty(node, "color".into(), "red".into()));
+        with_document_resources(document, |_, dirty| assert!(!*dirty));
+
+        browser.document(document, DomOp::SetStyleProperty(node, "background-image".into(), "url(second.png)".into()));
+        with_document_resources(document, |_, dirty| assert!(*dirty));
+    }
+
+    fn event_paths(events: &[DomEventRecord]) -> Vec<(NodeId, NodeId, &str)> {
+        events.iter().map(|e| (e.current_target, e.target, e.kind.as_str())).collect()
+    }
+
+    #[test]
+    fn inner_size_tracks_viewport_not_body_style() {
+        let browser = WebCore;
+        let document = browser.new_document("Viewport test");
+        browser.document(document, DomOp::SetStyleProperty(DOCUMENT, "width".into(), "320px".into()));
+        let size = browser.window(WindowOp::InnerSize(document));
+        assert!(matches!(size, WindowValue::Pair(800.0, 600.0)));
+
+        browser.window(WindowOp::ResizeTo(document, 640.0, 880.0));
+        let size = browser.window(WindowOp::InnerSize(document));
+        assert!(matches!(size, WindowValue::Pair(640.0, 880.0)));
+    }
+
+    #[test]
+    fn pointer_click_reaches_dom_listener_queue() {
+        let browser = WebCore;
+        let document = browser.new_document("Click test");
+        let DomValue::Node(button) = browser.document(document, DomOp::CreateElement {
+            tag: "button".into(), input_type: String::new(),
+        }) else { panic!("button not created") };
+        browser.document(document, DomOp::AppendChild { parent: DOCUMENT, child: button });
+        browser.document(document, DomOp::SetStyleProperty(button, "width".into(), "100px".into()));
+        browser.document(document, DomOp::SetStyleProperty(button, "height".into(), "40px".into()));
+        let DomValue::Rect { x, y, width, height } =
+            browser.document(document, DomOp::BoundingClientRect(button))
+        else { panic!("button not laid out") };
+        assert!(width > 0.0 && height > 0.0);
+        let (client_x, client_y) = ((x + width / 2.0) as f32, (y + height / 2.0) as f32);
+        for kind in ["mousedown", "mouseup"] {
+            browser.document(document, DomOp::DispatchPointer {
+                kind: kind.into(), client_x, client_y, button: 0,
+            });
+        }
+        let DomValue::Events(events) = browser.document(document, DomOp::DrainEvents)
+        else { panic!("no DOM event queue") };
+        assert_eq!(event_paths(&events), vec![(button, button, "click")]);
+    }
+
+    #[test]
+    fn mouse_coordinates_reach_dom_listener_queue() {
+        let browser = WebCore;
+        let document = browser.new_document("Mouse fields test");
+        let DomValue::Node(node) = browser.document(document, DomOp::CreateElement {
+            tag: "div".into(), input_type: String::new(),
+        }) else { panic!("div not created") };
+        browser.document(document, DomOp::AppendChild { parent: DOCUMENT, child: node });
+        browser.document(document, DomOp::SetStyleProperty(node, "width".into(), "100px".into()));
+        browser.document(document, DomOp::SetStyleProperty(node, "height".into(), "40px".into()));
+        browser.document(document, DomOp::ObserveEvent { node, kind: "mousedown".into() });
+        let DomValue::Rect { x, y, width, height } =
+            browser.document(document, DomOp::BoundingClientRect(node))
+        else { panic!("div not laid out") };
+        let client_x = (x + width / 2.0) as f32;
+        let client_y = (y + height / 2.0) as f32;
+        browser.document(document, DomOp::DispatchPointer {
+            kind: "mousedown".into(), client_x, client_y, button: 0,
+        });
+        let DomValue::Events(events) = browser.document(document, DomOp::DrainEvents)
+        else { panic!("no DOM event queue") };
+        assert_eq!(event_paths(&events), vec![(node, node, "mousedown")]);
+        assert_eq!(events[0].fields.client_x, client_x.round() as i32);
+        assert_eq!(events[0].fields.client_y, client_y.round() as i32);
+    }
+
+    #[test]
+    fn dynamic_nested_div_click_reaches_dom_listener_queue() {
+        let browser = WebCore;
+        let document = browser.new_document("Div click test");
+        let DomValue::Node(parent) = browser.document(document, DomOp::CreateElement {
+            tag: "div".into(), input_type: String::new(),
+        }) else { panic!("parent not created") };
+        let DomValue::Node(child) = browser.document(document, DomOp::CreateElement {
+            tag: "div".into(), input_type: String::new(),
+        }) else { panic!("child not created") };
+        browser.document(document, DomOp::AppendChild { parent: DOCUMENT, child: parent });
+        browser.document(document, DomOp::AppendChild { parent, child });
+        browser.document(document, DomOp::ObserveEvent { node: parent, kind: "click".into() });
+        browser.document(document, DomOp::ObserveEvent { node: child, kind: "click".into() });
+        browser.document(document, DomOp::SetStyleProperty(parent, "width".into(), "100px".into()));
+        browser.document(document, DomOp::SetStyleProperty(parent, "height".into(), "60px".into()));
+        browser.document(document, DomOp::SetStyleProperty(child, "width".into(), "80px".into()));
+        browser.document(document, DomOp::SetStyleProperty(child, "height".into(), "40px".into()));
+        let DomValue::Rect { x, y, width, height } =
+            browser.document(document, DomOp::BoundingClientRect(child))
+        else { panic!("child not laid out") };
+        assert!(width > 0.0 && height > 0.0);
+        for kind in ["mousedown", "mouseup"] {
+            browser.document(document, DomOp::DispatchPointer {
+                kind: kind.into(), client_x: (x + width / 2.0) as f32,
+                client_y: (y + height / 2.0) as f32, button: 0,
+            });
+        }
+        let DomValue::Events(events) = browser.document(document, DomOp::DrainEvents)
+        else { panic!("no DOM event queue") };
+        assert_eq!(event_paths(&events), vec![
+            (child, child, "click"),
+            (parent, child, "click"),
+        ]);
+        browser.document(document, DomOp::UnobserveEvent { node: child, kind: "click".into() });
+        with_entry(document, |entry| {
+            assert!(!entry.observed.contains_key(&(child, "click".into())));
+            assert!(!entry.doc.event_targets.node_ids().any(|id| id == child as u32));
+        });
+        for kind in ["mousedown", "mouseup"] {
+            browser.document(document, DomOp::DispatchPointer {
+                kind: kind.into(), client_x: (x + width / 2.0) as f32,
+                client_y: (y + height / 2.0) as f32, button: 0,
+            });
+        }
+        let DomValue::Events(events) = browser.document(document, DomOp::DrainEvents)
+        else { panic!("no DOM event queue") };
+        // The legacy form callback still records the raw hit node; it has no
+        // guest listener after removal, while the parent's native listener remains.
+        assert_eq!(event_paths(&events), vec![
+            (parent, child, "click"),
+            (child, child, "click"),
+        ]);
+    }
+
+    #[test]
+    fn positioned_grid_cell_receives_pointer_click() {
+        let browser = WebCore;
+        let document = browser.new_document("Grid click test");
+        let DomValue::Node(grid) = browser.document(document, DomOp::CreateElement {
+            tag: "div".into(), input_type: String::new(),
+        }) else { panic!("grid not created") };
+        let DomValue::Node(cell) = browser.document(document, DomOp::CreateElement {
+            tag: "div".into(), input_type: String::new(),
+        }) else { panic!("cell not created") };
+        browser.document(document, DomOp::ObserveEvent { node: cell, kind: "click".into() });
+        browser.document(document, DomOp::AppendChild { parent: DOCUMENT, child: grid });
+        browser.document(document, DomOp::AppendChild { parent: grid, child: cell });
+        for (name, value) in [
+            ("display", "grid"), ("grid-template-columns", "repeat(7, 1fr)"),
+            ("grid-template-rows", "repeat(6, 1fr)"), ("position", "absolute"),
+            ("left", "50px"), ("top", "60px"), ("width", "400px"),
+            ("height", "340px"), ("background-color", "dodgerblue"),
+        ] {
+            browser.document(document, DomOp::SetStyleProperty(grid, name.into(), value.into()));
+        }
+        for (name, value) in [
+            ("position", "relative"), ("width", "100%"), ("height", "100%"),
+            ("grid-column-start", "1"), ("grid-row-start", "1"),
+            ("background-color", "white"),
+        ] {
+            browser.document(document, DomOp::SetStyleProperty(cell, name.into(), value.into()));
+        }
+        let DomValue::Rect { x, y, width, height } =
+            browser.document(document, DomOp::BoundingClientRect(cell))
+        else { panic!("cell not laid out") };
+        assert!(width > 0.0 && height > 0.0);
+        for kind in ["mousedown", "mouseup"] {
+            browser.document(document, DomOp::DispatchPointer {
+                kind: kind.into(), client_x: (x + width / 2.0) as f32,
+                client_y: (y + height / 2.0) as f32, button: 0,
+            });
+        }
+        let DomValue::Events(events) = browser.document(document, DomOp::DrainEvents)
+        else { panic!("no DOM event queue") };
+        assert_eq!(event_paths(&events), vec![(cell, cell, "click")]);
+    }
+
+    #[test]
+    fn input_families_reach_registered_dom_targets() {
+        let browser = WebCore;
+        let document = browser.new_document("Input events");
+        let DomValue::Node(button) = browser.document(document, DomOp::CreateElement {
+            tag: "button".into(), input_type: String::new(),
+        }) else { panic!("button not created") };
+        browser.document(document, DomOp::AppendChild { parent: DOCUMENT, child: button });
+        browser.document(document, DomOp::SetStyleProperty(button, "width".into(), "100px".into()));
+        browser.document(document, DomOp::SetStyleProperty(button, "height".into(), "40px".into()));
+        for kind in ["mousedown", "mouseup", "pointerdown", "pointerup", "click", "wheel",
+                     "mousemove", "pointermove", "mouseover", "mouseout", "mouseenter", "mouseleave"] {
+            browser.document(document, DomOp::ObserveEvent { node: button, kind: kind.into() });
+        }
+        for kind in ["keydown", "keypress", "keyup"] {
+            browser.document(document, DomOp::ObserveEvent { node: DOCUMENT, kind: kind.into() });
+        }
+        let DomValue::Rect { x, y, width, height } =
+            browser.document(document, DomOp::BoundingClientRect(button))
+        else { panic!("button not laid out") };
+        let (client_x, client_y) = ((x + width / 2.0) as f32, (y + height / 2.0) as f32);
+        for kind in ["mousedown", "mouseup"] {
+            browser.document(document, DomOp::DispatchPointer {
+                kind: kind.into(), client_x, client_y, button: 0,
+            });
+        }
+        browser.document(document, DomOp::DispatchPointer {
+            kind: "mousemove".into(), client_x, client_y, button: 0,
+        });
+        let hover_before = with_document(document, |doc| doc.hovered_box).unwrap();
+        let outside_hit = with_document(document, |doc| doc.element_from_point(700.0, 500.0)).unwrap();
+        assert_eq!(hover_before, button as u32, "unexpected hover target; outside hit: {outside_hit:?}");
+        browser.document(document, DomOp::DispatchPointer {
+            kind: "mousemove".into(), client_x: 700.0,
+            client_y: 500.0, button: 0,
+        });
+        browser.document(document, DomOp::DispatchWheel(UiEventFields {
+            kind: "wheel".into(), client_x: client_x as i32,
+            client_y: client_y as i32, delta_y: -30.0,
+            ..UiEventFields::default()
+        }));
+        for kind in ["keydown", "keypress", "keyup"] {
+            browser.document(document, DomOp::DispatchKeyboard(UiEventFields {
+                kind: kind.into(), key: "a".into(), key_code: 65,
+                ..UiEventFields::default()
+            }));
+        }
+        let DomValue::Events(events) = browser.document(document, DomOp::DrainEvents)
+        else { panic!("no DOM event queue") };
+        for kind in ["mousedown", "mouseup", "pointerdown", "pointerup", "click", "wheel",
+                     "mousemove", "pointermove", "mouseover", "mouseout", "mouseenter", "mouseleave"] {
+            assert!(events.iter().any(|event| event.current_target == button && event.kind == kind),
+                "missing {kind}: {events:?}");
+        }
+        for kind in ["keydown", "keypress", "keyup"] {
+            assert!(events.iter().any(|event| event.current_target == DOCUMENT && event.kind == kind),
+                "missing {kind}: {events:?}");
+        }
+    }
+
+    #[test]
+    fn form_controls_emit_input_and_change() {
+        let browser = WebCore;
+        let document = browser.new_document("Form events");
+        let DomValue::Node(input) = browser.document(document, DomOp::CreateElement {
+            tag: "input".into(), input_type: "text".into(),
+        }) else { panic!("input not created") };
+        browser.document(document, DomOp::AppendChild { parent: DOCUMENT, child: input });
+        for kind in ["input", "change"] {
+            browser.document(document, DomOp::ObserveEvent { node: input, kind: kind.into() });
+        }
+        browser.document(document, DomOp::Focus(input));
+        browser.document(document, DomOp::DispatchKeyboard(UiEventFields {
+            kind: "keydown".into(), key: "a".into(), key_code: 65,
+            ..UiEventFields::default()
+        }));
+        let DomValue::Node(checkbox) = browser.document(document, DomOp::CreateElement {
+            tag: "input".into(), input_type: "checkbox".into(),
+        }) else { panic!("checkbox not created") };
+        browser.document(document, DomOp::AppendChild { parent: DOCUMENT, child: checkbox });
+        browser.document(document, DomOp::ObserveEvent { node: checkbox, kind: "change".into() });
+        let DomValue::Rect { x, y, width, height } =
+            browser.document(document, DomOp::BoundingClientRect(checkbox))
+        else { panic!("checkbox not laid out") };
+        for kind in ["mousedown", "mouseup"] {
+            browser.document(document, DomOp::DispatchPointer {
+                kind: kind.into(), client_x: (x + width / 2.0) as f32,
+                client_y: (y + height / 2.0) as f32, button: 0,
+            });
+        }
+        let DomValue::Events(events) = browser.document(document, DomOp::DrainEvents)
+        else { panic!("no DOM event queue") };
+        assert!(events.iter().any(|event| event.current_target == input && event.kind == "input"),
+            "input event missing: {events:?}");
+        assert!(events.iter().any(|event| event.current_target == checkbox && event.kind == "change"),
+            "change event missing: {events:?}");
+    }
+
+    #[test]
+    fn populated_grid_hits_each_cell_not_just_its_container() {
+        let browser = WebCore;
+        let document = browser.new_document("Populated grid");
+        let DomValue::Node(grid) = browser.document(document, DomOp::CreateElement {
+            tag: "div".into(), input_type: String::new(),
+        }) else { panic!("grid not created") };
+        browser.document(document, DomOp::AppendChild { parent: DOCUMENT, child: grid });
+        for (name, value) in [
+            ("display", "grid"), ("grid-template-columns", "repeat(7, 1fr)"),
+            ("grid-template-rows", "repeat(6, 1fr)"), ("gap", "2px"),
+            ("position", "absolute"), ("left", "50px"), ("top", "60px"),
+            ("width", "400px"), ("height", "340px"),
+        ] {
+            browser.document(document, DomOp::SetStyleProperty(grid, name.into(), value.into()));
+        }
+        browser.document(document, DomOp::SetAttribute(grid, "tabindex".into(), "1".into()));
+        for (tag, x, y, width, height) in [
+            ("label", 0, 0, 500, 40),
+            ("label", 50, 410, 400, 30),
+            ("button", 202, 450, 96, 23),
+        ] {
+            let DomValue::Node(sibling) = browser.document(document, DomOp::CreateElement {
+                tag: tag.into(), input_type: String::new(),
+            }) else { panic!("sibling not created") };
+            browser.document(document, DomOp::AppendChild { parent: DOCUMENT, child: sibling });
+            for (name, value) in [
+                ("position", "absolute".to_string()),
+                ("left", format!("{x}px")), ("top", format!("{y}px")),
+                ("width", format!("{width}px")), ("height", format!("{height}px")),
+            ] {
+                browser.document(document, DomOp::SetStyleProperty(sibling, name.into(), value));
+            }
+        }
+        let mut cells = Vec::new();
+        for row in 0..6 {
+            for col in 0..7 {
+                let DomValue::Node(cell) = browser.document(document, DomOp::CreateElement {
+                    tag: "div".into(), input_type: String::new(),
+                }) else { panic!("cell not created") };
+                browser.document(document, DomOp::AppendChild { parent: grid, child: cell });
+                browser.document(document, DomOp::ObserveEvent { node: cell, kind: "click".into() });
+                for (name, value) in [
+                    ("grid-column-start", (col + 1).to_string()),
+                    ("grid-row-start", (row + 1).to_string()),
+                    ("background-color", "white".into()),
+                    ("border", "1px solid #777".into()),
+                    ("margin", "2px 2px 2px 2px".into()),
+                    ("position", "relative".into()),
+                    ("width", "100%".into()),
+                    ("height", "100%".into()),
+                    ("box-sizing", "border-box".into()),
+                ] {
+                    browser.document(document, DomOp::SetStyleProperty(cell, name.into(), value));
+                }
+                cells.push(cell);
+            }
+        }
+        for cell in cells {
+            let DomValue::Rect { x, y, width, height } =
+                browser.document(document, DomOp::BoundingClientRect(cell))
+            else { panic!("cell not laid out") };
+            assert!(width > 0.0 && height > 0.0, "cell {cell} has no hit area");
+            let (client_x, client_y) = ((x + width / 2.0) as f32, (y + height / 2.0) as f32);
+            browser.document(document, DomOp::DispatchPointer {
+                kind: "mousemove".into(), client_x, client_y, button: 0,
+            });
+            for kind in ["mousedown", "mouseup"] {
+                browser.document(document, DomOp::DispatchPointer {
+                    kind: kind.into(), client_x, client_y, button: 0,
+                });
+            }
+            let DomValue::Events(events) = browser.document(document, DomOp::DrainEvents)
+            else { panic!("no DOM event queue") };
+            assert!(events.iter().any(|event| event.current_target == cell && event.kind == "click"),
+                "cell {cell} did not receive its click: {events:?}");
+        }
+    }
 }

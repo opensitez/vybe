@@ -166,7 +166,7 @@ pub fn register_types(fw: &mut Framework<'_>) {
     // The types above belong to `web:dom-parser` — detached `Value::Object`
     // trees, which is the right shape for `DOMParser().parseFromString(…)` and
     // `XMLHttpRequest.responseXML`, and which render nothing. The document a
-    // page actually has is `widgets::dom`, reached through `web:dom` /
+    // page actually has belongs to the active engine, reached through `web:dom` /
     // `web:html` / `web:cssom`, and it needs its own vtables because the same
     // method name has a different implementation over a different tree.
     //
@@ -180,9 +180,8 @@ pub fn register_types(fw: &mut Framework<'_>) {
     // resolving at all.
     //
     // `insertBefore` / `replaceChild` / `cloneNode` are absent on purpose:
-    // `widgets::dom::Document` has `append_child` and `remove_child` and
-    // nothing else, so there is no engine operation to forward to. They are not
-    // stubbed — a missing method fails to resolve, which is visible.
+    // These methods are not exposed on the live HTMLElement vtable here;
+    // a missing method fails to resolve rather than targeting the detached tree.
     let html_element_id = {
         let mut t = TypeDef::new("HTMLElement");
         // (method, module, host fn). The module differs per method because the

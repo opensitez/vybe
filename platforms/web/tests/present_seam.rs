@@ -5,7 +5,6 @@
 //! choice: `present` reads `engine_select::live()`, which a test sharing a
 //! binary with another engine's `install()` would be racing.
 //!
-//!     cargo test -p vybe_platform_web --features gui            --test present_seam
 //!     cargo test -p vybe_platform_web --features engine-webcore --test present_seam
 
 use vybe_platform_web::engine::{DOCUMENT, DomOp, DomValue, apply, new_document};
@@ -14,10 +13,7 @@ use vybe_platform_web::engine_select::{self, Engine};
 fn setup() -> u64 {
     // Through `engine_select`, not the engine's own `install()`: `present`
     // asks which engine is LIVE, and only this sets that.
-    #[cfg(feature = "engine-webcore")]
     engine_select::choose(Engine::WebCore);
-    #[cfg(not(feature = "engine-webcore"))]
-    engine_select::choose(Engine::Widgets);
     engine_select::install();
     new_document("test")
 }
@@ -84,7 +80,7 @@ fn a_frame_is_painted_from_the_live_engine() {
         DomOp::SetStyleProperty(button, "background-color".into(), "#ff0000".into()),
     );
 
-    let mut pixmap = widgets::Pixmap::new(200, 100).expect("pixmap");
+    let mut pixmap = tiny_skia::Pixmap::new(200, 100).expect("pixmap");
     assert!(
         vybe_platform_web::present::render(doc, &mut pixmap, 1.0),
         "the live engine refused to paint a document that has content"

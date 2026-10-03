@@ -39,18 +39,45 @@ fn create(doc: u64, tag: &str, input_type: &str) -> u64 {
 /// contract, so the same assertions run against either browser and there is no
 /// second copy to drift:
 ///
-///     cargo test -p vybe_platform_web --features gui             # widgets
-///     cargo test -p vybe_platform_web --features engine-webcore  # webcore
+///     cargo test -p vybe_platform_web --features engine-webcore
 fn install() {
-    #[cfg(feature = "engine-webcore")]
     vybe_platform_web::engine_webcore::install();
-    #[cfg(not(feature = "engine-webcore"))]
-    vybe_platform_web::engine_widgets::install();
 }
 
 fn setup() -> u64 {
     install();
     new_document("test")
+}
+
+#[test]
+fn native_keyboard_input_reaches_document_listener_with_event_fields() {
+    use vybe_platform_web::html;
+    use vybe_runtime::Value;
+    use vybe_platform_web::engine::{EventOp, UiEventFields, events};
+
+    let document = setup();
+    html::add_event_listener(document, DOCUMENT, "keydown", Value::String("key-handler".into()));
+    events(EventOp::Dispatch(UiEventFields {
+        kind: "keydown".into(),
+        key: "ArrowUp".into(),
+        code: "ArrowUp".into(),
+        key_code: 38,
+        shift_key: true,
+        ..UiEventFields::default()
+    }));
+
+    let calls = html::pending_dispatches(document);
+    assert_eq!(calls.len(), 1);
+    assert_eq!(format!("{}", calls[0].0), "key-handler");
+    let Value::Object(event) = &calls[0].1 else {
+        panic!("listener must receive an Event object");
+    };
+    let event = event.lock().unwrap();
+    assert_eq!(format!("{}", event.properties["type"]), "keydown");
+    assert_eq!(format!("{}", event.properties["code"]), "ArrowUp");
+    assert_eq!(event.properties["keyCode"].as_i32(), 38);
+    assert!(matches!(event.properties["shiftKey"], Value::Bool(true)));
+    assert!(html::pending_dispatches(document).is_empty());
 }
 
 #[test]
@@ -265,6 +292,37 @@ fn click_at(doc: u64, node: u64) {
     }
 }
 
+#[cfg(feature = "engine-webcore")]
+#[test]
+fn dynamic_child_listener_and_ancestor_receive_click_with_distinct_targets() {
+    use vybe_platform_web::html;
+    use vybe_runtime::Value;
+
+    let doc = setup();
+    let parent = create(doc, "div", "");
+    let child = create(doc, "div", "");
+    html::add_event_listener(doc, child, "click", Value::String("child".into()));
+    html::add_event_listener(doc, parent, "click", Value::String("parent".into()));
+    apply(doc, DomOp::AppendChild { parent: DOCUMENT, child: parent });
+    apply(doc, DomOp::AppendChild { parent, child });
+    apply(doc, DomOp::SetStyleProperty(parent, "width".into(), "100px".into()));
+    apply(doc, DomOp::SetStyleProperty(parent, "height".into(), "60px".into()));
+    apply(doc, DomOp::SetStyleProperty(child, "width".into(), "80px".into()));
+    apply(doc, DomOp::SetStyleProperty(child, "height".into(), "40px".into()));
+    click_at(doc, child);
+    let calls = html::pending_dispatches(doc);
+    assert_eq!(calls.len(), 2);
+    for (index, (callback, event)) in calls.iter().enumerate() {
+        let expected = if index == 0 { ("child", child) } else { ("parent", parent) };
+        assert_eq!(format!("{callback}"), expected.0);
+        let Value::Object(event) = event else { panic!("listener needs an Event") };
+        let event = event.lock().unwrap();
+        assert_eq!(event.properties["target"].as_i32(), child as i32);
+        assert_eq!(event.properties["currentTarget"].as_i32(), expected.1 as i32);
+    }
+    html::clear_document_listeners(doc);
+}
+
 #[test]
 fn a_click_comes_back_as_a_dom_event() {
     let doc = setup();
@@ -285,7 +343,7 @@ fn a_click_comes_back_as_a_dom_event() {
         panic!("DrainEvents must answer with events");
     };
     assert!(
-        events.iter().any(|(n, k)| *n == b && k == "click"),
+        events.iter().any(|event| event.target == b && event.kind == "click"),
         "expected a click on the button, got {:?}",
         events
     );
@@ -1292,14 +1350,14 @@ fn clicking_a_dropdown_reaches_the_control() {
         panic!("DrainEvents must answer with events");
     };
     assert!(
-        events.iter().any(|(n, k)| *n == s && k == "click"),
+        events.iter().any(|event| event.target == s && event.kind == "click"),
         "a click on a dropdown never reached it, got {events:?}"
     );
     // ⛔ EXACTLY one. `any()` cannot tell one click from two, and two is what a
     // control gets when a generic click path and a per-control one both fire:
     // a handler that counts, toggles or appends would do it twice for one press.
     assert_eq!(
-        events.iter().filter(|(_, k)| k == "click").count(),
+        events.iter().filter(|event| event.kind == "click").count(),
         1,
         "one press is one click, got {events:?}"
     );
@@ -1338,7 +1396,7 @@ fn one_press_is_one_click_on_every_kind_of_element() {
         let DomValue::Events(events) = apply(doc, DomOp::DrainEvents) else {
             panic!("DrainEvents must answer with events");
         };
-        let clicks = events.iter().filter(|(_, k)| k == "click").count();
+        let clicks = events.iter().filter(|event| event.kind == "click").count();
         assert_eq!(
             clicks, 1,
             "<{tag}> reported {clicks} clicks for one press: {events:?}"

@@ -33,7 +33,7 @@ fn obj(props: Vec<(&str, Value)>) -> Value {
 }
 
 /// Build the guest-visible event object — W3C attribute names.
-fn event_object(e: &UiEventFields) -> Value {
+pub(crate) fn event_object(e: &UiEventFields) -> Value {
     obj(vec![
         ("type", Value::String(e.kind.as_str().into())),
         ("key", Value::String(e.key.as_str().into())),

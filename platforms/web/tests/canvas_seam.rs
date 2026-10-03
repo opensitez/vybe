@@ -8,13 +8,12 @@
 //! Every assertion below is the WHATWG contract, so the same file runs against
 //! either engine and there is no second copy to drift:
 //!
-//!     cargo test -p vybe_platform_web --features gui             # widgets
-//!     cargo test -p vybe_platform_web --features engine-webcore  # webcore
+//!     cargo test -p vybe_platform_web --features engine-webcore
 
 use vybe_platform_web::canvas_backend::{
-    Op2D, Query2D, Query2DValue, StringAttribute, apply as paint, backend, query,
+    apply as paint, backend, query, Op2D, Query2D, Query2DValue, StringAttribute,
 };
-use vybe_platform_web::engine::{DOCUMENT, DomOp, DomValue, apply};
+use vybe_platform_web::engine::{apply, DomOp, DomValue, DOCUMENT};
 
 /// `measureText(text).width` on `target`, which must exist.
 fn measured(target: &str, text: &str) -> f32 {
@@ -36,16 +35,8 @@ fn node(v: DomValue) -> u64 {
 /// traits, and a build that swapped only the first would deliver every paint op
 /// to a document that does not contain the node it names.
 fn install() {
-    #[cfg(feature = "engine-webcore")]
-    {
-        vybe_platform_web::engine_webcore::install();
-        vybe_platform_web::canvas_backend_webcore::install();
-    }
-    #[cfg(not(feature = "engine-webcore"))]
-    {
-        vybe_platform_web::engine_widgets::install();
-        vybe_platform_web::canvas_backend_widgets::install();
-    }
+    vybe_platform_web::engine_webcore::install();
+    vybe_platform_web::canvas_backend_webcore::install();
 }
 
 /// Add a `<canvas id="{id}">` to the page, and answer the target string an
@@ -78,6 +69,121 @@ fn canvas_on_the_page(id: &str) -> (u64, String) {
         },
     );
     (doc, format!("n{canvas}"))
+}
+
+#[cfg(feature = "engine-webcore")]
+#[test]
+fn drawing_a_tainted_canvas_taints_the_destination_without_exposing_pixels() {
+    let (_, source) = canvas_on_the_page("tainted-source");
+    let (_, destination) = canvas_on_the_page("tainted-destination");
+    backend().unwrap().ensure(&source);
+    backend().unwrap().ensure(&destination);
+
+    paint(
+        &source,
+        Op2D::DrawImageRgba {
+            pixels: vec![255, 0, 0, 255],
+            width: 1,
+            height: 1,
+            origin_clean: false,
+            dx: 0.0,
+            dy: 0.0,
+            dw: 1.0,
+            dh: 1.0,
+        },
+    );
+    assert!(matches!(
+        query(
+            &source,
+            Query2D::GetImageData {
+                sx: 0,
+                sy: 0,
+                sw: 1,
+                sh: 1
+            }
+        ),
+        Query2DValue::Error("SecurityError")
+    ));
+
+    let Query2DValue::SourceImage {
+        data,
+        width,
+        height,
+        origin_clean,
+    } = query(
+        &source,
+        Query2D::SnapshotSource {
+            sx: 0,
+            sy: 0,
+            sw: 1,
+            sh: 1,
+        },
+    )
+    else {
+        panic!("canvas source snapshot missing");
+    };
+    assert!(!origin_clean);
+    paint(
+        &destination,
+        Op2D::DrawImageRgba {
+            pixels: data,
+            width,
+            height,
+            origin_clean,
+            dx: 0.0,
+            dy: 0.0,
+            dw: 1.0,
+            dh: 1.0,
+        },
+    );
+    assert!(matches!(
+        query(
+            &destination,
+            Query2D::GetImageData {
+                sx: 0,
+                sy: 0,
+                sw: 1,
+                sh: 1
+            }
+        ),
+        Query2DValue::Error("SecurityError")
+    ));
+    paint(&destination, Op2D::Reset);
+    assert!(matches!(
+        query(
+            &destination,
+            Query2D::GetImageData {
+                sx: 0,
+                sy: 0,
+                sw: 1,
+                sh: 1
+            }
+        ),
+        Query2DValue::Pixels { .. }
+    ));
+
+    paint(
+        &destination,
+        Op2D::SetFillPattern(vybe_platform_web::canvas_backend::PatternDef {
+            pixels: vec![255, 0, 0, 255],
+            width: 1,
+            height: 1,
+            origin_clean: false,
+            repetition: "repeat".into(),
+        }),
+    );
+    assert!(matches!(
+        query(
+            &destination,
+            Query2D::GetImageData {
+                sx: 0,
+                sy: 0,
+                sw: 1,
+                sh: 1
+            }
+        ),
+        Query2DValue::Error("SecurityError")
+    ));
 }
 
 #[test]
@@ -206,16 +312,19 @@ fn a_full_drawing_sequence_crosses_the_seam() {
             pixels: vec![128u8; 2 * 2 * 4],
             width: 2,
             height: 2,
+            origin_clean: true,
             dx: 0.0,
             dy: 0.0,
             dw: 4.0,
             dh: 4.0,
         },
-        Op2D::DrawImagePaletted {
-            indices: vec![0, 1, 1, 0],
-            palette: vec![0xff0000, 0x00ff00],
+        Op2D::DrawImageRgba {
+            pixels: vec![
+                255, 0, 0, 255, 0, 255, 0, 255, 0, 255, 0, 255, 255, 0, 0, 255,
+            ],
             width: 2,
             height: 2,
+            origin_clean: true,
             dx: 0.0,
             dy: 0.0,
             dw: 4.0,
@@ -536,6 +645,7 @@ fn the_members_that_had_no_wire_format_now_cross() {
             pixels: vec![255u8; 2 * 2 * 4],
             width: 2,
             height: 2,
+            origin_clean: true,
             repetition: "repeat".into(),
         }),
         Op2D::PutImageDataDirty {

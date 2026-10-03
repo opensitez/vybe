@@ -37,11 +37,11 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use vybe_runtime::value::Object;
+use vybe_runtime::value::{Object, ObjectKind};
 use vybe_runtime::vm::{HostFnDecl, ResourceBinding, ResourceMemberKind};
 use vybe_runtime::{FuncSig, HostContext, Param, VM, ValType, Value};
 
-use crate::engine::{DOCUMENT, DocumentId, DomOp, DomValue, NodeId, apply};
+use crate::engine::{DOCUMENT, DocumentId, DomOp, DomValue, EventOp, EventValue, NodeId, UiEventFields, apply, events};
 
 /// `(document, node, event type)` → listeners, in registration order.
 type ListenerKey = (DocumentId, NodeId, String);
@@ -108,10 +108,18 @@ fn return_values() -> &'static Mutex<ReturnValues> {
 /// [`reset_active_document`], since a discarded document's listeners are
 /// unreachable but the map still holds them.
 pub fn clear_document_listeners(document: DocumentId) {
-    listeners()
+    let mut all = listeners()
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .retain(|(doc, _, _), _| *doc != document);
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let removed = all.keys()
+        .filter(|(doc, _, _)| *doc == document)
+        .map(|(_, node, kind)| (*node, kind.clone()))
+        .collect::<Vec<_>>();
+    all.retain(|(doc, _, _), _| *doc != document);
+    drop(all);
+    for (node, kind) in removed {
+        apply(document, DomOp::UnobserveEvent { node, kind });
+    }
 }
 
 /// `target.addEventListener(type, callback)`.
@@ -132,6 +140,7 @@ pub fn add_event_listener(document: DocumentId, node: NodeId, kind: &str, callba
         .entry((document, node, kind.to_string()))
         .or_default()
         .push(callback);
+    apply(document, DomOp::ObserveEvent { node, kind: kind.to_string() });
 }
 
 /// `EventTarget.removeEventListener` — DOM §2.7.
@@ -187,6 +196,8 @@ pub fn remove_event_listener(document: DocumentId, node: NodeId, kind: &str, cal
     }
     if list.is_empty() {
         all.remove(&key);
+        drop(all);
+        apply(document, DomOp::UnobserveEvent { node, kind: kind.to_string() });
     }
 }
 
@@ -230,30 +241,59 @@ pub fn listeners_for(document: DocumentId, node: NodeId, kind: &str) -> Vec<Valu
 /// invoke. The frame loop calls this and dispatches each pair into the VM —
 /// the callback is a runtime value, so invoking it is the runtime's job.
 pub fn pending_dispatches(document: DocumentId) -> Vec<(Value, Value)> {
-    let DomValue::Events(events) = apply(document, DomOp::DrainEvents) else {
-        return Vec::new();
-    };
     let mut out = Vec::new();
-    for (node, kind) in events {
-        for cb in listeners_for(document, node, &kind) {
-            out.push((cb, event_object(&kind, node)));
+    match apply(document, DomOp::DrainEvents) {
+        DomValue::Events(dom_events) => {
+            for dispatched in dom_events {
+                for cb in listeners_for(document, dispatched.current_target, &dispatched.kind) {
+                    let event = event_object(&dispatched.fields, dispatched.target);
+                    if let Value::Object(object) = &event {
+                        object.lock().unwrap().properties.insert(
+                            "currentTarget".into(), Value::F64(dispatched.current_target as f64),
+                        );
+                    }
+                    out.push((cb, event));
+                }
+            }
+        }
+        _ => {}
+    }
+
+    // The native window supplies raw UI events. Deliver them to the document's
+    // EventTarget listeners just as a browser delivers input to a page. A page
+    // with no raw-input listeners leaves the polling queue untouched.
+    const INPUT: [&str; 6] = ["keydown", "keyup", "mousedown", "mouseup", "mousemove", "wheel"];
+    if INPUT.iter().any(|kind| !listeners_for(document, DOCUMENT, kind).is_empty()) {
+        while let EventValue::Event(input) = events(EventOp::Poll) {
+            let callbacks = listeners_for(document, DOCUMENT, &input.kind);
+            if callbacks.is_empty() {
+                continue;
+            }
+            let event = crate::ui_events::event_object(&input);
+            if let Value::Object(object) = &event {
+                let mut object = object.lock().unwrap();
+                object.properties.insert("target".into(), Value::F64(DOCUMENT as f64));
+                object.properties.insert("currentTarget".into(), Value::F64(DOCUMENT as f64));
+                object.properties.insert("bubbles".into(), Value::Bool(true));
+                object.properties.insert("cancelable".into(), Value::Bool(true));
+            }
+            out.extend(callbacks.into_iter().map(|callback| (callback, event.clone())));
         }
     }
     out
 }
 
 /// The object a listener receives — a real `Event`, not loose arguments.
-pub fn event_object(kind: &str, target: NodeId) -> Value {
-    let mut o = Object::new();
-    o.properties
-        .insert("type".into(), Value::String(kind.into()));
-    o.properties
-        .insert("target".into(), Value::F64(target as f64));
-    o.properties
-        .insert("currentTarget".into(), Value::F64(target as f64));
-    o.properties.insert("bubbles".into(), Value::Bool(true));
-    o.properties.insert("cancelable".into(), Value::Bool(true));
-    Value::Object(vybe_runtime::heap::alloc(o))
+pub fn event_object(fields: &UiEventFields, target: NodeId) -> Value {
+    let event = crate::ui_events::event_object(fields);
+    if let Value::Object(object) = &event {
+        let mut object = object.lock().unwrap();
+        object.properties.insert("target".into(), Value::F64(target as f64));
+        object.properties.insert("currentTarget".into(), Value::F64(target as f64));
+        object.properties.insert("bubbles".into(), Value::Bool(true));
+        object.properties.insert("cancelable".into(), Value::Bool(true));
+    }
+    event
 }
 
 /// The active document, created on first use — one per AGENT, not per
@@ -271,7 +311,8 @@ pub fn event_object(kind: &str, target: NodeId) -> Value {
 pub fn active_document() -> DocumentId {
     let slot = active_document_slot();
     let mut slot = slot.lock().unwrap();
-    match slot.0 {
+    slot.debugger_only = false;
+    match slot.id {
         Some(id) => id,
         None => {
             let id = crate::engine::new_document("");
@@ -283,10 +324,25 @@ pub fn active_document() -> DocumentId {
             // the one place the AMBIENT document comes into being — `open()`
             // brings its own context with it.
             crate::engine::window(crate::engine::WindowOp::AdoptTopLevel(id));
-            slot.0 = Some(id);
+            slot.id = Some(id);
             id
         }
     }
+}
+
+/// Reserve the guest's document for debugger inspection without making an
+/// otherwise headless script count as a windowed program.
+pub fn active_document_for_debugger() -> DocumentId {
+    let slot = active_document_slot();
+    let mut slot = slot.lock().unwrap();
+    if let Some(id) = slot.id {
+        return id;
+    }
+    let id = crate::engine::new_document("");
+    crate::engine::window(crate::engine::WindowOp::AdoptTopLevel(id));
+    slot.id = Some(id);
+    slot.debugger_only = true;
+    id
 }
 
 /// This browsing context's ambient document.
@@ -296,7 +352,10 @@ pub fn active_document() -> DocumentId {
 /// test on a reused thread inherited the previous test's controls — a 2-test
 /// wobble between identical runs before this was resettable at all.
 #[derive(Default)]
-struct ActiveDocument(Option<DocumentId>);
+struct ActiveDocument {
+    id: Option<DocumentId>,
+    debugger_only: bool,
+}
 
 fn active_document_slot() -> &'static std::sync::Mutex<ActiveDocument> {
     vybe_runtime::resources::get::<ActiveDocument>()
@@ -321,8 +380,13 @@ pub fn has_browsing_context() -> bool {
     active_document_slot()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .0
+        .id
         .is_some()
+}
+
+pub fn has_guest_browsing_context() -> bool {
+    let slot = active_document_slot().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    slot.id.is_some() && !slot.debugger_only
 }
 
 // ── argument decoding ───────────────────────────────────────────────────
@@ -374,7 +438,7 @@ fn doc_arg(args: &[Value], idx: usize) -> DocumentId {
 /// `__node` is the root, `__type` is what it is, `__document` is which tree.
 /// A document is its own `ownerDocument`, so the last two are about the same
 /// thing — which is what lets one decoder ([`doc_arg`]) read both handles.
-pub fn document_handle(document: DocumentId) -> Value {
+pub fn document_handle(document: DocumentId, body_getter: usize) -> Value {
     let mut o = Object::new_typed(live_type_ids().document);
     o.properties
         .insert("__node".into(), Value::F64(DOCUMENT as f64));
@@ -382,18 +446,49 @@ pub fn document_handle(document: DocumentId) -> Value {
         .insert("__type".into(), Value::String(Arc::from("Document")));
     o.properties
         .insert("__document".into(), Value::F64(document as f64));
-    // `document.body` is an IDL ATTRIBUTE (HTML §3.1.1), not a method, and the
-    // TypeRegistry vtable holds methods only — so it is a property on the
-    // object, which is exactly how `dom_parser` carries `tagName`/`childNodes`
-    // and how a plain `Op::STRUCT_GET` reaches it.
-    //
-    // Without this, `document.body.appendChild(node)` reads `undefined`, calls
-    // a method on it, and inserts NOTHING while raising nothing — the page just
-    // comes out empty. The `web:html:body` host fn stays: it is the same fact
-    // for a caller that imports rather than dispatches.
-    o.properties
-        .insert("body".into(), element(document, DOCUMENT));
+    // `body` is a live IDL attribute. Resolving it while wrapping a document
+    // would both return a stale node after replacement and force a browser
+    // roundtrip even when the caller never reads it.
+    let mut getter = Object::new();
+    getter.kind = ObjectKind::HostFunction(body_getter);
+    o.properties.insert(
+        "__get_body".into(),
+        Value::Object(vybe_runtime::heap::alloc(getter)),
+    );
     Value::Object(vybe_runtime::heap::alloc(o))
+}
+
+#[cfg(test)]
+mod document_handle_tests {
+    use super::*;
+
+    #[test]
+    fn body_is_a_live_accessor_not_an_eager_browser_read() {
+        let Value::Object(handle) = document_handle(42, 17) else {
+            panic!("document handle must be an object");
+        };
+        let handle = handle.lock().unwrap();
+        assert!(!handle.properties.contains_key("body"));
+        assert_eq!(handle.properties.get("__document").unwrap().as_f64(), 42.0);
+        let Some(Value::Object(getter)) = handle.properties.get("__get_body") else {
+            panic!("document.body must be a getter");
+        };
+        assert!(matches!(getter.lock().unwrap().kind, ObjectKind::HostFunction(17)));
+    }
+}
+
+fn body_handle(document: DocumentId) -> Value {
+    if document == 0 {
+        let body = element(0, DOCUMENT);
+        if let Value::Object(o) = &body {
+            o.lock().unwrap().properties.insert("__ambient_body".into(), Value::Bool(true));
+        }
+        return body;
+    }
+    match apply(document, DomOp::QuerySelector("body".into())) {
+        DomValue::Node(node) => element(document, node),
+        _ => Value::Null,
+    }
 }
 
 /// An element reference — the object `createElement` handed back, or a bare
@@ -404,13 +499,20 @@ pub fn document_handle(document: DocumentId) -> Value {
 /// a number can carry none of that. The node id travels inside as `__node`.
 fn node_arg(args: &[Value], idx: usize) -> NodeId {
     match args.get(idx) {
-        Some(Value::Object(o)) => o
-            .lock()
-            .unwrap()
-            .properties
-            .get("__node")
-            .map(|v| v.as_f64() as NodeId)
-            .unwrap_or(DOCUMENT),
+        Some(Value::Object(o)) => {
+            let o = o.lock().unwrap();
+            if matches!(o.properties.get("__ambient_body"), Some(Value::Bool(true))) {
+                drop(o);
+                return match apply(active_document(), DomOp::QuerySelector("body".into())) {
+                    DomValue::Node(node) => node,
+                    _ => DOCUMENT,
+                };
+            }
+            o.properties
+                .get("__node")
+                .map(|v| v.as_f64() as NodeId)
+                .unwrap_or(DOCUMENT)
+        }
         Some(v) => v.as_f64() as NodeId,
         None => DOCUMENT,
     }
@@ -426,7 +528,7 @@ fn node_arg(args: &[Value], idx: usize) -> NodeId {
 ///
 /// **Why these are not the `Element`/`Document` ids.** Those belong to
 /// `web:dom-parser`'s trees, whose methods walk detached `Value::Object` nodes;
-/// the live document's methods go to `web:dom` and walk `widgets::dom`.
+/// the live document's methods go to `web:dom` and the active engine.
 /// One name cannot carry two implementations, so the live handles are the HTML
 /// Standard's own `HTMLDocument`/`HTMLElement`. That the two exist at all is
 /// the open item — see the two-DOMs note in the crate docs.
@@ -679,8 +781,7 @@ fn html_fn(
 /// And for `web:cssom` — `CSSStyleDeclaration`, whose two operations take a
 /// property NAME and a value, both `string`. That is CSSOM's own typing: a
 /// declaration's value is text until a property parses it, which is exactly
-/// why `widgets`' `Style` stores declarations verbatim and `CssProperties`
-/// is the typed view beside it.
+/// why declarations remain text until the active engine computes a style.
 fn css_fn(
     vm: &mut VM,
     name: &str,
@@ -697,6 +798,19 @@ fn css_fn(
 }
 
 pub fn register(vm: &mut VM) {
+    // Register before activeDocument so its document handles can carry the
+    // current VM's callable getter, without a process-global function index.
+    html_fn(
+        vm,
+        "body",
+        "body",
+        vec![doc()],
+        vec![ValType::Option(Box::new(node()))],
+        Box::new(move |_ctx: &mut HostContext, args: &[Value]| body_handle(doc_arg(args, 0))),
+    );
+    let body_getter = vm
+        .resolve_host_function_index("web:html", "body")
+        .expect("web:html.body was just registered");
     // ── Document ────────────────────────────────────────────────────────
     //
     // Declared through `HostFnDecl`: same closure, same behaviour, plus the
@@ -1540,7 +1654,7 @@ pub fn register(vm: &mut VM) {
             "web:html",
             "activeDocument",
             Box::new(move |_ctx: &mut HostContext, _args: &[Value]| {
-                document_handle(active_document())
+                document_handle(active_document(), body_getter)
             }),
         )
         .with_sig(node_method(
@@ -1558,21 +1672,6 @@ pub fn register(vm: &mut VM) {
         }),
     );
 
-    // `document.body` — the document element every control hangs off.
-    //
-    // The parameter is declared because `body` IS a member of a document and
-    // the caller passes one. The closure ignores it and answers the one
-    // `DOCUMENT` root, so this is single-document today; the declaration is
-    // what will make that visible the day a second document exists, rather
-    // than the argument silently going nowhere as it does now.
-    html_fn(
-        vm,
-        "body",
-        "body",
-        vec![doc()],
-        vec![node()],
-        Box::new(move |_ctx: &mut HostContext, args: &[Value]| element(doc_arg(args, 0), DOCUMENT)),
-    );
     // `document.defaultView` (HTML §3.1.1) — the WindowProxy of this document's
     // browsing context, or null if it has none.
     //

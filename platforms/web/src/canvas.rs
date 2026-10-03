@@ -18,11 +18,11 @@
 use std::sync::{Arc, OnceLock};
 
 use vybe_runtime::value::{Object, ObjectKind, TypedElemKind};
-use vybe_runtime::{HostContext, VM, Value};
+use vybe_runtime::{HostContext, Value, VM};
 
 use crate::canvas_backend::{
-    GradientDef, GradientKind, Op2D, PathDef, PathOp2D, PatternDef, Query2D, Query2DValue,
-    StringAttribute, apply, backend, query,
+    apply, backend, query, GradientDef, GradientKind, Op2D, PathDef, PathOp2D, PatternDef, Query2D,
+    Query2DValue, StringAttribute,
 };
 
 /// The surface a context handle draws on.
@@ -88,6 +88,45 @@ fn numeric_property(arg: Option<&Value>, key: &str) -> Option<f64> {
     o.properties.get(key).map(|v| v.as_f64())
 }
 
+fn image_data_dimensions(args: &[Value]) -> Result<(u32, u32, usize), &'static str> {
+    let (width, height) = match args.get(1) {
+        Some(Value::Object(object)) => {
+            let object = object.lock().unwrap();
+            if !matches!(object.properties.get("__type"), Some(Value::String(kind)) if kind.as_ref() == "ImageData")
+            {
+                return Err("TypeError");
+            }
+            let width = object
+                .properties
+                .get("width")
+                .map(Value::as_i32)
+                .unwrap_or(0);
+            let height = object
+                .properties
+                .get("height")
+                .map(Value::as_i32)
+                .unwrap_or(0);
+            if width <= 0 || height <= 0 {
+                return Err("IndexSizeError");
+            }
+            (width as u32, height as u32)
+        }
+        _ => (
+            args.get(1).map(Value::as_i32).unwrap_or(0).unsigned_abs(),
+            args.get(2).map(Value::as_i32).unwrap_or(0).unsigned_abs(),
+        ),
+    };
+    if width == 0 || height == 0 {
+        return Err("IndexSizeError");
+    }
+    let len = (width as usize)
+        .checked_mul(height as usize)
+        .and_then(|pixels| pixels.checked_mul(4))
+        .filter(|len| *len <= i32::MAX as usize)
+        .ok_or("RangeError")?;
+    Ok((width, height, len))
+}
+
 fn f32_arg(args: &[Value], idx: usize) -> f32 {
     args.get(idx).map(|v| v.as_f64() as f32).unwrap_or(0.0)
 }
@@ -139,27 +178,6 @@ fn carray_view(ctx: Option<&HostContext<'_>>, value: &Value) -> Option<(Value, u
     };
     let o = obj.lock().unwrap();
     carray_view_from_object(ctx, &o)
-}
-
-/// The pixels of an `ImageData`-shaped argument: `{data, width, height}`.
-///
-/// `None` when the object is not that shape or its buffer does not match its
-/// own dimensions — which is a caller mistake, not a partial image, and is
-/// dropped rather than read from whatever bytes happened to be there.
-fn image_data_arg(arg: Option<&Value>) -> Option<(Vec<u8>, u32, u32)> {
-    let Some(Value::Object(o)) = arg else {
-        return None;
-    };
-    let bag = o.lock().unwrap();
-    let width = bag.properties.get("width").map(|v| v.as_f64() as u32)?;
-    let height = bag.properties.get("height").map(|v| v.as_f64() as u32)?;
-    let data = bag.properties.get("data").cloned()?;
-    drop(bag);
-    let pixels = bytes_arg(None, &[data], 0);
-    if pixels.len() != (width as usize) * (height as usize) * 4 {
-        return None;
-    }
-    Some((pixels, width, height))
 }
 
 fn bool_arg(args: &[Value], idx: usize) -> bool {
@@ -478,10 +496,16 @@ fn style_value(v: Option<&Value>) -> StyleValue {
                 .get("__repetition")
                 .map(|v| format!("{}", v))
                 .unwrap_or_else(|| "repeat".to_string());
+            let origin_clean = lock
+                .properties
+                .get("__origin_clean")
+                .map(Value::as_bool)
+                .unwrap_or(true);
             StyleValue::Pattern(PatternDef {
                 pixels,
                 width,
                 height,
+                origin_clean,
                 repetition,
             })
         }
@@ -1076,15 +1100,19 @@ pub fn register(vm: &mut VM) {
     vm.register_host_fn(
         "web:canvas",
         "createImageData",
-        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+        Box::new(move |ctx: &mut HostContext, args: &[Value]| {
             // `createImageData(sw, sh)` on a context — arg 0 is the context,
             // which this does not need: an `ImageData` is not bound to a
             // canvas. It is taken so the call shape matches every other
             // method here and the receiver form works.
-            let width = args.get(1).map(|v| v.as_i32().max(0)).unwrap_or(0);
-            let height = args.get(2).map(|v| v.as_i32().max(0)).unwrap_or(0);
+            let (width, height, bytes) = match image_data_dimensions(args) {
+                Ok(dimensions) => dimensions,
+                Err(error) => {
+                    ctx.throw_value(vybe_platform_ecma::error::new_error(ctx, error, error));
+                    return Value::Undefined;
+                }
+            };
             // Transparent black, per spec — every byte zero, INCLUDING alpha.
-            let bytes = (width as usize).saturating_mul(height as usize) * 4;
             let data =
                 vybe_platform_ecma::typedarray::new_typed_array(TypedElemKind::U8Clamped, bytes);
             let mut image_data = Object::new();
@@ -1094,10 +1122,10 @@ pub fn register(vm: &mut VM) {
             image_data.properties.insert("data".into(), data);
             image_data
                 .properties
-                .insert("width".into(), Value::I32(width));
+                .insert("width".into(), Value::I32(width as i32));
             image_data
                 .properties
-                .insert("height".into(), Value::I32(height));
+                .insert("height".into(), Value::I32(height as i32));
             Value::Object(vybe_runtime::heap::alloc(image_data))
         }),
     );
@@ -1166,8 +1194,8 @@ pub fn register(vm: &mut VM) {
                     10.. => (
                         args.get(2).map(|v| v.as_i32()).unwrap_or(0),
                         args.get(3).map(|v| v.as_i32()).unwrap_or(0),
-                        args.get(4).map(|v| v.as_i32().max(0) as u32).unwrap_or(0),
-                        args.get(5).map(|v| v.as_i32().max(0) as u32).unwrap_or(0),
+                        args.get(4).map(Value::as_i32).unwrap_or(0),
+                        args.get(5).map(Value::as_i32).unwrap_or(0),
                         f32_arg(args, 6),
                         f32_arg(args, 7),
                         f32_arg(args, 8),
@@ -1176,8 +1204,8 @@ pub fn register(vm: &mut VM) {
                     6.. => (
                         0,
                         0,
-                        natural_w,
-                        natural_h,
+                        natural_w.min(i32::MAX as u32) as i32,
+                        natural_h.min(i32::MAX as u32) as i32,
                         f32_arg(args, 2),
                         f32_arg(args, 3),
                         f32_arg(args, 4),
@@ -1186,8 +1214,8 @@ pub fn register(vm: &mut VM) {
                     _ => (
                         0,
                         0,
-                        natural_w,
-                        natural_h,
+                        natural_w.min(i32::MAX as u32) as i32,
+                        natural_h.min(i32::MAX as u32) as i32,
                         f32_arg(args, 2),
                         f32_arg(args, 3),
                         natural_w as f32,
@@ -1197,11 +1225,12 @@ pub fn register(vm: &mut VM) {
                 if sw == 0 || sh == 0 || dw == 0.0 || dh == 0.0 {
                     return Value::Null;
                 }
-                if let Query2DValue::Pixels {
+                if let Query2DValue::SourceImage {
                     data,
                     width,
                     height,
-                } = query(&source, Query2D::GetImageData { sx, sy, sw, sh })
+                    origin_clean,
+                } = query(&source, Query2D::SnapshotSource { sx, sy, sw, sh })
                 {
                     apply(
                         &target,
@@ -1209,6 +1238,7 @@ pub fn register(vm: &mut VM) {
                             pixels: data,
                             width,
                             height,
+                            origin_clean,
                             dx,
                             dy,
                             dw,
@@ -1518,11 +1548,19 @@ pub fn register(vm: &mut VM) {
             vm.register_host_fn(
                 "web:canvas",
                 $name,
-                Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+                Box::new(move |ctx: &mut HostContext, args: &[Value]| {
                     let target = target_of(args.first());
                     let build: fn(&[Value]) -> Query2D = $build;
                     let render: fn(Query2DValue) -> Value = $render;
-                    render(query(&target, build(args)))
+                    match query(&target, build(args)) {
+                        Query2DValue::Error(error) => {
+                            ctx.throw_value(vybe_platform_ecma::error::new_error(
+                                ctx, error, error,
+                            ));
+                            Value::Undefined
+                        }
+                        value => render(value),
+                    }
                 }),
             );
         };
@@ -1628,8 +1666,8 @@ pub fn register(vm: &mut VM) {
         |a| Query2D::GetImageData {
             sx: a.get(1).map(|v| v.as_i32()).unwrap_or(0),
             sy: a.get(2).map(|v| v.as_i32()).unwrap_or(0),
-            sw: a.get(3).map(|v| v.as_i32().max(0) as u32).unwrap_or(0),
-            sh: a.get(4).map(|v| v.as_i32().max(0) as u32).unwrap_or(0),
+            sw: a.get(3).map(Value::as_i32).unwrap_or(0),
+            sh: a.get(4).map(Value::as_i32).unwrap_or(0),
         },
         |v| {
             let Query2DValue::Pixels {
@@ -1869,7 +1907,31 @@ pub fn register(vm: &mut VM) {
         "web:canvas",
         "createPattern",
         Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
-            let Some((pixels, width, height)) = image_data_arg(args.get(1)) else {
+            let source = args.get(1);
+            let snapshot = if node_of(source).is_some() {
+                let width = numeric_property(source, "width").unwrap_or(0.0).max(0.0) as i32;
+                let height = numeric_property(source, "height").unwrap_or(0.0).max(0.0) as i32;
+                match query(
+                    &target_of(source),
+                    Query2D::SnapshotSource {
+                        sx: 0,
+                        sy: 0,
+                        sw: width,
+                        sh: height,
+                    },
+                ) {
+                    Query2DValue::SourceImage {
+                        data,
+                        width,
+                        height,
+                        origin_clean,
+                    } => Some((data, width, height, origin_clean)),
+                    _ => None,
+                }
+            } else {
+                None
+            };
+            let Some((pixels, width, height, origin_clean)) = snapshot else {
                 // §4.12.5: a source with no usable pixels answers null rather
                 // than an unusable pattern.
                 return Value::Null;
@@ -1887,6 +1949,8 @@ pub fn register(vm: &mut VM) {
                 .insert("__width".into(), Value::I32(width as i32));
             o.properties
                 .insert("__height".into(), Value::I32(height as i32));
+            o.properties
+                .insert("__origin_clean".into(), Value::Bool(origin_clean));
             o.properties.insert(
                 "__repetition".into(),
                 Value::String(
@@ -2074,6 +2138,30 @@ pub fn register(vm: &mut VM) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn image_data_dimensions_normalize_and_clone_shape() {
+        let numeric = [Value::Null, Value::I32(-2), Value::I32(3)];
+        assert_eq!(image_data_dimensions(&numeric), Ok((2, 3, 24)));
+        assert_eq!(
+            image_data_dimensions(&[Value::Null, Value::I32(0), Value::I32(3)]),
+            Err("IndexSizeError")
+        );
+
+        let mut source = Object::new();
+        source
+            .properties
+            .insert("__type".into(), Value::String("ImageData".into()));
+        source.properties.insert("width".into(), Value::I32(4));
+        source.properties.insert("height".into(), Value::I32(2));
+        assert_eq!(
+            image_data_dimensions(&[
+                Value::Null,
+                Value::Object(vybe_runtime::heap::alloc(source))
+            ]),
+            Ok((4, 2, 32))
+        );
+    }
 
     fn array(values: Vec<Value>) -> Value {
         Value::Object(vybe_runtime::heap::alloc(Object::new_array(values)))

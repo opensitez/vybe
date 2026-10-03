@@ -4,7 +4,7 @@
 //! object + an op enum make the DOM slow? It compares three paths over the
 //! same work — a property write and read on a live control:
 //!
-//!   1. straight into `widgets` (the floor — no seam at all)
+//!   1. straight into WebCore (the floor — no seam at all)
 //!   2. through the seam (`DomOp` → `dyn WebEngine` → the same call)
 //!   3. the same, but a node nested deep enough to exercise name lookup
 //!
@@ -48,7 +48,7 @@ fn time(label: &str, mut op: impl FnMut()) -> f64 {
 
 #[test]
 fn the_seam_is_not_where_the_cost_is() {
-    vybe_platform_web::engine_widgets::install();
+    vybe_platform_web::engine_webcore::install();
     let doc = new_document("bench");
 
     let flat = create(doc, "input", "text");
@@ -77,10 +77,10 @@ fn the_seam_is_not_where_the_cost_is() {
     );
 
     println!();
-    let direct = time("direct into widgets", || {
-        vybe_platform_web::engine_widgets::with_document(doc, |d| {
-            d.set_value(flat, "x");
-            d.value(flat)
+    let direct = time("direct into webcore", || {
+        vybe_platform_web::engine_webcore::with_document(doc, |d| {
+            d.set_value(flat as u32, "x");
+            d.value(flat as u32)
         });
     });
 

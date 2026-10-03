@@ -1,33 +1,25 @@
 //! Getting a frame out of whichever engine is live.
 //!
-//! # This is a stopgap, and it is the shape that does not survive a real browser
+//! # In-process frame capture
 //!
 //! `render` hands the engine a `tiny_skia::Pixmap` and says "paint here". That
-//! works because both engines in this build rasterise with tiny-skia in this
+//! works for WebCore because it rasterises with tiny-skia in this
 //! process. **Chrome cannot do it.** An out-of-process engine owns its own
 //! compositor: you give it a native window handle, or it hands YOU a buffer it
 //! produced. A host-owned pixmap in the signature is this build's convenience
 //! baked into the seam, exactly as `Op2D::SetFillStyle(u8, u8, u8, u8)` baked in
 //! a pre-parsed colour.
 //!
-//! The version that survives is `WindowOp::Open` meaning "there is a window on
-//! screen showing this document", with the engine painting it and the host never
-//! holding a buffer at all — plus an encode-to-bytes op for the headless case,
-//! which is what `Page.captureScreenshot` returns. Both engines here can already
-//! own a window (`widgets::app_window`, `webcore::main`), so that move is
-//! available; it relocates windowing out of `vybex`, which is why it is not this
-//! change.
+//! Windowed Webcore presentation is owned by `webcore::embedded_window`; this
+//! in-process pixmap path is also used for headless capture. An out-of-process
+//! browser would provide pixels through its own capture API.
 //!
 //! What this DOES fix is `vybex` reaching around the intermediary. It called
-//! `widgets::dom::with_document` directly, so the engine could swap and the
-//! renderer could not: the form went to webcore and the window painted the
-//! toolkit's empty tree. Everything above still asks `platforms/web`, which is
+//! the old native toolkit directly, so the engine could swap and the
+//! renderer could not. Everything above still asks `platforms/web`, which is
 //! the arrangement that stays true when the answer moves.
 
-// Through the toolkit's re-export rather than a direct `tiny-skia`
-// dependency: this module is `gui`-only, and the pixmap it borrows comes
-// from the window shell, which is the toolkit's.
-use widgets::Pixmap;
+use tiny_skia::Pixmap;
 
 use crate::engine::DocumentId;
 use crate::engine_select::{self, Engine};
@@ -67,40 +59,10 @@ pub fn render(document: DocumentId, pixmap: &mut Pixmap, scale: f32) -> bool {
         return false;
     }
     match engine_select::live() {
-        #[cfg(feature = "gui")]
-        Some(Engine::Widgets) => render_widgets(document, pixmap, scale),
         #[cfg(feature = "engine-webcore")]
         Some(Engine::WebCore) => render_webcore(document, pixmap, scale),
         _ => false,
     }
-}
-
-#[cfg(feature = "gui")]
-fn render_widgets(document: DocumentId, pixmap: &mut Pixmap, scale: f32) -> bool {
-    // The glyph cache is per-thread and per-engine, like the canvas's: a
-    // document belongs to an agent, and two guests side by side must not share
-    // one. The FONT SYSTEM is the toolkit's shared one, so text in a rendered
-    // frame resolves the same faces as text measured anywhere else.
-    thread_local! {
-        static GLYPHS: std::cell::RefCell<widgets::SwashCache> =
-            std::cell::RefCell::new(widgets::SwashCache::new());
-    }
-    GLYPHS.with(|glyphs| {
-        let mut glyphs = glyphs.borrow_mut();
-        widgets::ide_text::with_font_system(|fonts| {
-            widgets::dom::with_document(document, |doc| {
-                let mut ctx = widgets::RenderContext {
-                    pixmap,
-                    font_system: fonts,
-                    swash_cache: &mut glyphs,
-                    scale,
-                };
-                doc.render(&mut ctx);
-                true
-            })
-            .unwrap_or(false)
-        })
-    })
 }
 
 #[cfg(feature = "engine-webcore")]
@@ -115,7 +77,7 @@ fn render_webcore(document: DocumentId, pixmap: &mut Pixmap, scale: f32) -> bool
     }
     RENDERER.with(|renderer| {
         let mut renderer = renderer.borrow_mut();
-        crate::engine_webcore::with_document(document, |doc| {
+        crate::engine_webcore::with_document_resources(document, |doc, resources_dirty| {
             // **Layout, THEN paint** — the order webcore's own window runs
             // (`webcore::main`), and through the renderer's engine so its
             // caches see the same generation the paint reads. Painting without
@@ -158,6 +120,11 @@ fn render_webcore(document: DocumentId, pixmap: &mut Pixmap, scale: f32) -> bool
             let engine = renderer.layout_engine();
             engine.viewport_h = height;
             engine.layout(doc, width);
+            if *resources_dirty {
+                webcore::restart_async_image_fetches(doc);
+                *resources_dirty = false;
+            }
+            doc.poll_pending_images_budgeted(64, std::time::Duration::ZERO);
             renderer.render(doc, pixmap, scale);
             true
         })

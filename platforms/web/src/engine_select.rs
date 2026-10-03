@@ -17,25 +17,25 @@ use std::sync::RwLock;
 /// A browser engine this build can install.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Engine {
-    /// `widgets` — the toolkit's own layout and painting.
-    Widgets,
-    /// `webcore` (`webcore`) — the HTML/CSS engine.
+    /// WebCore, the in-process HTML/CSS engine.
     WebCore,
+    /// The user's system browser, connected through a loopback DOM bridge.
+    OsBrowser,
 }
 
 impl Engine {
     pub fn as_str(&self) -> &'static str {
         match self {
-            Engine::Widgets => "widgets",
             Engine::WebCore => "webcore",
+            Engine::OsBrowser => "osbrowser",
         }
     }
 
     /// Parse an engine name, case-insensitively. `None` for anything else.
     pub fn parse(name: &str) -> Option<Engine> {
         match name.trim().to_ascii_lowercase().as_str() {
-            "widgets" => Some(Engine::Widgets),
             "webcore" => Some(Engine::WebCore),
+            "osbrowser" => Some(Engine::OsBrowser),
             _ => None,
         }
     }
@@ -48,15 +48,15 @@ impl Engine {
     /// measuring the same one twice.
     pub fn is_available(&self) -> bool {
         match self {
-            Engine::Widgets => cfg!(feature = "gui"),
             Engine::WebCore => cfg!(feature = "engine-webcore"),
+            Engine::OsBrowser => cfg!(feature = "engine-osbrowser"),
         }
     }
 }
 
 /// Every engine this build can install.
 pub fn available() -> Vec<Engine> {
-    [Engine::Widgets, Engine::WebCore]
+    [Engine::WebCore, Engine::OsBrowser]
         .into_iter()
         .filter(Engine::is_available)
         .collect()
@@ -65,7 +65,6 @@ pub fn available() -> Vec<Engine> {
 /// The default when nothing asks for anything.
 ///
 /// `webcore`, because the web platform surface is the primary browser engine.
-/// `widgets` remains available as an explicit compatibility engine.
 const DEFAULT: Engine = Engine::WebCore;
 
 /// An explicit choice made in-process, which beats the environment.
@@ -93,8 +92,7 @@ pub fn live() -> Option<Engine> {
 ///
 /// A `VYBE_ENGINE` value that does not name an engine is not fatal — a run
 /// should not refuse to start over an environment variable — but it SAYS so.
-/// Falling back in silence is how `VYBE_ENGINE=htmlbx` gets you the toolkit
-/// engine and a comparison that measures it against itself.
+/// Falling back in silence would make an engine comparison misleading.
 fn requested() -> Engine {
     if let Some(chosen) = *CHOICE.read().unwrap() {
         return chosen;
@@ -152,18 +150,18 @@ pub fn install() -> Option<Engine> {
     };
 
     match engine {
-        Engine::Widgets => {
-            #[cfg(feature = "gui")]
-            {
-                crate::engine_widgets::install();
-                crate::canvas_backend_widgets::install();
-            }
-        }
         Engine::WebCore => {
             #[cfg(feature = "engine-webcore")]
             {
                 crate::engine_webcore::install();
                 crate::canvas_backend_webcore::install();
+            }
+        }
+        Engine::OsBrowser => {
+            #[cfg(feature = "engine-osbrowser")]
+            {
+                crate::engine_osbrowser::install();
+                crate::canvas_backend_osbrowser::install();
             }
         }
     }
@@ -177,7 +175,7 @@ mod tests {
 
     #[test]
     fn an_engine_name_round_trips() {
-        for e in [Engine::Widgets, Engine::WebCore] {
+        for e in [Engine::WebCore, Engine::OsBrowser] {
             assert_eq!(Engine::parse(e.as_str()), Some(e));
         }
         assert_eq!(Engine::parse("  WebCore "), Some(Engine::WebCore));
@@ -193,6 +191,6 @@ mod tests {
             have.contains(&Engine::WebCore),
             cfg!(feature = "engine-webcore")
         );
-        assert_eq!(have.contains(&Engine::Widgets), cfg!(feature = "gui"));
+        assert_eq!(have.contains(&Engine::OsBrowser), cfg!(feature = "engine-osbrowser"));
     }
 }

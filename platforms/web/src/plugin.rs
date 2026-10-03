@@ -18,8 +18,7 @@ impl vybe_runtime::Plugin for Plugin {
         }
         // `crate::register` installs the selected browser engine and its
         // matching canvas backend together. Re-installing a concrete backend
-        // here breaks `--engine webcore`: DOM operations go to webcore while
-        // canvas draws go to widgets.
+        // here could split DOM operations and canvas draws across engines.
     }
 
     fn finalize(&self, fw: &mut vybe_runtime::Framework<'_>) {
@@ -98,11 +97,8 @@ impl vybe_runtime::Plugin for Plugin {
         // assigned. Stamping it a phase earlier would leave it type 0 and every
         // method call on it unresolvable.
         //
-        // Binding the handle now (rather than a lazy accessor) is what a
-        // browser does too: the document exists before the first script runs.
-        // It starts empty, and an empty document opens no window — `should_present`
-        // asks `control_count() > 0` — so a console program that never touches
-        // `document` is unaffected by its existence.
+        // Bind the handle now, but resolve its ambient document and body only
+        // when guest code calls into the DOM. Console programs stay headless.
         //
         // ⛔ It is bound with document id `0` — "the ACTIVE document" — and NOT
         // with `active_document()`. A captured id does not survive: `reset` (and
@@ -112,13 +108,16 @@ impl vybe_runtime::Plugin for Plugin {
         // `doc_arg` resolves 0 to the ambient document at CALL time, which is
         // what `document` means in a browser and what makes one global outlive
         // any number of resets.
-        #[cfg(feature = "gui")]
+        #[cfg(feature = "engine-webcore")]
         if let Some(vm) = fw.vm.as_deref_mut() {
-            vm.set_global("document", crate::html::document_handle(0));
+            let body_getter = vm
+                .resolve_host_function_index("web:html", "body")
+                .expect("web:html.body is registered");
+            vm.set_global("document", crate::html::document_handle(0, body_getter));
         }
     }
 
-    /// Drop the widget state the finished program built.
+    /// Drop browser state the finished program built.
     ///
     /// Most of what this platform holds needs nothing here: the DOM listener
     /// table and the ambient document are VM-owned storage
@@ -132,23 +131,17 @@ impl vybe_runtime::Plugin for Plugin {
     /// are `DeferredSource`s, and `reset_to` clears every registered source's
     /// queue through `clear_pending`.
     ///
-    /// ⛔THE WIDGET CRATE IS THE EXCEPTION, and it is why this method exists.
-    /// `widgets` keeps its own PROCESS-WIDE tables — `dom::DOCS`,
-    /// `ui_events::QUEUE`, `scheduling::TIMERS`/`FRAMES`, each a `static
-    /// OnceLock` — and no amount of VM teardown can reach a process global. A
-    /// reused VM (the warm pool, `--serve`) would otherwise hand the next
-    /// program the previous one's documents, undelivered input, and live
-    /// timers.
-    ///
-    /// This ran in the `vybe` platform while `vybe:gui` owned the widgets. The
-    /// GUI is `web:*` now and it is the same `widgets` underneath, so the
-    /// obligation moved with it — the plugin that owns the state resets it.
     fn reset(&self) {
-        #[cfg(feature = "gui")]
-        {
-            widgets::dom::reset();
-            widgets::ui_events::reset();
-            widgets::scheduling::reset();
+        #[cfg(feature = "engine-webcore")]
+        if crate::engine_select::live() == Some(crate::engine_select::Engine::WebCore) {
+            webcore::ui_events::reset();
+            webcore::scheduling::reset();
+            return;
+        }
+        #[cfg(feature = "engine-osbrowser")]
+        if crate::engine_select::live() == Some(crate::engine_select::Engine::OsBrowser) {
+            crate::engine_osbrowser::reset();
+            return;
         }
     }
 }

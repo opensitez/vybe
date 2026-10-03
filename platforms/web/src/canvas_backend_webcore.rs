@@ -1,7 +1,6 @@
 //! The painter behind `web:canvas` when webcore is the engine.
 //!
-//! The same file as `canvas_backend_widgets`, pointed at the other engine, and
-//! that is the whole point of the seam: `getContext(element, "2d")` binds a
+//! `getContext(element, "2d")` binds a
 //! context to a NODE (HTML §4.12.5), each engine turns its own nodes into its
 //! own pixels, and nothing above this layer learns which one is installed.
 //!
@@ -60,9 +59,7 @@ fn split_target(target: &str) -> Target<'_> {
 
 /// The node a target names.
 ///
-/// Two forms, in the order a caller means them — the same two
-/// `canvas_backend_widgets` resolves, because they are the seam's forms and not
-/// an engine's:
+/// Two forms, in the order a caller means them, defined by the shared seam:
 ///
 /// 1. `n<id>` — what an element-bound context carries. `getContext` derives it
 ///    from the node it was given, so this is the direct case and no search
@@ -138,14 +135,33 @@ impl CanvasBackend for WebCoreBackend {
                     ideographic_baseline: m.ideographic_baseline,
                 })
             }
-            Query2D::GetImageData { sx, sy, sw, sh } => match c.get_image_data(sx, sy, sw, sh) {
-                Some(d) => Query2DValue::Pixels {
-                    data: d.data,
-                    width: d.width,
-                    height: d.height,
-                },
-                None => Query2DValue::Absent,
-            },
+            Query2D::GetImageData { sx, sy, sw, sh } => {
+                match c.get_image_data_signed(sx, sy, sw, sh) {
+                    Ok(d) => Query2DValue::Pixels {
+                        data: d.data,
+                        width: d.width,
+                        height: d.height,
+                    },
+                    Err(error) => Query2DValue::Error(error),
+                }
+            }
+            Query2D::SnapshotSource { sx, sy, sw, sh } => {
+                if sw == 0 || sh == 0 {
+                    Query2DValue::Absent
+                } else {
+                    let x = sx.saturating_add(sw.min(0));
+                    let y = sy.saturating_add(sh.min(0));
+                    match c.snapshot_image_source(x, y, sw.unsigned_abs(), sh.unsigned_abs()) {
+                        Some((d, origin_clean)) => Query2DValue::SourceImage {
+                            data: d.data,
+                            width: d.width,
+                            height: d.height,
+                            origin_clean,
+                        },
+                        None => Query2DValue::Absent,
+                    }
+                }
+            }
             Query2D::IsPointInPath { x, y, rule } => Query2DValue::Bool(c.is_point_in_path(
                 x,
                 y,
@@ -158,15 +174,17 @@ impl CanvasBackend for WebCoreBackend {
             }
             Query2D::GetLineDash => Query2DValue::Floats(c.get_line_dash()),
             Query2D::IsContextLost => Query2DValue::Bool(c.is_context_lost()),
-            Query2D::ToDataUrl { mime, quality } => {
-                Query2DValue::Text(c.to_data_url(&mime, quality))
-            }
-            Query2D::ToBlob { mime, quality } => match c.to_blob(&mime, quality) {
-                Some(bytes) => Query2DValue::Bytes(bytes),
+            Query2D::ToDataUrl { mime, quality } => match c.to_data_url_checked(&mime, quality) {
+                Ok(url) => Query2DValue::Text(url),
+                Err(error) => Query2DValue::Error(error),
+            },
+            Query2D::ToBlob { mime, quality } => match c.to_blob_checked(&mime, quality) {
+                Ok(Some(bytes)) => Query2DValue::Bytes(bytes),
                 // An unsupported MIME type is `None` from the engine and
                 // `Absent` here — the spec says a bad type falls back to PNG at
                 // the API layer, which is `canvas.rs`'s job, not a painter's.
-                None => Query2DValue::Absent,
+                Ok(None) => Query2DValue::Absent,
+                Err(error) => Query2DValue::Error(error),
             },
             Query2D::IsPointInPathOf { path, x, y, rule } => {
                 Query2DValue::Bool(c.is_point_in_path2d(
@@ -319,12 +337,14 @@ impl CanvasBackend for WebCoreBackend {
                     pixels,
                     width,
                     height,
+                    origin_clean,
                     dx,
                     dy,
                     dw,
                     dh,
                 } => {
-                    let img = Image::from_rgba(width, height, pixels);
+                    let img =
+                        Image::from_rgba(width, height, pixels).with_origin_clean(origin_clean);
                     c.draw_image(&img, dx, dy, dw, dh);
                 }
 
@@ -581,8 +601,10 @@ fn gradient(def: &GradientDef) -> CanvasGradient {
 /// The seam's pattern definition, in the engine's terms.
 fn pattern(def: PatternDef) -> CanvasPattern {
     CanvasPattern {
-        image: Image::from_rgba(def.width, def.height, def.pixels),
+        image: Image::from_rgba(def.width, def.height, def.pixels)
+            .with_origin_clean(def.origin_clean),
         repetition: Repetition::parse(&def.repetition).unwrap_or(Repetition::Repeat),
+        transform: webcore::canvas::Matrix::IDENTITY,
     }
 }
 

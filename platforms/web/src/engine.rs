@@ -3,10 +3,8 @@
 //! Same shape, and the same reason, as [`canvas_backend`](crate::canvas_backend):
 //! `Window`, `Document`, `Element` and `UIEvent` are web-platform interfaces,
 //! so they are declared here; the machinery behind them belongs to an engine.
-//! `widgets` is that engine today — its widget tree IS a document, with
-//! nesting, per-node properties and events already in it — and a real browser
-//! could be tomorrow, at which point the same guest code runs against the
-//! browser's own DOM. Neither engine is named by this module.
+//! WebCore and the system browser implement this contract independently.
+//! Neither engine is named by this module.
 //!
 //! ONE trait for the whole engine rather than a seam per API family: windows,
 //! documents and input are one implementation's job (`window.open` →
@@ -14,12 +12,13 @@
 //! only invite a half-swapped host. Canvas keeps its own seam because it is a
 //! genuinely separate concern — a stream of paint ops, no queries.
 //!
-//! Enums rather than wide method sets so a backend implements THREE functions
-//! and can never silently miss an operation: a missing arm is a compile error.
+//! Enums rather than wide method sets keep each API family exhaustive: a
+//! missing operation in a backend is a compile error.
 //! Unlike canvas ops these answer back — `createElement` yields a node,
 //! `getAttribute` a string or null — so each `apply` returns a value.
 
 use std::sync::{Arc, OnceLock, RwLock};
+use serde::{Deserialize, Serialize};
 
 /// A document handle. One per browsing context — `window.document`.
 pub type DocumentId = u64;
@@ -33,7 +32,7 @@ pub type NodeId = u64;
 pub const DOCUMENT: NodeId = 0;
 
 /// One DOM operation, in WHATWG terms.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum DomOp {
     // ── Document ─────────────────────────────────────────────────────────
     /// `document.createElement(localName)`, plus the `type` that — with the
@@ -235,6 +234,8 @@ pub enum DomOp {
     /// CSSOM §6.4.2: a declaration block serializes what was declared; nothing
     /// on `element.style` is resolved against layout.
     GetStyleProperty(NodeId, String),
+    /// `element.style` declarations in source order.
+    StyleDeclarations(NodeId),
     /// `getComputedStyle(element).getPropertyValue(property)` — the RESOLVED
     /// value, in used units, after the cascade and layout have run.
     ///
@@ -331,14 +332,36 @@ pub enum DomOp {
         button: i32,
     },
 
+    /// Deliver browser keyboard fields to the focused element.
+    DispatchKeyboard(UiEventFields),
+
+    /// Deliver wheel input at its client position. The engine dispatches the
+    /// cancelable DOM wheel event before its default scroll action.
+    DispatchWheel(UiEventFields),
+
+    /// Observe a guest listener on this exact EventTarget. The browser engine
+    /// owns propagation; the guest registry owns the callback value.
+    ObserveEvent { node: NodeId, kind: String },
+    UnobserveEvent { node: NodeId, kind: String },
+
     /// Drain what the user did, as DOM events (`click`, `input`, `change`).
     /// The surface turns each into an `Event` object and calls the listeners
     /// registered on that node.
     DrainEvents,
 }
 
+/// One dispatched DOM event, with the hit node distinct from the listener node.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DomEventRecord {
+    pub target: NodeId,
+    pub current_target: NodeId,
+    pub kind: String,
+    #[serde(default)]
+    pub fields: UiEventFields,
+}
+
 /// What an operation answers.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum DomValue {
     None,
     /// An absent attribute — `null`, distinct from `""`.
@@ -351,8 +374,8 @@ pub enum DomValue {
     /// [`DomValue::Text`] because the IDL type is `long`, and a caller that
     /// compares it with `>= 0` needs a number rather than digits.
     Number(f64),
-    /// `(node, event type)` pairs from [`DomOp::DrainEvents`].
-    Events(Vec<(NodeId, String)>),
+    /// Events from [`DomOp::DrainEvents`], in dispatch order.
+    Events(Vec<DomEventRecord>),
     /// Two numbers that are one fact — a size, today.
     Pair(f64, f64),
     /// A laid-out box — `DOMRect`'s four numbers, which are one fact for the
@@ -366,12 +389,13 @@ pub enum DomValue {
     },
     /// A list of strings — attribute names, today.
     Texts(Vec<String>),
+    Properties(Vec<(String, String)>),
 }
 
 // ── Windows: WHATWG HTML §7, browsing contexts ──────────────────────────
 
 /// One `Window` operation.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum WindowOp {
     /// `window.open(url, target, features)` — creates the context AND its
     /// initial `about:blank` document.
@@ -404,6 +428,8 @@ pub enum WindowOp {
     /// `window.innerWidth` / `innerHeight`
     InnerSize(WindowId),
     ResizeTo(WindowId, f64, f64),
+    /// Notify the document of a native viewport resize without resizing the OS window again.
+    ViewportChanged(WindowId, f64, f64),
     MoveTo(WindowId, f64, f64),
     /// `window.screenX` / `screenY`
     ScreenPosition(WindowId),
@@ -422,7 +448,7 @@ pub enum WindowOp {
     Confirm(String),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum WindowValue {
     None,
     Null,
@@ -439,7 +465,7 @@ pub enum WindowValue {
 /// One UI-event-queue operation. The event itself crosses this seam as its
 /// spec fields rather than as a struct, so the engine and the host never have
 /// to agree on a Rust type.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum EventOp {
     /// `EventTarget.dispatchEvent(event)` — inject a synthetic event, exactly
     /// as the DOM allows, which also makes the pipeline testable with no
@@ -454,7 +480,8 @@ pub enum EventOp {
 }
 
 /// A UI event's spec fields — W3C attribute names, no VM types.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct UiEventFields {
     pub kind: String,
     pub key: String,
@@ -472,7 +499,7 @@ pub struct UiEventFields {
     pub repeat: bool,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum EventValue {
     None,
     /// No event was queued — `pollEvent` answers null.
@@ -496,7 +523,7 @@ pub enum EventValue {
 /// One scheduling operation. These deal in IDS, never callbacks: the engine
 /// says what became due, and the callback registry above decides what running
 /// it means — the same division the DOM uses for listeners.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum ScheduleOp {
     /// `setTimeout` / `setInterval` — schedule `delay_ms` from now.
     SetTimer(f64),
@@ -521,7 +548,7 @@ pub enum ScheduleOp {
     Now,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum ScheduleValue {
     None,
     /// Nothing due / nothing scheduled.
@@ -530,6 +557,27 @@ pub enum ScheduleValue {
     Bool(bool),
     /// A relative delay, or a timestamp, in milliseconds.
     Ms(f64),
+}
+
+/// Browser chrome pickers. The selected browser decides how to present them.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum PickerOp {
+    Open {
+        title: String,
+        filters: Vec<(String, Vec<String>)>,
+        directory: String,
+        multiple: bool,
+    },
+    Save {
+        title: String,
+        filters: Vec<(String, Vec<String>)>,
+        directory: String,
+        suggested: String,
+    },
+    Directory {
+        title: String,
+        directory: String,
+    },
 }
 
 /// The engine behind the `web:*` surface — windows, documents, input,
@@ -549,6 +597,7 @@ pub trait WebEngine: Send + Sync {
     fn window(&self, op: WindowOp) -> WindowValue;
     fn events(&self, op: EventOp) -> EventValue;
     fn schedule(&self, op: ScheduleOp) -> ScheduleValue;
+    fn picker(&self, op: PickerOp) -> Vec<String>;
 }
 
 fn slot() -> &'static RwLock<Option<Arc<dyn WebEngine>>> {
@@ -627,6 +676,10 @@ pub fn schedule(op: ScheduleOp) -> ScheduleValue {
         Some(e) => e.schedule(op),
         None => ScheduleValue::None,
     }
+}
+
+pub fn picker(op: PickerOp) -> Vec<String> {
+    engine().map(|engine| engine.picker(op)).unwrap_or_default()
 }
 
 pub fn new_document(title: &str) -> DocumentId {

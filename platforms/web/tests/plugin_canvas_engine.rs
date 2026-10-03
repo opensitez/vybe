@@ -56,7 +56,7 @@ fn plugin_init_keeps_webcore_canvas_backend_with_webcore_engine() {
     paint(&target, Op2D::SetFillStyle(255, 0, 0, 255));
     paint(&target, Op2D::FillRect(0.0, 0.0, 80.0, 40.0));
 
-    let mut pixmap = widgets::Pixmap::new(160, 80).expect("pixmap");
+    let mut pixmap = tiny_skia::Pixmap::new(160, 80).expect("pixmap");
     assert!(
         vybe_platform_web::present::render(doc, &mut pixmap, 1.0),
         "webcore refused to paint a document with a canvas"

@@ -10,12 +10,12 @@
 //! ## Why here
 //!
 //! These used to be registered by `crates/vybex` — the RUNNER — reaching
-//! `widgets::dialogs` directly. The runner is the user agent: it should
+//! directly into a presentation backend. The runner is the user agent: it should
 //! not be publishing page APIs, because then two crates own the browser's
 //! surface and neither owns it fully.
 //!
-//! `platforms/web` owns the relationship to `widgets`. Everything a page
-//! can call belongs here.
+//! `platforms/web` owns these page APIs and delegates pickers to the active
+//! browser engine.
 //!
 //! ## Where this diverges from the spec, deliberately
 //!
@@ -32,24 +32,25 @@
 use vybe_runtime::value::Object;
 use vybe_runtime::{HostContext, VM, Value};
 
-use widgets::dialogs::{FileDialog, FileFilter, FolderDialog};
+use crate::engine::{self, PickerOp};
 
 /// `accept` as the spec spells it is a list of `{description, accept}` entries;
 /// a WinForms `Filter` is `"Text|*.txt|All|*.*"`. Both reduce to the same pair,
 /// so the string form is accepted directly and anything richer is ignored
 /// rather than half-read.
-fn filters_from(spec: &str) -> Vec<FileFilter> {
+fn filters_from(spec: &str) -> Vec<(String, Vec<String>)> {
     let parts: Vec<&str> = spec.split('|').collect();
     let mut out = Vec::new();
     for pair in parts.chunks(2) {
         let [name, patterns] = pair else { continue };
-        let extensions: Vec<&str> = patterns
+        let extensions: Vec<String> = patterns
             .split(';')
             .filter_map(|p| p.trim().rsplit('.').next())
             .filter(|e| !e.is_empty() && *e != "*")
+            .map(str::to_string)
             .collect();
         if !extensions.is_empty() {
-            out.push(FileFilter::new(name.to_string(), &extensions));
+            out.push((name.to_string(), extensions));
         }
     }
     out
@@ -73,25 +74,16 @@ fn path_or_null(path: Option<std::path::PathBuf>) -> Value {
     }
 }
 
-fn build(title: &str, filter: &str, directory: &str) -> FileDialog {
-    let mut dialog = FileDialog::new(if title.is_empty() { "Open" } else { title });
-    for f in filters_from(filter) {
-        dialog = dialog.with_filter(f);
-    }
-    if !directory.is_empty() {
-        dialog = dialog.with_starting_directory(directory);
-    }
-    dialog
-}
-
 /// `showOpenFilePicker` as a Rust call.
 ///
 /// Public because the RUNNER needs the same three pickers, and it must reach
-/// them through this crate rather than around it: `platforms/web` owns the
-/// relationship to `widgets`, and a second crate calling
-/// `widgets::dialogs` directly is how that ownership stops being true.
+/// them through this crate rather than around it: `platforms/web` owns
+/// the picker contract for either browser engine.
 pub fn open_file(title: &str, filter: &str, directory: &str) -> Option<std::path::PathBuf> {
-    build(title, filter, directory).open()
+    engine::picker(PickerOp::Open {
+        title: title.to_string(), filters: filters_from(filter),
+        directory: directory.to_string(), multiple: false,
+    }).into_iter().next().map(Into::into)
 }
 
 /// `showSaveFilePicker` as a Rust call.
@@ -101,24 +93,17 @@ pub fn save_file(
     directory: &str,
     suggested: &str,
 ) -> Option<std::path::PathBuf> {
-    let mut dialog = build(title, filter, directory);
-    if !suggested.is_empty() {
-        dialog = dialog.with_filename(suggested);
-    }
-    dialog.save()
+    engine::picker(PickerOp::Save {
+        title: title.to_string(), filters: filters_from(filter),
+        directory: directory.to_string(), suggested: suggested.to_string(),
+    }).into_iter().next().map(Into::into)
 }
 
 /// `showDirectoryPicker` as a Rust call.
 pub fn pick_directory(title: &str, directory: &str) -> Option<std::path::PathBuf> {
-    let mut dialog = FolderDialog::new(if title.is_empty() {
-        "Select Folder"
-    } else {
-        title
-    });
-    if !directory.is_empty() {
-        dialog = dialog.with_starting_directory(directory);
-    }
-    dialog.pick()
+    engine::picker(PickerOp::Directory {
+        title: title.to_string(), directory: directory.to_string(),
+    }).into_iter().next().map(Into::into)
 }
 
 pub fn register(vm: &mut VM) {
@@ -141,14 +126,13 @@ pub fn register(vm: &mut VM) {
             if !multiple {
                 return path_or_null(open_file(&title, &filter, &directory));
             }
-            let dialog = build(&title, &filter, &directory);
             // The spec always answers a LIST here; the single case above is the
             // convenience the callers actually use.
-            let items: Vec<Value> = dialog
-                .open_multiple()
-                .unwrap_or_default()
+            let items: Vec<Value> = engine::picker(PickerOp::Open {
+                title, filters: filters_from(&filter), directory, multiple: true,
+            })
                 .into_iter()
-                .map(|p| Value::String(p.to_string_lossy().to_string().into()))
+                .map(|path| Value::String(path.into()))
                 .collect();
             Value::Object(vybe_runtime::heap::alloc(Object::new_array(items)))
         }),

@@ -47,8 +47,8 @@ pub mod canvas;
 pub mod canvas_backend;
 #[cfg(feature = "engine-webcore")]
 pub mod canvas_backend_webcore;
-#[cfg(feature = "gui")]
-pub mod canvas_backend_widgets;
+#[cfg(feature = "engine-osbrowser")]
+pub mod canvas_backend_osbrowser;
 pub mod console;
 pub mod crypto;
 pub mod dom_parser;
@@ -56,16 +56,15 @@ pub mod encoding;
 pub mod engine;
 /// Which engine is live, chosen at run time. See `engine_select`.
 pub mod engine_select;
-/// The other engine behind the same trait. Additive to `engine_widgets`: both
-/// are compiled in, and `install()` decides which one is live.
+/// The Webcore implementation of the browser contract.
 #[cfg(feature = "engine-webcore")]
 pub mod engine_webcore;
-#[cfg(feature = "gui")]
-pub mod engine_widgets;
+#[cfg(feature = "engine-osbrowser")]
+pub mod engine_osbrowser;
 
 /// Getting a frame out of whichever engine is live. A STOPGAP — see the
 /// module docs for the shape that survives an out-of-process browser.
-#[cfg(feature = "gui")]
+#[cfg(feature = "engine-webcore")]
 pub mod present;
 
 /// The browser NAMED by this build, for the paths that need a concrete type.
@@ -84,17 +83,14 @@ pub mod present;
 /// swap that stays build-time. See `with_browser` for what that costs.
 #[cfg(feature = "engine-webcore")]
 pub type Browser = webcore::types::Document;
-#[cfg(all(feature = "gui", not(feature = "engine-webcore")))]
-pub type Browser = widgets::dom::Document;
-
-/// Proof, at COMPILE TIME, that both browsers offer the same WHATWG surface.
+/// Compile-time check for the in-process browser's WHATWG document surface.
 ///
 /// Never called. It names the methods generically through [`Browser`], so if
 /// either engine renames one, drops one, or changes a signature, this stops
 /// compiling under that engine's feature — which is the only way "they are
 /// interchangeable" can be a fact rather than a hope. A test cannot check it:
 /// a test only ever runs against the engine that was built.
-#[cfg(feature = "gui")]
+#[cfg(feature = "engine-webcore")]
 #[allow(dead_code)]
 fn _both_browsers_are_whatwg(browser: &mut Browser) {
     let node = browser.create_element("div");
@@ -256,30 +252,19 @@ fn _both_browsers_are_whatwg(browser: &mut Browser) {
 ///
 /// Anything that can be expressed as data should go through `engine::apply`
 /// instead, which follows the runtime choice.
-#[cfg(feature = "gui")]
+#[cfg(feature = "engine-webcore")]
 pub fn with_browser<T>(
     document: engine::DocumentId,
     f: impl FnOnce(&mut Browser) -> T,
 ) -> Option<T> {
-    #[cfg(feature = "engine-webcore")]
-    {
-        if engine_select::live() != Some(engine_select::Engine::WebCore) {
-            return None;
-        }
-        engine_webcore::with_document(document, f)
+    if engine_select::live() != Some(engine_select::Engine::WebCore) {
+        return None;
     }
-    #[cfg(not(feature = "engine-webcore"))]
-    {
-        if engine_select::live() != Some(engine_select::Engine::Widgets) {
-            return None;
-        }
-        engine_widgets::with_document(document, f)
-    }
+    engine_webcore::with_document(document, f)
 }
 pub mod fetch;
-/// WHATWG File System Access — `showOpenFilePicker` and friends. Behind `gui`
-/// because a picker is the user agent's own chrome, which only the toolkit has.
-#[cfg(feature = "gui")]
+/// Browser chrome pickers, dispatched to the selected engine.
+#[cfg(feature = "engine-webcore")]
 pub mod file_system_access;
 pub mod html;
 pub mod timers;
@@ -300,7 +285,7 @@ pub fn register(vm: &mut VM) {
     // rebuild. The ordering was doing the work of a switch.
     engine_select::install();
 
-    #[cfg(feature = "gui")]
+    #[cfg(feature = "engine-webcore")]
     file_system_access::register(vm);
     console::register(vm);
     crypto::register(vm);
@@ -308,11 +293,11 @@ pub fn register(vm: &mut VM) {
     encoding::register(vm);
     fetch::register(vm);
     timers::register(vm);
+    html::register(vm);
     dom_parser::register(vm);
     ui_events::register(vm);
     canvas::register(vm);
     animation::register(vm);
-    html::register(vm);
     window::register(vm);
 }
 pub mod plugin;

@@ -122,6 +122,9 @@ fn type_id_for(node_type: i32) -> usize {
 // ── Public registration ───────────────────────────────────────────
 
 pub fn register(vm: &mut VM) {
+    let body_getter = vm
+        .resolve_host_function_index("web:html", "body")
+        .expect("web:html.body is registered before DOMParser");
     // ── DOMParser ────────────────────────────────────────────────
     vm.register_host_fn(
         "web:dom-parser",
@@ -136,7 +139,7 @@ pub fn register(vm: &mut VM) {
     vm.register_host_fn(
         "web:dom-parser",
         "parseFromString",
-        Box::new(|_ctx, args| {
+        Box::new(move |_ctx, args| {
             // Spec: `DOMParser.parseFromString(string, type)`. We accept
             // both the instance-call shape (args[0] = DOMParser, args[1]
             // = string, args[2] = type) and the flat shorthand
@@ -186,7 +189,7 @@ pub fn register(vm: &mut VM) {
             let html = matches!(&type_arg, Value::String(t)
                 if t.trim().eq_ignore_ascii_case("text/html"));
             if html {
-                return parse_html_document(&xml);
+                return parse_html_document(&xml, body_getter);
             }
             match parse_markup(&xml, Grammar::Xml) {
                 Ok(doc) => doc,
@@ -1766,11 +1769,11 @@ impl TreeSink for DocumentSink {
 ///
 /// HTML has no parse errors, so there is no failure branch: what could not be
 /// represented comes back as `__parseRecoveries` on the handle.
-fn parse_html_document(source: &str) -> Value {
+fn parse_html_document(source: &str, body_getter: usize) -> Value {
     let document = crate::engine::new_document("");
     let mut sink = DocumentSink::new(document);
     let recoveries = drive(source, Grammar::Html, &mut sink).unwrap_or_default();
-    let handle = crate::html::document_handle(document);
+    let handle = crate::html::document_handle(document, body_getter);
     // `__parseRecoveries` is OUR diagnostic, not a DOM member — no browser has
     // one — so it lives on the handle rather than being written into the tree
     // as an attribute no engine would recognise. It is parse-time-only and
@@ -3878,22 +3881,22 @@ mod html_grammar_tests {
     }
 }
 
-/// `parseFromString(…, "text/html")` against the REAL document.
+/// `parseFromString(…, "text/html")` against the real document.
 ///
-/// These assert through the toolkit rather than through the return value,
+/// These assert through the active DOM engine rather than through the return value,
 /// because the return value is now a handle and the tree is the answer. What
 /// each one is really checking is that a parsed page is not a second kind of
 /// document: it cascades, it lays out, it serialises, and every `web:dom`
 /// operation is about it.
-#[cfg(all(test, feature = "gui"))]
+#[cfg(all(test, feature = "engine-webcore"))]
 mod html_document_tests {
     use super::*;
-    use widgets::dom;
+    use crate::engine::{self, DomOp, DomValue};
 
     /// Parse, and hand back the document the handle names.
-    fn parse(source: &str) -> dom::DocumentId {
-        crate::engine_widgets::install();
-        let handle = parse_html_document(source);
+    fn parse(source: &str) -> engine::DocumentId {
+        crate::engine_webcore::install();
+        let handle = parse_html_document(source, 0);
         let Value::Object(o) = &handle else {
             panic!("parseFromString answers a handle");
         };
@@ -3902,14 +3905,32 @@ mod html_document_tests {
             .unwrap()
             .properties
             .get("__document")
-            .map(|v| v.as_f64() as dom::DocumentId)
+            .map(|v| v.as_f64() as engine::DocumentId)
             .expect("the handle names its document");
         assert_ne!(id, 0, "a parsed document is a real, addressable document");
         id
     }
 
-    fn html_of(document: dom::DocumentId) -> String {
-        dom::with_document(document, |doc| doc.to_html()).unwrap_or_default()
+    fn html_of(document: engine::DocumentId) -> String {
+        let DomValue::Text(html) = engine::apply(document, DomOp::OuterHtml(engine::DOCUMENT)) else {
+            panic!("the document should serialize");
+        };
+        html
+    }
+
+    fn select(document: engine::DocumentId, selector: &str) -> engine::NodeId {
+        let DomValue::Node(node) = engine::apply(document, DomOp::QuerySelector(selector.into())) else {
+            panic!("missing {selector}");
+        };
+        node
+    }
+
+    fn color_of(document: engine::DocumentId, selector: &str) -> String {
+        let node = select(document, selector);
+        let DomValue::Text(color) = engine::apply(document, DomOp::ComputedStyleProperty(node, "color".into())) else {
+            panic!("missing computed color");
+        };
+        color
     }
 
     #[test]
@@ -3919,8 +3940,7 @@ mod html_document_tests {
         // this, a parsed tree and a live document were different objects and
         // no document operation reached the parsed one.
         let document = parse("<div id='wrap'><p>hello</p></div>");
-        let found = dom::with_document(document, |doc| doc.get_element_by_id("wrap")).flatten();
-        assert!(found.is_some(), "the parsed element is in the document");
+        assert!(matches!(engine::apply(document, DomOp::GetElementById("wrap".into())), DomValue::Node(_)), "the parsed element is in the document");
         let html = html_of(document);
         assert!(html.contains("<div id=\"wrap\">"), "got {html}");
         assert!(html.contains("<p>"), "got {html}");
@@ -3934,18 +3954,7 @@ mod html_document_tests {
         let document = parse(
             "<html><head><style>p { color: #ff0000 }</style></head><body><p>x</p></body></html>",
         );
-        let colour = dom::with_document(document, |doc| {
-            let p = doc
-                .query_selector("p")
-                .expect("the paragraph is in the tree");
-            doc.get_computed_style(p).color
-        })
-        .expect("the document is open");
-        assert_eq!(
-            colour,
-            Some(0xffff0000),
-            "the parsed rule reached the cascade"
-        );
+        assert_eq!(color_of(document, "p"), "rgb(255, 0, 0)", "the parsed rule reached the cascade");
     }
 
     #[test]
@@ -3953,14 +3962,7 @@ mod html_document_tests {
         // `style=""` is the last origin in the cascade, and it arrived as an
         // inert attribute for as long as the parser has existed.
         let document = parse("<p style='color: #00ff00'>x</p>");
-        let colour = dom::with_document(document, |doc| {
-            let p = doc
-                .query_selector("p")
-                .expect("the paragraph is in the tree");
-            doc.get_computed_style(p).color
-        })
-        .expect("the document is open");
-        assert_eq!(colour, Some(0xff00ff00));
+        assert_eq!(color_of(document, "p"), "rgb(0, 255, 0)");
     }
 
     #[test]
@@ -3969,14 +3971,7 @@ mod html_document_tests {
         // stylesheet and the attribute are genuinely the same cascade rather
         // than two writes racing.
         let document = parse("<style>p { color: #ff0000 }</style><p style='color: #0000ff'>x</p>");
-        let colour = dom::with_document(document, |doc| {
-            let p = doc
-                .query_selector("p")
-                .expect("the paragraph is in the tree");
-            doc.get_computed_style(p).color
-        })
-        .expect("the document is open");
-        assert_eq!(colour, Some(0xff0000ff), "inline wins");
+        assert_eq!(color_of(document, "p"), "rgb(0, 0, 255)", "inline wins");
     }
 
     #[test]
@@ -3992,11 +3987,9 @@ mod html_document_tests {
     #[test]
     fn a_comment_is_not_part_of_its_parents_text() {
         let document = parse("<div><!-- hidden --><p>shown</p></div>");
-        let text = dom::with_document(document, |doc| {
-            let div = doc.query_selector("div").expect("the div is in the tree");
-            doc.text_content(div)
-        })
-        .expect("the document is open");
+        let DomValue::Text(text) = engine::apply(document, DomOp::TextContent(select(document, "div"))) else {
+            panic!("missing div text");
+        };
         assert!(!text.contains("hidden"), "got {text:?}");
         assert!(text.contains("shown"), "got {text:?}");
     }
@@ -4004,8 +3997,7 @@ mod html_document_tests {
     #[test]
     fn a_title_names_the_document() {
         let document = parse("<html><head><title>Report</title></head><body></body></html>");
-        let title = dom::with_document(document, |doc| doc.title()).unwrap_or_default();
-        assert_eq!(title, "Report");
+        assert!(matches!(engine::apply(document, DomOp::Title), DomValue::Text(title) if title == "Report"));
     }
 
     #[test]
@@ -4015,11 +4007,9 @@ mod html_document_tests {
         // are the same fact. Falling through without this dropped the content
         // of every one of them.
         let document = parse("<p>before <span>inside</span> after</p>");
-        let text = dom::with_document(document, |doc| {
-            let span = doc.query_selector("span").expect("the span is in the tree");
-            doc.text_content(span)
-        })
-        .expect("the document is open");
+        let DomValue::Text(text) = engine::apply(document, DomOp::TextContent(select(document, "span"))) else {
+            panic!("missing span text");
+        };
         assert_eq!(text, "inside");
     }
 
@@ -4030,26 +4020,18 @@ mod html_document_tests {
         // a whole page arrived empty.
         let document =
             parse("<html><head><meta charset='utf-8'></head><body><p>x</p></body></html>");
-        let (has_meta, has_p) = dom::with_document(document, |doc| {
-            (
-                doc.query_selector("head meta").is_some(),
-                doc.query_selector("body p").is_some(),
-            )
-        })
-        .expect("the document is open");
-        assert!(has_meta, "the metadata is inside the head");
-        assert!(has_p, "the paragraph is inside the body");
+        assert!(matches!(engine::apply(document, DomOp::QuerySelector("head meta".into())), DomValue::Node(_)), "the metadata is inside the head");
+        assert!(matches!(engine::apply(document, DomOp::QuerySelector("body p".into())), DomValue::Node(_)), "the paragraph is inside the body");
     }
 
     #[test]
     fn a_parsed_document_is_not_the_page() {
         // `parseFromString` must not touch the browsing context's own
         // document — that is what makes it usable for reading a fragment.
-        crate::engine_widgets::install();
+        crate::engine_webcore::install();
         let page = crate::html::active_document();
         let parsed = parse("<p id='only-here'>x</p>");
         assert_ne!(parsed, page);
-        let leaked = dom::with_document(page, |doc| doc.get_element_by_id("only-here")).flatten();
-        assert!(leaked.is_none(), "the parse stayed in its own document");
+        assert!(matches!(engine::apply(page, DomOp::GetElementById("only-here".into())), DomValue::Null), "the parse stayed in its own document");
     }
 }

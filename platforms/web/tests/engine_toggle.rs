@@ -14,55 +14,20 @@ fn the_engine_is_chosen_at_run_time_and_reports_what_it_installed() {
     assert_eq!(engine_select::live(), None, "an engine installed itself");
 
     let have = engine_select::available();
-    assert!(
-        have.contains(&Engine::Widgets),
-        "a `gui` build always has the toolkit engine"
-    );
+    assert!(!have.is_empty(), "the browser build has no engine");
 
-    // A build with only one engine can only answer with that one; a build with
-    // both must honour the choice. Both are asserted, so this test says
-    // something true under either feature set.
-    #[cfg(feature = "engine-webcore")]
-    {
-        assert!(
-            have.contains(&Engine::WebCore),
-            "`engine-webcore` is on but webcore is not available"
-        );
-
-        engine_select::choose(Engine::WebCore);
-        assert_eq!(engine_select::install(), Some(Engine::WebCore));
-        assert_eq!(engine_select::live(), Some(Engine::WebCore));
-
-        // And back again, in the same process — the point of a runtime toggle.
-        engine_select::choose(Engine::Widgets);
-        assert_eq!(engine_select::install(), Some(Engine::Widgets));
-        assert_eq!(engine_select::live(), Some(Engine::Widgets));
-    }
-
-    #[cfg(not(feature = "engine-webcore"))]
-    {
-        assert!(
-            !have.contains(&Engine::WebCore),
-            "webcore reported available in a build that did not compile it"
-        );
-        // Asking for an engine this build does not have must not silently
-        // succeed with the other one pretending to be it: `install` answers
-        // what it ACTUALLY installed, which is the toolkit.
-        engine_select::choose(Engine::WebCore);
-        assert_eq!(engine_select::install(), Some(Engine::Widgets));
-        assert_eq!(engine_select::live(), Some(Engine::Widgets));
-    }
+    assert!(have.contains(&Engine::WebCore));
+    engine_select::choose(Engine::WebCore);
+    assert_eq!(engine_select::install(), Some(Engine::WebCore));
+    assert_eq!(engine_select::live(), Some(Engine::WebCore));
 }
 
 #[test]
 fn an_engine_name_is_parsed_the_way_a_user_would_type_it() {
     assert_eq!(Engine::parse("webcore"), Some(Engine::WebCore));
     assert_eq!(Engine::parse("WEBCORE"), Some(Engine::WebCore));
-    assert_eq!(Engine::parse(" widgets "), Some(Engine::Widgets));
-    // The crate names work too, because that is what someone reading the
-    // source would reach for.
-    assert_eq!(Engine::parse("webcore"), Some(Engine::WebCore));
-    assert_eq!(Engine::parse("widgets"), Some(Engine::Widgets));
+    assert_eq!(Engine::parse(" osbrowser "), Some(Engine::OsBrowser));
+    assert_eq!(Engine::parse("widgets"), None);
     // An unknown name is ignored rather than fatal — `VYBE_ENGINE=chrome`
     // falls back to the default instead of refusing to start.
     assert_eq!(Engine::parse("chrome"), None);

@@ -1,9 +1,8 @@
 //! The seam between `web:canvas` (the API) and whatever actually paints.
 //!
 //! `CanvasRenderingContext2D` is a web-platform interface, so it is declared
-//! here; the pixels belong to an engine. `widgets` is that engine today
-//! and a real browser engine could be tomorrow — neither is named by this
-//! module. A host installs its painter with [`set_backend`] at startup and
+//! here; the pixels belong to the selected browser engine. A host installs
+//! its painter with [`set_backend`] at startup and
 //! the API surface never learns which one it got.
 //!
 //! This is the same shape as `web:timers` owning the wheel while the clock
@@ -11,13 +10,14 @@
 //! machinery.
 
 use std::sync::{Arc, OnceLock, RwLock};
+use serde::{Deserialize, Serialize};
 
 /// One 2D drawing operation, in `CanvasRenderingContext2D` terms.
 ///
 /// An enum rather than a 30-method trait so a backend implements ONE function
 /// and can never silently miss an op — a missing arm is a compile error, and
 /// adding an op fails every backend that hasn't handled it.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize)]
 pub enum Op2D {
     // ── state ────────────────────────────────────────────────────────────
     Save,
@@ -110,12 +110,14 @@ pub enum Op2D {
     /// Internal transport for a resolved `CanvasImageSource`.
     ///
     /// The public API is still WHATWG `drawImage(image, ...)`: the platform
-    /// resolves that source to pixels through `getImageData`, then asks the
-    /// backend to draw the resulting bitmap.
+    /// resolves that source to a private bitmap snapshot, then asks the
+    /// backend to draw it. The origin flag must follow the bitmap without
+    /// passing through page-visible `getImageData`.
     DrawImageRgba {
         pixels: Vec<u8>,
         width: u32,
         height: u32,
+        origin_clean: bool,
         dx: f32,
         dy: f32,
         dw: f32,
@@ -261,7 +263,7 @@ pub enum Op2D {
 /// `clip()`. Sending the operations when it is USED means no registry of live
 /// paths, nothing to leak when a page drops one, and no way for the engine's
 /// copy to fall out of step with the page's.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize)]
 pub struct PathDef {
     pub ops: Vec<PathOp2D>,
 }
@@ -272,7 +274,7 @@ pub struct PathDef {
 /// seam type cannot name an engine type — and because a missing arm in a
 /// backend's conversion is then a compile error rather than a segment that
 /// silently does not draw.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Serialize)]
 pub enum PathOp2D {
     ClosePath,
     MoveTo(f32, f32),
@@ -332,7 +334,7 @@ pub enum PathOp2D {
 }
 
 /// A gradient, as the page built it.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize)]
 pub struct GradientDef {
     /// `linear` = (x0, y0, x1, y1); `radial` = (x0, y0, r0, x1, y1, r1);
     /// `conic` = (angle, x, y).
@@ -342,7 +344,7 @@ pub struct GradientDef {
     pub stops: Vec<(f32, String)>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize)]
 pub enum GradientKind {
     Linear {
         x0: f32,
@@ -366,11 +368,12 @@ pub enum GradientKind {
 }
 
 /// A pattern, as the page built it: `createPattern(image, repetition)`.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize)]
 pub struct PatternDef {
     pub pixels: Vec<u8>,
     pub width: u32,
     pub height: u32,
+    pub origin_clean: bool,
     /// `"repeat"`, `"repeat-x"`, `"repeat-y"` or `"no-repeat"`.
     pub repetition: String,
 }
@@ -386,7 +389,7 @@ pub struct PatternDef {
 ///
 /// Every one of these is a question about state the PREVIOUS ops established,
 /// so a backend has to answer from the same retained context it paints into.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize)]
 pub enum Query2D {
     /// `measureText(text)` — the full `TextMetrics`, not just the width.
     MeasureText(String),
@@ -396,7 +399,10 @@ pub enum Query2D {
     /// a whole canvas every frame is copying a whole canvas every frame. That
     /// is inherent to the spec's design, not to this seam — but it is worth
     /// knowing before putting one in a render loop.
-    GetImageData { sx: i32, sy: i32, sw: u32, sh: u32 },
+    GetImageData { sx: i32, sy: i32, sw: i32, sh: i32 },
+    /// Internal CanvasImageSource snapshot. Unlike getImageData, this may
+    /// contain tainted pixels, which must never be returned to page code.
+    SnapshotSource { sx: i32, sy: i32, sw: i32, sh: i32 },
     /// `isPointInPath(x, y, fillRule)` — the point is in the space the page's
     /// own transform maps into, and is mapped back through it.
     IsPointInPath { x: f32, y: f32, rule: String },
@@ -432,7 +438,7 @@ pub enum Query2D {
 }
 
 /// Which string attribute [`Query2D::GetStringAttribute`] is asking about.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub enum StringAttribute {
     Font,
     FillStyle,
@@ -463,6 +469,7 @@ pub enum StringAttribute {
 #[derive(Clone, Debug)]
 pub enum Query2DValue {
     Absent,
+    Error(&'static str),
     Bool(bool),
     Text(String),
     /// `[a, b, c, d, e, f]`
@@ -474,6 +481,12 @@ pub enum Query2DValue {
         data: Vec<u8>,
         width: u32,
         height: u32,
+    },
+    SourceImage {
+        data: Vec<u8>,
+        width: u32,
+        height: u32,
+        origin_clean: bool,
     },
     Metrics(TextMetrics2D),
     /// `getContextAttributes()` — `(alpha, desynchronized, colorSpace,
@@ -491,7 +504,7 @@ pub enum Query2DValue {
 ///
 /// All twelve members. The seam used to carry `width` alone, and the other
 /// eleven were computed by the engine and dropped on the way out.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, Deserialize)]
 pub struct TextMetrics2D {
     pub width: f32,
     pub actual_bounding_box_left: f32,
