@@ -658,6 +658,11 @@ fn dotnet_instance_method_return_type(class_name: &str, method_name: &str) -> Op
     {
         return Some("Boolean".into());
     }
+    if class_head.eq_ignore_ascii_case("TreeNodeCollection")
+        && method_name.eq_ignore_ascii_case("Add")
+    {
+        return Some("TreeNode".into());
+    }
     // ⛔ THE CHAIN'S TYPE IS WHAT MAKES `ToString` REACHABLE. `"s".AsMemory()`
     // and `.Slice(…)` both answer a memory view, and without saying so the
     // receiver read back untyped — so `ReadOnlyMemory<char>.ToString()` fell
@@ -2506,6 +2511,7 @@ pub fn declared_instance_property_types(
         .to_ascii_lowercase()
         .as_str()
     {
+        "treeview" => &[("Nodes", "TreeNodeCollection")],
         "sqlcommand" | "oledbcommand" | "adodbcommand" => {
             &[("Parameters", "SqlParameterCollection")]
         }

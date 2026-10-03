@@ -1116,7 +1116,8 @@ fn html_element_for_control(class_name: &str) -> Option<&'static str> {
         // A tree is a nested list, and an EMPTY one is still a control: the
         // border and white field are what the user sees before a single node
         // is added, and what a bare `<ul>` does not draw.
-        "treeview" => "ul;border:1px solid #c8c8c8;background-color:#ffffff;overflow:auto",
+        "treeview" => "ul;@role=tree;border:1px solid #c8c8c8;background-color:#ffffff;overflow:auto;list-style:none;padding:4px 2px;margin:0",
+        "treenode" => "li;@role=treeitem;list-style:none;white-space:nowrap;padding:1px 4px",
         // HTML has these outright, and they carry real semantics a `<div>`
         // cannot: a range input is keyboard-operable and `<progress>` is
         // announced as a progress indicator.

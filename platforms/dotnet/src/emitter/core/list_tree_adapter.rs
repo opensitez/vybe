@@ -48,6 +48,18 @@ pub fn emit_tree_add(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_SET, value, line);
     chunk.emit_op_u16(Op::LOCAL_SET, tree, line);
     create(chunk, "li", node, line);
+    document(chunk, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, node, line);
+    chunk.emit_string_const("role", line);
+    chunk.emit_string_const("treeitem", line);
+    dom(chunk, "setAttribute", 4, line);
+    chunk.emit_op(Op::DROP, line);
+    document(chunk, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, node, line);
+    chunk.emit_string_const("style", line);
+    chunk.emit_string_const("list-style:none;white-space:nowrap;padding:1px 4px", line);
+    dom(chunk, "setAttribute", 4, line);
+    chunk.emit_op(Op::DROP, line);
     text(chunk, node, value, line);
     append(chunk, tree, node, line);
     chunk.emit_op_u16(Op::LOCAL_GET, node, line);

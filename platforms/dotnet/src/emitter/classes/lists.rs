@@ -213,6 +213,20 @@ pub fn classes() -> &'static [DotnetClass] {
             name: "TreeNodeCollection",
             parent: None,
             properties: &[],
+            methods: &[DotnetMethod {
+                name: "Add",
+                arity: 2,
+                target: MethodTarget::Common {
+                    emit: "dotnet.tree_add_node",
+                },
+            }],
+            ctor_arity: 0,
+            widget_host_fn: None,
+        },
+        DotnetClass {
+            name: "TreeNode",
+            parent: None,
+            properties: &["Text"],
             methods: &[],
             ctor_arity: 0,
             widget_host_fn: None,
