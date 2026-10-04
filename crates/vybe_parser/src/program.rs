@@ -80,6 +80,13 @@ pub enum Instruction<'a> {
 /// dispatch/literals and need no grammar parsing, allocation, or name resolution
 /// at source-parse startup. Implementations must provide valid arena IDs.
 pub trait Program: std::fmt::Debug {
+    /// Return the original full task cost only when this pure literal-choice
+    /// expression is proven to fail without consuming input or mutating state.
+    /// The cost must be positive and include the root Eval task. The engine
+    /// uses it only where diagnostics/hooks are suppressed.
+    fn literal_choice_failure(&self, _: ExprId, _: &str) -> Option<usize> {
+        None
+    }
     fn trivia_failure_prefix(&self, _: RuleId) -> Option<crate::lexical::FailurePrefix> {
         None
     }
@@ -116,6 +123,18 @@ pub trait Program: std::fmt::Debug {
 }
 
 impl Program for CompiledGrammar {
+    fn literal_choice_failure(&self, expression: ExprId, source: &str) -> Option<usize> {
+        let choice = self.literal_choices.get(&expression)?;
+        for &id in &choice.alternatives {
+            let Instruction::Literal { text, insensitive } = self.instruction(id) else {
+                unreachable!()
+            };
+            if crate::lexical::literal_matches(source, text, insensitive) {
+                return None;
+            }
+        }
+        Some(choice.steps)
+    }
     fn trivia_failure_prefix(&self, rule: RuleId) -> Option<crate::lexical::FailurePrefix> {
         self.trivia_failure[rule]
     }

@@ -78,15 +78,32 @@ impl<T> Arena<T> {
 /// on rollback, so speculative construction needs neither Clone nor a second
 /// materialization walk. Children must have exclusive ownership; consumed IDs
 /// cannot be accessed until their composition has been rolled back.
-pub struct OwnedArena<T> {
+pub type OwnedArena<T> = MetadataArena<T, ()>;
+
+/// Owned AST arena with a binding-selected metadata undo payload. Choose a
+/// small payload or enum for edits; ordinary composition uses `OwnedArena<T>`.
+pub struct MetadataArena<T, U> {
     nodes: Vec<Option<T>>,
     values: Vec<Id>,
     undo: Vec<OwnedUndo<T>>,
+    edits: Vec<MetadataEdit<T, U>>,
+    lists: Vec<ListComposition<T>>,
+}
+struct ListComposition<T> {
+    children: Vec<Id>,
+    split: fn(T) -> Vec<T>,
+}
+struct MetadataEdit<T, U> {
+    node: Id,
+    previous: U,
+    restore: fn(&mut T, U),
 }
 enum OwnedUndo<T> {
     RemoveNode,
     RemoveValue,
     RestoreValue(Id),
+    RestoreEdit,
+    SplitList,
     SplitUnary {
         child: Id,
         split: fn(T) -> T,
@@ -97,16 +114,18 @@ enum OwnedUndo<T> {
         split: fn(T) -> (T, T),
     },
 }
-impl<T> Default for OwnedArena<T> {
+impl<T, U> Default for MetadataArena<T, U> {
     fn default() -> Self {
         Self {
             nodes: Vec::new(),
             values: Vec::new(),
             undo: Vec::new(),
+            edits: Vec::new(),
+            lists: Vec::new(),
         }
     }
 }
-impl<T> OwnedArena<T> {
+impl<T, U> MetadataArena<T, U> {
     pub fn checkpoint(&self) -> usize {
         self.undo.len()
     }
@@ -118,6 +137,21 @@ impl<T> OwnedArena<T> {
     }
     pub fn get(&self, id: Id) -> &T {
         self.nodes[id.0].as_ref().expect("consumed semantic node")
+    }
+    /// Edit a live node while retaining only the metadata needed to undo it.
+    /// `change` returns the previous metadata; `restore` must restore the exact
+    /// node. Both functions must not panic or mutate external state. A typed
+    /// payload (such as a span or a binding-owned enum) avoids AST cloning and
+    /// boxed undo closures. Later compositions are undone before this edit.
+    pub fn edit(&mut self, node: Id, change: impl FnOnce(&mut T) -> U, restore: fn(&mut T, U)) {
+        let value = self.nodes[node.0].as_mut().expect("consumed semantic node");
+        let previous = change(value);
+        self.edits.push(MetadataEdit {
+            node,
+            previous,
+            restore,
+        });
+        self.undo.push(OwnedUndo::RestoreEdit);
     }
     pub fn push(&mut self, id: Id) {
         assert!(self.nodes[id.0].is_some(), "consumed semantic node");
@@ -162,6 +196,50 @@ impl<T> OwnedArena<T> {
             .push(OwnedUndo::SplitBinary { left, right, split });
         id
     }
+    /// Move an ordered list of exclusive children into a parent. `split` must
+    /// recover exactly those children, in the same order. This supports module
+    /// bodies, argument lists and collection fields without cloning or a final
+    /// materialization walk. Empty lists are valid. Constructors/inverses have
+    /// the same no-panic/no-external-effects contract as unary composition.
+    pub fn list(
+        &mut self,
+        children: Vec<Id>,
+        make: impl FnOnce(Vec<T>) -> T,
+        split: fn(T) -> Vec<T>,
+    ) -> Id {
+        // Validate before taking any child. Small lists avoid an extra
+        // allocation; large lists avoid quadratic duplicate checking.
+        if children.len() <= 16 {
+            for (index, child) in children.iter().enumerate() {
+                assert!(
+                    !children[..index].contains(child),
+                    "owned AST children cannot alias"
+                );
+            }
+        } else {
+            let mut unique = children.clone();
+            unique.sort_unstable_by_key(|id| id.0);
+            assert!(
+                unique.windows(2).all(|pair| pair[0] != pair[1]),
+                "owned AST children cannot alias"
+            );
+        }
+        assert!(
+            children
+                .iter()
+                .all(|id| self.nodes.get(id.0).is_some_and(Option::is_some)),
+            "invalid or consumed semantic node"
+        );
+        let values = children
+            .iter()
+            .map(|id| self.nodes[id.0].take().unwrap())
+            .collect();
+        let id = Id(self.nodes.len());
+        self.nodes.push(Some(make(values)));
+        self.lists.push(ListComposition { children, split });
+        self.undo.push(OwnedUndo::SplitList);
+        id
+    }
     pub fn rollback(&mut self, mark: usize) {
         assert!(mark <= self.undo.len(), "invalid semantic arena checkpoint");
         while self.undo.len() > mark {
@@ -173,6 +251,30 @@ impl<T> OwnedArena<T> {
                     self.values.pop().unwrap();
                 }
                 OwnedUndo::RestoreValue(value) => self.values.push(value),
+                OwnedUndo::RestoreEdit => {
+                    let MetadataEdit {
+                        node,
+                        previous,
+                        restore,
+                    } = self.edits.pop().unwrap();
+                    restore(
+                        self.nodes[node.0].as_mut().expect("consumed edited node"),
+                        previous,
+                    );
+                }
+                OwnedUndo::SplitList => {
+                    let ListComposition { children, split } = self.lists.pop().unwrap();
+                    let parent = self.nodes.pop().unwrap().expect("consumed parent");
+                    let values = split(parent);
+                    assert_eq!(
+                        children.len(),
+                        values.len(),
+                        "list inverse changed child count"
+                    );
+                    for (child, value) in children.into_iter().zip(values) {
+                        self.nodes[child.0] = Some(value);
+                    }
+                }
                 OwnedUndo::SplitUnary { child, split } => {
                     let parent = self.nodes.pop().unwrap().expect("consumed parent");
                     self.nodes[child.0] = Some(split(parent));
@@ -189,6 +291,8 @@ impl<T> OwnedArena<T> {
     /// Release old undo marks after the whole speculative parse commits.
     pub fn commit(&mut self) {
         self.undo.clear();
+        self.edits.clear();
+        self.lists.clear();
     }
     /// Finish ownership transfer without traversing or cloning the AST. This
     /// consumes the arena; old IDs/checkpoints cannot subsequently be used.

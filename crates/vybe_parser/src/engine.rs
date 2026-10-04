@@ -524,6 +524,33 @@ impl<'g, 'i, P: Program, B: Builder, const CAPTURE: bool> State<'g, 'i, P, B, CA
         self.steps += 1;
         Ok(())
     }
+    fn finish_rule(
+        &mut self,
+        checkpoint: Checkpoint,
+        capture: Option<usize>,
+        builder_rule: Option<RuleId>,
+    ) -> Result<(), ParseError> {
+        self.rule_depth -= 1;
+        if !self.matched {
+            self.restore(checkpoint);
+        } else if let Some(index) = capture {
+            self.nodes[index].span.end = self.offset;
+            self.nodes[index].subtree_end = self.nodes.len();
+        }
+        if self.matched
+            && let Some(rule) = builder_rule
+        {
+            self.builder.try_finish(
+                rule,
+                Span {
+                    start: checkpoint.offset,
+                    end: self.offset,
+                },
+                self.source,
+            )?;
+        }
+        Ok(())
+    }
     fn ascii_repeat(
         &mut self,
         builtin: Builtin,
@@ -556,10 +583,12 @@ impl<'g, 'i, P: Program, B: Builder, const CAPTURE: bool> State<'g, 'i, P, B, CA
                 self.failure(env, Expected::Builtin(builtin));
             }
             self.charge_step()?; // RepeatAfterChild
-            if !self.matched {
+            if !self.matched && (max.is_none() || count < min) {
                 self.matched = count >= min;
                 break;
             }
+            // Failed bounded optional items still charge their later attempts,
+            // exactly like the compact continuation path (without input movement).
             count += 1;
         }
         Ok(())
@@ -672,6 +701,13 @@ impl<'g, 'i, P: Program, B: Builder, const CAPTURE: bool> State<'g, 'i, P, B, CA
                 mut checkpoint,
             } => {
                 let spec = self.grammar.source_pratt(frame.target).unwrap();
+                if candidate == 0
+                    && frame.env.semantic
+                    && !frame.env.predicate
+                    && !frame.env.skipping
+                {
+                    self.builder.try_pratt_boundary(frame.target, self.offset)?;
+                }
                 if candidate == 0 && spec.trailing_trivia == crate::islands::TrailingTrivia::Consume
                 {
                     checkpoint = self.checkpoint();
@@ -758,6 +794,26 @@ impl<'g, 'i, P: Program, B: Builder, const CAPTURE: bool> State<'g, 'i, P, B, CA
             Task::RunBuiltin(builtin, env) => self.builtin(builtin, env)?,
             Task::Eval(id, env) => {
                 let instruction = self.grammar.instruction(id);
+                if (env.predicate || env.skipping)
+                    && matches!(
+                        instruction,
+                        Instruction::Choice { .. } | Instruction::Group(_)
+                    )
+                    && let Some(cost) = self
+                        .grammar
+                        .literal_choice_failure(id, &self.source[self.offset..])
+                    && self
+                        .steps
+                        .checked_add(cost - 1)
+                        .is_some_and(|steps| steps <= self.options.max_steps)
+                {
+                    // A pure literal-choice failure leaves input/state intact
+                    // and emits no diagnostics in these environments. Tight
+                    // budgets run the original tasks to preserve error order.
+                    self.steps += cost - 1; // root Eval already charged
+                    self.matched = false;
+                    return Ok(());
+                }
                 // Terminals cannot leave partial input/captures/stack on
                 // failure. Calls and predicates already own their rollback;
                 // choice/group/push delegate failure rollback to their child.
@@ -924,22 +980,22 @@ impl<'g, 'i, P: Program, B: Builder, const CAPTURE: bool> State<'g, 'i, P, B, CA
                 if builder_rule.is_some() {
                     self.builder.try_begin(rule, self.offset)?;
                 }
-                self.tasks.push(Task::FinishRule {
-                    checkpoint,
-                    capture,
-                    builder_rule,
-                });
                 let env = Env {
                     mode,
                     scope: definition.scope,
                     ..incoming
                 };
-                if !CAPTURE
+                let pratt = !CAPTURE
                     && incoming.semantic
                     && !incoming.skipping
                     && self.builder.supports_pratt(rule)
-                    && self.grammar.source_pratt(rule).is_some()
-                {
+                    && self.grammar.source_pratt(rule).is_some();
+                self.tasks.push(Task::FinishRule {
+                    checkpoint,
+                    capture,
+                    builder_rule,
+                });
+                if pratt {
                     self.tasks.push(Task::PrattOperand {
                         frame: Box::new(PrattFrame {
                             target: rule,
@@ -959,25 +1015,7 @@ impl<'g, 'i, P: Program, B: Builder, const CAPTURE: bool> State<'g, 'i, P, B, CA
                 capture,
                 builder_rule,
             } => {
-                self.rule_depth -= 1;
-                if !self.matched {
-                    self.restore(checkpoint);
-                } else if let Some(index) = capture {
-                    self.nodes[index].span.end = self.offset;
-                    self.nodes[index].subtree_end = self.nodes.len();
-                }
-                if self.matched
-                    && let Some(rule) = builder_rule
-                {
-                    self.builder.try_finish(
-                        rule,
-                        Span {
-                            start: checkpoint.offset,
-                            end: self.offset,
-                        },
-                        self.source,
-                    )?;
-                }
+                self.finish_rule(checkpoint, capture, builder_rule)?;
             }
             Task::Sequence { right, env } => {
                 if self.matched {
@@ -1020,6 +1058,21 @@ impl<'g, 'i, P: Program, B: Builder, const CAPTURE: bool> State<'g, 'i, P, B, CA
                 checkpoint,
             } => {
                 if self.matched {
+                    // Required items and the optional tail are separated by
+                    // ordinary sequence trivia. Bounded optional items also
+                    // have sequence boundaries, even after an absent item.
+                    // Only attempts within an unbounded star tail roll their
+                    // preceding trivia back together with a failed child.
+                    let checkpoint = if (repetition.max.is_some()
+                        && repetition.count >= repetition.min)
+                        || (repetition.max.is_none()
+                            && repetition.min > 0
+                            && repetition.count == repetition.min)
+                    {
+                        self.checkpoint()
+                    } else {
+                        checkpoint
+                    };
                     self.tasks.push(Task::RepeatAfterChild {
                         repetition,
                         checkpoint,
@@ -1034,7 +1087,15 @@ impl<'g, 'i, P: Program, B: Builder, const CAPTURE: bool> State<'g, 'i, P, B, CA
             } => {
                 if !self.matched {
                     self.restore(checkpoint);
-                    self.matched = repetition.count >= repetition.min;
+                    if repetition.max.is_some() && repetition.count >= repetition.min {
+                        // Bounded repetition is a compact sequence of required
+                        // and optional items. An absent optional item succeeds;
+                        // later optional items still execute after their trivia.
+                        repetition.count += 1;
+                        self.tasks.push(Task::Repeat(repetition));
+                    } else {
+                        self.matched = repetition.count >= repetition.min;
+                    }
                 } else {
                     if self.offset == checkpoint.offset && repetition.max.is_none() {
                         return Err(self.error(

@@ -38,6 +38,14 @@ pub trait Builder {
         self.reduce(rule, fixity, span);
         Ok(())
     }
+    /// Reports an operand boundary after the island's implicit trivia has
+    /// matched, before the next operator candidate. A binding can extend its
+    /// top value's span without rescanning trivia. The edit must be journaled:
+    /// failed operators and Preserve-trivia islands can restore this boundary.
+    /// Suppressed in predicates, trivia and nonsemantic recognition.
+    fn try_pratt_boundary(&mut self, _: RuleId, _: usize) -> Result<(), BuildError> {
+        Ok(())
+    }
     /// Opt into a configured island whose atom hooks push one semantic value.
     /// Operator rule hooks are suppressed; `reduce` owns their AST semantics.
     /// Other rule wrappers may disappear on this path. Capture parsing always
@@ -67,6 +75,9 @@ impl Builder for NoBuilder {
 }
 
 impl<B: Builder> Builder for &mut B {
+    fn try_pratt_boundary(&mut self, rule: RuleId, offset: usize) -> Result<(), BuildError> {
+        (**self).try_pratt_boundary(rule, offset)
+    }
     fn try_begin(&mut self, rule: RuleId, offset: usize) -> Result<(), BuildError> {
         (**self).try_begin(rule, offset)
     }

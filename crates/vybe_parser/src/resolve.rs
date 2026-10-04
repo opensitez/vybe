@@ -2,8 +2,8 @@ use crate::grammar::{ExprId, RuleId};
 use crate::{Diagnostic, ExprKind, GrammarSyntax};
 use std::collections::HashMap;
 
-/// Initial builtin inventory covers the repository grammars, not every Unicode
-/// property pest offers. Recognition of these builtins is a later milestone.
+/// Supported builtin inventory covers the repository grammars, including source
+/// recognition. Other Unicode properties remain explicit unsupported features.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Builtin {
     Any,
@@ -77,9 +77,32 @@ pub struct CompiledGrammar {
     pub(crate) rule_scopes: Vec<usize>,
     pub(crate) pratt: Vec<Option<crate::program::OwnedPratt>>,
     pub(crate) trivia_failure: Vec<Option<crate::lexical::FailurePrefix>>,
+    pub(crate) literal_choices: HashMap<usize, crate::lexical::LiteralChoice>,
+    literal_choice_failures: bool,
 }
 
 impl CompiledGrammar {
+    /// Experimental pure literal-choice failure dispatch. Disabled by default:
+    /// current full AST benchmarks do not establish a consistent performance
+    /// win. Disabling also releases the certificate table.
+    pub fn set_literal_choice_failures(&mut self, enabled: bool) {
+        self.literal_choice_failures = enabled;
+        self.literal_choices = if enabled {
+            crate::lexical::literal_choices(self)
+        } else {
+            HashMap::new()
+        };
+    }
+    /// Maximal pure literal-choice certificates in deterministic expression order.
+    pub fn literal_choices(&self) -> impl Iterator<Item = (usize, &crate::lexical::LiteralChoice)> {
+        let mut choices: Vec<_> = self
+            .literal_choices
+            .iter()
+            .map(|(&id, choice)| (id, choice))
+            .collect();
+        choices.sort_unstable_by_key(|(id, _)| *id);
+        choices.into_iter()
+    }
     pub fn syntax(&self) -> &GrammarSyntax {
         &self.syntax
     }
@@ -106,6 +129,9 @@ impl CompiledGrammar {
     pub(crate) fn refresh_analysis(&mut self) {
         self.analysis = crate::analysis::analyze(self);
         self.trivia_failure = crate::lexical::trivia_failure_prefixes(self);
+        if self.literal_choice_failures {
+            self.literal_choices = crate::lexical::literal_choices(self);
+        }
     }
 }
 
@@ -157,6 +183,8 @@ pub fn resolve(syntax: GrammarSyntax) -> Result<CompiledGrammar, Vec<Diagnostic>
         let mut grammar = CompiledGrammar {
             pratt: vec![None; syntax.rules.len()],
             trivia_failure: vec![None; syntax.rules.len()],
+            literal_choices: HashMap::new(),
+            literal_choice_failures: false,
             rule_scopes: vec![0; syntax.rules.len()],
             syntax,
             references,

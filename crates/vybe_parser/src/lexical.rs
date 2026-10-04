@@ -254,3 +254,91 @@ pub(crate) fn whitespace_classes(
         (prefix.0 != [0, 0]).then_some(prefix),
     )
 }
+
+/// A maximal choice/group containing only nonempty literals. Alternative IDs
+/// retain grammar priority; successful choices always execute ordinary tasks.
+#[derive(Debug, Clone)]
+pub struct LiteralChoice {
+    pub alternatives: Vec<usize>,
+    pub steps: usize,
+}
+
+/// Exactly the engine's literal comparison, including ASCII-only folding.
+#[inline]
+pub fn literal_matches(source: &str, text: &str, insensitive: bool) -> bool {
+    if insensitive {
+        source
+            .as_bytes()
+            .get(..text.len())
+            .is_some_and(|bytes| bytes.eq_ignore_ascii_case(text.as_bytes()))
+    } else {
+        source.starts_with(text)
+    }
+}
+
+pub(crate) fn literal_choices(
+    grammar: &CompiledGrammar,
+) -> std::collections::HashMap<usize, LiteralChoice> {
+    let count = grammar.syntax().expressions.len();
+    // Compute costs/counts first, then flatten only maximal roots. Flattening
+    // every nested choice would make long alternative lists quadratic.
+    let mut proofs: Vec<Option<(usize, usize)>> = Vec::with_capacity(count);
+    let mut parent = vec![false; count];
+    for id in 0..count {
+        let proof = match grammar.instruction(id) {
+            Instruction::Literal { text, .. } if !text.is_empty() => Some((1, 1)),
+            Instruction::Group(child) => proofs[child]
+                .and_then(|(steps, leaves)| steps.checked_add(1).map(|steps| (steps, leaves))),
+            Instruction::Choice { left, right } => match (proofs[left], proofs[right]) {
+                (Some((a, x)), Some((b, y))) => a
+                    .checked_add(b)
+                    .and_then(|sum| sum.checked_add(2))
+                    .zip(x.checked_add(y)),
+                _ => None,
+            },
+            _ => None,
+        }
+        .filter(|(steps, _)| *steps <= 131_072);
+        if proof.is_some() {
+            match grammar.instruction(id) {
+                Instruction::Group(child) => parent[child] = true,
+                Instruction::Choice { left, right } => {
+                    parent[left] = true;
+                    parent[right] = true;
+                }
+                _ => {}
+            }
+        }
+        proofs.push(proof);
+    }
+    let mut choices = std::collections::HashMap::new();
+    for id in 0..count {
+        let Some((steps, leaves)) = proofs[id] else {
+            continue;
+        };
+        if parent[id] || leaves < 2 {
+            continue;
+        }
+        let mut pending = vec![id];
+        let mut alternatives = Vec::with_capacity(leaves);
+        while let Some(child) = pending.pop() {
+            match grammar.instruction(child) {
+                Instruction::Literal { .. } => alternatives.push(child),
+                Instruction::Group(child) => pending.push(child),
+                Instruction::Choice { left, right } => {
+                    pending.push(right);
+                    pending.push(left);
+                }
+                _ => unreachable!("certified pure literal choice"),
+            }
+        }
+        choices.insert(
+            id,
+            LiteralChoice {
+                alternatives,
+                steps,
+            },
+        );
+    }
+    choices
+}
