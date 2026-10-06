@@ -2192,6 +2192,15 @@ pub fn header_structs(header: &str) -> Vec<HeaderStruct> {
                 ],
             ),
             (
+                "SDL_TextInputEvent",
+                &[
+                    ("type", "unsigned int"),
+                    ("timestamp", "unsigned int"),
+                    ("windowID", "unsigned int"),
+                    ("text", "char[32]"),
+                ],
+            ),
+            (
                 "SDL_Color",
                 &[
                     ("r", "unsigned char"),
@@ -2231,6 +2240,7 @@ pub fn header_structs(header: &str) -> Vec<HeaderStruct> {
                     ("button", "SDL_MouseButtonEvent"),
                     ("wheel", "SDL_MouseWheelEvent"),
                     ("window", "SDL_WindowEvent"),
+                    ("text", "SDL_TextInputEvent"),
                 ],
             ),
         ],

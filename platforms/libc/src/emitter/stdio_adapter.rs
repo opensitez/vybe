@@ -20,6 +20,16 @@ fn ident(name: &str) -> Expression {
     e(ExprKind::Ident(name.to_string()))
 }
 
+/// Stdio indicators are numeric flags. Unset standard-stream flags are clear.
+pub fn file_status(handle: Expression, error: bool) -> Expression {
+    let flags = if error { "__c_file_error" } else { "__c_file_eof" };
+    bin(
+        BinOp::Integer(vybe_ast::IntOp::Or, vybe_ast::BitLane::W32),
+        bin(BinOp::NullCoalesce, index_expr(ident(flags), handle), lit_int(0)),
+        lit_int(0),
+    )
+}
+
 fn member(object: Expression, field: &str) -> Expression {
     e(ExprKind::Member {
         object: Box::new(object),

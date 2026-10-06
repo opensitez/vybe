@@ -59,6 +59,20 @@ uses_common_resolver = true
 # ────────────────────────────────────────────────────────────────────────────
 
 [builtins]
+"__libc_ctype_isalpha" = { emit = "common:libc.ctype.isalpha", min_args = 1, max_args = 1 }
+"__libc_ctype_isdigit" = { emit = "common:libc.ctype.isdigit", min_args = 1, max_args = 1 }
+"__libc_ctype_isalnum" = { emit = "common:libc.ctype.isalnum", min_args = 1, max_args = 1 }
+"__libc_ctype_isspace" = { emit = "common:libc.ctype.isspace", min_args = 1, max_args = 1 }
+"__libc_ctype_isupper" = { emit = "common:libc.ctype.isupper", min_args = 1, max_args = 1 }
+"__libc_ctype_islower" = { emit = "common:libc.ctype.islower", min_args = 1, max_args = 1 }
+"__libc_ctype_isxdigit" = { emit = "common:libc.ctype.isxdigit", min_args = 1, max_args = 1 }
+"__libc_ctype_iscntrl" = { emit = "common:libc.ctype.iscntrl", min_args = 1, max_args = 1 }
+"__libc_ctype_isprint" = { emit = "common:libc.ctype.isprint", min_args = 1, max_args = 1 }
+"__libc_ctype_ispunct" = { emit = "common:libc.ctype.ispunct", min_args = 1, max_args = 1 }
+"__libc_ctype_isgraph" = { emit = "common:libc.ctype.isgraph", min_args = 1, max_args = 1 }
+"__libc_ctype_isblank" = { emit = "common:libc.ctype.isblank", min_args = 1, max_args = 1 }
+"__libc_ctype_toupper" = { emit = "common:libc.ctype.toupper", min_args = 1, max_args = 1 }
+"__libc_ctype_tolower" = { emit = "common:libc.ctype.tolower", min_args = 1, max_args = 1 }
 "__c_u8array_new" = { emit = "host:ecma:uint8array:new", min_args = 1, max_args = 1 }
 "__c_sdl_listen_input" = { emit = "common:libc.sdl.listen_input", min_args = 1, max_args = 1 }
 "__c_sdl_document" = { emit = "host:web:html:activeDocument", min_args = 0, max_args = 0 }
@@ -66,6 +80,7 @@ uses_common_resolver = true
 "__c_is_undefined" = { emit = "host:wasm:js-undefined:test", min_args = 1, max_args = 1 }
 "__c_ref_eq" = { emit = "common:ref_eq", min_args = 2, max_args = 2 }
 "__c_ref_nonnull" = { emit = "common:ref_nonnull", min_args = 1, max_args = 1, i32_condition = true }
+"__c_ref_is_null" = { emit = "common:ref_is_null", min_args = 1, max_args = 1, i32_condition = true }
 "__c_tag_eq" = { emit = "common:strings.equals_if_string", min_args = 2, max_args = 2, i32_condition = true }
 "__c_tag_ne" = { emit = "common:strings.not_equals_if_string", min_args = 2, max_args = 2, i32_condition = true }
 "__c_string_byte_copy" = { emit = "common:libc.string.byte_copy", min_args = 3, max_args = 3 }
@@ -116,6 +131,7 @@ uses_common_resolver = true
 "__c_vsprintf" = { emit = "common:libc.stdio.vsprintf", min_args = 2, max_args = 2 }
 "__c_string_length" = { emit = "common:str_length", min_args = 1, max_args = 1 }
 "__c_char_code_at" = { emit = "common:str_char_code_at", min_args = 2, max_args = 2 }
+"__libc_nan_to_default" = { emit = "common:libc.number.nan_to_default", min_args = 2, max_args = 2 }
 # system() runs a REAL /bin/sh -c through node:child_process; fopen falls
 # back to the real filesystem on a store miss so shell redirects compose.
 "__c_spawn_sync" = { emit = "host:node:child_process:spawnSync", min_args = 2, max_args = 3 }
@@ -409,13 +425,46 @@ roots = []
 extra_imports = []
 
 [builtin_return_types]
+"__libc_ctype_isalpha" = "integer"
+"__libc_ctype_isdigit" = "integer"
+"__libc_ctype_isalnum" = "integer"
+"__libc_ctype_isspace" = "integer"
+"__libc_ctype_isupper" = "integer"
+"__libc_ctype_islower" = "integer"
+"__libc_ctype_isxdigit" = "integer"
+"__libc_ctype_iscntrl" = "integer"
+"__libc_ctype_isprint" = "integer"
+"__libc_ctype_ispunct" = "integer"
+"__libc_ctype_isgraph" = "integer"
+"__libc_ctype_isblank" = "integer"
+"__libc_ctype_toupper" = "integer"
+"__libc_ctype_tolower" = "integer"
 "strlen" = "int"
 "strcmp" = "int"
 "strncmp" = "int"
 "memcmp" = "int"
 "strncasecmp" = "int"
 "strnicmp" = "int"
+"SDL_GetWindowID" = "uint32"
+"SDL_Init" = "integer"
+"SDL_PushEvent" = "integer"
+"SDL_GetWindowFlags" = "uint32"
+"SDL_GetModState" = "integer"
+"SDL_GetKeyFromScancode" = "integer"
+"SDL_PollEvent" = "integer"
+"SDL_PeepEvents" = "integer"
+"SDL_GetRendererInfo" = "integer"
+"SDL_GetRendererOutputSize" = "integer"
+"SDL_GetCurrentDisplayMode" = "integer"
+"SDL_GetDisplayBounds" = "integer"
+"__libc_nan_to_default" = "double"
 "__libc_strlen_cstring" = "int"
+"__c_ptr_i32_load" = "integer"
+"__c_ptr_i32_load8_s" = "int8"
+"__c_ptr_i32_load8_u" = "uint8"
+"__c_ptr_i32_load16_s" = "int16"
+"__c_ptr_i32_load16_u" = "uint16"
+"__c_unsigned32_from_bits" = "uint32"
 
 # Which built-in each of this language's type spellings NAMES — step 4a.
 #

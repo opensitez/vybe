@@ -12,6 +12,7 @@
 pub mod bessel;
 pub mod build;
 pub mod c_runtime;
+pub mod ctype;
 pub mod dirent_adapter;
 pub mod dispatch;
 pub mod math_adapter;

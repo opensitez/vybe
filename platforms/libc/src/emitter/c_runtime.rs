@@ -268,16 +268,12 @@ fn build_hybrid_indexed_scalar_load_fn() -> Statement {
     let index = ident("index");
     let base = member(ptr.clone(), "__base");
     let idx = member(ptr.clone(), "__idx");
-    function_stmt(
+    let mut function = function_stmt(
         "__c_hybrid_indexed_scalar_load",
         vec!["ptr", "index", "width", "unsigned"],
         vec![
             if_stmt(
-                binary_expr(
-                    BinOp::Eq,
-                    member(ptr.clone(), "__byte_backed"),
-                    expr(ExprKind::Lit(vybe_ast::Literal::Bool(true))),
-                ),
+                member(ptr.clone(), "__byte_backed"),
                 vec![
                     let_decl_stmt(
                         "raw",
@@ -308,7 +304,12 @@ fn build_hybrid_indexed_scalar_load_fn() -> Statement {
             ),
             return_stmt(index_expr(ptr, index)),
         ],
-    )
+    );
+    if let StmtKind::FunctionDecl { params, .. } = &mut function.kind {
+        params[1].type_hint = Some(vybe_ast::TypeHint::checked("int"));
+        params[2].type_hint = Some(vybe_ast::TypeHint::checked("int"));
+    }
+    function
 }
 
 fn build_hybrid_struct_field_write_ptr_fn() -> Statement {
@@ -1656,7 +1657,7 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
         stmt(StmtKind::VarDecl {
             declarations: vec![VarDeclarator {
                 pattern: BindingPattern::Ident("__c_in_forked_child".to_string()),
-                type_hint: None,
+                type_hint: Some("integer".into()),
                 init: Some(int_lit(0)),
                 array_bounds: None,
                 with_events: false,
@@ -1666,7 +1667,7 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
         stmt(StmtKind::VarDecl {
             declarations: vec![VarDeclarator {
                 pattern: BindingPattern::Ident("__c_child_status".to_string()),
-                type_hint: None,
+                type_hint: Some("integer".into()),
                 init: Some(int_lit(0)),
                 array_bounds: None,
                 with_events: false,
@@ -1676,7 +1677,7 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
         stmt(StmtKind::VarDecl {
             declarations: vec![VarDeclarator {
                 pattern: BindingPattern::Ident("__c_child_exec_done".to_string()),
-                type_hint: None,
+                type_hint: Some("integer".into()),
                 init: Some(int_lit(0)),
                 array_bounds: None,
                 with_events: false,
@@ -3613,8 +3614,8 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
                     })),
                 }),
             ))),
-            var_decl_stmt(
-                "write_mode",
+            typed_var_decl_stmt(
+                "write_mode", "int",
                 expr(ExprKind::Ternary {
                     cond: Box::new(expr(ExprKind::Binary {
                         op: BinOp::GtEq,
@@ -3625,8 +3626,8 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
                     else_: Box::new(int_lit(0)),
                 }),
             ),
-            var_decl_stmt(
-                "append_mode",
+            typed_var_decl_stmt(
+                "append_mode", "int",
                 expr(ExprKind::Ternary {
                     cond: Box::new(expr(ExprKind::Binary {
                         op: BinOp::GtEq,
@@ -3637,8 +3638,8 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
                     else_: Box::new(int_lit(0)),
                 }),
             ),
-            var_decl_stmt(
-                "readonly_mode",
+            typed_var_decl_stmt(
+                "readonly_mode", "int",
                 expr(ExprKind::Ternary {
                     cond: Box::new(expr(ExprKind::Binary {
                         op: BinOp::Eq,
@@ -3661,8 +3662,8 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
                     else_: Box::new(int_lit(0)),
                 }),
             ),
-            var_decl_stmt(
-                "append_mode",
+            typed_var_decl_stmt(
+                "append_mode", "int",
                 expr(ExprKind::Ternary {
                     cond: Box::new(expr(ExprKind::Binary {
                         op: BinOp::GtEq,
@@ -3673,8 +3674,8 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
                     else_: Box::new(int_lit(0)),
                 }),
             ),
-            var_decl_stmt(
-                "readonly_mode",
+            typed_var_decl_stmt(
+                "readonly_mode", "int",
                 expr(ExprKind::Ternary {
                     cond: Box::new(expr(ExprKind::Binary {
                         op: BinOp::And,
@@ -3701,8 +3702,8 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
                     else_: Box::new(int_lit(0)),
                 }),
             ),
-            var_decl_stmt(
-                "binary_mode",
+            typed_var_decl_stmt(
+                "binary_mode", "int",
                 expr(ExprKind::Ternary {
                     cond: Box::new(expr(ExprKind::Binary {
                         op: BinOp::GtEq,
@@ -4252,8 +4253,8 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
                     right: Box::new(int_lit(1)),
                 }),
             ))),
-            var_decl_stmt(
-                "write_mode",
+            typed_var_decl_stmt(
+                "write_mode", "int",
                 expr(ExprKind::Ternary {
                     cond: Box::new(expr(ExprKind::Binary {
                         op: BinOp::GtEq,
@@ -4264,8 +4265,8 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
                     else_: Box::new(int_lit(0)),
                 }),
             ),
-            var_decl_stmt(
-                "binary_mode",
+            typed_var_decl_stmt(
+                "binary_mode", "int",
                 expr(ExprKind::Ternary {
                     cond: Box::new(expr(ExprKind::Binary {
                         op: BinOp::GtEq,
@@ -4276,8 +4277,8 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
                     else_: Box::new(int_lit(0)),
                 }),
             ),
-            var_decl_stmt(
-                "append_mode",
+            typed_var_decl_stmt(
+                "append_mode", "int",
                 expr(ExprKind::Ternary {
                     cond: Box::new(expr(ExprKind::Binary {
                         op: BinOp::GtEq,
@@ -4288,8 +4289,8 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
                     else_: Box::new(int_lit(0)),
                 }),
             ),
-            var_decl_stmt(
-                "readonly_mode",
+            typed_var_decl_stmt(
+                "readonly_mode", "int",
                 expr(ExprKind::Ternary {
                     cond: Box::new(expr(ExprKind::Binary {
                         op: BinOp::And,
@@ -4765,13 +4766,35 @@ fn build_legacy_runtime_support() -> Vec<Statement> {
         "__c_fputc_h",
         vec!["code", "handle"],
         vec![
-            stmt(StmtKind::Expr(call_expr(
-                ident("__c_fputs_h"),
-                vec![
-                    call_member(ident("String"), "fromCharCode", vec![ident("code")]),
-                    ident("handle"),
-                ],
+            stmt(StmtKind::Expr(assign_expr(
+                ident("code"),
+                binary_expr(
+                    BinOp::Integer(vybe_ast::IntOp::And, vybe_ast::BitLane::W32),
+                    ident("code"),
+                    int_lit(255),
+                ),
             ))),
+            stmt(StmtKind::VarDecl {
+                declarations: vec![VarDeclarator {
+                    pattern: BindingPattern::Ident("status".to_string()),
+                    type_hint: Some("integer".into()),
+                    init: Some(call_expr(
+                        ident("__c_fputs_h"),
+                        vec![
+                            call_member(ident("String"), "fromCharCode", vec![ident("code")]),
+                            ident("handle"),
+                        ],
+                    )),
+                    array_bounds: None,
+                    with_events: false,
+                }],
+                kind: VarDeclKind::Var,
+            }),
+            if_stmt(
+                binary_expr(BinOp::Lt, ident("status"), int_lit(0)),
+                vec![return_stmt(int_lit(-1))],
+                None,
+            ),
             stmt(StmtKind::Return(Some(ident("code")))),
         ],
     ));

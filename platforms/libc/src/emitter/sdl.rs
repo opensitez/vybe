@@ -325,6 +325,140 @@ fn emit_store_output(chunks: &mut [Chunk], current: usize, pointer: u16, tmp: u1
     );
 }
 
+// Event records use the same declarations as the C header adapter. Nested
+// records are inline addresses on the linear path, objects on the managed path.
+fn event_type_layout(ty: &str) -> (i32, i32) {
+    let ty = ty.trim();
+    if let Some((element, extent)) = ty.split_once('[') {
+        let extent = extent.strip_suffix(']').expect("fixed SDL array extent")
+            .parse::<i32>().expect("numeric SDL array extent");
+        let (size, alignment) = event_type_layout(element);
+        return (size.checked_mul(extent).expect("SDL array size"), alignment);
+    }
+    match ty {
+        "char" | "signed char" | "unsigned char" => return (1, 1),
+        "short" | "unsigned short" => return (2, 2),
+        "int" | "unsigned int" => return (4, 4),
+        _ => {},
+    }
+    let declarations = super::posix_adapter::header_structs("SDL.h");
+    let fields = declarations
+        .into_iter()
+        .find(|(name, _)| *name == ty)
+        .expect("declared SDL event record").1;
+    let mut size = 0;
+    let mut alignment = 1;
+    for &(_, field_type) in fields {
+        let (field_size, field_alignment) = event_type_layout(field_type);
+        size = align_event_offset(size, field_alignment) + field_size;
+        alignment = alignment.max(field_alignment);
+    }
+    (align_event_offset(size, alignment), alignment)
+}
+
+fn align_event_offset(offset: i32, alignment: i32) -> i32 {
+    (offset + alignment - 1) / alignment * alignment
+}
+
+fn event_field_layout(record: &str, field: &str) -> (i32, bool) {
+    let declarations = super::posix_adapter::header_structs("SDL.h");
+    let fields = declarations
+        .iter()
+        .find(|(name, _)| *name == record)
+        .expect("declared SDL event record")
+        .1;
+    let mut offset = 0;
+    for &(name, ty) in fields {
+        let (size, alignment) = event_type_layout(ty);
+        offset = align_event_offset(offset, alignment);
+        if name == field {
+            return (offset, matches!(ty, "int" | "unsigned int"));
+        }
+        offset += size;
+    }
+    panic!("undeclared SDL event field {record}.{field}");
+}
+
+#[cfg(test)]
+mod event_layout_tests {
+    use super::{event_field_layout, event_type_layout};
+
+    #[test]
+    fn text_input_fields_have_byte_buffer_layout() {
+        assert_eq!(event_type_layout("char[32]"), (32, 1));
+        assert_eq!(event_type_layout("SDL_TextInputEvent"), (44, 4));
+        assert_eq!(event_field_layout("SDL_TextInputEvent", "type"), (0, true));
+        assert_eq!(event_field_layout("SDL_TextInputEvent", "timestamp"), (4, true));
+        assert_eq!(event_field_layout("SDL_TextInputEvent", "windowID"), (8, true));
+        assert_eq!(event_field_layout("SDL_TextInputEvent", "text"), (12, false));
+        let (offset, scalar) = event_field_layout("SDL_Event", "text");
+        assert!(!scalar);
+        assert_eq!(event_type_layout("SDL_Event").0, offset + 44);
+    }
+
+    #[test]
+    fn existing_keyboard_and_byte_fields_keep_their_sizes() {
+        assert_eq!(event_type_layout("SDL_Keysym"), (12, 4));
+        assert_eq!(event_field_layout("SDL_Keysym", "mod"), (8, true));
+        assert_eq!(event_type_layout("SDL_Color"), (4, 1));
+        assert_eq!(event_type_layout("unsigned short[3]"), (6, 2));
+    }
+}
+
+fn emit_event_field(
+    chunks: &mut [Chunk],
+    current: usize,
+    record: &str,
+    field: &str,
+    line: u32,
+) {
+    use vybe_compiler::primitives::{instructions::host, pointers};
+    let base = chunks[current].alloc_scratch(1);
+    emit_set_local(chunks, current, base, line);
+    emit_get_local(chunks, current, base, line);
+    host::emit(&mut chunks[current], "wasm:js-number", "test", 1, line);
+    chunks[current].emit_if_value(line);
+    let (offset, scalar) = event_field_layout(record, field);
+    emit_get_local(chunks, current, base, line);
+    chunks[current].emit_i32_const(offset, line);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    if scalar {
+        pointers::emit_linear_i32_load(chunks, current, line);
+    }
+    chunks[current].emit_else(line);
+    emit_get_local(chunks, current, base, line);
+    emit_stack_field(chunks, current, field, line);
+    chunks[current].emit_end(line);
+}
+
+fn emit_store_event_field(
+    chunks: &mut [Chunk],
+    current: usize,
+    target: u16,
+    record: &str,
+    field: &str,
+    tmp: u16,
+    line: u32,
+) {
+    use vybe_compiler::primitives::{instructions::host, pointers};
+    emit_set_local(chunks, current, tmp, line);
+    emit_get_local(chunks, current, target, line);
+    host::emit(&mut chunks[current], "wasm:js-number", "test", 1, line);
+    chunks[current].emit_if(line);
+    let (offset, scalar) = event_field_layout(record, field);
+    assert!(scalar, "SDL event output must be a scalar field");
+    emit_get_local(chunks, current, target, line);
+    chunks[current].emit_i32_const(offset, line);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    emit_get_local(chunks, current, tmp, line);
+    pointers::emit_linear_i32_store(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_else(line);
+    emit_get_local(chunks, current, tmp, line);
+    emit_store_field(chunks, current, target, field, tmp, line);
+    chunks[current].emit_end(line);
+}
+
 /// `1` when the DOM event's `type` equals `kind`, else `0`.
 fn emit_dom_kind_is(chunks: &mut [Chunk], current: usize, ev: u16, kind: &str, line: u32) {
     emit_dom_field(chunks, current, ev, "type", line);
@@ -428,6 +562,18 @@ const SDL_SCANCODE_KEYCODES: &[(i32, i32)] = &[
 /// Accept direct records, scalar reference cells, and C structure pointers.
 /// Unwrap the existing backing rather than writing fields on the pointer wrapper.
 fn emit_deref_cell(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
+    emit_deref_record_arg(chunks, current, slot, true, line);
+}
+
+fn emit_deref_record_arg(
+    chunks: &mut [Chunk], current: usize, slot: u16, resolve_array: bool, line: u32,
+) {
+    emit_get_local(chunks, current, slot, line);
+    vybe_compiler::primitives::instructions::host::emit(
+        &mut chunks[current], "wasm:js-number", "test", 1, line,
+    );
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_if(line);
     emit_get_local(chunks, current, slot, line);
     emit_stack_field(chunks, current, "__ref_kind", line);
     let kind = chunks[current].alloc_scratch(1);
@@ -462,6 +608,24 @@ fn emit_deref_cell(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
     emit_get_local(chunks, current, slot, line);
     chunks[current].emit_end(line);
     emit_set_local(chunks, current, slot, line);
+
+    if resolve_array {
+        emit_get_local(chunks, current, slot, line);
+        emit_stack_field(chunks, current, "__ref_kind", line);
+        emit_set_local(chunks, current, kind, line);
+        vybe_compiler::primitives::ops::emit_string_slot_eq_literal(
+            &mut chunks[current], kind, "carray", line,
+        );
+        chunks[current].emit_if(line);
+        emit_get_local(chunks, current, slot, line);
+        emit_stack_field(chunks, current, "__base", line);
+        emit_get_local(chunks, current, slot, line);
+        emit_stack_field(chunks, current, "__idx", line);
+        vybe_compiler::primitives::collections::emit_get(chunks, current, line);
+        emit_set_local(chunks, current, slot, line);
+        chunks[current].emit_end(line);
+    }
+    chunks[current].emit_end(line);
 }
 
 fn emit_zero_i32(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -1225,24 +1389,16 @@ pub fn emit_sdl_get_performance_frequency(
 
 // ── Tier 1: input (`sdlplan.md`) ────────────────────────────────────────────
 //
-// The HOST fills the `SDL_Event` struct — it can mutate the pointee object
-// directly — so each of these stays a plain call instead of a field-copy
-// sequence in bytecode.
+// Input listeners enqueue browser events; the adapter translates the queue
+// entries into the guest's backing-aware SDL records.
 
 /// `SDL_PollEvent(SDL_Event *e)` → 1 if an event was dequeued, else 0.
 ///
 /// Translate an event delivered by the document's input listeners into SDL's
 /// struct view. The queue is owned by the SDL guest, not by a browser host.
 pub fn emit_sdl_poll_event(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
-    let store_tmp = chunks[current].alloc_scratch(1);
     let ptr = chunks[current].alloc_scratch(1);
     let ev = chunks[current].alloc_scratch(1);
-    let key = chunks[current].alloc_scratch(1);
-    let keysym = chunks[current].alloc_scratch(1);
-    let btn = chunks[current].alloc_scratch(1);
-    let motion = chunks[current].alloc_scratch(1);
-    let wheel = chunks[current].alloc_scratch(1);
-    let kind = chunks[current].alloc_scratch(1);
 
     emit_set_local(chunks, current, ptr, line);
     emit_deref_cell(chunks, current, ptr, line);
@@ -1262,7 +1418,14 @@ pub fn emit_sdl_poll_event(chunks: &mut [Chunk], current: usize, _argc: u8, line
     );
     vybe_compiler::primitives::collections::emit_shift(chunks, current, line);
     emit_set_local(chunks, current, ev, line);
+    emit_sdl_write_input_event(chunks, current, ptr, ev, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_else(line);
+    emit_zero_i32(chunks, current, line);
+    chunks[current].emit_end(line);
+}
 
+fn emit_sdl_input_kind(chunks: &mut [Chunk], current: usize, ev: u16, line: u32) {
     // SDL event type from the DOM `type` string.
     emit_dom_kind_is(chunks, current, ev, "keydown", line);
     chunks[current].emit_if_value(line);
@@ -1290,18 +1453,46 @@ pub fn emit_sdl_poll_event(chunks: &mut [Chunk], current: usize, _argc: u8, line
     chunks[current].emit_end(line);
     chunks[current].emit_end(line);
     chunks[current].emit_end(line);
+}
+
+fn emit_sdl_write_input_event(
+    chunks: &mut [Chunk], current: usize, ptr: u16, ev: u16, line: u32,
+) {
+    let store_tmp = chunks[current].alloc_scratch(1);
+    let key = chunks[current].alloc_scratch(1);
+    let keysym = chunks[current].alloc_scratch(1);
+    let btn = chunks[current].alloc_scratch(1);
+    let motion = chunks[current].alloc_scratch(1);
+    let wheel = chunks[current].alloc_scratch(1);
+    let kind = chunks[current].alloc_scratch(1);
+    emit_sdl_input_kind(chunks, current, ev, line);
     emit_set_local(chunks, current, kind, line);
 
     emit_get_local(chunks, current, kind, line);
-    emit_store_field(chunks, current, ptr, "type", store_tmp, line);
+    emit_store_event_field(chunks, current, ptr, "SDL_Event", "type", store_tmp, line);
+
+    emit_get_local(chunks, current, kind, line);
+    chunks[current].emit_i32_const(0x300, line);
+    chunks[current].emit_op(Op::I32_EQ, line);
+    emit_get_local(chunks, current, kind, line);
+    chunks[current].emit_i32_const(0x301, line);
+    chunks[current].emit_op(Op::I32_EQ, line);
+    chunks[current].emit_op(Op::I32_OR, line);
+    chunks[current].emit_if(line);
 
     // key.keysym.{sym,scancode,mod} — DOM keyCode IS the SDL keysym for the
     // printable range, which is how the winit layer fills it.
     emit_get_local(chunks, current, ptr, line);
-    emit_stack_field(chunks, current, "key", line);
+    emit_event_field(chunks, current, "SDL_Event", "key", line);
     emit_set_local(chunks, current, key, line);
+    emit_get_local(chunks, current, kind, line);
+    emit_store_event_field(chunks, current, key, "SDL_KeyboardEvent", "type", store_tmp, line);
+    emit_get_local(chunks, current, kind, line);
+    chunks[current].emit_i32_const(0x300, line);
+    chunks[current].emit_op(Op::I32_EQ, line);
+    emit_store_event_field(chunks, current, key, "SDL_KeyboardEvent", "state", store_tmp, line);
     emit_get_local(chunks, current, key, line);
-    emit_stack_field(chunks, current, "keysym", line);
+    emit_event_field(chunks, current, "SDL_KeyboardEvent", "keysym", line);
     emit_set_local(chunks, current, keysym, line);
 
     // DOM `keyCode` is the legacy UPPERCASE identity (A = 65); an SDL keysym
@@ -1375,7 +1566,7 @@ pub fn emit_sdl_poll_event(chunks: &mut [Chunk], current: usize, _argc: u8, line
     }
     emit_set_local(chunks, current, sc, line);
     emit_get_local(chunks, current, sc, line);
-    emit_store_field(chunks, current, keysym, "scancode", store_tmp, line);
+    emit_store_event_field(chunks, current, keysym, "SDL_Keysym", "scancode", store_tmp, line);
 
     // SDL's non-printable keysyms use the scancode mask, except Delete.
     emit_get_local(chunks, current, sc, line);
@@ -1421,7 +1612,7 @@ pub fn emit_sdl_poll_event(chunks: &mut [Chunk], current: usize, _argc: u8, line
     chunks[current].emit_end(line);
     chunks[current].emit_end(line);
     chunks[current].emit_end(line);
-    emit_store_field(chunks, current, keysym, "sym", store_tmp, line);
+    emit_store_event_field(chunks, current, keysym, "SDL_Keysym", "sym", store_tmp, line);
 
     // KMOD_* mask from the DOM's boolean modifiers — the inverse of what the
     // push side does, so a pushed event round-trips its modifiers.
@@ -1441,43 +1632,59 @@ pub fn emit_sdl_poll_event(chunks: &mut [Chunk], current: usize, _argc: u8, line
         emit_set_local(chunks, current, mods, line);
     }
     emit_get_local(chunks, current, mods, line);
-    emit_store_field(chunks, current, keysym, "mod", store_tmp, line);
+    emit_store_event_field(chunks, current, keysym, "SDL_Keysym", "mod", store_tmp, line);
+    chunks[current].emit_end(line);
 
     // button.{button,x,y} — DOM button is 0-based, SDL 1-based.
+    emit_get_local(chunks, current, kind, line);
+    chunks[current].emit_i32_const(0x401, line);
+    chunks[current].emit_op(Op::I32_EQ, line);
+    emit_get_local(chunks, current, kind, line);
+    chunks[current].emit_i32_const(0x402, line);
+    chunks[current].emit_op(Op::I32_EQ, line);
+    chunks[current].emit_op(Op::I32_OR, line);
+    chunks[current].emit_if(line);
     emit_get_local(chunks, current, ptr, line);
-    emit_stack_field(chunks, current, "button", line);
+    emit_event_field(chunks, current, "SDL_Event", "button", line);
     emit_set_local(chunks, current, btn, line);
     emit_dom_field(chunks, current, ev, "button", line);
     chunks[current].emit_f64_const(1.0, line);
     chunks[current].emit_op(Op::F64_ADD, line);
-    emit_store_field(chunks, current, btn, "button", store_tmp, line);
+    emit_store_event_field(chunks, current, btn, "SDL_MouseButtonEvent", "button", store_tmp, line);
     emit_dom_field(chunks, current, ev, "clientX", line);
-    emit_store_field(chunks, current, btn, "x", store_tmp, line);
+    emit_store_event_field(chunks, current, btn, "SDL_MouseButtonEvent", "x", store_tmp, line);
     emit_dom_field(chunks, current, ev, "clientY", line);
-    emit_store_field(chunks, current, btn, "y", store_tmp, line);
+    emit_store_event_field(chunks, current, btn, "SDL_MouseButtonEvent", "y", store_tmp, line);
+    chunks[current].emit_end(line);
 
     // motion.{x,y}
+    emit_get_local(chunks, current, kind, line);
+    chunks[current].emit_i32_const(0x400, line);
+    chunks[current].emit_op(Op::I32_EQ, line);
+    chunks[current].emit_if(line);
     emit_get_local(chunks, current, ptr, line);
-    emit_stack_field(chunks, current, "motion", line);
+    emit_event_field(chunks, current, "SDL_Event", "motion", line);
     emit_set_local(chunks, current, motion, line);
     emit_dom_field(chunks, current, ev, "clientX", line);
-    emit_store_field(chunks, current, motion, "x", store_tmp, line);
+    emit_store_event_field(chunks, current, motion, "SDL_MouseMotionEvent", "x", store_tmp, line);
     emit_dom_field(chunks, current, ev, "clientY", line);
-    emit_store_field(chunks, current, motion, "y", store_tmp, line);
+    emit_store_event_field(chunks, current, motion, "SDL_MouseMotionEvent", "y", store_tmp, line);
+    chunks[current].emit_end(line);
 
     // wheel.y — DOM deltaY is positive DOWN, SDL wheel y positive UP.
+    emit_get_local(chunks, current, kind, line);
+    chunks[current].emit_i32_const(0x403, line);
+    chunks[current].emit_op(Op::I32_EQ, line);
+    chunks[current].emit_if(line);
     emit_get_local(chunks, current, ptr, line);
-    emit_stack_field(chunks, current, "wheel", line);
+    emit_event_field(chunks, current, "SDL_Event", "wheel", line);
     emit_set_local(chunks, current, wheel, line);
     chunks[current].emit_f64_const(0.0, line);
     emit_dom_field(chunks, current, ev, "deltaY", line);
     chunks[current].emit_op(Op::F64_SUB, line);
-    emit_store_field(chunks, current, wheel, "y", store_tmp, line);
-
-    chunks[current].emit_i32_const(1, line);
-    chunks[current].emit_else(line);
-    emit_zero_i32(chunks, current, line);
+    emit_store_event_field(chunks, current, wheel, "SDL_MouseWheelEvent", "y", store_tmp, line);
     chunks[current].emit_end(line);
+
 }
 
 /// `SDL_PushEvent(SDL_Event *e)` → 1. Inject into SDL's own event queue.
@@ -1491,7 +1698,7 @@ pub fn emit_sdl_push_event(chunks: &mut [Chunk], current: usize, _argc: u8, line
 
     // The SDL type decides the DOM `type` string.
     emit_get_local(chunks, current, ptr, line);
-    emit_stack_field(chunks, current, "type", line);
+    emit_event_field(chunks, current, "SDL_Event", "type", line);
     emit_set_local(chunks, current, ty, line);
 
     emit_get_local(chunks, current, ty, line);
@@ -1530,11 +1737,14 @@ pub fn emit_sdl_push_event(chunks: &mut [Chunk], current: usize, _argc: u8, line
     emit_get_local(chunks, current, kind, line);
     emit_store_field(chunks, current, dom, "type", store_tmp, line);
 
-    let scan_v = chunks[current].alloc_scratch(1);
+    let keysym = chunks[current].alloc_scratch(1);
     emit_get_local(chunks, current, ptr, line);
-    emit_stack_field(chunks, current, "key", line);
-    emit_stack_field(chunks, current, "keysym", line);
-    emit_stack_field(chunks, current, "scancode", line);
+    emit_event_field(chunks, current, "SDL_Event", "key", line);
+    emit_event_field(chunks, current, "SDL_KeyboardEvent", "keysym", line);
+    emit_set_local(chunks, current, keysym, line);
+    let scan_v = chunks[current].alloc_scratch(1);
+    emit_get_local(chunks, current, keysym, line);
+    emit_event_field(chunks, current, "SDL_Keysym", "scancode", line);
     emit_set_local(chunks, current, scan_v, line);
     for &(code, scan) in DOM_CODE_SCANCODES {
         emit_get_local(chunks, current, scan_v, line);
@@ -1562,10 +1772,8 @@ pub fn emit_sdl_push_event(chunks: &mut [Chunk], current: usize, _argc: u8, line
     // SDL keysym is lowercase (SDLK_w = 119). Converting here is what lets
     // the poll side derive both `sym` AND the USB-HID `scancode` back.
     let sym_v = chunks[current].alloc_scratch(1);
-    emit_get_local(chunks, current, ptr, line);
-    emit_stack_field(chunks, current, "key", line);
-    emit_stack_field(chunks, current, "keysym", line);
-    emit_stack_field(chunks, current, "sym", line);
+    emit_get_local(chunks, current, keysym, line);
+    emit_event_field(chunks, current, "SDL_Keysym", "sym", line);
     emit_set_local(chunks, current, sym_v, line);
 
     emit_get_local(chunks, current, sym_v, line);
@@ -1592,10 +1800,8 @@ pub fn emit_sdl_push_event(chunks: &mut [Chunk], current: usize, _argc: u8, line
     // that made `Op::EQ` fail against `f64` type codes earlier in this
     // function. `bit = m - 2*floor(m/2)` needs no coercion at all.
     let mods = chunks[current].alloc_scratch(1);
-    emit_get_local(chunks, current, ptr, line);
-    emit_stack_field(chunks, current, "key", line);
-    emit_stack_field(chunks, current, "keysym", line);
-    emit_stack_field(chunks, current, "mod", line);
+    emit_get_local(chunks, current, keysym, line);
+    emit_event_field(chunks, current, "SDL_Keysym", "mod", line);
     emit_set_local(chunks, current, mods, line);
 
     for (mask, field) in [(1i32, "shiftKey"), (0x40, "ctrlKey"), (0x100, "altKey")] {
@@ -1613,8 +1819,8 @@ pub fn emit_sdl_push_event(chunks: &mut [Chunk], current: usize, _argc: u8, line
     }
 
     emit_get_local(chunks, current, ptr, line);
-    emit_stack_field(chunks, current, "button", line);
-    emit_stack_field(chunks, current, "button", line);
+    emit_event_field(chunks, current, "SDL_Event", "button", line);
+    emit_event_field(chunks, current, "SDL_MouseButtonEvent", "button", line);
     chunks[current].emit_f64_const(1.0, line);
     chunks[current].emit_op(Op::F64_SUB, line);
     emit_store_field(chunks, current, dom, "button", store_tmp, line);
@@ -1623,8 +1829,8 @@ pub fn emit_sdl_push_event(chunks: &mut [Chunk], current: usize, _argc: u8, line
     // 4 middle — a different assignment from SDL's, resolved here.
     let sdl_btn = chunks[current].alloc_scratch(1);
     emit_get_local(chunks, current, ptr, line);
-    emit_stack_field(chunks, current, "button", line);
-    emit_stack_field(chunks, current, "button", line);
+    emit_event_field(chunks, current, "SDL_Event", "button", line);
+    emit_event_field(chunks, current, "SDL_MouseButtonEvent", "button", line);
     emit_set_local(chunks, current, sdl_btn, line);
     emit_get_local(chunks, current, sdl_btn, line);
     chunks[current].emit_f64_const(1.0, line);
@@ -1651,13 +1857,13 @@ pub fn emit_sdl_push_event(chunks: &mut [Chunk], current: usize, _argc: u8, line
     emit_store_field(chunks, current, dom, "buttons", store_tmp, line);
 
     emit_get_local(chunks, current, ptr, line);
-    emit_stack_field(chunks, current, "button", line);
-    emit_stack_field(chunks, current, "x", line);
+    emit_event_field(chunks, current, "SDL_Event", "button", line);
+    emit_event_field(chunks, current, "SDL_MouseButtonEvent", "x", line);
     emit_store_field(chunks, current, dom, "clientX", store_tmp, line);
 
     emit_get_local(chunks, current, ptr, line);
-    emit_stack_field(chunks, current, "button", line);
-    emit_stack_field(chunks, current, "y", line);
+    emit_event_field(chunks, current, "SDL_Event", "button", line);
+    emit_event_field(chunks, current, "SDL_MouseButtonEvent", "y", line);
     emit_store_field(chunks, current, dom, "clientY", store_tmp, line);
 
     vybe_compiler::primitives::globals::emit_read(
@@ -1725,12 +1931,183 @@ pub fn emit_sdl_pump_events(chunks: &mut [Chunk], current: usize, argc: u8, line
     emit_zero_i32(chunks, current, line);
 }
 
-/// `SDL_PeepEvents(...)` → 0 events, dropping every argument.
+fn emit_sdl_i32(chunks: &mut [Chunk], current: usize, line: u32) {
+    vybe_compiler::primitives::instructions::host::emit(
+        &mut chunks[current], "wasm:js-number", "toF64", 1, line,
+    );
+    chunks[current].emit_op(Op::I64_TRUNC_F64_S, line);
+    chunks[current].emit_op(Op::I32_WRAP_I64, line);
+}
+
+fn emit_sdl_event_at(
+    chunks: &mut [Chunk], current: usize, buffer: u16, index: u16, line: u32,
+) {
+    use vybe_compiler::primitives::{collections, instructions::host};
+    emit_get_local(chunks, current, buffer, line);
+    host::emit(&mut chunks[current], "wasm:js-number", "test", 1, line);
+    chunks[current].emit_if_value(line);
+    emit_get_local(chunks, current, buffer, line);
+    emit_sdl_i32(chunks, current, line);
+    emit_get_local(chunks, current, index, line);
+    chunks[current].emit_i32_const(event_type_layout("SDL_Event").0, line);
+    chunks[current].emit_op(Op::I32_MUL, line);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    chunks[current].emit_else(line);
+    emit_get_local(chunks, current, buffer, line);
+    emit_stack_field(chunks, current, "__ref_kind", line);
+    let kind = chunks[current].alloc_scratch(1);
+    emit_set_local(chunks, current, kind, line);
+    vybe_compiler::primitives::ops::emit_string_slot_eq_literal(
+        &mut chunks[current], kind, "carray", line,
+    );
+    chunks[current].emit_if_value(line);
+    emit_get_local(chunks, current, buffer, line);
+    emit_stack_field(chunks, current, "__base", line);
+    emit_get_local(chunks, current, buffer, line);
+    emit_stack_field(chunks, current, "__idx", line);
+    emit_sdl_i32(chunks, current, line);
+    emit_get_local(chunks, current, index, line);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    collections::emit_get(chunks, current, line);
+    chunks[current].emit_else(line);
+    emit_get_local(chunks, current, buffer, line);
+    host::emit(&mut chunks[current], "ecma:array", "isArray", 1, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    emit_get_local(chunks, current, buffer, line);
+    emit_get_local(chunks, current, index, line);
+    collections::emit_get(chunks, current, line);
+    chunks[current].emit_else(line);
+    emit_get_local(chunks, current, buffer, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+}
+
+fn emit_sdl_increment(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
+    emit_get_local(chunks, current, slot, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    emit_set_local(chunks, current, slot, line);
+}
+
+/// Add, peek or retrieve a range of events from the adapter-owned queue.
 pub fn emit_sdl_peep_events(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
-    for _ in 0..argc {
-        chunks[current].emit_op(Op::DROP, line);
+    use vybe_compiler::primitives::{collections, globals, ops};
+    assert_eq!(argc, 5, "SDL_PeepEvents argument count");
+    let buffer = chunks[current].alloc_scratch(1);
+    let maximum = chunks[current].alloc_scratch(1);
+    let action = chunks[current].alloc_scratch(1);
+    let min_type = chunks[current].alloc_scratch(1);
+    let max_type = chunks[current].alloc_scratch(1);
+    let count = chunks[current].alloc_scratch(1);
+    let index = chunks[current].alloc_scratch(1);
+    let queue = chunks[current].alloc_scratch(1);
+    let event = chunks[current].alloc_scratch(1);
+    let pointer = chunks[current].alloc_scratch(1);
+    let kind = chunks[current].alloc_scratch(1);
+    let has_buffer = chunks[current].alloc_scratch(1);
+    for slot in [max_type, min_type, action, maximum] {
+        emit_sdl_i32(chunks, current, line);
+        emit_set_local(chunks, current, slot, line);
     }
+    emit_set_local(chunks, current, buffer, line);
+    emit_deref_record_arg(chunks, current, buffer, false, line);
+    emit_get_local(chunks, current, buffer, line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    emit_set_local(chunks, current, has_buffer, line);
+    globals::emit_read(&mut chunks[current], super::sdl_app::INPUT_QUEUE, line);
+    emit_set_local(chunks, current, queue, line);
     emit_zero_i32(chunks, current, line);
+    emit_set_local(chunks, current, count, line);
+    emit_zero_i32(chunks, current, line);
+    emit_set_local(chunks, current, index, line);
+
+    emit_get_local(chunks, current, action, line);
+    chunks[current].emit_i32_const(2, line);
+    chunks[current].emit_op(Op::I32_LE_U, line);
+    chunks[current].emit_if_value(line);
+    emit_get_local(chunks, current, action, line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_if(line);
+    let added = chunks[current].emit_block(line);
+    let (add_again, _) = chunks[current].emit_loop_s(line);
+    emit_get_local(chunks, current, count, line);
+    emit_get_local(chunks, current, maximum, line);
+    chunks[current].emit_op(Op::I32_GE_S, line);
+    chunks[current].emit_br_if(1, line);
+    emit_sdl_event_at(chunks, current, buffer, count, line);
+    emit_sdl_push_event(chunks, current, 1, line);
+    chunks[current].emit_op(Op::DROP, line);
+    emit_sdl_increment(chunks, current, count, line);
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(add_again);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(added);
+    chunks[current].emit_else(line);
+
+    let done = chunks[current].emit_block(line);
+    let (again, _) = chunks[current].emit_loop_s(line);
+    emit_get_local(chunks, current, index, line);
+    emit_get_local(chunks, current, queue, line);
+    collections::emit_len(chunks, current, line);
+    emit_sdl_i32(chunks, current, line);
+    chunks[current].emit_op(Op::I32_GE_U, line);
+    chunks[current].emit_br_if(1, line);
+    emit_get_local(chunks, current, count, line);
+    emit_get_local(chunks, current, maximum, line);
+    chunks[current].emit_op(Op::I32_GE_S, line);
+    emit_get_local(chunks, current, has_buffer, line);
+    chunks[current].emit_op(Op::I32_AND, line);
+    chunks[current].emit_br_if(1, line);
+
+    emit_get_local(chunks, current, queue, line);
+    emit_get_local(chunks, current, index, line);
+    collections::emit_get(chunks, current, line);
+    emit_set_local(chunks, current, event, line);
+    emit_sdl_input_kind(chunks, current, event, line);
+    emit_set_local(chunks, current, kind, line);
+    emit_get_local(chunks, current, kind, line);
+    emit_get_local(chunks, current, min_type, line);
+    chunks[current].emit_op(Op::I32_GE_U, line);
+    emit_get_local(chunks, current, kind, line);
+    emit_get_local(chunks, current, max_type, line);
+    chunks[current].emit_op(Op::I32_LE_U, line);
+    chunks[current].emit_op(Op::I32_AND, line);
+    chunks[current].emit_if(line);
+    emit_get_local(chunks, current, has_buffer, line);
+    chunks[current].emit_if(line);
+    emit_sdl_event_at(chunks, current, buffer, count, line);
+    emit_set_local(chunks, current, pointer, line);
+    emit_deref_cell(chunks, current, pointer, line);
+    emit_sdl_write_input_event(chunks, current, pointer, event, line);
+    chunks[current].emit_end(line);
+    emit_sdl_increment(chunks, current, count, line);
+    emit_get_local(chunks, current, action, line);
+    chunks[current].emit_i32_const(2, line);
+    chunks[current].emit_op(Op::I32_EQ, line);
+    chunks[current].emit_if(line);
+    emit_get_local(chunks, current, queue, line);
+    emit_get_local(chunks, current, index, line);
+    collections::emit_remove_at(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_else(line);
+    emit_sdl_increment(chunks, current, index, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_else(line);
+    emit_sdl_increment(chunks, current, index, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(again);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(done);
+    chunks[current].emit_end(line);
+    emit_get_local(chunks, current, count, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_i32_const(-1, line);
+    chunks[current].emit_end(line);
 }
 
 pub fn emit_sdl_show_window(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {

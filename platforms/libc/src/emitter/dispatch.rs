@@ -6,6 +6,22 @@
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
 
+fn emit_nan_to_default(chunks: &mut [Chunk], current: usize, line: u32) {
+    let value = chunks[current].alloc_scratch(1);
+    let fallback = chunks[current].alloc_scratch(1);
+    let chunk = &mut chunks[current];
+    chunk.emit_op_u16(Op::LOCAL_SET, fallback, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, value, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, value, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, value, line);
+    chunk.emit_op(Op::F64_NE, line);
+    chunk.emit_if(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, fallback, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, value, line);
+    chunk.emit_end(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, value, line);
+}
+
 fn call_math(chunks: &mut [Chunk], current: usize, func: &str, argc: u8, line: u32) {
     let idx = chunks[current].add_import("ecma:math", func);
     chunks[current].emit_call(idx, argc, line);
@@ -232,6 +248,10 @@ fn emit_lgamma(chunks: &mut [Chunk], current: usize, line: u32) {
 
 pub fn emit_math(name: &str, chunks: &mut [Chunk], current: usize, line: u32) -> bool {
     match name {
+        "libc.number.nan_to_default" => {
+            emit_nan_to_default(chunks, current, line);
+            true
+        }
         "libc.math.erf" => {
             emit_erf(chunks, current, line);
             true
@@ -269,6 +289,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         return true;
     }
     if emit_math(name, chunks, current, line) {
+        return true;
+    }
+    if super::ctype::emit(name, chunks, current, line) {
         return true;
     }
     match name {
