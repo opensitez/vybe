@@ -8,10 +8,12 @@
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use vybe_compiler::primitives::platforms::register_platforms;
+use vybe_compiler::primitives::platforms::{
+    finalize_platforms, init_platforms, register_platforms,
+};
 use vybe_runtime::capabilities::Capabilities;
 use vybe_runtime::value::Object;
-use vybe_runtime::{Chunk, Op, VM, Value};
+use vybe_runtime::{Chunk, Op, Value, VM};
 
 fn scratch_dir(label: &str) -> PathBuf {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -111,7 +113,10 @@ fn canonical_write_bytes(path: &std::path::Path, payload: &[u8], append: bool) {
     vm.set_global_owned(
         "__wasi_fs_write_payload",
         Value::Object(vybe_runtime::heap::alloc(Object::new_array(
-            payload.iter().map(|byte| Value::I32(*byte as i32)).collect(),
+            payload
+                .iter()
+                .map(|byte| Value::I32(*byte as i32))
+                .collect(),
         ))),
     );
     vm.run(vec![chunk]).expect("canonical file write");
@@ -170,11 +175,10 @@ fn bench_bulk_write_via_canonical_stream() {
 fn byte_array_store_chunk() -> Chunk {
     let mut chunk = Chunk::new("<canonical-byte-store>");
     let payload_name = chunk.intern_string_constant("__wasi_fs_write_payload");
-    let (ptr, _len) = vybe_compiler::primitives::canon_marshal::emit_store_byte_array(
-        &mut chunk,
-        0,
-        |chunk| chunk.emit_op_u32(Op::GLOBAL_GET, payload_name, 0),
-    );
+    let (ptr, _len) =
+        vybe_compiler::primitives::canon_marshal::emit_store_byte_array(&mut chunk, 0, |chunk| {
+            chunk.emit_op_u32(Op::GLOBAL_GET, payload_name, 0)
+        });
     chunk.emit_op_u16(Op::LOCAL_GET, ptr, 0);
     chunk.emit_op(Op::RETURN, 0);
     chunk
@@ -248,7 +252,10 @@ fn bench_canonical_byte_array_store_only() {
         vm.set_global_owned(
             "__wasi_fs_write_payload",
             Value::Object(vybe_runtime::heap::alloc(Object::new_array(
-                payload.iter().map(|byte| Value::I32(*byte as i32)).collect(),
+                payload
+                    .iter()
+                    .map(|byte| Value::I32(*byte as i32))
+                    .collect(),
             ))),
         );
         let started = std::time::Instant::now();
@@ -256,7 +263,10 @@ fn bench_canonical_byte_array_store_only() {
         samples.push(started.elapsed());
         let ptr = result.as_i32() as u32;
         let mut written = vec![0; payload.len()];
-        assert_eq!(vm.memory.read_bytes(ptr as usize, &mut written), payload.len());
+        assert_eq!(
+            vm.memory.read_bytes(ptr as usize, &mut written),
+            payload.len()
+        );
         assert_eq!(written, payload);
     }
     samples.sort_unstable();
@@ -270,24 +280,29 @@ fn bench_canonical_byte_array_store_only() {
     vm.set_global_owned(
         "__wasi_fs_write_payload",
         Value::Object(vybe_runtime::heap::alloc(Object::new_array(
-            payload.iter().map(|byte| Value::I32(*byte as i32)).collect(),
+            payload
+                .iter()
+                .map(|byte| Value::I32(*byte as i32))
+                .collect(),
         ))),
     );
     vm.record_runtime_perf(true);
-    vm.run(vec![chunk]).expect("instrumented canonical byte store");
+    vm.run(vec![chunk])
+        .expect("instrumented canonical byte store");
     let counters = vm.take_runtime_perf().unwrap();
     println!(
         "canonical store calls: js_builtin={}, host={}, bulk_copies={}",
-        counters.call_target_js_builtin,
-        counters.host_call,
-        counters.super_managed_to_linear
+        counters.call_target_js_builtin, counters.host_call, counters.super_managed_to_linear
     );
 }
 
 #[test]
 fn canonical_stream_preserves_batch_edges_and_binary_bytes() {
     let dir = scratch_dir("batch_edges");
-    for len in [0, 1, 7, 8, 9, 15, 16, 17, 63, 64, 65, 127, 128, 129, 191, 192, 193, 383, 384, 385, 65535, 65536, 65537] {
+    for len in [
+        0, 1, 7, 8, 9, 15, 16, 17, 63, 64, 65, 127, 128, 129, 191, 192, 193, 383, 384, 385, 65535,
+        65536, 65537,
+    ] {
         let data: Vec<u8> = (0..len).map(|i| (i % 251) as u8).collect();
         std::fs::write(dir.join("payload.bin"), &data).unwrap();
         assert_eq!(
@@ -381,7 +396,10 @@ fn bench_text_read_via_canonical_stream() {
     let actual = crate::stream_drain::read_via_stream(&dir, "payload.txt", 0.0);
     let elapsed = started.elapsed();
     assert_eq!(actual, data);
-    println!("canonical {} KiB text file read: {elapsed:?}", data.len() / 1024);
+    println!(
+        "canonical {} KiB text file read: {elapsed:?}",
+        data.len() / 1024
+    );
 
     std::fs::remove_dir_all(dir).unwrap();
 }
@@ -395,9 +413,150 @@ fn bench_bulk_stream_production_only() {
 
     let started = std::time::Instant::now();
     crate::stream_drain::produce_read_via_stream(&dir, "payload.bin");
-    println!("produce 256 KiB stream, no canonical drain: {:?}", started.elapsed());
+    println!(
+        "produce 256 KiB stream, no canonical drain: {:?}",
+        started.elapsed()
+    );
 
     std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+#[ignore = "local stream producer phase diagnostic"]
+fn bench_bulk_stream_production_phases() {
+    let dir = scratch_dir("produce_phases");
+    let data: Vec<u8> = (0..256 * 1024).map(|i| (i % 251) as u8).collect();
+    std::fs::write(dir.join("payload.bin"), data).unwrap();
+
+    let mut samples = [Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new()];
+    for round in 0..6 {
+        let started = std::time::Instant::now();
+        let chunk = crate::stream_drain::build_read_via_stream_producer(&dir, "payload.bin");
+        let built = started.elapsed();
+        let started = std::time::Instant::now();
+        let mut vm = VM::new();
+        let created = started.elapsed();
+        let started = std::time::Instant::now();
+        init_platforms(&mut vm);
+        let initialized = started.elapsed();
+        let started = std::time::Instant::now();
+        finalize_platforms(&mut vm);
+        let finalized = started.elapsed();
+        let started = std::time::Instant::now();
+        let result = vm.run(vec![chunk]).expect("stream producer");
+        let executed = started.elapsed();
+        assert!(matches!(result, Value::Object(_)));
+        if round != 0 {
+            for (values, sample) in
+                samples
+                    .iter_mut()
+                    .zip([built, created, initialized, finalized, executed])
+            {
+                values.push(sample);
+            }
+        }
+    }
+    for (label, values) in ["build", "VM new", "init", "finalize", "run"]
+        .into_iter()
+        .zip(&mut samples)
+    {
+        values.sort_unstable();
+        println!("produce 256 KiB stream {label}: {:?}", values[2]);
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+#[ignore = "local canonical stream read phase diagnostic"]
+fn bench_bulk_read_phases() {
+    let dir = scratch_dir("read_phases");
+    let data: Vec<u8> = (0..256 * 1024).map(|i| (i % 251) as u8).collect();
+    std::fs::write(dir.join("payload.bin"), &data).unwrap();
+
+    let mut samples = [Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new()];
+    for round in 0..6 {
+        let started = std::time::Instant::now();
+        let chunk = crate::stream_drain::build_read_via_stream_drain(&dir, "payload.bin", 0.0);
+        let built = started.elapsed();
+        let started = std::time::Instant::now();
+        let mut vm = VM::new();
+        let created = started.elapsed();
+        let started = std::time::Instant::now();
+        init_platforms(&mut vm);
+        let initialized = started.elapsed();
+        let started = std::time::Instant::now();
+        finalize_platforms(&mut vm);
+        let finalized = started.elapsed();
+        let started = std::time::Instant::now();
+        let result = vm.run(vec![chunk]).expect("canonical stream read");
+        let executed = started.elapsed();
+        let Value::Object(object) = result else {
+            panic!("expected byte array");
+        };
+        let object = object.lock().unwrap();
+        let vybe_runtime::value::ObjectKind::Array(bytes) = &object.kind else {
+            panic!("expected byte array");
+        };
+        assert_eq!(bytes.len(), data.len());
+        if round != 0 {
+            for (values, sample) in
+                samples
+                    .iter_mut()
+                    .zip([built, created, initialized, finalized, executed])
+            {
+                values.push(sample);
+            }
+        }
+    }
+    for (label, values) in ["build", "VM new", "init", "finalize", "run"]
+        .into_iter()
+        .zip(&mut samples)
+    {
+        values.sort_unstable();
+        println!("read 256 KiB stream {label}: {:?}", values[2]);
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+#[ignore = "local plugin registration diagnostic"]
+fn bench_plugin_registration_phases() {
+    let caps = Capabilities::all();
+    let mut samples: std::collections::BTreeMap<
+        (&'static str, &'static str),
+        Vec<std::time::Duration>,
+    > = std::collections::BTreeMap::new();
+    for round in 0..6 {
+        let mut vm = VM::new();
+        for plugin in vybe_runtime::plugins() {
+            let started = std::time::Instant::now();
+            plugin.init(&mut vybe_runtime::Framework::with_vm_and_caps(
+                &mut vm, &caps,
+            ));
+            if round != 0 {
+                samples
+                    .entry((plugin.name(), "init"))
+                    .or_default()
+                    .push(started.elapsed());
+            }
+        }
+        for plugin in vybe_runtime::plugins() {
+            let started = std::time::Instant::now();
+            plugin.finalize(&mut vybe_runtime::Framework::with_vm_and_caps(
+                &mut vm, &caps,
+            ));
+            if round != 0 {
+                samples
+                    .entry((plugin.name(), "finalize"))
+                    .or_default()
+                    .push(started.elapsed());
+            }
+        }
+    }
+    for ((name, phase), values) in &mut samples {
+        values.sort_unstable();
+        println!("plugin {name} {phase}: {:?}", values[2]);
+    }
 }
 
 #[test]
@@ -409,7 +568,10 @@ fn bench_text_stream_production_only() {
 
     let started = std::time::Instant::now();
     crate::stream_drain::produce_read_via_stream(&dir, "payload.txt");
-    println!("produce 263 KiB text stream, no canonical drain: {:?}", started.elapsed());
+    println!(
+        "produce 263 KiB text stream, no canonical drain: {:?}",
+        started.elapsed()
+    );
 
     std::fs::remove_dir_all(dir).unwrap();
 }

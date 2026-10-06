@@ -543,54 +543,6 @@ fn borrowed_assign_source_start(source: &Object) -> Option<usize> {
     }).then_some(0)
 }
 
-// A base ordinary target with no public data and no other metadata cannot
-// invoke setters or prototype code. Preserve an existing tracker object's
-// identity, and clone immutable source key strings rather than rebuilding them.
-fn try_assign_fresh_tracked_data(destination: &mut Object, source: &Object) -> bool {
-    if !matches!(destination.kind, ObjectKind::Ordinary)
-        || destination.type_id != 0 || !destination.fields.is_empty()
-        || destination.properties.len() > 1
-        || (destination.properties.len() == 1 && !destination.properties.contains_key("__keys"))
-    {
-        return false;
-    }
-    let Some(Value::Object(source_tracker)) = source.properties.get("__keys") else { return false };
-    let Ok(source_tracker) = source_tracker.try_lock() else { return false };
-    let ObjectKind::Array(keys) = &source_tracker.kind else { return false };
-    // Revalidate after reacquiring the tracker: no stale alignment assumption.
-    if !has_aligned_tracked_keys(source, keys) {
-        return false;
-    }
-    if source.properties.len() == 1 {
-        return true;
-    }
-    let existing_tracker = match destination.properties.get("__keys") {
-        Some(Value::Object(tracker)) => Some(tracker.clone()),
-        None => None,
-        _ => return false,
-    };
-    if let Some(tracker) = existing_tracker {
-        let Ok(mut tracker) = tracker.try_lock() else { return false };
-        let ObjectKind::Array(values) = &mut tracker.kind else { return false };
-        if !values.is_empty() {
-            return false;
-        }
-        destination.properties.reserve(keys.len());
-        values.reserve(keys.len());
-        for (key, value) in source.properties.iter().skip(1) {
-            destination.properties.insert(key.clone(), value.clone());
-        }
-        values.extend_from_slice(keys);
-    } else {
-        destination.properties.reserve(source.properties.len());
-        destination.properties.insert("__keys".into(),
-            Value::Object(vybe_runtime::heap::alloc(Object::new_array(keys.clone()))));
-        for (key, value) in source.properties.iter().skip(1) {
-            destination.properties.insert(key.clone(), value.clone());
-        }
-    }
-    true
-}
 fn try_assign_borrowed_plain_data(
     target: &Arc<Mutex<Object>>,
     source: &Arc<Mutex<Object>>,
@@ -605,19 +557,13 @@ fn try_assign_borrowed_plain_data(
     let Ok(mut destination) = target.try_lock() else {
         return false;
     };
-    if source_start == 1 {
-        if destination.type_id != 0 || !destination.fields.is_empty() {
-            return false;
-        }
-        if try_assign_fresh_tracked_data(&mut destination, &source_object) {
-            return true;
-        }
-    }
-    if !is_plain_data_destination(&destination) {
+    if !is_plain_data_destination(&destination)
+        || (source_start != 0 && (destination.type_id != 0 || !destination.fields.is_empty()))
+    {
         return false;
     }
-    let accessor_free = destination.properties.len()
-        <= source_object.properties.len().saturating_sub(source_start).saturating_mul(2)
+    let source_len = source_object.properties.len() - source_start;
+    let accessor_free = destination.properties.len() <= source_len.saturating_mul(2)
         && !destination.properties.keys().any(|key| {
             key.starts_with("__get_") || key.starts_with("__set_")
         });
@@ -645,8 +591,6 @@ fn try_assign_borrowed_plain_data(
     }
     true
 }
-
-// Some means updated; the inner option is the existing key-tracking work
 
 #[cfg(test)]
 mod tracked_borrowed_assignment_tests {
@@ -920,6 +864,11 @@ mod tracked_borrowed_assignment_tests {
                 let source = fixture(count, true, true);
                 let target = fixture(count, tracked, populated);
                 let original_tracker = target.lock().unwrap().properties.get("__keys").cloned();
+                if count != 0 && !populated {
+                    assert!(!try_assign_borrowed_plain_data(&target, &source));
+                    assert_eq!(target.lock().unwrap().properties.len(), usize::from(tracked));
+                    continue;
+                }
                 assert!(try_assign_borrowed_plain_data(&target, &source));
                 let destination = target.lock().unwrap();
                 assert_eq!(ordered_own_string_keys(&destination),
@@ -1775,6 +1724,10 @@ fn has_own_property_key(value: &Value, key_raw: &Value) -> Option<bool> {
 
 pub fn proxy_target_and_handler(obj: &Arc<Mutex<Object>>) -> Option<(Value, Value)> {
     let o = obj.lock().unwrap();
+    proxy_target_and_handler_from_object(&o)
+}
+
+pub(crate) fn proxy_target_and_handler_from_object(o: &Object) -> Option<(Value, Value)> {
     let target = o.properties.get(PROXY_TARGET_KEY).cloned()?;
     let handler = o.properties.get(PROXY_HANDLER_KEY).cloned()?;
     Some((target, handler))

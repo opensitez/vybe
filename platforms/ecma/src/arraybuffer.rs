@@ -129,15 +129,70 @@ fn new_arraybuffer(byte_length: i32, max_byte_length: i32, resizable: bool, shar
     Value::Object(vybe_runtime::heap::alloc(obj))
 }
 
-fn is_arraybuffer(args: &[Value], idx: usize) -> Option<Arc<Mutex<Object>>> {
-    if let Some(Value::Object(obj)) = args.get(idx) {
-        let o = obj.lock().unwrap();
-        if matches!(o.kind, ObjectKind::ArrayBuffer(_)) {
-            drop(o);
-            return Some(obj.clone());
-        }
+// Borrow the receiver from the stable host argument frame. Each operation
+// checks its ArrayBuffer kind under the lock it already needs for the state.
+fn buffer_receiver(args: &[Value], idx: usize) -> Option<&Arc<Mutex<Object>>> {
+    match args.get(idx) {
+        Some(Value::Object(obj)) => Some(obj),
+        _ => None,
     }
-    None
+}
+
+#[cfg(test)]
+mod borrowed_buffer_receiver_tests {
+    use super::*;
+
+    fn callable(vm: &VM, module: &str, name: &str) -> Value {
+        let mut object = Object::new();
+        object.kind = ObjectKind::HostFunction(vm.resolve_host_function_index(module, name).unwrap());
+        Value::Object(vybe_runtime::heap::alloc(object))
+    }
+
+    #[test]
+    fn receiver_borrow_keeps_identity_and_does_not_increment_ownership() {
+        let object = vybe_runtime::heap::alloc(Object::new());
+        let args = [Value::Object(object.clone())];
+        let owners = Arc::strong_count(&object);
+        let borrowed = buffer_receiver(&args, 0).unwrap();
+        assert!(Arc::ptr_eq(borrowed, &object));
+        assert_eq!(Arc::strong_count(&object), owners);
+        assert!(buffer_receiver(&[Value::Null], 0).is_none());
+        assert!(buffer_receiver(&[], 0).is_none());
+    }
+
+    #[test]
+    fn operations_keep_brand_fallback_and_independent_slice_storage() {
+        let mut vm = VM::new();
+        register(&mut vm);
+        let ordinary = Value::Object(vybe_runtime::heap::alloc(Object::new()));
+        for (module, name, expected) in [
+            ("ecma:sharedarraybuffer", "byteLength", Value::I32(0)),
+            ("ecma:sharedarraybuffer", "maxByteLength", Value::I32(0)),
+            ("ecma:sharedarraybuffer", "growable", Value::Bool(false)),
+            ("ecma:arraybuffer", "slice", Value::Null),
+            ("ecma:arraybuffer", "resize", Value::Null),
+            ("ecma:arraybuffer", "transfer", Value::Null),
+        ] {
+            let function = callable(&vm, module, name);
+            let result = vm.invoke(&function, &[ordinary.clone(), Value::I32(0)]).unwrap();
+            assert_eq!(format!("{result:?}"), format!("{expected:?}"));
+        }
+        let source = new_arraybuffer(4, 4, false, false);
+        let Value::Object(source_object) = &source else { unreachable!() };
+        let source_bytes = {
+            let object = source_object.lock().unwrap();
+            let ObjectKind::ArrayBuffer(state) = &object.kind else { unreachable!() };
+            state.bytes.clone()
+        };
+        source_bytes.lock().unwrap().copy_from_slice(&[1, 2, 3, 4]);
+        let slice = callable(&vm, "ecma:arraybuffer", "slice");
+        let result = vm.invoke(&slice, &[source, Value::I32(-2)]).unwrap();
+        let Value::Object(result) = result else { panic!("buffer expected") };
+        let object = result.lock().unwrap();
+        let ObjectKind::ArrayBuffer(state) = &object.kind else { panic!("buffer expected") };
+        assert_eq!(*state.bytes.lock().unwrap(), [3, 4]);
+        assert!(!Arc::ptr_eq(&source_bytes, &state.bytes));
+    }
 }
 
 fn apply_arraybuffer_receiver_species(result: &Value, receiver: &Arc<Mutex<Object>>) {
@@ -322,7 +377,7 @@ fn register_arraybuffer(vm: &mut VM) {
         "ecma:arraybuffer",
         "slice",
         Box::new(|ctx, args| {
-            if let Some(ab) = is_arraybuffer(args, 0) {
+            if let Some(ab) = buffer_receiver(args, 0) {
                 let start = args.get(1).map(|v| v.as_i32()).unwrap_or(0);
                 let end = args.get(2).map(|v| v.as_i32()).unwrap_or(i32::MAX);
                 let o = ab.lock().unwrap();
@@ -396,7 +451,7 @@ fn register_arraybuffer(vm: &mut VM) {
         "ecma:arraybuffer",
         "resize",
         Box::new(|ctx, args| {
-            if let Some(ab) = is_arraybuffer(args, 0) {
+            if let Some(ab) = buffer_receiver(args, 0) {
                 let new_len = args.get(1).map(|v| v.as_i32().max(0) as usize).unwrap_or(0);
                 let mut o = ab.lock().unwrap();
                 let ObjectKind::ArrayBuffer(ref mut state) = o.kind else {
@@ -443,7 +498,7 @@ fn register_arraybuffer(vm: &mut VM) {
         "ecma:arraybuffer",
         "transfer",
         Box::new(|_ctx, args| {
-            if let Some(ab) = is_arraybuffer(args, 0) {
+            if let Some(ab) = buffer_receiver(args, 0) {
                 let requested = args.get(1).map(|v| v.as_i32()).unwrap_or(-1);
                 let mut o = ab.lock().unwrap();
                 let taken_bytes = if let ObjectKind::ArrayBuffer(ref mut state) = o.kind {
@@ -499,7 +554,7 @@ fn register_arraybuffer(vm: &mut VM) {
         "transferToFixedLength",
         Box::new(|_ctx, args| {
             // Same as transfer() for MVP — both produce non-resizable.
-            if let Some(ab) = is_arraybuffer(args, 0) {
+            if let Some(ab) = buffer_receiver(args, 0) {
                 let requested = args.get(1).map(|v| v.as_i32()).unwrap_or(-1);
                 let mut o = ab.lock().unwrap();
                 let taken_bytes = if let ObjectKind::ArrayBuffer(ref mut state) = o.kind {
@@ -603,7 +658,7 @@ fn register_sharedarraybuffer(vm: &mut VM) {
         "ecma:sharedarraybuffer",
         "byteLength",
         Box::new(|_ctx, args| {
-            if let Some(ab) = is_arraybuffer(args, 0) {
+            if let Some(ab) = buffer_receiver(args, 0) {
                 return Value::I32(ab_byte_length_of(&ab) as i32);
             }
             Value::I32(0)
@@ -614,7 +669,7 @@ fn register_sharedarraybuffer(vm: &mut VM) {
         "ecma:sharedarraybuffer",
         "maxByteLength",
         Box::new(|_ctx, args| {
-            if let Some(ab) = is_arraybuffer(args, 0) {
+            if let Some(ab) = buffer_receiver(args, 0) {
                 let o = ab.lock().unwrap();
                 if let ObjectKind::ArrayBuffer(ref state) = o.kind {
                     return Value::I32(state.max_byte_length as i32);
@@ -628,7 +683,7 @@ fn register_sharedarraybuffer(vm: &mut VM) {
         "ecma:sharedarraybuffer",
         "growable",
         Box::new(|_ctx, args| {
-            if let Some(ab) = is_arraybuffer(args, 0) {
+            if let Some(ab) = buffer_receiver(args, 0) {
                 let o = ab.lock().unwrap();
                 if let ObjectKind::ArrayBuffer(ref state) = o.kind {
                     return Value::Bool(state.resizable);
@@ -642,7 +697,7 @@ fn register_sharedarraybuffer(vm: &mut VM) {
         "ecma:sharedarraybuffer",
         "slice",
         Box::new(|_ctx, args| {
-            if let Some(ab) = is_arraybuffer(args, 0) {
+            if let Some(ab) = buffer_receiver(args, 0) {
                 let start = args.get(1).map(|v| v.as_i32()).unwrap_or(0);
                 let end = args.get(2).map(|v| v.as_i32());
                 let o = ab.lock().unwrap();
@@ -691,7 +746,7 @@ fn register_sharedarraybuffer(vm: &mut VM) {
         "ecma:sharedarraybuffer",
         "grow",
         Box::new(|_ctx, args| {
-            if let Some(ab) = is_arraybuffer(args, 0) {
+            if let Some(ab) = buffer_receiver(args, 0) {
                 let new_len = args.get(1).map(|v| v.as_i32().max(0) as usize).unwrap_or(0);
                 let mut o = ab.lock().unwrap();
                 if let ObjectKind::ArrayBuffer(ref mut state) = o.kind {

@@ -23,9 +23,9 @@ use std::path::Path;
 
 use vybe_compiler::primitives::platforms::register_platforms;
 use vybe_runtime::capabilities::Capabilities;
+use vybe_runtime::chunk::ActiveDataSegment;
 use vybe_runtime::value::{ObjectKind, Value};
 use vybe_runtime::{Chunk, Op, VM};
-use vybe_runtime::chunk::ActiveDataSegment;
 
 #[test]
 fn canonical_allocator_handles_multi_page_buffers() {
@@ -65,6 +65,14 @@ fn canonical_allocator_handles_multi_page_buffers() {
 
 /// Open `dir/name` and drain it from `offset` to EOF.
 pub fn read_via_stream(dir: &Path, name: &str, offset: f64) -> Vec<u8> {
+    let chunk = build_read_via_stream_drain(dir, name, offset);
+    let mut vm = VM::new();
+    register_platforms(&mut vm, &Capabilities::all());
+    let result = vm.run(vec![chunk]).expect("VM run failed");
+    bytes_to_vec(&result)
+}
+
+pub(crate) fn build_read_via_stream_drain(dir: &Path, name: &str, offset: f64) -> Chunk {
     let mut chunk = Chunk::new("<wasi-fs-stream-drain>");
 
     let preopens = chunk.add_import("wasi:filesystem/preopens", "get-directories");
@@ -95,21 +103,28 @@ pub fn read_via_stream(dir: &Path, name: &str, offset: f64) -> Vec<u8> {
     chunk.emit_call(at, 2, 0);
     vybe_compiler::primitives::io::emit_read_stream_to_bytes(&mut chunk, 0);
     chunk.emit_op(Op::RETURN, 0);
-
-    let mut vm = VM::new();
-    register_platforms(&mut vm, &Capabilities::all());
-    let result = vm.run(vec![chunk]).expect("VM run failed");
-    bytes_to_vec(&result)
+    chunk
 }
 
 /// Construct the same WASI stream without draining it through the canonical ABI.
 /// Used only to separate host production from guest consumption in benchmarks.
 pub fn produce_read_via_stream(dir: &Path, name: &str) {
+    let chunk = build_read_via_stream_producer(dir, name);
+    let mut vm = VM::new();
+    register_platforms(&mut vm, &Capabilities::all());
+    let result = vm.run(vec![chunk]).expect("VM run failed");
+    assert!(matches!(result, Value::Object(_)));
+}
+
+pub(crate) fn build_read_via_stream_producer(dir: &Path, name: &str) -> Chunk {
     let mut chunk = Chunk::new("<wasi-fs-stream-produce>");
     let preopens = chunk.add_import("wasi:filesystem/preopens", "get-directories");
     let at = chunk.add_import("ecma:array", "at");
     let open_at = chunk.add_import("wasi:filesystem/types", "[method]descriptor.open-at");
-    let read_via = chunk.add_import("wasi:filesystem/types", "[method]descriptor.read-via-stream");
+    let read_via = chunk.add_import(
+        "wasi:filesystem/types",
+        "[method]descriptor.read-via-stream",
+    );
 
     chunk.emit_call(preopens, 0, 0);
     chunk.emit_i32_const(0, 0);
@@ -124,11 +139,7 @@ pub fn produce_read_via_stream(dir: &Path, name: &str) {
     chunk.emit_f64_const(0.0, 0);
     chunk.emit_call(read_via, 2, 0);
     chunk.emit_op(Op::RETURN, 0);
-
-    let mut vm = VM::new();
-    register_platforms(&mut vm, &Capabilities::all());
-    let result = vm.run(vec![chunk]).expect("VM run failed");
-    assert!(matches!(result, Value::Object(_)));
+    chunk
 }
 
 /// The `future<result<_, error-code>>` half of the same tuple, so a test can
@@ -246,6 +257,60 @@ fn bytes_to_vec(value: &Value) -> Vec<u8> {
 }
 
 #[test]
+fn canonical_byte_append_bulk_batch_preserves_tail() {
+    for size in [64, 509] {
+        let data: Vec<u8> = (0..size).map(|i| (i % 251) as u8).collect();
+        for custom_property in [false, true] {
+            let mut chunk = Chunk::new("<canonical-byte-append-batch>");
+            chunk.memory_min_pages.push(1);
+            chunk.data_segments.push(data.clone());
+            chunk.active_data_segments.push(ActiveDataSegment {
+                memory_index: 0,
+                offset: 0,
+                data_index: 0,
+            });
+            vybe_compiler::primitives::canon_marshal::emit_new_bytes(&mut chunk, 0);
+            let array = chunk.alloc_scratch(1);
+            let ptr = chunk.alloc_scratch(1);
+            let len = chunk.alloc_scratch(1);
+            chunk.emit_op_u16(Op::LOCAL_SET, array, 0);
+            if custom_property {
+                chunk.emit_op_u16(Op::LOCAL_GET, array, 0);
+                chunk.emit_string_const("marker", 0);
+                chunk.emit_i32_const(1, 0);
+                let set = chunk.add_import("ecma:object", "set");
+                chunk.emit_call(set, 3, 0);
+                chunk.emit_op(Op::DROP, 0);
+            }
+            chunk.emit_i32_const(0, 0);
+            chunk.emit_op_u16(Op::LOCAL_SET, ptr, 0);
+            chunk.emit_i32_const(data.len() as i32, 0);
+            chunk.emit_op_u16(Op::LOCAL_SET, len, 0);
+            vybe_compiler::primitives::canon_marshal::emit_append_bytes(
+                &mut chunk, 0, array, ptr, len,
+            );
+            chunk.emit_op_u16(Op::LOCAL_GET, array, 0);
+            chunk.emit_op(Op::RETURN, 0);
+
+            let mut vm = VM::new();
+            register_platforms(&mut vm, &Capabilities::all());
+            vm.record_runtime_perf(true);
+            let result = vm.run(vec![chunk]).expect("canonical byte append");
+            assert_eq!(bytes_to_vec(&result), data);
+            let counters = vm.take_runtime_perf().expect("runtime counters");
+            let expected = if custom_property {
+                0
+            } else if size == 509 {
+                2
+            } else {
+                1
+            };
+            assert_eq!(counters.super_linear_to_managed, expected);
+        }
+    }
+}
+
+#[test]
 #[ignore = "local canonical byte-array append diagnostic"]
 fn bench_canonical_byte_array_append_only() {
     let data: Vec<u8> = (0..256 * 1024).map(|index| (index % 251) as u8).collect();
@@ -329,7 +394,86 @@ fn bench_canonical_byte_array_append_small_chunks() {
         assert_eq!(bytes_to_vec(&result), data);
     }
     samples.sort_unstable();
-    println!("canonical 256 KiB append in 64-byte chunks median: {:?}; samples: {samples:?}", samples[2]);
+    println!(
+        "canonical 256 KiB append in 64-byte chunks median: {:?}; samples: {samples:?}",
+        samples[2]
+    );
+}
+
+#[test]
+#[ignore = "local canonical append fast-path comparison"]
+fn bench_canonical_byte_array_append_guarded_vs_fallback() {
+    let data: Vec<u8> = (0..256 * 1024).map(|index| (index % 251) as u8).collect();
+    let mut chunks = Vec::new();
+    for custom_property in [false, true] {
+        let mut chunk = Chunk::new("<canonical-byte-array-append-comparison>");
+        chunk.memory_min_pages.push(4);
+        chunk.data_segments.push(data.clone());
+        chunk.active_data_segments.push(ActiveDataSegment {
+            memory_index: 0,
+            offset: 0,
+            data_index: 0,
+        });
+        vybe_compiler::primitives::canon_marshal::emit_new_bytes(&mut chunk, 0);
+        let array = chunk.alloc_scratch(1);
+        let ptr = chunk.alloc_scratch(1);
+        let len = chunk.alloc_scratch(1);
+        chunk.emit_op_u16(Op::LOCAL_SET, array, 0);
+        if custom_property {
+            chunk.emit_op_u16(Op::LOCAL_GET, array, 0);
+            chunk.emit_string_const("marker", 0);
+            chunk.emit_i32_const(1, 0);
+            let set = chunk.add_import("ecma:object", "set");
+            chunk.emit_call(set, 3, 0);
+            chunk.emit_op(Op::DROP, 0);
+        }
+        chunk.emit_i32_const(0, 0);
+        chunk.emit_op_u16(Op::LOCAL_SET, ptr, 0);
+        chunk.emit_i32_const(64, 0);
+        chunk.emit_op_u16(Op::LOCAL_SET, len, 0);
+        let done = chunk.emit_block(0);
+        let (body, _) = chunk.emit_loop_s(0);
+        chunk.emit_op_u16(Op::LOCAL_GET, ptr, 0);
+        chunk.emit_i32_const(data.len() as i32, 0);
+        chunk.emit_op(Op::I32_GE_U, 0);
+        chunk.emit_br_if(1, 0);
+        vybe_compiler::primitives::canon_marshal::emit_append_bytes(&mut chunk, 0, array, ptr, len);
+        chunk.emit_op_u16(Op::LOCAL_GET, ptr, 0);
+        chunk.emit_i32_const(64, 0);
+        chunk.emit_op(Op::I32_ADD, 0);
+        chunk.emit_op_u16(Op::LOCAL_SET, ptr, 0);
+        chunk.emit_br(0, 0);
+        chunk.emit_end(0);
+        chunk.patch_loop(body);
+        chunk.emit_end(0);
+        chunk.patch_block(done);
+        chunk.emit_op_u16(Op::LOCAL_GET, array, 0);
+        chunk.emit_op(Op::RETURN, 0);
+        chunks.push(chunk);
+    }
+
+    let mut samples = [Vec::new(), Vec::new()];
+    for round in 0..7 {
+        for variant in [round % 2, (round + 1) % 2] {
+            let mut vm = VM::new();
+            register_platforms(&mut vm, &Capabilities::all());
+            let chunk = chunks[variant].clone();
+            let started = std::time::Instant::now();
+            let result = vm.run(vec![chunk]).expect("append comparison module");
+            let elapsed = started.elapsed();
+            assert_eq!(bytes_to_vec(&result), data);
+            if round != 0 {
+                samples[variant].push(elapsed);
+            }
+        }
+    }
+    for (label, runs) in ["guarded", "fallback"].into_iter().zip(&mut samples) {
+        runs.sort_unstable();
+        println!(
+            "canonical 256 KiB append, 64-byte chunks, {label}: {:?}",
+            runs[3]
+        );
+    }
 }
 
 #[test]
@@ -374,11 +518,10 @@ fn canonical_utf8_store_uses_bulk_copy_without_changing_bytes() {
     ] {
         let mut chunk = Chunk::new("<canonical-utf8-store>");
         chunk.memory_min_pages.push(1);
-        let (ptr, len) = vybe_compiler::primitives::canon_marshal::emit_store_utf8(
-            &mut chunk,
-            0,
-            |chunk| chunk.emit_string_const(&text, 0),
-        );
+        let (ptr, len) =
+            vybe_compiler::primitives::canon_marshal::emit_store_utf8(&mut chunk, 0, |chunk| {
+                chunk.emit_string_const(&text, 0)
+            });
         chunk.emit_op_u16(Op::LOCAL_GET, ptr, 0);
         chunk.emit_op_u16(Op::LOCAL_GET, len, 0);
         chunk.emit_op(Op::I32_ADD, 0);
@@ -389,7 +532,10 @@ fn canonical_utf8_store_uses_bulk_copy_without_changing_bytes() {
         vm.record_runtime_perf(true);
         let end = vm.run(vec![chunk]).expect("UTF-8 store").as_i32() as usize;
         let mut bytes = vec![0; text.len()];
-        assert_eq!(vm.memory.read_bytes(end - text.len(), &mut bytes), text.len());
+        assert_eq!(
+            vm.memory.read_bytes(end - text.len(), &mut bytes),
+            text.len()
+        );
         assert_eq!(bytes, text.as_bytes());
         if !text.is_empty() {
             assert!(
@@ -397,6 +543,116 @@ fn canonical_utf8_store_uses_bulk_copy_without_changing_bytes() {
                 "encoded byte array did not take the bulk-copy path"
             );
         }
+    }
+}
+
+#[test]
+#[ignore = "local canonical UTF-8 store diagnostic"]
+fn bench_canonical_utf8_store_only() {
+    let text = "The quick brown fox jumps over the lazy dog.\n".repeat(6_000);
+    let mut chunk = Chunk::new("<canonical-utf8-store-bench>");
+    chunk.memory_min_pages.push(1);
+    let (ptr, len) =
+        vybe_compiler::primitives::canon_marshal::emit_store_utf8(&mut chunk, 0, |chunk| {
+            chunk.emit_string_const(&text, 0)
+        });
+    chunk.emit_op_u16(Op::LOCAL_GET, ptr, 0);
+    chunk.emit_op_u16(Op::LOCAL_GET, len, 0);
+    chunk.emit_op(Op::I32_ADD, 0);
+    chunk.emit_op(Op::RETURN, 0);
+
+    let mut samples = Vec::new();
+    for round in 0..6 {
+        let mut vm = VM::new();
+        register_platforms(&mut vm, &Capabilities::all());
+        let started = std::time::Instant::now();
+        let end = vm.run(vec![chunk.clone()]).expect("UTF-8 store").as_i32() as usize;
+        let elapsed = started.elapsed();
+        let mut bytes = vec![0; text.len()];
+        assert_eq!(
+            vm.memory.read_bytes(end - text.len(), &mut bytes),
+            bytes.len()
+        );
+        assert_eq!(bytes, text.as_bytes());
+        if round != 0 {
+            samples.push(elapsed);
+        }
+    }
+    samples.sort_unstable();
+    println!(
+        "canonical {} KiB UTF-8 store median: {:?}",
+        text.len() / 1024,
+        samples[2]
+    );
+}
+
+#[test]
+#[ignore = "local canonical UTF-8 phase diagnostic"]
+fn bench_canonical_utf8_store_phases() {
+    let text = "The quick brown fox jumps over the lazy dog.\n".repeat(6_000);
+    let make_encode_chunk = |convert: bool| {
+        let mut chunk = Chunk::new(if convert {
+            "<utf8-array-from-phase>"
+        } else {
+            "<utf8-encode-phase>"
+        });
+        let encoder_new = chunk.add_import("web:encoding", "encoderNew");
+        chunk.emit_call(encoder_new, 0, 0);
+        chunk.emit_string_const(&text, 0);
+        let encoder_encode = chunk.add_import("web:encoding", "encode");
+        chunk.emit_call(encoder_encode, 2, 0);
+        if convert {
+            let from = chunk.add_import("ecma:array", "from");
+            chunk.emit_call(from, 1, 0);
+        }
+        chunk.emit_op(Op::RETURN, 0);
+        chunk
+    };
+    let encode = make_encode_chunk(false);
+    let array_from = make_encode_chunk(true);
+
+    let mut store = Chunk::new("<utf8-store-phase>");
+    store.memory_min_pages.push(1);
+    let (ptr, len) =
+        vybe_compiler::primitives::canon_marshal::emit_store_utf8(&mut store, 0, |chunk| {
+            chunk.emit_string_const(&text, 0)
+        });
+    store.emit_op_u16(Op::LOCAL_GET, ptr, 0);
+    store.emit_op_u16(Op::LOCAL_GET, len, 0);
+    store.emit_op(Op::I32_ADD, 0);
+    store.emit_op(Op::RETURN, 0);
+
+    for (name, chunk) in [
+        ("encode", encode),
+        ("array-from", array_from),
+        ("store", store),
+    ] {
+        let mut samples = Vec::new();
+        for round in 0..8 {
+            let mut vm = VM::new();
+            register_platforms(&mut vm, &Capabilities::all());
+            let started = std::time::Instant::now();
+            let result = vm.run(vec![chunk.clone()]).expect("UTF-8 phase");
+            let elapsed = started.elapsed();
+            if name == "store" {
+                let end = result.as_i32() as usize;
+                let mut bytes = vec![0; text.len()];
+                assert_eq!(
+                    vm.memory.read_bytes(end - text.len(), &mut bytes),
+                    bytes.len()
+                );
+                assert_eq!(bytes, text.as_bytes());
+            }
+            if round != 0 {
+                samples.push(elapsed);
+            }
+        }
+        samples.sort_unstable();
+        println!(
+            "UTF-8 {name} {} KiB median: {:?}",
+            text.len() / 1024,
+            samples[3]
+        );
     }
 }
 

@@ -62,3 +62,50 @@ fn bench_host_import_boundary() {
         println!("{label}: median {:.1} ns/call (5 debug runs)", samples[2]);
     }
 }
+
+#[test]
+#[ignore = "local host registry lookup diagnostic"]
+fn bench_host_registry_lookup_paths() {
+    let mut vm = VM::new();
+    vybe_compiler::primitives::platforms::register_platforms(
+        &mut vm,
+        &vybe_runtime::capabilities::Capabilities::all(),
+    );
+    let names = [
+        ("ecma:array", "push"),
+        ("ecma:math", "max"),
+        ("ecma:string", "includes"),
+    ];
+    for &(module, name) in &names {
+        assert_eq!(
+            vm.host_registry
+                .get(&(module.to_string(), name.to_string()))
+                .copied(),
+            vm.resolve_host_function_index(module, name)
+        );
+    }
+
+    for (label, borrowed) in [("allocating", false), ("borrowed", true)] {
+        let mut samples = Vec::new();
+        for _ in 0..5 {
+            let started = Instant::now();
+            for _ in 0..100_000 {
+                for &(module, name) in &names {
+                    let module = std::hint::black_box(module);
+                    let name = std::hint::black_box(name);
+                    let index = if borrowed {
+                        vm.resolve_host_function_index(module, name)
+                    } else {
+                        vm.host_registry
+                            .get(&(module.to_string(), name.to_string()))
+                            .copied()
+                    };
+                    std::hint::black_box(index);
+                }
+            }
+            samples.push(started.elapsed());
+        }
+        samples.sort_unstable();
+        println!("{label} host lookup: {:?} per 300k", samples[2]);
+    }
+}

@@ -1186,6 +1186,58 @@ mod result_buffer_speedup_tests {
     use super::*;
 
     #[test]
+    fn array_from_typed_array_preserves_values_for_fixed_and_resizable_buffers() {
+        let mut vm = VM::new();
+        register(&mut vm);
+        let from = function(&vm, "ecma:array", "from");
+
+        for (elem, input, expected) in [
+            (
+                TypedElemKind::U8,
+                vec![Value::I32(0), Value::I32(127), Value::I32(255)],
+                vec![Value::I32(0), Value::I32(127), Value::I32(255)],
+            ),
+            (
+                TypedElemKind::I16,
+                vec![Value::I32(-123), Value::I32(456), Value::I32(-32768)],
+                vec![Value::I32(-123), Value::I32(456), Value::I32(-32768)],
+            ),
+        ] {
+            let source = crate::typedarray::new_typed_array(elem, input.len());
+            let Value::Object(object) = &source else {
+                panic!("typed array");
+            };
+            let buffer_obj = {
+                let object = object.lock().unwrap();
+                let ObjectKind::TypedArray(typed) = &object.kind else {
+                    panic!("typed array");
+                };
+                for (index, value) in input.iter().enumerate() {
+                    crate::typedarray::write_element(typed, index, value);
+                }
+                typed.buffer_obj.clone()
+            };
+            for resizable in [false, true] {
+                let mut buffer = buffer_obj.lock().unwrap();
+                let ObjectKind::ArrayBuffer(state) = &mut buffer.kind else {
+                    panic!("array buffer");
+                };
+                state.resizable = resizable;
+                drop(buffer);
+                let result = vm.invoke(&from, &[source.clone()]).expect("Array.from");
+                let Value::Object(result) = result else {
+                    panic!("array result");
+                };
+                let result = result.lock().unwrap();
+                let ObjectKind::Array(values) = &result.kind else {
+                    panic!("array result");
+                };
+                assert_eq!(values, &expected);
+            }
+        }
+    }
+
+    #[test]
     #[ignore = "local batched Array.push diagnostic"]
     fn registered_batch_push_benchmark() {
         let mut vm = VM::new();
@@ -1204,9 +1256,13 @@ mod result_buffer_speedup_tests {
                 vm.invoke(&push, &args).expect("batched push");
             }
             let elapsed = started.elapsed();
-            let Value::Object(object) = array else { panic!("array result"); };
+            let Value::Object(object) = array else {
+                panic!("array result");
+            };
             let object = object.lock().unwrap();
-            let ObjectKind::Array(values) = &object.kind else { panic!("array storage"); };
+            let ObjectKind::Array(values) = &object.kind else {
+                panic!("array storage");
+            };
             assert_eq!(values.len(), 256 * 1024);
             println!("batched push 256 KiB: {elapsed:?}");
         }
@@ -1226,12 +1282,16 @@ mod result_buffer_speedup_tests {
             .invoke(&push, &[array.clone(), Value::I32(20), Value::I32(30)])
             .expect("batched push");
         assert_eq!(result, Value::I32(3));
-        let Value::Object(object) = array else { panic!("array result"); };
+        let Value::Object(object) = array else {
+            panic!("array result");
+        };
         let object = object.lock().unwrap();
         assert!(is_array_hole(&object, 0));
         assert!(!is_array_hole(&object, 1));
         assert!(!is_array_hole(&object, 2));
-        let ObjectKind::Array(values) = &object.kind else { panic!("array storage"); };
+        let ObjectKind::Array(values) = &object.kind else {
+            panic!("array storage");
+        };
         assert_eq!(values.len(), 3);
         assert_eq!(values[1], Value::I32(20));
         assert_eq!(values[2], Value::I32(30));
@@ -1241,7 +1301,11 @@ mod result_buffer_speedup_tests {
     fn registered_empty_filter_releases_reserved_storage() {
         let mut vm = VM::new();
         register(&mut vm);
-        vm.register_host_fn("ecma:array-result-test", "reject", Box::new(|_ctx, _args| Value::Bool(false)));
+        vm.register_host_fn(
+            "ecma:array-result-test",
+            "reject",
+            Box::new(|_ctx, _args| Value::Bool(false)),
+        );
         let method = function(&vm, "ecma:array", "filter");
         let callback = function(&vm, "ecma:array-result-test", "reject");
         for array_like in [false, true] {
@@ -1249,18 +1313,30 @@ mod result_buffer_speedup_tests {
                 let mut source = Object::new();
                 source.properties.insert("length".into(), Value::F64(128.0));
                 for index in 0..128 {
-                    source.properties.insert(index.to_string(), Value::I32(index));
+                    source
+                        .properties
+                        .insert(index.to_string(), Value::I32(index));
                 }
                 source
             } else {
                 Object::new_array((0..128).map(Value::I32).collect())
             };
-            let result = vm.invoke(&method, &[
-                Value::Object(vybe_runtime::heap::alloc(source)), callback.clone(),
-            ]).unwrap();
-            let Value::Object(result) = result else { panic!("empty filter result"); };
+            let result = vm
+                .invoke(
+                    &method,
+                    &[
+                        Value::Object(vybe_runtime::heap::alloc(source)),
+                        callback.clone(),
+                    ],
+                )
+                .unwrap();
+            let Value::Object(result) = result else {
+                panic!("empty filter result");
+            };
             let result = result.lock().unwrap();
-            let ObjectKind::Array(values) = &result.kind else { panic!("empty filter array"); };
+            let ObjectKind::Array(values) = &result.kind else {
+                panic!("empty filter array");
+            };
             assert!(values.is_empty());
             assert_eq!(values.capacity(), 0);
         }
@@ -1271,35 +1347,55 @@ mod result_buffer_speedup_tests {
     fn registered_filter_clone_benchmark() {
         let mut vm = VM::new();
         register(&mut vm);
-        vm.register_host_fn("ecma:array-filter-perf", "keep", Box::new(|_ctx, args| {
-            Value::Bool(args[1].as_i32() % 4 == 0)
-        }));
-        vm.register_host_fn("ecma:array-filter-perf", "legacy", Box::new(|ctx, args| {
-            let null = Value::Null;
-            let callback = args.get(1).unwrap_or(&null);
-            if !require_callable(ctx, callback, "Array.prototype.filter callback is not callable") {
-                return Value::Undefined;
-            }
-            let undefined = Value::Undefined;
-            let this_arg = args.get(2).unwrap_or(&undefined);
-            let dispatch = classify_callback(callback);
-            let _receiver = args.first().cloned().unwrap_or(Value::Undefined);
-            let array = array_of(args, 0).expect("native-array comparison fixture");
-            let length = array_length(&array);
-            let mut filtered = Vec::with_capacity(length);
-            let mut invoke_args = [Value::Undefined, Value::I32(0), Value::Object(array.clone())];
-            for index in 0..length {
-                let Some(element) = array_present_value_at(&array, index) else { continue; };
-                invoke_args[0] = element.clone();
-                invoke_args[1] = Value::I32(index as i32);
-                if is_truthy(&invoke_classified_callback_this_ref(
-                    ctx, callback, &dispatch, this_arg, &invoke_args,
-                )) {
-                    filtered.push(element);
+        vm.register_host_fn(
+            "ecma:array-filter-perf",
+            "keep",
+            Box::new(|_ctx, args| Value::Bool(args[1].as_i32() % 4 == 0)),
+        );
+        vm.register_host_fn(
+            "ecma:array-filter-perf",
+            "legacy",
+            Box::new(|ctx, args| {
+                let null = Value::Null;
+                let callback = args.get(1).unwrap_or(&null);
+                if !require_callable(
+                    ctx,
+                    callback,
+                    "Array.prototype.filter callback is not callable",
+                ) {
+                    return Value::Undefined;
                 }
-            }
-            make_array(filtered)
-        }));
+                let undefined = Value::Undefined;
+                let this_arg = args.get(2).unwrap_or(&undefined);
+                let dispatch = classify_callback(callback);
+                let _receiver = args.first().cloned().unwrap_or(Value::Undefined);
+                let array = array_of(args, 0).expect("native-array comparison fixture");
+                let length = array_length(&array);
+                let mut filtered = Vec::with_capacity(length);
+                let mut invoke_args = [
+                    Value::Undefined,
+                    Value::I32(0),
+                    Value::Object(array.clone()),
+                ];
+                for index in 0..length {
+                    let Some(element) = array_present_value_at(&array, index) else {
+                        continue;
+                    };
+                    invoke_args[0] = element.clone();
+                    invoke_args[1] = Value::I32(index as i32);
+                    if is_truthy(&invoke_classified_callback_this_ref(
+                        ctx,
+                        callback,
+                        &dispatch,
+                        this_arg,
+                        &invoke_args,
+                    )) {
+                        filtered.push(element);
+                    }
+                }
+                make_array(filtered)
+            }),
+        );
         let current = function(&vm, "ecma:array", "filter");
         let legacy = function(&vm, "ecma:array-filter-perf", "legacy");
         let callback = function(&vm, "ecma:array-filter-perf", "keep");
@@ -1311,38 +1407,53 @@ mod result_buffer_speedup_tests {
             let args = [source, callback.clone()];
             for method in [&legacy, &current] {
                 let result = vm.invoke(method, &args).unwrap();
-                let Value::Object(result) = result else { panic!("filter benchmark result"); };
+                let Value::Object(result) = result else {
+                    panic!("filter benchmark result");
+                };
                 let result = result.lock().unwrap();
-                let ObjectKind::Array(values) = &result.kind else { panic!("filter benchmark array"); };
+                let ObjectKind::Array(values) = &result.kind else {
+                    panic!("filter benchmark array");
+                };
                 assert_eq!(values.len(), count / 4);
                 for value in values {
-                    let Value::Object(value) = value else { panic!("filter benchmark object"); };
+                    let Value::Object(value) = value else {
+                        panic!("filter benchmark object");
+                    };
                     assert!(Arc::ptr_eq(value, &payload));
                 }
             }
             let iterations = (131072 / count).max(32);
             let mut totals = [0u128; 2];
             for sample in 0..6 {
-                let order = if sample % 2 == 0 { [true, false] } else { [false, true] };
+                let order = if sample % 2 == 0 {
+                    [true, false]
+                } else {
+                    [false, true]
+                };
                 for old in order {
                     let method = if old { &legacy } else { &current };
                     let start = std::time::Instant::now();
                     for _ in 0..iterations {
-                        std::hint::black_box(vm.invoke(method, std::hint::black_box(&args)).unwrap());
+                        std::hint::black_box(
+                            vm.invoke(method, std::hint::black_box(&args)).unwrap(),
+                        );
                     }
                     let elapsed = start.elapsed().as_nanos();
                     totals[usize::from(!old)] += elapsed;
                     println!("filter count={count} sample={sample} legacy={old} ns={elapsed}");
                 }
             }
-            println!("filter count={count} legacy_over_current={:.3}",
-                totals[0] as f64 / totals[1] as f64);
+            println!(
+                "filter count={count} legacy_over_current={:.3}",
+                totals[0] as f64 / totals[1] as f64
+            );
         }
     }
 
     fn function(vm: &VM, module: &str, name: &str) -> Value {
         let mut function = Object::new();
-        function.kind = ObjectKind::HostFunction(vm.resolve_host_function_index(module, name).unwrap());
+        function.kind =
+            ObjectKind::HostFunction(vm.resolve_host_function_index(module, name).unwrap());
         Value::Object(vybe_runtime::heap::alloc(function))
     }
 
@@ -1351,40 +1462,58 @@ mod result_buffer_speedup_tests {
         let mut vm = VM::new();
         register(&mut vm);
         let mut source = Object::new_array(vec![Value::I32(1), Value::I32(2), Value::I32(3)]);
-        source.properties.insert("__holes".into(), Value::Object(
-            vybe_runtime::heap::alloc(Object::new_array(vec![Value::I32(2)]))));
+        source.properties.insert(
+            "__holes".into(),
+            Value::Object(vybe_runtime::heap::alloc(Object::new_array(vec![
+                Value::I32(2),
+            ]))),
+        );
         let source = vybe_runtime::heap::alloc(source);
         let seen = Arc::new(Mutex::new(Vec::new()));
         let callback_source = source.clone();
         let callback_seen = seen.clone();
-        vm.register_host_fn("ecma:array-result-test", "map", Box::new(move |_ctx, args| {
-            assert_eq!(args.len(), 3);
-            let value = args[0].as_i32();
-            let index = args[1].as_i32();
-            callback_seen.lock().unwrap().push((index, value));
-            if index == 0 {
-                let mut source = callback_source.lock().unwrap();
-                if let ObjectKind::Array(values) = &mut source.kind {
-                    values[1] = Value::I32(20);
-                    values.push(Value::I32(4));
+        vm.register_host_fn(
+            "ecma:array-result-test",
+            "map",
+            Box::new(move |_ctx, args| {
+                assert_eq!(args.len(), 3);
+                let value = args[0].as_i32();
+                let index = args[1].as_i32();
+                callback_seen.lock().unwrap().push((index, value));
+                if index == 0 {
+                    let mut source = callback_source.lock().unwrap();
+                    if let ObjectKind::Array(values) = &mut source.kind {
+                        values[1] = Value::I32(20);
+                        values.push(Value::I32(4));
+                    }
+                    source.properties.insert("length".into(), Value::F64(4.0));
                 }
-                source.properties.insert("length".into(), Value::F64(4.0));
-            }
-            Value::I32(value * 10)
-        }));
+                Value::I32(value * 10)
+            }),
+        );
         let method = function(&vm, "ecma:array", "map");
         let callback = function(&vm, "ecma:array-result-test", "map");
-        let result = vm.invoke(&method, &[Value::Object(source), callback]).unwrap();
-        let Value::Object(result) = result else { panic!("map result"); };
+        let result = vm
+            .invoke(&method, &[Value::Object(source), callback])
+            .unwrap();
+        let Value::Object(result) = result else {
+            panic!("map result");
+        };
         let result = result.lock().unwrap();
-        let ObjectKind::Array(values) = &result.kind else { panic!("map array result"); };
+        let ObjectKind::Array(values) = &result.kind else {
+            panic!("map array result");
+        };
         assert_eq!(values.len(), 3);
         assert!(matches!(values[0], Value::I32(10)));
         assert!(matches!(values[1], Value::I32(200)));
         assert!(matches!(values[2], Value::Undefined));
-        let Some(Value::Object(holes)) = result.properties.get("__holes") else { panic!("map holes"); };
+        let Some(Value::Object(holes)) = result.properties.get("__holes") else {
+            panic!("map holes");
+        };
         let holes = holes.lock().unwrap();
-        let ObjectKind::Array(holes) = &holes.kind else { panic!("hole metadata"); };
+        let ObjectKind::Array(holes) = &holes.kind else {
+            panic!("hole metadata");
+        };
         assert_eq!(holes.len(), 1);
         assert!(matches!(holes[0], Value::I32(2)));
         assert_eq!(*seen.lock().unwrap(), vec![(0, 1), (1, 20)]);
@@ -1394,10 +1523,14 @@ mod result_buffer_speedup_tests {
     fn registered_filter_preserves_selected_reference_identity() {
         let mut vm = VM::new();
         register(&mut vm);
-        vm.register_host_fn("ecma:array-result-test", "filter", Box::new(|_ctx, args| {
-            assert_eq!(args.len(), 3);
-            Value::Bool(args[1].as_i32() == 1)
-        }));
+        vm.register_host_fn(
+            "ecma:array-result-test",
+            "filter",
+            Box::new(|_ctx, args| {
+                assert_eq!(args.len(), 3);
+                Value::Bool(args[1].as_i32() == 1)
+            }),
+        );
         let method = function(&vm, "ecma:array", "filter");
         let callback = function(&vm, "ecma:array-result-test", "filter");
         for array_like in [false, true] {
@@ -1406,7 +1539,9 @@ mod result_buffer_speedup_tests {
             let source = if array_like {
                 let mut source = Object::new();
                 source.properties.insert("0".into(), Value::Object(first));
-                source.properties.insert("1".into(), Value::Object(selected.clone()));
+                source
+                    .properties
+                    .insert("1".into(), Value::Object(selected.clone()));
                 source.properties.insert("length".into(), Value::F64(2.0));
                 source
             } else {
@@ -1414,11 +1549,17 @@ mod result_buffer_speedup_tests {
             };
             let source = Value::Object(vybe_runtime::heap::alloc(source));
             let result = vm.invoke(&method, &[source, callback.clone()]).unwrap();
-            let Value::Object(result) = result else { panic!("filter result"); };
+            let Value::Object(result) = result else {
+                panic!("filter result");
+            };
             let result = result.lock().unwrap();
-            let ObjectKind::Array(values) = &result.kind else { panic!("filter array result"); };
+            let ObjectKind::Array(values) = &result.kind else {
+                panic!("filter array result");
+            };
             assert_eq!(values.len(), 1);
-            let Value::Object(actual) = &values[0] else { panic!("selected object"); };
+            let Value::Object(actual) = &values[0] else {
+                panic!("selected object");
+            };
             assert!(Arc::ptr_eq(actual, &selected));
         }
     }
@@ -1430,29 +1571,41 @@ mod result_buffer_speedup_tests {
             let iterations = (1048576 / count).max(64);
             let mut totals = [0u128; 2];
             for sample in 0..6 {
-                let order = if sample % 2 == 0 { [true, false] } else { [false, true] };
+                let order = if sample % 2 == 0 {
+                    [true, false]
+                } else {
+                    [false, true]
+                };
                 for legacy in order {
                     let start = std::time::Instant::now();
                     for _ in 0..iterations {
                         let count = std::hint::black_box(count);
                         let values = if legacy {
                             let mut values = vec![Value::Undefined; count];
-                            for index in 0..count { values[index] = Value::I32(index as i32); }
+                            for index in 0..count {
+                                values[index] = Value::I32(index as i32);
+                            }
                             values
                         } else {
                             let mut values = Vec::with_capacity(count);
-                            for index in 0..count { values.push(Value::I32(index as i32)); }
+                            for index in 0..count {
+                                values.push(Value::I32(index as i32));
+                            }
                             values
                         };
                         std::hint::black_box(values);
                     }
                     let elapsed = start.elapsed().as_nanos();
                     totals[usize::from(!legacy)] += elapsed;
-                    println!("map_buffer count={count} sample={sample} legacy={legacy} ns={elapsed}");
+                    println!(
+                        "map_buffer count={count} sample={sample} legacy={legacy} ns={elapsed}"
+                    );
                 }
             }
-            println!("map_buffer count={count} legacy_over_current={:.3}",
-                totals[0] as f64 / totals[1] as f64);
+            println!(
+                "map_buffer count={count} legacy_over_current={:.3}",
+                totals[0] as f64 / totals[1] as f64
+            );
         }
     }
 }
@@ -1570,9 +1723,21 @@ fn register_constructors(vm: &mut VM) {
                         }
                         ObjectKind::TypedArray(ref ta) => {
                             let live = crate::typedarray::ta_live_length(ta);
-                            out.reserve(live);
-                            for index in 0..live {
-                                out.push(read_element(ta, index));
+                            let fixed_private_buffer = {
+                                let buffer = ta.buffer_obj.lock().unwrap();
+                                matches!(
+                                    &buffer.kind,
+                                    ObjectKind::ArrayBuffer(state)
+                                        if !state.resizable && !state.shared && !state.detached
+                                )
+                            };
+                            if fixed_private_buffer {
+                                out = typed_array_values_snapshot(ta, live);
+                            } else {
+                                out.reserve(live);
+                                for index in 0..live {
+                                    out.push(read_element(ta, index));
+                                }
                             }
                         }
                         // Map → Array of `[key, value]` pairs (§23.1.2.1).

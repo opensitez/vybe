@@ -615,6 +615,47 @@ fn ordinary_ordered_keys(o: &Object) -> Vec<String> {
 }
 
 fn object_serialization_keys(o: &Object, property_list: Option<&Vec<String>>) -> Vec<String> {
+    if let Some(list) = property_list {
+        let mut keys = Vec::with_capacity(list.len());
+        for key in list {
+            if is_serializable_object_key(o, key) && o.properties.contains_key(key) {
+                keys.push(key.clone());
+            }
+        }
+        return keys;
+    }
+
+    let mut ordered = ordinary_ordered_keys(o);
+    if ordered.iter().all(|key| json_array_index(key).is_none()) {
+        ordered.retain(|key| is_serializable_object_key(o, key));
+        return ordered;
+    }
+
+    let mut indices = Vec::with_capacity(ordered.len());
+    let mut others = Vec::with_capacity(ordered.len());
+    for key in ordered {
+        if !is_serializable_object_key(o, &key) {
+            continue;
+        }
+        if let Some(index) = json_array_index(&key) {
+            indices.push((index, key));
+        } else {
+            others.push(key);
+        }
+    }
+    indices.sort_by_key(|(index, _)| *index);
+    indices
+        .into_iter()
+        .map(|(_, key)| key)
+        .chain(others)
+        .collect()
+}
+
+
+#[cfg(test)]
+mod key_vector_reuse_tests {
+    use super::*;
+    fn previous_object_serialization_keys(o: &Object, property_list: Option<&Vec<String>>) -> Vec<String> {
     let ordered = ordinary_ordered_keys(o);
     if let Some(list) = property_list {
         let mut keys = Vec::with_capacity(list.len());
@@ -644,6 +685,178 @@ fn object_serialization_keys(o: &Object, property_list: Option<&Vec<String>>) ->
         .map(|(_, key)| key)
         .chain(others)
         .collect()
+}
+    fn previous_serialize_json_value(
+    ctx: &mut HostContext,
+    value: &Value,
+    state: &mut StringifyState,
+    in_array: bool,
+) -> Option<String> {
+    match value {
+        Value::Undefined | Value::Symbol(_) if in_array => Some("null".to_string()),
+        Value::Undefined | Value::Symbol(_) => None,
+        Value::Object(obj) if is_function_like_object(obj) && in_array => Some("null".to_string()),
+        Value::Object(obj) if is_function_like_object(obj) => None,
+        Value::Null | Value::TypedNull(_) => Some("null".to_string()),
+        Value::Bool(b) => Some(if *b { "true".into() } else { "false".into() }),
+        Value::I32(n) => Some(n.to_string()),
+        Value::I64(n) => Some(n.to_string()),
+        Value::F64(n) => Some(json_number_string(*n)),
+        Value::F32(n) => Some(json_number_string(*n as f64)),
+        Value::String(s) => Some(quote_string(s)),
+        Value::V128(_) | Value::WeakRef(_) => Some("null".to_string()),
+        // ECMA-262 §25.5.2: BigInt values must throw TypeError.
+        Value::BigInt(_) => {
+            let err =
+                crate::error::new_error(ctx, "TypeError", "Do not know how to serialize a BigInt");
+            ctx.throw_value(err);
+            return None;
+        }
+        Value::Object(obj) => {
+            // §25.5.2.2 reads through the proxy's [[Get]]/[[OwnPropertyKeys]]
+            // — with no traps that is exactly the target.
+            if let Some((target, _)) = crate::object::proxy_target_and_handler(obj) {
+                return previous_serialize_json_value(ctx, &target, state, in_array);
+            }
+            previous_serialize_object(ctx, obj, state)
+        }
+    }
+}
+    fn previous_serialize_object(
+    ctx: &mut HostContext,
+    obj: &Arc<Mutex<Object>>,
+    state: &mut StringifyState,
+) -> Option<String> {
+    let id = Arc::as_ptr(obj) as usize;
+    if !state.visited.insert(id) {
+        ctx.throw_value(crate::error::new_error(
+            ctx,
+            "TypeError",
+            "Converting circular structure to JSON",
+        ));
+        return None;
+    }
+
+    let result = {
+        let guard = obj.lock().unwrap();
+        // RawJSON objects serialize their embedded literal directly.
+        if matches!(
+            guard.properties.get("__type"),
+            Some(Value::String(tag)) if tag.as_ref() == "RawJSON"
+        ) {
+            if let Some(Value::String(raw)) = guard.properties.get("rawJSON") {
+                return Some(raw.to_string());
+            }
+        }
+        match &guard.kind {
+            ObjectKind::Array(elems) => {
+                let elems = elems.clone();
+                drop(guard);
+                serialize_array(ctx, obj, elems, state)
+            }
+            ObjectKind::TypedArray(ta) => Some(stringify_typed_array(ta)),
+            ObjectKind::Map(_) | ObjectKind::Set(_) | ObjectKind::ArrayBuffer(_) => {
+                Some("{}".to_string())
+            }
+            ObjectKind::Function(_)
+            | ObjectKind::HostFunction(_)
+            | ObjectKind::Continuation(_)
+            | ObjectKind::Future { .. }
+            | ObjectKind::Stream { .. } => None,
+            ObjectKind::Ordinary | ObjectKind::ModuleNamespace => {
+                let keys = previous_object_serialization_keys(&guard, state.property_list.as_ref());
+                drop(guard);
+                Some(serialize_ordinary(ctx, obj, &keys, state))
+            }
+        }
+    };
+
+    state.visited.remove(&id);
+    result
+}
+
+    fn fixture(count: usize, tracked: bool, numeric: bool) -> Value {
+        let mut object = Object::new();
+        let mut keys = Vec::new();
+        for index in 0..count {
+            let key = if numeric { index.to_string() } else { format!("field{index}") };
+            object.properties.insert(key.clone(), Value::I32(index as i32));
+            keys.push(crate::keys::string_value(&key));
+        }
+        if tracked {
+            keys.reverse();
+            object.properties.insert("__keys".into(), Value::Object(vybe_runtime::heap::alloc(Object::new_array(keys))));
+        }
+        Value::Object(vybe_runtime::heap::alloc(object))
+    }
+
+    #[test]
+    fn reused_key_vector_keeps_order_filtering_and_replacer_lists() {
+        for count in [0, 1, 3, 16] {
+            for tracked in [false, true] {
+                for numeric in [false, true] {
+                    let value = fixture(count, tracked, numeric);
+                    let Value::Object(object) = value else { unreachable!() };
+                    let mut object = object.lock().unwrap();
+                    object.properties.insert("00".into(), Value::I32(1));
+                    object.properties.insert("4294967295".into(), Value::I32(2));
+                    object.properties.insert("__private".into(), Value::I32(3));
+                    object.properties.insert("Symbol(hidden)".into(), Value::I32(4));
+                    object.properties.insert("__nonenum".into(), Value::Object(vybe_runtime::heap::alloc(
+                        Object::new_array(vec![crate::keys::string_value("field1"), crate::keys::string_value("1")]))));
+                    assert_eq!(object_serialization_keys(&object, None), previous_object_serialization_keys(&object, None));
+                    let list = vec!["field2".to_string(), "00".to_string(), "2".to_string(), "missing".to_string()];
+                    assert_eq!(object_serialization_keys(&object, Some(&list)), previous_object_serialization_keys(&object, Some(&list)));
+                }
+            }
+        }
+    }
+
+    fn callable(vm: &VM, module: &str, name: &str) -> Value {
+        let mut object = Object::new();
+        object.kind = ObjectKind::HostFunction(vm.resolve_host_function_index(module, name).unwrap());
+        Value::Object(vybe_runtime::heap::alloc(object))
+    }
+
+    #[test]
+    #[ignore = "paired complete registered stringify calls for flat object key enumeration"]
+    fn object_keys_complete_stringify_benchmark() {
+        use std::time::{Duration, Instant};
+        let mut vm = VM::new();
+        register(&mut vm);
+        vm.register_host_fn("ecma:json-key-benchmark", "previousStringify", Box::new(|ctx, args| {
+            let value = args.first().cloned().unwrap_or(Value::Undefined);
+            let mut state = StringifyState::new(args.get(1), args.get(2));
+            let holder = make_root_holder(value.clone());
+            let value = transform_json_value(ctx, &holder, "", value, &mut state);
+            previous_serialize_json_value(ctx, &value, &mut state, false)
+                .map(owned_string_value).unwrap_or(Value::Undefined)
+        }));
+        let previous = callable(&vm, "ecma:json-key-benchmark", "previousStringify");
+        let current = callable(&vm, "ecma:json", "stringify");
+        for count in [3, 16, 64, 512] {
+            for tracked in [false, true] {
+                let args = [fixture(count, tracked, false)];
+                let old = vm.invoke(&previous, &args).unwrap();
+                let new = vm.invoke(&current, &args).unwrap();
+                let (Value::String(old), Value::String(new)) = (old, new) else { panic!("string expected") };
+                assert_eq!(old, new);
+                let iterations = if count <= 16 { 500 } else { 100 };
+                let mut totals = [Duration::ZERO; 2];
+                for round in 0..8 {
+                    for variant in if round % 2 == 0 { [0, 1] } else { [1, 0] } {
+                        let began = Instant::now();
+                        for _ in 0..iterations {
+                            std::hint::black_box(vm.invoke(if variant == 0 { &previous } else { &current }, &args).unwrap());
+                        }
+                        totals[variant] += began.elapsed();
+                    }
+                }
+                eprintln!("json-object-keys count={count} tracked={tracked} calls={} previous={:?} current={:?} ratio={:.3}",
+                    iterations * 8, totals[0], totals[1], totals[0].as_secs_f64() / totals[1].as_secs_f64());
+            }
+        }
+    }
 }
 
 fn is_serializable_object_key(o: &Object, key: &str) -> bool {
@@ -836,6 +1049,74 @@ fn quote_string(s: &str) -> String {
 }
 
 fn write_quoted_string(s: &str, out: &mut String) {
+    if !s.bytes().any(|byte| byte == b'"' || byte == b'\\' || byte < 0x20) {
+        out.push('"');
+        out.push_str(s);
+        out.push('"');
+        return;
+    }
+    if !s.is_ascii() {
+        write_quoted_string_unicode_fallback(s, out);
+        return;
+    }
+    out.push('"');
+    let mut start = 0;
+    for (index, byte) in s.bytes().enumerate() {
+        if byte != b'"' && byte != b'\\' && byte >= 0x20 {
+            continue;
+        }
+        // Every escape byte is ASCII, so both ends of each copied span
+        // are UTF-8 boundaries even when the span contains multibyte text.
+        out.push_str(&s[start..index]);
+        match byte {
+            b'"' => out.push_str("\\\""),
+            b'\\' => out.push_str("\\\\"),
+            b'\n' => out.push_str("\\n"),
+            b'\r' => out.push_str("\\r"),
+            b'\t' => out.push_str("\\t"),
+            0x08 => out.push_str("\\b"),
+            0x0c => out.push_str("\\f"),
+            _ => {
+                out.push_str("\\u00");
+                out.push(HEX_LOWER[(byte >> 4) as usize] as char);
+                out.push(HEX_LOWER[(byte & 0x0f) as usize] as char);
+            }
+        }
+        start = index + 1;
+    }
+    out.push_str(&s[start..]);
+    out.push('"');
+}
+
+fn write_quoted_string_unicode_fallback(s: &str, out: &mut String) {
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            '\x08' => out.push_str("\\b"),
+            '\x0C' => out.push_str("\\f"),
+            c if (c as u32) < 0x20 => {
+                let code = c as u32;
+                out.push_str("\\u");
+                out.push(HEX_LOWER[((code >> 12) & 0x0f) as usize] as char);
+                out.push(HEX_LOWER[((code >> 8) & 0x0f) as usize] as char);
+                out.push(HEX_LOWER[((code >> 4) & 0x0f) as usize] as char);
+                out.push(HEX_LOWER[(code & 0x0f) as usize] as char);
+            }
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+}
+
+#[cfg(test)]
+mod escaped_span_performance_tests {
+    use super::*;
+    fn previous_write_quoted_string(s: &str, out: &mut String) {
     if !s
         .bytes()
         .any(|byte| byte == b'"' || byte == b'\\' || byte < 0x20)
@@ -868,6 +1149,83 @@ fn write_quoted_string(s: &str, out: &mut String) {
     }
     out.push('"');
 }
+
+    fn previous_quote(text: &str) -> String {
+        let mut output = String::with_capacity(text.len() + 2);
+        previous_write_quoted_string(text, &mut output);
+        output
+    }
+
+    #[test]
+    fn copied_utf8_spans_preserve_all_escape_classes_and_boundaries() {
+        for prefix in ["", "abc", "\u{00e9}\u{4e2d}\u{1f600}"] {
+            for code in 0u8..=127 {
+                let text = format!("{prefix}{}tail{prefix}", code as char);
+                assert_eq!(quote_string(&text), previous_quote(&text));
+            }
+        }
+        for scalar in [0x80, 0x7ff, 0x800, 0xd7ff, 0xe000, 0xffff, 0x10000, 0x10ffff] {
+            let ch = char::from_u32(scalar).unwrap();
+            for text in [format!("{ch}"), format!("{ch}\n{ch}"), format!("\n{ch}\t{ch}")] {
+                assert_eq!(quote_string(&text), previous_quote(&text));
+            }
+        }
+        assert_eq!(quote_string("\0"), "\"\\u0000\"");
+        assert_eq!(quote_string("\n\r\t"), "\"\\n\\r\\t\"");
+        assert_eq!(quote_string(""), "\"\"");
+    }
+
+    fn callable(vm: &VM, module: &str, name: &str) -> Value {
+        let mut object = Object::new();
+        object.kind = ObjectKind::HostFunction(vm.resolve_host_function_index(module, name).unwrap());
+        Value::Object(vybe_runtime::heap::alloc(object))
+    }
+
+    #[test]
+    #[ignore = "paired complete registered stringify calls for primitive string inputs"]
+    fn escaped_stringify_complete_call_benchmark() {
+        use std::time::{Duration, Instant};
+        let mut vm = VM::new();
+        register(&mut vm);
+        vm.register_host_fn("ecma:json-benchmark", "previousStringify", Box::new(|ctx, args| {
+            let value = args.first().cloned().unwrap_or(Value::Undefined);
+            let mut state = StringifyState::new(args.get(1), args.get(2));
+            let holder = make_root_holder(value.clone());
+            let value = transform_json_value(ctx, &holder, "", value, &mut state);
+            let result = match &value {
+                Value::String(text) => Some(previous_quote(text)),
+                _ => serialize_json_value(ctx, &value, &mut state, false),
+            };
+            result.map(owned_string_value).unwrap_or(Value::Undefined)
+        }));
+        let previous = callable(&vm, "ecma:json-benchmark", "previousStringify");
+        let current = callable(&vm, "ecma:json", "stringify");
+        for (name, fragment) in [
+            ("plain", "abcdefghij"),
+            ("escaped", "abcdefghij\n"),
+            ("unicode-escaped", "\u{00e9}\u{4e2d}\u{1f600}\n"),
+        ] {
+            let args = [crate::keys::string_value(&fragment.repeat(512))];
+            let old_result = vm.invoke(&previous, &args).unwrap();
+            let new_result = vm.invoke(&current, &args).unwrap();
+            let (Value::String(old), Value::String(new)) = (old_result, new_result) else { panic!("string expected") };
+            assert_eq!(old, new);
+            let mut totals = [Duration::ZERO; 2];
+            for round in 0..8 {
+                for variant in if round % 2 == 0 { [0, 1] } else { [1, 0] } {
+                    let began = Instant::now();
+                    for _ in 0..1000 {
+                        std::hint::black_box(vm.invoke(if variant == 0 { &previous } else { &current }, &args).unwrap());
+                    }
+                    totals[variant] += began.elapsed();
+                }
+            }
+            eprintln!("json-stringify case={name} calls=8000 previous={:?} current={:?} ratio={:.3}",
+                totals[0], totals[1], totals[0].as_secs_f64() / totals[1].as_secs_f64());
+        }
+    }
+}
+
 
 // ── Parse ──────────────────────────────────────────────────────────────
 

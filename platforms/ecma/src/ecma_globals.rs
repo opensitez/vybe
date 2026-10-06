@@ -121,10 +121,7 @@ fn set_constructor_once(proto: &Value, ctor: Value) -> Value {
 /// Create a HostFunction Value referencing a registered host function. Stamps
 /// the shared ecma function prototype, so it lives with ecma.
 fn host_fn_ref(vm: &VM, module: &str, name: &str) -> Value {
-    if let Some(&idx) = vm
-        .host_registry
-        .get(&(module.to_string(), name.to_string()))
-    {
+    if let Some(idx) = vm.resolve_host_function_index(module, name) {
         let mut obj = Object::new();
         obj.properties.reserve(5);
         obj.properties
@@ -1273,4 +1270,55 @@ fn register_intl(vm: &mut VM) {
 /// both callable AND have static methods (`Symbol.for`, `BigInt.asIntN`).
 fn host_fn_with_props(vm: &VM, module: &str, name: &str) -> Value {
     host_fn_ref(vm, module, name)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn globals_reference_registered_host_functions() {
+        let mut vm = VM::new();
+        crate::register(&mut vm);
+        register(&mut vm);
+
+        for (global, module, function) in [
+            ("Object", "ecma:object", "Object"),
+            ("Array", "ecma:array", "new"),
+            ("String", "ecma:string", "String"),
+        ] {
+            let value = vm.global(global).expect("registered constructor");
+            let expected = vm
+                .resolve_host_function_index(module, function)
+                .expect("registered host function");
+            let Value::Object(object) = value else {
+                panic!("{global} is not a host function object");
+            };
+            assert!(matches!(
+                object.lock().unwrap().kind,
+                ObjectKind::HostFunction(index) if index == expected
+            ));
+        }
+
+        let Value::Object(math) = vm.global("Math").expect("Math namespace") else {
+            panic!("Math is not a namespace object");
+        };
+        let max_of = math
+            .lock()
+            .unwrap()
+            .properties
+            .get("maxOf")
+            .cloned()
+            .expect("Math.maxOf");
+        let Value::Object(max_of) = max_of else {
+            panic!("Math.maxOf is not a host function object");
+        };
+        let expected = vm
+            .resolve_host_function_index("ecma:math", "maxOf")
+            .expect("registered Math.maxOf");
+        assert!(matches!(
+            max_of.lock().unwrap().kind,
+            ObjectKind::HostFunction(index) if index == expected
+        ));
+    }
 }

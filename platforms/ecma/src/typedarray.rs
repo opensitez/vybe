@@ -701,7 +701,15 @@ pub(crate) fn write_array_values_to_typed_array_bytes(
 pub fn new_typed_array(elem: TypedElemKind, length: usize) -> Value {
     let bpe = elem.bytes_per_element();
     let byte_length = length.saturating_mul(bpe);
-    let bytes = Arc::new(Mutex::new(vec![0u8; byte_length]));
+    new_typed_array_from_bytes(elem, length, vec![0u8; byte_length])
+}
+
+// Adopt newly allocated private bytes, never an existing view's storage.
+fn new_typed_array_from_bytes(elem: TypedElemKind, length: usize, bytes: Vec<u8>) -> Value {
+    let bpe = elem.bytes_per_element();
+    let byte_length = length.saturating_mul(bpe);
+    debug_assert_eq!(bytes.len(), byte_length);
+    let bytes = Arc::new(Mutex::new(bytes));
 
     // Construct the backing ArrayBuffer object so `.buffer` returns
     // a real externref users can pass around.
@@ -2599,14 +2607,10 @@ fn register_variant(vm: &mut VM, elem: TypedElemKind, module: &'static str) {
                     let bytes = buf[ta.byte_offset..ta.byte_offset + live as usize * bpe].to_vec();
                     drop(buf);
                     drop(o);
-                    let ta_val = new_typed_array(elem, live as usize);
+                    let ta_val = new_typed_array_from_bytes(elem, live as usize, bytes);
                     if let Value::Object(ref out) = ta_val {
                         let ol = out.lock().unwrap();
                         if let ObjectKind::TypedArray(ref t) = ol.kind {
-                            {
-                                let mut output = t.buffer.lock().unwrap();
-                                output[..bytes.len()].copy_from_slice(&bytes);
-                            }
                             write_element(t, idx as usize, &val);
                         }
                     }
@@ -2944,6 +2948,212 @@ fn register_variant(vm: &mut VM, elem: TypedElemKind, module: &'static str) {
 #[cfg(test)]
 mod with_byte_copy_performance_tests {
     use super::*;
+
+    #[test]
+    fn slice_keeps_independent_bytes_for_all_variants_and_bounds() {
+        let mut vm = VM::new();
+        register(&mut vm);
+        for &(elem, module) in VARIANTS {
+            let input = new_typed_array(elem, 16);
+            let storage = state(&input);
+            let original: Vec<u8> = (0..16 * elem.bytes_per_element()).map(|n| n as u8).collect();
+            storage.buffer.lock().unwrap().copy_from_slice(&original);
+            if let Value::Object(object) = &input {
+                let mut object = object.lock().unwrap();
+                let ObjectKind::TypedArray(view) = &mut object.kind else { unreachable!() };
+                view.byte_offset = 2 * elem.bytes_per_element();
+                view.length = 6;
+            }
+            let source = state(&input);
+            let function = callable(&vm, module, "slice");
+            for (start, end) in [(0, 4), (1, -1), (-3, 999), (5, 2), (0, 0)] {
+                let result = vm.invoke(&function, &[input.clone(), Value::I32(start), Value::I32(end)]).unwrap();
+                let output = state(&result);
+                let first = relative_index(start, 6);
+                let count = relative_index(end, 6).saturating_sub(first);
+                let byte_start = source.byte_offset + first * elem.bytes_per_element();
+                let byte_end = byte_start + count * elem.bytes_per_element();
+                assert_eq!(output.length, count);
+                assert_eq!(output.byte_offset, 0);
+                assert!(!Arc::ptr_eq(&output.buffer, &source.buffer));
+                assert_eq!(*output.buffer.lock().unwrap(), original[byte_start..byte_end]);
+                assert_eq!(*source.buffer.lock().unwrap(), original);
+            }
+            if let Value::Object(object) = &input {
+                let mut object = object.lock().unwrap();
+                let ObjectKind::TypedArray(view) = &mut object.kind else { unreachable!() };
+                view.byte_offset = original.len() + elem.bytes_per_element();
+            }
+            let result = vm.invoke(&function, &[input.clone()]).unwrap();
+            assert_eq!(state(&result).length, 0);
+        }
+    }
+
+    #[test]
+    #[ignore = "paired registered slice calls against previous zero-fill and copy path"]
+    fn adopted_slice_complete_call_benchmark() {
+        use std::time::{Duration, Instant};
+        let mut vm = VM::new();
+        register(&mut vm);
+        for (elem, module) in [(TypedElemKind::U8, "ecma:uint8array"), (TypedElemKind::F64, "ecma:float64array")] {
+            vm.register_host_fn("ecma:adopt-benchmark", "previousSlice", Box::new(move |_ctx, args| {
+            // Per spec: slice copies bytes into a new buffer (does
+            // NOT share storage with the source).
+            let start = args.get(1).map(|v| v.as_i32()).unwrap_or(0);
+            let end = args.get(2).map(|v| v.as_i32()).unwrap_or(i32::MAX);
+            if let Some(ta_obj) = is_typed_of(args, 0, elem) {
+                let o = ta_obj.lock().unwrap();
+                if let ObjectKind::TypedArray(ref ta) = o.kind {
+                    let live = ta_live_length(ta) as i32;
+                    let s = relative_index(start, live);
+                    let e = relative_index(end, live);
+                    let count = e.saturating_sub(s);
+                    let src_ta = ta.clone();
+                    drop(o);
+                    let ta_val = new_typed_array(elem, count);
+                    if count == 0 {
+                        return ta_val;
+                    }
+                    if let Value::Object(ref out) = ta_val {
+                        let ol = out.lock().unwrap();
+                        if let ObjectKind::TypedArray(ref t) = ol.kind {
+                            if !copy_typed_array_slice_bytes(&src_ta, s, t, count) {
+                                let bpe = src_ta.elem.bytes_per_element();
+                                let buf = src_ta.buffer.lock().unwrap();
+                                let mut values = Vec::with_capacity(count);
+                                for i in s..e {
+                                    let abs = src_ta.byte_offset + i * bpe;
+                                    values.push(read_element_from_locked_buffer(
+                                        src_ta.elem,
+                                        &buf,
+                                        abs,
+                                        bpe,
+                                    ));
+                                }
+                                drop(buf);
+                                let _ = write_array_values_to_typed_array_bytes(t, 0, &values);
+                            }
+                        }
+                    }
+                    return ta_val;
+                }
+            }
+            new_typed_array(elem, 0)
+        }));
+            let previous = callable(&vm, "ecma:adopt-benchmark", "previousSlice");
+            let current = callable(&vm, module, "slice");
+            for length in [16, 4096, 65536] {
+                let input = new_typed_array(elem, length);
+                let args = [input, Value::I32(0), Value::I32(length as i32)];
+                let old_result = vm.invoke(&previous, &args).unwrap();
+                let new_result = vm.invoke(&current, &args).unwrap();
+                assert_eq!(*state(&old_result).buffer.lock().unwrap(), *state(&new_result).buffer.lock().unwrap());
+                let iterations = if length == 16 { 2000 } else { 200 };
+                let mut totals = [Duration::ZERO; 2];
+                for round in 0..8 {
+                    for variant in if round % 2 == 0 { [0, 1] } else { [1, 0] } {
+                        let began = Instant::now();
+                        for _ in 0..iterations {
+                            std::hint::black_box(vm.invoke(if variant == 0 { &previous } else { &current }, &args).unwrap());
+                        }
+                        totals[variant] += began.elapsed();
+                    }
+                }
+                eprintln!("adopt-slice elem={elem:?} length={length} calls={} previous={:?} current={:?} ratio={:.3}",
+                    iterations * 8, totals[0], totals[1], totals[0].as_secs_f64() / totals[1].as_secs_f64());
+            }
+        }
+    }
+
+
+    #[test]
+    fn adopted_bytes_keep_allocation_and_view_metadata() {
+        for &(elem, _) in VARIANTS {
+            let count = 8;
+            let bytes = vec![0x5a; count * elem.bytes_per_element()];
+            let pointer = bytes.as_ptr();
+            let expected = bytes.clone();
+            let result = new_typed_array_from_bytes(elem, count, bytes);
+            let view = state(&result);
+            assert_eq!(view.length, count);
+            assert_eq!(view.byte_offset, 0);
+            let storage = view.buffer.lock().unwrap();
+            assert_eq!(storage.as_ptr(), pointer);
+            assert_eq!(*storage, expected);
+            drop(storage);
+            let buffer = view.buffer_obj.lock().unwrap();
+            let ObjectKind::ArrayBuffer(backing) = &buffer.kind else { panic!("array buffer expected") };
+            assert!(Arc::ptr_eq(&view.buffer, &backing.bytes));
+            assert!(!backing.detached);
+            assert!(!backing.resizable);
+            assert_eq!(backing.max_byte_length, count * elem.bytes_per_element());
+        }
+    }
+
+    #[test]
+    #[ignore = "paired registered with calls against the immediately previous byte-snapshot path"]
+    fn adopted_with_complete_call_benchmark() {
+        use std::time::{Duration, Instant};
+        let mut vm = VM::new();
+        register(&mut vm);
+        for (elem, module) in [(TypedElemKind::U8, "ecma:uint8array"), (TypedElemKind::F64, "ecma:float64array")] {
+            vm.register_host_fn("ecma:adopt-benchmark", "previousWith", Box::new(move |_ctx, args| {
+            let i = args.get(1).map(|v| v.as_i32()).unwrap_or(0);
+            let val = args.get(2).cloned().unwrap_or_else(|| zero_value(elem));
+            if let Some(ta_obj) = is_typed_of(args, 0, elem) {
+                let o = ta_obj.lock().unwrap();
+                if let ObjectKind::TypedArray(ref ta) = o.kind {
+                    let buf = ta.buffer.lock().unwrap();
+                    let live = ta_live_length_for_buffer(ta, buf.len()) as i32;
+                    let idx = if i < 0 { live + i } else { i };
+                    if idx < 0 || idx >= live {
+                        return args.first().cloned().unwrap_or(Value::Null);
+                    }
+                    let bpe = ta.elem.bytes_per_element();
+                    let bytes = buf[ta.byte_offset..ta.byte_offset + live as usize * bpe].to_vec();
+                    drop(buf);
+                    drop(o);
+                    let ta_val = new_typed_array(elem, live as usize);
+                    if let Value::Object(ref out) = ta_val {
+                        let ol = out.lock().unwrap();
+                        if let ObjectKind::TypedArray(ref t) = ol.kind {
+                            {
+                                let mut output = t.buffer.lock().unwrap();
+                                output[..bytes.len()].copy_from_slice(&bytes);
+                            }
+                            write_element(t, idx as usize, &val);
+                        }
+                    }
+                    return ta_val;
+                }
+            }
+            new_typed_array(elem, 0)
+        }));
+            let previous = callable(&vm, "ecma:adopt-benchmark", "previousWith");
+            let current = callable(&vm, module, "with");
+            for length in [16, 4096, 65536] {
+                let input = new_typed_array(elem, length);
+                let args = [input, Value::I32((length / 2) as i32), Value::I32(42)];
+                let old_result = vm.invoke(&previous, &args).unwrap();
+                let new_result = vm.invoke(&current, &args).unwrap();
+                assert_eq!(*state(&old_result).buffer.lock().unwrap(), *state(&new_result).buffer.lock().unwrap());
+                let iterations = if length == 16 { 2000 } else { 200 };
+                let mut totals = [Duration::ZERO; 2];
+                for round in 0..8 {
+                    for variant in if round % 2 == 0 { [0, 1] } else { [1, 0] } {
+                        let began = Instant::now();
+                        for _ in 0..iterations {
+                            std::hint::black_box(vm.invoke(if variant == 0 { &previous } else { &current }, &args).unwrap());
+                        }
+                        totals[variant] += began.elapsed();
+                    }
+                }
+                eprintln!("adopt-with elem={elem:?} length={length} calls={} previous={:?} current={:?} ratio={:.3}",
+                    iterations * 8, totals[0], totals[1], totals[0].as_secs_f64() / totals[1].as_secs_f64());
+            }
+        }
+    }
+
 
     fn state(value: &Value) -> TypedArrayState {
         let Value::Object(object) = value else { panic!("typed array expected"); };
