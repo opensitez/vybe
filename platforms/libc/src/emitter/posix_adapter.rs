@@ -2262,11 +2262,32 @@ fn inet_structs() -> Vec<HeaderStruct> {
     ]
 }
 
+pub fn header_variables(header: &str) -> &'static [(&'static str, &'static str, i64)] {
+    match header {
+        "errno.h" => &[("errno", "int", 0)],
+        _ => &[],
+    }
+}
+
 pub fn header_constants(header: &str) -> Option<&'static [(&'static str, i64)]> {
     if let Some(constants) = super::thread_adapter::header_constants(header) {
         return Some(constants);
     }
     match header {
+        // Guest errno values follow the existing libc error-code ABI, not the
+        // build machine's host libc (which differs on macOS).
+        "errno.h" => Some(&[
+            ("EPERM", 1), ("ENOENT", 2), ("ESRCH", 3), ("EINTR", 4),
+            ("EIO", 5), ("ENXIO", 6), ("E2BIG", 7), ("ENOEXEC", 8),
+            ("EBADF", 9), ("ECHILD", 10), ("EAGAIN", 11), ("EWOULDBLOCK", 11),
+            ("ENOMEM", 12), ("EACCES", 13), ("EFAULT", 14), ("EBUSY", 16),
+            ("EEXIST", 17), ("EXDEV", 18), ("ENODEV", 19), ("ENOTDIR", 20),
+            ("EISDIR", 21), ("EINVAL", 22), ("ENFILE", 23), ("EMFILE", 24),
+            ("ENOTTY", 25), ("ETXTBSY", 26), ("EFBIG", 27), ("ENOSPC", 28),
+            ("ESPIPE", 29), ("EROFS", 30), ("EMLINK", 31), ("EPIPE", 32),
+            ("EDOM", 33), ("ERANGE", 34), ("EDEADLK", 35), ("ENAMETOOLONG", 36),
+            ("ENOLCK", 37), ("ENOSYS", 38), ("ENOTEMPTY", 39), ("ELOOP", 40),
+        ]),
         "unistd.h" | "sys/wait.h" | "grp.h" => Some(&[
             ("STDIN_FILENO", 0),
             ("STDOUT_FILENO", 1),

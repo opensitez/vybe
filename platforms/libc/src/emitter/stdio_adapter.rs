@@ -1442,6 +1442,22 @@ pub fn strncpy_carray_runtime_helper() -> Statement {
 /// stdin token reader, assigns each target, and evaluates to the match count.
 /// Stops at the first failed conversion, per C semantics. `tmp_id` must be unique
 /// per call site to avoid temp-name collisions.
+fn scan_conversion(spec: char, token: Expression) -> Expression {
+    let parsed = match spec {
+        'd' | 'u' => call(ident("parseInt"), vec![token, lit_int(10)]),
+        'i' => call(ident("parseInt"), vec![token]),
+        'x' | 'X' => call(ident("parseInt"), vec![token, lit_int(16)]),
+        'o' => call(ident("parseInt"), vec![token, lit_int(8)]),
+        'f' | 'e' | 'g' | 'F' | 'E' | 'G' | 'a' => {
+            return call(ident("__libc_nan_to_default"), vec![
+                call(ident("parseFloat"), vec![token]), lit_float(0.0),
+            ]);
+        }
+        _ => return token,
+    };
+    call(ident("__libc_nan_to_default"), vec![parsed, lit_int(0)])
+}
+
 pub fn scanf(fmt: &str, targets: Vec<Expression>, tmp_id: u32) -> Expression {
     let mut specs: Vec<char> = Vec::new();
     let chars: Vec<char> = fmt.chars().collect();
@@ -1490,34 +1506,7 @@ pub fn scanf(fmt: &str, targets: Vec<Expression>, tmp_id: u32) -> Expression {
             ident(&tok_var),
             ternary(ident(&ok_var), call(ident(reader), vec![]), lit_str("")),
         ));
-        let converted = match spec {
-            'd' | 'u' => bin(
-                BinOp::Or,
-                call(ident("parseInt"), vec![ident(&tok_var), lit_int(10)]),
-                lit_int(0),
-            ),
-            'i' => bin(
-                BinOp::Or,
-                call(ident("parseInt"), vec![ident(&tok_var)]),
-                lit_int(0),
-            ),
-            'x' | 'X' => bin(
-                BinOp::Or,
-                call(ident("parseInt"), vec![ident(&tok_var), lit_int(16)]),
-                lit_int(0),
-            ),
-            'o' => bin(
-                BinOp::Or,
-                call(ident("parseInt"), vec![ident(&tok_var), lit_int(8)]),
-                lit_int(0),
-            ),
-            'f' | 'e' | 'g' | 'F' | 'E' | 'G' | 'a' => bin(
-                BinOp::Or,
-                call(ident("parseFloat"), vec![ident(&tok_var)]),
-                lit_float(0.0),
-            ),
-            _ => ident(&tok_var),
-        };
+        let converted = scan_conversion(*spec, ident(&tok_var));
         seq.push(ternary(
             bin(BinOp::Gt, member(ident(&tok_var), "length"), lit_int(0)),
             e(ExprKind::Sequence(vec![
@@ -1529,7 +1518,10 @@ pub fn scanf(fmt: &str, targets: Vec<Expression>, tmp_id: u32) -> Expression {
     }
 
     seq.push(ident(&n_var));
-    e(ExprKind::Sequence(seq))
+    e(ExprKind::Cast {
+        expr: Box::new(e(ExprKind::Sequence(seq))),
+        type_name: "integer".into(),
+    })
 }
 
 /// Lower `fscanf(stream, fmt, t1, ...)` for literal formats into a sequence that
@@ -1631,34 +1623,7 @@ pub fn fscanf(fmt: &str, handle: Expression, targets: Vec<Expression>, tmp_id: u
             seq.push(assign_expr(ident(&tok_var), ident(&src_var)));
         }
 
-        let converted = match spec {
-            'd' | 'u' => bin(
-                BinOp::Or,
-                call(ident("parseInt"), vec![ident(&tok_var), lit_int(10)]),
-                lit_int(0),
-            ),
-            'i' => bin(
-                BinOp::Or,
-                call(ident("parseInt"), vec![ident(&tok_var)]),
-                lit_int(0),
-            ),
-            'x' | 'X' => bin(
-                BinOp::Or,
-                call(ident("parseInt"), vec![ident(&tok_var), lit_int(16)]),
-                lit_int(0),
-            ),
-            'o' => bin(
-                BinOp::Or,
-                call(ident("parseInt"), vec![ident(&tok_var), lit_int(8)]),
-                lit_int(0),
-            ),
-            'f' | 'e' | 'g' | 'F' | 'E' | 'G' | 'a' => bin(
-                BinOp::Or,
-                call(ident("parseFloat"), vec![ident(&tok_var)]),
-                lit_float(0.0),
-            ),
-            _ => ident(&tok_var),
-        };
+        let converted = scan_conversion(*spec, ident(&tok_var));
 
         seq.push(ternary(
             bin(
@@ -1675,5 +1640,8 @@ pub fn fscanf(fmt: &str, handle: Expression, targets: Vec<Expression>, tmp_id: u
     }
 
     seq.push(ident(&n_var));
-    e(ExprKind::Sequence(seq))
+    e(ExprKind::Cast {
+        expr: Box::new(e(ExprKind::Sequence(seq))),
+        type_name: "integer".into(),
+    })
 }

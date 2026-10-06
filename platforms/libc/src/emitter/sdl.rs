@@ -559,7 +559,8 @@ const SDL_SCANCODE_KEYCODES: &[(i32, i32)] = &[
 
 /// Unwrap a C pointer argument to the object it addresses.
 ///
-/// Accept direct records, scalar reference cells, and C structure pointers.
+/// Accept direct records, scalar cells, and structure/array-element pointers.
+/// Numeric linear addresses need no managed-reference lookup.
 /// Unwrap the existing backing rather than writing fields on the pointer wrapper.
 fn emit_deref_cell(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
     emit_deref_record_arg(chunks, current, slot, true, line);
